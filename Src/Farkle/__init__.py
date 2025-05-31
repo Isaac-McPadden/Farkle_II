@@ -1,5 +1,5 @@
 """
-Farkle Mk II – fast Monte-Carlo engine & strategy tools
+Farkle Mk II - fast Monte-Carlo engine & strategy tools
 """
 from importlib.metadata import version as _v
 

@@ -11,15 +11,15 @@ from strategies import ThresholdStrategy
 
 """simulation.py
 ================
-High‑level utilities for *batch* and *grid* simulations.
+High-level utilities for *batch* and *grid* simulations.
 
 This is the entry point most users will reach for:
 
-* ``generate_strategy_grid`` – produce the canonical 800‑strategy (or
+* ``generate_strategy_grid`` - produce the canonical 800-strategy (or
   custom) grid and its accompanying ``DataFrame``.
-* ``simulate_many_games`` – run *N* games, optionally in parallel, and
+* ``simulate_many_games`` - run *N* games, optionally in parallel, and
   return tidy metrics.
-* ``aggregate_metrics`` – summarize a DataFrame of game results.
+* ``aggregate_metrics`` - summarize a DataFrame of game results.
 """
 
 __all__: list[str] = [
@@ -45,7 +45,7 @@ def generate_strategy_grid(
     """Create the Cartesian product of all parameter options.
 
     Returns a tuple *(strategies, meta_df)* where the first element is a
-    list of fully‑constructed ``ThresholdStrategy`` instances (safe to
+    list of fully-constructed ``ThresholdStrategy`` instances (safe to
     pass to the engine) and the second element is a *metadata* dataframe
     recording each parameter combo.
     """
@@ -156,7 +156,7 @@ def simulate_one_game(
 # ---------------------------------------------------------------------------
 
 def aggregate_metrics(df: pd.DataFrame) -> Dict[str, Any]:
-    """Return a *dict* with high‑level summary statistics."""
+    """Return a *dict* with high-level summary statistics."""
     return {
         "games": len(df),
         "avg_rounds": df["n_rounds"].mean(),

@@ -9,14 +9,14 @@ from strategies import ThresholdStrategy
 
 """engine.py
 ============
-Player and single‑game engine for Farkle simulations.
+Player and single-game engine for Farkle simulations.
 
-High‑level flow
+High-level flow
 ---------------
 * ``FarkleGame.play`` drives a game loop until someone reaches
   ``target_score``.  When that happens the *final round* rule is applied:
   every other player gets one last turn.
-* ``FarklePlayer.take_turn`` handles the intra‑turn loop of rolling,
+* ``FarklePlayer.take_turn`` handles the intra-turn loop of rolling,
   scoring, and consulting its strategy.
 
 The module keeps no global state; randomness lives inside each
@@ -52,7 +52,7 @@ class FarklePlayer:
 
     # ----------------------------- helpers -----------------------------
     def _roll(self, n: int) -> DiceRoll:
-        """Return *n* pseudo‑random dice using the player’s RNG."""
+        """Return *n* pseudo-random dice using the player's RNG."""
         self.n_rolls += 1
         return list(self.rng.integers(1, 7, size=n))
 
@@ -90,7 +90,7 @@ class FarklePlayer:
 
 
 # ---------------------------------------------------------------------------
-# Game‑level structures
+# Game-level structures
 # ---------------------------------------------------------------------------
 
 @dataclass

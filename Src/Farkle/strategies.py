@@ -7,16 +7,16 @@ from dataclasses import dataclass
 ================
 Strategy abstractions used by the Farkle simulation engine.  A *strategy*
 object decides **whether to continue rolling** based on the current turn
-context, independent of dice‑scoring rules.
+context, independent of dice-scoring rules.
 
 Classes
 -------
-`ThresholdStrategy` – simple heuristic combining score & dice limits plus
-an optional Smart‑5 flag.
+`ThresholdStrategy` - simple heuristic combining score & dice limits plus
+an optional Smart-5 flag.
 
 Functions
 ---------
-`random_threshold_strategy` – convenience generator for Monte‑Carlo
+`random_threshold_strategy` - convenience generator for Monte-Carlo
 sweeps.
 """
 
@@ -33,7 +33,7 @@ __all__: list[str] = [
 
 @dataclass
 class ThresholdStrategy:
-    """Threshold‑based decision rule.
+    """Threshold-based decision rule.
 
     Parameters
     ----------
@@ -41,12 +41,12 @@ class ThresholdStrategy:
         Keep rolling until turn score reaches this number (subject to
         *consider_score*).
     dice_threshold
-        Bank when dice‑left drop to this value or below (subject to
+        Bank when dice-left drop to this value or below (subject to
         *consider_dice*).
     smart
-        Enables Smart‑5 heuristic during scoring.
+        Enables Smart-5 heuristic during scoring.
     consider_score, consider_dice
-        Toggle the two conditions to reproduce *score‑only*, *dice‑only*,
+        Toggle the two conditions to reproduce *score-only*, *dice-only*,
         or *balanced* play styles.
     """
 
@@ -66,7 +66,7 @@ class ThresholdStrategy:
         dice_left: int,
         has_scored: bool,
         score_needed: int,  # not used but allows richer future strats  # noqa: ARG002
-    ) -> bool:  # noqa: D401 – imperative name
+    ) -> bool:  # noqa: D401 - imperative name
         """Decision rule implementation."""
         if not has_scored and turn_score < 500:
             return True  # opening rolls until first 500 pts
@@ -83,7 +83,7 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Representation helpers
     # ------------------------------------------------------------------
-    def __str__(self) -> str:  # noqa: D401 – magics method
+    def __str__(self) -> str:  # noqa: D401 - magics method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
         sm = "*" if self.smart else " "
