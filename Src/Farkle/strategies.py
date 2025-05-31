@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
-from typing import Protocol
 
 """strategies.py
 ================
@@ -24,30 +23,9 @@ sweeps.
 
 
 __all__: list[str] = [
-    "Strategy",
     "ThresholdStrategy",
     "random_threshold_strategy",
 ]
-
-# ---------------------------------------------------------------------------
-# Protocol (duck interface)
-# ---------------------------------------------------------------------------
-
-class Strategy(Protocol):
-    """Interface every strategy must implement."""
-
-    def decide(
-        self,
-        *,
-        turn_score: int,
-        dice_left: int,
-        has_scored: bool,
-        score_needed: int,
-    ) -> bool:
-        """Return *True* to keep rolling, *False* to bank points."""
-
-    def __str__(self) -> str: ...
-
 
 # ---------------------------------------------------------------------------
 # Concrete implementation
@@ -118,11 +96,12 @@ class ThresholdStrategy:
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
     """Return a randomised *ThresholdStrategy* instance."""
-    rng = rng or random
+    # if caller didn’t pass a PRNG, make a fresh one
+    rng_inst: random.Random = rng if rng is not None else random.Random()
     return ThresholdStrategy(
-        score_threshold=rng.randrange(50, 1000, 50),
-        dice_threshold=rng.randint(0, 4),
-        smart=rng.choice([True, False]),
-        consider_score=rng.choice([True, False]),
-        consider_dice=rng.choice([True, False]),
+        score_threshold=rng_inst.randrange(50, 1000, 50),
+        dice_threshold=rng_inst.randint(0, 4),
+        smart=rng_inst.choice([True, False]),
+        consider_score=rng_inst.choice([True, False]),
+        consider_dice=rng_inst.choice([True, False]),
     )

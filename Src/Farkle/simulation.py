@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import random
-from itertools import product
 from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
@@ -40,8 +39,8 @@ def generate_strategy_grid(
     score_thresholds: Sequence[int] | None = None,
     dice_thresholds: Sequence[int] | None = None,
     smart_options: Sequence[bool] | None = None,
-    consider_score_opts: Sequence[bool] | None = (True, False),
-    consider_dice_opts: Sequence[bool] | None = (True, False),
+    consider_score_opts: Sequence[bool] = (True, False),
+    consider_dice_opts: Sequence[bool] = (True, False),
 ) -> Tuple[List[ThresholdStrategy], pd.DataFrame]:
     """Create the Cartesian product of all parameter options.
 
@@ -50,10 +49,23 @@ def generate_strategy_grid(
     pass to the engine) and the second element is a *metadata* dataframe
     recording each parameter combo.
     """
-    score_thresholds = score_thresholds or list(range(200, 1050, 50))
-    dice_thresholds = dice_thresholds or list(range(0, 5))
-    smart_options = smart_options or [True, False]
-    combos = list(product(score_thresholds, dice_thresholds, smart_options, consider_score_opts, consider_dice_opts))
+
+    if score_thresholds is None:
+        score_thresholds = list(range(200, 1050, 50))
+    if dice_thresholds is None:
+        dice_thresholds = list(range(0, 5))
+    if smart_options is None:
+        smart_options = [True, False]
+    # nested comprehension instead of product(...)
+    combos: List[Tuple[int, int, bool, bool, bool]] = [
+        (st, dt, sm, cs, cd)
+        for st in score_thresholds
+        for dt in dice_thresholds
+        for sm in smart_options
+        for cs in consider_score_opts
+        for cd in consider_dice_opts
+    ]    
+    
     strategies = [ThresholdStrategy(st, dt, sm, cs, cd) for st, dt, sm, cs, cd in combos]
     meta = pd.DataFrame(combos, columns=["score_threshold", "dice_threshold", "smart", "consider_score", "consider_dice"])
     meta["strategy_idx"] = meta.index
@@ -65,8 +77,8 @@ def experiment_size(
     score_thresholds: Sequence[int] | None = None,
     dice_thresholds: Sequence[int] | None = None,
     smart_options: Sequence[bool] | None = None,
-    consider_score_opts: Sequence[bool] | None = (True, False),
-    consider_dice_opts: Sequence[bool] | None = (True, False),
+    consider_score_opts: Sequence[bool] = (True, False),
+    consider_dice_opts: Sequence[bool] = (True, False),
 ) -> int:
     """Compute *a priori* size of a strategy grid."""
     score_thresholds = score_thresholds or list(range(200, 1050, 50))
@@ -134,7 +146,7 @@ def simulate_one_game(
     seed: int | None = None,
 ):
     """Convenience wrapper around the *single* game engine."""
-    rng = random.Random(seed)
+    rng = np.random.default_rng(seed)
     players = [FarklePlayer(name=f"P{i+1}", strategy=s, rng=rng) for i, s in enumerate(strategies)]
     return FarkleGame(players, target_score=target_score).play()
 

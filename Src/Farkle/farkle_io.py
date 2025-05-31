@@ -1,7 +1,7 @@
 import csv
 import multiprocessing as mp
 from pathlib import Path
-from typing import Any, Dict, Iterable, Sequence
+from typing import Any, Dict, Sequence
 
 import numpy as np
 from simulation import _play_game
@@ -9,7 +9,7 @@ from strategies import ThresholdStrategy
 
 
 # ------------------------------------------------------------
-def _writer_worker(queue: mp.Queue, outpath: str, header: Iterable[str]) -> None:
+def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None:
     """Runs in its own process; pulls rows off queue and appends to CSV."""
     first = not Path(outpath).exists()
     with open(outpath, "a", newline="") as fh:
