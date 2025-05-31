@@ -1,0 +1,57 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name            = "farkle-mk2"
+version         = "0.3.0"
+description     = "Fast Monte Carlo simulation & strategy analysis for the dice game Farkle."
+readme          = "README.md"
+requires-python = ">=3.12"
+authors         = [{ name = "Isaac McPadden", email = "imcpadden523@gmail.com" }]
+license         = { text = "Apache 2.0" }
+classifiers     = [
+    "License :: OSI Approved :: Apache 2.0 License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment :: Simulation",
+]
+dependencies = [
+    "numpy >=1.26",
+    "pandas >=2.2",
+    "tqdm >=4.66",
+]
+
+[project.optional-dependencies]
+dev   = ["ruff>=0.5", "black>=24.4", "pytest>=8", "coverage[toml]>=7"]
+viz   = ["plotly>=5.21", "panel>=1.4", "dask[dataframe]>=2024.5"]
+docs  = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
+
+[project.scripts]
+farkle = "farkle.cli:main"
+
+# ────────────────────────────── tool configs ──────────────────────────────
+[tool.ruff]
+line-length         = 100
+target-version      = "py312"
+extend-select       = ["I", "B", "C4", "SIM", "ARG", "NPY"]
+unsafe-fixes        = true
+src                 = ["src"]
+
+[tool.black]
+line-length         = 100
+target-version      = ["py312"]
+
+[tool.pytest.ini_options]
+addopts             = "-q --cov=farkle --cov-report=term-missing"
+testpaths           = ["Tests"]
+xfail_strict        = true
+
+[tool.coverage.run]
+branch = true
+source = ["Farkle"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "if __name__ == .__main__.:",
+    "pragma: no cover",
+]

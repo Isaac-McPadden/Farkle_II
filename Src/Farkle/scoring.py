@@ -1,4 +1,8 @@
 from __future__ import annotations
+
+from collections import Counter
+from typing import List, Tuple
+
 """scoring.py
 ================
 Pure scoring utilities for the Farkle simulation suite.
@@ -18,8 +22,7 @@ Type aliases
 `DiceRoll` – ``list[int]`` convenience alias for type‑checking clarity.
 """
 
-from collections import Counter
-from typing import List, Tuple
+
 
 __all__: list[str] = [
     "DiceRoll",
@@ -78,7 +81,7 @@ def default_score(
         return 1500, 6, 0
     if len(counts) == 3 and all(v == 2 for v in counts.values()):  # three pairs
         return 1500, 6, 0
-    if len(counts) == 2 and set(counts.values()) == {3, 3}:  # two triplets
+    if len(counts) == 2 and set(counts.values()) == {3}:  # two triplets
         return 2500, 6, 0
     if len(counts) == 2 and 4 in counts.values() and 2 in counts.values():  # 4‑kind + pair
         return 1500, 6, 0

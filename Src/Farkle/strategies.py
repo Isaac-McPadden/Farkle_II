@@ -1,4 +1,9 @@
 from __future__ import annotations
+
+import random
+from dataclasses import dataclass
+from typing import Protocol
+
 """strategies.py
 ================
 Strategy abstractions used by the Farkle simulation engine.  A *strategy*
@@ -16,9 +21,7 @@ Functions
 sweeps.
 """
 
-from dataclasses import dataclass
-from typing import Protocol
-import random
+
 
 __all__: list[str] = [
     "Strategy",
@@ -84,7 +87,7 @@ class ThresholdStrategy:
         turn_score: int,
         dice_left: int,
         has_scored: bool,
-        score_needed: int,  # not used but allows richer future strats
+        score_needed: int,  # not used but allows richer future strats  # noqa: ARG002
     ) -> bool:  # noqa: D401 – imperative name
         """Decision rule implementation."""
         if not has_scored and turn_score < 500:

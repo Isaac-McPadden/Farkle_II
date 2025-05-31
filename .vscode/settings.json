@@ -11,5 +11,10 @@
     "cSpell.words": [
         "Farkle",
         "strats"
-    ]
+    ],
+    "python.analysis.packageIndexDepths": [
+        {"name": "Farkle",
+        "depth": 2}
+        ],
+    "python.analysis.useLibraryCodeForTypes": true
 }

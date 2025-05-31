@@ -1,4 +1,15 @@
 from __future__ import annotations
+
+import multiprocessing as mp
+import random
+from itertools import product
+from typing import Any, Dict, List, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+from engine import FarkleGame, FarklePlayer
+from strategies import ThresholdStrategy
+
 """simulation.py
 ================
 High‑level utilities for *batch* and *grid* simulations.
@@ -9,18 +20,8 @@ This is the entry point most users will reach for:
   custom) grid and its accompanying ``DataFrame``.
 * ``simulate_many_games`` – run *N* games, optionally in parallel, and
   return tidy metrics.
-* ``aggregate_metrics`` – summarise a DataFrame of game results.
+* ``aggregate_metrics`` – summarize a DataFrame of game results.
 """
-
-from itertools import product
-from typing import Sequence, Tuple, List, Dict, Any
-import random
-import multiprocessing as mp
-
-import pandas as pd
-
-from strategies import ThresholdStrategy
-from engine import FarklePlayer, FarkleGame
 
 __all__: list[str] = [
     "generate_strategy_grid",
@@ -84,8 +85,16 @@ def experiment_size(
 # ---------------------------------------------------------------------------
 
 def _play_game(seed: int, strategies: Sequence[ThresholdStrategy], target_score: int) -> Dict[str, Any]:
-    rng = random.Random(seed)
-    players = [FarklePlayer(name=f"P{i+1}", strategy=s, rng=rng) for i, s in enumerate(strategies)]
+    master = np.random.default_rng(seed)
+    # give every player an *independent* PRNG, but reproducible
+    players = [
+        FarklePlayer(
+            name=f"P{i+1}",
+            strategy=s,
+            rng=np.random.default_rng(master.integers(0, 2**32 - 1)),
+        )
+        for i, s in enumerate(strategies)
+    ]
     gm = FarkleGame(players, target_score=target_score).play()
     flat: Dict[str, Any] = {
         "winner": gm.winner,
@@ -141,3 +150,5 @@ def aggregate_metrics(df: pd.DataFrame) -> Dict[str, Any]:
         "avg_rounds": df["n_rounds"].mean(),
         "winner_freq": df["winner"].value_counts().to_dict(),
     }
+
+

@@ -1,4 +1,12 @@
 from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Sequence
+
+import numpy as np
+from scoring import DiceRoll, default_score
+from strategies import ThresholdStrategy
+
 """engine.py
 ============
 Player and single‑game engine for Farkle simulations.
@@ -16,12 +24,7 @@ The module keeps no global state; randomness lives inside each
 from the outer simulation layer).
 """
 
-from dataclasses import dataclass, field
-from typing import Sequence, Optional, Dict, Any, List
-import random
 
-from scoring import default_score, DiceRoll
-from strategies import ThresholdStrategy
 
 __all__: list[str] = [
     "FarklePlayer",
@@ -41,7 +44,7 @@ class FarklePlayer:
     strategy: ThresholdStrategy
     score: int = 0
     has_scored: bool = False  # entered game (≥500) flag
-    rng: random.Random = field(default_factory=random.Random, repr=False)
+    rng:  np.random.Generator = field(default_factory=np.random.default_rng, repr=False)
     # stats
     n_farkles: int = 0
     n_rolls: int = 0
@@ -51,7 +54,7 @@ class FarklePlayer:
     def _roll(self, n: int) -> DiceRoll:
         """Return *n* pseudo‑random dice using the player’s RNG."""
         self.n_rolls += 1
-        return [self.rng.randint(1, 6) for _ in range(n)]
+        return list(self.rng.integers(1, 7, size=n))
 
     # ------------------------------ turn --------------------------------
     def take_turn(self, target_score: int) -> None:
@@ -70,7 +73,8 @@ class FarklePlayer:
                 turn_score = 0
                 break
             turn_score += pts
-            dice = reroll or 6 if used == len(roll) and reroll == 0 else reroll
+            # “hot dice” : all dice scored *and* nothing left to reroll
+            dice = 6 if used == len(roll) and reroll == 0 else reroll
             if not self.strategy.decide(
                 turn_score=turn_score,
                 dice_left=dice,

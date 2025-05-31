@@ -1,6 +1,11 @@
 # src/farkle/cli.py
-import argparse, pathlib, yaml
-from .simulation import simulate_many_games_stream, generate_strategy_grid
+import argparse
+from typing import Any, Mapping
+
+import yaml
+from farkle_io import simulate_many_games_stream
+from simulation import generate_strategy_grid
+
 
 def main() -> None:
     ap = argparse.ArgumentParser(prog="farkle")
@@ -11,7 +16,7 @@ def main() -> None:
 
     if args.cmd == "run":
         with open(args.config) as fh:
-            cfg = yaml.safe_load(fh)
+            cfg: Mapping[str, Any] = yaml.safe_load(fh)
         strategies, _ = generate_strategy_grid(**cfg["strategy_grid"])
         simulate_many_games_stream(**cfg["sim"], strategies=strategies)
 

@@ -1,6 +1,8 @@
 # src/farkle/stats.py
 from math import ceil
+
 from scipy.stats import norm
+
 
 def games_for_power(M: int,        # #strategies being compared
                     alpha=.05,     # type-I error (FWER controlled by Bonferroni)
