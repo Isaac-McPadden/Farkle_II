@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Any, Dict, Sequence
 
 import numpy as np
-from simulation import _play_game
-from strategies import ThresholdStrategy
+from farkle.simulation import _play_game
+from farkle.strategies import ThresholdStrategy
 
 
 # ------------------------------------------------------------

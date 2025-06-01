@@ -4,8 +4,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
-from scoring import DiceRoll, default_score
-from strategies import ThresholdStrategy
+from farkle.scoring import DiceRoll, default_score
+from farkle.strategies import ThresholdStrategy
 
 """engine.py
 ============
@@ -31,6 +31,8 @@ __all__: list[str] = [
     "GameMetrics",
     "FarkleGame",
 ]
+
+
 
 # ---------------------------------------------------------------------------
 # Player
@@ -61,31 +63,55 @@ class FarklePlayer:
         """Simulate one complete turn for the player."""
         dice = 6
         turn_score = 0
+
         while dice > 0:
+            # 1) Roll `dice` number of dice
             roll = self._roll(dice)
+
+            # 2) Compute points from this roll, after applying Smart‐5/Smart‐1 discards
             pts, used, reroll = default_score(
-                roll,
-                smart=self.strategy.smart,
-                score_threshold=self.strategy.score_threshold,
+                dice_roll        = roll,
+                turn_score_pre   = turn_score,
+                smart_five       = self.strategy.smart_five,
+                smart_one        = self.strategy.smart_one,
+                score_threshold  = self.strategy.score_threshold,
             )
+
+            # 3) If pts == 0, that's a Farkle: bust, lose all points this turn, and end turn
             if pts == 0:  # farkle bust
                 self.n_farkles += 1
                 turn_score = 0
                 break
+
+            # 4) Otherwise, accumulate the points from this roll
             turn_score += pts
-            # “hot dice” : all dice scored *and* nothing left to reroll
-            dice = 6 if used == len(roll) and reroll == 0 else reroll
+
+            # 5) “Hot dice” logic: if all dice in `roll` scored (used == len(roll)),
+            #    and `reroll == 0`, that means you get to roll all 6 dice again.
+            #    Otherwise, you roll `reroll` dice next.
+            dice = 6 if (used == len(roll) and reroll == 0) else reroll
+
+            # 6) Check the strategy’s decide() method to see if we should keep rolling.
+            #    Pass in:
+            #      - current turn_score
+            #      - dice_left = dice (from step 5)
+            #      - has_scored = whether we’ve ever scored ≥500 on a previous turn
+            #      - score_needed = how many more points (from banked + turn_score) we need to reach target_score
             if not self.strategy.decide(
-                turn_score=turn_score,
-                dice_left=dice,
-                has_scored=self.has_scored,
-                score_needed=max(0, target_score - (self.score + turn_score)),
+                turn_score   = turn_score,
+                dice_left    = dice,
+                has_scored   = self.has_scored,
+                score_needed = max(0, target_score - (self.score + turn_score)),
             ):
                 break
+
+        # 7) After leaving the loop, check if this is our “entry turn” (we need ≥500 to get on the board)
         if not self.has_scored and turn_score >= 500:
             self.has_scored = True
+
+        # 8) If we already had a “first‐500” in a previous turn, or just got it, bank the points
         if self.has_scored:
-            self.score += turn_score
+            self.score        += turn_score
             self.highest_turn = max(self.highest_turn, turn_score)
 
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 from dataclasses import dataclass
+from typing import List
 
 """strategies.py
 ================
@@ -26,6 +27,9 @@ __all__: list[str] = [
     "ThresholdStrategy",
     "random_threshold_strategy",
 ]
+
+DiceRoll = List[int]
+"""A list of integers 1-6 representing a single dice roll."""
 
 # ---------------------------------------------------------------------------
 # Concrete implementation
@@ -52,9 +56,11 @@ class ThresholdStrategy:
 
     score_threshold: int = 300
     dice_threshold: int = 2
-    smart: bool = False
+    smart_five: bool = False   # “throw back lone 5’s first”
+    smart_one:  bool = False
     consider_score: bool = True
     consider_dice: bool = True
+    require_both: bool = True
 
     # ------------------------------------------------------------------
     # Public API
@@ -73,7 +79,10 @@ class ThresholdStrategy:
         want_score = self.consider_score and turn_score < self.score_threshold
         want_dice = self.consider_dice and dice_left > self.dice_threshold
         if self.consider_score and self.consider_dice:
-            return want_score and want_dice
+           if self.require_both:
+               return want_score and want_dice
+           else:
+               return want_score or want_dice
         if self.consider_score:
             return want_score
         if self.consider_dice:
@@ -86,8 +95,10 @@ class ThresholdStrategy:
     def __str__(self) -> str:  # noqa: D401 - magics method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
-        sm = "*" if self.smart else " "
-        return f"T({self.score_threshold},{self.dice_threshold})[{cs}{cd}]{sm}"
+        sf = "*F" if self.smart_five else " "
+        so = "*O" if self.smart_one else " "
+        rb = "AND" if self.require_both else "OR"
+        return f"T({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{rb}]{sf}{so}"
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +112,9 @@ def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStra
     return ThresholdStrategy(
         score_threshold=rng_inst.randrange(50, 1000, 50),
         dice_threshold=rng_inst.randint(0, 4),
-        smart=rng_inst.choice([True, False]),
+        smart_five=rng_inst.choice([True, False]),
+        smart_one=rng_inst.choice([True, False]),
         consider_score=rng_inst.choice([True, False]),
         consider_dice=rng_inst.choice([True, False]),
+        require_both=rng_inst.choice([True, False]),
     )

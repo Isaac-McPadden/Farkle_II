@@ -4,10 +4,10 @@ Farkle Mk II - fast Monte-Carlo engine & strategy tools
 from importlib.metadata import version as _v
 
 # Re-export the "friendly" surface
-from .engine import FarklePlayer, GameMetrics
-from .farkle_io import simulate_many_games_stream
-from .simulation import generate_strategy_grid
-from .strategies import ThresholdStrategy
+from farkle.engine import FarklePlayer, GameMetrics
+from farkle.farkle_io import simulate_many_games_stream
+from farkle.simulation import generate_strategy_grid
+from farkle.strategies import ThresholdStrategy
 
 __all__ = [
     "FarklePlayer",

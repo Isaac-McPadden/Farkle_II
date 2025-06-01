@@ -6,8 +6,8 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
-from engine import FarkleGame, FarklePlayer
-from strategies import ThresholdStrategy
+from farkle.engine import FarkleGame, FarklePlayer
+from farkle.strategies import ThresholdStrategy
 
 """simulation.py
 ================
@@ -38,7 +38,8 @@ def generate_strategy_grid(
     *,
     score_thresholds: Sequence[int] | None = None,
     dice_thresholds: Sequence[int] | None = None,
-    smart_options: Sequence[bool] | None = None,
+    smart_five_opts: Sequence[bool] | None = None,
+    smart_one_opts: Sequence[bool] | None = None,
     consider_score_opts: Sequence[bool] = (True, False),
     consider_dice_opts: Sequence[bool] = (True, False),
 ) -> Tuple[List[ThresholdStrategy], pd.DataFrame]:
@@ -54,20 +55,44 @@ def generate_strategy_grid(
         score_thresholds = list(range(200, 1050, 50))
     if dice_thresholds is None:
         dice_thresholds = list(range(0, 5))
-    if smart_options is None:
-        smart_options = [True, False]
-    # nested comprehension instead of product(...)
-    combos: List[Tuple[int, int, bool, bool, bool]] = [
-        (st, dt, sm, cs, cd)
-        for st in score_thresholds
-        for dt in dice_thresholds
-        for sm in smart_options
-        for cs in consider_score_opts
-        for cd in consider_dice_opts
-    ]    
-    
-    strategies = [ThresholdStrategy(st, dt, sm, cs, cd) for st, dt, sm, cs, cd in combos]
-    meta = pd.DataFrame(combos, columns=["score_threshold", "dice_threshold", "smart", "consider_score", "consider_dice"])
+    if smart_five_opts is None:
+        smart_five_opts = [True, False]
+    if smart_one_opts is None:
+        smart_one_opts = [True, False]
+    combos: List[Tuple[int, int, bool, bool, bool, bool, bool]] = []
+    # We'll build combos of (st, dt, sm, cs, cd, require_both)
+    for st in score_thresholds:
+        for dt in dice_thresholds:
+            for sf in smart_five_opts:
+                for so in smart_one_opts:
+                    if not sf and so:
+                        continue
+                    for cs in consider_score_opts:
+                        for cd in consider_dice_opts:
+                            if cs and cd:
+                                combos.append((st, dt, sf, so, True,  True,  True))
+                                combos.append((st, dt, sf, so, True,  True,  False))
+                            else:
+                                combos.append((st, dt, sf, so, cs,    cd,   True))
+
+    # Build actual strategy objects and a DataFrame
+    strategies = [
+        ThresholdStrategy(
+            score_threshold = st,
+            dice_threshold  = dt,
+            smart_five      = sf,
+            smart_one       = so,
+            consider_score  = cs,
+            consider_dice   = cd,
+            require_both    = rb,
+        )
+        for st, dt, sf, so, cs, cd, rb in combos
+    ]
+
+    meta = pd.DataFrame(
+        combos,
+        columns=["score_threshold", "dice_threshold", "smart", "consider_score", "consider_dice", "require_both"],
+    )
     meta["strategy_idx"] = meta.index
     return strategies, meta
 
