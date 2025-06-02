@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from farkle.scoring import compute_raw_score
+from farkle.scoring import score_roll_cached
 
 # ---------------------------------------------------------------------------
 # Location of the test data CSV
@@ -58,6 +59,18 @@ def test_compute_raw_score(
     roll, exp_score, exp_used, exp_reroll, exp_sfives, exp_sones
 ):
     score, used, _counts, single_fives, single_ones = compute_raw_score(roll)
+
+    assert score == exp_score
+    assert used == exp_used
+    assert single_fives == exp_sfives
+    assert single_ones == exp_sones
+    assert len(roll) - used == exp_reroll
+
+
+def test_score_roll_cached(
+    roll, exp_score, exp_used, exp_reroll, exp_sfives, exp_sones
+):
+    score, used, _counts, single_fives, single_ones = score_roll_cached(roll)
 
     assert score == exp_score
     assert used == exp_used

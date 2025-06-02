@@ -106,7 +106,7 @@ SCORING_CHAIN: List[Rule] = [
 # Public API
 # ---------------------------------------------------------------------------
 
-def evaluate(counts: Counter[int]) -> tuple[int, int]:
+def evaluate(counts: Counter[int]) -> tuple[int, int, int, int]:
     """Return (total_points, total_dice_used) for the given roll counts.
 
     The caller is expected to make a *copy* of the Counter if they still
@@ -117,7 +117,7 @@ def evaluate(counts: Counter[int]) -> tuple[int, int]:
     for rule in SCORING_CHAIN:
         pts, used = rule(counts)
         if pts is not None:
-            return pts, used
+            return pts, used, 0, 0
 
     total_score = total_used = 0
 
@@ -135,12 +135,14 @@ def evaluate(counts: Counter[int]) -> tuple[int, int]:
                 break
 
     # Pass 3: single 1s and 5s.
-    pts, used = singles(counts)
+    n1  = counts.get(1, 0)
+    n5  = counts.get(5, 0)
+    pts = n1 * 100 + n5 * 50
     if pts:
         total_score += pts
-        total_used += used
+        total_used  += n1 + n5
 
-    return total_score, total_used
+    return total_score, total_used, n5, n1
 
 
 # ---------------------------------------------------------------------------
@@ -148,8 +150,8 @@ def evaluate(counts: Counter[int]) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 def score_roll(roll: list[int]) -> tuple[int, int]:
-    """Thin wrapper so callers can pass a raw list of ints (dice)."""
-    return evaluate(Counter(roll))
+    score, used, *_ = evaluate(Counter(roll))
+    return score, used
 
 
 """
@@ -160,24 +162,43 @@ Value: (score, used_dice)  # reroll = n_total - used_dice
 """
 # LOOKUP: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int]] = {}
 
+# def build_score_lookup_table():
+#     LOOKUP: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int]] = {}
+#     faces = range(1, 7)
+#     for n in range(1, 7):                                # 1-die … 6-die rolls
+#         for multiset in combinations_with_replacement(faces, n):
+#             counts = Counter(multiset)
+#             key = tuple(counts.get(f, 0) for f in faces)
+#             assert len(key) == 6, "Counter length not 6 somehow"
+
+#             score, used = evaluate(counts.copy())
+#             if score == 0:                               # fall back to singles
+#                 ones, fives = key[0], key[4]
+#                 score = ones * 100 + fives * 50
+#                 used  = ones + fives
+#             try:
+#                 LOOKUP[key] = (score, used)
+#             except Exception as e:
+#                 print(f"Error {e} on key, value assignment: {key}, score: {score}, used: {used}")
+#                 print(f"\nKey {key} value set to (-1, -1)")
+#                 LOOKUP[key] = (-1, -1)
+#     return LOOKUP
+
 def build_score_lookup_table():
-    LOOKUP: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int]] = {}
+    LOOKUP: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int, Counter[int], int, int]] = {}
     faces = range(1, 7)
-    for n in range(1, 7):                                # 1-die … 6-die rolls
+
+    for n in range(1, 7):
         for multiset in combinations_with_replacement(faces, n):
             counts = Counter(multiset)
-            key = tuple(counts.get(f, 0) for f in faces)
+            key    = tuple(counts.get(f, 0) for f in faces)
             assert len(key) == 6, "Counter length not 6 somehow"
 
-            score, used = evaluate(counts.copy())
-            if score == 0:                               # fall back to singles
-                ones, fives = key[0], key[4]
-                score = ones * 100 + fives * 50
-                used  = ones + fives
-            try:
-                LOOKUP[key] = (score, used)
-            except Exception as e:
-                print(f"Error {e} on key, value assignment: {key}, score: {score}, used: {used}")
-                print(f"\nKey {key} value set to (-1, -1)")
-                LOOKUP[key] = (-1, -1)
+            # score, used, single_fives, single_ones - *evaluate* mutates a copy
+            score, used, sfives, sones = evaluate(counts.copy())
+
+            # (the old “fallback to singles” branch is no longer needed—evaluate
+            # already handles that)
+
+            LOOKUP[key] = (score, used, counts, sfives, sones)
     return LOOKUP

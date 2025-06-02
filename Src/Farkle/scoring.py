@@ -187,15 +187,20 @@ def compute_raw_score(
 
 
 lookup_table = build_score_lookup_table()
-def score_roll_cached(roll: list[int], lookup: dict = lookup_table) -> tuple[int, int, int]:
-    """Return (score, used, reroll) via O(1) dict lookup."""
+
+def score_roll_cached(
+    roll: list[int],
+    lookup: dict = lookup_table,
+) -> tuple[int, int, Counter[int], int, int]:
+    """
+    Return (score, used, counts, single_fives, single_ones) in O(1).
+    """
     key = (
         roll.count(1), roll.count(2), roll.count(3),
         roll.count(4), roll.count(5), roll.count(6)
     )
-    score, used = lookup[key]
-    return score, used, len(roll) - used
-
+    score, used, base_counts, sfives, sones = lookup[key]
+    return score, used, base_counts.copy(), sfives, sones
 
 
 def decide_smart_discards(
@@ -337,7 +342,7 @@ def default_score(
       4) returns (score, used, reroll)
     """
     # 1) Raw scoring
-    raw_score, raw_used, counts, single_fives, single_ones = compute_raw_score(dice_roll)
+    raw_score, raw_used, counts, single_fives, single_ones = score_roll_cached(dice_roll)
 
     # 2) Figure out discards
     discard_fives, discard_ones = decide_smart_discards(
