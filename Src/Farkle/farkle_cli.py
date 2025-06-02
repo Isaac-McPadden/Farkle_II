@@ -3,6 +3,7 @@ import argparse
 from typing import Any, Mapping
 
 import yaml
+
 from farkle.farkle_io import simulate_many_games_stream
 from farkle.simulation import generate_strategy_grid
 

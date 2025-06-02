@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import Counter
 from typing import List, Tuple
 
+from farkle.scoring_lookup import build_score_lookup_table
+
 """scoring.py
 ================
 Pure scoring utilities for the Farkle simulation suite.
@@ -46,28 +48,28 @@ def compute_raw_score(
       - raw_score:   total points from this roll under the Farkle rules
       - raw_used:    how many dice “scored” (i.e. removed from play this roll)
       - counts:      Counter of face→count, for use by Smart-1/Smart-5 logic
-      - single_fives: # of solitary 5’s not part of any higher combo
-      - single_ones:  # of solitary 1’s not part of any higher combo
+      - single_fives: # of solitary 5's not part of any higher combo
+      - single_ones:  # of solitary 1's not part of any higher combo
 
-    Scoring hierarchy (highest‐priority first):
-      1) Straight 1–2–3–4–5–6          = 1,500   (uses all 6 dice)
+    Scoring hierarchy (highest-priority first):
+      1) Straight 1-2-3-4-5-6          = 1,500   (uses all 6 dice)
       2) Three pairs                   = 1,500   (uses all 6 dice)
       3) Two triplets                  = 2,500   (uses all 6 dice)
       4) Four of a kind + a pair       = 1,500   (uses all 6 dice)
       5) Six of a kind                 = 3,000   (uses all 6 dice)
       6) Five of a kind                = 2,000   + (leftover die can still be a 1 or a 5)
-      7) Four of a kind (alone)        = 1,000   + (score leftover 1’s or 5’s)
+      7) Four of a kind (alone)        = 1,000   + (score leftover 1's or 5's)
       8) Three of a kind (single)      = 300 if face=1 else face*100
-                                         + (score leftover 1’s or 5’s)
-      9) Single 1’s (not in any triplet or above) = 100 each
-     10) Single 5’s (not in any triplet or above) = 50 each
+                                         + (score leftover 1's or 5's)
+      9) Single 1's (not in any triplet or above) = 100 each
+     10) Single 5's (not in any triplet or above) = 50 each
     """
     counts     = Counter(dice_roll)
     raw_score  = 0
     raw_used   = 0
 
-    # ------------- 1) Straight 1–6? -------------
-    # If there are exactly 6 distinct faces, each must be 1–6 once:
+    # ------------- 1) Straight 1-6? -------------
+    # If there are exactly 6 distinct faces, each must be 1-6 once:
     if len(counts) == 6:
         # Must be exactly {1:1, 2:1, 3:1, 4:1, 5:1, 6:1}
         return 1500, 6, counts, 0, 0
@@ -82,31 +84,31 @@ def compute_raw_score(
     if len(counts) == 2 and set(counts.values()) == {3}:
         return 2500, 6, counts, 0, 0
 
-    # ------------- 4) Four‐of‐a‐kind + pair? -------------
+    # ------------- 4) Four-of-a-kind + pair? -------------
     # Look for one face with count>=4 AND another (different) face with count>=2.
     if len(counts) == 2 and 4 in counts.values() and 2 in counts.values():
         return 1500, 6, counts, 0, 0
 
-    # At this point we know we do NOT have any of the “6‐dice”‐only combos above.
-    # We’ll now handle “n‐of‐a‐kind” for n=6,5,4,3, in descending order, then fall back
-    # to scoring any leftover single 1’s or 5’s.
+    # At this point we know we do NOT have any of the “6-dice”-only combos above.
+    # We'll now handle “n-of-a-kind” for n=6,5,4,3, in descending order, then fall back
+    # to scoring any leftover single 1's or 5's.
 
-    # Track how many stand‐alone 1’s or 5’s are left once we peel off triplets/quads/etc.
+    # Track how many stand-alone 1's or 5's are left once we peel off triplets/quads/etc.
     single_fives = 0
     single_ones  = 0
 
-    # ------------- 5) Six‐of‐a‐kind? -------------
-    for face, cnt in counts.items():  # noqa: B007
-        if cnt == 6:
+    # ------------- 5) Six-of-a-kind? -------------
+    for face, count in counts.items():  # noqa: B007
+        if count == 6:
             return 3000, 6, counts, 0, 0
 
-    # ------------- 6) Five‐of‐a‐kind? -------------
-    # Score 2,000 for the five, then we must “look at” the leftover single die (if it’s a 1 or a 5).
-    for face, cnt in counts.items():
-        if cnt == 5:
+    # ------------- 6) Five-of-a-kind? -------------
+    # Score 2,000 for the five, then we must “look at” the leftover single die (if it's a 1 or a 5).
+    for face, count in counts.items():
+        if count == 5:
             raw_score = 2000
             raw_used  = 5
-            # Remove those five from a temp Counter to see what’s left:
+            # Remove those five from a temp Counter to see what's left:
             temp_counts = counts.copy()
             temp_counts[face] -= 5
             if temp_counts[face] == 0:
@@ -120,15 +122,15 @@ def compute_raw_score(
                 raw_score += 50
                 raw_used  += 1
 
-            # Count how many single 5’s / single 1’s remain for later Smart logic:
+            # Count how many single 5's / single 1's remain for later Smart logic:
             single_fives = temp_counts.get(5, 0)
             single_ones  = temp_counts.get(1, 0)
             return raw_score, raw_used, counts, single_fives, single_ones
 
-    # ------------- 7) Four‐of‐a‐kind (alone)? -------------
-    for face, cnt in counts.items():
-        if cnt == 4:
-            # Score 1,000 for the four‐of‐a‐kind
+    # ------------- 7) Four-of-a-kind (alone)? -------------
+    for face, count in counts.items():
+        if count == 4:
+            # Score 1,000 for the four-of-a-kind
             raw_score = 1000
             raw_used  = 4
 
@@ -138,7 +140,7 @@ def compute_raw_score(
             if temp_counts[face] == 0:
                 del temp_counts[face]
 
-            # Any leftover dice (2 of them) can only contribute single 1’s or 5’s:
+            # Any leftover dice (2 of them) can only contribute single 1's or 5's:
             #   - Each 1 → +100
             #   - Each 5 → +50
             single_ones  = temp_counts.get(1, 0)
@@ -148,10 +150,10 @@ def compute_raw_score(
 
             return raw_score, raw_used, counts, single_fives, single_ones
 
-    # ------------- 8) Single three‐of‐a‐kind? -------------
-    # (We already excluded two triplets, four‐pair+pair, etc. above.)
-    for face, cnt in counts.items():
-        if cnt >= 3:
+    # ------------- 8) Single three-of-a-kind? -------------
+    # (We already excluded two triplets, four-pair+pair, etc. above.)
+    for face, count in counts.items():
+        if count >= 3:
             # Score the triplet:
             raw_score = 300 if face == 1 else face * 100
             raw_used = 3
@@ -162,7 +164,7 @@ def compute_raw_score(
             if temp_counts[face] == 0:
                 del temp_counts[face]
 
-            # Now any remaining (up to 3) dice can only be single 1’s or 5’s:
+            # Now any remaining (up to 3) dice can only be single 1's or 5's:
             single_ones  = temp_counts.get(1, 0)
             single_fives = temp_counts.get(5, 0)
             raw_score += 100 * single_ones + 50 * single_fives
@@ -170,10 +172,10 @@ def compute_raw_score(
 
             return raw_score, raw_used, counts, single_fives, single_ones
 
-    # ------------- 9) Fallback: only single 1’s or 5’s -------------
-    # At this point, no straights, no three‐pairs, no two‐triplets,
+    # ------------- 9) Fallback: only single 1's or 5's -------------
+    # At this point, no straights, no three-pairs, no two-triplets,
     # no four+pair, no six, no five, no four, no three. So the only scoring
-    # dice left are single 1’s or single 5’s.
+    # dice left are single 1's or single 5's.
     single_ones  = counts.get(1, 0)
     single_fives = counts.get(5, 0)
 
@@ -183,7 +185,17 @@ def compute_raw_score(
     return raw_score, raw_used, counts, single_fives, single_ones
 
 
-# scoring.py
+
+lookup_table = build_score_lookup_table()
+def score_roll_cached(roll: list[int], lookup: dict = lookup_table) -> tuple[int, int, int]:
+    """Return (score, used, reroll) via O(1) dict lookup."""
+    key = (
+        roll.count(1), roll.count(2), roll.count(3),
+        roll.count(4), roll.count(5), roll.count(6)
+    )
+    score, used = lookup[key]
+    return score, used, len(roll) - used
+
 
 
 def decide_smart_discards(
@@ -199,14 +211,14 @@ def decide_smart_discards(
     smart_one: bool,
 ) -> Tuple[int, int]:
     """
-    Decide how many 5’s and then 1’s to discard, but only commit them if
+    Decide how many 5's and then 1's to discard, but only commit them if
     doing so leaves (turn_score_pre + new_score) < threshold.
 
     Steps:
       1) Compute discard_fives purely from smart_five rules.
       2) Compute intermediate_score_after5 = raw_score - 50*discard_fives.
          If turn_score_pre + intermediate_score_after5 >= threshold, restore
-         discard_fives = 0 (i.e. do not toss any 5’s).
+         discard_fives = 0 (i.e. do not toss any 5's).
       3) Compute discard_ones purely from smart_one rules, applied to a Counter
          that reflects removing the (possibly zero) discard_fives. 
       4) Compute final_score_after_all = intermediate_score_after5 - 100*discard_ones.
@@ -215,74 +227,72 @@ def decide_smart_discards(
     Return (discard_fives, discard_ones).
     """
 
-    # --- 1) Decide how many 5’s we would toss, ignoring threshold for the moment ---
+    # --- 1) Decide how many 5's we would toss, ignoring threshold for the moment ---
     discard_fives = 0
     if smart_five and single_fives >= 1:
-        # Is there any “other scoring die” besides lone 5’s?
+        # Is there any “other scoring die” besides lone 5's?
         other_scoring_for_five = any(
-            (cnt >= 3 and face != 5) or (face == 1 and cnt >= 1)
-            for face, cnt in counts.items()
+            (count >= 3 and face != 5) or (face == 1 and count >= 1)
+            for face, count in counts.items()
         )
         if other_scoring_for_five:
-            # Discard all lone 5’s (even if single_fives == 1)
+            # Discard all lone 5's (even if single_fives == 1)
             discard_fives = single_fives
         else:
-            # Only scoring dice are these single 5’s. If ≥ 2, keep exactly 1, discard rest
+            # Only scoring dice are these single 5's. If ≥ 2, keep exactly 1, discard rest
             if single_fives >= 2:
                 discard_fives = single_fives - 1
             # If single_fives == 1 and no other scoring, we do not discard it.
 
-    # Compute intermediate score & used if we DID discard those 5’s
+    # Compute intermediate score & used if we DID discard those 5's
     score_after_5 = raw_score - 50 * discard_fives
     used_after_5  = raw_used  - discard_fives
 
-    # --- 2) If throwing away those 5’s would STILL leave us ≥ threshold, restore them ---
+    # --- 2) If throwing away those 5's would STILL leave us ≥ threshold, restore them ---
     if turn_score_pre + score_after_5 >= score_threshold:
         discard_fives = 0
         score_after_5 = raw_score
         used_after_5  = raw_used
 
-    # Remove those (possibly zero) 5’s from counts so Smart‐1 sees the right picture
+    # Remove those (possibly zero) 5's from counts so Smart-1 sees the right picture
     temp_counts = counts.copy()
     if discard_fives > 0:
         temp_counts[5] -= discard_fives
         if temp_counts[5] <= 0:
             del temp_counts[5]
 
-    # Re‐count how many lone 1’s remain (no need to re‐compute single_fives now)
-    # single_ones still represents how many 1’s were in the original roll.
-    # But if we removed some 5’s, single_ones is unchanged.
+    # Re-count how many lone 1's remain (no need to re-compute single_fives now)
+    # single_ones still represents how many 1's were in the original roll.
+    # But if we removed some 5's, single_ones is unchanged.
     # (We only need single_ones to see if ≥2 remain.)
 
-    # --- 3) Decide how many 1’s we would toss, ignoring threshold again ---
+    # --- 3) Decide how many 1's we would toss, ignoring threshold again ---
     discard_ones = 0
     if smart_one and single_ones >= 1:  # noqa: SIM102
-        # Only attempt Smart‐1 if the raw Roland (or after Smart‐5) 
+        # Only attempt Smart-1 if the raw roll (or after Smart-5) 
         # left us below threshold:
         if turn_score_pre + score_after_5 < score_threshold:
-            # “Other scoring” w.r.t the remaining dice (after removing 5’s):
+            # “Other scoring” w.r.t the remaining dice (after removing 5's):
             other_scoring_for_one = any(
-                (cnt >= 3 and face != 1) or (face == 5 and cnt >= 1)
-                for face, cnt in temp_counts.items()
+                (count >= 3 and face != 1) or (face == 5 and count >= 1)
+                for face, count in temp_counts.items()
             )
             if not other_scoring_for_one and single_ones >= 2:
-                # If ≥ 2 lonely 1’s remain, discard all but one.
+                # If ≥ 2 lonely 1's remain, discard all but one.
                 discard_ones = single_ones - 1
-            # If only one 1 remains or there’s some other scoring die, discard_ones=0.
+            # If only one 1 remains or there's some other scoring die, discard_ones=0.
 
-    # Compute final score if we commit to discarding those 1’s
+    # Compute final score if we commit to discarding those 1's
     score_after_all = score_after_5 - 100 * discard_ones
     used_after_5 -= discard_ones
 
-    # --- 4) If discarding those 1’s would STILL leave us ≥ threshold, restore them ---
+    # --- 4) If discarding those 1's would STILL leave us ≥ threshold, restore them ---
     if turn_score_pre + score_after_all >= score_threshold:
         discard_ones   = 0
         score_after_all = score_after_5
 
     return discard_fives, discard_ones
 
-
-# scoring.py
 
 
 def apply_discards(
@@ -299,9 +309,9 @@ def apply_discards(
       - dice_roll_len = len(dice_roll)
 
     Return:
-      - final_score   = raw_score – 50*discard_fives – 100*discard_ones
-      - final_used    = raw_used  – discard_fives – discard_ones
-      - final_reroll  = dice_roll_len – final_used
+      - final_score   = raw_score - 50*discard_fives - 100*discard_ones
+      - final_used    = raw_used  - discard_fives - discard_ones
+      - final_reroll  = dice_roll_len - final_used
     """
     final_score  = raw_score   - 50 * discard_fives - 100 * discard_ones
     final_used   = raw_used    - discard_fives   - discard_ones
@@ -322,7 +332,7 @@ def default_score(
     """
     Master function that:
       1) computes raw score/used/counts
-      2) decides how many 5’s/1’s to discard (but only commits if it keeps you below threshold)
+      2) decides how many 5's/1's to discard (but only commits if it keeps you below threshold)
       3) applies those discards
       4) returns (score, used, reroll)
     """
@@ -408,24 +418,24 @@ def default_score(
 #     single_fives: int = 0  # track single-die fives for Smart-5
 
 #     # ----- Triplets & singles --------------------------------------------
-#     for num, cnt in counts.items():
-#         if cnt >= 3:
-#             if cnt == 3:
+#     for num, count in counts.items():
+#         if count >= 3:
+#             if count == 3:
 #                 score += 300 if num == 1 else num * 100
-#             elif cnt == 4:
+#             elif count == 4:
 #                 score += 1000
-#             elif cnt == 5:
+#             elif count == 5:
 #                 score += 2000
-#             elif cnt == 6:
+#             elif count == 6:
 #                 score += 3000
-#             used += cnt
+#             used += count
 #         elif num == 1:
-#             score += 100 * cnt
-#             used += cnt
+#             score += 100 * count
+#             used += count
 #         elif num == 5:
-#             score += 50 * cnt
-#             used += cnt
-#             single_fives += cnt  # only singles (cnt 1 or 2) fall here
+#             score += 50 * count
+#             used += count
+#             single_fives += count  # only singles (count 1 or 2) fall here
 
 #     reroll: int = len(dice_roll) - used
 

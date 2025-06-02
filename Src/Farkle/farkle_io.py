@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, Sequence
 
 import numpy as np
+
 from farkle.simulation import _play_game
 from farkle.strategies import ThresholdStrategy
 
@@ -16,12 +17,19 @@ def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None
         w = csv.DictWriter(fh, fieldnames=header)
         if first:
             w.writeheader()
+        buffer = []
         while True:
             row = queue.get()
-            if row is None:        # poison pill → clean shutdown
+            if row is None:
                 break
-            w.writerow(row)
-            fh.flush()
+            buffer.append(row)
+            if len(buffer) >= 1_000:
+                w.writerows(buffer)
+                fh.flush()
+                buffer.clear()
+        # after loop
+        if buffer:
+            w.writerows(buffer)
 
 # ------------------------------------------------------------
 def simulate_many_games_stream(

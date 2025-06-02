@@ -95,10 +95,10 @@ class ThresholdStrategy:
     def __str__(self) -> str:  # noqa: D401 - magics method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
-        sf = "*F" if self.smart_five else " "
-        so = "*O" if self.smart_one else " "
+        sf = "*F" if self.smart_five else "-"
+        so = "*O" if self.smart_one else "-"
         rb = "AND" if self.require_both else "OR"
-        return f"T({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{rb}]{sf}{so}"
+        return f"T({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}][{rb}]"
 
 
 # ---------------------------------------------------------------------------

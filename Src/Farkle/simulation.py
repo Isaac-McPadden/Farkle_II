@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
+
 from farkle.engine import FarkleGame, FarklePlayer
 from farkle.strategies import ThresholdStrategy
 
@@ -65,8 +66,8 @@ def generate_strategy_grid(
         for dt in dice_thresholds:
             for sf in smart_five_opts:
                 for so in smart_one_opts:
-                    if not sf and so:
-                        continue
+                    if not sf and so:  # Can't be smart one without being smart five
+                        continue # You technically could but it makes no strategic sense irl
                     for cs in consider_score_opts:
                         for cd in consider_dice_opts:
                             if cs and cd:
@@ -91,7 +92,7 @@ def generate_strategy_grid(
 
     meta = pd.DataFrame(
         combos,
-        columns=["score_threshold", "dice_threshold", "smart", "consider_score", "consider_dice", "require_both"],
+        columns=["score_threshold", "dice_threshold", "smart_five", "smart_one", "consider_score", "consider_dice", "require_both"],
     )
     meta["strategy_idx"] = meta.index
     return strategies, meta

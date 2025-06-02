@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence
 
 import numpy as np
+
 from farkle.scoring import DiceRoll, default_score
 from farkle.strategies import ThresholdStrategy
 
