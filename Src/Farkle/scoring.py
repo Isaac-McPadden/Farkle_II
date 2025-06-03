@@ -279,13 +279,19 @@ def decide_smart_discards(
         if turn_score_pre + score_after_5 < score_threshold:
             # “Other scoring” w.r.t the remaining dice (after removing 5's):
             other_scoring_for_one = any(
-                (count >= 3 and face != 1) or (face == 5 and count >= 1)
+                (count >= 3 and face != 1) or (face == 5 and count >= 1) # failsafe if sf=F, so=T was allowed
                 for face, count in temp_counts.items()
             )
-            if not other_scoring_for_one and single_ones >= 2:
+            if not other_scoring_for_one and single_ones == 2:
                 # If ≥ 2 lonely 1's remain, discard all but one.
-                discard_ones = single_ones - 1
-            # If only one 1 remains or there's some other scoring die, discard_ones=0.
+                discard_ones = 1
+            if not other_scoring_for_one and single_ones == 1:
+                discard_ones = 0
+            if other_scoring_for_one and single_ones == 2:
+                # If ≥ 2 lonely 1's remain, discard all but one.
+                discard_ones = 2
+            if other_scoring_for_one and single_ones == 1:
+                discard_ones = 1
 
     # Compute final score if we commit to discarding those 1's
     score_after_all = score_after_5 - 100 * discard_ones
