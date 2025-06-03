@@ -103,27 +103,35 @@ def experiment_size(
     *,
     score_thresholds: Sequence[int] | None = None,
     dice_thresholds: Sequence[int] | None = None,
-    smart_options: Sequence[bool] | None = None,
+    smart_five_and_one_options: Sequence[Sequence[bool]] | None = None,
     consider_score_opts: Sequence[bool] = (True, False),
     consider_dice_opts: Sequence[bool] = (True, False),
 ) -> int:
     """Compute *a priori* size of a strategy grid."""
     score_thresholds = score_thresholds or list(range(200, 1050, 50))
     dice_thresholds = dice_thresholds or list(range(0, 5))
-    smart_options = smart_options or [True, False]
-    return (
+    smart_five_and_one_options = smart_five_and_one_options or [[True, True], [True, False], [False, False]]
+    base = (
         len(score_thresholds)
         * len(dice_thresholds)
-        * len(smart_options)
-        * len(consider_score_opts)
-        * len(consider_dice_opts)
+        * len(smart_five_and_one_options)
     )
+
+    # ----- how many CS/CD pairs? ----------------------------------------
+    n_cs, n_cd = len(consider_score_opts), len(consider_dice_opts)
+    pair_count = n_cs * n_cd
+
+    # Extra row for (True, True) when it's present
+    if True in consider_score_opts and True in consider_dice_opts:
+        pair_count += 1          # second variant with require_both=True
+
+    return base * pair_count
 
 # ---------------------------------------------------------------------------
 # Batch simulation helpers
 # ---------------------------------------------------------------------------
 
-def _play_game(seed: int, strategies: Sequence[ThresholdStrategy], target_score: int) -> Dict[str, Any]:
+def _play_game(seed: int, strategies: Sequence[ThresholdStrategy], target_score: int=10000) -> Dict[str, Any]:
     master = np.random.default_rng(seed)
     # give every player an *independent* PRNG, but reproducible
     players = [
