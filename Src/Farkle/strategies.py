@@ -47,8 +47,8 @@ class ThresholdStrategy:
     dice_threshold
         Bank when dice-left drop to this value or below (subject to
         *consider_dice*).
-    smart
-        Enables Smart-5 heuristic during scoring.
+    smart_five, smart_one
+        Enables/Disables Smart-5 and Smart-1 heuristics during scoring.
     consider_score, consider_dice
         Toggle the two conditions to reproduce *score-only*, *dice-only*,
         or *balanced* play styles.
@@ -61,6 +61,20 @@ class ThresholdStrategy:
     consider_score: bool = True
     consider_dice: bool = True
     require_both: bool = True
+    
+    def __post_init__(self):
+        # 1) smart_one may never be True if smart_five is False
+        if self.smart_one and not self.smart_five:
+            raise ValueError(
+                "ThresholdStrategy: smart_one=True requires smart_five=True"
+            )
+
+        # 2) require_both may only be True if both consider_score and consider_dice are True
+        if self.require_both and not (self.consider_score and self.consider_dice):
+            raise ValueError(
+                "ThresholdStrategy: require_both=True requires both "
+                "consider_score=True and consider_dice=True"
+            )
 
     # ------------------------------------------------------------------
     # Public API
@@ -106,15 +120,24 @@ class ThresholdStrategy:
 # ---------------------------------------------------------------------------
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
-    """Return a randomised *ThresholdStrategy* instance."""
-    # if caller didn’t pass a PRNG, make a fresh one
-    rng_inst: random.Random = rng if rng is not None else random.Random()
+    """Return a random ThresholdStrategy that always satisfies the two constraints."""
+    rng_inst = rng if rng is not None else random.Random()
+
+    # pick smart_five first; if it’s False, force smart_one=False
+    sf = rng_inst.choice([True, False])
+    so = rng_inst.choice([True, False]) if sf else False
+
+    # pick consider_score/dice; if either is False, force require_both=False
+    cs = rng_inst.choice([True, False])
+    cd = rng_inst.choice([True, False])
+    rb = rng_inst.choice([True, False]) if (cs and cd) else False
+
     return ThresholdStrategy(
         score_threshold=rng_inst.randrange(50, 1000, 50),
         dice_threshold=rng_inst.randint(0, 4),
-        smart_five=rng_inst.choice([True, False]),
-        smart_one=rng_inst.choice([True, False]),
-        consider_score=rng_inst.choice([True, False]),
-        consider_dice=rng_inst.choice([True, False]),
-        require_both=rng_inst.choice([True, False]),
+        smart_five=sf,
+        smart_one=so,
+        consider_score=cs,
+        consider_dice=cd,
+        require_both=rb,
     )

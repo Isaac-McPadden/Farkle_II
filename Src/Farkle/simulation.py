@@ -181,8 +181,15 @@ def simulate_one_game(
     seed: int | None = None,
 ):
     """Convenience wrapper around the *single* game engine."""
-    rng = np.random.default_rng(seed)
-    players = [FarklePlayer(name=f"P{i+1}", strategy=s, rng=rng) for i, s in enumerate(strategies)]
+    master = np.random.default_rng(seed)
+    players = [
+        FarklePlayer(
+            name=f"P{i+1}",
+            strategy=s,
+            rng=np.random.default_rng(master.integers(0, 2**32 - 1)),
+        )
+        for i, s in enumerate(strategies)
+    ]
     return FarkleGame(players, target_score=target_score).play()
 
 
