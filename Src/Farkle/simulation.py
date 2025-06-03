@@ -50,31 +50,32 @@ def generate_strategy_grid(
     list of fully-constructed ``ThresholdStrategy`` instances (safe to
     pass to the engine) and the second element is a *metadata* dataframe
     recording each parameter combo.
+    Default grid should be len(grid) = 1275
     """
 
     if score_thresholds is None:
         score_thresholds = list(range(200, 1050, 50))
     if dice_thresholds is None:
-        dice_thresholds = list(range(0, 5))
+        dice_thresholds = list(range(0, 5)) 
     if smart_five_opts is None:
-        smart_five_opts = [True, False]
+        smart_five_opts = [True, False] 
     if smart_one_opts is None:
-        smart_one_opts = [True, False]
+        smart_one_opts = [True, False] 
     combos: List[Tuple[int, int, bool, bool, bool, bool, bool]] = []
     # We'll build combos of (st, dt, sm, cs, cd, require_both)
-    for st in score_thresholds:
-        for dt in dice_thresholds:
-            for sf in smart_five_opts:
-                for so in smart_one_opts:
+    for st in score_thresholds: # 17 options
+        for dt in dice_thresholds: # 5 options
+            for sf in smart_five_opts: # 2 options
+                for so in smart_one_opts: # 1.5 options
                     if not sf and so:  # Can't be smart one without being smart five
                         continue # You technically could but it makes no strategic sense irl
-                    for cs in consider_score_opts:
-                        for cd in consider_dice_opts:
+                    for cs in consider_score_opts: # 2 options
+                        for cd in consider_dice_opts: # 2.5 options (1/4 of cs&cd gets an extra option on rb 4+1 = 5, 5/2 = 2.5)
                             if cs and cd:
-                                combos.append((st, dt, sf, so, True,  True,  True))
-                                combos.append((st, dt, sf, so, True,  True,  False))
-                            else:
-                                combos.append((st, dt, sf, so, cs,    cd,   True))
+                                combos.append((st, dt, sf, so, True,  True,  True))  # rb = True
+                                combos.append((st, dt, sf, so, True,  True,  False)) # rb = False
+                            else:                                                   # default rb = False
+                                combos.append((st, dt, sf, so, cs,    cd,   False)) # otherwise breaks if cs or cd = False
 
     # Build actual strategy objects and a DataFrame
     strategies = [
