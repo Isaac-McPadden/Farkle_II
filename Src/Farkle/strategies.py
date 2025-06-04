@@ -60,7 +60,7 @@ class ThresholdStrategy:
     smart_one:  bool = False
     consider_score: bool = True
     consider_dice: bool = True
-    require_both: bool = True
+    require_both: bool = False
     auto_hot_dice: bool = False  
     
     def __post_init__(self):
@@ -86,33 +86,41 @@ class ThresholdStrategy:
         turn_score: int,
         dice_left: int,
         has_scored: bool,
-        score_needed: int,  # noqa: ARG002 vestigial, not worth deleting
-        final_round: bool = False,
+        score_needed: int,          # noqa: ARG002 (vestigial/reserved for richer strats)
+        final_round: bool = False,  # (new end-game hooks – harmless defaults)
         score_to_beat: int = 0,
-        running_total: int = 0,        
-    ) -> bool:  # noqa: D401 - imperative name
-        """Decision rule implementation."""
+        running_total: int = 0,
+    ) -> bool:  # noqa: D401 – imperative name
+        """Return **True** to keep rolling, **False** to bank."""
+
+        # --------------------------------- fast exits ---------------------------------
         if not has_scored and turn_score < 500:
-            return True  # opening rolls until first 500 pts
-        want_score = self.consider_score and turn_score < self.score_threshold
-        want_dice = self.consider_dice and dice_left > self.dice_threshold
-        
+            return True                     # must cross the 500-pt entry gate
+
+        # final-round catch-up rule
         if final_round:
-            # Force play until we pass the leader
-            if running_total <= score_to_beat:  # noqa: SIM103
-                return True
-            # Once we’re ahead, bail immediately
-            return False
-        
+            return running_total <= score_to_beat
+
+        # -----------------------------------------------------------------------------  
+        want_score = self.consider_score and turn_score < self.score_threshold
+        want_dice  = self.consider_dice and dice_left  > self.dice_threshold
+
+        # both score & dice active ----------------------------------------------------
         if self.consider_score and self.consider_dice:
-           if self.require_both:
-               return want_score and want_dice
-           else:
-               return want_score or want_dice
+            if self.require_both:
+                # stop only when **both** limits are satisfied
+                return want_score or want_dice
+            else:
+                # stop as soon as **either** limit is satisfied
+                return want_score and want_dice
+
+        # single-axis strategies ------------------------------------------------------
         if self.consider_score:
             return want_score
         if self.consider_dice:
             return want_dice
+
+        # nothing left to consider → always bank
         return False
 
     # ------------------------------------------------------------------

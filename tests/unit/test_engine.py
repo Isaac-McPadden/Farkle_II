@@ -28,7 +28,7 @@ def test_take_turn_success(monkeypatch):
 
 
 def stop_after_one():
-    return ThresholdStrategy(score_threshold=10000, dice_threshold=6)
+    return ThresholdStrategy(score_threshold=100, dice_threshold=6)
 
 def test_game_play_deterministic():
     # make every roll be six 1-s  ⇒  (3000, 6, 0)
