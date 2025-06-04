@@ -1,6 +1,8 @@
+import random
+
 import pytest
 
-from farkle.strategies import ThresholdStrategy
+from farkle.strategies import ThresholdStrategy, random_threshold_strategy
 
 
 @pytest.mark.parametrize(
@@ -48,3 +50,12 @@ def test_smart1_requires_smart5():
 def test_require_both_guard():
     with pytest.raises(ValueError):
         ThresholdStrategy(consider_score=True, consider_dice=False, require_both=True)
+
+def test_random_strategy_factory():
+    rng = random.Random(123)
+    for _ in range(50):
+        ts = random_threshold_strategy(rng)
+        # smart_one requires smart_five
+        assert not ts.smart_one or ts.smart_five
+        # require_both only valid when both flags set
+        assert not ts.require_both or (ts.consider_score and ts.consider_dice)
