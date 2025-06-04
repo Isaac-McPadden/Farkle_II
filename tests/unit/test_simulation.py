@@ -1,3 +1,5 @@
+from pandas import DataFrame
+
 from farkle.simulation import (
     _play_game,
     experiment_size,
@@ -10,11 +12,14 @@ from farkle.strategies import ThresholdStrategy
 
 def test_default_grid_size():
     strategies, meta = generate_strategy_grid()
-    assert len(strategies) == 1275
-    assert len(meta) == 1275
+    assert len(strategies) == 2550
+    assert len(meta) == 2550
+    for object in strategies:
+        assert isinstance(object, ThresholdStrategy)
+    assert isinstance(meta, DataFrame)
     
 def test_default_size():
-    assert experiment_size() == 1275
+    assert experiment_size() == 2550
     
 def test_play_helpers_consistency():
     # one always-stop, one always-roll (score_threshold huge)

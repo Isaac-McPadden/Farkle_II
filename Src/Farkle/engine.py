@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Sequence
 
 import numpy as np
 
@@ -52,6 +52,7 @@ class FarklePlayer:
     n_farkles: int = 0
     n_rolls: int = 0
     highest_turn: int = 0
+    
 
     # ----------------------------- helpers -----------------------------
     def _roll(self, n: int) -> DiceRoll:
@@ -60,7 +61,13 @@ class FarklePlayer:
         return list(self.rng.integers(1, 7, size=n))
 
     # ------------------------------ turn --------------------------------
-    def take_turn(self, target_score: int) -> None:
+    def take_turn(
+        self,
+        target_score: int,
+        *,
+        final_round: bool = False,
+        score_to_beat: int = 0,
+    ) -> None:
         """Simulate one complete turn for the player."""
         dice = 6
         turn_score = 0
@@ -91,6 +98,15 @@ class FarklePlayer:
             #    and `reroll == 0`, that means you get to roll all 6 dice again.
             #    Otherwise, you roll `reroll` dice next.
             dice = 6 if (used == len(roll) and reroll == 0) else reroll
+            
+            # 5.5) Hot dice short circuit
+            if self.strategy.auto_hot_dice and dice == 6:
+                continue                       # force another throw
+            
+            # 6-A) If we’re in the final round and have already won, stop.
+            running_total = self.score + turn_score
+            if final_round and running_total > score_to_beat:
+                break
 
             # 6) Check the strategy’s decide() method to see if we should keep rolling.
             #    Pass in:
@@ -98,13 +114,22 @@ class FarklePlayer:
             #      - dice_left = dice (from step 5)
             #      - has_scored = whether we’ve ever scored ≥500 on a previous turn
             #      - score_needed = how many more points (from banked + turn_score) we need to reach target_score
-            if not self.strategy.decide(
+            keep_rolling = self.strategy.decide(
                 turn_score   = turn_score,
                 dice_left    = dice,
                 has_scored   = self.has_scored,
-                score_needed = max(0, target_score - (self.score + turn_score)),
-            ):
-                break
+                score_needed = max(0, target_score - running_total),
+                final_round  = final_round,
+                score_to_beat= score_to_beat,
+                running_total= running_total,
+            )
+        
+            # 6-C) Override the strategy if we’re still behind in the final round.
+            if final_round and running_total <= score_to_beat:
+                keep_rolling = True
+
+            if not keep_rolling:
+                break        
 
         # 7) After leaving the loop, check if this is our “entry turn” (we need ≥500 to get on the board)
         if not self.has_scored and turn_score >= 500:
@@ -141,20 +166,28 @@ class FarkleGame:
     def play(self, max_rounds: int = 100) -> GameMetrics:
         """Run the game and return a *GameMetrics* summary."""
         final_round = False
-        trigger: Optional[FarklePlayer] = None
+        score_to_beat = self.target_score   # updated when someone triggers
         rounds = 0
         while rounds < max_rounds:
-            for p in self.players:
-                p.take_turn(self.target_score)
-                if p.score >= self.target_score and not final_round:
-                    final_round = True
-                    trigger = p
             rounds += 1
-            if final_round:
-                for p in self.players:
-                    if p is not trigger:
-                        p.take_turn(self.target_score)
+            for p in self.players:
+                p.take_turn(
+                    self.target_score,
+                    final_round = final_round,
+                    score_to_beat = score_to_beat,
+                )
+                # First trigger starts the final round
+                if not final_round and p.score >= self.target_score:
+                    final_round   = True
+                    score_to_beat = p.score
+
+                # During the final round update the bar whenever someone
+                #     jumps ahead (so later players know what they must beat).
+                elif final_round and p.score > score_to_beat:
+                    score_to_beat = p.score
+            if final_round:         # whole table has now had exactly one shot
                 break
+            
         winner = max(self.players, key=lambda pl: pl.score)
         per_player: Dict[str, Dict[str, Any]] = {
             p.name: {

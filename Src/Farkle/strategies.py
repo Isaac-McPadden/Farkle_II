@@ -61,6 +61,7 @@ class ThresholdStrategy:
     consider_score: bool = True
     consider_dice: bool = True
     require_both: bool = True
+    auto_hot_dice: bool = False  
     
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
@@ -85,13 +86,24 @@ class ThresholdStrategy:
         turn_score: int,
         dice_left: int,
         has_scored: bool,
-        score_needed: int,  # not used but allows richer future strats  # noqa: ARG002
+        score_needed: int,  # noqa: ARG002 vestigial, not worth deleting
+        final_round: bool = False,
+        score_to_beat: int = 0,
+        running_total: int = 0,        
     ) -> bool:  # noqa: D401 - imperative name
         """Decision rule implementation."""
         if not has_scored and turn_score < 500:
             return True  # opening rolls until first 500 pts
         want_score = self.consider_score and turn_score < self.score_threshold
         want_dice = self.consider_dice and dice_left > self.dice_threshold
+        
+        if final_round:
+            # Force play until we pass the leader
+            if running_total <= score_to_beat:  # noqa: SIM103
+                return True
+            # Once we’re ahead, bail immediately
+            return False
+        
         if self.consider_score and self.consider_dice:
            if self.require_both:
                return want_score and want_dice
