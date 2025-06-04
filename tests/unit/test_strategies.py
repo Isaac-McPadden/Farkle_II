@@ -39,3 +39,12 @@ def test_decide(tscore,dleft,has500,cs,cd,rb,keep_rolling):
         turn_score=tscore, dice_left=dleft,
         has_scored=has500, score_needed=1_000
     ) is keep_rolling
+
+
+def test_smart1_requires_smart5():
+    with pytest.raises(ValueError):
+        ThresholdStrategy(smart_five=False, smart_one=True)
+
+def test_require_both_guard():
+    with pytest.raises(ValueError):
+        ThresholdStrategy(consider_score=True, consider_dice=False, require_both=True)

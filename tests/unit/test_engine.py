@@ -1,3 +1,5 @@
+import itertools
+
 import numpy as np
 
 from farkle.engine import FarkleGame, FarklePlayer
@@ -50,3 +52,103 @@ def test_game_play_deterministic():
         
     assert total_rolls == [1, 2]
     assert gm.n_rounds == 1
+
+
+class _SeqGen(np.random.Generator):
+    """
+    A deterministic RNG that cycles through *seq* forever.
+
+    It satisfies the numpy.random.Generator interface, so
+    static type-checkers are happy and the production code
+    needs no changes.
+    """
+    def __init__(self, seq):
+        # Initialise the parent class with *any* BitGenerator
+        super().__init__(np.random.PCG64())
+        self._cycle = itertools.cycle(seq)
+
+    # Override only the method the engine actually calls.
+    def integers(
+        self,
+        low: int,  # noqa: ARG002
+        high: int | None = None,  # noqa: ARG002
+        size: int | tuple[int, ...] | None = None,
+        dtype=int,
+        endpoint: bool = False,  # noqa: ARG002
+    ):
+        # The engine always passes (1, 7, size=6) style args,
+        # so we ignore *low*, *high*, *endpoint*.
+        if size is None:
+            size = 1
+        n = int(np.prod(size))
+        arr = np.fromiter((next(self._cycle) for _ in range(n)),
+                          dtype=dtype, count=n)
+        return arr.reshape(size)
+
+def fixed_rng_2(seq):
+    """Return a numpy.random.Generator that cycles through *seq*."""
+    return _SeqGen(seq)
+    
+    
+def test_auto_hot_dice_forces_roll():
+    seq = [1,1,1,5,5,5, 2,2,3,3,4,6]  # 6 scoring + 6 busting dice
+    rng = fixed_rng_2(seq)
+
+    strat_hot  = ThresholdStrategy(score_threshold=0, dice_threshold=6,
+                                   auto_hot_dice=True)
+    strat_cold = ThresholdStrategy(score_threshold=0, dice_threshold=6,
+                                   auto_hot_dice=False)
+
+    p_hot  = FarklePlayer("H", strat_hot,  rng=rng)
+    p_cold = FarklePlayer("C", strat_cold, rng=rng)
+
+    # target_score argument comes from take_turn signature
+    p_hot.take_turn(target_score=10_000)
+    p_cold.take_turn(target_score=10_000)
+
+    assert p_hot.score  == 0     # rolled twice, busts on 2,2,3,3,4,6
+    assert p_cold.score == 2500   # banked after first roll
+    
+class SeqGen2(np.random.Generator):
+    """Deterministic RNG that cycles through *seq* forever."""
+    def __init__(self, seq):
+        super().__init__(np.random.PCG64())
+        self._seq = list(seq)
+        self._i = 0
+
+    def integers(self, low, high=None, size=None, **kwargs):  # noqa: ARG002
+        if size is None:
+            size = 1
+        n = int(np.prod(size))
+        out = [self._seq[(self._i + k) % len(self._seq)] for k in range(n)]
+        self._i = (self._i + n) % len(self._seq)
+        return np.array(out).reshape(size)
+
+
+def test_final_round_override():
+    # ---------- Player 1  triggers the final round ----------
+    p1_rng = SeqGen2([1, 1, 1, 2, 3, 4])          # 300 pts
+    strat1 = ThresholdStrategy(score_threshold=0, dice_threshold=6)
+    p1 = FarklePlayer("P1", strat1, rng=p1_rng)
+    p1.score = 9_900          # so first turn pushes ≥10 000
+    p1.has_scored = True
+
+    # ---------- Player 2 would normally STOP after 1 roll ----------
+    p2_rng = SeqGen2([1, 1, 2, 3, 4, 6,   # 200 pts (would bank)
+                     2, 2, 3, 4])        # 0 pts → bust
+    strat2 = ThresholdStrategy(
+        score_threshold=150, dice_threshold=6,
+        consider_score=True, consider_dice=False
+    )
+    p2 = FarklePlayer("P2", strat2, rng=p2_rng)
+    p2.score = 8_500
+    p2.has_scored = True
+
+    # ---------- Run one game ----------
+    g = FarkleGame([p1, p2])
+    g.play()
+
+    # P2 should have rolled *twice*: override forced a 2nd roll
+    assert p2.n_rolls == 2
+    # …and still finished behind the trigger score because of the bust
+    assert p2.score == 8_500

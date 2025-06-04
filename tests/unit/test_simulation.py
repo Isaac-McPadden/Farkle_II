@@ -34,3 +34,9 @@ def test_play_helpers_consistency():
                              target_score=1_000, seed=999, n_jobs=1)
     assert len(df) == 1
     assert df.iloc[0]["winner"] in {"P1", "P2"}
+    
+def test_custom_grid_size():
+    # Only auto_hot_dice == True → half the default grid (1 275)
+    strategies, meta = generate_strategy_grid(auto_hot_opts=[True])
+    assert len(strategies) == 1_275
+    assert len(meta) == 1_275

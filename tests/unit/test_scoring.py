@@ -6,6 +6,8 @@ from collections import Counter  # noqa: F401 Counter objects loaded from csv
 from pathlib import Path
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from farkle.scoring import (
     apply_discards,
@@ -196,3 +198,26 @@ def test_default_score(dice_roll, turn_pre, thr, smart5, smart1, expected):
         smart_one       = smart1,
         score_threshold = thr,
     ) == expected
+    
+
+
+@given(st.lists(st.integers(min_value=1, max_value=6),
+                min_size=1, max_size=6))
+def test_default_score_invariants(roll):
+    # Pass required keyword arg; keep smart-flags off for a neutral baseline
+    score, used, reroll = default_score(
+        dice_roll      = roll,
+        turn_score_pre = 0,          # <- new
+        smart_five     = False,
+        smart_one      = False,
+        # score_threshold left at default 300
+    )
+
+    # --- invariants -------------------------------------------------
+    # 1) dice are partitioned correctly
+    assert used + reroll == len(roll)
+    assert 0 <= used <= len(roll)
+
+    # 2) a bust never reports used dice
+    if score == 0:
+        assert used == 0

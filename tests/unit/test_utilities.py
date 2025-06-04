@@ -1,0 +1,56 @@
+import sys
+from pathlib import Path
+
+import yaml
+
+from farkle import farkle_cli  # imports the module, not the exe
+from farkle.farkle_io import simulate_many_games_stream
+from farkle.stats import games_for_power
+from farkle.strategies import ThresholdStrategy
+
+
+def test_games_for_power_monotonic():
+    n_small_delta = games_for_power(n_strategies=2, delta=0.05)
+    n_large_delta = games_for_power(n_strategies=2, delta=0.10)
+    # Larger effect size ⇒ fewer games required
+    assert n_large_delta < n_small_delta
+
+
+def test_cli_run(tmp_path, monkeypatch):
+    cfg = {
+        "strategy_grid": {
+            "score_thresholds": [300],
+            "dice_thresholds": [2],
+            "smart_five_opts": [False],
+            "smart_one_opts":  [False],
+            "consider_score_opts": [True],
+            "consider_dice_opts": [True],
+            "auto_hot_opts": [False],
+        },
+        "sim": {
+            "n_games": 2,
+            "out_csv": str(tmp_path / "out.csv"),
+            "seed": 42,
+            "n_jobs": 1,
+        },
+    }
+    cfg_path = tmp_path / "cfg.yml"
+    cfg_path.write_text(yaml.safe_dump(cfg))
+
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", str(cfg_path)])
+    farkle_cli.main()
+
+    assert Path(cfg["sim"]["out_csv"]).exists()
+
+
+def test_stream_writer(tmp_path):
+    out_csv = tmp_path / "results.csv"
+    strat = [ThresholdStrategy(score_threshold=300, dice_threshold=2)]
+    simulate_many_games_stream(
+        n_games=10, strategies=strat,
+        out_csv=str(out_csv), seed=123, n_jobs=1
+    )
+    lines = out_csv.read_text().splitlines()
+    assert len(lines) == 11          # header + 10 rows
+    header = lines[0].split(",")
+    assert header == ["game_id", "winner", "winning_score", "winner_strategy", "n_rounds"]
