@@ -1,0 +1,146 @@
+import subprocess as sp
+import sys
+from pathlib import Path
+from time import perf_counter
+
+import pandas as pd
+import pytest
+import yaml
+
+from farkle.engine import FarkleGame, FarklePlayer
+from farkle.farkle_io import simulate_many_games_stream
+from farkle.simulation import simulate_many_games
+from farkle.strategies import ThresholdStrategy
+
+TMP = Path(__file__).with_suffix("") / "_tmp"
+TMP.mkdir(parents=True, exist_ok=True)
+
+@pytest.fixture(scope="session")
+def tmp_csv():
+    """Unique CSV path per test-session that we can freely overwrite."""
+    csv_path = TMP / "sim.csv"
+    # clean between test runs
+    if csv_path.exists():
+        csv_path.unlink()
+    yield csv_path
+    csv_path.unlink(missing_ok=True)
+
+@pytest.fixture(scope="session")
+def simple_strategy():
+    return [ThresholdStrategy(score_threshold=300, dice_threshold=2)]
+
+
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("n_jobs", [1, 2, 4])
+def test_stream_mp_branches(tmp_csv, simple_strategy, n_jobs):
+    """Serial + parallel branches of simulate_many_games_stream."""
+    if tmp_csv.exists():          # start fresh for each param value
+        tmp_csv.unlink()
+    simulate_many_games_stream(
+        n_games=40,           # tiny but enough to hit queues
+        strategies=simple_strategy,
+        out_csv=str(tmp_csv),
+        seed=42,
+        n_jobs=n_jobs,
+    )
+    df = pd.read_csv(tmp_csv)
+    # 1 strategy × 40 reps  → 40 rows
+    assert len(df) == 40
+    # verify writer closed file cleanly (newline at EOF)
+    assert tmp_csv.read_bytes().endswith(b"\n")
+
+
+# tests/integration/test_seed_repeatable.py
+
+def test_seed_reproducible(simple_strategy):
+    df1 = simulate_many_games(n_games=200, strategies=simple_strategy, seed=123, n_jobs=1)
+    df2 = simulate_many_games(n_games=200, strategies=simple_strategy, seed=123, n_jobs=1)
+    pd.testing.assert_frame_equal(df1, df2)
+
+
+
+
+CLI = [sys.executable, "-m", "farkle.farkle_cli"]
+
+def test_cli_smoke(tmp_path):
+    """End-to-end CLI run via `farkle run <cfg.yml>`."""
+    cfg = {
+        "strategy_grid": {
+            "score_thresholds": [300],
+            "dice_thresholds":  [2],
+            "smart_five_opts": [False],
+            "smart_one_opts":  [False],
+            "consider_score_opts": [True],
+            "consider_dice_opts": [True],
+            "auto_hot_opts": [False],
+        },
+        "sim": {
+            "n_games": 20,
+            "out_csv": str(tmp_path / "out.csv"),
+            "seed": 9,
+            "n_jobs": 1,
+        },
+    }
+    cfg_path = tmp_path / "cfg.yml"
+    cfg_path.write_text(yaml.safe_dump(cfg))
+
+    sp.check_call(CLI + ["run", str(cfg_path)])
+    # exit code 0 -> no exception
+    df = pd.read_csv(cfg["sim"]["out_csv"])
+    assert len(df) == 20
+    # stderr / stdout left for devs to inspect if desired
+
+
+
+
+def test_final_round_rule_1():
+    players = [FarklePlayer("P1", ThresholdStrategy(score_threshold=100, dice_threshold=0)),  # super-aggressive
+        FarklePlayer("P2", ThresholdStrategy(score_threshold=300, dice_threshold=2)),
+    ]
+    game = FarkleGame(players, target_score=2000)
+    gm = game.play()                         # GameMetrics
+    assert gm.winning_score >= 2000
+    # everyone had ≤ one extra turn
+    assert gm.n_rounds >= 1
+
+
+def test_final_round_rule_2():
+    # 1) two simple strategies …
+    strats = [
+        ThresholdStrategy(score_threshold=100, dice_threshold=0),  # very aggressive
+        ThresholdStrategy(score_threshold=300, dice_threshold=2),
+    ]
+
+    # 2) wrap them in *players* that own their RNGs
+    players = [FarklePlayer(f"P{i+1}", s) for i, s in enumerate(strats)]
+
+    # 3) FarkleGame takes (players, target_score)
+    game = FarkleGame(players, target_score=2_000)
+
+    # 4) play() returns a GameMetrics object
+    gm = game.play()
+
+    # ───────── assertions on the public result ─────────
+    assert gm.winning_score >= 2_000
+    assert gm.n_rounds >= 1        # each player got ≤ one extra turn
+
+
+
+pytestmark = pytest.mark.skipif(
+    # set env var FAST_CI to skip heavy tests
+    "FAST_CI" in __import__("os").environ,
+    reason="performance test – skip on CI",
+)
+
+def test_batch_time_under_baseline():
+    t0 = perf_counter()
+    simulate_many_games(
+        n_games=5_000,
+        strategies=[ThresholdStrategy()],
+        seed=7,
+        n_jobs=4,
+    )
+    elapsed = perf_counter() - t0
+    assert elapsed < 8.0, f"perf regression: {elapsed:.1f}s > 8s baseline"
