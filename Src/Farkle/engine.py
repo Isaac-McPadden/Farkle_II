@@ -71,10 +71,14 @@ class FarklePlayer:
         """Simulate one complete turn for the player."""
         dice = 6
         turn_score = 0
+        rolls_this_turn = 0
 
         while dice > 0:
+            if rolls_this_turn > 1000:
+                raise RuntimeError("Turn exceeded 1000 rolls - aborting.")
             # 1) Roll `dice` number of dice
             roll = self._roll(dice)
+            rolls_this_turn += 1
 
             # 2) Compute points from this roll, after applying Smart‐5/Smart‐1 discards
             pts, used, reroll = default_score(
@@ -106,7 +110,10 @@ class FarklePlayer:
             # 6-A) If we’re in the final round and have already won, stop.
             running_total = self.score + turn_score
             if final_round and running_total > score_to_beat:
-                break
+                if self.strategy.run_up_score:         # NEW opt-in flag
+                    pass                               # fall through to decide()
+                else:
+                    break
 
             # 6) Check the strategy’s decide() method to see if we should keep rolling.
             #    Pass in:

@@ -160,29 +160,6 @@ Fast lookup table for any 1-6-die roll.
 Key  : tuple(count_1, count_2, count_3, count_4, count_5, count_6)
 Value: (score, used_dice)  # reroll = n_total - used_dice
 """
-# LOOKUP: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int]] = {}
-
-# def build_score_lookup_table():
-#     LOOKUP: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int]] = {}
-#     faces = range(1, 7)
-#     for n in range(1, 7):                                # 1-die … 6-die rolls
-#         for multiset in combinations_with_replacement(faces, n):
-#             counts = Counter(multiset)
-#             key = tuple(counts.get(f, 0) for f in faces)
-#             assert len(key) == 6, "Counter length not 6 somehow"
-
-#             score, used = evaluate(counts.copy())
-#             if score == 0:                               # fall back to singles
-#                 ones, fives = key[0], key[4]
-#                 score = ones * 100 + fives * 50
-#                 used  = ones + fives
-#             try:
-#                 LOOKUP[key] = (score, used)
-#             except Exception as e:
-#                 print(f"Error {e} on key, value assignment: {key}, score: {score}, used: {used}")
-#                 print(f"\nKey {key} value set to (-1, -1)")
-#                 LOOKUP[key] = (-1, -1)
-#     return LOOKUP
 
 def build_score_lookup_table():
     LOOKUP: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int, Counter[int], int, int]] = {}

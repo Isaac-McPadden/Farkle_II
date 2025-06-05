@@ -1,6 +1,7 @@
 import itertools
 
 import numpy as np
+import pytest
 
 from farkle.engine import FarkleGame, FarklePlayer
 from farkle.strategies import ThresholdStrategy
@@ -152,3 +153,14 @@ def test_final_round_override():
     assert p2.n_rolls == 2
     # …and still finished behind the trigger score because of the bust
     assert p2.score == 8_500
+    
+def test_turn_roll_fuse():
+    # RNG that always returns hot dice: 1,1,1,2,2,2 …
+    class HotGen(np.random.Generator):
+        def __init__(self): super().__init__(np.random.PCG64())
+        def integers(self, *a, size=None, **k):  # noqa: ARG002, D401
+            return np.array([1,1,1,2,2,2][:size or 1])
+    p = FarklePlayer("X", ThresholdStrategy(auto_hot_dice=True),
+                     rng=HotGen())
+    with pytest.raises(RuntimeError):
+        p.take_turn(target_score=10_000)

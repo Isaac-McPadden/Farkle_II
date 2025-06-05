@@ -40,10 +40,204 @@ DiceRoll = List[int]
 
 
 
-def compute_raw_score(
+lookup_table = build_score_lookup_table()
+
+def score_roll_cached(
+    roll: list[int],
+    lookup: dict = lookup_table,
+) -> tuple[int, int, Counter[int], int, int]:
+    """
+    Return (score, used, counts, single_fives, single_ones) in O(1).
+    """
+    key = (
+        roll.count(1), roll.count(2), roll.count(3),
+        roll.count(4), roll.count(5), roll.count(6)
+    )
+    score, used, base_counts, sfives, sones = lookup[key]
+    return score, used, base_counts.copy(), sfives, sones
+
+
+def decide_smart_discards(
+    counts: Counter[int],
+    single_fives: int,
+    single_ones: int,
+    raw_score: int,
+    raw_used: int,
+    dice_roll_len: int,  # noqa: ARG001
+    turn_score_pre: int,
+    score_threshold: int,
+    smart_five: bool,
+    smart_one: bool,
+) -> Tuple[int, int]:
+    """
+    Decide how many 5's and then 1's to discard, but only commit them if
+    doing so leaves (turn_score_pre + new_score) < threshold.
+
+    Steps:
+      1) Compute discard_fives purely from smart_five rules.
+      2) Compute intermediate_score_after5 = raw_score - 50*discard_fives.
+         If turn_score_pre + intermediate_score_after5 >= threshold, restore
+         discard_fives = 0 (i.e. do not toss any 5's).
+      3) Compute discard_ones purely from smart_one rules, applied to a Counter
+         that reflects removing the (possibly zero) discard_fives. 
+      4) Compute final_score_after_all = intermediate_score_after5 - 100*discard_ones.
+         If turn_score_pre + final_score_after_all >= threshold, restore discard_ones = 0.
+
+    Return (discard_fives, discard_ones).
+    """
+    # ────────────────────────────────────────────────────────────────
+    # If every die in this roll already scored, we should NOT discard
+    # anything. Just return (0, 0) immediately.
+    if raw_used == dice_roll_len:
+        return 0, 0
+    
+    # --- 1) Decide how many 5's we would toss, ignoring threshold for the moment ---
+    discard_fives = 0
+    if smart_five and single_fives >= 1:
+        # Is there any “other scoring die” besides lone 5's?
+        other_scoring_for_five = any(
+            (count >= 3 and face != 5) or (face == 1 and count >= 1)
+            for face, count in counts.items()
+        )
+        if other_scoring_for_five:
+            # Discard all lone 5's (even if single_fives == 1)
+            discard_fives = single_fives
+        else:
+            # Only scoring dice are these single 5's. If ≥ 2, keep exactly 1, discard rest
+            if single_fives >= 2:
+                discard_fives = single_fives - 1
+            # If single_fives == 1 and no other scoring, we do not discard it.
+
+    # Compute intermediate score & used if we DID discard those 5's
+    score_after_5 = raw_score - 50 * discard_fives
+    used_after_5  = raw_used  - discard_fives
+
+    # --- 2) If throwing away those 5's would STILL leave us ≥ threshold, restore them ---
+    if turn_score_pre + score_after_5 >= score_threshold:
+        discard_fives = 0
+        score_after_5 = raw_score
+        used_after_5  = raw_used
+
+    # Remove those (possibly zero) 5's from counts so Smart-1 sees the right picture
+    temp_counts = counts.copy()
+    if discard_fives > 0:
+        temp_counts[5] -= discard_fives
+        if temp_counts[5] <= 0:
+            del temp_counts[5]
+
+    # Re-count how many lone 1's remain (no need to re-compute single_fives now)
+    # single_ones still represents how many 1's were in the original roll.
+    # But if we removed some 5's, single_ones is unchanged.
+    # (We only need single_ones to see if ≥2 remain.)
+
+    # --- 3) Decide how many 1's we would toss, ignoring threshold again ---
+    discard_ones = 0
+    if smart_one and single_ones >= 1:  # noqa: SIM102
+        # Only attempt Smart-1 if the raw roll (or after Smart-5) 
+        # left us below threshold:
+        if turn_score_pre + score_after_5 < score_threshold:
+            # “Other scoring” w.r.t the remaining dice (after removing 5's):
+            other_scoring_for_one = any(
+                (count >= 3 and face != 1) or (face == 5 and count >= 1) # failsafe if sf=F, so=T was allowed
+                for face, count in temp_counts.items()
+            )
+            if not other_scoring_for_one and single_ones == 2:
+                # If ≥ 2 lonely 1's remain, discard all but one.
+                discard_ones = 1
+            if not other_scoring_for_one and single_ones == 1:
+                discard_ones = 0
+            if other_scoring_for_one and single_ones == 2:
+                # If ≥ 2 lonely 1's remain, discard all but one.
+                discard_ones = 2
+            if other_scoring_for_one and single_ones == 1:
+                discard_ones = 1
+
+    # Compute final score if we commit to discarding those 1's
+    score_after_all = score_after_5 - 100 * discard_ones
+    used_after_5 -= discard_ones
+
+    # --- 4) If discarding those 1's would STILL leave us ≥ threshold, restore them ---
+    if turn_score_pre + score_after_all >= score_threshold:
+        discard_ones   = 0
+        score_after_all = score_after_5
+
+    return discard_fives, discard_ones
+
+
+def apply_discards(
+    raw_score:     int,
+    raw_used:      int,
+    discard_fives: int,
+    discard_ones:  int,
+    dice_roll_len: int,
+) -> Tuple[int, int, int]:
+    """
+    Given:
+      - raw_score, raw_used   (from compute_raw_score)
+      - discard_fives, discard_ones   (from decide_smart_discards)
+      - dice_roll_len = len(dice_roll)
+
+    Return:
+      - final_score   = raw_score - 50*discard_fives - 100*discard_ones
+      - final_used    = raw_used  - discard_fives - discard_ones
+      - final_reroll  = dice_roll_len - final_used
+    """
+    final_score  = raw_score   - 50 * discard_fives - 100 * discard_ones
+    final_used   = raw_used    - discard_fives   - discard_ones
+    final_reroll = dice_roll_len - final_used
+    return final_score, final_used, final_reroll
+
+
+# scoring.py
+
+def default_score(
+    dice_roll:        DiceRoll,
+    *,
+    turn_score_pre:   int,
+    smart_five:       bool = False,
+    smart_one:        bool = False,
+    score_threshold:  int  = 300,
+) -> Tuple[int, int, int]:
+    """
+    Master function that:
+      1) computes raw score/used/counts
+      2) decides how many 5's/1's to discard (but only commits if it keeps you below threshold)
+      3) applies those discards
+      4) returns (score, used, reroll)
+    """
+    # 1) Raw scoring
+    raw_score, raw_used, counts, single_fives, single_ones = score_roll_cached(dice_roll)
+
+    # 2) Figure out discards
+    discard_fives, discard_ones = decide_smart_discards(
+        counts          = counts,
+        single_fives    = single_fives,
+        single_ones     = single_ones,
+        raw_score       = raw_score,
+        raw_used        = raw_used,
+        dice_roll_len   = len(dice_roll),
+        turn_score_pre  = turn_score_pre,
+        score_threshold = score_threshold,
+        smart_five      = smart_five,
+        smart_one       = smart_one,
+    )
+
+    # 3) Convert those discards into final numbers
+    final_score, final_used, final_reroll = apply_discards(
+        raw_score       = raw_score,
+        raw_used        = raw_used,
+        discard_fives   = discard_fives,
+        discard_ones    = discard_ones,
+        dice_roll_len   = len(dice_roll),
+    )
+
+    return final_score, final_used, final_reroll
+
+def _compute_raw_score(
     dice_roll: DiceRoll,
 ) -> Tuple[int, int, Counter[int], int, int]:
     """
+    Legacy, present for regression testing
     Given a single roll (up to 6 dice), compute:
       - raw_score:   total points from this roll under the Farkle rules
       - raw_used:    how many dice “scored” (i.e. removed from play this roll)
@@ -183,285 +377,3 @@ def compute_raw_score(
     raw_used  = single_ones + single_fives
 
     return raw_score, raw_used, counts, single_fives, single_ones
-
-
-
-lookup_table = build_score_lookup_table()
-
-def score_roll_cached(
-    roll: list[int],
-    lookup: dict = lookup_table,
-) -> tuple[int, int, Counter[int], int, int]:
-    """
-    Return (score, used, counts, single_fives, single_ones) in O(1).
-    """
-    key = (
-        roll.count(1), roll.count(2), roll.count(3),
-        roll.count(4), roll.count(5), roll.count(6)
-    )
-    score, used, base_counts, sfives, sones = lookup[key]
-    return score, used, base_counts.copy(), sfives, sones
-
-
-def decide_smart_discards(
-    counts: Counter[int],
-    single_fives: int,
-    single_ones: int,
-    raw_score: int,
-    raw_used: int,
-    dice_roll_len: int,  # noqa: ARG001
-    turn_score_pre: int,
-    score_threshold: int,
-    smart_five: bool,
-    smart_one: bool,
-) -> Tuple[int, int]:
-    """
-    Decide how many 5's and then 1's to discard, but only commit them if
-    doing so leaves (turn_score_pre + new_score) < threshold.
-
-    Steps:
-      1) Compute discard_fives purely from smart_five rules.
-      2) Compute intermediate_score_after5 = raw_score - 50*discard_fives.
-         If turn_score_pre + intermediate_score_after5 >= threshold, restore
-         discard_fives = 0 (i.e. do not toss any 5's).
-      3) Compute discard_ones purely from smart_one rules, applied to a Counter
-         that reflects removing the (possibly zero) discard_fives. 
-      4) Compute final_score_after_all = intermediate_score_after5 - 100*discard_ones.
-         If turn_score_pre + final_score_after_all >= threshold, restore discard_ones = 0.
-
-    Return (discard_fives, discard_ones).
-    """
-
-    # --- 1) Decide how many 5's we would toss, ignoring threshold for the moment ---
-    discard_fives = 0
-    if smart_five and single_fives >= 1:
-        # Is there any “other scoring die” besides lone 5's?
-        other_scoring_for_five = any(
-            (count >= 3 and face != 5) or (face == 1 and count >= 1)
-            for face, count in counts.items()
-        )
-        if other_scoring_for_five:
-            # Discard all lone 5's (even if single_fives == 1)
-            discard_fives = single_fives
-        else:
-            # Only scoring dice are these single 5's. If ≥ 2, keep exactly 1, discard rest
-            if single_fives >= 2:
-                discard_fives = single_fives - 1
-            # If single_fives == 1 and no other scoring, we do not discard it.
-
-    # Compute intermediate score & used if we DID discard those 5's
-    score_after_5 = raw_score - 50 * discard_fives
-    used_after_5  = raw_used  - discard_fives
-
-    # --- 2) If throwing away those 5's would STILL leave us ≥ threshold, restore them ---
-    if turn_score_pre + score_after_5 >= score_threshold:
-        discard_fives = 0
-        score_after_5 = raw_score
-        used_after_5  = raw_used
-
-    # Remove those (possibly zero) 5's from counts so Smart-1 sees the right picture
-    temp_counts = counts.copy()
-    if discard_fives > 0:
-        temp_counts[5] -= discard_fives
-        if temp_counts[5] <= 0:
-            del temp_counts[5]
-
-    # Re-count how many lone 1's remain (no need to re-compute single_fives now)
-    # single_ones still represents how many 1's were in the original roll.
-    # But if we removed some 5's, single_ones is unchanged.
-    # (We only need single_ones to see if ≥2 remain.)
-
-    # --- 3) Decide how many 1's we would toss, ignoring threshold again ---
-    discard_ones = 0
-    if smart_one and single_ones >= 1:  # noqa: SIM102
-        # Only attempt Smart-1 if the raw roll (or after Smart-5) 
-        # left us below threshold:
-        if turn_score_pre + score_after_5 < score_threshold:
-            # “Other scoring” w.r.t the remaining dice (after removing 5's):
-            other_scoring_for_one = any(
-                (count >= 3 and face != 1) or (face == 5 and count >= 1) # failsafe if sf=F, so=T was allowed
-                for face, count in temp_counts.items()
-            )
-            if not other_scoring_for_one and single_ones == 2:
-                # If ≥ 2 lonely 1's remain, discard all but one.
-                discard_ones = 1
-            if not other_scoring_for_one and single_ones == 1:
-                discard_ones = 0
-            if other_scoring_for_one and single_ones == 2:
-                # If ≥ 2 lonely 1's remain, discard all but one.
-                discard_ones = 2
-            if other_scoring_for_one and single_ones == 1:
-                discard_ones = 1
-
-    # Compute final score if we commit to discarding those 1's
-    score_after_all = score_after_5 - 100 * discard_ones
-    used_after_5 -= discard_ones
-
-    # --- 4) If discarding those 1's would STILL leave us ≥ threshold, restore them ---
-    if turn_score_pre + score_after_all >= score_threshold:
-        discard_ones   = 0
-        score_after_all = score_after_5
-
-    return discard_fives, discard_ones
-
-
-
-def apply_discards(
-    raw_score:     int,
-    raw_used:      int,
-    discard_fives: int,
-    discard_ones:  int,
-    dice_roll_len: int,
-) -> Tuple[int, int, int]:
-    """
-    Given:
-      - raw_score, raw_used   (from compute_raw_score)
-      - discard_fives, discard_ones   (from decide_smart_discards)
-      - dice_roll_len = len(dice_roll)
-
-    Return:
-      - final_score   = raw_score - 50*discard_fives - 100*discard_ones
-      - final_used    = raw_used  - discard_fives - discard_ones
-      - final_reroll  = dice_roll_len - final_used
-    """
-    final_score  = raw_score   - 50 * discard_fives - 100 * discard_ones
-    final_used   = raw_used    - discard_fives   - discard_ones
-    final_reroll = dice_roll_len - final_used
-    return final_score, final_used, final_reroll
-
-
-# scoring.py
-
-def default_score(
-    dice_roll:        DiceRoll,
-    *,
-    turn_score_pre:   int,
-    smart_five:       bool = False,
-    smart_one:        bool = False,
-    score_threshold:  int  = 300,
-) -> Tuple[int, int, int]:
-    """
-    Master function that:
-      1) computes raw score/used/counts
-      2) decides how many 5's/1's to discard (but only commits if it keeps you below threshold)
-      3) applies those discards
-      4) returns (score, used, reroll)
-    """
-    # 1) Raw scoring
-    raw_score, raw_used, counts, single_fives, single_ones = score_roll_cached(dice_roll)
-
-    # 2) Figure out discards
-    discard_fives, discard_ones = decide_smart_discards(
-        counts          = counts,
-        single_fives    = single_fives,
-        single_ones     = single_ones,
-        raw_score       = raw_score,
-        raw_used        = raw_used,
-        dice_roll_len   = len(dice_roll),
-        turn_score_pre  = turn_score_pre,
-        score_threshold = score_threshold,
-        smart_five      = smart_five,
-        smart_one       = smart_one,
-    )
-
-    # 3) Convert those discards into final numbers
-    final_score, final_used, final_reroll = apply_discards(
-        raw_score       = raw_score,
-        raw_used        = raw_used,
-        discard_fives   = discard_fives,
-        discard_ones    = discard_ones,
-        dice_roll_len   = len(dice_roll),
-    )
-
-    return final_score, final_used, final_reroll
-
-
-# ---------------------------------------------------------------------------
-# Old Core routine
-# ---------------------------------------------------------------------------
-
-# def default_score(
-#     dice_roll: DiceRoll,
-#     *,
-#     smart: bool = False,
-#     score_threshold: int = 300,
-# ) -> Tuple[int, int, int]:
-#     """Evaluate a dice roll under Farkle rules.
-
-#     Parameters
-#     ----------
-#     dice_roll
-#         Sequence of integers 1-6 from a single throw of *n* dice.
-#     smart
-#         Whether to apply the Smart-5 heuristic.  If *True* and the roll
-#         contains **one or two** single-die fives, **no other scoring
-#         dice**, and the provisional turn score is below *score_threshold*,
-#         then lone fives (except one) are discarded: 50 points are
-#         subtracted for each discarded five, one die is freed for each,
-#         and the roll never becomes a bust.
-#     score_threshold
-#         The player's turn-score threshold (usually the strategy's
-#         ``score_threshold``).  Smart-5 only triggers when the provisional
-#         score is strictly less than this value.
-
-#     Returns
-#     -------
-#     score_pts, dice_used, dice_to_reroll
-#         *score_pts* is the integer score of the roll **after** Smart-5
-#         adjustments, *dice_used* is how many dice contributed to that
-#         score, and *dice_to_reroll* is how many dice remain for the next
-#         throw (0 implies *hot dice*).
-#     """
-#     counts: Counter[int] = Counter(dice_roll)
-#     score: int = 0
-#     used: int = 0
-
-#     # ----- Special combos -------------------------------------------------
-#     if len(counts) == 6:  # straight 1-6
-#         return 1500, 6, 0
-#     if len(counts) == 3 and all(v == 2 for v in counts.values()):  # three pairs
-#         return 1500, 6, 0
-#     if len(counts) == 2 and set(counts.values()) == {3}:  # two triplets
-#         return 2500, 6, 0
-#     if len(counts) == 2 and 4 in counts.values() and 2 in counts.values():  # 4-kind + pair
-#         return 1500, 6, 0
-
-#     single_fives: int = 0  # track single-die fives for Smart-5
-
-#     # ----- Triplets & singles --------------------------------------------
-#     for num, count in counts.items():
-#         if count >= 3:
-#             if count == 3:
-#                 score += 300 if num == 1 else num * 100
-#             elif count == 4:
-#                 score += 1000
-#             elif count == 5:
-#                 score += 2000
-#             elif count == 6:
-#                 score += 3000
-#             used += count
-#         elif num == 1:
-#             score += 100 * count
-#             used += count
-#         elif num == 5:
-#             score += 50 * count
-#             used += count
-#             single_fives += count  # only singles (count 1 or 2) fall here
-
-#     reroll: int = len(dice_roll) - used
-
-#     # ----- Smart-5 adjustment --------------------------------------------
-#     if smart and 1 <= single_fives <= 2 and score < score_threshold:
-#         # Any *other* scoring dice cancel Smart-5
-#         other_scoring = any(
-#             (n == 1) or (c >= 3 and n != 5)
-#             for n, c in counts.items()
-#         )
-#         if not other_scoring:
-#             discard = single_fives - 1 if single_fives > 1 else 0
-#             if discard:
-#                 score -= 50 * discard
-#                 used -= discard
-#                 reroll += discard
-
-#     return score, used, reroll

@@ -44,6 +44,7 @@ def generate_strategy_grid(
     consider_score_opts: Sequence[bool] = (True, False),
     consider_dice_opts: Sequence[bool] = (True, False),
     auto_hot_opts: Sequence[bool] = (False, True),
+    run_up_score_opts: Sequence[bool] = (True, False),
 ) -> Tuple[List[ThresholdStrategy], pd.DataFrame]:
     """Create the Cartesian product of all parameter options.
 
@@ -51,7 +52,7 @@ def generate_strategy_grid(
     list of fully-constructed ``ThresholdStrategy`` instances (safe to
     pass to the engine) and the second element is a *metadata* dataframe
     recording each parameter combo.
-    Default grid should be len(grid) = 2550
+    Default grid should be len(grid) = 5100
     """
 
     if score_thresholds is None:
@@ -62,22 +63,23 @@ def generate_strategy_grid(
         smart_five_opts = [True, False] 
     if smart_one_opts is None:
         smart_one_opts = [True, False] 
-    combos: List[Tuple[int, int, bool, bool, bool, bool, bool, bool]] = []
+    combos: List[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool]] = []
     # We'll build combos of (st, dt, sm, cs, cd, require_both)
-    for hd in auto_hot_opts: # Hot Dice 2 options
-        for st in score_thresholds: # 17 options
-            for dt in dice_thresholds: # 5 options
-                for sf in smart_five_opts: # 2 options
-                    for so in smart_one_opts: # 1.5 options
-                        if not sf and so:  # Can't be smart one without being smart five
-                            continue # You technically could but it makes no strategic sense irl
-                        for cs in consider_score_opts: # 2 options
-                            for cd in consider_dice_opts: # 2.5 options (1/4 of cs&cd gets an extra option on rb 4+1 = 5, 5/2 = 2.5)
-                                if cs and cd:
-                                    combos.append((st, dt, sf, so, True,  True,  True, hd))  # rb = True
-                                    combos.append((st, dt, sf, so, True,  True,  False, hd)) # rb = False
-                                else:                                                   # default rb = False
-                                    combos.append((st, dt, sf, so, cs,    cd,   False, hd)) # otherwise breaks if cs or cd = False
+    for rs in run_up_score_opts:
+        for hd in auto_hot_opts: # Hot Dice 2 options
+            for st in score_thresholds: # 17 options
+                for dt in dice_thresholds: # 5 options
+                    for sf in smart_five_opts: # 2 options
+                        for so in smart_one_opts: # 1.5 options
+                            if not sf and so:  # Can't be smart one without being smart five
+                                continue # You technically could but it makes no strategic sense irl
+                            for cs in consider_score_opts: # 2 options
+                                for cd in consider_dice_opts: # 2.5 options (1/4 of cs&cd gets an extra option on rb 4+1 = 5, 5/2 = 2.5)
+                                    if cs and cd:
+                                        combos.append((st, dt, sf, so, True,  True,  True, hd, rs))  # rb = True
+                                        combos.append((st, dt, sf, so, True,  True,  False, hd, rs)) # rb = False
+                                    else:                                                   # default rb = False
+                                        combos.append((st, dt, sf, so, cs,    cd,   False, hd, rs)) # otherwise breaks if cs or cd = False
 
     # Build actual strategy objects and a DataFrame
     strategies = [
@@ -90,13 +92,14 @@ def generate_strategy_grid(
             consider_dice   = cd,
             require_both    = rb,
             auto_hot_dice   = hd,
+            run_up_score    = rs,
         )
-        for st, dt, sf, so, cs, cd, rb, hd in combos
+        for st, dt, sf, so, cs, cd, rb, hd, rs in combos
     ]
 
     meta = pd.DataFrame(
         combos,
-        columns=["score_threshold", "dice_threshold", "smart_five", "smart_one", "consider_score", "consider_dice", "require_both", "auto_hot_dice"],
+        columns=["score_threshold", "dice_threshold", "smart_five", "smart_one", "consider_score", "consider_dice", "require_both", "auto_hot_dice", "run_up_score"],
     )
     meta["strategy_idx"] = meta.index
     return strategies, meta
@@ -110,6 +113,7 @@ def experiment_size(
     consider_score_opts: Sequence[bool] = (True, False),
     consider_dice_opts: Sequence[bool] = (True, False),
     auto_hot_dice_opts: Sequence[bool] = (True, False),
+    run_up_score_opts: Sequence[bool] = (True, False),
 ) -> int:
     """Compute *a priori* size of a strategy grid."""
     score_thresholds = score_thresholds or list(range(200, 1050, 50))
@@ -120,6 +124,7 @@ def experiment_size(
         * len(dice_thresholds)
         * len(smart_five_and_one_options)
         * len(auto_hot_dice_opts)
+        * len(run_up_score_opts)
     )
 
     # ----- how many CS/CD pairs? ----------------------------------------

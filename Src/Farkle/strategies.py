@@ -61,7 +61,8 @@ class ThresholdStrategy:
     consider_score: bool = True
     consider_dice: bool = True
     require_both: bool = False
-    auto_hot_dice: bool = False  
+    auto_hot_dice: bool = False
+    run_up_score: bool = False
     
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
@@ -91,7 +92,26 @@ class ThresholdStrategy:
         score_to_beat: int = 0,
         running_total: int = 0,
     ) -> bool:  # noqa: D401 – imperative name
-        """Return **True** to keep rolling, **False** to bank."""
+        """
+        Return **True** to keep rolling, **False** to bank.
+        
+        Counterintuitively, require_both = True is riskier play
+        
+        Outcomes of cominations of consider_score = True, consider_dice = True, 
+        require_both = [True, False] for score_threshold = 300 and dice_threshold = 3:
+         
+        cs and cd are True, require_both = True (AND logic)
+        (400, 4, True),  # Enough dice but too many points
+        (200, 2, True),  # Low enough points but not enough dice
+        (200, 4, True),   # Low enough points and enough dice available
+        (400, 2, False),  # # Too many points and not enough dice available
+        
+        cs and cd are True, require_both = False (OR logic)
+        (400, 4, False),  # Enough dice but too many points
+        (200, 2, False),  # Low enough points but not enough dice
+        (200, 4, True),   # Low enough points and enough dice available
+        (400, 2, False),  # # Too many points and not enough dice available
+        """
 
         # --------------------------------- fast exits ---------------------------------
         if not has_scored and turn_score < 500:
@@ -132,7 +152,9 @@ class ThresholdStrategy:
         sf = "*F" if self.smart_five else "-"
         so = "*O" if self.smart_one else "-"
         rb = "AND" if self.require_both else "OR"
-        return f"T({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}][{rb}]"
+        hd = "H" if self.auto_hot_dice else "-"
+        rs = "R" if self.run_up_score else "-"
+        return f"Strat({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}][{rb}][{hd}{rs}]"
 
 
 # ---------------------------------------------------------------------------

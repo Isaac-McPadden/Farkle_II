@@ -23,7 +23,7 @@ def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None
             if row is None:
                 break
             buffer.append(row)
-            if len(buffer) >= 1_000:
+            if len(buffer) >= 10_000:
                 w.writerows(buffer)
                 fh.flush()
                 buffer.clear()

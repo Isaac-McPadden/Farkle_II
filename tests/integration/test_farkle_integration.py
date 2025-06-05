@@ -62,19 +62,26 @@ def test_seed_reproducible(simple_strategy):
 
 
 
-CLI = [sys.executable, "-m", "farkle.farkle_cli"]
 
-def test_cli_smoke(tmp_path):
-    """End-to-end CLI run via `farkle run <cfg.yml>`."""
+CLI = [sys.executable, "-m", "farkle"]   # <- NEW entry-point
+
+def test_cli_smoke(tmp_path: Path):
+    """
+    End-to-end CLI run via:  python -m farkle run <cfg.yml>
+
+    Verifies:
+      * CLI exits 0
+      * output CSV has expected number of rows
+    """
     cfg = {
         "strategy_grid": {
-            "score_thresholds": [300],
-            "dice_thresholds":  [2],
-            "smart_five_opts": [False],
-            "smart_one_opts":  [False],
-            "consider_score_opts": [True],
-            "consider_dice_opts": [True],
-            "auto_hot_opts": [False],
+            "score_thresholds":      [300],
+            "dice_thresholds":       [2],
+            "smart_five_opts":       [False],
+            "smart_one_opts":        [False],
+            "consider_score_opts":   [True],
+            "consider_dice_opts":    [True],
+            "auto_hot_opts":         [False],
         },
         "sim": {
             "n_games": 20,
@@ -83,16 +90,16 @@ def test_cli_smoke(tmp_path):
             "n_jobs": 1,
         },
     }
+
     cfg_path = tmp_path / "cfg.yml"
-    cfg_path.write_text(yaml.safe_dump(cfg))
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
+    # --- run the CLI -------------------------------------------------------
     sp.check_call(CLI + ["run", str(cfg_path)])
-    # exit code 0 -> no exception
+    # -----------------------------------------------------------------------
+
     df = pd.read_csv(cfg["sim"]["out_csv"])
-    assert len(df) == 20
-    # stderr / stdout left for devs to inspect if desired
-
-
+    assert len(df) == cfg["sim"]["n_games"]
 
 
 def test_final_round_rule_1():
