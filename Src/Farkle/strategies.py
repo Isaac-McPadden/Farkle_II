@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 from dataclasses import dataclass
 from typing import List
 
@@ -63,6 +64,7 @@ class ThresholdStrategy:
     require_both: bool = False
     auto_hot_dice: bool = False
     run_up_score: bool = False
+    prefer_score: bool = True
     
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
@@ -93,7 +95,7 @@ class ThresholdStrategy:
         running_total: int = 0,
     ) -> bool:  # noqa: D401 – imperative name
         """
-        Return **True** to keep rolling, **False** to bank.
+        Return **True** to keep rolling, *False** to bank.
         
         Counterintuitively, require_both = True is riskier play
         
@@ -149,17 +151,38 @@ class ThresholdStrategy:
     def __str__(self) -> str:  # noqa: D401 - magics method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
-        sf = "*F" if self.smart_five else "-"
-        so = "*O" if self.smart_one else "-"
+        sf = "F" if self.smart_five else "-"
+        so = "O" if self.smart_one else "-"
         rb = "AND" if self.require_both else "OR"
         hd = "H" if self.auto_hot_dice else "-"
         rs = "R" if self.run_up_score else "-"
-        return f"Strat({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}][{rb}][{hd}{rs}]"
+        ps = "PS" if self.prefer_score else "PD"
+        return f"Strat({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}{ps}][{rb}][{hd}{rs}]"
 
 
 # ---------------------------------------------------------------------------
 # Convenience factory
 # ---------------------------------------------------------------------------
+# strategies.py
+def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> bool:
+    """
+    Return the *only* legal value(s) for `prefer_score`
+    given the (consider_score, consider_dice) pair.
+
+        cs  cd   →  prefer_score
+        ─────────────────────────
+        T   F       True    (always favour score)
+        F   T       False   (always favour dice)
+        T   T       rng     (tie-break random)
+        F   F       rng     (doesn’t matter – random)
+
+    Much easier to read than a stacked ternary.
+    """
+    if cs == cd:                 # (T,T) or (F,F)   →  free choice
+        return rng.choice([True, False])
+    return cs                    # (T,F) or (F,T)
+
+
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
     """Return a random ThresholdStrategy that always satisfies the two constraints."""
@@ -173,6 +196,7 @@ def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStra
     cs = rng_inst.choice([True, False])
     cd = rng_inst.choice([True, False])
     rb = rng_inst.choice([True, False]) if (cs and cd) else False
+    ps = _sample_prefer_score(cs, cd, rng_inst)
 
     return ThresholdStrategy(
         score_threshold=rng_inst.randrange(50, 1000, 50),
@@ -182,4 +206,98 @@ def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStra
         consider_score=cs,
         consider_dice=cd,
         require_both=rb,
+        prefer_score=ps,
+    )
+
+
+def parse_strategy(s: str) -> ThresholdStrategy:
+    """
+    Reverse of ThresholdStrategy.__str__.
+
+    Accepts strings of the form:
+      Strat(300,2)[SD][FO][AND][H-]
+    or (for example):
+      Strat(500,1)[S-][-O][OR][-R]
+
+    Returns a ThresholdStrategy(...) with all booleans parsed.
+
+    NOTE: this is meant for analysis/log-parsing, not the hot path.
+    """
+    # 1) Top-level pattern:  Strat(score_threshold, dice_threshold)
+    # 2) Four bracketed blocks:
+    #    [<consider_score><consider_dice>]
+    #    [<smart_five><smart_one>]
+    #    [AND|OR]
+    #    [<auto_hot><run_up>]
+    #
+    #   where:
+    #     consider_score = "S" or "-"
+    #     consider_dice  = "D" or "-"
+    #     smart_five     = "F" or "-"
+    #     smart_one      = "O" or "-"
+    #     auto_hot       = "H" or "-"
+    #     run_up_score   = "R" or "-"
+    #     require_both   = "AND" or "OR"
+    #     prefer_score   = "P" or "-"
+    #
+    # Example literal: "Strat(300,2)[SD][F-O][AND][H-]"
+
+    pattern = re.compile(
+        r"""
+        \A
+        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)   # thresholds
+        \[
+            (?P<cs>[S\-])(?P<cd>[D\-])
+        \]
+        \[
+            (?P<sf>[F\-])  # smart_five block
+            (?P<so>[O\-])  # smart_one block
+            (?P<ps>PS|PD)
+        \]
+        \[
+            (?P<rb>AND|OR)
+        \]
+        \[
+            (?P<hd>[H\-])(?P<rs>[R\-])
+        \]
+        \Z
+        """,
+        re.VERBOSE,
+    )
+
+    m = pattern.match(s)
+    if not m:
+        raise ValueError(f"Cannot parse strategy string: {s!r}")
+
+    score_threshold = int(m.group("score"))
+    dice_threshold  = int(m.group("dice"))
+
+    cs_flag = m.group("cs") == "S"
+    cd_flag = m.group("cd") == "D"
+
+    sf_token = m.group("sf")  # "F", "-F", or "--"
+    sf_flag = bool(sf_token.startswith("F"))
+
+    so_token = m.group("so")  # "O", "-O", or "--"
+    so_flag = bool(so_token.startswith("O"))
+    
+    ps_flag = m.group("ps") == "PS"
+
+    rb_token = m.group("rb")  # "AND" or "OR"
+    require_both = rb_token == "AND"
+
+    hd_flag = m.group("hd") == "H"
+    rs_flag = m.group("rs") == "R"
+
+    return ThresholdStrategy(
+        score_threshold=score_threshold,
+        dice_threshold=dice_threshold,
+        smart_five=sf_flag,
+        smart_one=so_flag,
+        consider_score=cs_flag,
+        consider_dice=cd_flag,
+        require_both=require_both,
+        auto_hot_dice=hd_flag,
+        run_up_score=rs_flag,
+        prefer_score=ps_flag,
     )

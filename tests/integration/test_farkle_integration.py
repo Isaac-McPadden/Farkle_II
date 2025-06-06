@@ -6,9 +6,17 @@ from time import perf_counter
 import pandas as pd
 import pytest
 import yaml
+from hypothesis import given
+from hypothesis import strategies as st
 
 from farkle.engine import FarkleGame, FarklePlayer
 from farkle.farkle_io import simulate_many_games_stream
+from farkle.scoring import (
+    apply_discards,
+    decide_smart_discards,
+    default_score,
+    score_roll_cached,
+)
 from farkle.simulation import simulate_many_games
 from farkle.strategies import ThresholdStrategy
 
@@ -151,3 +159,56 @@ def test_batch_time_under_baseline():
     )
     elapsed = perf_counter() - t0
     assert elapsed < 8.0, f"perf regression: {elapsed:.1f}s > 8s baseline"
+
+
+# helper: ensure Smart-1 never true when Smart-5 false
+smart_flags = st.tuples(
+    st.booleans(),                        # smart_five
+    st.booleans(),
+).filter(lambda t: t[1] <= t[0])         # (sf, so) with (so ⇒ sf)
+
+@given(
+    roll = st.lists(st.integers(1, 6), min_size=1, max_size=6),
+    turn_pre = st.integers(min_value=0, max_value=500),
+    flags = smart_flags,
+)
+def test_pipeline_matches_default(roll, turn_pre, flags):
+    smart_five, smart_one = flags
+
+    # ---------- (A) single-call pipeline ----------
+    d_score, d_used, d_reroll = default_score(
+        dice_roll       = roll,
+        turn_score_pre  = turn_pre,
+        smart_five      = smart_five,
+        smart_one       = smart_one,
+        score_threshold = 300,
+        dice_threshold  = 3,
+    )
+
+    # ---------- (B) manual three-step pipeline ----------
+    raw_score, raw_used, counts, sfives, sones = score_roll_cached(roll)
+
+    disc5, disc1 = decide_smart_discards(
+        counts          = counts,
+        single_fives    = sfives,
+        single_ones     = sones,
+        raw_score       = raw_score,
+        raw_used        = raw_used,
+        dice_roll_len   = len(roll),
+        turn_score_pre  = turn_pre,
+        score_threshold = 300,
+        dice_threshold  = 3,
+        smart_five      = smart_five,
+        smart_one       = smart_one,
+    )
+
+    f_score, f_used, f_reroll = apply_discards(
+        raw_score     = raw_score,
+        raw_used      = raw_used,
+        discard_fives = disc5,
+        discard_ones  = disc1,
+        dice_roll_len = len(roll),
+    )
+
+    # ---------- agreement check ----------
+    assert (d_score, d_used, d_reroll) == (f_score, f_used, f_reroll)

@@ -12,14 +12,14 @@ from farkle.strategies import ThresholdStrategy
 
 def test_default_grid_size():
     strategies, meta = generate_strategy_grid()
-    assert len(strategies) == 5100
-    assert len(meta) == 5100
+    assert len(strategies) == 8160
+    assert len(meta) == 8160
     for object in strategies:
         assert isinstance(object, ThresholdStrategy)
     assert isinstance(meta, DataFrame)
     
 def test_default_size():
-    assert experiment_size() == 5100
+    assert experiment_size() == 8160
     
 def test_size_and_grid_match():
     strats, _ = generate_strategy_grid()
@@ -44,5 +44,5 @@ def test_play_helpers_consistency():
 def test_custom_grid_size():
     # Only auto_hot_dice == True → half the default grid (1 275)
     strategies, meta = generate_strategy_grid(auto_hot_opts=[True])
-    assert len(strategies) == 2550
-    assert len(meta) == 2550
+    assert len(strategies) == 4080
+    assert len(meta) == 4080

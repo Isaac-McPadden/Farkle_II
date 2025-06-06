@@ -154,14 +154,18 @@ def score_roll(roll: list[int]) -> tuple[int, int]:
     return score, used
 
 
-"""
-Fast lookup table for any 1-6-die roll.
 
-Key  : tuple(count_1, count_2, count_3, count_4, count_5, count_6)
-Value: (score, used_dice)  # reroll = n_total - used_dice
-"""
 
 def build_score_lookup_table():
+    """
+    Fast lookup table for any 1-6-die roll.
+
+    Key  : tuple(count_1, count_2, count_3, count_4, count_5, count_6)
+    Value: (score, used_dice)  # reroll = n_total - used_dice
+
+    56k possible dice rolls collapse to 923 counters which can only be 
+    scored 143 different ways.  
+    """
     LOOKUP: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int, Counter[int], int, int]] = {}
     faces = range(1, 7)
 

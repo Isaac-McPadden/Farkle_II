@@ -13,7 +13,11 @@ from farkle.scoring import (
     _compute_raw_score,
     apply_discards,
     decide_smart_discards,
+    # decide_smart_discards,
     default_score,
+    expand_sorted,
+    generate_sequences,
+    score_lister,
     score_roll_cached,
 )
 from farkle.scoring_lookup import build_score_lookup_table, evaluate, score_roll
@@ -32,7 +36,7 @@ def _make_csv_loader(filename: str):
     """
     # 1) Build an absolute path to tests/data/filename
     repo_root = Path(__file__).resolve().parents[1]  # one above 'tests/'
-    data_path = repo_root / "tests" / "data" / filename
+    data_path = repo_root / "data" / filename
 
     if not data_path.exists():
         raise FileNotFoundError(
@@ -80,93 +84,95 @@ def load_score_cases():
 
 
 
-def load_discard_cases():
-    """
-    Load test_decide_smart_discards.csv → yields a tuple:
-       (
-         [counts: dict], single_fives: int, single_ones: int,
-         raw_score: int, raw_used: int, dice_len: int,
-         turn_pre: int, threshold: int,
-         smart_five: bool, smart_one: bool,
-         expected: (int, int)
-       )
-    and a parallel list of IDs [ "case01", "case02", ... ].
-    """
-    loader = _make_csv_loader("test_decide_smart_discards.csv")
-    cases = []
-    ids   = []
-    for idx, row in loader():
-        try:
-            counts = ast.literal_eval(row["counts"])
-        except Exception as e:
-            raise ValueError(f"Row {idx}: cannot parse counts={row['counts']!r}") from e
+# --------------------------------------------------------------------------- #
+# Helper: fill in the *rarely-changed* kwargs so every test only specifies
+# what is strictly relevant to the branch it targets.
+# --------------------------------------------------------------------------- #
+def _call(
+    roll,
+    *,
+    turn_pre       = 0,
+    score_thr      = 300,
+    dice_thr       = 2,
+    smart_five     = True,
+    smart_one      = False,
+    consider_score = True,
+    consider_dice  = True,
+    require_both   = False,
+    prefer_score   = True,
+):
+    raw_s, raw_u, cnts, sf, so = score_roll_cached(roll)
+    return decide_smart_discards(
+        counts          = cnts,
+        single_fives    = sf,
+        single_ones     = so,
+        raw_score       = raw_s,          # kept for API parity
+        raw_used        = raw_u,
+        dice_roll_len   = len(roll),
+        turn_score_pre  = turn_pre,
+        score_threshold = score_thr,
+        dice_threshold  = dice_thr,
+        smart_five      = smart_five,
+        smart_one       = smart_one,
+        consider_score  = consider_score,
+        consider_dice   = consider_dice,
+        require_both    = require_both,
+        prefer_score    = prefer_score,
+    )
 
-        try:
-            single_fives    = int(row["single_fives"])
-            single_ones     = int(row["single_ones"])
-            raw_score       = int(row["raw_score"])
-            raw_used        = int(row["raw_used"])
-            dice_len        = int(row["dice_len"])
-            turn_pre        = int(row["turn_score_pre"])
-            score_threshold = int(row["score_threshold"])
-            smart_five_flag = row["smart_five"].strip().lower() == "true"
-            smart_one_flag  = row["smart_one"].strip().lower() == "true"
-            expected        = ast.literal_eval(row["expected"])
-        except Exception as e:
-            raise ValueError(f"Row {idx}: invalid field - {e}") from e
-
-        cases.append(
-            (
-                counts,
-                single_fives,
-                single_ones,
-                raw_score,
-                raw_used,
-                dice_len,
-                turn_pre,
-                score_threshold,
-                smart_five_flag,
-                smart_one_flag,
-                expected,
-            )
-        )
-        ids.append(f"case{idx:02d}")
-
-    return cases, ids
+# --------------------------------------------------------------------------- #
+# 1) early-exit guards  (three independent paths)
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "kw, expected",
+    [
+        # a) smart-5 disabled
+        ({"smart_five": False, "roll": [5, 2, 3, 4, 6]},
+         (0, 0)),
+        # b) hot dice  (all six score → raw_used == len)
+        ({"roll": [2,2,2,3,3,3]},          # 200 + 300
+         (0, 0)),
+        # c) no single 1/5 present
+        ({"roll": [2,2,2,3,4,6]},          # triples + 3 loose bust dice
+         (0, 0)),
+    ],
+)
+def test_early_exits(kw, expected):
+    assert _call(**kw) == expected
 
 
-# DATA_PATH = Path(__file__).resolve().parents[1] / "data" / "test_farkle_scores_data.csv"
-# if not DATA_PATH.exists():  # fail fast with a helpful hint
-#     raise FileNotFoundError(
-#         f"Could not find {DATA_PATH} - is the CSV in tests/data/?"
-#     )
+# --------------------------------------------------------------------------- #
+# 2) _must_bank filter — branch on `require_both`
+#    *With AND-logic the candidate passes; OR-logic kills it*
+# --------------------------------------------------------------------------- #
+def test_require_both_logic():
+    roll = [5, 5, 2, 3, 4]          # 100 pts, uses 2 dice, 3 left
+    # (a) AND-logic → keep rolling ⇒ no discard
+    keep = _call(roll, turn_pre=290, score_thr=300, dice_thr=2,
+                 require_both=True)
+    # (b) OR-logic  → every candidate must bank ⇒ default (0,0)
+    bank = _call(roll, turn_pre=290, score_thr=300, dice_thr=2,
+                 require_both=False)
+    assert keep == (0, 0) and bank == (0, 0)   # different paths, same result
+    # sanity check that *a* really went through AND logic:
+    # OR-logic would have discarded one 5 (see next test)
 
-# # ---------------------------------------------------------------------------
-# # Turn each CSV row into a pytest.param
-# # ---------------------------------------------------------------------------
-# def _load_cases():
-#     with DATA_PATH.open(newline="", encoding="utf-8") as fh:
-#         reader = csv.DictReader(fh)
-#         for idx, row in enumerate(reader, start=1):
-#             try:
-#                 roll = ast.literal_eval(row["Dice_Roll"])
-#             except Exception as e:  # bad “[1, 5]” string?
-#                 raise ValueError(
-#                     f"Row {idx}: cannot parse Dice_Roll={row['Dice_Roll']!r}"
-#                 ) from e
 
-#             try:
-#                 yield pytest.param(
-#                     roll,
-#                     int(row["Score"]),
-#                     int(row["Used_Dice"]),
-#                     int(row["Reroll_Dice"]),
-#                     int(row["Single_Fives"]),
-#                     int(row["Single_Ones"]),
-#                     id=f"row{idx}:{roll}",
-#                 )
-#             except ValueError as e:  # e.g. blank numeric field
-#                 raise ValueError(f"Row {idx}: {e}") from e
+# --------------------------------------------------------------------------- #
+# 3) prefer-score  vs  prefer-dice
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "prefer_score, expected",
+    [
+        (True,  (0, 0)),   # choose higher score → keep both 5s
+        (False, (1, 0)),   # choose more dice   → throw one 5 back
+    ],
+)
+def test_prefer_score_vs_dice(prefer_score, expected):
+    roll = [5, 5, 2, 3, 4]
+    out = _call(roll, prefer_score=prefer_score,
+                dice_thr=2, score_thr=300)  # low thresholds keep options open
+    assert out == expected
 
 
 # ---------------------------------------------------------------------------
@@ -203,61 +209,51 @@ def test_score_roll_cached(
     assert len(roll) - used == exp_reroll
     
 
-# DISCARD_PATH = Path(__file__).resolve().parents[1] / "data" / "test_decide_smart_discards.csv"
-    
-# def _load_discard_cases(path_obj):
-#     csv_path = path_obj
-#     cases = []
-#     ids = []                 # nice test-case names for pytest -vv
-#     with csv_path.open(newline="") as f:
-#         reader = csv.DictReader(f)
-#         for i, row in enumerate(reader, 1):
-#             cases.append((
-#                 ast.literal_eval(row["counts"]),      # Counter({...})
-#                 int(row["single_fives"]),
-#                 int(row["single_ones"]),
-#                 int(row["raw_score"]),
-#                 int(row["raw_used"]),
-#                 int(row["dice_len"]),
-#                 int(row["turn_score_pre"]),
-#                 int(row["score_threshold"]),
-#                 row["smart_five"] == "True",
-#                 row["smart_one"]  == "True",
-#                 ast.literal_eval(row["expected"]),    # (discard_fives, discard_ones)
-#             ))
-#             ids.append(f"case{i:02d}")
-#     return cases, ids
 
-
-# CASES, CASE_IDS = _load_discard_cases(DISCARD_PATH)
-
-CASES, CASE_IDS = load_discard_cases()
-
-# ----------------------------------------------------------------------
-# The parametrized test itself
-# ----------------------------------------------------------------------
+# ───────────────────────── expand_sorted ─────────────────────────
 @pytest.mark.parametrize(
-    "counts,single_fives,single_ones,raw_score,raw_used,dice_len,"
-    "turn_pre,threshold,smart_five,smart_one,expected",
-    CASES,
-    ids=CASE_IDS,
+    "counts, expected",
+    [
+        ({5: 2, 2: 3},          [2, 2, 2, 5, 5]),
+        ({1: 2, 3: 1, 5: 1},    [1, 1, 3, 5]),
+        ({},                    []),
+    ],
 )
-def test_decide_smart_discards(counts, single_fives, single_ones,
-                               raw_score, raw_used, dice_len,
-                               turn_pre, threshold, smart_five,
-                               smart_one, expected):
-    assert decide_smart_discards(
-        counts,
-        single_fives,
-        single_ones,
-        raw_score,
-        raw_used,
-        dice_len,
-        turn_pre,
-        threshold,
-        smart_five,
-        smart_one,
-    ) == expected    
+def test_expand_sorted(counts, expected):
+    assert expand_sorted(counts) == expected
+
+
+# ─────────────────────── generate_sequences ──────────────────────
+@pytest.mark.parametrize(
+    "counts, smart_one, expected",
+    [
+        # Example from the spec
+        ({2: 3, 5: 2}, False,
+         [[2, 2, 2, 5, 5],
+          [2, 2, 2, 5],
+          [2, 2, 2]]),
+
+        ({1: 2, 2: 1, 3: 1, 5: 2}, True,
+         [[1, 1, 2, 3, 5, 5],
+          [1, 1, 2, 3, 5],
+          [1, 1, 2, 3],
+          [1, 2, 3],
+          [2, 3]]),
+    ],
+)
+def test_generate_sequences(counts, smart_one, expected):
+    assert generate_sequences(counts, smart_one=smart_one) == expected
+
+
+# ───────────────────────── score_lister ──────────────────────────
+def test_score_lister_filters_busts():
+    rolls = [[2, 3, 4, 6], [5, 5]]          # first is a bust, second scores 100
+    listed = score_lister(rolls)
+    # Only one surviving entry and its score is 100
+    assert len(listed) == 1
+    *_, raw_score, raw_used, counts, sf, so = listed[0]
+    assert raw_score == 100 and raw_used == 2
+    assert sf == 2 and so == 0
     
 
 def test_compute_raw_score_cleans_up_zero_keys():
@@ -289,30 +285,6 @@ def test_score_roll_wrapper_agrees_with_evaluate():
 )
 def test_apply_discards(raw_score, raw_used, discard5, discard1, dice_len, expected):
     assert apply_discards(raw_score, raw_used, discard5, discard1, dice_len) == expected
-    
-
-@pytest.mark.parametrize(
-    "dice_roll,turn_pre,thr,smart5,smart1,expected",
-    [
-        # 1)  plain scoring, no smarts
-        ([1, 2, 3, 4, 5, 6], 0, 300, False, False, (1500, 6, 0)),
-        # 2)  smart-5 only, two lonely 5s + a 1   -> discard both 5s
-        ([5, 5, 1],          0, 300, True,  False, (100, 1, 2)),
-        # 3)  smart-5 + smart-1, 2 fives & 2 ones  -> discard 2×5, then 1×1
-        ([5, 5, 1, 1],       0, 300, True,  True,  (100, 1, 3)),
-        # 4)  rollback case: lone 5, but turn already ≥ thr so keep it
-        ([5],               300, 300, True, True,  (50, 1, 0)),
-    ],
-)
-def test_default_score(dice_roll, turn_pre, thr, smart5, smart1, expected):
-    assert default_score(
-        dice_roll       = dice_roll,
-        turn_score_pre  = turn_pre,
-        smart_five      = smart5,
-        smart_one       = smart1,
-        score_threshold = thr,
-    ) == expected
-    
 
 
 @given(st.lists(st.integers(min_value=1, max_value=6),
@@ -368,3 +340,38 @@ def test_hot_dice_discard_never_trims_six(roll):
     score, used, reroll = default_score(roll, turn_score_pre=0)
     assert used == 6
     assert reroll == 0
+    
+
+@pytest.mark.parametrize(
+    "dice_roll, turn_pre, threshold, smart5, smart1, expected",
+    [
+        # 1) plain roll, straight 1-6 → 1 500 pts, all six dice used
+        ([1, 2, 3, 4, 5, 6], 0, 300, False, False,
+         (1500, 6, 0)),
+
+        # 2) Smart-5 only: every discard would force a bank → keep all dice
+        ([5, 5, 1, 2],      0, 300, True,  False,
+         (200, 3, 1)),
+
+        # 3) Smart-5 + Smart-1: only roll that avoids banking is
+        #    “discard both 5s and one 1” → leaves 4 dice to roll
+        ([5, 5, 1, 1, 2],   0, 300, True,  True,
+         (100, 1, 4)),
+
+        # 4) Already at threshold, so the lone 5 is kept (no discard)
+        ([5],               300, 300, True, True,
+         (50, 1, 0)),
+    ],
+)
+def test_default_score_cases(
+    dice_roll, turn_pre, threshold, smart5, smart1, expected
+):
+    out = default_score(
+        dice_roll       = dice_roll,
+        turn_score_pre  = turn_pre,
+        smart_five      = smart5,
+        smart_one       = smart1,
+        score_threshold = threshold,
+        dice_threshold  = 3,      # default
+    )
+    assert out == expected

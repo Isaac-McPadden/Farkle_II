@@ -52,7 +52,7 @@ def generate_strategy_grid(
     list of fully-constructed ``ThresholdStrategy`` instances (safe to
     pass to the engine) and the second element is a *metadata* dataframe
     recording each parameter combo.
-    Default grid should be len(grid) = 5100
+    Default grid should be len(grid) = 8160
     """
 
     if score_thresholds is None:
@@ -63,9 +63,9 @@ def generate_strategy_grid(
         smart_five_opts = [True, False] 
     if smart_one_opts is None:
         smart_one_opts = [True, False] 
-    combos: List[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool]] = []
+    combos: List[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, bool]] = []
     # We'll build combos of (st, dt, sm, cs, cd, require_both)
-    for rs in run_up_score_opts:
+    for rs in run_up_score_opts: # 2 options
         for hd in auto_hot_opts: # Hot Dice 2 options
             for st in score_thresholds: # 17 options
                 for dt in dice_thresholds: # 5 options
@@ -75,11 +75,24 @@ def generate_strategy_grid(
                                 continue # You technically could but it makes no strategic sense irl
                             for cs in consider_score_opts: # 2 options
                                 for cd in consider_dice_opts: # 2.5 options (1/4 of cs&cd gets an extra option on rb 4+1 = 5, 5/2 = 2.5)
-                                    if cs and cd:
-                                        combos.append((st, dt, sf, so, True,  True,  True, hd, rs))  # rb = True
-                                        combos.append((st, dt, sf, so, True,  True,  False, hd, rs)) # rb = False
-                                    else:                                                   # default rb = False
-                                        combos.append((st, dt, sf, so, cs,    cd,   False, hd, rs)) # otherwise breaks if cs or cd = False
+                                    # Determine the two valid values of require_both:
+                                    rb_values = [True, False] if cs and cd else [False]
+                                    for rb in rb_values:
+                                        # Now we need to pick prefer_score (ps) according to:
+                                        #   cs  cd   ⟶  valid ps
+                                        #   T   F       True
+                                        #   F   T       False
+                                        #   T   T       both {True, False}
+                                        #   F   F       both {True, False}
+                                        if cs and not cd:
+                                            ps_values = [True]
+                                        elif cd and not cs:
+                                            ps_values = [False]
+                                        else:
+                                            # (cs,cd) is either (T,T) or (F,F)
+                                            ps_values = [True, False]
+                                        for ps in ps_values: # 1.6 options (Increases cs,cd,rb truth table from 5 to 8 with cs,cd,rb,ps 8/5 = 1.6)
+                                            combos.append((st, dt, sf, so, cs, cd, rb, hd, rs, ps))
 
     # Build actual strategy objects and a DataFrame
     strategies = [
@@ -93,13 +106,14 @@ def generate_strategy_grid(
             require_both    = rb,
             auto_hot_dice   = hd,
             run_up_score    = rs,
+            prefer_score    = ps,
         )
-        for st, dt, sf, so, cs, cd, rb, hd, rs in combos
+        for st, dt, sf, so, cs, cd, rb, hd, rs, ps in combos
     ]
 
     meta = pd.DataFrame(
         combos,
-        columns=["score_threshold", "dice_threshold", "smart_five", "smart_one", "consider_score", "consider_dice", "require_both", "auto_hot_dice", "run_up_score"],
+        columns=["score_threshold", "dice_threshold", "smart_five", "smart_one", "consider_score", "consider_dice", "require_both", "auto_hot_dice", "run_up_score", "prefer_score"],
     )
     meta["strategy_idx"] = meta.index
     return strategies, meta
@@ -134,6 +148,8 @@ def experiment_size(
     # Extra row for (True, True) when it's present
     if True in consider_score_opts and True in consider_dice_opts:
         pair_count += 1          # second variant with require_both=True
+    
+    pair_count += 3 # prefer score adds an extra option for each cs,cd TT (2 of them) or FF combination
 
     return base * pair_count
 

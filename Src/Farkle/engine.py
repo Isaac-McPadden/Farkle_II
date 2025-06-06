@@ -87,6 +87,11 @@ class FarklePlayer:
                 smart_five       = self.strategy.smart_five,
                 smart_one        = self.strategy.smart_one,
                 score_threshold  = self.strategy.score_threshold,
+                dice_threshold   = self.strategy.dice_threshold,
+                consider_score   = self.strategy.consider_score,
+                consider_dice    = self.strategy.consider_dice,
+                require_both     = self.strategy.require_both,
+                prefer_score     = self.strategy.prefer_score
             )
 
             # 3) If pts == 0, that's a Farkle: bust, lose all points this turn, and end turn
