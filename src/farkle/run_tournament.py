@@ -20,6 +20,9 @@ from typing import List, Tuple
 import numpy as np
 import pandas as pd
 
+from farkle.simulation import _play_game, generate_strategy_grid
+from farkle.stats import games_for_power
+
 # ---------------------------------------------------------------------------
 # Locate project root and ensure the package is importable
 # ---------------------------------------------------------------------------
@@ -37,8 +40,6 @@ def find_project_root() -> Path:
 PROJECT_ROOT = find_project_root()
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from farkle.simulation import generate_strategy_grid, _play_game
-from farkle.stats import games_for_power
 
 # ---------------------------------------------------------------------------
 # Constants
