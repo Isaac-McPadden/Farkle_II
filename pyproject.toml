@@ -33,7 +33,7 @@ farkle = "farkle.cli:main"
 
 # ── 3. Tell Hatchling where the code lives ───────────
 [tool.hatch.build.targets.wheel]
-packages = ["src/farkle"]
+packages = ["Src/Farkle", "farkle"]
 
 # ── 4. Tool configs (unchanged except for testpaths) ─
 [tool.ruff]
@@ -41,7 +41,7 @@ line-length    = 100
 target-version = "py312"
 extend-select  = ["I", "B", "C4", "SIM", "ARG", "NPY"]
 unsafe-fixes   = true
-src            = ["src"]
+src            = ["Src", "farkle"]
 
 [tool.black]
 line-length    = 100
@@ -54,7 +54,7 @@ xfail_strict = true
 
 [tool.coverage.run]
 branch  = true
-source  = ["src/farkle"]
+source  = ["Src/Farkle", "farkle"]
 
 [tool.coverage.report]
 exclude_lines = [
