@@ -1,3 +1,5 @@
+# Farkle_II
+The fully tested, software packaged, upgraded version of my FarkleProject
 Efficient packaged version of my Farkle Monte Carlo simulation
 
 import farkle as far
