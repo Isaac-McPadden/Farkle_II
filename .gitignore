@@ -193,4 +193,7 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 cspell.config.yaml
+
+
+notebooks/data/
 notebooks/data/shuffles.bin
