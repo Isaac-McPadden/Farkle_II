@@ -175,7 +175,7 @@ class FarkleGame:
         self.target_score: int = target_score
 
     # ---------------------------- gameplay -----------------------------
-    def play(self, max_rounds: int = 100) -> GameMetrics:
+    def play(self, max_rounds: int = 50) -> GameMetrics:
         """Run the game and return a *GameMetrics* summary."""
         final_round = False
         score_to_beat = self.target_score   # updated when someone triggers
@@ -184,7 +184,7 @@ class FarkleGame:
             rounds += 1
             for p in self.players:
                 p.take_turn(
-                    self.target_score,
+                    self.target_score,  # This is that vestigial stat 
                     final_round = final_round,
                     score_to_beat = score_to_beat,
                 )
@@ -192,13 +192,21 @@ class FarkleGame:
                 if not final_round and p.score >= self.target_score:
                     final_round   = True
                     score_to_beat = p.score
-
+                    triggering_player = p
+                    final_players = [player for player in self.players if player != triggering_player]
+                
+                if final_round:
+                    for player in final_players:  # All other players have chance to beat the first tentative winner
+                                                  # It's not fair, but it's the rules
+                        player.take_turn(target_score=score_to_beat,
+                                         final_round=True,
+                                         score_to_beat=score_to_beat)    
                 # During the final round update the bar whenever someone
                 #     jumps ahead (so later players know what they must beat).
-                elif final_round and p.score > score_to_beat:
-                    score_to_beat = p.score
-            if final_round:         # whole table has now had exactly one shot
-                break
+                        if player.score > score_to_beat:
+                            score_to_beat = p.score
+                if final_round:         # whole table has now had exactly one shot
+                    break
             
         winner = max(self.players, key=lambda pl: pl.score)
         per_player: Dict[str, Dict[str, Any]] = {
