@@ -180,7 +180,7 @@ class FarkleGame:
         final_round = False
         score_to_beat = self.target_score   # updated when someone triggers
         rounds = 0
-        while rounds < max_rounds:
+        while rounds < max_rounds and final_round == False:
             rounds += 1
             for p in self.players:
                 p.take_turn(
@@ -198,16 +198,21 @@ class FarkleGame:
                 if final_round:
                     for player in final_players:  # All other players have chance to beat the first tentative winner
                                                   # It's not fair, but it's the rules
-                        player.take_turn(target_score=score_to_beat,
+                        player.take_turn(target_score=self.target_score,
                                          final_round=True,
                                          score_to_beat=score_to_beat)    
                 # During the final round update the bar whenever someone
                 #     jumps ahead (so later players know what they must beat).
                         if player.score > score_to_beat:
                             score_to_beat = p.score
-                if final_round:         # whole table has now had exactly one shot
+                        
+                        # whole table has now had exactly one shot
+                        
+                if final_round:
                     break
-            
+            if final_round:
+                break
+                    
         winner = max(self.players, key=lambda pl: pl.score)
         per_player: Dict[str, Dict[str, Any]] = {
             p.name: {

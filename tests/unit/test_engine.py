@@ -31,7 +31,7 @@ def test_take_turn_success(monkeypatch):
 
 
 def stop_after_one():
-    return ThresholdStrategy(score_threshold=100, dice_threshold=6)
+    return ThresholdStrategy(score_threshold=100, dice_threshold=6, run_up_score=False)
 
 def test_game_play_deterministic():
     # make every roll be six 1-s  ⇒  (3000, 6, 0)
@@ -46,7 +46,7 @@ def test_game_play_deterministic():
     assert gm.winner in {"P1", "P2"}
     # Six 1's count as six-of-a-kind = 3000 points, so first turn already ≥1500
     assert gm.winning_score == 6000
-    # both players still only rolled once
+    # both players still only had one round
     total_rolls = []
     for stats in gm.per_player.values():
         total_rolls.append(stats["rolls"])
