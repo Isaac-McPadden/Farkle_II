@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import multiprocessing as mp
-import random
 from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
@@ -156,25 +155,28 @@ def experiment_size(
 # ---------------------------------------------------------------------------
 # Batch simulation helpers
 # ---------------------------------------------------------------------------
+def _make_players(strategies, seed):
+    master = np.random.default_rng(seed)
+    return [
+      FarklePlayer(
+        name=f"P{i+1}",
+        strategy=s,
+        rng=np.random.default_rng(master.integers(0, 2**32 - 1)),
+      )
+      for i, s in enumerate(strategies)
+    ]
+
 
 def _play_game(seed: int, strategies: Sequence[ThresholdStrategy], target_score: int=10000) -> Dict[str, Any]:
-    master = np.random.default_rng(seed)
     # give every player an *independent* PRNG, but reproducible
-    players = [
-        FarklePlayer(
-            name=f"P{i+1}",
-            strategy=s,
-            rng=np.random.default_rng(master.integers(0, 2**32 - 1)),
-        )
-        for i, s in enumerate(strategies)
-    ]
+    players = _make_players(strategies, seed)
     gm = FarkleGame(players, target_score=target_score).play()
     flat: Dict[str, Any] = {
         "winner": gm.winner,
         "winning_score": gm.winning_score,
         "n_rounds": gm.n_rounds,
     }
-    for pname, stats in gm.per_player.items():
+    for pname, stats in gm.per_player.items():  # player stats
         for k, v in stats.items():
             flat[f"{pname}_{k}"] = v
     return flat
@@ -189,8 +191,8 @@ def simulate_many_games(
     n_jobs: int = 1,
 ) -> pd.DataFrame:
     """Run *n_games* in parallel (if *n_jobs>1*) and return tidy metrics."""
-    master_rng = random.Random(seed)
-    seeds = [master_rng.randint(0, 2**32 - 1) for _ in range(n_games)]
+    master_rng = np.random.default_rng(seed)
+    seeds = master_rng.integers(0, 2**32 - 1, size=n_games).tolist()
     args = [(s, strategies, target_score) for s in seeds]
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]
@@ -207,15 +209,7 @@ def simulate_one_game(
     seed: int | None = None,
 ):
     """Convenience wrapper around the *single* game engine."""
-    master = np.random.default_rng(seed)
-    players = [
-        FarklePlayer(
-            name=f"P{i+1}",
-            strategy=s,
-            rng=np.random.default_rng(master.integers(0, 2**32 - 1)),
-        )
-        for i, s in enumerate(strategies)
-    ]
+    players = _make_players(strategies, seed)
     return FarkleGame(players, target_score=target_score).play()
 
 

@@ -165,6 +165,7 @@ class GameMetrics:
     winning_score: int
     n_rounds: int
     per_player: Dict[str, Dict[str, Any]]
+    winner_data: Dict[str, Any]
 
 
 class FarkleGame:
@@ -180,7 +181,7 @@ class FarkleGame:
         final_round = False
         score_to_beat = self.target_score   # updated when someone triggers
         rounds = 0
-        while rounds < max_rounds and final_round == False:
+        while rounds < max_rounds:
             rounds += 1
             for p in self.players:
                 p.take_turn(
@@ -214,6 +215,15 @@ class FarkleGame:
                 break
                     
         winner = max(self.players, key=lambda pl: pl.score)
+        winner_data: Dict = {
+            winner.name: {
+                "score": p.score,
+                "farkles": p.n_farkles,
+                "rolls": p.n_rolls,
+                "highest_turn": p.highest_turn,
+                "strategy": str(p.strategy),
+            }
+        }    
         per_player: Dict[str, Dict[str, Any]] = {
             p.name: {
                 "score": p.score,
@@ -224,4 +234,5 @@ class FarkleGame:
             }
             for p in self.players
         }
-        return GameMetrics(winner.name, winner.score, rounds, per_player)
+        
+        return GameMetrics(winner.name, winner.score, rounds, per_player, winner_data)
