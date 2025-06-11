@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence
 
+import numba as nb
 import numpy as np
 
 from farkle.scoring import DiceRoll, default_score
@@ -35,11 +36,25 @@ __all__: list[str] = [
 
 
 
+@nb.njit(cache=True, fastmath=True)
+def _throw(n: int, seed: int) -> np.ndarray:
+    # simple, splittable xorshift* for 1-6 inclusive
+    x = seed ^ (seed >> 12)
+    x ^= (x << 25) & 0xFFFFFFFFFFFFFFFF
+    x ^=  x >> 27
+    rng  = (x * 0x2545F4914F6CDD1D) & 0xFFFFFFFFFFFFFFFF
+    out  = np.empty(n, dtype=np.int8)
+    for i in range(n):
+        rng ^= rng >> 12
+        rng ^= (rng << 25) & 0xFFFFFFFFFFFFFFFF
+        rng ^= rng >> 27          # ← same three actions, now one-per-line
+        out[i] = 1 + (rng % 6)
+    return out
 # ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------
 
-@dataclass
+@dataclass(slots=True)
 class FarklePlayer:
     """A single player in a Farkle game."""
 
@@ -52,13 +67,17 @@ class FarklePlayer:
     n_farkles: int = 0
     n_rolls: int = 0
     highest_turn: int = 0
+    strategy_str: str = field(init=False, repr=False)
     
-
+    def __post_init__(self):
+        object.__setattr__(self, "strategy_str", str(self.strategy))
     # ----------------------------- helpers -----------------------------
     def _roll(self, n: int) -> DiceRoll:
         """Return *n* pseudo-random dice using the player's RNG."""
         self.n_rolls += 1
-        return list(self.rng.integers(1, 7, size=n))
+        # ask for **one** uint32 with the classic 3-arg signature
+        # Use the RNG directly so deterministic test generators work.
+        return self.rng.integers(1, 7, size=n).tolist()
 
     # ------------------------------ turn --------------------------------
     def take_turn(
@@ -114,6 +133,7 @@ class FarklePlayer:
             
             # 6-A) If we’re in the final round and have already won, stop.
             running_total = self.score + turn_score
+            score_needed = max(0, target_score - running_total)
             if final_round and running_total > score_to_beat:
                 if self.strategy.run_up_score:         # NEW opt-in flag
                     pass                               # fall through to decide()
@@ -130,7 +150,7 @@ class FarklePlayer:
                 turn_score   = turn_score,
                 dice_left    = dice,
                 has_scored   = self.has_scored,
-                score_needed = max(0, target_score - running_total),
+                score_needed = score_needed,
                 final_round  = final_round,
                 score_to_beat= score_to_beat,
                 running_total= running_total,
@@ -157,7 +177,7 @@ class FarklePlayer:
 # Game-level structures
 # ---------------------------------------------------------------------------
 
-@dataclass
+@dataclass(slots=True)
 class GameMetrics:
     """Aggregate stats returned after a single game."""
 

@@ -1,185 +1,147 @@
-"""Table-driven scoring rules for Farkle Mk II.
-
-This module holds **only** the rule functions and the evaluation
-pipeline.  All higher-level helpers (smart-5 discard logic, player
-turns, etc.) should import :func:`build_score_lookup_table` rather than duplicating
-rule logic.
-"""
-
+# src/farkle/scoring_lookup.py  – Numba- & cache-ready
 from __future__ import annotations
 
-from collections import Counter
+from functools import lru_cache
 from itertools import combinations_with_replacement
-from typing import Callable, Dict, List, Tuple
+from typing import Dict, Tuple
+
+import numba as nb
+import numpy as np
+
+from farkle.types import Counts6, Int64Arr1D
 
 # ---------------------------------------------------------------------------
-# Type aliases
+# 0.  Low-level helpers  (all *nopython*-safe)
 # ---------------------------------------------------------------------------
 
-# A rule takes a Counter of face-counts (1 → n₁, 2 → n₂, …) and returns
-#    (points_awarded, dice_used).
-# If the rule **does not** trigger it must return (None, 0).
-Rule = Callable[[Counter[int]], Tuple[int | None, int]]
+@nb.njit(cache=True)
+def _straight(ctr: Int64Arr1D) -> Tuple[int, int]:
+    """1-6 straight worth 1 500 pts."""
+    return (1500, 6) if np.all(ctr == 1) else (0, 0)
+
+
+@nb.njit(cache=True)
+def _three_pairs(ctr: Int64Arr1D) -> Tuple[int, int]:
+    """Exactly three distinct pairs → 1 500."""
+    pairs = (ctr == 2).sum()
+    return (1500, 6) if pairs == 3 else (0, 0)
+
+
+@nb.njit(cache=True)
+def _two_triplets(ctr: Int64Arr1D) -> Tuple[int, int]:
+    """Two different triples → 2 500."""
+    trips = (ctr == 3).sum()
+    return (2500, 6) if trips == 2 else (0, 0)
+
+
+@nb.njit(cache=True)
+def _four_kind_plus_pair(ctr: Int64Arr1D) -> Tuple[int, int]:
+    """4-of-a-kind + distinct pair → 1 500."""
+    return (1500, 6) if 4 in ctr and 2 in ctr else (0, 0)
+
 
 # ---------------------------------------------------------------------------
-# Individual rule functions (ordered from most-specific to most-generic)
+# 1.  Master evaluator (Numba core + pure-Python wrapper)
 # ---------------------------------------------------------------------------
 
-def straight(counts: Counter[int]) -> Tuple[int | None, int]:
-    """1-6 straight worth 1500, uses all six dice."""
-    return (1500, 6) if len(counts) == 6 else (None, 0)
-
-
-def three_pairs(counts: Counter[int]) -> Tuple[int | None, int]:
-    """Exactly three pairs worth 1500, uses all six dice."""
-    return (1500, 6) if len(counts) == 3 and all(v == 2 for v in counts.values()) else (None, 0)
-
-
-def two_triplets(counts: Counter[int]) -> Tuple[int | None, int]:
-    """Two distinct triples worth 2500, uses all six dice."""
-    return (2500, 6) if len(counts) == 2 and set(counts.values()) == {3} else (None, 0)
-
-
-def four_kind_plus_pair(counts: Counter[int]) -> Tuple[int | None, int]:
-    """4-of-a-kind + separate pair worth 1500, uses all six dice."""
-    return (
-        (1500, 6)
-        if len(counts) == 2 and 4 in counts.values() and 2 in counts.values()
-        else (None, 0)
-    )
-
-
-def n_of_a_kind(counts: Counter[int]) -> Tuple[int | None, int]:
-    """Triplets and larger (same face).
-
-    • Three 1s  →  300
-    • Three Xs  →  X * 100  (X = 2-6)
-    • Four-of-a-kind → 1000
-    • Five-of-a-kind → 2000
-    • Six-of-a-kind  → 3000
-    (These follow the house rules used in the original Farkle notebook.)
+@nb.njit(cache=True)
+def _evaluate_nb(c1: int, c2: int, c3: int,
+                 c4: int, c5: int, c6: int
+) -> tuple[int, int, int, int]:
     """
-    # Find *any* face with ≥3 counts.  If multiple qualify, the first one
-    # triggers; caller is expected to remove the used dice and call again
-    # if they want cumulative scoring.
-    for face, n in counts.items():
-        if n >= 3:
-            # Calculate points based on how many dice are in the set.
-            if n == 3:
-                pts = 300 if face == 1 else face * 100
-            elif n == 4:
-                pts = 1000
-            elif n == 5:
-                pts = 2000
-            else:  # n == 6
-                pts = 3000
-            return pts, n
-    return None, 0
-
-
-def singles(counts: Counter[int]) -> Tuple[int | None, int]:
-    """Score any leftover single 1s and 5s (others are 0)."""
-    n1 = counts.get(1, 0)
-    n5 = counts.get(5, 0)
-    if n1 or n5:
-        return n1 * 100 + n5 * 50, n1 + n5
-    return None, 0
-
-
-# ---------------------------------------------------------------------------
-# Ordered rule chain - evaluated top-to-bottom until the *first* rule fires.
-# Once a special 6-dice pattern is detected we **stop** (per common house
-# rules).  If none match, we fall back to n-of-a-kind and singles.
-# ---------------------------------------------------------------------------
-
-SCORING_CHAIN: List[Rule] = [
-    straight,
-    three_pairs,
-    two_triplets,
-    four_kind_plus_pair,
-]
-
-# The generic rules are handled in a second pass so we can accumulate points
-# from multiple sets (e.g. triple-4 plus single-1).
-
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-def evaluate(counts: Counter[int]) -> tuple[int, int, int, int]:
-    """Return (total_points, total_dice_used) for the given roll counts.
-
-    The caller is expected to make a *copy* of the Counter if they still
-    need the original because this function will mutate it while peeling
-    off scoring combinations.
+    Pure-Numba scorer.  Returns
+        (total_score, total_used, lone_fives, lone_ones)
     """
-    # Pass 1: check special 6-dice patterns in priority order.
-    for rule in SCORING_CHAIN:
-        pts, used = rule(counts)
-        if pts is not None:
-            return pts, used, 0, 0
+    # ---- convert inputs to fixed array -----------------------------------
+    ctr = np.array([c1, c2, c3, c4, c5, c6], dtype=np.int64)
+    score = used = 0
 
-    total_score = total_used = 0
-
-    # Pass 2: peel off n-of-a-kind combinations until none remain.
-    while True:
-        pts, used = n_of_a_kind(counts)
-        if pts is None:
-            break
-        total_score += pts
-        total_used += used
-        # Remove the dice that produced points so singles logic sees leftovers.
-        for face,  count in list(counts.items()):
-            if  count >= 3:
-                del counts[face]
-                break
-
-    # Pass 3: single 1s and 5s.
-    n1  = counts.get(1, 0)
-    n5  = counts.get(5, 0)
-    pts = n1 * 100 + n5 * 50
+    # ---- special 6-dice patterns ----------------------------------------
+    pts, ud = _straight(ctr)
     if pts:
-        total_score += pts
-        total_used  += n1 + n5
+        return pts, ud, 0, 0
+    pts, ud = _three_pairs(ctr)
+    if pts:
+        return pts, ud, 0, 0
+    pts, ud = _two_triplets(ctr)
+    if pts:
+        return pts, ud, 0, 0
+    pts, ud = _four_kind_plus_pair(ctr)
+    if pts:
+        return pts, ud, 0, 0
 
-    return total_score, total_used, n5, n1
+    # ---- n-of-a-kind loop (may fire multiple times) ----------------------
+    while True:
+        triggered = False
+        for face in range(6):
+            n = ctr[face]
+            if n >= 3:
+                triggered = True
+                if n == 3:
+                    pts = 300 if face == 0 else (face + 1) * 100
+                elif n == 4:
+                    pts = 1000
+                elif n == 5:
+                    pts = 2000
+                else:  # n == 6 (straight case already out)
+                    pts = 3000
+                score += pts
+                used  += n
+                ctr[face] = 0            # consume dice
+                break
+        if not triggered:
+            break
+
+    # ---- leftover singles (only 1s and 5s score) -------------------------
+    lone_ones  = ctr[0]
+    lone_fives = ctr[4]
+    score += lone_ones * 100 + lone_fives * 50
+    used  += lone_ones + lone_fives
+    return score, used, lone_fives, lone_ones
 
 
 # ---------------------------------------------------------------------------
-# Convenience helper for raw rolls
+# 2.  Thin Python shims (hashable → JIT core → cached)
 # ---------------------------------------------------------------------------
 
-def score_roll(roll: list[int]) -> tuple[int, int]:
-    score, used, *_ = evaluate(Counter(roll))
-    return score, used
+@lru_cache(maxsize=4096)
+def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
+    """Hash-friendly wrapper around the Numba core."""
+    return _evaluate_nb(*counts)
 
 
+def score_roll(roll: list[int]) -> Tuple[int, int]:
+    """Convenience helper for ad-hoc scoring of a raw dice list."""
+    key = (
+        roll.count(1), roll.count(2), roll.count(3),
+        roll.count(4), roll.count(5), roll.count(6),
+    )
+    pts, used, *_ = evaluate(key)
+    return pts, used
 
 
-def build_score_lookup_table():
+# ---------------------------------------------------------------------------
+# 3.  Pre-compute full lookup table (still ~56 k combos → 923 uniques)
+# ---------------------------------------------------------------------------
+
+def build_score_lookup_table() -> dict[Counts6, tuple[int, int, Counts6, int, int]]:
     """
-    Fast lookup table for any 1-6-die roll.
+    Fast O(1) table for any ≤6-dice roll.
 
-    Key  : tuple(count_1, count_2, count_3, count_4, count_5, count_6)
-    Value: (score, used_dice)  # reroll = n_total - used_dice
-
-    56k possible dice rolls collapse to 923 counters which can only be 
-    scored 143 different ways.  
+    Key  : (c1, c2, c3, c4, c5, c6)
+    Value: (score, used, *original counts tuple*, lone_fives, lone_ones)
     """
-    LOOKUP: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int, Counter[int], int, int]] = {}
+    look: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int, Tuple[int, int, int, int, int, int], int, int]] = {}
     faces = range(1, 7)
 
     for n in range(1, 7):
         for multiset in combinations_with_replacement(faces, n):
-            counts = Counter(multiset)
-            key    = tuple(counts.get(f, 0) for f in faces)
-            assert len(key) == 6, "Counter length not 6 somehow"
-
-            # score, used, single_fives, single_ones - *evaluate* mutates a copy
-            score, used, sfives, sones = evaluate(counts.copy())
-
-            # (the old “fallback to singles” branch is no longer needed—evaluate
-            # already handles that)
-
-            LOOKUP[key] = (score, used, counts, sfives, sones)
-    return LOOKUP
+            key = (
+                multiset.count(1), multiset.count(2), multiset.count(3),
+                multiset.count(4), multiset.count(5), multiset.count(6),
+            )
+            if key in look:          # skip duplicates (e.g. (2,2,2,5,5) permutes)
+                continue
+            score, used, sf, so = evaluate(key)
+            look[key] = (score, used, key, sf, so)
+    return look

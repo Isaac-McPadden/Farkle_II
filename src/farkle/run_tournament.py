@@ -211,3 +211,93 @@ if __name__ == "__main__":
     prod.join()
     coll.join()
     log.info("All workers joined – tournament complete.")
+
+# TODO: Was working on this (below) in a jupyter notebook, eventually needs its own module
+# TODO: goal is to write game shuffles and strategies to disc so run_tournament workers can 
+# TODO: grab their rows, crunch numbers and minimize splitting IO across processes on repeat
+
+from pathlib import Path
+import multiprocessing as mp
+import gzip
+import pickle
+
+import pandas as pd
+import numpy as np
+
+from farkle.shuffle_io import write_shuffle_file, read_shuffles      # your shuffle_io.py
+from farkle.simulation import generate_strategy_grid        # grid helper :contentReference[oaicite:0]{index=0}
+
+
+def prearrange_strategy_shuffles():
+    # -----------------------------------------------------------------------------
+    # 1) PARAMETERS
+    # -----------------------------------------------------------------------------
+    n_strats   = 8_160               # size of the default grid
+    n_shuffles = 10_223              # total number of random permutations you want
+    shard_size = 1_000               # rows per shard
+    out_dir    = Path("data/shards") # where to drop the shards
+    seed       = 42                  # any fixed seed for reproducibility
+
+    # -----------------------------------------------------------------------------
+    # 2) GENERATE MEMMAP SHUFFLE FILE
+    # -----------------------------------------------------------------------------
+    # This will create a raw binary file shaped (n_shuffles, n_strats), uint16.
+    shuffle_file = write_shuffle_file(
+        path       = "data/shuffles.bin",
+        n_strats   = n_strats,
+        n_shuffles = n_shuffles,
+        seed       = seed,
+    )  # produces data/shuffles.bin via streaming into a memmap
+
+
+    # -----------------------------------------------------------------------------
+    # 3) BUILD THE STRATEGY GRID ONCE
+    # -----------------------------------------------------------------------------
+    strategies, meta = generate_strategy_grid()
+    # `strategies` is a List[ThresholdStrategy], length == n_strats :contentReference[oaicite:1]{index=1}
+
+
+    # -----------------------------------------------------------------------------
+    # 4) SHARD WRITER
+    # -----------------------------------------------------------------------------
+    def write_one_shard(shard_idx: int) -> Path:
+        """
+        Read rows [start : start+count] from the memmap, map indices -> strategy
+        objects, and dump a compressed shard pickle.
+        """
+        start = shard_idx * shard_size
+        count = min(shard_size, n_shuffles - start)
+        # zero-copy slice into a small ndarray of shape (count, n_strats)
+        perm_mat = read_shuffles(
+            shuffle_file,
+            start,
+            count   = count,
+            as_array=True
+        )
+        # perm_mat[i, j] is an integer in [0, n_strats)
+        # map each row to the actual ThresholdStrategy instances
+        rows: list[list] = [
+            [strategies[idx] for idx in perm_mat[i]]
+            for i in range(count)
+        ]
+        df = pd.DataFrame(rows)
+        df.columns = meta["strategy_idx"]  # label columns by original strategy index
+        
+        # ensure output directory exists
+        out_dir.mkdir(parents=True, exist_ok=True)
+        shard_path = out_dir / f"shard_{shard_idx:02d}.pkl.gz"
+        # write compressed pickle
+        with gzip.open(shard_path, "wb") as f:
+            pickle.dump(df, f)
+        return shard_path
+
+
+    # -----------------------------------------------------------------------------
+    # 5) DISPATCH IN PARALLEL
+    # -----------------------------------------------------------------------------
+    n_shards = (n_shuffles + shard_size - 1) // shard_size
+
+    with mp.Pool() as pool:
+        paths = pool.map(write_one_shard, range(n_shards))
+
+    print("Wrote shards:", paths)

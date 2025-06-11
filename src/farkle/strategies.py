@@ -5,6 +5,8 @@ import re
 from dataclasses import dataclass
 from typing import List
 
+import numba as nb
+
 """strategies.py
 ================
 Strategy abstractions used by the Farkle simulation engine.  A *strategy*
@@ -35,6 +37,21 @@ DiceRoll = List[int]
 # ---------------------------------------------------------------------------
 # Concrete implementation
 # ---------------------------------------------------------------------------
+@nb.njit(cache=True)
+def _should_continue(turn_score, dice_left,
+                     sc_thr, di_thr,
+                     c_score, c_dice,
+                     req_both) -> bool:
+    want_s = c_score and turn_score < sc_thr
+    want_d = c_dice and dice_left  > di_thr
+    if c_score and c_dice:
+        return (want_s or want_d) if req_both else (want_s and want_d)
+    if c_score:
+        return want_s
+    if c_dice:
+        return want_d
+    return False
+
 
 @dataclass
 class ThresholdStrategy:
@@ -124,26 +141,14 @@ class ThresholdStrategy:
             return running_total <= score_to_beat
 
         # -----------------------------------------------------------------------------  
-        want_score = self.consider_score and turn_score < self.score_threshold
-        want_dice  = self.consider_dice and dice_left  > self.dice_threshold
+        keep_rolling = _should_continue(
+            turn_score, dice_left,
+            self.score_threshold, self.dice_threshold,
+            self.consider_score, self.consider_dice,
+            self.require_both,
+        )
 
-        # both score & dice active ----------------------------------------------------
-        if self.consider_score and self.consider_dice:
-            if self.require_both:
-                # stop only when **both** limits are satisfied
-                return want_score or want_dice
-            else:
-                # stop as soon as **either** limit is satisfied
-                return want_score and want_dice
-
-        # single-axis strategies ------------------------------------------------------
-        if self.consider_score:
-            return want_score
-        if self.consider_dice:
-            return want_dice
-
-        # nothing left to consider → always bank
-        return False
+        return keep_rolling
 
     # ------------------------------------------------------------------
     # Representation helpers
