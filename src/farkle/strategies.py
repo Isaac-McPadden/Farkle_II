@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import pickle
 import random
 import re
 from dataclasses import dataclass
-from typing import List
+from pathlib import Path
+from typing import Callable, List
 
 import numba as nb
+import pandas as pd
 
 """strategies.py
 ================
@@ -306,3 +309,170 @@ def parse_strategy(s: str) -> ThresholdStrategy:
         run_up_score=rs_flag,
         prefer_score=ps_flag,
     )
+
+
+def parse_strategy_for_df(s: str) -> dict:
+    """
+    Reverse of ThresholdStrategy.__str__.
+
+    Accepts strings of the form:
+      Strat(300,2)[SD][FO][AND][H-]
+    or (for example):
+      Strat(500,1)[S-][-O][OR][-R]
+
+    Returns a dictionary with all booleans parsed.
+
+    NOTE: this is meant for analysis/log-parsing, not the hot path.
+    """
+    # 1) Top-level pattern:  Strat(score_threshold, dice_threshold)
+    # 2) Four bracketed blocks:
+    #    [<consider_score><consider_dice>]
+    #    [<smart_five><smart_one>]
+    #    [AND|OR]
+    #    [<auto_hot><run_up>]
+    #
+    #   where:
+    #     consider_score = "S" or "-"
+    #     consider_dice  = "D" or "-"
+    #     smart_five     = "F" or "-"
+    #     smart_one      = "O" or "-"
+    #     auto_hot       = "H" or "-"
+    #     run_up_score   = "R" or "-"
+    #     require_both   = "AND" or "OR"
+    #     prefer_score   = "P" or "-"
+    #
+    # Example literal: "Strat(300,2)[SD][F-O][AND][H-]"
+
+    pattern = re.compile(
+        r"""
+        \A
+        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)   # thresholds
+        \[
+            (?P<cs>[S\-])(?P<cd>[D\-])
+        \]
+        \[
+            (?P<sf>[F\-])  # smart_five block
+            (?P<so>[O\-])  # smart_one block
+            (?P<ps>PS|PD)
+        \]
+        \[
+            (?P<rb>AND|OR)
+        \]
+        \[
+            (?P<hd>[H\-])(?P<rs>[R\-])
+        \]
+        \Z
+        """,
+        re.VERBOSE,
+    )
+
+    m = pattern.match(s)
+    if not m:
+        raise ValueError(f"Cannot parse strategy string: {s!r}")
+
+    score_threshold = int(m.group("score"))
+    dice_threshold  = int(m.group("dice"))
+
+    cs_flag = m.group("cs") == "S"
+    cd_flag = m.group("cd") == "D"
+
+    sf_token = m.group("sf")  # "F", "-F", or "--"
+    sf_flag = bool(sf_token.startswith("F"))
+
+    so_token = m.group("so")  # "O", "-O", or "--"
+    so_flag = bool(so_token.startswith("O"))
+    
+    ps_flag = m.group("ps") == "PS"
+
+    rb_token = m.group("rb")  # "AND" or "OR"
+    require_both = rb_token == "AND"
+
+    hd_flag = m.group("hd") == "H"
+    rs_flag = m.group("rs") == "R"
+
+    strat_dict = {
+        "score_threshold" : score_threshold,
+        "dice_threshold" : dice_threshold,
+        "smart_five" : sf_flag,
+        "smart_one" : so_flag,
+        "consider_score" : cs_flag,
+        "consider_dice" : cd_flag,
+        "require_both": require_both,
+        "auto_hot_dice" : hd_flag,
+        "run_up_score" : rs_flag,
+        "prefer_score" : ps_flag,
+    }
+    return strat_dict
+
+
+def load_farkle_results(
+    pkl_path: str | Path,
+    *,
+    parse_strategy: Callable[[str], dict] = parse_strategy_for_df,
+    ordered: bool = True,
+) -> pd.DataFrame:
+    """
+    Load a pickled Counter {strategy_str: wins} and explode it into a
+    “full-fat” DataFrame with every strategy flag broken out.
+
+    Parameters
+    ----------
+    pkl_path : str | Path
+        Path to the pickle file produced by `run_tournament_2.py`.
+        The pickle must contain a `collections.Counter` or plain dict
+        whose keys are strategy strings and whose values are win counts.
+    parse_strategy : callable, default ``parse_strategy_for_df``
+        Function that converts one strategy string to a dict of columns.
+        Override only if you have a different parser.
+    ordered : bool, default True
+        Whether to return the columns in a logical, pre-defined order.
+
+    Returns
+    -------
+    pd.DataFrame
+        Columns:
+          strategy, wins,
+          score_threshold, dice_threshold,
+          consider_score, consider_dice, require_both, prefer_score,
+          smart_five, smart_one, auto_hot_dice, run_up_score
+    """
+    # ------------------------------------------------------------------
+    # 1) Load the Counter
+    # ------------------------------------------------------------------
+    pkl_path = Path(pkl_path).expanduser().resolve()
+    counter = pickle.loads(pkl_path.read_bytes())
+
+    # ------------------------------------------------------------------
+    # 2) Counter → two-column DataFrame
+    # ------------------------------------------------------------------
+    base_df = (
+        pd.Series(counter, name="wins")
+          .reset_index(drop=False)
+          .rename(columns={"index": "strategy"})
+    )
+
+    # ------------------------------------------------------------------
+    # 3) Explode strategy strings into individual columns
+    # ------------------------------------------------------------------
+    flags_df = (
+        base_df["strategy"]
+          .apply(parse_strategy)   # str → dict
+          .apply(pd.Series)        # dict → DataFrame
+    )
+
+    full_df = pd.concat([base_df, flags_df], axis=1)
+
+    # ------------------------------------------------------------------
+    # 4) Nice-to-have column ordering
+    # ------------------------------------------------------------------
+    if ordered:
+        col_order = [
+            "strategy", "wins",
+            "score_threshold", "dice_threshold",
+            "consider_score", "consider_dice", "require_both",
+            "smart_five", "smart_one", "prefer_score",
+            "auto_hot_dice", "run_up_score",
+        ]
+        full_df = full_df[col_order].sort_values(by="wins", ascending=False, ignore_index=True)
+
+    return full_df

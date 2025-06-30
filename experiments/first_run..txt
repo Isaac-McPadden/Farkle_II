@@ -1,0 +1,989 @@
+{'Strat(900,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 4167, 'Strat(300,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][-R
+    ]': 4135, 'Strat(300,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][H-
+    ]': 4134, 'Strat(250,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][HR
+    ]': 4108, 'Strat(850,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 4107, 'Strat(800,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 4082, 'Strat(250,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][-R
+    ]': 4077, 'Strat(800,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 4070, 'Strat(700,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 4069, 'Strat(300,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][--
+    ]': 4066, 'Strat(1000,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 4050, 'Strat(650,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 4043, 'Strat(1000,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 4041, 'Strat(300,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][HR
+    ]': 4041, 'Strat(250,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][H-
+    ]': 4039, 'Strat(350,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][-R
+    ]': 4038, 'Strat(250,
+    2)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 4033, 'Strat(250,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][--
+    ]': 4033, 'Strat(750,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 4026, 'Strat(300,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 4020, 'Strat(900,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 4018, 'Strat(550,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 4016, 'Strat(300,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 4014, 'Strat(250,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 4004, 'Strat(500,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 4002, 'Strat(350,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3999, 'Strat(950,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3999, 'Strat(700,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3994, 'Strat(950,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3994, 'Strat(300,
+    2)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3992, 'Strat(450,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3991, 'Strat(450,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3988, 'Strat(750,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3986, 'Strat(400,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3986, 'Strat(200,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3985, 'Strat(350,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][HR
+    ]': 3976, 'Strat(300,
+    1)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3975, 'Strat(350,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][H-
+    ]': 3972, 'Strat(500,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3969, 'Strat(350,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][--
+    ]': 3968, 'Strat(550,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3967, 'Strat(500,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3965, 'Strat(600,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3964, 'Strat(650,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3964, 'Strat(300,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][HR
+    ]': 3963, 'Strat(250,
+    2)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3963, 'Strat(450,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3962, 'Strat(400,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3962, 'Strat(500,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3961, 'Strat(350,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][--
+    ]': 3956, 'Strat(700,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][--
+    ]': 3956, 'Strat(650,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3955, 'Strat(300,
+    0)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3955, 'Strat(250,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][--
+    ]': 3953, 'Strat(600,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3953, 'Strat(300,
+    3)[SD
+    ][F-PD
+    ][AND
+    ][H-
+    ]': 3950, 'Strat(300,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3949, 'Strat(350,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][-R
+    ]': 3948, 'Strat(400,
+    2)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3948, 'Strat(1000,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3946, 'Strat(300,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3943, 'Strat(600,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3943, 'Strat(300,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][-R
+    ]': 3941, 'Strat(250,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][HR
+    ]': 3938, 'Strat(250,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][-R
+    ]': 3938, 'Strat(850,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3937, 'Strat(350,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][HR
+    ]': 3936, 'Strat(300,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3934, 'Strat(950,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][--
+    ]': 3934, 'Strat(250,
+    0)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3931, 'Strat(750,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3930, 'Strat(850,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][--
+    ]': 3929, 'Strat(600,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3929, 'Strat(300,
+    2)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3928, 'Strat(750,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][--
+    ]': 3926, 'Strat(300,
+    0)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3925, 'Strat(250,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3925, 'Strat(600,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][--
+    ]': 3925, 'Strat(750,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3925, 'Strat(250,
+    1)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3922, 'Strat(300,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][--
+    ]': 3921, 'Strat(550,
+    2)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3921, 'Strat(350,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3921, 'Strat(400,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3920, 'Strat(500,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3917, 'Strat(250,
+    3)[SD
+    ][FOPD
+    ][AND
+    ][--
+    ]': 3916, 'Strat(250,
+    0)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3916, 'Strat(700,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3912, 'Strat(550,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3912, 'Strat(800,
+    3)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3909, 'Strat(250,
+    4)[SD
+    ][FOPS
+    ][AND
+    ][H-
+    ]': 3908, 'Strat(500,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3908, 'Strat(250,
+    1)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3907, 'Strat(250,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][H-
+    ]': 3907, 'Strat(400,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3907, 'Strat(400,
+    2)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3907, 'Strat(250,
+    1)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3906, 'Strat(1000,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3905, 'Strat(850,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3903, 'Strat(300,
+    1)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3902, 'Strat(300,
+    3)[SD
+    ][FOPD
+    ][AND
+    ][H-
+    ]': 3902, 'Strat(300,
+    4)[SD
+    ][F-PD
+    ][AND
+    ][H-
+    ]': 3902, 'Strat(650,
+    3)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3901, 'Strat(300,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3900, 'Strat(200,
+    3)[SD
+    ][FOPD
+    ][AND
+    ][HR
+    ]': 3899, 'Strat(300,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3897, 'Strat(250,
+    3)[SD
+    ][FOPD
+    ][AND
+    ][H-
+    ]': 3897, 'Strat(600,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3897, 'Strat(800,
+    3)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3897, 'Strat(650,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3896, 'Strat(700,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3895, 'Strat(800,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][--
+    ]': 3894, 'Strat(850,
+    3)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3894, 'Strat(550,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3893, 'Strat(700,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3892, 'Strat(900,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3892, 'Strat(550,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3892, 'Strat(350,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3891, 'Strat(300,
+    4)[SD
+    ][FOPS
+    ][AND
+    ][H-
+    ]': 3891, 'Strat(950,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3890, 'Strat(1000,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3890, 'Strat(350,
+    4)[SD
+    ][FOPD
+    ][AND
+    ][H-
+    ]': 3889, 'Strat(850,
+    3)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3888, 'Strat(350,
+    2)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3888, 'Strat(500,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][--
+    ]': 3887, 'Strat(700,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3886, 'Strat(200,
+    3)[SD
+    ][FOPD
+    ][AND
+    ][H-
+    ]': 3886, 'Strat(250,
+    1)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3886, 'Strat(1000,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][--
+    ]': 3886, 'Strat(600,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3886, 'Strat(800,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3886, 'Strat(900,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3886, 'Strat(450,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3885, 'Strat(350,
+    3)[-D
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3884, 'Strat(550,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3884, 'Strat(350,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3883, 'Strat(300,
+    3)[SD
+    ][FOPD
+    ][AND
+    ][-R
+    ]': 3882, 'Strat(250,
+    3)[SD
+    ][FOPD
+    ][AND
+    ][-R
+    ]': 3882, 'Strat(200,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3882, 'Strat(350,
+    3)[SD
+    ][FOPD
+    ][OR
+    ][H-
+    ]': 3881, 'Strat(900,
+    3)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3881, 'Strat(600,
+    3)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3880, 'Strat(800,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][HR
+    ]': 3879, 'Strat(400,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][-R
+    ]': 3878, 'Strat(350,
+    2)[SD
+    ][FOPD
+    ][OR
+    ][HR
+    ]': 3878, 'Strat(300,
+    3)[SD
+    ][FOPD
+    ][AND
+    ][HR
+    ]': 3877, 'Strat(250,
+    2)[SD
+    ][F-PD
+    ][OR
+    ][H-
+    ]': 3877, 'Strat(650,
+    3)[-D
+    ][FOPD
+    ][OR
+    ][--
+    ]': 387SD
+][FOPD
+][AND
+][-R
+]': 3849, 'Strat(900,
+3)[-D
+][FOPD
+][OR
+][HR
+]': 3849, 'Strat(450,
+2)[SD
+][F-PD
+][OR
+][HR
+]': 3848, 'Strat(450,
+3)[SD
+][F-PD
+][OR
+][HR
+]': 3848, 'Strat(700,
+3)[-D
+][F-PD
+][OR
+][--
+]': 3846, 'Strat(250,
+2)[SD
+][F-PD
+][OR
+][HR
+]': 3845, 'Strat(650,
+3)[-D
+][FOPD
+][OR
+][H-
+]': 3845, 'Strat(600,
+3)[SD
+][F-PD
+][OR
+][HR
+]': 3844, 'Strat(500,
+3)[SD
+][F-PD
+][OR
+][HR
+]': 3844, 'Strat(950,
+3)[SD
+][F-PD
+][OR
+][H-
+]': 3844, 'Strat(300,
+4)[SD
+][F-PS
+][AND
+][H-
+]': 3844, 'Strat(300,
+0)[SD
+][FOPD
+][OR
+][HR
+]': 3844, 'Strat(1000,
+3)[-D
+][F-PD
+][OR
+][--
+]': 3843, 'Strat(200,
+3)[-D
+][F-PD
+][OR
+][HR
+]': 3843, 'Strat(450,
+3)[-D
+][FOPD
+][OR
+][H-
+]': 3839, 'Strat(200,
+4)[SD
+][FOPD
+][AND
+][--
+]': 3838, 'Strat(500,
+3)[SD
+][F-PD
+][OR
+][H-
+]': 3837, 'Strat(600,
+2)[SD
+][FOPD
+][OR
+][H-
+]': 3837, 'Strat(950,
+2)[SD
+][F-PD
+][OR
+][H-
+]': 3836, 'Strat(1000,
+2)[SD
+][F-PD
+][OR
+][H-
+]': 3835, 'Strat(750,
+3)[SD
+][F-PD
+][OR
+][H-
+]': 3834, 'Strat(850,
+3)[-D
+][FOPD
+][OR
+][-R
+]': 3834, 'Strat(750,
+2)[SD
+][FOPD
+][OR
+][HR
+]': 3834, 'Strat(250,
+3)[SD
+][F-PD
+][AND
+][HR
+]': 3832, 'Strat(900,
+3)[-D
+][F-PD
+][OR
+][--
+]': 3832, 'Strat(800,
+2)[SD
+][F-PD
+][OR
+][H-
+]': 3831, 'Strat(700,
+2)[SD
+][F-PD
+][OR
+][HR
+]': 3828, 'Strat(550,
+3)[-D
+][F-PD
+][OR
+][H-
+]': 3825, 'Strat(350,
+0)[SD
+][FOPD
+][OR
+][H-
+]': 3825, 'Strat(300,
+3)[SD
+][F-PD
+][OR
+][H-
+]': 3824, 'Strat(350,
+3)[SD
+][F-PD
+][AND
+][-R
+]': 3823, 'Strat(650,
+3)[SD
+][F-PD
+][OR
+][HR
+]': 3823, 'Strat(350,
+1)[SD
+][F-PD
+][OR
+][H-
+]': 3823, 'Strat(400,
+3)[-D
+][F-PD
+][OR
+][H-
+]': 3823, 'Strat(300,
+2)[SD
+][FOPS
+][OR
+][H-
+]': 3822, 'Strat(300,
+3)[SD
+][F-PD
+][AND
+][HR
+]': 3821, 'Strat(200,
+3)[-D
+][FOPD
+][OR
+][--
+]': 3821, 'Strat(350,
+3)[SD
+][FOPD
+][AND
+][-R
+]': 3819, 'Strat(200,
+3)[SD
+][F-PD
+][AND
+][H-
+]': 3818, 'Strat(400,
+3)[-D
+][FOPD
+][OR
+][--
+]': 3818, 'Strat(800,
+3)[-D
+][FOPD
+][OR
+][H-
+]': 3818, 'Strat(400,
+4)[SD
+][FOPD
+][AND
+][--
+]': 3817, 'Strat(450,
+3)[-D
+][FOPD
+][OR
+][HR
+]': 3817, 'Strat(350,
+3)[SD
+][F-PD
+][OR
+][HR
+]': 3816, 'Strat(300,
+4)[SD
+][F-PS
+][AND
+][-R
+]': 3815, 'Strat(650,
+3)[-D
+][F-PD
+][OR
+][--
+]': 3815, 'Strat(950,
+3)[-D
+][FOPD
+][OR
+][HR
+]': 3813, 'Strat(950,
+3)[-D
+][F-PD
+][OR
+][H-
+]': 3813, 'Strat(200,
+4)[SD
+][FOPD
+][AND
+][H-
+]': 3812, 'Strat(650,
+2)[SD
+][F-PD
+]
+}
