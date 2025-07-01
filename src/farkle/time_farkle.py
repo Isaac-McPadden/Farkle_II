@@ -33,7 +33,7 @@ def make_random_strategies(num_players: int, seed: int | None) -> list:
     return [random_threshold_strategy(rng) for _ in range(num_players)]
 
 
-def measure_sim_times():
+def measure_sim_times(argv: list[str] | None = None):
     p = argparse.ArgumentParser(
         description="Time one Farkle game and a batch of N games."
     )
@@ -53,7 +53,7 @@ def measure_sim_times():
         "-j", "--jobs", type=int, default=1,
         help="Number of parallel processes"
     )
-    args = p.parse_args()
+    args = p.parse_args(argv)
 
     # 1) Build a fixed roster of random strategies
     strategies = make_random_strategies(args.players, args.seed)
