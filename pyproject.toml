@@ -50,13 +50,14 @@ line-length    = 100
 target-version = ["py312"]
 
 [tool.pytest.ini_options]
-addopts   = "-q --cov=farkle --cov-report=term-missing"
+addopts   = "-q --cov=farkle --cov-report=term-missing --ignore=watch_game.py"
 testpaths = ["tests"]                 # ← match actual folder name
 xfail_strict = true
 
 [tool.coverage.run]
 branch  = true
 source  = ["src/farkle"]
+omit = ["*/watch_game.py"]
 
 [tool.coverage.report]
 exclude_lines = [
