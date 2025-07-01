@@ -1,303 +1,142 @@
-#!/usr/bin/env python3
-"""Parallel tournament runner for Farkle strategies.
-
-This script generates the default strategy grid and plays a powered number of
-round‐robin games using multiprocessing. Progress is periodically written to a
-checkpoint file so long runs can be resumed.
-"""
+# src/farkle/run_tournament_2.py
 from __future__ import annotations
 
 import logging
 import multiprocessing as mp
 import pickle
-import sys
-import threading
 import time
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Sequence
 
 import numpy as np
-import pandas as pd
 
 from farkle.simulation import _play_game, generate_strategy_grid
-from farkle.stats import games_for_power
+from farkle.strategies import ThresholdStrategy
 
-# ---------------------------------------------------------------------------
-# Locate project root and ensure the package is importable
-# ---------------------------------------------------------------------------
+# ── Constants ───────────────────────────────────────────────────────────────
+N_PLAYERS            = 5
+NUM_SHUFFLES         = 10_223                   # games-per-strategy
+GAMES_PER_SHUFFLE    = 8_160 // N_PLAYERS       # 1 632
+DESIRED_SEC_PER_CHUNK = 10
 
-def find_project_root() -> Path:
-    try:
-        start = Path(__file__).resolve()
-    except NameError:  # interactive session
-        start = Path.cwd()
-    for p in (start, *start.parents):
-        if (p / "Src" / "Farkle").is_dir():
-            return p
-    return Path.cwd()
+# ── Globals shared by worker processes ──────────────────────────────────────
+_STRATS: List[ThresholdStrategy] = []           # filled by _init_worker
 
-PROJECT_ROOT = find_project_root()
-sys.path.insert(0, str(PROJECT_ROOT))
-
-
-# ---------------------------------------------------------------------------
-# Constants
-# ---------------------------------------------------------------------------
-CHUNKSIZE = 200
-FLUSH_EVERY = 1000
-PROCESSES = 16
-QUEUE_MAXSIZE = 50_000
-REPORT_EVERY = 1000
-CHECKPOINT_DIR = PROJECT_ROOT / "data" / "checkpoints"
-CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
-CHECKPOINT_FILE = CHECKPOINT_DIR / "win_counter.chk"
-
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
-class FirstNFilter(logging.Filter):
-    """Limit DEBUG spam to the first *n* occurrences per callsite."""
-
-    def __init__(self, n: int = 10_000) -> None:
-        super().__init__()
-        self.n = n
-        self.seen: Counter[Tuple[str, int]] = Counter()
-
-    def filter(self, record: logging.LogRecord) -> bool:  # noqa: D401 - bool
-        key = (record.pathname, record.lineno)
-        self.seen[key] += 1
-        return self.seen[key] <= self.n
-
-root = logging.getLogger()
-root.setLevel(logging.DEBUG)
-handler = logging.StreamHandler(sys.stdout)
-handler.setFormatter(
-    logging.Formatter(
-        "%(asctime)s %(levelname)-5s | %(processName)s | %(message)s",
-        datefmt="%H:%M:%S",
-    )
-)
-handler.addFilter(FirstNFilter())
-root.handlers[:] = [handler]
-log = logging.getLogger("tournament")
-log.setLevel(logging.INFO)
-
-# ---------------------------------------------------------------------------
-# Workers
-# ---------------------------------------------------------------------------
-
-def producer(task_q: mp.Queue, n_games_per_player: int, num_strats: int) -> None:
-    """Enqueue (seed, idx tuple) tasks for all tables."""
-    perm_rng = np.random.default_rng(999)
-    seed_rng = np.random.default_rng(1234)
-    for _ in range(n_games_per_player):
-        perm = perm_rng.permutation(num_strats)
-        for j in range(0, num_strats, 5):
-            if j + 5 > num_strats:
-                break
-            seed = int(seed_rng.integers(2**32))
-            task_q.put((seed, tuple(int(x) for x in perm[j:j + 5])))
-    for _ in range(PROCESSES):
-        task_q.put(None)
+# ----------------------------------------------------------------------------
+# 0.  Worker initialiser – runs once per fork
+# ----------------------------------------------------------------------------
+def _init_worker(strategies: Sequence[ThresholdStrategy]) -> None:
+    """Store the strategies in a module-level variable (zero copy per task)."""
+    global _STRATS
+    _STRATS = list(strategies)                  # plain list → fast index lookup
 
 
-def worker(strat_list: List, task_q: mp.Queue, result_q: mp.Queue) -> None:
-    strategies = strat_list
-    local_counter: Counter[str] = Counter()
-    processed = 0
-    while True:
-        batch: List[Tuple[int, Tuple[int, ...]]] = []
-        sentinel = False
-        for _ in range(CHUNKSIZE):
-            task = task_q.get()
-            if task is None:
-                sentinel = True
-                break
-            batch.append(task)
-        if not batch and sentinel:
-            break
-        for seed, idxs in batch:
-            row = _play_game(seed, [strategies[i] for i in idxs], 10_000)
-            winner_key = str(row[f"{row['winner']}_strategy"])
-            local_counter[winner_key] += 1
-            processed += 1
-            if processed % FLUSH_EVERY == 0:
-                result_q.put(local_counter)
-                local_counter = Counter()
-        if sentinel:
-            break
-    if local_counter:
-        result_q.put(local_counter)
-    result_q.put(None)
+# ----------------------------------------------------------------------------
+# 1.  Fast helpers that use the global strategy list
+# ----------------------------------------------------------------------------
+def _play_table(seed: int, idxs: Sequence[int]) -> str:
+    """Play one game given *indices* into _STRATS, return the winner’s repr."""
+    table = [_STRATS[i] for i in idxs]
+    res   = _play_game(seed, table)
+    return res[f"{res['winner']}_strategy"]
 
 
-def collector(result_q: mp.Queue, num_strats: int, strategies: List) -> None:
-    win_counter: Counter[str] = Counter()
-    done_batches = 0
-    active_workers = PROCESSES
-    start = time.perf_counter()
-    while active_workers:
-        msg = result_q.get()
-        if msg is None:
-            active_workers -= 1
-            continue
-        win_counter.update(msg)
-        done_batches += 1
-        if done_batches % REPORT_EVERY == 0:
-            hrs = (time.perf_counter() - start) / 3600
-            log.info("[batch %d] %.2f h elapsed", done_batches, hrs)
-            with CHECKPOINT_FILE.open("wb") as f:
-                pickle.dump({"done": done_batches, "counter": dict(win_counter)}, f)
-    # final write
-    with CHECKPOINT_FILE.open("wb") as f:
-        pickle.dump({"done": done_batches, "counter": dict(win_counter)}, f)
-    df = pd.DataFrame({
-        "strategy_idx": range(num_strats),
-        "str_repr": [str(s) for s in strategies],
-    })
-    df["wincount"] = df["str_repr"].map(win_counter).fillna(0).astype(int)
-    df.to_csv("wincounts.csv", index=False)
-    log.info("collector CSV written")
+def _play_shuffle(seed: int) -> Counter[str]:
+    """Play all 1 632 games that make up one shuffle."""
+    rng    = np.random.default_rng(seed)
+    perm   = rng.permutation(len(_STRATS))      # ndarray[int64]
+    seeds  = rng.integers(0, 2**32 - 1, size=GAMES_PER_SHUFFLE)
+
+    wins: Counter[str] = Counter()
+    offset = 0
+    for s in seeds.tolist():                    # cast → list[int]  (Ruff happy)
+        idxs = perm[offset : offset + N_PLAYERS].tolist()
+        wins[_play_table(int(s), idxs)] += 1
+        offset += N_PLAYERS
+    return wins
 
 
-# ---------------------------------------------------------------------------
-# Main entry
-# ---------------------------------------------------------------------------
-if __name__ == "__main__":
-    strategies, _ = generate_strategy_grid()
-    num_strats = len(strategies)
-    n_games_per_player = games_for_power(
-        n_strategies=num_strats,
-        delta=0.03,
-        alpha=0.025,
-        power=0.90,
-        method="bh",
-        pairwise=True,
-    )
-    total_tasks = num_strats * n_games_per_player // 5
-    log.info(
-        "Grid: %d strategies, %d games/strat → %d tasks.",
-        num_strats,
-        n_games_per_player,
-        total_tasks,
-    )
+# ----------------------------------------------------------------------------
+# 2.  Chunk wrappers
+# ----------------------------------------------------------------------------
+def _run_chunk(shuffle_seed_slice: Sequence[int]) -> Counter[str]:
+    """Aggregate results from several shuffles (one process-pool task)."""
+    ctr: Counter[str] = Counter()
+    for sd in shuffle_seed_slice:
+        ctr.update(_play_shuffle(int(sd)))
+    return ctr
 
-    ctx = mp.get_context("spawn")
-    task_q = ctx.Queue(maxsize=QUEUE_MAXSIZE)
-    result_q = ctx.Queue(maxsize=QUEUE_MAXSIZE)
 
-    prod = threading.Thread(
-        target=producer,
-        args=(task_q, n_games_per_player, num_strats),
-        daemon=False,
-    )
-    coll = threading.Thread(
-        target=collector,
-        args=(result_q, num_strats, strategies),
-        daemon=False,
-    )
-    prod.start()
-    coll.start()
+# ----------------------------------------------------------------------------
+# 3.  Utility: empirical games-per-second
+# ----------------------------------------------------------------------------
+def _measure_throughput(strategies: Sequence[ThresholdStrategy],
+                        test_games: int = 2_000,
+                        seed: int = 0) -> float:
+    rng   = np.random.default_rng(seed)
+    seeds = rng.integers(0, 2**32 - 1, size=test_games)
+    t0    = time.perf_counter()
+    for s in seeds.tolist():
+        _play_game(int(s), strategies[:N_PLAYERS])
+    return test_games / (time.perf_counter() - t0)
 
-    processes = [
-        ctx.Process(target=worker, args=(strategies, task_q, result_q))
-        for _ in range(PROCESSES)
+
+# ----------------------------------------------------------------------------
+# 4.  Main driver
+# ----------------------------------------------------------------------------
+def run_tournament(global_seed: int = 0,
+                   checkpoint_path: str | Path = "checkpoint.pkl",
+                   n_jobs: int | None = None) -> None:
+
+    strategies, _ = generate_strategy_grid()          # 8 160 objects
+    gps  = _measure_throughput(strategies[:N_PLAYERS])
+    shuffles_per_chunk = max(1,
+        int(DESIRED_SEC_PER_CHUNK * gps // GAMES_PER_SHUFFLE))
+
+    master         = np.random.default_rng(global_seed)
+    shuffle_seeds  = master.integers(0, 2**32 - 1, size=NUM_SHUFFLES).tolist()
+
+    # split into roughly equal-sized chunks
+    chunks = [
+        shuffle_seeds[i : i + shuffles_per_chunk]
+        for i in range(0, NUM_SHUFFLES, shuffles_per_chunk)
     ]
-    for p in processes:
-        p.start()
-    for p in processes:
-        p.join()
-    prod.join()
-    coll.join()
-    log.info("All workers joined – tournament complete.")
 
-# TODO: Was working on this (below) in a jupyter notebook, eventually needs its own module
-# TODO: goal is to write game shuffles and strategies to disc so run_tournament workers can 
-# TODO: grab their rows, crunch numbers and minimize splitting IO across processes on repeat
+    logging.basicConfig(level=logging.INFO,
+                        format="%(asctime)s  %(message)s",
+                        datefmt="%H:%M:%S")
+    win_counter: Counter[str] = Counter()
 
-from pathlib import Path
-import multiprocessing as mp
-import gzip
-import pickle
+    with ProcessPoolExecutor(max_workers=n_jobs,
+                             initializer=_init_worker,
+                             initargs=(strategies,)) as pool:
 
-import pandas as pd
-import numpy as np
+        futures = {pool.submit(_run_chunk, c): idx
+                   for idx, c in enumerate(chunks)}
+        for done, fut in enumerate(as_completed(futures), 1):
+            win_counter.update(fut.result())
+            logging.info("after %5d/%d chunks: %d games played",
+                         done, len(chunks), sum(win_counter.values()))
 
-from farkle.shuffle_io import write_shuffle_file, read_shuffles      # your shuffle_io.py
-from farkle.simulation import generate_strategy_grid        # grid helper :contentReference[oaicite:0]{index=0}
+            if done % 10 == 0:
+                Path(checkpoint_path).write_bytes(pickle.dumps(win_counter))
+                logging.info("checkpoint saved → %s", checkpoint_path)
 
-
-def prearrange_strategy_shuffles():
-    # -----------------------------------------------------------------------------
-    # 1) PARAMETERS
-    # -----------------------------------------------------------------------------
-    n_strats   = 8_160               # size of the default grid
-    n_shuffles = 10_223              # total number of random permutations you want
-    shard_size = 1_000               # rows per shard
-    out_dir    = Path("data/shards") # where to drop the shards
-    seed       = 42                  # any fixed seed for reproducibility
-
-    # -----------------------------------------------------------------------------
-    # 2) GENERATE MEMMAP SHUFFLE FILE
-    # -----------------------------------------------------------------------------
-    # This will create a raw binary file shaped (n_shuffles, n_strats), uint16.
-    shuffle_file = write_shuffle_file(
-        path       = "data/shuffles.bin",
-        n_strats   = n_strats,
-        n_shuffles = n_shuffles,
-        seed       = seed,
-    )  # produces data/shuffles.bin via streaming into a memmap
+    Path(checkpoint_path).write_bytes(pickle.dumps(win_counter))
+    logging.info("All done! Final win counts:\n%s", win_counter)
 
 
-    # -----------------------------------------------------------------------------
-    # 3) BUILD THE STRATEGY GRID ONCE
-    # -----------------------------------------------------------------------------
-    strategies, meta = generate_strategy_grid()
-    # `strategies` is a List[ThresholdStrategy], length == n_strats :contentReference[oaicite:1]{index=1}
+# ----------------------------------------------------------------------------
+# 5.  Convenience wrapper
+# ----------------------------------------------------------------------------
+def main(global_seed: int = 0,
+         checkpoint_path: str | Path = "checkpoint.pkl",
+         n_jobs: int = 16) -> None:
+    mp.set_start_method("spawn", force=True)
+    run_tournament(global_seed, checkpoint_path, n_jobs)
 
 
-    # -----------------------------------------------------------------------------
-    # 4) SHARD WRITER
-    # -----------------------------------------------------------------------------
-    def write_one_shard(shard_idx: int) -> Path:
-        """
-        Read rows [start : start+count] from the memmap, map indices -> strategy
-        objects, and dump a compressed shard pickle.
-        """
-        start = shard_idx * shard_size
-        count = min(shard_size, n_shuffles - start)
-        # zero-copy slice into a small ndarray of shape (count, n_strats)
-        perm_mat = read_shuffles(
-            shuffle_file,
-            start,
-            count   = count,
-            as_array=True
-        )
-        # perm_mat[i, j] is an integer in [0, n_strats)
-        # map each row to the actual ThresholdStrategy instances
-        rows: list[list] = [
-            [strategies[idx] for idx in perm_mat[i]]
-            for i in range(count)
-        ]
-        df = pd.DataFrame(rows)
-        df.columns = meta["strategy_idx"]  # label columns by original strategy index
-        
-        # ensure output directory exists
-        out_dir.mkdir(parents=True, exist_ok=True)
-        shard_path = out_dir / f"shard_{shard_idx:02d}.pkl.gz"
-        # write compressed pickle
-        with gzip.open(shard_path, "wb") as f:
-            pickle.dump(df, f)
-        return shard_path
-
-
-    # -----------------------------------------------------------------------------
-    # 5) DISPATCH IN PARALLEL
-    # -----------------------------------------------------------------------------
-    n_shards = (n_shuffles + shard_size - 1) // shard_size
-
-    with mp.Pool() as pool:
-        paths = pool.map(write_one_shard, range(n_shards))
-
-    print("Wrote shards:", paths)
+if __name__ == "__main__":
+    main()
