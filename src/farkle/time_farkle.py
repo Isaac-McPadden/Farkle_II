@@ -9,31 +9,52 @@ Prints timing for a single game and for a batch of N games
 using random ThresholdStrategy instances for each player.
 """
 
-# TODO: Unit tests that act a bit like integration tests: sum winners == n_games, 
-# TODO: two runs have the same outcome with same seed, speed increases with more jobs
-# TODO: Time how long it takes to make strategy grid
-# TODO: Move to package
-
 import argparse
 import random
 import time
 
 import pandas as pd
 
-from farkle.simulation import (  # :contentReference[oaicite:0]{index=0}
+from farkle.simulation import (
     simulate_many_games,
     simulate_one_game,
 )
-from farkle.strategies import random_threshold_strategy  # :contentReference[oaicite:1]{index=1}
+from farkle.strategies import random_threshold_strategy
 
 
 def make_random_strategies(num_players: int, seed: int | None) -> list:
-    """Generate a list of random ThresholdStrategy for each player."""
+    """Summary
+    -------
+    Generates a list of random ThresholdStrategy objects for each player.
+
+    Inputs
+    ------
+    num_players: int 
+    seed: int | None
+
+    Returns
+    -------
+    list
+        Randomly generated ThresholdStrategy objects
+    """
     rng = random.Random(seed)
     return [random_threshold_strategy(rng) for _ in range(num_players)]
 
 
 def measure_sim_times(argv: list[str] | None = None):
+    """Summary
+    -------
+    Run timing benchmarks for one game and a batch of games.
+
+    Inputs
+    ------
+    argv : list[str] | None, optional
+        Argument list to parse instead of ``sys.argv``.
+
+    Returns
+    -------
+    None
+    """
     p = argparse.ArgumentParser(
         description="Time one Farkle game and a batch of N games."
     )

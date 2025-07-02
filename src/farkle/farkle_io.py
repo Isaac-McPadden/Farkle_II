@@ -11,7 +11,18 @@ from farkle.strategies import ThresholdStrategy
 
 # ------------------------------------------------------------
 def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None:
-    """Runs in its own process; pulls rows off queue and appends to CSV."""
+    """Summary: write queued rows to outpath in a separate process.
+
+    Inputs:
+        queue: multiprocessing.Queue containing row dictionaries and a
+            None sentinel to stop the worker.
+        outpath: Destination CSV file.
+        header: Column names for the csv.DictWriter.
+
+    Returns:
+        None. Rows are appended to outpath until the sentinel is
+        received.
+    """
     first = not Path(outpath).exists()
     with open(outpath, "a", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=header)
@@ -45,6 +56,18 @@ def simulate_many_games_stream(
 
     Each finished game immediately lands as one row in *out_csv*:
         game_id, winner, winning_score, winner_strategy, n_rounds
+    
+    Inputs:
+        n_games: Number of games to simulate.
+        strategies: Strategies to assign to the players.
+        target_score: Score needed to trigger the final round.
+        out_csv: Path to the output CSV file.
+        seed: Optional seed for deterministic runs.
+        n_jobs: Number of processes to use; 1 runs serially.
+
+    Returns:
+        None. Metrics for each game are written incrementally to
+        out_csv.
     """
     master = np.random.default_rng(seed)
     seeds = master.integers(0, 2**32 - 1, size=n_games)
@@ -84,6 +107,18 @@ def _single_game_row(
     strategies: Sequence[ThresholdStrategy],
     target_score: int,
 ) -> Dict[str, Any]:
+    """Summary: play one game and format metrics for CSV output.
+
+    Inputs:
+        game_id: Sequential identifier for the game.
+        seed: Random seed used for the game's RNGs.
+        strategies: Strategies applied to the players.
+        target_score: Score required to win the game.
+
+    Returns:
+        Mapping of column names to values for a single row of the
+        simulate_many_games_stream output.
+    """
     gm = _play_game(seed, strategies, target_score)       # re-use existing helper
     winner_name = gm["winner"]
     winner_strategy = gm[f"{winner_name}_strategy"]
@@ -97,4 +132,14 @@ def _single_game_row(
 
 # pickle-friendly wrapper for mp.Pool
 def _single_game_row_mp(args_tuple):
+    """
+    multiprocessing helper that forwards to _single_game_row.
+
+    Inputs:
+        args_tuple: Tuple (game_id, seed, strategies, target_score) as
+            expected by _single_game_row.
+
+    Returns:
+        (game_id, row_dict) so that the game id survives pool ordering.
+    """
     return args_tuple[0], _single_game_row(*args_tuple)

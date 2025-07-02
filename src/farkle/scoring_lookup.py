@@ -16,27 +16,59 @@ from farkle.types import Counts6, Int64Arr1D
 
 @nb.njit(cache=True)
 def _straight(ctr: Int64Arr1D) -> Tuple[int, int]:
-    """1-6 straight worth 1 500 pts."""
+    """Return the straight bonus if every face appears once.
+
+    Args:
+        ctr: Array of counts for faces one through six.
+
+    Returns:
+        (1500, 6) when ctr equals [1, 1, 1, 1, 1, 1].
+        Otherwise (0, 0).
+    """
     return (1500, 6) if np.all(ctr == 1) else (0, 0)
 
 
 @nb.njit(cache=True)
 def _three_pairs(ctr: Int64Arr1D) -> Tuple[int, int]:
-    """Exactly three distinct pairs → 1 500."""
+    """Detect the *three pairs* pattern.
+
+    Args:
+        ctr: Array of counts for faces one through six.
+
+    Returns:
+        A tuple (1500, 6) when ctr contains exactly three
+        different pairs, otherwise (0, 0).
+    """
     pairs = (ctr == 2).sum()
     return (1500, 6) if pairs == 3 else (0, 0)
 
 
 @nb.njit(cache=True)
 def _two_triplets(ctr: Int64Arr1D) -> Tuple[int, int]:
-    """Two different triples → 2 500."""
+    """Detect the *two triplets* pattern.
+
+    Args:
+        ctr: Array of counts for faces one through six.
+
+    Returns:
+        (2500, 6) when ctr contains two distinct three-of-a-kind
+        groups, otherwise (0, 0).
+    """
     trips = (ctr == 3).sum()
     return (2500, 6) if trips == 2 else (0, 0)
 
 
 @nb.njit(cache=True)
 def _four_kind_plus_pair(ctr: Int64Arr1D) -> Tuple[int, int]:
-    """4-of-a-kind + distinct pair → 1 500."""
+    """Check for four of a kind together with a separate pair.
+
+    Args:
+        ctr: Array of counts for faces one through six.
+
+    Returns:
+        (1500, 6) if ctr contains a four-of-a-kind and a
+        different pair, otherwise (0, 0).
+    """
     return (1500, 6) if 4 in ctr and 2 in ctr else (0, 0)
 
 
@@ -48,9 +80,17 @@ def _four_kind_plus_pair(ctr: Int64Arr1D) -> Tuple[int, int]:
 def _evaluate_nb(c1: int, c2: int, c3: int,
                  c4: int, c5: int, c6: int
 ) -> tuple[int, int, int, int]:
-    """
-    Pure-Numba scorer.  Returns
-        (total_score, total_used, lone_fives, lone_ones)
+    """Score a roll purely within Numba.
+
+    Args:
+        c1, c2, c3, c4, c5, c6: Number of dice showing each face value
+            from 1 through 6.
+
+    Returns:
+        A tuple (score, used, single_fives, single_ones) where
+        score is the total points, used is the number of dice that
+        contribute to that score and the last two elements report how many
+        lone fives and ones remain.
     """
     # ---- convert inputs to fixed array -----------------------------------
     ctr = np.array([c1, c2, c3, c4, c5, c6], dtype=np.int64)
@@ -106,12 +146,29 @@ def _evaluate_nb(c1: int, c2: int, c3: int,
 
 @lru_cache(maxsize=4096)
 def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
-    """Hash-friendly wrapper around the Numba core."""
+    """Score a counts tuple via the JIT compiled core.
+        Hash friendly for Numba.
+
+    Args:
+        counts: A 6-tuple giving the number of dice showing each face.
+
+    Returns:
+        (score, used, single_fives, single_ones) in the same format
+        as :func:`_evaluate_nb`.
+    """
     return _evaluate_nb(*counts)
 
 
 def score_roll(roll: list[int]) -> Tuple[int, int]:
-    """Convenience helper for ad-hoc scoring of a raw dice list."""
+    """Score a roll given as a list of faces.
+
+    Args:
+        roll: Sequence of integers in [1, 6] representing the dice.
+
+    Returns:
+        A tuple (score, used_dice) describing the total points scored
+        and how many dice contributed to the score.
+    """
     key = (
         roll.count(1), roll.count(2), roll.count(3),
         roll.count(4), roll.count(5), roll.count(6),
@@ -127,9 +184,16 @@ def score_roll(roll: list[int]) -> Tuple[int, int]:
 def build_score_lookup_table() -> dict[Counts6, tuple[int, int, Counts6, int, int]]:
     """
     Fast O(1) table for any ≤6-dice roll.
+    Loads pre-computed scores for every multiset of up to six dice.
+    
+    Inputs:
+        None
 
-    Key  : (c1, c2, c3, c4, c5, c6)
-    Value: (score, used, *original counts tuple*, lone_fives, lone_ones)
+    Returns:
+        A dictionary mapping (c1, c2, c3, c4, c5, c6) tuples to
+        (score, used, counts, single_fives, single_ones).  The
+        first element is the total points for that combination and
+        counts repeats the key so callers can keep a reference.
     """
     look: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int, Tuple[int, int, int, int, int, int], int, int]] = {}
     faces = range(1, 7)

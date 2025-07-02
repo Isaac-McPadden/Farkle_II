@@ -15,23 +15,45 @@ from farkle.types import Counts6, FacesT, Int64Arr1D
 # --------------------------------------------------------------------------- #
 # 0.  Public type alias
 # --------------------------------------------------------------------------- #
-DiceRoll = List[int]                 # a raw roll as a list of faces
+DiceRoll = List[int]  # a raw roll as a list of faces
+
 
 # --------------------------------------------------------------------------- #
 # 1.  Tiny helpers – all immutable / hash-friendly
 # --------------------------------------------------------------------------- #
 @nb.njit(cache=True)
 def _faces_to_counts_nb(faces: np.ndarray) -> Counts6:
-    """Vectorised `bincount` → 6-tuple (ones … sixes)."""
+    """Count occurrences of each face value.
+
+    Inputs
+    ------
+    faces (np.ndarray):
+        1-D array of dice faces.
+
+    Returns
+    -------
+    Counts6:
+        Tuple of counts for faces one through six.
+    """
     out = np.zeros(6, dtype=np.int64)
-    for v in faces:              # Numba for-loops are fine
+    for v in faces:
         out[v - 1] += 1
-    return (int(out[0]), int(out[1]), int(out[2]),
-            int(out[3]), int(out[4]), int(out[5]))
+    return (int(out[0]), int(out[1]), int(out[2]), int(out[3]), int(out[4]), int(out[5]))
 
 
 def faces_to_counts_tuple(faces: Sequence[int]) -> Counts6:
-    """Pure-Python wrapper so we can feed lru_cache keys."""
+    """Convert a sequence of faces to a counts tuple.
+
+    Inputs
+    ------
+    faces (Sequence[int]):
+        Iterable of dice faces.
+
+    Returns
+    -------
+    Counts6:
+        Six-element tuple of counts for faces one through six.
+    """
     return _faces_to_counts_nb(np.asarray(faces, dtype=np.int64))
 
 
@@ -40,16 +62,34 @@ def faces_to_counts_tuple(faces: Sequence[int]) -> Counts6:
 # --------------------------------------------------------------------------- #
 @functools.lru_cache(maxsize=32_768)
 def _score_by_counts(key: Counts6) -> Tuple[int, int, Counts6, int, int]:
-    """
-    Return (score, used, counts_key, single_fives, single_ones)
+    """Score a roll represented by face counts.
+
+    Inputs
+    ------
+    key (Counts6):
+        Tuple of counts for faces one through six.
+
+    Returns
+    -------
+    tuple[int, int, Counts6, int, int]:
+        (score, used, counts_key, single_fives, single_ones).
     """
     score, used, sfives, sones = _eval_nb(key)        # JIT kernel
     return score, used, key, sfives, sones
 
 
 def score_roll_cached(roll: Sequence[int]) -> Tuple[int, int, Counts6, int, int]:
-    """
-    Public helper – accepts *either* list[int] or tuple[int,…] of faces.
+    """Score a roll, caching by its face counts.
+
+    Inputs
+    ------
+    roll (Sequence[int]):
+        Iterable of dice faces.
+
+    Returns
+    -------
+    tuple[int, int, Counts6, int, int]:
+        (score, used, counts_key, single_fives, single_ones).
     """
     key = faces_to_counts_tuple(roll)
     return _score_by_counts(key)
@@ -59,11 +99,23 @@ def score_roll_cached(roll: Sequence[int]) -> Tuple[int, int, Counts6, int, int]
 # 3.  Expand counts → sorted faces  (needed for Smart discards)
 # --------------------------------------------------------------------------- #
 Int64Arr1DNP = np.ndarray  # local alias to keep the signature tidy
+
+
 # 1) **FAST kernel** – stays in Numba, but now returns an ndarray
 @nb.njit(cache=True)
-def _expand_sorted_nb(c1: int, c2: int, c3: int,
-                      c4: int, c5: int, c6: int) -> Int64Arr1D:
-    """Return the faces in ascending order as a 1-D int64 array."""
+def _expand_sorted_nb(c1: int, c2: int, c3: int, c4: int, c5: int, c6: int) -> Int64Arr1D:
+    """Expand counts into a sorted NumPy array.
+
+    Inputs
+    ------
+    c1, c2, c3, c4, c5, c6 (int):
+        Counts for faces one through six.
+
+    Returns
+    -------
+    Int64Arr1D:
+        Array of face values in ascending order.
+    """
     n_tot = c1 + c2 + c3 + c4 + c5 + c6
     out   = np.empty(n_tot, dtype=np.int64)
     pos   = 0
@@ -73,8 +125,21 @@ def _expand_sorted_nb(c1: int, c2: int, c3: int,
             pos += 1
     return out
 
+
 # 2) **Thin wrapper** – cheap Python, converts to an immutable tuple
 def _expand_sorted(counts: Counts6) -> FacesT:
+    """Return sorted faces as an immutable tuple.
+
+    Inputs
+    ------
+    counts (Counts6):
+        Counts for faces one through six.
+
+    Returns
+    -------
+    FacesT:
+        Tuple of face values in ascending order.
+    """
     return tuple(_expand_sorted_nb(*counts))
 
 
@@ -83,15 +148,29 @@ def _expand_sorted(counts: Counts6) -> FacesT:
 # --------------------------------------------------------------------------- #
 @functools.lru_cache(maxsize=4096)
 def generate_sequences(counts: Counts6, *, smart_one: bool = False) -> tuple[FacesT, ...]:
-    c = list(counts)                        # mutable copy
+    """Enumerate all post-discard face sequences.
+
+    Inputs
+    ------
+    counts (Counts6):
+        Counts representing the roll.
+    smart_one (bool, optional):
+        Include sequences discarding single ones.
+
+    Returns
+    -------
+    tuple[FacesT, ...]:
+        All possible remaining dice as sorted tuples.
+    """
+    c = list(counts)  # mutable copy
     seqs: list[FacesT] = [_expand_sorted(counts)]
 
-    while c[4]:                             # index 4 == face-value 5
+    while c[4]:  # index 4 == face-value 5
         c[4] -= 1
-        seqs.append(_expand_sorted(cast(Counts6, tuple(c))))   # Ruff happy
+        seqs.append(_expand_sorted(cast(Counts6, tuple(c))))
 
     if smart_one:
-        while c[0]:                         # index 0 == face-value 1
+        while c[0]:  # index 0 == face-value 1
             c[0] -= 1
             seqs.append(_expand_sorted(cast(Counts6, tuple(c))))
 
@@ -105,19 +184,29 @@ def generate_sequences(counts: Counts6, *, smart_one: bool = False) -> tuple[Fac
 def score_lister(
     dice_rolls: tuple[FacesT, ...],
 ) -> tuple[
-        tuple[list[int],     # original roll (sorted)
-              int,           # dice_len
-              int,           # cand_score
-              int,           # cand_used
-              Counts6,       # counts
-              int,           # cand_sf
-              int],          # cand_so
+        tuple[
+            list[int],     # original roll (sorted)
+            int,           # dice_len
+            int,           # cand_score
+            int,           # cand_used
+            Counts6,       # counts
+            int,           # cand_sf
+            int            # cand_so
+            ],
         ...
    ]:
-    """
-    Return tuples:
-        (roll_faces, roll_len, score, used, counts_key, lone_5s, lone_1s)
-    skipping any non-scoring roll.
+    """Score multiple sorted rolls.
+
+    Inputs
+    ------
+    dice_rolls (tuple[FacesT, ...]):
+        Rolls represented as tuples of sorted faces.
+
+    Returns
+    -------
+    tuple[tuple[list[int], int, int, int, Counts6, int, int], ...]:
+        (faces, len, score, used, counts, lone_fives, lone_ones) for
+        each scoring roll. Skips non-scoring rolls
     """
     out = []
     for faces in dice_rolls:
@@ -136,25 +225,74 @@ def decide_smart_discards(
     *,
     counts: Counts6,
     single_fives: int,
-    single_ones:  int,
-    raw_score:    int,  # noqa: ARG001
-    raw_used:     int,
+    single_ones: int,
+    raw_score: int,  # noqa: ARG001
+    raw_used: int,
     dice_roll_len: int,
     turn_score_pre: int,
     score_threshold: int,
-    dice_threshold:  int,
+    dice_threshold: int,
     smart_five: bool,
-    smart_one:  bool,
+    smart_one: bool,
     consider_score: bool = True,
-    consider_dice:  bool = True,
-    require_both:   bool = False,
-    prefer_score:   bool = True,
+    consider_dice: bool = True,
+    require_both: bool = False,
+    prefer_score: bool = True,
 ) -> Tuple[int, int]:
+    """Determine how many single 5s and 1s to throw back.
 
+    Inputs
+    ------
+    counts (Counts6):
+        Face counts for the roll.
+    single_fives (int):
+        Number of single fives available.
+    single_ones (int):
+        Number of single ones available.
+    raw_score (int):
+        Score before discarding.
+    raw_used (int):
+        Dice used before discarding.
+    dice_roll_len (int):
+        Number of dice rolled.
+    turn_score_pre (int):
+        Score already accumulated this turn.
+    score_threshold (int):
+        Minimum score before banking.
+    dice_threshold (int):
+        Maximum dice left before banking.
+    smart_five (bool):
+        Enable Smart-5 heuristic.
+    smart_one (bool):
+        Enable Smart-1 heuristic.
+    consider_score (bool, optional):
+        Whether to check score_threshold.
+    consider_dice (bool, optional):
+        Whether to check dice_threshold.
+    require_both (bool, optional):
+        Bank only if both thresholds are hit.
+    prefer_score (bool, optional):
+        Break ties in favour of higher score.
+
+    Returns
+    -------
+    tuple[int, int]:
+        (discard_fives, discard_ones).
+    """
     if not smart_five or raw_used == dice_roll_len or (single_fives == 0 and single_ones == 0):
         return 0, 0
 
     def _must_bank(score_after: int, dice_left_after: int) -> bool:
+        """internal helper function for evaluating if the player must bank 
+            their points after modifying the dice counter
+
+        Args:
+            score_after (int): score after modifying dice counter
+            dice_left_after (int): dice count after modifying dice counter
+
+        Returns:
+            bool: player banking points decision
+        """
         hit_score = (score_after >= score_threshold) if consider_score else False
         hit_dice  = (dice_left_after <= dice_threshold) if consider_dice else False
         return (hit_score and hit_dice) if (consider_score and consider_dice and require_both) else (hit_score or hit_dice)
@@ -164,10 +302,9 @@ def decide_smart_discards(
     best_key: Tuple[int, int] | None = None
     best_sf, best_so = single_fives, single_ones
 
-    for (_roll, _len, cand_score, cand_used,
-         _cnt, cand_sf, cand_so) in candidates:
+    for (_roll, _len, cand_score, cand_used, _cnt, cand_sf, cand_so) in candidates:
 
-        score_after     = turn_score_pre + cand_score
+        score_after = turn_score_pre + cand_score
         dice_left_after = dice_roll_len - cand_used
         if _must_bank(score_after, dice_left_after):
             continue
@@ -177,19 +314,39 @@ def decide_smart_discards(
             best_key = key
             best_sf, best_so = cand_sf, cand_so
 
-    if best_key is None:                 # every path banks → keep everything
+    if best_key is None:  # every path banks → keep everything
         return 0, 0
 
     return single_fives - best_sf, single_ones - best_so
 
 
 def apply_discards(
-    raw_score:     int,
-    raw_used:      int,
+    raw_score: int,
+    raw_used: int,
     discard_fives: int,
-    discard_ones:  int,
+    discard_ones: int,
     dice_roll_len: int,
 ) -> Tuple[int, int, int]:
+    """Apply the discard decision to the raw score.
+
+    Inputs
+    ------
+    raw_score (int):
+        Score before discards.
+    raw_used (int):
+        Dice used before discards.
+    discard_fives (int):
+        Number of single fives discarded.
+    discard_ones (int):
+        Number of single ones discarded.
+    dice_roll_len (int):
+        Total dice rolled.
+
+    Returns
+    -------
+    tuple[int, int, int]:
+        (final_score, final_used, dice_to_reroll).
+    """
     final_score  = raw_score - 50 * discard_fives - 100 * discard_ones
     final_used   = raw_used  - discard_fives - discard_ones
     final_reroll = dice_roll_len - final_used
@@ -200,52 +357,85 @@ def apply_discards(
 # 7.  High-level public API
 # --------------------------------------------------------------------------- #
 def default_score(
-    dice_roll:       DiceRoll,
+    dice_roll: DiceRoll,
     *,
-    turn_score_pre:  int,
-    smart_five:      bool = False,
-    smart_one:       bool = False,
-    consider_score:  bool = True,
-    consider_dice:   bool = True,
-    require_both:    bool = False,
+    turn_score_pre: int,
+    smart_five: bool = False,
+    smart_one: bool = False,
+    consider_score: bool = True,
+    consider_dice: bool = True,
+    require_both: bool = False,
     score_threshold: int  = 300,
-    dice_threshold:  int  = 3,
-    prefer_score:    bool = True,
+    dice_threshold: int  = 3,
+    prefer_score: bool = True,
 ) -> Tuple[int, int, int]:
-    """
-    Evaluate a roll *and* apply Smart-discard heuristics in one go.
-      Returns (final_score, final_used, final_reroll).
+    """Score a roll and apply Smart discard heuristics.
+
+    Inputs
+    ------
+    dice_roll (DiceRoll):
+        List of faces in the roll.
+    turn_score_pre (int):
+        Score already accumulated this turn.
+    smart_five (bool, optional):
+        Enable Smart‑5 discard.
+    smart_one (bool, optional):
+        Enable Smart‑1 discard.
+    consider_score (bool, optional):
+        Whether to respect score_threshold.
+    consider_dice (bool, optional):
+        Whether to respect dice_threshold.
+    require_both (bool, optional):
+        Bank only if both thresholds are hit.
+    score_threshold (int, optional):
+        Minimum score before banking.
+    dice_threshold (int, optional):
+        Maximum dice left before banking.
+    prefer_score (bool, optional):
+        Break ties in favour of higher score.
+
+    Returns
+    -------
+    tuple[int, int, int]:
+        (final_score, final_used, final_reroll).
     """
     raw_score, raw_used, counts_key, sfives, sones = score_roll_cached(tuple(dice_roll))
 
     d5, d1 = decide_smart_discards(
-        counts          = counts_key,
-        single_fives    = sfives,
-        single_ones     = sones,
-        raw_score       = raw_score,
-        raw_used        = raw_used,
-        dice_roll_len   = len(dice_roll),
-        turn_score_pre  = turn_score_pre,
-        score_threshold = score_threshold,
-        dice_threshold  = dice_threshold,
-        smart_five      = smart_five,
-        smart_one       = smart_one,
-        consider_score  = consider_score,
-        consider_dice   = consider_dice,
-        require_both    = require_both,
-        prefer_score    = prefer_score,
+        counts=counts_key,
+        single_fives=sfives,
+        single_ones=sones,
+        raw_score=raw_score,
+        raw_used=raw_used,
+        dice_roll_len=len(dice_roll),
+        turn_score_pre=turn_score_pre,
+        score_threshold=score_threshold,
+        dice_threshold=dice_threshold,
+        smart_five=smart_five,
+        smart_one=smart_one,
+        consider_score=consider_score,
+        consider_dice=consider_dice,
+        require_both=require_both,
+        prefer_score=prefer_score,
     )
 
-    return apply_discards(
-        raw_score, raw_used, d5, d1, len(dice_roll)
-    )
+    return apply_discards(raw_score, raw_used, d5, d1, len(dice_roll))
 
 
 # --------------------------------------------------------------------------- #
 # 8.  Legacy shim (kept for unit-test parity)
 # --------------------------------------------------------------------------- #
 def _compute_raw_score(dice_roll: DiceRoll):
-    """
-    Thin wrapper maintained for backwards-compat tests.
+    """Legacy scoring helper for backwards-compatibility tests.
+
+    Inputs
+    ------
+    dice_roll (DiceRoll):
+        Sequence of faces to score.
+
+    Returns
+    -------
+    tuple[int, int, Counts6, int, int]:
+        Raw scoring tuple from :func:`score_roll_cached`.
     """
     return score_roll_cached(tuple(dice_roll))

@@ -32,20 +32,55 @@ _STRATS: List[ThresholdStrategy] = []               # filled by _init_worker
 
 
 def _init_worker(strategies: Sequence[ThresholdStrategy]) -> None:
-    """One-off initialiser for every forked worker process."""
+    """Initialise the worker process with a strategy list.
+
+    Inputs
+    ------
+    strategies : Sequence[ThresholdStrategy]
+        Strategy objects created in the parent process.
+
+    Returns
+    -------
+    None
+        _STRATS is populated for fast lookups in the worker.
+    """
     global _STRATS
     _STRATS = list(strategies)                      # zero-copy index look-ups
 
 
 def _play_table(seed: int, idxs: Sequence[int]) -> str:
-    """Play a single 5-player game given *indices* into `_STRATS`."""
+    """Run one table of five players using stored strategies.
+
+    Inputs
+    ------
+    seed : int
+        RNG seed for the game engine.
+    idxs : Sequence[int]
+        Indices into the global _STRATS list.
+
+    Returns
+    -------
+    str
+        Strategy string representation of the winning player.
+    """
     table = [_STRATS[i] for i in idxs]
     res   = _play_game(seed, table)
     return res[f"{res['winner']}_strategy"]          # string repr → Counter key
 
 
 def _play_shuffle(seed: int) -> Counter[str]:
-    """Play the 1 632 games that make up **one** shuffle → Counter of wins."""
+    """Play all games that comprise a single shuffle.
+
+    Inputs
+    ------
+    seed : int
+        Seed used to create permutations and per-game seeds.
+
+    Returns
+    -------
+    Counter[str]
+        Mapping of strategy strings to win counts for this shuffle.
+    """
     rng    = np.random.default_rng(seed)
     perm   = rng.permutation(len(_STRATS))
     seeds  = rng.integers(0, 2**32 - 1, size=GAMES_PER_SHUFFLE)
@@ -60,7 +95,18 @@ def _play_shuffle(seed: int) -> Counter[str]:
 
 
 def _run_chunk(shuffle_seed_slice: Sequence[int]) -> Counter[str]:
-    """Aggregate several shuffles – one ProcessPool task."""
+    """Aggregate multiple shuffles in one worker call.
+
+    Inputs
+    ------
+    shuffle_seed_slice : Sequence[int]
+        Collection of seeds, one for each shuffle to execute.
+
+    Returns
+    -------
+    Counter[str]
+        Combined win counts across all shuffles in shuffle_seed_slice.
+    """
     ctr: Counter[str] = Counter()
     for sd in shuffle_seed_slice:
         ctr.update(_play_shuffle(int(sd)))
@@ -70,7 +116,22 @@ def _run_chunk(shuffle_seed_slice: Sequence[int]) -> Counter[str]:
 def _measure_throughput(strats: Sequence[ThresholdStrategy],
                         test_games: int = 2_000,
                         seed: int = 0) -> float:
-    """Rough games / sec so we can pick a sensible chunk size."""
+    """Estimate processing speed in games per second.
+
+    Inputs
+    ------
+    strats : Sequence[ThresholdStrategy]
+        Strategy objects used in the benchmark games.
+    test_games : int, default 2000
+        Number of games to run for the estimate.
+    seed : int, default 0
+        RNG seed for reproducibility.
+
+    Returns
+    -------
+    float
+        Approximate games processed per second.
+    """
     rng   = np.random.default_rng(seed)
     seeds = rng.integers(0, 2**32 - 1, size=test_games)
     t0    = time.perf_counter()
@@ -87,8 +148,25 @@ def run_tournament(
     checkpoint_path: str | Path = "checkpoint.pkl",
     n_jobs: int | None = None,
     ckpt_every_sec: int = CKPT_EVERY_SEC,
-) -> None:
+    ) -> None:
+    """Run the full tournament across many worker processes.
 
+    Inputs
+    ------
+    global_seed : int, default 0
+        Seed controlling the overall reproducibility of the tournament.
+    checkpoint_path : str | Path, default "checkpoint.pkl"
+        File path to which intermediate results are periodically saved.
+    n_jobs : int | None, optional
+        Number of worker processes, None uses CPU count.
+    ckpt_every_sec : int, default CKPT_EVERY_SEC
+        Seconds between checkpoint writes.
+
+    Returns
+    -------
+    None
+        Progress is logged and the final win counts are written to checkpoint_path.
+    """
     strategies, _ = generate_strategy_grid()                 # 8 160 objects
     gps = _measure_throughput(strategies[:N_PLAYERS])
     shuffles_per_chunk = max(1,
@@ -144,6 +222,24 @@ def main(
     n_jobs: int = 16,
     ckpt_every_sec: int = CKPT_EVERY_SEC,
 ) -> None:
+    """main()
+
+    Inputs
+    ------
+    global_seed : int, default 0
+        Master seed for reproducibility.
+    checkpoint_path : str | Path, default "checkpoint.pkl"
+        Location to store tournament checkpoints.
+    n_jobs : int, default 16
+        Number of worker processes to spawn.
+    ckpt_every_sec : int, default CKPT_EVERY_SEC
+        Seconds between checkpoint writes.
+
+    Returns
+    -------
+    None
+        The function runs run_tournament with the provided parameters.
+    """
     mp.set_start_method("spawn", force=True)
     run_tournament(global_seed=global_seed,
                    checkpoint_path=checkpoint_path,

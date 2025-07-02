@@ -33,7 +33,7 @@ def fast_helpers(monkeypatch):
     """
     1) Replace generate_strategy_grid() with 12 toy strategies.
     2) Make _play_shuffle() return a trivial deterministic Counter.
-    3) Skip the ProcessPool – we call _run_chunk() directly.
+    3) Skip the ProcessPool - we call _run_chunk() directly.
     """
     strats = _mini_strats(12)
     monkeypatch.setattr(rt, "generate_strategy_grid",

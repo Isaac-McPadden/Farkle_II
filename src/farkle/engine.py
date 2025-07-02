@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Sequence
 
-import numba as nb
 import numpy as np
 
 from farkle.scoring import DiceRoll, default_score
@@ -15,14 +14,14 @@ Player and single-game engine for Farkle simulations.
 
 High-level flow
 ---------------
-* ``FarkleGame.play`` drives a game loop until someone reaches
-  ``target_score``.  When that happens the *final round* rule is applied:
+* FarkleGame.play drives a game loop until someone reaches
+  target_score.  When that happens the *final round* rule is applied:
   every other player gets one last turn.
-* ``FarklePlayer.take_turn`` handles the intra-turn loop of rolling,
+* FarklePlayer.take_turn handles the intra-turn loop of rolling,
   scoring, and consulting its strategy.
 
 The module keeps no global state; randomness lives inside each
-``FarklePlayer`` via its dedicated ``random.Random`` instance (passed in
+FarklePlayer via its dedicated random.Random instance (passed in
 from the outer simulation layer).
 """
 
@@ -36,20 +35,6 @@ __all__: list[str] = [
 
 
 
-@nb.njit(cache=True, fastmath=True)
-def _throw(n: int, seed: int) -> np.ndarray:
-    # simple, splittable xorshift* for 1-6 inclusive
-    x = seed ^ (seed >> 12)
-    x ^= (x << 25) & 0xFFFFFFFFFFFFFFFF
-    x ^=  x >> 27
-    rng  = (x * 0x2545F4914F6CDD1D) & 0xFFFFFFFFFFFFFFFF
-    out  = np.empty(n, dtype=np.int8)
-    for i in range(n):
-        rng ^= rng >> 12
-        rng ^= (rng << 25) & 0xFFFFFFFFFFFFFFFF
-        rng ^= rng >> 27          # ← same three actions, now one-per-line
-        out[i] = 1 + (rng % 6)
-    return out
 # ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------
@@ -73,7 +58,18 @@ class FarklePlayer:
         object.__setattr__(self, "strategy_str", str(self.strategy))
     # ----------------------------- helpers -----------------------------
     def _roll(self, n: int) -> DiceRoll:
-        """Return *n* pseudo-random dice using the player's RNG."""
+        """Produce n dice using this player's RNG.
+
+        Inputs
+        ------
+        n
+            Number of dice to roll.
+
+        Returns
+        -------
+        DiceRoll
+            List of integers in the range 1-6.
+        """
         self.n_rolls += 1
         # ask for **one** uint32 with the classic 3-arg signature
         # Use the RNG directly so deterministic test generators work.
@@ -87,7 +83,22 @@ class FarklePlayer:
         final_round: bool = False,
         score_to_beat: int = 0,
     ) -> None:
-        """Simulate one complete turn for the player."""
+        """Simulates a full turn for this player.
+
+        Inputs
+        ------
+        target_score
+            Score that ends the game and triggers the final round.
+        final_round
+            Whether this turn occurs during the closing round.
+        score_to_beat
+            Current leading score in the final round.
+
+        Returns
+        -------
+        None
+            The player's internal state is updated in place.
+        """
         dice = 6
         turn_score = 0
         rolls_this_turn = 0
@@ -179,8 +190,26 @@ class FarklePlayer:
 
 @dataclass(slots=True)
 class GameMetrics:
-    """Aggregate stats returned after a single game."""
+    """Summary statistics describing a completed game.
 
+    Inputs
+    ------
+    winner
+        Name of the winning player.
+    winning_score
+        Score achieved by the winner.
+    n_rounds
+        Number of rounds played.
+    per_player
+        Stats for each player keyed by name.
+    winner_data
+        Stats for the winner only.
+
+    Returns
+    -------
+    GameMetrics
+        New dataclass instance populated with results.
+    """
     winner: str
     winning_score: int
     n_rounds: int
@@ -197,7 +226,18 @@ class FarkleGame:
 
     # ---------------------------- gameplay -----------------------------
     def play(self, max_rounds: int = 50) -> GameMetrics:
-        """Run the game and return a *GameMetrics* summary."""
+        """Execute the game loop and return final statistics.
+
+        Inputs
+        ------
+        max_rounds
+            Safety cap on the number of rounds played.
+
+        Returns
+        -------
+        GameMetrics
+            Dataclass summarising the winner and per-player stats.
+        """
         final_round = False
         score_to_beat = self.target_score   # updated when someone triggers
         rounds = 0

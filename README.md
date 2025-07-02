@@ -137,7 +137,7 @@ import farkle as far
 
 Any of these work:
 python -m farkle run cfg.yml
-python -m farkle.cli run cfg.yml
+python -m farkle.farkle_cli run cfg.yml
 farkle run cfg.yml               # installed entry-point
 
 

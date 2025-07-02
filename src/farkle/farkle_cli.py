@@ -14,6 +14,15 @@ def main(argv: list[str] | None = None) -> None:
     """
     Console-script entry-point.
     Passing *argv* lets unit-tests inject fake arguments.
+    
+    Inputs
+    ------
+    argv : list[str] | None
+        Command line argument list, or None for sys.argv.
+
+    Returns
+    -------
+    None
     """
     ap = argparse.ArgumentParser(prog="farkle")
     sub = ap.add_subparsers(dest="cmd", required=True)

@@ -54,7 +54,8 @@ def strategy_yaml(s: ThresholdStrategy) -> str:
         run_up_score    : false
         prefer_score    : true
     """
-    # dataclass → plain dict (keeps declared order)  :contentReference[oaicite:0]{index=0}
+    # dataclass → plain dict (keeps declared order)
+    assert isinstance(s, ThresholdStrategy)
     d = asdict(s)
     # YAML-friendly booleans (lowercase)
     def _fmt(v): return str(v).lower() if isinstance(v, bool) else v

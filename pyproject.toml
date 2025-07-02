@@ -29,7 +29,7 @@ viz   = ["plotly>=5.21", "panel>=1.4", "dask[dataframe]>=2024.5"]
 docs  = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
 
 [project.scripts]
-farkle = "farkle.cli:main"
+farkle = "farkle.farkle_cli:main"
 time-farkle = "farkle.time_farkle:main"
 
 # ── 3. Tell Hatchling where the code lives ───────────

@@ -23,7 +23,17 @@ __all__ = [
 ]
 
 def _read_version_from_toml() -> str:
-    toml_path = Path(__file__).with_suffix("").parent.parent / "pyproject.toml"
+    """
+    Inputs
+    ------
+    None
+
+    Returns
+    -------
+    str
+        Version string from pyproject.toml.
+    """
+    toml_path = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
     with toml_path.open("rb") as fh:
         data = tomllib.load(fh)
     return data["project"]["version"]
