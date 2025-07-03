@@ -5,7 +5,7 @@ This version keeps the original fast win-count loop used in the unit tests but
 adds optional collection of richer statistics. When enabled the worker
 processes accumulate running sums and sum-of-squares for a small set of metrics
 so that per-strategy means and variances can be computed without storing every
-row.  A parquet dump of all rows can also be requested via ``--row-dir``.
+row.  A parquet dump of all rows can also be requested via --row-dir.
 """
 
 from __future__ import annotations
@@ -86,7 +86,7 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
     Dict[str, Dict[str, float]],
     List[Dict[str, Any]],
 ]:
-    """Play ``GAMES_PER_SHUFFLE`` games and aggregate the results."""
+    """Play GAMES_PER_SHUFFLE games and aggregate the results."""
 
     rng = np.random.default_rng(seed)
     perm = rng.permutation(len(_STRATS))
@@ -209,7 +209,7 @@ def _save_checkpoint(
     sums: Dict[str, Dict[str, float]] | None,
     sq_sums: Dict[str, Dict[str, float]] | None,
 ) -> None:
-    """Pickle the current aggregates to ``path``."""
+    """Pickle the current aggregates to path."""
 
     payload: Dict[str, Any] = {"win_totals": wins}
     if sums is not None and sq_sums is not None:
