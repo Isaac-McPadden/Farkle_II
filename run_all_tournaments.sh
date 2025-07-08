@@ -27,7 +27,7 @@ for N in "${PLAYERS[@]}"; do
   echo "▶️  Starting tournament with ${N} players (output → ${OUTDIR})"
 
 # --- inside the loop ---
-  python - <<PYTHON
+  python3 - <<PYTHON
 import pathlib, multiprocessing as mp, farkle.run_tournament as rt
 
 rt.N_PLAYERS = $N

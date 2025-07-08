@@ -198,3 +198,12 @@ cspell.config.yaml
 notebooks/data/
 notebooks/data/shuffles.bin
 bfg.jar
+
+.pkl
+.parquet
+
+/data/results/2_players/
+/data/results/*/*/*.pkl
+/data/results/*/*/*/*.parquet
+
+data
