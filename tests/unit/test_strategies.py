@@ -2,7 +2,12 @@ import random
 
 import pytest
 
-from farkle.strategies import ThresholdStrategy, parse_strategy, random_threshold_strategy
+from farkle.strategies import (
+    ThresholdStrategy,
+    parse_strategy,
+    parse_strategy_for_df,
+    random_threshold_strategy,
+)
 
 
 @pytest.mark.parametrize(
@@ -249,3 +254,34 @@ def test_parse_strategy_valid(input_str, expected):
 def test_parse_strategy_invalid(bad_str):
     with pytest.raises(ValueError):
         parse_strategy(bad_str)
+
+
+def test_parse_strategy_for_df():  # noqa: ARG001
+    strat_case_1 = "Strat(300,2)[SD][FOPS][AND][HR]"
+    strat_case_2 = "Strat(300,2)[--][--PD][OR][--]"
+    strat_dict_1 = parse_strategy_for_df(strat_case_1)
+    strat_dict_2 = parse_strategy_for_df(strat_case_2)
+    assert strat_dict_1 == {
+        "score_threshold" : 300,
+        "dice_threshold" : 2,
+        "smart_five" : True,
+        "smart_one" : True,
+        "consider_score" : True,
+        "consider_dice" : True,
+        "require_both": True,
+        "auto_hot_dice" : True,
+        "run_up_score" : True,
+        "prefer_score" : True,
+    }
+    assert strat_dict_2 == {
+        "score_threshold" : 300,
+        "dice_threshold" : 2,
+        "smart_five" : False,
+        "smart_one" : False,
+        "consider_score" : False,
+        "consider_dice" : False,
+        "require_both": False,
+        "auto_hot_dice" : False,
+        "run_up_score" : False,
+        "prefer_score" : False,
+    }

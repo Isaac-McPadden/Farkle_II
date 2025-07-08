@@ -230,7 +230,7 @@ def run_tournament(
     n_jobs: int | None = None,
     ckpt_every_sec: int = CKPT_EVERY_SEC,
     collect_metrics: bool = False,
-    row_output_directory: Path | None = None,
+    row_output_directory: Path | None = None, # None if --row-dir omitted
 ) -> None:
     """Orchestrate the multi-process tournament."""
 

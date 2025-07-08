@@ -283,10 +283,10 @@ def parse_strategy(s: str) -> ThresholdStrategy:
     cs_flag = m.group("cs") == "S"
     cd_flag = m.group("cd") == "D"
 
-    sf_token = m.group("sf")  # "F", "-F", or "--"
+    sf_token = m.group("sf")  # "F" or "-"
     sf_flag = bool(sf_token.startswith("F"))
 
-    so_token = m.group("so")  # "O", "-O", or "--"
+    so_token = m.group("so")  # "O" or "-"
     so_flag = bool(so_token.startswith("O"))
     
     ps_flag = m.group("ps") == "PS"
@@ -376,10 +376,10 @@ def parse_strategy_for_df(s: str) -> dict:
     cs_flag = m.group("cs") == "S"
     cd_flag = m.group("cd") == "D"
 
-    sf_token = m.group("sf")  # "F", "-F", or "--"
+    sf_token = m.group("sf")  # "F" or "-"
     sf_flag = bool(sf_token.startswith("F"))
 
-    so_token = m.group("so")  # "O", "-O", or "--"
+    so_token = m.group("so")  # "O" or "-"
     so_flag = bool(so_token.startswith("O"))
     
     ps_flag = m.group("ps") == "PS"
