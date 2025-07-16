@@ -41,7 +41,9 @@ def _load_winners(block: Path) -> List[str]:
     return []
 
 
-def _update_ratings(winners: List[str], keepers: List[str], env: trueskill.TrueSkill) -> Dict[str, tuple[float, float]]:
+def _update_ratings(
+    winners: List[str], keepers: List[str], env: trueskill.TrueSkill
+) -> Dict[str, tuple[float, float]]:
     ratings = {k: env.create_rating() for k in keepers}
     dummy = env.create_rating()
     prev_mu = {k: r.mu for k, r in ratings.items()}
@@ -49,7 +51,7 @@ def _update_ratings(winners: List[str], keepers: List[str], env: trueskill.TrueS
     for i, w in enumerate(winners, 1):
         if w not in ratings:
             continue
-        ratings[w], dummy = env.rate_1vs1(ratings[w], dummy)
+        ratings[w], dummy = trueskill.rate_1vs1(ratings[w], dummy, env=env)
         if i % 100_000 == 0 or i == total:
             diff = [abs(ratings[k].mu - prev_mu[k]) for k in ratings]
             med = float(np.median(diff)) if diff else 0.0
@@ -92,7 +94,7 @@ def run_trueskill(seed: int = 0) -> None:
 def main(argv: List[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Compute TrueSkill ratings")
     parser.add_argument("--seed", type=int, default=0)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     run_trueskill(seed=args.seed)
 

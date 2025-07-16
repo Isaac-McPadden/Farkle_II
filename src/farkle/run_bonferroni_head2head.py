@@ -15,7 +15,8 @@ from .utils import bonferroni_pairs
 
 
 def run_bonferroni_head2head(seed: int = 0) -> None:
-    tiers = json.load(open("data/tiers.json"))
+    with open("data/tiers.json") as fh:
+        tiers = json.load(fh)
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
     games_needed = games_for_power(len(elites), method="bonferroni", pairwise=True)
@@ -24,7 +25,12 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
     records = []
     for (a, b), grp in schedule.groupby(["a", "b"]):
         n_games = len(grp)
-        df = simulate_many_games(n_games=n_games, strategies=[parse_strategy(a), parse_strategy(b)], seed=seed, n_jobs=1)
+        df = simulate_many_games(
+            n_games=n_games, 
+            strategies=[parse_strategy(a), parse_strategy(b)], 
+            seed=seed, 
+            n_jobs=1
+            )
         wins = df["winner_strategy"].value_counts()
         wa = int(wins.get(a, 0))
         wb = int(wins.get(b, 0))

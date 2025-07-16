@@ -14,7 +14,8 @@ from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 
 def run_rf(seed: int = 0) -> None:
     metrics = pd.read_parquet("data/metrics.parquet")
-    ratings = pickle.load(open("data/ratings_pooled.pkl", "rb"))
+    with open("data/ratings_pooled.pkl", "rb") as fh:
+        ratings = pickle.load(fh)
     df_mu = pd.DataFrame({"strategy": list(ratings), "mu": [v[0] for v in ratings.values()]})
     data = metrics.merge(df_mu, on="strategy", how="inner")
     X = data.drop(columns=["strategy", "mu"])
@@ -24,7 +25,7 @@ def run_rf(seed: int = 0) -> None:
     model.fit(X, y)
 
     imp = permutation_importance(model, X, y, n_repeats=5, random_state=seed)
-    imp_dict = {c: float(s) for c, s in zip(X.columns, imp.importances_mean, strict=False)}
+    imp_dict = {c: float(s) for c, s in zip(X.columns, imp["importances_mean"], strict=False)}
     Path("data").mkdir(exist_ok=True)
     with (Path("data") / "rf_importance.json").open("w") as fh:
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
@@ -40,7 +41,7 @@ def run_rf(seed: int = 0) -> None:
 def main(argv: List[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Random forest analysis")
     parser.add_argument("--seed", type=int, default=0)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(argv or [])
     run_rf(seed=args.seed)
 
 
