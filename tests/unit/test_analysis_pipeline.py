@@ -14,7 +14,7 @@ from farkle import run_rf, run_trueskill
 
 def test_analysis_pipeline(tmp_path):
     data_root = tmp_path / "data"
-    res_dir = data_root / "results/2_players"
+    res_dir = data_root / "results" / "2_players"
     res_dir.mkdir(parents=True)
 
     keepers = np.array(["A", "B", "C"])
@@ -37,9 +37,10 @@ def test_analysis_pipeline(tmp_path):
 
     nb_dir = tmp_path / "notebooks"
     nb_dir.mkdir()
-    src_nb = Path(__file__).resolve().parents[2] / "notebooks" / "farkle_report.ipynb"
+    root = Path(__file__).resolve().parents[2]
+    src_nb = root / "notebooks" / "farkle_report.ipynb"
     shutil.copy(src_nb, nb_dir / "farkle_report.ipynb")
-    (tmp_path / "src").symlink_to(Path(__file__).resolve().parents[2] / "src")
+    (tmp_path / "src").symlink_to(root / "src")
 
     cwd = os.getcwd()
     os.chdir(tmp_path)
