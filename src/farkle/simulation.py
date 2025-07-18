@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import multiprocessing as mp
+from dataclasses import asdict
 from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
@@ -180,7 +181,8 @@ def _play_game(seed: int, strategies: Sequence[ThresholdStrategy], target_score:
     }
     # 3) Per-player metrics
     for pname, stats in gm.players.items():
-        for k, v in vars(stats).items():
+        # asdict works on slots dataclasses
+        for k, v in asdict(stats).items():
             flat[f"{pname}_{k}"] = v
             
     return flat

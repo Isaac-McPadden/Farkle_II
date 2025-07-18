@@ -74,7 +74,12 @@ def simulate_many_games_stream(
 
     # We will write only five tiny columns per game
     header = ["game_id", "winner", "winning_score", "winner_strategy", "n_rounds"]
-
+    
+    # --- truncate file & write header once, upfront --------------------
+    with open(out_csv, "w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=header)
+        writer.writeheader()
+        
     if n_jobs == 1:
         with open(out_csv, "w", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=header)

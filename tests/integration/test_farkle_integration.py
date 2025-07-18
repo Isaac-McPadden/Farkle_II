@@ -1,3 +1,4 @@
+import contextlib
 import subprocess as sp
 import sys
 from pathlib import Path
@@ -29,9 +30,11 @@ def tmp_csv():
     csv_path = TMP / "sim.csv"
     # clean between test runs
     if csv_path.exists():
-        csv_path.unlink()
+        with contextlib.suppress(PermissionError):
+            csv_path.unlink()
     yield csv_path
-    csv_path.unlink(missing_ok=True)
+    with contextlib.suppress(PermissionError):
+        csv_path.unlink(missing_ok=True)
 
 @pytest.fixture(scope="session")
 def simple_strategy():
