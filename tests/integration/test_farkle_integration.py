@@ -116,9 +116,10 @@ def test_final_round_rule_1():
     ]
     game = FarkleGame(players, target_score=2000)
     gm = game.play()                         # GameMetrics
-    assert gm.winning_score >= 2000
+    winner = max(gm.players, key=lambda n: gm.players[n].score)
+    assert gm.players[winner].score >= 2000
     # everyone had ≤ one extra turn
-    assert gm.n_rounds >= 1
+    assert gm.game.n_rounds >= 1
 
 
 def test_final_round_rule_2():
@@ -138,15 +139,16 @@ def test_final_round_rule_2():
     gm = game.play()
 
     # ───────── assertions on the public result ─────────
-    assert gm.winning_score >= 2_000
-    assert gm.n_rounds >= 1        # each player got ≤ one extra turn
+    winner = max(gm.players, key=lambda n: gm.players[n].score)
+    assert gm.players[winner].score >= 2_000
+    assert gm.game.n_rounds >= 1        # each player got ≤ one extra turn
 
 
 
 pytestmark = pytest.mark.skipif(
     # set env var FAST_CI to skip heavy tests
     "FAST_CI" in __import__("os").environ,
-    reason="performance test – skip on CI",
+    reason="performance test - skip on CI",
 )
 
 def test_batch_time_under_baseline():
@@ -176,7 +178,7 @@ def test_pipeline_matches_default(roll, turn_pre, flags):
     smart_five, smart_one = flags
 
     # ---------- (A) single-call pipeline ----------
-    d_score, d_used, d_reroll = default_score(
+    d_score, d_used, d_reroll = default_score( # type: ignore (refactor allows 3 or 5 outputs)
         dice_roll       = roll,
         turn_score_pre  = turn_pre,
         smart_five      = smart_five,

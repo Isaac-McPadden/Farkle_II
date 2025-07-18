@@ -171,14 +171,18 @@ def _play_game(seed: int, strategies: Sequence[ThresholdStrategy], target_score:
     # give every player an *independent* PRNG, but reproducible
     players = _make_players(strategies, seed)
     gm = FarkleGame(players, target_score=target_score).play()
+    # 1) Determine the winning player's name from the PlayerStats block
+    winner = next(name for name, ps in gm.players.items() if ps.rank == 1)
     flat: Dict[str, Any] = {
-        "winner": gm.winner,
-        "winning_score": gm.winning_score,
-        "n_rounds": gm.n_rounds,
+        "winner": winner,
+        "winning_score": gm.players[winner].score,
+        "n_rounds": gm.game.n_rounds,
     }
-    for pname, stats in gm.per_player.items():  # player stats
-        for k, v in stats.items():
+    # 3) Per-player metrics
+    for pname, stats in gm.players.items():
+        for k, v in vars(stats).items():
             flat[f"{pname}_{k}"] = v
+            
     return flat
 
 

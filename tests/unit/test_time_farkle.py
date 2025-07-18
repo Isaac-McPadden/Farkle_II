@@ -17,7 +17,8 @@ def fast_sim(monkeypatch):
     enough like pandas objects that measure_sim_times() is happy.
     """
     dummy_game = SimpleNamespace(
-        winner=0, winning_score=10, n_rounds=1
+        players={"P0": SimpleNamespace(score=10)},
+        game=SimpleNamespace(n_rounds=1),
     )
 
     # simulate_one_game → lightweight object

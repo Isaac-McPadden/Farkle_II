@@ -88,9 +88,10 @@ def measure_sim_times(argv: list[str] | None = None):
     t1 = time.perf_counter()
     print("\nSingle game:")
     print(f"  Time elapsed      : {t1-t0:.6f} s")
-    print(f"  Winner            : {gm.winner}")
-    print(f"  Winning score     : {gm.winning_score}")
-    print(f"  Rounds            : {gm.n_rounds}")
+    winner = max(gm.players.items(), key=lambda p: p[1].score)[0]
+    print(f"  Winner            : {winner}")
+    print(f"  Winning score     : {gm.players[winner].score}")
+    print(f"  Rounds            : {gm.game.n_rounds}")
 
     # 3) Time a batch of N games
     t0 = time.perf_counter()

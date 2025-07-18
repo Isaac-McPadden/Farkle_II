@@ -34,7 +34,8 @@ def test_play_helpers_consistency():
 
     stats_dict = _play_game(seed=123, strategies=[s1, s2], target_score=1_000)
     gm = simulate_one_game(strategies=[s1, s2], target_score=1_000, seed=123)
-    assert stats_dict["winner"] == gm.winner
+    winner = max(gm.players, key=lambda n: gm.players[n].score)
+    assert stats_dict["winner"] == winner
     # simulate_many_games should aggregate identical winners when n_games=1
     df = simulate_many_games(n_games=1, strategies=[s1, s2],
                              target_score=1_000, seed=999, n_jobs=1)

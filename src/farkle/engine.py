@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Sequence
 
 import numpy as np
@@ -245,7 +245,22 @@ class GameMetrics:
     # legacy – keep old call‑sites alive until migrated
     @property
     def per_player(self):
-        return {n: vars(ps) for n, ps in self.players.items()}
+        return {n: asdict(ps) for n, ps in self.players.items()}
+
+    # ------------------------------------------------------------------
+    # Compatability helpers for the previous GameMetrics API
+    # ------------------------------------------------------------------
+    @property
+    def winner(self) -> str:
+        return max(self.players.items(), key=lambda p: p[1].score)[0]
+
+    @property
+    def winning_score(self) -> int:
+        return self.players[self.winner].score
+
+    @property
+    def n_rounds(self) -> int:
+        return self.game.n_rounds
 
 
 @dataclass(slots=True)

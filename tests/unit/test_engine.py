@@ -43,16 +43,15 @@ def test_game_play_deterministic():
         FarklePlayer("P2", stop_after_one(), rng=rng2),
     ]
     gm = FarkleGame(players, target_score=1500).play()
-    assert gm.winner in {"P1", "P2"}
+    winner = max(gm.players, key=lambda n: gm.players[n].score)
+    assert winner in {"P1", "P2"}
     # Six 1's count as six-of-a-kind = 3000 points, so first turn already ≥1500
-    assert gm.winning_score == 6000
+    assert gm.players[winner].score == 6000
     # both players still only had one round
-    total_rolls = []
-    for stats in gm.per_player.values():
-        total_rolls.append(stats["rolls"])
+    total_rolls = [gm.players[name].rolls for name in sorted(gm.players)]
         
     assert total_rolls == [1, 2]
-    assert gm.n_rounds == 1
+    assert gm.game.n_rounds == 1
 
 
 class _SeqGen(np.random.Generator):
