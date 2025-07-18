@@ -33,14 +33,14 @@ def test_analysis_pipeline(tmp_path):
     )
     metrics.to_parquet(data_root / "metrics.parquet")
 
-    (data_root / "results/manifest.yaml").write_text(yaml.safe_dump({"seed": 0}))
+    (data_root / "results" / "manifest.yaml").write_text(yaml.safe_dump({"seed": 0}))
 
     nb_dir = tmp_path / "notebooks"
     nb_dir.mkdir()
     root = Path(__file__).resolve().parents[2]
     src_nb = root / "notebooks" / "farkle_report.ipynb"
     shutil.copy(src_nb, nb_dir / "farkle_report.ipynb")
-    (tmp_path / "src").symlink_to(root / "src")
+    shutil.copytree(root / "src", tmp_path / "src", dirs_exist_ok=True)
 
     cwd = os.getcwd()
     os.chdir(tmp_path)

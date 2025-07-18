@@ -19,6 +19,7 @@ def run_rf(seed: int = 0) -> None:
     df_mu = pd.DataFrame({"strategy": list(ratings), "mu": [v[0] for v in ratings.values()]})
     data = metrics.merge(df_mu, on="strategy", how="inner")
     X = data.drop(columns=["strategy", "mu"])
+    X = X.astype(float)
     y = data["mu"]
 
     model = HistGradientBoostingRegressor(random_state=seed)

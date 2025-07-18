@@ -368,7 +368,8 @@ def default_score(
     score_threshold: int  = 300,
     dice_threshold: int  = 3,
     prefer_score: bool = True,
-) -> Tuple[int, int, int]:
+    return_discards: bool = False, # reports if 5's or 1's were discarded at all
+) -> Tuple[int, int, int] | Tuple[int, int, int, int, int]:
     """Score a roll and apply Smart discard heuristics.
 
     Inputs
@@ -378,9 +379,9 @@ def default_score(
     turn_score_pre (int):
         Score already accumulated this turn.
     smart_five (bool, optional):
-        Enable Smart‑5 discard.
+        Enable Smart-5 discard.
     smart_one (bool, optional):
-        Enable Smart‑1 discard.
+        Enable Smart-1 discard.
     consider_score (bool, optional):
         Whether to respect score_threshold.
     consider_dice (bool, optional):
@@ -419,7 +420,8 @@ def default_score(
         prefer_score=prefer_score,
     )
 
-    return apply_discards(raw_score, raw_used, d5, d1, len(dice_roll))
+    final_scoring_info = apply_discards(raw_score, raw_used, d5, d1, len(dice_roll))
+    return (*final_scoring_info, d5, d1) if return_discards else final_scoring_info
 
 
 # --------------------------------------------------------------------------- #
