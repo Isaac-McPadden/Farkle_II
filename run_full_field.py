@@ -8,10 +8,12 @@ run_full_field.py  -  Phase-1 full-grid screen for all table sizes
 
 import importlib
 import multiprocessing as mp
+import shutil
 from math import ceil
 from pathlib import Path
 from time import perf_counter
 
+import pandas as pd
 from scipy.stats import norm
 
 # Seed 1 Global Config
@@ -30,6 +32,16 @@ from scipy.stats import norm
     # # pre-compute critical z-scores
     # Z_ALPHA = norm.isf(Q_FDR / 2)      # two-sided BH
     # Z_BETA  = norm.isf(1 - POWER)      # power target
+    
+def _concat_row_shards(out_dir: Path, n: int) -> None:
+    """Combine row shard files and remove the temporary directory."""
+    row_dir = out_dir / f"{n}p_rows"
+    files = sorted(row_dir.glob("*.parquet"))
+    if not files:
+        return
+    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+    df.to_parquet(out_dir / f"{n}p_rows.parquet")
+    shutil.rmtree(row_dir, ignore_errors=True)
 
 def main():
     import farkle.run_tournament as rt # required for main hook  # noqa: I001
@@ -41,7 +53,7 @@ def main():
     Q_FDR            = 0.02            # BH, two-sided
     GLOBAL_SEED      = 0
     JOBS             = None            # None → all logical cores
-    BASE_OUT         = Path("data/results_seed_0")
+    BASE_OUT         = Path(f"data/results_seed_{GLOBAL_SEED}")
     BASE_OUT.mkdir(parents=True, exist_ok=True)
     # ------------------------------------------------------------------
 
@@ -85,7 +97,7 @@ def main():
         )
         dt = perf_counter() - t0
         print(f"✅ finished {n}-player in {dt/60:5.1f} min\n", flush=True)
-
+        _concat_row_shards(out_dir, n)
     print("🏁  All table sizes completed.")
 
 if __name__=='__main__':
