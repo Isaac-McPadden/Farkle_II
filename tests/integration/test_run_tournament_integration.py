@@ -18,6 +18,7 @@ Both the direct API and the CLI wrapper are covered.
 from __future__ import annotations
 
 import importlib
+import inspect
 import pickle
 import random
 import sys
@@ -66,7 +67,9 @@ def _tiny_strategy_grid(seed: int = 0) -> List[ThresholdStrategy]:
 ###############################################################################
 
 
-def _init_worker_small(strategies: Sequence[ThresholdStrategy]):  # pragma: no cover
+def _init_worker_small(
+    strategies: Sequence[ThresholdStrategy], *_: object
+) -> None:  # pragma: no cover
     """Executed in every spawned process.
 
     We re -import the module *inside* the worker so we mutate the *child 's*
@@ -79,13 +82,13 @@ def _init_worker_small(strategies: Sequence[ThresholdStrategy]):  # pragma: no c
     _rt = _imp.import_module("farkle.run_tournament")
 
     # Drastically cut the workload
-    _rt.GAMES_PER_SHUFFLE = 2 # type: ignore
-    _rt.NUM_SHUFFLES = 2 # type: ignore
-    _rt.DESIRED_SEC_PER_CHUNK = 0.1 # type: ignore
-    _rt.CKPT_EVERY_SEC = 1 # type: ignore
+    _rt.GAMES_PER_SHUFFLE = 2  # type: ignore
+    _rt.NUM_SHUFFLES = 2  # type: ignore
+    _rt.DESIRED_SEC_PER_CHUNK = 0.1  # type: ignore
+    _rt.CKPT_EVERY_SEC = 1  # type: ignore
 
     # Populate the fast global lookup table
-    _rt._STRATS = list(strategies) # type: ignore
+    _rt._STRATS = list(strategies)  # type: ignore
 
 
 ###############################################################################
@@ -133,7 +136,14 @@ def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     _apply_fast_patches(monkeypatch, rt)
 
     ckpt = tmp_path / "ppool.pkl"
-    rt.run_tournament(global_seed=123, checkpoint_path=ckpt, n_jobs=2)
+    kwargs = {
+        "global_seed": 123,
+        "checkpoint_path": ckpt,
+        "n_jobs": 2,
+    }
+    if "n_players" in inspect.signature(rt.run_tournament).parameters:
+        kwargs["n_players"] = rt.N_PLAYERS
+    rt.run_tournament(**kwargs)
 
     # --- assertions ---
     assert ckpt.exists(), "checkpoint not created"
@@ -161,7 +171,7 @@ def test_run_tournament_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     ckpt = tmp_path / "cli.pkl"
 
     argv_backup = sys.argv.copy()
-    sys.argv = [
+    argv = [
         "farkle.run_tournament",
         "--seed",
         "42",
@@ -172,6 +182,9 @@ def test_run_tournament_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "--ckpt-sec",
         "1",
     ]
+    if "--players" in inspect.getsource(rt.main):
+        argv.extend(["--n_players", str(rt.N_PLAYERS)])
+    sys.argv = argv
     try:
         rt.main()
     finally:

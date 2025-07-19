@@ -29,7 +29,7 @@ from farkle.strategies import ThresholdStrategy
 # ---------------------------------------------------------------------------
 # Configuration constants (patched by tests/CLI)
 # ---------------------------------------------------------------------------
-N_PLAYERS: int = 5
+N_PLAYERS: int = 5  # default – can be overwritten at runtime
 NUM_SHUFFLES: int = 10_223
 GAMES_PER_SHUFFLE: int = 8_160 // N_PLAYERS  # 1 632
 DESIRED_SEC_PER_CHUNK: int = 10
@@ -55,11 +55,16 @@ METRIC_LABELS: Tuple[str, ...] = (
 _STRATS: List[ThresholdStrategy] = []
 
 
-def _init_worker(strategies: Sequence[ThresholdStrategy]) -> None:
-    """Store the strategy list in each worker process."""
+def _init_worker(
+    strategies: Sequence[ThresholdStrategy],
+    n_players: int,          # NEW
+) -> None:
+    """Run once in every worker; copy strats **and** table size."""
 
-    global _STRATS
+    global _STRATS, N_PLAYERS, GAMES_PER_SHUFFLE
     _STRATS = list(strategies)
+    N_PLAYERS = n_players
+    GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
 
 
 def _play_single_game(seed: int, strat_indices: Sequence[int]) -> Tuple[str, List[int]]:
@@ -243,6 +248,7 @@ def _save_checkpoint(
 
 def run_tournament(
     *,
+    n_players: int = 5,
     global_seed: int = 0,
     checkpoint_path: Path | str = "checkpoint.pkl",
     n_jobs: int | None = None,
@@ -251,9 +257,15 @@ def run_tournament(
     row_output_directory: Path | None = None, # None if --row-dir omitted
 ) -> None:
     """Orchestrate the multi-process tournament."""
-
+        
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
-
+    
+    global N_PLAYERS, GAMES_PER_SHUFFLE
+    if n_players < 2:
+        raise ValueError("n_players must be ≥2")
+    N_PLAYERS = n_players
+    GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
+    
     games_per_sec = _measure_throughput(strategies[:N_PLAYERS])
     shuffles_per_chunk = max(1, int(DESIRED_SEC_PER_CHUNK * games_per_sec // GAMES_PER_SHUFFLE))
 
@@ -290,7 +302,7 @@ def run_tournament(
         chunk_fn = _run_chunk
 
     with ProcessPoolExecutor(
-        max_workers=n_jobs, initializer=_init_worker, initargs=(strategies,)
+        max_workers=n_jobs, initializer=_init_worker, initargs=(strategies, N_PLAYERS)
     ) as pool:
         future_to_index = {pool.submit(chunk_fn, c): i for i, c in enumerate(chunks)}
 

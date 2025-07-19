@@ -38,6 +38,8 @@ docs  = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
 [project.scripts]
 farkle = "farkle.farkle_cli:main"
 time-farkle = "farkle.time_farkle:main"
+run-full-field = "farkle.run_full_field:main"
+watch-game = "farkle.watch_game:watch_game"
 
 # ── 3. Tell Hatchling where the code lives ───────────
 [tool.hatch.build.targets.wheel]

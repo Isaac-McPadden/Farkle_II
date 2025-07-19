@@ -32,7 +32,8 @@ from scipy.stats import norm
     # # pre-compute critical z-scores
     # Z_ALPHA = norm.isf(Q_FDR / 2)  # two-sided BH
     # Z_BETA = norm.isf(1 - POWER)  # power target
-    
+
+
 def _concat_row_shards(out_dir: Path, n: int) -> None:
     """Combine row shard files and remove the temporary directory."""
     row_dir = out_dir / f"{n}p_rows"
@@ -43,8 +44,10 @@ def _concat_row_shards(out_dir: Path, n: int) -> None:
     df.to_parquet(out_dir / f"{n}p_rows.parquet")
     shutil.rmtree(row_dir, ignore_errors=True)
 
+
 def main():
     import farkle.run_tournament as rt  # required for main hook  # noqa: I001
+    
     # ────────── GLOBAL CONFIG ─────────────────────────────────────────
     PLAYERS = [2, 3, 4, 5, 6, 8, 10, 12]
     GRID = 8_160  # total strategies
@@ -80,23 +83,22 @@ def main():
 
         print(
             f"▶ {n:>2}-player  |  {nshuf:>7,} shuffles  "
-            f"{gps:>5} gps  →  {ngames/1e6:5.2f} M games",
+            f"{gps:>5} gps  →  {ngames / 1e6:5.2f} M games",
             flush=True,
         )
 
         # fresh module copy for clean monkey-patch
         rt = importlib.reload(rt)
-        rt.N_PLAYERS = n  # type: ignore
-        rt.GAMES_PER_SHUFFLE = gps  # type: ignore
         rt.NUM_SHUFFLES = nshuf  # type: ignore
 
         t0 = perf_counter()
         rt.run_tournament(
-            global_seed = GLOBAL_SEED,
-            checkpoint_path = out_dir / f"{n}p_checkpoint.pkl",
-            n_jobs = JOBS,
-            collect_metrics = True,
-            row_output_directory = out_dir / f"{n}p_rows",
+            n_players = n,
+            global_seed=GLOBAL_SEED,
+            checkpoint_path=out_dir / f"{n}p_checkpoint.pkl",
+            n_jobs=JOBS,
+            collect_metrics=True,
+            row_output_directory=out_dir / f"{n}p_rows",
         )
         dt = perf_counter() - t0
         print(f"✅ finished {n}-player in {dt/60:5.1f} min\n", flush=True)
@@ -104,4 +106,5 @@ def main():
     print("🏁  All table sizes completed.")
 
 if __name__=='__main__':
+    # run: python -m farkle.run_full_field
     main()
