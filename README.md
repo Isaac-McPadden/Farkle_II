@@ -63,6 +63,15 @@ whether to keep rolling or bank points. Key options:
 - `data` - small datasets used in examples
 - `experiments` - configuration files for larger runs
 
+## Code Checks
+Install dev dependencies and run the linters and type checker:
+
+```bash
+pip install -e .[dev] mypy
+ruff .
+black --check .
+mypy
+```
 ## License
 This project is licensed under the Apache 2.0 License.
 

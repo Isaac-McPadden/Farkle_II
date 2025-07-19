@@ -1,9 +1,14 @@
+import pickle
 import random
+from collections import Counter
 
+import pandas as pd
 import pytest
 
 from farkle.strategies import (
     ThresholdStrategy,
+    _sample_prefer_score,
+    load_farkle_results,
     parse_strategy,
     parse_strategy_for_df,
     random_threshold_strategy,
@@ -14,47 +19,48 @@ from farkle.strategies import (
     "tscore,dleft,has500,cs,cd,rb,keep_rolling",
     [
         # opening-roll shortcut
-        (200, 6, False, True, True, True,  True),
+        (200, 6, False, True, True, True, True),
         # score-only
-        (250, 3, True,  True, False, False,  True),
-        (350, 3, True,  True, False, False,  False),
-        (250, 4, True,  True, False, False,  True),
-        (350, 4, True,  True, False, False,  False),        
+        (250, 3, True, True, False, False, True),
+        (350, 3, True, True, False, False, False),
+        (250, 4, True, True, False, False, True),
+        (350, 4, True, True, False, False, False),
         # dice-only
-        (0,   4, True,  False, True, False,  True),
-        (0,   3, True,  False, True, False,  False),
-        (500, 4, True,  False, True, False,  True),
-        (500, 3, True,  False, True, False,  False),
+        (0, 4, True, False, True, False, True),
+        (0, 3, True, False, True, False, False),
+        (500, 4, True, False, True, False, True),
+        (500, 3, True, False, True, False, False),
         # both + require_both thresholds met
-        (400, 4, True,  True, True,  True,  True),  # Enough dice but too many points
-        (200, 2, True,  True, True,  True,  True),  # Low enough points but not enough dice
-        (200, 4, True,  True, True,  True,  True),   # Low enough points and enough dice available
-        (400, 2, True,  True, True,  True,  False),  # # Too many points and not enough dice available
+        (400, 4, True, True, True, True, True),  # Enough dice but too many points
+        (200, 2, True, True, True, True, True),  # Low enough points but not enough dice
+        (200, 4, True, True, True, True, True),  # Low enough points and enough dice available
+        (400, 2, True, True, True, True, False),  # # Too many points and not enough dice available
         # both + OR logic
-        (400, 4, True,  True, True,  False,  False),  # Enough dice but too many points
-        (200, 2, True,  True, True,  False,  False),  # Low enough points but not enough dice
-        (200, 4, True,  True, True,  False,  True),   # Low enough points and enough dice available
-        (400, 2, True,  True, True,  False,  False),  # # Too many points and not enough dice available
+        (400, 4, True, True, True, False, False),  # Enough dice but too many points
+        (200, 2, True, True, True, False, False),  # Low enough points but not enough dice
+        (200, 4, True, True, True, False, True),  # Low enough points and enough dice available
+        (400, 2, True, True, True, False, False),  # # Too many points and not enough dice available
     ],
 )
-def test_decide(tscore,dleft,has500,cs,cd,rb,keep_rolling):
+def test_decide(tscore, dleft, has500, cs, cd, rb, keep_rolling):
     strat = ThresholdStrategy(
-        score_threshold=300, dice_threshold=3,
-        consider_score=cs, consider_dice=cd, require_both=rb
+        score_threshold=300, dice_threshold=3, consider_score=cs, consider_dice=cd, require_both=rb
     )
-    assert strat.decide(
-        turn_score=tscore, dice_left=dleft,
-        has_scored=has500, score_needed=1_000
-    ) is keep_rolling
+    assert (
+        strat.decide(turn_score=tscore, dice_left=dleft, has_scored=has500, score_needed=1_000)
+        is keep_rolling
+    )
 
 
 def test_smart1_requires_smart5():
     with pytest.raises(ValueError):
         ThresholdStrategy(smart_five=False, smart_one=True)
 
+
 def test_require_both_guard():
     with pytest.raises(ValueError):
         ThresholdStrategy(consider_score=True, consider_dice=False, require_both=True)
+
 
 def test_random_strategy_factory():
     rng = random.Random(123)
@@ -71,14 +77,10 @@ def test_random_strategy_factory():
             assert ts.prefer_score is False
 
 
-
-# tests/unit/test_parse_strategy.py
-
-
-
 # ────────────────────────────────────────────────────────────────────────────
 # 1) A handful of “known-good” strings, together with the expected fields.
 # ────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize(
     "input_str, expected",
@@ -229,6 +231,7 @@ def test_parse_strategy_valid(input_str, expected):
 # 2) A collection of malformed strings that should all raise ValueError
 # ────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.parametrize(
     "bad_str",
     [
@@ -262,26 +265,60 @@ def test_parse_strategy_for_df():  # noqa: ARG001
     strat_dict_1 = parse_strategy_for_df(strat_case_1)
     strat_dict_2 = parse_strategy_for_df(strat_case_2)
     assert strat_dict_1 == {
-        "score_threshold" : 300,
-        "dice_threshold" : 2,
-        "smart_five" : True,
-        "smart_one" : True,
-        "consider_score" : True,
-        "consider_dice" : True,
+        "score_threshold": 300,
+        "dice_threshold": 2,
+        "smart_five": True,
+        "smart_one": True,
+        "consider_score": True,
+        "consider_dice": True,
         "require_both": True,
-        "auto_hot_dice" : True,
-        "run_up_score" : True,
-        "prefer_score" : True,
+        "auto_hot_dice": True,
+        "run_up_score": True,
+        "prefer_score": True,
     }
     assert strat_dict_2 == {
-        "score_threshold" : 300,
-        "dice_threshold" : 2,
-        "smart_five" : False,
-        "smart_one" : False,
-        "consider_score" : False,
-        "consider_dice" : False,
+        "score_threshold": 300,
+        "dice_threshold": 2,
+        "smart_five": False,
+        "smart_one": False,
+        "consider_score": False,
+        "consider_dice": False,
         "require_both": False,
-        "auto_hot_dice" : False,
-        "run_up_score" : False,
-        "prefer_score" : False,
+        "auto_hot_dice": False,
+        "run_up_score": False,
+        "prefer_score": False,
     }
+
+
+def test_sample_prefer_score_deterministic():
+    rng = random.Random(0)
+    assert _sample_prefer_score(True, False, rng) is True
+    rng = random.Random(0)
+    assert _sample_prefer_score(False, True, rng) is False
+    rng = random.Random(0)
+    expected_tt = rng.choice([True, False])
+    rng = random.Random(0)
+    assert _sample_prefer_score(True, True, rng) is expected_tt
+    rng = random.Random(0)
+    expected_ff = rng.choice([True, False])
+    rng = random.Random(0)
+    assert _sample_prefer_score(False, False, rng) is expected_ff
+
+
+def test_load_farkle_results(tmp_path):
+    counter = Counter({
+        'Strat(300,2)[SD][FOPS][AND][HR]': 5,
+        'Strat(250,3)[--][--PD][OR][--]': 3,
+    })
+    pkl = tmp_path / "results.pkl"
+    pkl.write_bytes(pickle.dumps(counter))
+
+    df = load_farkle_results(pkl)
+
+    row1 = {"strategy": 'Strat(300,2)[SD][FOPS][AND][HR]', "wins": 5}
+    row1.update(parse_strategy_for_df(row1["strategy"]))
+    row2 = {"strategy": 'Strat(250,3)[--][--PD][OR][--]', "wins": 3}
+    row2.update(parse_strategy_for_df(row2["strategy"]))
+    expected = pd.DataFrame([row1, row2])
+    expected = expected[df.columns]
+    pd.testing.assert_frame_equal(df.reset_index(drop=True), expected)

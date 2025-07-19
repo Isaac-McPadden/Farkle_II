@@ -14,6 +14,7 @@ from farkle.types import Counts6, Int64Arr1D
 # 0.  Low-level helpers  (all *nopython*-safe)
 # ---------------------------------------------------------------------------
 
+
 @nb.njit(cache=True)
 def _straight(ctr: Int64Arr1D) -> Tuple[int, int]:
     """Return the straight bonus if every face appears once.
@@ -77,8 +78,13 @@ def _four_kind_plus_pair(ctr: Int64Arr1D) -> Tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 @nb.njit(cache=True)
-def _evaluate_nb(c1: int, c2: int, c3: int,
-                 c4: int, c5: int, c6: int
+def _evaluate_nb(
+    c1: int, 
+    c2: int, 
+    c3: int, 
+    c4: int, 
+    c5: int, 
+    c6: int,
 ) -> tuple[int, int, int, int]:
     """Score a roll purely within Numba.
 
@@ -126,23 +132,24 @@ def _evaluate_nb(c1: int, c2: int, c3: int,
                 else:  # n == 6 (straight case already out)
                     pts = 3000
                 score += pts
-                used  += n
-                ctr[face] = 0            # consume dice
+                used += n
+                ctr[face] = 0  # consume dice
                 break
         if not triggered:
             break
 
     # ---- leftover singles (only 1s and 5s score) -------------------------
-    lone_ones  = ctr[0]
+    lone_ones = ctr[0]
     lone_fives = ctr[4]
     score += lone_ones * 100 + lone_fives * 50
-    used  += lone_ones + lone_fives
+    used += lone_ones + lone_fives
     return score, used, lone_fives, lone_ones
 
 
 # ---------------------------------------------------------------------------
 # 2.  Thin Python shims (hashable → JIT core → cached)
 # ---------------------------------------------------------------------------
+
 
 @lru_cache(maxsize=4096)
 def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
@@ -170,8 +177,12 @@ def score_roll(roll: list[int]) -> Tuple[int, int]:
         and how many dice contributed to the score.
     """
     key = (
-        roll.count(1), roll.count(2), roll.count(3),
-        roll.count(4), roll.count(5), roll.count(6),
+        roll.count(1), 
+        roll.count(2), 
+        roll.count(3),
+        roll.count(4), 
+        roll.count(5), 
+        roll.count(6),
     )
     pts, used, *_ = evaluate(key)
     return pts, used
@@ -180,6 +191,7 @@ def score_roll(roll: list[int]) -> Tuple[int, int]:
 # ---------------------------------------------------------------------------
 # 3.  Pre-compute full lookup table (still ~56 k combos → 923 uniques)
 # ---------------------------------------------------------------------------
+
 
 def build_score_lookup_table() -> dict[Counts6, tuple[int, int, Counts6, int, int]]:
     """
@@ -195,7 +207,10 @@ def build_score_lookup_table() -> dict[Counts6, tuple[int, int, Counts6, int, in
         first element is the total points for that combination and
         counts repeats the key so callers can keep a reference.
     """
-    look: Dict[Tuple[int, int, int, int, int, int], Tuple[int, int, Tuple[int, int, int, int, int, int], int, int]] = {}
+    look: Dict[
+        Tuple[int, int, int, int, int, int], 
+        Tuple[int, int, Tuple[int, int, int, int, int, int], int, int]
+    ] = {}
     faces = range(1, 7)
 
     for n in range(1, 7):
@@ -204,7 +219,7 @@ def build_score_lookup_table() -> dict[Counts6, tuple[int, int, Counts6, int, in
                 multiset.count(1), multiset.count(2), multiset.count(3),
                 multiset.count(4), multiset.count(5), multiset.count(6),
             )
-            if key in look:          # skip duplicates (e.g. (2,2,2,5,5) permutes)
+            if key in look:  # skip duplicates (e.g. (2,2,2,5,5) permutes)
                 continue
             score, used, sf, so = evaluate(key)
             look[key] = (score, used, key, sf, so)

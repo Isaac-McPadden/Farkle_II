@@ -23,7 +23,7 @@ def test_cli_run(tmp_path, monkeypatch):
             "score_thresholds": [300],
             "dice_thresholds": [2],
             "smart_five_opts": [False],
-            "smart_one_opts":  [False],
+            "smart_one_opts": [False],
             "consider_score_opts": [True],
             "consider_dice_opts": [True],
             "auto_hot_opts": [False],
@@ -52,7 +52,7 @@ def test_stream_writer(tmp_path):
         out_csv=str(out_csv), seed=123, n_jobs=1
     )
     lines = out_csv.read_text().splitlines()
-    assert len(lines) == 11          # header + 10 rows
+    assert len(lines) == 11  # header + 10 rows
     header = lines[0].split(",")
     assert header == ["game_id", "winner", "winning_score", "winner_strategy", "n_rounds"]
     
@@ -74,4 +74,4 @@ def test_stream_parallel(tmp_path, n_jobs):
         seed=7, n_jobs=n_jobs
     )
     rows = out.read_text().splitlines()
-    assert len(rows) == 5      # header + 4
+    assert len(rows) == 5  # header + 4

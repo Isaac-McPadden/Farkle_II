@@ -8,5 +8,5 @@ def pytest_configure():
     except ModuleNotFoundError:
         return
 
-    numba.jit = lambda *a, **k: (lambda f: f)         # type: ignore  # noqa: ARG005
-    numba.njit = numba.jit                             # keep both symbols
+    numba.jit = lambda *a, **k: (lambda f: f)  # type: ignore  # noqa: ARG005
+    numba.njit = numba.jit  # keep both symbols

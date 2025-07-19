@@ -28,25 +28,28 @@ sweeps.
 """
 
 
-
 __all__: list[str] = [
     "ThresholdStrategy",
     "random_threshold_strategy",
 ]
 
+
 DiceRoll = List[int]
 """A list of integers 1-6 representing a single dice roll."""
+
 
 # ---------------------------------------------------------------------------
 # Concrete implementation
 # ---------------------------------------------------------------------------
+
+
 @nb.njit(cache=True)
 def _should_continue(turn_score, dice_left,
                      sc_thr, di_thr,
                      c_score, c_dice,
                      req_both) -> bool:
     want_s = c_score and turn_score < sc_thr
-    want_d = c_dice and dice_left  > di_thr
+    want_d = c_dice and dice_left > di_thr
     if c_score and c_dice:
         return (want_s or want_d) if req_both else (want_s and want_d)
     if c_score:
@@ -77,8 +80,8 @@ class ThresholdStrategy:
 
     score_threshold: int = 300
     dice_threshold: int = 2
-    smart_five: bool = False   # “throw back lone 5’s first”
-    smart_one:  bool = False
+    smart_five: bool = False  # “throw back lone 5’s first”
+    smart_one: bool = False
     consider_score: bool = True
     consider_dice: bool = True
     require_both: bool = False
@@ -103,13 +106,14 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+    
     def decide(
         self,
         *,
         turn_score: int,
         dice_left: int,
         has_scored: bool,
-        score_needed: int,          # noqa: ARG002 (vestigial/reserved for richer strats)
+        score_needed: int,  # noqa: ARG002 (vestigial/reserved for richer strats)
         final_round: bool = False,  # (new end-game hooks – harmless defaults)
         score_to_beat: int = 0,
         running_total: int = 0,
@@ -137,7 +141,7 @@ class ThresholdStrategy:
 
         # --------------------------------- fast exits ---------------------------------
         if not has_scored and turn_score < 500:
-            return True                     # must cross the 500-pt entry gate
+            return True  # must cross the 500-pt entry gate
 
         # final-round catch-up rule
         if final_round:
@@ -156,6 +160,7 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Representation helpers
     # ------------------------------------------------------------------
+    
     def __str__(self) -> str:  # noqa: D401 - magics method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
@@ -171,7 +176,8 @@ class ThresholdStrategy:
 # ---------------------------------------------------------------------------
 # Convenience factory
 # ---------------------------------------------------------------------------
-# strategies.py
+
+
 def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> bool:
     """
     Return the *only* legal value(s) for `prefer_score`
@@ -182,18 +188,18 @@ def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> bool:
         T   F       True    (always favour score)
         F   T       False   (always favour dice)
         T   T       rng     (tie-break random)
-        F   F       rng     (doesn’t matter – random)
+        F   F       rng     (doesn't matter - random)
 
     Much easier to read than a stacked ternary.
     """
-    if cs == cd:                 # (T,T) or (F,F)   →  free choice
+    if cs == cd:  # (T,T) or (F,F)   →  free choice
         return rng.choice([True, False])
-    return cs                    # (T,F) or (F,T)
-
+    return cs  # (T,F) or (F,T)
 
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
     """Return a random ThresholdStrategy that always satisfies the two constraints."""
+    
     rng_inst = rng if rng is not None else random.Random()
 
     # pick smart_five first; if it’s False, force smart_one=False
@@ -253,7 +259,7 @@ def parse_strategy(s: str) -> ThresholdStrategy:
     pattern = re.compile(
         r"""
         \A
-        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)   # thresholds
+        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)  # thresholds
         \[
             (?P<cs>[S\-])(?P<cd>[D\-])
         \]
@@ -278,7 +284,7 @@ def parse_strategy(s: str) -> ThresholdStrategy:
         raise ValueError(f"Cannot parse strategy string: {s!r}")
 
     score_threshold = int(m.group("score"))
-    dice_threshold  = int(m.group("dice"))
+    dice_threshold = int(m.group("dice"))
 
     cs_flag = m.group("cs") == "S"
     cd_flag = m.group("cd") == "D"
@@ -346,7 +352,7 @@ def parse_strategy_for_df(s: str) -> dict:
     pattern = re.compile(
         r"""
         \A
-        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)   # thresholds
+        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)  # thresholds
         \[
             (?P<cs>[S\-])(?P<cd>[D\-])
         \]
@@ -371,7 +377,7 @@ def parse_strategy_for_df(s: str) -> dict:
         raise ValueError(f"Cannot parse strategy string: {s!r}")
 
     score_threshold = int(m.group("score"))
-    dice_threshold  = int(m.group("dice"))
+    dice_threshold = int(m.group("dice"))
 
     cs_flag = m.group("cs") == "S"
     cd_flag = m.group("cd") == "D"
@@ -456,8 +462,8 @@ def load_farkle_results(
     # ------------------------------------------------------------------
     flags_df = (
         base_df["strategy"]
-          .apply(parse_strategy)   # str → dict
-          .apply(pd.Series)        # dict → DataFrame
+          .apply(parse_strategy)  # str → dict
+          .apply(pd.Series)  # dict → DataFrame
     )
 
     full_df = pd.concat([base_df, flags_df], axis=1)

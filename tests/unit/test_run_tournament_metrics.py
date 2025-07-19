@@ -8,6 +8,7 @@ logging behaviour.
 
 from __future__ import annotations
 
+import pickle
 import sys
 import types
 from collections import Counter, defaultdict
@@ -18,6 +19,7 @@ import farkle.run_tournament as rt
 # ---------------------------------------------------------------------------
 # Dummy helper for deterministic results
 # ---------------------------------------------------------------------------
+
 
 def _fake_play_one_shuffle(seed: int, *, collect_rows: bool = False):
     """Return simple deterministic aggregates based on the seed."""
@@ -32,6 +34,7 @@ def _fake_play_one_shuffle(seed: int, *, collect_rows: bool = False):
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 def test_run_chunk_metrics_accumulates(monkeypatch):
     monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
@@ -61,9 +64,9 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
 
     pa_mod = types.ModuleType("pyarrow")
     pq_mod = types.ModuleType("pyarrow.parquet")
-    pa_mod.Table = types.SimpleNamespace(from_pylist=DummyTable.from_pylist) # type: ignore
-    pa_mod.parquet = pq_mod # type: ignore
-    pq_mod.write_table = lambda tbl, path: written.update({"path": Path(path), "tbl": tbl}) # type: ignore
+    pa_mod.Table = types.SimpleNamespace(from_pylist=DummyTable.from_pylist)  # type: ignore
+    pa_mod.parquet = pq_mod  # type: ignore
+    pq_mod.write_table = lambda tbl, path: written.update({"path": Path(path), "tbl": tbl})  # type: ignore
     monkeypatch.setitem(sys.modules, "pyarrow", pa_mod)
     monkeypatch.setitem(sys.modules, "pyarrow.parquet", pq_mod)
 
@@ -73,3 +76,18 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     assert written["tbl"] == "tbl"
     assert written["path"].parent == tmp_path
     assert written["path"].name == "rows_42_99.parquet"
+    
+def test_save_checkpoint_round_trip(tmp_path):
+    wins = Counter({"A": 2})
+    sums = {label: defaultdict(float, {"A": 1.0}) for label in rt.METRIC_LABELS}
+    sqs = {label: defaultdict(float, {"A": 2.0}) for label in rt.METRIC_LABELS}
+
+    ckpt = tmp_path / "ckpt.pkl"
+    rt._save_checkpoint(ckpt, wins, sums, sqs)
+
+    payload = pickle.loads(ckpt.read_bytes())
+
+    assert payload["win_totals"] == wins
+    assert payload["metric_sums"] == sums
+    assert payload["metric_square_sums"] == sqs
+    

@@ -26,7 +26,6 @@ from the outer simulation layer).
 """
 
 
-
 __all__ = [
     "FarklePlayer",
     "PlayerStats",
@@ -36,10 +35,10 @@ __all__ = [
 ]
 
 
-
 # ---------------------------------------------------------------------------
 # Player
 # ---------------------------------------------------------------------------
+
 
 @dataclass(slots=True)
 class FarklePlayer:
@@ -49,7 +48,7 @@ class FarklePlayer:
     strategy: ThresholdStrategy
     score: int = 0
     has_scored: bool = False  # entered game (≥500) flag
-    rng:  np.random.Generator = field(default_factory=np.random.default_rng, repr=False)
+    rng: np.random.Generator = field(default_factory=np.random.default_rng, repr=False)
     
     # counters
     n_farkles: int = 0
@@ -64,6 +63,7 @@ class FarklePlayer:
     
     def __post_init__(self):
         object.__setattr__(self, "strategy_str", str(self.strategy))
+        
     # ----------------------------- helpers -----------------------------
     def _roll(self, n: int) -> DiceRoll:
         """Produce n dice using this player's RNG.
@@ -120,17 +120,17 @@ class FarklePlayer:
 
             # 2) Compute points from this roll, after applying Smart‐5/Smart‐1 discards
             pts, used, reroll, d5, d1 = default_score( # type: ignore
-                dice_roll        = roll,
-                turn_score_pre   = turn_score,
-                smart_five       = self.strategy.smart_five,
-                smart_one        = self.strategy.smart_one,
-                score_threshold  = self.strategy.score_threshold,
-                dice_threshold   = self.strategy.dice_threshold,
-                consider_score   = self.strategy.consider_score,
-                consider_dice    = self.strategy.consider_dice,
-                require_both     = self.strategy.require_both,
-                prefer_score     = self.strategy.prefer_score,
-                return_discards  = True
+                dice_roll = roll,
+                turn_score_pre = turn_score,
+                smart_five = self.strategy.smart_five,
+                smart_one = self.strategy.smart_one,
+                score_threshold = self.strategy.score_threshold,
+                dice_threshold = self.strategy.dice_threshold,
+                consider_score = self.strategy.consider_score,
+                consider_dice = self.strategy.consider_dice,
+                require_both = self.strategy.require_both,
+                prefer_score = self.strategy.prefer_score,
+                return_discards = True
             )
 
             # 3) If pts == 0, that's a Farkle: bust, lose all points this turn, and end turn
@@ -158,14 +158,14 @@ class FarklePlayer:
             # 5.5) Hot dice short circuit
             if self.strategy.auto_hot_dice and dice == 6:
                 self.n_hot_dice += 1
-                continue                       # force another throw
+                continue  # force another throw
             
             # 6-A) If we’re in the final round and have already won, stop.
             running_total = self.score + turn_score
             score_needed = max(0, target_score - running_total)
             if final_round and running_total > score_to_beat:
-                if self.strategy.run_up_score:         # NEW opt-in flag
-                    pass                               # fall through to decide()
+                if self.strategy.run_up_score:  # NEW opt-in flag
+                    pass  # fall through to decide()
                 else:
                     break
 
@@ -176,11 +176,11 @@ class FarklePlayer:
             #      - has_scored = whether we’ve ever scored ≥500 on a previous turn
             #      - score_needed = how many more points (from banked + turn_score) we need to reach target_score
             keep_rolling = self.strategy.decide(
-                turn_score   = turn_score,
-                dice_left    = dice,
-                has_scored   = self.has_scored,
+                turn_score = turn_score,
+                dice_left = dice,
+                has_scored = self.has_scored,
                 score_needed = score_needed,
-                final_round  = final_round,
+                final_round = final_round,
                 score_to_beat= score_to_beat,
                 running_total= running_total,
             )
@@ -190,7 +190,7 @@ class FarklePlayer:
                 keep_rolling = True
 
             if not keep_rolling:
-                break        
+                break
 
         # 7) After leaving the loop, check if this is our “entry turn” (we need ≥500 to get on the board)
         if not self.has_scored and turn_score >= 500:
@@ -198,7 +198,7 @@ class FarklePlayer:
 
         # 8) If we already had a “first‐500” in a previous turn, or just got it, bank the points
         if self.has_scored:
-            self.score        += turn_score
+            self.score += turn_score
             self.highest_turn = max(self.highest_turn, turn_score)
 
 
@@ -228,19 +228,19 @@ class GameStats:
     GameMetrics
         New dataclass instance populated with results.
     """
-    n_players:     int
-    table_seed:    int
-    n_rounds:      int
-    total_rolls:   int
+    n_players: int
+    table_seed: int
+    n_rounds: int
+    total_rolls: int
     total_farkles: int
-    margin:        int
+    margin: int
     # per player and winner pulled into separate class, PlayerStats
 
 
 @dataclass(slots=True)
 class GameMetrics:
     players: Dict[str, PlayerStats]
-    game:    GameStats
+    game: GameStats
 
     # legacy – keep old call‑sites alive until migrated
     @property
@@ -302,7 +302,7 @@ class FarkleGame:
             Dataclass summarising the winner and per-player stats.
         """
         final_round = False
-        score_to_beat = self.target_score   # updated when someone triggers
+        score_to_beat = self.target_score  # updated when someone triggers
         rounds = 0
         while rounds < max_rounds:
             rounds += 1
@@ -314,7 +314,7 @@ class FarkleGame:
                 )
                 # First trigger starts the final round
                 if not final_round and p.score >= self.target_score:
-                    final_round   = True
+                    final_round = True
                     score_to_beat = p.score
                     triggering_player = p
                     final_players = [player for player in self.players if player != triggering_player]
@@ -324,7 +324,7 @@ class FarkleGame:
                                                   # It's not fair, but it's the rules
                         player.take_turn(target_score=self.target_score,
                                          final_round=True,
-                                         score_to_beat=score_to_beat)    
+                                         score_to_beat=score_to_beat)
                 # During the final round update the bar whenever someone
                 #     jumps ahead (so later players know what they must beat).
                         if player.score > score_to_beat:
@@ -357,16 +357,16 @@ class FarkleGame:
                 n_smart_five_dice = pl.n_smart_five_dice,
                 smart_one_uses = pl.smart_one_uses,
                 n_smart_one_dice = pl.n_smart_one_dice,
-                hot_dice     = pl.n_hot_dice,
+                hot_dice = pl.n_hot_dice,
             )
 
         game_block = GameStats(
-            n_players     = len(self.players),
-            table_seed    = self.table_seed,
-            n_rounds      = rounds,
-            total_rolls   = sum(pl.n_rolls for pl in self.players),
+            n_players = len(self.players),
+            table_seed = self.table_seed,
+            n_rounds = rounds,
+            total_rolls = sum(pl.n_rolls for pl in self.players),
             total_farkles = sum(pl.n_farkles for pl in self.players),
-            margin        = winner.score - (runner.score if runner else 0),
+            margin = winner.score - (runner.score if runner else 0),
         )
 
         return GameMetrics(players_block, game_block)

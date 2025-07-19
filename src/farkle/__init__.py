@@ -26,10 +26,12 @@ from farkle.strategies import ThresholdStrategy
 
 _orig_unlink = pathlib.Path.unlink
 
+
 def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
     """Wrapper around Path.unlink that squashes the WinError 32 race."""
     with contextlib.suppress(PermissionError):
         return _orig_unlink(self, missing_ok=missing_ok)
+
 
 # Patch globally (harmless on POSIX; vital on Windows)
 pathlib.Path.unlink = _safe_unlink  # type: ignore[assignment]
@@ -40,7 +42,7 @@ __all__ = [
     "ThresholdStrategy",
     "generate_strategy_grid",
     "simulate_many_games_stream",
-    "games_for_power"
+    "games_for_power",
 ]
 
 def _read_version_from_toml() -> str:
@@ -59,8 +61,10 @@ def _read_version_from_toml() -> str:
         data = tomllib.load(fh)
     return data["project"]["version"]
 
+
 try:
     assert __package__ is not None, "__package__ not detected, loading version from pyproject.toml"
-    __version__ = _v(__package__)      # importlib.metadata
+    __version__ = _v(__package__)  # importlib.metadata
 except PackageNotFoundError:
     __version__ = _read_version_from_toml()
+    

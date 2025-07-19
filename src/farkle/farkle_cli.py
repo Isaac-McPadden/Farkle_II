@@ -38,3 +38,4 @@ def main(argv: list[str] | None = None) -> None:
 
         strategies, _ = generate_strategy_grid(**cfg["strategy_grid"])
         simulate_many_games_stream(**cfg["sim"], strategies=strategies)
+        

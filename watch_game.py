@@ -86,10 +86,11 @@ def _patch_default_score() -> None:
     original = default_score
 
     def traced_default_score(*args, **kw):
-        pts, used, rr = original(*args, **kw) # type:ignore (default score produces 3 outputs by default, 5 if tracking discards)
+        res = original(*args, **kw)  # type: ignore[arg-type]
+        pts, used, reroll = res[:3]
         roll = args[0]
-        log.info(f"score({roll}) -> pts={pts:<4} used={used} reroll={rr}")
-        return pts, used, rr
+        log.info(f"score({roll}) -> pts={pts:<4} used={used} reroll={reroll}")
+        return res
 
     # monkey-patch in the *farkle.scoring* module too
     import farkle.scoring as _scoring_mod

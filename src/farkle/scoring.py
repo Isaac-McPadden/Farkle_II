@@ -117,8 +117,8 @@ def _expand_sorted_nb(c1: int, c2: int, c3: int, c4: int, c5: int, c6: int) -> I
         Array of face values in ascending order.
     """
     n_tot = c1 + c2 + c3 + c4 + c5 + c6
-    out   = np.empty(n_tot, dtype=np.int64)
-    pos   = 0
+    out = np.empty(n_tot, dtype=np.int64)
+    pos = 0
     for face, n in enumerate((c1, c2, c3, c4, c5, c6), 1):
         for _ in range(n):
             out[pos] = face
@@ -185,13 +185,13 @@ def score_lister(
     dice_rolls: tuple[FacesT, ...],
 ) -> tuple[
         tuple[
-            list[int],     # original roll (sorted)
-            int,           # dice_len
-            int,           # cand_score
-            int,           # cand_used
-            Counts6,       # counts
-            int,           # cand_sf
-            int            # cand_so
+            list[int],  # original roll (sorted)
+            int,  # dice_len
+            int,  # cand_score
+            int,  # cand_used
+            Counts6,  # counts
+            int,  # cand_sf
+            int  # cand_so
             ],
         ...
    ]:
@@ -294,8 +294,12 @@ def decide_smart_discards(
             bool: player banking points decision
         """
         hit_score = (score_after >= score_threshold) if consider_score else False
-        hit_dice  = (dice_left_after <= dice_threshold) if consider_dice else False
-        return (hit_score and hit_dice) if (consider_score and consider_dice and require_both) else (hit_score or hit_dice)
+        hit_dice = (dice_left_after <= dice_threshold) if consider_dice else False
+        return (
+            (hit_score and hit_dice)
+            if (consider_score and consider_dice and require_both)
+            else (hit_score or hit_dice)
+        )
 
     candidates = score_lister(generate_sequences(counts, smart_one=smart_one))
 
@@ -303,7 +307,6 @@ def decide_smart_discards(
     best_sf, best_so = single_fives, single_ones
 
     for (_roll, _len, cand_score, cand_used, _cnt, cand_sf, cand_so) in candidates:
-
         score_after = turn_score_pre + cand_score
         dice_left_after = dice_roll_len - cand_used
         if _must_bank(score_after, dice_left_after):
@@ -347,8 +350,8 @@ def apply_discards(
     tuple[int, int, int]:
         (final_score, final_used, dice_to_reroll).
     """
-    final_score  = raw_score - 50 * discard_fives - 100 * discard_ones
-    final_used   = raw_used  - discard_fives - discard_ones
+    final_score = raw_score - 50 * discard_fives - 100 * discard_ones
+    final_used = raw_used - discard_fives - discard_ones
     final_reroll = dice_roll_len - final_used
     return final_score, final_used, final_reroll
 
@@ -365,8 +368,8 @@ def default_score(
     consider_score: bool = True,
     consider_dice: bool = True,
     require_both: bool = False,
-    score_threshold: int  = 300,
-    dice_threshold: int  = 3,
+    score_threshold: int = 300,
+    dice_threshold: int = 3,
     prefer_score: bool = True,
     return_discards: bool = False, # reports if 5's or 1's were discarded at all
 ) -> Tuple[int, int, int] | Tuple[int, int, int, int, int]:

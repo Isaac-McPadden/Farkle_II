@@ -10,16 +10,17 @@ from __future__ import annotations
 import types  # noqa: F401
 from collections import Counter
 
-import numpy as np  # noqa: F401   Potentially imports something that needs it
+import numpy as np  # noqa: F401 | Potentially imports something that needs it
 import pytest
 
 import farkle.run_tournament as rt
 from farkle.strategies import ThresholdStrategy
 
-
 # --------------------------------------------------------------------------- #
 # Mini test doubles – replace expensive pieces with cheap determinism
 # --------------------------------------------------------------------------- #
+
+
 def _mini_strats(n: int = 6):
     """Return deterministic Strategy objects with distinct __str__()."""
     return [
@@ -62,18 +63,19 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
     """
 
     # ── 1 · deterministic, instantly-returning ProcessPool substitute ─────────
+    
     class DummyFuture:
         def __init__(self, result):
             self._result = result
-        def result(self):                # mimic concurrent.futures.Future
+        def result(self):  # mimic concurrent.futures.Future
             return self._result
-        def __hash__(self):              # make it usable as a dict key
+        def __hash__(self):  # make it usable as a dict key
             return id(self)
         def __eq__(self, other):
             return self is other
 
     class DummyPool:
-        def __enter__(self):  return self
+        def __enter__(self): return self
         def __exit__(self, *a): return False
         def submit(self, fn, arg):
             # run the work *eagerly* and wrap the result
@@ -85,18 +87,19 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
     # ── 2 · speed-up constants so only TWO chunks total ───────────────────────
     monkeypatch.setattr(rt, "NUM_SHUFFLES", 2, raising=False)
 
-    # ── 3 · fake wall-clock  (t jumps +31 s before the 2nd chunk) ─────────────
+    # ── 3 · fake wall-clock (t jumps +31 s before the 2nd chunk) ─────────────
     t = 0.0
-    def fake_perf():           # our replacement for time.perf_counter()
+    
+    def fake_perf():  # our replacement for time.perf_counter()
         return t
     monkeypatch.setattr(rt.time, "perf_counter", fake_perf, raising=True)
 
-    def fake_as_completed(dct):         # yield first future, then advance time
+    def fake_as_completed(dct):  # yield first future, then advance time
         nonlocal t
         it = iter(dct.keys())
         fut1 = next(it)
-        yield fut1                      # after first chunk (t = 0)
-        t += 31                         # 31 s later → timer should fire
+        yield fut1  # after first chunk (t = 0)
+        t += 31  # 31 s later → timer should fire
         for fut in it:
             yield fut
     monkeypatch.setattr(rt, "as_completed", fake_as_completed, raising=True)
@@ -108,6 +111,7 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
 
     # ── 5 · count how many times we attempt to write a checkpoint ─────────────
     saves = {"n": 0}
+    
     def fake_write_bytes(self, data):  # noqa: ARG001
         saves["n"] += 1
     monkeypatch.setattr(rt.Path, "write_bytes", fake_write_bytes, raising=True)
@@ -121,4 +125,4 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
                       n_jobs=None,
                       ckpt_every_sec=30)
 
-    assert saves["n"] == 2          # exactly one inside the loop, one at end
+    assert saves["n"] == 2  # exactly one inside the loop, one at end

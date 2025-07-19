@@ -66,3 +66,4 @@ def test_dataframe_winner_column(tmp_path, monkeypatch):  # noqa: ARG001
     monkeypatch.setattr(tf, "simulate_many_games", fake_many_games)
     df = tf.simulate_many_games(n_games=3, strategies=[], seed=0, n_jobs=1)
     assert set(df["winner"]) == {"P1", "P2"}
+    

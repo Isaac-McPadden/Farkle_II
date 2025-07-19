@@ -42,6 +42,7 @@ def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None
         if buffer:
             w.writerows(buffer)
 
+
 # ------------------------------------------------------------
 def simulate_many_games_stream(
     *,
@@ -101,7 +102,7 @@ def simulate_many_games_stream(
             ):
                 queue.put(row)
 
-        queue.put(None)    # poison pill
+        queue.put(None)  # poison pill
         writer.join()
 
 
@@ -124,7 +125,7 @@ def _single_game_row(
         Mapping of column names to values for a single row of the
         simulate_many_games_stream output.
     """
-    gm = _play_game(seed, strategies, target_score)       # re-use existing helper
+    gm = _play_game(seed, strategies, target_score)  # re-use existing helper
     winner_name = gm["winner"]
     winner_strategy = gm[f"{winner_name}_strategy"]
     return {
@@ -134,6 +135,7 @@ def _single_game_row(
         "winner_strategy": winner_strategy,
         "n_rounds": gm["n_rounds"],
     }
+
 
 # pickle-friendly wrapper for mp.Pool
 def _single_game_row_mp(args_tuple):
