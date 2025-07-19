@@ -42,6 +42,11 @@ METRIC_LABELS: Tuple[str, ...] = (
     "winner_farkles",
     "winner_rolls",
     "winner_highest_turn",
+    "winner_smart_five_uses",
+    "winner_n_smart_five_dice",
+    "winner_smart_one_uses",
+    "winner_n_smart_one_dice",
+    "winner_hot_dice",
 )
 
 # ---------------------------------------------------------------------------
@@ -71,6 +76,11 @@ def _play_single_game(seed: int, strat_indices: Sequence[int]) -> Tuple[str, Lis
         res[f"{winner}_farkles"],
         res[f"{winner}_rolls"],
         res[f"{winner}_highest_turn"],
+        res[f"{winner}_smart_five_uses"],
+        res[f"{winner}_n_smart_five_dice"],
+        res[f"{winner}_smart_one_uses"],
+        res[f"{winner}_n_smart_one_dice"],
+        res[f"{winner}_hot_dice"],
     ]
     return strat_repr, metrics
 
@@ -102,19 +112,27 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
         idxs = perm[offset : offset + N_PLAYERS].tolist()
         offset += N_PLAYERS
 
-        strat_repr, metrics = _play_single_game(int(gseed), idxs)
+        row = _play_game(int(gseed), [_STRATS[i] for i in idxs])
+        winner = row["winner"]
+        strat_repr = row[f"{winner}_strategy"]
+        metrics = [
+            row["winning_score"],
+            row["n_rounds"],
+            row[f"{winner}_farkles"],
+            row[f"{winner}_rolls"],
+            row[f"{winner}_highest_turn"],
+            row[f"{winner}_smart_five_uses"],
+            row[f"{winner}_n_smart_five_dice"],
+            row[f"{winner}_smart_one_uses"],
+            row[f"{winner}_n_smart_one_dice"],
+            row[f"{winner}_hot_dice"],
+        ]
         wins[strat_repr] += 1
         for label, value in zip(METRIC_LABELS, metrics, strict=True):
             sums[label][strat_repr] += value
             sq_sums[label][strat_repr] += value * value
         if collect_rows:
-            rows.append(
-                {
-                    "game_seed": int(gseed),
-                    "winner_strategy": strat_repr,
-                    **dict(zip(METRIC_LABELS, metrics, strict=True)),
-                }
-            )
+            rows.append({"game_seed": int(gseed), **row})
 
     return wins, sums, sq_sums, rows
 

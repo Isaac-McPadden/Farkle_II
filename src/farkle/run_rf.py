@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import pickle
+import warnings
 from pathlib import Path
 from typing import List
 
@@ -34,7 +35,12 @@ def run_rf(seed: int = 0) -> None:
     figs = Path("notebooks/figs")
     figs.mkdir(parents=True, exist_ok=True)
     for col in X.columns:
-        disp = PartialDependenceDisplay.from_estimator(model, X, [col])
+        with warnings.catch_warnings():
+            warnings.filterwarnings(
+                "ignore",
+                message="Attempting to set identical low and high ylims",
+            )
+            disp = PartialDependenceDisplay.from_estimator(model, X, [col])
         disp.figure_.savefig(figs / f"pd_{col}.png")
         plt.close(disp.figure_)
 

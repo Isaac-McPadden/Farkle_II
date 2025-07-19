@@ -11,36 +11,65 @@ def test_read_manifest_seed(tmp_path):
     assert rt._read_manifest_seed(tmp_path / "missing.yaml") == 0
 
 
-def test_load_winners_parquet(tmp_path):
-    block = tmp_path / "b_players"
+def test_load_ranked_games_parquet(tmp_path):
+    block   = tmp_path / "b_players"
     row_dir = block / "1_rows"
     row_dir.mkdir(parents=True)
     pd.DataFrame({"winner_strategy": ["A"]}).to_parquet(row_dir / "a.parquet")
     pd.DataFrame({"winner_strategy": ["B", "A"]}).to_parquet(row_dir / "b.parquet")
-    winners = rt._load_winners(block)
-    assert sorted(winners) == ["A", "A", "B"]
+
+    games = rt._load_ranked_games(block)
+    assert sorted(games) == [["A"], ["A"], ["B"]]  # ← list-of-lists
 
 
-def test_load_winners_csv(tmp_path):
+def test_load_ranked_games_rank_based(tmp_path):
+    block   = tmp_path / "r_players"
+    row_dir = block / "1_rows"
+    row_dir.mkdir(parents=True)
+    df = pd.DataFrame({
+        "P1_strategy": ["A"],
+        "P1_rank":     [1],
+        "P2_strategy": ["B"],
+        "P2_rank":     [2],
+    })
+    df.to_parquet(row_dir / "rows.parquet")
+
+    games = rt._load_ranked_games(block)
+    assert games == [["A", "B"]]  # full ranking
+
+
+def test_load_ranked_games_csv(tmp_path):
     block = tmp_path / "c_players"
     block.mkdir()
     pd.DataFrame({"winner": ["X", "Y"]}).to_csv(block / "winners.csv", index=False)
-    assert rt._load_winners(block) == ["X", "Y"]
+
+    games = rt._load_ranked_games(block)
+    assert games == [["X"], ["Y"]]  # list-of-lists
 
 
-def test_update_ratings_simple():
+def test_update_ratings_ranked():
     env = trueskill.TrueSkill()
-    winners = ["A", "B", "A", "C", "A"]
-    keepers = ["A", "B"]
 
-    result = rt._update_ratings(winners, keepers, env)
+    # original winner stream:  A, B, A, C, A
+    games = [
+        ["A", "B"],   # A beats B
+        ["B", "A"],   # B beats A
+        ["A", "C"],   # A beats C
+        ["C", "A"],   # C beats A
+        ["A", "B"],   # A beats B again
+    ]
 
+    keepers = ["A", "B"]                     # only rate these two
+    result = rt._update_ratings(games, keepers, env)
+
+    # build the expected ratings by replaying the same tables
     ratings = {k: env.create_rating() for k in keepers}
-    dummy = env.create_rating()
-    for w in winners:
-        if w not in ratings:
-            continue
-        ratings[w], dummy = trueskill.rate_1vs1(ratings[w], dummy, env=env)
-    expected = {k: (r.mu, r.sigma) for k, r in ratings.items()}
+    for g in games:
+      p = [s for s in g if s in keepers]
+      if len(p) < 2:
+          continue
+      new = env.rate([[ratings[p[0]]], [ratings[p[1]]]], ranks=[0, 1])
+      ratings[p[0]], ratings[p[1]] = new[0][0], new[1][0]
 
+    expected = {k: (r.mu, r.sigma) for k, r in ratings.items()}
     assert result == expected

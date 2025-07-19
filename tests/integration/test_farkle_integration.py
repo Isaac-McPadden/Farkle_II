@@ -7,7 +7,7 @@ from time import perf_counter
 import pandas as pd
 import pytest
 import yaml
-from hypothesis import given
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from farkle.engine import FarkleGame, FarklePlayer
@@ -175,6 +175,7 @@ smart_flags = st.tuples(
     turn_pre=st.integers(min_value=0, max_value=500),
     flags=smart_flags,
 )
+@settings(suppress_health_check=[HealthCheck.too_slow])
 def test_pipeline_matches_default(roll, turn_pre, flags):
     smart_five, smart_one = flags
 

@@ -25,40 +25,79 @@ def _read_manifest_seed(path: Path) -> int:
         return 0
 
 
-def _load_winners(block: Path) -> List[str]:
+def _load_ranked_games(block: Path) -> list[list[str]]:
+    """
+    Return one list per game, containing the strategies in finishing order.
+
+    Understands three on-disk layouts, in this priority order
+        1. <block>/*_rows/*.parquet         # modern row-shard directory
+        2. <block>/winners.csv              # legacy CSV with one winner col
+        3. <block>/*.parquet                # legacy parquet(s) in root
+    """
+    # ── 1. Modern layout ────────────────────────────────────────────────────
     row_dir = next(block.glob("*_rows"), None)
-    if row_dir and row_dir.is_dir():
-        files = list(row_dir.glob("*.parquet"))
-        if files:
-            df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-            col = "winner_strategy" if "winner_strategy" in df.columns else "winner"
-            return df[col].tolist()
-    csv = block / "winners.csv"
-    if csv.exists():
-        df = pd.read_csv(csv)
-        col = "winner_strategy" if "winner_strategy" in df.columns else "winner"
-        return df[col].tolist()
-    return []
+    if row_dir:
+        frames = [pd.read_parquet(p) for p in row_dir.glob("*.parquet")]
+        df = pd.concat(frames, ignore_index=True)
+
+    # ── 2. winners.csv fallback ────────────────────────────────────────────
+    elif (block / "winners.csv").exists():
+        df = pd.read_csv(block / "winners.csv")
+
+    # ── 3. Loose parquet(s) in the block root ──────────────────────────────
+    else:
+        parquet_files = list(block.glob("*.parquet"))
+        if parquet_files:
+            frames = [pd.read_parquet(p) for p in parquet_files]
+            df = pd.concat(frames, ignore_index=True)
+        else:
+            return []                       # nothing we know how to read
+
+    # ----------------------------------------------------------------------
+    rank_cols  = [c for c in df.columns if c.endswith("_rank")]
+    strat_cols = {c[:-5]: f"{c[:-5]}_strategy" for c in rank_cols}
+
+    games: list[list[str]] = []
+    for _, row in df.iterrows():
+        if rank_cols:                                   # modern per-player ranks
+            ordered = sorted(rank_cols, key=row.__getitem__)
+            players = [row[strat_cols[c[:-5]]] for c in ordered]
+        else:                                           # winner-only rows
+            if "winner_strategy" in row:
+                players = [row["winner_strategy"]]
+            elif "winner" in row:
+                players = [row["winner"]]
+            else:
+                players = []        # unknown schema → ignore row
+        games.append(players)
+
+    return games
 
 
 def _update_ratings(
-    winners: List[str], keepers: List[str], env: trueskill.TrueSkill
-) -> Dict[str, tuple[float, float]]:
-    ratings = {k: env.create_rating() for k in keepers}
-    dummy = env.create_rating()
-    prev_mu = {k: r.mu for k, r in ratings.items()}
-    total = len(winners)
-    for i, w in enumerate(winners, 1):
-        if w not in ratings:
-            continue
-        ratings[w], dummy = trueskill.rate_1vs1(ratings[w], dummy, env=env)
-        if i % 100_000 == 0 or i == total:
-            diff = [abs(ratings[k].mu - prev_mu[k]) for k in ratings]
-            med = float(np.median(diff)) if diff else 0.0
-            log.info("%s games → median Δμ=%.6f", i, med)
-            prev_mu = {k: r.mu for k, r in ratings.items()}
-            if i >= 100_000 and med < 0.005:
-                break
+    games: list[list[str]],
+    keepers: list[str],
+    env: trueskill.TrueSkill,
+) -> dict[str, tuple[float, float]]:
+    """
+    Update ratings using TrueSkill's team API with full table rankings.
+    """
+    ratings: dict[str, trueskill.Rating] = {
+        k: env.create_rating() for k in keepers
+    }
+
+    for game in games:
+        # keep only the strategies we really want to rate
+        players = [s for s in game if (not keepers or s in keepers)]
+        teams   = [[ratings.setdefault(s, env.create_rating())] for s in players]
+
+        if len(teams) < 2:
+            continue  # need at least two teams for a rating update
+
+        new_teams = env.rate(teams, ranks=range(len(teams)))
+        for s, team_rating in zip(players, new_teams, strict=True):
+            ratings[s] = team_rating[0]
+
     return {k: (r.mu, r.sigma) for k, r in ratings.items()}
 
 
@@ -72,9 +111,8 @@ def run_trueskill(seed: int = 0) -> None:
         n = block.name.split("_")[0]
         keep_path = block / f"keepers_{n}.npy"
         keepers = np.load(keep_path).tolist() if keep_path.exists() else []
-        winners = _load_winners(block)
-        winners = [w for w in winners if not keepers or w in keepers]
-        ratings = _update_ratings(winners, keepers, env)
+        games = _load_ranked_games(block)
+        ratings = _update_ratings(games, keepers, env)
         with (Path("data") / f"ratings_{n}{suffix}.pkl").open("wb") as fh:
             pickle.dump(ratings, fh)
         for k, v in ratings.items():
