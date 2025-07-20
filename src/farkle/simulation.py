@@ -28,6 +28,7 @@ __all__: list[str] = [
     "experiment_size",
     "simulate_one_game",
     "simulate_many_games",
+    "simulate_many_games_from_seeds",
     "aggregate_metrics",
 ]
 
@@ -214,6 +215,24 @@ def simulate_many_games(
     
     master_rng = np.random.default_rng(seed)
     seeds = master_rng.integers(0, 2**32 - 1, size=n_games).tolist()
+    args = [(s, strategies, target_score) for s in seeds]
+    if n_jobs == 1:
+        rows = [_play_game(*a) for a in args]
+    else:
+        with mp.Pool(processes=n_jobs) as pool:
+            rows = pool.starmap(_play_game, args)
+    return pd.DataFrame(rows)
+
+
+def simulate_many_games_from_seeds(
+    *,
+    seeds: Sequence[int],
+    strategies: Sequence[ThresholdStrategy],
+    target_score: int = 10_000,
+    n_jobs: int = 1,
+) -> pd.DataFrame:
+    """Run games for a predetermined list of seeds."""
+
     args = [(s, strategies, target_score) for s in seeds]
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]
