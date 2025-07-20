@@ -232,7 +232,6 @@ def simulate_many_games_from_seeds(
     n_jobs: int = 1,
 ) -> pd.DataFrame:
     """Run games for a predetermined list of seeds."""
-
     args = [(s, strategies, target_score) for s in seeds]
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]
