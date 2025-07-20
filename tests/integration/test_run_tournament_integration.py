@@ -83,7 +83,6 @@ def _init_worker_small(
 
     # Drastically cut the workload
     _rt.GAMES_PER_SHUFFLE = 2  # type: ignore
-    _rt.NUM_SHUFFLES = 2  # type: ignore
     _rt.DESIRED_SEC_PER_CHUNK = 0.1  # type: ignore
     _rt.CKPT_EVERY_SEC = 1  # type: ignore
 
@@ -109,7 +108,6 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> None:  # type: i
     _tiny_grid = _tiny_strategy_grid()
 
     # 3a. Constants in parent (affects chunking logic)
-    monkeypatch.setattr(rt, "NUM_SHUFFLES", 2, raising=False)
     monkeypatch.setattr(rt, "GAMES_PER_SHUFFLE", 2, raising=False)
     monkeypatch.setattr(rt, "DESIRED_SEC_PER_CHUNK", 0.1, raising=False)
     monkeypatch.setattr(rt, "CKPT_EVERY_SEC", 1, raising=False)
@@ -140,6 +138,7 @@ def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: 
         "global_seed": 123,
         "checkpoint_path": ckpt,
         "n_jobs": 2,
+        "num_shuffles": 2,
     }
     if "n_players" in inspect.signature(rt.run_tournament).parameters:
         kwargs["n_players"] = rt.N_PLAYERS
@@ -181,6 +180,8 @@ def test_run_tournament_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "2",
         "--ckpt-sec",
         "1",
+        "--num-shuffles",
+        "2",
     ]
     if "--players" in inspect.getsource(rt.main):
         argv.extend(["--n_players", str(rt.N_PLAYERS)])
