@@ -14,7 +14,7 @@ def main(argv: list[str] | None = None) -> None:
     """
     Console-script entry-point.
     Passing *argv* lets unit-tests inject fake arguments.
-    
+
     Inputs
     ------
     argv : list[str] | None
@@ -24,13 +24,13 @@ def main(argv: list[str] | None = None) -> None:
     -------
     None
     """
-    ap = argparse.ArgumentParser(prog="farkle")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    parser = argparse.ArgumentParser(prog="farkle")
+    subparsers = parser.add_subparsers(dest="cmd", required=True)
 
-    run = sub.add_parser("run", help="Run a tournament from a YAML config")
-    run.add_argument("config", help="Path to YAML configuration file")
+    run_parser = subparsers.add_parser("run", help="Run a tournament from a YAML config")
+    run_parser.add_argument("config", help="Path to YAML configuration file")
 
-    args = ap.parse_args(argv)
+    args = parser.parse_args(argv)
 
     if args.cmd == "run":
         with open(args.config, encoding="utf-8") as fh:
@@ -38,4 +38,3 @@ def main(argv: list[str] | None = None) -> None:
 
         strategies, _ = generate_strategy_grid(**cfg["strategy_grid"])
         simulate_many_games_stream(**cfg["sim"], strategies=strategies)
-        
