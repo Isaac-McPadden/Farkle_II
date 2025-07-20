@@ -34,6 +34,9 @@ __all__ = [
     "FarkleGame",
 ]
 
+# Maximum number of rolls permitted in a single turn before aborting
+ROLL_LIMIT: int = 1000
+
 
 # ---------------------------------------------------------------------------
 # Player
@@ -106,14 +109,20 @@ class FarklePlayer:
         -------
         None
             The player's internal state is updated in place.
+        Raises
+        ------
+        RuntimeError
+            If the number of rolls in this turn exceeds ``ROLL_LIMIT``.
         """
         dice = 6
         turn_score = 0
         rolls_this_turn = 0
 
         while dice > 0:
-            if rolls_this_turn > 1000:
-                raise RuntimeError("Turn exceeded 1000 rolls - aborting.")
+            if rolls_this_turn > ROLL_LIMIT:
+                raise RuntimeError(
+                    f"Turn exceeded {ROLL_LIMIT} rolls - aborting."
+                )
             # 1) Roll dice number of dice
             roll = self._roll(dice)
             rolls_this_turn += 1
