@@ -1,4 +1,11 @@
 # src/farkle/cli.py
+"""CLI entry point for the Farkle package.
+
+This module exposes the command line interface.  At present the only
+available subcommand is ``run``.  It reads a YAML configuration file and
+invokes :func:`simulate_many_games_stream` to execute simulations.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -26,17 +33,45 @@ def load_config(path: str) -> Mapping[str, Any]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Console-script entry-point."""
-    ap = argparse.ArgumentParser(prog="farkle")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    """
+    Console-script entry-point for farkle CLI.
+    Passing *argv* lets unit-tests inject fake arguments.
 
-    run = sub.add_parser("run", help="Run a tournament from a YAML config")
-    run.add_argument("config", help="Path to YAML configuration file")
+    Inputs
+    ------
+    argv : list[str] | None
+        Optional command line arguments. ``None`` uses ``sys.argv``.
 
-    args = ap.parse_args(argv)
+    Returns
+    -------
+    None
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``config`` cannot be opened.
+    KeyError
+        If required sections are missing from the YAML file.
+    yaml.YAMLError
+        If the file cannot be parsed.
+
+    The configuration YAML must contain ``strategy_grid`` and ``sim`` keys. A
+    minimal example looks like::
+
+        strategy_grid:
+          dice_threshold: [1, 2, 3]
+        sim:
+          n_games: 1000
+    """
+    parser = argparse.ArgumentParser(prog="farkle")
+    subparsers = parser.add_subparsers(dest="cmd", required=True)
+
+    run_parser = subparsers.add_parser("run", help="Run a tournament from a YAML config")
+    run_parser.add_argument("config", help="Path to YAML configuration file")
+
+    args = parser.parse_args(argv)
 
     if args.cmd == "run":
         cfg = load_config(args.config)
         strategies, _ = generate_strategy_grid(**cfg["strategy_grid"])
         simulate_many_games_stream(**cfg["sim"], strategies=strategies)
-
