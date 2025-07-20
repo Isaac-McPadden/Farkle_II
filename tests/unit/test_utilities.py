@@ -88,3 +88,47 @@ def test_stream_nested_output(tmp_path):
         n_jobs=1,
     )
     assert out.exists()
+
+    
+def test_cli_missing_file(monkeypatch):
+    bad = "nope.yml"
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", bad])
+    with pytest.raises(FileNotFoundError):
+        farkle_cli.main()
+
+
+def test_cli_bad_yaml(tmp_path, monkeypatch):
+    cfg = tmp_path / "bad.yml"
+    cfg.write_text("{:")  # invalid YAML
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", str(cfg)])
+    with pytest.raises(yaml.YAMLError):
+        farkle_cli.main()
+
+
+def test_cli_missing_keys(tmp_path, monkeypatch):
+    cfg = tmp_path / "missing.yml"
+    cfg.write_text(yaml.safe_dump({}))
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", str(cfg)])
+    with pytest.raises(KeyError):
+        farkle_cli.main()
+
+
+def test_load_config_missing_file(tmp_path):
+    cfg_path = tmp_path / "missing.yml"
+    with pytest.raises(FileNotFoundError):
+        farkle_cli.load_config(str(cfg_path))
+
+
+def test_load_config_bad_yaml(tmp_path):
+    cfg_path = tmp_path / "bad.yml"
+    cfg_path.write_text("strategy_grid: [")
+    with pytest.raises(yaml.YAMLError):
+        farkle_cli.load_config(str(cfg_path))
+
+
+def test_load_config_missing_keys(tmp_path):
+    cfg_path = tmp_path / "cfg.yml"
+    cfg_path.write_text(yaml.safe_dump({"strategy_grid": {}}))
+    with pytest.raises(KeyError) as excinfo:
+        farkle_cli.load_config(str(cfg_path))
+    assert "sim" in str(excinfo.value)
