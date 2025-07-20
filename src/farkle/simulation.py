@@ -225,13 +225,13 @@ def simulate_many_games(
 
 
 def simulate_many_games_from_seeds(
+    *,
     seeds: Sequence[int],
     strategies: Sequence[ThresholdStrategy],
     target_score: int = 10_000,
     n_jobs: int = 1,
 ) -> pd.DataFrame:
-    """Run games using the provided sequence of seeds."""
-
+    """Run games for a predetermined list of seeds."""
     args = [(s, strategies, target_score) for s in seeds]
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]
