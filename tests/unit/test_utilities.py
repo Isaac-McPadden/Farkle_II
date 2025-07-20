@@ -6,6 +6,10 @@ import yaml
 
 from farkle import farkle_cli  # imports the module, not the exe
 from farkle.farkle_io import simulate_many_games_stream
+import queue
+import threading
+import csv
+import farkle.farkle_io as farkle_io
 from farkle.stats import games_for_power
 from farkle.strategies import ThresholdStrategy
 
@@ -75,6 +79,90 @@ def test_stream_parallel(tmp_path, n_jobs):
     )
     rows = out.read_text().splitlines()
     assert len(rows) == 5  # header + 4
+
+
+def test_stream_custom_tmpdir(tmp_path, monkeypatch):
+    tmpdir = tmp_path / "mptmp"
+    tmpdir.mkdir()
+    monkeypatch.setenv("TMPDIR", str(tmpdir))
+
+    out_csv = tmp_path / "tmpdir.csv"
+    strategies = [ThresholdStrategy(score_threshold=0, dice_threshold=6)]
+    simulate_many_games_stream(
+        n_games=4, strategies=strategies, out_csv=str(out_csv), seed=5, n_jobs=2
+    )
+    rows = out_csv.read_text().splitlines()
+    assert len(rows) == 5
+
+
+def test_stream_buffer_queue_limits(tmp_path, monkeypatch):
+    buffer_size = 3
+    queue_size = 2
+
+    def writer_worker(q, outpath, header):
+        first = not Path(outpath).exists()
+        with open(outpath, "a", newline="") as fh:
+            w = csv.DictWriter(fh, fieldnames=header)
+            if first:
+                w.writeheader()
+            buf = []
+            while True:
+                row = q.get()
+                if row is None:
+                    break
+                buf.append(row)
+                if len(buf) >= buffer_size:
+                    w.writerows(buf)
+                    fh.flush()
+                    buf.clear()
+            if buf:
+                w.writerows(buf)
+
+    monkeypatch.setattr(farkle_io, "_writer_worker", writer_worker)
+
+    monkeypatch.setattr(
+        farkle_io.mp,
+        "Queue",
+        lambda *a, **k: queue.Queue(maxsize=queue_size),
+    )
+
+    class ThreadProcess:
+        def __init__(self, target, args=()):
+            self._thread = threading.Thread(target=target, args=args)
+
+        def start(self):
+            self._thread.start()
+
+        def join(self):
+            self._thread.join()
+
+    monkeypatch.setattr(farkle_io.mp, "Process", ThreadProcess)
+
+    class DummyPool:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def imap_unordered(self, func, iterable, chunksize=1):
+            for item in iterable:
+                yield func(item)
+
+    monkeypatch.setattr(farkle_io.mp, "Pool", DummyPool)
+
+    out_csv = tmp_path / "limits.csv"
+    strategies = [ThresholdStrategy(score_threshold=0, dice_threshold=6)]
+    n_games = max(buffer_size, queue_size) + 2
+    simulate_many_games_stream(
+        n_games=n_games, strategies=strategies, out_csv=str(out_csv), seed=9, n_jobs=2
+    )
+
+    rows = out_csv.read_text().splitlines()
+    assert len(rows) == n_games + 1
 
 
 def test_stream_nested_output(tmp_path):
