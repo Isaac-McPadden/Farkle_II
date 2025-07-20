@@ -7,6 +7,9 @@ import json
 from pathlib import Path
 from typing import List
 
+TIERS_PATH = Path("data/tiers.json")
+PAIRWISE_CSV = Path("data/bonferroni_pairwise.csv")
+
 import pandas as pd
 from scipy.stats import binomtest
 
@@ -30,7 +33,7 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
     p-values computed via :func:`scipy.stats.binomtest`.
     """
 
-    with open("data/tiers.json") as fh:
+    with open("TIERS_PATH") as fh:
         tiers = json.load(fh)
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
@@ -50,8 +53,8 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
         records.append({"a": a, "b": b, "wins_a": wa, "wins_b": wb, "pvalue": pval})
 
     out = pd.DataFrame(records)
-    Path("data").mkdir(exist_ok=True)
-    out.to_csv("data/bonferroni_pairwise.csv", index=False)
+    PAIRWISE_CSV.parent.mkdir(exist_ok=True)
+    out.to_csv(PAIRWISE_CSV, index=False)
 
 
 def main(argv: List[str] | None = None) -> None:
@@ -60,10 +63,9 @@ def main(argv: List[str] | None = None) -> None:
     Usage
         python -m farkle.run_bonferroni_head2head [--seed N]
     """
-
-    p = argparse.ArgumentParser(description="Head-to-head Bonferroni analysis")
-    p.add_argument("--seed", type=int, default=0)
-    args = p.parse_args(argv)
+    parser = argparse.ArgumentParser(description="Head-to-head Bonferroni analysis")
+    parser.add_argument("--seed", type=int, default=0)
+    args = parser.parse_args(argv)
     run_bonferroni_head2head(seed=args.seed)
 
 
