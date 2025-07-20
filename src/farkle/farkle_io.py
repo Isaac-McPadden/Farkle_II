@@ -64,7 +64,7 @@ def simulate_many_games_stream(
 
     Each finished game immediately lands as one row in *out_csv*:
         game_id, winner, winning_score, winner_strategy, n_rounds
-    
+
     Inputs:
         n_games: Number of games to simulate.
         strategies: Strategies to assign to the players.
