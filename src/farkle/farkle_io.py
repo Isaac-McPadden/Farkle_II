@@ -8,41 +8,46 @@ import numpy as np
 from farkle.simulation import _play_game
 from farkle.strategies import ThresholdStrategy
 
+# Batching and queue sizes for file I/O
+BUFFER_SIZE = 10_000
+QUEUE_SIZE = 2_000
+
 
 # ------------------------------------------------------------
-def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None:
-    """Summary: write queued rows to *outpath* in a separate process.
+def _writer_worker(queue: mp.Queue, out_csv: str, header: Sequence[str]) -> None:
+    """Summary: write queued rows to ``out_csv`` in a separate process.
+
+    Rows are buffered until :data:`BUFFER_SIZE` rows accumulate before
+    being flushed to disk.
 
     Inputs:
         queue: multiprocessing.Queue containing row dictionaries and a
-            None sentinel to stop the worker. Each row dictionary must
-            provide all keys listed in ``header``.
-        outpath: Destination CSV file. If it exists, new rows are
-            appended; otherwise the file is created and the header is
-            written.
-        header: Column names for the ``csv.DictWriter``.
+            None sentinel to stop the worker.
+        out_csv: Destination CSV file.
+        header: Column names for the csv.DictWriter.
 
     Returns:
-        None. Rows are written until the sentinel is received.
+        None. Rows are appended to ``out_csv`` until the sentinel is
+        received.
     """
-    first = not Path(outpath).exists()
-    with open(outpath, "a", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=header)
+    first = not Path(out_csv).exists()
+    with open(out_csv, "a", newline="") as file_handle:
+        writer = csv.DictWriter(file_handle, fieldnames=header)
         if first:
-            w.writeheader()
+            writer.writeheader()
         buffer = []
         while True:
             row = queue.get()
             if row is None:
                 break
             buffer.append(row)
-            if len(buffer) >= 10_000:
-                w.writerows(buffer)
-                fh.flush()
+            if len(buffer) >= BUFFER_SIZE:
+                writer.writerows(buffer)
+                file_handle.flush()
                 buffer.clear()
         # after loop
         if buffer:
-            w.writerows(buffer)
+            writer.writerows(buffer)
 
 
 # ------------------------------------------------------------
@@ -68,7 +73,9 @@ def simulate_many_games_stream(
             overwritten at the start of the run. Its parent directory
             must exist or will be created.
         seed: Optional seed for deterministic runs.
-        n_jobs: Number of processes to use; 1 runs serially.
+        n_jobs: Number of processes to use; 1 runs serially. When greater than
+            one, results are sent through a queue limited to
+            :data:`QUEUE_SIZE` items.
 
     Returns:
         None. Metrics for each game are written incrementally to
@@ -82,20 +89,29 @@ def simulate_many_games_stream(
     # We will write only five tiny columns per game
     header = ["game_id", "winner", "winning_score", "winner_strategy", "n_rounds"]
 
+    # ensure target directory exists
+    Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
+
     # --- truncate file & write header once, upfront --------------------
-    with open(out_csv, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=header)
+    with open(out_csv, "w", newline="") as file_handle:
+        writer = csv.DictWriter(file_handle, fieldnames=header)
         writer.writeheader()
 
     if n_jobs == 1:
-        with open(out_csv, "w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=header)
+        # open once, write header, and stream rows serially
+        with open(out_csv, "w", newline="") as file_handle:
+            writer = csv.DictWriter(file_handle, fieldnames=header)
             writer.writeheader()
             for gid, s in enumerate(seeds, 1):
                 row = _single_game_row(gid, s, strategies, target_score)
                 writer.writerow(row)
     else:
-        queue: mp.Queue = mp.Queue(maxsize=2_000)
+        # first truncate file and write header, then append via worker
+        with open(out_csv, "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header)
+            writer.writeheader()
+
+        queue: mp.Queue = mp.Queue(maxsize=QUEUE_SIZE)
         writer = mp.Process(target=_writer_worker, args=(queue, out_csv, header))
         writer.start()
 
