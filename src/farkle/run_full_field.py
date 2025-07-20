@@ -15,46 +15,6 @@ from time import perf_counter
 import pandas as pd
 from scipy.stats import norm
 
-# ────────── GLOBAL CONFIG ─────────────────────────────────────────
-PLAYERS = [2, 3, 4, 5, 6, 8, 10, 12]
-GRID = 8_160  # total strategies
-DELTA = 0.03  # abs lift to detect
-POWER = 0.95  # 1 – β
-Q_FDR = 0.02  # BH, two-sided
-GLOBAL_SEED = 0
-JOBS = None  # None → all logical cores
-BASE_OUT = Path(f"data/results_seed_{GLOBAL_SEED}")
-
-# pre-compute critical z-scores
-Z_ALPHA = norm.isf(Q_FDR / 2)  # two-sided BH
-Z_BETA = norm.isf(1 - POWER)  # power target
-
-
-def shuffles_required(n_players: int) -> int:
-    """Return observations/strategy (≡ shuffles) for given table size."""
-    p0 = 1 / n_players
-    var = p0 * (1 - p0) + (p0 + DELTA) * (1 - p0 - DELTA)
-    n = ((Z_ALPHA + Z_BETA) ** 2 * var) / (DELTA**2)
-    return ceil(n)
-
-
-# Seed 1 Global Config
-# # ────────── GLOBAL CONFIG ─────────────────────────────────────────
-# PLAYERS = [2, 3, 4, 5, 6, 8, 10, 12]
-# GRID = 8_160  # total strategies
-# DELTA = 0.03  # abs lift to detect
-# POWER = 0.95  # 1 – β
-# Q_FDR = 0.02  # BH, two-sided
-# GLOBAL_SEED = 42
-# JOBS = None  # None → all logical cores
-# BASE_OUT = Path("data/results_seed_42")
-# BASE_OUT.mkdir(parents=True, exist_ok=True)
-# # ------------------------------------------------------------------
-
-# # pre-compute critical z-scores
-# Z_ALPHA = norm.isf(Q_FDR / 2)  # two-sided BH
-# Z_BETA = norm.isf(1 - POWER)  # power target
-
 
 def _concat_row_shards(out_dir: Path, n: int) -> None:
     """Combine row shard files and remove the temporary directory.
