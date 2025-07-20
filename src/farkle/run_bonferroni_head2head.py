@@ -7,9 +7,6 @@ import json
 from pathlib import Path
 from typing import List
 
-TIERS_PATH = Path("data/tiers.json")
-PAIRWISE_CSV = Path("data/bonferroni_pairwise.csv")
-
 import pandas as pd
 from scipy.stats import binomtest
 
@@ -18,6 +15,8 @@ from farkle.stats import games_for_power
 from farkle.strategies import parse_strategy
 from farkle.utils import bonferroni_pairs
 
+TIERS_PATH = Path("data/tiers.json")
+PAIRWISE_CSV = Path("data/bonferroni_pairwise.csv")
 
 def run_bonferroni_head2head(seed: int = 0) -> None:
     """Run pairwise games between top-tier strategies using Bonferroni tests.
@@ -32,9 +31,13 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
     matchup and writes ``data/bonferroni_pairwise.csv`` containing win counts and
     p-values computed via :func:`scipy.stats.binomtest`.
     """
-
-    with open("TIERS_PATH") as fh:
-        tiers = json.load(fh)
+    try:
+        with TIERS_PATH.open() as fh:
+            tiers = json.load(fh)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Tier file not found at {TIERS_PATH}") from exc
+    if not tiers:
+        raise RuntimeError(f"No tiers found in {TIERS_PATH}")
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
     games_needed = games_for_power(len(elites), method="bonferroni", pairwise=True)
