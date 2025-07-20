@@ -86,6 +86,74 @@ class FarklePlayer:
         # Use the RNG directly so deterministic test generators work.
         return self.rng.integers(1, 7, size=n).tolist()
 
+    def _score_roll(self, roll: DiceRoll, turn_score: int) -> tuple[int, int, bool]:
+        """Return points, dice to reroll and whether we farkled."""
+        pts, used, reroll, d5, d1 = default_score(  # type: ignore[misc]
+            dice_roll=roll,
+            turn_score_pre=turn_score,
+            smart_five=self.strategy.smart_five,
+            smart_one=self.strategy.smart_one,
+            score_threshold=self.strategy.score_threshold,
+            dice_threshold=self.strategy.dice_threshold,
+            consider_score=self.strategy.consider_score,
+            consider_dice=self.strategy.consider_dice,
+            require_both=self.strategy.require_both,
+            prefer_score=self.strategy.prefer_score,
+            return_discards=True,
+        )
+
+        if pts == 0:
+            self.n_farkles += 1
+            return 0, 0, True
+
+        if d5:
+            self.smart_five_uses += 1
+            self.n_smart_five_dice += d5
+        if d1:
+            self.smart_one_uses += 1
+            self.n_smart_one_dice += d1
+
+        next_dice = 6 if (used == len(roll) and reroll == 0) else reroll
+        return pts, next_dice, False
+
+    def _apply_hot_dice(self, dice: int) -> bool:
+        """Return True if auto-hot-dice forces another roll."""
+        if self.strategy.auto_hot_dice and dice == 6:
+            self.n_hot_dice += 1
+            return True
+        return False
+
+    def _should_continue(
+        self,
+        *,
+        turn_score: int,
+        dice_left: int,
+        final_round: bool,
+        score_to_beat: int,
+        target_score: int,
+    ) -> bool:
+        running_total = self.score + turn_score
+        score_needed = max(0, target_score - running_total)
+
+        if final_round and running_total > score_to_beat:
+            if not self.strategy.run_up_score:
+                return False
+
+        keep_rolling = self.strategy.decide(
+            turn_score=turn_score,
+            dice_left=dice_left,
+            has_scored=self.has_scored,
+            score_needed=score_needed,
+            final_round=final_round,
+            score_to_beat=score_to_beat,
+            running_total=running_total,
+        )
+
+        if final_round and running_total <= score_to_beat:
+            keep_rolling = True
+
+        return keep_rolling
+
     # ------------------------------ turn --------------------------------
     def take_turn(
         self,
@@ -123,91 +191,34 @@ class FarklePlayer:
                 raise RuntimeError(
                     f"Turn exceeded {ROLL_LIMIT} rolls - aborting."
                 )
-            # 1) Roll dice number of dice
             roll = self._roll(dice)
             rolls_this_turn += 1
 
-            # 2) Compute points from this roll, after applying Smart‐5/Smart‐1 discards
-            pts, used, reroll, d5, d1 = default_score(  # type: ignore
-                dice_roll=roll,
-                turn_score_pre=turn_score,
-                smart_five=self.strategy.smart_five,
-                smart_one=self.strategy.smart_one,
-                score_threshold=self.strategy.score_threshold,
-                dice_threshold=self.strategy.dice_threshold,
-                consider_score=self.strategy.consider_score,
-                consider_dice=self.strategy.consider_dice,
-                require_both=self.strategy.require_both,
-                prefer_score=self.strategy.prefer_score,
-                return_discards=True,
-            )
-
-            # 3) If pts == 0, that's a Farkle: bust, lose all points this turn, and end turn
-            if pts == 0:  # farkle bust
-                self.n_farkles += 1
+            pts, dice, bust = self._score_roll(roll, turn_score)
+            if bust:
                 turn_score = 0
                 break
 
-            # 4) Otherwise, accumulate the points from this roll
             turn_score += pts
 
-            # 4.5) Update smart_five and smart_one tracking
-            if d5:
-                self.smart_five_uses += 1
-                self.n_smart_five_dice += d5
-            if d1:
-                self.smart_one_uses += 1
-                self.n_smart_one_dice += d1
+            if self._apply_hot_dice(dice):
+                continue
 
-            # 5) “Hot dice” logic: if all dice in roll scored (used == len(roll)),
-            #    and reroll == 0, that means you get to roll all 6 dice again.
-            #    Otherwise, you roll reroll dice next.
-            dice = 6 if (used == len(roll) and reroll == 0) else reroll
-
-            # 5.5) Hot dice short circuit
-            if self.strategy.auto_hot_dice and dice == 6:
-                self.n_hot_dice += 1
-                continue  # force another throw
-
-            # 6-A) If we’re in the final round and have already won, stop.
-            running_total = self.score + turn_score
-            score_needed = max(0, target_score - running_total)
-            if final_round and running_total > score_to_beat:
-                if self.strategy.run_up_score:  # NEW opt-in flag
-                    pass  # fall through to decide()
-                else:
-                    break
-
-            # 6) Check the strategy’s decide() method to see if we should keep rolling.
-            #    Pass in:
-            #      - current turn_score
-            #      - dice_left = dice (from step 5)
-            #      - has_scored = whether we’ve ever scored ≥500 on a previous turn
-            #      - score_needed = how many more points (from banked + turn_score)
-            #                     we need to reach target_score
-            keep_rolling = self.strategy.decide(
+            if not self._should_continue(
                 turn_score=turn_score,
                 dice_left=dice,
-                has_scored=self.has_scored,
-                score_needed=score_needed,
                 final_round=final_round,
                 score_to_beat=score_to_beat,
-                running_total=running_total,
-            )
-
-            # 6-C) Override the strategy if we’re still behind in the final round.
-            if final_round and running_total <= score_to_beat:
-                keep_rolling = True
-
-            if not keep_rolling:
+                target_score=target_score,
+            ):
                 break
 
-        # 7) After leaving the loop, check if this is our “entry turn"
-        #     (we need ≥500 to get on the board)
+        # After leaving the loop, check if this is our “entry turn"
+        # (we need ≥500 to get on the board)
         if not self.has_scored and turn_score >= 500:
             self.has_scored = True
 
-        # 8) If we already had a “first‐500” in a previous turn, or just got it, bank the points
+        # If we already had a "first‐500" in a previous turn, or just got it, bank the points
         if self.has_scored:
             self.score += turn_score
             self.highest_turn = max(self.highest_turn, turn_score)
