@@ -1,4 +1,11 @@
 # src/farkle/cli.py
+"""CLI entry point for the Farkle package.
+
+This module exposes the command line interface.  At present the only
+available subcommand is ``run``.  It reads a YAML configuration file and
+invokes :func:`simulate_many_games_stream` to execute simulations.
+"""
+
 from __future__ import annotations
 
 import argparse
