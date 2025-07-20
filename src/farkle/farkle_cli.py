@@ -17,6 +17,21 @@ from farkle.farkle_io import simulate_many_games_stream
 from farkle.simulation import generate_strategy_grid
 
 
+def load_config(path: str) -> Mapping[str, Any]:
+    """Load YAML configuration from *path*.
+
+    Raises FileNotFoundError, yaml.YAMLError if the file cannot be read or parsed.
+    """
+    with open(path, encoding="utf-8") as fh:
+        cfg: Mapping[str, Any] = yaml.safe_load(fh)
+
+    missing = [k for k in ("strategy_grid", "sim") if k not in cfg]
+    if missing:
+        raise KeyError(f"Missing required keys: {', '.join(missing)}")
+
+    return cfg
+
+
 def main(argv: list[str] | None = None) -> None:
     """
     Console-script entry-point for farkle CLI.
@@ -57,8 +72,6 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
 
     if args.cmd == "run":
-        with open(args.config, encoding="utf-8") as fh:
-            cfg: Mapping[str, Any] = yaml.safe_load(fh)
-
+        cfg = load_config(args.config)
         strategies, _ = generate_strategy_grid(**cfg["strategy_grid"])
         simulate_many_games_stream(**cfg["sim"], strategies=strategies)
