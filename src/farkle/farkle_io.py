@@ -76,12 +76,8 @@ def simulate_many_games_stream(
     # We will write only five tiny columns per game
     header = ["game_id", "winner", "winning_score", "winner_strategy", "n_rounds"]
     
-    # --- truncate file & write header once, upfront --------------------
-    with open(out_csv, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=header)
-        writer.writeheader()
-        
     if n_jobs == 1:
+        # open once, write header, and stream rows serially
         with open(out_csv, "w", newline="") as fh:
             writer = csv.DictWriter(fh, fieldnames=header)
             writer.writeheader()
@@ -89,6 +85,11 @@ def simulate_many_games_stream(
                 row = _single_game_row(gid, s, strategies, target_score)
                 writer.writerow(row)
     else:
+        # first truncate file and write header, then append via worker
+        with open(out_csv, "w", newline="") as fh:
+            writer = csv.DictWriter(fh, fieldnames=header)
+            writer.writeheader()
+
         queue: mp.Queue = mp.Queue(maxsize=2_000)
         writer = mp.Process(target=_writer_worker, args=(queue, out_csv, header))
         writer.start()
