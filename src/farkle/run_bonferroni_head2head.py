@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Bonferroni-corrected head-to-head comparison of top-tier strategies."""
+
 import argparse
 import json
 from pathlib import Path
@@ -15,6 +17,19 @@ from .utils import bonferroni_pairs
 
 
 def run_bonferroni_head2head(seed: int = 0) -> None:
+    """Run pairwise games between top-tier strategies using Bonferroni tests.
+
+    Parameters
+    ----------
+    seed : int, default ``0``
+        Seed for shuffling the schedule and for each simulated game.
+
+    The function reads ``data/tiers.json`` to find strategies in the highest
+    tier.  It runs enough games for a Bonferroni-corrected binomial test on each
+    matchup and writes ``data/bonferroni_pairwise.csv`` containing win counts and
+    p-values computed via :func:`scipy.stats.binomtest`.
+    """
+
     with open("data/tiers.json") as fh:
         tiers = json.load(fh)
     top_val = min(tiers.values())
@@ -26,11 +41,8 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
     for (a, b), grp in schedule.groupby(["a", "b"]):
         n_games = len(grp)
         df = simulate_many_games(
-            n_games=n_games, 
-            strategies=[parse_strategy(a), parse_strategy(b)], 
-            seed=seed, 
-            n_jobs=1
-            )
+            n_games=n_games, strategies=[parse_strategy(a), parse_strategy(b)], seed=seed, n_jobs=1
+        )
         wins = df["winner_strategy"].value_counts()
         wa = int(wins.get(a, 0))
         wb = int(wins.get(b, 0))
@@ -43,6 +55,12 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
 
 
 def main(argv: List[str] | None = None) -> None:
+    """Command line interface for :func:`run_bonferroni_head2head`.
+
+    Usage
+        python -m farkle.run_bonferroni_head2head [--seed N]
+    """
+
     p = argparse.ArgumentParser(description="Head-to-head Bonferroni analysis")
     p.add_argument("--seed", type=int, default=0)
     args = p.parse_args(argv)
@@ -51,4 +69,3 @@ def main(argv: List[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-    
