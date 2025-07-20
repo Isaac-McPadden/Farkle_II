@@ -331,7 +331,6 @@ class FarkleGame:
         table_seed
             Seed for any table-level randomness.
         """
-
         self.players: List[FarklePlayer] = list(players)
         self.target_score: int = target_score
         self.table_seed = table_seed
@@ -365,29 +364,9 @@ class FarkleGame:
                 if not final_round and p.score >= self.target_score:
                     final_round = True
                     score_to_beat = p.score
-                    triggering_player = p
-                    final_players = [
-                        player for player in self.players if player != triggering_player
-                    ]
+                    final_players = [player for player in self.players if player != p]
+                    score_to_beat = self._run_final_round(final_players, score_to_beat)
 
-                if final_round:
-                    for player in (
-                        final_players
-                    ):  # All other players have chance to beat the first tentative winner
-                        # It's not fair, but it's the rules
-                        player.take_turn(
-                            target_score=self.target_score,
-                            final_round=True,
-                            score_to_beat=score_to_beat,
-                        )
-                        # During the final round update the bar whenever someone
-                        #     jumps ahead (so later players know what they must beat).
-                        if player.score > score_to_beat:
-                            score_to_beat = player.score
-
-                        # whole table has now had exactly one shot
-
-                if final_round:
                     break
             if final_round:
                 break
@@ -424,6 +403,36 @@ class FarkleGame:
         )
 
         return GameMetrics(players_block, game_block)
+
+
+    def _run_final_round(self, final_players: Sequence[FarklePlayer], score_to_beat: int) -> int:
+        """Give each remaining player one last turn.
+
+        Parameters
+        ----------
+        final_players
+            Players who get a final chance to beat the trigger score.
+        score_to_beat
+            The current leading score at the start of the round.
+
+        Returns
+        -------
+        int
+            Updated score to beat after all final turns.
+        """
+        for player in final_players:
+            # All other players have exactly one chance to overtake
+            player.take_turn(
+                target_score=self.target_score,
+                final_round=True,
+                score_to_beat=score_to_beat,
+            )
+
+            # Update bar so later players know what they must beat
+            if player.score > score_to_beat:
+                score_to_beat = player.score
+
+        return score_to_beat
 
         # Legacy metrics engine left here just in case
         # from typing import Any

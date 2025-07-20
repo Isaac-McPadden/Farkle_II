@@ -13,7 +13,7 @@ jobs:
       - uses: actions/setup-python@v4
         with:
           python-version: '3.12'
-      - run: pip install .[dev] mypy
+      - run: pip install .[dev] mypy ruff
       - run: ruff .
       - run: black --check .
       - run: mypy
