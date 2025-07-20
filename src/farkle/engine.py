@@ -209,25 +209,22 @@ class FarklePlayer:
 
 @dataclass(slots=True)
 class GameStats:
-    """Summary statistics describing a completed game.
+    """Aggregate results of one game.
 
-    Inputs
-    ------
-    winner
-        Name of the winning player.
-    winning_score
-        Score achieved by the winner.
+    Attributes
+    ----------
+    n_players
+        Number of participants.
+    table_seed
+        Seed used for the table RNG.
     n_rounds
-        Number of rounds played.
-    per_player
-        Stats for each player keyed by name.
-    winner_data
-        Stats for the winner only.
-
-    Returns
-    -------
-    GameMetrics
-        New dataclass instance populated with results.
+        Rounds played before a winner emerged.
+    total_rolls
+        Combined dice rolls for all players.
+    total_farkles
+        Total number of Farkles rolled.
+    margin
+        Points separating first and second place.
     """
 
     n_players: int
@@ -241,6 +238,16 @@ class GameStats:
 
 @dataclass(slots=True)
 class GameMetrics:
+    """Per-game statistics keyed by player name.
+
+    Attributes
+    ----------
+    players
+        Mapping from player name to :class:`PlayerStats`.
+    game
+        :class:`GameStats` summarising the overall session.
+    """
+
     players: Dict[str, PlayerStats]
     game: GameStats
 
@@ -267,6 +274,32 @@ class GameMetrics:
 
 @dataclass(slots=True)
 class PlayerStats:
+    """Statistics for a single player.
+
+    Attributes
+    ----------
+    score
+        Final score for the game.
+    farkles
+        Number of times the player farkled.
+    rolls
+        Dice rolls taken across all turns.
+    highest_turn
+        Highest single-turn score.
+    strategy
+        String representation of the strategy used.
+    rank
+        Finishing position (1 for the winner).
+    loss_margin
+        Point difference from the winner (``0`` if they won).
+    smart_five_uses, n_smart_five_dice
+        Counts for Smart‑5 heuristic usage and dice removed.
+    smart_one_uses, n_smart_one_dice
+        Counts for Smart‑1 heuristic usage and dice removed.
+    hot_dice
+        Number of hot-dice rerolls.
+    """
+
     score: int
     farkles: int
     rolls: int
@@ -287,6 +320,17 @@ class FarkleGame:
     def __init__(
         self, players: Sequence[FarklePlayer], *, target_score: int = 10_000, table_seed: int = 0
     ) -> None:
+        """Create a new game instance.
+
+        Inputs
+        ------
+        players
+            Participants in turn order.
+        target_score
+            Score that triggers the final round.
+        table_seed
+            Seed for any table-level randomness.
+        """
         self.players: List[FarklePlayer] = list(players)
         self.target_score: int = target_score
         self.table_seed = table_seed
@@ -359,6 +403,7 @@ class FarkleGame:
         )
 
         return GameMetrics(players_block, game_block)
+
 
     def _run_final_round(self, final_players: Sequence[FarklePlayer], score_to_beat: int) -> int:
         """Give each remaining player one last turn.
