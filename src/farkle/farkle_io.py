@@ -10,24 +10,24 @@ from farkle.strategies import ThresholdStrategy
 
 
 # ------------------------------------------------------------
-def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None:
-    """Summary: write queued rows to outpath in a separate process.
+def _writer_worker(queue: mp.Queue, out_csv: str, header: Sequence[str]) -> None:
+    """Summary: write queued rows to ``out_csv`` in a separate process.
 
     Inputs:
         queue: multiprocessing.Queue containing row dictionaries and a
             None sentinel to stop the worker.
-        outpath: Destination CSV file.
+        out_csv: Destination CSV file.
         header: Column names for the csv.DictWriter.
 
     Returns:
-        None. Rows are appended to outpath until the sentinel is
+        None. Rows are appended to ``out_csv`` until the sentinel is
         received.
     """
-    first = not Path(outpath).exists()
-    with open(outpath, "a", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=header)
+    first = not Path(out_csv).exists()
+    with open(out_csv, "a", newline="") as file_handle:
+        writer = csv.DictWriter(file_handle, fieldnames=header)
         if first:
-            w.writeheader()
+            writer.writeheader()
         buffer = []
         while True:
             row = queue.get()
@@ -35,12 +35,12 @@ def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None
                 break
             buffer.append(row)
             if len(buffer) >= 10_000:
-                w.writerows(buffer)
-                fh.flush()
+                writer.writerows(buffer)
+                file_handle.flush()
                 buffer.clear()
         # after loop
         if buffer:
-            w.writerows(buffer)
+            writer.writerows(buffer)
 
 
 # ------------------------------------------------------------
