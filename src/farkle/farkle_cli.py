@@ -1,4 +1,11 @@
 # src/farkle/cli.py
+"""CLI entry point for the Farkle package.
+
+This module exposes the command line interface.  At present the only
+available subcommand is ``run``.  It reads a YAML configuration file and
+invokes :func:`simulate_many_games_stream` to execute simulations.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -11,10 +18,12 @@ from farkle.simulation import generate_strategy_grid
 
 
 def main(argv: list[str] | None = None) -> None:
-    """Run the ``farkle`` command line interface.
+    """
+    Console-script entry-point for farkle CLI.
+    Passing *argv* lets unit-tests inject fake arguments.
 
-    Parameters
-    ----------
+    Inputs
+    ------
     argv : list[str] | None
         Optional command line arguments. ``None`` uses ``sys.argv``.
 
