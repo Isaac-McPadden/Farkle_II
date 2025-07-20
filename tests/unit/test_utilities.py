@@ -77,6 +77,19 @@ def test_stream_parallel(tmp_path, n_jobs):
     assert len(rows) == 5  # header + 4
 
 
+def test_stream_nested_output(tmp_path):
+    out = tmp_path / "subdir" / "out.csv"
+    strategies = [ThresholdStrategy(score_threshold=0, dice_threshold=6)]
+    simulate_many_games_stream(
+        n_games=2,
+        strategies=strategies,
+        out_csv=str(out),
+        seed=42,
+        n_jobs=1,
+    )
+    assert out.exists()
+
+    
 def test_cli_missing_file(monkeypatch):
     bad = "nope.yml"
     monkeypatch.setattr(sys, "argv", ["farkle", "run", bad])
