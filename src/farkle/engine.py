@@ -248,7 +248,7 @@ class GameMetrics:
         return {n: asdict(ps) for n, ps in self.players.items()}
 
     # ------------------------------------------------------------------
-    # Compatability helpers for the previous GameMetrics API
+    # Compatibility helpers for the previous GameMetrics API
     # ------------------------------------------------------------------
     @property
     def winner(self) -> str:
@@ -306,17 +306,17 @@ class FarkleGame:
         rounds = 0
         while rounds < max_rounds:
             rounds += 1
-            for p in self.players:
-                p.take_turn(
-                    self.target_score,  # This is that vestigial stat 
+            for player in self.players:
+                player.take_turn(
+                    self.target_score,  # This is that vestigial stat
                     final_round = final_round,
                     score_to_beat = score_to_beat,
                 )
                 # First trigger starts the final round
-                if not final_round and p.score >= self.target_score:
+                if not final_round and player.score >= self.target_score:
                     final_round = True
-                    score_to_beat = p.score
-                    triggering_player = p
+                    score_to_beat = player.score
+                    triggering_player = player
                     final_players = [player for player in self.players if player != triggering_player]
                 
                 if final_round:
@@ -338,34 +338,34 @@ class FarkleGame:
                 break
         
         
-        sorted_pl = sorted(self.players, key=lambda pl: pl.score, reverse=True)
+        sorted_pl = sorted(self.players, key=lambda player: player.score, reverse=True)
         winner = sorted_pl[0]
         runner = sorted_pl[1] if len(sorted_pl) > 1 else None
 
-        ranks = {pl.name: rk for rk, pl in enumerate(sorted_pl, start=1)}
+        ranks = {player.name: rk for rk, player in enumerate(sorted_pl, start=1)}
         players_block: Dict[str, PlayerStats] = {}
-        for pl in sorted_pl:
-            players_block[pl.name] = PlayerStats(
-                score = pl.score,
-                farkles = pl.n_farkles,
-                rolls = pl.n_rolls,
-                highest_turn = pl.highest_turn,
-                strategy = str(pl.strategy),
-                rank = ranks[pl.name],
-                loss_margin = winner.score - pl.score,
-                smart_five_uses = pl.smart_five_uses,
-                n_smart_five_dice = pl.n_smart_five_dice,
-                smart_one_uses = pl.smart_one_uses,
-                n_smart_one_dice = pl.n_smart_one_dice,
-                hot_dice = pl.n_hot_dice,
+        for player in sorted_pl:
+            players_block[player.name] = PlayerStats(
+                score = player.score,
+                farkles = player.n_farkles,
+                rolls = player.n_rolls,
+                highest_turn = player.highest_turn,
+                strategy = str(player.strategy),
+                rank = ranks[player.name],
+                loss_margin = winner.score - player.score,
+                smart_five_uses = player.smart_five_uses,
+                n_smart_five_dice = player.n_smart_five_dice,
+                smart_one_uses = player.smart_one_uses,
+                n_smart_one_dice = player.n_smart_one_dice,
+                hot_dice = player.n_hot_dice,
             )
 
         game_block = GameStats(
             n_players = len(self.players),
             table_seed = self.table_seed,
             n_rounds = rounds,
-            total_rolls = sum(pl.n_rolls for pl in self.players),
-            total_farkles = sum(pl.n_farkles for pl in self.players),
+            total_rolls = sum(player.n_rolls for player in self.players),
+            total_farkles = sum(player.n_farkles for player in self.players),
             margin = winner.score - (runner.score if runner else 0),
         )
 
