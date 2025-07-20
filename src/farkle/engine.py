@@ -34,6 +34,9 @@ __all__ = [
     "FarkleGame",
 ]
 
+# Maximum number of rolls permitted in a single turn before aborting
+ROLL_LIMIT: int = 1000
+
 
 # ---------------------------------------------------------------------------
 # Player
@@ -49,7 +52,7 @@ class FarklePlayer:
     score: int = 0
     has_scored: bool = False  # entered game (≥500) flag
     rng: np.random.Generator = field(default_factory=np.random.default_rng, repr=False)
-    
+
     # counters
     n_farkles: int = 0
     n_rolls: int = 0
@@ -60,7 +63,7 @@ class FarklePlayer:
     n_smart_one_dice: int = 0
     n_hot_dice: int = 0
     strategy_str: str = field(init=False, repr=False)
-    
+
     def __post_init__(self):
         object.__setattr__(self, "strategy_str", str(self.strategy))
 
@@ -174,14 +177,20 @@ class FarklePlayer:
         -------
         None
             The player's internal state is updated in place.
+        Raises
+        ------
+        RuntimeError
+            If the number of rolls in this turn exceeds ``ROLL_LIMIT``.
         """
         dice = 6
         turn_score = 0
         rolls_this_turn = 0
 
         while dice > 0:
-            if rolls_this_turn > 1000:
-                raise RuntimeError("Turn exceeded 1000 rolls - aborting.")
+            if rolls_this_turn > ROLL_LIMIT:
+                raise RuntimeError(
+                    f"Turn exceeded {ROLL_LIMIT} rolls - aborting."
+                )
             roll = self._roll(dice)
             rolls_this_turn += 1
 
@@ -204,11 +213,12 @@ class FarklePlayer:
             ):
                 break
 
-        # 7) After leaving the loop, check if this is our “entry turn” (we need ≥500 to get on the board)
+        # After leaving the loop, check if this is our “entry turn"
+        # (we need ≥500 to get on the board)
         if not self.has_scored and turn_score >= 500:
             self.has_scored = True
 
-        # 8) If we already had a “first‐500” in a previous turn, or just got it, bank the points
+        # If we already had a "first‐500" in a previous turn, or just got it, bank the points
         if self.has_scored:
             self.score += turn_score
             self.highest_turn = max(self.highest_turn, turn_score)
@@ -218,28 +228,27 @@ class FarklePlayer:
 # Game-level structures
 # ---------------------------------------------------------------------------
 
+
 @dataclass(slots=True)
 class GameStats:
-    """Summary statistics describing a completed game.
+    """Aggregate results of one game.
 
-    Inputs
-    ------
-    winner
-        Name of the winning player.
-    winning_score
-        Score achieved by the winner.
+    Attributes
+    ----------
+    n_players
+        Number of participants.
+    table_seed
+        Seed used for the table RNG.
     n_rounds
-        Number of rounds played.
-    per_player
-        Stats for each player keyed by name.
-    winner_data
-        Stats for the winner only.
-
-    Returns
-    -------
-    GameMetrics
-        New dataclass instance populated with results.
+        Rounds played before a winner emerged.
+    total_rolls
+        Combined dice rolls for all players.
+    total_farkles
+        Total number of Farkles rolled.
+    margin
+        Points separating first and second place.
     """
+
     n_players: int
     table_seed: int
     n_rounds: int
@@ -251,6 +260,16 @@ class GameStats:
 
 @dataclass(slots=True)
 class GameMetrics:
+    """Per-game statistics keyed by player name.
+
+    Attributes
+    ----------
+    players
+        Mapping from player name to :class:`PlayerStats`.
+    game
+        :class:`GameStats` summarising the overall session.
+    """
+
     players: Dict[str, PlayerStats]
     game: GameStats
 
@@ -260,7 +279,7 @@ class GameMetrics:
         return {n: asdict(ps) for n, ps in self.players.items()}
 
     # ------------------------------------------------------------------
-    # Compatability helpers for the previous GameMetrics API
+    # Compatibility helpers for the previous GameMetrics API
     # ------------------------------------------------------------------
     @property
     def winner(self) -> str:
@@ -277,13 +296,39 @@ class GameMetrics:
 
 @dataclass(slots=True)
 class PlayerStats:
+    """Statistics for a single player.
+
+    Attributes
+    ----------
+    score
+        Final score for the game.
+    farkles
+        Number of times the player farkled.
+    rolls
+        Dice rolls taken across all turns.
+    highest_turn
+        Highest single-turn score.
+    strategy
+        String representation of the strategy used.
+    rank
+        Finishing position (1 for the winner).
+    loss_margin
+        Point difference from the winner (``0`` if they won).
+    smart_five_uses, n_smart_five_dice
+        Counts for Smart‑5 heuristic usage and dice removed.
+    smart_one_uses, n_smart_one_dice
+        Counts for Smart‑1 heuristic usage and dice removed.
+    hot_dice
+        Number of hot-dice rerolls.
+    """
+
     score: int
     farkles: int
     rolls: int
     highest_turn: int
     strategy: str
-    rank: int # 1 = winner
-    loss_margin: int # 0 for winner, >0 otherwise
+    rank: int  # 1 = winner
+    loss_margin: int  # 0 for winner, >0 otherwise
     smart_five_uses: int = 0
     n_smart_five_dice: int = 0
     smart_one_uses: int = 0
@@ -294,7 +339,24 @@ class PlayerStats:
 class FarkleGame:
     """Driver for a *single* Farkle game."""
 
-    def __init__(self, players: Sequence[FarklePlayer], *, target_score: int = 10_000, table_seed: int = 0) -> None:
+    def __init__(
+        self,
+        players: Sequence[FarklePlayer],
+        *,
+        target_score: int = 10_000,
+        table_seed: int = 0,
+    ) -> None:
+        """Create a new game instance.
+
+        Inputs
+        ------
+        players
+            Participants in turn order.
+        target_score
+            Score that triggers the final round.
+        table_seed
+            Seed for any table-level randomness.
+        """
         self.players: List[FarklePlayer] = list(players)
         self.target_score: int = target_score
         self.table_seed = table_seed
@@ -318,93 +380,82 @@ class FarkleGame:
         rounds = 0
         while rounds < max_rounds:
             rounds += 1
-            for p in self.players:
-                p.take_turn(
-                    self.target_score,  # This is that vestigial stat 
+            for player in self.players:
+                player.take_turn(
+                    self.target_score,  # This is that vestigial stat
                     final_round = final_round,
                     score_to_beat = score_to_beat,
                 )
                 # First trigger starts the final round
-                if not final_round and p.score >= self.target_score:
+                if not final_round and player.score >= self.target_score:
                     final_round = True
-                    score_to_beat = p.score
-                    triggering_player = p
-                    final_players = [player for player in self.players if player != triggering_player]
-                
-                if final_round:
-                    for player in final_players:  # All other players have chance to beat the first tentative winner
-                                                  # It's not fair, but it's the rules
-                        player.take_turn(target_score=self.target_score,
-                                         final_round=True,
-                                         score_to_beat=score_to_beat)
-                # During the final round update the bar whenever someone
-                #     jumps ahead (so later players know what they must beat).
-                        if player.score > score_to_beat:
-                            score_to_beat = player.score
-                        
-                        # whole table has now had exactly one shot
-                        
-                if final_round:
+                    score_to_beat = player.score
+                    final_players = [pl for pl in self.players if pl != player]
+                    score_to_beat = self._run_final_round(final_players, score_to_beat)
+
                     break
             if final_round:
                 break
-        
-        
-        sorted_pl = sorted(self.players, key=lambda pl: pl.score, reverse=True)
-        winner = sorted_pl[0]
-        runner = sorted_pl[1] if len(sorted_pl) > 1 else None
 
-        ranks = {pl.name: rk for rk, pl in enumerate(sorted_pl, start=1)}
+        sorted_players = sorted(self.players, key=lambda pl: pl.score, reverse=True)
+        winner = sorted_players[0]
+        runner = sorted_players[1] if len(sorted_pl) > 1 else None
+        ranks = {player.name: rk for rk, player in enumerate(sorted_players, start=1)}
+        
         players_block: Dict[str, PlayerStats] = {}
-        for pl in sorted_pl:
-            players_block[pl.name] = PlayerStats(
-                score = pl.score,
-                farkles = pl.n_farkles,
-                rolls = pl.n_rolls,
-                highest_turn = pl.highest_turn,
-                strategy = str(pl.strategy),
-                rank = ranks[pl.name],
-                loss_margin = winner.score - pl.score,
-                smart_five_uses = pl.smart_five_uses,
-                n_smart_five_dice = pl.n_smart_five_dice,
-                smart_one_uses = pl.smart_one_uses,
-                n_smart_one_dice = pl.n_smart_one_dice,
-                hot_dice = pl.n_hot_dice,
+        for player in sorted_players:
+            players_block[player.name] = PlayerStats(
+                score = player.score,
+                farkles = player.n_farkles,
+                rolls = player.n_rolls,
+                highest_turn = player.highest_turn,
+                strategy = str(player.strategy),
+                rank = ranks[player.name],
+                loss_margin = winner.score - player.score,
+                smart_five_uses = player.smart_five_uses,
+                n_smart_five_dice = player.n_smart_five_dice,
+                smart_one_uses = player.smart_one_uses,
+                n_smart_one_dice = player.n_smart_one_dice,
+                hot_dice = player.n_hot_dice,
             )
 
         game_block = GameStats(
             n_players = len(self.players),
             table_seed = self.table_seed,
             n_rounds = rounds,
-            total_rolls = sum(pl.n_rolls for pl in self.players),
-            total_farkles = sum(pl.n_farkles for pl in self.players),
+            total_rolls = sum(player.n_rolls for player in self.players),
+            total_farkles = sum(player.n_farkles for player in self.players),
             margin = winner.score - (runner.score if runner else 0),
         )
 
         return GameMetrics(players_block, game_block)
-    
-        # Legacy metrics engine left here just in case
-        # from typing import Any
-        #         
-        # winner = max(self.players, key=lambda pl: pl.score)
-        # winner_data: Dict = {
-        #     winner.name: {
-        #         "score": p.score,
-        #         "farkles": p.n_farkles,
-        #         "rolls": p.n_rolls,
-        #         "highest_turn": p.highest_turn,
-        #         "strategy": str(p.strategy),
-        #     }
-        # }    
-        # per_player: Dict[str, Dict[str, Any]] = {
-        #     p.name: {
-        #         "score": p.score,
-        #         "farkles": p.n_farkles,
-        #         "rolls": p.n_rolls,
-        #         "highest_turn": p.highest_turn,
-        #         "strategy": str(p.strategy),
-        #     }
-        #     for p in self.players
-        # }
-        #
-        # return GameMetrics(winner.name, winner.score, rounds, per_player, winner_data)
+
+
+    def _run_final_round(self, final_players: Sequence[FarklePlayer], score_to_beat: int) -> int:
+        """Give each remaining player one last turn.
+
+        Parameters
+        ----------
+        final_players
+            Players who get a final chance to beat the trigger score.
+        score_to_beat
+            The current leading score at the start of the round.
+
+        Returns
+        -------
+        int
+            Updated score to beat after all final turns.
+        """
+        for player in final_players:
+            # All other players have exactly one chance to overtake
+            player.take_turn(
+                target_score=self.target_score,
+                final_round=True,
+                score_to_beat=score_to_beat,
+            )
+
+            # Update bar so later players know what they must beat
+            if player.score > score_to_beat:
+                score_to_beat = player.score
+
+        return score_to_beat
