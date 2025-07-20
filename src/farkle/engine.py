@@ -183,7 +183,8 @@ class FarklePlayer:
             #      - current turn_score
             #      - dice_left = dice (from step 5)
             #      - has_scored = whether we’ve ever scored ≥500 on a previous turn
-            #      - score_needed = how many more points (from banked + turn_score) we need to reach target_score
+            #      - score_needed = how many more points (from banked + turn_score)
+            #                     we need to reach target_score
             keep_rolling = self.strategy.decide(
                 turn_score=turn_score,
                 dice_left=dice,
@@ -201,7 +202,8 @@ class FarklePlayer:
             if not keep_rolling:
                 break
 
-        # 7) After leaving the loop, check if this is our “entry turn” (we need ≥500 to get on the board)
+        # 7) After leaving the loop, check if this is our “entry turn"
+        #     (we need ≥500 to get on the board)
         if not self.has_scored and turn_score >= 500:
             self.has_scored = True
 
@@ -327,7 +329,11 @@ class FarkleGame:
     """Driver for a *single* Farkle game."""
 
     def __init__(
-        self, players: Sequence[FarklePlayer], *, target_score: int = 10_000, table_seed: int = 0
+        self,
+        players: Sequence[FarklePlayer],
+        *,
+        target_score: int = 10_000,
+        table_seed: int = 0,
     ) -> None:
         """Create a new game instance.
 
@@ -363,13 +369,11 @@ class FarkleGame:
         rounds = 0
         while rounds < max_rounds:
             rounds += 1
-
             for player in self.players:
                 player.take_turn(
                     self.target_score,  # This is that vestigial stat
                     final_round = final_round,
                     score_to_beat = score_to_beat,
-
                 )
                 # First trigger starts the final round
                 if not final_round and player.score >= self.target_score:
@@ -444,29 +448,3 @@ class FarkleGame:
                 score_to_beat = player.score
 
         return score_to_beat
-
-        # Legacy metrics engine left here just in case
-        # from typing import Any
-        #
-        # winner = max(self.players, key=lambda pl: pl.score)
-        # winner_data: Dict = {
-        #     winner.name: {
-        #         "score": p.score,
-        #         "farkles": p.n_farkles,
-        #         "rolls": p.n_rolls,
-        #         "highest_turn": p.highest_turn,
-        #         "strategy": str(p.strategy),
-        #     }
-        # }
-        # per_player: Dict[str, Dict[str, Any]] = {
-        #     p.name: {
-        #         "score": p.score,
-        #         "farkles": p.n_farkles,
-        #         "rolls": p.n_rolls,
-        #         "highest_turn": p.highest_turn,
-        #         "strategy": str(p.strategy),
-        #     }
-        #     for p in self.players
-        # }
-        #
-        # return GameMetrics(winner.name, winner.score, rounds, per_player, winner_data)
