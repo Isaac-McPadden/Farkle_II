@@ -8,10 +8,17 @@ import numpy as np
 from farkle.simulation import _play_game
 from farkle.strategies import ThresholdStrategy
 
+# Batching and queue sizes for file I/O
+BUFFER_SIZE = 10_000
+QUEUE_SIZE = 2_000
+
 
 # ------------------------------------------------------------
 def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None:
     """Summary: write queued rows to outpath in a separate process.
+
+    Rows are buffered until :data:`BUFFER_SIZE` rows accumulate before
+    being flushed to disk.
 
     Inputs:
         queue: multiprocessing.Queue containing row dictionaries and a
@@ -34,7 +41,7 @@ def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None
             if row is None:
                 break
             buffer.append(row)
-            if len(buffer) >= 10_000:
+            if len(buffer) >= BUFFER_SIZE:
                 w.writerows(buffer)
                 fh.flush()
                 buffer.clear()
@@ -64,7 +71,9 @@ def simulate_many_games_stream(
         target_score: Score needed to trigger the final round.
         out_csv: Path to the output CSV file.
         seed: Optional seed for deterministic runs.
-        n_jobs: Number of processes to use; 1 runs serially.
+        n_jobs: Number of processes to use; 1 runs serially. When greater than
+            one, results are sent through a queue limited to
+            :data:`QUEUE_SIZE` items.
 
     Returns:
         None. Metrics for each game are written incrementally to
@@ -89,7 +98,7 @@ def simulate_many_games_stream(
                 row = _single_game_row(gid, s, strategies, target_score)
                 writer.writerow(row)
     else:
-        queue: mp.Queue = mp.Queue(maxsize=2_000)
+        queue: mp.Queue = mp.Queue(maxsize=QUEUE_SIZE)
         writer = mp.Process(target=_writer_worker, args=(queue, out_csv, header))
         writer.start()
 
