@@ -69,7 +69,9 @@ def simulate_many_games_stream(
         n_games: Number of games to simulate.
         strategies: Strategies to assign to the players.
         target_score: Score needed to trigger the final round.
-        out_csv: Path to the output CSV file.
+        out_csv: Path to the output CSV file. The file will be
+            overwritten at the start of the run. Its parent directory
+            must exist or will be created.
         seed: Optional seed for deterministic runs.
         n_jobs: Number of processes to use; 1 runs serially. When greater than
             one, results are sent through a queue limited to
@@ -81,6 +83,8 @@ def simulate_many_games_stream(
     """
     master = np.random.default_rng(seed)
     seeds = master.integers(0, 2**32 - 1, size=n_games)
+
+    Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
 
     # We will write only five tiny columns per game
     header = ["game_id", "winner", "winning_score", "winner_strategy", "n_rounds"]
@@ -156,15 +160,18 @@ def _single_game_row(
 
 
 # pickle-friendly wrapper for mp.Pool
-def _single_game_row_mp(args_tuple):
+def _single_game_row_mp(
+    args_tuple: tuple[int, int, Sequence[ThresholdStrategy], int],
+) -> tuple[int, Dict[str, Any]]:
     """
-    multiprocessing helper that forwards to _single_game_row.
+    Multiprocessing helper that forwards to ``_single_game_row``.
 
     Inputs:
-        args_tuple: Tuple (game_id, seed, strategies, target_score) as
-            expected by _single_game_row.
+        args_tuple: tuple[int, int, Sequence[ThresholdStrategy], int]
+            ``(game_id, seed, strategies, target_score)``.
 
     Returns:
-        (game_id, row_dict) so that the game id survives pool ordering.
+        tuple[int, Dict[str, Any]] containing the game id and the row
+        dictionary produced by ``_single_game_row``.
     """
     return args_tuple[0], _single_game_row(*args_tuple)
