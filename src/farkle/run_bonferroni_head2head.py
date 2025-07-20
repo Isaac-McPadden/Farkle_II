@@ -13,10 +13,10 @@ PAIRWISE_CSV = Path("data/bonferroni_pairwise.csv")
 import pandas as pd
 from scipy.stats import binomtest
 
-from .simulation import simulate_many_games
-from .stats import games_for_power
-from .strategies import parse_strategy
-from .utils import bonferroni_pairs
+from farkle.simulation import simulate_many_games_from_seeds
+from farkle.stats import games_for_power
+from farkle.strategies import parse_strategy
+from farkle.utils import bonferroni_pairs
 
 
 def run_bonferroni_head2head(seed: int = 0) -> None:
@@ -42,9 +42,10 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
 
     records = []
     for (a, b), grp in schedule.groupby(["a", "b"]):
-        n_games = len(grp)
-        df = simulate_many_games(
-            n_games=n_games, strategies=[parse_strategy(a), parse_strategy(b)], seed=seed, n_jobs=1
+        df = simulate_many_games_from_seeds(
+            seeds=grp["seed"].tolist(),
+            strategies=[parse_strategy(a), parse_strategy(b)],
+            n_jobs=1,
         )
         wins = df["winner_strategy"].value_counts()
         wa = int(wins.get(a, 0))
