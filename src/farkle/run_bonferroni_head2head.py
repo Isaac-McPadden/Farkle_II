@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import List
 
+TIERS_PATH = Path("data/tiers.json")
+
 import pandas as pd
 from scipy.stats import binomtest
 
@@ -15,8 +17,13 @@ from .utils import bonferroni_pairs
 
 
 def run_bonferroni_head2head(seed: int = 0) -> None:
-    with open("data/tiers.json") as fh:
-        tiers = json.load(fh)
+    try:
+        with TIERS_PATH.open() as fh:
+            tiers = json.load(fh)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Tier file not found at {TIERS_PATH}") from exc
+    if not tiers:
+        raise RuntimeError(f"No tiers found in {TIERS_PATH}")
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
     games_needed = games_for_power(len(elites), method="bonferroni", pairwise=True)
