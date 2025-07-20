@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Sequence
 
@@ -193,7 +194,6 @@ class FarklePlayer:
                 )
             roll = self._roll(dice)
             rolls_this_turn += 1
-
             pts, dice, bust = self._score_roll(roll, turn_score)
             if bust:
                 turn_score = 0
@@ -273,10 +273,31 @@ class GameMetrics:
     players: Dict[str, PlayerStats]
     game: GameStats
 
+    @property
+    def players_dict(self) -> Dict[str, Dict[str, int]]:
+        """Return per-player statistics as plain dictionaries.
+
+        This property mirrors the legacy :attr:`per_player` attribute which
+        originally exposed player results before :class:`PlayerStats` existed.
+        """
+        return {n: asdict(ps) for n, ps in self.players.items()}
+
     # legacy – keep old call‑sites alive until migrated
     @property
     def per_player(self):
-        return {n: asdict(ps) for n, ps in self.players.items()}
+        """Deprecated alias for :attr:`players_dict`.
+
+        The original :class:`GameMetrics` exposed player results via
+        ``per_player`` before :class:`PlayerStats` was introduced.  Existing
+        code may still rely on that attribute, so it now forwards to
+        :attr:`players_dict` and emits a :class:`DeprecationWarning`.
+        """
+        warnings.warn(
+            "GameMetrics.per_player is deprecated; use players_dict instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.players_dict
 
     # ------------------------------------------------------------------
     # Compatibility helpers for the previous GameMetrics API
@@ -427,10 +448,10 @@ class FarkleGame:
             total_farkles = sum(player.n_farkles for player in self.players),
             margin = winner.score - (runner.score if runner else 0),
         )
-
+        
         return GameMetrics(players_block, game_block)
 
-
+      
     def _run_final_round(self, final_players: Sequence[FarklePlayer], score_to_beat: int) -> int:
         """Give each remaining player one last turn.
 
