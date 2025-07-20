@@ -11,18 +11,33 @@ from farkle.simulation import generate_strategy_grid
 
 
 def main(argv: list[str] | None = None) -> None:
-    """
-    Console-script entry-point.
-    Passing *argv* lets unit-tests inject fake arguments.
-    
-    Inputs
-    ------
+    """Run the ``farkle`` command line interface.
+
+    Parameters
+    ----------
     argv : list[str] | None
-        Command line argument list, or None for sys.argv.
+        Optional command line arguments. ``None`` uses ``sys.argv``.
 
     Returns
     -------
     None
+
+    Raises
+    ------
+    FileNotFoundError
+        If ``config`` cannot be opened.
+    KeyError
+        If required sections are missing from the YAML file.
+    yaml.YAMLError
+        If the file cannot be parsed.
+
+    The configuration YAML must contain ``strategy_grid`` and ``sim`` keys. A
+    minimal example looks like::
+
+        strategy_grid:
+          dice_threshold: [1, 2, 3]
+        sim:
+          n_games: 1000
     """
     ap = argparse.ArgumentParser(prog="farkle")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -38,4 +53,3 @@ def main(argv: list[str] | None = None) -> None:
 
         strategies, _ = generate_strategy_grid(**cfg["strategy_grid"])
         simulate_many_games_stream(**cfg["sim"], strategies=strategies)
-        
