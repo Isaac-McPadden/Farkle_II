@@ -1,4 +1,4 @@
-# src/farkle/cli.py
+# src/farkle/farkle_cli.py
 from __future__ import annotations
 
 import argparse
@@ -14,7 +14,7 @@ def main(argv: list[str] | None = None) -> None:
     """
     Console-script entry-point.
     Passing *argv* lets unit-tests inject fake arguments.
-    
+
     Inputs
     ------
     argv : list[str] | None
@@ -38,4 +38,4 @@ def main(argv: list[str] | None = None) -> None:
 
         strategies, _ = generate_strategy_grid(**cfg["strategy_grid"])
         simulate_many_games_stream(**cfg["sim"], strategies=strategies)
-        
+
