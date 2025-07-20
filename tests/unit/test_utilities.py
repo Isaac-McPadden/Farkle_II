@@ -77,6 +77,29 @@ def test_stream_parallel(tmp_path, n_jobs):
     assert len(rows) == 5  # header + 4
 
 
+def test_cli_missing_file(monkeypatch):
+    bad = "nope.yml"
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", bad])
+    with pytest.raises(FileNotFoundError):
+        farkle_cli.main()
+
+
+def test_cli_bad_yaml(tmp_path, monkeypatch):
+    cfg = tmp_path / "bad.yml"
+    cfg.write_text("{:")  # invalid YAML
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", str(cfg)])
+    with pytest.raises(yaml.YAMLError):
+        farkle_cli.main()
+
+
+def test_cli_missing_keys(tmp_path, monkeypatch):
+    cfg = tmp_path / "missing.yml"
+    cfg.write_text(yaml.safe_dump({}))
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", str(cfg)])
+    with pytest.raises(KeyError):
+        farkle_cli.main()
+
+
 def test_load_config_missing_file(tmp_path):
     cfg_path = tmp_path / "missing.yml"
     with pytest.raises(FileNotFoundError):
