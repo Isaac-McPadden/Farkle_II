@@ -14,8 +14,8 @@ QUEUE_SIZE = 2_000
 
 
 # ------------------------------------------------------------
-def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None:
-    """Summary: write queued rows to outpath in a separate process.
+def _writer_worker(queue: mp.Queue, out_csv: str, header: Sequence[str]) -> None:
+    """Summary: write queued rows to ``out_csv`` in a separate process.
 
     Rows are buffered until :data:`BUFFER_SIZE` rows accumulate before
     being flushed to disk.
@@ -23,18 +23,18 @@ def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None
     Inputs:
         queue: multiprocessing.Queue containing row dictionaries and a
             None sentinel to stop the worker.
-        outpath: Destination CSV file.
+        out_csv: Destination CSV file.
         header: Column names for the csv.DictWriter.
 
     Returns:
-        None. Rows are appended to outpath until the sentinel is
+        None. Rows are appended to ``out_csv`` until the sentinel is
         received.
     """
-    first = not Path(outpath).exists()
-    with open(outpath, "a", newline="") as fh:
-        w = csv.DictWriter(fh, fieldnames=header)
+    first = not Path(out_csv).exists()
+    with open(out_csv, "a", newline="") as file_handle:
+        writer = csv.DictWriter(file_handle, fieldnames=header)
         if first:
-            w.writeheader()
+            writer.writeheader()
         buffer = []
         while True:
             row = queue.get()
@@ -42,12 +42,12 @@ def _writer_worker(queue: mp.Queue, outpath: str, header: Sequence[str]) -> None
                 break
             buffer.append(row)
             if len(buffer) >= BUFFER_SIZE:
-                w.writerows(buffer)
-                fh.flush()
+                writer.writerows(buffer)
+                file_handle.flush()
                 buffer.clear()
         # after loop
         if buffer:
-            w.writerows(buffer)
+            writer.writerows(buffer)
 
 
 # ------------------------------------------------------------
@@ -89,14 +89,14 @@ def simulate_many_games_stream(
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
 
     # --- truncate file & write header once, upfront --------------------
-    with open(out_csv, "w", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=header)
+    with open(out_csv, "w", newline="") as file_handle:
+        writer = csv.DictWriter(file_handle, fieldnames=header)
         writer.writeheader()
 
     if n_jobs == 1:
         # open once, write header, and stream rows serially
-        with open(out_csv, "w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=header)
+        with open(out_csv, "w", newline="") as file_handle:
+            writer = csv.DictWriter(file_handle, fieldnames=header)
             writer.writeheader()
             for gid, s in enumerate(seeds, 1):
                 row = _single_game_row(gid, s, strategies, target_score)
