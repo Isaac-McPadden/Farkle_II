@@ -1,3 +1,5 @@
+import numpy as np
+import pandas as pd
 from pandas import DataFrame
 
 from farkle.simulation import (
@@ -5,6 +7,7 @@ from farkle.simulation import (
     experiment_size,
     generate_strategy_grid,
     simulate_many_games,
+    simulate_many_games_from_seeds,
     simulate_one_game,
 )
 from farkle.strategies import ThresholdStrategy
@@ -57,3 +60,14 @@ def test_experiment_size_subset_options():
     strats, _ = generate_strategy_grid(consider_score_opts=cs_opts, consider_dice_opts=cd_opts)
     size = experiment_size(consider_score_opts=cs_opts, consider_dice_opts=cd_opts)
     assert size == len(strats)
+
+    
+def test_simulate_many_games_from_seeds_matches():
+    strats = [ThresholdStrategy(score_threshold=100, dice_threshold=0)]
+    rng_seed = 42
+    n_games = 5
+    rng = np.random.default_rng(rng_seed)
+    seeds = rng.integers(0, 2**32 - 1, size=n_games).tolist()
+    df1 = simulate_many_games_from_seeds(seeds=seeds, strategies=strats, n_jobs=1)
+    df2 = simulate_many_games(n_games=n_games, strategies=strats, seed=rng_seed, n_jobs=1)
+    pd.testing.assert_frame_equal(df1, df2)
