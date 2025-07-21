@@ -11,8 +11,37 @@ def test_read_manifest_seed(tmp_path):
     assert rt._read_manifest_seed(tmp_path / "missing.yaml") == 0
 
 
+def test_read_row_shards(tmp_path):
+    row_dir = tmp_path / "rows"
+    row_dir.mkdir()
+    pd.DataFrame({"w": [1]}).to_parquet(row_dir / "a.parquet")
+    pd.DataFrame({"w": [2]}).to_parquet(row_dir / "b.parquet")
+
+    df = rt._read_row_shards(row_dir)
+    assert sorted(df["w"]) == [1, 2]
+
+
+def test_read_winners_csv(tmp_path):
+    block = tmp_path
+    pd.DataFrame({"winner": ["A", "B"]}).to_csv(block / "winners.csv", index=False)
+
+    df = rt._read_winners_csv(block)
+    assert list(df["winner"]) == ["A", "B"]
+
+
+def test_read_loose_parquets(tmp_path):
+    block = tmp_path / "block"
+    block.mkdir()
+    pd.DataFrame({"w": ["X"]}).to_parquet(block / "a.parquet")
+    pd.DataFrame({"w": ["Y"]}).to_parquet(block / "b.parquet")
+
+    df = rt._read_loose_parquets(block)
+    assert sorted(df["w"]) == ["X", "Y"]
+    assert rt._read_loose_parquets(tmp_path / "empty") is None
+
+
 def test_load_ranked_games_parquet(tmp_path):
-    block   = tmp_path / "b_players"
+    block = tmp_path / "b_players"
     row_dir = block / "1_rows"
     row_dir.mkdir(parents=True)
     pd.DataFrame({"winner_strategy": ["A"]}).to_parquet(row_dir / "a.parquet")
@@ -23,15 +52,17 @@ def test_load_ranked_games_parquet(tmp_path):
 
 
 def test_load_ranked_games_rank_based(tmp_path):
-    block   = tmp_path / "r_players"
+    block = tmp_path / "r_players"
     row_dir = block / "1_rows"
     row_dir.mkdir(parents=True)
-    df = pd.DataFrame({
-        "P1_strategy": ["A"],
-        "P1_rank":     [1],
-        "P2_strategy": ["B"],
-        "P2_rank":     [2],
-    })
+    df = pd.DataFrame(
+        {
+            "P1_strategy": ["A"],
+            "P1_rank": [1],
+            "P2_strategy": ["B"],
+            "P2_rank": [2],
+        }
+    )
     df.to_parquet(row_dir / "rows.parquet")
 
     games = rt._load_ranked_games(block)
@@ -65,24 +96,24 @@ def test_update_ratings_ranked():
 
     # original winner stream:  A, B, A, C, A
     games = [
-        ["A", "B"],   # A beats B
-        ["B", "A"],   # B beats A
-        ["A", "C"],   # A beats C
-        ["C", "A"],   # C beats A
-        ["A", "B"],   # A beats B again
+        ["A", "B"],  # A beats B
+        ["B", "A"],  # B beats A
+        ["A", "C"],  # A beats C
+        ["C", "A"],  # C beats A
+        ["A", "B"],  # A beats B again
     ]
 
-    keepers = ["A", "B"]                     # only rate these two
+    keepers = ["A", "B"]  # only rate these two
     result = rt._update_ratings(games, keepers, env)
 
     # build the expected ratings by replaying the same tables
     ratings = {k: env.create_rating() for k in keepers}
     for g in games:
-      p = [s for s in g if s in keepers]
-      if len(p) < 2:
-          continue
-      new = env.rate([[ratings[p[0]]], [ratings[p[1]]]], ranks=[0, 1])
-      ratings[p[0]], ratings[p[1]] = new[0][0], new[1][0]
+        p = [s for s in g if s in keepers]
+        if len(p) < 2:
+            continue
+        new = env.rate([[ratings[p[0]]], [ratings[p[1]]]], ranks=[0, 1])
+        ratings[p[0]], ratings[p[1]] = new[0][0], new[1][0]
 
     expected = {k: rt.RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
     assert result == expected

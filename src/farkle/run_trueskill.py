@@ -49,6 +49,14 @@ def _read_manifest_seed(path: Path) -> int:
         return 0
 
 
+def _read_row_shards(row_dir: Path) -> pd.DataFrame:
+    """Concatenate all parquet shards inside ``row_dir``."""
+    frames = [pd.read_parquet(p) for p in row_dir.glob("*.parquet")]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def _load_ranked_games(block: Path) -> list[list[str]]:
     """Load all ranked games for a results block.
 
@@ -77,35 +85,48 @@ def _load_ranked_games(block: Path) -> list[list[str]]:
             frames.extend(pd.read_parquet(p) for p in row_dir.glob("*.parquet"))
         df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    # ── 2. winners.csv fallback ────────────────────────────────────────────
-    elif (block / "winners.csv").exists():
-        df = pd.read_csv(block / "winners.csv")
+def _read_winners_csv(block: Path) -> pd.DataFrame:
+    """Read ``winners.csv`` from a result block."""
+    return pd.read_csv(block / "winners.csv")
 
-    # ── 3. Loose parquet(s) in the block root ──────────────────────────────
+
+def _read_loose_parquets(block: Path) -> pd.DataFrame | None:
+    """Return a DataFrame from loose parquet files or ``None`` when absent."""
+    files = list(block.glob("*.parquet"))
+    if not files:
+        return None
+    frames = [pd.read_parquet(p) for p in files]
+    return pd.concat(frames, ignore_index=True)
+
+
+def _load_ranked_games(block: Path) -> list[list[str]]:
+    """Return one list per game, ordered by finishing position."""
+    row_dir = next((p for p in block.glob("*_rows") if p.is_dir()), None)
+    if row_dir:
+        df = _read_row_shards(row_dir)
+    elif (block / "winners.csv").exists():
+        df = _read_winners_csv(block)
     else:
-        parquet_files = list(block.glob("*.parquet"))
-        if parquet_files:
-            frames = [pd.read_parquet(p) for p in parquet_files]
-            df = pd.concat(frames, ignore_index=True)
-        else:
-            return []                       # nothing we know how to read
+        df = _read_loose_parquets(block)
+        if df is None:
+            return []
 
     # ----------------------------------------------------------------------
-    rank_cols  = [c for c in df.columns if c.endswith("_rank")]
+    rank_cols = [c for c in df.columns if c.endswith("_rank")]
     strat_cols = {c[:-5]: f"{c[:-5]}_strategy" for c in rank_cols}
 
     games: list[list[str]] = []
     for _, row in df.iterrows():
-        if rank_cols:                                   # modern per-player ranks
+        if rank_cols:  # modern per-player ranks
             ordered = sorted(rank_cols, key=row.__getitem__)
             players = [row[strat_cols[c[:-5]]] for c in ordered]
-        else:                                           # winner-only rows
+        else:  # winner-only rows
             if "winner_strategy" in row:
                 players = [row["winner_strategy"]]
             elif "winner" in row:
                 players = [row["winner"]]
             else:
-                players = []        # unknown schema → ignore row
+                players = []  # unknown schema → ignore row
         games.append(players)
 
     return games
@@ -134,14 +155,12 @@ def _update_ratings(
     dict[str, RatingStats]
         Mapping from strategy name to its RatingStats tuple.
     """
-    ratings: dict[str, trueskill.Rating] = {
-        k: env.create_rating() for k in keepers
-    }
+    ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
 
     for game in games:
         # keep only the strategies we really want to rate
         players = [s for s in game if (not keepers or s in keepers)]
-        teams   = [[ratings.setdefault(s, env.create_rating())] for s in players]
+        teams = [[ratings.setdefault(s, env.create_rating())] for s in players]
 
         if len(teams) < 2:
             continue  # need at least two teams for a rating update
@@ -223,4 +242,3 @@ def main(argv: List[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-    
