@@ -420,7 +420,7 @@ class FarkleGame:
 
         sorted_players = sorted(self.players, key=lambda pl: pl.score, reverse=True)
         winner = sorted_players[0]
-        runner = sorted_players[1] if len(sorted_pl) > 1 else None
+        runner = sorted_players[1] if len(sorted_players) > 1 else None
         ranks = {player.name: rk for rk, player in enumerate(sorted_players, start=1)}
         
         players_block: Dict[str, PlayerStats] = {}
