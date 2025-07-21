@@ -48,13 +48,21 @@ def generate_strategy_grid(
     auto_hot_opts: Sequence[bool] = (False, True),
     run_up_score_opts: Sequence[bool] = (True, False),
 ) -> Tuple[List[ThresholdStrategy], pd.DataFrame]:
-    """Create the Cartesian product of all parameter options.
+    """Create the Cartesian product of all parameter choices.
 
-    Returns a tuple *(strategies, meta_df)* where the first element is a
-    list of fully-constructed ``ThresholdStrategy`` instances (safe to
-    pass to the engine) and the second element is a *metadata* dataframe
-    recording each parameter combo.
-    Default grid should be len(grid) = 8160
+    Parameters
+    ----------
+    score_thresholds, dice_thresholds, smart_five_opts, smart_one_opts,
+    consider_score_opts, consider_dice_opts, auto_hot_opts, run_up_score_opts
+        Sequences of options for the corresponding ``ThresholdStrategy``
+        fields. ``None`` selects sensible defaults for each parameter.
+
+    Returns
+    -------
+    Tuple[List[ThresholdStrategy], pandas.DataFrame]
+        The first element contains fully constructed strategies in the
+        same order as the metadata ``DataFrame`` returned as the second
+        element.  The default grid consists of 8 160 strategies.
     """
 
     if score_thresholds is None:
@@ -142,7 +150,22 @@ def experiment_size(
     auto_hot_dice_opts: Sequence[bool] = (True, False),
     run_up_score_opts: Sequence[bool] = (True, False),
 ) -> int:
-    """Compute *a priori* size of a strategy grid."""
+    """Compute *a priori* size of a strategy grid.
+
+    Parameters
+    ----------
+    score_thresholds, dice_thresholds, smart_five_and_one_options,
+    consider_score_opts, consider_dice_opts, auto_hot_dice_opts,
+    run_up_score_opts
+        Option sequences mirroring those accepted by
+        :func:`generate_strategy_grid`. ``None`` falls back to that
+        function's defaults.
+
+    Returns
+    -------
+    int
+        Number of unique strategy combinations that would be generated.
+    """
     
     score_thresholds = score_thresholds or list(range(200, 1050, 50))
     dice_thresholds = dice_thresholds or list(range(0, 5))
@@ -170,35 +193,75 @@ def experiment_size(
 # ---------------------------------------------------------------------------
 # Batch simulation helpers
 # ---------------------------------------------------------------------------
-def _make_players(strategies, seed):
+def _make_players(
+    strategies: Sequence[ThresholdStrategy],
+    seed: int | None,
+) -> List[FarklePlayer]:
+    """Instantiate ``FarklePlayer`` objects for a table.
+
+    Parameters
+    ----------
+    strategies
+        Strategies applied to each player in order.
+    seed
+        Seed used to create per-player random number generators.  ``None``
+        yields non-deterministic behaviour.
+
+    Returns
+    -------
+    List[FarklePlayer]
+        Players ready to be passed to ``FarkleGame``.
+    """
+
     master = np.random.default_rng(seed)
     return [
-      FarklePlayer(
-        name=f"P{i+1}",
-        strategy=s,
-        rng=np.random.default_rng(master.integers(0, 2**32 - 1)),
-      )
-      for i, s in enumerate(strategies)
+        FarklePlayer(
+            name=f"P{i+1}",
+            strategy=s,
+            rng=np.random.default_rng(master.integers(0, 2**32 - 1)),
+        )
+        for i, s in enumerate(strategies)
     ]
 
 
-def _play_game(seed: int, strategies: Sequence[ThresholdStrategy], target_score: int=10000) -> Dict[str, Any]:
+def _play_game(
+    seed: int,
+    strategies: Sequence[ThresholdStrategy],
+    target_score: int = 10_000,
+) -> Dict[str, Any]:
+    """Play a single game and return flattened metrics.
+
+    Parameters
+    ----------
+    seed
+        Base seed for constructing player RNGs.
+    strategies
+        ``ThresholdStrategy`` objects in seating order.
+    target_score
+        Score required to trigger the final round.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Mapping of metric names to values including the winner and
+        per-player statistics.
+    """
+
     # give every player an *independent* PRNG, but reproducible
     players = _make_players(strategies, seed)
     gm = FarkleGame(players, target_score=target_score).play()
-    # 1) Determine the winning player's name from the PlayerStats block
+    # Determine the winner from the PlayerStats block
     winner = next(name for name, ps in gm.players.items() if ps.rank == 1)
     flat: Dict[str, Any] = {
         "winner": winner,
         "winning_score": gm.players[winner].score,
         "n_rounds": gm.game.n_rounds,
     }
-    # 3) Per-player metrics
+    # Per-player metrics
     for pname, stats in gm.players.items():
-        # asdict works on slots dataclasses
         for k, v in asdict(stats).items():
             flat[f"{pname}_{k}"] = v
-            
+
     return flat
 
 
@@ -210,7 +273,26 @@ def simulate_many_games(
     seed: int | None = None,
     n_jobs: int = 1,
 ) -> pd.DataFrame:
-    """Run *n_games* in parallel (if *n_jobs>1*) and return tidy metrics."""
+    """Run many games and return a tidy ``DataFrame`` of results.
+
+    Parameters
+    ----------
+    n_games
+        Number of games to simulate.
+    strategies
+        Strategies assigned to the players.
+    target_score
+        Score required to trigger the final round.
+    seed
+        Optional seed for determinism across runs.
+    n_jobs
+        Number of worker processes to spawn; ``1`` runs serially.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per game as produced by :func:`_play_game`.
+    """
     
     master_rng = np.random.default_rng(seed)
     seeds = master_rng.integers(0, 2**32 - 1, size=n_games).tolist()
@@ -229,7 +311,22 @@ def simulate_one_game(
     target_score: int = 10_000,
     seed: int | None = None,
 ):
-    """Convenience wrapper around the *single* game engine."""
+    """Play a single game using the provided strategies.
+
+    Parameters
+    ----------
+    strategies
+        Strategy objects applied to the players.
+    target_score
+        Score needed to trigger the final round.
+    seed
+        Optional seed controlling all random number generators.
+
+    Returns
+    -------
+    GameMetrics
+        Dataclass returned by :class:`~farkle.engine.FarkleGame.play`.
+    """
     
     players = _make_players(strategies, seed)
     return FarkleGame(players, target_score=target_score).play()
@@ -240,7 +337,19 @@ def simulate_one_game(
 # ---------------------------------------------------------------------------
 
 def aggregate_metrics(df: pd.DataFrame) -> Dict[str, Any]:
-    """Return a *dict* with high-level summary statistics."""
+    """Summarize a DataFrame of game results.
+
+    Parameters
+    ----------
+    df
+        DataFrame produced by :func:`simulate_many_games`.
+
+    Returns
+    -------
+    Dict[str, Any]
+        Mapping with the total number of games, the mean round count and
+        a winner frequency dictionary.
+    """
     
     return {
         "games": len(df),
