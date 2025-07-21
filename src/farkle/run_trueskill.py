@@ -35,10 +35,12 @@ def _load_ranked_games(block: Path) -> list[list[str]]:
         3. <block>/*.parquet                # legacy parquet(s) in root
     """
     # ── 1. Modern layout ────────────────────────────────────────────────────
-    row_dir = next(block.glob("*_rows"), None)
-    if row_dir:
-        frames = [pd.read_parquet(p) for p in row_dir.glob("*.parquet")]
-        df = pd.concat(frames, ignore_index=True)
+    row_dirs = sorted(block.glob("*_rows"))
+    if row_dirs:
+        frames: list[pd.DataFrame] = []
+        for row_dir in row_dirs:
+            frames.extend(pd.read_parquet(p) for p in row_dir.glob("*.parquet"))
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     # ── 2. winners.csv fallback ────────────────────────────────────────────
     elif (block / "winners.csv").exists():
