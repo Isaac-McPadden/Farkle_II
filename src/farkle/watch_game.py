@@ -38,8 +38,12 @@ log = logging.getLogger("watch")
 # ── 2.  Tiny helpers ---------------------------------------------------------
 # ── helper: dump a ThresholdStrategy in YAML-ish format ─────────────────────
 def strategy_yaml(s: ThresholdStrategy) -> str:
-    """
-    Return something like:
+    """Return a human friendly description of ``s``.
+
+    The function formats the dataclass fields of ``ThresholdStrategy`` in the
+    order they were declared so that the resulting string can be logged or
+    printed.  The output intentionally resembles YAML but no YAML library is
+    used.  Example output::
 
         score_threshold : 600
         dice_threshold  : 3
@@ -67,7 +71,14 @@ def strategy_yaml(s: ThresholdStrategy) -> str:
 
 
 def _trace_decide(s: ThresholdStrategy, label: str) -> None:
-    """Monkey-patch *one* strategy instance so we can watch its calls."""
+    """Log calls to ``s.decide``.
+
+    The function replaces the ``decide`` method of the provided strategy with a
+    wrapper that logs the input state (turn score and dice left) and the
+    resulting decision using :mod:`logging`.  The replacement happens in place
+    (a classic monkey patch) so further calls to ``decide`` are intercepted
+    until the program exits or the method is reset.
+    """
     original = s.decide
 
     def traced_decide(self: ThresholdStrategy, **kw):  # same signature  # noqa: ARG001
@@ -85,8 +96,14 @@ def _trace_decide(s: ThresholdStrategy, label: str) -> None:
 
 @contextlib.contextmanager
 def patch_scoring():
-    """Temporarily wrap ``scoring.default_score`` so each call is logged."""
+    """Patch :func:`farkle.scoring.default_score` to emit log messages.
 
+    The patched function behaves identically to the original but logs the
+    points scored, which dice were used and whether the player gets to reroll.
+    Both the local ``default_score`` symbol in this module and the one in
+    :mod:`farkle.scoring` are replaced.  This is a global side effect and should
+    be undone after tests if necessary.
+    """
     global default_score  # module alias
     import farkle.scoring as _scoring_mod
 
@@ -120,9 +137,10 @@ def _patch_default_score() -> None:
 
 
 class TracePlayer(FarklePlayer):
-    """Subclass that only adds a noisy _roll()."""
+    """Subclass of :class:`FarklePlayer` that logs every dice roll."""
 
-    def _roll(self, n: int) -> list[int]:  # :contentReference[oaicite:3]{index=3}
+    def _roll(self, n: int) -> Sequence[int]:  # :contentReference[oaicite:3]{index=3}
+        """Return ``n`` dice faces and log the result."""
         faces = super()._roll(n)
         log.info(f"{self.name} rolls {faces}")
         return faces
@@ -130,9 +148,19 @@ class TracePlayer(FarklePlayer):
 
 # ── 3.  High-level entry-point ----------------------------------------------
 def watch_game(seed: int | None = None) -> None:
-    """
-    Play one game between two *random* ThresholdStrategy players
-    with full trace output.
+    """Run a single game with very verbose output.
+
+    Two :class:`ThresholdStrategy` instances are created with random
+    parameters.  Their ``decide`` methods and the global scoring function are
+    monkey patched so that every decision and scoring call is logged.  Each
+    player is wrapped in :class:`TracePlayer` so that all dice rolls are also
+    printed.
+
+    Parameters
+    ----------
+    seed:
+        Optional seed forwarded to ``numpy.random.default_rng`` to make the game
+        deterministic.
     """
     rng = np.random.default_rng(seed)
 
