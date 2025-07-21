@@ -7,7 +7,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 
 from farkle.scoring import DiceRoll, default_score
-from farkle.strategies import PreferScore, ThresholdStrategy
+from farkle.strategies import ThresholdStrategy
 
 """engine.py
 ============
@@ -404,8 +404,8 @@ class FarkleGame:
             for player in self.players:
                 player.take_turn(
                     self.target_score,  # This is that vestigial stat
-                    final_round = final_round,
-                    score_to_beat = score_to_beat,
+                    final_round=final_round,
+                    score_to_beat=score_to_beat,
                 )
                 # First trigger starts the final round
                 if not final_round and player.score >= self.target_score:
