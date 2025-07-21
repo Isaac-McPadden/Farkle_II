@@ -30,7 +30,7 @@ def test_cli_run(tmp_path, monkeypatch):
             "smart_one_opts": [False],
             "consider_score_opts": [True],
             "consider_dice_opts": [True],
-            "auto_hot_opts": [False],
+            "auto_hot_dice_opts": [False],
         },
         "sim": {
             "n_games": 2,

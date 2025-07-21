@@ -47,7 +47,7 @@ def generate_strategy_grid(
     smart_one_opts: Sequence[bool] | None = None,
     consider_score_opts: Sequence[bool] = (True, False),
     consider_dice_opts: Sequence[bool] = (True, False),
-    auto_hot_opts: Sequence[bool] = (False, True),
+    auto_hot_dice_opts: Sequence[bool] = (False, True),
     run_up_score_opts: Sequence[bool] = (True, False),
 ) -> Tuple[List[ThresholdStrategy], pd.DataFrame]:
     """Create the Cartesian product of all parameter options.
