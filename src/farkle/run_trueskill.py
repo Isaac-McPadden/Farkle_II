@@ -18,6 +18,21 @@ log = logging.getLogger(__name__)
 
 
 def _read_manifest_seed(path: Path) -> int:
+    """Return the tournament seed recorded in ``manifest.yaml``.
+
+    Parameters
+    ----------
+    path : Path
+        Location of the manifest file. The YAML is expected to contain a
+        ``seed`` entry.
+
+    Returns
+    -------
+    int
+        The integer seed found in the file. ``0`` is returned when the file
+        does not exist or the value is missing.
+    """
+
     try:
         data = yaml.safe_load(path.read_text())
         return int(data.get("seed", 0))
@@ -26,13 +41,24 @@ def _read_manifest_seed(path: Path) -> int:
 
 
 def _load_ranked_games(block: Path) -> list[list[str]]:
-    """
-    Return one list per game, containing the strategies in finishing order.
+    """Load all ranked games for a results block.
 
-    Understands three on-disk layouts, in this priority order
-        1. <block>/*_rows/*.parquet         # modern row-shard directory
-        2. <block>/winners.csv              # legacy CSV with one winner col
-        3. <block>/*.parquet                # legacy parquet(s) in root
+    Parameters
+    ----------
+    block : Path
+        Directory containing the results for one tournament block. The
+        directory may be organised in one of three supported layouts:
+
+        ``*_rows`` directory of Parquet files,
+        a ``winners.csv`` file,
+        or loose ``.parquet`` files in the block root.
+
+    Returns
+    -------
+    list[list[str]]
+        One list per game with strategy names ordered from first place to
+        last. An empty list is returned when the block contains no readable
+        data.
     """
     # ── 1. Modern layout ────────────────────────────────────────────────────
     row_dir = next(block.glob("*_rows"), None)
@@ -79,8 +105,23 @@ def _update_ratings(
     keepers: list[str],
     env: trueskill.TrueSkill,
 ) -> dict[str, tuple[float, float]]:
-    """
-    Update ratings using TrueSkill's team API with full table rankings.
+    """Update strategy ratings for a block of games.
+
+    Parameters
+    ----------
+    games : list[list[str]]
+        Each inner list contains strategy names ordered by finishing position
+        for a single game.
+    keepers : list[str]
+        Strategies to include in the rating calculation. If empty, all
+        strategies appearing in ``games`` are rated.
+    env : trueskill.TrueSkill
+        The environment used to perform the TrueSkill updates.
+
+    Returns
+    -------
+    dict[str, tuple[float, float]]
+        Mapping from strategy name to its ``(mu, sigma)`` rating tuple.
     """
     ratings: dict[str, trueskill.Rating] = {
         k: env.create_rating() for k in keepers
@@ -102,6 +143,25 @@ def _update_ratings(
 
 
 def run_trueskill(seed: int = 0) -> None:
+    """Compute TrueSkill ratings for all result blocks.
+
+    Parameters
+    ----------
+    seed : int, optional
+        Seed used when generating the results. It is compared against the
+        value stored in ``manifest.yaml`` to decide whether a suffix should be
+        appended to the rating files.
+
+    Side Effects
+    ------------
+    ``ratings_<n>[ _seedX ].pkl``
+        Pickle files containing per-block ratings for each strategy.
+    ``ratings_pooled[ _seedX ].pkl``
+        A pickle with ratings pooled across all blocks.
+    ``tiers.json``
+        JSON file with league tiers derived from the pooled ratings.
+    """
+
     base = Path("data/results")
     manifest_seed = _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{seed}" if seed != manifest_seed else ""
@@ -130,6 +190,20 @@ def run_trueskill(seed: int = 0) -> None:
 
 
 def main(argv: List[str] | None = None) -> None:
+    """Entry point for the ``run_trueskill`` command line interface.
+
+    Parameters
+    ----------
+    argv : list[str] | None, optional
+        Arguments to parse instead of ``sys.argv``. Each argument should be a
+        separate element in the list.
+
+    Side Effects
+    ------------
+    Invokes :func:`run_trueskill`, which writes rating and tier files to the
+    ``data`` directory.
+    """
+
     parser = argparse.ArgumentParser(description="Compute TrueSkill ratings")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv or [])
