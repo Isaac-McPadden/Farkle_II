@@ -55,13 +55,12 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
     Only ``PermissionError`` is suppressed. Any other :class:`OSError` will be
     re-raised.
     """
-    with contextlib.suppress(PermissionError):
-        try:
-            return _orig_unlink(self, missing_ok=missing_ok)
-        except PermissionError as e:
-            if getattr(e, "winerror", None) == 32:
-                return None
-            raise
+    try:
+        return _orig_unlink(self, missing_ok=missing_ok)
+    except PermissionError as e:
+        if getattr(e, "winerror", None) == 32:
+            return None
+        raise
 
 
 # Patch globally (harmless on POSIX; vital on Windows)
