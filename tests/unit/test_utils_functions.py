@@ -36,6 +36,12 @@ def test_bh_correct_none_pass():
     assert mask.tolist() == [False, False, False]
 
 
+def test_bh_correct_all_high_pvals():
+    pvals = np.array([0.9, 0.85, 0.95, 0.99])
+    mask = bh_correct(pvals, alpha=0.05)
+    assert mask.tolist() == [False, False, False, False]
+
+
 def test_bonferroni_pairs_basic_determinism():
     strats = ["S1", "S2", "S3"]
     df1 = bonferroni_pairs(strats, games_needed=2, seed=42)

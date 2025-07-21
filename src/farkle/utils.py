@@ -35,7 +35,10 @@ def bh_correct(pvals: np.ndarray, alpha: float = 0.02) -> np.ndarray:
     ranks = np.arange(1, len(pvals_array) + 1)
     critical_values = alpha * ranks / len(pvals_array)
     passed_mask = pvals_array[sorted_indices] <= critical_values
-    threshold = pvals_array[sorted_indices][passed_mask].max() if passed_mask.any() else 0.0
+    if not passed_mask.any():
+        return np.full_like(pvals_array, False, dtype=bool)
+
+    threshold = pvals_array[sorted_indices][passed_mask].max()
     return pvals_array <= threshold
 
 
