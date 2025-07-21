@@ -57,7 +57,8 @@ def strategy_yaml(s: ThresholdStrategy) -> str:
     """
     
     # dataclass → plain dict (keeps declared order)
-    assert isinstance(s, ThresholdStrategy)
+    if not isinstance(s, ThresholdStrategy):
+        raise TypeError("strategy_yaml expects a ThresholdStrategy")
     d = asdict(s)
     
     # YAML-friendly booleans (lowercase)
