@@ -172,15 +172,19 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
-def run_trueskill(seed: int = 0) -> None:
+def run_trueskill(manifest_seed: int = 0, output_seed: int = 0) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
     Parameters
     ----------
-    seed : int, optional
+    manifest_seed : int, optional
         Seed used when generating the results. It is compared against the
         value stored in ``manifest.yaml`` to decide whether a suffix should be
         appended to the rating files.
+       
+    output_seed: int, optional
+        Value appended to output filenames so repeated runs do not overwrite
+        earlier results.
 
     Side Effects
     ------------
@@ -194,7 +198,7 @@ def run_trueskill(seed: int = 0) -> None:
 
     base = Path("data/results")
     manifest_seed = _read_manifest_seed(base / "manifest.yaml")
-    suffix = f"_seed{seed}" if seed != manifest_seed else ""
+    suffix = f"_seed{output_seed}" if output_seed != manifest_seed else ""
     env = trueskill.TrueSkill()
     pooled: Dict[str, RatingStats] = {}
     for block in sorted(base.glob("*_players")):
@@ -234,10 +238,15 @@ def main(argv: List[str] | None = None) -> None:
     ``data`` directory.
     """
     parser = argparse.ArgumentParser(description="Compute TrueSkill ratings")
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--output-seed",
+        type=int,
+        default=0,
+        help="only used to name output files",
+    )
     args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run_trueskill(seed=args.seed)
+    run_trueskill(output_seed=args.output_seed)
 
 
 if __name__ == "__main__":

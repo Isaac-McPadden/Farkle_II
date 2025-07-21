@@ -46,7 +46,7 @@ def test_analysis_pipeline(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_trueskill.main([])
+        run_trueskill.main(["--output-seed", "0"])
         run_rf.main([])
 
         assert (data_root / "rf_importance.json").exists()
@@ -93,4 +93,3 @@ def test_run_rf_missing_files(tmp_path, missing):
             run_rf.run_rf()
     finally:
         os.chdir(cwd)
-        
