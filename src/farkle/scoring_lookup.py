@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from itertools import combinations_with_replacement
-from typing import Dict, Tuple
+from typing import Dict, Tuple, Sequence
 
 import numba as nb
 import numpy as np
@@ -166,22 +166,30 @@ def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
     return _evaluate_nb(*counts)
 
 
-def score_roll(roll: list[int]) -> Tuple[int, int]:
-    """Score a roll given as a list of faces.
+def score_roll(roll: Sequence[int]) -> tuple[int, int]:
+    """Score a single roll of up to six dice.
 
     Args:
-        roll: Sequence of integers in [1, 6] representing the dice.
+        roll: Sequence of integers in ``[1, 6]`` representing the dice.
+            The sequence may contain at most six values.
 
     Returns:
-        A tuple (score, used_dice) describing the total points scored
+        A ``(score, used_dice)`` tuple describing the total points scored
         and how many dice contributed to the score.
+
+    Raises:
+        ValueError: If ``roll`` contains values outside ``[1, 6]`` or has
+        more than six elements.
     """
+    if len(roll) > 6 or any(d < 1 or d > 6 for d in roll):
+        raise ValueError("roll must contain at most six integers between 1 and 6")
+
     key = (
-        roll.count(1), 
-        roll.count(2), 
+        roll.count(1),
+        roll.count(2),
         roll.count(3),
-        roll.count(4), 
-        roll.count(5), 
+        roll.count(4),
+        roll.count(5),
         roll.count(6),
     )
     pts, used, *_ = evaluate(key)
