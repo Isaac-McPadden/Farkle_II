@@ -27,7 +27,13 @@ def run_rf(seed: int = 0) -> None:
     model.fit(X, y)
 
     imp = permutation_importance(model, X, y, n_repeats=5, random_state=seed)
-    imp_dict = {c: float(s) for c, s in zip(X.columns, imp["importances_mean"], strict=False)}
+    if len(imp["importances_mean"]) != len(X.columns):
+        msg = (
+            "Mismatch between number of features and permutation importances: "
+            f"expected {len(X.columns)}, got {len(imp['importances_mean'])}"
+        )
+        raise ValueError(msg)
+    imp_dict = {col: float(imp["importances_mean"][i]) for i, col in enumerate(X.columns)}
     Path("data").mkdir(exist_ok=True)
     with (Path("data") / "rf_importance.json").open("w") as fh:
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
@@ -54,4 +60,3 @@ def main(argv: List[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-    
