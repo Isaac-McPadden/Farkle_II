@@ -14,6 +14,7 @@ No game-logic is duplicated - we only *wrap* the real engine.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import random
 from dataclasses import asdict
@@ -82,26 +83,40 @@ def _trace_decide(s: ThresholdStrategy, label: str) -> None:
     s.decide = MethodType(traced_decide, s)  # type: ignore[attr-defined, method-assign]
 
 
-def _patch_default_score() -> None:
-    """Wrap scoring.default_score so every call is printed once."""
+@contextlib.contextmanager
+def patch_scoring():
+    """Temporarily wrap ``scoring.default_score`` so each call is logged."""
+
     global default_score  # module alias
-    original = default_score
+    import farkle.scoring as _scoring_mod
+
+    orig_local = default_score
+    orig_mod = _scoring_mod.default_score
 
     def traced_default_score(*args, **kw):
-        res = original(*args, **kw)  # type: ignore[arg-type]
+        res = orig_mod(*args, **kw)  # type: ignore[arg-type]
         pts, used, reroll = res[:3]
         roll = args[0] if args else kw.get("dice_roll")
         log.info(f"score({roll}) -> pts={pts:<4} used={used} reroll={reroll}")
         return res
 
-    # monkey-patch both modules because FarklePlayer imported default_score
-    # from farkle.scoring at import time
-    import farkle.engine as _engine_mod
-    import farkle.scoring as _scoring_mod
-
     _scoring_mod.default_score = traced_default_score  # type: ignore[assignment]
-    _engine_mod.default_score = traced_default_score  # type: ignore[assignment]
-    default_score = traced_default_score  # local alias
+    default_score = traced_default_score
+    try:
+        yield
+    finally:
+        _scoring_mod.default_score = orig_mod  # type: ignore[assignment]
+        default_score = orig_local
+
+
+def _patch_default_score() -> None:
+    """Backward compatible wrapper for tests."""
+
+    cm = patch_scoring()
+    context = cm.__enter__()
+    # store context manager object so tests can manually exit if needed
+    _patch_default_score._cm = cm  # type: ignore[attr-defined]
+    return context
 
 
 class TracePlayer(FarklePlayer):
@@ -132,11 +147,10 @@ def watch_game(seed: int | None = None) -> None:
     _trace_decide(s2, "P2")
 
     # monkey-patch the *scoring* layer so we can see Smart-discard results
-    _patch_default_score()
-
-    # --- wrap players so we can see every dice throw --------------------
-    p1 = TracePlayer("P1", s1, rng=np.random.default_rng(rng.integers(2**32)))
-    p2 = TracePlayer("P2", s2, rng=np.random.default_rng(rng.integers(2**32)))
+    with patch_scoring():
+        # --- wrap players so we can see every dice throw --------------------
+        p1 = TracePlayer("P1", s1, rng=np.random.default_rng(rng.integers(2**32)))
+        p2 = TracePlayer("P2", s2, rng=np.random.default_rng(rng.integers(2**32)))
 
     game = FarkleGame([p1, p2], target_score=10_000)
     metrics = game.play()
