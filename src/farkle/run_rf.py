@@ -1,3 +1,10 @@
+"""Train a gradient boosting model to analyse strategy metrics.
+
+This script reads the feature metrics and pooled ratings, fits a
+``HistGradientBoostingRegressor`` to predict strategy ``mu`` values, then writes
+permutation feature importances and partial dependence plots.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -12,13 +19,42 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 
+# ---------------------------------------------------------------------------
+# Constants for file and directory locations used in this module
+# ---------------------------------------------------------------------------
+METRICS_PATH = Path("data/metrics.parquet")
+RATINGS_PATH = Path("data/ratings_pooled.pkl")
+FIG_DIR = Path("notebooks/figs")
+IMPORTANCE_PATH = Path("data/rf_importance.json")
+
 
 def run_rf(seed: int = 0) -> None:
-    metrics = pd.read_parquet("data/metrics.parquet")
-    with open("data/ratings_pooled.pkl", "rb") as fh:
+    """Train the regressor and output feature importance and plots.
+
+    Parameters
+    ----------
+    seed : int, optional
+        Random seed for model fitting and permutation importance.
+
+    Reads
+    -----
+    ``data/metrics.parquet``
+        Per-strategy feature metrics.
+    ``data/ratings_pooled.pkl``
+        Pickled mapping of strategy names to pooled ``(mu, sigma)`` tuples.
+
+    Writes
+    ------
+    ``data/rf_importance.json``
+        JSON file mapping metric names to permutation importance scores.
+    ``notebooks/figs/pd_<feature>.png``
+        Partial dependence plots for each metric.
+    """
+    metrics = pd.read_parquet(METRICS_PATH)
+    with open(RATINGS_PATH, "rb") as fh:
         ratings = pickle.load(fh)
-    df_mu = pd.DataFrame({"strategy": list(ratings), "mu": [v[0] for v in ratings.values()]})
-    data = metrics.merge(df_mu, on="strategy", how="inner")
+    rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [v[0] for v in ratings.values()]})
+    data = metrics.merge(rating_df, on="strategy", how="inner")
     X = data.drop(columns=["strategy", "mu"])
     X = X.astype(float)
     y = data["mu"]
@@ -26,20 +62,18 @@ def run_rf(seed: int = 0) -> None:
     model = HistGradientBoostingRegressor(random_state=seed)
     model.fit(X, y)
 
-    imp = permutation_importance(model, X, y, n_repeats=5, random_state=seed)
-    if len(imp["importances_mean"]) != len(X.columns):
+    perm_importance = permutation_importance(model, X, y, n_repeats=5, random_state=seed)
+    if len(perm_importance["importances_mean"]) != len(X.columns):
         msg = (
             "Mismatch between number of features and permutation importances: "
             f"expected {len(X.columns)}, got {len(imp['importances_mean'])}"
         )
         raise ValueError(msg)
-    imp_dict = {col: float(imp["importances_mean"][i]) for i, col in enumerate(X.columns)}
-    Path("data").mkdir(exist_ok=True)
-    with (Path("data") / "rf_importance.json").open("w") as fh:
+    imp_dict = {c: float(s) for c, s in zip(X.columns, perm_importance["importances_mean"], strict=False)}
+    IMPORTANCE_PATH.parent.mkdir(exist_ok=True)
+    with IMPORTANCE_PATH.open("w") as fh:
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
-
-    figs = Path("notebooks/figs")
-    figs.mkdir(parents=True, exist_ok=True)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
     for col in X.columns:
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -47,11 +81,20 @@ def run_rf(seed: int = 0) -> None:
                 message="Attempting to set identical low and high ylims",
             )
             disp = PartialDependenceDisplay.from_estimator(model, X, [col])
-        disp.figure_.savefig(figs / f"pd_{col}.png")
+        disp.figure_.savefig(FIG_DIR / f"pd_{col}.png")
         plt.close(disp.figure_)
 
 
 def main(argv: List[str] | None = None) -> None:
+    """Entry point for ``python -m farkle.run_rf``.
+
+    Parameters
+    ----------
+    argv : List[str] | None, optional
+        Command line arguments, or ``None`` to use ``sys.argv``. Only a single
+        ``--seed`` option is accepted.
+    """
+
     parser = argparse.ArgumentParser(description="Random forest analysis")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv or [])
