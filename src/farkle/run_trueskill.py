@@ -106,7 +106,7 @@ def run_trueskill(seed: int = 0) -> None:
     manifest_seed = _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{seed}" if seed != manifest_seed else ""
     env = trueskill.TrueSkill()
-    pooled: Dict[str, tuple[float, float]] = {}
+    pooled_sums: Dict[str, list[float]] = {}
     for block in sorted(base.glob("*_players")):
         n = block.name.split("_")[0]
         keep_path = block / f"keepers_{n}.npy"
@@ -116,11 +116,12 @@ def run_trueskill(seed: int = 0) -> None:
         with (Path("data") / f"ratings_{n}{suffix}.pkl").open("wb") as fh:
             pickle.dump(ratings, fh)
         for k, v in ratings.items():
-            if k in pooled:
-                m, s = pooled[k]
-                pooled[k] = ((m + v[0]) / 2, (s + v[1]) / 2)
-            else:
-                pooled[k] = v
+            entry = pooled_sums.setdefault(k, [0.0, 0.0, 0])
+            entry[0] += v[0]
+            entry[1] += v[1]
+            entry[2] += 1
+
+    pooled = {k: (mu / cnt, sig / cnt) for k, (mu, sig, cnt) in pooled_sums.items()}
     with (Path("data") / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
     tiers = build_tiers({k: v[0] for k, v in pooled.items()}, {k: v[1] for k, v in pooled.items()})
