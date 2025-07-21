@@ -44,17 +44,37 @@ DiceRoll = List[int]
 
 
 @nb.njit(cache=True)
-def _should_continue(turn_score, dice_left,
-                     sc_thr, di_thr,
-                     c_score, c_dice,
-                     req_both) -> bool:
-    want_s = c_score and turn_score < sc_thr
-    want_d = c_dice and dice_left > di_thr
-    if c_score and c_dice:
-        return (want_s or want_d) if req_both else (want_s and want_d)
-    if c_score:
+def _decide_continue(
+    turn_score,
+    dice_left,
+    score_threshold,
+    dice_threshold,
+    consider_score,
+    consider_dice,
+    require_both,
+) -> bool:
+    """Return ``True`` to keep rolling based on score/dice thresholds.
+
+    Parameters
+    ----------
+    turn_score, dice_left
+        Current turn score and dice remaining.
+    score_threshold, dice_threshold
+        Limits governing when to stop rolling.
+    consider_score, consider_dice
+        Flags enabling the above limits.
+    require_both
+        When both flags are set, decide using ``OR`` logic if ``True`` and
+        ``AND`` logic if ``False``.
+    """
+
+    want_s = consider_score and turn_score < score_threshold
+    want_d = consider_dice and dice_left > dice_threshold
+    if consider_score and consider_dice:
+        return (want_s or want_d) if require_both else (want_s and want_d)
+    if consider_score:
         return want_s
-    if c_dice:
+    if consider_dice:
         return want_d
     return False
 
@@ -88,13 +108,11 @@ class ThresholdStrategy:
     auto_hot_dice: bool = False
     run_up_score: bool = False
     prefer_score: bool = True
-    
+
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
         if self.smart_one and not self.smart_five:
-            raise ValueError(
-                "ThresholdStrategy: smart_one=True requires smart_five=True"
-            )
+            raise ValueError("ThresholdStrategy: smart_one=True requires smart_five=True")
 
         # 2) require_both may only be True if both consider_score and consider_dice are True
         if self.require_both and not (self.consider_score and self.consider_dice):
@@ -106,7 +124,7 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    
+
     def decide(
         self,
         *,
@@ -120,18 +138,18 @@ class ThresholdStrategy:
     ) -> bool:  # noqa: D401 – imperative name
         """
         Return **True** to keep rolling, *False** to bank.
-        
+
         Counterintuitively, require_both = True is riskier play
-        
-        Outcomes of cominations of consider_score = True, consider_dice = True, 
+
+        Outcomes of cominations of consider_score = True, consider_dice = True,
         require_both = [True, False] for score_threshold = 300 and dice_threshold = 3:
-         
+
         cs and cd are True, require_both = True (AND logic)
         (400, 4, True),  # Enough dice but too many points
         (200, 2, True),  # Low enough points but not enough dice
         (200, 4, True),   # Low enough points and enough dice available
         (400, 2, False),  # # Too many points and not enough dice available
-        
+
         cs and cd are True, require_both = False (OR logic)
         (400, 4, False),  # Enough dice but too many points
         (200, 2, False),  # Low enough points but not enough dice
@@ -147,11 +165,14 @@ class ThresholdStrategy:
         if final_round:
             return running_total <= score_to_beat
 
-        # -----------------------------------------------------------------------------  
-        keep_rolling = _should_continue(
-            turn_score, dice_left,
-            self.score_threshold, self.dice_threshold,
-            self.consider_score, self.consider_dice,
+        # -----------------------------------------------------------------------------
+        keep_rolling = _decide_continue(
+            turn_score,
+            dice_left,
+            self.score_threshold,
+            self.dice_threshold,
+            self.consider_score,
+            self.consider_dice,
             self.require_both,
         )
 
@@ -160,7 +181,7 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Representation helpers
     # ------------------------------------------------------------------
-    
+
     def __str__(self) -> str:  # noqa: D401 - magics method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
@@ -199,7 +220,7 @@ def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> bool:
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
     """Return a random ThresholdStrategy that always satisfies the two constraints."""
-    
+
     rng_inst = rng if rng is not None else random.Random()
 
     # pick smart_five first; if it’s False, force smart_one=False
@@ -294,7 +315,7 @@ def parse_strategy(s: str) -> ThresholdStrategy:
 
     so_token = m.group("so")  # "O" or "-"
     so_flag = bool(so_token.startswith("O"))
-    
+
     ps_flag = m.group("ps") == "PS"
 
     rb_token = m.group("rb")  # "AND" or "OR"
@@ -387,7 +408,7 @@ def parse_strategy_for_df(s: str) -> dict:
 
     so_token = m.group("so")  # "O" or "-"
     so_flag = bool(so_token.startswith("O"))
-    
+
     ps_flag = m.group("ps") == "PS"
 
     rb_token = m.group("rb")  # "AND" or "OR"
@@ -397,16 +418,16 @@ def parse_strategy_for_df(s: str) -> dict:
     rs_flag = m.group("rs") == "R"
 
     strat_dict = {
-        "score_threshold" : score_threshold,
-        "dice_threshold" : dice_threshold,
-        "smart_five" : sf_flag,
-        "smart_one" : so_flag,
-        "consider_score" : cs_flag,
-        "consider_dice" : cd_flag,
+        "score_threshold": score_threshold,
+        "dice_threshold": dice_threshold,
+        "smart_five": sf_flag,
+        "smart_one": so_flag,
+        "consider_score": cs_flag,
+        "consider_dice": cd_flag,
         "require_both": require_both,
-        "auto_hot_dice" : hd_flag,
-        "run_up_score" : rs_flag,
-        "prefer_score" : ps_flag,
+        "auto_hot_dice": hd_flag,
+        "run_up_score": rs_flag,
+        "prefer_score": ps_flag,
     }
     return strat_dict
 
@@ -453,17 +474,15 @@ def load_farkle_results(
     # ------------------------------------------------------------------
     base_df = (
         pd.Series(counter, name="wins")
-          .reset_index(drop=False)
-          .rename(columns={"index": "strategy"})
+        .reset_index(drop=False)
+        .rename(columns={"index": "strategy"})
     )
 
     # ------------------------------------------------------------------
     # 3) Explode strategy strings into individual columns
     # ------------------------------------------------------------------
     flags_df = (
-        base_df["strategy"]
-          .apply(parse_strategy)  # str → dict
-          .apply(pd.Series)  # dict → DataFrame
+        base_df["strategy"].apply(parse_strategy).apply(pd.Series)  # str → dict  # dict → DataFrame
     )
 
     full_df = pd.concat([base_df, flags_df], axis=1)
@@ -473,11 +492,18 @@ def load_farkle_results(
     # ------------------------------------------------------------------
     if ordered:
         col_order = [
-            "strategy", "wins",
-            "score_threshold", "dice_threshold",
-            "consider_score", "consider_dice", "require_both",
-            "smart_five", "smart_one", "prefer_score",
-            "auto_hot_dice", "run_up_score",
+            "strategy",
+            "wins",
+            "score_threshold",
+            "dice_threshold",
+            "consider_score",
+            "consider_dice",
+            "require_both",
+            "smart_five",
+            "smart_one",
+            "prefer_score",
+            "auto_hot_dice",
+            "run_up_score",
         ]
         full_df = full_df[col_order].sort_values(by="wins", ascending=False, ignore_index=True)
 
