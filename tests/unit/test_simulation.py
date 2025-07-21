@@ -1,5 +1,7 @@
+import pytest
 from pandas import DataFrame
 
+from farkle.engine import FarkleGame, GameMetrics, GameStats, PlayerStats
 from farkle.simulation import (
     _play_game,
     experiment_size,
@@ -49,4 +51,37 @@ def test_custom_grid_size():
     strategies, meta = generate_strategy_grid(auto_hot_opts=[True])
     assert len(strategies) == 4080
     assert len(meta) == 4080
-    
+
+
+def test_play_game_checks_single_winner(monkeypatch):
+    """_play_game should error if multiple players have rank==1."""
+
+    def fake_play(_self):
+        ps = PlayerStats(
+            score=100,
+            farkles=0,
+            rolls=1,
+            highest_turn=100,
+            strategy="S",
+            rank=1,
+            loss_margin=0,
+        )
+        players = {"P1": ps, "P2": ps}
+        gm = GameMetrics(
+            players,
+            GameStats(
+                n_players=2,
+                table_seed=0,
+                n_rounds=1,
+                total_rolls=0,
+                total_farkles=0,
+                margin=0,
+            ),
+        )
+        return gm
+
+    monkeypatch.setattr(FarkleGame, "play", fake_play, raising=True)
+
+    strat = [ThresholdStrategy(score_threshold=0, dice_threshold=6)] * 2
+    with pytest.raises(ValueError):
+        _play_game(seed=123, strategies=strat)
