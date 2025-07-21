@@ -18,19 +18,50 @@ def games_for_power(
     *,
     pairwise: bool | None = None,  # deprecated alias
 ) -> int:
-    """
-    Return the games-per-strategy required to detect a win-rate difference
-    ``delta`` with the requested power after multiple-test adjustment.
+    """Calculate the number of games needed for each strategy.
 
     Parameters
     ----------
+    n_strategies : int
+        Total number of strategies included in the experiment.
+    delta : float, default 0.03
+        Smallest detectable difference in win probability between two
+        strategies.
+    base_p : float, default 0.5
+        Baseline probability of winning against which ``delta`` is
+        measured.
+    alpha : float, default 0.05
+        Desired family wise error rate.
+    power : float, default 0.8
+        Target statistical power for each comparison.
+    method : {{'bh', 'bonferroni'}}, default ``'bh'``
+        Multiple comparison correction to apply.
     full_pairwise :
         ``True`` → compare every pair of strategies (k = *n*·(*n*-1)/2).
         ``False`` → compare each strategy only to a single baseline (*n*-1 tests).
     pairwise :
         **Deprecated** alias for ``full_pairwise``.  Will be removed in a future
         version.
+
+    Returns
+    -------
+    int
+        Number of games required per strategy (rounded up to the next
+        integer).
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is not ``'bh'`` or ``'bonferroni'``.
+
+    Examples
+    --------
+    >>> games_for_power(n_strategies=3, delta=0.2, method='bh')
+    111
     """
+    
+    # per-test alpha*
+
 
     # ------------------ handle deprecated alias ---------------------------
     if pairwise is not None:
