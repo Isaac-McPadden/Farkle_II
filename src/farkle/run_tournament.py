@@ -59,7 +59,24 @@ def _init_worker(
     strategies: Sequence[ThresholdStrategy],
     n_players: int,          # NEW
 ) -> None:
-    """Run once in every worker; copy strats **and** table size."""
+    """Initialise per-process globals.
+
+    Parameters
+    ----------
+    strategies : Sequence[ThresholdStrategy]
+        Strategy objects to copy into the worker.
+    n_players : int
+        Number of players used when generating game tables.
+
+    Returns
+    -------
+    None
+
+    Side Effects
+    ------------
+    Copies the strategies list and stores ``n_players`` and the derived
+    ``GAMES_PER_SHUFFLE`` in module-level globals.
+    """
 
     global _STRATS, N_PLAYERS, GAMES_PER_SHUFFLE
     _STRATS = list(strategies)
@@ -153,7 +170,18 @@ def _play_shuffle(seed: int) -> Counter[str]:
 
 
 def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[str]:
-    """Aggregate win counts for a batch of shuffles (legacy behaviour)."""
+    """Play a batch of shuffles and tally wins.
+
+    Parameters
+    ----------
+    shuffle_seed_batch : Sequence[int]
+        RNG seeds for each shuffle processed by this worker.
+
+    Returns
+    -------
+    collections.Counter[str]
+        Mapping of strategy strings to win counts for the batch.
+    """
 
     total: Counter[str] = Counter()
     for sd in shuffle_seed_batch:
@@ -174,7 +202,28 @@ def _run_chunk_metrics(
     Dict[str, Dict[str, float]],
     Dict[str, Dict[str, float]],
 ]:
-    """Same as :func:`_run_chunk` but also accumulates metric sums."""
+    """Play shuffles and accumulate metrics.
+
+    Parameters
+    ----------
+    shuffle_seed_batch : Sequence[int]
+        RNG seeds for each shuffle in this batch.
+    collect_rows : bool, default False
+        If ``True`` return and optionally persist full per-game rows.
+    row_dir : Path | None, default None
+        Directory used to write parquet files when ``collect_rows`` is ``True``.
+
+    Returns
+    -------
+    tuple
+        ``(wins, sums, square_sums)`` where each element aggregates the
+        respective values over the batch.
+
+    Side Effects
+    ------------
+    When ``collect_rows`` is ``True`` a parquet file containing all rows for the
+    current worker is written to ``row_dir``.
+    """
 
     wins_total: Counter[str] = Counter()
     sums_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -256,7 +305,36 @@ def run_tournament(
     collect_metrics: bool = False,
     row_output_directory: Path | None = None, # None if --row-dir omitted
 ) -> None:
-    """Orchestrate the multi-process tournament."""
+    """Orchestrate the multi-process tournament.
+
+    Parameters
+    ----------
+    n_players : int, default 5
+        Number of players per game table.
+    global_seed : int, default 0
+        Seed for the top-level RNG controlling shuffle order.
+    checkpoint_path : Path | str, default "checkpoint.pkl"
+        Destination for periodic checkpoint pickles.
+    n_jobs : int | None, default None
+        Number of worker processes to spawn. ``None`` uses the process default.
+    ckpt_every_sec : int, default ``CKPT_EVERY_SEC``
+        Frequency of checkpoint saves in seconds.
+    collect_metrics : bool, default False
+        If ``True`` per-strategy metric sums and variances are accumulated.
+    row_output_directory : Path | None, default None
+        When provided, full per-game rows are written as parquet files into this
+        directory.
+
+    Returns
+    -------
+    None
+
+    Side Effects
+    ------------
+    A checkpoint pickle is written to ``checkpoint_path`` periodically and when
+    the tournament completes.  If ``row_output_directory`` is specified, each
+    worker writes parquet files containing raw game rows into that folder.
+    """
         
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
     
