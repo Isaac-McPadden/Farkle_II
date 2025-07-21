@@ -11,6 +11,8 @@ from __future__ import annotations
 import pickle
 import sys
 import types
+import builtins
+import logging
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -76,6 +78,27 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     assert written["tbl"] == "tbl"
     assert written["path"].parent == tmp_path
     assert written["path"].name == "rows_42_99.parquet"
+
+
+def test_run_chunk_metrics_row_logging_missing_pyarrow(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
+    sys.modules.pop("pyarrow", None)
+    sys.modules.pop("pyarrow.parquet", None)
+
+    orig_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name.startswith("pyarrow"):
+            raise ModuleNotFoundError(name)
+        return orig_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    with caplog.at_level(logging.WARNING):
+        rt._run_chunk_metrics([4], collect_rows=True, row_dir=tmp_path)
+
+    assert "pyarrow not installed - row logging skipped" in caplog.text
+    assert not any(tmp_path.iterdir())
     
 def test_save_checkpoint_round_trip(tmp_path):
     wins = Counter({"A": 2})
