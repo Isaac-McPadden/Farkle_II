@@ -67,27 +67,6 @@ def _init_worker(
     GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
 
 
-def _play_single_game(seed: int, strat_indices: Sequence[int]) -> Tuple[str, List[int]]:
-    """Run one game and return the winning strategy string and metrics."""
-
-    table = [_STRATS[i] for i in strat_indices]
-    res: Dict[str, Any] = _play_game(seed, table)
-
-    winner = res["winner"]
-    strat_repr = res[f"{winner}_strategy"]
-    metrics = [
-        res["winning_score"],
-        res["n_rounds"],
-        res[f"{winner}_farkles"],
-        res[f"{winner}_rolls"],
-        res[f"{winner}_highest_turn"],
-        res[f"{winner}_smart_five_uses"],
-        res[f"{winner}_n_smart_five_dice"],
-        res[f"{winner}_smart_one_uses"],
-        res[f"{winner}_n_smart_one_dice"],
-        res[f"{winner}_hot_dice"],
-    ]
-    return strat_repr, metrics
 
 
 # ---------------------------------------------------------------------------
