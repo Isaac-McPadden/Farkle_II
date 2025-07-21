@@ -1,3 +1,10 @@
+"""Train a gradient boosting model to analyse strategy metrics.
+
+This script reads the feature metrics and pooled ratings, fits a
+``HistGradientBoostingRegressor`` to predict strategy ``mu`` values, then writes
+permutation feature importances and partial dependence plots.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -14,6 +21,28 @@ from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 
 
 def run_rf(seed: int = 0) -> None:
+    """Train the regressor and output feature importance and plots.
+
+    Parameters
+    ----------
+    seed : int, optional
+        Random seed for model fitting and permutation importance.
+
+    Reads
+    -----
+    ``data/metrics.parquet``
+        Per-strategy feature metrics.
+    ``data/ratings_pooled.pkl``
+        Pickled mapping of strategy names to pooled ``(mu, sigma)`` tuples.
+
+    Writes
+    ------
+    ``data/rf_importance.json``
+        JSON file mapping metric names to permutation importance scores.
+    ``notebooks/figs/pd_<feature>.png``
+        Partial dependence plots for each metric.
+    """
+
     metrics = pd.read_parquet("data/metrics.parquet")
     with open("data/ratings_pooled.pkl", "rb") as fh:
         ratings = pickle.load(fh)
@@ -46,6 +75,15 @@ def run_rf(seed: int = 0) -> None:
 
 
 def main(argv: List[str] | None = None) -> None:
+    """Entry point for ``python -m farkle.run_rf``.
+
+    Parameters
+    ----------
+    argv : List[str] | None, optional
+        Command line arguments, or ``None`` to use ``sys.argv``. Only a single
+        ``--seed`` option is accepted.
+    """
+
     parser = argparse.ArgumentParser(description="Random forest analysis")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv or [])
@@ -54,4 +92,3 @@ def main(argv: List[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-    
