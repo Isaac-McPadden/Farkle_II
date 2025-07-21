@@ -1,4 +1,5 @@
 # src/farkle/types.py  (new tiny helper, purely for typing)
+from __future__ import annotations
 from typing import Tuple, TypeAlias
 
 import numpy as np
