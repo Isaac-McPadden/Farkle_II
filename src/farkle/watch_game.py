@@ -30,11 +30,7 @@ from farkle.strategies import (  # :contentReference[oaicite:2]{index=2}
 )
 
 # ── 1.  Plain-text logger ----------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    handlers=[logging.StreamHandler()]
-)
+logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[logging.StreamHandler()])
 log = logging.getLogger("watch")
 
 
@@ -55,15 +51,15 @@ def strategy_yaml(s: ThresholdStrategy) -> str:
         run_up_score    : false
         prefer_score    : true
     """
-    
+
     # dataclass → plain dict (keeps declared order)
     assert isinstance(s, ThresholdStrategy)
     d = asdict(s)
-    
+
     # YAML-friendly booleans (lowercase)
-    def _fmt(v): 
+    def _fmt(v):
         return str(v).lower() if isinstance(v, bool) else v
-    
+
     lines = [f"{k:<15}: {_fmt(v)}" for k, v in d.items()]
     return "\n".join(lines)
 
@@ -93,15 +89,18 @@ def _patch_default_score() -> None:
     def traced_default_score(*args, **kw):
         res = original(*args, **kw)  # type: ignore[arg-type]
         pts, used, reroll = res[:3]
-        roll = args[0]
+        roll = args[0] if args else kw.get("dice_roll")
         log.info(f"score({roll}) -> pts={pts:<4} used={used} reroll={reroll}")
         return res
 
-    # monkey-patch in the *farkle.scoring* module too
+    # monkey-patch both modules because FarklePlayer imported default_score
+    # from farkle.scoring at import time
+    import farkle.engine as _engine_mod
     import farkle.scoring as _scoring_mod
-    
-    _scoring_mod.default_score = traced_default_score         # type: ignore[assignment]
-    default_score = traced_default_score                      # local alias
+
+    _scoring_mod.default_score = traced_default_score  # type: ignore[assignment]
+    _engine_mod.default_score = traced_default_score  # type: ignore[assignment]
+    default_score = traced_default_score  # local alias
 
 
 class TracePlayer(FarklePlayer):
@@ -142,11 +141,7 @@ def watch_game(seed: int | None = None) -> None:
     gm = game.play()
 
     log.info("\n===== final result =====")
-    log.info(
-        f"Winner: {gm.winner}  "
-        f"score={gm.winning_score}  "
-        f"rounds={gm.n_rounds}"
-    )
+    log.info(f"Winner: {gm.winner}  " f"score={gm.winning_score}  " f"rounds={gm.n_rounds}")
 
 
 if __name__ == "__main__":
