@@ -7,6 +7,9 @@ import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _v
 from pathlib import Path
+# Path to the project's pyproject.toml for local version fallback
+PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+
 
 # Re-export the "friendly" surface
 from farkle.engine import FarklePlayer, GameMetrics
@@ -56,8 +59,7 @@ def _read_version_from_toml() -> str:
     str
         Version string from pyproject.toml.
     """
-    toml_path = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
-    with toml_path.open("rb") as fh:
+    with PYPROJECT_TOML.open("rb") as fh:
         data = tomllib.load(fh)
     return data["project"]["version"]
 
