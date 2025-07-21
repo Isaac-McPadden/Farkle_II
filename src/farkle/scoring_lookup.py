@@ -12,7 +12,6 @@ from __future__ import annotations
 
 from functools import lru_cache
 from itertools import combinations_with_replacement
-from typing import Dict, Tuple
 
 import numba as nb
 import numpy as np
@@ -25,7 +24,7 @@ from farkle.types import Counts6, Int64Arr1D
 
 
 @nb.njit(cache=True)
-def _straight(ctr: Int64Arr1D) -> Tuple[int, int]:
+def _straight(ctr: Int64Arr1D) -> tuple[int, int]:
     """Return the straight bonus if every face appears once.
 
     Args:
@@ -39,7 +38,7 @@ def _straight(ctr: Int64Arr1D) -> Tuple[int, int]:
 
 
 @nb.njit(cache=True)
-def _three_pairs(ctr: Int64Arr1D) -> Tuple[int, int]:
+def _three_pairs(ctr: Int64Arr1D) -> tuple[int, int]:
     """Detect the *three pairs* pattern.
 
     Args:
@@ -54,7 +53,7 @@ def _three_pairs(ctr: Int64Arr1D) -> Tuple[int, int]:
 
 
 @nb.njit(cache=True)
-def _two_triplets(ctr: Int64Arr1D) -> Tuple[int, int]:
+def _two_triplets(ctr: Int64Arr1D) -> tuple[int, int]:
     """Detect the *two triplets* pattern.
 
     Args:
@@ -69,7 +68,7 @@ def _two_triplets(ctr: Int64Arr1D) -> Tuple[int, int]:
 
 
 @nb.njit(cache=True)
-def _four_kind_plus_pair(ctr: Int64Arr1D) -> Tuple[int, int]:
+def _four_kind_plus_pair(ctr: Int64Arr1D) -> tuple[int, int]:
     """Check for four of a kind together with a separate pair.
 
     Args:
@@ -176,7 +175,7 @@ def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
     return _evaluate_nb(*counts)
 
 
-def score_roll(roll: list[int]) -> Tuple[int, int]:
+def score_roll(roll: list[int]) -> tuple[int, int]:
     """Score a roll given as a list of faces.
 
     Args:
@@ -217,9 +216,9 @@ def build_score_lookup_table() -> dict[Counts6, tuple[int, int, Counts6, int, in
         first element is the total points for that combination and
         counts repeats the key so callers can keep a reference.
     """
-    look: Dict[
-        Tuple[int, int, int, int, int, int],
-        Tuple[int, int, Tuple[int, int, int, int, int, int], int, int],
+    look: dict[
+        tuple[int, int, int, int, int, int],
+        tuple[int, int, tuple[int, int, int, int, int, int], int, int],
     ] = {}
     faces = range(1, 7)
 
