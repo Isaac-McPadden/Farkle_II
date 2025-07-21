@@ -68,14 +68,37 @@ DiceRoll = List[int]
 
 
 @nb.njit(cache=True)
-def _should_continue(turn_score, dice_left, sc_thr, di_thr, c_score, c_dice, req_both) -> bool:
-    want_s = c_score and turn_score < sc_thr
-    want_d = c_dice and dice_left > di_thr
-    if c_score and c_dice:
-        return (want_s or want_d) if req_both else (want_s and want_d)
-    if c_score:
+def _decide_continue(
+    turn_score,
+    dice_left,
+    score_threshold,
+    dice_threshold,
+    consider_score,
+    consider_dice,
+    require_both,
+) -> bool:
+    """Return ``True`` to keep rolling based on score/dice thresholds.
+
+    Parameters
+    ----------
+    turn_score, dice_left
+        Current turn score and dice remaining.
+    score_threshold, dice_threshold
+        Limits governing when to stop rolling.
+    consider_score, consider_dice
+        Flags enabling the above limits.
+    require_both
+        When both flags are set, decide using ``OR`` logic if ``True`` and
+        ``AND`` logic if ``False``.
+    """
+
+    want_s = consider_score and turn_score < score_threshold
+    want_d = consider_dice and dice_left > dice_threshold
+    if consider_score and consider_dice:
+        return (want_s or want_d) if require_both else (want_s and want_d)
+    if consider_score:
         return want_s
-    if c_dice:
+    if consider_dice:
         return want_d
     return False
 
@@ -141,8 +164,8 @@ class ThresholdStrategy:
         Return **True** to keep rolling, *False** to bank.
 
         Counterintuitively, require_both = True is riskier play
-
-        Outcomes of cominations of consider_score = True, consider_dice = True,
+        
+        Outcomes of combinations of consider_score = True, consider_dice = True,
         require_both = [True, False] for score_threshold = 300 and dice_threshold = 3:
 
         cs and cd are True, require_both = True (AND logic)
@@ -167,7 +190,7 @@ class ThresholdStrategy:
             return running_total <= score_to_beat
 
         # -----------------------------------------------------------------------------
-        keep_rolling = _should_continue(
+        keep_rolling = _decide_continue(
             turn_score,
             dice_left,
             self.score_threshold,
@@ -183,7 +206,8 @@ class ThresholdStrategy:
     # Representation helpers
     # ------------------------------------------------------------------
 
-    def __str__(self) -> str:  # noqa: D401 - magics method
+
+    def __str__(self) -> str:  # noqa: D401 - magic method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
         sf = "F" if self.smart_five else "-"
@@ -295,9 +319,9 @@ def parse_strategy(s: str) -> ThresholdStrategy:
     #     auto_hot       = "H" or "-"
     #     run_up_score   = "R" or "-"
     #     require_both   = "AND" or "OR"
-    #     prefer_score   = "P" or "-"
+    #     prefer_score   = "PS" or "PD"
     #
-    # Example literal: "Strat(300,2)[SD][F-O][AND][H-]"
+    # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
 
     flags = _parse_strategy_flags(s)
     return ThresholdStrategy(**flags)
@@ -331,9 +355,9 @@ def parse_strategy_for_df(s: str) -> dict:
     #     auto_hot       = "H" or "-"
     #     run_up_score   = "R" or "-"
     #     require_both   = "AND" or "OR"
-    #     prefer_score   = "P" or "-"
+    #     prefer_score   = "PS" or "PD"
     #
-    # Example literal: "Strat(300,2)[SD][F-O][AND][H-]"
+    # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
 
     return _parse_strategy_flags(s)
 
