@@ -10,7 +10,7 @@ import numba as nb
 import numpy as np
 
 from farkle.scoring_lookup import evaluate as _eval_nb  # fast JIT core
-from farkle.types import Counts6, FacesT, Int64Arr1D
+from farkle.types import Int64Array1D, FacesSequence, SixFaceCounts
 
 # --------------------------------------------------------------------------- #
 # 0.  Public type alias
@@ -22,7 +22,7 @@ DiceRoll = List[int]  # a raw roll as a list of faces
 # 1.  Tiny helpers – all immutable / hash-friendly
 # --------------------------------------------------------------------------- #
 @nb.njit(cache=True)
-def _faces_to_counts_nb(faces: np.ndarray) -> Counts6:
+def _faces_to_counts_nb(faces: np.ndarray) -> SixFaceCounts:
     """Count occurrences of each face value.
 
     Inputs
@@ -32,7 +32,7 @@ def _faces_to_counts_nb(faces: np.ndarray) -> Counts6:
 
     Returns
     -------
-    Counts6:
+    SixFaceCounts:
         Tuple of counts for faces one through six.
     """
     out = np.zeros(6, dtype=np.int64)
@@ -41,7 +41,7 @@ def _faces_to_counts_nb(faces: np.ndarray) -> Counts6:
     return (int(out[0]), int(out[1]), int(out[2]), int(out[3]), int(out[4]), int(out[5]))
 
 
-def faces_to_counts_tuple(faces: Sequence[int]) -> Counts6:
+def faces_to_counts_tuple(faces: Sequence[int]) -> SixFaceCounts:
     """Convert a sequence of faces to a counts tuple.
 
     Inputs
@@ -51,7 +51,7 @@ def faces_to_counts_tuple(faces: Sequence[int]) -> Counts6:
 
     Returns
     -------
-    Counts6:
+    SixFaceCounts:
         Six-element tuple of counts for faces one through six.
     """
     return _faces_to_counts_nb(np.asarray(faces, dtype=np.int64))
@@ -61,24 +61,24 @@ def faces_to_counts_tuple(faces: Sequence[int]) -> Counts6:
 # 2.  Fast single-roll scorer (cached)
 # --------------------------------------------------------------------------- #
 @functools.lru_cache(maxsize=32_768)
-def _score_by_counts(key: Counts6) -> Tuple[int, int, Counts6, int, int]:
+def _score_by_counts(key: SixFaceCounts) -> Tuple[int, int, SixFaceCounts, int, int]:
     """Score a roll represented by face counts.
 
     Inputs
     ------
-    key (Counts6):
+    key (SixFaceCounts):
         Tuple of counts for faces one through six.
 
     Returns
     -------
-    tuple[int, int, Counts6, int, int]:
+    tuple[int, int, SixFaceCounts, int, int]:
         (score, used, counts_key, single_fives, single_ones).
     """
     score, used, sfives, sones = _eval_nb(key)        # JIT kernel
     return score, used, key, sfives, sones
 
 
-def score_roll_cached(roll: Sequence[int]) -> Tuple[int, int, Counts6, int, int]:
+def score_roll_cached(roll: Sequence[int]) -> Tuple[int, int, SixFaceCounts, int, int]:
     """Score a roll, caching by its face counts.
 
     Inputs
@@ -88,7 +88,7 @@ def score_roll_cached(roll: Sequence[int]) -> Tuple[int, int, Counts6, int, int]
 
     Returns
     -------
-    tuple[int, int, Counts6, int, int]:
+    tuple[int, int, SixFaceCounts, int, int]:
         (score, used, counts_key, single_fives, single_ones).
     """
     key = faces_to_counts_tuple(roll)
@@ -98,12 +98,12 @@ def score_roll_cached(roll: Sequence[int]) -> Tuple[int, int, Counts6, int, int]
 # --------------------------------------------------------------------------- #
 # 3.  Expand counts → sorted faces  (needed for Smart discards)
 # --------------------------------------------------------------------------- #
-Int64Arr1DNP = np.ndarray  # local alias to keep the signature tidy
+Int64Array1DNP = np.ndarray  # local alias to keep the signature tidy
 
 
 # 1) **FAST kernel** – stays in Numba, but now returns an ndarray
 @nb.njit(cache=True)
-def _expand_sorted_nb(c1: int, c2: int, c3: int, c4: int, c5: int, c6: int) -> Int64Arr1D:
+def _expand_sorted_nb(c1: int, c2: int, c3: int, c4: int, c5: int, c6: int) -> Int64Array1D:
     """Expand counts into a sorted NumPy array.
 
     Inputs
@@ -113,7 +113,7 @@ def _expand_sorted_nb(c1: int, c2: int, c3: int, c4: int, c5: int, c6: int) -> I
 
     Returns
     -------
-    Int64Arr1D:
+    Int64Array1D:
         Array of face values in ascending order.
     """
     n_tot = c1 + c2 + c3 + c4 + c5 + c6
@@ -127,17 +127,17 @@ def _expand_sorted_nb(c1: int, c2: int, c3: int, c4: int, c5: int, c6: int) -> I
 
 
 # 2) **Thin wrapper** – cheap Python, converts to an immutable tuple
-def _expand_sorted(counts: Counts6) -> FacesT:
+def _expand_sorted(counts: SixFaceCounts) -> FacesSequence:
     """Return sorted faces as an immutable tuple.
 
     Inputs
     ------
-    counts (Counts6):
+    counts (SixFaceCounts):
         Counts for faces one through six.
 
     Returns
     -------
-    FacesT:
+    FacesSequence:
         Tuple of face values in ascending order.
     """
     return tuple(_expand_sorted_nb(*counts))
@@ -147,32 +147,32 @@ def _expand_sorted(counts: Counts6) -> FacesT:
 # 4.  Enumerate every post-discard state  (cached)
 # --------------------------------------------------------------------------- #
 @functools.lru_cache(maxsize=4096)
-def generate_sequences(counts: Counts6, *, smart_one: bool = False) -> tuple[FacesT, ...]:
+def generate_sequences(counts: SixFaceCounts, *, smart_one: bool = False) -> tuple[FacesSequence, ...]:
     """Enumerate all post-discard face sequences.
 
     Inputs
     ------
-    counts (Counts6):
+    counts (SixFaceCounts):
         Counts representing the roll.
     smart_one (bool, optional):
         Include sequences discarding single ones.
 
     Returns
     -------
-    tuple[FacesT, ...]:
+    tuple[FacesSequence, ...]:
         All possible remaining dice as sorted tuples.
     """
     c = list(counts)  # mutable copy
-    seqs: list[FacesT] = [_expand_sorted(counts)]
+    seqs: list[FacesSequence] = [_expand_sorted(counts)]
 
     while c[4]:  # index 4 == face-value 5
         c[4] -= 1
-        seqs.append(_expand_sorted(cast(Counts6, tuple(c))))
+        seqs.append(_expand_sorted(cast(SixFaceCounts, tuple(c))))
 
     if smart_one:
         while c[0]:  # index 0 == face-value 1
             c[0] -= 1
-            seqs.append(_expand_sorted(cast(Counts6, tuple(c))))
+            seqs.append(_expand_sorted(cast(SixFaceCounts, tuple(c))))
 
     return tuple(seqs)
 
@@ -182,14 +182,14 @@ def generate_sequences(counts: Counts6, *, smart_one: bool = False) -> tuple[Fac
 # --------------------------------------------------------------------------- #
 @functools.lru_cache(maxsize=4096)
 def score_lister(
-    dice_rolls: tuple[FacesT, ...],
+    dice_rolls: tuple[FacesSequence, ...],
 ) -> tuple[
         tuple[
             list[int],  # original roll (sorted)
             int,  # dice_len
             int,  # cand_score
             int,  # cand_used
-            Counts6,  # counts
+            SixFaceCounts,  # counts
             int,  # cand_sf
             int  # cand_so
             ],
@@ -199,12 +199,12 @@ def score_lister(
 
     Inputs
     ------
-    dice_rolls (tuple[FacesT, ...]):
+    dice_rolls (tuple[FacesSequence, ...]):
         Rolls represented as tuples of sorted faces.
 
     Returns
     -------
-    tuple[tuple[list[int], int, int, int, Counts6, int, int], ...]:
+    tuple[tuple[list[int], int, int, int, SixFaceCounts, int, int], ...]:
         (faces, len, score, used, counts, lone_fives, lone_ones) for
         each scoring roll. Skips non-scoring rolls
     """
@@ -223,7 +223,7 @@ def score_lister(
 # --------------------------------------------------------------------------- #
 def decide_smart_discards(
     *,
-    counts: Counts6,
+    counts: SixFaceCounts,
     single_fives: int,
     single_ones: int,
     raw_score: int,  # noqa: ARG001
@@ -243,7 +243,7 @@ def decide_smart_discards(
 
     Inputs
     ------
-    counts (Counts6):
+    counts (SixFaceCounts):
         Face counts for the roll.
     single_fives (int):
         Number of single fives available.
@@ -440,7 +440,7 @@ def _compute_raw_score(dice_roll: DiceRoll):
 
     Returns
     -------
-    tuple[int, int, Counts6, int, int]:
+    tuple[int, int, SixFaceCounts, int, int]:
         Raw scoring tuple from :func:`score_roll_cached`.
     """
     return score_roll_cached(tuple(dice_roll))

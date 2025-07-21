@@ -8,7 +8,7 @@ from typing import Dict, Tuple
 import numba as nb
 import numpy as np
 
-from farkle.types import Counts6, Int64Arr1D
+from farkle.types import Int64Array1D, SixFaceCounts
 
 # ---------------------------------------------------------------------------
 # 0.  Low-level helpers  (all *nopython*-safe)
@@ -16,7 +16,7 @@ from farkle.types import Counts6, Int64Arr1D
 
 
 @nb.njit(cache=True)
-def _straight(ctr: Int64Arr1D) -> Tuple[int, int]:
+def _straight(ctr: Int64Array1D) -> Tuple[int, int]:
     """Return the straight bonus if every face appears once.
 
     Args:
@@ -30,7 +30,7 @@ def _straight(ctr: Int64Arr1D) -> Tuple[int, int]:
 
 
 @nb.njit(cache=True)
-def _three_pairs(ctr: Int64Arr1D) -> Tuple[int, int]:
+def _three_pairs(ctr: Int64Array1D) -> Tuple[int, int]:
     """Detect the *three pairs* pattern.
 
     Args:
@@ -45,7 +45,7 @@ def _three_pairs(ctr: Int64Arr1D) -> Tuple[int, int]:
 
 
 @nb.njit(cache=True)
-def _two_triplets(ctr: Int64Arr1D) -> Tuple[int, int]:
+def _two_triplets(ctr: Int64Array1D) -> Tuple[int, int]:
     """Detect the *two triplets* pattern.
 
     Args:
@@ -60,7 +60,7 @@ def _two_triplets(ctr: Int64Arr1D) -> Tuple[int, int]:
 
 
 @nb.njit(cache=True)
-def _four_kind_plus_pair(ctr: Int64Arr1D) -> Tuple[int, int]:
+def _four_kind_plus_pair(ctr: Int64Array1D) -> Tuple[int, int]:
     """Check for four of a kind together with a separate pair.
 
     Args:
@@ -152,7 +152,7 @@ def _evaluate_nb(
 
 
 @lru_cache(maxsize=4096)
-def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
+def evaluate(counts: SixFaceCounts) -> tuple[int, int, int, int]:
     """Score a counts tuple via the JIT compiled core.
         Hash friendly for Numba.
 
@@ -193,7 +193,7 @@ def score_roll(roll: list[int]) -> Tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 
-def build_score_lookup_table() -> dict[Counts6, tuple[int, int, Counts6, int, int]]:
+def build_score_lookup_table() -> dict[SixFaceCounts, tuple[int, int, SixFaceCounts, int, int]]:
     """
     Fast O(1) table for any ≤6-dice roll.
     Loads pre-computed scores for every multiset of up to six dice.
