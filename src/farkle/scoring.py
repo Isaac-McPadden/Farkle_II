@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import functools
-from typing import List, Sequence, Tuple, cast
+from typing import Callable, List, Sequence, Tuple, cast
 
 # Numba is only used in the low-level helpers;
 # no caller needs to install it explicitly.
@@ -74,7 +74,7 @@ def _score_by_counts(key: Counts6) -> Tuple[int, int, Counts6, int, int]:
     tuple[int, int, Counts6, int, int]:
         (score, used, counts_key, single_fives, single_ones).
     """
-    score, used, sfives, sones = _eval_nb(key)        # JIT kernel
+    score, used, sfives, sones = _eval_nb(key)  # JIT kernel
     return score, used, key, sfives, sones
 
 
@@ -184,17 +184,17 @@ def generate_sequences(counts: Counts6, *, smart_one: bool = False) -> tuple[Fac
 def score_lister(
     dice_rolls: tuple[FacesT, ...],
 ) -> tuple[
-        tuple[
-            list[int],  # original roll (sorted)
-            int,  # dice_len
-            int,  # cand_score
-            int,  # cand_used
-            Counts6,  # counts
-            int,  # cand_sf
-            int  # cand_so
-            ],
-        ...
-   ]:
+    tuple[
+        list[int],  # original roll (sorted)
+        int,  # dice_len
+        int,  # cand_score
+        int,  # cand_used
+        Counts6,  # counts
+        int,  # cand_sf
+        int,  # cand_so
+    ],
+    ...,
+]:
     """Score multiple sorted rolls.
 
     Inputs
@@ -221,6 +221,68 @@ def score_lister(
 # --------------------------------------------------------------------------- #
 # 6.  Smart-discard logic (unchanged externally, tuple-friendly inside)
 # --------------------------------------------------------------------------- #
+
+
+def _must_bank(
+    score_after: int,
+    dice_left_after: int,
+    *,
+    score_threshold: int,
+    dice_threshold: int,
+    consider_score: bool,
+    consider_dice: bool,
+    require_both: bool,
+) -> bool:
+    """Return True if thresholds force a bank."""
+    hit_score = (score_after >= score_threshold) if consider_score else False
+    hit_dice = (dice_left_after <= dice_threshold) if consider_dice else False
+    return (
+        (hit_score and hit_dice)
+        if (consider_score and consider_dice and require_both)
+        else (hit_score or hit_dice)
+    )
+
+
+def _select_candidate(
+    candidates: tuple[
+        tuple[list[int], int, int, int, Counts6, int, int],
+        ...,
+    ],
+    *,
+    turn_score_pre: int,
+    dice_roll_len: int,
+    single_fives: int,
+    single_ones: int,
+    prefer_score: bool,
+    must_bank: Callable[[int, int], bool],
+) -> tuple[int, int] | None:
+    """Pick the best discard option from scored candidates."""
+    best_key: tuple[int, int] | None = None
+    best_sf, best_so = single_fives, single_ones
+
+    for _roll, _len, cand_score, cand_used, _cnt, cand_sf, cand_so in candidates:
+        score_after = turn_score_pre + cand_score
+        dice_left_after = dice_roll_len - cand_used
+        if must_bank(score_after, dice_left_after):
+            continue
+
+        key = (
+            (score_after, dice_left_after)
+            if prefer_score
+            else (
+                dice_left_after,
+                score_after,
+            )
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best_sf, best_so = cand_sf, cand_so
+
+    if best_key is None:  # every path banks → keep everything
+        return None
+    return best_sf, best_so
+
+
 def decide_smart_discards(
     *,
     counts: Counts6,
@@ -282,44 +344,32 @@ def decide_smart_discards(
     if not smart_five or raw_used == dice_roll_len or (single_fives == 0 and single_ones == 0):
         return 0, 0
 
-    def _must_bank(score_after: int, dice_left_after: int) -> bool:
-        """internal helper function for evaluating if the player must bank 
-            their points after modifying the dice counter
-
-        Args:
-            score_after (int): score after modifying dice counter
-            dice_left_after (int): dice count after modifying dice counter
-
-        Returns:
-            bool: player banking points decision
-        """
-        hit_score = (score_after >= score_threshold) if consider_score else False
-        hit_dice = (dice_left_after <= dice_threshold) if consider_dice else False
-        return (
-            (hit_score and hit_dice)
-            if (consider_score and consider_dice and require_both)
-            else (hit_score or hit_dice)
+    def must_bank(score_after: int, dice_left_after: int) -> bool:
+        return _must_bank(
+            score_after,
+            dice_left_after,
+            score_threshold=score_threshold,
+            dice_threshold=dice_threshold,
+            consider_score=consider_score,
+            consider_dice=consider_dice,
+            require_both=require_both,
         )
 
     candidates = score_lister(generate_sequences(counts, smart_one=smart_one))
+    best = _select_candidate(
+        candidates,
+        turn_score_pre=turn_score_pre,
+        dice_roll_len=dice_roll_len,
+        single_fives=single_fives,
+        single_ones=single_ones,
+        prefer_score=prefer_score,
+        must_bank=must_bank,
+    )
 
-    best_key: Tuple[int, int] | None = None
-    best_sf, best_so = single_fives, single_ones
-
-    for (_roll, _len, cand_score, cand_used, _cnt, cand_sf, cand_so) in candidates:
-        score_after = turn_score_pre + cand_score
-        dice_left_after = dice_roll_len - cand_used
-        if _must_bank(score_after, dice_left_after):
-            continue
-
-        key = (score_after, dice_left_after) if prefer_score else (dice_left_after, score_after)
-        if best_key is None or key > best_key:
-            best_key = key
-            best_sf, best_so = cand_sf, cand_so
-
-    if best_key is None:  # every path banks → keep everything
+    if best is None:
         return 0, 0
 
+    best_sf, best_so = best
     return single_fives - best_sf, single_ones - best_so
 
 
@@ -371,7 +421,7 @@ def default_score(
     score_threshold: int = 300,
     dice_threshold: int = 3,
     prefer_score: bool = True,
-    return_discards: bool = False, # reports if 5's or 1's were discarded at all
+    return_discards: bool = False,  # reports if 5's or 1's were discarded at all
 ) -> Tuple[int, int, int] | Tuple[int, int, int, int, int]:
     """Score a roll and apply Smart discard heuristics.
 
