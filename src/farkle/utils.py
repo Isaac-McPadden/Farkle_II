@@ -9,6 +9,9 @@ import pandas as pd
 
 def build_tiers(mu: Dict[str, float], sigma: Dict[str, float], z: float = 2.326) -> Dict[str, int]:
     """Group strategies into overlapping confidence tiers."""
+    if set(mu) != set(sigma):
+        raise ValueError("mu and sigma must have matching keys")
+
     sorted_items = sorted(mu.items(), key=lambda kv: kv[1], reverse=True)
     tier_map: Dict[str, int] = {}
     if not sorted_items:
