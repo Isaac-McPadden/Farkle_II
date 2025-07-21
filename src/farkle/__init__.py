@@ -38,7 +38,8 @@ _orig_unlink = pathlib.Path.unlink
 
 
 def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
-    """Delete ``self`` while ignoring transient permission issues.
+    """Wrapper around Path.unlink that squashes the WinError 32 race.
+    Deletes ``self`` while ignoring transient permission issues.
 
     Parameters
     ----------
@@ -55,7 +56,12 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
     re-raised.
     """
     with contextlib.suppress(PermissionError):
+    try:
         return _orig_unlink(self, missing_ok=missing_ok)
+    except PermissionError as e:
+        if getattr(e, "winerror", None) == 32:
+            return None
+        raise
 
 
 # Patch globally (harmless on POSIX; vital on Windows)
