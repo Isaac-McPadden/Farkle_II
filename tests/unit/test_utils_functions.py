@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from farkle.utils import bh_correct, bonferroni_pairs, build_tiers
 
@@ -51,4 +52,13 @@ def test_bonferroni_pairs_basic_determinism():
 def test_bonferroni_pairs_not_enough_strats():
     assert bonferroni_pairs([], games_needed=2, seed=0).empty
     assert bonferroni_pairs(["A"], games_needed=2, seed=0).empty
-    
+
+
+def test_bonferroni_pairs_zero_games():
+    df = bonferroni_pairs(["A", "B"], games_needed=0, seed=1)
+    assert df.empty
+
+
+def test_bonferroni_pairs_negative_games():
+    with pytest.raises(ValueError):
+        bonferroni_pairs(["A", "B"], games_needed=-1, seed=1)

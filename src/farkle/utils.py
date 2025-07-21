@@ -6,6 +6,9 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
+# Max unsigned 32-bit integer for random seed generation
+MAX_UINT32 = 2**32 - 1
+
 
 def build_tiers(mu: Dict[str, float], sigma: Dict[str, float], z: float = 2.326) -> Dict[str, int]:
     """Group strategies into overlapping confidence tiers."""
@@ -41,10 +44,13 @@ def bh_correct(pvals: np.ndarray, alpha: float = 0.02) -> np.ndarray:
 
 def bonferroni_pairs(strats: List[str], games_needed: int, seed: int) -> pd.DataFrame:
     """Generate a schedule for Bonferroni-corrected head-to-head games."""
+    if games_needed < 0:
+        raise ValueError("games_needed must be non-negative")
+
     random_generator = np.random.default_rng(seed)
     schedule_rows = []
     for strat_a, strat_b in itertools.combinations(strats, 2):
-        random_seeds = random_generator.integers(0, 2**32 - 1, size=games_needed)
+        random_seeds = random_generator.integers(0, MAX_UINT32, size=games_needed)
         for game_seed in random_seeds:
             schedule_rows.append({"a": strat_a, "b": strat_b, "seed": int(game_seed)})
     return pd.DataFrame(schedule_rows)
