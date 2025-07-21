@@ -19,7 +19,7 @@ from farkle.simulation import (
     simulate_many_games,
     simulate_one_game,
 )
-from farkle.strategies import random_threshold_strategy
+from farkle.strategies import ThresholdStrategy, random_threshold_strategy
 
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -58,38 +58,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def make_random_strategies(num_players: int, seed: int | None) -> list:
-    """Summary
-    -------
-    Generates a list of random ThresholdStrategy objects for each player.
+def make_random_strategies(num_players: int, seed: int | None) -> list[ThresholdStrategy]:
+    """Generate random strategies for each player.
 
-    Inputs
-    ------
-    num_players: int
-    seed: int | None
+    Args:
+        num_players: Number of players in the game.
+        seed: Seed for deterministic randomness.
 
-    Returns
-    -------
-    list
-        Randomly generated ThresholdStrategy objects
+    Returns:
+        list[ThresholdStrategy]:
+            Randomly generated ``ThresholdStrategy`` objects.
     """
     rng = random.Random(seed)
     return [random_threshold_strategy(rng) for _ in range(num_players)]
 
 
 def measure_sim_times(argv: list[str] | None = None):
-    """Summary
-    -------
-    Run timing benchmarks for one game and a batch of games.
+    """Run timing benchmarks for one game and a batch of games.
 
-    Inputs
-    ------
-    argv : list[str] | None, optional
-        Argument list to parse instead of ``sys.argv``.
+    Args:
+        argv: Optional argument list to parse instead of ``sys.argv``.
 
-    Returns
-    -------
-    None
+    Returns:
+        None
     """
     parser = build_arg_parser()
     args = parser.parse_args(argv)
