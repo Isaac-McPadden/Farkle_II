@@ -5,10 +5,12 @@ import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Any, Callable
 
 import numba as nb
 import pandas as pd
+
+from farkle.types import DiceRoll
 
 """strategies.py
 ================
@@ -34,7 +36,28 @@ __all__: list[str] = [
 ]
 
 
-from farkle.types import DiceRoll
+_STRAT_RE = re.compile(
+    r"""
+    \A
+    Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)  # thresholds
+    \[
+        (?P<cs>[S\-])(?P<cd>[D\-])
+    \]
+    \[
+        (?P<sf>[F\-])  # smart_five block
+        (?P<so>[O\-])  # smart_one block
+        (?P<ps>PS|PD)
+    \]
+    \[
+        (?P<rb>AND|OR)
+    \]
+    \[
+        (?P<hd>[H\-])(?P<rs>[R\-])
+    \]
+    \Z
+    """,
+    re.VERBOSE,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +268,27 @@ def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStra
     )
 
 
+def _parse_strategy_flags(s: str) -> dict[str, Any]:
+    """Return a mapping of strategy fields parsed from ``s``."""
+
+    m = _STRAT_RE.match(s)
+    if not m:
+        raise ValueError(f"Cannot parse strategy string: {s!r}")
+
+    return {
+        "score_threshold": int(m.group("score")),
+        "dice_threshold": int(m.group("dice")),
+        "smart_five": m.group("sf") == "F",
+        "smart_one": m.group("so") == "O",
+        "consider_score": m.group("cs") == "S",
+        "consider_dice": m.group("cd") == "D",
+        "require_both": m.group("rb") == "AND",
+        "auto_hot_dice": m.group("hd") == "H",
+        "run_up_score": m.group("rs") == "R",
+        "prefer_score": m.group("ps") == "PS",
+    }
+
+
 def parse_strategy(s: str) -> ThresholdStrategy:
     """
     Reverse of ThresholdStrategy.__str__.
@@ -277,65 +321,8 @@ def parse_strategy(s: str) -> ThresholdStrategy:
     #
     # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
 
-    pattern = re.compile(
-        r"""
-        \A
-        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)  # thresholds
-        \[
-            (?P<cs>[S\-])(?P<cd>[D\-])
-        \]
-        \[
-            (?P<sf>[F\-])  # smart_five block
-            (?P<so>[O\-])  # smart_one block
-            (?P<ps>PS|PD)
-        \]
-        \[
-            (?P<rb>AND|OR)
-        \]
-        \[
-            (?P<hd>[H\-])(?P<rs>[R\-])
-        \]
-        \Z
-        """,
-        re.VERBOSE,
-    )
-
-    m = pattern.match(s)
-    if not m:
-        raise ValueError(f"Cannot parse strategy string: {s!r}")
-
-    score_threshold = int(m.group("score"))
-    dice_threshold = int(m.group("dice"))
-
-    cs_flag = m.group("cs") == "S"
-    cd_flag = m.group("cd") == "D"
-
-    sf_token = m.group("sf")  # "F" or "-"
-    sf_flag = bool(sf_token.startswith("F"))
-
-    so_token = m.group("so")  # "O" or "-"
-    so_flag = bool(so_token.startswith("O"))
-
-    ps_flag = m.group("ps") == "PS"
-
-    rb_token = m.group("rb")  # "AND" or "OR"
-    require_both = rb_token == "AND"
-
-    hd_flag = m.group("hd") == "H"
-    rs_flag = m.group("rs") == "R"
-
-    return ThresholdStrategy(
-        score_threshold=score_threshold,
-        dice_threshold=dice_threshold,
-        smart_five=sf_flag,
-        smart_one=so_flag,
-        consider_score=cs_flag,
-        consider_dice=cd_flag,
-        require_both=require_both,
-        auto_hot_dice=hd_flag,
-        run_up_score=rs_flag,
-        prefer_score=ps_flag,
-    )
+    flags = _parse_strategy_flags(s)
+    return ThresholdStrategy(**flags)
 
 
 def parse_strategy_for_df(s: str) -> dict:
@@ -370,66 +357,7 @@ def parse_strategy_for_df(s: str) -> dict:
     #
     # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
 
-    pattern = re.compile(
-        r"""
-        \A
-        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)  # thresholds
-        \[
-            (?P<cs>[S\-])(?P<cd>[D\-])
-        \]
-        \[
-            (?P<sf>[F\-])  # smart_five block
-            (?P<so>[O\-])  # smart_one block
-            (?P<ps>PS|PD)
-        \]
-        \[
-            (?P<rb>AND|OR)
-        \]
-        \[
-            (?P<hd>[H\-])(?P<rs>[R\-])
-        \]
-        \Z
-        """,
-        re.VERBOSE,
-    )
-
-    m = pattern.match(s)
-    if not m:
-        raise ValueError(f"Cannot parse strategy string: {s!r}")
-
-    score_threshold = int(m.group("score"))
-    dice_threshold = int(m.group("dice"))
-
-    cs_flag = m.group("cs") == "S"
-    cd_flag = m.group("cd") == "D"
-
-    sf_token = m.group("sf")  # "F" or "-"
-    sf_flag = bool(sf_token.startswith("F"))
-
-    so_token = m.group("so")  # "O" or "-"
-    so_flag = bool(so_token.startswith("O"))
-
-    ps_flag = m.group("ps") == "PS"
-
-    rb_token = m.group("rb")  # "AND" or "OR"
-    require_both = rb_token == "AND"
-
-    hd_flag = m.group("hd") == "H"
-    rs_flag = m.group("rs") == "R"
-
-    strat_dict = {
-        "score_threshold": score_threshold,
-        "dice_threshold": dice_threshold,
-        "smart_five": sf_flag,
-        "smart_one": so_flag,
-        "consider_score": cs_flag,
-        "consider_dice": cd_flag,
-        "require_both": require_both,
-        "auto_hot_dice": hd_flag,
-        "run_up_score": rs_flag,
-        "prefer_score": ps_flag,
-    }
-    return strat_dict
+    return _parse_strategy_flags(s)
 
 
 def load_farkle_results(
