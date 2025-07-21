@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import pickle
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List
 
@@ -15,6 +16,14 @@ import yaml
 from .utils import build_tiers
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class RatingStats:
+    """Simple TrueSkill rating stats container."""
+
+    mu: float
+    sigma: float
 
 
 def _read_manifest_seed(path: Path) -> int:
@@ -78,7 +87,7 @@ def _update_ratings(
     games: list[list[str]],
     keepers: list[str],
     env: trueskill.TrueSkill,
-) -> dict[str, tuple[float, float]]:
+) -> dict[str, RatingStats]:
     """
     Update ratings using TrueSkill's team API with full table rankings.
     """
@@ -98,7 +107,7 @@ def _update_ratings(
         for s, team_rating in zip(players, new_teams, strict=True):
             ratings[s] = team_rating[0]
 
-    return {k: (r.mu, r.sigma) for k, r in ratings.items()}
+    return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
 def run_trueskill(seed: int = 0) -> None:
@@ -106,7 +115,7 @@ def run_trueskill(seed: int = 0) -> None:
     manifest_seed = _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{seed}" if seed != manifest_seed else ""
     env = trueskill.TrueSkill()
-    pooled: Dict[str, tuple[float, float]] = {}
+    pooled: Dict[str, RatingStats] = {}
     for block in sorted(base.glob("*_players")):
         n = block.name.split("_")[0]
         keep_path = block / f"keepers_{n}.npy"
@@ -117,13 +126,13 @@ def run_trueskill(seed: int = 0) -> None:
             pickle.dump(ratings, fh)
         for k, v in ratings.items():
             if k in pooled:
-                m, s = pooled[k]
-                pooled[k] = ((m + v[0]) / 2, (s + v[1]) / 2)
+                r = pooled[k]
+                pooled[k] = RatingStats((r.mu + v.mu) / 2, (r.sigma + v.sigma) / 2)
             else:
                 pooled[k] = v
     with (Path("data") / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
-    tiers = build_tiers({k: v[0] for k, v in pooled.items()}, {k: v[1] for k, v in pooled.items()})
+    tiers = build_tiers({k: v.mu for k, v in pooled.items()}, {k: v.sigma for k, v in pooled.items()})
     Path("data").mkdir(exist_ok=True)
     with (Path("data") / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)

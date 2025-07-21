@@ -71,5 +71,5 @@ def test_update_ratings_ranked():
       new = env.rate([[ratings[p[0]]], [ratings[p[1]]]], ranks=[0, 1])
       ratings[p[0]], ratings[p[1]] = new[0][0], new[1][0]
 
-    expected = {k: (r.mu, r.sigma) for k, r in ratings.items()}
+    expected = {k: rt.RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
     assert result == expected
