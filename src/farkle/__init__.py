@@ -11,9 +11,9 @@ from pathlib import Path
 # Re-export the "friendly" surface
 from farkle.engine import FarklePlayer, GameMetrics
 from farkle.farkle_io import simulate_many_games_stream
-from farkle.simulation import generate_strategy_grid
+from farkle.simulation import generate_strategy_grid, simulate_many_games_from_seeds
 from farkle.stats import games_for_power
-from farkle.strategies import ThresholdStrategy
+from farkle.strategies import PreferScore, ThresholdStrategy
 
 # --------------------------------------------------------------------------- #
 # Robust Windows delete helper
@@ -39,9 +39,11 @@ pathlib.Path.unlink = _safe_unlink  # type: ignore[assignment]
 __all__ = [
     "FarklePlayer",
     "GameMetrics",
+    "PreferScore",
     "ThresholdStrategy",
     "generate_strategy_grid",
     "simulate_many_games_stream",
+    "simulate_many_games_from_seeds",
     "games_for_power",
 ]
 
