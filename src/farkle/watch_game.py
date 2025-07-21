@@ -22,9 +22,9 @@ from typing import Sequence
 
 import numpy as np
 
-from farkle.engine import FarkleGame, FarklePlayer  # :contentReference[oaicite:0]{index=0}
-from farkle.scoring import default_score  # :contentReference[oaicite:1]{index=1}
-from farkle.strategies import (  # :contentReference[oaicite:2]{index=2}
+from farkle.engine import FarkleGame, FarklePlayer
+from farkle.scoring import default_score
+from farkle.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
 )
