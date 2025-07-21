@@ -38,6 +38,16 @@ def games_for_power(
         )
         full_pairwise = pairwise
 
+    if not 0 < base_p < 1:
+        raise ValueError("base_p must be in (0,1)")
+    if not 0 < delta < 1:
+        raise ValueError("delta must be in (0,1)")
+    if base_p + delta >= 1:
+        raise ValueError("base_p + delta must be < 1")
+
+    if method == "bonferroni" and n_strategies <= 1:
+        raise ValueError("bonferroni adjustment requires more than one strategy")
+    
     # per-test alpha*
     if method == "bonferroni":
         k = n_strategies * (n_strategies - 1) // 2 if full_pairwise else n_strategies - 1
