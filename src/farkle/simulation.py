@@ -260,6 +260,12 @@ def _play_game(
     # give every player an *independent* PRNG, but reproducible
     players = _make_players(strategies, seed)
     gm = FarkleGame(players, target_score=target_score).play()
+    # Check for only one winner
+    winners = [name for name, ps in gm.players.items() if ps.rank == 1]
+    if len(winners) != 1:
+        raise ValueError(
+            f"Expected exactly one player with rank == 1, got {len(winners)}: {winners}"
+        )
     # Determine the winner from the PlayerStats block
     winner = next(name for name, ps in gm.players.items() if ps.rank == 1)
     flat: Dict[str, Any] = {
