@@ -180,7 +180,9 @@ def _evaluate_nb(
 @lru_cache(maxsize=4096)
 def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
     """Score a counts tuple via the JIT compiled core.
-        Hash friendly for Numba.
+    
+    The function is intentionally defensive – invalid input should raise a
+    :class:`ValueError` rather than yielding nonsensical results.
 
     Args:
         counts: A 6-tuple giving the number of dice showing each face. The
@@ -188,17 +190,17 @@ def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
             exceed six.
 
     Returns:
-        (score, used, single_fives, single_ones) in the same format
-        as :func:`_evaluate_nb`.
+        (score, used, single_fives, single_ones) in the same format as
+        :func:`_evaluate_nb`.
     """
-    if (
-        len(counts) != 6
-        or not all(isinstance(x, int) and x >= 0 for x in counts)
-        or sum(counts) > 6
-    ):
-        raise ValueError(
-            "counts must contain six non-negative integers totaling at most six"
-        )
+if len(counts) != 6:
+    raise ValueError("counts must contain exactly six values")
+if not all(isinstance(c, int) for c in counts):
+    raise TypeError(f"non-integers in {counts!r}")
+if any(c < 0 for c in counts):
+    raise ValueError(f"negative count in {counts!r}")
+if sum(counts) > 6:
+    raise ValueError(f"more than six dice specified: {counts!r}")
     return _evaluate_nb(*counts)
 
 
@@ -217,8 +219,10 @@ def score_roll(roll: Sequence[int]) -> tuple[int, int]:
         ValueError: If ``roll`` contains values outside ``[1, 6]`` or has
         more than six elements.
     """
-    if len(roll) > 6 or any(d < 1 or d > 6 for d in roll):
-        raise ValueError("roll must contain at most six integers between 1 and 6")
+    if len(roll) > 6:
+        raise ValueError("roll cannot contain more than six dice")
+    if any(d < 1 or d > 6 for d in roll):
+        raise ValueError(f"invalid die face in {roll!r}")
 
     key = (
         roll.count(1),
