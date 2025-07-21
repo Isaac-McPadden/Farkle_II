@@ -54,6 +54,7 @@ class TournamentConfig:
     def games_per_shuffle(self) -> int:
         return 8_160 // self.n_players
 
+
 # metric fields tracked per winning strategy
 METRIC_LABELS: Tuple[str, ...] = (
     "winning_score",
@@ -105,14 +106,14 @@ def _init_worker(
         Strategy objects to copy into the worker.
     config: TournamentConfig
         Config rules sent with worker.
-        
+
     Returns
     -------
     None
     """
 
     global _STRATS, _CFG, N_PLAYERS, GAMES_PER_SHUFFLE
-    if 8_160 % n_players != 0:
+    if 8_160 % config.n_players != 0:
         raise ValueError("n_players must divide 8,160")
     _STRATS = list(strategies)
     _CFG = config
@@ -125,7 +126,9 @@ def _init_worker(
 # ---------------------------------------------------------------------------
 
 
-def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
+def _play_one_shuffle(
+    seed: int, *, collect_rows: bool = False
+) -> Tuple[
     Counter[str],
     Dict[str, Dict[str, float]],
     Dict[str, Dict[str, float]],
@@ -307,23 +310,22 @@ def run_tournament(
     row_output_directory: Path | None = None,  # None if --row-dir omitted
     num_shuffles: int = NUM_SHUFFLES,
 ) -> None:
-        """
-    Orchestrate a multi-process Monte-Carlo Farkle tournament.
+    """Run a multi-process Monte-Carlo Farkle tournament.
 
     Parameters
     ----------
     config : TournamentConfig, optional
         Encapsulates all tunable constants (number of players, shuffle count,
-        checkpoint cadence, etc.).  If ``None`` a default instance is created
+        checkpoint cadence, etc.). If ``None`` a default instance is created
         from the module-level constants.
     global_seed : int, default 0
-        Seed for the master RNG that generates per-shuffle seeds—make this
+        Seed for the master RNG that generates per-shuffle seeds -- make this
         different to obtain a fresh tournament.
     checkpoint_path : str | pathlib.Path, default "checkpoint.pkl"
-        Location for periodic checkpoint pickles.  Parent directories are
+        Location for periodic checkpoint pickles. Parent directories are
         created automatically.
     n_jobs : int | None, default None
-        Worker processes to spawn.  ``None`` lets
+        Worker processes to spawn. ``None`` lets
         :class:`~concurrent.futures.ProcessPoolExecutor` decide
         (usually ``os.cpu_count()``).
     collect_metrics : bool, default False
@@ -336,17 +338,19 @@ def run_tournament(
     Notes
     -----
     *Old keyword arguments such as ``num_shuffles`` and ``ckpt_every_sec`` are
-    now fields of :class:`TournamentConfig`.  Provide a custom config if you
-    need to override them.*
+    now fields of :class:`TournamentConfig`. Provide a custom config if you need
+    to override them.*
 
     Side Effects
     ------------
     Creates/updates ``checkpoint_path`` and, if ``row_output_directory`` is
     given, a set of Parquet files containing raw game rows.
     """
-    strategies, _ = generate_strategy_grid()  # 8 160 strategies
+    strategies, _ = generate_strategy_grid()  # 8_160 strategies
 
     cfg = config or TournamentConfig()
+    if num_shuffles != cfg.num_shuffles:
+        cfg.num_shuffles = num_shuffles
     if cfg.n_players < 2:
         raise ValueError("n_players must be ≥2")
 
