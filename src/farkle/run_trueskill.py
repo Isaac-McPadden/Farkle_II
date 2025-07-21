@@ -51,24 +51,24 @@ def _load_ranked_games(block: Path) -> list[list[str]]:
             frames = [pd.read_parquet(p) for p in parquet_files]
             df = pd.concat(frames, ignore_index=True)
         else:
-            return []                       # nothing we know how to read
+            return []  # nothing we know how to read
 
     # ----------------------------------------------------------------------
-    rank_cols  = [c for c in df.columns if c.endswith("_rank")]
+    rank_cols = [c for c in df.columns if c.endswith("_rank")]
     strat_cols = {c[:-5]: f"{c[:-5]}_strategy" for c in rank_cols}
 
     games: list[list[str]] = []
     for _, row in df.iterrows():
-        if rank_cols:                                   # modern per-player ranks
+        if rank_cols:  # modern per-player ranks
             ordered = sorted(rank_cols, key=row.__getitem__)
             players = [row[strat_cols[c[:-5]]] for c in ordered]
-        else:                                           # winner-only rows
+        else:  # winner-only rows
             if "winner_strategy" in row:
                 players = [row["winner_strategy"]]
             elif "winner" in row:
                 players = [row["winner"]]
             else:
-                players = []        # unknown schema → ignore row
+                players = []  # unknown schema → ignore row
         games.append(players)
 
     return games
@@ -82,14 +82,12 @@ def _update_ratings(
     """
     Update ratings using TrueSkill's team API with full table rankings.
     """
-    ratings: dict[str, trueskill.Rating] = {
-        k: env.create_rating() for k in keepers
-    }
+    ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
 
     for game in games:
         # keep only the strategies we really want to rate
         players = [s for s in game if (not keepers or s in keepers)]
-        teams   = [[ratings.setdefault(s, env.create_rating())] for s in players]
+        teams = [[ratings.setdefault(s, env.create_rating())] for s in players]
 
         if len(teams) < 2:
             continue  # need at least two teams for a rating update
@@ -123,7 +121,10 @@ def run_trueskill(seed: int = 0) -> None:
                 pooled[k] = v
     with (Path("data") / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
-    tiers = build_tiers({k: v[0] for k, v in pooled.items()}, {k: v[1] for k, v in pooled.items()})
+    tiers = build_tiers(
+        means={k: v[0] for k, v in pooled.items()},
+        stdevs={k: v[1] for k, v in pooled.items()},
+    )
     Path("data").mkdir(exist_ok=True)
     with (Path("data") / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)
@@ -139,4 +140,3 @@ def main(argv: List[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-    
