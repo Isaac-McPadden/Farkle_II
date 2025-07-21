@@ -2,6 +2,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+import pytest
+
 from farkle.utils import bh_correct, bonferroni_pairs, build_tiers
 
 
@@ -25,6 +27,11 @@ def test_build_tiers_multiple_tiers():
     assert tiers["C"] == 2
 
 
+def test_build_tiers_mismatched_sigma():
+    mu = {"A": 100.0}
+    sigma = {}
+
+
 def test_build_tiers_key_mismatch():
     mu = {"A": 100.0}
     sigma = {"A": 1.0, "B": 1.0}
@@ -42,6 +49,13 @@ def test_bh_correct_none_pass():
     pvals = np.array([0.2, 0.8, 0.4])
     mask = bh_correct(pvals, alpha=0.05)
     assert mask.tolist() == [False, False, False]
+
+
+def test_bh_correct_zero_one():
+    pvals = np.array([0.0, 1.0, 0.5])
+    mask = bh_correct(pvals, alpha=0.05)
+    # The zero should always pass, one should never pass
+    assert mask.tolist() == [True, False, False]
 
 
 def test_bh_correct_all_high_pvals():
@@ -68,6 +82,8 @@ def test_bonferroni_pairs_not_enough_strats():
 
 
 def test_bonferroni_pairs_zero_games():
+    df = bonferroni_pairs(["A", "B"], games_needed=0, seed=5)
+    assert df.empty
     df = bonferroni_pairs(["A", "B"], games_needed=0, seed=1)
     assert df.empty
 
