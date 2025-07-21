@@ -167,12 +167,22 @@ def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
         Hash friendly for Numba.
 
     Args:
-        counts: A 6-tuple giving the number of dice showing each face.
+        counts: A 6-tuple giving the number of dice showing each face. The
+            tuple must consist of six non-negative integers whose sum does not
+            exceed six.
 
     Returns:
         (score, used, single_fives, single_ones) in the same format
         as :func:`_evaluate_nb`.
     """
+    if (
+        len(counts) != 6
+        or not all(isinstance(x, int) and x >= 0 for x in counts)
+        or sum(counts) > 6
+    ):
+        raise ValueError(
+            "counts must contain six non-negative integers totaling at most six"
+        )
     return _evaluate_nb(*counts)
 
 
