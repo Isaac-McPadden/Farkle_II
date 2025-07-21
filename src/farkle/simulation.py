@@ -45,7 +45,7 @@ def generate_strategy_grid(
     smart_one_opts: Sequence[bool] | None = None,
     consider_score_opts: Sequence[bool] = (True, False),
     consider_dice_opts: Sequence[bool] = (True, False),
-    auto_hot_opts: Sequence[bool] = (False, True),
+    auto_hot_dice_opts: Sequence[bool] = (False, True),
     run_up_score_opts: Sequence[bool] = (True, False),
 ) -> Tuple[List[ThresholdStrategy], pd.DataFrame]:
     """Create the Cartesian product of all parameter options.
@@ -68,7 +68,7 @@ def generate_strategy_grid(
     combos: List[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, bool]] = []
     # We'll build combos of (st, dt, sm, cs, cd, require_both)
     for rs in run_up_score_opts:  # 2 options
-        for hd in auto_hot_opts:  # Hot Dice 2 options
+        for hd in auto_hot_dice_opts:  # Hot Dice 2 options
             for st in score_thresholds:  # 17 options
                 for dt in dice_thresholds:  # 5 options
                     for sf in smart_five_opts:  # 2 options

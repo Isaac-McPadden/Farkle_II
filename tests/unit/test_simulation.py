@@ -46,7 +46,7 @@ def test_play_helpers_consistency():
 
 def test_custom_grid_size():
     # Only auto_hot_dice == True → half the default grid (1 275)
-    strategies, meta = generate_strategy_grid(auto_hot_opts=[True])
+    strategies, meta = generate_strategy_grid(auto_hot_dice_opts=[True])
     assert len(strategies) == 4080
     assert len(meta) == 4080
     
