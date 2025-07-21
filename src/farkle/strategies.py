@@ -140,8 +140,8 @@ class ThresholdStrategy:
         Return **True** to keep rolling, *False** to bank.
 
         Counterintuitively, require_both = True is riskier play
-
-        Outcomes of cominations of consider_score = True, consider_dice = True,
+        
+        Outcomes of combinations of consider_score = True, consider_dice = True,
         require_both = [True, False] for score_threshold = 300 and dice_threshold = 3:
 
         cs and cd are True, require_both = True (AND logic)
@@ -182,7 +182,8 @@ class ThresholdStrategy:
     # Representation helpers
     # ------------------------------------------------------------------
 
-    def __str__(self) -> str:  # noqa: D401 - magics method
+
+    def __str__(self) -> str:  # noqa: D401 - magic method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
         sf = "F" if self.smart_five else "-"
@@ -273,9 +274,9 @@ def parse_strategy(s: str) -> ThresholdStrategy:
     #     auto_hot       = "H" or "-"
     #     run_up_score   = "R" or "-"
     #     require_both   = "AND" or "OR"
-    #     prefer_score   = "P" or "-"
+    #     prefer_score   = "PS" or "PD"
     #
-    # Example literal: "Strat(300,2)[SD][F-O][AND][H-]"
+    # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
 
     pattern = re.compile(
         r"""
@@ -366,9 +367,9 @@ def parse_strategy_for_df(s: str) -> dict:
     #     auto_hot       = "H" or "-"
     #     run_up_score   = "R" or "-"
     #     require_both   = "AND" or "OR"
-    #     prefer_score   = "P" or "-"
+    #     prefer_score   = "PS" or "PD"
     #
-    # Example literal: "Strat(300,2)[SD][F-O][AND][H-]"
+    # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
 
     pattern = re.compile(
         r"""
