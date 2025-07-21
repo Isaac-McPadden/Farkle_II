@@ -71,8 +71,8 @@ def run_rf(seed: int = 0, output_path: Path = IMPORTANCE_PATH) -> None:
     metrics = pd.read_parquet(METRICS_PATH)
     with open(RATINGS_PATH, "rb") as fh:
         ratings = pickle.load(fh)
-    rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [v[0] for v in ratings.values()]})
-    data = metrics.merge(rating_df, on="strategy", how="inner")
+    mu_rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [v.mu for v in ratings.values()]})
+    data = metrics.merge(mu_rating_df, on="strategy", how="inner")
     X = data.drop(columns=["strategy", "mu"])
     X = X.astype(float)
     y = data["mu"]

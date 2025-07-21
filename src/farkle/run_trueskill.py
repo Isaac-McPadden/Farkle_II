@@ -4,6 +4,7 @@ import argparse
 import json
 import logging
 import pickle
+from dataclasses import dataclass
 from pathlib import Path
 
 
@@ -15,6 +16,14 @@ import yaml
 from .utils import build_tiers
 
 log = logging.getLogger(__name__)
+
+
+@dataclass(slots=True)
+class RatingStats:
+    """Simple TrueSkill rating stats container."""
+
+    mu: float
+    sigma: float
 
 
 def _read_manifest_seed(path: Path) -> int:
@@ -106,7 +115,7 @@ def _update_ratings(
     games: list[list[str]],
     keepers: list[str],
     env: trueskill.TrueSkill,
-) -> dict[str, tuple[float, float]]:
+) -> dict[str, RatingStats]:
     """Update strategy ratings for a block of games.
 
     Parameters
@@ -122,8 +131,8 @@ def _update_ratings(
 
     Returns
     -------
-    dict[str, tuple[float, float]]
-        Mapping from strategy name to its ``(mu, sigma)`` rating tuple.
+    dict[str, RatingStats]
+        Mapping from strategy name to its RatingStats tuple.
     """
     ratings: dict[str, trueskill.Rating] = {
         k: env.create_rating() for k in keepers
@@ -141,7 +150,7 @@ def _update_ratings(
         for s, team_rating in zip(players, new_teams, strict=True):
             ratings[s] = team_rating[0]
 
-    return {k: (r.mu, r.sigma) for k, r in ratings.items()}
+    return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
 def run_trueskill(seed: int = 0) -> None:
@@ -168,7 +177,7 @@ def run_trueskill(seed: int = 0) -> None:
     manifest_seed = _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{seed}" if seed != manifest_seed else ""
     env = trueskill.TrueSkill()
-    pooled_sums: dict[str, tuple[float, float]] = {}
+    pooled: Dict[str, RatingStats] = {}
     for block in sorted(base.glob("*_players")):
         player_count = block.name.split("_")[0]
         keep_path = block / f"keepers_{player_count}.npy"
@@ -178,15 +187,14 @@ def run_trueskill(seed: int = 0) -> None:
         with (Path("data") / f"ratings_{player_count}{suffix}.pkl").open("wb") as fh:
             pickle.dump(ratings, fh)
         for k, v in ratings.items():
-            entry = pooled_sums.setdefault(k, [0.0, 0.0, 0])
-            entry[0] += v[0]
-            entry[1] += v[1]
-            entry[2] += 1
-
-    pooled = {k: (mu / cnt, sig / cnt) for k, (mu, sig, cnt) in pooled_sums.items()}
+            if k in pooled:
+                r = pooled[k]
+                pooled[k] = RatingStats((r.mu + v.mu) / 2, (r.sigma + v.sigma) / 2)
+            else:
+                pooled[k] = v
     with (Path("data") / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
-    tiers = build_tiers({k: v[0] for k, v in pooled.items()}, {k: v[1] for k, v in pooled.items()})
+    tiers = build_tiers({k: v.mu for k, v in pooled.items()}, {k: v.sigma for k, v in pooled.items()})
     Path("data").mkdir(exist_ok=True)
     with (Path("data") / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)
