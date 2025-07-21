@@ -5,7 +5,7 @@ import json
 import logging
 import pickle
 from pathlib import Path
-from typing import Dict, List
+
 
 import numpy as np
 import pandas as pd
@@ -168,14 +168,14 @@ def run_trueskill(seed: int = 0) -> None:
     manifest_seed = _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{seed}" if seed != manifest_seed else ""
     env = trueskill.TrueSkill()
-    pooled_sums: Dict[str, list[float]] = {}
+    pooled_sums: dict[str, tuple[float, float]] = {}
     for block in sorted(base.glob("*_players")):
-        n = block.name.split("_")[0]
-        keep_path = block / f"keepers_{n}.npy"
+        player_count = block.name.split("_")[0]
+        keep_path = block / f"keepers_{player_count}.npy"
         keepers = np.load(keep_path).tolist() if keep_path.exists() else []
         games = _load_ranked_games(block)
         ratings = _update_ratings(games, keepers, env)
-        with (Path("data") / f"ratings_{n}{suffix}.pkl").open("wb") as fh:
+        with (Path("data") / f"ratings_{player_count}{suffix}.pkl").open("wb") as fh:
             pickle.dump(ratings, fh)
         for k, v in ratings.items():
             entry = pooled_sums.setdefault(k, [0.0, 0.0, 0])
@@ -206,7 +206,6 @@ def main(argv: List[str] | None = None) -> None:
     Invokes :func:`run_trueskill`, which writes rating and tier files to the
     ``data`` directory.
     """
-
     parser = argparse.ArgumentParser(description="Compute TrueSkill ratings")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv or [])
