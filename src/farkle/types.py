@@ -1,4 +1,10 @@
-# src/farkle/types.py  (new tiny helper, purely for typing)
+"""Shared type aliases for the Farkle project.
+
+This module centralizes a few simple ``TypeAlias`` definitions used across
+the code base.  ``Int64Arr1D`` is provided as a convenience for NumPy arrays
+of ``np.int64`` that are expected, by convention, to be one-dimensional.
+"""
+
 from typing import Tuple, TypeAlias
 
 import numpy as np
