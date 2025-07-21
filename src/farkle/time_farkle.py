@@ -22,6 +22,15 @@ from farkle.simulation import (
 from farkle.strategies import ThresholdStrategy, random_threshold_strategy
 
 
+def _positive_int(value: str) -> int:
+    """Return ``value`` as ``int`` if it is strictly positive."""
+
+    ivalue = int(value)
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return ivalue
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     """Return the :class:`argparse.ArgumentParser` for the CLI."""
     parser = argparse.ArgumentParser(
@@ -84,7 +93,6 @@ def measure_sim_times(argv: list[str] | None = None):
     """
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-
     if args.n_games <= 0:
         raise argparse.ArgumentTypeError("--n_games must be > 0")
     if args.players <= 0:
