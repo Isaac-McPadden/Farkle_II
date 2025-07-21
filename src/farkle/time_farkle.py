@@ -22,6 +22,52 @@ from farkle.simulation import (
 from farkle.strategies import random_threshold_strategy
 
 
+def _positive_int(value: str) -> int:
+    """Return ``value`` as ``int`` if it is strictly positive."""
+
+    ivalue = int(value)
+    if ivalue <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return ivalue
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Return the CLI argument parser with validated defaults."""
+
+    p = argparse.ArgumentParser(
+        description="Time one Farkle game and a batch of N games.",
+    )
+    p.add_argument(
+        "-n",
+        "--n_games",
+        type=_positive_int,
+        default=1000,
+        help="Number of games to simulate in batch",
+    )
+    p.add_argument(
+        "-p",
+        "--players",
+        type=_positive_int,
+        default=5,
+        help="Number of players per game",
+    )
+    p.add_argument(
+        "-s",
+        "--seed",
+        type=int,
+        default=42,
+        help="Master seed for reproducible RNG",
+    )
+    p.add_argument(
+        "-j",
+        "--jobs",
+        type=_positive_int,
+        default=1,
+        help="Number of parallel processes",
+    )
+    return p
+
+
 def make_random_strategies(num_players: int, seed: int | None) -> list:
     """Summary
     -------
@@ -55,26 +101,8 @@ def measure_sim_times(argv: list[str] | None = None):
     -------
     None
     """
-    p = argparse.ArgumentParser(
-        description="Time one Farkle game and a batch of N games."
-    )
-    p.add_argument(
-        "-n", "--n_games", type=int, default=1000,
-        help="Number of games to simulate in batch"
-    )
-    p.add_argument(
-        "-p", "--players", type=int, default=5,
-        help="Number of players per game"
-    )
-    p.add_argument(
-        "-s", "--seed", type=int, default=42,
-        help="Master seed for reproducible RNG"
-    )
-    p.add_argument(
-        "-j", "--jobs", type=int, default=1,
-        help="Number of parallel processes"
-    )
-    args = p.parse_args(argv)
+    parser = build_arg_parser()
+    args = parser.parse_args(argv)
 
     # 1) Build a fixed roster of random strategies
     strategies = make_random_strategies(args.players, args.seed)
