@@ -55,7 +55,7 @@ def generate_strategy_grid(
     Parameters
     ----------
     score_thresholds, dice_thresholds, smart_five_opts, smart_one_opts,
-    consider_score_opts, consider_dice_opts, auto_hot_opts, run_up_score_opts
+    consider_score_opts, consider_dice_opts, auto_hot_dice_opts, run_up_score_opts
         Sequences of options for the corresponding ``ThresholdStrategy``
         fields. ``None`` selects sensible defaults for each parameter.
 
@@ -85,7 +85,7 @@ def generate_strategy_grid(
         smart_one_opts,
         consider_score_opts,
         consider_dice_opts,
-        auto_hot_opts,
+        auto_hot_dice_opts,
         run_up_score_opts,
     ):
         # Can't be smart one without smart five
