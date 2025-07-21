@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from farkle.strategies import (
+    PreferScore,
     ThresholdStrategy,
     _sample_prefer_score,
     load_farkle_results,
@@ -72,9 +73,9 @@ def test_random_strategy_factory():
         assert not ts.require_both or (ts.consider_score and ts.consider_dice)
         # NEW: prefer_score must follow the truth-table above
         if ts.consider_score and not ts.consider_dice:
-            assert ts.prefer_score is True
+            assert ts.prefer_score is PreferScore.SCORE
         elif ts.consider_dice and not ts.consider_score:
-            assert ts.prefer_score is False
+            assert ts.prefer_score is PreferScore.DICE
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -106,7 +107,7 @@ def test_random_strategy_factory():
                 "consider_dice": True,
                 "smart_five": True,
                 "smart_one": True,
-                "prefer_score": True,
+                "prefer_score": PreferScore.SCORE,
                 "require_both": True,
                 "auto_hot_dice": True,
                 "run_up_score": True,
@@ -133,7 +134,7 @@ def test_random_strategy_factory():
                 "consider_dice": False,
                 "smart_five": True,
                 "smart_one": False,
-                "prefer_score": False,
+                "prefer_score": PreferScore.DICE,
                 "require_both": False,
                 "auto_hot_dice": False,
                 "run_up_score": False,
@@ -160,7 +161,7 @@ def test_random_strategy_factory():
                 "consider_dice": False,
                 "smart_five": False,
                 "smart_one": False,
-                "prefer_score": True,
+                "prefer_score": PreferScore.SCORE,
                 "require_both": False,
                 "auto_hot_dice": True,
                 "run_up_score": False,
@@ -187,7 +188,7 @@ def test_random_strategy_factory():
                 "consider_dice": True,
                 "smart_five": False,
                 "smart_one": False,
-                "prefer_score": False,
+                "prefer_score": PreferScore.DICE,
                 "require_both": False,
                 "auto_hot_dice": False,
                 "run_up_score": True,
@@ -274,7 +275,7 @@ def test_parse_strategy_for_df():  # noqa: ARG001
         "require_both": True,
         "auto_hot_dice": True,
         "run_up_score": True,
-        "prefer_score": True,
+        "prefer_score": PreferScore.SCORE,
     }
     assert strat_dict_2 == {
         "score_threshold": 300,
@@ -286,21 +287,21 @@ def test_parse_strategy_for_df():  # noqa: ARG001
         "require_both": False,
         "auto_hot_dice": False,
         "run_up_score": False,
-        "prefer_score": False,
+        "prefer_score": PreferScore.DICE,
     }
 
 
 def test_sample_prefer_score_deterministic():
     rng = random.Random(0)
-    assert _sample_prefer_score(True, False, rng) is True
+    assert _sample_prefer_score(True, False, rng) is PreferScore.SCORE
     rng = random.Random(0)
-    assert _sample_prefer_score(False, True, rng) is False
+    assert _sample_prefer_score(False, True, rng) is PreferScore.DICE
     rng = random.Random(0)
-    expected_tt = rng.choice([True, False])
+    expected_tt = rng.choice([PreferScore.SCORE, PreferScore.DICE])
     rng = random.Random(0)
     assert _sample_prefer_score(True, True, rng) is expected_tt
     rng = random.Random(0)
-    expected_ff = rng.choice([True, False])
+    expected_ff = rng.choice([PreferScore.SCORE, PreferScore.DICE])
     rng = random.Random(0)
     assert _sample_prefer_score(False, False, rng) is expected_ff
 

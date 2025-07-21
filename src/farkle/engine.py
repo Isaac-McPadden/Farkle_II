@@ -6,7 +6,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 
 from farkle.scoring import DiceRoll, default_score
-from farkle.strategies import ThresholdStrategy
+from farkle.strategies import PreferScore, ThresholdStrategy
 
 """engine.py
 ============
@@ -129,7 +129,7 @@ class FarklePlayer:
                 consider_score=self.strategy.consider_score,
                 consider_dice=self.strategy.consider_dice,
                 require_both=self.strategy.require_both,
-                prefer_score=self.strategy.prefer_score,
+                prefer_score=self.strategy.prefer_score is PreferScore.SCORE,
                 return_discards=True,
             )
 

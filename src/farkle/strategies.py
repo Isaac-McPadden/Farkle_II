@@ -4,6 +4,7 @@ import pickle
 import random
 import re
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Callable, List
 
@@ -29,9 +30,20 @@ sweeps.
 
 
 __all__: list[str] = [
+    "PreferScore",
     "ThresholdStrategy",
     "random_threshold_strategy",
 ]
+
+
+class PreferScore(Enum):
+    """Tie-break preference when both score and dice targets are hit."""
+
+    SCORE = "score"
+    DICE = "dice"
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return self.value
 
 
 DiceRoll = List[int]
@@ -87,7 +99,7 @@ class ThresholdStrategy:
     require_both: bool = False
     auto_hot_dice: bool = False
     run_up_score: bool = False
-    prefer_score: bool = True
+    prefer_score: PreferScore = PreferScore.SCORE
     
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
@@ -169,7 +181,7 @@ class ThresholdStrategy:
         rb = "AND" if self.require_both else "OR"
         hd = "H" if self.auto_hot_dice else "-"
         rs = "R" if self.run_up_score else "-"
-        ps = "PS" if self.prefer_score else "PD"
+        ps = "PS" if self.prefer_score is PreferScore.SCORE else "PD"
         return f"Strat({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}{ps}][{rb}][{hd}{rs}]"
 
 
@@ -178,7 +190,7 @@ class ThresholdStrategy:
 # ---------------------------------------------------------------------------
 
 
-def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> bool:
+def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> PreferScore:
     """
     Return the *only* legal value(s) for `prefer_score`
     given the (consider_score, consider_dice) pair.
@@ -193,8 +205,8 @@ def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> bool:
     Much easier to read than a stacked ternary.
     """
     if cs == cd:  # (T,T) or (F,F)   →  free choice
-        return rng.choice([True, False])
-    return cs  # (T,F) or (F,T)
+        return rng.choice([PreferScore.SCORE, PreferScore.DICE])
+    return PreferScore.SCORE if cs else PreferScore.DICE
 
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
@@ -295,7 +307,7 @@ def parse_strategy(s: str) -> ThresholdStrategy:
     so_token = m.group("so")  # "O" or "-"
     so_flag = bool(so_token.startswith("O"))
     
-    ps_flag = m.group("ps") == "PS"
+    ps_enum = PreferScore.SCORE if m.group("ps") == "PS" else PreferScore.DICE
 
     rb_token = m.group("rb")  # "AND" or "OR"
     require_both = rb_token == "AND"
@@ -313,7 +325,7 @@ def parse_strategy(s: str) -> ThresholdStrategy:
         require_both=require_both,
         auto_hot_dice=hd_flag,
         run_up_score=rs_flag,
-        prefer_score=ps_flag,
+        prefer_score=ps_enum,
     )
 
 
@@ -388,7 +400,7 @@ def parse_strategy_for_df(s: str) -> dict:
     so_token = m.group("so")  # "O" or "-"
     so_flag = bool(so_token.startswith("O"))
     
-    ps_flag = m.group("ps") == "PS"
+    ps_enum = PreferScore.SCORE if m.group("ps") == "PS" else PreferScore.DICE
 
     rb_token = m.group("rb")  # "AND" or "OR"
     require_both = rb_token == "AND"
@@ -406,7 +418,7 @@ def parse_strategy_for_df(s: str) -> dict:
         "require_both": require_both,
         "auto_hot_dice" : hd_flag,
         "run_up_score" : rs_flag,
-        "prefer_score" : ps_flag,
+        "prefer_score" : ps_enum,
     }
     return strat_dict
 
