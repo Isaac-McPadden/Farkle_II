@@ -213,8 +213,13 @@ def test_score_lister_filters_busts():
     tup_rolls = tuple(tuple(r) for r in rolls)
     listed = score_lister(tup_rolls)
     assert len(listed) == 1
-    *_ , raw_score, raw_used, _counts, sf, so = listed[0]
-    assert (raw_score, raw_used, sf, so) == (100, 2, 2, 0)
+    cand = listed[0]
+    assert (cand.score, cand.used, cand.single_fives, cand.single_ones) == (
+        100,
+        2,
+        2,
+        0,
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────────
