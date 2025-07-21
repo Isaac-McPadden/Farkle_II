@@ -2,6 +2,8 @@
 Tiny integration-style tests for time_farkle.py utilities.
 (We don't time anything here - just logic.)
 """
+
+import argparse
 from types import SimpleNamespace
 
 import pandas as pd
@@ -101,3 +103,11 @@ def test_winners_breakdown_multiple_winners(monkeypatch, capfd):
     assert "P1" in out and "2" in out
     assert "P2" in out and "1" in out
     
+
+def test_measure_sim_times_rejects_invalid_args():
+    with pytest.raises(argparse.ArgumentTypeError):
+        tf.measure_sim_times(["--n_games", "0"])
+    with pytest.raises(argparse.ArgumentTypeError):
+        tf.measure_sim_times(["--players", "0"])
+    with pytest.raises(argparse.ArgumentTypeError):
+        tf.measure_sim_times(["--jobs", "0"])
