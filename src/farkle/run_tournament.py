@@ -49,6 +49,24 @@ METRIC_LABELS: Tuple[str, ...] = (
     "winner_hot_dice",
 )
 
+
+def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
+    """Return the metric vector for the winning player."""
+
+    return [
+        row["winning_score"],
+        row["n_rounds"],
+        row[f"{winner}_farkles"],
+        row[f"{winner}_rolls"],
+        row[f"{winner}_highest_turn"],
+        row[f"{winner}_smart_five_uses"],
+        row[f"{winner}_n_smart_five_dice"],
+        row[f"{winner}_smart_one_uses"],
+        row[f"{winner}_n_smart_one_dice"],
+        row[f"{winner}_hot_dice"],
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Worker initialisation and helpers
 # ---------------------------------------------------------------------------
@@ -57,7 +75,7 @@ _STRATS: List[ThresholdStrategy] = []
 
 def _init_worker(
     strategies: Sequence[ThresholdStrategy],
-    n_players: int,          # NEW
+    n_players: int,  # NEW
 ) -> None:
     """Run once in every worker; copy strats **and** table size."""
 
@@ -75,18 +93,7 @@ def _play_single_game(seed: int, strat_indices: Sequence[int]) -> Tuple[str, Lis
 
     winner = res["winner"]
     strat_repr = res[f"{winner}_strategy"]
-    metrics = [
-        res["winning_score"],
-        res["n_rounds"],
-        res[f"{winner}_farkles"],
-        res[f"{winner}_rolls"],
-        res[f"{winner}_highest_turn"],
-        res[f"{winner}_smart_five_uses"],
-        res[f"{winner}_n_smart_five_dice"],
-        res[f"{winner}_smart_one_uses"],
-        res[f"{winner}_n_smart_one_dice"],
-        res[f"{winner}_hot_dice"],
-    ]
+    metrics = _extract_winner_metrics(res, winner)
     return strat_repr, metrics
 
 
@@ -120,18 +127,7 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
         row = _play_game(int(gseed), [_STRATS[i] for i in idxs])
         winner = row["winner"]
         strat_repr = row[f"{winner}_strategy"]
-        metrics = [
-            row["winning_score"],
-            row["n_rounds"],
-            row[f"{winner}_farkles"],
-            row[f"{winner}_rolls"],
-            row[f"{winner}_highest_turn"],
-            row[f"{winner}_smart_five_uses"],
-            row[f"{winner}_n_smart_five_dice"],
-            row[f"{winner}_smart_one_uses"],
-            row[f"{winner}_n_smart_one_dice"],
-            row[f"{winner}_hot_dice"],
-        ]
+        metrics = _extract_winner_metrics(row, winner)
         wins[strat_repr] += 1
         for label, value in zip(METRIC_LABELS, metrics, strict=True):
             sums[label][strat_repr] += value
@@ -254,18 +250,18 @@ def run_tournament(
     n_jobs: int | None = None,
     ckpt_every_sec: int = CKPT_EVERY_SEC,
     collect_metrics: bool = False,
-    row_output_directory: Path | None = None, # None if --row-dir omitted
+    row_output_directory: Path | None = None,  # None if --row-dir omitted
 ) -> None:
     """Orchestrate the multi-process tournament."""
-        
+
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
-    
+
     global N_PLAYERS, GAMES_PER_SHUFFLE
     if n_players < 2:
         raise ValueError("n_players must be ≥2")
     N_PLAYERS = n_players
     GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
-    
+
     games_per_sec = _measure_throughput(strategies[:N_PLAYERS])
     shuffles_per_chunk = max(1, int(DESIRED_SEC_PER_CHUNK * games_per_sec // GAMES_PER_SHUFFLE))
 
