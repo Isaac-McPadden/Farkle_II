@@ -85,6 +85,13 @@ def measure_sim_times(argv: list[str] | None = None):
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
+    if args.n_games <= 0:
+        raise argparse.ArgumentTypeError("--n_games must be > 0")
+    if args.players <= 0:
+        raise argparse.ArgumentTypeError("--players must be > 0")
+    if args.jobs <= 0:
+        raise argparse.ArgumentTypeError("--jobs must be > 0")
+
     # 1) Build a fixed roster of random strategies
     strategies = make_random_strategies(args.players, args.seed)
 
