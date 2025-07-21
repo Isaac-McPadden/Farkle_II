@@ -54,6 +54,7 @@ class TournamentConfig:
     def games_per_shuffle(self) -> int:
         return 8_160 // self.n_players
 
+
 # metric fields tracked per winning strategy
 METRIC_LABELS: Tuple[str, ...] = (
     "winning_score",
@@ -105,14 +106,14 @@ def _init_worker(
         Strategy objects to copy into the worker.
     config: TournamentConfig
         Config rules sent with worker.
-        
+
     Returns
     -------
     None
     """
 
     global _STRATS, _CFG, N_PLAYERS, GAMES_PER_SHUFFLE
-    if 8_160 % n_players != 0:
+    if 8_160 % config.n_players != 0:
         raise ValueError("n_players must divide 8,160")
     _STRATS = list(strategies)
     _CFG = config
@@ -305,10 +306,9 @@ def run_tournament(
     n_jobs: int | None = None,
     collect_metrics: bool = False,
     row_output_directory: Path | None = None,  # None if --row-dir omitted
-    num_shuffles: int = NUM_SHUFFLES,
+    num_shuffles: int = NUM_SHUFFLES,  # noqa: ARG001
 ) -> None:
-        """
-    Orchestrate a multi-process Monte-Carlo Farkle tournament.
+    """Orchestrate a multi-process Monte-Carlo Farkle tournament.
 
     Parameters
     ----------
