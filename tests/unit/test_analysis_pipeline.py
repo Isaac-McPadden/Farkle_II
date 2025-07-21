@@ -45,7 +45,7 @@ def test_analysis_pipeline(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_trueskill.main([])
+        run_trueskill.main(["--output-seed", "0"])
         run_rf.main([])
 
         with open("data/ratings_pooled.pkl", "rb") as fh:
@@ -68,4 +68,3 @@ def test_analysis_pipeline(tmp_path):
         )
     finally:
         os.chdir(cwd)
-        
