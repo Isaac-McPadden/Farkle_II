@@ -213,8 +213,13 @@ def test_score_lister_filters_busts():
     tup_rolls = tuple(tuple(r) for r in rolls)
     listed = score_lister(tup_rolls)
     assert len(listed) == 1
-    *_ , raw_score, raw_used, _counts, sf, so = listed[0]
-    assert (raw_score, raw_used, sf, so) == (100, 2, 2, 0)
+    cand = listed[0]
+    assert (cand.score, cand.used, cand.single_fives, cand.single_ones) == (
+        100,
+        2,
+        2,
+        0,
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -301,3 +306,18 @@ def test_default_score_cases(dice_roll, turn_pre, threshold, smart5, smart1, exp
         dice_threshold = 3,
     )
     assert out == expected
+
+
+@pytest.mark.parametrize(
+    "faces",
+    [
+        [0, 1, 2],
+        [1, 2, 7],
+        [-1, 3, 4],
+    ],
+)
+def test_faces_to_counts_tuple_invalid_faces(faces):
+    import farkle.scoring as scoring
+
+    with pytest.raises(ValueError):
+        scoring.faces_to_counts_tuple(faces)

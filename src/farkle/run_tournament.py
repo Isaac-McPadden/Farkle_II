@@ -17,9 +17,10 @@ import pickle
 import time
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 
@@ -35,6 +36,24 @@ GAMES_PER_SHUFFLE: int = 8_160 // N_PLAYERS  # 1 632
 DESIRED_SEC_PER_CHUNK: int = 10
 CKPT_EVERY_SEC: int = 30
 
+# ---------------------------------------------------------------------------
+# Dataclass configuration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TournamentConfig:
+    """Runtime configuration for :func:`run_tournament`."""
+
+    n_players: int = N_PLAYERS
+    num_shuffles: int = NUM_SHUFFLES
+    desired_sec_per_chunk: int = DESIRED_SEC_PER_CHUNK
+    ckpt_every_sec: int = CKPT_EVERY_SEC
+
+    @property
+    def games_per_shuffle(self) -> int:
+        return 8_160 // self.n_players
+
 # metric fields tracked per winning strategy
 METRIC_LABELS: Tuple[str, ...] = (
     "winning_score",
@@ -49,45 +68,56 @@ METRIC_LABELS: Tuple[str, ...] = (
     "winner_hot_dice",
 )
 
+
+def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
+    """Return the metric vector for the winning player."""
+
+    return [
+        row["winning_score"],
+        row["n_rounds"],
+        row[f"{winner}_farkles"],
+        row[f"{winner}_rolls"],
+        row[f"{winner}_highest_turn"],
+        row[f"{winner}_smart_five_uses"],
+        row[f"{winner}_n_smart_five_dice"],
+        row[f"{winner}_smart_one_uses"],
+        row[f"{winner}_n_smart_one_dice"],
+        row[f"{winner}_hot_dice"],
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Worker initialisation and helpers
 # ---------------------------------------------------------------------------
 _STRATS: List[ThresholdStrategy] = []
+_CFG: TournamentConfig = TournamentConfig()
 
 
 def _init_worker(
     strategies: Sequence[ThresholdStrategy],
-    n_players: int,          # NEW
+    config: TournamentConfig,
 ) -> None:
-    """Run once in every worker; copy strats **and** table size."""
+    """Initialise per-process globals.
 
-    global _STRATS, N_PLAYERS, GAMES_PER_SHUFFLE
+    Parameters
+    ----------
+    strategies : Sequence[ThresholdStrategy]
+        Strategy objects to copy into the worker.
+    config: TournamentConfig
+        Config rules sent with worker.
+        
+    Returns
+    -------
+    None
+    """
+
+    global _STRATS, _CFG, N_PLAYERS, GAMES_PER_SHUFFLE
+    if 8_160 % n_players != 0:
+        raise ValueError("n_players must divide 8,160")
     _STRATS = list(strategies)
-    N_PLAYERS = n_players
-    GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
-
-
-def _play_single_game(seed: int, strat_indices: Sequence[int]) -> Tuple[str, List[int]]:
-    """Run one game and return the winning strategy string and metrics."""
-
-    table = [_STRATS[i] for i in strat_indices]
-    res: Dict[str, Any] = _play_game(seed, table)
-
-    winner = res["winner"]
-    strat_repr = res[f"{winner}_strategy"]
-    metrics = [
-        res["winning_score"],
-        res["n_rounds"],
-        res[f"{winner}_farkles"],
-        res[f"{winner}_rolls"],
-        res[f"{winner}_highest_turn"],
-        res[f"{winner}_smart_five_uses"],
-        res[f"{winner}_n_smart_five_dice"],
-        res[f"{winner}_smart_one_uses"],
-        res[f"{winner}_n_smart_one_dice"],
-        res[f"{winner}_hot_dice"],
-    ]
-    return strat_repr, metrics
+    _CFG = config
+    N_PLAYERS = config.n_players
+    GAMES_PER_SHUFFLE = config.games_per_shuffle
 
 
 # ---------------------------------------------------------------------------
@@ -101,7 +131,7 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
     Dict[str, Dict[str, float]],
     List[Dict[str, Any]],
 ]:
-    """Play GAMES_PER_SHUFFLE games and aggregate the results."""
+    """Play all games for one shuffle and aggregate the results."""
 
     rng = np.random.default_rng(seed)
     perm = rng.permutation(len(_STRATS))
@@ -120,18 +150,7 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
         row = _play_game(int(gseed), [_STRATS[i] for i in idxs])
         winner = row["winner"]
         strat_repr = row[f"{winner}_strategy"]
-        metrics = [
-            row["winning_score"],
-            row["n_rounds"],
-            row[f"{winner}_farkles"],
-            row[f"{winner}_rolls"],
-            row[f"{winner}_highest_turn"],
-            row[f"{winner}_smart_five_uses"],
-            row[f"{winner}_n_smart_five_dice"],
-            row[f"{winner}_smart_one_uses"],
-            row[f"{winner}_n_smart_one_dice"],
-            row[f"{winner}_hot_dice"],
-        ]
+        metrics = _extract_winner_metrics(row, winner)
         wins[strat_repr] += 1
         for label, value in zip(METRIC_LABELS, metrics, strict=True):
             sums[label][strat_repr] += value
@@ -153,7 +172,18 @@ def _play_shuffle(seed: int) -> Counter[str]:
 
 
 def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[str]:
-    """Aggregate win counts for a batch of shuffles (legacy behaviour)."""
+    """Play a batch of shuffles and tally wins.
+
+    Parameters
+    ----------
+    shuffle_seed_batch : Sequence[int]
+        RNG seeds for each shuffle processed by this worker.
+
+    Returns
+    -------
+    collections.Counter[str]
+        Mapping of strategy strings to win counts for the batch.
+    """
 
     total: Counter[str] = Counter()
     for sd in shuffle_seed_batch:
@@ -174,7 +204,28 @@ def _run_chunk_metrics(
     Dict[str, Dict[str, float]],
     Dict[str, Dict[str, float]],
 ]:
-    """Same as :func:`_run_chunk` but also accumulates metric sums."""
+    """Play shuffles and accumulate metrics.
+
+    Parameters
+    ----------
+    shuffle_seed_batch : Sequence[int]
+        RNG seeds for each shuffle in this batch.
+    collect_rows : bool, default False
+        If ``True`` return and optionally persist full per-game rows.
+    row_dir : Path | None, default None
+        Directory used to write parquet files when ``collect_rows`` is ``True``.
+
+    Returns
+    -------
+    tuple
+        ``(wins, sums, square_sums)`` where each element aggregates the
+        respective values over the batch.
+
+    Side Effects
+    ------------
+    When ``collect_rows`` is ``True`` a parquet file containing all rows for the
+    current worker is written to ``row_dir``.
+    """
 
     wins_total: Counter[str] = Counter()
     sums_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -196,12 +247,12 @@ def _run_chunk_metrics(
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
-
+        except ImportError:  # pragma: no cover - optional dependency
+            logging.warning("pyarrow not installed - row logging skipped")
+        else:
             assert row_dir is not None
             out = row_dir / f"rows_{mp.current_process().pid}_{time.time_ns()}.parquet"
             pq.write_table(pa.Table.from_pylist(all_rows), out)
-        except Exception:  # pragma: no cover - optional dependency
-            logging.warning("pyarrow not installed - row logging skipped")
 
     return wins_total, sums_total, sq_total
 
@@ -248,32 +299,68 @@ def _save_checkpoint(
 
 def run_tournament(
     *,
-    n_players: int = 5,
+    config: TournamentConfig | None = None,
     global_seed: int = 0,
     checkpoint_path: Path | str = "checkpoint.pkl",
     n_jobs: int | None = None,
-    ckpt_every_sec: int = CKPT_EVERY_SEC,
     collect_metrics: bool = False,
-    row_output_directory: Path | None = None, # None if --row-dir omitted
+    row_output_directory: Path | None = None,  # None if --row-dir omitted
+    num_shuffles: int = NUM_SHUFFLES,
 ) -> None:
-    """Orchestrate the multi-process tournament."""
-        
+        """
+    Orchestrate a multi-process Monte-Carlo Farkle tournament.
+
+    Parameters
+    ----------
+    config : TournamentConfig, optional
+        Encapsulates all tunable constants (number of players, shuffle count,
+        checkpoint cadence, etc.).  If ``None`` a default instance is created
+        from the module-level constants.
+    global_seed : int, default 0
+        Seed for the master RNG that generates per-shuffle seeds—make this
+        different to obtain a fresh tournament.
+    checkpoint_path : str | pathlib.Path, default "checkpoint.pkl"
+        Location for periodic checkpoint pickles.  Parent directories are
+        created automatically.
+    n_jobs : int | None, default None
+        Worker processes to spawn.  ``None`` lets
+        :class:`~concurrent.futures.ProcessPoolExecutor` decide
+        (usually ``os.cpu_count()``).
+    collect_metrics : bool, default False
+        If ``True``, per-strategy means/variances for several game metrics are
+        accumulated in addition to raw win counts.
+    row_output_directory : pathlib.Path | None, default None
+        When supplied, every worker writes complete per-game rows to this
+        directory as Parquet files (requires *pyarrow*).
+
+    Notes
+    -----
+    *Old keyword arguments such as ``num_shuffles`` and ``ckpt_every_sec`` are
+    now fields of :class:`TournamentConfig`.  Provide a custom config if you
+    need to override them.*
+
+    Side Effects
+    ------------
+    Creates/updates ``checkpoint_path`` and, if ``row_output_directory`` is
+    given, a set of Parquet files containing raw game rows.
+    """
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
-    
-    global N_PLAYERS, GAMES_PER_SHUFFLE
-    if n_players < 2:
+
+    cfg = config or TournamentConfig()
+    if cfg.n_players < 2:
         raise ValueError("n_players must be ≥2")
-    N_PLAYERS = n_players
-    GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
-    
-    games_per_sec = _measure_throughput(strategies[:N_PLAYERS])
-    shuffles_per_chunk = max(1, int(DESIRED_SEC_PER_CHUNK * games_per_sec // GAMES_PER_SHUFFLE))
+
+    games_per_sec = _measure_throughput(strategies[: cfg.n_players])
+    shuffles_per_chunk = max(
+        1,
+        int(cfg.desired_sec_per_chunk * games_per_sec // cfg.games_per_shuffle),
+    )
 
     master_rng = np.random.default_rng(global_seed)
-    shuffle_seeds = master_rng.integers(0, 2**32 - 1, size=NUM_SHUFFLES).tolist()
+    shuffle_seeds = master_rng.integers(0, 2**32 - 1, size=cfg.num_shuffles).tolist()
     chunks = [
         shuffle_seeds[i : i + shuffles_per_chunk]
-        for i in range(0, NUM_SHUFFLES, shuffles_per_chunk)
+        for i in range(0, cfg.num_shuffles, shuffles_per_chunk)
     ]
 
     logging.basicConfig(
@@ -292,21 +379,24 @@ def run_tournament(
 
     collect_rows = row_output_directory is not None
     if collect_rows:
+        assert row_output_directory is not None
         row_output_directory.mkdir(parents=True, exist_ok=True)
 
     if collect_metrics or collect_rows:
-        chunk_fn = partial(
+        chunk_fn: Callable[[Sequence[int]], object] = partial(
             _run_chunk_metrics, collect_rows=collect_rows, row_dir=row_output_directory
         )
     else:
         chunk_fn = _run_chunk
 
     with ProcessPoolExecutor(
-        max_workers=n_jobs, initializer=_init_worker, initargs=(strategies, N_PLAYERS)
+        max_workers=n_jobs,
+        initializer=_init_worker,
+        initargs=(strategies, cfg),
     ) as pool:
-        future_to_index = {pool.submit(chunk_fn, c): i for i, c in enumerate(chunks)}
+        futures = [pool.submit(chunk_fn, c) for c in chunks]
 
-        for done, fut in enumerate(as_completed(future_to_index), 1):
+        for done, fut in enumerate(as_completed(futures), 1):
             result = fut.result()
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(
@@ -323,7 +413,7 @@ def run_tournament(
                 win_totals.update(cast(Counter[str], result))
 
             now = time.perf_counter()
-            if now - last_ckpt >= ckpt_every_sec:
+            if now - last_ckpt >= cfg.ckpt_every_sec:
                 _save_checkpoint(
                     ckpt_path,
                     win_totals,
@@ -366,6 +456,12 @@ def main() -> None:
         help="collect per-strategy means/variances",
     )
     p.add_argument(
+        "--num-shuffles",
+        type=int,
+        default=NUM_SHUFFLES,
+        help="number of shuffles to simulate",
+    )
+    p.add_argument(
         "--row-dir",
         type=Path,
         metavar="DIR",
@@ -373,13 +469,21 @@ def main() -> None:
     )
     args = p.parse_args()
 
+    cfg = TournamentConfig(
+        n_players=N_PLAYERS,
+        num_shuffles=NUM_SHUFFLES,
+        desired_sec_per_chunk=DESIRED_SEC_PER_CHUNK,
+        ckpt_every_sec=args.ckpt_sec,
+    )
+
     run_tournament(
+        config=cfg,
         global_seed=args.seed,
         checkpoint_path=args.checkpoint,
         n_jobs=args.jobs,
-        ckpt_every_sec=args.ckpt_sec,
         collect_metrics=args.metrics,
         row_output_directory=args.row_dir,
+        num_shuffles=args.num_shuffles,
     )
 
 

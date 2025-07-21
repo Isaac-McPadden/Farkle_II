@@ -14,6 +14,7 @@ No game-logic is duplicated - we only *wrap* the real engine.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import random
 from dataclasses import asdict
@@ -22,19 +23,15 @@ from typing import Sequence
 
 import numpy as np
 
-from farkle.engine import FarkleGame, FarklePlayer  # :contentReference[oaicite:0]{index=0}
-from farkle.scoring import default_score  # :contentReference[oaicite:1]{index=1}
-from farkle.strategies import (  # :contentReference[oaicite:2]{index=2}
+from farkle.engine import FarkleGame, FarklePlayer
+from farkle.scoring import default_score
+from farkle.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
 )
 
 # ── 1.  Plain-text logger ----------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    handlers=[logging.StreamHandler()]
-)
+logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[logging.StreamHandler()])
 log = logging.getLogger("watch")
 
 
@@ -59,16 +56,17 @@ def strategy_yaml(s: ThresholdStrategy) -> str:
         run_up_score    : false
         prefer_score    : true
     """
-    
+
     # dataclass → plain dict (keeps declared order)
-    assert isinstance(s, ThresholdStrategy)
+    if not isinstance(s, ThresholdStrategy):
+        raise TypeError("strategy_yaml expects a ThresholdStrategy")
     d = asdict(s)
-    
+
     # YAML-friendly booleans (lowercase)
-    def _fmt(v): 
+    def format_bool(v):
         return str(v).lower() if isinstance(v, bool) else v
-    
-    lines = [f"{k:<15}: {_fmt(v)}" for k, v in d.items()]
+
+    lines = [f"{k:<15}: {format_bool(v)}" for k, v in d.items()]
     return "\n".join(lines)
 
 
@@ -93,10 +91,11 @@ def _trace_decide(s: ThresholdStrategy, label: str) -> None:
         return keep
 
     # bind as *method* so `self` is passed correctly
-    s.decide = MethodType(traced_decide, s)  # type: ignore[attr-defined]
+    s.decide = MethodType(traced_decide, s)  # type: ignore[attr-defined, method-assign]
 
 
-def _patch_default_score() -> None:
+@contextlib.contextmanager
+def patch_scoring():
     """Patch :func:`farkle.scoring.default_score` to emit log messages.
 
     The patched function behaves identically to the original but logs the
@@ -106,20 +105,35 @@ def _patch_default_score() -> None:
     be undone after tests if necessary.
     """
     global default_score  # module alias
-    original = default_score
+    import farkle.scoring as _scoring_mod
+
+    orig_local = default_score
+    orig_mod = _scoring_mod.default_score
 
     def traced_default_score(*args, **kw):
-        res = original(*args, **kw)  # type: ignore[arg-type]
+        res = orig_mod(*args, **kw)  # type: ignore[arg-type]
         pts, used, reroll = res[:3]
-        roll = args[0]
+        roll = args[0] if args else kw.get("dice_roll")
         log.info(f"score({roll}) -> pts={pts:<4} used={used} reroll={reroll}")
         return res
 
-    # monkey-patch in the *farkle.scoring* module too
-    import farkle.scoring as _scoring_mod
-    
-    _scoring_mod.default_score = traced_default_score         # type: ignore[assignment]
-    default_score = traced_default_score                      # local alias
+    _scoring_mod.default_score = traced_default_score  # type: ignore[assignment]
+    default_score = traced_default_score
+    try:
+        yield
+    finally:
+        _scoring_mod.default_score = orig_mod  # type: ignore[assignment]
+        default_score = orig_local
+
+
+def _patch_default_score() -> None:
+    """Backward compatible wrapper for tests."""
+
+    cm = patch_scoring()
+    context = cm.__enter__()
+    # store context manager object so tests can manually exit if needed
+    _patch_default_score._cm = cm  # type: ignore[attr-defined]
+    return context
 
 
 class TracePlayer(FarklePlayer):
@@ -161,20 +175,19 @@ def watch_game(seed: int | None = None) -> None:
     _trace_decide(s2, "P2")
 
     # monkey-patch the *scoring* layer so we can see Smart-discard results
-    _patch_default_score()
-
-    # --- wrap players so we can see every dice throw --------------------
-    p1 = TracePlayer("P1", s1, rng=np.random.default_rng(rng.integers(2**32)))
-    p2 = TracePlayer("P2", s2, rng=np.random.default_rng(rng.integers(2**32)))
+    with patch_scoring():
+        # --- wrap players so we can see every dice throw --------------------
+        p1 = TracePlayer("P1", s1, rng=np.random.default_rng(rng.integers(2**32)))
+        p2 = TracePlayer("P2", s2, rng=np.random.default_rng(rng.integers(2**32)))
 
     game = FarkleGame([p1, p2], target_score=10_000)
-    gm = game.play()
+    metrics = game.play()
 
     log.info("\n===== final result =====")
     log.info(
-        f"Winner: {gm.winner}  "
-        f"score={gm.winning_score}  "
-        f"rounds={gm.n_rounds}"
+        f"Winner: {metrics.winner}  "
+        f"score={metrics.winning_score}  "
+        f"rounds={metrics.n_rounds}"
     )
 
 
