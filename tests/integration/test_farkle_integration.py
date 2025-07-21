@@ -88,7 +88,7 @@ def test_cli_smoke(tmp_path: Path):
             "smart_one_opts": [False],
             "consider_score_opts": [True],
             "consider_dice_opts": [True],
-            "auto_hot_opts": [False],
+            "auto_hot_dice_opts": [False],
         },
         "sim": {
             "n_games": 20,

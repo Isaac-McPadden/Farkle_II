@@ -23,9 +23,9 @@ from typing import Sequence
 
 import numpy as np
 
-from farkle.engine import FarkleGame, FarklePlayer  # :contentReference[oaicite:0]{index=0}
-from farkle.scoring import default_score  # :contentReference[oaicite:1]{index=1}
-from farkle.strategies import (  # :contentReference[oaicite:2]{index=2}
+from farkle.engine import FarkleGame, FarklePlayer
+from farkle.scoring import default_score
+from farkle.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
 )
@@ -54,14 +54,15 @@ def strategy_yaml(s: ThresholdStrategy) -> str:
     """
 
     # dataclass → plain dict (keeps declared order)
-    assert isinstance(s, ThresholdStrategy)
+    if not isinstance(s, ThresholdStrategy):
+        raise TypeError("strategy_yaml expects a ThresholdStrategy")
     d = asdict(s)
 
     # YAML-friendly booleans (lowercase)
-    def _fmt(v):
+    def format_bool(v):
         return str(v).lower() if isinstance(v, bool) else v
 
-    lines = [f"{k:<15}: {_fmt(v)}" for k, v in d.items()]
+    lines = [f"{k:<15}: {format_bool(v)}" for k, v in d.items()]
     return "\n".join(lines)
 
 
@@ -79,7 +80,7 @@ def _trace_decide(s: ThresholdStrategy, label: str) -> None:
         return keep
 
     # bind as *method* so `self` is passed correctly
-    s.decide = MethodType(traced_decide, s)  # type: ignore[attr-defined]
+    s.decide = MethodType(traced_decide, s)  # type: ignore[attr-defined, method-assign]
 
 
 @contextlib.contextmanager
@@ -95,7 +96,7 @@ def patch_scoring():
     def traced_default_score(*args, **kw):
         res = orig_mod(*args, **kw)  # type: ignore[arg-type]
         pts, used, reroll = res[:3]
-        roll = args[0]
+        roll = args[0] if args else kw.get("dice_roll")
         log.info(f"score({roll}) -> pts={pts:<4} used={used} reroll={reroll}")
         return res
 
@@ -121,7 +122,7 @@ def _patch_default_score() -> None:
 class TracePlayer(FarklePlayer):
     """Subclass that only adds a noisy _roll()."""
 
-    def _roll(self, n: int) -> Sequence[int]:  # :contentReference[oaicite:3]{index=3}
+    def _roll(self, n: int) -> list[int]:  # :contentReference[oaicite:3]{index=3}
         faces = super()._roll(n)
         log.info(f"{self.name} rolls {faces}")
         return faces
@@ -151,11 +152,15 @@ def watch_game(seed: int | None = None) -> None:
         p1 = TracePlayer("P1", s1, rng=np.random.default_rng(rng.integers(2**32)))
         p2 = TracePlayer("P2", s2, rng=np.random.default_rng(rng.integers(2**32)))
 
-        game = FarkleGame([p1, p2], target_score=10_000)
-        gm = game.play()
+    game = FarkleGame([p1, p2], target_score=10_000)
+    metrics = game.play()
 
     log.info("\n===== final result =====")
-    log.info(f"Winner: {gm.winner}  " f"score={gm.winning_score}  " f"rounds={gm.n_rounds}")
+    log.info(
+        f"Winner: {metrics.winner}  "
+        f"score={metrics.winning_score}  "
+        f"rounds={metrics.n_rounds}"
+    )
 
 
 if __name__ == "__main__":
