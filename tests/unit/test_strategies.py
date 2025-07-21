@@ -322,3 +322,22 @@ def test_load_farkle_results(tmp_path):
     expected = pd.DataFrame([row1, row2])
     expected = expected[df.columns]
     pd.testing.assert_frame_equal(df.reset_index(drop=True), expected)
+
+
+def test_load_farkle_results_unordered(tmp_path):
+    counter = Counter({
+        'Strat(300,2)[SD][FOPS][AND][HR]': 5,
+    })
+    pkl = tmp_path / "results.pkl"
+    pkl.write_bytes(pickle.dumps(counter))
+
+    df = load_farkle_results(pkl, ordered=False)
+    assert df.columns.tolist() == [
+        "strategy", "wins",
+        "score_threshold", "dice_threshold",
+        "smart_five", "smart_one",
+        "consider_score", "consider_dice", "require_both",
+        "auto_hot_dice", "run_up_score", "prefer_score",
+    ]
+
+
