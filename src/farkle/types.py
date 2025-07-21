@@ -7,3 +7,4 @@ import numpy.typing as npt
 Counts6: TypeAlias = Tuple[int, int, int, int, int, int]
 FacesT: TypeAlias = Tuple[int, ...]
 Int64Arr1D: TypeAlias = npt.NDArray[np.int64]
+DiceRoll: TypeAlias = list[int]

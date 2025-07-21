@@ -5,10 +5,12 @@ import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, List
+from typing import Any, Callable
 
 import numba as nb
 import pandas as pd
+
+from farkle.types import DiceRoll
 
 """strategies.py
 ================
@@ -56,10 +58,6 @@ _STRAT_RE = re.compile(
     """,
     re.VERBOSE,
 )
-
-
-DiceRoll = List[int]
-"""A list of integers 1-6 representing a single dice roll."""
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +369,11 @@ def load_farkle_results(
     """
     Load a pickled Counter {strategy_str: wins} and explode it into a
     “full-fat” DataFrame with every strategy flag broken out.
+
+    Warning
+    -------
+    Unpickling data from untrusted sources can execute arbitrary code.
+    Only load pickle files from trusted sources.
 
     Parameters
     ----------
