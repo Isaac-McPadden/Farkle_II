@@ -40,15 +40,17 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
         raise RuntimeError(f"No tiers found in {TIERS_PATH}")
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
-    games_needed = games_for_power(len(elites), method="bonferroni", pairwise=True)
+    games_needed = games_for_power(len(elites), method="bonferroni", full_pairwise=True)
     schedule = bonferroni_pairs(elites, games_needed, seed)
 
     records = []
     for (a, b), grp in schedule.groupby(["a", "b"]):
-        df = simulate_many_games_from_seeds(
-            seeds=grp["seed"].tolist(),
-            strategies=[parse_strategy(a), parse_strategy(b)],
-            n_jobs=1,
+        n_games = len(grp)
+        df = simulate_many_games(
+            n_games=n_games, 
+            strategies=[parse_strategy(a), parse_strategy(b)], 
+            seed=seed, 
+            n_jobs=1
         )
         wins = df["winner_strategy"].value_counts()
         wa = int(wins.get(a, 0))
