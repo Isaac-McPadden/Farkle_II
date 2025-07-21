@@ -168,4 +168,51 @@ def test_turn_roll_fuse():
                      rng=HotGen())
     with pytest.raises(RuntimeError):
         p.take_turn(target_score=10_000)
-        
+
+
+class AlwaysRoll(ThresholdStrategy):
+    """Strategy that always opts to roll again."""
+
+    def decide(self, **kwargs):  # noqa: D401, ARG002
+        return True
+
+
+def test_final_round_stop_when_ahead_run_up_false():
+    seq = [1, 1, 1, 1, 1, 1, 2, 3, 4, 6, 2, 3]
+    rng = SeqGen2(seq)
+
+    strat = ThresholdStrategy(
+        score_threshold=0,
+        dice_threshold=6,
+        consider_score=False,
+        consider_dice=False,
+    )
+    p = FarklePlayer("P", strat, rng=rng)
+    p.score = 9_000
+    p.has_scored = True
+
+    p.take_turn(target_score=10_000, final_round=True, score_to_beat=9_500)
+
+    assert p.n_rolls == 1  # stopped automatically when ahead
+    assert p.score == 12_000
+
+
+def test_final_round_continue_when_ahead_run_up_true():
+    seq = [1, 1, 1, 1, 1, 1, 2, 3, 4, 6, 2, 3]
+    rng = SeqGen2(seq)
+
+    strat = AlwaysRoll(
+        score_threshold=0,
+        dice_threshold=6,
+        consider_score=False,
+        consider_dice=False,
+        run_up_score=True,
+    )
+    p = FarklePlayer("P", strat, rng=rng)
+    p.score = 9_000
+    p.has_scored = True
+
+    p.take_turn(target_score=10_000, final_round=True, score_to_beat=9_500)
+
+    assert p.n_rolls == 2  # second roll allowed despite being ahead
+    assert p.score == 9_000  # bust on the second roll wipes the turn
