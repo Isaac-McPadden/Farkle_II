@@ -62,6 +62,8 @@ def _init_worker(
     """Run once in every worker; copy strats **and** table size."""
 
     global _STRATS, N_PLAYERS, GAMES_PER_SHUFFLE
+    if 8_160 % n_players != 0:
+        raise ValueError("n_players must divide 8,160")
     _STRATS = list(strategies)
     N_PLAYERS = n_players
     GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
@@ -259,10 +261,12 @@ def run_tournament(
     """Orchestrate the multi-process tournament."""
         
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
-    
+
     global N_PLAYERS, GAMES_PER_SHUFFLE
     if n_players < 2:
         raise ValueError("n_players must be ≥2")
+    if 8_160 % n_players != 0:
+        raise ValueError("n_players must divide 8,160")
     N_PLAYERS = n_players
     GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
     
