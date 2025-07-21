@@ -1,6 +1,11 @@
+"""Farkle Mk II - fast Monte-Carlo engine & strategy tools.
+
+Note
+----
+At import time :class:`pathlib.Path.unlink` is monkey patched with a helper that
+safely suppresses transient ``PermissionError`` on Windows.
 """
-Farkle Mk II - fast Monte-Carlo engine & strategy tools
-"""
+
 import contextlib
 import pathlib
 import tomllib
@@ -28,7 +33,22 @@ _orig_unlink = pathlib.Path.unlink
 
 
 def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
-    """Wrapper around Path.unlink that squashes the WinError 32 race."""
+    """Delete ``self`` while ignoring transient permission issues.
+
+    Parameters
+    ----------
+    missing_ok : bool, optional
+        Forwarded to :meth:`pathlib.Path.unlink`.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Only ``PermissionError`` is suppressed. Any other :class:`OSError` will be
+    re-raised.
+    """
     with contextlib.suppress(PermissionError):
         return _orig_unlink(self, missing_ok=missing_ok)
 
@@ -45,16 +65,13 @@ __all__ = [
     "games_for_power",
 ]
 
-def _read_version_from_toml() -> str:
-    """
-    Inputs
-    ------
-    None
 
-    Returns
-    -------
-    str
-        Version string from pyproject.toml.
+def _read_version_from_toml() -> str:
+    """Return the package version declared in ``pyproject.toml``.
+
+    The file is expected to reside at the repository root three directories
+    above this module. If the ``[project]`` table or the ``version`` entry is
+    missing a :class:`KeyError` will be raised by :mod:`tomllib`.
     """
     toml_path = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
     with toml_path.open("rb") as fh:
@@ -67,4 +84,3 @@ try:
     __version__ = _v(__package__)  # importlib.metadata
 except PackageNotFoundError:
     __version__ = _read_version_from_toml()
-    
