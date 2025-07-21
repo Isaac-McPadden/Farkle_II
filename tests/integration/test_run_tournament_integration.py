@@ -68,7 +68,7 @@ def _tiny_strategy_grid(seed: int = 0) -> List[ThresholdStrategy]:
 
 
 def _init_worker_small(
-    strategies: Sequence[ThresholdStrategy], *_: object
+    strategies: Sequence[ThresholdStrategy], cfg: object
 ) -> None:  # pragma: no cover
     """Executed in every spawned process.
 
@@ -81,14 +81,11 @@ def _init_worker_small(
 
     _rt = _imp.import_module("farkle.run_tournament")
 
-    # Drastically cut the workload
-    _rt.GAMES_PER_SHUFFLE = 2  # type: ignore
-    _rt.NUM_SHUFFLES = 2  # type: ignore
-    _rt.DESIRED_SEC_PER_CHUNK = 0.1  # type: ignore
-    _rt.CKPT_EVERY_SEC = 1  # type: ignore
-
-    # Populate the fast global lookup table
+    # Populate globals in the worker
     _rt._STRATS = list(strategies)  # type: ignore
+    _rt._CFG = cfg  # type: ignore
+    _rt.N_PLAYERS = cfg.n_players  # type: ignore
+    _rt.GAMES_PER_SHUFFLE = 2  # type: ignore - keep workload tiny
 
 
 ###############################################################################
@@ -96,7 +93,7 @@ def _init_worker_small(
 ###############################################################################
 
 
-def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> None:  # type: ignore
+def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> rt.TournamentConfig:  # type: ignore
     """Patch **everything** needed for a lightning -fast run.
 
     * constants (shuffles, games, timing)
@@ -109,7 +106,6 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> None:  # type: i
     _tiny_grid = _tiny_strategy_grid()
 
     # 3a. Constants in parent (affects chunking logic)
-    monkeypatch.setattr(rt, "NUM_SHUFFLES", 2, raising=False)
     monkeypatch.setattr(rt, "GAMES_PER_SHUFFLE", 2, raising=False)
     monkeypatch.setattr(rt, "DESIRED_SEC_PER_CHUNK", 0.1, raising=False)
     monkeypatch.setattr(rt, "CKPT_EVERY_SEC", 1, raising=False)
@@ -120,6 +116,13 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> None:  # type: i
     # 3c. Make *this* interpreter use the tiny grid → the list also travels to
     #      every worker because run_tournament passes it via *initargs*.
     monkeypatch.setattr(rt, "generate_strategy_grid", lambda: (_tiny_grid, None), raising=True)
+
+    return rt.TournamentConfig(
+        n_players=rt.N_PLAYERS,
+        num_shuffles=rt.NUM_SHUFFLES,
+        desired_sec_per_chunk=rt.DESIRED_SEC_PER_CHUNK,
+        ckpt_every_sec=rt.CKPT_EVERY_SEC,
+    )
 
 
 ###############################################################################
@@ -133,16 +136,16 @@ def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     monkeypatch.setattr(sim, "generate_strategy_grid", lambda: (_tiny_strategy_grid(), None))
 
     rt = importlib.import_module("farkle.run_tournament")
-    _apply_fast_patches(monkeypatch, rt)
+    cfg = _apply_fast_patches(monkeypatch, rt)
 
     ckpt = tmp_path / "ppool.pkl"
     kwargs = {
         "global_seed": 123,
         "checkpoint_path": ckpt,
         "n_jobs": 2,
+        "num_shuffles": 2,
     }
-    if "n_players" in inspect.signature(rt.run_tournament).parameters:
-        kwargs["n_players"] = rt.N_PLAYERS
+    kwargs["config"] = cfg
     rt.run_tournament(**kwargs)
 
     # --- assertions ---
@@ -181,6 +184,8 @@ def test_run_tournament_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "2",
         "--ckpt-sec",
         "1",
+        "--num-shuffles",
+        "2",
     ]
     if "--players" in inspect.getsource(rt.main):
         argv.extend(["--n_players", str(rt.N_PLAYERS)])
