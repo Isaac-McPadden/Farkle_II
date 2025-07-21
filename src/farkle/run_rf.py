@@ -14,6 +14,8 @@ import warnings
 from pathlib import Path
 from typing import List
 
+IMPORTANCE_PATH = Path("data/rf_importance.json")
+
 import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
@@ -44,7 +46,7 @@ def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
     return out_file
 
 
-def run_rf(seed: int = 0) -> None:
+def run_rf(seed: int = 0, output_path: Path = IMPORTANCE_PATH) -> None:
     """Train the regressor and output feature importance and plots.
 
     Parameters
@@ -105,10 +107,23 @@ def main(argv: List[str] | None = None) -> None:
         ``--seed`` option is accepted.
     """
 
-    parser = argparse.ArgumentParser(description="Random forest analysis")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Train a random forest using data/metrics.parquet and data/ratings_pooled.pkl. "
+            "Run from the project root. Writes rf_importance.json to --output and partial "
+            "dependence plots to notebooks/figs/."
+        )
+    )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "-o",
+        "--output",
+        type=Path,
+        default=IMPORTANCE_PATH,
+        help="Path to write rf_importance.json",
+    )
     args = parser.parse_args(argv or [])
-    run_rf(seed=args.seed)
+    run_rf(seed=args.seed, output_path=args.output)
 
 
 if __name__ == "__main__":
