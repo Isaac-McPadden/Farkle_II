@@ -397,11 +397,17 @@ def default_score(
         Maximum dice left before banking.
     prefer_score (bool, optional):
         Break ties in favour of higher score.
+    return_discards (bool, optional):
+        If True, include the number of discarded 5s and 1s in the result.
 
     Returns
     -------
     tuple[int, int, int]:
-        (final_score, final_used, final_reroll).
+        Returned when ``return_discards`` is ``False`` as
+        ``(final_score, final_used, final_reroll)``.
+    tuple[int, int, int, int, int]:
+        Returned when ``return_discards`` is ``True`` as
+        ``(final_score, final_used, final_reroll, discarded_fives, discarded_ones)``.
     """
     raw_score, raw_used, counts_key, sfives, sones = score_roll_cached(tuple(dice_roll))
 
