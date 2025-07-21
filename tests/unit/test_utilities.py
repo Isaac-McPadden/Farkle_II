@@ -48,20 +48,28 @@ def test_stream_writer(tmp_path):
     out_csv = tmp_path / "results.csv"
     strat = [ThresholdStrategy(score_threshold=300, dice_threshold=2)]
     simulate_many_games_stream(
-        n_games=10, strategies=strat,
-        out_csv=str(out_csv), seed=123, n_jobs=1
+        n_games=10, strategies=strat, out_csv=str(out_csv), seed=123, n_jobs=1
     )
     lines = out_csv.read_text().splitlines()
     assert len(lines) == 11  # header + 10 rows
     header = lines[0].split(",")
     assert header == ["game_id", "winner", "winning_score", "winner_strategy", "n_rounds"]
-    
+
+
 @pytest.mark.parametrize(
-    "method,pairwise", [("bh", True), ("bonferroni", True), ("bonferroni", False)]
+    "method,full_pairwise",
+    [("bh", True), ("bonferroni", True), ("bonferroni", False)],
 )
-def test_games_for_power_branches(method, pairwise):
-    n = games_for_power(n_strategies=3, method=method, pairwise=pairwise)
+def test_games_for_power_branches(method, full_pairwise):
+    n = games_for_power(n_strategies=3, method=method, full_pairwise=full_pairwise)
     assert n > 0
+
+
+def test_games_for_power_pairwise_deprecated():
+    with pytest.warns(DeprecationWarning):
+        a = games_for_power(n_strategies=3, pairwise=False)
+    b = games_for_power(n_strategies=3, full_pairwise=False)
+    assert a == b
 
 
 @pytest.mark.parametrize("n_jobs", [1, 2])
@@ -70,8 +78,7 @@ def test_stream_parallel(tmp_path, n_jobs):
     out = tmp_path / "w.csv"
     strategies = [ThresholdStrategy(score_threshold=0, dice_threshold=6)]
     simulate_many_games_stream(
-        n_games=4, strategies=strategies, out_csv=str(out),
-        seed=7, n_jobs=n_jobs
+        n_games=4, strategies=strategies, out_csv=str(out), seed=7, n_jobs=n_jobs
     )
     rows = out.read_text().splitlines()
     assert len(rows) == 5  # header + 4
