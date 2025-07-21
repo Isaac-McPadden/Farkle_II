@@ -36,6 +36,7 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
 # Patch globally (harmless on POSIX; vital on Windows)
 pathlib.Path.unlink = _safe_unlink  # type: ignore[assignment]
 
+# The following identifiers are re-exported for user convenience
 __all__ = [
     "FarklePlayer",
     "GameMetrics",
