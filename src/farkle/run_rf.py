@@ -63,6 +63,12 @@ def run_rf(seed: int = 0) -> None:
     model.fit(X, y)
 
     perm_importance = permutation_importance(model, X, y, n_repeats=5, random_state=seed)
+    if len(perm_importance["importances_mean"]) != len(X.columns):
+        msg = (
+            "Mismatch between number of features and permutation importances: "
+            f"expected {len(X.columns)}, got {len(imp['importances_mean'])}"
+        )
+        raise ValueError(msg)
     imp_dict = {c: float(s) for c, s in zip(X.columns, perm_importance["importances_mean"], strict=False)}
     IMPORTANCE_PATH.parent.mkdir(exist_ok=True)
     with IMPORTANCE_PATH.open("w") as fh:
