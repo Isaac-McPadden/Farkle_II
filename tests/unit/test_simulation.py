@@ -56,6 +56,37 @@ def test_custom_grid_size():
     assert len(meta) == 4080
 
 
+def test_limited_consider_opts_grid_and_size():
+    """Grid size and experiment_size with restricted consider_* options."""
+    opts = dict(consider_score_opts=[False], consider_dice_opts=[False])
+    strategies, _ = generate_strategy_grid(**opts)
+    # hand-computed: base combinations (1020) × 2 ps values
+    assert len(strategies) == 2040
+    assert experiment_size(**opts) == 4080
+
+
+def test_consider_true_true_options():
+    opts = dict(consider_score_opts=[True], consider_dice_opts=[True])
+    strategies, _ = generate_strategy_grid(**opts)
+    assert len(strategies) == 4080  # 1020 base × 4 variants
+    assert experiment_size(**opts) == 5100
+
+
+def test_parallel_simulation():
+    """simulate_many_games uses multiprocessing when n_jobs > 1."""
+    s1 = ThresholdStrategy(score_threshold=0, dice_threshold=6)
+    s2 = ThresholdStrategy(score_threshold=0, dice_threshold=6)
+    df = simulate_many_games(
+        n_games=2,
+        strategies=[s1, s2],
+        target_score=200,
+        seed=42,
+        n_jobs=2,
+    )
+    assert len(df) == 2
+    assert set(df["winner"]) <= {"P1", "P2"}
+
+
 def test_play_game_checks_single_winner(monkeypatch):
     """_play_game should error if multiple players have rank==1."""
 
