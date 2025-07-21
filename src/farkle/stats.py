@@ -58,10 +58,8 @@ def games_for_power(
     --------
     >>> games_for_power(n_strategies=3, delta=0.2, method='bh')
     111
-    """
-    
+    """    
     # per-test alpha*
-
 
     # ------------------ handle deprecated alias ---------------------------
     if pairwise is not None:
@@ -81,6 +79,12 @@ def games_for_power(
         raise ValueError("base_p + delta must be < 1")
     if method == "bonferroni" and n_strategies <= 1:
         raise ValueError("bonferroni adjustment requires more than one strategy")
+    if n_strategies <= 1:
+        raise ValueError("n_strategies must be > 1")
+    if not (0 < alpha < 1):
+        raise ValueError("alpha must be between 0 and 1")
+    if not (0 < power < 1):
+        raise ValueError("power must be between 0 and 1")
 
     # ------------------ per-test alpha* -----------------------------------
     if method == "bonferroni":
