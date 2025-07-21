@@ -73,6 +73,39 @@ def _four_kind_plus_pair(ctr: Int64Arr1D) -> Tuple[int, int]:
     return (1500, 6) if 4 in ctr and 2 in ctr else (0, 0)
 
 
+@nb.njit(cache=True)
+def _apply_sets(ctr: Int64Arr1D) -> tuple[int, int]:
+    """Score and consume any n-of-a-kind groups.
+
+    Parameters
+    ----------
+    ctr:
+        Array of counts for faces one through six. Modified in-place.
+
+    Returns
+    -------
+    tuple[int, int]
+        Additional (score, used) from all qualifying sets.
+    """
+    score_add = 0
+    used_add = 0
+    for face in range(6):
+        n = ctr[face]
+        if n >= 3:
+            if n == 3:
+                pts = 300 if face == 0 else (face + 1) * 100
+            elif n == 4:
+                pts = 1000
+            elif n == 5:
+                pts = 2000
+            else:  # n == 6
+                pts = 3000
+            score_add += pts
+            used_add += n
+            ctr[face] = 0
+    return score_add, used_add
+
+
 # ---------------------------------------------------------------------------
 # 1.  Master evaluator (Numba core + pure-Python wrapper)
 # ---------------------------------------------------------------------------
@@ -116,27 +149,10 @@ def _evaluate_nb(
     if pts:
         return pts, ud, 0, 0
 
-    # ---- n-of-a-kind loop (may fire multiple times) ----------------------
-    while True:
-        triggered = False
-        for face in range(6):
-            n = ctr[face]
-            if n >= 3:
-                triggered = True
-                if n == 3:
-                    pts = 300 if face == 0 else (face + 1) * 100
-                elif n == 4:
-                    pts = 1000
-                elif n == 5:
-                    pts = 2000
-                else:  # n == 6 (straight case already out)
-                    pts = 3000
-                score += pts
-                used += n
-                ctr[face] = 0  # consume dice
-                break
-        if not triggered:
-            break
+    # ---- n-of-a-kind sets -------------------------------------------------
+    pts, ud = _apply_sets(ctr)
+    score += pts
+    used += ud
 
     # ---- leftover singles (only 1s and 5s score) -------------------------
     lone_ones = ctr[0]
