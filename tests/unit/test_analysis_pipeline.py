@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
 from farkle import run_rf, run_trueskill
@@ -45,8 +46,13 @@ def test_analysis_pipeline(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_trueskill.main([])
+        run_trueskill.main(["--output-seed", "0"])
         run_rf.main([])
+
+        assert (data_root / "rf_importance.json").exists()
+        figs = tmp_path / "notebooks" / "figs"
+        assert (figs / "pd_feat1.png").exists()
+        assert (figs / "pd_feat2.png").exists()
 
         with open("data/ratings_pooled.pkl", "rb") as fh:
             ratings = pickle.load(fh)
@@ -68,4 +74,22 @@ def test_analysis_pipeline(tmp_path):
         )
     finally:
         os.chdir(cwd)
-        
+
+
+@pytest.mark.parametrize("missing", ["metrics", "ratings"])
+def test_run_rf_missing_files(tmp_path, missing):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    if missing != "metrics":
+        df = pd.DataFrame({"strategy": ["A"], "feat": [1]})
+        df.to_parquet(data_dir / "metrics.parquet")
+    if missing != "ratings":
+        with open(data_dir / "ratings_pooled.pkl", "wb") as fh:
+            pickle.dump({"A": (0.0, 1.0)}, fh)
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        with pytest.raises(FileNotFoundError):
+            run_rf.run_rf()
+    finally:
+        os.chdir(cwd)
