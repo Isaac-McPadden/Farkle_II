@@ -154,15 +154,25 @@ def _evaluate_nb(
 @lru_cache(maxsize=4096)
 def evaluate(counts: Counts6) -> tuple[int, int, int, int]:
     """Score a counts tuple via the JIT compiled core.
-        Hash friendly for Numba.
+    
+    The function is intentionally defensive – invalid input should raise a
+    :class:`ValueError` rather than yielding nonsensical results.
 
     Args:
         counts: A 6-tuple giving the number of dice showing each face.
 
     Returns:
-        (score, used, single_fives, single_ones) in the same format
-        as :func:`_evaluate_nb`.
+        (score, used, single_fives, single_ones) in the same format as
+        :func:`_evaluate_nb`.
     """
+
+    if len(counts) != 6:
+        raise ValueError("counts must contain six integers")
+    if any(c < 0 for c in counts):
+        raise ValueError(f"negative count in {counts!r}")
+    if sum(counts) > 6:
+        raise ValueError(f"more than six dice specified: {counts!r}")
+
     return _evaluate_nb(*counts)
 
 
@@ -176,12 +186,17 @@ def score_roll(roll: list[int]) -> Tuple[int, int]:
         A tuple (score, used_dice) describing the total points scored
         and how many dice contributed to the score.
     """
+    if len(roll) > 6:
+        raise ValueError("roll cannot contain more than six dice")
+    if any(d < 1 or d > 6 for d in roll):
+        raise ValueError(f"invalid die face in {roll!r}")
+
     key = (
-        roll.count(1), 
-        roll.count(2), 
+        roll.count(1),
+        roll.count(2),
         roll.count(3),
-        roll.count(4), 
-        roll.count(5), 
+        roll.count(4),
+        roll.count(5),
         roll.count(6),
     )
     pts, used, *_ = evaluate(key)
