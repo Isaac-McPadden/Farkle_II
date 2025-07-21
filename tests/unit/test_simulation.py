@@ -49,4 +49,11 @@ def test_custom_grid_size():
     strategies, meta = generate_strategy_grid(auto_hot_opts=[True])
     assert len(strategies) == 4080
     assert len(meta) == 4080
-    
+
+
+def test_experiment_size_subset_options():
+    cs_opts = [True]
+    cd_opts = [True, False]
+    strats, _ = generate_strategy_grid(consider_score_opts=cs_opts, consider_dice_opts=cd_opts)
+    size = experiment_size(consider_score_opts=cs_opts, consider_dice_opts=cd_opts)
+    assert size == len(strats)
