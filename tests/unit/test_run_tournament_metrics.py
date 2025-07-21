@@ -99,6 +99,27 @@ def test_run_chunk_metrics_row_logging_missing_pyarrow(monkeypatch, tmp_path, ca
 
     assert "pyarrow not installed - row logging skipped" in caplog.text
     assert not any(tmp_path.iterdir())
+
+    
+def test_run_chunk_metrics_skips_on_missing_pyarrow(monkeypatch, tmp_path):
+    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
+
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name.startswith("pyarrow"):
+            raise ImportError
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+    wins, sums, sqs = rt._run_chunk_metrics([4], collect_rows=True, row_dir=tmp_path)
+
+    assert wins == Counter({"S4": 1})
+    assert list(tmp_path.iterdir()) == []
+
     
 def test_save_checkpoint_round_trip(tmp_path):
     wins = Counter({"A": 2})
