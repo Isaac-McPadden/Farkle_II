@@ -196,12 +196,12 @@ def _run_chunk_metrics(
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
-
+        except ImportError:  # pragma: no cover - optional dependency
+            logging.warning("pyarrow not installed - row logging skipped")
+        else:
             assert row_dir is not None
             out = row_dir / f"rows_{mp.current_process().pid}_{time.time_ns()}.parquet"
             pq.write_table(pa.Table.from_pylist(all_rows), out)
-        except Exception:  # pragma: no cover - optional dependency
-            logging.warning("pyarrow not installed - row logging skipped")
 
     return wins_total, sums_total, sq_total
 
