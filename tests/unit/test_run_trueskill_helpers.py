@@ -78,6 +78,19 @@ def test_load_ranked_games_csv(tmp_path):
     assert games == [["X"], ["Y"]]  # list-of-lists
 
 
+def test_load_ranked_games_multi_row_dirs(tmp_path):
+    block   = tmp_path / "m_players"
+    row1    = block / "1_rows"
+    row2    = block / "2_rows"
+    row1.mkdir(parents=True)
+    row2.mkdir()
+    pd.DataFrame({"winner_strategy": ["A"]}).to_parquet(row1 / "a.parquet")
+    pd.DataFrame({"winner_strategy": ["B"]}).to_parquet(row2 / "b.parquet")
+
+    games = rt._load_ranked_games(block)
+    assert sorted(games) == [["A"], ["B"]]
+
+
 def test_update_ratings_ranked():
     env = trueskill.TrueSkill()
 
