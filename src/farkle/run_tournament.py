@@ -68,6 +68,24 @@ METRIC_LABELS: Tuple[str, ...] = (
     "winner_hot_dice",
 )
 
+
+def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
+    """Return the metric vector for the winning player."""
+
+    return [
+        row["winning_score"],
+        row["n_rounds"],
+        row[f"{winner}_farkles"],
+        row[f"{winner}_rolls"],
+        row[f"{winner}_highest_turn"],
+        row[f"{winner}_smart_five_uses"],
+        row[f"{winner}_n_smart_five_dice"],
+        row[f"{winner}_smart_one_uses"],
+        row[f"{winner}_n_smart_one_dice"],
+        row[f"{winner}_hot_dice"],
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Worker initialisation and helpers
 # ---------------------------------------------------------------------------
@@ -79,7 +97,19 @@ def _init_worker(
     strategies: Sequence[ThresholdStrategy],
     config: TournamentConfig,
 ) -> None:
-    """Run once in every worker; copy strategies and config."""
+    """Initialise per-process globals.
+
+    Parameters
+    ----------
+    strategies : Sequence[ThresholdStrategy]
+        Strategy objects to copy into the worker.
+    config: TournamentConfig
+        Config rules sent with worker.
+        
+    Returns
+    -------
+    None
+    """
 
     global _STRATS, _CFG, N_PLAYERS, GAMES_PER_SHUFFLE
     if 8_160 % n_players != 0:
@@ -88,8 +118,6 @@ def _init_worker(
     _CFG = config
     N_PLAYERS = config.n_players
     GAMES_PER_SHUFFLE = config.games_per_shuffle
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -122,18 +150,7 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
         row = _play_game(int(gseed), [_STRATS[i] for i in idxs])
         winner = row["winner"]
         strat_repr = row[f"{winner}_strategy"]
-        metrics = [
-            row["winning_score"],
-            row["n_rounds"],
-            row[f"{winner}_farkles"],
-            row[f"{winner}_rolls"],
-            row[f"{winner}_highest_turn"],
-            row[f"{winner}_smart_five_uses"],
-            row[f"{winner}_n_smart_five_dice"],
-            row[f"{winner}_smart_one_uses"],
-            row[f"{winner}_n_smart_one_dice"],
-            row[f"{winner}_hot_dice"],
-        ]
+        metrics = _extract_winner_metrics(row, winner)
         wins[strat_repr] += 1
         for label, value in zip(METRIC_LABELS, metrics, strict=True):
             sums[label][strat_repr] += value
@@ -155,7 +172,18 @@ def _play_shuffle(seed: int) -> Counter[str]:
 
 
 def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[str]:
-    """Aggregate win counts for a batch of shuffles (legacy behaviour)."""
+    """Play a batch of shuffles and tally wins.
+
+    Parameters
+    ----------
+    shuffle_seed_batch : Sequence[int]
+        RNG seeds for each shuffle processed by this worker.
+
+    Returns
+    -------
+    collections.Counter[str]
+        Mapping of strategy strings to win counts for the batch.
+    """
 
     total: Counter[str] = Counter()
     for sd in shuffle_seed_batch:
@@ -176,7 +204,28 @@ def _run_chunk_metrics(
     Dict[str, Dict[str, float]],
     Dict[str, Dict[str, float]],
 ]:
-    """Same as :func:`_run_chunk` but also accumulates metric sums."""
+    """Play shuffles and accumulate metrics.
+
+    Parameters
+    ----------
+    shuffle_seed_batch : Sequence[int]
+        RNG seeds for each shuffle in this batch.
+    collect_rows : bool, default False
+        If ``True`` return and optionally persist full per-game rows.
+    row_dir : Path | None, default None
+        Directory used to write parquet files when ``collect_rows`` is ``True``.
+
+    Returns
+    -------
+    tuple
+        ``(wins, sums, square_sums)`` where each element aggregates the
+        respective values over the batch.
+
+    Side Effects
+    ------------
+    When ``collect_rows`` is ``True`` a parquet file containing all rows for the
+    current worker is written to ``row_dir``.
+    """
 
     wins_total: Counter[str] = Counter()
     sums_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -258,12 +307,43 @@ def run_tournament(
     row_output_directory: Path | None = None,  # None if --row-dir omitted
     num_shuffles: int = NUM_SHUFFLES,
 ) -> None:
-    """Orchestrate the multi-process tournament.
+        """
+    Orchestrate a multi-process Monte-Carlo Farkle tournament.
 
-    Pass a ``TournamentConfig`` to override defaults; otherwise the module
-    defaults (5 players, 10 223 shuffles, …) are used.
+    Parameters
+    ----------
+    config : TournamentConfig, optional
+        Encapsulates all tunable constants (number of players, shuffle count,
+        checkpoint cadence, etc.).  If ``None`` a default instance is created
+        from the module-level constants.
+    global_seed : int, default 0
+        Seed for the master RNG that generates per-shuffle seeds—make this
+        different to obtain a fresh tournament.
+    checkpoint_path : str | pathlib.Path, default "checkpoint.pkl"
+        Location for periodic checkpoint pickles.  Parent directories are
+        created automatically.
+    n_jobs : int | None, default None
+        Worker processes to spawn.  ``None`` lets
+        :class:`~concurrent.futures.ProcessPoolExecutor` decide
+        (usually ``os.cpu_count()``).
+    collect_metrics : bool, default False
+        If ``True``, per-strategy means/variances for several game metrics are
+        accumulated in addition to raw win counts.
+    row_output_directory : pathlib.Path | None, default None
+        When supplied, every worker writes complete per-game rows to this
+        directory as Parquet files (requires *pyarrow*).
+
+    Notes
+    -----
+    *Old keyword arguments such as ``num_shuffles`` and ``ckpt_every_sec`` are
+    now fields of :class:`TournamentConfig`.  Provide a custom config if you
+    need to override them.*
+
+    Side Effects
+    ------------
+    Creates/updates ``checkpoint_path`` and, if ``row_output_directory`` is
+    given, a set of Parquet files containing raw game rows.
     """
-
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
 
     cfg = config or TournamentConfig()
