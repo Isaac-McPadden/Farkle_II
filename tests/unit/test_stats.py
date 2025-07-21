@@ -1,0 +1,51 @@
+import pytest
+from math import ceil, sqrt
+from farkle.stats import games_for_power
+from scipy.stats import norm
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"n_strategies": 1},
+        {"delta": 0},
+        {"delta": 1},
+        {"base_p": 0},
+        {"base_p": 1},
+        {"alpha": 0},
+        {"alpha": 1},
+        {"power": 0},
+        {"power": 1},
+        {"method": "foo"},
+    ],
+)
+def test_games_for_power_invalid(params):
+    base = {"n_strategies": 2}
+    base.update(params)
+    with pytest.raises(ValueError):
+        games_for_power(**base)
+
+
+def test_bh_vs_bonferroni():
+    n_bh = games_for_power(n_strategies=3, method="bh")
+    n_bonf = games_for_power(n_strategies=3, method="bonferroni")
+    assert n_bh < n_bonf
+
+
+def test_games_for_power_rounding():
+    n = 2
+    delta = 0.03
+    base_p = 0.5
+    alpha = 0.05
+    power = 0.8
+    h_m = sum(1 / i for i in range(1, n + 1))
+    alpha_star = alpha / h_m
+    z_alpha = norm.ppf(1 - alpha_star / 2)
+    z_beta = norm.ppf(power)
+    p1, p2 = base_p, base_p + delta
+    pbar = (p1 + p2) / 2
+    numerator = z_alpha * sqrt(2 * pbar * (1 - pbar)) + z_beta * sqrt(
+        p1 * (1 - p1) + p2 * (1 - p2)
+    )
+    expected = ceil((numerator / delta) ** 2)
+    assert games_for_power(n_strategies=n, delta=delta) == expected

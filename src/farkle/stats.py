@@ -1,6 +1,6 @@
 # src/farkle/stats.py
 
-from math import sqrt
+from math import ceil, sqrt
 
 from scipy.stats import norm
 
@@ -15,6 +15,17 @@ def games_for_power(
     pairwise: bool = True # baseline vs all or full pairwise
 ) -> int:
     """Return games per strategy for desired power."""
+
+    if n_strategies <= 1:
+        raise ValueError("n_strategies must be > 1")
+    if not (0 < delta < 1):
+        raise ValueError("delta must be between 0 and 1")
+    if not (0 < base_p < 1):
+        raise ValueError("base_p must be between 0 and 1")
+    if not (0 < alpha < 1):
+        raise ValueError("alpha must be between 0 and 1")
+    if not (0 < power < 1):
+        raise ValueError("power must be between 0 and 1")
     
     # per-test alpha*
     if method == "bonferroni":
@@ -33,4 +44,4 @@ def games_for_power(
     pbar = (p1 + p2)/2
     numerator = z_alpha*sqrt(2*pbar*(1-pbar)) + z_beta*sqrt(p1*(1-p1)+p2*(1-p2))
     n = (numerator / delta)**2
-    return int(n) + 1
+    return ceil(n)
