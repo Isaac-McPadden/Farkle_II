@@ -28,6 +28,22 @@ FIG_DIR = Path("notebooks/figs")
 IMPORTANCE_PATH = Path("data/rf_importance.json")
 
 
+def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
+    """Save the partial dependence plot for ``column`` and return the path."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="Attempting to set identical low and high ylims",
+        )
+        disp = PartialDependenceDisplay.from_estimator(model, X, [column])
+    out_file = out_dir / f"pd_{column}.png"
+    disp.figure_.savefig(out_file)
+    plt.close(disp.figure_)
+    return out_file
+
+
 def run_rf(seed: int = 0) -> None:
     """Train the regressor and output feature importance and plots.
 
@@ -73,16 +89,10 @@ def run_rf(seed: int = 0) -> None:
     IMPORTANCE_PATH.parent.mkdir(exist_ok=True)
     with IMPORTANCE_PATH.open("w") as fh:
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
+
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     for col in X.columns:
-        with warnings.catch_warnings():
-            warnings.filterwarnings(
-                "ignore",
-                message="Attempting to set identical low and high ylims",
-            )
-            disp = PartialDependenceDisplay.from_estimator(model, X, [col])
-        disp.figure_.savefig(FIG_DIR / f"pd_{col}.png")
-        plt.close(disp.figure_)
+        plot_partial_dependence(model, X, col, FIG_DIR)
 
 
 def main(argv: List[str] | None = None) -> None:
