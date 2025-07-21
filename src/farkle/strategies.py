@@ -88,7 +88,7 @@ class ThresholdStrategy:
     auto_hot_dice: bool = False
     run_up_score: bool = False
     prefer_score: bool = True
-    
+
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
         if self.smart_one and not self.smart_five:
@@ -106,7 +106,7 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    
+
     def decide(
         self,
         *,
@@ -120,18 +120,18 @@ class ThresholdStrategy:
     ) -> bool:  # noqa: D401 – imperative name
         """
         Return **True** to keep rolling, *False** to bank.
-        
+
         Counterintuitively, require_both = True is riskier play
-        
-        Outcomes of cominations of consider_score = True, consider_dice = True, 
+
+        Outcomes of cominations of consider_score = True, consider_dice = True,
         require_both = [True, False] for score_threshold = 300 and dice_threshold = 3:
-         
+
         cs and cd are True, require_both = True (AND logic)
         (400, 4, True),  # Enough dice but too many points
         (200, 2, True),  # Low enough points but not enough dice
         (200, 4, True),   # Low enough points and enough dice available
         (400, 2, False),  # # Too many points and not enough dice available
-        
+
         cs and cd are True, require_both = False (OR logic)
         (400, 4, False),  # Enough dice but too many points
         (200, 2, False),  # Low enough points but not enough dice
@@ -147,7 +147,7 @@ class ThresholdStrategy:
         if final_round:
             return running_total <= score_to_beat
 
-        # -----------------------------------------------------------------------------  
+        # -----------------------------------------------------------------------------
         keep_rolling = _should_continue(
             turn_score, dice_left,
             self.score_threshold, self.dice_threshold,
@@ -160,7 +160,7 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Representation helpers
     # ------------------------------------------------------------------
-    
+
     def __str__(self) -> str:  # noqa: D401 - magics method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
@@ -199,7 +199,7 @@ def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> bool:
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
     """Return a random ThresholdStrategy that always satisfies the two constraints."""
-    
+
     rng_inst = rng if rng is not None else random.Random()
 
     # pick smart_five first; if it’s False, force smart_one=False
@@ -294,7 +294,7 @@ def parse_strategy(s: str) -> ThresholdStrategy:
 
     so_token = m.group("so")  # "O" or "-"
     so_flag = bool(so_token.startswith("O"))
-    
+
     ps_flag = m.group("ps") == "PS"
 
     rb_token = m.group("rb")  # "AND" or "OR"
@@ -387,7 +387,7 @@ def parse_strategy_for_df(s: str) -> dict:
 
     so_token = m.group("so")  # "O" or "-"
     so_flag = bool(so_token.startswith("O"))
-    
+
     ps_flag = m.group("ps") == "PS"
 
     rb_token = m.group("rb")  # "AND" or "OR"
