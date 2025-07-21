@@ -7,7 +7,7 @@ from typing import Dict, List, Sequence
 import numpy as np
 
 from farkle.scoring import DiceRoll, default_score
-from farkle.strategies import ThresholdStrategy
+from farkle.strategies import PreferScore, ThresholdStrategy
 
 """engine.py
 ============
