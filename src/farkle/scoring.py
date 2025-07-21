@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import functools
-from typing import List, Sequence, Tuple, cast
+from typing import List, Sequence, Tuple, cast, NamedTuple
 
 # Numba is only used in the low-level helpers;
 # no caller needs to install it explicitly.
@@ -16,6 +16,18 @@ from farkle.types import Counts6, FacesT, Int64Arr1D
 # 0.  Public type alias
 # --------------------------------------------------------------------------- #
 DiceRoll = List[int]  # a raw roll as a list of faces
+
+
+class ScoreCandidate(NamedTuple):
+    """Container for potential scoring outcomes after discards."""
+
+    faces: list[int]
+    dice_len: int
+    score: int
+    used: int
+    counts: Counts6
+    single_fives: int
+    single_ones: int
 
 
 # --------------------------------------------------------------------------- #
@@ -190,18 +202,7 @@ def generate_sequences(counts: Counts6, *, smart_one: bool = False) -> tuple[Fac
 @functools.lru_cache(maxsize=4096)
 def score_lister(
     dice_rolls: tuple[FacesT, ...],
-) -> tuple[
-        tuple[
-            list[int],  # original roll (sorted)
-            int,  # dice_len
-            int,  # cand_score
-            int,  # cand_used
-            Counts6,  # counts
-            int,  # cand_sf
-            int  # cand_so
-            ],
-        ...
-   ]:
+) -> tuple[ScoreCandidate, ...]:
     """Score multiple sorted rolls.
 
     Inputs
@@ -211,17 +212,26 @@ def score_lister(
 
     Returns
     -------
-    tuple[tuple[list[int], int, int, int, Counts6, int, int], ...]:
-        (faces, len, score, used, counts, lone_fives, lone_ones) for
-        each scoring roll. Skips non-scoring rolls
+    tuple[ScoreCandidate, ...]:
+        Candidate scoring states. Non-scoring rolls are skipped.
     """
-    out = []
+    out: list[ScoreCandidate] = []
     for faces in dice_rolls:
         counts_key = faces_to_counts_tuple(faces)
         score, used, _, sf, so = _score_by_counts(counts_key)
         if score == 0:
             continue
-        out.append((list(faces), len(faces), score, used, counts_key, sf, so))
+        out.append(
+            ScoreCandidate(
+                faces=list(faces),
+                dice_len=len(faces),
+                score=score,
+                used=used,
+                counts=counts_key,
+                single_fives=sf,
+                single_ones=so,
+            )
+        )
     return tuple(out)
 
 
@@ -316,16 +326,16 @@ def decide_smart_discards(
     best_key: Tuple[int, int] | None = None
     best_sf, best_so = single_fives, single_ones
 
-    for (_roll, _len, cand_score, cand_used, _cnt, cand_sf, cand_so) in candidates:
-        score_after = turn_score_pre + cand_score
-        dice_left_after = dice_roll_len - cand_used
+    for cand in candidates:
+        score_after = turn_score_pre + cand.score
+        dice_left_after = dice_roll_len - cand.used
         if _must_bank(score_after, dice_left_after):
             continue
 
         key = (score_after, dice_left_after) if prefer_score else (dice_left_after, score_after)
         if best_key is None or key > best_key:
             best_key = key
-            best_sf, best_so = cand_sf, cand_so
+            best_sf, best_so = cand.single_fives, cand.single_ones
 
     if best_key is None:  # every path banks → keep everything
         return 0, 0
