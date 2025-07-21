@@ -12,6 +12,9 @@ import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _v
 from pathlib import Path
+# Path to the project's pyproject.toml for local version fallback
+PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+
 
 NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
 
@@ -77,8 +80,7 @@ def _read_version_from_toml() -> str:
     above this module. If the ``[project]`` table or the ``version`` entry is
     missing a :class:`KeyError` will be raised by :mod:`tomllib`.
     """
-    toml_path = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    with toml_path.open("rb") as fh:
+    with PYPROJECT_TOML.open("rb") as fh:
         data = tomllib.load(fh)
     return data["project"]["version"]
 
