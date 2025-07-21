@@ -15,6 +15,16 @@ def games_for_power(
     pairwise: bool = True # baseline vs all or full pairwise
 ) -> int:
     """Return games per strategy for desired power."""
+
+    if not 0 < base_p < 1:
+        raise ValueError("base_p must be in (0,1)")
+    if not 0 < delta < 1:
+        raise ValueError("delta must be in (0,1)")
+    if base_p + delta >= 1:
+        raise ValueError("base_p + delta must be < 1")
+
+    if method == "bonferroni" and n_strategies <= 1:
+        raise ValueError("bonferroni adjustment requires more than one strategy")
     
     # per-test alpha*
     if method == "bonferroni":
