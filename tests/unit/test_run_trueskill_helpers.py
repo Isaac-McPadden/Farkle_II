@@ -1,4 +1,9 @@
+import os
+import pickle
+
+import numpy as np
 import pandas as pd
+import pytest
 import trueskill
 
 import farkle.run_trueskill as rt
@@ -115,5 +120,55 @@ def test_update_ratings_ranked():
         new = env.rate([[ratings[p[0]]], [ratings[p[1]]]], ranks=[0, 1])
         ratings[p[0]], ratings[p[1]] = new[0][0], new[1][0]
 
-    expected = {k: rt.RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
+    expected = {k: (r.mu, r.sigma) for k, r in ratings.items()}
     assert result == expected
+
+
+def test_load_ranked_games_empty(tmp_path):
+    block = tmp_path / "empty_players"
+    block.mkdir()
+    assert rt._load_ranked_games(block) == []
+
+
+def test_load_ranked_games_missing_strategy(tmp_path):
+    block = tmp_path / "bad_players"
+    row_dir = block / "2_rows"
+    row_dir.mkdir(parents=True)
+    df = pd.DataFrame({"P1_rank": [1], "P2_rank": [2], "P2_strategy": ["B"]})
+    df.to_parquet(row_dir / "rows.parquet")
+    with pytest.raises(KeyError):
+        rt._load_ranked_games(block)
+
+
+def test_run_trueskill_incomplete_block(tmp_path):
+    data_root = tmp_path / "data"
+    res_dir = data_root / "results"
+    res_dir.mkdir(parents=True)
+
+    block_good = res_dir / "2_players"
+    block_good.mkdir()
+    np.save(block_good / "keepers_2.npy", np.array(["A", "B"]))
+    pd.DataFrame({"winner_strategy": ["A", "B"]}).to_csv(block_good / "winners.csv", index=False)
+
+    block_empty = res_dir / "3_players"
+    block_empty.mkdir()
+
+    (res_dir / "manifest.yaml").write_text("seed: 0\n")
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        rt.run_trueskill(seed=0)
+    finally:
+        os.chdir(cwd)
+
+    with open(data_root / "ratings_2.pkl", "rb") as fh:
+        good = pickle.load(fh)
+    with open(data_root / "ratings_3.pkl", "rb") as fh:
+        empty = pickle.load(fh)
+    with open(data_root / "ratings_pooled.pkl", "rb") as fh:
+        pooled = pickle.load(fh)
+
+    assert good
+    assert empty == {}
+    assert set(pooled) == set(good)
