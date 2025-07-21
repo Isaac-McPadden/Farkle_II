@@ -217,7 +217,10 @@ def run_trueskill(manifest_seed: int = 0, output_seed: int = 0) -> None:
                 pooled[k] = v
     with (Path("data") / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
-    tiers = build_tiers({k: v.mu for k, v in pooled.items()}, {k: v.sigma for k, v in pooled.items()})
+    tiers = build_tiers(
+        means={k: v[0] for k, v in pooled.items()},
+        stdevs={k: v[1] for k, v in pooled.items()},
+    )
     Path("data").mkdir(exist_ok=True)
     with (Path("data") / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)

@@ -6,20 +6,20 @@ from farkle.utils import bh_correct, bonferroni_pairs, build_tiers
 
 
 def test_build_tiers_empty():
-    assert build_tiers({}, {}) == {}
+    assert build_tiers(means={}, stdevs={}) == {}
 
 
 def test_build_tiers_overlapping():
     mu = {"A": 100.0, "B": 99.0}
     sigma = {"A": 0.5, "B": 0.5}
-    tiers = build_tiers(mu, sigma, z=2)
+    tiers = build_tiers(means=mu, stdevs=sigma, z=2)
     assert tiers == {"A": 1, "B": 1}
 
 
 def test_build_tiers_multiple_tiers():
     mu = {"A": 100.0, "B": 95.0, "C": 93.0}
     sigma = {"A": 1.0, "B": 1.0, "C": 1.0}
-    tiers = build_tiers(mu, sigma, z=2)
+    tiers = build_tiers(means=mu, stdevs=sigma, z=2)
     assert tiers["A"] == 1
     assert tiers["B"] == 2
     assert tiers["C"] == 2
