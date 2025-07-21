@@ -11,6 +11,7 @@ import numpy as np
 import pytest
 
 import farkle.scoring_lookup as sl
+import farkle.strategies as strategies
 from farkle.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
@@ -102,3 +103,46 @@ def test_random_threshold_strategy_diversity():
     )
     # heuristic – at least three distinct thresholds in 200 draws
     assert len(seen) >= 3
+
+
+@pytest.mark.parametrize(
+    "running_total, score_to_beat, expected",
+    [
+        (5000, 5500, True),
+        (6000, 5500, False),
+    ],
+)
+def test_decide_final_round_ignores_other_flags(running_total, score_to_beat, expected):
+    strat = ThresholdStrategy(auto_hot_dice=True, run_up_score=True)
+    res = strat.decide(
+        turn_score=0,
+        dice_left=6,
+        has_scored=True,
+        score_needed=0,
+        final_round=True,
+        score_to_beat=score_to_beat,
+        running_total=running_total,
+    )
+    assert res is expected
+
+
+@pytest.mark.parametrize(
+    "turn_score, dice_left, sc_thr, di_thr, c_score, c_dice, expected",
+    [
+        (300, 3, 300, 2, True, False, False),
+        (299, 3, 300, 2, True, False, True),
+        (100, 2, 200, 2, False, True, False),
+        (100, 3, 200, 2, False, True, True),
+    ],
+)
+def test_should_continue_threshold_boundaries(turn_score, dice_left, sc_thr, di_thr, c_score, c_dice, expected):
+    res = strategies._should_continue(
+        turn_score,
+        dice_left,
+        sc_thr,
+        di_thr,
+        c_score,
+        c_dice,
+        False,
+    )
+    assert res is expected

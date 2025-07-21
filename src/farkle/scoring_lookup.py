@@ -1,9 +1,18 @@
 # src/farkle/scoring_lookup.py  – Numba- & cache-ready
+"""Evaluate Farkle dice rolls using Numba accelerated routines.
+
+This module exposes the key functions :func:`_evaluate_nb`,
+:func:`evaluate`, :func:`score_roll`, and
+:func:`build_score_lookup_table` for scoring rolls or generating a
+lookup table.  Inputs are 6-tuples of counts whose elements are
+non‐negative and sum to at most six.
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache
 from itertools import combinations_with_replacement
-from typing import Dict, Tuple
+from typing import Sequence
 
 import numba as nb
 import numpy as np
@@ -73,17 +82,51 @@ def _four_kind_plus_pair(ctr: Int64Array1D) -> Tuple[int, int]:
     return (1500, 6) if 4 in ctr and 2 in ctr else (0, 0)
 
 
+@nb.njit(cache=True)
+def _apply_sets(ctr: Int64Arr1D) -> tuple[int, int]:
+    """Score and consume any n-of-a-kind groups.
+
+    Parameters
+    ----------
+    ctr:
+        Array of counts for faces one through six. Modified in-place.
+
+    Returns
+    -------
+    tuple[int, int]
+        Additional (score, used) from all qualifying sets.
+    """
+    score_add = 0
+    used_add = 0
+    for face in range(6):
+        n = ctr[face]
+        if n >= 3:
+            if n == 3:
+                pts = 300 if face == 0 else (face + 1) * 100
+            elif n == 4:
+                pts = 1000
+            elif n == 5:
+                pts = 2000
+            else:  # n == 6
+                pts = 3000
+            score_add += pts
+            used_add += n
+            ctr[face] = 0
+    return score_add, used_add
+
+
 # ---------------------------------------------------------------------------
 # 1.  Master evaluator (Numba core + pure-Python wrapper)
 # ---------------------------------------------------------------------------
 
+
 @nb.njit(cache=True)
 def _evaluate_nb(
-    c1: int, 
-    c2: int, 
-    c3: int, 
-    c4: int, 
-    c5: int, 
+    c1: int,
+    c2: int,
+    c3: int,
+    c4: int,
+    c5: int,
     c6: int,
 ) -> tuple[int, int, int, int]:
     """Score a roll purely within Numba.
@@ -116,27 +159,10 @@ def _evaluate_nb(
     if pts:
         return pts, ud, 0, 0
 
-    # ---- n-of-a-kind loop (may fire multiple times) ----------------------
-    while True:
-        triggered = False
-        for face in range(6):
-            n = ctr[face]
-            if n >= 3:
-                triggered = True
-                if n == 3:
-                    pts = 300 if face == 0 else (face + 1) * 100
-                elif n == 4:
-                    pts = 1000
-                elif n == 5:
-                    pts = 2000
-                else:  # n == 6 (straight case already out)
-                    pts = 3000
-                score += pts
-                used += n
-                ctr[face] = 0  # consume dice
-                break
-        if not triggered:
-            break
+    # ---- n-of-a-kind sets -------------------------------------------------
+    pts, ud = _apply_sets(ctr)
+    score += pts
+    used += ud
 
     # ---- leftover singles (only 1s and 5s score) -------------------------
     lone_ones = ctr[0]
@@ -154,34 +180,56 @@ def _evaluate_nb(
 @lru_cache(maxsize=4096)
 def evaluate(counts: SixFaceCounts) -> tuple[int, int, int, int]:
     """Score a counts tuple via the JIT compiled core.
-        Hash friendly for Numba.
+    
+    The function is intentionally defensive – invalid input should raise a
+    :class:`ValueError` rather than yielding nonsensical results.
 
     Args:
-        counts: A 6-tuple giving the number of dice showing each face.
+        counts: A 6-tuple giving the number of dice showing each face. The
+            tuple must consist of six non-negative integers whose sum does not
+            exceed six.
 
     Returns:
-        (score, used, single_fives, single_ones) in the same format
-        as :func:`_evaluate_nb`.
+        (score, used, single_fives, single_ones) in the same format as
+        :func:`_evaluate_nb`.
     """
+if len(counts) != 6:
+    raise ValueError("counts must contain exactly six values")
+if not all(isinstance(c, int) for c in counts):
+    raise TypeError(f"non-integers in {counts!r}")
+if any(c < 0 for c in counts):
+    raise ValueError(f"negative count in {counts!r}")
+if sum(counts) > 6:
+    raise ValueError(f"more than six dice specified: {counts!r}")
     return _evaluate_nb(*counts)
 
 
-def score_roll(roll: list[int]) -> Tuple[int, int]:
+def score_roll(roll: Sequence[int]) -> tuple[int, int]:
     """Score a roll given as a list of faces.
 
     Args:
-        roll: Sequence of integers in [1, 6] representing the dice.
+        roll: Sequence of integers in ``[1, 6]`` representing the dice.
+            The sequence may contain at most six values.
 
     Returns:
-        A tuple (score, used_dice) describing the total points scored
+        A ``(score, used_dice)`` tuple describing the total points scored
         and how many dice contributed to the score.
+
+    Raises:
+        ValueError: If ``roll`` contains values outside ``[1, 6]`` or has
+        more than six elements.
     """
+    if len(roll) > 6:
+        raise ValueError("roll cannot contain more than six dice")
+    if any(d < 1 or d > 6 for d in roll):
+        raise ValueError(f"invalid die face in {roll!r}")
+
     key = (
-        roll.count(1), 
-        roll.count(2), 
+        roll.count(1),
+        roll.count(2),
         roll.count(3),
-        roll.count(4), 
-        roll.count(5), 
+        roll.count(4),
+        roll.count(5),
         roll.count(6),
     )
     pts, used, *_ = evaluate(key)
@@ -197,7 +245,7 @@ def build_score_lookup_table() -> dict[SixFaceCounts, tuple[int, int, SixFaceCou
     """
     Fast O(1) table for any ≤6-dice roll.
     Loads pre-computed scores for every multiset of up to six dice.
-    
+
     Inputs:
         None
 
@@ -207,17 +255,21 @@ def build_score_lookup_table() -> dict[SixFaceCounts, tuple[int, int, SixFaceCou
         first element is the total points for that combination and
         counts repeats the key so callers can keep a reference.
     """
-    look: Dict[
-        Tuple[int, int, int, int, int, int], 
-        Tuple[int, int, Tuple[int, int, int, int, int, int], int, int]
+    look: dict[
+        tuple[int, int, int, int, int, int],
+        tuple[int, int, tuple[int, int, int, int, int, int], int, int],
     ] = {}
     faces = range(1, 7)
 
     for n in range(1, 7):
         for multiset in combinations_with_replacement(faces, n):
             key = (
-                multiset.count(1), multiset.count(2), multiset.count(3),
-                multiset.count(4), multiset.count(5), multiset.count(6),
+                multiset.count(1),
+                multiset.count(2),
+                multiset.count(3),
+                multiset.count(4),
+                multiset.count(5),
+                multiset.count(6),
             )
             if key in look:  # skip duplicates (e.g. (2,2,2,5,5) permutes)
                 continue
