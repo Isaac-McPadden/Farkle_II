@@ -5,7 +5,7 @@ import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List
+from typing import Any, Callable, List
 
 import numba as nb
 import pandas as pd
@@ -34,6 +34,30 @@ __all__: list[str] = [
 ]
 
 
+_STRAT_RE = re.compile(
+    r"""
+    \A
+    Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)  # thresholds
+    \[
+        (?P<cs>[S\-])(?P<cd>[D\-])
+    \]
+    \[
+        (?P<sf>[F\-])  # smart_five block
+        (?P<so>[O\-])  # smart_one block
+        (?P<ps>PS|PD)
+    \]
+    \[
+        (?P<rb>AND|OR)
+    \]
+    \[
+        (?P<hd>[H\-])(?P<rs>[R\-])
+    \]
+    \Z
+    """,
+    re.VERBOSE,
+)
+
+
 DiceRoll = List[int]
 """A list of integers 1-6 representing a single dice roll."""
 
@@ -44,10 +68,7 @@ DiceRoll = List[int]
 
 
 @nb.njit(cache=True)
-def _should_continue(turn_score, dice_left,
-                     sc_thr, di_thr,
-                     c_score, c_dice,
-                     req_both) -> bool:
+def _should_continue(turn_score, dice_left, sc_thr, di_thr, c_score, c_dice, req_both) -> bool:
     want_s = c_score and turn_score < sc_thr
     want_d = c_dice and dice_left > di_thr
     if c_score and c_dice:
@@ -88,13 +109,11 @@ class ThresholdStrategy:
     auto_hot_dice: bool = False
     run_up_score: bool = False
     prefer_score: bool = True
-    
+
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
         if self.smart_one and not self.smart_five:
-            raise ValueError(
-                "ThresholdStrategy: smart_one=True requires smart_five=True"
-            )
+            raise ValueError("ThresholdStrategy: smart_one=True requires smart_five=True")
 
         # 2) require_both may only be True if both consider_score and consider_dice are True
         if self.require_both and not (self.consider_score and self.consider_dice):
@@ -106,7 +125,7 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    
+
     def decide(
         self,
         *,
@@ -120,18 +139,18 @@ class ThresholdStrategy:
     ) -> bool:  # noqa: D401 – imperative name
         """
         Return **True** to keep rolling, *False** to bank.
-        
+
         Counterintuitively, require_both = True is riskier play
-        
-        Outcomes of cominations of consider_score = True, consider_dice = True, 
+
+        Outcomes of cominations of consider_score = True, consider_dice = True,
         require_both = [True, False] for score_threshold = 300 and dice_threshold = 3:
-         
+
         cs and cd are True, require_both = True (AND logic)
         (400, 4, True),  # Enough dice but too many points
         (200, 2, True),  # Low enough points but not enough dice
         (200, 4, True),   # Low enough points and enough dice available
         (400, 2, False),  # # Too many points and not enough dice available
-        
+
         cs and cd are True, require_both = False (OR logic)
         (400, 4, False),  # Enough dice but too many points
         (200, 2, False),  # Low enough points but not enough dice
@@ -147,11 +166,14 @@ class ThresholdStrategy:
         if final_round:
             return running_total <= score_to_beat
 
-        # -----------------------------------------------------------------------------  
+        # -----------------------------------------------------------------------------
         keep_rolling = _should_continue(
-            turn_score, dice_left,
-            self.score_threshold, self.dice_threshold,
-            self.consider_score, self.consider_dice,
+            turn_score,
+            dice_left,
+            self.score_threshold,
+            self.dice_threshold,
+            self.consider_score,
+            self.consider_dice,
             self.require_both,
         )
 
@@ -160,7 +182,7 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Representation helpers
     # ------------------------------------------------------------------
-    
+
     def __str__(self) -> str:  # noqa: D401 - magics method
         cs = "S" if self.consider_score else "-"
         cd = "D" if self.consider_dice else "-"
@@ -199,7 +221,7 @@ def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> bool:
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
     """Return a random ThresholdStrategy that always satisfies the two constraints."""
-    
+
     rng_inst = rng if rng is not None else random.Random()
 
     # pick smart_five first; if it’s False, force smart_one=False
@@ -222,6 +244,27 @@ def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStra
         require_both=rb,
         prefer_score=ps,
     )
+
+
+def _parse_strategy_flags(s: str) -> dict[str, Any]:
+    """Return a mapping of strategy fields parsed from ``s``."""
+
+    m = _STRAT_RE.match(s)
+    if not m:
+        raise ValueError(f"Cannot parse strategy string: {s!r}")
+
+    return {
+        "score_threshold": int(m.group("score")),
+        "dice_threshold": int(m.group("dice")),
+        "smart_five": m.group("sf") == "F",
+        "smart_one": m.group("so") == "O",
+        "consider_score": m.group("cs") == "S",
+        "consider_dice": m.group("cd") == "D",
+        "require_both": m.group("rb") == "AND",
+        "auto_hot_dice": m.group("hd") == "H",
+        "run_up_score": m.group("rs") == "R",
+        "prefer_score": m.group("ps") == "PS",
+    }
 
 
 def parse_strategy(s: str) -> ThresholdStrategy:
@@ -256,65 +299,8 @@ def parse_strategy(s: str) -> ThresholdStrategy:
     #
     # Example literal: "Strat(300,2)[SD][F-O][AND][H-]"
 
-    pattern = re.compile(
-        r"""
-        \A
-        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)  # thresholds
-        \[
-            (?P<cs>[S\-])(?P<cd>[D\-])
-        \]
-        \[
-            (?P<sf>[F\-])  # smart_five block
-            (?P<so>[O\-])  # smart_one block
-            (?P<ps>PS|PD)
-        \]
-        \[
-            (?P<rb>AND|OR)
-        \]
-        \[
-            (?P<hd>[H\-])(?P<rs>[R\-])
-        \]
-        \Z
-        """,
-        re.VERBOSE,
-    )
-
-    m = pattern.match(s)
-    if not m:
-        raise ValueError(f"Cannot parse strategy string: {s!r}")
-
-    score_threshold = int(m.group("score"))
-    dice_threshold = int(m.group("dice"))
-
-    cs_flag = m.group("cs") == "S"
-    cd_flag = m.group("cd") == "D"
-
-    sf_token = m.group("sf")  # "F" or "-"
-    sf_flag = bool(sf_token.startswith("F"))
-
-    so_token = m.group("so")  # "O" or "-"
-    so_flag = bool(so_token.startswith("O"))
-    
-    ps_flag = m.group("ps") == "PS"
-
-    rb_token = m.group("rb")  # "AND" or "OR"
-    require_both = rb_token == "AND"
-
-    hd_flag = m.group("hd") == "H"
-    rs_flag = m.group("rs") == "R"
-
-    return ThresholdStrategy(
-        score_threshold=score_threshold,
-        dice_threshold=dice_threshold,
-        smart_five=sf_flag,
-        smart_one=so_flag,
-        consider_score=cs_flag,
-        consider_dice=cd_flag,
-        require_both=require_both,
-        auto_hot_dice=hd_flag,
-        run_up_score=rs_flag,
-        prefer_score=ps_flag,
-    )
+    flags = _parse_strategy_flags(s)
+    return ThresholdStrategy(**flags)
 
 
 def parse_strategy_for_df(s: str) -> dict:
@@ -349,66 +335,7 @@ def parse_strategy_for_df(s: str) -> dict:
     #
     # Example literal: "Strat(300,2)[SD][F-O][AND][H-]"
 
-    pattern = re.compile(
-        r"""
-        \A
-        Strat\(\s*(?P<score>\d+)\s*,\s*(?P<dice>\d+)\s*\)  # thresholds
-        \[
-            (?P<cs>[S\-])(?P<cd>[D\-])
-        \]
-        \[
-            (?P<sf>[F\-])  # smart_five block
-            (?P<so>[O\-])  # smart_one block
-            (?P<ps>PS|PD)
-        \]
-        \[
-            (?P<rb>AND|OR)
-        \]
-        \[
-            (?P<hd>[H\-])(?P<rs>[R\-])
-        \]
-        \Z
-        """,
-        re.VERBOSE,
-    )
-
-    m = pattern.match(s)
-    if not m:
-        raise ValueError(f"Cannot parse strategy string: {s!r}")
-
-    score_threshold = int(m.group("score"))
-    dice_threshold = int(m.group("dice"))
-
-    cs_flag = m.group("cs") == "S"
-    cd_flag = m.group("cd") == "D"
-
-    sf_token = m.group("sf")  # "F" or "-"
-    sf_flag = bool(sf_token.startswith("F"))
-
-    so_token = m.group("so")  # "O" or "-"
-    so_flag = bool(so_token.startswith("O"))
-    
-    ps_flag = m.group("ps") == "PS"
-
-    rb_token = m.group("rb")  # "AND" or "OR"
-    require_both = rb_token == "AND"
-
-    hd_flag = m.group("hd") == "H"
-    rs_flag = m.group("rs") == "R"
-
-    strat_dict = {
-        "score_threshold" : score_threshold,
-        "dice_threshold" : dice_threshold,
-        "smart_five" : sf_flag,
-        "smart_one" : so_flag,
-        "consider_score" : cs_flag,
-        "consider_dice" : cd_flag,
-        "require_both": require_both,
-        "auto_hot_dice" : hd_flag,
-        "run_up_score" : rs_flag,
-        "prefer_score" : ps_flag,
-    }
-    return strat_dict
+    return _parse_strategy_flags(s)
 
 
 def load_farkle_results(
@@ -453,17 +380,15 @@ def load_farkle_results(
     # ------------------------------------------------------------------
     base_df = (
         pd.Series(counter, name="wins")
-          .reset_index(drop=False)
-          .rename(columns={"index": "strategy"})
+        .reset_index(drop=False)
+        .rename(columns={"index": "strategy"})
     )
 
     # ------------------------------------------------------------------
     # 3) Explode strategy strings into individual columns
     # ------------------------------------------------------------------
     flags_df = (
-        base_df["strategy"]
-          .apply(parse_strategy)  # str → dict
-          .apply(pd.Series)  # dict → DataFrame
+        base_df["strategy"].apply(parse_strategy).apply(pd.Series)  # str → dict  # dict → DataFrame
     )
 
     full_df = pd.concat([base_df, flags_df], axis=1)
@@ -473,11 +398,18 @@ def load_farkle_results(
     # ------------------------------------------------------------------
     if ordered:
         col_order = [
-            "strategy", "wins",
-            "score_threshold", "dice_threshold",
-            "consider_score", "consider_dice", "require_both",
-            "smart_five", "smart_one", "prefer_score",
-            "auto_hot_dice", "run_up_score",
+            "strategy",
+            "wins",
+            "score_threshold",
+            "dice_threshold",
+            "consider_score",
+            "consider_dice",
+            "require_both",
+            "smart_five",
+            "smart_one",
+            "prefer_score",
+            "auto_hot_dice",
+            "run_up_score",
         ]
         full_df = full_df[col_order].sort_values(by="wins", ascending=False, ignore_index=True)
 
