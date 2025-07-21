@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import functools
-from typing import Callable, List, Sequence, Tuple, cast
+from typing import Callable, List, Sequence, Tuple, cast, NamedTuple
 
 # Numba is only used in the low-level helpers;
 # no caller needs to install it explicitly.
@@ -16,6 +16,18 @@ from farkle.types import Counts6, FacesT, Int64Arr1D
 # 0.  Public type alias
 # --------------------------------------------------------------------------- #
 DiceRoll = List[int]  # a raw roll as a list of faces
+
+
+class ScoreCandidate(NamedTuple):
+    """Container for potential scoring outcomes after discards."""
+
+    faces: list[int]
+    dice_len: int
+    score: int
+    used: int
+    counts: Counts6
+    single_fives: int
+    single_ones: int
 
 
 # --------------------------------------------------------------------------- #
@@ -53,7 +65,14 @@ def faces_to_counts_tuple(faces: Sequence[int]) -> Counts6:
     -------
     Counts6:
         Six-element tuple of counts for faces one through six.
+
+    Raises
+    ------
+    ValueError:
+        If any face value is outside the ``1``–``6`` range.
     """
+    if not all(1 <= f <= 6 for f in faces):
+        raise ValueError("dice faces must be between 1 and 6")
     return _faces_to_counts_nb(np.asarray(faces, dtype=np.int64))
 
 
@@ -183,18 +202,7 @@ def generate_sequences(counts: Counts6, *, smart_one: bool = False) -> tuple[Fac
 @functools.lru_cache(maxsize=4096)
 def score_lister(
     dice_rolls: tuple[FacesT, ...],
-) -> tuple[
-    tuple[
-        list[int],  # original roll (sorted)
-        int,  # dice_len
-        int,  # cand_score
-        int,  # cand_used
-        Counts6,  # counts
-        int,  # cand_sf
-        int,  # cand_so
-    ],
-    ...,
-]:
+) -> tuple[ScoreCandidate, ...]:
     """Score multiple sorted rolls.
 
     Inputs
@@ -204,17 +212,26 @@ def score_lister(
 
     Returns
     -------
-    tuple[tuple[list[int], int, int, int, Counts6, int, int], ...]:
-        (faces, len, score, used, counts, lone_fives, lone_ones) for
-        each scoring roll. Skips non-scoring rolls
+    tuple[ScoreCandidate, ...]:
+        Candidate scoring states. Non-scoring rolls are skipped.
     """
-    out = []
+    out: list[ScoreCandidate] = []
     for faces in dice_rolls:
         counts_key = faces_to_counts_tuple(faces)
         score, used, _, sf, so = _score_by_counts(counts_key)
         if score == 0:
             continue
-        out.append((list(faces), len(faces), score, used, counts_key, sf, so))
+        out.append(
+            ScoreCandidate(
+                faces=list(faces),
+                dice_len=len(faces),
+                score=score,
+                used=used,
+                counts=counts_key,
+                single_fives=sf,
+                single_ones=so,
+            )
+        )
     return tuple(out)
 
 
@@ -303,6 +320,9 @@ def decide_smart_discards(
 ) -> Tuple[int, int]:
     """Determine how many single 5s and 1s to throw back.
 
+    Note that ``smart_one=True`` only has an effect when ``smart_five`` is
+    also ``True``. Smart‑1 discards are ignored otherwise.
+
     Inputs
     ------
     counts (Counts6):
@@ -326,7 +346,7 @@ def decide_smart_discards(
     smart_five (bool):
         Enable Smart-5 heuristic.
     smart_one (bool):
-        Enable Smart-1 heuristic.
+        Enable Smart-1 heuristic. Always False if ``smart_five`` is False.
     consider_score (bool, optional):
         Whether to check score_threshold.
     consider_dice (bool, optional):
@@ -425,6 +445,9 @@ def default_score(
 ) -> Tuple[int, int, int] | Tuple[int, int, int, int, int]:
     """Score a roll and apply Smart discard heuristics.
 
+    ``smart_one=True`` only has an effect when ``smart_five`` is ``True``.
+    Otherwise the Smart‑1 logic is skipped.
+
     Inputs
     ------
     dice_roll (DiceRoll):
@@ -434,7 +457,7 @@ def default_score(
     smart_five (bool, optional):
         Enable Smart-5 discard.
     smart_one (bool, optional):
-        Enable Smart-1 discard.
+        Enable Smart-1 discard. Ignored unless ``smart_five`` is True.
     consider_score (bool, optional):
         Whether to respect score_threshold.
     consider_dice (bool, optional):
@@ -447,11 +470,17 @@ def default_score(
         Maximum dice left before banking.
     prefer_score (bool, optional):
         Break ties in favour of higher score.
+    return_discards (bool, optional):
+        If True, include the number of discarded 5s and 1s in the result.
 
     Returns
     -------
     tuple[int, int, int]:
-        (final_score, final_used, final_reroll).
+        Returned when ``return_discards`` is ``False`` as
+        ``(final_score, final_used, final_reroll)``.
+    tuple[int, int, int, int, int]:
+        Returned when ``return_discards`` is ``True`` as
+        ``(final_score, final_used, final_reroll, discarded_fives, discarded_ones)``.
     """
     raw_score, raw_used, counts_key, sfives, sones = score_roll_cached(tuple(dice_roll))
 
