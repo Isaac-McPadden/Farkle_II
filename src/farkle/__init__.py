@@ -1,6 +1,11 @@
+"""Farkle Mk II - fast Monte-Carlo engine & strategy tools.
+
+Note
+----
+At import time :class:`pathlib.Path.unlink` is monkey patched with a helper that
+safely suppresses transient ``PermissionError`` on Windows.
 """
-Farkle Mk II - fast Monte-Carlo engine & strategy tools
-"""
+
 import contextlib
 import pathlib
 import tomllib
@@ -11,27 +16,44 @@ from pathlib import Path
 PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
 
 
+NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
+
 # Re-export the "friendly" surface
 from farkle.engine import FarklePlayer, GameMetrics
 from farkle.farkle_io import simulate_many_games_stream
-from farkle.simulation import generate_strategy_grid
+from farkle.simulation import generate_strategy_grid, simulate_many_games_from_seeds
 from farkle.stats import games_for_power
-from farkle.strategies import ThresholdStrategy
+from farkle.strategies import PreferScore, ThresholdStrategy
 
 # --------------------------------------------------------------------------- #
 # Robust Windows delete helper
-# OneDrive (and occasionally AV software) can momentarily keep a handle on
-# freshly-written files, making a plain Path.unlink() raise PermissionError.
+# OneDrive/AV software may hold a handle on newly written files,
+# making Path.unlink() raise PermissionError.
 # The test-suite calls unlink() many times and assumes it will *never* fail.
-# We monkey-patch pathlib.Path.unlink once, at import-time, so that ONLY
-# PermissionError is suppressed; all other OSErrors still propagate.
+# We patch pathlib.Path.unlink at import time so ONLY PermissionError is
+# suppressed; other OSErrors still propagate.
 # --------------------------------------------------------------------------- #
 
 _orig_unlink = pathlib.Path.unlink
 
 
 def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
-    """Wrapper around Path.unlink that squashes the WinError 32 race."""
+    """Delete ``self`` while ignoring transient permission issues.
+
+    Parameters
+    ----------
+    missing_ok : bool, optional
+        Forwarded to :meth:`pathlib.Path.unlink`.
+
+    Returns
+    -------
+    None
+
+    Notes
+    -----
+    Only ``PermissionError`` is suppressed. Any other :class:`OSError` will be
+    re-raised.
+    """
     with contextlib.suppress(PermissionError):
         return _orig_unlink(self, missing_ok=missing_ok)
 
@@ -42,22 +64,21 @@ pathlib.Path.unlink = _safe_unlink  # type: ignore[assignment]
 __all__ = [
     "FarklePlayer",
     "GameMetrics",
+    "PreferScore",
     "ThresholdStrategy",
     "generate_strategy_grid",
     "simulate_many_games_stream",
+    "simulate_many_games_from_seeds",
     "games_for_power",
 ]
 
-def _read_version_from_toml() -> str:
-    """
-    Inputs
-    ------
-    None
 
-    Returns
-    -------
-    str
-        Version string from pyproject.toml.
+def _read_version_from_toml() -> str:
+    """Return the package version declared in ``pyproject.toml``.
+
+    The file is expected to reside at the repository root three directories
+    above this module. If the ``[project]`` table or the ``version`` entry is
+    missing a :class:`KeyError` will be raised by :mod:`tomllib`.
     """
     with PYPROJECT_TOML.open("rb") as fh:
         data = tomllib.load(fh)
@@ -65,8 +86,7 @@ def _read_version_from_toml() -> str:
 
 
 try:
-    assert __package__ is not None, "__package__ not detected, loading version from pyproject.toml"
+    assert __package__ is not None, NO_PKG_MSG
     __version__ = _v(__package__)  # importlib.metadata
 except PackageNotFoundError:
     __version__ = _read_version_from_toml()
-    
