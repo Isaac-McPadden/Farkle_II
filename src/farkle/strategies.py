@@ -421,6 +421,11 @@ def load_farkle_results(
     Load a pickled Counter {strategy_str: wins} and explode it into a
     “full-fat” DataFrame with every strategy flag broken out.
 
+    Warning
+    -------
+    Unpickling data from untrusted sources can execute arbitrary code.
+    Only load pickle files from trusted sources.
+
     Parameters
     ----------
     pkl_path : str | Path
