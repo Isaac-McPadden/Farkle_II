@@ -12,18 +12,17 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _v
 from pathlib import Path
 
-# Path to the project's pyproject.toml for local version fallback
-PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
-
-
-NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
-
 # Re-export the "friendly" surface
 from farkle.engine import FarklePlayer, GameMetrics  # noqa: E402
 from farkle.farkle_io import simulate_many_games_stream  # noqa: E402
 from farkle.simulation import generate_strategy_grid, simulate_many_games_from_seeds  # noqa: E402
 from farkle.stats import games_for_power  # noqa: E402
 from farkle.strategies import PreferScore, ThresholdStrategy  # noqa: E402
+
+# Path to the project's pyproject.toml for local version fallback
+PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+
+NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
 
 # --------------------------------------------------------------------------- #
 # Robust Windows delete helper
