@@ -241,6 +241,9 @@ def decide_smart_discards(
 ) -> Tuple[int, int]:
     """Determine how many single 5s and 1s to throw back.
 
+    Note that ``smart_one=True`` only has an effect when ``smart_five`` is
+    also ``True``. Smart‑1 discards are ignored otherwise.
+
     Inputs
     ------
     counts (Counts6):
@@ -264,7 +267,7 @@ def decide_smart_discards(
     smart_five (bool):
         Enable Smart-5 heuristic.
     smart_one (bool):
-        Enable Smart-1 heuristic.
+        Enable Smart-1 heuristic. Has no effect if ``smart_five`` is False.
     consider_score (bool, optional):
         Whether to check score_threshold.
     consider_dice (bool, optional):
@@ -375,6 +378,9 @@ def default_score(
 ) -> Tuple[int, int, int] | Tuple[int, int, int, int, int]:
     """Score a roll and apply Smart discard heuristics.
 
+    ``smart_one=True`` only has an effect when ``smart_five`` is ``True``.
+    Otherwise the Smart‑1 logic is skipped.
+
     Inputs
     ------
     dice_roll (DiceRoll):
@@ -384,7 +390,7 @@ def default_score(
     smart_five (bool, optional):
         Enable Smart-5 discard.
     smart_one (bool, optional):
-        Enable Smart-1 discard.
+        Enable Smart-1 discard. Ignored unless ``smart_five`` is True.
     consider_score (bool, optional):
         Whether to respect score_threshold.
     consider_dice (bool, optional):
