@@ -10,7 +10,7 @@ from typing import List
 import pandas as pd
 from scipy.stats import binomtest
 
-from farkle.simulation import simulate_many_games_from_seeds
+from farkle.simulation import simulate_many_games
 from farkle.stats import games_for_power
 from farkle.strategies import parse_strategy
 from farkle.utils import bonferroni_pairs

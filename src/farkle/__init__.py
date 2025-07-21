@@ -6,18 +6,18 @@ At import time :class:`pathlib.Path.unlink` is monkey patched with a helper that
 safely suppresses transient ``PermissionError`` on Windows.
 """
 
-import contextlib
 import pathlib
 import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _v
 from pathlib import Path
 
-from farkle.engine import FarklePlayer, GameMetrics
-from farkle.farkle_io import simulate_many_games_stream
-from farkle.simulation import generate_strategy_grid, simulate_many_games_from_seeds
-from farkle.stats import games_for_power
-from farkle.strategies import PreferScore, ThresholdStrategy
+# Re-export the "friendly" surface
+from farkle.engine import FarklePlayer, GameMetrics  # noqa: E402
+from farkle.farkle_io import simulate_many_games_stream  # noqa: E402
+from farkle.simulation import generate_strategy_grid, simulate_many_games_from_seeds  # noqa: E402
+from farkle.stats import games_for_power  # noqa: E402
+from farkle.strategies import PreferScore, ThresholdStrategy  # noqa: E402
 
 # Path to the project's pyproject.toml for local version fallback
 PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
@@ -36,9 +36,8 @@ NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
 _orig_unlink = pathlib.Path.unlink
 
 
-def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
-    """Wrapper around Path.unlink that squashes the WinError 32 race.
-    Deletes ``self`` while ignoring transient permission issues.
+def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False) -> None:
+    """Safely unlink ``self`` while ignoring transient permission issues.
 
     Parameters
     ----------
@@ -54,13 +53,12 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
     Only ``PermissionError`` is suppressed. Any other :class:`OSError` will be
     re-raised.
     """
-    with contextlib.suppress(PermissionError):
-        try:
-            return _orig_unlink(self, missing_ok=missing_ok)
-        except PermissionError as e:
-            if getattr(e, "winerror", None) == 32:
-                return None
-            raise
+    try:
+        return _orig_unlink(self, missing_ok=missing_ok)
+    except PermissionError as e:
+        if getattr(e, "winerror", None) == 32:
+            return None
+        raise
 
 
 # Patch globally (harmless on POSIX; vital on Windows)
