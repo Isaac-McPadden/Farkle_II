@@ -4,8 +4,9 @@ import argparse
 import json
 import logging
 import pickle
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List
+
 
 import numpy as np
 import pandas as pd
@@ -17,7 +18,30 @@ from .utils import build_tiers
 log = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class RatingStats:
+    """Simple TrueSkill rating stats container."""
+
+    mu: float
+    sigma: float
+
+
 def _read_manifest_seed(path: Path) -> int:
+    """Return the tournament seed recorded in ``manifest.yaml``.
+
+    Parameters
+    ----------
+    path : Path
+        Location of the manifest file. The YAML is expected to contain a
+        ``seed`` entry.
+
+    Returns
+    -------
+    int
+        The integer seed found in the file. ``0`` is returned when the file
+        does not exist or the value is missing.
+    """
+
     try:
         data = yaml.safe_load(path.read_text())
         return int(data.get("seed", 0))
@@ -25,33 +49,67 @@ def _read_manifest_seed(path: Path) -> int:
         return 0
 
 
-def _load_ranked_games(block: Path) -> list[list[str]]:
-    """
-    Return one list per game, containing the strategies in finishing order.
+def _read_row_shards(row_dir: Path) -> pd.DataFrame:
+    """Concatenate all parquet shards inside ``row_dir``."""
+    frames = [pd.read_parquet(p) for p in row_dir.glob("*.parquet")]
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
 
-    Understands three on-disk layouts, in this priority order
-        1. <block>/*_rows/*.parquet         # modern row-shard directory
-        2. <block>/winners.csv              # legacy CSV with one winner col
-        3. <block>/*.parquet                # legacy parquet(s) in root
+
+def _load_ranked_games(block: Path) -> list[list[str]]:
+    """Load all ranked games for a results block.
+
+    Parameters
+    ----------
+    block : Path
+        Directory containing the results for one tournament block. The
+        directory may be organised in one of three supported layouts:
+
+        ``*_rows`` directory of Parquet files,
+        a ``winners.csv`` file,
+        or loose ``.parquet`` files in the block root.
+
+    Returns
+    -------
+    list[list[str]]
+        One list per game with strategy names ordered from first place to
+        last. An empty list is returned when the block contains no readable
+        data.
     """
     # ── 1. Modern layout ────────────────────────────────────────────────────
-    row_dir = next(block.glob("*_rows"), None)
+    row_dirs = sorted(block.glob("*_rows"))
+    if row_dirs:
+        frames: list[pd.DataFrame] = []
+        for row_dir in row_dirs:
+            frames.extend(pd.read_parquet(p) for p in row_dir.glob("*.parquet"))
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+def _read_winners_csv(block: Path) -> pd.DataFrame:
+    """Read ``winners.csv`` from a result block."""
+    return pd.read_csv(block / "winners.csv")
+
+
+def _read_loose_parquets(block: Path) -> pd.DataFrame | None:
+    """Return a DataFrame from loose parquet files or ``None`` when absent."""
+    files = list(block.glob("*.parquet"))
+    if not files:
+        return None
+    frames = [pd.read_parquet(p) for p in files]
+    return pd.concat(frames, ignore_index=True)
+
+
+def _load_ranked_games(block: Path) -> list[list[str]]:
+    """Return one list per game, ordered by finishing position."""
+    row_dir = next((p for p in block.glob("*_rows") if p.is_dir()), None)
     if row_dir:
-        frames = [pd.read_parquet(p) for p in row_dir.glob("*.parquet")]
-        df = pd.concat(frames, ignore_index=True)
-
-    # ── 2. winners.csv fallback ────────────────────────────────────────────
+        df = _read_row_shards(row_dir)
     elif (block / "winners.csv").exists():
-        df = pd.read_csv(block / "winners.csv")
-
-    # ── 3. Loose parquet(s) in the block root ──────────────────────────────
+        df = _read_winners_csv(block)
     else:
-        parquet_files = list(block.glob("*.parquet"))
-        if parquet_files:
-            frames = [pd.read_parquet(p) for p in parquet_files]
-            df = pd.concat(frames, ignore_index=True)
-        else:
-            return []  # nothing we know how to read
+        df = _read_loose_parquets(block)
+        if df is None:
+            return []
 
     # ----------------------------------------------------------------------
     rank_cols = [c for c in df.columns if c.endswith("_rank")]
@@ -78,9 +136,24 @@ def _update_ratings(
     games: list[list[str]],
     keepers: list[str],
     env: trueskill.TrueSkill,
-) -> dict[str, tuple[float, float]]:
-    """
-    Update ratings using TrueSkill's team API with full table rankings.
+) -> dict[str, RatingStats]:
+    """Update strategy ratings for a block of games.
+
+    Parameters
+    ----------
+    games : list[list[str]]
+        Each inner list contains strategy names ordered by finishing position
+        for a single game.
+    keepers : list[str]
+        Strategies to include in the rating calculation. If empty, all
+        strategies appearing in ``games`` are rated.
+    env : trueskill.TrueSkill
+        The environment used to perform the TrueSkill updates.
+
+    Returns
+    -------
+    dict[str, RatingStats]
+        Mapping from strategy name to its RatingStats tuple.
     """
     ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
 
@@ -96,27 +169,50 @@ def _update_ratings(
         for s, team_rating in zip(players, new_teams, strict=True):
             ratings[s] = team_rating[0]
 
-    return {k: (r.mu, r.sigma) for k, r in ratings.items()}
+    return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
-def run_trueskill(seed: int = 0) -> None:
+def run_trueskill(manifest_seed: int = 0, output_seed: int = 0) -> None:
+    """Compute TrueSkill ratings for all result blocks.
+
+    Parameters
+    ----------
+    manifest_seed : int, optional
+        Seed used when generating the results. It is compared against the
+        value stored in ``manifest.yaml`` to decide whether a suffix should be
+        appended to the rating files.
+       
+    output_seed: int, optional
+        Value appended to output filenames so repeated runs do not overwrite
+        earlier results.
+
+    Side Effects
+    ------------
+    ``ratings_<n>[ _seedX ].pkl``
+        Pickle files containing per-block ratings for each strategy.
+    ``ratings_pooled[ _seedX ].pkl``
+        A pickle with ratings pooled across all blocks.
+    ``tiers.json``
+        JSON file with league tiers derived from the pooled ratings.
+    """
+
     base = Path("data/results")
     manifest_seed = _read_manifest_seed(base / "manifest.yaml")
-    suffix = f"_seed{seed}" if seed != manifest_seed else ""
+    suffix = f"_seed{output_seed}" if output_seed != manifest_seed else ""
     env = trueskill.TrueSkill()
-    pooled: Dict[str, tuple[float, float]] = {}
+    pooled: Dict[str, RatingStats] = {}
     for block in sorted(base.glob("*_players")):
-        n = block.name.split("_")[0]
-        keep_path = block / f"keepers_{n}.npy"
+        player_count = block.name.split("_")[0]
+        keep_path = block / f"keepers_{player_count}.npy"
         keepers = np.load(keep_path).tolist() if keep_path.exists() else []
         games = _load_ranked_games(block)
         ratings = _update_ratings(games, keepers, env)
-        with (Path("data") / f"ratings_{n}{suffix}.pkl").open("wb") as fh:
+        with (Path("data") / f"ratings_{player_count}{suffix}.pkl").open("wb") as fh:
             pickle.dump(ratings, fh)
         for k, v in ratings.items():
             if k in pooled:
-                m, s = pooled[k]
-                pooled[k] = ((m + v[0]) / 2, (s + v[1]) / 2)
+                r = pooled[k]
+                pooled[k] = RatingStats((r.mu + v.mu) / 2, (r.sigma + v.sigma) / 2)
             else:
                 pooled[k] = v
     with (Path("data") / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
@@ -131,11 +227,29 @@ def run_trueskill(seed: int = 0) -> None:
 
 
 def main(argv: List[str] | None = None) -> None:
+    """Entry point for the ``run_trueskill`` command line interface.
+
+    Parameters
+    ----------
+    argv : list[str] | None, optional
+        Arguments to parse instead of ``sys.argv``. Each argument should be a
+        separate element in the list.
+
+    Side Effects
+    ------------
+    Invokes :func:`run_trueskill`, which writes rating and tier files to the
+    ``data`` directory.
+    """
     parser = argparse.ArgumentParser(description="Compute TrueSkill ratings")
-    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--output-seed",
+        type=int,
+        default=0,
+        help="only used to name output files",
+    )
     args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run_trueskill(seed=args.seed)
+    run_trueskill(output_seed=args.output_seed)
 
 
 if __name__ == "__main__":
