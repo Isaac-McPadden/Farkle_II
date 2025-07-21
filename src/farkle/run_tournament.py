@@ -308,7 +308,7 @@ def run_tournament(
     n_jobs: int | None = None,
     collect_metrics: bool = False,
     row_output_directory: Path | None = None,  # None if --row-dir omitted
-    num_shuffles: int = NUM_SHUFFLES,
+    num_shuffles: int = NUM_SHUFFLES,  # noqa: ARG001
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
