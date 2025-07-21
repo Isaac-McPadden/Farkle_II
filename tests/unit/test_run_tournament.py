@@ -136,3 +136,43 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
     )
 
     assert saves["n"] == 2  # exactly one inside the loop, one at end
+
+
+def test_init_worker_valid_and_invalid(monkeypatch):
+    strats = _mini_strats(8)
+    rt._init_worker(strats, 4)
+    assert rt.N_PLAYERS == 4
+    assert rt.GAMES_PER_SHUFFLE == 8_160 // 4
+
+    with pytest.raises(ValueError):
+        rt._init_worker(strats, 7)
+
+    rt._init_worker(strats, 5)
+
+
+def test_run_tournament_player_count(monkeypatch, tmp_path):
+    class DummyFuture:
+        def __init__(self, result):
+            self._result = result
+        def result(self):
+            return self._result
+
+    class DummyPool:
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def submit(self, fn, arg):
+            return DummyFuture(fn(arg))
+
+    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)
+    monkeypatch.setattr(rt, "NUM_SHUFFLES", 1, raising=False)
+    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(rt, "as_completed", lambda d: list(d.keys()), raising=True)
+
+    rt.run_tournament(n_players=6, checkpoint_path=tmp_path / "c.pkl", n_jobs=None)
+
+    with pytest.raises(ValueError):
+        rt.run_tournament(n_players=7, checkpoint_path=tmp_path / "d.pkl", n_jobs=None)
