@@ -19,6 +19,14 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 
+# ---------------------------------------------------------------------------
+# Constants for file and directory locations used in this module
+# ---------------------------------------------------------------------------
+METRICS_PATH = Path("data/metrics.parquet")
+RATINGS_PATH = Path("data/ratings_pooled.pkl")
+FIG_DIR = Path("notebooks/figs")
+IMPORTANCE_PATH = Path("data/rf_importance.json")
+
 
 def run_rf(seed: int = 0) -> None:
     """Train the regressor and output feature importance and plots.
@@ -42,9 +50,8 @@ def run_rf(seed: int = 0) -> None:
     ``notebooks/figs/pd_<feature>.png``
         Partial dependence plots for each metric.
     """
-
-    metrics = pd.read_parquet("data/metrics.parquet")
-    with open("data/ratings_pooled.pkl", "rb") as fh:
+    metrics = pd.read_parquet(METRICS_PATH)
+    with open(RATINGS_PATH, "rb") as fh:
         ratings = pickle.load(fh)
     rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [v[0] for v in ratings.values()]})
     data = metrics.merge(rating_df, on="strategy", how="inner")
@@ -57,12 +64,10 @@ def run_rf(seed: int = 0) -> None:
 
     perm_importance = permutation_importance(model, X, y, n_repeats=5, random_state=seed)
     imp_dict = {c: float(s) for c, s in zip(X.columns, perm_importance["importances_mean"], strict=False)}
-    Path("data").mkdir(exist_ok=True)
-    with (Path("data") / "rf_importance.json").open("w") as fh:
+    IMPORTANCE_PATH.parent.mkdir(exist_ok=True)
+    with IMPORTANCE_PATH.open("w") as fh:
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
-
-    fig_dir = Path("notebooks/figs")
-    fig_dir.mkdir(parents=True, exist_ok=True)
+    FIG_DIR.mkdir(parents=True, exist_ok=True)
     for col in X.columns:
         with warnings.catch_warnings():
             warnings.filterwarnings(
@@ -70,7 +75,7 @@ def run_rf(seed: int = 0) -> None:
                 message="Attempting to set identical low and high ylims",
             )
             disp = PartialDependenceDisplay.from_estimator(model, X, [col])
-        disp.figure_.savefig(fig_dir / f"pd_{col}.png")
+        disp.figure_.savefig(FIG_DIR / f"pd_{col}.png")
         plt.close(disp.figure_)
 
 
