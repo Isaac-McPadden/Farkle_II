@@ -94,9 +94,9 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
         return t
     monkeypatch.setattr(rt.time, "perf_counter", fake_perf, raising=True)
 
-    def fake_as_completed(dct):  # yield first future, then advance time
+    def fake_as_completed(futures):  # yield first future, then advance time
         nonlocal t
-        it = iter(dct.keys())
+        it = iter(futures)
         fut1 = next(it)
         yield fut1  # after first chunk (t = 0)
         t += 31  # 31 s later → timer should fire

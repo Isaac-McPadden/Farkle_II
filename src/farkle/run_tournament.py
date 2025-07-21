@@ -304,9 +304,9 @@ def run_tournament(
     with ProcessPoolExecutor(
         max_workers=n_jobs, initializer=_init_worker, initargs=(strategies, N_PLAYERS)
     ) as pool:
-        future_to_index = {pool.submit(chunk_fn, c): i for i, c in enumerate(chunks)}
+        futures = [pool.submit(chunk_fn, c) for c in chunks]
 
-        for done, fut in enumerate(as_completed(future_to_index), 1):
+        for done, fut in enumerate(as_completed(futures), 1):
             result = fut.result()
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(
