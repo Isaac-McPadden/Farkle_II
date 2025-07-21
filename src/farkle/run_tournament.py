@@ -17,6 +17,7 @@ import pickle
 import time
 from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Sequence, Tuple, cast
@@ -34,6 +35,24 @@ NUM_SHUFFLES: int = 10_223
 GAMES_PER_SHUFFLE: int = 8_160 // N_PLAYERS  # 1 632
 DESIRED_SEC_PER_CHUNK: int = 10
 CKPT_EVERY_SEC: int = 30
+
+# ---------------------------------------------------------------------------
+# Dataclass configuration
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TournamentConfig:
+    """Runtime configuration for :func:`run_tournament`."""
+
+    n_players: int = N_PLAYERS
+    num_shuffles: int = NUM_SHUFFLES
+    desired_sec_per_chunk: int = DESIRED_SEC_PER_CHUNK
+    ckpt_every_sec: int = CKPT_EVERY_SEC
+
+    @property
+    def games_per_shuffle(self) -> int:
+        return 8_160 // self.n_players
 
 # metric fields tracked per winning strategy
 METRIC_LABELS: Tuple[str, ...] = (
@@ -53,18 +72,20 @@ METRIC_LABELS: Tuple[str, ...] = (
 # Worker initialisation and helpers
 # ---------------------------------------------------------------------------
 _STRATS: List[ThresholdStrategy] = []
+_CFG: TournamentConfig = TournamentConfig()
 
 
 def _init_worker(
     strategies: Sequence[ThresholdStrategy],
-    n_players: int,          # NEW
+    config: TournamentConfig,
 ) -> None:
-    """Run once in every worker; copy strats **and** table size."""
+    """Run once in every worker; copy strategies and config."""
 
-    global _STRATS, N_PLAYERS, GAMES_PER_SHUFFLE
+    global _STRATS, _CFG, N_PLAYERS, GAMES_PER_SHUFFLE
     _STRATS = list(strategies)
-    N_PLAYERS = n_players
-    GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
+    _CFG = config
+    N_PLAYERS = config.n_players
+    GAMES_PER_SHUFFLE = config.games_per_shuffle
 
 
 def _play_single_game(seed: int, strat_indices: Sequence[int]) -> Tuple[str, List[int]]:
@@ -101,7 +122,7 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
     Dict[str, Dict[str, float]],
     List[Dict[str, Any]],
 ]:
-    """Play GAMES_PER_SHUFFLE games and aggregate the results."""
+    """Play all games for one shuffle and aggregate the results."""
 
     rng = np.random.default_rng(seed)
     perm = rng.permutation(len(_STRATS))
@@ -248,32 +269,32 @@ def _save_checkpoint(
 
 def run_tournament(
     *,
-    n_players: int = 5,
+    config: TournamentConfig | None = None,
     global_seed: int = 0,
     checkpoint_path: Path | str = "checkpoint.pkl",
     n_jobs: int | None = None,
-    ckpt_every_sec: int = CKPT_EVERY_SEC,
     collect_metrics: bool = False,
     row_output_directory: Path | None = None, # None if --row-dir omitted
 ) -> None:
     """Orchestrate the multi-process tournament."""
         
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
-    
-    global N_PLAYERS, GAMES_PER_SHUFFLE
-    if n_players < 2:
+
+    cfg = config or TournamentConfig()
+    if cfg.n_players < 2:
         raise ValueError("n_players must be ≥2")
-    N_PLAYERS = n_players
-    GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
-    
-    games_per_sec = _measure_throughput(strategies[:N_PLAYERS])
-    shuffles_per_chunk = max(1, int(DESIRED_SEC_PER_CHUNK * games_per_sec // GAMES_PER_SHUFFLE))
+
+    games_per_sec = _measure_throughput(strategies[: cfg.n_players])
+    shuffles_per_chunk = max(
+        1,
+        int(cfg.desired_sec_per_chunk * games_per_sec // cfg.games_per_shuffle),
+    )
 
     master_rng = np.random.default_rng(global_seed)
-    shuffle_seeds = master_rng.integers(0, 2**32 - 1, size=NUM_SHUFFLES).tolist()
+    shuffle_seeds = master_rng.integers(0, 2**32 - 1, size=cfg.num_shuffles).tolist()
     chunks = [
         shuffle_seeds[i : i + shuffles_per_chunk]
-        for i in range(0, NUM_SHUFFLES, shuffles_per_chunk)
+        for i in range(0, cfg.num_shuffles, shuffles_per_chunk)
     ]
 
     logging.basicConfig(
@@ -302,7 +323,9 @@ def run_tournament(
         chunk_fn = _run_chunk
 
     with ProcessPoolExecutor(
-        max_workers=n_jobs, initializer=_init_worker, initargs=(strategies, N_PLAYERS)
+        max_workers=n_jobs,
+        initializer=_init_worker,
+        initargs=(strategies, cfg),
     ) as pool:
         future_to_index = {pool.submit(chunk_fn, c): i for i, c in enumerate(chunks)}
 
@@ -323,7 +346,7 @@ def run_tournament(
                 win_totals.update(cast(Counter[str], result))
 
             now = time.perf_counter()
-            if now - last_ckpt >= ckpt_every_sec:
+            if now - last_ckpt >= cfg.ckpt_every_sec:
                 _save_checkpoint(
                     ckpt_path,
                     win_totals,
@@ -373,11 +396,18 @@ def main() -> None:
     )
     args = p.parse_args()
 
+    cfg = TournamentConfig(
+        n_players=N_PLAYERS,
+        num_shuffles=NUM_SHUFFLES,
+        desired_sec_per_chunk=DESIRED_SEC_PER_CHUNK,
+        ckpt_every_sec=args.ckpt_sec,
+    )
+
     run_tournament(
+        config=cfg,
         global_seed=args.seed,
         checkpoint_path=args.checkpoint,
         n_jobs=args.jobs,
-        ckpt_every_sec=args.ckpt_sec,
         collect_metrics=args.metrics,
         row_output_directory=args.row_dir,
     )

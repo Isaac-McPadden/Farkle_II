@@ -84,8 +84,8 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "ProcessPoolExecutor",
                         lambda *a, **k: DummyPool())  # noqa: ARG005
 
-    # ── 2 · speed-up constants so only TWO chunks total ───────────────────────
-    monkeypatch.setattr(rt, "NUM_SHUFFLES", 2, raising=False)
+    # ── 2 · small config so only TWO chunks total ────────────────────────────
+    cfg = rt.TournamentConfig(num_shuffles=2, ckpt_every_sec=30)
 
     # ── 3 · fake wall-clock (t jumps +31 s before the 2nd chunk) ─────────────
     t = 0.0
@@ -120,9 +120,11 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
     monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
 
     # ── 6 · run – we expect 1 mid-run save + 1 final save ─────────────────────
-    rt.run_tournament(global_seed=0,
-                      checkpoint_path=tmp_path / "chk.pkl",
-                      n_jobs=None,
-                      ckpt_every_sec=30)
+    rt.run_tournament(
+        config=cfg,
+        global_seed=0,
+        checkpoint_path=tmp_path / "chk.pkl",
+        n_jobs=None,
+    )
 
     assert saves["n"] == 2  # exactly one inside the loop, one at end
