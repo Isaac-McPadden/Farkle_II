@@ -57,7 +57,7 @@ _STRATS: List[ThresholdStrategy] = []
 
 def _init_worker(
     strategies: Sequence[ThresholdStrategy],
-    n_players: int,          # NEW
+    n_players: int,  # NEW
 ) -> None:
     """Initialise per-process globals.
 
@@ -79,32 +79,13 @@ def _init_worker(
     """
 
     global _STRATS, N_PLAYERS, GAMES_PER_SHUFFLE
+    if 8_160 % n_players != 0:
+        raise ValueError("n_players must divide 8,160")
     _STRATS = list(strategies)
     N_PLAYERS = n_players
     GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
 
 
-def _play_single_game(seed: int, strat_indices: Sequence[int]) -> Tuple[str, List[int]]:
-    """Run one game and return the winning strategy string and metrics."""
-
-    table = [_STRATS[i] for i in strat_indices]
-    res: Dict[str, Any] = _play_game(seed, table)
-
-    winner = res["winner"]
-    strat_repr = res[f"{winner}_strategy"]
-    metrics = [
-        res["winning_score"],
-        res["n_rounds"],
-        res[f"{winner}_farkles"],
-        res[f"{winner}_rolls"],
-        res[f"{winner}_highest_turn"],
-        res[f"{winner}_smart_five_uses"],
-        res[f"{winner}_n_smart_five_dice"],
-        res[f"{winner}_smart_one_uses"],
-        res[f"{winner}_n_smart_one_dice"],
-        res[f"{winner}_hot_dice"],
-    ]
-    return strat_repr, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -245,12 +226,12 @@ def _run_chunk_metrics(
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
-
+        except ImportError:  # pragma: no cover - optional dependency
+            logging.warning("pyarrow not installed - row logging skipped")
+        else:
             assert row_dir is not None
             out = row_dir / f"rows_{mp.current_process().pid}_{time.time_ns()}.parquet"
             pq.write_table(pa.Table.from_pylist(all_rows), out)
-        except Exception:  # pragma: no cover - optional dependency
-            logging.warning("pyarrow not installed - row logging skipped")
 
     return wins_total, sums_total, sq_total
 
@@ -303,7 +284,8 @@ def run_tournament(
     n_jobs: int | None = None,
     ckpt_every_sec: int = CKPT_EVERY_SEC,
     collect_metrics: bool = False,
-    row_output_directory: Path | None = None, # None if --row-dir omitted
+    row_output_directory: Path | None = None,  # None if --row-dir omitted
+    num_shuffles: int = NUM_SHUFFLES,
 ) -> None:
     """Orchestrate the multi-process tournament.
 
@@ -335,23 +317,24 @@ def run_tournament(
     the tournament completes.  If ``row_output_directory`` is specified, each
     worker writes parquet files containing raw game rows into that folder.
     """
-        
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
-    
+
     global N_PLAYERS, GAMES_PER_SHUFFLE
     if n_players < 2:
         raise ValueError("n_players must be ≥2")
+    if 8_160 % n_players != 0:
+        raise ValueError("n_players must divide 8,160")
     N_PLAYERS = n_players
     GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
-    
+
     games_per_sec = _measure_throughput(strategies[:N_PLAYERS])
     shuffles_per_chunk = max(1, int(DESIRED_SEC_PER_CHUNK * games_per_sec // GAMES_PER_SHUFFLE))
 
     master_rng = np.random.default_rng(global_seed)
-    shuffle_seeds = master_rng.integers(0, 2**32 - 1, size=NUM_SHUFFLES).tolist()
+    shuffle_seeds = master_rng.integers(0, 2**32 - 1, size=num_shuffles).tolist()
     chunks = [
         shuffle_seeds[i : i + shuffles_per_chunk]
-        for i in range(0, NUM_SHUFFLES, shuffles_per_chunk)
+        for i in range(0, num_shuffles, shuffles_per_chunk)
     ]
 
     logging.basicConfig(
@@ -382,9 +365,9 @@ def run_tournament(
     with ProcessPoolExecutor(
         max_workers=n_jobs, initializer=_init_worker, initargs=(strategies, N_PLAYERS)
     ) as pool:
-        future_to_index = {pool.submit(chunk_fn, c): i for i, c in enumerate(chunks)}
+        futures = [pool.submit(chunk_fn, c) for c in chunks]
 
-        for done, fut in enumerate(as_completed(future_to_index), 1):
+        for done, fut in enumerate(as_completed(futures), 1):
             result = fut.result()
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(
@@ -444,6 +427,12 @@ def main() -> None:
         help="collect per-strategy means/variances",
     )
     p.add_argument(
+        "--num-shuffles",
+        type=int,
+        default=NUM_SHUFFLES,
+        help="number of shuffles to simulate",
+    )
+    p.add_argument(
         "--row-dir",
         type=Path,
         metavar="DIR",
@@ -458,6 +447,7 @@ def main() -> None:
         ckpt_every_sec=args.ckpt_sec,
         collect_metrics=args.metrics,
         row_output_directory=args.row_dir,
+        num_shuffles=args.num_shuffles,
     )
 
 
