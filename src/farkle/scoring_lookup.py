@@ -1,4 +1,13 @@
 # src/farkle/scoring_lookup.py  – Numba- & cache-ready
+"""Evaluate Farkle dice rolls using Numba accelerated routines.
+
+This module exposes the key functions :func:`_evaluate_nb`,
+:func:`evaluate`, :func:`score_roll`, and
+:func:`build_score_lookup_table` for scoring rolls or generating a
+lookup table.  Inputs are 6-tuples of counts whose elements are
+non‐negative and sum to at most six.
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache
