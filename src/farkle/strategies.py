@@ -5,7 +5,7 @@ import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable
 
 import numba as nb
 import pandas as pd
@@ -34,8 +34,7 @@ __all__: list[str] = [
 ]
 
 
-DiceRoll = List[int]
-"""A list of integers 1-6 representing a single dice roll."""
+from farkle.types import DiceRoll
 
 
 # ---------------------------------------------------------------------------
