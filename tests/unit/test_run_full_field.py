@@ -27,16 +27,16 @@ def test_main_invokes_run_tournament(monkeypatch: MonkeyPatch, tmp_path: rf.Path
     calls = []
 
     def fake_run_tournament(**kwargs):
-        calls.append(kwargs["row_output_directory"])
+        calls.append((kwargs["row_output_directory"], kwargs.get("num_shuffles")))
 
     monkeypatch.setattr("farkle.run_tournament.run_tournament", fake_run_tournament)
-    monkeypatch.setattr(rf.importlib, "reload", lambda mod: mod)
     monkeypatch.setattr(rf.mp, "set_start_method", lambda *a, **k: None)  # noqa: ARG005
     monkeypatch.chdir(tmp_path)
 
     rf.main()
 
     players = [2, 3, 4, 5, 6, 8, 10, 12]
-    seen = sorted(int(p.parent.name.split("_")[0]) for p in calls)
+    seen = sorted(int(p[0].parent.name.split("_")[0]) for p in calls)
     assert seen == players
     assert len(calls) == len(players)
+    assert all(isinstance(nshuf, int) for _, nshuf in calls)
