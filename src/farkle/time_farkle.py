@@ -29,7 +29,7 @@ def make_random_strategies(num_players: int, seed: int | None) -> list:
 
     Inputs
     ------
-    num_players: int 
+    num_players: int
     seed: int | None
 
     Returns
@@ -55,36 +55,28 @@ def measure_sim_times(argv: list[str] | None = None):
     -------
     None
     """
-    p = argparse.ArgumentParser(
-        description="Time one Farkle game and a batch of N games."
-    )
+    p = argparse.ArgumentParser(description="Time one Farkle game and a batch of N games.")
     p.add_argument(
-        "-n", "--n_games", type=int, default=1000,
-        help="Number of games to simulate in batch"
+        "-n", "--n_games", type=int, default=1000, help="Number of games to simulate in batch"
     )
-    p.add_argument(
-        "-p", "--players", type=int, default=5,
-        help="Number of players per game"
-    )
-    p.add_argument(
-        "-s", "--seed", type=int, default=42,
-        help="Master seed for reproducible RNG"
-    )
-    p.add_argument(
-        "-j", "--jobs", type=int, default=1,
-        help="Number of parallel processes"
-    )
+    p.add_argument("-p", "--players", type=int, default=5, help="Number of players per game")
+    p.add_argument("-s", "--seed", type=int, default=42, help="Master seed for reproducible RNG")
+    p.add_argument("-j", "--jobs", type=int, default=1, help="Number of parallel processes")
     args = p.parse_args(argv)
+
+    if args.n_games <= 0:
+        raise argparse.ArgumentTypeError("--n_games must be > 0")
+    if args.players <= 0:
+        raise argparse.ArgumentTypeError("--players must be > 0")
+    if args.jobs <= 0:
+        raise argparse.ArgumentTypeError("--jobs must be > 0")
 
     # 1) Build a fixed roster of random strategies
     strategies = make_random_strategies(args.players, args.seed)
 
     # 2) Time a single game
     t0 = time.perf_counter()
-    gm = simulate_one_game(
-        strategies=strategies,
-        seed=args.seed
-    )
+    gm = simulate_one_game(strategies=strategies, seed=args.seed)
     t1 = time.perf_counter()
     print("\nSingle game:")
     print(f"  Time elapsed      : {t1-t0:.6f} s")
@@ -96,19 +88,18 @@ def measure_sim_times(argv: list[str] | None = None):
     # 3) Time a batch of N games
     t0 = time.perf_counter()
     df: pd.DataFrame = simulate_many_games(
-        n_games=args.n_games,
-        strategies=strategies,
-        seed=args.seed,
-        n_jobs=args.jobs
+        n_games=args.n_games, strategies=strategies, seed=args.seed, n_jobs=args.jobs
     )
     t1 = time.perf_counter()
     print(f"\nBatch of {args.n_games} games (jobs={args.jobs}):")
     print(f"  Time elapsed      : {t1-t0:.6f} s")
     print("  Winners breakdown :")
     print(df["winner"].value_counts().to_string())
-    
+
+
 def main():
     measure_sim_times()
+
 
 if __name__ == "__main__":
     main()
