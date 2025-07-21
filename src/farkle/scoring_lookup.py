@@ -193,7 +193,6 @@ def evaluate(counts: SixFaceCounts) -> tuple[int, int, int, int]:
         (score, used, single_fives, single_ones) in the same format as
         :func:`_evaluate_nb`.
     """
-
     if len(counts) != 6:
         raise ValueError("counts must contain exactly six values")
     if not all(isinstance(c, int) for c in counts):
