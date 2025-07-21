@@ -29,7 +29,7 @@ def make_random_strategies(num_players: int, seed: int | None) -> list:
 
     Inputs
     ------
-    num_players: int 
+    num_players: int
     seed: int | None
 
     Returns
@@ -106,9 +106,11 @@ def measure_sim_times(argv: list[str] | None = None):
     print(f"  Time elapsed      : {t1-t0:.6f} s")
     print("  Winners breakdown :")
     print(df["winner"].value_counts().to_string())
-    
+
+
 def main():
     measure_sim_times()
+
 
 if __name__ == "__main__":
     main()
