@@ -1,3 +1,10 @@
+"""Train a gradient boosting model to analyse strategy metrics.
+
+This script reads the feature metrics and pooled ratings, fits a
+``HistGradientBoostingRegressor`` to predict strategy ``mu`` values, then writes
+permutation feature importances and partial dependence plots.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -22,11 +29,32 @@ IMPORTANCE_PATH = Path("data/rf_importance.json")
 
 
 def run_rf(seed: int = 0) -> None:
+    """Train the regressor and output feature importance and plots.
+
+    Parameters
+    ----------
+    seed : int, optional
+        Random seed for model fitting and permutation importance.
+
+    Reads
+    -----
+    ``data/metrics.parquet``
+        Per-strategy feature metrics.
+    ``data/ratings_pooled.pkl``
+        Pickled mapping of strategy names to pooled ``(mu, sigma)`` tuples.
+
+    Writes
+    ------
+    ``data/rf_importance.json``
+        JSON file mapping metric names to permutation importance scores.
+    ``notebooks/figs/pd_<feature>.png``
+        Partial dependence plots for each metric.
+    """
     metrics = pd.read_parquet(METRICS_PATH)
     with open(RATINGS_PATH, "rb") as fh:
         ratings = pickle.load(fh)
-    df_mu = pd.DataFrame({"strategy": list(ratings), "mu": [v[0] for v in ratings.values()]})
-    data = metrics.merge(df_mu, on="strategy", how="inner")
+    rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [v[0] for v in ratings.values()]})
+    data = metrics.merge(rating_df, on="strategy", how="inner")
     X = data.drop(columns=["strategy", "mu"])
     X = X.astype(float)
     y = data["mu"]
@@ -34,12 +62,11 @@ def run_rf(seed: int = 0) -> None:
     model = HistGradientBoostingRegressor(random_state=seed)
     model.fit(X, y)
 
-    imp = permutation_importance(model, X, y, n_repeats=5, random_state=seed)
-    imp_dict = {c: float(s) for c, s in zip(X.columns, imp["importances_mean"], strict=False)}
+    perm_importance = permutation_importance(model, X, y, n_repeats=5, random_state=seed)
+    imp_dict = {c: float(s) for c, s in zip(X.columns, perm_importance["importances_mean"], strict=False)}
     IMPORTANCE_PATH.parent.mkdir(exist_ok=True)
     with IMPORTANCE_PATH.open("w") as fh:
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
-
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     for col in X.columns:
         with warnings.catch_warnings():
@@ -53,6 +80,15 @@ def run_rf(seed: int = 0) -> None:
 
 
 def main(argv: List[str] | None = None) -> None:
+    """Entry point for ``python -m farkle.run_rf``.
+
+    Parameters
+    ----------
+    argv : List[str] | None, optional
+        Command line arguments, or ``None`` to use ``sys.argv``. Only a single
+        ``--seed`` option is accepted.
+    """
+
     parser = argparse.ArgumentParser(description="Random forest analysis")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv or [])
@@ -61,4 +97,3 @@ def main(argv: List[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
-    

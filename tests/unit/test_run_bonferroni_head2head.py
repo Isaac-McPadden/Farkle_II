@@ -1,0 +1,51 @@
+import json
+
+import pandas as pd
+
+import farkle.run_bonferroni_head2head as rb
+from farkle.strategies import ThresholdStrategy
+from farkle.simulation import simulate_many_games_from_seeds
+
+
+def test_simulate_many_games_from_seeds(monkeypatch):
+    def fake_play(seed, strategies, target_score=10_000):
+        return {
+            "winner": f"P{seed}",
+            "winning_score": seed,
+            "n_rounds": seed,
+            "P1_strategy": str(strategies[0]),
+        }
+
+    import farkle.simulation as sim
+    monkeypatch.setattr(sim, "_play_game", fake_play, raising=True)
+    seeds1 = [1, 2, 3]
+    seeds2 = [4, 5, 6]
+    strat = ThresholdStrategy(300, 1, True, True)
+    df1 = simulate_many_games_from_seeds(seeds=seeds1, strategies=[strat], n_jobs=1)
+    df2 = simulate_many_games_from_seeds(seeds=seeds2, strategies=[strat], n_jobs=1)
+
+    assert len(df1) == len(seeds1)
+    assert len(df2) == len(seeds2)
+    assert not df1.equals(df2)
+
+
+def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    tiers_path = data_dir / "tiers.json"
+    tiers_path.write_text(json.dumps({"A": 1, "B": 1}))
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(rb, "games_for_power", lambda n, method="bonferroni", pairwise=True: 1)
+    monkeypatch.setattr(rb, "bonferroni_pairs", lambda elites, games_needed, seed: pd.DataFrame({"a": ["A"], "b": ["B"], "seed": [seed]}))
+    monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
+
+    def fake_many_games(n_games, strategies, seed, n_jobs):
+        return pd.DataFrame({"winner_strategy": ["A"] * n_games})
+
+    monkeypatch.setattr(rb, "simulate_many_games", fake_many_games)
+
+    rb.run_bonferroni_head2head(seed=0)
+    out_csv = data_dir / "bonferroni_pairwise.csv"
+    df = pd.read_csv(out_csv)
+    assert set(df.columns) == {"a", "b", "wins_a", "wins_b", "pvalue"}
