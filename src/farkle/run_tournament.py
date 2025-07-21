@@ -20,7 +20,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 
@@ -379,10 +379,11 @@ def run_tournament(
 
     collect_rows = row_output_directory is not None
     if collect_rows:
+        assert row_output_directory is not None
         row_output_directory.mkdir(parents=True, exist_ok=True)
 
     if collect_metrics or collect_rows:
-        chunk_fn = partial(
+        chunk_fn: Callable[[Sequence[int]], object] = partial(
             _run_chunk_metrics, collect_rows=collect_rows, row_dir=row_output_directory
         )
     else:

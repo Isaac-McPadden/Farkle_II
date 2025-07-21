@@ -103,7 +103,7 @@ def simulate_many_games_stream(
             writer = csv.DictWriter(file_handle, fieldnames=header)
             writer.writeheader()
             for gid, s in enumerate(seeds, 1):
-                row = _single_game_row(gid, s, strategies, target_score)
+                row = _single_game_row(gid, int(s), strategies, target_score)
                 writer.writerow(row)
     else:
         # first truncate file and write header, then append via worker
@@ -125,7 +125,7 @@ def simulate_many_games_stream(
                 queue.put(row)
 
         queue.put(None)  # poison pill
-        writer.join()
+        writer_process.join()
 
 
 # ------- helpers shared by both execution paths --------------------------
