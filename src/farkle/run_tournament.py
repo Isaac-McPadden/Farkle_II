@@ -68,6 +68,24 @@ METRIC_LABELS: Tuple[str, ...] = (
     "winner_hot_dice",
 )
 
+
+def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
+    """Return the metric vector for the winning player."""
+
+    return [
+        row["winning_score"],
+        row["n_rounds"],
+        row[f"{winner}_farkles"],
+        row[f"{winner}_rolls"],
+        row[f"{winner}_highest_turn"],
+        row[f"{winner}_smart_five_uses"],
+        row[f"{winner}_n_smart_five_dice"],
+        row[f"{winner}_smart_one_uses"],
+        row[f"{winner}_n_smart_one_dice"],
+        row[f"{winner}_hot_dice"],
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Worker initialisation and helpers
 # ---------------------------------------------------------------------------
@@ -88,8 +106,6 @@ def _init_worker(
     _CFG = config
     N_PLAYERS = config.n_players
     GAMES_PER_SHUFFLE = config.games_per_shuffle
-
-
 
 
 # ---------------------------------------------------------------------------
@@ -122,18 +138,7 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
         row = _play_game(int(gseed), [_STRATS[i] for i in idxs])
         winner = row["winner"]
         strat_repr = row[f"{winner}_strategy"]
-        metrics = [
-            row["winning_score"],
-            row["n_rounds"],
-            row[f"{winner}_farkles"],
-            row[f"{winner}_rolls"],
-            row[f"{winner}_highest_turn"],
-            row[f"{winner}_smart_five_uses"],
-            row[f"{winner}_n_smart_five_dice"],
-            row[f"{winner}_smart_one_uses"],
-            row[f"{winner}_n_smart_one_dice"],
-            row[f"{winner}_hot_dice"],
-        ]
+        metrics = _extract_winner_metrics(row, winner)
         wins[strat_repr] += 1
         for label, value in zip(METRIC_LABELS, metrics, strict=True):
             sums[label][strat_repr] += value
