@@ -61,10 +61,10 @@ def strategy_yaml(s: ThresholdStrategy) -> str:
     d = asdict(s)
     
     # YAML-friendly booleans (lowercase)
-    def _fmt(v): 
+    def format_bool(v):
         return str(v).lower() if isinstance(v, bool) else v
-    
-    lines = [f"{k:<15}: {_fmt(v)}" for k, v in d.items()]
+
+    lines = [f"{k:<15}: {format_bool(v)}" for k, v in d.items()]
     return "\n".join(lines)
 
 
@@ -139,13 +139,13 @@ def watch_game(seed: int | None = None) -> None:
     p2 = TracePlayer("P2", s2, rng=np.random.default_rng(rng.integers(2**32)))
 
     game = FarkleGame([p1, p2], target_score=10_000)
-    gm = game.play()
+    metrics = game.play()
 
     log.info("\n===== final result =====")
     log.info(
-        f"Winner: {gm.winner}  "
-        f"score={gm.winning_score}  "
-        f"rounds={gm.n_rounds}"
+        f"Winner: {metrics.winner}  "
+        f"score={metrics.winning_score}  "
+        f"rounds={metrics.n_rounds}"
     )
 
 
