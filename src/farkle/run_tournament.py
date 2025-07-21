@@ -82,33 +82,14 @@ def _init_worker(
     """Run once in every worker; copy strategies and config."""
 
     global _STRATS, _CFG, N_PLAYERS, GAMES_PER_SHUFFLE
+    if 8_160 % n_players != 0:
+        raise ValueError("n_players must divide 8,160")
     _STRATS = list(strategies)
     _CFG = config
     N_PLAYERS = config.n_players
     GAMES_PER_SHUFFLE = config.games_per_shuffle
 
 
-def _play_single_game(seed: int, strat_indices: Sequence[int]) -> Tuple[str, List[int]]:
-    """Run one game and return the winning strategy string and metrics."""
-
-    table = [_STRATS[i] for i in strat_indices]
-    res: Dict[str, Any] = _play_game(seed, table)
-
-    winner = res["winner"]
-    strat_repr = res[f"{winner}_strategy"]
-    metrics = [
-        res["winning_score"],
-        res["n_rounds"],
-        res[f"{winner}_farkles"],
-        res[f"{winner}_rolls"],
-        res[f"{winner}_highest_turn"],
-        res[f"{winner}_smart_five_uses"],
-        res[f"{winner}_n_smart_five_dice"],
-        res[f"{winner}_smart_one_uses"],
-        res[f"{winner}_n_smart_one_dice"],
-        res[f"{winner}_hot_dice"],
-    ]
-    return strat_repr, metrics
 
 
 # ---------------------------------------------------------------------------
@@ -217,12 +198,12 @@ def _run_chunk_metrics(
         try:
             import pyarrow as pa
             import pyarrow.parquet as pq
-
+        except ImportError:  # pragma: no cover - optional dependency
+            logging.warning("pyarrow not installed - row logging skipped")
+        else:
             assert row_dir is not None
             out = row_dir / f"rows_{mp.current_process().pid}_{time.time_ns()}.parquet"
             pq.write_table(pa.Table.from_pylist(all_rows), out)
-        except Exception:  # pragma: no cover - optional dependency
-            logging.warning("pyarrow not installed - row logging skipped")
 
     return wins_total, sums_total, sq_total
 
@@ -274,10 +255,15 @@ def run_tournament(
     checkpoint_path: Path | str = "checkpoint.pkl",
     n_jobs: int | None = None,
     collect_metrics: bool = False,
-    row_output_directory: Path | None = None, # None if --row-dir omitted
+    row_output_directory: Path | None = None,  # None if --row-dir omitted
+    num_shuffles: int = NUM_SHUFFLES,
 ) -> None:
-    """Orchestrate the multi-process tournament."""
-        
+    """Orchestrate the multi-process tournament.
+
+    Pass a ``TournamentConfig`` to override defaults; otherwise the module
+    defaults (5 players, 10 223 shuffles, …) are used.
+    """
+
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
 
     cfg = config or TournamentConfig()
@@ -327,9 +313,9 @@ def run_tournament(
         initializer=_init_worker,
         initargs=(strategies, cfg),
     ) as pool:
-        future_to_index = {pool.submit(chunk_fn, c): i for i, c in enumerate(chunks)}
+        futures = [pool.submit(chunk_fn, c) for c in chunks]
 
-        for done, fut in enumerate(as_completed(future_to_index), 1):
+        for done, fut in enumerate(as_completed(futures), 1):
             result = fut.result()
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(
@@ -389,6 +375,12 @@ def main() -> None:
         help="collect per-strategy means/variances",
     )
     p.add_argument(
+        "--num-shuffles",
+        type=int,
+        default=NUM_SHUFFLES,
+        help="number of shuffles to simulate",
+    )
+    p.add_argument(
         "--row-dir",
         type=Path,
         metavar="DIR",
@@ -410,6 +402,7 @@ def main() -> None:
         n_jobs=args.jobs,
         collect_metrics=args.metrics,
         row_output_directory=args.row_dir,
+        num_shuffles=args.num_shuffles,
     )
 
 
