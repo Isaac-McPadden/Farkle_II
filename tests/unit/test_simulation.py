@@ -54,6 +54,14 @@ def test_custom_grid_size():
     assert len(meta) == 4080
 
 
+def test_experiment_size_subset_options():
+    cs_opts = [True]
+    cd_opts = [True, False]
+    strats, _ = generate_strategy_grid(consider_score_opts=cs_opts, consider_dice_opts=cd_opts)
+    size = experiment_size(consider_score_opts=cs_opts, consider_dice_opts=cd_opts)
+    assert size == len(strats)
+
+    
 def test_simulate_many_games_from_seeds_matches():
     strats = [ThresholdStrategy(score_threshold=100, dice_threshold=0)]
     rng_seed = 42
@@ -63,4 +71,3 @@ def test_simulate_many_games_from_seeds_matches():
     df1 = simulate_many_games_from_seeds(seeds=seeds, strategies=strats, n_jobs=1)
     df2 = simulate_many_games(n_games=n_games, strategies=strats, seed=rng_seed, n_jobs=1)
     pd.testing.assert_frame_equal(df1, df2)
-    
