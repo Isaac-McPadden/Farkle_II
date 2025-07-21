@@ -19,7 +19,7 @@ from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from functools import partial
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 
@@ -57,7 +57,7 @@ _STRATS: List[ThresholdStrategy] = []
 
 def _init_worker(
     strategies: Sequence[ThresholdStrategy],
-    n_players: int,          # NEW
+    n_players: int,  # NEW
 ) -> None:
     """Run once in every worker; copy strats **and** table size."""
 
@@ -254,18 +254,18 @@ def run_tournament(
     n_jobs: int | None = None,
     ckpt_every_sec: int = CKPT_EVERY_SEC,
     collect_metrics: bool = False,
-    row_output_directory: Path | None = None, # None if --row-dir omitted
+    row_output_directory: Path | None = None,  # None if --row-dir omitted
 ) -> None:
     """Orchestrate the multi-process tournament."""
-        
+
     strategies, _ = generate_strategy_grid()  # 8 160 strategies
-    
+
     global N_PLAYERS, GAMES_PER_SHUFFLE
     if n_players < 2:
         raise ValueError("n_players must be ≥2")
     N_PLAYERS = n_players
     GAMES_PER_SHUFFLE = 8_160 // N_PLAYERS
-    
+
     games_per_sec = _measure_throughput(strategies[:N_PLAYERS])
     shuffles_per_chunk = max(1, int(DESIRED_SEC_PER_CHUNK * games_per_sec // GAMES_PER_SHUFFLE))
 
@@ -292,10 +292,11 @@ def run_tournament(
 
     collect_rows = row_output_directory is not None
     if collect_rows:
+        assert row_output_directory is not None
         row_output_directory.mkdir(parents=True, exist_ok=True)
 
     if collect_metrics or collect_rows:
-        chunk_fn = partial(
+        chunk_fn: Callable[[Sequence[int]], object] = partial(
             _run_chunk_metrics, collect_rows=collect_rows, row_dir=row_output_directory
         )
     else:
