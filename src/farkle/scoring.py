@@ -53,7 +53,14 @@ def faces_to_counts_tuple(faces: Sequence[int]) -> Counts6:
     -------
     Counts6:
         Six-element tuple of counts for faces one through six.
+
+    Raises
+    ------
+    ValueError:
+        If any face value is outside the ``1``–``6`` range.
     """
+    if not all(1 <= f <= 6 for f in faces):
+        raise ValueError("dice faces must be between 1 and 6")
     return _faces_to_counts_nb(np.asarray(faces, dtype=np.int64))
 
 

@@ -301,3 +301,18 @@ def test_default_score_cases(dice_roll, turn_pre, threshold, smart5, smart1, exp
         dice_threshold = 3,
     )
     assert out == expected
+
+
+@pytest.mark.parametrize(
+    "faces",
+    [
+        [0, 1, 2],
+        [1, 2, 7],
+        [-1, 3, 4],
+    ],
+)
+def test_faces_to_counts_tuple_invalid_faces(faces):
+    import farkle.scoring as scoring
+
+    with pytest.raises(ValueError):
+        scoring.faces_to_counts_tuple(faces)
