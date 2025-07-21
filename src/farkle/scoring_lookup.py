@@ -1,4 +1,13 @@
 # src/farkle/scoring_lookup.py  – Numba- & cache-ready
+"""Evaluate Farkle dice rolls using Numba accelerated routines.
+
+This module exposes the key functions :func:`_evaluate_nb`,
+:func:`evaluate`, :func:`score_roll`, and
+:func:`build_score_lookup_table` for scoring rolls or generating a
+lookup table.  Inputs are 6-tuples of counts whose elements are
+non‐negative and sum to at most six.
+"""
+
 from __future__ import annotations
 
 from functools import lru_cache
@@ -77,13 +86,14 @@ def _four_kind_plus_pair(ctr: Int64Arr1D) -> Tuple[int, int]:
 # 1.  Master evaluator (Numba core + pure-Python wrapper)
 # ---------------------------------------------------------------------------
 
+
 @nb.njit(cache=True)
 def _evaluate_nb(
-    c1: int, 
-    c2: int, 
-    c3: int, 
-    c4: int, 
-    c5: int, 
+    c1: int,
+    c2: int,
+    c3: int,
+    c4: int,
+    c5: int,
     c6: int,
 ) -> tuple[int, int, int, int]:
     """Score a roll purely within Numba.
@@ -177,11 +187,11 @@ def score_roll(roll: list[int]) -> Tuple[int, int]:
         and how many dice contributed to the score.
     """
     key = (
-        roll.count(1), 
-        roll.count(2), 
+        roll.count(1),
+        roll.count(2),
         roll.count(3),
-        roll.count(4), 
-        roll.count(5), 
+        roll.count(4),
+        roll.count(5),
         roll.count(6),
     )
     pts, used, *_ = evaluate(key)
@@ -197,7 +207,7 @@ def build_score_lookup_table() -> dict[Counts6, tuple[int, int, Counts6, int, in
     """
     Fast O(1) table for any ≤6-dice roll.
     Loads pre-computed scores for every multiset of up to six dice.
-    
+
     Inputs:
         None
 
@@ -208,16 +218,20 @@ def build_score_lookup_table() -> dict[Counts6, tuple[int, int, Counts6, int, in
         counts repeats the key so callers can keep a reference.
     """
     look: Dict[
-        Tuple[int, int, int, int, int, int], 
-        Tuple[int, int, Tuple[int, int, int, int, int, int], int, int]
+        Tuple[int, int, int, int, int, int],
+        Tuple[int, int, Tuple[int, int, int, int, int, int], int, int],
     ] = {}
     faces = range(1, 7)
 
     for n in range(1, 7):
         for multiset in combinations_with_replacement(faces, n):
             key = (
-                multiset.count(1), multiset.count(2), multiset.count(3),
-                multiset.count(4), multiset.count(5), multiset.count(6),
+                multiset.count(1),
+                multiset.count(2),
+                multiset.count(3),
+                multiset.count(4),
+                multiset.count(5),
+                multiset.count(6),
             )
             if key in look:  # skip duplicates (e.g. (2,2,2,5,5) permutes)
                 continue
