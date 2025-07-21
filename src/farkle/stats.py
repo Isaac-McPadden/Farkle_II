@@ -14,7 +14,45 @@ def games_for_power(
     method: str = "bh",  # "bh" or "bonferroni"
     pairwise: bool = True # baseline vs all or full pairwise
 ) -> int:
-    """Return games per strategy for desired power."""
+    """Calculate the number of games needed for each strategy.
+
+    Parameters
+    ----------
+    n_strategies : int
+        Total number of strategies included in the experiment.
+    delta : float, default 0.03
+        Smallest detectable difference in win probability between two
+        strategies.
+    base_p : float, default 0.5
+        Baseline probability of winning against which ``delta`` is
+        measured.
+    alpha : float, default 0.05
+        Desired family wise error rate.
+    power : float, default 0.8
+        Target statistical power for each comparison.
+    method : {{'bh', 'bonferroni'}}, default ``'bh'``
+        Multiple comparison correction to apply.
+    pairwise : bool, default ``True``
+        If ``True`` perform a full pairwise analysis where each strategy
+        is compared with every other.  If ``False`` only compare each
+        strategy against a single baseline.
+
+    Returns
+    -------
+    int
+        Number of games required per strategy (rounded up to the next
+        integer).
+
+    Raises
+    ------
+    ValueError
+        If ``method`` is not ``'bh'`` or ``'bonferroni'``.
+
+    Examples
+    --------
+    >>> games_for_power(n_strategies=3, delta=0.2, method='bh')
+    111
+    """
     
     # per-test alpha*
     if method == "bonferroni":
