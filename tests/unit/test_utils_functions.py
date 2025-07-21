@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from farkle.utils import bh_correct, bonferroni_pairs, build_tiers
 
@@ -22,6 +23,13 @@ def test_build_tiers_multiple_tiers():
     assert tiers["A"] == 1
     assert tiers["B"] == 2
     assert tiers["C"] == 2
+
+
+def test_build_tiers_key_mismatch():
+    mu = {"A": 100.0}
+    sigma = {"A": 1.0, "B": 1.0}
+    with pytest.raises(ValueError):
+        build_tiers(mu, sigma)
 
 
 def test_bh_correct_typical():
