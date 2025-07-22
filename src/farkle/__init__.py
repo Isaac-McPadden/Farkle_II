@@ -12,6 +12,7 @@ import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _v
 from pathlib import Path
+
 # Path to the project's pyproject.toml for local version fallback
 PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
 
@@ -38,7 +39,8 @@ _orig_unlink = pathlib.Path.unlink
 
 
 def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
-    """Wrapper around Path.unlink that squashes the WinError 32 race.
+    """Wrapper around ``Path.unlink`` that squashes the WinError 32 race.
+
     Deletes ``self`` while ignoring transient permission issues.
 
     Parameters
@@ -56,12 +58,12 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
     re-raised.
     """
     with contextlib.suppress(PermissionError):
-    try:
-        return _orig_unlink(self, missing_ok=missing_ok)
-    except PermissionError as e:
-        if getattr(e, "winerror", None) == 32:
-            return None
-        raise
+        try:
+            return _orig_unlink(self, missing_ok=missing_ok)
+        except PermissionError as e:
+            if getattr(e, "winerror", None) == 32:
+                return None
+            raise
 
 
 # Patch globally (harmless on POSIX; vital on Windows)
