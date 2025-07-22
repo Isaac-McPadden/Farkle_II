@@ -25,7 +25,7 @@ def build_tiers(
     stdevs :
         Mapping ``strategy → sample σ`` (must have the same keys as *means*).
     z :
-        One-sided *z*-score for the desired confidence level.  
+        One-sided *z*-score for the desired confidence level.
         Default **2.326** ≈ 99 % one-sided (α ≈ 0.01).
 
     Returns
@@ -45,12 +45,12 @@ def build_tiers(
     {'A': 1, 'B': 1}
     """
 
-    if set(means) != set(stdevs):                         # extra safety check
+    if set(means) != set(stdevs):  # extra safety check
         raise ValueError("means and stdevs must have identical strategy keys")
 
     sorted_items = sorted(means.items(), key=lambda kv: kv[1], reverse=True)
     tier_map: Dict[str, int] = {}
-    if not sorted_items:                                  # fast-exit for empty
+    if not sorted_items:  # fast-exit for empty
         return tier_map
 
     current_tier = 1
@@ -60,7 +60,7 @@ def build_tiers(
     for name, _ in sorted_items[1:]:
         lower = means[name] - z * stdevs[name]
         upper = means[name] + z * stdevs[name]
-        if upper < current_lower:                         # strict separation
+        if upper < current_lower:  # strict separation
             current_tier += 1
             current_lower = lower
         else:
@@ -111,14 +111,14 @@ def bh_correct(pvals: np.ndarray, alpha: float = 0.02) -> np.ndarray:
     return benjamini_hochberg(pvals, alpha)
 
 
-def bonferroni_pairs(strats: List[str], games_needed: int, seed: int) -> pd.DataFrame:
-     """
+def bonferroni_pairs(strategies: List[str], games_needed: int, seed: int) -> pd.DataFrame:
+    """
     Create a deterministic schedule of head-to-head games for every strategy
     pair, assigning a unique RNG seed to each game.
 
     Parameters
     ----------
-    strats :
+    strategies :
         List of strategy names.
     games_needed :
         **Non-negative** number of games to schedule per pair.
@@ -130,12 +130,12 @@ def bonferroni_pairs(strats: List[str], games_needed: int, seed: int) -> pd.Data
     pandas.DataFrame
         Columns ``"a"``, ``"b"``, ``"seed"`` – one row per game.
     """
-    if games_needed < 0:                                  # check from other branch
+    if games_needed < 0:  # explicit sanity check
         raise ValueError("games_needed must be non-negative")
 
     random_generator = np.random.default_rng(seed)
     schedule_rows = []
-    for strat_a, strat_b in itertools.combinations(strats, 2):
+    for strat_a, strat_b in itertools.combinations(strategies, 2):
         random_seeds = random_generator.integers(0, MAX_UINT32, size=games_needed)
         for game_seed in random_seeds:
             schedule_rows.append({"a": strat_a, "b": strat_b, "seed": int(game_seed)})
