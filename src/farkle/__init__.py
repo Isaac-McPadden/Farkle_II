@@ -2,26 +2,22 @@
 
 Note
 ----
-At import time :class:`pathlib.Path.unlink` is monkey patched with a helper that
-safely suppresses transient ``PermissionError`` on Windows.
+At import time :class:`pathlib.Path.unlink` is monkey patched with a helper
+that safely suppresses transient ``PermissionError`` on Windows.
 """
 
-import contextlib
 import pathlib
 import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _v
 from pathlib import Path
-# Path to the project's pyproject.toml for local version fallback
-PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
 
-
-NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
 
 # Re-export the "friendly" surface
 from farkle.engine import FarklePlayer, GameMetrics
 from farkle.farkle_io import simulate_many_games_stream
-from farkle.simulation import generate_strategy_grid, simulate_many_games_from_seeds
+from farkle.simulation import generate_strategy_grid
+from farkle.simulation import simulate_many_games_from_seeds
 from farkle.stats import games_for_power
 from farkle.strategies import PreferScore, ThresholdStrategy
 
@@ -55,7 +51,6 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
     Only ``PermissionError`` is suppressed. Any other :class:`OSError` will be
     re-raised.
     """
-    with contextlib.suppress(PermissionError):
     try:
         return _orig_unlink(self, missing_ok=missing_ok)
     except PermissionError as e:
@@ -78,6 +73,14 @@ __all__ = [
     "simulate_many_games_from_seeds",
     "games_for_power",
 ]
+
+# Diagnostic message for fallback version retrieval
+NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
+
+# Path to the project's pyproject.toml for local version fallback
+PYPROJECT_TOML = (
+    Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+)
 
 
 def _read_version_from_toml() -> str:
