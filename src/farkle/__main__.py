@@ -1,9 +1,19 @@
-"""Entry point for `python -m farkle`.
+"""Command line entry point for the :mod:`farkle` package.
 
-Simply calls `farkle.farkle_cli.main()` to run the command-line interface.
+When executed as ``python -m farkle`` this module simply delegates to
+:func:`farkle.farkle_cli.main` which implements the full CLI logic.
 """
 
-from farkle.farkle_cli import main
+from __future__ import annotations
 
-if __name__ == "__main__":
+from farkle.farkle_cli import main as cli_main
+
+
+def main() -> None:
+    """Invoke :func:`farkle.farkle_cli.main`."""
+
+    cli_main()
+
+
+if __name__ == "__main__":  # pragma: no cover - direct execution path
     main()
