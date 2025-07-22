@@ -130,7 +130,7 @@ def bonferroni_pairs(strats: List[str], games_needed: int, seed: int) -> pd.Data
     pandas.DataFrame
         Columns ``"a"``, ``"b"``, ``"seed"`` – one row per game.
     """
-    if games_needed < 0:
+    if games_needed < 0:  # check from other branch
         raise ValueError("games_needed must be non-negative")
 
     random_generator = np.random.default_rng(seed)
