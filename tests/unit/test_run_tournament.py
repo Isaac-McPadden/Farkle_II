@@ -34,9 +34,7 @@ def fast_helpers(monkeypatch):
     3) Skip the ProcessPool - we call _run_chunk() directly.
     """
     strats = _mini_strats(12)
-    monkeypatch.setattr(
-        rt, "generate_strategy_grid", lambda *a, **kw: (strats, None), raising=True
-    )  # noqa: ARG005
+    monkeypatch.setattr(rt, "generate_strategy_grid", lambda *a, **kw: (strats, None), raising=True)  # noqa: ARG005
 
     def fake_play_shuffle(seed: int) -> Counter[str]:
         # pretend player at index (seed % len(strats)) always wins
@@ -142,28 +140,32 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
 
 def test_init_worker_valid_and_invalid(monkeypatch):
     strats = _mini_strats(8)
-    rt._init_worker(strats, 4)
+    cfg = rt.TournamentConfig(n_players=4)
+    rt._init_worker(strats, cfg)
     assert rt.N_PLAYERS == 4
     assert rt.GAMES_PER_SHUFFLE == 8_160 // 4
 
     with pytest.raises(ValueError):
-        rt._init_worker(strats, 7)
+        rt._init_worker(strats, rt.TournamentConfig(n_players=7))
 
-    rt._init_worker(strats, 5)
+    rt._init_worker(strats, rt.TournamentConfig(n_players=5))
 
 
 def test_run_tournament_player_count(monkeypatch, tmp_path):
     class DummyFuture:
         def __init__(self, result):
             self._result = result
+
         def result(self):
             return self._result
 
     class DummyPool:
         def __enter__(self):
             return self
+
         def __exit__(self, *a):
             return False
+
         def submit(self, fn, arg):
             return DummyFuture(fn(arg))
 
@@ -174,7 +176,49 @@ def test_run_tournament_player_count(monkeypatch, tmp_path):
     monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(rt, "as_completed", lambda d: list(d.keys()), raising=True)
 
-    rt.run_tournament(n_players=6, checkpoint_path=tmp_path / "c.pkl", n_jobs=None)
+    cfg_ok = rt.TournamentConfig(n_players=6)
+    rt.run_tournament(config=cfg_ok, checkpoint_path=tmp_path / "c.pkl", n_jobs=None)
 
     with pytest.raises(ValueError):
-        rt.run_tournament(n_players=7, checkpoint_path=tmp_path / "d.pkl", n_jobs=None)
+        cfg_bad = rt.TournamentConfig(n_players=7)
+        rt.run_tournament(config=cfg_bad, checkpoint_path=tmp_path / "d.pkl", n_jobs=None)
+
+
+def test_run_tournament_num_shuffles_override(monkeypatch, tmp_path):
+    """run_tournament should honour the ``num_shuffles`` argument."""
+
+    class DummyFuture:
+        def __init__(self, result):
+            self._result = result
+
+        def result(self):
+            return self._result
+
+    class DummyPool:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def submit(self, fn, arg):
+            return DummyFuture(fn(arg))
+
+    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)
+    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(rt, "as_completed", lambda l: list(l), raising=True)
+
+    called = []
+
+    def fake_run_chunk(batch):
+        called.append(list(batch))
+        return Counter()
+
+    monkeypatch.setattr(rt, "_run_chunk", fake_run_chunk, raising=True)
+
+    cfg = rt.TournamentConfig(num_shuffles=5)
+    rt.run_tournament(config=cfg, checkpoint_path=tmp_path / "x.pkl", num_shuffles=2)
+
+    assert len(called) == 2
