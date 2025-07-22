@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from itertools import combinations_with_replacement
-from typing import Sequence
+from typing import Sequence, Tuple
 
 import numba as nb
 import numpy as np

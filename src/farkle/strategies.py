@@ -297,7 +297,9 @@ def _parse_strategy_flags(s: str) -> dict[str, Any]:
         "require_both": m.group("rb") == "AND",
         "auto_hot_dice": m.group("hd") == "H",
         "run_up_score": m.group("rs") == "R",
-        "prefer_score": m.group("ps") == "PS",
+        "prefer_score": (
+            PreferScore.SCORE if m.group("ps") == "PS" else PreferScore.DICE
+        ),
     }
 
 

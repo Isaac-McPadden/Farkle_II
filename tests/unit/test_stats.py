@@ -1,7 +1,9 @@
-import pytest
 from math import ceil, sqrt
-from farkle.stats import games_for_power
+
+import pytest
 from scipy.stats import norm
+
+from farkle.stats import games_for_power
 
 
 @pytest.mark.parametrize(
@@ -44,9 +46,7 @@ def test_games_for_power_rounding():
     z_beta = norm.ppf(power)
     p1, p2 = base_p, base_p + delta
     pbar = (p1 + p2) / 2
-    numerator = z_alpha * sqrt(2 * pbar * (1 - pbar)) + z_beta * sqrt(
-        p1 * (1 - p1) + p2 * (1 - p2)
-    )
+    numerator = z_alpha * sqrt(2 * pbar * (1 - pbar)) + z_beta * sqrt(p1 * (1 - p1) + p2 * (1 - p2))
     expected = ceil((numerator / delta) ** 2)
     assert games_for_power(n_strategies=n, delta=delta) == expected
 

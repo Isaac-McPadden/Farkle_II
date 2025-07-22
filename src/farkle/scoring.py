@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import functools
-from typing import Callable, Sequence, Tuple, cast, NamedTuple
+from typing import Callable, NamedTuple, Sequence, Tuple, cast
 
 # Numba is only used in the low-level helpers;
 # no caller needs to install it explicitly.
@@ -10,7 +10,7 @@ import numba as nb
 import numpy as np
 
 from farkle.scoring_lookup import evaluate as _eval_nb  # fast JIT core
-from farkle.types import DiceRoll, Int64Array1D, FacesSequence, SixFaceCounts
+from farkle.types import DiceRoll, FacesSequence, Int64Array1D, SixFaceCounts
 
 # --------------------------------------------------------------------------- #
 # 0.  Public type alias
