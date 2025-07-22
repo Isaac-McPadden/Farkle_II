@@ -14,8 +14,6 @@ import warnings
 from pathlib import Path
 from typing import List
 
-IMPORTANCE_PATH = Path("data/rf_importance.json")
-
 import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
@@ -31,7 +29,24 @@ IMPORTANCE_PATH = Path("data/rf_importance.json")
 
 
 def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
-    """Save the partial dependence plot for ``column`` and return the path."""
+    """Return a saved partial dependence plot for ``column``.
+
+    Parameters
+    ----------
+    model : HistGradientBoostingRegressor
+        Fitted model used to compute the plot.
+    X : pd.DataFrame
+        Feature matrix that ``model`` was trained on.
+    column : str
+        Name of the feature to analyse.
+    out_dir : Path
+        Directory in which to store the generated PNG.
+
+    Returns
+    -------
+    Path
+        Location of the saved plot.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     with warnings.catch_warnings():
@@ -53,6 +68,8 @@ def run_rf(seed: int = 0, output_path: Path = IMPORTANCE_PATH) -> None:
     ----------
     seed : int, optional
         Random seed for model fitting and permutation importance.
+    output_path : Path, optional
+        Location for the permutation importance JSON file.
 
     Reads
     -----
@@ -71,30 +88,34 @@ def run_rf(seed: int = 0, output_path: Path = IMPORTANCE_PATH) -> None:
     metrics = pd.read_parquet(METRICS_PATH)
     with open(RATINGS_PATH, "rb") as fh:
         ratings = pickle.load(fh)
-    mu_rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [v.mu for v in ratings.values()]})
-    data = metrics.merge(mu_rating_df, on="strategy", how="inner")
-    X = data.drop(columns=["strategy", "mu"])
-    X = X.astype(float)
-    y = data["mu"]
+    rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [v.mu for v in ratings.values()]})
+    data = metrics.merge(rating_df, on="strategy", how="inner")
+    features = data.drop(columns=["strategy", "mu"]).astype(float)
+    target = data["mu"]
 
     model = HistGradientBoostingRegressor(random_state=seed)
-    model.fit(X, y)
+    model.fit(features, target)
 
-    perm_importance = permutation_importance(model, X, y, n_repeats=5, random_state=seed)
-    if len(perm_importance["importances_mean"]) != len(X.columns):
+    perm_importance = permutation_importance(
+        model, features, target, n_repeats=5, random_state=seed
+    )
+    if len(perm_importance["importances_mean"]) != len(features.columns):
         msg = (
             "Mismatch between number of features and permutation importances: "
-            f"expected {len(X.columns)}, got {len(imp['importances_mean'])}"
+            f"expected {len(features.columns)}, got {len(perm_importance['importances_mean'])}"
         )
         raise ValueError(msg)
-    imp_dict = {c: float(s) for c, s in zip(X.columns, perm_importance["importances_mean"], strict=False)}
-    IMPORTANCE_PATH.parent.mkdir(exist_ok=True)
-    with IMPORTANCE_PATH.open("w") as fh:
+    imp_dict = {
+        c: float(s)
+        for c, s in zip(features.columns, perm_importance["importances_mean"], strict=False)
+    }
+    output_path.parent.mkdir(exist_ok=True)
+    with output_path.open("w") as fh:
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
 
     FIG_DIR.mkdir(parents=True, exist_ok=True)
-    for col in X.columns:
-        plot_partial_dependence(model, X, col, FIG_DIR)
+    for col in features.columns:
+        plot_partial_dependence(model, features, col, FIG_DIR)
 
 
 def main(argv: List[str] | None = None) -> None:
