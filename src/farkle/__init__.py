@@ -35,7 +35,7 @@ NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
 # suppressed; other OSErrors still propagate.
 # --------------------------------------------------------------------------- #
 
-_orig_unlink = pathlib.Path.unlink
+_ORIG_UNLINK = pathlib.Path.unlink
 
 
 def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
@@ -58,9 +58,9 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
     re-raised.
     """
     try:
-        return _orig_unlink(self, missing_ok=missing_ok)
-    except PermissionError as e:
-        if getattr(e, "winerror", None) == 32:
+        _ORIG_UNLINK(self, missing_ok=missing_ok)
+    except PermissionError as exc:
+        if getattr(exc, "winerror", None) == 32:
             return None
         raise
 
