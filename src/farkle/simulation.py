@@ -75,7 +75,9 @@ def generate_strategy_grid(
         smart_five_opts = [True, False]
     if smart_one_opts is None:
         smart_one_opts = [True, False]
-    combos: List[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, bool]] = []
+    combos: List[
+        Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, bool]
+    ] = []
 
     # Iterate over the basic option grid using itertools.product and filter
     for st, dt, sf, so, cs, cd, hd, rs in itertools.product(
@@ -195,7 +197,9 @@ def experiment_size(
         return rb_choices * ps_choices
 
     pair_count = sum(
-        _pair_variations(cs, cd) for cs in consider_score_opts for cd in consider_dice_opts
+        _pair_variations(cs, cd)
+        for cs in consider_score_opts
+        for cd in consider_dice_opts
     )
 
     return base * pair_count
@@ -264,7 +268,8 @@ def _play_game(
     winners = [name for name, ps in gm.players.items() if ps.rank == 1]
     if len(winners) != 1:
         raise ValueError(
-            f"Expected exactly one player with rank == 1, got {len(winners)}: {winners}"
+            "Expected exactly one player with rank == 1, "
+            f"got {len(winners)}: {winners}"
         )
     # Determine the winner from the PlayerStats block
     winner = next(name for name, ps in gm.players.items() if ps.rank == 1)

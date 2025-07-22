@@ -2,8 +2,8 @@
 
 Note
 ----
-At import time :class:`pathlib.Path.unlink` is monkey patched with a helper that
-safely suppresses transient ``PermissionError`` on Windows.
+At import time :class:`pathlib.Path.unlink` is monkey patched with a helper
+that safely suppresses transient ``PermissionError`` on Windows.
 """
 
 import pathlib
@@ -77,6 +77,14 @@ __all__ = [
     "simulate_many_games_from_seeds",
     "games_for_power",
 ]
+
+# Diagnostic message for fallback version retrieval
+NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
+
+# Path to the project's pyproject.toml for local version fallback
+PYPROJECT_TOML = (
+    Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+)
 
 
 def _read_version_from_toml() -> str:
