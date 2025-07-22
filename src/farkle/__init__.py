@@ -36,8 +36,10 @@ NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
 _orig_unlink = pathlib.Path.unlink
 
 
-def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False) -> None:
-    """Safely unlink ``self`` while ignoring transient permission issues.
+def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
+    """Wrapper around ``Path.unlink`` that squashes the WinError 32 race.
+
+    Deletes ``self`` while ignoring transient permission issues.
 
     Parameters
     ----------
