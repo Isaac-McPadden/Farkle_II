@@ -37,8 +37,8 @@ log = logging.getLogger("watch")
 
 # ── 2.  Tiny helpers ---------------------------------------------------------
 # ── helper: dump a ThresholdStrategy in YAML-ish format ─────────────────────
-def strategy_yaml(s: ThresholdStrategy) -> str:
-    """Return a human friendly description of ``s``.
+def strategy_yaml(strategy: ThresholdStrategy) -> str:
+    """Return a human friendly description of ``strategy``.
 
     The function formats the dataclass fields of ``ThresholdStrategy`` in the
     order they were declared so that the resulting string can be logged or
@@ -58,9 +58,9 @@ def strategy_yaml(s: ThresholdStrategy) -> str:
     """
 
     # dataclass → plain dict (keeps declared order)
-    if not isinstance(s, ThresholdStrategy):
+    if not isinstance(strategy, ThresholdStrategy):
         raise TypeError("strategy_yaml expects a ThresholdStrategy")
-    d = asdict(s)
+    d = asdict(strategy)
 
     # YAML-friendly booleans (lowercase)
     def format_bool(v):
@@ -70,8 +70,8 @@ def strategy_yaml(s: ThresholdStrategy) -> str:
     return "\n".join(lines)
 
 
-def _trace_decide(s: ThresholdStrategy, label: str) -> None:
-    """Log calls to ``s.decide``.
+def _trace_decide(strategy: ThresholdStrategy, label: str) -> None:
+    """Log calls to ``strategy.decide``.
 
     The function replaces the ``decide`` method of the provided strategy with a
     wrapper that logs the input state (turn score and dice left) and the
@@ -79,7 +79,7 @@ def _trace_decide(s: ThresholdStrategy, label: str) -> None:
     (a classic monkey patch) so further calls to ``decide`` are intercepted
     until the program exits or the method is reset.
     """
-    original = s.decide
+    original = strategy.decide
 
     def traced_decide(self: ThresholdStrategy, **kw):  # same signature  # noqa: ARG001
         keep = original(**kw)
@@ -91,7 +91,7 @@ def _trace_decide(s: ThresholdStrategy, label: str) -> None:
         return keep
 
     # bind as *method* so `self` is passed correctly
-    s.decide = MethodType(traced_decide, s)  # type: ignore[attr-defined, method-assign]
+    strategy.decide = MethodType(traced_decide, strategy)  # type: ignore[attr-defined, method-assign]
 
 
 @contextlib.contextmanager
@@ -105,10 +105,12 @@ def patch_scoring():
     be undone after tests if necessary.
     """
     global default_score  # module alias
+    import farkle.engine as _engine_mod
     import farkle.scoring as _scoring_mod
 
     orig_local = default_score
     orig_mod = _scoring_mod.default_score
+    orig_engine = _engine_mod.default_score
 
     def traced_default_score(*args, **kw):
         res = orig_mod(*args, **kw)  # type: ignore[arg-type]
@@ -118,22 +120,41 @@ def patch_scoring():
         return res
 
     _scoring_mod.default_score = traced_default_score  # type: ignore[assignment]
+    _engine_mod.default_score = traced_default_score  # type: ignore[assignment]
     default_score = traced_default_score
     try:
         yield
     finally:
         _scoring_mod.default_score = orig_mod  # type: ignore[assignment]
+        _engine_mod.default_score = orig_engine  # type: ignore[assignment]
         default_score = orig_local
 
 
 def _patch_default_score() -> None:
-    """Backward compatible wrapper for tests."""
+    """Backward compatible patch for unit tests."""
 
-    cm = patch_scoring()
-    context = cm.__enter__()
-    # store context manager object so tests can manually exit if needed
-    _patch_default_score._cm = cm  # type: ignore[attr-defined]
-    return context
+    global default_score
+    import farkle.engine as _engine_mod
+    import farkle.scoring as _scoring_mod
+
+    orig_local = default_score
+    orig_mod = _scoring_mod.default_score
+    orig_engine = _engine_mod.default_score
+
+    def traced_default_score(*args, **kw):
+        res = orig_mod(*args, **kw)  # type: ignore[arg-type]
+        pts, used, reroll = res[:3]
+        roll = args[0] if args else kw.get("dice_roll")
+        log.info(f"score({roll}) -> pts={pts:<4} used={used} reroll={reroll}")
+        return res
+
+    _scoring_mod.default_score = traced_default_score  # type: ignore[assignment]
+    _engine_mod.default_score = traced_default_score  # type: ignore[assignment]
+    default_score = traced_default_score
+
+    _patch_default_score._orig_local = orig_local  # type: ignore[attr-defined]
+    _patch_default_score._orig_mod = orig_mod  # type: ignore[attr-defined]
+    _patch_default_score._orig_engine = orig_engine  # type: ignore[attr-defined]
 
 
 class TracePlayer(FarklePlayer):
@@ -165,23 +186,31 @@ def watch_game(seed: int | None = None) -> None:
     rng = np.random.default_rng(seed)
 
     # --- make two random strategies -------------------------------------
-    s1 = random_threshold_strategy(random.Random(int(rng.integers(2**32))))
-    s2 = random_threshold_strategy(random.Random(int(rng.integers(2**32))))
-    log.info("P1 strategy\n%s\n", strategy_yaml(s1))
-    log.info("P2 strategy\n%s\n", strategy_yaml(s2))
+    strategy1 = random_threshold_strategy(random.Random(int(rng.integers(2**32))))
+    strategy2 = random_threshold_strategy(random.Random(int(rng.integers(2**32))))
+    log.info("P1 strategy\n%s\n", strategy_yaml(strategy1))
+    log.info("P2 strategy\n%s\n", strategy_yaml(strategy2))
 
     # monkey-patch the *strategy* layer so we can see decide()
-    _trace_decide(s1, "P1")
-    _trace_decide(s2, "P2")
+    _trace_decide(strategy1, "P1")
+    _trace_decide(strategy2, "P2")
 
     # monkey-patch the *scoring* layer so we can see Smart-discard results
     with patch_scoring():
         # --- wrap players so we can see every dice throw --------------------
-        p1 = TracePlayer("P1", s1, rng=np.random.default_rng(rng.integers(2**32)))
-        p2 = TracePlayer("P2", s2, rng=np.random.default_rng(rng.integers(2**32)))
+        p1 = TracePlayer(
+            "P1",
+            strategy1,
+            rng=np.random.default_rng(rng.integers(2**32)),
+        )
+        p2 = TracePlayer(
+            "P2",
+            strategy2,
+            rng=np.random.default_rng(rng.integers(2**32)),
+        )
 
-    game = FarkleGame([p1, p2], target_score=10_000)
-    metrics = game.play()
+        game = FarkleGame([p1, p2], target_score=10_000)
+        metrics = game.play()
 
     log.info("\n===== final result =====")
     log.info(

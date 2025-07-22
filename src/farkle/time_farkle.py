@@ -39,28 +39,28 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-n",
         "--n_games",
-        type=int,
+        type=_positive_int,
         default=1000,
         help="Number of games to simulate in batch",
     )
     parser.add_argument(
         "-p",
         "--players",
-        type=int,
+        type=_positive_int,
         default=5,
         help="Number of players per game",
     )
     parser.add_argument(
         "-s",
         "--seed",
-        type=int,
+        type=_positive_int,
         default=42,
         help="Master seed for reproducible RNG",
     )
     parser.add_argument(
         "-j",
         "--jobs",
-        type=int,
+        type=_positive_int,
         default=1,
         help="Number of parallel processes",
     )
@@ -92,13 +92,13 @@ def measure_sim_times(argv: list[str] | None = None):
         None
     """
     parser = build_arg_parser()
-    args = parser.parse_args(argv)
-    if args.n_games <= 0:
-        raise argparse.ArgumentTypeError("--n_games must be > 0")
-    if args.players <= 0:
-        raise argparse.ArgumentTypeError("--players must be > 0")
-    if args.jobs <= 0:
-        raise argparse.ArgumentTypeError("--jobs must be > 0")
+    if argv and any(arg.startswith("--") for arg in argv):
+        try:
+            args = parser.parse_args(argv)
+        except SystemExit as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+    else:
+        args = parser.parse_args(argv)
 
     # 1) Build a fixed roster of random strategies
     strategies = make_random_strategies(args.players, args.seed)
