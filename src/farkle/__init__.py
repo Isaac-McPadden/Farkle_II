@@ -6,24 +6,30 @@ At import time :class:`pathlib.Path.unlink` is monkey patched with a helper that
 safely suppresses transient ``PermissionError`` on Windows.
 """
 
+from __future__ import annotations
+
 import contextlib
 import pathlib
 import tomllib
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _v
 from pathlib import Path
-# Path to the project's pyproject.toml for local version fallback
-PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
 
-
-NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
-
-# Re-export the "friendly" surface
 from farkle.engine import FarklePlayer, GameMetrics
 from farkle.farkle_io import simulate_many_games_stream
 from farkle.simulation import generate_strategy_grid, simulate_many_games_from_seeds
-from farkle.stats import games_for_power
 from farkle.strategies import PreferScore, ThresholdStrategy
+
+# Path to the project's pyproject.toml for local version fallback
+PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+
+NO_PKG_MSG = "__package__ not detected, loading version from pyproject.toml"
+
+try:  # optional dependency for light-weight imports
+    from farkle.stats import games_for_power
+except Exception:  # pragma: no cover - optional import
+    def games_for_power(*_a, **_kw):  # type: ignore[return-type]
+        raise ImportError("scipy is required for games_for_power")
 
 # --------------------------------------------------------------------------- #
 # Robust Windows delete helper
@@ -56,12 +62,12 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
     re-raised.
     """
     with contextlib.suppress(PermissionError):
-    try:
-        return _orig_unlink(self, missing_ok=missing_ok)
-    except PermissionError as e:
-        if getattr(e, "winerror", None) == 32:
-            return None
-        raise
+        try:
+            return _orig_unlink(self, missing_ok=missing_ok)
+        except PermissionError as e:  # pragma: no cover - Windows only
+            if getattr(e, "winerror", None) == 32:
+                return None
+            raise
 
 
 # Patch globally (harmless on POSIX; vital on Windows)
