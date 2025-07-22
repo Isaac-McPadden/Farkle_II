@@ -6,6 +6,7 @@ run_full_field.py  -  Phase-1 full-grid screen for all table sizes
    • Detectable lift Δ   = 0.03     (3-percentage-point edge)
 """
 
+import importlib
 import multiprocessing as mp
 import shutil
 from math import ceil
@@ -16,19 +17,19 @@ import pandas as pd
 from scipy.stats import norm
 
 
-def _concat_row_shards(out_dir: Path, n: int) -> None:
+def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     """Combine row shard files and remove the temporary directory.
 
     If no shard files are found the function simply returns without
     writing anything. Reading/writing parquet requires ``pyarrow`` to be
     installed.
     """
-    row_dir = out_dir / f"{n}p_rows"
+    row_dir = out_dir / f"{n_players}p_rows"
     files = sorted(row_dir.glob("*.parquet"))
     if not files:
         return
     df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-    df.to_parquet(out_dir / f"{n}p_rows.parquet")
+    df.to_parquet(out_dir / f"{n_players}p_rows.parquet")
     shutil.rmtree(row_dir, ignore_errors=True)
 
 

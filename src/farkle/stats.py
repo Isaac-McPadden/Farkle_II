@@ -1,8 +1,8 @@
 # src/farkle/stats.py
 from __future__ import annotations
 
-from math import ceil, sqrt
 import warnings
+from math import ceil, sqrt
 
 from scipy.stats import norm
 
@@ -13,7 +13,7 @@ def games_for_power(
     base_p: float = 0.5,
     alpha: float = 0.05,
     power: float = 0.8,
-    method: str = "bh",          # "bh" or "bonferroni"
+    method: str = "bh",  # "bh" or "bonferroni"
     full_pairwise: bool = True,  # baseline-vs-all or full pairwise
     *,
     pairwise: bool | None = None,  # deprecated alias
@@ -58,7 +58,7 @@ def games_for_power(
     --------
     >>> games_for_power(n_strategies=3, delta=0.2, method='bh')
     111
-    """    
+    """
     # per-test alpha*
 
     # ------------------ handle deprecated alias ---------------------------
@@ -88,11 +88,7 @@ def games_for_power(
 
     # ------------------ per-test alpha* -----------------------------------
     if method == "bonferroni":
-        k = (
-            n_strategies * (n_strategies - 1) // 2
-            if full_pairwise
-            else n_strategies - 1
-        )
+        k = n_strategies * (n_strategies - 1) // 2 if full_pairwise else n_strategies - 1
         alpha_star = alpha / k
     elif method == "bh":
         h_m = sum(1 / i for i in range(1, n_strategies + 1))  # harmonic number
