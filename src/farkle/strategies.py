@@ -113,6 +113,10 @@ def _decide_continue(
     return False
 
 
+# Backwards compatible alias for older tests
+_should_continue = _decide_continue
+
+
 @dataclass
 class ThresholdStrategy:
     """Threshold-based decision rule.

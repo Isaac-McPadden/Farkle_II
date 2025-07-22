@@ -303,12 +303,13 @@ def _save_checkpoint(
 def run_tournament(
     *,
     config: TournamentConfig | None = None,
+    n_players: int | None = None,
     global_seed: int = 0,
     checkpoint_path: Path | str = "checkpoint.pkl",
     n_jobs: int | None = None,
     collect_metrics: bool = False,
     row_output_directory: Path | None = None,  # None if --row-dir omitted
-    num_shuffles: int = NUM_SHUFFLES,  # noqa: ARG001
+    num_shuffles: int = NUM_SHUFFLES,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
@@ -318,6 +319,9 @@ def run_tournament(
         Encapsulates all tunable constants (number of players, shuffle count,
         checkpoint cadence, etc.). If ``None`` a default instance is created
         from the module-level constants.
+    n_players : int | None, optional
+        Deprecated override for ``config.n_players``. If provided it replaces
+        the value inside ``config`` for this run.
     global_seed : int, default 0
         Seed for the master RNG that generates per-shuffle seeds -- make this
         different to obtain a fresh tournament.
@@ -349,10 +353,14 @@ def run_tournament(
     strategies, _ = generate_strategy_grid()  # 8_160 strategies
 
     cfg = config or TournamentConfig()
+    if n_players is not None:
+        cfg.n_players = n_players
     if num_shuffles != cfg.num_shuffles:
         cfg.num_shuffles = num_shuffles
     if cfg.n_players < 2:
         raise ValueError("n_players must be ≥2")
+    if 8_160 % cfg.n_players != 0:
+        raise ValueError("n_players must divide 8,160")
 
     games_per_sec = _measure_throughput(strategies[: cfg.n_players])
     shuffles_per_chunk = max(
@@ -398,7 +406,7 @@ def run_tournament(
         initializer=_init_worker,
         initargs=(strategies, cfg),
     ) as pool:
-        futures = [pool.submit(chunk_fn, c) for c in chunks]
+        futures = {pool.submit(chunk_fn, c): c for c in chunks}
 
         for done, fut in enumerate(as_completed(futures), 1):
             result = fut.result()

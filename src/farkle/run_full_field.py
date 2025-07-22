@@ -91,13 +91,13 @@ def main():
             flush=True,
         )
 
-        # fresh module copy for clean monkey-patch
-        tournament_mod = importlib.reload(tournament_mod)
+        # update shuffle count on the already-imported module
         tournament_mod.NUM_SHUFFLES = nshuf  # type: ignore
 
         t0 = perf_counter()
         tournament_mod.run_tournament(
             n_players=n_players,
+            num_shuffles=nshuf,
             global_seed=GLOBAL_SEED,
             checkpoint_path=out_dir / f"{n_players}p_checkpoint.pkl",
             n_jobs=JOBS,

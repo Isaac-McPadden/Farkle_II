@@ -67,7 +67,10 @@ def test_pooled_ratings_are_mean(tmp_path):
     expected3 = run_trueskill._update_ratings(g3, ["A", "B"], env)
 
     expected_pooled = {
-        k: ((expected2[k][0] + expected3[k][0]) / 2, (expected2[k][1] + expected3[k][1]) / 2)
+        k: run_trueskill.RatingStats(
+            (expected2[k].mu + expected3[k].mu) / 2,
+            (expected2[k].sigma + expected3[k].sigma) / 2,
+        )
         for k in ("A", "B")
     }
 
