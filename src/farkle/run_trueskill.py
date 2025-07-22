@@ -50,40 +50,13 @@ def _read_manifest_seed(path: Path) -> int:
 
 
 def _read_row_shards(row_dir: Path) -> pd.DataFrame:
-    """Concatenate all parquet shards inside ``row_dir``."""
+    """Return a DataFrame built from all Parquet files in ``row_dir``."""
     frames = [pd.read_parquet(p) for p in row_dir.glob("*.parquet")]
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
 
 
-def _load_ranked_games(block: Path) -> list[list[str]]:
-    """Load all ranked games for a results block.
-
-    Parameters
-    ----------
-    block : Path
-        Directory containing the results for one tournament block. The
-        directory may be organised in one of three supported layouts:
-
-        ``*_rows`` directory of Parquet files,
-        a ``winners.csv`` file,
-        or loose ``.parquet`` files in the block root.
-
-    Returns
-    -------
-    list[list[str]]
-        One list per game with strategy names ordered from first place to
-        last. An empty list is returned when the block contains no readable
-        data.
-    """
-    # ── 1. Modern layout ────────────────────────────────────────────────────
-    row_dirs = sorted(block.glob("*_rows"))
-    if row_dirs:
-        frames: list[pd.DataFrame] = []
-        for row_dir in row_dirs:
-            frames.extend(pd.read_parquet(p) for p in row_dir.glob("*.parquet"))
-        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 def _read_winners_csv(block: Path) -> pd.DataFrame:
     """Read ``winners.csv`` from a result block."""
@@ -101,9 +74,10 @@ def _read_loose_parquets(block: Path) -> pd.DataFrame | None:
 
 def _load_ranked_games(block: Path) -> list[list[str]]:
     """Return one list per game, ordered by finishing position."""
-    row_dir = next((p for p in block.glob("*_rows") if p.is_dir()), None)
-    if row_dir:
-        df = _read_row_shards(row_dir)
+    row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
+    if row_dirs:
+        frames = [_read_row_shards(d) for d in row_dirs]
+        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     elif (block / "winners.csv").exists():
         df = _read_winners_csv(block)
     else:
@@ -172,16 +146,11 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
-def run_trueskill(manifest_seed: int = 0, output_seed: int = 0) -> None:
+def run_trueskill(output_seed: int = 0) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
     Parameters
     ----------
-    manifest_seed : int, optional
-        Seed used when generating the results. It is compared against the
-        value stored in ``manifest.yaml`` to decide whether a suffix should be
-        appended to the rating files.
-       
     output_seed: int, optional
         Value appended to output filenames so repeated runs do not overwrite
         earlier results.
@@ -198,9 +167,9 @@ def run_trueskill(manifest_seed: int = 0, output_seed: int = 0) -> None:
 
     base = Path("data/results")
     manifest_seed = _read_manifest_seed(base / "manifest.yaml")
-    suffix = f"_seed{output_seed}" if output_seed != manifest_seed else ""
+    suffix = f"_seed{output_seed}" if output_seed else ""
     env = trueskill.TrueSkill()
-    pooled: Dict[str, RatingStats] = {}
+    pooled: dict[str, RatingStats] = {}
     for block in sorted(base.glob("*_players")):
         player_count = block.name.split("_")[0]
         keep_path = block / f"keepers_{player_count}.npy"
@@ -218,15 +187,15 @@ def run_trueskill(manifest_seed: int = 0, output_seed: int = 0) -> None:
     with (Path("data") / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
     tiers = build_tiers(
-        means={k: v[0] for k, v in pooled.items()},
-        stdevs={k: v[1] for k, v in pooled.items()},
+        means={k: v.mu for k, v in pooled.items()},
+        stdevs={k: v.sigma for k, v in pooled.items()},
     )
     Path("data").mkdir(exist_ok=True)
     with (Path("data") / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)
 
 
-def main(argv: List[str] | None = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     """Entry point for the ``run_trueskill`` command line interface.
 
     Parameters

@@ -2,8 +2,6 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import pytest
-
 from farkle.utils import bh_correct, bonferroni_pairs, build_tiers
 
 
@@ -30,6 +28,9 @@ def test_build_tiers_multiple_tiers():
 def test_build_tiers_mismatched_sigma():
     mu = {"A": 100.0}
     sigma = {}
+
+    with pytest.raises(ValueError):
+        build_tiers(mu, sigma)
 
 
 def test_build_tiers_key_mismatch():
@@ -64,10 +65,15 @@ def test_bh_correct_all_high_pvals():
     assert mask.tolist() == [False, False, False, False]
 
 
+def test_bh_correct_empty():
+    mask = bh_correct(np.array([]), alpha=0.05)
+    assert mask.size == 0
+
+
 def test_bonferroni_pairs_basic_determinism():
-    strats = ["S1", "S2", "S3"]
-    df1 = bonferroni_pairs(strats, games_needed=2, seed=42)
-    df2 = bonferroni_pairs(strats, games_needed=2, seed=42)
+    strategies = ["S1", "S2", "S3"]
+    df1 = bonferroni_pairs(strategies, games_needed=2, seed=42)
+    df2 = bonferroni_pairs(strategies, games_needed=2, seed=42)
     assert df1.equals(df2)
     assert set(df1.columns) == {"a", "b", "seed"}
     assert len(df1) == 6
@@ -76,7 +82,7 @@ def test_bonferroni_pairs_basic_determinism():
     assert pd.api.types.is_integer_dtype(df1["seed"])
 
 
-def test_bonferroni_pairs_not_enough_strats():
+def test_bonferroni_pairs_not_enough_strategies():
     assert bonferroni_pairs([], games_needed=2, seed=0).empty
     assert bonferroni_pairs(["A"], games_needed=2, seed=0).empty
 
