@@ -8,7 +8,7 @@ import pytest
 
 def _reload(monkeypatch):
     # Restore original unlink so reload grabs it
-    monkeypatch.setattr(pathlib.Path, "unlink", farkle._orig_unlink)
+    monkeypatch.setattr(pathlib.Path, "unlink", farkle._ORIG_UNLINK)
     return importlib.reload(farkle)
 
 
@@ -36,7 +36,7 @@ def test_safe_unlink_permissionerror_winerror32(tmp_path, monkeypatch):
         err.winerror = 32
         raise err
 
-    monkeypatch.setattr(farkle, "_orig_unlink", raise_perm)
+    monkeypatch.setattr(farkle, "_ORIG_UNLINK", raise_perm)
 
     farkle._safe_unlink(target)
     assert target.exists()
@@ -50,7 +50,7 @@ def test_safe_unlink_permissionerror_other(tmp_path, monkeypatch):
         _ = missing_ok
         raise PermissionError()
 
-    monkeypatch.setattr(farkle, "_orig_unlink", raise_perm)
+    monkeypatch.setattr(farkle, "_ORIG_UNLINK", raise_perm)
 
     with pytest.raises(PermissionError):
         farkle._safe_unlink(target)

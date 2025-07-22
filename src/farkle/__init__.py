@@ -34,12 +34,11 @@ from farkle.strategies import PreferScore, ThresholdStrategy
 # suppressed; other OSErrors still propagate.
 # --------------------------------------------------------------------------- #
 
-_orig_unlink = pathlib.Path.unlink
+_ORIG_UNLINK = pathlib.Path.unlink
 
 
-def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
-    """Wrapper around Path.unlink that squashes the WinError 32 race.
-    Deletes ``self`` while ignoring transient permission issues.
+def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False) -> None:
+    """Delete ``self`` while ignoring transient permission issues.
 
     Parameters
     ----------
@@ -55,11 +54,10 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
     Only ``PermissionError`` is suppressed. Any other :class:`OSError` will be
     re-raised.
     """
-    with contextlib.suppress(PermissionError):
     try:
-        return _orig_unlink(self, missing_ok=missing_ok)
-    except PermissionError as e:
-        if getattr(e, "winerror", None) == 32:
+        _ORIG_UNLINK(self, missing_ok=missing_ok)
+    except PermissionError as exc:
+        if getattr(exc, "winerror", None) == 32:
             return None
         raise
 
