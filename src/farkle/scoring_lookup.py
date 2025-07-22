@@ -180,7 +180,7 @@ def _evaluate_nb(
 @lru_cache(maxsize=4096)
 def evaluate(counts: SixFaceCounts) -> tuple[int, int, int, int]:
     """Score a counts tuple via the JIT compiled core.
-    
+
     The function is intentionally defensive – invalid input should raise a
     :class:`ValueError` rather than yielding nonsensical results.
 
@@ -193,14 +193,16 @@ def evaluate(counts: SixFaceCounts) -> tuple[int, int, int, int]:
         (score, used, single_fives, single_ones) in the same format as
         :func:`_evaluate_nb`.
     """
-if len(counts) != 6:
-    raise ValueError("counts must contain exactly six values")
-if not all(isinstance(c, int) for c in counts):
-    raise TypeError(f"non-integers in {counts!r}")
-if any(c < 0 for c in counts):
-    raise ValueError(f"negative count in {counts!r}")
-if sum(counts) > 6:
-    raise ValueError(f"more than six dice specified: {counts!r}")
+
+    if len(counts) != 6:
+        raise ValueError("counts must contain exactly six values")
+    if not all(isinstance(c, int) for c in counts):
+        raise TypeError(f"non-integers in {counts!r}")
+    if any(c < 0 for c in counts):
+        raise ValueError(f"negative count in {counts!r}")
+    if sum(counts) > 6:
+        raise ValueError(f"more than six dice specified: {counts!r}")
+
     return _evaluate_nb(*counts)
 
 
