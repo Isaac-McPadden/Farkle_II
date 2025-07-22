@@ -20,7 +20,8 @@ from farkle.simulation import generate_strategy_grid
 def load_config(path: str) -> Mapping[str, Any]:
     """Load YAML configuration from *path*.
 
-    Raises FileNotFoundError, yaml.YAMLError if the file cannot be read or parsed.
+    Raises FileNotFoundError, yaml.YAMLError if the file cannot be read or
+    parsed.
     """
     with open(path, encoding="utf-8") as fh:
         cfg: Mapping[str, Any] = yaml.safe_load(fh)
@@ -66,7 +67,9 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="farkle")
     subparsers = parser.add_subparsers(dest="cmd", required=True)
 
-    run_parser = subparsers.add_parser("run", help="Run a tournament from a YAML config")
+    run_parser = subparsers.add_parser(
+        "run", help="Run a tournament from a YAML config"
+    )
     run_parser.add_argument("config", help="Path to YAML configuration file")
 
     args = parser.parse_args(argv)

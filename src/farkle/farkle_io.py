@@ -14,7 +14,11 @@ QUEUE_SIZE = 2_000
 
 
 # ------------------------------------------------------------
-def _writer_worker(queue: mp.Queue, out_csv: str, header: Sequence[str]) -> None:
+def _writer_worker(
+    queue: mp.Queue,
+    out_csv: str,
+    header: Sequence[str],
+) -> None:
     """Summary: write queued rows to ``out_csv`` in a separate process.
 
     Rows are buffered until :data:`BUFFER_SIZE` rows accumulate before
@@ -84,18 +88,17 @@ def simulate_many_games_stream(
     master = np.random.default_rng(seed)
     seeds = master.integers(0, 2**32 - 1, size=n_games)
 
-    Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
-
-    # We will write only five tiny columns per game
-    header = ["game_id", "winner", "winning_score", "winner_strategy", "n_rounds"]
-
     # ensure target directory exists
     Path(out_csv).parent.mkdir(parents=True, exist_ok=True)
 
-    # --- truncate file & write header once, upfront --------------------
-    with open(out_csv, "w", newline="") as file_handle:
-        writer = csv.DictWriter(file_handle, fieldnames=header)
-        writer.writeheader()
+    # We will write only five tiny columns per game
+    header = [
+        "game_id",
+        "winner",
+        "winning_score",
+        "winner_strategy",
+        "n_rounds",
+    ]
 
     if n_jobs == 1:
         # open once, write header, and stream rows serially
@@ -107,19 +110,25 @@ def simulate_many_games_stream(
                 writer.writerow(row)
     else:
         # first truncate file and write header, then append via worker
-        with open(out_csv, "w", newline="") as fh:
-            writer = csv.DictWriter(fh, fieldnames=header)
+        with open(out_csv, "w", newline="") as file_handle:
+            writer = csv.DictWriter(file_handle, fieldnames=header)
             writer.writeheader()
 
         queue: mp.Queue = mp.Queue(maxsize=QUEUE_SIZE)
-        writer = mp.Process(target=_writer_worker, args=(queue, out_csv, header))
-        writer.start()
+        writer_process = mp.Process(
+            target=_writer_worker,
+            args=(queue, out_csv, header),
+        )
+        writer_process.start()
 
         # map-reduce style parallel play
         with mp.Pool(processes=n_jobs) as pool:
             for _, row in pool.imap_unordered(
                 _single_game_row_mp,
-                [(i + 1, sd, strategies, target_score) for i, sd in enumerate(seeds)],
+                [
+                    (i + 1, int(sd), strategies, target_score)
+                    for i, sd in enumerate(seeds)
+                ],
                 chunksize=50,
             ):
                 queue.put(row)
