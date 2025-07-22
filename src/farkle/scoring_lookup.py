@@ -201,7 +201,6 @@ def evaluate(counts: SixFaceCounts) -> tuple[int, int, int, int]:
         raise ValueError(f"negative count in {counts!r}")
     if sum(counts) > 6:
         raise ValueError(f"more than six dice specified: {counts!r}")
-
     return _evaluate_nb(*counts)
 
 

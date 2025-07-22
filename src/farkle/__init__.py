@@ -6,6 +6,8 @@ At import time :class:`pathlib.Path.unlink` is monkey patched with a helper
 that safely suppresses transient ``PermissionError`` on Windows.
 """
 
+from __future__ import annotations
+
 import pathlib
 import tomllib
 from importlib.metadata import PackageNotFoundError
