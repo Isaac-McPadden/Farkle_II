@@ -120,7 +120,7 @@ def test_update_ratings_ranked():
         new = env.rate([[ratings[p[0]]], [ratings[p[1]]]], ranks=[0, 1])
         ratings[p[0]], ratings[p[1]] = new[0][0], new[1][0]
 
-    expected = {k: (r.mu, r.sigma) for k, r in ratings.items()}
+    expected = {k: rt.RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
     assert result == expected
 
 
@@ -158,7 +158,7 @@ def test_run_trueskill_incomplete_block(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(seed=0)
+        rt.run_trueskill()
     finally:
         os.chdir(cwd)
 
@@ -172,3 +172,26 @@ def test_run_trueskill_incomplete_block(tmp_path):
     assert good
     assert empty == {}
     assert set(pooled) == set(good)
+
+
+def test_run_trueskill_with_suffix(tmp_path):
+    data_root = tmp_path / "data"
+    res_dir = data_root / "results"
+    res_dir.mkdir(parents=True)
+
+    block = res_dir / "2_players"
+    block.mkdir()
+    np.save(block / "keepers_2.npy", np.array(["A", "B"]))
+    pd.DataFrame({"winner_strategy": ["A", "B"]}).to_csv(block / "winners.csv", index=False)
+
+    (res_dir / "manifest.yaml").write_text("seed: 0\n")
+
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        rt.run_trueskill(output_seed=1)
+    finally:
+        os.chdir(cwd)
+
+    assert (data_root / "ratings_2_seed1.pkl").exists()
+    assert (data_root / "ratings_pooled_seed1.pkl").exists()
