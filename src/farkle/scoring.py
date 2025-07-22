@@ -261,7 +261,7 @@ def _must_bank(
 
 def _select_candidate(
     candidates: tuple[
-        tuple[list[int], int, int, int, Counts6, int, int],
+        tuple[list[int], int, int, int, SixFaceCounts, int, int],
         ...,
     ],
     *,
