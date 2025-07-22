@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from itertools import combinations_with_replacement
-from typing import Sequence
+from typing import Sequence, Tuple
 
 import numba as nb
 import numpy as np
@@ -83,7 +83,7 @@ def _four_kind_plus_pair(ctr: Int64Array1D) -> Tuple[int, int]:
 
 
 @nb.njit(cache=True)
-def _apply_sets(ctr: Int64Arr1D) -> tuple[int, int]:
+def _apply_sets(ctr: Int64Array1D) -> tuple[int, int]:
     """Score and consume any n-of-a-kind groups.
 
     Parameters
@@ -180,7 +180,7 @@ def _evaluate_nb(
 @lru_cache(maxsize=4096)
 def evaluate(counts: SixFaceCounts) -> tuple[int, int, int, int]:
     """Score a counts tuple via the JIT compiled core.
-    
+
     The function is intentionally defensive – invalid input should raise a
     :class:`ValueError` rather than yielding nonsensical results.
 
