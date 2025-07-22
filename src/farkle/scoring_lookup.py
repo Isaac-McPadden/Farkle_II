@@ -180,7 +180,7 @@ def _evaluate_nb(
 @lru_cache(maxsize=4096)
 def evaluate(counts: SixFaceCounts) -> tuple[int, int, int, int]:
     """Score a counts tuple via the JIT compiled core.
-    
+
     The function is intentionally defensive – invalid input should raise a
     :class:`ValueError` rather than yielding nonsensical results.
 

@@ -36,7 +36,11 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
     tiers_path.write_text(json.dumps({"A": 1, "B": 1}))
     monkeypatch.chdir(tmp_path)
 
-    monkeypatch.setattr(rb, "games_for_power", lambda n, method="bonferroni", pairwise=True: 1)
+    monkeypatch.setattr(
+        rb,
+        "games_for_power",
+        lambda n, method="bonferroni", full_pairwise=True: 1,
+    )
     monkeypatch.setattr(rb, "bonferroni_pairs", lambda elites, games_needed, seed: pd.DataFrame({"a": ["A"], "b": ["B"], "seed": [seed]}))
     monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
 
