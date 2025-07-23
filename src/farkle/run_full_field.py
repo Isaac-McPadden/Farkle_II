@@ -88,7 +88,7 @@ def main():
 
         print(
             f"▶ {n_players:>2}-player  |  {nshuf:>7,} shuffles  "
-            f"{gps:>5} gps  →  {ngames / 1e6:5.2f} M games",
+            f"{gps:>5} games per shuffle  →  {ngames / 1e6:5.2f} M games",
             flush=True,
         )
 

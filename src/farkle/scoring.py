@@ -207,7 +207,7 @@ def generate_sequences(counts: SixFaceCounts, *, smart_one: bool = False) -> tup
 # --------------------------------------------------------------------------- #
 # 5.  Score a batch of rolls (tuples of faces) – cached
 # --------------------------------------------------------------------------- #
-@functools.lru_cache(maxsize=4096)
+@functools.lru_cache(maxsize=16_384)
 def score_lister(
     dice_rolls: tuple[FacesSequence, ...],
 ) -> tuple[ScoreCandidate, ...]:
@@ -311,7 +311,7 @@ def _select_candidate(
     return best_sf, best_so
 
 
-def decide_smart_discards(
+def _decide_smart_discards_impl(
     *,
     counts: SixFaceCounts,
     single_fives: int,
@@ -332,8 +332,11 @@ def decide_smart_discards(
     """Determine how many single 5s and 1s to throw back.
 
     Note that ``smart_one=True`` only has an effect when ``smart_five`` is
-    also ``True``. Smart‑1 discards are ignored otherwise.
+    also ``True``. Smart-1 discards are ignored otherwise.
 
+    This is the implementation that gets run by decide_smart_discards which exists
+    to cache outcomes for a small speed boost.
+    
     Inputs
     ------
     counts (SixFaceCounts):
@@ -402,6 +405,45 @@ def decide_smart_discards(
 
     best_sf, best_so = best
     return single_fives - best_sf, single_ones - best_so
+
+
+@functools.lru_cache(maxsize=None)
+def decide_smart_discards(
+    *,
+    counts: SixFaceCounts,
+    single_fives: int,
+    single_ones: int,
+    raw_score: int,
+    raw_used: int,
+    dice_roll_len: int,
+    turn_score_pre: int,
+    score_threshold: int,
+    dice_threshold: int,
+    smart_five: bool,
+    smart_one: bool,
+    consider_score: bool = True,
+    consider_dice: bool = True,
+    require_both: bool = False,
+    favor_dice_or_score: Union[FavorDiceOrScore, bool] = FavorDiceOrScore.SCORE,
+) -> tuple[int, int]:
+    """Caches results of the implementation function, _decide_smart_discards_impl"""
+    return _decide_smart_discards_impl(
+        counts=counts,
+        single_fives=single_fives,
+        single_ones=single_ones,
+        raw_score=raw_score,
+        raw_used=raw_used,
+        dice_roll_len=dice_roll_len,
+        turn_score_pre=turn_score_pre,
+        score_threshold=score_threshold,
+        dice_threshold=dice_threshold,
+        smart_five=smart_five,
+        smart_one=smart_one,
+        consider_score=consider_score,
+        consider_dice=consider_dice,
+        require_both=require_both,
+        favor_dice_or_score=favor_dice_or_score,
+    )
 
 
 def apply_discards(

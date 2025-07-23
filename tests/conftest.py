@@ -1,3 +1,4 @@
+# pragma: no cover
 def pytest_configure():
     """
     During unit-tests we don't need Numba's jit - disable it so coverage can
