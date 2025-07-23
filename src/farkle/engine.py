@@ -66,6 +66,14 @@ class FarklePlayer:
     strategy_str: str = field(init=False, repr=False)
 
     def __post_init__(self):
+        """Populate the cached strategy string used by ``repr``.
+
+        ``dataclasses`` with ``slots=True`` do not allow setting attributes
+        that aren't defined ahead of time.  ``strategy_str`` is created in the
+        dataclass body but initialised here so ``FarklePlayer`` objects retain a
+        stable textual representation even if the underlying strategy is
+        mutated.
+        """
         object.__setattr__(self, "strategy_str", str(self.strategy))
 
     # ----------------------------- helpers -----------------------------
@@ -88,7 +96,23 @@ class FarklePlayer:
         return self.rng.integers(1, 7, size=n).tolist()
 
     def _score_roll(self, roll: DiceRoll, turn_score: int) -> tuple[int, int, bool]:
-        """Return points, dice to reroll and whether we farkled."""
+        """Evaluate a dice roll.
+
+        Parameters
+        ----------
+        roll
+            Sequence of dice faces from the last throw.
+        turn_score
+            Points already accumulated in the current turn.
+
+        Returns
+        -------
+        tuple[int, int, bool]
+            ``(points, dice_left, farkled)`` where ``points`` is the score for
+            the roll, ``dice_left`` indicates how many dice remain (``6`` if the
+            player scored with all dice), and ``farkled`` signals that no points
+            were scored.
+        """
         pts, used, reroll, d5, d1 = default_score(  # type: ignore[misc]
             dice_roll=roll,
             turn_score_pre=turn_score,
@@ -133,6 +157,27 @@ class FarklePlayer:
         score_to_beat: int,
         target_score: int,
     ) -> bool:
+        """Decide whether to keep rolling.
+
+        Parameters
+        ----------
+        turn_score
+            Points accumulated so far this turn.
+        dice_left
+            Number of dice remaining after scoring the last roll.
+        final_round
+            Whether the game is in the final round.
+        score_to_beat
+            Current leading score that must be surpassed in the final round.
+        target_score
+            Score that triggers the final round.
+
+        Returns
+        -------
+        bool
+            ``True`` if the player's strategy opts to roll again, ``False`` to
+            bank the turn's points.
+        """
         running_total = self.score + turn_score
         score_needed = max(0, target_score - running_total)
 
@@ -303,14 +348,17 @@ class GameMetrics:
     # ------------------------------------------------------------------
     @property
     def winner(self) -> str:
+        """Return the name of the player with the highest score."""
         return max(self.players.items(), key=lambda p: p[1].score)[0]
 
     @property
     def winning_score(self) -> int:
+        """Final score achieved by the winner."""
         return self.players[self.winner].score
 
     @property
     def n_rounds(self) -> int:
+        """Number of rounds played in the game."""
         return self.game.n_rounds
 
 
