@@ -40,3 +40,41 @@ def test_main_invokes_run_tournament(monkeypatch: MonkeyPatch, tmp_path: rf.Path
     assert seen == players
     assert len(calls) == len(players)
     assert all(isinstance(nshuf, int) for _, nshuf in calls)
+
+
+def test_main_skips_complete_and_resets_partial(
+    monkeypatch: MonkeyPatch, tmp_path: rf.Path
+) -> None:
+    calls = []
+
+    def fake_run_tournament(**kwargs):
+        row_dir = kwargs["row_output_directory"]
+        # ensure partial directories were removed before calling
+        assert not row_dir.exists()
+        calls.append(kwargs["n_players"])
+
+    monkeypatch.setattr("farkle.run_tournament.run_tournament", fake_run_tournament)
+    monkeypatch.setattr(rf.mp, "set_start_method", lambda *a, **k: None)  # noqa: ARG005
+    monkeypatch.chdir(tmp_path)
+
+    base = tmp_path / "data" / "results_seed_0"
+    base.mkdir(parents=True)
+
+    # create completed results for 2 players
+    done = base / "2_players"
+    done.mkdir()
+    (done / "2p_checkpoint.pkl").write_text("done")
+    (done / "2p_rows.parquet").write_text("rows")
+
+    # create partial results for 3 players
+    partial = base / "3_players"
+    row_dir = partial / "3p_rows"
+    row_dir.mkdir(parents=True)
+    (row_dir / "a.parquet").write_text("partial")
+
+    rf.main()
+
+    # 2-player run skipped, 3-player run executed with reset
+    players_called = calls
+    assert 2 not in players_called
+    assert 3 in players_called
