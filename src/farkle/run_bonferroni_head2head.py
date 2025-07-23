@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Bonferroni-corrected head-to-head comparison of top-tier strategies."""
+
+from __future__ import annotations
 
 import argparse
 import json

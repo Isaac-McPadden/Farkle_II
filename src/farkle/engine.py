@@ -99,7 +99,7 @@ class FarklePlayer:
             consider_score=self.strategy.consider_score,
             consider_dice=self.strategy.consider_dice,
             require_both=self.strategy.require_both,
-            prefer_score=self.strategy.prefer_score,
+            favor_dice_or_score=self.strategy.favor_dice_or_score,
             return_discards=True,
         )
 
@@ -136,8 +136,7 @@ class FarklePlayer:
         running_total = self.score + turn_score
         score_needed = max(0, target_score - running_total)
 
-        if final_round and running_total > score_to_beat:
-            if not self.strategy.run_up_score:
+        if final_round and running_total > score_to_beat and not self.strategy.run_up_score:
                 return False
 
         keep_rolling = self.strategy.decide(

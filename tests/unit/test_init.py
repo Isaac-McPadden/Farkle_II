@@ -2,8 +2,9 @@ import importlib
 import importlib.metadata
 import pathlib
 
-import farkle
 import pytest
+
+import farkle
 
 
 def _reload(monkeypatch):

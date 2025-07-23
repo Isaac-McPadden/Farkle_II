@@ -19,7 +19,7 @@ from farkle.engine import FarklePlayer, GameMetrics  # noqa: E402
 from farkle.farkle_io import simulate_many_games_stream  # noqa: E402
 from farkle.simulation import generate_strategy_grid, simulate_many_games_from_seeds  # noqa: E402
 from farkle.stats import games_for_power  # noqa: E402
-from farkle.strategies import PreferScore, ThresholdStrategy  # noqa: E402
+from farkle.strategies import FavorDiceOrScore, ThresholdStrategy  # noqa: E402
 
 # Path to the project's pyproject.toml for local version fallback
 PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
@@ -72,7 +72,7 @@ pathlib.Path.unlink = _safe_unlink  # type: ignore[assignment]
 __all__ = [
     "FarklePlayer",
     "GameMetrics",
-    "PreferScore",
+    "FavorDiceOrScore",
     "ThresholdStrategy",
     "generate_strategy_grid",
     "simulate_many_games_stream",

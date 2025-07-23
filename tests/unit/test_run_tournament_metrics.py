@@ -8,11 +8,11 @@ logging behaviour.
 
 from __future__ import annotations
 
+import builtins
+import logging
 import pickle
 import sys
 import types
-import builtins
-import logging
 from collections import Counter, defaultdict
 from pathlib import Path
 

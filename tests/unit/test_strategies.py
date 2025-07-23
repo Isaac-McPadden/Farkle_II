@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from farkle.strategies import (
-    PreferScore,
+    FavorDiceOrScore,
     ThresholdStrategy,
     _sample_prefer_score,
     load_farkle_results,
@@ -71,11 +71,11 @@ def test_random_strategy_factory():
         assert not ts.smart_one or ts.smart_five
         # require_both only legal when both flags set
         assert not ts.require_both or (ts.consider_score and ts.consider_dice)
-        # NEW: prefer_score must follow the truth-table above
+        # NEW: favor_dice_or_score must follow the truth-table above
         if ts.consider_score and not ts.consider_dice:
-            assert ts.prefer_score is PreferScore.SCORE
+            assert ts.favor_dice_or_score is FavorDiceOrScore.SCORE
         elif ts.consider_dice and not ts.consider_score:
-            assert ts.prefer_score is PreferScore.DICE
+            assert ts.favor_dice_or_score is FavorDiceOrScore.DICE
 
 
 # ────────────────────────────────────────────────────────────────────────────
@@ -87,14 +87,14 @@ def test_random_strategy_factory():
     "input_str, expected",
     [
         # ────────────────────────────────────────────────────────────────────
-        # Basic case: all flags True, prefer_score=True, auto_hot=True, run_up=True
+        # Basic case: all flags True, favor_dice_or_score=True, auto_hot=True, run_up=True
         #   • score_threshold = 300
         #   • dice_threshold  = 2
         #   • consider_score  = True  (“S”)
         #   • consider_dice   = True  (“D”)
         #   • smart_five      = True  (“*F”)
         #   • smart_one       = True  (“*O”)
-        #   • prefer_score    = True  (“P”)
+        #   • favor_dice_or_score    = True  (“P”)
         #   • require_both    = True  (“AND”)
         #   • auto_hot_dice   = True  (“H”)
         #   • run_up_score    = True  (“R”)
@@ -107,21 +107,21 @@ def test_random_strategy_factory():
                 "consider_dice": True,
                 "smart_five": True,
                 "smart_one": True,
-                "prefer_score": PreferScore.SCORE,
+                "favor_dice_or_score": FavorDiceOrScore.SCORE,
                 "require_both": True,
                 "auto_hot_dice": True,
                 "run_up_score": True,
             },
         ),
         # ────────────────────────────────────────────────────────────────────
-        # 2) Variation: smart_one=False, prefer_score=False, auto_hot=False, run_up=False
+        # 2) Variation: smart_one=False, favor_dice_or_score=False, auto_hot=False, run_up=False
         #   • score_threshold = 500
         #   • dice_threshold  = 1
         #   • consider_score  = True  (“S”)
         #   • consider_dice   = False (“-”)
         #   • smart_five      = True  (“*F”)
         #   • smart_one       = False (“-”)
-        #   • prefer_score    = False (“-”)
+        #   • favor_dice_or_score    = False (“-”)
         #   • require_both    = False (“OR”)
         #   • auto_hot_dice   = False (“-”)
         #   • run_up_score    = False (“-”)
@@ -134,21 +134,21 @@ def test_random_strategy_factory():
                 "consider_dice": False,
                 "smart_five": True,
                 "smart_one": False,
-                "prefer_score": PreferScore.DICE,
+                "favor_dice_or_score": FavorDiceOrScore.DICE,
                 "require_both": False,
                 "auto_hot_dice": False,
                 "run_up_score": False,
             },
         ),
         # ────────────────────────────────────────────────────────────────────
-        # 3) Neither consider_score nor consider_dice (cs=False, cd=False), prefer_score=True
+        # 3) Neither consider_score nor consider_dice (cs=False, cd=False), favor_dice_or_score=True
         #   • score_threshold = 250
         #   • dice_threshold  = 3
         #   • consider_score  = False (“-”)
         #   • consider_dice   = False (“-”)
         #   • smart_five      = False (“-F”)
         #   • smart_one       = False (“--”)
-        #   • prefer_score    = True  (“P”)
+        #   • favor_dice_or_score    = True  (“P”)
         #   • require_both    = False (“OR”)
         #   • auto_hot_dice   = True  (“H”)
         #   • run_up_score    = False (“-”)
@@ -161,21 +161,21 @@ def test_random_strategy_factory():
                 "consider_dice": False,
                 "smart_five": False,
                 "smart_one": False,
-                "prefer_score": PreferScore.SCORE,
+                "favor_dice_or_score": FavorDiceOrScore.SCORE,
                 "require_both": False,
                 "auto_hot_dice": True,
                 "run_up_score": False,
             },
         ),
         # ────────────────────────────────────────────────────────────────────
-        # 4) cs=False, cd=True => prefer_score must be False
+        # 4) cs=False, cd=True => favor_dice_or_score must be False
         #   • score_threshold = 700
         #   • dice_threshold  = 4
         #   • consider_score  = False (“-”)
         #   • consider_dice   = True  (“D”)
         #   • smart_five      = False (“-F”)
         #   • smart_one       = False (“--”)
-        #   • prefer_score    = False (“-”)
+        #   • favor_dice_or_score    = False (“-”)
         #   • require_both    = False (“OR”)
         #   • auto_hot_dice   = False (“-”)
         #   • run_up_score    = True  (“R”)
@@ -188,7 +188,7 @@ def test_random_strategy_factory():
                 "consider_dice": True,
                 "smart_five": False,
                 "smart_one": False,
-                "prefer_score": PreferScore.DICE,
+                "favor_dice_or_score": FavorDiceOrScore.DICE,
                 "require_both": False,
                 "auto_hot_dice": False,
                 "run_up_score": True,
@@ -208,7 +208,7 @@ def test_parse_strategy_valid(input_str, expected):
     assert strat.consider_dice == expected["consider_dice"]
     assert strat.smart_five == expected["smart_five"]
     assert strat.smart_one == expected["smart_one"]
-    assert strat.prefer_score == expected["prefer_score"]
+    assert strat.favor_dice_or_score == expected["favor_dice_or_score"]
     assert strat.require_both == expected["require_both"]
     assert strat.auto_hot_dice == expected["auto_hot_dice"]
     assert strat.run_up_score == expected["run_up_score"]
@@ -222,7 +222,7 @@ def test_parse_strategy_valid(input_str, expected):
     assert reparsed.consider_dice == strat.consider_dice
     assert reparsed.smart_five == strat.smart_five
     assert reparsed.smart_one == strat.smart_one
-    assert reparsed.prefer_score == strat.prefer_score
+    assert reparsed.favor_dice_or_score == strat.favor_dice_or_score
     assert reparsed.require_both == strat.require_both
     assert reparsed.auto_hot_dice == strat.auto_hot_dice
     assert reparsed.run_up_score == strat.run_up_score
@@ -275,7 +275,7 @@ def test_parse_strategy_for_df():  # noqa: ARG001
         "require_both": True,
         "auto_hot_dice": True,
         "run_up_score": True,
-        "prefer_score": PreferScore.SCORE,
+        "favor_dice_or_score": FavorDiceOrScore.SCORE,
     }
     assert strat_dict_2 == {
         "score_threshold": 300,
@@ -287,21 +287,21 @@ def test_parse_strategy_for_df():  # noqa: ARG001
         "require_both": False,
         "auto_hot_dice": False,
         "run_up_score": False,
-        "prefer_score": PreferScore.DICE,
+        "favor_dice_or_score": FavorDiceOrScore.DICE,
     }
 
 
 def test_sample_prefer_score_deterministic():
     rng = random.Random(0)
-    assert _sample_prefer_score(True, False, rng) is PreferScore.SCORE
+    assert _sample_prefer_score(True, False, rng) is FavorDiceOrScore.SCORE
     rng = random.Random(0)
-    assert _sample_prefer_score(False, True, rng) is PreferScore.DICE
+    assert _sample_prefer_score(False, True, rng) is FavorDiceOrScore.DICE
     rng = random.Random(0)
-    expected_tt = rng.choice([PreferScore.SCORE, PreferScore.DICE])
+    expected_tt = rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
     rng = random.Random(0)
     assert _sample_prefer_score(True, True, rng) is expected_tt
     rng = random.Random(0)
-    expected_ff = rng.choice([PreferScore.SCORE, PreferScore.DICE])
+    expected_ff = rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
     rng = random.Random(0)
     assert _sample_prefer_score(False, False, rng) is expected_ff
 
@@ -338,7 +338,7 @@ def test_load_farkle_results_unordered(tmp_path):
         "score_threshold", "dice_threshold",
         "smart_five", "smart_one",
         "consider_score", "consider_dice", "require_both",
-        "auto_hot_dice", "run_up_score", "prefer_score",
+        "auto_hot_dice", "run_up_score", "favor_dice_or_score",
     ]
 
 

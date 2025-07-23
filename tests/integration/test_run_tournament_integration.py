@@ -28,6 +28,7 @@ from typing import List, Sequence
 import pytest
 
 import farkle.simulation as sim
+from farkle.run_tournament import TournamentConfig
 from farkle.strategies import ThresholdStrategy
 
 ###############################################################################
@@ -93,7 +94,7 @@ def _init_worker_small(
 ###############################################################################
 
 
-def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> rt.TournamentConfig:  # type: ignore
+def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> TournamentConfig:  # type: ignore
     """Patch **everything** needed for a lightning -fast run.
 
     * constants (shuffles, games, timing)

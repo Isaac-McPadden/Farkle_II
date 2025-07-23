@@ -58,18 +58,18 @@ def test_custom_grid_size():
 
 def test_limited_consider_opts_grid_and_size():
     """Grid size and experiment_size with restricted consider_* options."""
-    opts = dict(consider_score_opts=[False], consider_dice_opts=[False])
+    opts = {"consider_score_opts": [False], "consider_dice_opts": [False]}
     strategies, _ = generate_strategy_grid(**opts)
     # hand-computed: base combinations (1020) × 2 ps values
     assert len(strategies) == 2040
-    assert experiment_size(**opts) == 2040
+    assert experiment_size(**opts) == 2040 # type: ignore
 
 
 def test_consider_true_true_options():
-    opts = dict(consider_score_opts=[True], consider_dice_opts=[True])
+    opts = {"consider_score_opts": [True], "consider_dice_opts": [True]}
     strategies, _ = generate_strategy_grid(**opts)
     assert len(strategies) == 4080  # 1020 base × 4 variants
-    assert experiment_size(**opts) == 4080
+    assert experiment_size(**opts) == 4080 # type: ignore
 
 
 def test_parallel_simulation():

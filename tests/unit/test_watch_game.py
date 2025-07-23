@@ -29,7 +29,7 @@ def test_patched_score_used_in_turn(monkeypatch):  # noqa: ARG001
     wg._patch_default_score()
     calls: list[str] = []
 
-    monkeypatch.setattr(wg.log, "info", lambda msg, *a, **k: calls.append(msg))
+    monkeypatch.setattr(wg.log, "info", lambda msg, *a, **k: calls.append(msg))  # noqa: ARG005
 
     class FixedGen(np.random.Generator):
         def __init__(self) -> None:

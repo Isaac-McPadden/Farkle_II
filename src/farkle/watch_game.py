@@ -54,7 +54,7 @@ def strategy_yaml(strategy: ThresholdStrategy) -> str:
         require_both    : false
         auto_hot_dice   : false
         run_up_score    : false
-        prefer_score    : true
+        favor_dice_or_score    : true
     """
 
     # dataclass → plain dict (keeps declared order)
@@ -160,7 +160,7 @@ def _patch_default_score() -> None:
 class TracePlayer(FarklePlayer):
     """Subclass of :class:`FarklePlayer` that logs every dice roll."""
 
-    def _roll(self, n: int) -> Sequence[int]:  # :contentReference[oaicite:3]{index=3}
+    def _roll(self, n: int) -> Sequence[int]:
         """Return ``n`` dice faces and log the result."""
         faces = super()._roll(n)
         log.info(f"{self.name} rolls {faces}")

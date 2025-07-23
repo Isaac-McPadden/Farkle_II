@@ -41,6 +41,7 @@ def test_read_loose_parquets(tmp_path):
     pd.DataFrame({"w": ["Y"]}).to_parquet(block / "b.parquet")
 
     df = rt._read_loose_parquets(block)
+    assert df is not None
     assert sorted(df["w"]) == ["X", "Y"]
     assert rt._read_loose_parquets(tmp_path / "empty") is None
 

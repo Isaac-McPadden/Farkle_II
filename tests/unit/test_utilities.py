@@ -1,15 +1,15 @@
+import csv
+import queue
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 import yaml
 
+import farkle.farkle_io as farkle_io
 from farkle import farkle_cli  # imports the module, not the exe
 from farkle.farkle_io import simulate_many_games_stream
-import queue
-import threading
-import csv
-import farkle.farkle_io as farkle_io
 from farkle.stats import games_for_power
 from farkle.strategies import ThresholdStrategy
 
@@ -130,7 +130,7 @@ def test_stream_buffer_queue_limits(tmp_path, monkeypatch):
     monkeypatch.setattr(
         farkle_io.mp,
         "Queue",
-        lambda *a, **k: queue.Queue(maxsize=queue_size),
+        lambda *a, **k: queue.Queue(maxsize=queue_size),  # noqa: ARG005
     )
 
     class ThreadProcess:
@@ -155,7 +155,7 @@ def test_stream_buffer_queue_limits(tmp_path, monkeypatch):
         def __exit__(self, *exc):
             return False
 
-        def imap_unordered(self, func, iterable, chunksize=1):
+        def imap_unordered(self, func, iterable, chunksize=1):  # noqa: ARG002
             for item in iterable:
                 yield func(item)
 

@@ -1,16 +1,3 @@
-from __future__ import annotations
-
-import multiprocessing as mp
-import itertools
-from dataclasses import asdict
-from typing import Any, Dict, List, Sequence, Tuple
-
-import numpy as np
-import pandas as pd
-
-from farkle.engine import FarkleGame, FarklePlayer
-from farkle.strategies import ThresholdStrategy
-
 """simulation.py
 ================
 High-level utilities for *batch* and *grid* simulations.
@@ -23,6 +10,19 @@ This is the entry point most users will reach for:
   return tidy metrics.
 * ``aggregate_metrics`` - summarize a DataFrame of game results.
 """
+
+from __future__ import annotations
+
+import itertools
+import multiprocessing as mp
+from dataclasses import asdict
+from typing import Any, Dict, List, Sequence, Tuple
+
+import numpy as np
+import pandas as pd
+
+from farkle.engine import FarkleGame, FarklePlayer
+from farkle.strategies import FavorDiceOrScore, ThresholdStrategy
 
 __all__: list[str] = [
     "generate_strategy_grid",
@@ -76,7 +76,7 @@ def generate_strategy_grid(
     if smart_one_opts is None:
         smart_one_opts = [True, False]
     combos: List[
-        Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, bool]
+        Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]
     ] = []
 
     # Iterate over the basic option grid using itertools.product and filter
@@ -97,11 +97,11 @@ def generate_strategy_grid(
         rb_values = [True, False] if cs and cd else [False]
 
         if cs and not cd:
-            ps_values = [True]
+            ps_values = [FavorDiceOrScore.SCORE]
         elif cd and not cs:
-            ps_values = [False]
+            ps_values = [FavorDiceOrScore.DICE]
         else:
-            ps_values = [True, False]
+            ps_values = [FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE]
 
         for rb in rb_values:
             for ps in ps_values:
@@ -119,7 +119,7 @@ def generate_strategy_grid(
             require_both=rb,
             auto_hot_dice=hd,
             run_up_score=rs,
-            prefer_score=ps,
+            favor_dice_or_score=ps,
         )
         for st, dt, sf, so, cs, cd, rb, hd, rs, ps in combos
     ]
@@ -136,7 +136,7 @@ def generate_strategy_grid(
             "require_both",
             "auto_hot_dice",
             "run_up_score",
-            "prefer_score",
+            "favor_dice_or_score",
         ],
     )
     meta["strategy_idx"] = meta.index
@@ -186,7 +186,7 @@ def experiment_size(
 
     # ----- how many CS/CD pairs? ----------------------------------------
     # generate_strategy_grid loops over each (cs, cd) pair and then
-    # selects ``require_both`` and ``prefer_score`` options based on the
+    # selects ``require_both`` and ``favor_dice_or_score`` options based on the
     # truth table described in the function's docstring.  ``pair_count``
     # should therefore mirror that logic directly so that the predicted
     # size matches ``generate_strategy_grid`` for any subset of options.

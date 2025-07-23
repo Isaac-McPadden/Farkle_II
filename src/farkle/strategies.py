@@ -11,7 +11,7 @@ from typing import Any, Callable
 import numba as nb
 import pandas as pd
 
-from farkle.types import DiceRoll
+from farkle.types import DiceRoll  # noqa: F401 Likely needed for decide(*)
 
 """strategies.py
 ================
@@ -32,13 +32,13 @@ sweeps.
 
 
 __all__: list[str] = [
-    "PreferScore",
+    "FavorDiceOrScore",
     "ThresholdStrategy",
     "random_threshold_strategy",
 ]
 
 
-class PreferScore(Enum):
+class FavorDiceOrScore(Enum):
     """Tie-break preference when both score and dice targets are hit."""
 
     SCORE = "score"
@@ -145,7 +145,7 @@ class ThresholdStrategy:
     require_both: bool = False
     auto_hot_dice: bool = False
     run_up_score: bool = False
-    prefer_score: PreferScore = PreferScore.SCORE
+    favor_dice_or_score: FavorDiceOrScore = FavorDiceOrScore.SCORE
     
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
@@ -229,7 +229,7 @@ class ThresholdStrategy:
         rb = "AND" if self.require_both else "OR"
         hd = "H" if self.auto_hot_dice else "-"
         rs = "R" if self.run_up_score else "-"
-        ps = "PS" if self.prefer_score is PreferScore.SCORE else "PD"
+        ps = "PS" if self.favor_dice_or_score is FavorDiceOrScore.SCORE else "PD"
         return f"Strat({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}{ps}][{rb}][{hd}{rs}]"
 
 
@@ -238,12 +238,12 @@ class ThresholdStrategy:
 # ---------------------------------------------------------------------------
 
 
-def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> PreferScore:
+def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrScore:
     """
-    Return the *only* legal value(s) for `prefer_score`
+    Return the *only* legal value(s) for `favor_dice_or_score`
     given the (consider_score, consider_dice) pair.
 
-        cs  cd   →  prefer_score
+        cs  cd   →  favor_dice_or_score
         ─────────────────────────
         T   F       True    (always favour score)
         F   T       False   (always favour dice)
@@ -253,8 +253,8 @@ def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> PreferScore:
     Much easier to read than a stacked ternary.
     """
     if cs == cd:  # (T,T) or (F,F)   →  free choice
-        return rng.choice([PreferScore.SCORE, PreferScore.DICE])
-    return PreferScore.SCORE if cs else PreferScore.DICE
+        return rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
+    return FavorDiceOrScore.SCORE if cs else FavorDiceOrScore.DICE
 
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
@@ -280,7 +280,7 @@ def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStra
         consider_score=cs,
         consider_dice=cd,
         require_both=rb,
-        prefer_score=ps,
+        favor_dice_or_score=ps,
     )
 
 
@@ -301,8 +301,8 @@ def _parse_strategy_flags(s: str) -> dict[str, Any]:
         "require_both": m.group("rb") == "AND",
         "auto_hot_dice": m.group("hd") == "H",
         "run_up_score": m.group("rs") == "R",
-        "prefer_score": (
-            PreferScore.SCORE if m.group("ps") == "PS" else PreferScore.DICE
+        "favor_dice_or_score": (
+            FavorDiceOrScore.SCORE if m.group("ps") == "PS" else FavorDiceOrScore.DICE
         ),
     }
 
@@ -335,7 +335,7 @@ def parse_strategy(s: str) -> ThresholdStrategy:
     #     auto_hot       = "H" or "-"
     #     run_up_score   = "R" or "-"
     #     require_both   = "AND" or "OR"
-    #     prefer_score   = "PS" or "PD"
+    #     favor_dice_or_score   = "PS" or "PD"
     #
     # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
 
@@ -371,7 +371,7 @@ def parse_strategy_for_df(s: str) -> dict:
     #     auto_hot       = "H" or "-"
     #     run_up_score   = "R" or "-"
     #     require_both   = "AND" or "OR"
-    #     prefer_score   = "PS" or "PD"
+    #     favor_dice_or_score   = "PS" or "PD"
     #
     # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
 
@@ -411,7 +411,7 @@ def load_farkle_results(
         Columns:
           strategy, wins,
           score_threshold, dice_threshold,
-          consider_score, consider_dice, require_both, prefer_score,
+          consider_score, consider_dice, require_both, favor_dice_or_score,
           smart_five, smart_one, auto_hot_dice, run_up_score
     """
     # ------------------------------------------------------------------
@@ -452,7 +452,7 @@ def load_farkle_results(
             "require_both",
             "smart_five",
             "smart_one",
-            "prefer_score",
+            "favor_dice_or_score",
             "auto_hot_dice",
             "run_up_score",
         ]

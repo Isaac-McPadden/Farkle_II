@@ -7,7 +7,6 @@ import pickle
 from dataclasses import dataclass
 from pathlib import Path
 
-
 import numpy as np
 import pandas as pd
 import trueskill
@@ -166,7 +165,7 @@ def run_trueskill(output_seed: int = 0) -> None:
     """
 
     base = Path("data/results")
-    manifest_seed = _read_manifest_seed(base / "manifest.yaml")
+    _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
     env = trueskill.TrueSkill()
     pooled: dict[str, RatingStats] = {}

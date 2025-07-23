@@ -138,7 +138,7 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
     assert saves["n"] == 2  # exactly one inside the loop, one at end
 
 
-def test_init_worker_valid_and_invalid(monkeypatch):
+def test_init_worker_valid_and_invalid():
     strats = _mini_strats(8)
     cfg = rt.TournamentConfig(n_players=4)
     rt._init_worker(strats, cfg)
@@ -169,11 +169,11 @@ def test_run_tournament_player_count(monkeypatch, tmp_path):
         def submit(self, fn, arg):
             return DummyFuture(fn(arg))
 
-    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())
-    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)
+    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())  # noqa: ARG005
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
     monkeypatch.setattr(rt, "NUM_SHUFFLES", 1, raising=False)
-    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)
-    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)  # noqa: ARG005
+    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
     monkeypatch.setattr(rt, "as_completed", lambda d: list(d.keys()), raising=True)
 
     cfg_ok = rt.TournamentConfig(n_players=6)
@@ -204,11 +204,11 @@ def test_run_tournament_num_shuffles_override(monkeypatch, tmp_path):
         def submit(self, fn, arg):
             return DummyFuture(fn(arg))
 
-    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())
-    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)
-    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)
-    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)
-    monkeypatch.setattr(rt, "as_completed", lambda l: list(l), raising=True)
+    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())  # noqa: ARG005
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
+    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)  # noqa: ARG005
+    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
+    monkeypatch.setattr(rt, "as_completed", lambda x: list(x), raising=True)
 
     called = []
 

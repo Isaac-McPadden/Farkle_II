@@ -273,6 +273,6 @@ def build_score_lookup_table() -> dict[SixFaceCounts, tuple[int, int, SixFaceCou
             )
             if key in look:  # skip duplicates (e.g. (2,2,2,5,5) permutes)
                 continue
-            score, used, sf, so = evaluate(key)
-            look[key] = (score, used, key, sf, so)
+            score, used, smart_fives, smart_ones = evaluate(key)
+            look[key] = (score, used, key, smart_fives, smart_ones)
     return look

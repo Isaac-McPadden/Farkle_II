@@ -96,7 +96,7 @@ def _call(
     consider_score = True,
     consider_dice = True,
     require_both = False,
-    prefer_score = True,
+    favor_dice_or_score = True,
 ):
     raw_s, raw_u, counts, sf, so = score_roll_cached(roll)
     return decide_smart_discards(
@@ -114,7 +114,7 @@ def _call(
         consider_score = consider_score,
         consider_dice = consider_dice,
         require_both = require_both,
-        prefer_score = prefer_score,
+        favor_dice_or_score = favor_dice_or_score,
     )
 
 
@@ -150,12 +150,12 @@ def test_require_both_logic():
 # ────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
-    "prefer_score, expected",
+    "favor_dice_or_score, expected",
     [(True, (0, 0)), (False, (1, 0))],
 )
-def test_prefer_score_vs_dice(prefer_score, expected):
+def test_prefer_score_vs_dice(favor_dice_or_score, expected):
     roll = [5, 5, 2, 3, 4]
-    out = _call(roll, prefer_score=prefer_score, dice_thr=2, score_thr=300)
+    out = _call(roll, favor_dice_or_score=favor_dice_or_score, dice_thr=2, score_thr=300)
     assert out == expected
 
 

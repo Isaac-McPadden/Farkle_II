@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import functools
-from typing import Callable, NamedTuple, Sequence, Tuple, cast
+from typing import Callable, NamedTuple, Sequence, Tuple, Union, cast
 
 # Numba is only used in the low-level helpers;
 # no caller needs to install it explicitly.
@@ -10,6 +10,7 @@ import numba as nb
 import numpy as np
 
 from farkle.scoring_lookup import evaluate as _eval_nb  # fast JIT core
+from farkle.strategies import FavorDiceOrScore
 from farkle.types import DiceRoll, FacesSequence, Int64Array1D, SixFaceCounts
 
 # --------------------------------------------------------------------------- #
@@ -269,7 +270,7 @@ def _select_candidate(
     dice_roll_len: int,
     single_fives: int,
     single_ones: int,
-    prefer_score: bool,
+    favor_dice_or_score: Union[FavorDiceOrScore, bool] = FavorDiceOrScore.SCORE,
     must_bank: Callable[[int, int], bool],
 ) -> tuple[int, int] | None:
     """Pick the best discard option from scored candidates."""
@@ -282,9 +283,12 @@ def _select_candidate(
         if must_bank(score_after, dice_left_after):
             continue
 
+        _prefer_score = (
+            favor_dice_or_score is True or favor_dice_or_score is FavorDiceOrScore.SCORE  # bool vs enum normalization
+        )
         key = (
             (score_after, dice_left_after)
-            if prefer_score
+            if _prefer_score
             else (
                 dice_left_after,
                 score_after,
@@ -315,7 +319,7 @@ def decide_smart_discards(
     consider_score: bool = True,
     consider_dice: bool = True,
     require_both: bool = False,
-    prefer_score: bool = True,
+    favor_dice_or_score: Union[FavorDiceOrScore, bool] = FavorDiceOrScore.SCORE,
 ) -> Tuple[int, int]:
     """Determine how many single 5s and 1s to throw back.
 
@@ -352,7 +356,7 @@ def decide_smart_discards(
         Whether to check dice_threshold.
     require_both (bool, optional):
         Bank only if both thresholds are hit.
-    prefer_score (bool, optional):
+    favor_dice_or_score (bool, optional):
         Break ties in favour of higher score.
 
     Returns
@@ -381,7 +385,7 @@ def decide_smart_discards(
         dice_roll_len=dice_roll_len,
         single_fives=single_fives,
         single_ones=single_ones,
-        prefer_score=prefer_score,
+        favor_dice_or_score=favor_dice_or_score,
         must_bank=must_bank,
     )
 
@@ -439,13 +443,13 @@ def default_score(
     require_both: bool = False,
     score_threshold: int = 300,
     dice_threshold: int = 3,
-    prefer_score: bool = True,
+    favor_dice_or_score: Union[FavorDiceOrScore, bool] = FavorDiceOrScore.SCORE,
     return_discards: bool = False,  # reports if 5's or 1's were discarded at all
 ) -> Tuple[int, int, int] | Tuple[int, int, int, int, int]:
     """Score a roll and apply Smart discard heuristics.
 
     ``smart_one=True`` only has an effect when ``smart_five`` is ``True``.
-    Otherwise the Smart‑1 logic is skipped.
+    Otherwise the Smart-1 logic is skipped.
 
     Inputs
     ------
@@ -467,7 +471,7 @@ def default_score(
         Minimum score before banking.
     dice_threshold (int, optional):
         Maximum dice left before banking.
-    prefer_score (bool, optional):
+    favor_dice_or_score (bool, optional):
         Break ties in favour of higher score.
     return_discards (bool, optional):
         If True, include the number of discarded 5s and 1s in the result.
@@ -498,7 +502,7 @@ def default_score(
         consider_score=consider_score,
         consider_dice=consider_dice,
         require_both=require_both,
-        prefer_score=prefer_score,
+        favor_dice_or_score=favor_dice_or_score,
     )
 
     final_scoring_info = apply_discards(raw_score, raw_used, d5, d1, len(dice_roll))
