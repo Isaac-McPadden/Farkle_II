@@ -75,19 +75,7 @@ mypy
 ## License
 This project is licensed under the Apache 2.0 License.
 
-For more examples see the unit tests and module level docstrings.
-
-import farkle as far
-
-Any of these work:
-python -m farkle run cfg.yml
-python -m farkle.farkle_cli run cfg.yml
-farkle run cfg.yml               # installed entry-point
-
-
-Dice threshold -> I must have at least n dice to keep rolling (Inclusive Down)
-
-Score threshold -> I stop at this number or higher (Inclusive Up)
-
-5.3 Stat-power vs player-count
-n_games ≥ 2·(z_α + z_β)² · p(1-p) / δ²
+## Project Usage
+Run `farkle run cfg.yml` to simulate tournaments from a configuration file or use
+the API as shown above. See the unit tests and module-level docstrings for more
+examples.
