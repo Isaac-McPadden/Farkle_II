@@ -57,7 +57,7 @@ _STRAT_RE = re.compile(
     \[
         (?P<sf>[F\-])  # smart_five block
         (?P<so>[O\-])  # smart_one block
-        (?P<ps>PS|PD)
+        (?P<fs>FS|FD)
     \]
     \[
         (?P<rb>AND|OR)
@@ -228,8 +228,8 @@ class ThresholdStrategy:
         rb = "AND" if self.require_both else "OR"
         hd = "H" if self.auto_hot_dice else "-"
         rs = "R" if self.run_up_score else "-"
-        ps = "PS" if self.favor_dice_or_score is FavorDiceOrScore.SCORE else "PD"
-        return f"Strat({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}{ps}][{rb}][{hd}{rs}]"
+        fs = "FS" if self.favor_dice_or_score is FavorDiceOrScore.SCORE else "FD"
+        return f"Strat({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}{fs}][{rb}][{hd}{rs}]"
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +237,7 @@ class ThresholdStrategy:
 # ---------------------------------------------------------------------------
 
 
-def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrScore:
+def _sample_favor_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrScore:
     """
     Return the *only* legal value(s) for `favor_dice_or_score`
     given the (consider_score, consider_dice) pair.
@@ -256,6 +256,10 @@ def _sample_prefer_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrS
     return FavorDiceOrScore.SCORE if cs else FavorDiceOrScore.DICE
 
 
+# Backwards compatible alias for older APIs
+_sample_prefer_score = _sample_favor_score
+
+
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
     """Return a random ThresholdStrategy that always satisfies the two constraints."""
 
@@ -269,7 +273,7 @@ def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStra
     cs = rng_inst.choice([True, False])
     cd = rng_inst.choice([True, False])
     rb = rng_inst.choice([True, False]) if (cs and cd) else False
-    ps = _sample_prefer_score(cs, cd, rng_inst)
+    fs = _sample_favor_score(cs, cd, rng_inst)
 
     return ThresholdStrategy(
         score_threshold=rng_inst.randrange(50, 1000, 50),
@@ -279,7 +283,7 @@ def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStra
         consider_score=cs,
         consider_dice=cd,
         require_both=rb,
-        favor_dice_or_score=ps,
+        favor_dice_or_score=fs,
     )
 
 
@@ -301,7 +305,7 @@ def _parse_strategy_flags(s: str) -> dict[str, Any]:
         "auto_hot_dice": m.group("hd") == "H",
         "run_up_score": m.group("rs") == "R",
         "favor_dice_or_score": (
-            FavorDiceOrScore.SCORE if m.group("ps") == "PS" else FavorDiceOrScore.DICE
+            FavorDiceOrScore.SCORE if m.group("fs") == "FS" else FavorDiceOrScore.DICE
         ),
     }
 
@@ -334,9 +338,9 @@ def parse_strategy(s: str) -> ThresholdStrategy:
     #     auto_hot       = "H" or "-"
     #     run_up_score   = "R" or "-"
     #     require_both   = "AND" or "OR"
-    #     favor_dice_or_score   = "PS" or "PD"
+    #     favor_dice_or_score   = "FS" or "FD"
     #
-    # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
+    # Example literal: "Strat(300,2)[SD][FOFD][AND][H-]"
 
     flags = _parse_strategy_flags(s)
     return ThresholdStrategy(**flags)
@@ -370,9 +374,9 @@ def parse_strategy_for_df(s: str) -> dict:
     #     auto_hot       = "H" or "-"
     #     run_up_score   = "R" or "-"
     #     require_both   = "AND" or "OR"
-    #     favor_dice_or_score   = "PS" or "PD"
+    #     favor_dice_or_score   = "FS" or "FD"
     #
-    # Example literal: "Strat(300,2)[SD][FOPD][AND][H-]"
+    # Example literal: "Strat(300,2)[SD][FOFD][AND][H-]"
 
     return _parse_strategy_flags(s)
 
