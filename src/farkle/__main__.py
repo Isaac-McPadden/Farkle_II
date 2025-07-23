@@ -1,3 +1,4 @@
+# src/farkle/__main__.py
 """Command line entry point for the :mod:`farkle` package.
 
 When executed as ``python -m farkle`` this module simply delegates to

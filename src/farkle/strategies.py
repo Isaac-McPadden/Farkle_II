@@ -1,18 +1,4 @@
-from __future__ import annotations
-
-import pickle
-import random
-import re
-from dataclasses import dataclass
-from enum import Enum
-from pathlib import Path
-from typing import Any, Callable
-
-import numba as nb
-import pandas as pd
-
-from farkle.types import DiceRoll  # noqa: F401 Likely needed for decide(*)
-
+# src/farkle/strategies.py
 """strategies.py
 ================
 Strategy abstractions used by the Farkle simulation engine.  A *strategy*
@@ -29,7 +15,20 @@ Functions
 `random_threshold_strategy` - convenience generator for Monte-Carlo
 sweeps.
 """
+from __future__ import annotations
 
+import pickle
+import random
+import re
+from dataclasses import dataclass
+from enum import Enum
+from pathlib import Path
+from typing import Any, Callable
+
+import numba as nb
+import pandas as pd
+
+from farkle.types import DiceRoll  # noqa: F401 Likely needed for decide(*)
 
 __all__: list[str] = [
     "FavorDiceOrScore",

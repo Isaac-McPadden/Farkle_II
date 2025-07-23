@@ -1,3 +1,4 @@
+# src/farkle/simulation.py
 """simulation.py
 ================
 High-level utilities for *batch* and *grid* simulations.

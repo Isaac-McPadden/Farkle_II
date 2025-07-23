@@ -1,3 +1,5 @@
+# src/farkle/farkle_io.py
+"""Collection of read/write data helper functions available for project-wide use"""
 import csv
 import multiprocessing as mp
 from pathlib import Path

@@ -1,3 +1,4 @@
+# src/farkle/run_full_field.py
 """
 run_full_field.py  -  Phase-1 full-grid screen for all table sizes
    • BH FDR (two-sided) Q = 0.02   →  zα = Φ⁻¹(0.99) ≈ 2.326

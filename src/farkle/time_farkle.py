@@ -1,7 +1,5 @@
-#!/usr/bin/env python3
+# src/farkle/time_farkle.py
 """
-time_farkle.py
-
 Usage:
     python time_farkle.py [--n_games N] [--players P] [--seed S] [--jobs J]
 

@@ -1,5 +1,4 @@
-#!/usr/bin/env python3
-# pragma: no cover
+# src/farkle/watch_game.py
 """
 watch_game.py - run a *single* Farkle game with very chatty logging.
 

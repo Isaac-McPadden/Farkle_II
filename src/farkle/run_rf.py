@@ -1,3 +1,4 @@
+# src/farkle/run_rf.py
 """Train a gradient boosting model to analyse strategy metrics.
 
 This script reads the feature metrics and pooled ratings, fits a

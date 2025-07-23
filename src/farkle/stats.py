@@ -1,4 +1,5 @@
 # src/farkle/stats.py
+"""Module that holds games_for_power calculator for statistical significance"""
 from __future__ import annotations
 
 import warnings

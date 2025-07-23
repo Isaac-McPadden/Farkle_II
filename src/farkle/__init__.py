@@ -1,3 +1,4 @@
+# src/farkle/__init__.py
 """Farkle Mk II - fast Monte-Carlo engine & strategy tools.
 
 Note
