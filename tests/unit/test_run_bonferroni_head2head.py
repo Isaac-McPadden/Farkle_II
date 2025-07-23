@@ -53,3 +53,23 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
     out_csv = data_dir / "bonferroni_pairwise.csv"
     df = pd.read_csv(out_csv)
     assert set(df.columns) == {"a", "b", "wins_a", "wins_b", "pvalue"}
+
+
+def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch):
+    """Gracefully handle tiers.json with only one strategy."""
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    tiers_path = data_dir / "tiers.json"
+    tiers_path.write_text(json.dumps({"A": 1}))
+    monkeypatch.chdir(tmp_path)
+
+    monkeypatch.setattr(rb, "games_for_power", lambda *a, **k: 0)
+    monkeypatch.setattr(rb, "bonferroni_pairs", lambda *a, **k: pd.DataFrame(columns=["a", "b", "seed"]))
+    monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
+    monkeypatch.setattr(rb, "simulate_many_games", lambda **k: pd.DataFrame({"winner_strategy": []}))
+
+    rb.run_bonferroni_head2head(seed=0)
+    out_csv = data_dir / "bonferroni_pairwise.csv"
+    assert out_csv.exists()
+    assert out_csv.read_text() == "\n"

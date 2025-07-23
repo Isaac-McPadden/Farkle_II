@@ -134,4 +134,17 @@ def test_save_checkpoint_round_trip(tmp_path):
     assert payload["win_totals"] == wins
     assert payload["metric_sums"] == sums
     assert payload["metric_square_sums"] == sqs
+
+
+def test_save_checkpoint_wins_only(tmp_path):
+    """_save_checkpoint should omit metric keys when sums/sqs are None."""
+
+    wins = Counter({"X": 7})
+    ckpt = tmp_path / "ckpt.pkl"
+
+    rt._save_checkpoint(ckpt, wins, None, None)
+
+    payload = pickle.loads(ckpt.read_bytes())
+
+    assert payload == {"win_totals": wins}
     
