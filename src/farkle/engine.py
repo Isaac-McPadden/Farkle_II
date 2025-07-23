@@ -137,7 +137,7 @@ class FarklePlayer:
         score_needed = max(0, target_score - running_total)
 
         if final_round and running_total > score_to_beat and not self.strategy.run_up_score:
-                return False
+            return False
 
         keep_rolling = self.strategy.decide(
             turn_score=turn_score,
