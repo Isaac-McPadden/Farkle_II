@@ -12,9 +12,12 @@ from farkle import run_rf, run_trueskill
 def _setup_data(tmp_path: Path) -> Path:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    metrics = pd.DataFrame({"strategy": ["A"], "feat": [1]})
+    metrics = pd.DataFrame({"strategy": ["A", "B"], "feat": [1, 2]})
     metrics.to_parquet(data_dir / "metrics.parquet")
-    ratings = {"A": run_trueskill.RatingStats(0.0, 1.0)}
+    ratings = {
+        "A": run_trueskill.RatingStats(0.0, 1.0),
+        "B": run_trueskill.RatingStats(0.0, 1.0),
+    }
     with open(data_dir / "ratings_pooled.pkl", "wb") as fh:
         pickle.dump(ratings, fh)
     return data_dir
