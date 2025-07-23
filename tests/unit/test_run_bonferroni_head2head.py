@@ -1,6 +1,7 @@
 import json
 
 import pandas as pd
+import pytest
 
 import farkle.run_bonferroni_head2head as rb
 from farkle.simulation import simulate_many_games_from_seeds
@@ -73,3 +74,29 @@ def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch):
     out_csv = data_dir / "bonferroni_pairwise.csv"
     assert out_csv.exists()
     assert out_csv.read_text() == "\n"
+
+def test_run_bonferroni_head2head_missing_file(tmp_path, monkeypatch):
+    """An informative error is raised when tiers.json is absent."""
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(RuntimeError, match="Tier file not found"):
+        rb.run_bonferroni_head2head(seed=1)
+
+
+def test_run_bonferroni_head2head_empty_file(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    (data_dir / "tiers.json").write_text("{}")
+    monkeypatch.chdir(tmp_path)
+    with pytest.raises(RuntimeError, match="No tiers found"):
+        rb.run_bonferroni_head2head()
+
+
+def test_main_delegates_to_runner(monkeypatch):
+    captured = {}
+
+    def fake_run(seed: int = 0) -> None:
+        captured["seed"] = seed
+
+    monkeypatch.setattr(rb, "run_bonferroni_head2head", fake_run)
+    rb.main(["--seed", "42"])
+    assert captured["seed"] == 42
