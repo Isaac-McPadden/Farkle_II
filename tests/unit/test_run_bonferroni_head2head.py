@@ -3,8 +3,8 @@ import json
 import pandas as pd
 
 import farkle.run_bonferroni_head2head as rb
-from farkle.strategies import ThresholdStrategy
 from farkle.simulation import simulate_many_games_from_seeds
+from farkle.strategies import ThresholdStrategy
 
 
 def test_simulate_many_games_from_seeds(monkeypatch):
