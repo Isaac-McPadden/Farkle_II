@@ -3,7 +3,7 @@ import itertools
 import numpy as np
 import pytest
 
-from farkle.engine import FarkleGame, FarklePlayer
+from farkle.engine import FarkleGame, FarklePlayer, ROLL_LIMIT
 from farkle.strategies import ThresholdStrategy
 
 
@@ -216,3 +216,21 @@ def test_final_round_continue_when_ahead_run_up_true():
 
     assert p.n_rolls == 2  # second roll allowed despite being ahead
     assert p.score == 9_000  # bust on the second roll wipes the turn
+
+
+def test_take_turn_roll_limit(monkeypatch):
+    """Player exceeds ``ROLL_LIMIT`` when every roll scores."""
+
+    def scoring_roll(self, n):
+        self.n_rolls += 1
+        return [1] * n
+
+    monkeypatch.setattr(FarklePlayer, "_roll", scoring_roll)
+
+    p = FarklePlayer("P", AlwaysRoll())
+
+    with pytest.raises(RuntimeError):
+        p.take_turn(target_score=10_000)
+
+    assert p.n_rolls == ROLL_LIMIT + 1
+
