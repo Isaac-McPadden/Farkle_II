@@ -50,6 +50,11 @@ def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    # ``PartialDependenceDisplay`` currently warns if integer dtypes are passed
+    # for feature columns. Casting avoids the warning and future ``ValueError``
+    # in scikit-learn 1.9.
+    X = X.copy()
+    X[column] = X[column].astype(float)
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
