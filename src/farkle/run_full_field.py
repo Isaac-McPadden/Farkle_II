@@ -4,8 +4,8 @@ run_full_field.py  -  Phase-1 full-grid screen for all table sizes
    • BH FDR (two-sided) Q = 0.02   →  zα = Φ⁻¹(0.99) ≈ 2.326
    • Power               = 0.95    →  zβ = Φ⁻¹(0.05) ≈ 1.645
    • Detectable lift Δ   = 0.03     (3-percentage-point edge)
-   
-Run with: python -m farkle.run_full_field  
+
+Run with: python -m farkle.run_full_field
 """
 
 import multiprocessing as mp
@@ -32,6 +32,27 @@ def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
     df.to_parquet(out_dir / f"{n_players}p_rows.parquet")
     shutil.rmtree(row_dir, ignore_errors=True)
+
+
+def _combo_complete(out_dir: Path, n_players: int) -> bool:
+    """Return ``True`` if the results for this combo already exist."""
+
+    ckpt = out_dir / f"{n_players}p_checkpoint.pkl"
+    rows = out_dir / f"{n_players}p_rows.parquet"
+    row_dir = out_dir / f"{n_players}p_rows"
+    return ckpt.is_file() and rows.is_file() and not row_dir.exists()
+
+
+def _reset_partial(out_dir: Path, n_players: int) -> None:
+    """Delete partial outputs for a table size if needed."""
+
+    row_dir = out_dir / f"{n_players}p_rows"
+    rows = out_dir / f"{n_players}p_rows.parquet"
+    if row_dir.exists() and not rows.exists():
+        shutil.rmtree(row_dir, ignore_errors=True)
+        ckpt = out_dir / f"{n_players}p_checkpoint.pkl"
+        if ckpt.exists():
+            ckpt.unlink()
 
 
 def main():
@@ -86,6 +107,12 @@ def main():
         out_dir = BASE_OUT / f"{n_players}_players"
         (out_dir).mkdir(parents=True, exist_ok=True)
 
+        if _combo_complete(out_dir, n_players):
+            print(f"↩ skipping {n_players}-player – already done", flush=True)
+            continue
+
+        _reset_partial(out_dir, n_players)
+
         print(
             f"▶ {n_players:>2}-player  |  {nshuf:>7,} shuffles  "
             f"{gps:>5} games per shuffle  →  {ngames / 1e6:5.2f} M games",
@@ -106,7 +133,7 @@ def main():
             row_output_directory=out_dir / f"{n_players}p_rows",
         )
         dt = perf_counter() - t0
-        print(f"✅ finished {n_players}-player in {dt/60:5.1f} min\n", flush=True)
+        print(f"✅ finished {n_players}-player in {dt / 60:5.1f} min\n", flush=True)
         _concat_row_shards(out_dir, n_players)
     print("🏁  All table sizes completed.")
 
