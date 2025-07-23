@@ -222,3 +222,42 @@ def test_run_tournament_num_shuffles_override(monkeypatch, tmp_path):
     rt.run_tournament(config=cfg, checkpoint_path=tmp_path / "x.pkl", num_shuffles=2)
 
     assert len(called) == 2
+
+
+def test_run_tournament_config_overrides(monkeypatch, tmp_path):
+    """n_players and num_shuffles args should update the passed config."""
+
+    class DummyFuture:
+        def __init__(self, result):
+            self._result = result
+
+        def result(self):
+            return self._result
+
+    class DummyPool:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def submit(self, fn, arg):
+            return DummyFuture(fn(arg))
+
+    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)
+    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)
+    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(rt, "as_completed", lambda x: list(x), raising=True)
+    monkeypatch.setattr(rt, "_run_chunk", lambda batch: Counter(), raising=True)
+
+    cfg = rt.TournamentConfig(n_players=5, num_shuffles=3, ckpt_every_sec=99)
+    rt.run_tournament(
+        config=cfg,
+        n_players=4,
+        num_shuffles=2,
+        checkpoint_path=tmp_path / "c.pkl",
+    )
+
+    assert cfg.n_players == 4
+    assert cfg.num_shuffles == 2
