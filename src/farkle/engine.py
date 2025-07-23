@@ -1,14 +1,4 @@
-from __future__ import annotations
-
-import warnings
-from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Sequence
-
-import numpy as np
-
-from farkle.scoring import DiceRoll, default_score
-from farkle.strategies import ThresholdStrategy
-
+# src/farkle/engine.py
 """engine.py
 ============
 Player and single-game engine for Farkle simulations.
@@ -26,6 +16,16 @@ FarklePlayer via its dedicated random.Random instance (passed in
 from the outer simulation layer).
 """
 
+from __future__ import annotations
+
+import warnings
+from dataclasses import asdict, dataclass, field
+from typing import Dict, List, Sequence
+
+import numpy as np
+
+from farkle.scoring import DiceRoll, default_score
+from farkle.strategies import ThresholdStrategy
 
 __all__ = [
     "FarklePlayer",

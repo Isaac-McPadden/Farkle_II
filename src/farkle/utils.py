@@ -1,3 +1,4 @@
+# src/farkle/utils.py
 """Utility helpers for statistical analysis and scheduling.
 
 This module exposes a small collection of functions that support the

@@ -1,9 +1,10 @@
-# src/farkle/scoring.py   –  100 % tuple-based, Numba-compatible
+# src/farkle/scoring.py
 """Score Farkle dice rolls and apply Smart discard logic.
 
 This module wraps the Numba-accelerated helpers in
 :mod:`farkle.scoring_lookup` to compute raw scores and exposes
 :func:`default_score` for applying the Smart-5 and Smart-1 heuristics.
+Tuple based logic for compatibility with Numba
 """
 
 from __future__ import annotations

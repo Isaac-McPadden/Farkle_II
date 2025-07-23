@@ -1,4 +1,4 @@
-# src/farkle/scoring_lookup.py  – Numba- & cache-ready
+# src/farkle/scoring_lookup.py
 """Evaluate Farkle dice rolls using Numba accelerated routines.
 
 This module exposes the key functions :func:`_evaluate_nb`,
