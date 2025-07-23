@@ -1,3 +1,16 @@
+"""Utility helpers for statistical analysis and scheduling.
+
+This module exposes a small collection of functions that support the
+simulation framework:
+
+* ``build_tiers`` groups strategies into overlapping confidence tiers.
+* ``benjamini_hochberg``/``bh_correct`` perform false discovery rate control.
+* ``bonferroni_pairs`` creates deterministic head‑to‑head schedules with RNG
+  seeds.
+
+``MAX_UINT32`` is provided for generating 32‑bit seeds.
+"""
+
 from __future__ import annotations
 
 import itertools
