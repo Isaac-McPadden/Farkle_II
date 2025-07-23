@@ -1,6 +1,14 @@
 # src/farkle/run_trueskill.py
 from __future__ import annotations
 
+"""Compute TrueSkill ratings for Farkle strategies.
+
+The script scans the ``data/results`` directory for completed tournament
+blocks, updates ratings with the ``trueskill`` package and writes per-block
+as well as pooled rating files.  A ``tiers.json`` file mapping strategies to
+league tiers is also produced.
+"""
+
 import argparse
 import json
 import logging
@@ -55,7 +63,6 @@ def _read_row_shards(row_dir: Path) -> pd.DataFrame:
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
-
 
 
 def _read_winners_csv(block: Path) -> pd.DataFrame:
