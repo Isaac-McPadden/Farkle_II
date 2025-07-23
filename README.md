@@ -52,7 +52,7 @@ whether to keep rolling or bank points. Key options:
   otherwise stop when either triggers.
 - `smart_five` - re-roll single fives when allowed by the thresholds.
 - `smart_one` - re-roll single ones; valid only if `smart_five` is true.
-- `prefer_score` - break ties in favor of the score threshold when both hit.
+- `favor_dice_or_score` - choose whether to favor the score or dice threshold when both are met.
 - `auto_hot_dice` - automatically roll again if every die scores.
 - `run_up_score` - in the final round, keep rolling even after taking the lead.
 

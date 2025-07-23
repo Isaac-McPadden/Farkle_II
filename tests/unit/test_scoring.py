@@ -146,14 +146,14 @@ def test_require_both_logic():
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# 3) prefer-score vs prefer-dice
+# 3) favor-score vs favor-dice
 # ────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize(
     "favor_dice_or_score, expected",
     [(True, (0, 0)), (False, (1, 0))],
 )
-def test_prefer_score_vs_dice(favor_dice_or_score, expected):
+def test_favor_score_vs_dice(favor_dice_or_score, expected):
     roll = [5, 5, 2, 3, 4]
     out = _call(roll, favor_dice_or_score=favor_dice_or_score, dice_thr=2, score_thr=300)
     assert out == expected

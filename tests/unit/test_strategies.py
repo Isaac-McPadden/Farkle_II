@@ -8,7 +8,7 @@ import pytest
 from farkle.strategies import (
     FavorDiceOrScore,
     ThresholdStrategy,
-    _sample_prefer_score,
+    _sample_favor_score,
     load_farkle_results,
     parse_strategy,
     parse_strategy_for_df,
@@ -99,7 +99,7 @@ def test_random_strategy_factory():
         #   • auto_hot_dice   = True  (“H”)
         #   • run_up_score    = True  (“R”)
         (
-            "Strat(300,2)[SD][FOPS][AND][HR]",
+            "Strat(300,2)[SD][FOFS][AND][HR]",
             {
                 "score_threshold": 300,
                 "dice_threshold": 2,
@@ -126,7 +126,7 @@ def test_random_strategy_factory():
         #   • auto_hot_dice   = False (“-”)
         #   • run_up_score    = False (“-”)
         (
-            "Strat(500,1)[S-][F-PD][OR][--]",
+            "Strat(500,1)[S-][F-FD][OR][--]",
             {
                 "score_threshold": 500,
                 "dice_threshold": 1,
@@ -153,7 +153,7 @@ def test_random_strategy_factory():
         #   • auto_hot_dice   = True  (“H”)
         #   • run_up_score    = False (“-”)
         (
-            "Strat(250,3)[--][--PS][OR][H-]",
+            "Strat(250,3)[--][--FS][OR][H-]",
             {
                 "score_threshold": 250,
                 "dice_threshold": 3,
@@ -180,7 +180,7 @@ def test_random_strategy_factory():
         #   • auto_hot_dice   = False (“-”)
         #   • run_up_score    = True  (“R”)
         (
-            "Strat(700,4)[-D][--PD][OR][-R]",
+            "Strat(700,4)[-D][--FD][OR][-R]",
             {
                 "score_threshold": 700,
                 "dice_threshold": 4,
@@ -261,8 +261,8 @@ def test_parse_strategy_invalid(bad_str):
 
 
 def test_parse_strategy_for_df():  # noqa: ARG001
-    strat_case_1 = "Strat(300,2)[SD][FOPS][AND][HR]"
-    strat_case_2 = "Strat(300,2)[--][--PD][OR][--]"
+    strat_case_1 = "Strat(300,2)[SD][FOFS][AND][HR]"
+    strat_case_2 = "Strat(300,2)[--][--FD][OR][--]"
     strat_dict_1 = parse_strategy_for_df(strat_case_1)
     strat_dict_2 = parse_strategy_for_df(strat_case_2)
     assert strat_dict_1 == {
@@ -291,34 +291,34 @@ def test_parse_strategy_for_df():  # noqa: ARG001
     }
 
 
-def test_sample_prefer_score_deterministic():
+def test_sample_favor_score_deterministic():
     rng = random.Random(0)
-    assert _sample_prefer_score(True, False, rng) is FavorDiceOrScore.SCORE
+    assert _sample_favor_score(True, False, rng) is FavorDiceOrScore.SCORE
     rng = random.Random(0)
-    assert _sample_prefer_score(False, True, rng) is FavorDiceOrScore.DICE
+    assert _sample_favor_score(False, True, rng) is FavorDiceOrScore.DICE
     rng = random.Random(0)
     expected_tt = rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
     rng = random.Random(0)
-    assert _sample_prefer_score(True, True, rng) is expected_tt
+    assert _sample_favor_score(True, True, rng) is expected_tt
     rng = random.Random(0)
     expected_ff = rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
     rng = random.Random(0)
-    assert _sample_prefer_score(False, False, rng) is expected_ff
+    assert _sample_favor_score(False, False, rng) is expected_ff
 
 
 def test_load_farkle_results(tmp_path):
     counter = Counter({
-        'Strat(300,2)[SD][FOPS][AND][HR]': 5,
-        'Strat(250,3)[--][--PD][OR][--]': 3,
+        'Strat(300,2)[SD][FOFS][AND][HR]': 5,
+        'Strat(250,3)[--][--FD][OR][--]': 3,
     })
     pkl = tmp_path / "results.pkl"
     pkl.write_bytes(pickle.dumps(counter))
 
     df = load_farkle_results(pkl)
 
-    row1 = {"strategy": 'Strat(300,2)[SD][FOPS][AND][HR]', "wins": 5}
+    row1 = {"strategy": 'Strat(300,2)[SD][FOFS][AND][HR]', "wins": 5}
     row1.update(parse_strategy_for_df(row1["strategy"]))
-    row2 = {"strategy": 'Strat(250,3)[--][--PD][OR][--]', "wins": 3}
+    row2 = {"strategy": 'Strat(250,3)[--][--FD][OR][--]', "wins": 3}
     row2.update(parse_strategy_for_df(row2["strategy"]))
     expected = pd.DataFrame([row1, row2])
     expected = expected[df.columns]
@@ -327,7 +327,7 @@ def test_load_farkle_results(tmp_path):
 
 def test_load_farkle_results_unordered(tmp_path):
     counter = Counter({
-        'Strat(300,2)[SD][FOPS][AND][HR]': 5,
+        'Strat(300,2)[SD][FOFS][AND][HR]': 5,
     })
     pkl = tmp_path / "results.pkl"
     pkl.write_bytes(pickle.dumps(counter))
