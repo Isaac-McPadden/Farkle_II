@@ -3,6 +3,8 @@ run_full_field.py  -  Phase-1 full-grid screen for all table sizes
    • BH FDR (two-sided) Q = 0.02   →  zα = Φ⁻¹(0.99) ≈ 2.326
    • Power               = 0.95    →  zβ = Φ⁻¹(0.05) ≈ 1.645
    • Detectable lift Δ   = 0.03     (3-percentage-point edge)
+   
+Run with: python -m farkle.run_full_field  
 """
 
 import multiprocessing as mp
