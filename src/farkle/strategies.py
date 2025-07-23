@@ -97,8 +97,8 @@ def _decide_continue(
     consider_score, consider_dice
         Flags enabling the above limits.
     require_both
-        When both flags are set, decide using ``OR`` logic if ``True`` and
-        ``AND`` logic if ``False``.
+        When both flags are set, decide using ``AND`` logic if ``True`` and
+        ``OR`` logic if ``False``.
     """
 
     want_s = consider_score and turn_score < score_threshold
