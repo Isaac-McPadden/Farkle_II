@@ -422,7 +422,7 @@ def _decide_smart_discards_impl(
     return single_fives - best_sf, single_ones - best_so
 
 
-@functools.lru_cache(maxsize=None)
+@functools.lru_cache(maxsize=131_072)
 def decide_smart_discards(
     *,
     counts: SixFaceCounts,

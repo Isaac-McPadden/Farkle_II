@@ -28,6 +28,9 @@ def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     If no shard files are found the function simply returns without
     writing anything. Reading/writing parquet requires ``pyarrow`` to be
     installed.
+    
+    out_dir is the parent folder of the row folder and where the finished
+    parquet is saved.
     """
     row_dir = out_dir / f"{n_players}p_rows"
     files = sorted(row_dir.glob("*.parquet"))
@@ -84,7 +87,7 @@ def main():
     DELTA = 0.03  # abs lift to detect
     POWER = 0.95  # 1 – β
     Q_FDR = 0.02  # BH, two-sided
-    GLOBAL_SEED = 0
+    GLOBAL_SEED = 42
     JOBS = None  # None → all logical cores
     BASE_OUT = Path(f"data/results_seed_{GLOBAL_SEED}")
     BASE_OUT.mkdir(parents=True, exist_ok=True)
@@ -112,7 +115,7 @@ def main():
         (out_dir).mkdir(parents=True, exist_ok=True)
 
         if _combo_complete(out_dir, n_players):
-            print(f"↩ skipping {n_players}-player – already done", flush=True)
+            print(f"↩ skipping {n_players}-player - already done", flush=True)
             continue
 
         _reset_partial(out_dir, n_players)
@@ -138,7 +141,9 @@ def main():
         )
         dt = perf_counter() - t0
         print(f"✅ finished {n_players}-player in {dt / 60:5.1f} min\n", flush=True)
+        print(f"Cleaning up {n_players}-player parquet shards...")
         _concat_row_shards(out_dir, n_players)
+        print(f"{n_players}-player parquet shards consolidation process complete.")
     print("🏁  All table sizes completed.")
 
 
