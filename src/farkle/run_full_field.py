@@ -39,6 +39,7 @@ def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
     df.to_parquet(out_dir / f"{n_players}p_rows.parquet")
     shutil.rmtree(row_dir, ignore_errors=True)
+    del df  # free memory before returning
 
 
 def _combo_complete(out_dir: Path, n_players: int) -> bool:

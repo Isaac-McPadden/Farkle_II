@@ -256,6 +256,7 @@ def _run_chunk_metrics(
             assert row_dir is not None
             out = row_dir / f"rows_{mp.current_process().pid}_{time.time_ns()}.parquet"
             pq.write_table(pa.Table.from_pylist(all_rows), out)
+            all_rows.clear()  # drop rows from memory once persisted
 
     return wins_total, sums_total, sq_total
 
