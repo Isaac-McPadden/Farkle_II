@@ -17,6 +17,10 @@ from time import perf_counter
 import pandas as pd
 from scipy.stats import norm
 
+from farkle.scoring_lookup import build_score_lookup_table
+
+SCORE_TABLE = build_score_lookup_table()
+
 
 def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     """Combine row shard files and remove the temporary directory.

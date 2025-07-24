@@ -8,6 +8,9 @@ from types import MethodType
 import numpy as np
 import pytest
 
+import farkle.engine as engine
+import farkle.scoring as scoring
+
 # ---------------------------------------------------------------------------
 # Some modules depend on ``scipy`` at import time.  The real package is heavy
 # and pulls in compiled extensions which cause issues when loaded under the
@@ -24,14 +27,13 @@ class _Norm:
         return x
 
 
-stats_stub.norm = _Norm()
+stats_stub.norm = _Norm()  # type: ignore[attr-defined]
 scipy_stub = types.ModuleType("scipy")
-scipy_stub.stats = stats_stub
+scipy_stub.stats = stats_stub  # type: ignore[attr-defined]
 sys.modules.setdefault("scipy", scipy_stub)
 sys.modules.setdefault("scipy.stats", stats_stub)
 
-import farkle.engine as engine
-import farkle.scoring as scoring
+
 
 wg = pytest.importorskip("farkle.watch_game")
 
@@ -139,7 +141,7 @@ def test_trace_decide_logs_and_returns(caplog):
     """Monkey patched ``decide`` should log calls and preserve return value."""
     strat = wg.ThresholdStrategy(score_threshold=0, dice_threshold=6)
 
-    def dummy(self, *, turn_score, dice_left):  # noqa: D401
+    def dummy(self, *, turn_score, dice_left):  # noqa: D401 ARG001
         return turn_score < 5
 
     strat.decide = MethodType(dummy, strat)
@@ -214,7 +216,7 @@ def test_watch_game_runs_with_dummies(monkeypatch, caplog):
     monkeypatch.setattr(wg, "random_threshold_strategy", dummy_strategy)
     monkeypatch.setattr(wg, "patch_scoring", dummy_patch_scoring)
     monkeypatch.setattr(wg, "TracePlayer", wg.FarklePlayer)
-    monkeypatch.setattr(wg, "_trace_decide", lambda *a, **k: None)
+    monkeypatch.setattr(wg, "_trace_decide", lambda *a, **k: None)  # noqa: ARG005
 
     caplog.set_level(logging.INFO, logger="watch")
     wg.watch_game(seed=1)
