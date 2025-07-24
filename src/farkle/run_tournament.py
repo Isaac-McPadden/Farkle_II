@@ -409,6 +409,8 @@ def run_tournament(
         futures = {pool.submit(chunk_fn, c): c for c in chunks}
 
         for done, fut in enumerate(as_completed(futures), 1):
+            # drop the original chunk list to free memory while keeping the key
+            futures[fut] = None
             result = fut.result()
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(
