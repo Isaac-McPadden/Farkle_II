@@ -19,10 +19,13 @@ from collections import Counter, defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
+from os import getpid
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from farkle.simulation import _play_game, generate_strategy_grid
 from farkle.strategies import ThresholdStrategy
@@ -31,10 +34,18 @@ from farkle.strategies import ThresholdStrategy
 # Configuration constants (patched by tests/CLI)
 # ---------------------------------------------------------------------------
 N_PLAYERS: int = 5  # default – can be overwritten at runtime
-NUM_SHUFFLES: int = 10_223
-GAMES_PER_SHUFFLE: int = 8_160 // N_PLAYERS  # 1 632
+NUM_SHUFFLES: int = 5_907  # BH-power calculation for default
+GAMES_PER_SHUFFLE: int = 8_160 // N_PLAYERS  # 1_632
+# Default result of NUM_SHUFFLES * GAMES_PER_SHUFFLE is 9_640_224 games total
+
+# Counting metrics in pkl file
 DESIRED_SEC_PER_CHUNK: int = 10
 CKPT_EVERY_SEC: int = 30
+
+# Full game data capture in parquet rows
+ROW_QUEUE_MAX = 2_000  # limit back-pressure
+ROW_BUFFER    = 50_000  # parquet rows per shard
+_ROW_QUEUE: mp.Queue | None = None
 
 # ---------------------------------------------------------------------------
 # Dataclass configuration
@@ -70,6 +81,31 @@ METRIC_LABELS: Tuple[str, ...] = (
 )
 
 
+def _row_writer(queue: mp.Queue, row_out_dir: Path) -> None:
+    """Explicit row writing function to properly handle
+    memory usage.
+
+    Args:
+        queue (mp.Queue): The multiprocessor Queue of interest
+        out_dir (Path): _description_
+    """
+    row_out_dir.mkdir(parents=True, exist_ok=True)
+    buffer, shard = [], 0
+    while True:
+        item = queue.get()
+        if item is None:  # poison pill
+            break
+        buffer.append(item)
+        if len(buffer) >= ROW_BUFFER:
+            pq.write_table(pa.Table.from_pylist(buffer),
+                           row_out_dir/f"rows_{shard:06d}.parquet")
+            shard += 1
+            buffer.clear()
+    if buffer:
+        pq.write_table(pa.Table.from_pylist(buffer),
+                       row_out_dir/f"rows_{shard:06d}.parquet")
+
+
 def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
     """Return the metric vector for the winning player."""
 
@@ -97,6 +133,7 @@ _CFG: TournamentConfig = TournamentConfig()
 def _init_worker(
     strategies: Sequence[ThresholdStrategy],
     config: TournamentConfig,
+    row_queue: mp.Queue | None
 ) -> None:
     """Initialise per-process globals.
 
@@ -112,13 +149,14 @@ def _init_worker(
     None
     """
 
-    global _STRATS, _CFG, N_PLAYERS, GAMES_PER_SHUFFLE
+    global _STRATS, _CFG, N_PLAYERS, GAMES_PER_SHUFFLE, _ROW_QUEUE
     if 8_160 % config.n_players != 0:
         raise ValueError("n_players must divide 8,160")
     _STRATS = list(strategies)
     _CFG = config
     N_PLAYERS = config.n_players
     GAMES_PER_SHUFFLE = config.games_per_shuffle
+    _ROW_QUEUE = row_queue
 
 
 # ---------------------------------------------------------------------------
@@ -226,14 +264,15 @@ def _run_chunk_metrics(
 
     Side Effects
     ------------
-    When ``collect_rows`` is ``True`` a parquet file containing all rows for the
-    current worker is written to ``row_dir``.
+    *Queue mode* - rows are pushed to ``_ROW_Q`` for a dedicated writer
+    process.  
+    *Fallback mode* - if no queue is set, each shuffle is flushed to its own
+    Parquet shard inside ``row_dir``.
     """
 
     wins_total: Counter[str] = Counter()
     sums_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
     sq_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
-    all_rows: List[Dict[str, Any]] = []
 
     for seed in shuffle_seed_batch:
         w, s, sq, rows = _play_one_shuffle(int(seed), collect_rows=collect_rows)
@@ -243,20 +282,16 @@ def _run_chunk_metrics(
                 sums_total[label][k] += v
             for k, v in sq[label].items():
                 sq_total[label][k] += v
-        if collect_rows:
-            all_rows.extend(rows)
-
-    if collect_rows and all_rows:
-        try:
-            import pyarrow as pa
-            import pyarrow.parquet as pq
-        except ImportError:  # pragma: no cover - optional dependency
-            logging.warning("pyarrow not installed - row logging skipped")
-        else:
-            assert row_dir is not None
-            out = row_dir / f"rows_{mp.current_process().pid}_{time.time_ns()}.parquet"
-            pq.write_table(pa.Table.from_pylist(all_rows), out)
-            all_rows.clear()  # drop rows from memory once persisted
+                
+        if collect_rows and _ROW_QUEUE is not None:
+            for r in rows:
+                _ROW_QUEUE.put(r)
+        elif row_dir is not None:  # no queue → write a shard locally
+            out = row_dir / f"rows_{getpid()}_{seed}.parquet"
+            pq.write_table(pa.Table.from_pylist(rows), out)
+        
+        # free memory for this shuffle
+        rows.clear()
 
     return wins_total, sums_total, sq_total
 
@@ -394,6 +429,17 @@ def run_tournament(
     if collect_rows:
         assert row_output_directory is not None
         row_output_directory.mkdir(parents=True, exist_ok=True)
+    
+    context = mp.get_context("spawn")
+    row_queue = writer = None
+    if collect_rows and row_output_directory is not None:
+        row_queue  = context.Queue(maxsize=ROW_QUEUE_MAX)
+        writer = context.Process(
+            target=_row_writer,
+            args=(row_queue, row_output_directory),
+            daemon=True,
+        )
+        writer.start()
 
     if collect_metrics or collect_rows:
         chunk_fn: Callable[[Sequence[int]], object] = partial(
@@ -405,7 +451,7 @@ def run_tournament(
     with ProcessPoolExecutor(
         max_workers=n_jobs,
         initializer=_init_worker,
-        initargs=(strategies, cfg),
+        initargs=(strategies, cfg, row_queue),
     ) as pool:
         futures = {pool.submit(chunk_fn, c): c for c in chunks}
 

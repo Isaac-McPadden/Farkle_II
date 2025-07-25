@@ -44,11 +44,15 @@ def _concat_row_shards(out_dir: Path, n_players: int) -> None:
 
 def _combo_complete(out_dir: Path, n_players: int) -> bool:
     """Return ``True`` if the results for this combo already exist."""
-
-    ckpt = out_dir / f"{n_players}p_checkpoint.pkl"
-    rows = out_dir / f"{n_players}p_rows.parquet"
+    ckpt    = out_dir / f"{n_players}p_checkpoint.pkl"
+    rows    = out_dir / f"{n_players}p_rows.parquet"
     row_dir = out_dir / f"{n_players}p_rows"
-    return ckpt.is_file() and rows.is_file() and not row_dir.exists()
+
+    # If the final parquet is present we consider the block complete;
+    # any leftover shard directory is just debris – remove it.
+    if rows.is_file() and row_dir.exists():
+        shutil.rmtree(row_dir, ignore_errors=True)
+    return ckpt.is_file() and rows.is_file()
 
 
 def _reset_partial(out_dir: Path, n_players: int) -> None:
@@ -88,7 +92,7 @@ def main():
     DELTA = 0.03  # abs lift to detect
     POWER = 0.95  # 1 – β
     Q_FDR = 0.02  # BH, two-sided
-    GLOBAL_SEED = 42
+    GLOBAL_SEED = 0
     JOBS = None  # None → all logical cores
     BASE_OUT = Path(f"data/results_seed_{GLOBAL_SEED}")
     BASE_OUT.mkdir(parents=True, exist_ok=True)
@@ -142,7 +146,7 @@ def main():
         )
         dt = perf_counter() - t0
         print(f"✅ finished {n_players}-player in {dt / 60:5.1f} min\n", flush=True)
-        print(f"Cleaning up {n_players}-player parquet shards...")
+        print(f"Concatenating and cleaning up {n_players}-player parquet shards...")
         _concat_row_shards(out_dir, n_players)
         print(f"{n_players}-player parquet shards consolidation process complete.")
     print("🏁  All table sizes completed.")
