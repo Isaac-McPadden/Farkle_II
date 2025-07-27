@@ -191,6 +191,7 @@ def _expand_sorted(counts: SixFaceCounts) -> FacesSequence:
 @functools.lru_cache(maxsize=4096)
 def generate_sequences(counts: SixFaceCounts, *, smart_one: bool = False) -> tuple[FacesSequence, ...]:
     """Enumerate all post-discard face sequences.
+    Only ever run by functions with smart_five == True.
 
     Inputs
     ------
@@ -226,7 +227,9 @@ def generate_sequences(counts: SixFaceCounts, *, smart_one: bool = False) -> tup
 def score_lister(
     dice_rolls: tuple[FacesSequence, ...],
 ) -> tuple[ScoreCandidate, ...]:
-    """Score multiple sorted rolls.
+    """Score multiple sorted rolls for smart five
+    and smart one decision logic.  Prevents non-scoring
+    rolls from occurring.
 
     Inputs
     ------
@@ -301,15 +304,15 @@ def _select_candidate(
     best_sf, best_so = single_fives, single_ones
 
     for _roll, _len, cand_score, cand_used, _cnt, cand_sf, cand_so in candidates:
-        score_after = turn_score_pre + cand_score
-        dice_left_after = dice_roll_len - cand_used
-        if must_bank(score_after, dice_left_after):
+        score_after = turn_score_pre + cand_score  # score entering turn plus candidate score under evaluation
+        dice_left_after = dice_roll_len - cand_used  # Dice remaining after candidate under evaluation is scored
+        if must_bank(score_after, dice_left_after):  # If must_bank returns true, smart rules don't apply to this candidate
             continue
 
-        _prefer_score = (
+        _prefer_score = (  # convert FavorDiceOrScore attribute into usable boolean
             favor_dice_or_score is True or favor_dice_or_score is FavorDiceOrScore.SCORE  # bool vs enum normalization
         )
-        key = (
+        key = (  # favor_dice_or_score prioritization encoded in tuple position
             (score_after, dice_left_after)
             if _prefer_score
             else (
@@ -317,13 +320,13 @@ def _select_candidate(
                 score_after,
             )
         )
-        if best_key is None or key > best_key:
-            best_key = key
-            best_sf, best_so = cand_sf, cand_so
+        if best_key is None or key > best_key:  # compare candidate key to current best key
+            best_key = key  # Holding current best key (dice-score or score-dice outcome)
+            best_sf, best_so = cand_sf, cand_so  # if a new best was found, record the candidate single five and single one counts
 
     if best_key is None:  # every path banks → keep everything
         return None
-    return best_sf, best_so
+    return best_sf, best_so  # discards will be applied by subtracting these from original single fives and ones
 
 
 def _decide_smart_discards_impl(
@@ -419,7 +422,7 @@ def _decide_smart_discards_impl(
         return 0, 0
 
     best_sf, best_so = best
-    return single_fives - best_sf, single_ones - best_so
+    return single_fives - best_sf, single_ones - best_so  # calculates and returns how many fives and ones to discard
 
 
 @functools.lru_cache(maxsize=131_072)
