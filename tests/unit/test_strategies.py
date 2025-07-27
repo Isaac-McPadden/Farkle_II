@@ -228,6 +228,21 @@ def test_parse_strategy_valid(input_str, expected):
     assert reparsed.run_up_score == strat.run_up_score
 
 
+def test_parse_strategy_round_trip_str():
+    s = "Strat(500,1)[S-][--FD][OR][-R]"
+    assert str(parse_strategy(s)) == s
+
+
+def test_entry_gate_requires_rolling():
+    strat = ThresholdStrategy(score_threshold=300, dice_threshold=2)
+    assert strat.decide(
+        turn_score=400,
+        dice_left=3,
+        has_scored=False,
+        score_needed=1000,
+    )
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 2) A collection of malformed strings that should all raise ValueError
 # ────────────────────────────────────────────────────────────────────────────
