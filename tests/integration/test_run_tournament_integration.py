@@ -23,7 +23,7 @@ import pickle
 import random
 import sys
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Sequence  # noqa: F401
 
 import pytest
 
@@ -68,13 +68,17 @@ def _tiny_strategy_grid(seed: int = 0) -> List[ThresholdStrategy]:
 ###############################################################################
 
 
-def _init_worker_small(
-    strategies: Sequence[ThresholdStrategy], cfg: object
-) -> None:  # pragma: no cover
-    """Executed in every spawned process.
+def _init_worker_small(  # pragma: no cover
+    strategies: Sequence[ThresholdStrategy],
+    cfg: object,
+    *_extra: object,            # ← swallow optional 3rd positional arg
+) -> None:
+    """Accepts 2 or 3 positional arguments so we can reuse it after the row-queue
+    parameter was added.
+    Executed in every spawned process.
 
-    We re -import the module *inside* the worker so we mutate the *child 's*
-    globals, **not** the parent 's.  With the spawn method each worker starts
+    We re-import the module *inside* the worker so we mutate the *child's*
+    globals, **not** the parent's.  With the spawn method each worker starts
     with a fresh interpreter.
     """
 

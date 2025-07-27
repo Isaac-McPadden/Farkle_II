@@ -141,14 +141,14 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
 def test_init_worker_valid_and_invalid():
     strats = _mini_strats(8)
     cfg = rt.TournamentConfig(n_players=4)
-    rt._init_worker(strats, cfg)
+    rt._init_worker(strats, cfg, None)
     assert rt.N_PLAYERS == 4
     assert rt.GAMES_PER_SHUFFLE == 8_160 // 4
 
     with pytest.raises(ValueError):
-        rt._init_worker(strats, rt.TournamentConfig(n_players=7))
+        rt._init_worker(strats, rt.TournamentConfig(n_players=7), None)
 
-    rt._init_worker(strats, rt.TournamentConfig(n_players=5))
+    rt._init_worker(strats, rt.TournamentConfig(n_players=5), None)
 
 
 def test_run_tournament_player_count(monkeypatch, tmp_path):
@@ -244,12 +244,12 @@ def test_run_tournament_config_overrides(monkeypatch, tmp_path):
         def submit(self, fn, arg):
             return DummyFuture(fn(arg))
 
-    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())
-    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)
-    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)
-    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())  # noqa: ARG005
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
+    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)  # noqa: ARG005
+    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
     monkeypatch.setattr(rt, "as_completed", lambda x: list(x), raising=True)
-    monkeypatch.setattr(rt, "_run_chunk", lambda batch: Counter(), raising=True)
+    monkeypatch.setattr(rt, "_run_chunk", lambda batch: Counter(), raising=True)  # noqa: ARG005
 
     cfg = rt.TournamentConfig(n_players=5, num_shuffles=3, ckpt_every_sec=99)
     rt.run_tournament(
