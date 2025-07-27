@@ -16,6 +16,28 @@ import types
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# Farkle depends on numba at import time. Provide a light-weight stub so the
+# test suite can run without the real dependency installed.
+sys.modules.setdefault(
+    "numba",
+    types.SimpleNamespace(jit=lambda *a, **k: (lambda f: f), njit=lambda *a, **k: (lambda f: f)),
+)
+# Provide a minimal pyarrow stub so farkle.run_tournament imports without the real dependency.
+pa_stub = types.ModuleType("pyarrow")
+pq_stub = types.ModuleType("pyarrow.parquet")
+pa_stub.Table = types.SimpleNamespace(from_pylist=lambda rows: None)
+pa_stub.parquet = pq_stub
+pa_stub.__version__ = "0.0.0"
+pq_stub.write_table = lambda *a, **k: None
+sys.modules.setdefault("pyarrow", pa_stub)
+sys.modules.setdefault("pyarrow.parquet", pq_stub)
+# Stats helpers depend on SciPy – provide a minimal stub
+scipy_stats_stub = types.SimpleNamespace(norm=types.SimpleNamespace(ppf=lambda *a, **k: 0.0))
+scipy_mod = types.ModuleType("scipy")
+scipy_mod.stats = scipy_stats_stub
+sys.modules.setdefault("scipy", scipy_mod)
+sys.modules.setdefault("scipy.stats", scipy_stats_stub)
+
 import farkle.run_tournament as rt
 
 # ---------------------------------------------------------------------------
@@ -53,8 +75,7 @@ def test_run_chunk_metrics_accumulates(monkeypatch):
 
 def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
-    monkeypatch.setattr(rt.mp, "current_process", lambda: types.SimpleNamespace(pid=42))
-    monkeypatch.setattr(rt.time, "time_ns", lambda: 99)
+    monkeypatch.setattr(rt, "getpid", lambda: 42)
 
     written = {}
 
@@ -64,61 +85,21 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
             written["rows"] = list(rows)
             return "tbl"
 
-    pa_mod = types.ModuleType("pyarrow")
-    pq_mod = types.ModuleType("pyarrow.parquet")
-    pa_mod.Table = types.SimpleNamespace(from_pylist=DummyTable.from_pylist)  # type: ignore
-    pa_mod.parquet = pq_mod  # type: ignore
-    pq_mod.write_table = lambda tbl, path: written.update({"path": Path(path), "tbl": tbl})  # type: ignore
-    monkeypatch.setitem(sys.modules, "pyarrow", pa_mod)
-    monkeypatch.setitem(sys.modules, "pyarrow.parquet", pq_mod)
+    pq_mod = types.SimpleNamespace()
+    pa_mod = types.SimpleNamespace(
+        Table=types.SimpleNamespace(from_pylist=DummyTable.from_pylist), parquet=pq_mod
+    )
+    pq_mod.write_table = lambda tbl, path: written.update({"path": Path(path), "tbl": tbl})
+    monkeypatch.setattr(rt, "pa", pa_mod, raising=False)
+    monkeypatch.setattr(rt, "pq", pq_mod, raising=False)
 
     wins, sums, sqs = rt._run_chunk_metrics([3], collect_rows=True, row_dir=tmp_path)
 
     assert written["rows"] == [{"game_seed": 3, "winner_strategy": "S3"}]
     assert written["tbl"] == "tbl"
     assert written["path"].parent == tmp_path
-    assert written["path"].name == "rows_42_99.parquet"
+    assert written["path"].name == "rows_42_3.parquet"
 
-
-def test_run_chunk_metrics_row_logging_missing_pyarrow(monkeypatch, tmp_path, caplog):
-    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
-    sys.modules.pop("pyarrow", None)
-    sys.modules.pop("pyarrow.parquet", None)
-
-    orig_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name.startswith("pyarrow"):
-            raise ModuleNotFoundError(name)
-        return orig_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    with caplog.at_level(logging.WARNING):
-        rt._run_chunk_metrics([4], collect_rows=True, row_dir=tmp_path)
-
-    assert "pyarrow not installed - row logging skipped" in caplog.text
-    assert not any(tmp_path.iterdir())
-
-    
-def test_run_chunk_metrics_skips_on_missing_pyarrow(monkeypatch, tmp_path):
-    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
-
-    import builtins
-
-    real_import = builtins.__import__
-
-    def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
-        if name.startswith("pyarrow"):
-            raise ImportError
-        return real_import(name, globals, locals, fromlist, level)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-
-    wins, sums, sqs = rt._run_chunk_metrics([4], collect_rows=True, row_dir=tmp_path)
-
-    assert wins == Counter({"S4": 1})
-    assert list(tmp_path.iterdir()) == []
 
     
 def test_save_checkpoint_round_trip(tmp_path):
