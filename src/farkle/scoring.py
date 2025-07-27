@@ -575,22 +575,3 @@ def default_score(
 
     final_scoring_info = apply_discards(raw_score, raw_used, d5, d1, len(dice_roll))
     return (*final_scoring_info, d5, d1) if return_discards else final_scoring_info
-
-
-# --------------------------------------------------------------------------- #
-# 8.  Legacy shim (kept for unit-test parity)
-# --------------------------------------------------------------------------- #
-def _compute_raw_score(dice_roll: DiceRoll):
-    """Legacy scoring helper for backwards-compatibility tests.
-
-    Inputs
-    ------
-    dice_roll (DiceRoll):
-        Sequence of faces to score.
-
-    Returns
-    -------
-    tuple[int, int, SixFaceCounts, int, int]:
-        Raw scoring tuple from :func:`score_roll_cached`.
-    """
-    return score_roll_cached(tuple(dice_roll))

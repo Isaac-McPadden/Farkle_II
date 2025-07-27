@@ -11,7 +11,6 @@ from hypothesis import given
 from hypothesis import strategies as st
 
 from farkle.scoring import (
-    _compute_raw_score,
     apply_discards,
     decide_smart_discards,
     default_score,
@@ -160,18 +159,8 @@ def test_favor_score_vs_dice(favor_dice_or_score, expected):
 
 
 # ────────────────────────────────────────────────────────────────────────────
-# 4) Golden CSV –  _compute_raw_score  &  score_roll_cached
+# 4) Golden CSV – score_roll_cached
 # ────────────────────────────────────────────────────────────────────────────
-
-@pytest.mark.parametrize(
-    "roll, exp_score, exp_used, exp_reroll, exp_sfives, exp_sones",
-    load_score_cases(),
-)
-def test_compute_raw_score(roll, exp_score, exp_used, exp_reroll, exp_sfives, exp_sones):
-    score, used, _counts, sf, so = _compute_raw_score(roll)
-    assert (score, used, sf, so, len(roll) - used) == (
-        exp_score, exp_used, exp_sfives, exp_sones, exp_reroll
-    )
 
 
 @pytest.mark.parametrize(

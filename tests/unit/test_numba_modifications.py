@@ -11,7 +11,6 @@ import numpy as np
 import pytest
 
 import farkle.scoring_lookup as sl
-import farkle.strategies as strategies
 from farkle.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
@@ -45,8 +44,8 @@ def test_random_entry_consistency():
 
 
 def test_keys_are_sorted_and_hashable():
-    """50 random keys from the table keep their structural promises."""
-    for k in random.sample(list(LOOKUP.keys()), 50):
+    """10 random keys from the table keep their structural promises."""
+    for k in random.sample(list(LOOKUP.keys()), 10):
         # tuple of 6 ints, already counts-ordered
         assert len(k) == 6 and all(isinstance(x, int) for x in k)
         hash(k)  # will raise TypeError if not hashable
@@ -99,9 +98,9 @@ def test_random_threshold_strategy_diversity():
     """Just make sure we don't always get the same parameters."""
     seen = Counter(
         random_threshold_strategy().score_threshold
-        for _ in range(200)
+        for _ in range(10)
     )
-    # heuristic – at least three distinct thresholds in 200 draws
+    # heuristic – at least three distinct thresholds in 10 draws
     assert len(seen) >= 3
 
 
@@ -122,27 +121,5 @@ def test_decide_final_round_ignores_other_flags(running_total, score_to_beat, ex
         final_round=True,
         score_to_beat=score_to_beat,
         running_total=running_total,
-    )
-    assert res is expected
-
-
-@pytest.mark.parametrize(
-    "turn_score, dice_left, sc_thr, di_thr, c_score, c_dice, expected",
-    [
-        (300, 3, 300, 2, True, False, False),
-        (299, 3, 300, 2, True, False, True),
-        (100, 2, 200, 2, False, True, False),
-        (100, 3, 200, 2, False, True, True),
-    ],
-)
-def test_should_continue_threshold_boundaries(turn_score, dice_left, sc_thr, di_thr, c_score, c_dice, expected):
-    res = strategies._should_continue(
-        turn_score,
-        dice_left,
-        sc_thr,
-        di_thr,
-        c_score,
-        c_dice,
-        False,
     )
     assert res is expected

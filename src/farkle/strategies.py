@@ -116,10 +116,6 @@ def _decide_continue(
     return False
 
 
-# Backwards compatible alias for older tests
-_should_continue = _decide_continue
-
-
 @dataclass
 class ThresholdStrategy:
     """Threshold-based decision rule.
@@ -258,10 +254,6 @@ def _sample_favor_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrSc
     if cs == cd:  # (T,T) or (F,F)   →  free choice
         return rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
     return FavorDiceOrScore.SCORE if cs else FavorDiceOrScore.DICE
-
-
-# Backwards compatible alias for older APIs
-_sample_prefer_score = _sample_favor_score
 
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:

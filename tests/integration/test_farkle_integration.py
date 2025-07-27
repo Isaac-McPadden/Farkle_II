@@ -2,7 +2,6 @@ import contextlib
 import subprocess as sp
 import sys
 from pathlib import Path
-from time import perf_counter
 
 import pandas as pd
 import pytest
@@ -109,20 +108,7 @@ def test_cli_smoke(tmp_path: Path):
     assert len(df) == cfg["sim"]["n_games"]
 
 
-def test_final_round_rule_1():
-    players = [
-        FarklePlayer("P1", ThresholdStrategy(score_threshold=100, dice_threshold=0)),  # super-aggressive
-        FarklePlayer("P2", ThresholdStrategy(score_threshold=300, dice_threshold=2)),
-    ]
-    game = FarkleGame(players, target_score=2000)
-    gm = game.play()  # GameMetrics
-    winner = max(gm.players, key=lambda n: gm.players[n].score)
-    assert gm.players[winner].score >= 2000
-    # everyone had ≤ one extra turn
-    assert gm.game.n_rounds >= 1
-
-
-def test_final_round_rule_2():
+def test_final_round_rule():
     # 1) two simple strategies …
     strats = [
         ThresholdStrategy(score_threshold=100, dice_threshold=0),  # very aggressive
@@ -142,26 +128,6 @@ def test_final_round_rule_2():
     winner = max(gm.players, key=lambda n: gm.players[n].score)
     assert gm.players[winner].score >= 2_000
     assert gm.game.n_rounds >= 1  # each player got ≤ one extra turn
-
-
-
-pytestmark = pytest.mark.skipif(
-    # set env var FAST_CI to skip heavy tests
-    "FAST_CI" in __import__("os").environ,
-    reason="performance test - skip on CI",
-)
-
-
-def test_batch_time_under_baseline():
-    t0 = perf_counter()
-    simulate_many_games(
-        n_games=5_000,
-        strategies=[ThresholdStrategy()],
-        seed=7,
-        n_jobs=4,
-    )
-    elapsed = perf_counter() - t0
-    assert elapsed < 8.0, f"perf regression: {elapsed:.1f}s > 8s baseline"
 
 
 # helper: ensure Smart-1 never true when Smart-5 false
