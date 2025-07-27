@@ -383,9 +383,9 @@ class PlayerStats:
     loss_margin
         Point difference from the winner (``0`` if they won).
     smart_five_uses, n_smart_five_dice
-        Counts for Smart‑5 heuristic usage and dice removed.
+        Counts for Smart-5 heuristic usage and dice removed.
     smart_one_uses, n_smart_one_dice
-        Counts for Smart‑1 heuristic usage and dice removed.
+        Counts for Smart-1 heuristic usage and dice removed.
     hot_dice
         Number of hot-dice rerolls.
     """
@@ -450,9 +450,9 @@ class FarkleGame:
             rounds += 1
             for player in self.players:
                 player.take_turn(
-                    self.target_score,  # This is that vestigial stat
+                    self.target_score,  # This is the end of game finish-line
                     final_round=final_round,
-                    score_to_beat=score_to_beat,
+                    score_to_beat=score_to_beat,  # This is the post-game finish-line that can move based on player scores
                 )
                 # First trigger starts the final round
                 if not final_round and player.score >= self.target_score:

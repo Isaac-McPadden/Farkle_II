@@ -97,14 +97,18 @@ def _decide_continue(
     consider_score, consider_dice
         Flags enabling the above limits.
     require_both
-        When both flags are set, decide using ``AND`` logic if ``True`` and
-        ``OR`` logic if ``False``.
+        When both consider_score and consider_dice flags are set to ``True``, 
+        if ``require_both`` is ``True`` the function continues when *either* 
+        limit is still unmet (``OR``); 
+        if ``False`` it continues only when *both* limits are unmet (``AND``).
     """
-
-    want_s = consider_score and turn_score < score_threshold
-    want_d = consider_dice and dice_left > dice_threshold
-    if consider_score and consider_dice:
-        return (want_s or want_d) if require_both else (want_s and want_d)
+    # The function asks if we continue while the thresholds dictate when to stop.
+    # As a result, the logic here looks incorrect at first glance but it is correct.
+    # want_s and want_d are checking if limits are NOT hit for easier boolean logic.
+    want_s = consider_score and turn_score < score_threshold  # want higher score
+    want_d = consider_dice and dice_left > dice_threshold  # want to spend more dice
+    if consider_score and consider_dice:  # the booleans here are counterintuitive but correct
+        return (want_s or want_d) if require_both else (want_s and want_d)  
     if consider_score:
         return want_s
     if consider_dice:
