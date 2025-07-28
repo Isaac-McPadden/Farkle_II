@@ -36,7 +36,7 @@ def _writer_worker(
         None. Rows are appended to ``out_csv`` until the sentinel is
         received.
     """
-    first = not Path(out_csv).exists()
+    first = True
     with open(out_csv, "a", newline="") as file_handle:
         writer = csv.DictWriter(file_handle, fieldnames=header)
         if first:
@@ -111,10 +111,8 @@ def simulate_many_games_stream(
                 row = _single_game_row(gid, int(s), strategies, target_score)
                 writer.writerow(row)
     else:
-        # first truncate file and write header, then append via worker
-        with open(out_csv, "w", newline="") as file_handle:
-            writer = csv.DictWriter(file_handle, fieldnames=header)
-            writer.writeheader()
+        # truncate the file – the writer-process will write the header once
+        open(out_csv, "w").close()
 
         queue: mp.Queue = mp.Queue(maxsize=QUEUE_SIZE)
         writer_process = mp.Process(

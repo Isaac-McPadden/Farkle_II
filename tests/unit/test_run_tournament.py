@@ -8,7 +8,9 @@ We monkey-patch the heavy helpers so no real games are played.
 from __future__ import annotations
 
 import types  # noqa: F401
-from collections import Counter
+from collections import Counter, defaultdict
+from pathlib import Path
+from unittest.mock import ANY
 
 import numpy as np  # noqa: F401 | Potentially imports something that needs it
 import pytest
@@ -26,19 +28,26 @@ def _mini_strats(n: int = 6):
     return [ThresholdStrategy(50 + 50 * i, i % 3, True, True) for i in range(n)]
 
 
+def fake_play_shuffle(seed: int) -> Counter[str]:
+        # pretend player at index (seed % len(strats)) always wins
+        strats = _mini_strats(12)
+        return Counter({str(strats[seed % len(strats)]): 1})
+
+
 @pytest.fixture(autouse=True)
 def fast_helpers(monkeypatch):
     """
-    1) Replace generate_strategy_grid() with 12 toy strategies.
-    2) Make _play_shuffle() return a trivial deterministic Counter.
-    3) Skip the ProcessPool - we call _run_chunk() directly.
+    Keep tests lightning-fast **and** remember the real ``_play_shuffle`` so
+    individual tests can restore it when they *need* the real behaviour.
     """
     strats = _mini_strats(12)
-    monkeypatch.setattr(rt, "generate_strategy_grid", lambda *a, **kw: (strats, None), raising=True)  # noqa: ARG005
+    monkeypatch.setattr(
+        rt, "generate_strategy_grid", lambda *a, **kw: (strats, None), raising=True  # noqa: ARG005
+    )
 
-    def fake_play_shuffle(seed: int) -> Counter[str]:
-        # pretend player at index (seed % len(strats)) always wins
-        return Counter({str(strats[seed % len(strats)]): 1})
+    # save the genuine function on the module *once*
+    if not hasattr(rt, "_ORIG_PLAY_SHUFFLE"):
+        rt._ORIG_PLAY_SHUFFLE = rt._play_shuffle # type: ignore
 
     monkeypatch.setattr(rt, "_play_shuffle", fake_play_shuffle, raising=True)
 
@@ -261,3 +270,190 @@ def test_run_tournament_config_overrides(monkeypatch, tmp_path):
 
     assert cfg.n_players == 4
     assert cfg.num_shuffles == 2
+
+
+def test_extract_winner_metrics():
+    row = {
+        "winning_score": 100,
+        "n_rounds": 5,
+        "A_farkles": 1,
+        "A_rolls": 2,
+        "A_highest_turn": 3,
+        "A_smart_five_uses": 4,
+        "A_n_smart_five_dice": 5,
+        "A_smart_one_uses": 6,
+        "A_n_smart_one_dice": 7,
+        "A_hot_dice": 8,
+    }
+    assert rt._extract_winner_metrics(row, "A") == [100, 5, 1, 2, 3, 4, 5, 6, 7, 8]
+
+
+def test_play_one_shuffle_collects(monkeypatch):
+    strats = _mini_strats(4)
+    cfg = rt.TournamentConfig(n_players=2)
+    rt._init_worker(strats, cfg, None)
+    monkeypatch.setattr(rt, "GAMES_PER_SHUFFLE", 2, raising=False)
+
+    class DummyRNG:
+        def permutation(self, n): return rt.np.arange(n)
+        def integers(self, *a, size): return rt.np.arange(1, size + 1)  # noqa: ARG002
+
+    monkeypatch.setattr(rt.np.random, "default_rng", lambda _: DummyRNG(), raising=True)
+
+    def fake_play_game(seed, players):  # noqa: ARG002
+        return {
+            "winner": "P0",
+            "P0_strategy": str(players[0]),
+            "winning_score": seed,
+            "n_rounds": seed + 1,
+            "P0_farkles": seed + 2,
+            "P0_rolls": seed + 3,
+            "P0_highest_turn": seed + 4,
+            "P0_smart_five_uses": seed + 5,
+            "P0_n_smart_five_dice": seed + 6,
+            "P0_smart_one_uses": seed + 7,
+            "P0_n_smart_one_dice": seed + 8,
+            "P0_hot_dice": seed + 9,
+        }
+
+    monkeypatch.setattr(rt, "_play_game", fake_play_game, raising=True)
+
+    wins, sums, sqs, rows = rt._play_one_shuffle(0, collect_rows=True)
+    assert wins == Counter({str(strats[0]): 1, str(strats[2]): 1})
+    first, second = range(1, 11), range(2, 12)
+    for lab, v1, v2 in zip(rt.METRIC_LABELS, first, second, strict=True):
+        assert sums[lab][str(strats[0])] == v1
+        assert sums[lab][str(strats[2])] == v2
+        assert sqs[lab][str(strats[0])] == v1 * v1
+        assert sqs[lab][str(strats[2])] == v2 * v2
+    assert rows[0]["game_seed"] == 1 and rows[1]["game_seed"] == 2
+
+
+def test_run_chunk_metrics_queue(monkeypatch):
+    def fake_play_one_shuffle(seed, *, collect_rows=False):  # noqa: ARG002
+        w = Counter({f"S{seed}": 1})
+        sums = {m: defaultdict(float, {f"S{seed}": float(seed)}) for m in rt.METRIC_LABELS}
+        sqs = {m: defaultdict(float, {f"S{seed}": float(seed * seed)}) for m in rt.METRIC_LABELS}
+        rows = [{"game_seed": seed}] if collect_rows else []
+        return w, sums, sqs, rows
+
+    monkeypatch.setattr(rt, "_play_one_shuffle", fake_play_one_shuffle, raising=True)
+
+    sent = []
+
+    class DummyQueue:
+        def put(self, item): sent.append(item)
+
+    monkeypatch.setattr(rt, "_ROW_QUEUE", DummyQueue(), raising=False)
+
+    wins, sums, sqs = rt._run_chunk_metrics([1, 2], collect_rows=True)
+    assert sent == [{"game_seed": 1}, {"game_seed": 2}]
+    assert wins == Counter({"S1": 1, "S2": 1})
+    for m in rt.METRIC_LABELS:
+        assert sums[m]["S1"] == 1 and sums[m]["S2"] == 2
+        assert sqs[m]["S1"] == 1 and sqs[m]["S2"] == 4
+
+
+def test_measure_throughput(monkeypatch):
+    calls = []
+    monkeypatch.setattr(rt, "_play_game", lambda s, p: calls.append(s), raising=True)  # noqa: ARG005
+    monkeypatch.setattr(rt.time, "perf_counter", lambda: 0 if not calls else 1, raising=True)
+    assert rt._measure_throughput(_mini_strats(2), sample_games=3, seed=0) == 3
+    assert len(calls) == 3
+
+
+def test_play_shuffle_wrapper(monkeypatch):
+    import farkle.run_tournament as rt
+
+    called = {}
+
+    # 1 · stub that records the seed and returns correct tuple
+    def fake_play_one_shuffle(seed, *, collect_rows=False):  # noqa: ARG001, ARG002
+        called.setdefault("seed", seed)
+        return Counter(), {}, {}, []
+
+    monkeypatch.setattr(rt, "_play_one_shuffle", fake_play_one_shuffle, raising=True)
+
+    # 2 · restore the genuine wrapper just for this test
+    monkeypatch.setattr(rt, "_play_shuffle", rt._ORIG_PLAY_SHUFFLE, raising=True)  # type:ignore
+
+    rt._play_shuffle(123)
+    assert called["seed"] == 123
+
+
+def test_run_tournament_cli(monkeypatch):
+    called = {}
+    monkeypatch.setattr(rt, "run_tournament", lambda **kw: called.update(kw), raising=True)
+
+    class DummyArgs:
+        config, seed, checkpoint, jobs, ckpt_sec, metrics, num_shuffles = (
+            ANY,
+            7,
+            Path("out.pkl"),
+            2,
+            5,
+            True,
+            3,
+        )
+        row_dir = Path("rows")
+
+    monkeypatch.setattr(rt.argparse, "ArgumentParser", lambda *a, **k: type("P", (), {"add_argument": lambda *a, **k: None, "parse_args": lambda _: DummyArgs})())  # noqa: ARG005
+
+    rt.main()
+    assert called == {
+        "config": ANY,
+        "global_seed": 7,
+        "checkpoint_path": Path("out.pkl"),
+        "n_jobs": 2,
+        "collect_metrics": True,
+        "row_output_directory": Path("rows"),
+        "num_shuffles": 3,
+    }
+
+
+def test_run_tournament_collect_rows(monkeypatch, tmp_path):
+    class DummyFuture:
+        def __init__(self, r): self._r = r
+        def result(self): return self._r
+        def __hash__(self): return id(self)
+
+    class DummyPool:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, fn, arg): return DummyFuture(fn(arg))
+
+    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())  # noqa: ARG005
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
+    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
+    monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)  # noqa: ARG005
+    monkeypatch.setattr(rt, "as_completed", lambda d: list(d.keys()), raising=True)
+    monkeypatch.setattr(
+        rt,
+        "_run_chunk_metrics",
+        lambda *a, **k: (Counter(), {m: defaultdict(float) for m in rt.METRIC_LABELS}, {m: defaultdict(float) for m in rt.METRIC_LABELS}),  # noqa: ARG005
+        raising=True,
+    )
+
+    row_dir = tmp_path / "rows"
+    started = {"n": 0}
+
+    class DummyProcess:
+        def __init__(self, *a, **k): pass
+        def start(self): started["n"] += 1
+
+    class DummyCtx:
+        def Queue(self, maxsize): return type("Q", (), {"put": lambda *a, **k: None})()  # noqa: ARG002, ARG005
+        def Process(self, *a, **k): return DummyProcess()  # noqa: ARG002
+
+    monkeypatch.setattr(rt.mp, "get_context", lambda *a, **k: DummyCtx())  # noqa: ARG005
+
+    cfg = rt.TournamentConfig(num_shuffles=1, ckpt_every_sec=30)
+    rt.run_tournament(
+        config=cfg,
+        global_seed=0,
+        checkpoint_path=tmp_path / "chk.pkl",
+        n_jobs=None,
+        collect_metrics=True,
+        row_output_directory=row_dir,
+    )
+    assert started["n"] == 1

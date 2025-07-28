@@ -3,7 +3,7 @@ import itertools
 import numpy as np
 import pytest
 
-from farkle.engine import FarkleGame, FarklePlayer, ROLL_LIMIT
+from farkle.engine import ROLL_LIMIT, FarkleGame, FarklePlayer
 from farkle.strategies import ThresholdStrategy
 
 
@@ -109,24 +109,9 @@ def test_auto_hot_dice_forces_roll():
 
     assert p_hot.score == 0  # rolled twice, busts on 2,2,3,3,4,6
     assert p_cold.score == 2500  # banked after first roll
-
-
-def test_auto_hot_dice_records_hot_roll():
-    seq = [1, 2, 3, 4, 5, 6, 2, 2, 3, 3, 4, 6]
-    rng = fixed_rng_2(seq)
-
-    strat_hot = ThresholdStrategy(score_threshold=0, dice_threshold=6, auto_hot_dice=True)
-    strat_cold = ThresholdStrategy(score_threshold=0, dice_threshold=6, auto_hot_dice=False)
-
-    p_hot = FarklePlayer("H", strat_hot, rng=rng)
-    p_cold = FarklePlayer("C", strat_cold, rng=rng)
-
-    p_hot.take_turn(target_score=10_000)
-    p_cold.take_turn(target_score=10_000)
-
-    assert p_hot.n_hot_dice == 1
-    assert p_hot.n_rolls == 2
-    assert p_cold.n_rolls == 1
+    assert p_hot.n_hot_dice == 1  # records auto_hot_dice option taken
+    assert p_hot.n_rolls == 2  # records correct roll count: 2 rolls, busts on second roll
+    assert p_cold.n_rolls == 1  # records correct roll count: declines auto_hot_dice, rolls once and banks
 
 
 class SeqGen2(np.random.Generator):
