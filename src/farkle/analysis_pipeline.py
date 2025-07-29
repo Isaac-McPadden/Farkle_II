@@ -1,29 +1,17 @@
 # src/farkle/analysis_pipeline.py
-"""High‑level convenience wrapper that stitches together the three
-analysis sub‑modules (TrueSkill, Bonferroni head‑to‑head, Gradient‑Boost
-feature importance).
+"""High‑level wrapper that kicks off all second‑stage analyses (TrueSkill,
+Bonferroni head‑to‑head, random‑forest feature importance).
 
-The script is intentionally I/O‑bound only.  All heavy computation still
-lives in :pymod:`farkle.run_trueskill`, :pymod:`farkle.run_bonferroni_head2head`
-and :pymod:`farkle.run_rf`.  This wrapper merely:
-
-1.  Locates a *result seed folder* (eg. ``data/results_seed_0``).
-2.  Builds a dedicated ``analysis/`` sub‑directory and wires the raw
-    outputs into it via a **symlink** (or a read‑only copy when symlinks
-    are unavailable – see :pyfunc:`_safe_link`).
-3.  Derives per‑strategy metrics (wins/avg rounds/avg score) for each
-    table‑size block and writes them to Parquet.
-4.  Executes the three stage‑2 analyses *in the correct order* while
-    temporarily ``chdir``‑ing to the analysis directory so that their
-    hard‑coded ``data/`` look‑ups succeed.
-
-The module is designed for *importability* (everything wrapped in
-functions) but can also be used as a CLI::
-
-    python -m farkle.analysis_pipeline path/to/results_seed_7
-
->>> run_analysis_pipeline(Path("data/results_seed_0"))  # doctest: +ELLIPSIS
-PosixPath('data/results_seed_0/analysis')
+Key points
+==========
+*   **No recursion on Windows** – when symlinks are unavailable we now
+    ``copytree`` while *ignoring the ``analysis/`` directory* to avoid the
+    exponential nesting the user just observed.
+*   Per‑strategy metrics are aggregated once per *n_players* block and as
+    a combined table.  Each stage‑2 script runs inside
+    ``<seed>/analysis`` so that its hard‑coded ``data/`` look‑ups resolve.
+*   Module is both importable *and* CLI‑invokable via
+    ``python -m farkle.analysis_pipeline <results_seed_dir>``.
 """
 from __future__ import annotations
 
@@ -41,33 +29,37 @@ from .run_trueskill import _read_loose_parquets, _read_row_shards, _read_winners
 
 log = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _safe_link(src: Path, dst: Path) -> None:
-    """Create *dst* → *src* directory symlink or fall back to copytree.
+    """Make *dst* point at *src*.
 
-    On Windows, non‑admin users (or files on FAT/ExFAT) cannot create
-    symlinks.  In that case we make a **shallow** copy – individual files
-    are still memory‑mapped by Pandas/PyArrow so the extra disk usage is
-    negligible for parquet‑heavy folders.
+    1.  Try a real directory symlink (preferred).
+    2.  If that fails on Windows (`WinError 1314`), make a **shallow
+        copy** while *ignoring the ``analysis`` directory* so we don’t end
+        up with ``…/analysis/data/results/analysis/data/results/…``.
     """
     try:
         dst.symlink_to(src, target_is_directory=True)  # type: ignore[arg-type]
         return
     except (OSError, NotImplementedError) as exc:
         log.warning("Symlink failed (%s). Falling back to copytree …", exc)
+
     if dst.exists():
         shutil.rmtree(dst)
-    shutil.copytree(src, dst, dirs_exist_ok=True)
+
+    # Skip the analysis directory to prevent infinite nesting on re‑runs.
+    ignore_analysis = shutil.ignore_patterns("analysis")
+    shutil.copytree(src, dst, dirs_exist_ok=True, ignore=ignore_analysis)
 
 
 def _load_results_df(block: Path) -> pd.DataFrame:
-    """Return a DataFrame with **all** game rows for one *n_players* block."""
+    """Return a DataFrame with **all** game rows for one *n_players* sub‑folder."""
 
-    # Prefer row‑shard directories → compact parquet → legacy CSV order.
     row_dirs: List[Path] = [p for p in block.glob("*_rows") if p.is_dir()]
     if row_dirs:
         frames = [_read_row_shards(d) for d in row_dirs]
@@ -77,37 +69,21 @@ def _load_results_df(block: Path) -> pd.DataFrame:
     if parquet_df is not None:
         return parquet_df
 
-    if (block / "winners.csv").exists():
+    winners = block / "winners.csv"
+    if winners.exists():
         return _read_winners_csv(block)
 
     return pd.DataFrame()
 
 
 def _strategy_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute wins / avg rounds / avg score per *winner* strategy."""
+    """Compute per‑strategy win‑rate + average rounds/score."""
     if df.empty:
-        return pd.DataFrame(
-            columns=[
-                "strategy",
-                "wins",
-                "avg_rounds",
-                "avg_score",
-            ]
-        )
+        return pd.DataFrame(columns=["strategy", "wins", "avg_rounds", "avg_score"])
 
-    if "winner_strategy" in df.columns:
-        winner_col = "winner_strategy"
-    elif "winner" in df.columns:
-        winner_col = "winner"
-    else:
-        return pd.DataFrame(
-            columns=[
-                "strategy",
-                "wins",
-                "avg_rounds",
-                "avg_score",
-            ]
-        )
+    winner_col = "winner_strategy" if "winner_strategy" in df.columns else "winner" if "winner" in df.columns else None
+    if winner_col is None:
+        return pd.DataFrame(columns=["strategy", "wins", "avg_rounds", "avg_score"])
 
     grouped = df.groupby(winner_col)
     out = pd.DataFrame(
@@ -154,12 +130,16 @@ def run_analysis_pipeline(
     data_dir = analysis_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # --- wire raw results into analysis/data/results -------------------
+    # ------------------------------------------------------------------
+    # Wire raw results → analysis/data/results (symlink or safe copy)
+    # ------------------------------------------------------------------
     results_link = data_dir / "results"
     if not results_link.exists():
         _safe_link(base, results_link)
 
-    # --- derive per‑strategy metrics for every *n_players* block -------
+    # ------------------------------------------------------------------
+    # Derive per‑strategy metrics for each *n_players* sub‑folder
+    # ------------------------------------------------------------------
     metrics_frames: list[pd.DataFrame] = []
 
     for block in sorted(base.glob("*_players")):
@@ -172,12 +152,13 @@ def run_analysis_pipeline(
 
     metrics_frames = [m for m in metrics_frames if not m.empty]
     if metrics_frames:
-        combined = pd.concat(metrics_frames, ignore_index=True)
-        combined.to_parquet(data_dir / "metrics.parquet", index=False)
+        pd.concat(metrics_frames, ignore_index=True).to_parquet(data_dir / "metrics.parquet", index=False)
     else:
         log.warning("No per‑strategy metrics generated – check input folders.")
 
-    # --- stage‑2 analyses (need to operate inside analysis/ dir) -------
+    # ------------------------------------------------------------------
+    # Second‑stage stats (run inside analysis/ so relative paths match)
+    # ------------------------------------------------------------------
     cwd = Path.cwd()
     os.chdir(analysis_dir)
     try:
