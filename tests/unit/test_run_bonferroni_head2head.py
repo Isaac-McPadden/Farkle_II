@@ -18,6 +18,7 @@ def test_simulate_many_games_from_seeds(monkeypatch):
         }
 
     import farkle.simulation as sim
+
     monkeypatch.setattr(sim, "_play_game", fake_play, raising=True)
     seeds1 = [1, 2, 3]
     seeds2 = [4, 5, 6]
@@ -42,7 +43,11 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
         "games_for_power",
         lambda n, method="bonferroni", full_pairwise=True: 1,
     )
-    monkeypatch.setattr(rb, "bonferroni_pairs", lambda elites, games_needed, seed: pd.DataFrame({"a": ["A"], "b": ["B"], "seed": [seed]}))
+    monkeypatch.setattr(
+        rb,
+        "bonferroni_pairs",
+        lambda elites, games_needed, seed: pd.DataFrame({"a": ["A"], "b": ["B"], "seed": [seed]}),
+    )
     monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
 
     def fake_many_games(n_games, strategies, seed, n_jobs):
@@ -50,7 +55,7 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rb, "simulate_many_games", fake_many_games)
 
-    rb.run_bonferroni_head2head(seed=0)
+    rb.run_bonferroni_head2head(seed=0, dataroot=data_dir)
     out_csv = data_dir / "bonferroni_pairwise.csv"
     df = pd.read_csv(out_csv)
     assert set(df.columns) == {"a", "b", "wins_a", "wins_b", "pvalue"}
@@ -66,20 +71,25 @@ def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
     monkeypatch.setattr(rb, "games_for_power", lambda *a, **k: 0)
-    monkeypatch.setattr(rb, "bonferroni_pairs", lambda *a, **k: pd.DataFrame(columns=["a", "b", "seed"]))
+    monkeypatch.setattr(
+        rb, "bonferroni_pairs", lambda *a, **k: pd.DataFrame(columns=["a", "b", "seed"])
+    )
     monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
-    monkeypatch.setattr(rb, "simulate_many_games", lambda **k: pd.DataFrame({"winner_strategy": []}))
+    monkeypatch.setattr(
+        rb, "simulate_many_games", lambda **k: pd.DataFrame({"winner_strategy": []})
+    )
 
-    rb.run_bonferroni_head2head(seed=0)
+    rb.run_bonferroni_head2head(seed=0, dataroot=data_dir)
     out_csv = data_dir / "bonferroni_pairwise.csv"
     assert out_csv.exists()
     assert out_csv.read_text() == "\n"
+
 
 def test_run_bonferroni_head2head_missing_file(tmp_path, monkeypatch):
     """An informative error is raised when tiers.json is absent."""
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="Tier file not found"):
-        rb.run_bonferroni_head2head(seed=1)
+        rb.run_bonferroni_head2head(seed=1, dataroot=tmp_path / "data")
 
 
 def test_run_bonferroni_head2head_empty_file(tmp_path, monkeypatch):
@@ -88,15 +98,16 @@ def test_run_bonferroni_head2head_empty_file(tmp_path, monkeypatch):
     (data_dir / "tiers.json").write_text("{}")
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="No tiers found"):
-        rb.run_bonferroni_head2head()
+        rb.run_bonferroni_head2head(dataroot=data_dir)
 
 
 def test_main_delegates_to_runner(monkeypatch):
     captured = {}
 
-    def fake_run(seed: int = 0) -> None:
+    def fake_run(seed: int = 0, dataroot=None) -> None:  # noqa: ANN001
+        _ = dataroot
         captured["seed"] = seed
 
     monkeypatch.setattr(rb, "run_bonferroni_head2head", fake_run)
-    rb.main(["--seed", "42"])
+    rb.main(["--seed", "42", "--dataroot", "d"])
     assert captured["seed"] == 42

@@ -17,26 +17,30 @@ def test_pooled_ratings_are_mean(tmp_path):
     # --- block with A beating B -------------------------------------------------
     block2 = res_root / "2_players" / "1_rows"
     block2.mkdir(parents=True)
-    df2 = pd.DataFrame({
-        "P1_strategy": ["A"] * 3,
-        "P1_rank": [1] * 3,
-        "P2_strategy": ["B"] * 3,
-        "P2_rank": [2] * 3,
-    })
+    df2 = pd.DataFrame(
+        {
+            "P1_strategy": ["A"] * 3,
+            "P1_rank": [1] * 3,
+            "P2_strategy": ["B"] * 3,
+            "P2_rank": [2] * 3,
+        }
+    )
     df2.to_parquet(block2 / "rows.parquet")
     np.save(block2.parent / "keepers_2.npy", np.array(["A", "B"]))
 
     # --- block with B beating A (extra player ignored) -------------------------
     block3 = res_root / "3_players" / "1_rows"
     block3.mkdir(parents=True)
-    df3 = pd.DataFrame({
-        "P1_strategy": ["B"] * 3,
-        "P1_rank": [1] * 3,
-        "P2_strategy": ["A"] * 3,
-        "P2_rank": [2] * 3,
-        "P3_strategy": ["C"] * 3,
-        "P3_rank": [3] * 3,
-    })
+    df3 = pd.DataFrame(
+        {
+            "P1_strategy": ["B"] * 3,
+            "P1_rank": [1] * 3,
+            "P2_strategy": ["A"] * 3,
+            "P2_rank": [2] * 3,
+            "P3_strategy": ["C"] * 3,
+            "P3_rank": [3] * 3,
+        }
+    )
     df3.to_parquet(block3 / "rows.parquet")
     np.save(block3.parent / "keepers_3.npy", np.array(["A", "B"]))
 
@@ -49,7 +53,7 @@ def test_pooled_ratings_are_mean(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_trueskill.main([])
+        run_trueskill.main(["--dataroot", str(data_root)])
     finally:
         os.chdir(cwd)
 
@@ -77,4 +81,3 @@ def test_pooled_ratings_are_mean(tmp_path):
     assert r2 == expected2
     assert r3 == expected3
     assert pooled == expected_pooled
-

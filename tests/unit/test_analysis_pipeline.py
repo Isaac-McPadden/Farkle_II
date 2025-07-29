@@ -46,8 +46,8 @@ def test_analysis_pipeline(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_trueskill.main(["--output-seed", "0"])
-        run_rf.main([])
+        run_trueskill.main(["--output-seed", "0", "--dataroot", str(data_root)])
+        run_rf.main(["--dataroot", str(data_root)])
 
         assert (data_root / "rf_importance.json").exists()
         figs = tmp_path / "notebooks" / "figs"
@@ -90,6 +90,6 @@ def test_run_rf_missing_files(tmp_path, missing):
     os.chdir(tmp_path)
     try:
         with pytest.raises(FileNotFoundError):
-            run_rf.run_rf()
+            run_rf.run_rf(dataroot=data_dir)
     finally:
         os.chdir(cwd)
