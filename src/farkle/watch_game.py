@@ -18,7 +18,6 @@ import logging
 import random
 from dataclasses import asdict
 from types import MethodType
-from typing import Sequence
 
 import numpy as np
 
@@ -159,7 +158,7 @@ def _patch_default_score() -> None:
 class TracePlayer(FarklePlayer):
     """Subclass of :class:`FarklePlayer` that logs every dice roll."""
 
-    def _roll(self, n: int) -> Sequence[int]:
+    def _roll(self, n: int) -> list[int]:
         """Return ``n`` dice faces and log the result."""
         faces = super()._roll(n)
         log.info(f"{self.name} rolls {faces}")

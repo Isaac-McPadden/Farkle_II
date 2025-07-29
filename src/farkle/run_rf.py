@@ -23,10 +23,11 @@ from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 # ---------------------------------------------------------------------------
 # Constants for file and directory locations used in this module
 # ---------------------------------------------------------------------------
-METRICS_PATH = Path("data/metrics.parquet")
-RATINGS_PATH = Path("data/ratings_pooled.pkl")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
+METRICS_NAME = "metrics.parquet"
+RATINGS_NAME = "ratings_pooled.pkl"
 FIG_DIR = Path("notebooks/figs")
-IMPORTANCE_PATH = Path("data/rf_importance.json")
 
 
 def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
@@ -67,32 +68,40 @@ def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
     return out_file
 
 
-def run_rf(seed: int = 0, output_path: Path = IMPORTANCE_PATH) -> None:
+def run_rf(
+    seed: int = 0,
+    output_path: Path | None = None,
+    dataroot: Path = DEFAULT_DATA_ROOT,
+) -> None:
     """Train the regressor and output feature importance and plots.
 
     Parameters
     ----------
     seed : int, optional
         Random seed for model fitting and permutation importance.
-    output_path : Path, optional
+    output_path : Path | None, optional
         Location for the permutation importance JSON file.
 
     Reads
     -----
-    ``data/metrics.parquet``
+    ``<dataroot>/metrics.parquet``
         Per-strategy feature metrics.
-    ``data/ratings_pooled.pkl``
+    ``<dataroot>/ratings_pooled.pkl``
         Pickled mapping of strategy names to pooled ``(mu, sigma)`` tuples.
 
     Writes
     ------
-    ``data/rf_importance.json``
+    ``<dataroot>/rf_importance.json``
         JSON file mapping metric names to permutation importance scores.
     ``notebooks/figs/pd_<feature>.png``
         Partial dependence plots for each metric.
     """
-    metrics = pd.read_parquet(METRICS_PATH)
-    with open(RATINGS_PATH, "rb") as fh:
+    dataroot = Path(dataroot)
+    metrics_path = dataroot / METRICS_NAME
+    ratings_path = dataroot / RATINGS_NAME
+
+    metrics = pd.read_parquet(metrics_path)
+    with open(ratings_path, "rb") as fh:
         ratings = pickle.load(fh)
     rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [v.mu for v in ratings.values()]})
     data = metrics.merge(rating_df, on="strategy", how="inner")
@@ -115,6 +124,9 @@ def run_rf(seed: int = 0, output_path: Path = IMPORTANCE_PATH) -> None:
         c: float(s)
         for c, s in zip(features.columns, perm_importance["importances_mean"], strict=False)
     }
+    if output_path is None:
+        output_path = dataroot / "rf_importance.json"
+
     output_path.parent.mkdir(exist_ok=True)
     with output_path.open("w") as fh:
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
@@ -146,11 +158,12 @@ def main(argv: List[str] | None = None) -> None:
         "-o",
         "--output",
         type=Path,
-        default=IMPORTANCE_PATH,
+        default=None,
         help="Path to write rf_importance.json",
     )
+    parser.add_argument("--dataroot", type=Path, default=DEFAULT_DATA_ROOT)
     args = parser.parse_args(argv or [])
-    run_rf(seed=args.seed, output_path=args.output)
+    run_rf(seed=args.seed, output_path=args.output, dataroot=args.dataroot)
 
 
 if __name__ == "__main__":

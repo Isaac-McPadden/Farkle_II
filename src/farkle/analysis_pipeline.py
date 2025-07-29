@@ -34,6 +34,7 @@ log = logging.getLogger(__name__)
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _safe_link(src: Path, dst: Path) -> None:
     """Make *dst* point at *src*.
 
@@ -85,12 +86,16 @@ def _strategy_metrics(df: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["strategy", "wins", "avg_rounds", "avg_score"])
 
     grouped = df.groupby(winner_col)
-    out = pd.DataFrame({
-        "strategy": grouped.size().index,
-        "wins": grouped.size().values,
-        "avg_rounds": grouped["n_rounds"].mean() if "n_rounds" in df.columns else float("nan"),
-        "avg_score": grouped["winning_score"].mean() if "winning_score" in df.columns else float("nan"),
-    })
+    out = pd.DataFrame(
+        {
+            "strategy": grouped.size().index,
+            "wins": grouped.size().values,
+            "avg_rounds": grouped["n_rounds"].mean() if "n_rounds" in df.columns else float("nan"),
+            "avg_score": (
+                grouped["winning_score"].mean() if "winning_score" in df.columns else float("nan")
+            ),
+        }
+    )
     return out
 
 
@@ -98,8 +103,25 @@ def _strategy_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # Public entry‑point
 # ---------------------------------------------------------------------------
 
-def run_analysis_pipeline(seed_folder: str | Path) -> Path:  # noqa: C901
-    """Run the full analysis chain for *seed_folder* and return the output dir."""
+
+def run_analysis_pipeline(
+    seed_folder: str | Path,
+) -> Path:  # noqa: C901 – acceptable for orchestrator
+    """Run the full analysis chain for the given *result seed* directory.
+
+    Parameters
+    ----------
+    seed_folder : str | Path
+        Directory that contains per‑table‑size sub‑folders such as
+        ``2_players/``, ``3_players/`` … Each must in turn contain either
+        ``winners.csv``, loose Parquet files, or row‑shard directories
+        produced by :pymod:`farkle.run_tournament`.
+
+    Returns
+    -------
+    Path
+        The freshly populated ``analysis/`` directory.
+    """
     base = Path(seed_folder).expanduser().resolve()
     if not base.is_dir():
         raise FileNotFoundError(base)
@@ -140,9 +162,9 @@ def run_analysis_pipeline(seed_folder: str | Path) -> Path:  # noqa: C901
     cwd = Path.cwd()
     os.chdir(analysis_dir)
     try:
-        run_trueskill.run_trueskill()
-        run_bonferroni_head2head.run_bonferroni_head2head()
-        run_rf.run_rf()
+        run_trueskill.run_trueskill(dataroot=data_dir)
+        run_bonferroni_head2head.run_bonferroni_head2head(dataroot=data_dir)
+        run_rf.run_rf(dataroot=data_dir)
     finally:
         os.chdir(cwd)
 

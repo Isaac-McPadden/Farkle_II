@@ -22,6 +22,9 @@ import yaml
 
 from .utils import build_tiers
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
+
 log = logging.getLogger(__name__)
 
 
@@ -152,7 +155,10 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
-def run_trueskill(output_seed: int = 0) -> None:
+def run_trueskill(
+    output_seed: int = 0,
+    dataroot: Path = DEFAULT_DATA_ROOT,
+) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
     Parameters
@@ -171,7 +177,8 @@ def run_trueskill(output_seed: int = 0) -> None:
         JSON file with league tiers derived from the pooled ratings.
     """
 
-    base = Path("data/results")
+    dataroot = Path(dataroot)
+    base = dataroot / "results"
     _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
     env = trueskill.TrueSkill()
@@ -182,7 +189,7 @@ def run_trueskill(output_seed: int = 0) -> None:
         keepers = np.load(keep_path).tolist() if keep_path.exists() else []
         games = _load_ranked_games(block)
         ratings = _update_ratings(games, keepers, env)
-        with (Path("data") / f"ratings_{player_count}{suffix}.pkl").open("wb") as fh:
+        with (dataroot / f"ratings_{player_count}{suffix}.pkl").open("wb") as fh:
             pickle.dump(ratings, fh)
         for k, v in ratings.items():
             if k in pooled:
@@ -190,14 +197,14 @@ def run_trueskill(output_seed: int = 0) -> None:
                 pooled[k] = RatingStats((r.mu + v.mu) / 2, (r.sigma + v.sigma) / 2)
             else:
                 pooled[k] = v
-    with (Path("data") / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
+    with (dataroot / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
     tiers = build_tiers(
         means={k: v.mu for k, v in pooled.items()},
         stdevs={k: v.sigma for k, v in pooled.items()},
     )
-    Path("data").mkdir(exist_ok=True)
-    with (Path("data") / "tiers.json").open("w") as fh:
+    dataroot.mkdir(exist_ok=True)
+    with (dataroot / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)
 
 
@@ -222,9 +229,10 @@ def main(argv: list[str] | None = None) -> None:
         default=0,
         help="only used to name output files",
     )
+    parser.add_argument("--dataroot", type=Path, default=DEFAULT_DATA_ROOT)
     args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run_trueskill(output_seed=args.output_seed)
+    run_trueskill(output_seed=args.output_seed, dataroot=args.dataroot)
 
 
 if __name__ == "__main__":

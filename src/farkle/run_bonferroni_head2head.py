@@ -16,10 +16,11 @@ from farkle.stats import games_for_power
 from farkle.strategies import parse_strategy
 from farkle.utils import bonferroni_pairs
 
-TIERS_PATH = Path("data/tiers.json")
-PAIRWISE_CSV = Path("data/bonferroni_pairwise.csv")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
 
-def run_bonferroni_head2head(seed: int = 0) -> None:
+
+def run_bonferroni_head2head(seed: int = 0, dataroot: Path = DEFAULT_DATA_ROOT) -> None:
     """Run pairwise games between top-tier strategies using Bonferroni tests.
 
     Parameters
@@ -32,13 +33,17 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
     matchup and writes ``data/bonferroni_pairwise.csv`` containing win counts and
     p-values computed via :func:`scipy.stats.binomtest`.
     """
+    dataroot = Path(dataroot)
+    tiers_path = dataroot / "tiers.json"
+    pairwise_csv = dataroot / "bonferroni_pairwise.csv"
+
     try:
-        with TIERS_PATH.open() as fh:
+        with tiers_path.open() as fh:
             tiers = json.load(fh)
     except FileNotFoundError as exc:
-        raise RuntimeError(f"Tier file not found at {TIERS_PATH}") from exc
+        raise RuntimeError(f"Tier file not found at {tiers_path}") from exc
     if not tiers:
-        raise RuntimeError(f"No tiers found in {TIERS_PATH}")
+        raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
     games_needed = games_for_power(len(elites), method="bonferroni", full_pairwise=True)
@@ -48,10 +53,7 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
     for (a, b), grp in schedule.groupby(["a", "b"]):
         n_games = len(grp)
         df = simulate_many_games(
-            n_games=n_games, 
-            strategies=[parse_strategy(a), parse_strategy(b)], 
-            seed=seed, 
-            n_jobs=1
+            n_games=n_games, strategies=[parse_strategy(a), parse_strategy(b)], seed=seed, n_jobs=1
         )
         wins = df["winner_strategy"].value_counts()
         wa = int(wins.get(a, 0))
@@ -60,8 +62,8 @@ def run_bonferroni_head2head(seed: int = 0) -> None:
         records.append({"a": a, "b": b, "wins_a": wa, "wins_b": wb, "pvalue": pval})
 
     out = pd.DataFrame(records)
-    PAIRWISE_CSV.parent.mkdir(exist_ok=True)
-    out.to_csv(PAIRWISE_CSV, index=False)
+    pairwise_csv.parent.mkdir(exist_ok=True)
+    out.to_csv(pairwise_csv, index=False)
 
 
 def main(argv: List[str] | None = None) -> None:
@@ -72,8 +74,9 @@ def main(argv: List[str] | None = None) -> None:
     """
     parser = argparse.ArgumentParser(description="Head-to-head Bonferroni analysis")
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--dataroot", type=Path, default=DEFAULT_DATA_ROOT)
     args = parser.parse_args(argv)
-    run_bonferroni_head2head(seed=args.seed)
+    run_bonferroni_head2head(seed=args.seed, dataroot=args.dataroot)
 
 
 if __name__ == "__main__":

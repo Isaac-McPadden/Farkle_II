@@ -29,7 +29,7 @@ def test_run_rf_custom_output_path(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_rf.run_rf(output_path=out_file)
+        run_rf.run_rf(output_path=out_file, dataroot=data_dir)
     finally:
         os.chdir(cwd)
     assert out_file.exists()
@@ -48,6 +48,6 @@ def test_run_rf_importance_length_check(tmp_path, monkeypatch):
     os.chdir(tmp_path)
     try:
         with pytest.raises(ValueError, match="Mismatch between number of features"):
-            run_rf.run_rf(output_path=data_dir / "out.json")
+            run_rf.run_rf(output_path=data_dir / "out.json", dataroot=data_dir)
     finally:
         os.chdir(cwd)

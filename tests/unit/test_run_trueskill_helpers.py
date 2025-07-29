@@ -85,9 +85,9 @@ def test_load_ranked_games_csv(tmp_path):
 
 
 def test_load_ranked_games_multi_row_dirs(tmp_path):
-    block   = tmp_path / "m_players"
-    row1    = block / "1_rows"
-    row2    = block / "2_rows"
+    block = tmp_path / "m_players"
+    row1 = block / "1_rows"
+    row2 = block / "2_rows"
     row1.mkdir(parents=True)
     row2.mkdir()
     pd.DataFrame({"winner_strategy": ["A"]}).to_parquet(row1 / "a.parquet")
@@ -159,7 +159,7 @@ def test_run_trueskill_incomplete_block(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill()
+        rt.run_trueskill(dataroot=data_root)
     finally:
         os.chdir(cwd)
 
@@ -190,7 +190,7 @@ def test_run_trueskill_with_suffix(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(output_seed=1)
+        rt.run_trueskill(output_seed=1, dataroot=data_root)
     finally:
         os.chdir(cwd)
 
