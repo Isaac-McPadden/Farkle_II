@@ -1,0 +1,86 @@
+# farkle/analysis_config.py
+"""
+Config module for the analysis stage
+# pipeline.py
+from farkle.config import PipelineCfg
+from farkle import ingest, metrics, analytics
+
+def main():
+    cfg = PipelineCfg(root=Path(args.root))
+    ingest.run(cfg)
+    metrics.run(cfg)
+    analytics.run_all(cfg)     # inside it: respects cfg.run_trueskill flags
+"""
+from __future__ import annotations
+
+import json
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+@dataclass
+class PipelineCfg:
+    # 1. core paths
+    root: Path = Path("data")
+    results_glob: str = "*_players"
+    analysis_subdir: str = "analysis"
+    curated_rows_name: str = "game_rows.parquet"
+    metrics_name: str = "metrics.parquet"
+
+    # 2. ingest
+    ingest_cols: tuple[str, ...] = field(
+        default_factory=lambda: (
+            "winner",
+            "n_rounds",
+            "winning_score",
+            *[f"P{i}_strategy" for i in range(1, 13)],
+        )
+    )
+    parquet_codec: str = "zstd"
+    row_group_size: int = 64_000
+    max_shard_mb: int = 512
+
+    # 3. analytics toggles / params
+    run_trueskill: bool = True
+    run_head2head: bool = True
+    run_rf: bool = True
+    rf_n_estimators: int = 500
+    trueskill_beta: float = 25 / 6
+
+    # 4. perf
+    cores = os.cpu_count()
+    assert cores is not None
+    n_jobs: int = max(cores - 1, 1)
+    prefetch_shards: int = 2
+
+    # 5. logging & provenance
+    log_level: str = "INFO"
+    manifest_name: str = "manifest.json"
+    git_sha: str | None = None   # filled on __post_init__
+
+    # --------------------------------------------------------------
+    def __post_init__(self) -> None:
+        if self.git_sha is None:
+            try:
+                import shlex
+                import subprocess
+
+                self.git_sha = (
+                    subprocess.check_output(shlex.split("git rev-parse HEAD"))
+                    .decode()
+                    .strip()
+                )
+            except Exception:
+                self.git_sha = "unknown"
+
+    # Convenience helpers
+    # -------------------
+    def data_dir(self) -> Path:
+        return self.root  # alias if you like cfg.data_dir()
+
+    def analysis_dir(self) -> Path:
+        return self.root.parent / self.analysis_subdir
+
+    def to_json(self) -> str:
+        return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)
