@@ -14,6 +14,6 @@ jobs:
         with:
           python-version: '3.12'
       - run: pip install .[dev] mypy ruff
-      - run: ruff check .
+      - run: ruff check src/farkle
       - run: black --check .
       - run: mypy
