@@ -27,9 +27,9 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from farkle.logging_utils import setup_info_logging, setup_warning_logging
 from farkle.simulation import _play_game, generate_strategy_grid
 from farkle.strategies import ThresholdStrategy
-from farkle.logging_utils import setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -542,9 +542,9 @@ def main() -> None:
         help="write full per-game rows to DIR as parquet",
     )
     p.add_argument(
-        "--log-level",
+        "--log_level",
         choices=["DEBUG", "INFO", "WARNING"],
-        default="WARNING",
+        default="INFO",
         help="logging verbosity",
     )
     args = p.parse_args()
@@ -556,7 +556,10 @@ def main() -> None:
         ckpt_every_sec=args.ckpt_sec,
     )
 
-    setup_logging(level=getattr(args, "log_level", "WARNING"))
+    if args.log_level == "INFO":
+        setup_info_logging()
+    else:
+        setup_warning_logging()
 
     run_tournament(
         config=cfg,
