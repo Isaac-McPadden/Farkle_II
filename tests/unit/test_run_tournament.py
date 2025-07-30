@@ -52,6 +52,13 @@ def fast_helpers(monkeypatch):
     monkeypatch.setattr(rt, "_play_shuffle", fake_play_shuffle, raising=True)
 
 
+@pytest.fixture(autouse=True)
+def silence_logging(monkeypatch):
+    """Disable info/error logging from run_tournament during tests."""
+    monkeypatch.setattr(rt.log, "info", lambda *a, **k: None)
+    monkeypatch.setattr(rt.log, "error", lambda *a, **k: None)
+
+
 # --------------------------------------------------------------------------- #
 # Unit tests
 # --------------------------------------------------------------------------- #
@@ -133,8 +140,6 @@ def test_checkpoint_timer(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rt.Path, "write_bytes", fake_write_bytes, raising=True)
 
-    # also silence logging noise
-    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
 
     # ── 6 · run – we expect 1 mid-run save + 1 final save ─────────────────────
     rt.run_tournament(
@@ -182,7 +187,6 @@ def test_run_tournament_player_count(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
     monkeypatch.setattr(rt, "NUM_SHUFFLES", 1, raising=False)
     monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)  # noqa: ARG005
-    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
     monkeypatch.setattr(rt, "as_completed", lambda d: list(d.keys()), raising=True)
 
     cfg_ok = rt.TournamentConfig(n_players=6)
@@ -216,7 +220,6 @@ def test_run_tournament_num_shuffles_override(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())  # noqa: ARG005
     monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
     monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)  # noqa: ARG005
-    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
     monkeypatch.setattr(rt, "as_completed", lambda x: list(x), raising=True)
 
     called = []
@@ -256,7 +259,6 @@ def test_run_tournament_config_overrides(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())  # noqa: ARG005
     monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
     monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)  # noqa: ARG005
-    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
     monkeypatch.setattr(rt, "as_completed", lambda x: list(x), raising=True)
     monkeypatch.setattr(rt, "_run_chunk", lambda batch: Counter(), raising=True)  # noqa: ARG005
 
@@ -424,7 +426,6 @@ def test_run_tournament_collect_rows(monkeypatch, tmp_path):
 
     monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())  # noqa: ARG005
     monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
-    monkeypatch.setattr(rt.logging, "info", lambda *a, **k: None, raising=False)  # noqa: ARG005
     monkeypatch.setattr(rt.Path, "write_bytes", lambda *a, **k: None, raising=True)  # noqa: ARG005
     monkeypatch.setattr(rt, "as_completed", lambda d: list(d.keys()), raising=True)
     monkeypatch.setattr(
