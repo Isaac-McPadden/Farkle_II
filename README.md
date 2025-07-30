@@ -25,6 +25,8 @@ Run a tournament from a config file:
 python -m farkle run cfg.yml
 ```
 
+You can get progress logs with `--log-level INFO`.
+
 Use the API directly:
 
 ```python

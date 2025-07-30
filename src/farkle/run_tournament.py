@@ -29,6 +29,9 @@ import pyarrow.parquet as pq
 
 from farkle.simulation import _play_game, generate_strategy_grid
 from farkle.strategies import ThresholdStrategy
+from farkle.logging_utils import setup_logging
+
+log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration constants (patched by tests/CLI)
@@ -228,7 +231,15 @@ def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[str]:
 
     total: Counter[str] = Counter()
     for sd in shuffle_seed_batch:
-        total.update(_play_shuffle(int(sd)))
+        log.info("Shuffle %s started", sd)
+        try:
+            result = _play_shuffle(int(sd))
+        except Exception:
+            log.error("Shuffle %s failed", sd, exc_info=True)
+            raise
+        else:
+            log.info("Shuffle %s finished: %d games", sd, _CFG.games_per_shuffle)
+            total.update(result)
     return total
 
 
@@ -275,8 +286,15 @@ def _run_chunk_metrics(
     sq_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
 
     for seed in shuffle_seed_batch:
-        w, s, sq, rows = _play_one_shuffle(int(seed), collect_rows=collect_rows)
-        wins_total.update(w)
+        log.info("Shuffle %s started", seed)
+        try:
+            w, s, sq, rows = _play_one_shuffle(int(seed), collect_rows=collect_rows)
+        except Exception:
+            log.error("Shuffle %s failed", seed, exc_info=True)
+            raise
+        else:
+            log.info("Shuffle %s finished: %d games", seed, _CFG.games_per_shuffle)
+            wins_total.update(w)
         for label in METRIC_LABELS:
             for k, v in s[label].items():
                 sums_total[label][k] += v
@@ -411,11 +429,6 @@ def run_tournament(
         for i in range(0, cfg.num_shuffles, shuffles_per_chunk)
     ]
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(message)s",
-        datefmt="%H:%M:%S",
-    )
 
     win_totals: Counter[str] = Counter()
     metric_sums: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -481,7 +494,7 @@ def run_tournament(
                     metric_sums if collect_metrics or collect_rows else None,
                     metric_sq_sums if collect_metrics or collect_rows else None,
                 )
-                logging.info(
+                log.info(
                     "checkpoint … %d/%d chunks, %d games",
                     done,
                     len(chunks),
@@ -495,7 +508,7 @@ def run_tournament(
         metric_sums if collect_metrics or collect_rows else None,
         metric_sq_sums if collect_metrics or collect_rows else None,
     )
-    logging.info("finished - %d games", sum(win_totals.values()))
+    log.info("finished - %d games", sum(win_totals.values()))
 
 
 # ---------------------------------------------------------------------------
@@ -528,6 +541,12 @@ def main() -> None:
         metavar="DIR",
         help="write full per-game rows to DIR as parquet",
     )
+    p.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING"],
+        default="WARNING",
+        help="logging verbosity",
+    )
     args = p.parse_args()
 
     cfg = TournamentConfig(
@@ -536,6 +555,8 @@ def main() -> None:
         desired_sec_per_chunk=DESIRED_SEC_PER_CHUNK,
         ckpt_every_sec=args.ckpt_sec,
     )
+
+    setup_logging(level=getattr(args, "log_level", "WARNING"))
 
     run_tournament(
         config=cfg,
