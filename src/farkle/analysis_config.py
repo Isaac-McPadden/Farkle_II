@@ -84,3 +84,11 @@ class PipelineCfg:
 
     def to_json(self) -> str:
         return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)
+    
+    # ── Logging ────────────────────────────────────────────────────────────
+    log_level: str = "INFO"                # default matches your new choice
+    log_file: Path | None = None           # e.g. Path("analysis/pipeline.log")
+
+    # Convenience: return kwargs ready for setup_logging()
+    def logging_params(self) -> dict[str, object]:
+        return {"level": self.log_level, "log_file": self.log_file}
