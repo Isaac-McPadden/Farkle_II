@@ -76,11 +76,17 @@ class PipelineCfg:
 
     # Convenience helpers
     # -------------------
+    @property
     def data_dir(self) -> Path:
         return self.root  # alias if you like cfg.data_dir()
 
+    @property
     def analysis_dir(self) -> Path:
-        return self.root.parent / self.analysis_subdir
+        return self.root / self.analysis_subdir
+
+    @property
+    def curated_parquet(self) -> Path:
+        return self.analysis_dir / "data" / self.curated_rows_name
 
     def to_json(self) -> str:
         return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)
