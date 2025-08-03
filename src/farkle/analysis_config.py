@@ -18,6 +18,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Sequence
 
 
 @dataclass
@@ -59,7 +60,7 @@ class PipelineCfg:
     log_level: str = "INFO"
     log_file: Path | None = None           # e.g. Path("analysis/pipeline.log")
     manifest_name: str = "manifest.json"
-    git_sha: str | None = None   # filled on __post_init__
+    git_sha: str | None = None  # filled on __post_init__
 
     # --------------------------------------------------------------
     def __post_init__(self) -> None:
@@ -69,9 +70,7 @@ class PipelineCfg:
                 import subprocess
 
                 self.git_sha = (
-                    subprocess.check_output(shlex.split("git rev-parse HEAD"))
-                    .decode()
-                    .strip()
+                    subprocess.check_output(shlex.split("git rev-parse HEAD")).decode().strip()
                 )
             except Exception:
                 self.git_sha = "unknown"
@@ -93,39 +92,35 @@ class PipelineCfg:
         return self.analysis_dir / "data" / self.curated_rows_name
 
     def to_json(self) -> str:
-        return json.dumps(
-            self,
-            default=lambda o: str(o) if isinstance(o, Path) else o,
-            indent=2,
-        )
+        return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)
+
+    # ── Logging ────────────────────────────────────────────────────────────
+    log_level: str = "INFO"  # default matches your new choice
+    log_file: Path | None = None  # e.g. Path("analysis/pipeline.log")
 
     # Convenience: return kwargs ready for setup_logging()
     def logging_params(self) -> dict[str, object]:
         return {"level": self.log_level, "log_file": self.log_file}
 
-    # CLI -----------------------------------------------------------------
+    # ------------------------------------------------------------------
     @classmethod
-    def parse_cli(cls, argv: list[str] | None = None) -> "PipelineCfg":
-        """Parse command line options into a :class:`PipelineCfg` instance."""
-        parser = argparse.ArgumentParser()
-        parser.add_argument("--root", type=Path, default=Path("data"))
+    def parse_cli(
+        cls, argv: Sequence[str] | None = None
+    ) -> tuple["PipelineCfg", argparse.Namespace, list[str]]:
+        """Parse command-line arguments into a :class:`PipelineCfg`.
+
+        Returns a triple ``(cfg, namespace, remaining)`` where ``remaining``
+        contains any extra arguments for higher-level parsers (e.g. pipeline
+        subcommands).
+        """
+        parser = argparse.ArgumentParser(add_help=False)
+        parser.add_argument("--root", type=Path, default=Path("data"), help="Root directory")
         parser.add_argument(
-            "--run-trueskill",
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            dest="run_trueskill",
+            "--analysis-subdir",
+            default="analysis",
+            help="Subdirectory for analysis outputs",
         )
-        parser.add_argument(
-            "--run-head2head",
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            dest="run_head2head",
-        )
-        parser.add_argument(
-            "--run-rf",
-            action=argparse.BooleanOptionalAction,
-            default=True,
-            dest="run_rf",
-        )
-        args = parser.parse_args(argv)
-        return cls(**vars(args))
+        parser.add_argument("-v", "--verbose", action="store_true", help="Enable progress bars")
+        ns, remaining = parser.parse_known_args(argv)
+        cfg = cls(root=ns.root, analysis_subdir=ns.analysis_subdir)
+        return cfg, ns, remaining
