@@ -90,8 +90,7 @@ class PipelineCfg:
 
     @property
     def curated_parquet(self) -> Path:
-        """Location of the curated game rows parquet."""
-        return self.data_dir / self.curated_rows_name
+        return self.analysis_dir / "data" / self.curated_rows_name
 
     def to_json(self) -> str:
         return json.dumps(
