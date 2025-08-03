@@ -57,13 +57,11 @@ def run(cfg: PipelineCfg) -> None:
     •  Writes <analysis_dir>/manifest.json
     •  Logs progress with the same logger used by ingest.py
     """
-    analysis_dir = cfg.root / cfg.analysis_subdir
-    data_dir = analysis_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
-    src_tmp  = data_dir / (cfg.curated_rows_name + ".in-progress")
-    dst_file = data_dir / cfg.curated_rows_name
-    manifest = analysis_dir / cfg.manifest_name
+    src_tmp = cfg.curated_parquet.with_suffix(".in-progress")
+    dst_file = cfg.curated_parquet
+    manifest = cfg.analysis_dir / cfg.manifest_name
 
     if _already_curated(dst_file, manifest):
         log.info("Curate: %s already up-to-date – skipped", dst_file.name)
@@ -71,7 +69,7 @@ def run(cfg: PipelineCfg) -> None:
 
     #  Stream-copy the row-groups exactly as ingest produced them
     src_rows = 0
-    source_pq = data_dir / cfg.curated_rows_name  # ingest’s output
+    source_pq = cfg.curated_parquet  # ingest’s output
     if not source_pq.exists():
         raise FileNotFoundError(source_pq)
 

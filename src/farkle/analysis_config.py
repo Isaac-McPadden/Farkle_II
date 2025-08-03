@@ -58,6 +58,7 @@ class PipelineCfg:
 
     # 5. logging & provenance
     log_level: str = "INFO"
+    log_file: Path | None = None           # e.g. Path("analysis/pipeline.log")
     manifest_name: str = "manifest.json"
     git_sha: str | None = None  # filled on __post_init__
 
@@ -76,11 +77,19 @@ class PipelineCfg:
 
     # Convenience helpers
     # -------------------
-    def data_dir(self) -> Path:
-        return self.root  # alias if you like cfg.data_dir()
-
+    @property
     def analysis_dir(self) -> Path:
-        return self.root.parent / self.analysis_subdir
+        """Directory where analysis artifacts are written."""
+        return self.root / self.analysis_subdir
+
+    @property
+    def data_dir(self) -> Path:
+        """Subdirectory beneath :pyattr:`analysis_dir` holding intermediate data."""
+        return self.analysis_dir / "data"
+
+    @property
+    def curated_parquet(self) -> Path:
+        return self.analysis_dir / "data" / self.curated_rows_name
 
     def to_json(self) -> str:
         return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)

@@ -15,7 +15,18 @@ log = logging.getLogger(__name__)
 def run_all(cfg: PipelineCfg) -> None:
     """Run every analytics pass in sequence."""
     log.info("Analytics: starting all modules")
-    _ts.run(cfg)
-    _h2h.run(cfg)
-    _rf.run(cfg)
+    if cfg.run_trueskill:
+        _ts.run(cfg)
+    else:
+        log.info("Analytics: skipping trueskill (run_trueskill=False)")
+
+    if cfg.run_head2head:
+        _h2h.run(cfg)
+    else:
+        log.info("Analytics: skipping head-to-head (run_head2head=False)")
+
+    if cfg.run_rf:
+        _rf.run(cfg)
+    else:
+        log.info("Analytics: skipping random forest (run_rf=False)")
     log.info("Analytics: all modules finished")
