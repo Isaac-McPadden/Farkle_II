@@ -1,95 +1,78 @@
-# import json
-# import os
-# import pickle
-# import shutil
-# import subprocess
-# from pathlib import Path
+import os
+from pathlib import Path
 
-# import numpy as np
-# import pandas as pd
-# import pytest
-# import yaml
+import numpy as np
+import pandas as pd
+import pytest
 
-# from farkle import run_rf, run_trueskill
+pipeline = pytest.importorskip("pipeline")
 
 
-# def test_analysis_pipeline(tmp_path):
-#     data_root = tmp_path / "data"
-#     res_dir = data_root / "results" / "2_players"
-#     res_dir.mkdir(parents=True)
-
-#     keepers = np.array(["A", "B", "C"])
-#     np.save(res_dir / "keepers_2.npy", keepers)
-
-#     rng = np.random.default_rng(0)
-#     winners = rng.choice(keepers, size=50)
-#     pd.DataFrame({"winner_strategy": winners}).to_csv(res_dir / "winners.csv", index=False)
-
-#     metrics = pd.DataFrame(
-#         {
-#             "strategy": keepers,
-#             "feat1": [1, 2, 3],
-#             "feat2": [4, 5, 6],
-#         }
-#     )
-#     metrics.to_parquet(data_root / "metrics.parquet")
-
-#     (data_root / "results" / "manifest.yaml").write_text(yaml.safe_dump({"seed": 0}))
-
-#     nb_dir = tmp_path / "notebooks"
-#     nb_dir.mkdir()
-#     root = Path(__file__).resolve().parents[2]
-#     src_nb = root / "notebooks" / "farkle_report.ipynb"
-#     shutil.copy(src_nb, nb_dir / "farkle_report.ipynb")
-#     shutil.copytree(root / "src", tmp_path / "src", dirs_exist_ok=True)
-
-#     cwd = os.getcwd()
-#     os.chdir(tmp_path)
-#     try:
-#         run_trueskill.main(["--output-seed", "0", "--root", str(data_root)])
-#         run_rf.main(["--root", str(data_root)])
-
-#         assert (data_root / "rf_importance.json").exists()
-#         figs = tmp_path / "notebooks" / "figs"
-#         assert (figs / "pd_feat1.png").exists()
-#         assert (figs / "pd_feat2.png").exists()
-
-#         with open("data/ratings_pooled.pkl", "rb") as fh:
-#             ratings = pickle.load(fh)
-#         with open("data/tiers.json") as fh:
-#             tiers = json.load(fh)
-#         assert set(ratings) <= set(keepers)
-#         assert set(tiers) <= set(keepers)
-
-#         subprocess.run(
-#             [
-#                 "jupyter",
-#                 "nbconvert",
-#                 "--to",
-#                 "html",
-#                 "--execute",
-#                 str(nb_dir / "farkle_report.ipynb"),
-#             ],
-#             check=True,
-#         )
-#     finally:
-#         os.chdir(cwd)
+def _write_fixture(root: Path) -> None:
+    """Create a minimal results block under *root* for two players."""
+    block = root / "2_players"
+    block.mkdir()
+    np.save(block / "keepers_2.npy", np.array(["A", "B"]))
+    df = pd.DataFrame(
+        {
+            "winner": ["P1", "P2"],
+            "n_rounds": [5, 6],
+            "winning_score": [1000, 1100],
+            "P1_strategy": ["A", "A"],
+            "P2_strategy": ["B", "B"],
+            "P1_rank": [1, 2],
+            "P2_rank": [2, 1],
+        }
+    )
+    df.to_csv(block / "winners.csv", index=False)
 
 
-# @pytest.mark.parametrize("missing", ["metrics", "ratings"])
-# def test_run_rf_missing_files(tmp_path, missing):
-#     data_dir = tmp_path / "data"
-#     data_dir.mkdir()
-#     if missing != "metrics":
-#         df = pd.DataFrame({"strategy": ["A"], "feat": [1]})
-#         df.to_parquet(data_dir / "metrics.parquet")
-#     if missing != "ratings":
-#         with open(data_dir / "ratings_pooled.pkl", "wb") as fh:
-#             pickle.dump({"A": (0.0, 1.0)}, fh)
-#     cwd = os.getcwd()
-#     os.chdir(tmp_path)
-#     try:
-#         with pytest.raises(FileNotFoundError):
-#             run_rf.run_rf(root=data_dir)
-#     finally:
-#         os.chdir(cwd)
+def test_pipeline_all_creates_outputs(tmp_path: Path) -> None:
+    _write_fixture(tmp_path)
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        pipeline.main(["all", "--root", str(tmp_path)])
+    finally:
+        os.chdir(cwd)
+
+    analysis = tmp_path / "analysis"
+    assert (analysis / "data" / "game_rows.parquet").exists()
+    assert (analysis / "metrics.parquet").exists()
+    assert (analysis / "seat_advantage.csv").exists()
+
+    # analytics artefacts
+    assert (tmp_path / "ratings_pooled.pkl").exists()
+    assert (tmp_path / "rf_importance.json").exists()
+    figs = tmp_path / "notebooks" / "figs"
+    assert any(figs.glob("pd_*.png"))
+
+
+def test_pipeline_ingest_only(tmp_path: Path) -> None:
+    _write_fixture(tmp_path)
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        pipeline.main(["ingest", "--root", str(tmp_path)])
+    finally:
+        os.chdir(cwd)
+
+    analysis = tmp_path / "analysis"
+    assert (analysis / "data" / "game_rows.parquet").exists()
+    assert not (analysis / "metrics.parquet").exists()
+    assert not (tmp_path / "rf_importance.json").exists()
+
+
+def test_pipeline_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _write_fixture(tmp_path)
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        def _boom(cfg):  # simulate analytics dependency failure
+            raise RuntimeError("missing dependency")
+
+        monkeypatch.setattr("farkle.analytics.run_all", _boom)
+        with pytest.raises(RuntimeError):
+            pipeline.main(["all", "--root", str(tmp_path)])
+    finally:
+        os.chdir(cwd)
