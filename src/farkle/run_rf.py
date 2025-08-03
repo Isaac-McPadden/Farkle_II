@@ -23,8 +23,7 @@ from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 # ---------------------------------------------------------------------------
 # Constants for file and directory locations used in this module
 # ---------------------------------------------------------------------------
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
+DEFAULT_ROOT = Path("data")
 METRICS_NAME = "metrics.parquet"
 RATINGS_NAME = "ratings_pooled.pkl"
 FIG_DIR = Path("notebooks/figs")
@@ -71,7 +70,7 @@ def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
 def run_rf(
     seed: int = 0,
     output_path: Path | None = None,
-    dataroot: Path = DEFAULT_DATA_ROOT,
+    root: Path = DEFAULT_ROOT,
 ) -> None:
     """Train the regressor and output feature importance and plots.
 
@@ -84,21 +83,21 @@ def run_rf(
 
     Reads
     -----
-    ``<dataroot>/metrics.parquet``
+    ``<root>/metrics.parquet``
         Per-strategy feature metrics.
-    ``<dataroot>/ratings_pooled.pkl``
+    ``<root>/ratings_pooled.pkl``
         Pickled mapping of strategy names to pooled ``(mu, sigma)`` tuples.
 
     Writes
     ------
-    ``<dataroot>/rf_importance.json``
+    ``<root>/rf_importance.json``
         JSON file mapping metric names to permutation importance scores.
     ``notebooks/figs/pd_<feature>.png``
         Partial dependence plots for each metric.
     """
-    dataroot = Path(dataroot)
-    metrics_path = dataroot / METRICS_NAME
-    ratings_path = dataroot / RATINGS_NAME
+    root = Path(root)
+    metrics_path = root / METRICS_NAME
+    ratings_path = root / RATINGS_NAME
 
     metrics = pd.read_parquet(metrics_path)
     with open(ratings_path, "rb") as fh:
@@ -125,7 +124,7 @@ def run_rf(
         for c, s in zip(features.columns, perm_importance["importances_mean"], strict=False)
     }
     if output_path is None:
-        output_path = dataroot / "rf_importance.json"
+        output_path = root / "rf_importance.json"
 
     output_path.parent.mkdir(exist_ok=True)
     with output_path.open("w") as fh:
@@ -161,9 +160,9 @@ def main(argv: List[str] | None = None) -> None:
         default=None,
         help="Path to write rf_importance.json",
     )
-    parser.add_argument("--dataroot", type=Path, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     args = parser.parse_args(argv or [])
-    run_rf(seed=args.seed, output_path=args.output, dataroot=args.dataroot)
+    run_rf(seed=args.seed, output_path=args.output, root=args.root)
 
 
 if __name__ == "__main__":

@@ -22,8 +22,7 @@ import yaml
 
 from .utils import build_tiers
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
+DEFAULT_ROOT = Path("data")
 
 log = logging.getLogger(__name__)
 
@@ -157,7 +156,7 @@ def _update_ratings(
 
 def run_trueskill(
     output_seed: int = 0,
-    dataroot: Path = DEFAULT_DATA_ROOT,
+    root: Path = DEFAULT_ROOT,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -177,8 +176,8 @@ def run_trueskill(
         JSON file with league tiers derived from the pooled ratings.
     """
 
-    dataroot = Path(dataroot)
-    base = dataroot / "results"
+    root = Path(root)
+    base = root / "results"
     _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
     env = trueskill.TrueSkill()
@@ -189,7 +188,7 @@ def run_trueskill(
         keepers = np.load(keep_path).tolist() if keep_path.exists() else []
         games = _load_ranked_games(block)
         ratings = _update_ratings(games, keepers, env)
-        with (dataroot / f"ratings_{player_count}{suffix}.pkl").open("wb") as fh:
+        with (root / f"ratings_{player_count}{suffix}.pkl").open("wb") as fh:
             pickle.dump(ratings, fh)
         for k, v in ratings.items():
             if k in pooled:
@@ -197,14 +196,14 @@ def run_trueskill(
                 pooled[k] = RatingStats((r.mu + v.mu) / 2, (r.sigma + v.sigma) / 2)
             else:
                 pooled[k] = v
-    with (dataroot / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
+    with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
     tiers = build_tiers(
         means={k: v.mu for k, v in pooled.items()},
         stdevs={k: v.sigma for k, v in pooled.items()},
     )
-    dataroot.mkdir(exist_ok=True)
-    with (dataroot / "tiers.json").open("w") as fh:
+    root.mkdir(exist_ok=True)
+    with (root / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)
 
 
@@ -229,10 +228,10 @@ def main(argv: list[str] | None = None) -> None:
         default=0,
         help="only used to name output files",
     )
-    parser.add_argument("--dataroot", type=Path, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run_trueskill(output_seed=args.output_seed, dataroot=args.dataroot)
+    run_trueskill(output_seed=args.output_seed, root=args.root)
 
 
 if __name__ == "__main__":

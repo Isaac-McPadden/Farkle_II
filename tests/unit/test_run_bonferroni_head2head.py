@@ -55,7 +55,7 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rb, "simulate_many_games", fake_many_games)
 
-    rb.run_bonferroni_head2head(seed=0, dataroot=data_dir)
+    rb.run_bonferroni_head2head(seed=0, root=data_dir)
     out_csv = data_dir / "bonferroni_pairwise.csv"
     df = pd.read_csv(out_csv)
     assert set(df.columns) == {"a", "b", "wins_a", "wins_b", "pvalue"}
@@ -79,7 +79,7 @@ def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch):
         rb, "simulate_many_games", lambda **k: pd.DataFrame({"winner_strategy": []})
     )
 
-    rb.run_bonferroni_head2head(seed=0, dataroot=data_dir)
+    rb.run_bonferroni_head2head(seed=0, root=data_dir)
     out_csv = data_dir / "bonferroni_pairwise.csv"
     assert out_csv.exists()
     assert out_csv.read_text() == "\n"
@@ -89,7 +89,7 @@ def test_run_bonferroni_head2head_missing_file(tmp_path, monkeypatch):
     """An informative error is raised when tiers.json is absent."""
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="Tier file not found"):
-        rb.run_bonferroni_head2head(seed=1, dataroot=tmp_path / "data")
+        rb.run_bonferroni_head2head(seed=1, root=tmp_path / "data")
 
 
 def test_run_bonferroni_head2head_empty_file(tmp_path, monkeypatch):
@@ -98,16 +98,16 @@ def test_run_bonferroni_head2head_empty_file(tmp_path, monkeypatch):
     (data_dir / "tiers.json").write_text("{}")
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="No tiers found"):
-        rb.run_bonferroni_head2head(dataroot=data_dir)
+        rb.run_bonferroni_head2head(root=data_dir)
 
 
 def test_main_delegates_to_runner(monkeypatch):
     captured = {}
 
-    def fake_run(seed: int = 0, dataroot=None) -> None:  # noqa: ANN001
-        _ = dataroot
+    def fake_run(seed: int = 0, root=None) -> None:  # noqa: ANN001
+        _ = root
         captured["seed"] = seed
 
     monkeypatch.setattr(rb, "run_bonferroni_head2head", fake_run)
-    rb.main(["--seed", "42", "--dataroot", "d"])
+    rb.main(["--seed", "42", "--root", "d"])
     assert captured["seed"] == 42

@@ -162,9 +162,9 @@
 #     cwd = Path.cwd()
 #     os.chdir(analysis_dir)
 #     try:
-#         run_trueskill.run_trueskill(dataroot=data_dir)
-#         run_bonferroni_head2head.run_bonferroni_head2head(dataroot=data_dir)
-#         run_rf.run_rf(dataroot=data_dir)
+#         run_trueskill.run_trueskill(root=data_dir)
+#         run_bonferroni_head2head.run_bonferroni_head2head(root=data_dir)
+#         run_rf.run_rf(root=data_dir)
 #     finally:
 #         os.chdir(cwd)
 

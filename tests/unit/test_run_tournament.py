@@ -398,6 +398,7 @@ def test_run_tournament_cli(monkeypatch):
             3,
         )
         row_dir = Path("rows")
+        log_level = "INFO"
 
     monkeypatch.setattr(rt.argparse, "ArgumentParser", lambda *a, **k: type("P", (), {"add_argument": lambda *a, **k: None, "parse_args": lambda _: DummyArgs})())  # noqa: ARG005
 
