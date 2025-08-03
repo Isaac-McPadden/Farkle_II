@@ -13,6 +13,7 @@ def main():
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 from dataclasses import dataclass, field
@@ -56,6 +57,7 @@ class PipelineCfg:
 
     # 5. logging & provenance
     log_level: str = "INFO"
+    log_file: Path | None = None           # e.g. Path("analysis/pipeline.log")
     manifest_name: str = "manifest.json"
     git_sha: str | None = None   # filled on __post_init__
 
@@ -77,24 +79,53 @@ class PipelineCfg:
     # Convenience helpers
     # -------------------
     @property
-    def data_dir(self) -> Path:
-        return self.root  # alias if you like cfg.data_dir()
+    def analysis_dir(self) -> Path:
+        """Directory where analysis artifacts are written."""
+        return self.root / self.analysis_subdir
 
     @property
-    def analysis_dir(self) -> Path:
-        return self.root / self.analysis_subdir
+    def data_dir(self) -> Path:
+        """Subdirectory beneath :pyattr:`analysis_dir` holding intermediate data."""
+        return self.analysis_dir / "data"
 
     @property
     def curated_parquet(self) -> Path:
         return self.analysis_dir / "data" / self.curated_rows_name
 
     def to_json(self) -> str:
-        return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)
-    
-    # ── Logging ────────────────────────────────────────────────────────────
-    log_level: str = "INFO"                # default matches your new choice
-    log_file: Path | None = None           # e.g. Path("analysis/pipeline.log")
+        return json.dumps(
+            self,
+            default=lambda o: str(o) if isinstance(o, Path) else o,
+            indent=2,
+        )
 
     # Convenience: return kwargs ready for setup_logging()
     def logging_params(self) -> dict[str, object]:
         return {"level": self.log_level, "log_file": self.log_file}
+
+    # CLI -----------------------------------------------------------------
+    @classmethod
+    def parse_cli(cls, argv: list[str] | None = None) -> "PipelineCfg":
+        """Parse command line options into a :class:`PipelineCfg` instance."""
+        parser = argparse.ArgumentParser()
+        parser.add_argument("--root", type=Path, default=Path("data"))
+        parser.add_argument(
+            "--run-trueskill",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            dest="run_trueskill",
+        )
+        parser.add_argument(
+            "--run-head2head",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            dest="run_head2head",
+        )
+        parser.add_argument(
+            "--run-rf",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            dest="run_rf",
+        )
+        args = parser.parse_args(argv)
+        return cls(**vars(args))
