@@ -159,7 +159,7 @@ def test_run_trueskill_incomplete_block(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(dataroot=data_root)
+        rt.run_trueskill(root=data_root)
     finally:
         os.chdir(cwd)
 
@@ -190,7 +190,7 @@ def test_run_trueskill_with_suffix(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(output_seed=1, dataroot=data_root)
+        rt.run_trueskill(output_seed=1, root=data_root)
     finally:
         os.chdir(cwd)
 

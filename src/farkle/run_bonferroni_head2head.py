@@ -16,11 +16,10 @@ from farkle.stats import games_for_power
 from farkle.strategies import parse_strategy
 from farkle.utils import bonferroni_pairs
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_DATA_ROOT = PROJECT_ROOT / "data"
+DEFAULT_ROOT = Path("data")
 
 
-def run_bonferroni_head2head(seed: int = 0, dataroot: Path = DEFAULT_DATA_ROOT) -> None:
+def run_bonferroni_head2head(seed: int = 0, root: Path = DEFAULT_ROOT) -> None:
     """Run pairwise games between top-tier strategies using Bonferroni tests.
 
     Parameters
@@ -33,9 +32,9 @@ def run_bonferroni_head2head(seed: int = 0, dataroot: Path = DEFAULT_DATA_ROOT) 
     matchup and writes ``data/bonferroni_pairwise.csv`` containing win counts and
     p-values computed via :func:`scipy.stats.binomtest`.
     """
-    dataroot = Path(dataroot)
-    tiers_path = dataroot / "tiers.json"
-    pairwise_csv = dataroot / "bonferroni_pairwise.csv"
+    root = Path(root)
+    tiers_path = root / "tiers.json"
+    pairwise_csv = root / "bonferroni_pairwise.csv"
 
     try:
         with tiers_path.open() as fh:
@@ -74,9 +73,9 @@ def main(argv: List[str] | None = None) -> None:
     """
     parser = argparse.ArgumentParser(description="Head-to-head Bonferroni analysis")
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--dataroot", type=Path, default=DEFAULT_DATA_ROOT)
+    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     args = parser.parse_args(argv)
-    run_bonferroni_head2head(seed=args.seed, dataroot=args.dataroot)
+    run_bonferroni_head2head(seed=args.seed, root=args.root)
 
 
 if __name__ == "__main__":
