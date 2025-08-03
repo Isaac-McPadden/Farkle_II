@@ -78,10 +78,8 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
 def run(cfg: PipelineCfg) -> None:
     log.info("Ingest started: root=%s", cfg.root)
 
-    analysis_dir = cfg.root / cfg.analysis_subdir
-    data_dir     = analysis_dir / "data"
-    data_dir.mkdir(parents=True, exist_ok=True)
-    out_path     = data_dir / cfg.curated_rows_name
+    cfg.data_dir.mkdir(parents=True, exist_ok=True)
+    out_path = cfg.curated_parquet
     if out_path.exists():
         out_path.unlink()  # remove old file; idempotent
 

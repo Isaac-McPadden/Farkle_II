@@ -55,9 +55,9 @@ def run(cfg: PipelineCfg) -> None:
     <analysis_dir>/metrics.parquet         (per-strategy & overall KPIs)
     <analysis_dir>/seat_advantage.csv      (P1..P6 win-rates with CI)
     """
-    analysis_dir = cfg.root / cfg.analysis_subdir
-    data_file = analysis_dir / "data" / cfg.curated_rows_name
-    out_metrics = analysis_dir / "metrics.parquet"
+    analysis_dir = cfg.analysis_dir
+    data_file = cfg.curated_parquet
+    out_metrics = analysis_dir / cfg.metrics_name
     out_seats = analysis_dir / "seat_advantage.csv"
 
     if all(p.exists() and p.stat().st_mtime >= data_file.stat().st_mtime
