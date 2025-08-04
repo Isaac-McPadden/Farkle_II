@@ -156,13 +156,15 @@ def test_init_worker_valid_and_invalid():
     strats = _mini_strats(8)
     cfg = rt.TournamentConfig(n_players=4)
     rt._init_worker(strats, cfg, None)
-    assert rt.N_PLAYERS == 4
-    assert rt.GAMES_PER_SHUFFLE == 8_160 // 4
+    assert rt.N_PLAYERS == 5  # module constant should remain unchanged
+    assert rt._CFG.n_players == 4
+    assert rt._CFG.games_per_shuffle == 8_160 // 4
 
     with pytest.raises(ValueError):
         rt._init_worker(strats, rt.TournamentConfig(n_players=7), None)
 
     rt._init_worker(strats, rt.TournamentConfig(n_players=5), None)
+    assert rt._CFG.n_players == 5
 
 
 def test_run_tournament_player_count(monkeypatch, tmp_path):
@@ -294,7 +296,7 @@ def test_play_one_shuffle_collects(monkeypatch):
     strats = _mini_strats(4)
     cfg = rt.TournamentConfig(n_players=2)
     rt._init_worker(strats, cfg, None)
-    monkeypatch.setattr(rt, "GAMES_PER_SHUFFLE", 2, raising=False)
+    rt._CFG = types.SimpleNamespace(n_players=2, games_per_shuffle=2)
 
     class DummyRNG:
         def permutation(self, n): return rt.np.arange(n)
@@ -398,6 +400,7 @@ def test_run_tournament_cli(monkeypatch):
             3,
         )
         row_dir = Path("rows")
+        metric_chunk_dir = Path("chunks")
         log_level = "INFO"
 
     monkeypatch.setattr(rt.argparse, "ArgumentParser", lambda *a, **k: type("P", (), {"add_argument": lambda *a, **k: None, "parse_args": lambda _: DummyArgs})())  # noqa: ARG005
@@ -410,6 +413,7 @@ def test_run_tournament_cli(monkeypatch):
         "n_jobs": 2,
         "collect_metrics": True,
         "row_output_directory": Path("rows"),
+        "metric_chunk_directory": Path("chunks"),
         "num_shuffles": 3,
     }
 
@@ -459,3 +463,55 @@ def test_run_tournament_collect_rows(monkeypatch, tmp_path):
         row_output_directory=row_dir,
     )
     assert started["n"] == 1
+
+
+def test_run_tournament_metric_chunking(monkeypatch, tmp_path):
+    class DummyFuture:
+        def __init__(self, r): self._r = r
+        def result(self): return self._r
+        def __hash__(self): return id(self)
+
+    class DummyPool:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def submit(self, fn, arg): return DummyFuture(fn(arg))
+
+    monkeypatch.setattr(rt, "ProcessPoolExecutor", lambda *a, **k: DummyPool())  # noqa: ARG005
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
+    monkeypatch.setattr(rt, "as_completed", lambda d: list(d.keys()), raising=True)
+
+    def fake_run_chunk_metrics(batch, collect_rows=False, row_dir=None):  # noqa: ARG002
+        w = Counter({"S": 1})
+        sums = {m: defaultdict(float, {"S": 1.0}) for m in rt.METRIC_LABELS}
+        sqs = {m: defaultdict(float, {"S": 1.0}) for m in rt.METRIC_LABELS}
+        return w, sums, sqs
+
+    monkeypatch.setattr(rt, "_run_chunk_metrics", fake_run_chunk_metrics, raising=True)
+
+    captured = {}
+
+    def fake_save_checkpoint(path, wins, sums, sqs):  # noqa: ARG001
+        captured["wins"] = wins
+        captured["sums"] = sums
+        captured["sqs"] = sqs
+
+    monkeypatch.setattr(rt, "_save_checkpoint", fake_save_checkpoint, raising=True)
+
+    cfg = rt.TournamentConfig(num_shuffles=2)
+    metric_dir = tmp_path / "chunks"
+
+    rt.run_tournament(
+        config=cfg,
+        global_seed=0,
+        checkpoint_path=tmp_path / "chk.pkl",
+        n_jobs=None,
+        collect_metrics=True,
+        metric_chunk_directory=metric_dir,
+        num_shuffles=2,
+    )
+
+    files = sorted(metric_dir.glob("metrics_*.pkl"))
+    assert len(files) == 2
+    for m in rt.METRIC_LABELS:
+        assert captured["sums"][m]["S"] == 2.0
+        assert captured["sqs"][m]["S"] == 2.0
