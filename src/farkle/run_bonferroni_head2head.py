@@ -16,7 +16,7 @@ from farkle.stats import games_for_power
 from farkle.strategies import parse_strategy
 from farkle.utils import bonferroni_pairs
 
-DEFAULT_ROOT = Path("data")
+DEFAULT_ROOT = Path("results_seed_0")
 
 
 def run_bonferroni_head2head(seed: int = 0, root: Path = DEFAULT_ROOT) -> None:

@@ -17,6 +17,6 @@ def run(cfg: PipelineCfg) -> None:
         log.info("Head-to-Head: results up-to-date - skipped")
         return
 
-    cmd = [sys.executable, str(SCRIPT), "--root", str(cfg.root)]
+    cmd = [sys.executable, str(SCRIPT), "--root", str(cfg.results_dir)]
     log.info("Head-to-Head: calling %s", " ".join(cmd))
     subprocess.check_call(cmd)

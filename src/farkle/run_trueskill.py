@@ -1,10 +1,9 @@
 # src/farkle/run_trueskill.py
 """Compute TrueSkill ratings for Farkle strategies.
 
-The script scans the ``data/results`` directory for completed tournament
-blocks, updates ratings with the ``trueskill`` package and writes per-block
-as well as pooled rating files.  A ``tiers.json`` file mapping strategies to
-league tiers is also produced.
+The script scans a directory of tournament results, updates ratings with the
+``trueskill`` package and writes per-block as well as pooled rating files. A
+``tiers.json`` file mapping strategies to league tiers is also produced.
 """
 from __future__ import annotations
 
@@ -22,7 +21,7 @@ import yaml
 
 from .utils import build_tiers
 
-DEFAULT_ROOT = Path("data")
+DEFAULT_DATAROOT = Path("results_seed_0")
 
 log = logging.getLogger(__name__)
 
@@ -161,7 +160,7 @@ def _update_ratings(
 
 def run_trueskill(
     output_seed: int = 0,
-    root: Path = DEFAULT_ROOT,
+    root: Path = DEFAULT_DATAROOT,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -183,7 +182,7 @@ def run_trueskill(
     """
 
     root = Path(root)
-    base = root / "results"
+    base = root / "results" if (root / "results").exists() else root
     _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
     env = trueskill.TrueSkill()
@@ -242,11 +241,19 @@ def main(argv: list[str] | None = None) -> None:
         default=0,
         help="only used to name output files",
     )
-    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    parser.add_argument(
+        "--dataroot",
+        "--root",
+        dest="dataroot",
+        type=Path,
+        default=DEFAULT_DATAROOT,
+    )
     args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run_trueskill(output_seed=args.output_seed, root=args.root)
+    run_trueskill(output_seed=args.output_seed, root=args.dataroot)
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    main(sys.argv[1:])
