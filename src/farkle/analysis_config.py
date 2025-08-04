@@ -60,20 +60,22 @@ class PipelineCfg:
     log_level: str = "INFO"
     log_file: Path | None = None           # e.g. Path("analysis/pipeline.log")
     manifest_name: str = "manifest.json"
-    git_sha: str | None = None  # filled on __post_init__
+    _git_sha: str | None = field(default=None, repr=False, init=False)
 
-    # --------------------------------------------------------------
-    def __post_init__(self) -> None:
-        if self.git_sha is None:
-            try:
-                import shlex
-                import subprocess
+    def _load_git_sha(self) -> str:
+        try:
+            import shlex
+            import subprocess
 
-                self.git_sha = (
-                    subprocess.check_output(shlex.split("git rev-parse HEAD")).decode().strip()
-                )
-            except Exception:
-                self.git_sha = "unknown"
+            return subprocess.check_output(shlex.split("git rev-parse HEAD")).decode().strip()
+        except Exception:
+            return "unknown"
+
+    @property
+    def git_sha(self) -> str:
+        if self._git_sha is None:
+            self._git_sha = self._load_git_sha()
+        return self._git_sha
 
     # Convenience helpers
     # -------------------
@@ -93,10 +95,6 @@ class PipelineCfg:
 
     def to_json(self) -> str:
         return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)
-
-    # ── Logging ────────────────────────────────────────────────────────────
-    log_level: str = "INFO"  # default matches your new choice
-    log_file: Path | None = None  # e.g. Path("analysis/pipeline.log")
 
     # Convenience: return kwargs ready for setup_logging()
     def logging_params(self) -> dict[str, object]:
