@@ -2,8 +2,17 @@
 """Compute TrueSkill ratings for Farkle strategies.
 
 The script scans a directory of tournament results, updates ratings with the
-``trueskill`` package and writes per-block as well as pooled rating files. A
-``tiers.json`` file mapping strategies to league tiers is also produced.
+``trueskill`` package and writes per-block as well as pooled rating files.
+
+Key CLI flags
+-------------
+--dataroot   Directory containing <N>_players blocks            (default: data/results)
+--root       Output directory for analysis artefacts            (default: <dataroot>/analysis)
+
+Outputs
+-------
+ratings_<N>.pkl(*), ratings_pooled.pkl – pickled RatingStats
+tiers.json                       – mapping of strategy → tier
 """
 from __future__ import annotations
 
@@ -21,7 +30,8 @@ import yaml
 
 from .utils import build_tiers
 
-DEFAULT_DATAROOT = Path("results_seed_0")
+_REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
+DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results_seed_0"  # root folder for the results of run_full_field.py
 
 log = logging.getLogger(__name__)
 
@@ -160,7 +170,8 @@ def _update_ratings(
 
 def run_trueskill(
     output_seed: int = 0,
-    root: Path = DEFAULT_DATAROOT,
+    root: Path | None = None,
+    dataroot: Path = DEFAULT_DATAROOT,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -169,6 +180,11 @@ def run_trueskill(
     output_seed: int, optional
         Value appended to output filenames so repeated runs do not overwrite
         earlier results.
+    root: Path | None, optional
+        Directory where rating artifacts are written. Defaults to
+        ``<dataroot>/analysis`` when ``None``.
+    dataroot: Path, optional
+        Directory containing tournament result blocks.
 
     Side Effects
     ------------
@@ -180,9 +196,9 @@ def run_trueskill(
     ``tiers.json``
         JSON file with league tiers derived from the pooled ratings.
     """
-
-    root = Path(root)
-    base = root / "results" if (root / "results").exists() else root
+    base = Path(dataroot)
+    root = Path(root) if root is not None else base / "analysis"
+    root.mkdir(parents=True, exist_ok=True)
     _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
     env = trueskill.TrueSkill()
@@ -215,7 +231,6 @@ def run_trueskill(
         means={k: v.mu for k, v in pooled.items()},
         stdevs={k: v.sigma for k, v in pooled.items()},
     )
-    root.mkdir(exist_ok=True)
     with (root / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)
 
@@ -231,26 +246,37 @@ def main(argv: list[str] | None = None) -> None:
 
     Side Effects
     ------------
-    Invokes :func:`run_trueskill`, which writes rating and tier files to the
-    ``data`` directory.
+    Invokes :func:`run_trueskill`, which writes rating and tier files to
+    ``--root`` (default ``<dataroot>/analysis``).
     """
     parser = argparse.ArgumentParser(description="Compute TrueSkill ratings")
     parser.add_argument(
-        "--output-seed",
-        type=int,
-        default=0,
-        help="only used to name output files",
+        "--output-seed", type=int, default=0,
+        help="appended to filenames to avoid overwrites",
     )
     parser.add_argument(
-        "--dataroot",
-        "--root",
-        dest="dataroot",
-        type=Path,
-        default=DEFAULT_DATAROOT,
+    "--dataroot",
+    type=Path,
+    default=DEFAULT_DATAROOT,
+    help=(
+        "Folder that holds <N>_players blocks "
+        "(default: <repo>/data/results_seed_0). "
+        "Accepts absolute or relative paths."
+        ),
     )
+    parser.add_argument(
+        "--root", type=Path, default=None,
+        help="output directory (default: <dataroot>/analysis)",
+    )
+
     args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run_trueskill(output_seed=args.output_seed, root=args.dataroot)
+
+    run_trueskill(
+        output_seed=args.output_seed,
+        root=args.root,
+        dataroot=args.dataroot,
+    )
 
 
 if __name__ == "__main__":

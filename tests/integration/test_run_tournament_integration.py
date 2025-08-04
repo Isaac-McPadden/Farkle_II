@@ -85,8 +85,7 @@ def _init_worker_small(  # pragma: no cover
 
     _rt = _imp.import_module("farkle.run_tournament")
     _rt.TournamentConfig.games_per_shuffle = property(lambda self: 2)  # type: ignore
-    _rt._STRATS = list(strategies)  # type: ignore
-    _rt._CFG = cfg  # type: ignore
+    _rt._STATE = _rt.WorkerState(list(strategies), cfg, None)  # type: ignore
 
 
 ###############################################################################
@@ -120,7 +119,7 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> TournamentConfig
     monkeypatch.setattr(rt.TournamentConfig, "games_per_shuffle", property(lambda self: 2), raising=False)
 
     return rt.TournamentConfig(
-        n_players=rt.N_PLAYERS,
+        n_players=rt.TournamentConfig().n_players,
         num_shuffles=rt.NUM_SHUFFLES,
         desired_sec_per_chunk=rt.DESIRED_SEC_PER_CHUNK,
         ckpt_every_sec=rt.CKPT_EVERY_SEC,
@@ -190,7 +189,7 @@ def test_run_tournament_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
         "2",
     ]
     if "--players" in inspect.getsource(rt.main):
-        argv.extend(["--n_players", str(rt.N_PLAYERS)])
+        argv.extend(["--n_players", str(rt.TournamentConfig().n_players)])
     sys.argv = argv
     try:
         rt.main()

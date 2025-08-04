@@ -36,10 +36,8 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration constants (patched by tests/CLI)
 # ---------------------------------------------------------------------------
-N_PLAYERS: int = 5  # default – can be overwritten at runtime
 NUM_SHUFFLES: int = 5_907  # BH-power calculation for default
-GAMES_PER_SHUFFLE: int = 8_160 // N_PLAYERS  # 1_632
-# Default result of NUM_SHUFFLES * GAMES_PER_SHUFFLE is 9_640_224 games total
+# Default result of NUM_SHUFFLES * games_per_shuffle is 9_640_224 games total
 
 # Counting metrics in pkl file
 DESIRED_SEC_PER_CHUNK: int = 10
@@ -48,7 +46,6 @@ CKPT_EVERY_SEC: int = 30
 # Full game data capture in parquet rows
 ROW_QUEUE_MAX = 2_000  # limit back-pressure
 ROW_BUFFER    = 50_000  # parquet rows per shard
-_ROW_QUEUE: mp.Queue | None = None
 
 # ---------------------------------------------------------------------------
 # Dataclass configuration
@@ -59,7 +56,7 @@ _ROW_QUEUE: mp.Queue | None = None
 class TournamentConfig:
     """Runtime configuration for :func:`run_tournament`."""
 
-    n_players: int = N_PLAYERS
+    n_players: int = 5
     num_shuffles: int = NUM_SHUFFLES
     desired_sec_per_chunk: int = DESIRED_SEC_PER_CHUNK
     ckpt_every_sec: int = CKPT_EVERY_SEC
@@ -127,10 +124,18 @@ def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
 
 
 # ---------------------------------------------------------------------------
-# Worker initialisation and helpers
+# Worker state and helpers
 # ---------------------------------------------------------------------------
-_STRATS: List[ThresholdStrategy] = []
-_CFG: TournamentConfig = TournamentConfig()
+
+
+@dataclass(slots=True)
+class WorkerState:
+    strats: list[ThresholdStrategy]
+    cfg: TournamentConfig
+    row_q: mp.Queue | None
+
+
+_STATE: WorkerState | None = None
 
 
 def _init_worker(
@@ -138,26 +143,12 @@ def _init_worker(
     config: TournamentConfig,
     row_queue: mp.Queue | None
 ) -> None:
-    """Initialise per-process globals.
+    """Initialise per-process state."""
 
-    Parameters
-    ----------
-    strategies : Sequence[ThresholdStrategy]
-        Strategy objects to copy into the worker.
-    config: TournamentConfig
-        Config rules sent with worker.
-
-    Returns
-    -------
-    None
-    """
-
-    global _STRATS, _CFG, _ROW_QUEUE
+    global _STATE
     if 8_160 % config.n_players != 0:
         raise ValueError("n_players must divide 8,160")
-    _STRATS = list(strategies)
-    _CFG = config
-    _ROW_QUEUE = row_queue
+    _STATE = WorkerState(list(strategies), config, row_queue)
 
 
 # ---------------------------------------------------------------------------
@@ -175,9 +166,12 @@ def _play_one_shuffle(
 ]:
     """Play all games for one shuffle and aggregate the results."""
 
+    state = _STATE
+    assert state is not None
+
     rng = np.random.default_rng(seed)
-    perm = rng.permutation(len(_STRATS))
-    game_seeds = rng.integers(0, 2**32 - 1, size=_CFG.games_per_shuffle)
+    perm = rng.permutation(len(state.strats))
+    game_seeds = rng.integers(0, 2**32 - 1, size=state.cfg.games_per_shuffle)
 
     wins: Counter[str] = Counter()
     sums: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -186,10 +180,10 @@ def _play_one_shuffle(
 
     offset = 0
     for gseed in game_seeds.tolist():
-        idxs = perm[offset : offset + _CFG.n_players].tolist()
-        offset += _CFG.n_players
+        idxs = perm[offset : offset + state.cfg.n_players].tolist()
+        offset += state.cfg.n_players
 
-        row = _play_game(int(gseed), [_STRATS[i] for i in idxs])
+        row = _play_game(int(gseed), [state.strats[i] for i in idxs])
         winner = row["winner"]
         strat_repr = row[f"{winner}_strategy"]
         metrics = _extract_winner_metrics(row, winner)
@@ -236,7 +230,9 @@ def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[str]:
             log.error("Shuffle %s failed", sd, exc_info=True)
             raise
         else:
-            log.info("Shuffle %s finished: %d games", sd, _CFG.games_per_shuffle)
+            state = _STATE
+            games = state.cfg.games_per_shuffle if state is not None else 0
+            log.info("Shuffle %s finished: %d games", sd, games)
             total.update(result)
     return total
 
@@ -273,8 +269,8 @@ def _run_chunk_metrics(
 
     Side Effects
     ------------
-    *Queue mode* - rows are pushed to ``_ROW_Q`` for a dedicated writer
-    process.  
+    *Queue mode* - rows are pushed to a dedicated writer process via
+    ``WorkerState.row_q``.
     *Fallback mode* - if no queue is set, each shuffle is flushed to its own
     Parquet shard inside ``row_dir``.
     """
@@ -291,7 +287,9 @@ def _run_chunk_metrics(
             log.error("Shuffle %s failed", seed, exc_info=True)
             raise
         else:
-            log.info("Shuffle %s finished: %d games", seed, _CFG.games_per_shuffle)
+            state = _STATE
+            assert state is not None
+            log.info("Shuffle %s finished: %d games", seed, state.cfg.games_per_shuffle)
             wins_total.update(w)
         for label in METRIC_LABELS:
             for k, v in s[label].items():
@@ -299,9 +297,9 @@ def _run_chunk_metrics(
             for k, v in sq[label].items():
                 sq_total[label][k] += v
                 
-        if collect_rows and _ROW_QUEUE is not None:
+        if collect_rows and _STATE is not None and _STATE.row_q is not None:
             for r in rows:
-                _ROW_QUEUE.put(r)
+                _STATE.row_q.put(r)
         elif row_dir is not None:  # no queue → write a shard locally
             out = row_dir / f"rows_{getpid()}_{seed}.parquet"
             pq.write_table(pa.Table.from_pylist(rows), out)
@@ -597,7 +595,6 @@ def main() -> None:
     args = p.parse_args()
 
     cfg = TournamentConfig(
-        n_players=N_PLAYERS,
         num_shuffles=NUM_SHUFFLES,
         desired_sec_per_chunk=DESIRED_SEC_PER_CHUNK,
         ckpt_every_sec=args.ckpt_sec,
