@@ -81,3 +81,13 @@ This project is licensed under the Apache 2.0 License.
 Run `farkle run cfg.yml` to simulate tournaments from a configuration file or use
 the API as shown above. See the unit tests and module-level docstrings for more
 examples.
+
+## TrueSkill Ratings
+Compute ratings for a directory of tournament results:
+
+```bash
+python -m farkle.run_trueskill --dataroot data/results_seed_0
+```
+
+This scans `data/results_seed_0` for blocks and writes rating files and
+`tiers.json` to `data/results_seed_0/analysis` by default.
