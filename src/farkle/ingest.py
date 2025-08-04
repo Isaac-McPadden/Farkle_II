@@ -16,11 +16,19 @@ log = logging.getLogger(__name__)
 
 def _iter_shards(block: Path, cols: tuple[str, ...]):
     """Yield one (DataFrame, source_path) per shard, limited to *cols*."""
+    # Newer runs emit a single `<Np_rows>.parquet` file directly under the
+    # block directory. Prefer that if present.
+    row_file = next(block.glob("*p_rows.parquet"), None)
+    if row_file is not None:
+        yield pd.read_parquet(row_file, columns=list(cols)), row_file
+        return
+
+    # Legacy layout with `<Np_rows>` directory containing shards
     row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
-    if row_dirs:                       # new format
+    if row_dirs:
         for shard_path in row_dirs[0].glob("*.parquet"):
             yield pd.read_parquet(shard_path, columns=list(cols)), shard_path
-    else:                              # compact parquet or CSV
+    else:  # compact parquet or CSV
         for pqt in block.glob("*.parquet"):
             yield pd.read_parquet(pqt, columns=list(cols)), pqt
         csv = block / "winners.csv"

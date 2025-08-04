@@ -82,16 +82,21 @@ def _read_loose_parquets(block: Path) -> pd.DataFrame | None:
 
 def _load_ranked_games(block: Path) -> list[list[str]]:
     """Return one list per game, ordered by finishing position."""
-    row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
-    if row_dirs:
-        frames = [_read_row_shards(d) for d in row_dirs]
-        df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    elif (block / "winners.csv").exists():
-        df = _read_winners_csv(block)
+    # Prefer the consolidated `<Np_rows>.parquet` file when available.
+    row_file = next(block.glob("*p_rows.parquet"), None)
+    if row_file is not None:
+        df = pd.read_parquet(row_file)
     else:
-        df = _read_loose_parquets(block)
-        if df is None:
-            return []
+        row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
+        if row_dirs:
+            frames = [_read_row_shards(d) for d in row_dirs]
+            df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+        elif (block / "winners.csv").exists():
+            df = _read_winners_csv(block)
+        else:
+            df = _read_loose_parquets(block)
+            if df is None:
+                return []
 
     # ----------------------------------------------------------------------
     rank_cols = [c for c in df.columns if c.endswith("_rank")]

@@ -48,10 +48,9 @@ def test_read_loose_parquets(tmp_path):
 
 def test_load_ranked_games_parquet(tmp_path):
     block = tmp_path / "b_players"
-    row_dir = block / "1_rows"
-    row_dir.mkdir(parents=True)
-    pd.DataFrame({"winner_strategy": ["A"]}).to_parquet(row_dir / "a.parquet")
-    pd.DataFrame({"winner_strategy": ["B", "A"]}).to_parquet(row_dir / "b.parquet")
+    block.mkdir()
+    df = pd.DataFrame({"winner_strategy": ["A", "B", "A"]})
+    df.to_parquet(block / "bp_rows.parquet")
 
     games = rt._load_ranked_games(block)
     assert sorted(games) == [["A"], ["A"], ["B"]]  # ← list-of-lists
@@ -59,8 +58,7 @@ def test_load_ranked_games_parquet(tmp_path):
 
 def test_load_ranked_games_rank_based(tmp_path):
     block = tmp_path / "r_players"
-    row_dir = block / "1_rows"
-    row_dir.mkdir(parents=True)
+    block.mkdir()
     df = pd.DataFrame(
         {
             "P1_strategy": ["A"],
@@ -69,7 +67,7 @@ def test_load_ranked_games_rank_based(tmp_path):
             "P2_rank": [2],
         }
     )
-    df.to_parquet(row_dir / "rows.parquet")
+    df.to_parquet(block / "rp_rows.parquet")
 
     games = rt._load_ranked_games(block)
     assert games == [["A", "B"]]  # full ranking
