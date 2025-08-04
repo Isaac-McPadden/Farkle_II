@@ -50,17 +50,20 @@ def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
     """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    # ``PartialDependenceDisplay`` currently warns if integer dtypes are passed
-    # for feature columns. Casting avoids the warning and future ``ValueError``
-    # in scikit-learn 1.9.
-    X = X.copy()
-    X[column] = X[column].astype(float)
+    # ``PartialDependenceDisplay`` warns if integer dtypes are passed for feature
+    # columns. ``X`` should therefore be cast to ``float`` before calling this
+    # function. Casting once outside this helper avoids an expensive copy for
+    # each plotted feature.
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
             message="Attempting to set identical low and high ylims",
         )
-        disp = PartialDependenceDisplay.from_estimator(model, X, [column])
+        disp = PartialDependenceDisplay.from_estimator(
+            model,
+            X,
+            features=[column],
+        )
     out_file = out_dir / f"pd_{column}.png"
     disp.figure_.savefig(out_file)
     plt.close(disp.figure_)
