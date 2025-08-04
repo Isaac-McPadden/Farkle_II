@@ -60,6 +60,10 @@
 # def _load_results_df(block: Path) -> pd.DataFrame:
 #     """Return a DataFrame with **all** game rows for one *n_players* sub‑folder."""
 
+#     row_file = next(block.glob("*p_rows.parquet"), None)
+#     if row_file is not None:
+#         return pd.read_parquet(row_file)
+
 #     row_dirs: List[Path] = [p for p in block.glob("*_rows") if p.is_dir()]
 #     if row_dirs:
 #         frames = [_read_row_shards(d) for d in row_dirs]

@@ -15,7 +15,7 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
     res_root = data_root / "results"
 
     # --- block with A beating B -------------------------------------------------
-    block2 = res_root / "2_players" / "1_rows"
+    block2 = res_root / "2_players"
     block2.mkdir(parents=True)
     df2 = pd.DataFrame(
         {
@@ -25,11 +25,11 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
             "P2_rank": [2] * 3,
         }
     )
-    df2.to_parquet(block2 / "rows.parquet")
-    np.save(block2.parent / "keepers_2.npy", np.array(["A", "B"]))
+    df2.to_parquet(block2 / "2p_rows.parquet")
+    np.save(block2 / "keepers_2.npy", np.array(["A", "B"]))
 
     # --- block with B beating A (extra player ignored) -------------------------
-    block3 = res_root / "3_players" / "1_rows"
+    block3 = res_root / "3_players"
     block3.mkdir(parents=True)
     df3 = pd.DataFrame(
         {
@@ -41,8 +41,8 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
             "P3_rank": [3] * 6,
         }
     )
-    df3.to_parquet(block3 / "rows.parquet")
-    np.save(block3.parent / "keepers_3.npy", np.array(["A", "B"]))
+    df3.to_parquet(block3 / "3p_rows.parquet")
+    np.save(block3 / "keepers_3.npy", np.array(["A", "B"]))
 
     (res_root / "manifest.yaml").write_text(yaml.safe_dump({"seed": 0}))
 
