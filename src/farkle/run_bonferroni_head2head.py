@@ -11,7 +11,7 @@ from typing import List
 import pandas as pd
 from scipy.stats import binomtest
 
-from farkle.simulation import simulate_many_games
+from farkle.simulation import simulate_many_games_from_seeds
 from farkle.stats import games_for_power
 from farkle.strategies import parse_strategy
 from farkle.utils import bonferroni_pairs
@@ -25,7 +25,8 @@ def run_bonferroni_head2head(seed: int = 0, root: Path = DEFAULT_ROOT) -> None:
     Parameters
     ----------
     seed : int, default ``0``
-        Seed for shuffling the schedule and for each simulated game.
+        Base seed for shuffling the schedule and deterministically assigning
+        unique seeds to each simulated game.
 
     The function reads ``data/tiers.json`` to find strategies in the highest
     tier.  It runs enough games for a Bonferroni-corrected binomial test on each
@@ -50,9 +51,9 @@ def run_bonferroni_head2head(seed: int = 0, root: Path = DEFAULT_ROOT) -> None:
 
     records = []
     for (a, b), grp in schedule.groupby(["a", "b"]):
-        n_games = len(grp)
-        df = simulate_many_games(
-            n_games=n_games, strategies=[parse_strategy(a), parse_strategy(b)], seed=seed, n_jobs=1
+        seeds = grp["seed"].tolist()
+        df = simulate_many_games_from_seeds(
+            seeds=seeds, strategies=[parse_strategy(a), parse_strategy(b)], n_jobs=1
         )
         wins = df["winner_strategy"].value_counts()
         wa = int(wins.get(a, 0))

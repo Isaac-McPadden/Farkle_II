@@ -50,10 +50,12 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
 
-    def fake_many_games(n_games, strategies, seed, n_jobs):
-        return pd.DataFrame({"winner_strategy": ["A"] * n_games})
+    def fake_many_games_from_seeds(*, seeds, strategies, n_jobs):
+        _ = strategies
+        _ = n_jobs
+        return pd.DataFrame({"winner_strategy": ["A"] * len(seeds)})
 
-    monkeypatch.setattr(rb, "simulate_many_games", fake_many_games)
+    monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_many_games_from_seeds)
 
     rb.run_bonferroni_head2head(seed=0, root=data_dir)
     out_csv = data_dir / "bonferroni_pairwise.csv"
@@ -76,7 +78,9 @@ def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
     monkeypatch.setattr(
-        rb, "simulate_many_games", lambda **k: pd.DataFrame({"winner_strategy": []})
+        rb,
+        "simulate_many_games_from_seeds",
+        lambda **k: pd.DataFrame({"winner_strategy": []}),
     )
 
     rb.run_bonferroni_head2head(seed=0, root=data_dir)
