@@ -103,9 +103,12 @@ def run(cfg: PipelineCfg) -> None:
                     log.debug("Shard %s is empty — skipped", shard_path.name)
                     continue
 
-                if set(shard_df.columns) != expected_cols:
+                if not set(shard_df.columns).issubset(expected_cols):
                     log.error("Schema mismatch in %s", shard_path)
                     raise RuntimeError("Shard DataFrame columns do not match expected columns")
+
+                for col in expected_cols - set(shard_df.columns):
+                    shard_df[col] = pd.NA
 
                 shard_df = shard_df.reindex(columns=cfg.ingest_cols)
                 log.debug("Shard %s → %d rows", shard_path.name, len(shard_df))
