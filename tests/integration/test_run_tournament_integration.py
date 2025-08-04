@@ -28,7 +28,6 @@ from typing import List, Sequence  # noqa: F401
 import pytest
 
 import farkle.simulation as sim
-from farkle.run_tournament import TournamentConfig
 from farkle.strategies import ThresholdStrategy
 
 ###############################################################################
@@ -85,12 +84,9 @@ def _init_worker_small(  # pragma: no cover
     import importlib as _imp  # local import to avoid leak in parent
 
     _rt = _imp.import_module("farkle.run_tournament")
-
-    # Populate globals in the worker
+    _rt.TournamentConfig.games_per_shuffle = property(lambda self: 2)  # type: ignore
     _rt._STRATS = list(strategies)  # type: ignore
     _rt._CFG = cfg  # type: ignore
-    _rt.N_PLAYERS = cfg.n_players  # type: ignore
-    _rt.GAMES_PER_SHUFFLE = 2  # type: ignore - keep workload tiny
 
 
 ###############################################################################
@@ -111,7 +107,6 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> TournamentConfig
     _tiny_grid = _tiny_strategy_grid()
 
     # 3a. Constants in parent (affects chunking logic)
-    monkeypatch.setattr(rt, "GAMES_PER_SHUFFLE", 2, raising=False)
     monkeypatch.setattr(rt, "DESIRED_SEC_PER_CHUNK", 0.1, raising=False)
     monkeypatch.setattr(rt, "CKPT_EVERY_SEC", 1, raising=False)
 
@@ -121,6 +116,8 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> TournamentConfig
     # 3c. Make *this* interpreter use the tiny grid → the list also travels to
     #      every worker because run_tournament passes it via *initargs*.
     monkeypatch.setattr(rt, "generate_strategy_grid", lambda: (_tiny_grid, None), raising=True)
+
+    monkeypatch.setattr(rt.TournamentConfig, "games_per_shuffle", property(lambda self: 2), raising=False)
 
     return rt.TournamentConfig(
         n_players=rt.N_PLAYERS,

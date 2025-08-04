@@ -152,13 +152,11 @@ def _init_worker(
     None
     """
 
-    global _STRATS, _CFG, N_PLAYERS, GAMES_PER_SHUFFLE, _ROW_QUEUE
+    global _STRATS, _CFG, _ROW_QUEUE
     if 8_160 % config.n_players != 0:
         raise ValueError("n_players must divide 8,160")
     _STRATS = list(strategies)
     _CFG = config
-    N_PLAYERS = config.n_players
-    GAMES_PER_SHUFFLE = config.games_per_shuffle
     _ROW_QUEUE = row_queue
 
 
@@ -179,7 +177,7 @@ def _play_one_shuffle(
 
     rng = np.random.default_rng(seed)
     perm = rng.permutation(len(_STRATS))
-    game_seeds = rng.integers(0, 2**32 - 1, size=GAMES_PER_SHUFFLE)
+    game_seeds = rng.integers(0, 2**32 - 1, size=_CFG.games_per_shuffle)
 
     wins: Counter[str] = Counter()
     sums: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -188,8 +186,8 @@ def _play_one_shuffle(
 
     offset = 0
     for gseed in game_seeds.tolist():
-        idxs = perm[offset : offset + N_PLAYERS].tolist()
-        offset += N_PLAYERS
+        idxs = perm[offset : offset + _CFG.n_players].tolist()
+        offset += _CFG.n_players
 
         row = _play_game(int(gseed), [_STRATS[i] for i in idxs])
         winner = row["winner"]
@@ -363,6 +361,7 @@ def run_tournament(
     n_jobs: int | None = None,
     collect_metrics: bool = False,
     row_output_directory: Path | None = None,  # None if --row-dir omitted
+    metric_chunk_directory: Path | None = None,
     num_shuffles: int = NUM_SHUFFLES,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
@@ -392,6 +391,9 @@ def run_tournament(
     row_output_directory : pathlib.Path | None, default None
         When supplied, every worker writes complete per-game rows to this
         directory as Parquet files (requires *pyarrow*).
+    metric_chunk_directory : pathlib.Path | None, default None
+        Persist per-chunk metric aggregates to this directory instead of
+        keeping them all in memory.
 
     Notes
     -----
@@ -402,7 +404,9 @@ def run_tournament(
     Side Effects
     ------------
     Creates/updates ``checkpoint_path`` and, if ``row_output_directory`` is
-    given, a set of Parquet files containing raw game rows.
+    given, a set of Parquet files containing raw game rows. When
+    ``metric_chunk_directory`` is set, per-chunk metric aggregates are also
+    written there.
     """
     strategies, _ = generate_strategy_grid()  # 8_160 strategies
 
@@ -431,8 +435,14 @@ def run_tournament(
 
 
     win_totals: Counter[str] = Counter()
-    metric_sums: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
-    metric_sq_sums: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
+    metric_sums: Dict[str, Dict[str, float]] | None
+    metric_sq_sums: Dict[str, Dict[str, float]] | None
+    if metric_chunk_directory is None:
+        metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
+        metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
+    else:
+        metric_sums = None
+        metric_sq_sums = None
 
     ckpt_path = Path(checkpoint_path)
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -442,6 +452,9 @@ def run_tournament(
     if collect_rows:
         assert row_output_directory is not None
         row_output_directory.mkdir(parents=True, exist_ok=True)
+
+    if metric_chunk_directory is not None:
+        metric_chunk_directory.mkdir(parents=True, exist_ok=True)
     
     context = mp.get_context("spawn")
     row_queue = writer = None
@@ -478,11 +491,22 @@ def run_tournament(
                     result,
                 )
                 win_totals.update(wins)
-                for label in METRIC_LABELS:
-                    for k, v in sums[label].items():
-                        metric_sums[label][k] += v
-                    for k, v in sqs[label].items():
-                        metric_sq_sums[label][k] += v
+                if metric_chunk_directory is not None:
+                    chunk_path = metric_chunk_directory / f"metrics_{done:06d}.pkl"
+                    payload = {
+                        "metric_sums": sums,
+                        "metric_square_sums": sqs,
+                    }
+                    chunk_path.write_bytes(
+                        pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+                    )
+                else:
+                    assert metric_sums is not None and metric_sq_sums is not None
+                    for label in METRIC_LABELS:
+                        for k, v in sums[label].items():
+                            metric_sums[label][k] += v
+                        for k, v in sqs[label].items():
+                            metric_sq_sums[label][k] += v
             else:
                 win_totals.update(cast(Counter[str], result))
 
@@ -491,8 +515,12 @@ def run_tournament(
                 _save_checkpoint(
                     ckpt_path,
                     win_totals,
-                    metric_sums if collect_metrics or collect_rows else None,
-                    metric_sq_sums if collect_metrics or collect_rows else None,
+                    None
+                    if metric_chunk_directory is not None
+                    else (metric_sums if collect_metrics or collect_rows else None),
+                    None
+                    if metric_chunk_directory is not None
+                    else (metric_sq_sums if collect_metrics or collect_rows else None),
                 )
                 log.info(
                     "checkpoint … %d/%d chunks, %d games",
@@ -502,11 +530,24 @@ def run_tournament(
                 )
                 last_ckpt = now
 
+    if metric_chunk_directory is not None and (collect_metrics or collect_rows):
+        metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
+        metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
+        for path in sorted(metric_chunk_directory.glob("metrics_*.pkl")):
+            data = pickle.loads(path.read_bytes())
+            sums = data["metric_sums"]
+            sqs = data["metric_square_sums"]
+            for label in METRIC_LABELS:
+                for k, v in sums[label].items():
+                    metric_sums[label][k] += v
+                for k, v in sqs[label].items():
+                    metric_sq_sums[label][k] += v
+
     _save_checkpoint(
         ckpt_path,
         win_totals,
-        metric_sums if collect_metrics or collect_rows else None,
-        metric_sq_sums if collect_metrics or collect_rows else None,
+        metric_sums if (collect_metrics or collect_rows) else None,
+        metric_sq_sums if (collect_metrics or collect_rows) else None,
     )
     log.info("finished - %d games", sum(win_totals.values()))
 
@@ -542,6 +583,12 @@ def main() -> None:
         help="write full per-game rows to DIR as parquet",
     )
     p.add_argument(
+        "--metric-chunk-dir",
+        type=Path,
+        metavar="DIR",
+        help="write per-chunk metric aggregates to DIR",
+    )
+    p.add_argument(
         "--log_level",
         choices=["DEBUG", "INFO", "WARNING"],
         default="INFO",
@@ -568,6 +615,7 @@ def main() -> None:
         n_jobs=args.jobs,
         collect_metrics=args.metrics,
         row_output_directory=args.row_dir,
+        metric_chunk_directory=args.metric_chunk_dir,
         num_shuffles=args.num_shuffles,
     )
 
