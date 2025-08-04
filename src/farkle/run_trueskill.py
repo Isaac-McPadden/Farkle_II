@@ -1,10 +1,11 @@
 # src/farkle/run_trueskill.py
 """Compute TrueSkill ratings for Farkle strategies.
 
-The script scans the ``data/results`` directory for completed tournament
-blocks, updates ratings with the ``trueskill`` package and writes per-block
-as well as pooled rating files.  A ``tiers.json`` file mapping strategies to
-league tiers is also produced.
+The script scans a directory of tournament results, updates ratings with the
+``trueskill`` package and writes per-block as well as pooled rating files. The
+results directory is provided via ``--dataroot`` (default: ``data/results``).
+A ``tiers.json`` file mapping strategies to league tiers is also produced.
+Outputs are written to ``--root`` which defaults to ``<dataroot>/analysis``.
 """
 from __future__ import annotations
 
@@ -161,7 +162,8 @@ def _update_ratings(
 
 def run_trueskill(
     output_seed: int = 0,
-    root: Path = DEFAULT_ROOT,
+    root: Path | None = None,
+    dataroot: Path = DEFAULT_ROOT / "results",
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -170,6 +172,11 @@ def run_trueskill(
     output_seed: int, optional
         Value appended to output filenames so repeated runs do not overwrite
         earlier results.
+    root: Path | None, optional
+        Directory where rating artifacts are written. Defaults to
+        ``<dataroot>/analysis`` when ``None``.
+    dataroot: Path, optional
+        Directory containing tournament result blocks.
 
     Side Effects
     ------------
@@ -182,8 +189,9 @@ def run_trueskill(
         JSON file with league tiers derived from the pooled ratings.
     """
 
-    root = Path(root)
-    base = root / "results"
+    base = Path(dataroot)
+    root = Path(root) if root is not None else base / "analysis"
+    root.mkdir(parents=True, exist_ok=True)
     _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
     env = trueskill.TrueSkill()
@@ -216,7 +224,6 @@ def run_trueskill(
         means={k: v.mu for k, v in pooled.items()},
         stdevs={k: v.sigma for k, v in pooled.items()},
     )
-    root.mkdir(exist_ok=True)
     with (root / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)
 
@@ -232,8 +239,8 @@ def main(argv: list[str] | None = None) -> None:
 
     Side Effects
     ------------
-    Invokes :func:`run_trueskill`, which writes rating and tier files to the
-    ``data`` directory.
+    Invokes :func:`run_trueskill`, which writes rating and tier files to
+    ``--root`` (default ``<dataroot>/analysis``).
     """
     parser = argparse.ArgumentParser(description="Compute TrueSkill ratings")
     parser.add_argument(
@@ -242,10 +249,25 @@ def main(argv: list[str] | None = None) -> None:
         default=0,
         help="only used to name output files",
     )
-    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    args = parser.parse_args(argv or [])
+    parser.add_argument(
+        "--root",
+        type=Path,
+        default=None,
+        help="Directory for output files (default: <dataroot>/analysis)",
+    )
+    parser.add_argument(
+        "--dataroot",
+        type=Path,
+        default=DEFAULT_ROOT / "results",
+        help="Directory containing tournament result blocks",
+    )
+    args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run_trueskill(output_seed=args.output_seed, root=args.root)
+    run_trueskill(
+        output_seed=args.output_seed,
+        root=args.root,
+        dataroot=args.dataroot,
+    )
 
 
 if __name__ == "__main__":
