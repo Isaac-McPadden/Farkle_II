@@ -112,6 +112,9 @@ def main():
     mp.set_start_method("spawn", force=True)
 
     for n_players in PLAYERS:
+        if n_players < 2:
+            print(f"Must have two or more players, skipping {n_players}")
+            continue
         nshuf = shuffles_required(n_players)
         gps = GRID // n_players  # games per shuffle
         ngames = nshuf * gps
