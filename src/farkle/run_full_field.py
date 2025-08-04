@@ -5,9 +5,10 @@ run_full_field.py  -  Phase-1 full-grid screen for all table sizes
    • Power               = 0.95    →  zβ = Φ⁻¹(0.05) ≈ 1.645
    • Detectable lift Δ   = 0.03     (3-percentage-point edge)
 
-Run with: python -m farkle.run_full_field
+Run with: ``python -m farkle.run_full_field --results-dir runs/my_run``
 """
 
+import argparse
 import multiprocessing as mp
 import shutil
 from math import ceil
@@ -67,7 +68,7 @@ def _reset_partial(out_dir: Path, n_players: int) -> None:
             ckpt.unlink()
 
 
-def main():
+def main(argv: list[str] | None = None) -> None:
     """Run tournaments for each table size defined in ``PLAYERS``.
 
     The function iterates over the configured ``PLAYERS`` list. For each
@@ -84,6 +85,15 @@ def main():
     None
     """
 
+    parser = argparse.ArgumentParser(description="Phase-1 full-grid tournament sweep")
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        default=Path("results_seed_0"),
+        help="Directory to store tournament results",
+    )
+    args = parser.parse_args(argv or [])
+
     import farkle.run_tournament as tournament_mod  # required for main hook  # noqa: I001
 
     # ────────── GLOBAL CONFIG ─────────────────────────────────────────
@@ -94,7 +104,11 @@ def main():
     Q_FDR = 0.02  # BH, two-sided
     GLOBAL_SEED = 0
     JOBS = None  # None → all logical cores
-    BASE_OUT = Path(f"data/results_seed_{GLOBAL_SEED}")
+    BASE_OUT = args.results_dir
+    if not BASE_OUT.exists():
+        candidate = Path("data") / BASE_OUT
+        if candidate.exists():
+            BASE_OUT = candidate
     BASE_OUT.mkdir(parents=True, exist_ok=True)
     # ------------------------------------------------------------------
 
@@ -156,5 +170,6 @@ def main():
 
 
 if __name__ == "__main__":
-    # run: python -m farkle.run_full_field
-    main()
+    import sys
+
+    main(sys.argv[1:])

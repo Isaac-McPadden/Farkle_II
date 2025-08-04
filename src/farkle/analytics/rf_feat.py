@@ -17,6 +17,6 @@ def run(cfg: PipelineCfg) -> None:
         log.info("Random-Forest: results up-to-date - skipped")
         return
 
-    cmd = [sys.executable, str(SCRIPT), "--root", str(cfg.root)]
+    cmd = [sys.executable, str(SCRIPT), "--root", str(cfg.results_dir)]
     log.info("Random-Forest: calling %s", " ".join(cmd))
     subprocess.check_call(cmd)

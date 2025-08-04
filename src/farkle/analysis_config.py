@@ -24,7 +24,7 @@ from typing import Sequence
 @dataclass
 class PipelineCfg:
     # 1. core paths
-    root: Path = Path("data")
+    results_dir: Path = Path("results_seed_0")
     results_glob: str = "*_players"
     analysis_subdir: str = "analysis"
     curated_rows_name: str = "game_rows.parquet"
@@ -82,7 +82,7 @@ class PipelineCfg:
     @property
     def analysis_dir(self) -> Path:
         """Directory where analysis artifacts are written."""
-        return self.root / self.analysis_subdir
+        return self.results_dir / self.analysis_subdir
 
     @property
     def data_dir(self) -> Path:
@@ -112,7 +112,14 @@ class PipelineCfg:
         subcommands).
         """
         parser = argparse.ArgumentParser(add_help=False)
-        parser.add_argument("--root", type=Path, default=Path("data"), help="Root directory")
+        parser.add_argument(
+            "--results-dir",
+            "--root",
+            dest="results_dir",
+            type=Path,
+            default=Path("results_seed_0"),
+            help="Directory containing raw results blocks",
+        )
         parser.add_argument(
             "--analysis-subdir",
             default="analysis",
@@ -120,5 +127,5 @@ class PipelineCfg:
         )
         parser.add_argument("-v", "--verbose", action="store_true", help="Enable progress bars")
         ns, remaining = parser.parse_known_args(argv)
-        cfg = cls(root=ns.root, analysis_subdir=ns.analysis_subdir)
+        cfg = cls(results_dir=ns.results_dir, analysis_subdir=ns.analysis_subdir)
         return cfg, ns, remaining

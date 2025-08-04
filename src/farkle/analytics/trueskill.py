@@ -18,6 +18,6 @@ def run(cfg: PipelineCfg) -> None:
         log.info("TrueSkill: results up-to-date - skipped")
         return
 
-    cmd = [sys.executable, str(SCRIPT), "--root", str(cfg.root)]
+    cmd = [sys.executable, str(SCRIPT), "--dataroot", str(cfg.results_dir)]
     log.info("TrueSkill: calling %s", " ".join(cmd))
     subprocess.check_call(cmd)

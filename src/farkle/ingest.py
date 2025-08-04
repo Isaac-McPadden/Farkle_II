@@ -83,7 +83,7 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run(cfg: PipelineCfg) -> None:
-    log.info("Ingest started: root=%s", cfg.root)
+    log.info("Ingest started: root=%s", cfg.results_dir)
 
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     out_path = cfg.curated_parquet
@@ -95,7 +95,7 @@ def run(cfg: PipelineCfg) -> None:
     total_rows = 0
 
     try:
-        for block in sorted(cfg.root.glob(cfg.results_glob)):
+        for block in sorted(cfg.results_dir.glob(cfg.results_glob)):
             log.info("Reading block %s", block.name)
             expected_cols = set(cfg.ingest_cols)
             for shard_df, shard_path in _iter_shards(block, cfg.ingest_cols):
@@ -138,3 +138,13 @@ def run(cfg: PipelineCfg) -> None:
         if writer:
             writer.close()
     log.info("Ingest finished — %d rows written to %s", total_rows, out_path)
+
+
+def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper
+    cfg, _, _ = PipelineCfg.parse_cli(argv)
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    run(cfg)
+
+
+if __name__ == "__main__":  # pragma: no cover
+    main()

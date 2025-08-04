@@ -23,7 +23,7 @@ from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 # ---------------------------------------------------------------------------
 # Constants for file and directory locations used in this module
 # ---------------------------------------------------------------------------
-DEFAULT_ROOT = Path("data")
+DEFAULT_ROOT = Path("results_seed_0")
 METRICS_NAME = "metrics.parquet"
 RATINGS_NAME = "ratings_pooled.pkl"
 FIG_DIR = Path("notebooks/figs")

@@ -2,10 +2,17 @@
 """Compute TrueSkill ratings for Farkle strategies.
 
 The script scans a directory of tournament results, updates ratings with the
-``trueskill`` package and writes per-block as well as pooled rating files. The
-results directory is provided via ``--dataroot`` (default: ``data/results``).
-A ``tiers.json`` file mapping strategies to league tiers is also produced.
-Outputs are written to ``--root`` which defaults to ``<dataroot>/analysis``.
+``trueskill`` package and writes per-block as well as pooled rating files.
+
+Key CLI flags
+-------------
+--dataroot   Directory containing <N>_players blocks            (default: data/results)
+--root       Output directory for analysis artefacts            (default: <dataroot>/analysis)
+
+Outputs
+-------
+ratings_<N>.pkl(*), ratings_pooled.pkl – pickled RatingStats
+tiers.json                       – mapping of strategy → tier
 """
 from __future__ import annotations
 
@@ -23,7 +30,8 @@ import yaml
 
 from .utils import build_tiers
 
-DEFAULT_ROOT = Path("data")
+_REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
+DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results_seed_0"  # root folder for the results of run_full_field.py
 
 log = logging.getLogger(__name__)
 
@@ -163,7 +171,7 @@ def _update_ratings(
 def run_trueskill(
     output_seed: int = 0,
     root: Path | None = None,
-    dataroot: Path = DEFAULT_ROOT / "results",
+    dataroot: Path = DEFAULT_DATAROOT,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -188,7 +196,6 @@ def run_trueskill(
     ``tiers.json``
         JSON file with league tiers derived from the pooled ratings.
     """
-
     base = Path(dataroot)
     root = Path(root) if root is not None else base / "analysis"
     root.mkdir(parents=True, exist_ok=True)
@@ -244,25 +251,27 @@ def main(argv: list[str] | None = None) -> None:
     """
     parser = argparse.ArgumentParser(description="Compute TrueSkill ratings")
     parser.add_argument(
-        "--output-seed",
-        type=int,
-        default=0,
-        help="only used to name output files",
+        "--output-seed", type=int, default=0,
+        help="appended to filenames to avoid overwrites",
     )
     parser.add_argument(
-        "--root",
-        type=Path,
-        default=None,
-        help="Directory for output files (default: <dataroot>/analysis)",
+    "--dataroot",
+    type=Path,
+    default=DEFAULT_DATAROOT,
+    help=(
+        "Folder that holds <N>_players blocks "
+        "(default: <repo>/data/results_seed_0). "
+        "Accepts absolute or relative paths."
+        ),
     )
     parser.add_argument(
-        "--dataroot",
-        type=Path,
-        default=DEFAULT_ROOT / "results",
-        help="Directory containing tournament result blocks",
+        "--root", type=Path, default=None,
+        help="output directory (default: <dataroot>/analysis)",
     )
-    args = parser.parse_args(argv)
+
+    args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
+
     run_trueskill(
         output_seed=args.output_seed,
         root=args.root,
@@ -271,4 +280,6 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+
+    main(sys.argv[1:])
