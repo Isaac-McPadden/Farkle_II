@@ -156,15 +156,15 @@ def test_init_worker_valid_and_invalid():
     strats = _mini_strats(8)
     cfg = rt.TournamentConfig(n_players=4)
     rt._init_worker(strats, cfg, None)
-    assert rt.N_PLAYERS == 5  # module constant should remain unchanged
-    assert rt._CFG.n_players == 4
-    assert rt._CFG.games_per_shuffle == 8_160 // 4
+    assert rt._STATE is not None
+    assert rt._STATE.cfg.n_players == 4
+    assert rt._STATE.cfg.games_per_shuffle == 8_160 // 4
 
     with pytest.raises(ValueError):
         rt._init_worker(strats, rt.TournamentConfig(n_players=7), None)
 
     rt._init_worker(strats, rt.TournamentConfig(n_players=5), None)
-    assert rt._CFG.n_players == 5
+    assert rt._STATE is not None and rt._STATE.cfg.n_players == 5
 
 
 def test_run_tournament_player_count(monkeypatch, tmp_path):
@@ -296,7 +296,7 @@ def test_play_one_shuffle_collects(monkeypatch):
     strats = _mini_strats(4)
     cfg = rt.TournamentConfig(n_players=2)
     rt._init_worker(strats, cfg, None)
-    rt._CFG = types.SimpleNamespace(n_players=2, games_per_shuffle=2)
+    rt._STATE = rt.WorkerState(list(strats), types.SimpleNamespace(n_players=2, games_per_shuffle=2), None)
 
     class DummyRNG:
         def permutation(self, n): return rt.np.arange(n)
@@ -348,7 +348,7 @@ def test_run_chunk_metrics_queue(monkeypatch):
     class DummyQueue:
         def put(self, item): sent.append(item)
 
-    monkeypatch.setattr(rt, "_ROW_QUEUE", DummyQueue(), raising=False)
+    monkeypatch.setattr(rt, "_STATE", rt.WorkerState([], types.SimpleNamespace(games_per_shuffle=0), DummyQueue()), raising=False)
 
     wins, sums, sqs = rt._run_chunk_metrics([1, 2], collect_rows=True)
     assert sent == [{"game_seed": 1}, {"game_seed": 2}]
