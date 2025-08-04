@@ -171,7 +171,8 @@ def run_trueskill(
     ``ratings_<n>[ _seedX ].pkl``
         Pickle files containing per-block ratings for each strategy.
     ``ratings_pooled[ _seedX ].pkl``
-        A pickle with ratings pooled across all blocks.
+        A pickle with ratings pooled across all blocks using a games-per-block
+        weighted mean.
     ``tiers.json``
         JSON file with league tiers derived from the pooled ratings.
     """
@@ -182,6 +183,7 @@ def run_trueskill(
     suffix = f"_seed{output_seed}" if output_seed else ""
     env = trueskill.TrueSkill()
     pooled: dict[str, RatingStats] = {}
+    pooled_weights: dict[str, int] = {}
     for block in sorted(base.glob("*_players")):
         player_count = block.name.split("_")[0]
         keep_path = block / f"keepers_{player_count}.npy"
@@ -190,12 +192,19 @@ def run_trueskill(
         ratings = _update_ratings(games, keepers, env)
         with (root / f"ratings_{player_count}{suffix}.pkl").open("wb") as fh:
             pickle.dump(ratings, fh)
+        block_games = len(games)
         for k, v in ratings.items():
             if k in pooled:
-                r = pooled[k]
-                pooled[k] = RatingStats((r.mu + v.mu) / 2, (r.sigma + v.sigma) / 2)
+                weight = pooled_weights[k]
+                new_weight = weight + block_games
+                pooled[k] = RatingStats(
+                    (pooled[k].mu * weight + v.mu * block_games) / new_weight,
+                    (pooled[k].sigma * weight + v.sigma * block_games) / new_weight,
+                )
+                pooled_weights[k] = new_weight
             else:
                 pooled[k] = v
+                pooled_weights[k] = block_games
     with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
     tiers = build_tiers(
