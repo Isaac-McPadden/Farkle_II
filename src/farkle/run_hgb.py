@@ -12,6 +12,7 @@ import argparse
 import json
 import pickle
 import warnings
+import logging
 from pathlib import Path
 from typing import List
 
@@ -27,6 +28,10 @@ DEFAULT_ROOT = Path("results_seed_0")
 METRICS_NAME = "metrics.parquet"
 RATINGS_NAME = "ratings_pooled.pkl"
 FIG_DIR = Path("notebooks/figs")
+MAX_PD_PLOTS = 30
+
+
+logger = logging.getLogger(__name__)
 
 
 def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
@@ -96,7 +101,7 @@ def run_hgb(
     ``<root>/hgb_importance.json``
         JSON file mapping metric names to permutation importance scores.
     ``notebooks/figs/pd_<feature>.png``
-        Partial dependence plots for each metric.
+        Partial dependence plots for up to ``MAX_PD_PLOTS`` metrics.
     """
     root = Path(root)
     metrics_path = root / METRICS_NAME
@@ -134,7 +139,15 @@ def run_hgb(
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
 
     FIG_DIR.mkdir(parents=True, exist_ok=True)
-    for col in features.columns:
+    cols = list(features.columns)
+    if len(cols) > MAX_PD_PLOTS:
+        logger.warning(
+            "More than %d features provided (%d); only plotting the first %d",
+            MAX_PD_PLOTS,
+            len(cols),
+            MAX_PD_PLOTS,
+        )
+    for col in cols[:MAX_PD_PLOTS]:
         plot_partial_dependence(model, features, col, FIG_DIR)
 
 
