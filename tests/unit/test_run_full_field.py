@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 from pytest import MonkeyPatch
 
 import farkle.run_full_field as rf
@@ -78,3 +79,23 @@ def test_main_skips_complete_and_resets_partial(
     players_called = calls
     assert 2 not in players_called
     assert 3 in players_called
+
+
+def test_combo_complete_force_clean(tmp_path: rf.Path, caplog: pytest.LogCaptureFixture) -> None:
+    n = 4
+    out_dir = tmp_path
+    row_dir = out_dir / f"{n}p_rows"
+    row_dir.mkdir()
+    (out_dir / f"{n}p_rows.parquet").write_text("rows")
+    (out_dir / f"{n}p_checkpoint.pkl").write_text("done")
+
+    with caplog.at_level("WARNING"):
+        rf._combo_complete(out_dir, n)
+    assert row_dir.exists()
+    assert "--force-clean" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        rf._combo_complete(out_dir, n, force_clean=True)
+    assert not row_dir.exists()
+    assert "Deleting existing row directory" in caplog.text

@@ -9,6 +9,7 @@ Run with: ``python -m farkle.run_full_field --results-dir runs/my_run``
 """
 
 import argparse
+import logging
 import multiprocessing as mp
 import shutil
 from math import ceil
@@ -22,6 +23,8 @@ from farkle.scoring_lookup import build_score_lookup_table
 
 SCORE_TABLE = build_score_lookup_table()
 
+logger = logging.getLogger(__name__)
+
 
 def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     """Combine row shard files and remove the temporary directory.
@@ -29,7 +32,7 @@ def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     If no shard files are found the function simply returns without
     writing anything. Reading/writing parquet requires ``pyarrow`` to be
     installed.
-    
+
     out_dir is the parent folder of the row folder and where the finished
     parquet is saved.
     """
@@ -43,16 +46,24 @@ def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     del df  # free memory before returning
 
 
-def _combo_complete(out_dir: Path, n_players: int) -> bool:
+def _combo_complete(out_dir: Path, n_players: int, *, force_clean: bool = False) -> bool:
     """Return ``True`` if the results for this combo already exist."""
-    ckpt    = out_dir / f"{n_players}p_checkpoint.pkl"
-    rows    = out_dir / f"{n_players}p_rows.parquet"
+    ckpt = out_dir / f"{n_players}p_checkpoint.pkl"
+    rows = out_dir / f"{n_players}p_rows.parquet"
     row_dir = out_dir / f"{n_players}p_rows"
 
     # If the final parquet is present we consider the block complete;
-    # any leftover shard directory is just debris – remove it.
+    # leftover shard directories are debris but may be preserved unless forced.
     if rows.is_file() and row_dir.exists():
-        shutil.rmtree(row_dir, ignore_errors=True)
+        if force_clean:
+            logger.warning("Deleting existing row directory %s", row_dir)
+            shutil.rmtree(row_dir, ignore_errors=True)
+        else:
+            logger.warning(
+                "Row directory %s exists alongside final parquet; "
+                "rerun with --force-clean to remove it",
+                row_dir,
+            )
     return ckpt.is_file() and rows.is_file()
 
 
@@ -91,6 +102,11 @@ def main(argv: list[str] | None = None) -> None:
         type=Path,
         default=Path("results_seed_0"),
         help="Directory to store tournament results",
+    )
+    parser.add_argument(
+        "--force-clean",
+        action="store_true",
+        help="remove existing row directories when final parquets are present",
     )
     args = parser.parse_args(argv or [])
 
@@ -136,7 +152,7 @@ def main(argv: list[str] | None = None) -> None:
         out_dir = BASE_OUT / f"{n_players}_players"
         (out_dir).mkdir(parents=True, exist_ok=True)
 
-        if _combo_complete(out_dir, n_players):
+        if _combo_complete(out_dir, n_players, force_clean=args.force_clean):
             print(f"↩ skipping {n_players}-player - already done", flush=True)
             continue
 
