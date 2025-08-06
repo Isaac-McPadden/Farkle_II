@@ -3,7 +3,7 @@ Tests for the metric-collecting helpers in run_tournament.py.
 
 These tests patch the heavy game logic so that no real games are played. They
 focus on the aggregation logic in _run_chunk_metrics and its optional row
-logging behaviour.
+logging behavior.
 """
 
 from __future__ import annotations

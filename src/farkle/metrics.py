@@ -26,9 +26,9 @@ def _wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
         return 0.0, 0.0
     p = k / n
     denom = 1 + z**2 / n
-    centre = p + z**2 / (2 * n)
+    center = p + z**2 / (2 * n)
     margin = z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2))
-    return (centre - margin) / denom, (centre + margin) / denom
+    return (center - margin) / denom, (center + margin) / denom
 
 
 def _write_parquet(tmp: Path, final: Path, rows: list[dict[str, Any]], schema: pa.Schema) -> None:

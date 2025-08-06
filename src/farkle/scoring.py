@@ -386,7 +386,7 @@ def _decide_smart_discards_impl(
     require_both (bool, optional):
         Bank only if both thresholds are hit.
     favor_dice_or_score (bool, optional):
-        Break ties in favour of higher score.
+        Break ties in favor of higher score.
 
     Returns
     -------
@@ -540,7 +540,7 @@ def default_score(
     dice_threshold (int, optional):
         Maximum dice left before banking.
     favor_dice_or_score (bool, optional):
-        Break ties in favour of higher score.
+        Break ties in favor of higher score.
     return_discards (bool, optional):
         If True, include the number of discarded 5s and 1s in the result.
 

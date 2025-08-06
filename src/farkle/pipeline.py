@@ -14,7 +14,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Console entry point for the analysis pipeline."""
     cfg, cli_ns, remaining = PipelineCfg.parse_cli(argv)
 
-    parser = argparse.ArgumentParser(prog="farkle-analyse")
+    parser = argparse.ArgumentParser(prog="farkle-analyze")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("ingest", "curate", "metrics", "analytics", "all"):
         sub.add_parser(name)

@@ -221,7 +221,7 @@ def _make_players(
         Strategies applied to each player in order.
     seed
         Seed used to create per-player random number generators.  ``None``
-        yields non-deterministic behaviour.
+        yields non-deterministic behavior.
 
     Returns
     -------

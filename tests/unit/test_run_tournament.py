@@ -38,7 +38,7 @@ def fake_play_shuffle(seed: int) -> Counter[str]:
 def fast_helpers(monkeypatch):
     """
     Keep tests lightning-fast **and** remember the real ``_play_shuffle`` so
-    individual tests can restore it when they *need* the real behaviour.
+    individual tests can restore it when they *need* the real behavior.
     """
     strats = _mini_strats(12)
     monkeypatch.setattr(
