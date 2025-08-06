@@ -244,8 +244,8 @@ def _sample_favor_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrSc
 
         cs  cd   →  favor_dice_or_score
         ─────────────────────────
-        T   F       True    (always favour score)
-        F   T       False   (always favour dice)
+        T   F       True    (always favor score)
+        F   T       False   (always favor dice)
         T   T       rng     (tie-break random)
         F   F       rng     (doesn't matter - random)
 

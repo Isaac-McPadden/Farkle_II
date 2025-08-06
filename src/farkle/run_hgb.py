@@ -1,5 +1,5 @@
 # src/farkle/run_hgb.py
-"""Train a hist gradient boosting model to analyse strategy metrics.
+"""Train a hist gradient boosting model to analyze strategy metrics.
 
 This script reads the feature metrics and pooled ratings, fits a
 ``HistGradientBoostingRegressor`` to predict strategy ``mu`` values, then writes
@@ -44,7 +44,7 @@ def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
     X : pd.DataFrame
         Feature matrix that ``model`` was trained on.
     column : str
-        Name of the feature to analyse.
+        Name of the feature to analyze.
     out_dir : Path
         Directory in which to store the generated PNG.
 
