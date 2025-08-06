@@ -70,8 +70,10 @@ def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
             features=[column],
         )
     out_file = out_dir / f"pd_{column}.png"
-    disp.figure_.savefig(out_file)
+    tmp_file = out_file.with_suffix(".tmp")
+    disp.figure_.savefig(tmp_file, format="png")
     plt.close(disp.figure_)
+    tmp_file.replace(out_file)
     return out_file
 
 
@@ -135,8 +137,10 @@ def run_hgb(
         output_path = root / "hgb_importance.json"
 
     output_path.parent.mkdir(exist_ok=True)
-    with output_path.open("w") as fh:
+    tmp_output = output_path.with_suffix(".tmp")
+    with tmp_output.open("w") as fh:
         json.dump(imp_dict, fh, indent=2, sort_keys=True)
+    tmp_output.replace(output_path)
 
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     cols = list(features.columns)
