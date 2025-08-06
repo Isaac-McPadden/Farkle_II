@@ -49,5 +49,6 @@ def test_run_hgb_importance_length_check(tmp_path, monkeypatch):
     try:
         with pytest.raises(ValueError, match="Mismatch between number of features"):
             run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
+        assert not (data_dir / "out.tmp").exists()
     finally:
         os.chdir(cwd)

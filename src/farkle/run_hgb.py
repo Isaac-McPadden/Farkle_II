@@ -138,9 +138,13 @@ def run_hgb(
 
     output_path.parent.mkdir(exist_ok=True)
     tmp_output = output_path.with_suffix(".tmp")
-    with tmp_output.open("w") as fh:
-        json.dump(imp_dict, fh, indent=2, sort_keys=True)
-    tmp_output.replace(output_path)
+    try:
+        with tmp_output.open("w") as fh:
+            json.dump(imp_dict, fh, indent=2, sort_keys=True)
+        tmp_output.replace(output_path)
+    except Exception:
+        tmp_output.unlink(missing_ok=True)
+        raise
 
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     cols = list(features.columns)
