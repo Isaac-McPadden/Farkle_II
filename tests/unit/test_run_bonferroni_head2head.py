@@ -46,18 +46,20 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
     monkeypatch.setattr(
         rb,
         "bonferroni_pairs",
-        lambda elites, games_needed, seed: pd.DataFrame({"a": ["A"], "b": ["B"], "seed": [seed]}),  # noqa: ARG005
+        lambda elites, games_needed, seed: pd.DataFrame(
+            {"a": ["A"], "b": ["B"], "seed": [seed]}
+        ),  # noqa: ARG005
     )
     monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
 
     def fake_many_games_from_seeds(*, seeds, strategies, n_jobs):
         _ = strategies
-        _ = n_jobs
+        assert n_jobs == 2
         return pd.DataFrame({"winner_strategy": ["A"] * len(seeds)})
 
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_many_games_from_seeds)
 
-    rb.run_bonferroni_head2head(seed=0, root=data_dir)
+    rb.run_bonferroni_head2head(seed=0, root=data_dir, n_jobs=2)
     out_csv = data_dir / "bonferroni_pairwise.csv"
     df = pd.read_csv(out_csv)
     assert set(df.columns) == {"a", "b", "wins_a", "wins_b", "pvalue"}
@@ -74,7 +76,9 @@ def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rb, "games_for_power", lambda *a, **k: 0)  # noqa: ARG005
     monkeypatch.setattr(
-        rb, "bonferroni_pairs", lambda *a, **k: pd.DataFrame(columns=["a", "b", "seed"])  # noqa: ARG005
+        rb,
+        "bonferroni_pairs",
+        lambda *a, **k: pd.DataFrame(columns=["a", "b", "seed"]),  # noqa: ARG005
     )
     monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
     monkeypatch.setattr(
@@ -108,10 +112,12 @@ def test_run_bonferroni_head2head_empty_file(tmp_path, monkeypatch):
 def test_main_delegates_to_runner(monkeypatch):
     captured = {}
 
-    def fake_run(seed: int = 0, root=None) -> None:  # noqa: ANN001
+    def fake_run(seed: int = 0, root=None, n_jobs: int = 1) -> None:  # noqa: ANN001
         _ = root
         captured["seed"] = seed
+        captured["n_jobs"] = n_jobs
 
     monkeypatch.setattr(rb, "run_bonferroni_head2head", fake_run)
-    rb.main(["--seed", "42", "--root", "d"])
+    rb.main(["--seed", "42", "--root", "d", "--jobs", "5"])
     assert captured["seed"] == 42
+    assert captured["n_jobs"] == 5
