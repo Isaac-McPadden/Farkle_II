@@ -83,11 +83,32 @@ def run(cfg: PipelineCfg) -> None:
     total_games = 0
 
     reader = ds.dataset(data_file, format="parquet")
-    for batch in reader.to_batches(columns=_WIN_COLS):
-        arr_win = batch.column("winner").to_pylist()
-        arr_wseat = batch.column("winner_seat").to_pylist()
-        arr_score = batch.column("winning_score").to_pylist()
-        arr_nrounds = batch.column("n_rounds").to_pylist()
+    strategy_cols = [
+        name
+        for name in reader.schema.names
+        if name.endswith("_strategy") and name != "winner_strategy"
+    ]
+    all_strategies: set[str] = set()
+
+    for batch in reader.to_batches(columns=_WIN_COLS + strategy_cols):
+        try:
+            arr_win = batch["winner"].to_numpy(zero_copy_only=True)
+        except pa.ArrowInvalid:  # fallback for types requiring a copy
+            arr_win = batch["winner"].to_numpy()
+
+        try:
+            arr_wseat = batch["winner_seat"].to_numpy(zero_copy_only=True)
+        except pa.ArrowInvalid:
+            arr_wseat = batch["winner_seat"].to_numpy()
+
+        arr_score = batch["winning_score"].to_numpy(zero_copy_only=True)
+        arr_nrounds = batch["n_rounds"].to_numpy(zero_copy_only=True)
+
+        all_strategies.update(arr_win)
+        for col in strategy_cols:
+            all_strategies.update(
+                s for s in batch[col].to_pylist() if s is not None
+            )
 
         for w, ws, sc, nr in zip(arr_win, arr_wseat, arr_score, arr_nrounds, strict=True):
             total_games += 1
@@ -98,7 +119,7 @@ def run(cfg: PipelineCfg) -> None:
 
     # Build rows ---------------------------------------------------------------
     metrics_rows: list[dict[str, Any]] = []
-    for strat in sorted(wins_by_strategy):
+    for strat in sorted(all_strategies):
         n = wins_by_strategy[strat]
         metrics_rows.append(
             {
