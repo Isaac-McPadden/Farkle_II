@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import hashlib
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,12 +17,21 @@ from farkle.analysis_config import PipelineCfg
 log = logging.getLogger(__name__)
 
 
+# ------------------------------------------------------------------
+def _schema_checksum(schema: pa.Schema) -> str:
+    """Return a stable checksum for the schema list."""
+    joined = "|".join(str(f) for f in schema)
+    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: PipelineCfg) -> None:
     """Dump a simple JSON manifest next to the curated parquet."""
+    schema_list = [str(f) for f in schema]
     payload: dict[str, Any] = {
         "rows": rows,
-        "schema": [str(f) for f in schema],
+        "schema": schema_list,
+        "schema_checksum": _schema_checksum(schema),
         "codec": cfg.parquet_codec,
         "row_group_size": cfg.row_group_size,
         "git_sha": cfg.git_sha,
@@ -40,11 +50,19 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
         meta = json.loads(manifest.read_text())
     except Exception:  # corrupt JSON?  redo
         return False
+    expected_rows = meta.get("rows")
+    expected_cksum = meta.get("schema_checksum")
+    if expected_rows is None or expected_cksum is None:
+        return False
     try:
-        parquet_rows = pq.read_metadata(out_file).num_rows
+        md = pq.read_metadata(out_file)
+        parquet_rows = md.num_rows
+        schema = md.schema.to_arrow_schema()
     except Exception:
         return False
-    return parquet_rows == meta.get("rows")
+    if parquet_rows != expected_rows:
+        return False
+    return _schema_checksum(schema) == expected_cksum
 
 
 # ──────────────────────────────────────────────────────────────────────────────
