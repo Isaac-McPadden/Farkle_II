@@ -1,13 +1,15 @@
 # farkle/analysis_config.py
 """
-Config module for the analysis stage
-# pipeline.py
-from farkle.config import PipelineCfg
-from farkle import ingest, metrics, analytics
+Config module for the analysis stage.
 
-def main():
+Typical usage::
+
+    from farkle.analysis_config import PipelineCfg
+    from farkle import ingest, curate, metrics, analytics
+
     cfg = PipelineCfg(root=Path(args.root))
-    ingest.run(cfg)
+    ingest.run(cfg)   # writes ``game_rows.raw.parquet``
+    curate.run(cfg)   # adds manifest & renames to ``game_rows.parquet``
     metrics.run(cfg)
     analytics.run_all(cfg)     # inside it: respects cfg.run_trueskill flags
 """
