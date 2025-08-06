@@ -46,7 +46,7 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
     monkeypatch.setattr(
         rb,
         "bonferroni_pairs",
-        lambda elites, games_needed, seed: pd.DataFrame(
+        lambda elites, games_needed, seed: pd.DataFrame(  # noqa: ARG005
             {"a": ["A"], "b": ["B"], "seed": [seed]}
         ),  # noqa: ARG005
     )

@@ -98,6 +98,24 @@ def _read_loose_parquets(block: Path) -> pd.DataFrame | None:
     return pd.concat(frames, ignore_index=True)
 
 
+def _df_to_games(df: pd.DataFrame, n_players: int) -> list[list[str]]:
+    strat_cols = [f"P{i}_strategy" for i in range(1, n_players+1)]
+    rank_cols  = [f"P{i}_rank"     for i in range(1, n_players+1)]
+
+    # shape (rows, players)
+    strategies = df[strat_cols].to_numpy()
+    ranks      = df[rank_cols].to_numpy()
+
+    # argsort turns low rank (1) into position 0, etc.
+    order = np.argsort(ranks, axis=1)          # same shape
+    # gather strategies in that order per row
+    row_idx  = np.arange(strategies.shape[0])[:, None]
+    ordered  = strategies[row_idx, order]      # fancy-indexing
+
+    # build python lists only once
+    return ordered.tolist()
+
+
 def _load_ranked_games(block: Path) -> list[list[str]]:
     """Return one list per game, ordered by finishing position."""
     # Prefer the consolidated `<Np_rows>.parquet` file when available.

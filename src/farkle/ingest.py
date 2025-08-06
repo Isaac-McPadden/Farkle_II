@@ -55,7 +55,7 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
         # Already processed — nothing to do.
         return df
 
-    df = df.copy(deep=False)                     # cheap shallow copy
+    df = df.copy()                     # cheap shallow copy
     seat_cols = sorted(
         [c for c in df.columns if _SEAT_RE.match(c)],
         key=lambda c: int(_SEAT_RE.match(c).group(1)),  # natural seat order  # type: ignore
