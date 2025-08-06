@@ -63,7 +63,10 @@ def run_bonferroni_head2head(seed: int = 0, root: Path = DEFAULT_ROOT) -> None:
 
     out = pd.DataFrame(records)
     pairwise_csv.parent.mkdir(exist_ok=True)
-    out.to_csv(pairwise_csv, index=False)
+
+    tmp_path = pairwise_csv.with_suffix(".tmp")
+    out.to_csv(tmp_path, index=False)
+    tmp_path.replace(pairwise_csv)
 
 
 def main(argv: List[str] | None = None) -> None:
