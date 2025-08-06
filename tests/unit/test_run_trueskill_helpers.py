@@ -120,7 +120,10 @@ def test_update_ratings_ranked():
         ratings[p[0]], ratings[p[1]] = new[0][0], new[1][0]
 
     expected = {k: rt.RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
-    assert result == expected
+    assert set(result) == {"A", "B", "C"}
+    assert result["A"] == expected["A"]
+    assert result["B"] == expected["B"]
+    assert result["C"] == rt.RatingStats(rt.DEFAULT_RATING.mu, rt.DEFAULT_RATING.sigma)
 
 
 def test_load_ranked_games_empty(tmp_path):
