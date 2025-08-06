@@ -27,6 +27,7 @@ import numpy as np
 import pandas as pd
 import trueskill
 import yaml
+from trueskill import Rating
 
 from .utils import build_tiers
 
@@ -36,6 +37,8 @@ DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results"
 
 log = logging.getLogger(__name__)
 
+DEFAULT_RATING = trueskill.Rating()  # uses env defaults
+
 
 @dataclass(slots=True)
 class RatingStats:
@@ -43,6 +46,11 @@ class RatingStats:
 
     mu: float
     sigma: float
+
+
+def _ensure_seed_ratings(ratings: dict[str, Rating], all_strategies: list[str]) -> None:
+    for strat in all_strategies:
+        ratings.setdefault(strat, DEFAULT_RATING)
 
 
 def _read_manifest_seed(path: Path) -> int:
@@ -153,6 +161,10 @@ def _update_ratings(
         Mapping from strategy name to its RatingStats tuple.
     """
     ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
+    all_strats: set[str] = set(keepers)
+    for g in games:
+        all_strats.update(g)
+    _ensure_seed_ratings(ratings, list(all_strats))
 
     for game in games:
         # keep only the strategies we really want to rate

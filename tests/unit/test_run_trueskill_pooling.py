@@ -71,13 +71,14 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
     expected3 = run_trueskill._update_ratings(g3, ["A", "B"], env)
 
     w2, w3 = len(g2), len(g3)
-    expected_pooled = {
-        k: run_trueskill.RatingStats(
-            (expected2[k].mu * w2 + expected3[k].mu * w3) / (w2 + w3),
-            (expected2[k].sigma * w2 + expected3[k].sigma * w3) / (w2 + w3),
+    expected_pooled = {}
+    for k in ("A", "B", "C"):
+        e2 = expected2.get(k, run_trueskill.RatingStats(run_trueskill.DEFAULT_RATING.mu, run_trueskill.DEFAULT_RATING.sigma))
+        e3 = expected3.get(k, run_trueskill.RatingStats(run_trueskill.DEFAULT_RATING.mu, run_trueskill.DEFAULT_RATING.sigma))
+        expected_pooled[k] = run_trueskill.RatingStats(
+            (e2.mu * w2 + e3.mu * w3) / (w2 + w3),
+            (e2.sigma * w2 + e3.sigma * w3) / (w2 + w3),
         )
-        for k in ("A", "B")
-    }
 
     assert r2 == expected2
     assert r3 == expected3
