@@ -31,7 +31,8 @@ import yaml
 from .utils import build_tiers
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
-DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results_seed_0"  # root folder for the results of run_full_field.py
+# Default location of tournament result blocks when no path is supplied
+DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results"
 
 log = logging.getLogger(__name__)
 
@@ -171,7 +172,7 @@ def _update_ratings(
 def run_trueskill(
     output_seed: int = 0,
     root: Path | None = None,
-    dataroot: Path = DEFAULT_DATAROOT,
+    dataroot: Path | None = None,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -183,8 +184,10 @@ def run_trueskill(
     root: Path | None, optional
         Directory where rating artifacts are written. Defaults to
         ``<dataroot>/analysis`` when ``None``.
-    dataroot: Path, optional
-        Directory containing tournament result blocks.
+    dataroot: Path | None, optional
+        Directory containing tournament result blocks. When ``None`` the
+        path defaults to ``<root>/results`` if ``root`` is given, otherwise
+        to :data:`DEFAULT_DATAROOT`.
 
     Side Effects
     ------------
@@ -196,7 +199,14 @@ def run_trueskill(
     ``tiers.json``
         JSON file with league tiers derived from the pooled ratings.
     """
-    base = Path(dataroot)
+    if dataroot is None:
+        if root is not None:
+            base = Path(root) / "results"
+        else:
+            base = DEFAULT_DATAROOT
+    else:
+        base = Path(dataroot)
+
     root = Path(root) if root is not None else base / "analysis"
     root.mkdir(parents=True, exist_ok=True)
     _read_manifest_seed(base / "manifest.yaml")
