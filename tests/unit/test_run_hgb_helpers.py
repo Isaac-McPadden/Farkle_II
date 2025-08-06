@@ -1,7 +1,7 @@
 import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 
-from farkle.run_rf import plot_partial_dependence
+from farkle.run_hgb import plot_partial_dependence
 
 
 def test_plot_partial_dependence(tmp_path):

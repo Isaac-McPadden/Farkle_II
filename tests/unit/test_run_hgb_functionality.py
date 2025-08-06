@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from farkle import run_rf, run_trueskill
+from farkle import run_hgb, run_trueskill
 
 
 def _setup_data(tmp_path: Path) -> Path:
@@ -23,31 +23,31 @@ def _setup_data(tmp_path: Path) -> Path:
     return data_dir
 
 
-def test_run_rf_custom_output_path(tmp_path):
+def test_run_hgb_custom_output_path(tmp_path):
     data_dir = _setup_data(tmp_path)
     out_file = data_dir / "custom.json"
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_rf.run_rf(output_path=out_file, root=data_dir)
+        run_hgb.run_hgb(output_path=out_file, root=data_dir)
     finally:
         os.chdir(cwd)
     assert out_file.exists()
-    assert not (data_dir / "rf_importance.json").exists()
+    assert not (data_dir / "hgb_importance.json").exists()
 
 
-def test_run_rf_importance_length_check(tmp_path, monkeypatch):
+def test_run_hgb_importance_length_check(tmp_path, monkeypatch):
     data_dir = _setup_data(tmp_path)
 
     def fake_perm_importance(_model, _X, _y, n_repeats=5, random_state=None):
         _ = n_repeats, random_state
         return {"importances_mean": np.array([0.1, 0.2])}
 
-    monkeypatch.setattr(run_rf, "permutation_importance", fake_perm_importance)
+    monkeypatch.setattr(run_hgb, "permutation_importance", fake_perm_importance)
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
         with pytest.raises(ValueError, match="Mismatch between number of features"):
-            run_rf.run_rf(output_path=data_dir / "out.json", root=data_dir)
+            run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
     finally:
         os.chdir(cwd)

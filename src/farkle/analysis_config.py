@@ -46,8 +46,8 @@ class PipelineCfg:
     # 3. analytics toggles / params
     run_trueskill: bool = True
     run_head2head: bool = True
-    run_rf: bool = True
-    rf_n_estimators: int = 500
+    run_hgb: bool = True
+    hgb_max_iter: int = 500
     trueskill_beta: float = 25 / 6
 
     # 4. perf
