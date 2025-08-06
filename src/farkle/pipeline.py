@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 from typing import Callable, Sequence
 
@@ -21,6 +22,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(remaining)
     verbose = getattr(cli_ns, "verbose", False)
+
+    logging.basicConfig(
+        level=getattr(logging, cfg.log_level.upper(), logging.INFO),
+        format="%(message)s",
+        force=True,
+    )
 
     if args.command == "ingest":
         try:
