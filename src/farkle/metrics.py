@@ -11,6 +11,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+import pandas as pd
 
 from farkle.analysis_config import PipelineCfg
 
@@ -44,6 +45,35 @@ def _write_csv(tmp: Path, final: Path, rows: list[dict[str, Any]]) -> None:
         writer.writerows(rows)
     tmp.replace(final)
     log.info("✓ seat_advantage → %s", final.name)
+
+
+def _update_batch_counters(
+    arr_win: Any,
+    arr_wseat: Any,
+    arr_score: Any,
+    arr_nrounds: Any,
+    wins_by_strategy: Counter[str],
+    rounds_by_strategy: Counter[str],
+    score_by_strategy: Counter[str],
+    wins_by_seat: Counter[str],
+) -> None:
+    """Update running counters using vectorized batch operations."""
+    df = pd.DataFrame(
+        {
+            "winner": arr_win,
+            "winner_seat": arr_wseat,
+            "winning_score": arr_score,
+            "n_rounds": arr_nrounds,
+        }
+    )
+    wins_by_strategy.update(df["winner"].value_counts().to_dict())
+    wins_by_seat.update(df["winner_seat"].value_counts().to_dict())
+    rounds_by_strategy.update(
+        df.groupby("winner")["n_rounds"].sum().to_dict()
+    )
+    score_by_strategy.update(
+        df.groupby("winner")["winning_score"].sum().to_dict()
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -110,12 +140,17 @@ def run(cfg: PipelineCfg) -> None:
                 s for s in batch[col].to_pylist() if s is not None
             )
 
-        for w, ws, sc, nr in zip(arr_win, arr_wseat, arr_score, arr_nrounds, strict=True):
-            total_games += 1
-            wins_by_strategy[w] += 1
-            rounds_by_strategy[w] += nr
-            score_by_strategy[w] += sc
-            wins_by_seat[ws] += 1
+        _update_batch_counters(
+            arr_win,
+            arr_wseat,
+            arr_score,
+            arr_nrounds,
+            wins_by_strategy,
+            rounds_by_strategy,
+            score_by_strategy,
+            wins_by_seat,
+        )
+        total_games += len(arr_win)
 
     # Build rows ---------------------------------------------------------------
     metrics_rows: list[dict[str, Any]] = []
