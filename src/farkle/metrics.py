@@ -54,14 +54,23 @@ def run(cfg: PipelineCfg) -> None:
     -------
     <analysis_dir>/metrics.parquet         (per-strategy & overall KPIs)
     <analysis_dir>/seat_advantage.csv      (P1..P6 win-rates with CI)
+
+    Notes
+    -----
+    ``mean_score`` and ``mean_rounds`` are conditional averages over games
+    the strategy actually won, capturing a typical winning performance. The
+    ``expected_score`` divides total points by ``total_games`` to give the
+    per-game score expectation with losses counted as zero.
     """
     analysis_dir = cfg.analysis_dir
     data_file = cfg.curated_parquet
     out_metrics = analysis_dir / cfg.metrics_name
     out_seats = analysis_dir / "seat_advantage.csv"
 
-    if all(p.exists() and p.stat().st_mtime >= data_file.stat().st_mtime
-           for p in (out_metrics, out_seats)):
+    if all(
+        p.exists() and p.stat().st_mtime >= data_file.stat().st_mtime
+        for p in (out_metrics, out_seats)
+    ):
         log.info("Metrics: outputs up-to-date – skipped")
         return
 
@@ -75,10 +84,10 @@ def run(cfg: PipelineCfg) -> None:
 
     reader = ds.dataset(data_file, format="parquet")
     for batch in reader.to_batches(columns=_WIN_COLS):
-        arr_win      = batch.column("winner").to_pylist()
-        arr_wseat    = batch.column("winner_seat").to_pylist()
-        arr_score    = batch.column("winning_score").to_pylist()
-        arr_nrounds  = batch.column("n_rounds").to_pylist()
+        arr_win = batch.column("winner").to_pylist()
+        arr_wseat = batch.column("winner_seat").to_pylist()
+        arr_score = batch.column("winning_score").to_pylist()
+        arr_nrounds = batch.column("n_rounds").to_pylist()
 
         for w, ws, sc, nr in zip(arr_win, arr_wseat, arr_score, arr_nrounds, strict=True):
             total_games += 1
@@ -94,10 +103,14 @@ def run(cfg: PipelineCfg) -> None:
         metrics_rows.append(
             {
                 "strategy": strat,
-                "games": total_games,          # all strategies saw every game
+                "games": total_games,  # all strategies saw every game
                 "wins": n,
                 "win_rate": n / total_games,
+                # Expected value of points per game, counting zero for losses
+                "expected_score": score_by_strategy[strat] / total_games,
+                # Typical winning score – conditional mean over only games won
                 "mean_score": score_by_strategy[strat] / n,
+                # Typical number of rounds in a win (losing rounds are unknown)
                 "mean_rounds": rounds_by_strategy[strat] / n,
             }
         )
@@ -124,6 +137,7 @@ def run(cfg: PipelineCfg) -> None:
             ("games", pa.int32()),
             ("wins", pa.int32()),
             ("win_rate", pa.float32()),
+            ("expected_score", pa.float32()),
             ("mean_score", pa.float32()),
             ("mean_rounds", pa.float32()),
         ]
