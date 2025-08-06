@@ -10,6 +10,7 @@ from __future__ import annotations
 import types  # noqa: F401
 from collections import Counter, defaultdict
 from pathlib import Path
+from typing import cast
 from unittest.mock import ANY
 
 import numpy as np  # noqa: F401 | Potentially imports something that needs it
@@ -296,7 +297,11 @@ def test_play_one_shuffle_collects(monkeypatch):
     strats = _mini_strats(4)
     cfg = rt.TournamentConfig(n_players=2)
     rt._init_worker(strats, cfg, None)
-    rt._STATE = rt.WorkerState(list(strats), types.SimpleNamespace(n_players=2, games_per_shuffle=2), None)
+    rt._STATE = rt.WorkerState(
+        list(strats),
+        cast(rt.TournamentConfig, types.SimpleNamespace(n_players=2, games_per_shuffle=2)),
+        None,
+    )
 
     class DummyRNG:
         def permutation(self, n): return rt.np.arange(n)
@@ -346,9 +351,19 @@ def test_run_chunk_metrics_queue(monkeypatch):
     sent = []
 
     class DummyQueue:
-        def put(self, item): sent.append(item)
+        def put(self, item):
+            sent.append(item)
 
-    monkeypatch.setattr(rt, "_STATE", rt.WorkerState([], types.SimpleNamespace(games_per_shuffle=0), DummyQueue()), raising=False)
+    monkeypatch.setattr(
+        rt,
+        "_STATE",
+        rt.WorkerState(
+            [],
+            cast(rt.TournamentConfig, types.SimpleNamespace(games_per_shuffle=0)),
+            cast(rt.mp.Queue, DummyQueue()),
+        ),
+        raising=False,
+    )
 
     wins, sums, sqs = rt._run_chunk_metrics([1, 2], collect_rows=True)
     assert sent == [{"game_seed": 1}, {"game_seed": 2}]
