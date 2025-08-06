@@ -53,7 +53,7 @@ class PipelineCfg:
     trueskill_beta: float = 25 / 6
 
     # 4. perf
-    cores = os.cpu_count() or 1
+    cores = os.cpu_count() or 1  # or however many the user wants
     if cores is None:
         raise RuntimeError("Unable to determine CPU Count")
     n_jobs: int = max(cores - 1, 1)
@@ -69,7 +69,7 @@ class PipelineCfg:
         try:
             import subprocess
             return subprocess.check_output(
-                        ["git", "rev-parse", "HEAD"], text=True, encoding="utf-8"
+                        ["git", "rev-parse", "HEAD"], text=True
                         ).strip()
         except Exception:
             return "unknown _load_git_sha() exception"

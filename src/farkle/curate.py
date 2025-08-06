@@ -43,7 +43,9 @@ def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: P
 
 
 def _already_curated(out_file: Path, manifest: Path) -> bool:
-    """Return True if both parquet & manifest exist and appear consistent."""
+    """Return True if both parquet & manifest exist and appear consistent.
+    Prevents redoing analyses. Expected behavior is to return a silent False.
+    """
     if not (out_file.exists() and manifest.exists()):
         return False
     try:
@@ -82,7 +84,7 @@ def run(cfg: PipelineCfg) -> None:
     manifest = cfg.analysis_dir / cfg.manifest_name
 
     if _already_curated(dst_file, manifest):
-        log.info("Curate: %s already up-to-date – skipped", dst_file.name)
+        log.info("Curate: %s already up-to-date - skipped", dst_file.name)
         return
 
     if not raw_file.exists():

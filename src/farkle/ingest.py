@@ -45,9 +45,9 @@ _SEAT_RE = re.compile(r"^P(\d+)_strategy$")
 def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     """
     Enrich *df* with:
-    • winner_strategy – the strategy string for the winning seat
-    • winner_seat     – seat label (P1 … PN)
-    • seat_ranks      – tuple of seat labels ordered by rank (winner first)
+    • winner_strategy - the strategy string for the winning seat
+    • winner_seat     - seat label (P1 … PN)
+    • seat_ranks      - tuple of seat labels ordered by rank (winner first)
 
     Leaves all original columns intact so caller can `drop()` later.
     """
@@ -65,7 +65,7 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     df["winner_seat"] = df["winner"]            # winner column still holds P#
 
     # --- Step 2: promote strategy string -------------------------------
-    seat_idx = df["winner_seat"].str.extract(r"P(\d+)").astype("int64")[0] - 1
+    seat_idx = df["winner_seat"].dropna().str.extract(r"P(\d+)").astype("int64")[0] - 1
     df["winner_strategy"] = df[seat_cols].to_numpy()[
         np.arange(len(df)), seat_idx.to_numpy()
     ]
