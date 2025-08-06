@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
-from pathlib import Path
 
+from farkle import run_bonferroni_head2head as _h2h
 from farkle.analysis_config import PipelineCfg
 
 log = logging.getLogger(__name__)
-SCRIPT = Path(__file__).resolve().parents[1] / "run_bonferroni_head2head.py"
 
 
 def run(cfg: PipelineCfg) -> None:
@@ -17,6 +14,5 @@ def run(cfg: PipelineCfg) -> None:
         log.info("Head-to-Head: results up-to-date - skipped")
         return
 
-    cmd = [sys.executable, str(SCRIPT), "--root", str(cfg.results_dir)]
-    log.info("Head-to-Head: calling %s", " ".join(cmd))
-    subprocess.check_call(cmd)
+    log.info("Head-to-Head: running in-process")
+    _h2h.main(["--root", str(cfg.results_dir)])
