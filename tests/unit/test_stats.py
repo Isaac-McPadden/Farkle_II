@@ -1,4 +1,5 @@
 from math import ceil, sqrt
+from typing import Any
 
 import pytest
 from scipy.stats import norm
@@ -22,7 +23,7 @@ from farkle.stats import games_for_power
     ],
 )
 def test_games_for_power_invalid(params):
-    base = {"n_strategies": 2}
+    base: dict[str, Any] = {"n_strategies": 2}
     base.update(params)
     with pytest.raises(ValueError):
         games_for_power(**base)
