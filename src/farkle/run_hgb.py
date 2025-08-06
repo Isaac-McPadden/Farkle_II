@@ -1,5 +1,5 @@
-# src/farkle/run_rf.py
-"""Train a gradient boosting model to analyse strategy metrics.
+# src/farkle/run_hgb.py
+"""Train a hist gradient boosting model to analyse strategy metrics.
 
 This script reads the feature metrics and pooled ratings, fits a
 ``HistGradientBoostingRegressor`` to predict strategy ``mu`` values, then writes
@@ -70,7 +70,7 @@ def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
     return out_file
 
 
-def run_rf(
+def run_hgb(
     seed: int = 0,
     output_path: Path | None = None,
     root: Path = DEFAULT_ROOT,
@@ -93,7 +93,7 @@ def run_rf(
 
     Writes
     ------
-    ``<root>/rf_importance.json``
+    ``<root>/hgb_importance.json``
         JSON file mapping metric names to permutation importance scores.
     ``notebooks/figs/pd_<feature>.png``
         Partial dependence plots for each metric.
@@ -127,7 +127,7 @@ def run_rf(
         for c, s in zip(features.columns, perm_importance["importances_mean"], strict=False)
     }
     if output_path is None:
-        output_path = root / "rf_importance.json"
+        output_path = root / "hgb_importance.json"
 
     output_path.parent.mkdir(exist_ok=True)
     with output_path.open("w") as fh:
@@ -139,7 +139,7 @@ def run_rf(
 
 
 def main(argv: List[str] | None = None) -> None:
-    """Entry point for ``python -m farkle.run_rf``.
+    """Entry point for ``python -m farkle.run_hgb``.
 
     Parameters
     ----------
@@ -150,9 +150,10 @@ def main(argv: List[str] | None = None) -> None:
 
     parser = argparse.ArgumentParser(
         description=(
-            "Train a random forest using data/metrics.parquet and data/ratings_pooled.pkl. "
-            "Run from the project root. Writes rf_importance.json to --output and partial "
-            "dependence plots to notebooks/figs/."
+            "Train a HistGradientBoostingRegressor using data/metrics.parquet and "
+            "data/ratings_pooled.pkl. Run from the project root. Writes "
+            "hgb_importance.json to --output and partial dependence plots to "
+            "notebooks/figs/."
         )
     )
     parser.add_argument("--seed", type=int, default=0)
@@ -161,11 +162,11 @@ def main(argv: List[str] | None = None) -> None:
         "--output",
         type=Path,
         default=None,
-        help="Path to write rf_importance.json",
+        help="Path to write hgb_importance.json",
     )
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
     args = parser.parse_args(argv or [])
-    run_rf(seed=args.seed, output_path=args.output, root=args.root)
+    run_hgb(seed=args.seed, output_path=args.output, root=args.root)
 
 
 if __name__ == "__main__":

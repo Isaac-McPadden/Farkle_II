@@ -43,7 +43,7 @@ def test_pipeline_all_creates_outputs(tmp_path: Path) -> None:
 
     # analytics artefacts
     assert (tmp_path / "ratings_pooled.pkl").exists()
-    assert (tmp_path / "rf_importance.json").exists()
+    assert (tmp_path / "hgb_importance.json").exists()
     figs = tmp_path / "notebooks" / "figs"
     assert any(figs.glob("pd_*.png"))
 
@@ -60,7 +60,7 @@ def test_pipeline_ingest_only(tmp_path: Path) -> None:
     analysis = tmp_path / "analysis"
     assert (analysis / "data" / "game_rows.parquet").exists()
     assert not (analysis / "metrics.parquet").exists()
-    assert not (tmp_path / "rf_importance.json").exists()
+    assert not (tmp_path / "hgb_importance.json").exists()
 
 
 def test_pipeline_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
