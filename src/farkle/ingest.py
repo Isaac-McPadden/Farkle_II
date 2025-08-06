@@ -83,11 +83,17 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def run(cfg: PipelineCfg) -> None:
+    """Consolidate raw results blocks into a single parquet file.
+
+    The ingest step writes ``game_rows.raw.parquet`` beneath the analysis
+    directory.  A subsequent :mod:`farkle.curate` run will attach a manifest and
+    rename it to :pyattr:`cfg.curated_parquet`.
+    """
     log.info("Ingest started: root=%s", cfg.results_dir)
 
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    out_path = cfg.curated_parquet
-    tmp_path = out_path.with_suffix(".in-progress")
+    raw_path = cfg.curated_parquet.with_suffix(".raw.parquet")
+    tmp_path = raw_path.with_suffix(".in-progress")
     if tmp_path.exists():
         tmp_path.unlink()
 
@@ -141,8 +147,8 @@ def run(cfg: PipelineCfg) -> None:
         if writer:
             writer.close()
     if tmp_path.exists():
-        tmp_path.replace(out_path)
-    log.info("Ingest finished — %d rows written to %s", total_rows, out_path)
+        tmp_path.replace(raw_path)
+    log.info("Ingest finished — %d rows written to %s", total_rows, raw_path)
 
 
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper

@@ -38,6 +38,7 @@ def test_pipeline_all_creates_outputs(tmp_path: Path) -> None:
 
     analysis = tmp_path / "analysis"
     assert (analysis / "data" / "game_rows.parquet").exists()
+    assert not (analysis / "data" / "game_rows.raw.parquet").exists()
     assert (analysis / "metrics.parquet").exists()
     assert (analysis / "seat_advantage.csv").exists()
 
@@ -58,7 +59,10 @@ def test_pipeline_ingest_only(tmp_path: Path) -> None:
         os.chdir(cwd)
 
     analysis = tmp_path / "analysis"
-    assert (analysis / "data" / "game_rows.parquet").exists()
+    raw = analysis / "data" / "game_rows.raw.parquet"
+    curated = analysis / "data" / "game_rows.parquet"
+    assert raw.exists()
+    assert not curated.exists()
     assert not (analysis / "metrics.parquet").exists()
     assert not (tmp_path / "hgb_importance.json").exists()
 

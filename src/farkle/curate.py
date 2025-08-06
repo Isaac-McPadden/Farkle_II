@@ -67,17 +67,17 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
 
 # ──────────────────────────────────────────────────────────────────────────────
 def run(cfg: PipelineCfg) -> None:
-    """Finalize the curated parquet written by ingest.run(cfg).
-    
+    """Finalize the raw parquet written by :func:`farkle.ingest.run`.
+
     Side-effects
     ------------
-    •  Writes <analysis_dir>/data/game_rows.parquet        (if absent or stale)
-    •  Writes <analysis_dir>/manifest.json
-    •  Logs progress with the same logger used by ingest.py
+    •  Reads ``game_rows.raw.parquet`` produced by ingest
+    •  Writes ``<analysis_dir>/data/game_rows.parquet`` and a JSON manifest
+    •  Logs progress with the same logger used by :mod:`ingest`
     """
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
-    src_tmp = cfg.curated_parquet.with_suffix(".in-progress")
+    raw_file = cfg.curated_parquet.with_suffix(".raw.parquet")
     dst_file = cfg.curated_parquet
     manifest = cfg.analysis_dir / cfg.manifest_name
 
@@ -85,27 +85,19 @@ def run(cfg: PipelineCfg) -> None:
         log.info("Curate: %s already up-to-date – skipped", dst_file.name)
         return
 
-    #  Stream-copy the row-groups exactly as ingest produced them
-    src_rows = 0
-    source_pq = cfg.curated_parquet  # ingest’s output
-    if not source_pq.exists():
-        raise FileNotFoundError(source_pq)
+    if not raw_file.exists():
+        raise FileNotFoundError(raw_file)
 
-    md = pq.read_metadata(source_pq)
+    md = pq.read_metadata(raw_file)
     schema = md.schema.to_arrow_schema()
-    with pq.ParquetFile(source_pq) as reader, pq.ParquetWriter(
-        src_tmp, schema, compression=cfg.parquet_codec
-    ) as writer:
-        for i in range(reader.num_row_groups):
-            tbl = reader.read_row_group(i)
-            writer.write_table(tbl, row_group_size=cfg.row_group_size)
-            src_rows += tbl.num_rows
-            if i % 10 == 0:
-                log.debug("curate: %d/%d row-groups copied", i + 1, reader.num_row_groups)
+    _write_manifest(manifest, rows=md.num_rows, schema=schema, cfg=cfg)
 
-    # Atomic publish
-    src_tmp.replace(dst_file)
+    # Atomic publish: rename raw file to curated destination
+    raw_file.replace(dst_file)
 
-    #  Verify & manifest
-    log.info("Curate: wrote %s (%d rows, %d row-groups)", dst_file.name, src_rows, md.num_row_groups)
-    _write_manifest(manifest, rows=src_rows, schema=schema, cfg=cfg)
+    log.info(
+        "Curate: wrote %s (%d rows, %d row-groups)",
+        dst_file.name,
+        md.num_rows,
+        md.num_row_groups,
+    )
