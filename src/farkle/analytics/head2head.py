@@ -15,4 +15,11 @@ def run(cfg: PipelineCfg) -> None:
         return
 
     log.info("Head-to-Head: running in-process")
-    _h2h.main(["--root", str(cfg.analysis_dir)])
+    _h2h.main(
+        [
+            "--root",
+            str(cfg.analysis_dir),
+            "--jobs",
+            str(cfg.n_jobs),
+        ]
+    )

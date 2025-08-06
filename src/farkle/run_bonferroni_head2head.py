@@ -19,7 +19,7 @@ from farkle.utils import bonferroni_pairs
 DEFAULT_ROOT = Path("results_seed_0")
 
 
-def run_bonferroni_head2head(seed: int = 0, root: Path = DEFAULT_ROOT) -> None:
+def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs: int = 1) -> None:
     """Run pairwise games between top-tier strategies using Bonferroni tests.
 
     Parameters
@@ -27,6 +27,11 @@ def run_bonferroni_head2head(seed: int = 0, root: Path = DEFAULT_ROOT) -> None:
     seed : int, default ``0``
         Base seed for shuffling the schedule and deterministically assigning
         unique seeds to each simulated game.
+    root : Path, default :data:`DEFAULT_ROOT`
+        Directory containing ``tiers.json`` and where results are written.
+    n_jobs : int, default ``1``
+        Number of worker processes; when greater than one, games are simulated in
+        parallel.
 
     The function reads ``data/tiers.json`` to find strategies in the highest
     tier.  It runs enough games for a Bonferroni-corrected binomial test on each
@@ -53,7 +58,9 @@ def run_bonferroni_head2head(seed: int = 0, root: Path = DEFAULT_ROOT) -> None:
     for (a, b), grp in schedule.groupby(["a", "b"]):
         seeds = grp["seed"].tolist()
         df = simulate_many_games_from_seeds(
-            seeds=seeds, strategies=[parse_strategy(a), parse_strategy(b)], n_jobs=1
+            seeds=seeds,
+            strategies=[parse_strategy(a), parse_strategy(b)],
+            n_jobs=n_jobs,
         )
         wins = df["winner_strategy"].value_counts()
         wa = int(wins.get(a, 0))
@@ -73,13 +80,14 @@ def main(argv: List[str] | None = None) -> None:
     """Command line interface for :func:`run_bonferroni_head2head`.
 
     Usage
-        python -m farkle.run_bonferroni_head2head [--seed N]
+        python -m farkle.run_bonferroni_head2head [--seed N] [--jobs J]
     """
     parser = argparse.ArgumentParser(description="Head-to-head Bonferroni analysis")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
+    parser.add_argument("--jobs", type=int, default=1, help="worker processes")
     args = parser.parse_args(argv)
-    run_bonferroni_head2head(seed=args.seed, root=args.root)
+    run_bonferroni_head2head(seed=args.seed, root=args.root, n_jobs=args.jobs)
 
 
 if __name__ == "__main__":
