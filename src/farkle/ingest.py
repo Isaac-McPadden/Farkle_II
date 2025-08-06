@@ -17,8 +17,10 @@ log = logging.getLogger(__name__)
 def _iter_shards(block: Path, cols: tuple[str, ...]):
     """Yield one (DataFrame, source_path) per shard, limited to *cols*."""
     # Newer runs emit a single `<Np_rows>.parquet` file directly under the
-    # block directory. Prefer that if present.
-    row_file = next(block.glob("*p_rows.parquet"), None)
+    # block directory. Prefer that if present. Sorting ensures deterministic
+    # selection should multiple consolidated files coexist.
+    row_files = sorted(block.glob("*p_rows.parquet"))
+    row_file = row_files[0] if row_files else None
     if row_file is not None:
         yield pd.read_parquet(row_file, columns=list(cols)), row_file
         return
@@ -69,15 +71,13 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     ]
 
     # --- Step 3: capture finishing order -------------------------------
-    def _row_to_seat_ranks(row):
-        pairs = [
-            (seat[:-9], row[seat.replace("_strategy", "_rank")]) for seat in seat_cols
-        ]
-        return tuple(seat for seat, rk in sorted(pairs, key=lambda p: p[1]))
-
     rank_cols = [c.replace("_strategy", "_rank") for c in seat_cols]
     if all(col in df.columns for col in rank_cols):
-        df["seat_ranks"] = df.apply(_row_to_seat_ranks, axis=1)
+        ranks = df[rank_cols].to_numpy()
+        seat_labels = np.array([c[:-9] for c in seat_cols])
+        df["seat_ranks"] = list(
+            map(tuple, seat_labels[ranks.argsort(axis=1)])
+        )
 
     return df
 
@@ -87,8 +87,9 @@ def run(cfg: PipelineCfg) -> None:
 
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
     out_path = cfg.curated_parquet
-    if out_path.exists():
-        out_path.unlink()  # remove old file; idempotent
+    tmp_path = out_path.with_suffix(".in-progress")
+    if tmp_path.exists():
+        tmp_path.unlink()
 
     # Prepare Arrow writer once
     writer = None
@@ -108,7 +109,9 @@ def run(cfg: PipelineCfg) -> None:
                     raise RuntimeError("Shard DataFrame columns do not match expected columns")
 
                 for col in expected_cols - set(shard_df.columns):
-                    shard_df[col] = pd.NA
+                    shard_df[col] = pd.Series(
+                        pd.NA, index=shard_df.index, dtype="string[pyarrow]"
+                    )
 
                 shard_df = shard_df.reindex(columns=cfg.ingest_cols)
                 log.debug("Shard %s → %d rows", shard_path.name, len(shard_df))
@@ -128,7 +131,7 @@ def run(cfg: PipelineCfg) -> None:
                 table = pa.Table.from_pandas(shard_df, preserve_index=False)
                 if writer is None:
                     writer = pq.ParquetWriter(
-                        out_path,
+                        tmp_path,
                         table.schema,
                         compression=cfg.parquet_codec,
                     )
@@ -137,6 +140,8 @@ def run(cfg: PipelineCfg) -> None:
     finally:
         if writer:
             writer.close()
+    if tmp_path.exists():
+        tmp_path.replace(out_path)
     log.info("Ingest finished — %d rows written to %s", total_rows, out_path)
 
 
