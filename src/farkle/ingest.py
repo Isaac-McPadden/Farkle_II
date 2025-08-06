@@ -28,7 +28,7 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
     # Legacy layout with `<Np_rows>` directory containing shards
     row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
     if row_dirs:
-        for shard_path in row_dirs[0].glob("*.parquet"):
+        for shard_path in sorted(row_dirs[0].glob("*.parquet")):
             yield pd.read_parquet(shard_path, columns=list(cols)), shard_path
     else:  # compact parquet or CSV
         for pqt in block.glob("*.parquet"):
