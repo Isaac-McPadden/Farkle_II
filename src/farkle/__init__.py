@@ -71,15 +71,15 @@ pathlib.Path.unlink = _safe_unlink  # type: ignore[assignment]
 # ``run_trueskill``.
 # --------------------------------------------------------------------------- #
 
-__all__ = [
-    "FarklePlayer",
-    "GameMetrics",
-    "FavorDiceOrScore",
-    "ThresholdStrategy",
-    "generate_strategy_grid",
-    "simulate_many_games_stream",
-    "simulate_many_games_from_seeds",
-    "games_for_power",
+__all__ = [  # loads lazily, that's why reportUnsupportedDunderAll is triggered
+    "FarklePlayer",  # pyright: ignore[reportUnsupportedDunderAll]
+    "GameMetrics",  # pyright: ignore[reportUnsupportedDunderAll]
+    "FavorDiceOrScore",  # pyright: ignore[reportUnsupportedDunderAll]
+    "ThresholdStrategy",  # pyright: ignore[reportUnsupportedDunderAll]
+    "generate_strategy_grid",  # pyright: ignore[reportUnsupportedDunderAll]
+    "simulate_many_games_stream",  # pyright: ignore[reportUnsupportedDunderAll]
+    "simulate_many_games_from_seeds",  # pyright: ignore[reportUnsupportedDunderAll]
+    "games_for_power",  # pyright: ignore[reportUnsupportedDunderAll]
 ]
 
 _LAZY_IMPORTS = {

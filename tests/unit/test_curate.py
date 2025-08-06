@@ -1,5 +1,3 @@
-from pathlib import Path
-
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -19,7 +17,6 @@ def test_already_curated_schema_checksum(tmp_path):
 
     assert _already_curated(file1, manifest)
 
-    schema2 = pa.schema([("b", pa.int64())])
     table2 = pa.Table.from_pydict({"b": [1]})
     file2 = tmp_path / "file2.parquet"
     pq.write_table(table2, file2)

@@ -72,7 +72,7 @@ def test_pipeline_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyP
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        def _boom(cfg):  # simulate analytics dependency failure
+        def _boom(cfg):  # simulate analytics dependency failure  # noqa: ARG001
             raise RuntimeError("missing dependency")
 
         monkeypatch.setattr("farkle.analytics.run_all", _boom)

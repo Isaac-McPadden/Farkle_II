@@ -8,10 +8,10 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
-import pandas as pd
 
 from farkle.analysis_config import PipelineCfg
 

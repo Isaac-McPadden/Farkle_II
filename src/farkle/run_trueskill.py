@@ -200,10 +200,7 @@ def run_trueskill(
         JSON file with league tiers derived from the pooled ratings.
     """
     if dataroot is None:
-        if root is not None:
-            base = Path(root) / "results"
-        else:
-            base = DEFAULT_DATAROOT
+        base = Path(root) / "results" if root is not None else DEFAULT_DATAROOT
     else:
         base = Path(dataroot)
 

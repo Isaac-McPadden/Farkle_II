@@ -46,8 +46,8 @@ sys.modules.setdefault("scipy.stats", scipy_stats_stub)  # type: ignore
 @pytest.fixture(autouse=True)
 def silence_logging(monkeypatch):
     """Mute info/error logs from run_tournament during tests."""
-    monkeypatch.setattr(rt.log, "info", lambda *a, **k: None)
-    monkeypatch.setattr(rt.log, "error", lambda *a, **k: None)
+    monkeypatch.setattr(rt.log, "info", lambda *a, **k: None)  # noqa: ARG005
+    monkeypatch.setattr(rt.log, "error", lambda *a, **k: None)  # noqa: ARG005
 
 # ---------------------------------------------------------------------------
 # Dummy helper for deterministic results

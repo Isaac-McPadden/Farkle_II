@@ -6,7 +6,7 @@ from farkle.analysis_config import PipelineCfg
 def test_git_sha_lazily_computed(monkeypatch):
     calls = 0
 
-    def fake_load(self):
+    def fake_load(self):  # noqa: ARG001
         nonlocal calls
         calls += 1
         return "abc123"

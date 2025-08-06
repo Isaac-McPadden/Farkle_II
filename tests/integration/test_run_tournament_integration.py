@@ -28,6 +28,7 @@ from typing import List, Sequence  # noqa: F401
 import pytest
 
 import farkle.simulation as sim
+from farkle.run_tournament import TournamentConfig
 from farkle.strategies import ThresholdStrategy
 
 ###############################################################################
@@ -84,7 +85,7 @@ def _init_worker_small(  # pragma: no cover
     import importlib as _imp  # local import to avoid leak in parent
 
     _rt = _imp.import_module("farkle.run_tournament")
-    _rt.TournamentConfig.games_per_shuffle = property(lambda self: 2)  # type: ignore
+    _rt.TournamentConfig.games_per_shuffle = property(lambda self: 2)  # type: ignore  # noqa: ARG005
     _rt._STATE = _rt.WorkerState(list(strategies), cfg, None)  # type: ignore
 
 
@@ -116,7 +117,7 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> TournamentConfig
     #      every worker because run_tournament passes it via *initargs*.
     monkeypatch.setattr(rt, "generate_strategy_grid", lambda: (_tiny_grid, None), raising=True)
 
-    monkeypatch.setattr(rt.TournamentConfig, "games_per_shuffle", property(lambda self: 2), raising=False)
+    monkeypatch.setattr(rt.TournamentConfig, "games_per_shuffle", property(lambda self: 2), raising=False)  # noqa: ARG005
 
     return rt.TournamentConfig(
         n_players=rt.TournamentConfig().n_players,

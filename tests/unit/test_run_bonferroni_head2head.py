@@ -9,7 +9,7 @@ from farkle.strategies import ThresholdStrategy
 
 
 def test_simulate_many_games_from_seeds(monkeypatch):
-    def fake_play(seed, strategies, target_score=10_000):
+    def fake_play(seed, strategies, target_score=10_000):  # noqa: ARG001
         return {
             "winner": f"P{seed}",
             "winning_score": seed,
@@ -41,12 +41,12 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
     monkeypatch.setattr(
         rb,
         "games_for_power",
-        lambda n, method="bonferroni", full_pairwise=True: 1,
+        lambda n, method="bonferroni", full_pairwise=True: 1,  # noqa: ARG005
     )
     monkeypatch.setattr(
         rb,
         "bonferroni_pairs",
-        lambda elites, games_needed, seed: pd.DataFrame({"a": ["A"], "b": ["B"], "seed": [seed]}),
+        lambda elites, games_needed, seed: pd.DataFrame({"a": ["A"], "b": ["B"], "seed": [seed]}),  # noqa: ARG005
     )
     monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
 
@@ -72,15 +72,15 @@ def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch):
     tiers_path.write_text(json.dumps({"A": 1}))
     monkeypatch.chdir(tmp_path)
 
-    monkeypatch.setattr(rb, "games_for_power", lambda *a, **k: 0)
+    monkeypatch.setattr(rb, "games_for_power", lambda *a, **k: 0)  # noqa: ARG005
     monkeypatch.setattr(
-        rb, "bonferroni_pairs", lambda *a, **k: pd.DataFrame(columns=["a", "b", "seed"])
+        rb, "bonferroni_pairs", lambda *a, **k: pd.DataFrame(columns=["a", "b", "seed"])  # noqa: ARG005
     )
     monkeypatch.setattr(rb, "parse_strategy", lambda s: s)
     monkeypatch.setattr(
         rb,
         "simulate_many_games_from_seeds",
-        lambda **k: pd.DataFrame({"winner_strategy": []}),
+        lambda **k: pd.DataFrame({"winner_strategy": []}),  # noqa: ARG005
     )
 
     rb.run_bonferroni_head2head(seed=0, root=data_dir)

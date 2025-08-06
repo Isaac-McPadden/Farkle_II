@@ -55,8 +55,8 @@ def fast_helpers(monkeypatch):
 @pytest.fixture(autouse=True)
 def silence_logging(monkeypatch):
     """Disable info/error logging from run_tournament during tests."""
-    monkeypatch.setattr(rt.log, "info", lambda *a, **k: None)
-    monkeypatch.setattr(rt.log, "error", lambda *a, **k: None)
+    monkeypatch.setattr(rt.log, "info", lambda *a, **k: None)  # noqa: ARG005
+    monkeypatch.setattr(rt.log, "error", lambda *a, **k: None)  # noqa: ARG005
 
 
 # --------------------------------------------------------------------------- #
@@ -480,7 +480,7 @@ def test_run_tournament_metric_chunking(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)  # noqa: ARG005
     monkeypatch.setattr(rt, "as_completed", lambda d: list(d.keys()), raising=True)
 
-    def fake_run_chunk_metrics(batch, collect_rows=False, row_dir=None):  # noqa: ARG002
+    def fake_run_chunk_metrics(batch, collect_rows=False, row_dir=None):  # noqa: ARG001
         w = Counter({"S": 1})
         sums = {m: defaultdict(float, {"S": 1.0}) for m in rt.METRIC_LABELS}
         sqs = {m: defaultdict(float, {"S": 1.0}) for m in rt.METRIC_LABELS}
