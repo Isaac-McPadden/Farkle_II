@@ -128,7 +128,14 @@ class PipelineCfg:
             default="analysis",
             help="Subdirectory for analysis outputs",
         )
-        parser.add_argument("-v", "--verbose", action="store_true", help="Enable progress bars")
+        parser.add_argument(
+            "-v",
+            "--verbose",
+            action="store_true",
+            help="Enable progress bars and DEBUG logging",
+        )
         ns, remaining = parser.parse_known_args(argv)
         cfg = cls(results_dir=ns.results_dir, analysis_subdir=ns.analysis_subdir)
+        if ns.verbose:
+            cfg.log_level = "DEBUG"
         return cfg, ns, remaining
