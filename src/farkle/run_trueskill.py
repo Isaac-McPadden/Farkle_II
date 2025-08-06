@@ -265,13 +265,13 @@ def main(argv: list[str] | None = None) -> None:
         help="appended to filenames to avoid overwrites",
     )
     parser.add_argument(
-    "--dataroot",
-    type=Path,
-    default=DEFAULT_DATAROOT,
-    help=(
-        "Folder that holds <N>_players blocks "
-        "(default: <repo>/data/results_seed_0). "
-        "Accepts absolute or relative paths."
+        "--dataroot",
+        type=Path,
+        default=None,
+        help=(
+            "Folder that holds <N>_players blocks "
+            "(default: <root>/results or <repo>/data/results). "
+            "Accepts absolute or relative paths."
         ),
     )
     parser.add_argument(

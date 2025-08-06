@@ -11,16 +11,10 @@ from __future__ import annotations
 
 import pathlib
 import tomllib
+from importlib import import_module
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _v
 from pathlib import Path
-
-# Re-export the "friendly" surface
-from farkle.engine import FarklePlayer, GameMetrics  # noqa: E402
-from farkle.farkle_io import simulate_many_games_stream  # noqa: E402
-from farkle.simulation import generate_strategy_grid, simulate_many_games_from_seeds  # noqa: E402
-from farkle.stats import games_for_power  # noqa: E402
-from farkle.strategies import FavorDiceOrScore, ThresholdStrategy  # noqa: E402
 
 # Path to the project's pyproject.toml for local version fallback
 PYPROJECT_TOML = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
@@ -70,7 +64,13 @@ def _safe_unlink(self: pathlib.Path, *, missing_ok: bool = False):
 # Patch globally (harmless on POSIX; vital on Windows)
 pathlib.Path.unlink = _safe_unlink  # type: ignore[assignment]
 
-# The following identifiers are re-exported for user convenience
+# --------------------------------------------------------------------------- #
+# Lazily expose the "friendly" surface
+# Heavy modules (numba, etc.) are imported only when accessed, dramatically
+# reducing import-time dependencies for light utilities such as
+# ``run_trueskill``.
+# --------------------------------------------------------------------------- #
+
 __all__ = [
     "FarklePlayer",
     "GameMetrics",
@@ -81,6 +81,27 @@ __all__ = [
     "simulate_many_games_from_seeds",
     "games_for_power",
 ]
+
+_LAZY_IMPORTS = {
+    "FarklePlayer": "farkle.engine",
+    "GameMetrics": "farkle.engine",
+    "FavorDiceOrScore": "farkle.strategies",
+    "ThresholdStrategy": "farkle.strategies",
+    "generate_strategy_grid": "farkle.simulation",
+    "simulate_many_games_stream": "farkle.farkle_io",
+    "simulate_many_games_from_seeds": "farkle.simulation",
+    "games_for_power": "farkle.stats",
+}
+
+
+def __getattr__(name: str):  # pragma: no cover - simple dynamic loader
+    module_name = _LAZY_IMPORTS.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    module = import_module(module_name)
+    attr = getattr(module, name)
+    globals()[name] = attr
+    return attr
 
 
 def _read_version_from_toml() -> str:
