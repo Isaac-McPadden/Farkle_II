@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from typing import Callable, Sequence
 
 from tqdm import tqdm
@@ -22,13 +23,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     verbose = getattr(cli_ns, "verbose", False)
 
     if args.command == "ingest":
-        ingest.run(cfg)
+        try:
+            ingest.run(cfg)
+        except Exception as e:  # noqa: BLE001
+            print(f"ingest step failed: {e}", file=sys.stderr)
+            return 1
     elif args.command == "curate":
-        curate.run(cfg)
+        try:
+            curate.run(cfg)
+        except Exception as e:  # noqa: BLE001
+            print(f"curate step failed: {e}", file=sys.stderr)
+            return 1
     elif args.command == "metrics":
-        metrics.run(cfg)
+        try:
+            metrics.run(cfg)
+        except Exception as e:  # noqa: BLE001
+            print(f"metrics step failed: {e}", file=sys.stderr)
+            return 1
     elif args.command == "analytics":
-        analytics.run_all(cfg)
+        try:
+            analytics.run_all(cfg)
+        except Exception as e:  # noqa: BLE001
+            print(f"analytics step failed: {e}", file=sys.stderr)
+            return 1
     elif args.command == "all":
         steps: list[tuple[str, Callable[[PipelineCfg], None]]] = [
             ("ingest", ingest.run),
@@ -37,7 +54,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("analytics", analytics.run_all),
         ]
         for _name, fn in tqdm(steps, desc="pipeline", disable=not verbose):
-            fn(cfg)
+            try:
+                fn(cfg)
+            except Exception as e:  # noqa: BLE001
+                print(f"{_name} step failed: {e}", file=sys.stderr)
+                return 1
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")
     return 0
