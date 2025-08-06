@@ -8,7 +8,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-import pandas as pd
+import numpy as np
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
@@ -57,23 +57,31 @@ def _update_batch_counters(
     score_by_strategy: Counter[str],
     wins_by_seat: Counter[str],
 ) -> None:
-    """Update running counters using vectorized batch operations."""
-    df = pd.DataFrame(
-        {
-            "winner": arr_win,
-            "winner_seat": arr_wseat,
-            "winning_score": arr_score,
-            "n_rounds": arr_nrounds,
-        }
-    )
-    wins_by_strategy.update(df["winner"].value_counts().to_dict())
-    wins_by_seat.update(df["winner_seat"].value_counts().to_dict())
-    rounds_by_strategy.update(
-        df.groupby("winner")["n_rounds"].sum().to_dict()
-    )
-    score_by_strategy.update(
-        df.groupby("winner")["winning_score"].sum().to_dict()
-    )
+    """Vectorised in-memory update using NumPy; no pandas required."""
+    # Convert once – arrow → NumPy (zero-copy for numeric columns)
+    win = np.asarray(arr_win)
+    wseat = np.asarray(arr_wseat)
+    score = np.asarray(arr_score,  dtype=np.int64)
+    nrounds = np.asarray(arr_nrounds, dtype=np.int64)
+
+    # 1) wins by strategy  ────────────────────────────────────────────
+    uniq, counts = np.unique(win, return_counts=True)
+    wins_by_strategy.update(dict(zip(uniq.tolist(), counts.tolist(), strict=True)))
+
+    # 2) wins by seat (P1, P2 …)  ────────────────────────────────────
+    uniq_s, counts_s = np.unique(wseat, return_counts=True)
+    wins_by_seat.update(dict(zip(uniq_s.tolist(), counts_s.tolist(), strict=True)))
+
+    # 3) rounds & scores per winning strategy  ───────────────────────
+    # build an index map strategy→idx
+    strat_idx = {s: i for i, s in enumerate(uniq)}
+    # aggregate via bincount on aligned index array
+    idx = np.vectorize(strat_idx.get, otypes=[np.int64])(win)
+    rounds_sum = np.bincount(idx, weights=nrounds, minlength=len(uniq))
+    score_sum  = np.bincount(idx, weights=score,   minlength=len(uniq))
+
+    rounds_by_strategy.update(dict(zip(uniq.tolist(), rounds_sum.tolist(), strict=True)))
+    score_by_strategy.update(dict(zip(uniq.tolist(),  score_sum.tolist(), strict=True)))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -101,7 +109,7 @@ def run(cfg: PipelineCfg) -> None:
         p.exists() and p.stat().st_mtime >= data_file.stat().st_mtime
         for p in (out_metrics, out_seats)
     ):
-        log.info("Metrics: outputs up-to-date – skipped")
+        log.info("Metrics: outputs up-to-date - skipped")
         return
 
     # Running aggregates -------------------------------------------------------
