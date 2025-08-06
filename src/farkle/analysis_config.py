@@ -51,8 +51,9 @@ class PipelineCfg:
     trueskill_beta: float = 25 / 6
 
     # 4. perf
-    cores = os.cpu_count()
-    assert cores is not None
+    cores = os.cpu_count() or 1
+    if cores is None:
+        raise RuntimeError("Unable to determine CPU Count")
     n_jobs: int = max(cores - 1, 1)
     prefetch_shards: int = 2
 
@@ -64,12 +65,12 @@ class PipelineCfg:
 
     def _load_git_sha(self) -> str:
         try:
-            import shlex
             import subprocess
-
-            return subprocess.check_output(shlex.split("git rev-parse HEAD")).decode().strip()
+            return subprocess.check_output(
+                        ["git", "rev-parse", "HEAD"], text=True, encoding="utf-8"
+                        ).strip()
         except Exception:
-            return "unknown"
+            return "unknown _load_git_sha() exception"
 
     @property
     def git_sha(self) -> str:
