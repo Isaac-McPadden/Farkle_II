@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import logging
-import subprocess
-import sys
-from pathlib import Path
 
+from farkle import run_trueskill as _rt
 from farkle.analysis_config import PipelineCfg
 
 log = logging.getLogger(__name__)
-SCRIPT = Path(__file__).resolve().parents[1] / "run_trueskill.py"
 
 
 def run(cfg: PipelineCfg) -> None:
@@ -18,6 +15,5 @@ def run(cfg: PipelineCfg) -> None:
         log.info("TrueSkill: results up-to-date - skipped")
         return
 
-    cmd = [sys.executable, str(SCRIPT), "--dataroot", str(cfg.results_dir)]
-    log.info("TrueSkill: calling %s", " ".join(cmd))
-    subprocess.check_call(cmd)
+    log.info("TrueSkill: running in-process")
+    _rt.main(["--dataroot", str(cfg.results_dir)])
