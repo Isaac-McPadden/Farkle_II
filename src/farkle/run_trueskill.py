@@ -25,10 +25,12 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import trueskill
 import yaml
 from trueskill import Rating
 
+from .analysis_config import n_players_from_schema
 from .utils import build_tiers
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
@@ -135,9 +137,8 @@ def _load_ranked_games(block: Path) -> list[list[str]]:
                 return []
 
     # ----------------------------------------------------------------------
-    rank_cols = [c for c in df.columns if c.endswith("_rank")]
-    if rank_cols:  # modern per-player ranks
-        n_players = len(rank_cols)
+    n_players = n_players_from_schema(pa.Table.from_pandas(df).schema)
+    if n_players:
         return _df_to_games(df, n_players)
 
     if "winner_strategy" in df.columns:
