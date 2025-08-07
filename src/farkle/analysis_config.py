@@ -44,8 +44,7 @@ class PipelineCfg:
         )
     )
     parquet_codec: str = "zstd"
-    row_group_size: int = 64_000
-    max_shard_mb: int = 512
+    row_group_size: int = 64_000  # max_shard_mb removed (unused)
 
     # 3. analytics toggles / params
     run_trueskill: bool = True
