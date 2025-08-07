@@ -136,23 +136,17 @@ def _load_ranked_games(block: Path) -> list[list[str]]:
 
     # ----------------------------------------------------------------------
     rank_cols = [c for c in df.columns if c.endswith("_rank")]
-    strat_cols = {c[:-5]: f"{c[:-5]}_strategy" for c in rank_cols}
+    if rank_cols:  # modern per-player ranks
+        n_players = len(rank_cols)
+        return _df_to_games(df, n_players)
 
-    games: list[list[str]] = []
-    for _, row in df.iterrows():
-        if rank_cols:  # modern per-player ranks
-            ordered = sorted(rank_cols, key=row.__getitem__)
-            players = [row[strat_cols[c[:-5]]] for c in ordered]
-        else:  # winner-only rows
-            if "winner_strategy" in row:
-                players = [row["winner_strategy"]]
-            elif "winner" in row:
-                players = [row["winner"]]
-            else:
-                players = []  # unknown schema → ignore row
-        games.append(players)
+    if "winner_strategy" in df.columns:
+        return [[s] for s in df["winner_strategy"]]
+    if "winner" in df.columns:
+        return [[s] for s in df["winner"]]
 
-    return games
+    # unknown schema → ignore rows
+    return []
 
 
 def _update_ratings(
