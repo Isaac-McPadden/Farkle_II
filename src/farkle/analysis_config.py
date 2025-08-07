@@ -20,7 +20,9 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from typing import Final, Sequence
+
+import pyarrow as pa
 
 
 @dataclass
@@ -139,3 +141,52 @@ class PipelineCfg:
         if ns.verbose:
             cfg.log_level = "DEBUG"
         return cfg, ns, remaining
+
+
+# ---------- static pieces -------------------------------------------------
+_BASE_FIELDS: Final[list[tuple[str, pa.DataType]]] = [
+    ("winner",        pa.string()),
+    ("winner_seat",   pa.string()),
+    ("winning_score", pa.int32()),
+    ("n_rounds",      pa.int16()),
+]
+
+_SEAT_TEMPLATE: Final[dict[str, pa.DataType]] = {
+    "score"          : pa.int32(),
+    "farkles"        : pa.int16(),
+    "rolls"          : pa.int16(),
+    "highest_turn"   : pa.int16(),
+    "strategy"       : pa.string(),
+    "rank"           : pa.int8(),
+    "loss_margin"    : pa.int32(),
+    "smart_five_uses": pa.int16(),
+    "n_smart_five_dice": pa.int16(),
+    "smart_one_uses" : pa.int16(),
+    "n_smart_one_dice": pa.int16(),
+    "hot_dice"       : pa.bool_(),
+    # add/remove seat-level cols here once
+}
+
+# ---------- public helpers -----------------------------------------------
+
+def expected_schema_for(n_players: int) -> pa.Schema:
+    """Return canonical Arrow schema for a given player count."""
+    seat_fields = [
+        (f"P{p}_{suffix}", typ)
+        for p in range(1, n_players + 1)
+        for suffix, typ in _SEAT_TEMPLATE.items()
+    ]
+    return pa.schema(_BASE_FIELDS + seat_fields)
+
+
+def n_players_from_schema(schema: pa.Schema) -> int:
+    """Infer player count by counting seat prefixes in a schema."""
+    max_p = 0
+    for name in schema.names:
+        if name.startswith("P"):
+            try:
+                pnum = int(name[1:].split("_", 1)[0])
+                max_p = max(max_p, pnum)
+            except ValueError:
+                pass
+    return max_p
