@@ -1,7 +1,6 @@
 # src/farkle/curate.py
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import os
@@ -12,26 +11,34 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis_config import PipelineCfg
+from farkle.analysis_config import (
+    PipelineCfg,
+    expected_schema_for,
+    n_players_from_schema,
+)
 
 log = logging.getLogger(__name__)
 
-
-# ------------------------------------------------------------------
-def _schema_checksum(schema: pa.Schema) -> str:
-    """Return a stable checksum for the schema list."""
-    joined = "|".join(str(f) for f in schema)
-    return hashlib.sha256(joined.encode("utf-8")).hexdigest()
-
-
 # ──────────────────────────────────────────────────────────────────────────────
+def _schema_hash(n_players: int) -> str:
+    schema = expected_schema_for(n_players)
+    try:
+        return pa.ipc.serialize(schema).checksum.hex()
+    except AttributeError:  # pyarrow >=20 removed ipc.serialize
+        import hashlib
+
+        return hashlib.sha256(schema.serialize().to_pybytes()).hexdigest()
+
+
 def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: PipelineCfg) -> None:
     """Dump a simple JSON manifest next to the curated parquet."""
+    n_players = n_players_from_schema(schema)
+    schema_hash = _schema_hash(n_players)
     schema_list = [str(f) for f in schema]
     payload: dict[str, Any] = {
         "rows": rows,
         "schema": schema_list,
-        "schema_checksum": _schema_checksum(schema),
+        "schema_hash": schema_hash,
         "codec": cfg.parquet_codec,
         "row_group_size": cfg.row_group_size,
         "git_sha": cfg.git_sha,
@@ -53,8 +60,8 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
     except Exception:  # corrupt JSON?  redo
         return False
     expected_rows = meta.get("rows")
-    expected_cksum = meta.get("schema_checksum")
-    if expected_rows is None or expected_cksum is None:
+    expected_hash = meta.get("schema_hash")
+    if expected_rows is None or expected_hash is None:
         return False
     try:
         md = pq.read_metadata(out_file)
@@ -64,7 +71,17 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
         return False
     if parquet_rows != expected_rows:
         return False
-    return _schema_checksum(schema) == expected_cksum
+    n_players = n_players_from_schema(schema)
+    actual_hash = _schema_hash(n_players)
+    if actual_hash != expected_hash:
+        log.info(
+            "Curate: %s schema mismatch (expected %s, found %s)",
+            out_file.name,
+            expected_hash,
+            actual_hash,
+        )
+        return False
+    return True
 
 
 # ──────────────────────────────────────────────────────────────────────────────
