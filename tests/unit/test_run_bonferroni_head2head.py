@@ -65,7 +65,7 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
     assert set(df.columns) == {"a", "b", "wins_a", "wins_b", "pvalue"}
 
 
-def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch):
+def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch, capsys):
     """Gracefully handle tiers.json with only one strategy."""
 
     data_dir = tmp_path / "data"
@@ -88,9 +88,11 @@ def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch):
     )
 
     rb.run_bonferroni_head2head(seed=0, root=data_dir)
+    captured = capsys.readouterr().out
+    assert "no games needed" in captured
+
     out_csv = data_dir / "bonferroni_pairwise.csv"
-    assert out_csv.exists()
-    assert out_csv.read_text() == "\n"
+    assert not out_csv.exists()
 
 
 def test_run_bonferroni_head2head_missing_file(tmp_path, monkeypatch):
