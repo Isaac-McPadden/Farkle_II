@@ -1,6 +1,7 @@
 # src/farkle/curate.py
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -22,12 +23,16 @@ log = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 def _schema_hash(n_players: int) -> str:
     schema = expected_schema_for(n_players)
-    try:
-        return pa.ipc.serialize(schema).checksum.hex()
-    except AttributeError:  # pyarrow >=20 removed ipc.serialize
-        import hashlib
 
-        return hashlib.sha256(schema.serialize().to_pybytes()).hexdigest()
+    # ---- get raw bytes ---------------------------------------------------
+    pa_serialize = getattr(pa.ipc, "serialize", None)
+    if pa_serialize is not None:                      # PyArrow ≤ 19
+        buf_bytes = pa_serialize(schema).to_buffer().to_pybytes()
+    else:                                             # PyArrow ≥ 20
+        buf_bytes = schema.serialize().to_pybytes()
+
+    # ---- hash ------------------------------------------------------------
+    return hashlib.sha256(buf_bytes).hexdigest()
 
 
 def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: PipelineCfg) -> None:

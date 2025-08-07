@@ -102,7 +102,7 @@ def _read_loose_parquets(block: Path) -> pd.DataFrame | None:
 
 def _df_to_games(df: pd.DataFrame, n_players: int) -> list[list[str]]:
     strat_cols = [f"P{i}_strategy" for i in range(1, n_players+1)]
-    rank_cols  = [f"P{i}_rank"     for i in range(1, n_players+1)]
+    rank_cols  = [f"P{i}_rank" for i in range(1, n_players+1)]
 
     # shape (rows, players)
     strategies = df[strat_cols].to_numpy()
