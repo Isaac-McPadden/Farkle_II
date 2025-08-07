@@ -54,6 +54,11 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
     games_needed = games_for_power(len(elites), method="bonferroni", full_pairwise=True)
     schedule = bonferroni_pairs(elites, games_needed, seed)
 
+    # Nothing to simulate (e.g., only one elite strategy)
+    if schedule.empty:
+        print("\u2713 Bonferroni H2H: no games needed \u2014 exiting early.")
+        return
+
     records = []
     for (a, b), grp in schedule.groupby(["a", "b"]):
         seeds = grp["seed"].tolist()
@@ -65,7 +70,8 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
         wins = df["winner_strategy"].value_counts()
         wa = int(wins.get(a, 0))
         wb = int(wins.get(b, 0))
-        pval = binomtest(wa, wa + wb).pvalue
+        # One-sided: "A beats B"
+        pval = binomtest(wa, wa + wb, alternative="greater").pvalue
         records.append({"a": a, "b": b, "wins_a": wa, "wins_b": wb, "pvalue": pval})
 
     out = pd.DataFrame(records)
