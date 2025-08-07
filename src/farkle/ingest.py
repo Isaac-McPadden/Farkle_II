@@ -33,7 +33,7 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
     def _read_subset(path: Path, wanted: Iterable[str]) -> pd.DataFrame:
         df = pd.read_parquet(path)           # read all columns first
         present = [c for c in wanted if c in df.columns]
-        if len(present) < len(wanted):       # debug noise only
+        if len(present) < wanted.__sizeof__():       # debug noise only
             missing = set(wanted) - set(present)
             log.debug("%s missing cols: %s", path.name, sorted(missing))
         return df[present]
