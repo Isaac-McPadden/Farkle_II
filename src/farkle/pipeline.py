@@ -23,11 +23,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(remaining)
     verbose = getattr(cli_ns, "verbose", False)
 
-    logging.basicConfig(
-        level=getattr(logging, cfg.log_level.upper(), logging.INFO),
-        format="%(message)s",
-        force=True,
-    )
+    log_kwargs = {
+        "level": getattr(logging, cfg.log_level.upper(), logging.INFO),
+        "format": "%(message)s",
+        "force": True,
+    }
+    if cfg.log_file is not None:
+        log_kwargs["handlers"] = [
+            logging.StreamHandler(),
+            logging.FileHandler(cfg.log_file),
+        ]
+    logging.basicConfig(**log_kwargs)
 
     if args.command == "ingest":
         try:

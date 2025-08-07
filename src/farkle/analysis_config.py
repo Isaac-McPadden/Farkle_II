@@ -55,7 +55,7 @@ class PipelineCfg:
     trueskill_beta: float = 25 / 6
 
     # 4. perf
-    cores = os.cpu_count() or 1  # or however many the user wants
+    cores = os.cpu_count()
     if cores is None:
         raise RuntimeError("Unable to determine CPU Count")
     n_jobs: int = max(cores - 1, 1)
