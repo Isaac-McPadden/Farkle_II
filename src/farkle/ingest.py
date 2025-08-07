@@ -69,7 +69,7 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     df["winner_seat"] = df["winner"]            # winner column still holds P#
 
     # --- Step 2: promote strategy string -------------------------------
-    seat_idx = df["winner_seat"].dropna().str.extract(r"P(\d+)").astype("int64")[0] - 1
+    seat_idx = df["winner_seat"].dropna().str.extract(r"P(\d+)")[0].map(int) - 1
     df["winner_strategy"] = df[seat_cols].to_numpy()[
         np.arange(len(df)), seat_idx.to_numpy()
     ]
@@ -132,24 +132,13 @@ def run(cfg: PipelineCfg) -> None:
 
                 if not set(shard_df.columns).issubset(expected_cols):
                     log.error("Schema mismatch in %s", shard_path)
-                    raise RuntimeError("Shard DataFrame columns do not match expected columns")
-
-                for col in expected_cols - set(shard_df.columns):
-                    shard_df[col] = pd.Series(
-                        pd.NA, index=shard_df.index, dtype="string[pyarrow]"
+                    raise RuntimeError(
+                        "Shard DataFrame columns do not match expected columns"
                     )
 
-                shard_df = shard_df.reindex(columns=cfg.ingest_cols)
                 log.debug("Shard %s → %d rows", shard_path.name, len(shard_df))
 
                 shard_df = _fix_winner(shard_df)
-                canonical_cols = list(cfg.ingest_cols) + [
-                    "winner_seat",
-                    "winner_strategy",
-                ]
-                if "seat_ranks" in shard_df.columns:
-                    canonical_cols.append("seat_ranks")
-                shard_df = shard_df.reindex(columns=canonical_cols)
 
                 total_rows += len(shard_df)
 
