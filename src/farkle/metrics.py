@@ -172,10 +172,10 @@ def run(cfg: PipelineCfg) -> None:
                 "win_rate": n / total_games,
                 # Expected value of points per game, counting zero for losses
                 "expected_score": score_by_strategy[strat] / total_games,
-                # Typical winning score – conditional mean over only games won
-                "mean_score": score_by_strategy[strat] / n,
-                # Typical number of rounds in a win (losing rounds are unknown)
-                "mean_rounds": rounds_by_strategy[strat] / n,
+                # Typical winning score – conditional mean (None if no wins)
+                "mean_score": None if n == 0 else score_by_strategy[strat] / n,
+                # Typical number of rounds in a win (None if no wins)
+                "mean_rounds": None if n == 0 else rounds_by_strategy[strat] / n,
             }
         )
 
