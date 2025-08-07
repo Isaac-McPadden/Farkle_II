@@ -19,6 +19,7 @@ from farkle.analysis_config import (
 
 log = logging.getLogger(__name__)
 
+
 def _iter_shards(block: Path, cols: tuple[str, ...]):
     """
     Yield one ``(DataFrame, source_path)`` per shard, selecting only the
@@ -31,12 +32,27 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
     """
 
     def _read_subset(path: Path, wanted: Iterable[str]) -> pd.DataFrame:
-        df = pd.read_parquet(path)           # read all columns first
+        """Read *path* and return only the columns present in *wanted*.
+
+        Pandas' ``usecols`` parameter will raise if any requested column is
+        missing.  To provide a more forgiving interface, load the file normally
+        and then select the intersection of the desired and available columns.
+        ``wanted`` is typically ``cfg.ingest_cols`` which may include seats not
+        present in legacy results blocks (e.g., requesting ``P12_strategy`` when
+        only two players were recorded).
+        """
+
+        if path.suffix == ".csv":
+            df = pd.read_csv(path, dtype_backend="pyarrow")
+        else:
+            df = pd.read_parquet(path)  # read all columns first
+
         present = [c for c in wanted if c in df.columns]
-        if len(present) < wanted.__sizeof__():       # debug noise only
+        if len(present) < len(wanted):  # debug noise only
             missing = set(wanted) - set(present)
             log.debug("%s missing cols: %s", path.name, sorted(missing))
         return df[present]
+
     # Newer runs emit a single `<Np_rows>.parquet` file directly under the
     # block directory. Prefer that if present. Sorting ensures deterministic
     # selection should multiple consolidated files coexist.
@@ -56,12 +72,12 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
             yield _read_subset(pqt, cols), pqt
         csv = block / "winners.csv"
         if csv.exists():
-            yield pd.read_csv(csv, usecols=list(cols), dtype_backend="pyarrow"), csv
-
+            yield _read_subset(csv, cols), csv
 
 
 # Regex once, reuse
 _SEAT_RE = re.compile(r"^P(\d+)_strategy$")
+
 
 def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -76,29 +92,25 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
         # Already processed — nothing to do.
         return df
 
-    df = df.copy()                     # cheap shallow copy
+    df = df.copy()  # cheap shallow copy
     seat_cols = sorted(
         [c for c in df.columns if _SEAT_RE.match(c)],
         key=lambda c: int(_SEAT_RE.match(c).group(1)),  # natural seat order  # type: ignore
     )
 
     # --- Step 1: find seat label (P#) that won --------------------------
-    df["winner_seat"] = df["winner"]            # winner column still holds P#
+    df["winner_seat"] = df["winner"]  # winner column still holds P#
 
     # --- Step 2: promote strategy string -------------------------------
-    seat_idx = df["winner_seat"].dropna().str.extract(r"P(\d+)")[0].map(int) - 1
-    df["winner_strategy"] = df[seat_cols].to_numpy()[
-        np.arange(len(df)), seat_idx.to_numpy()
-    ]
+    seat_idx = df["winner_seat"].str.extract(r"P(?P<num>\d+)")["num"].astype(int) - 1
+    df["winner_strategy"] = df[seat_cols].to_numpy()[np.arange(len(df)), seat_idx.to_numpy()]
 
     # --- Step 3: capture finishing order -------------------------------
     rank_cols = [c.replace("_strategy", "_rank") for c in seat_cols]
     if all(col in df.columns for col in rank_cols):
         ranks = df[rank_cols].to_numpy()
         seat_labels = np.array([c[:-9] for c in seat_cols])
-        df["seat_ranks"] = list(
-            map(tuple, seat_labels[ranks.argsort(axis=1)])
-        )
+        df["seat_ranks"] = list(map(tuple, seat_labels[ranks.argsort(axis=1)]))
 
     return df
 
@@ -112,9 +124,7 @@ def _coerce_schema(tbl: pa.Table) -> pa.Table:
     # add missing cols + cast dtypes
     for field in schema:
         if field.name not in tbl.column_names:
-            tbl = tbl.append_column(
-                field.name, pa.nulls(len(tbl), field.type)
-            )
+            tbl = tbl.append_column(field.name, pa.nulls(len(tbl), field.type))
     arrays = [tbl[col.name].cast(col.type) for col in schema]
     return pa.Table.from_arrays(arrays, names=schema.names)
 
@@ -149,9 +159,7 @@ def run(cfg: PipelineCfg) -> None:
 
                 if not set(shard_df.columns).issubset(expected_cols):
                     log.error("Schema mismatch in %s", shard_path)
-                    raise RuntimeError(
-                        "Shard DataFrame columns do not match expected columns"
-                    )
+                    raise RuntimeError("Shard DataFrame columns do not match expected columns")
 
                 log.debug("Shard %s → %d rows", shard_path.name, len(shard_df))
 

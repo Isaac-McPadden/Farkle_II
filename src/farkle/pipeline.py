@@ -24,8 +24,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     verbose = getattr(cli_ns, "verbose", False)
 
     # Ensure DEBUG level is in effect before any sub-modules log
-    effective_level = logging.DEBUG if verbose else getattr(
-        logging, cfg.log_level.upper(), logging.INFO
+    effective_level = (
+        logging.DEBUG if verbose else getattr(logging, cfg.log_level.upper(), logging.INFO)
     )
     log_kwargs = {
         "level": effective_level,
@@ -74,8 +74,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 fn(cfg)
             except Exception as e:  # noqa: BLE001
+                # Propagate the failure so callers (and tests) can detect it.
                 print(f"{_name} step failed: {e}", file=sys.stderr)
-                return 1
+                raise
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")
     return 0

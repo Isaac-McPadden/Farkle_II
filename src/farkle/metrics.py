@@ -61,7 +61,7 @@ def _update_batch_counters(
     # Convert once – arrow → NumPy (zero-copy for numeric columns)
     win = np.asarray(arr_win)
     wseat = np.asarray(arr_wseat)
-    score = np.asarray(arr_score,  dtype=np.int64)
+    score = np.asarray(arr_score, dtype=np.int64)
     nrounds = np.asarray(arr_nrounds, dtype=np.int64)
 
     # 1) wins by strategy  ────────────────────────────────────────────
@@ -78,10 +78,10 @@ def _update_batch_counters(
     # aggregate via bincount on aligned index array
     idx = np.vectorize(strat_idx.get, otypes=[np.int64])(win)
     rounds_sum = np.bincount(idx, weights=nrounds, minlength=len(uniq))
-    score_sum  = np.bincount(idx, weights=score,   minlength=len(uniq))
+    score_sum = np.bincount(idx, weights=score, minlength=len(uniq))
 
     rounds_by_strategy.update(dict(zip(uniq.tolist(), rounds_sum.tolist(), strict=True)))
-    score_by_strategy.update(dict(zip(uniq.tolist(),  score_sum.tolist(), strict=True)))
+    score_by_strategy.update(dict(zip(uniq.tolist(), score_sum.tolist(), strict=True)))
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -129,24 +129,19 @@ def run(cfg: PipelineCfg) -> None:
     all_strategies: set[str] = set()
 
     for batch in reader.to_batches(columns=_WIN_COLS + strategy_cols):
-        try:
-            arr_win = batch["winner"].to_numpy(zero_copy_only=True)
-        except pa.ArrowInvalid:  # fallback for types requiring a copy
-            arr_win = batch["winner"].to_numpy()
-
-        try:
-            arr_wseat = batch["winner_seat"].to_numpy(zero_copy_only=True)
-        except pa.ArrowInvalid:
-            arr_wseat = batch["winner_seat"].to_numpy()
+        # Arrow's ``to_numpy`` has strict zero-copy semantics for string data
+        # which can raise ``ArrowInvalid`` even for small, null-free arrays. The
+        # win/seat columns are tiny, so converting via ``to_pylist`` is simpler
+        # and avoids these edge cases.
+        arr_win = np.asarray(batch["winner"].to_pylist())
+        arr_wseat = np.asarray(batch["winner_seat"].to_pylist())
 
         arr_score = batch["winning_score"].to_numpy(zero_copy_only=True)
         arr_nrounds = batch["n_rounds"].to_numpy(zero_copy_only=True)
 
         all_strategies.update(arr_win)
         for col in strategy_cols:
-            all_strategies.update(
-                s for s in batch[col].to_pylist() if s is not None
-            )
+            all_strategies.update(s for s in batch[col].to_pylist() if s is not None)
 
         _update_batch_counters(
             arr_win,
