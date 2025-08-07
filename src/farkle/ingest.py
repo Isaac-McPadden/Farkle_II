@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
@@ -19,24 +20,40 @@ from farkle.analysis_config import (
 log = logging.getLogger(__name__)
 
 def _iter_shards(block: Path, cols: tuple[str, ...]):
-    """Yield one (DataFrame, source_path) per shard, limited to *cols*."""
+    """
+    Yield one ``(DataFrame, source_path)`` per shard, selecting only the
+    *intersection* of *cols* with the shard’s schema.
+
+    Parquet will raise if we request a column that doesn’t exist, so read the
+    whole shard once and trim afterwards.  The ingest pipeline later pads any
+    truly-missing columns back in :func:`_coerce_schema`, keeping the final
+    table rectangular.
+    """
+
+    def _read_subset(path: Path, wanted: Iterable[str]) -> pd.DataFrame:
+        df = pd.read_parquet(path)           # read all columns first
+        present = [c for c in wanted if c in df.columns]
+        if len(present) < len(wanted):       # debug noise only
+            missing = set(wanted) - set(present)
+            log.debug("%s missing cols: %s", path.name, sorted(missing))
+        return df[present]
     # Newer runs emit a single `<Np_rows>.parquet` file directly under the
     # block directory. Prefer that if present. Sorting ensures deterministic
     # selection should multiple consolidated files coexist.
     row_files = sorted(block.glob("*p_rows.parquet"))
     row_file = row_files[0] if row_files else None
     if row_file is not None:
-        yield pd.read_parquet(row_file, columns=list(cols)), row_file
+        yield _read_subset(row_file, cols), row_file
         return
 
     # Legacy layout with `<Np_rows>` directory containing shards
     row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
     if row_dirs:
         for shard_path in sorted(row_dirs[0].glob("*.parquet")):
-            yield pd.read_parquet(shard_path, columns=list(cols)), shard_path
+            yield _read_subset(shard_path, cols), shard_path
     else:  # compact parquet or CSV
         for pqt in block.glob("*.parquet"):
-            yield pd.read_parquet(pqt, columns=list(cols)), pqt
+            yield _read_subset(pqt, cols), pqt
         csv = block / "winners.csv"
         if csv.exists():
             yield pd.read_csv(csv, usecols=list(cols), dtype_backend="pyarrow"), csv
