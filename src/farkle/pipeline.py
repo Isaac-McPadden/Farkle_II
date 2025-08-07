@@ -23,8 +23,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(remaining)
     verbose = getattr(cli_ns, "verbose", False)
 
+    # Ensure DEBUG level is in effect before any sub-modules log
+    effective_level = logging.DEBUG if verbose else getattr(
+        logging, cfg.log_level.upper(), logging.INFO
+    )
     log_kwargs = {
-        "level": getattr(logging, cfg.log_level.upper(), logging.INFO),
+        "level": effective_level,
         "format": "%(message)s",
         "force": True,
     }
