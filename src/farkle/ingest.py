@@ -10,7 +10,11 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis_config import PipelineCfg
+from farkle.analysis_config import (
+    PipelineCfg,
+    expected_schema_for,
+    n_players_from_schema,
+)
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +86,22 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _coerce_schema(tbl: pa.Table) -> pa.Table:
+    """Ensure *tbl* matches the expected schema for the observed players."""
+    # determine #players from observed columns (first batch)
+    num_players = n_players_from_schema(tbl.schema)
+    schema = expected_schema_for(num_players)
+
+    # add missing cols + cast dtypes
+    for field in schema:
+        if field.name not in tbl.column_names:
+            tbl = tbl.append_column(
+                field.name, pa.nulls(len(tbl), field.type)
+            )
+    arrays = [tbl[col.name].cast(col.type) for col in schema]
+    return pa.Table.from_arrays(arrays, names=schema.names)
+
+
 def run(cfg: PipelineCfg) -> None:
     """Consolidate raw results blocks into a single parquet file.
 
@@ -135,6 +155,7 @@ def run(cfg: PipelineCfg) -> None:
 
                 # Lazily open writer on first chunk
                 table = pa.Table.from_pandas(shard_df, preserve_index=False)
+                table = _coerce_schema(table)
                 if writer is None:
                     writer = pq.ParquetWriter(
                         tmp_path,
