@@ -107,19 +107,6 @@ class PipelineCfg:
     @property
     def curated_parquet(self) -> Path:
         return self.analysis_dir / "data" / self.curated_rows_name
-
-    # Convenience helpers for per-player-count data paths
-    def ingested_rows_raw(self, n: int) -> Path:
-        """Path to the raw ingested rows parquet for *n* players."""
-        return self.data_dir / f"{n}p" / f"{n}_ingested_rows.raw.parquet"
-
-    def ingested_rows_curated(self, n: int) -> Path:
-        """Destination path for the curated ingested rows parquet for *n* players."""
-        return self.data_dir / f"{n}p" / f"{n}_ingested_rows.parquet"
-
-    def manifest_for(self, n: int) -> Path:
-        """Manifest path accompanying the curated parquet for *n* players."""
-        return self.data_dir / f"{n}p" / self.manifest_name
       
     def to_json(self) -> str:
         return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)
