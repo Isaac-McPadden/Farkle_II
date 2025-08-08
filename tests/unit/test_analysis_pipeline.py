@@ -37,8 +37,11 @@ def test_pipeline_all_creates_outputs(tmp_path: Path) -> None:
         os.chdir(cwd)
 
     analysis = tmp_path / "analysis"
-    assert (analysis / "data" / "game_rows.parquet").exists()
-    assert not (analysis / "data" / "game_rows.raw.parquet").exists()
+    p2_dir = analysis / "data" / "2p"
+    assert (p2_dir / "2p_ingested_rows.parquet").exists()
+    assert not (p2_dir / "2p_ingested_rows.raw.parquet").exists()
+    combined = analysis / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
+    assert combined.exists()
     assert (analysis / "metrics.parquet").exists()
     assert (analysis / "seat_advantage.csv").exists()
 
@@ -59,12 +62,30 @@ def test_pipeline_ingest_only(tmp_path: Path) -> None:
         os.chdir(cwd)
 
     analysis = tmp_path / "analysis"
-    raw = analysis / "data" / "game_rows.raw.parquet"
-    curated = analysis / "data" / "game_rows.parquet"
+    p2_dir = analysis / "data" / "2p"
+    raw = p2_dir / "2p_ingested_rows.raw.parquet"
+    curated = p2_dir / "2p_ingested_rows.parquet"
     assert raw.exists()
     assert not curated.exists()
     assert not (analysis / "metrics.parquet").exists()
     assert not (tmp_path / "hgb_importance.json").exists()
+    combined = analysis / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
+    assert not combined.exists()
+
+
+def test_pipeline_aggregate_only(tmp_path: Path) -> None:
+    _write_fixture(tmp_path)
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        pipeline.main(["ingest", "--root", str(tmp_path)])
+        pipeline.main(["curate", "--root", str(tmp_path)])
+        pipeline.main(["aggregate", "--root", str(tmp_path)])
+    finally:
+        os.chdir(cwd)
+
+    combined = tmp_path / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
+    assert combined.exists()
 
 
 def test_pipeline_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

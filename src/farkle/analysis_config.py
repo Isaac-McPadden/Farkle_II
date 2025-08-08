@@ -106,7 +106,10 @@ class PipelineCfg:
 
     @property
     def curated_parquet(self) -> Path:
-        return self.analysis_dir / "data" / self.curated_rows_name
+        legacy = self.analysis_dir / "data" / self.curated_rows_name
+        combined = self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
+        # Prefer aggregated superset if present; fallback to legacy path
+        return combined if combined.exists() or not legacy.exists() else legacy
       
     def to_json(self) -> str:
         return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)

@@ -7,7 +7,7 @@ from typing import Callable, Sequence
 
 from tqdm import tqdm
 
-from farkle import analytics, curate, ingest, metrics
+from farkle import analytics, curate, ingest, metrics, aggregate
 from farkle.analysis_config import PipelineCfg
 
 
@@ -17,7 +17,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="farkle-analyze")
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("ingest", "curate", "metrics", "analytics", "all"):
+    for name in ("ingest", "curate", "aggregate", "metrics", "analytics", "all"):
         sub.add_parser(name)
 
     args = parser.parse_args(remaining)
@@ -51,6 +51,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as e:  # noqa: BLE001
             print(f"curate step failed: {e}", file=sys.stderr)
             return 1
+    elif args.command == "aggregate":
+        try:
+            aggregate.run(cfg)
+        except Exception as e:  # noqa: BLE001
+            print(f"aggregate step failed: {e}", file=sys.stderr)
+            return 1
     elif args.command == "metrics":
         try:
             metrics.run(cfg)
@@ -67,6 +73,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         steps: list[tuple[str, Callable[[PipelineCfg], None]]] = [
             ("ingest", ingest.run),
             ("curate", curate.run),
+            ("aggregate", aggregate.run),
             ("metrics", metrics.run),
             ("analytics", analytics.run_all),
         ]
