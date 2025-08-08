@@ -48,7 +48,7 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
             df = pd.read_parquet(path)  # read all columns first
 
         present = [c for c in wanted if c in df.columns]
-        if len(present) < len(wanted):  # debug noise only
+        if len(present) < wanted.__sizeof__():  # debug noise only
             missing = set(wanted) - set(present)
             log.debug("%s missing cols: %s", path.name, sorted(missing))
         return df[present]
@@ -115,18 +115,18 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _coerce_schema(tbl: pa.Table) -> pa.Table:
-    """Ensure *tbl* matches the expected schema for the observed players."""
-    # determine #players from observed columns (first batch)
-    num_players = n_players_from_schema(tbl.schema)
-    schema = expected_schema_for(num_players)
+def _coerce_schema(tbl: pa.Table, target: pa.Schema | None = None) -> pa.Table:
+    """Pad/cast *tbl* to the supplied *target* schema (or infer per-N if None)."""
+    if target is None:
+        target = expected_schema_for(n_players_from_schema(tbl.schema))
+    arrays = []
+    for field in target: # type: ignore
+        if field.name in tbl.column_names:
+            arrays.append(tbl[field.name].cast(field.type))
+        else:
+            arrays.append(pa.nulls(len(tbl), field.type))
+    return pa.Table.from_arrays(arrays, names=target.names) # type: ignore
 
-    # add missing cols + cast dtypes
-    for field in schema:
-        if field.name not in tbl.column_names:
-            tbl = tbl.append_column(field.name, pa.nulls(len(tbl), field.type))
-    arrays = [tbl[col.name].cast(col.type) for col in schema]
-    return pa.Table.from_arrays(arrays, names=schema.names)
 
 
 def run(cfg: PipelineCfg) -> None:
