@@ -13,6 +13,8 @@ def test_already_curated_schema_hash(tmp_path):
         {
             "winner": ["P1"],
             "winner_seat": ["1"],
+            "winner_strategy": ["none"],
+            "seat_ranks": [[]],
             "winning_score": [100],
             "n_rounds": [1],
         },
