@@ -48,7 +48,7 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
             df = pd.read_parquet(path)  # read all columns first
 
         present = [c for c in wanted if c in df.columns]
-        if len(present) < len(wanted):  # debug noise only
+        if len(present) < wanted.__sizeof__():  # debug noise only
             missing = set(wanted) - set(present)
             log.debug("%s missing cols: %s", path.name, sorted(missing))
         return df[present]
@@ -115,38 +115,30 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _coerce_schema(tbl: pa.Table) -> pa.Table:
-    """Ensure *tbl* matches the expected schema for the observed players."""
-    # determine #players from observed columns (first batch)
-    num_players = n_players_from_schema(tbl.schema)
-    schema = expected_schema_for(num_players)
+def _coerce_schema(tbl: pa.Table, target: pa.Schema | None = None) -> pa.Table:
+    """Pad/cast *tbl* to the supplied *target* schema (or infer per-N if None)."""
+    if target is None:
+        target = expected_schema_for(n_players_from_schema(tbl.schema))
+    arrays = []
+    for field in target: # type: ignore
+        if field.name in tbl.column_names:
+            arrays.append(tbl[field.name].cast(field.type))
+        else:
+            arrays.append(pa.nulls(len(tbl), field.type))
+    return pa.Table.from_arrays(arrays, names=target.names) # type: ignore
 
-    # add missing cols + cast dtypes
-    for field in schema:
-        if field.name not in tbl.column_names:
-            tbl = tbl.append_column(field.name, pa.nulls(len(tbl), field.type))
-    arrays = [tbl[col.name].cast(col.type) for col in schema]
-    return pa.Table.from_arrays(arrays, names=schema.names)
 
 
 def run(cfg: PipelineCfg) -> None:
-    """Consolidate raw results blocks into a single parquet file.
+    """Consolidate raw results blocks into parquet files per player-count."""
 
-    The ingest step writes ``game_rows.raw.parquet`` beneath the analysis
-    directory.  A subsequent :mod:`farkle.curate` run will attach a manifest and
-    rename it to :pyattr:`cfg.curated_parquet`.
-    """
     log.info("Ingest started: root=%s", cfg.results_dir)
 
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
-    raw_path = cfg.curated_parquet.with_suffix(".raw.parquet")
-    tmp_path = raw_path.with_suffix(".in-progress")
-    if tmp_path.exists():
-        tmp_path.unlink()
 
-    # Prepare Arrow writer once
-    writer = None
-    total_rows = 0
+    writers: dict[int, pq.ParquetWriter] = {}
+    tmp_paths: dict[int, Path] = {}
+    totals: dict[int, int] = {}
 
     try:
         for block in sorted(cfg.results_dir.glob(cfg.results_glob)):
@@ -165,25 +157,35 @@ def run(cfg: PipelineCfg) -> None:
 
                 shard_df = _fix_winner(shard_df)
 
-                total_rows += len(shard_df)
-
-                # Lazily open writer on first chunk
                 table = pa.Table.from_pandas(shard_df, preserve_index=False)
                 table = _coerce_schema(table)
-                if writer is None:
-                    writer = pq.ParquetWriter(
-                        tmp_path,
-                        table.schema,
-                        compression=cfg.parquet_codec,
-                    )
+                n_players = n_players_from_schema(table.schema)
 
-                writer.write_table(table, row_group_size=cfg.row_group_size)
+                if n_players not in writers:
+                    raw_path = cfg.ingested_rows_raw(n_players)
+                    tmp_path = raw_path.with_suffix(raw_path.suffix + ".in-progress")
+                    if tmp_path.exists():
+                        tmp_path.unlink()
+                    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+                    writers[n_players] = pq.ParquetWriter(
+                        tmp_path, table.schema, compression=cfg.parquet_codec
+                    )
+                    tmp_paths[n_players] = tmp_path
+                    totals[n_players] = 0
+
+                writers[n_players].write_table(table, row_group_size=cfg.row_group_size)
+                totals[n_players] += len(shard_df)
     finally:
-        if writer:
-            writer.close()
-    if tmp_path.exists():
-        tmp_path.replace(raw_path)
-    log.info("Ingest finished — %d rows written to %s", total_rows, raw_path)
+        for w in writers.values():
+            w.close()
+
+    for n_players, tmp in tmp_paths.items():
+        raw_path = cfg.ingested_rows_raw(n_players)
+        if tmp.exists():
+            tmp.replace(raw_path)
+        log.info(
+            "Ingest finished — %d rows written to %s", totals.get(n_players, 0), raw_path
+        )
 
 
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper
