@@ -108,6 +108,17 @@ class PipelineCfg:
     def curated_parquet(self) -> Path:
         return self.analysis_dir / "data" / self.curated_rows_name
 
+    # --- new helpers for per-player-count ingest ----------------------
+    def ingested_rows_raw(self, n_players: int) -> Path:
+        """Path to the raw parquet for *n_players* games.
+
+        Historically only a single ``game_rows.raw.parquet`` was produced.
+        Retain that filename for two-player games to preserve backwards
+        compatibility with existing consumers.
+        """
+        suffix = "" if n_players == 2 else f"_{n_players}p"
+        return self.analysis_dir / "data" / f"game_rows{suffix}.raw.parquet"
+
     def to_json(self) -> str:
         return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)
 
