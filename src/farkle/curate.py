@@ -91,16 +91,32 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
 
 # ──────────────────────────────────────────────────────────────────────────────
 def run(cfg: PipelineCfg) -> None:
-    """Finalize the raw parquet written by :func:`farkle.ingest.run`.
-
-    Side-effects
-    ------------
-    •  Reads ``game_rows.raw.parquet`` produced by ingest
-    •  Writes ``<analysis_dir>/data/game_rows.parquet`` and a JSON manifest
-    •  Logs progress with the same logger used by :mod:`ingest`
-    """
+    """Curate raw parquet files produced by :func:`farkle.ingest.run`."""
+    log = logging.getLogger("curate")
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
+    # New layout: analysis/data/*p/*_ingested_rows.raw.parquet
+    raw_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.raw.parquet"))
+    if raw_files:
+        for raw_file in raw_files:
+            n = int(raw_file.parent.name.removesuffix("p"))
+            dst_file = cfg.ingested_rows_curated(n)
+            manifest = cfg.manifest_for(n)
+
+            md = pq.read_metadata(raw_file)
+            schema = md.schema.to_arrow_schema()
+            _write_manifest(manifest, rows=md.num_rows, schema=schema, cfg=cfg)
+
+            raw_file.replace(dst_file)
+            log.info(
+                "Curate: wrote %s (%d rows, %d row-groups)",
+                dst_file.name,
+                md.num_rows,
+                md.num_row_groups,
+            )
+        return
+
+    # Legacy single-file layout
     raw_file = cfg.curated_parquet.with_suffix(".raw.parquet")
     dst_file = cfg.curated_parquet
     manifest = cfg.analysis_dir / cfg.manifest_name
@@ -116,9 +132,7 @@ def run(cfg: PipelineCfg) -> None:
     schema = md.schema.to_arrow_schema()
     _write_manifest(manifest, rows=md.num_rows, schema=schema, cfg=cfg)
 
-    # Atomic publish: rename raw file to curated destination
     raw_file.replace(dst_file)
-
     log.info(
         "Curate: wrote %s (%d rows, %d row-groups)",
         dst_file.name,
