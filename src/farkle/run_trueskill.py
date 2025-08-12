@@ -17,20 +17,20 @@ tiers.json                       – mapping of strategy → tier
 from __future__ import annotations
 
 import argparse
+import concurrent.futures as cf
 import json
 import logging
+import os
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
 
-import os
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import trueskill
 import yaml
 from trueskill import Rating
-import concurrent.futures as cf
 
 from .analysis_config import n_players_from_schema
 from .utils import build_tiers
@@ -196,6 +196,32 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
+def _rate_block(block_dir: str, root_dir: str, suffix: str) -> tuple[str, int]:
+    """
+    Process one <N>_players block:
+    - loads keepers + ranked games
+    - runs TrueSkill updates
+    - writes ratings_<N>{suffix}.pkl under root_dir
+    Returns: (player_count_str, n_games)
+    """
+    block = Path(block_dir)
+    root  = Path(root_dir)
+
+    player_count = block.name.split("_")[0]
+    keep_path = block / f"keepers_{player_count}.npy"
+    keepers = np.load(keep_path).tolist() if keep_path.exists() else []
+
+    games = _load_ranked_games(block)          # existing helper in this module
+    env   = trueskill.TrueSkill()              # per-process environment
+    ratings = _update_ratings(games, keepers, env)
+
+    out = root / f"ratings_{player_count}{suffix}.pkl"
+    with out.open("wb") as fh:
+        pickle.dump(ratings, fh)
+
+    return player_count, len(games)
+
+
 def _rate_block_worker(block: Path, root: Path, suffix: str) -> tuple[str, int]:
     """Compute ratings for one <N>_players block and write the pickle."""
     player_count = block.name.split("_")[0]
@@ -257,10 +283,17 @@ def run_trueskill(
     pooled_weights: dict[str, int] = {}
 
     blocks = sorted(base.glob("*_players"))
-
-    if workers > 1 and len(blocks) > 1:
-        with cf.ProcessPoolExecutor(max_workers=workers) as ex:
-            futures = [ex.submit(_rate_block_worker, b, root, suffix) for b in blocks]
+    # Pick a sensible default, then cap to CPUs and number of blocks
+    auto_default = max(1, (os.cpu_count() or 1) - 1)
+    requested = workers or auto_default
+    cpu_cap   = (os.cpu_count() or 1)
+    actual_workers = max(1, min(requested, cpu_cap, len(blocks)))
+    if actual_workers != requested:
+        log.info("Workers capped from %d → %d (cpus=%d, blocks=%d)",
+                 requested, actual_workers, cpu_cap, len(blocks))
+    if actual_workers > 1 and len(blocks) > 1:
+        with cf.ProcessPoolExecutor(max_workers=actual_workers) as ex:
+            futures = {ex.submit(_rate_block, str(b), str(root), suffix): b for b in blocks}
             for fut in cf.as_completed(futures):
                 player_count, block_games = fut.result()
                 with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
