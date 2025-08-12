@@ -1,7 +1,7 @@
+import importlib.util
 import logging
 import os
 import time
-import importlib.util
 from pathlib import Path
 
 from farkle.analysis_config import PipelineCfg
@@ -9,6 +9,8 @@ from farkle.analysis_config import PipelineCfg
 _spec = importlib.util.spec_from_file_location(
     "head2head", Path(__file__).resolve().parents[2] / "src" / "farkle" / "analytics" / "head2head.py"
 )
+assert _spec is not None
+assert _spec.loader is not None
 head2head = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(head2head)
 

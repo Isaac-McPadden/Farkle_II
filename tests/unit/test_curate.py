@@ -1,4 +1,5 @@
 import json
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -8,6 +9,8 @@ from farkle.curate import (
     _already_curated,
     _schema_hash,
     _write_manifest,
+)
+from farkle.curate import (
     run as curate_run,
 )
 

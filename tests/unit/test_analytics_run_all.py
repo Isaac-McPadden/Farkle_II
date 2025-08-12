@@ -1,9 +1,8 @@
 import logging
-from dataclasses import dataclass
-from typing import List
-
 import sys
 import types
+from dataclasses import dataclass
+from typing import List
 
 import pytest
 
@@ -38,7 +37,7 @@ def test_run_all_invokes_expected_modules(ts, h2h, hgb, monkeypatch: pytest.Monk
 
     # Stub out heavy dependency modules before importing run_all
     stub = types.ModuleType("run_hgb")
-    stub.main = lambda *args, **kwargs: None  # noqa: ARG005
+    stub.main = lambda *args, **kwargs: None  # noqa: ARG005  # type:ignore
     monkeypatch.setitem(sys.modules, "farkle.run_hgb", stub)
 
     from farkle.analytics import run_all  # import after stubbing dependencies

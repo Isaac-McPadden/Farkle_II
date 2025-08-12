@@ -5,9 +5,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.ingest import _iter_shards, _fix_winner, _coerce_schema, run
 from farkle.analysis_config import PipelineCfg, expected_schema_for
-
+from farkle.ingest import _coerce_schema, _fix_winner, _iter_shards, run
 
 # -------------------- _iter_shards -------------------------------------
 
@@ -123,7 +122,7 @@ def test_run_schema_mismatch_logs_and_closes(tmp_path, caplog, monkeypatch):
 
     monkeypatch.setattr(pq, "ParquetWriter", DummyWriter)
 
-    def fake_iter_shards(block, cols):
+    def fake_iter_shards(block, cols):  # noqa: ARG001
         if block.name.startswith("block1"):
             df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"]})
             yield df, block / "good.parquet"

@@ -1,7 +1,7 @@
-import os
-from pathlib import Path
 import argparse
 import logging
+import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -131,7 +131,7 @@ def test_individual_step_failure_returns_one(
 
     monkeypatch.setattr(target, _boom)
 
-    def _parse_cli(cls, argv):
+    def _parse_cli(cls, argv):  # noqa: ARG001
         parser = argparse.ArgumentParser(add_help=False)
         parser.add_argument("--root", dest="results_dir", type=Path, default=tmp_path)
         parser.add_argument("-v", "--verbose", action="store_true")

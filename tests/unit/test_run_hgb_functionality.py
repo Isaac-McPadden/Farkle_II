@@ -80,19 +80,19 @@ def test_get_mu_various_types(tmp_path, monkeypatch, rating_val, mu):
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),
+        lambda random_state=None: DummyModel(),  # noqa: ARG005
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: {
+        lambda model, X, y, n_repeats=5, random_state=None: {  # noqa: ARG005
             "importances_mean": np.zeros(X.shape[1])
         },
     )
     monkeypatch.setattr(
         run_hgb,
         "plot_partial_dependence",
-        lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",
+        lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
     )
     run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
     assert captured["y"] == [mu, mu]
@@ -126,18 +126,18 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),
+        lambda random_state=None: DummyModel(),  # noqa: ARG005
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: {
+        lambda model, X, y, n_repeats=5, random_state=None: {  # noqa: ARG005
             "importances_mean": np.zeros(X.shape[1])
         },
     )
     plotted = []
 
-    def fake_plot(model, X, column, out_dir):
+    def fake_plot(model, X, column, out_dir):  # noqa: ARG001
         plotted.append(column)
         p = Path(out_dir) / f"pd_{column}.png"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -163,19 +163,19 @@ def test_main_default_output(tmp_path, monkeypatch):
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),
+        lambda random_state=None: DummyModel(),  # noqa: ARG005
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: {
+        lambda model, X, y, n_repeats=5, random_state=None: {  # noqa: ARG005
             "importances_mean": np.zeros(X.shape[1])
         },
     )
     monkeypatch.setattr(
         run_hgb,
         "plot_partial_dependence",
-        lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",
+        lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
     )
 
     run_hgb.main(["--root", str(data_dir)])

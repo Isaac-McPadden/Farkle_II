@@ -22,7 +22,7 @@ def test_run_skips_when_tiers_up_to_date(tmp_path, monkeypatch):
     os.utime(curated, (now, now))
     os.utime(tiers, (now + 10, now + 10))
 
-    def boom(*args, **kwargs):  # noqa: ANN001
+    def boom(*args, **kwargs):  # noqa: ARG001
         raise AssertionError("should not call run_trueskill.main")
 
     monkeypatch.setattr(trueskill._rt, "main", boom)
