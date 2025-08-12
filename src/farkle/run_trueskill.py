@@ -23,12 +23,14 @@ import pickle
 from dataclasses import dataclass
 from pathlib import Path
 
+import os
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import trueskill
 import yaml
 from trueskill import Rating
+import concurrent.futures as cf
 
 from .analysis_config import n_players_from_schema
 from .utils import build_tiers
@@ -194,10 +196,25 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
+def _rate_block_worker(block: Path, root: Path, suffix: str) -> tuple[str, int]:
+    """Compute ratings for one <N>_players block and write the pickle."""
+    player_count = block.name.split("_")[0]
+    keep_path = block / f"keepers_{player_count}.npy"
+    keepers = np.load(keep_path).tolist() if keep_path.exists() else []
+    games = _load_ranked_games(block)
+    env_local = trueskill.TrueSkill()
+    ratings = _update_ratings(games, keepers, env_local)
+    out = root / f"ratings_{player_count}{suffix}.pkl"
+    with out.open("wb") as fh:
+        pickle.dump(ratings, fh)
+    return player_count, len(games)
+
+
 def run_trueskill(
     output_seed: int = 0,
     root: Path | None = None,
     dataroot: Path | None = None,
+    workers: int | None = None,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -233,35 +250,54 @@ def run_trueskill(
     root.mkdir(parents=True, exist_ok=True)
     _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
-    env = trueskill.TrueSkill()
+    if workers is None:
+        workers = max(1, (os.cpu_count() or 1) - 1)
+
     pooled: dict[str, RatingStats] = {}
     pooled_weights: dict[str, int] = {}
-    for block in sorted(base.glob("*_players")):
-        player_count = block.name.split("_")[0]
-        keep_path = block / f"keepers_{player_count}.npy"
-        keepers = np.load(keep_path).tolist() if keep_path.exists() else []
-        games = _load_ranked_games(block)
-        ratings = _update_ratings(games, keepers, env)
-        with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
-            pickle.dump(pooled, fh)
-        # Also write a JSON that does not depend on importing 'farkle'
-        pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled.items()}
-        (root / f"ratings_pooled{suffix}.json").write_text(json.dumps(pooled_json))
-        block_games = len(games)
-        for k, v in ratings.items():
-            if k in pooled:
-                weight = pooled_weights[k]
-                new_weight = weight + block_games
-                pooled[k] = RatingStats(
-                    (pooled[k].mu * weight + v.mu * block_games) / new_weight,
-                    (pooled[k].sigma * weight + v.sigma * block_games) / new_weight,
-                )
-                pooled_weights[k] = new_weight
-            else:
-                pooled[k] = v
-                pooled_weights[k] = block_games
+
+    blocks = sorted(base.glob("*_players"))
+
+    if workers > 1 and len(blocks) > 1:
+        with cf.ProcessPoolExecutor(max_workers=workers) as ex:
+            futures = [ex.submit(_rate_block_worker, b, root, suffix) for b in blocks]
+            for fut in cf.as_completed(futures):
+                player_count, block_games = fut.result()
+                with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
+                    ratings = pickle.load(fh)
+                for k, v in ratings.items():
+                    if k in pooled:
+                        weight = pooled_weights[k]
+                        new_weight = weight + block_games
+                        pooled[k] = RatingStats(
+                            (pooled[k].mu * weight + v.mu * block_games) / new_weight,
+                            (pooled[k].sigma * weight + v.sigma * block_games) / new_weight,
+                        )
+                        pooled_weights[k] = new_weight
+                    else:
+                        pooled[k] = v
+                        pooled_weights[k] = block_games
+    else:
+        for block in blocks:
+            player_count, block_games = _rate_block_worker(block, root, suffix)
+            with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
+                ratings = pickle.load(fh)
+            for k, v in ratings.items():
+                if k in pooled:
+                    weight = pooled_weights[k]
+                    new_weight = weight + block_games
+                    pooled[k] = RatingStats(
+                        (pooled[k].mu * weight + v.mu * block_games) / new_weight,
+                        (pooled[k].sigma * weight + v.sigma * block_games) / new_weight,
+                    )
+                    pooled_weights[k] = new_weight
+                else:
+                    pooled[k] = v
+                    pooled_weights[k] = block_games
     with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
+    pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled.items()}
+    (root / f"ratings_pooled{suffix}.json").write_text(json.dumps(pooled_json))
     tiers = build_tiers(
         means={k: v.mu for k, v in pooled.items()},
         stdevs={k: v.sigma for k, v in pooled.items()},
@@ -303,6 +339,10 @@ def main(argv: list[str] | None = None) -> None:
         "--root", type=Path, default=None,
         help="output directory (default: <dataroot>/analysis)",
     )
+    parser.add_argument(
+        "--workers", type=int, default=None,
+        help="process <N>_players blocks in parallel (default: cpu_count-1)",
+    )
 
     args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -311,6 +351,7 @@ def main(argv: list[str] | None = None) -> None:
         output_seed=args.output_seed,
         root=args.root,
         dataroot=args.dataroot,
+        workers=args.workers,
     )
 
 
