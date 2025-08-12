@@ -242,8 +242,11 @@ def run_trueskill(
         keepers = np.load(keep_path).tolist() if keep_path.exists() else []
         games = _load_ranked_games(block)
         ratings = _update_ratings(games, keepers, env)
-        with (root / f"ratings_{player_count}{suffix}.pkl").open("wb") as fh:
-            pickle.dump(ratings, fh)
+        with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
+            pickle.dump(pooled, fh)
+        # Also write a JSON that does not depend on importing 'farkle'
+        pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled.items()}
+        (root / f"ratings_pooled{suffix}.json").write_text(json.dumps(pooled_json))
         block_games = len(games)
         for k, v in ratings.items():
             if k in pooled:

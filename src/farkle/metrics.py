@@ -18,7 +18,7 @@ from farkle.analysis_config import PipelineCfg
 log = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
-_WIN_COLS = ["winner", "winner_seat", "winning_score", "n_rounds"]
+_WIN_COLS = ["winner_strategy", "winner_seat", "winning_score", "n_rounds"]
 
 
 def _wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -48,7 +48,7 @@ def _write_csv(tmp: Path, final: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def _update_batch_counters(
-    arr_win: Any,
+    arr_win_strategy: Any,
     arr_wseat: Any,
     arr_score: Any,
     arr_nrounds: Any,
@@ -59,7 +59,7 @@ def _update_batch_counters(
 ) -> None:
     """Vectorised in-memory update using NumPy; no pandas required."""
     # Convert once – arrow → NumPy (zero-copy for numeric columns)
-    win = np.asarray(arr_win)
+    win = np.asarray(arr_win_strategy)
     wseat = np.asarray(arr_wseat)
     score = np.asarray(arr_score, dtype=np.int64)
     nrounds = np.asarray(arr_nrounds, dtype=np.int64)
@@ -69,8 +69,8 @@ def _update_batch_counters(
     wins_by_strategy.update(dict(zip(uniq.tolist(), counts.tolist(), strict=True)))
 
     # 2) wins by seat (P1, P2 …)  ────────────────────────────────────
-    uniq_s, counts_s = np.unique(wseat, return_counts=True)
-    wins_by_seat.update(dict(zip(uniq_s.tolist(), counts_s.tolist(), strict=True)))
+    uniq_seat, counts_s = np.unique(wseat, return_counts=True)
+    wins_by_seat.update(dict(zip(uniq_seat.tolist(), counts_s.tolist(), strict=True)))
 
     # 3) rounds & scores per winning strategy  ───────────────────────
     # build an index map strategy→idx
@@ -116,6 +116,7 @@ def run(cfg: PipelineCfg) -> None:
     wins_by_strategy: Counter[str] = Counter()
     rounds_by_strategy: Counter[str] = Counter()
     score_by_strategy: Counter[str] = Counter()
+    appearances_by_strategy: Counter[str] = Counter()
 
     wins_by_seat: Counter[str] = Counter()
     total_games = 0
@@ -133,18 +134,25 @@ def run(cfg: PipelineCfg) -> None:
         # which can raise ``ArrowInvalid`` even for small, null-free arrays. The
         # win/seat columns are tiny, so converting via ``to_pylist`` is simpler
         # and avoids these edge cases.
-        arr_win = np.asarray(batch["winner"].to_pylist())
+        arr_wstrat = np.asarray(batch["winner_strategy"].to_pylist())
         arr_wseat = np.asarray(batch["winner_seat"].to_pylist())
 
         arr_score = batch["winning_score"].to_numpy(zero_copy_only=True)
         arr_nrounds = batch["n_rounds"].to_numpy(zero_copy_only=True)
 
-        all_strategies.update(arr_win)
+        all_strategies.update(arr_wstrat)
         for col in strategy_cols:
-            all_strategies.update(s for s in batch[col].to_pylist() if s is not None)
+            col_vals = [s for s in batch[col].to_pylist() if s is not None]
+            all_strategies.update(col_vals)
+            # appearances denominator for win_rate/expected_score
+            if col_vals:
+                uniq, counts = np.unique(np.asarray(col_vals), return_counts=True)
+                appearances_by_strategy.update(
+                    dict(zip(uniq.tolist(), counts.tolist(), strict=True))
+                )
 
         _update_batch_counters(
-            arr_win,
+            arr_wstrat,
             arr_wseat,
             arr_score,
             arr_nrounds,
@@ -153,24 +161,22 @@ def run(cfg: PipelineCfg) -> None:
             score_by_strategy,
             wins_by_seat,
         )
-        total_games += len(arr_win)
+        total_games += len(arr_wstrat)
 
     # Build rows ---------------------------------------------------------------
     metrics_rows: list[dict[str, Any]] = []
     for strat in sorted(all_strategies):
-        n = wins_by_strategy[strat]
+        n_wins = wins_by_strategy[strat]
+        n_games = appearances_by_strategy[strat]
         metrics_rows.append(
             {
                 "strategy": strat,
-                "games": total_games,  # all strategies saw every game
-                "wins": n,
-                "win_rate": n / total_games,
-                # Expected value of points per game, counting zero for losses
-                "expected_score": score_by_strategy[strat] / total_games,
-                # Typical winning score – conditional mean (None if no wins)
-                "mean_score": None if n == 0 else score_by_strategy[strat] / n,
-                # Typical number of rounds in a win (None if no wins)
-                "mean_rounds": None if n == 0 else rounds_by_strategy[strat] / n,
+                "games": n_games,
+                "wins": n_wins,
+                "win_rate": (n_wins / n_games) if n_games else 0.0,
+                "expected_score": (score_by_strategy[strat] / n_games) if n_games else 0.0,
+                "mean_score": None if n_wins == 0 else (score_by_strategy[strat] / n_wins),
+                "mean_rounds": None if n_wins == 0 else (rounds_by_strategy[strat] / n_wins),
             }
         )
 

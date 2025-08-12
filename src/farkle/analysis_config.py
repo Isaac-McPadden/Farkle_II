@@ -38,6 +38,8 @@ class PipelineCfg:
     ingest_cols: tuple[str, ...] = field(
         default_factory=lambda: (
             "winner",
+            "winner_strategy",
+            "winner_seat",
             "n_rounds",
             "winning_score",
             *[f"P{i}_strategy" for i in range(1, 13)],

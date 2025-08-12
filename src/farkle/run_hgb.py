@@ -112,7 +112,15 @@ def run_hgb(
     metrics = pd.read_parquet(metrics_path)
     with open(ratings_path, "rb") as fh:
         ratings = pickle.load(fh)
-    rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [v.mu for v in ratings.values()]})
+    def _get_mu(v):
+        if hasattr(v, "mu"):
+            return v.mu
+        if isinstance(v, dict) and "mu" in v:
+            return v["mu"]
+        if isinstance(v, (list, tuple)) and v:
+            return v[0]
+        raise TypeError("Unknown rating value type")
+    rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [_get_mu(v) for v in ratings.values()]})
     data = metrics.merge(rating_df, on="strategy", how="inner")
     features = data.drop(columns=["strategy", "mu"]).astype(float)
     target = data["mu"]

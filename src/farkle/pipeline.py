@@ -7,7 +7,7 @@ from typing import Callable, Sequence
 
 from tqdm import tqdm
 
-from farkle import analytics, curate, ingest, metrics, aggregate
+from farkle import aggregate, analytics, curate, ingest, metrics
 from farkle.analysis_config import PipelineCfg
 
 
