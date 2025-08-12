@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -47,7 +47,9 @@ def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: P
         "codec": cfg.parquet_codec,
         "row_group_size": cfg.row_group_size,
         "git_sha": cfg.git_sha,
-        "created": datetime.utcnow().isoformat(timespec="seconds") + "Z",
+        "created": datetime.now(UTC)
+        .isoformat(timespec="seconds")
+        .replace("+00:00", "Z"),
         "pid": str(os.getpid()),
     }
     manifest_path.write_text(json.dumps(payload, indent=2))

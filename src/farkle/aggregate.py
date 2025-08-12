@@ -41,7 +41,7 @@ def run(cfg: PipelineCfg) -> None:
     out = out_dir / "all_ingested_rows.parquet"
     tmp = out.with_suffix(out.suffix + ".in-progress")
 
-    all_tbl = pa.concat_tables(parts, promote=True)
+    all_tbl = pa.concat_tables(parts, promote_options="default")
     pq.write_table(all_tbl, tmp, compression=cfg.parquet_codec, use_dictionary=True)
     tmp.replace(out)
     log.info("aggregate: wrote %s (%d rows)", out, total)
