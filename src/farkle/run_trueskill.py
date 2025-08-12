@@ -32,8 +32,8 @@ import trueskill
 import yaml
 from trueskill import Rating
 
-from .analysis_config import n_players_from_schema
-from .utils import build_tiers
+from farkle.analysis_config import n_players_from_schema
+from farkle.utils import build_tiers
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
 # Default location of tournament result blocks when no path is supplied
@@ -52,9 +52,9 @@ class RatingStats:
     sigma: float
 
 
-def _ensure_seed_ratings(ratings: dict[str, Rating], all_strategies: list[str]) -> None:
+def _ensure_seed_ratings(ratings: dict[str, Rating], all_strategies: list[str], env: trueskill.TrueSkill) -> None:
     for strat in all_strategies:
-        ratings.setdefault(strat, DEFAULT_RATING)
+        ratings.setdefault(strat, env.create_rating())
 
 
 def _read_manifest_seed(path: Path) -> int:
@@ -179,7 +179,7 @@ def _update_ratings(
     all_strats: set[str] = set(keepers)
     for g in games:
         all_strats.update(g)
-    _ensure_seed_ratings(ratings, list(all_strats))
+    _ensure_seed_ratings(ratings, list(all_strats), env)
 
     for game in games:
         # keep only the strategies we really want to rate
@@ -196,7 +196,7 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
-def _rate_block(block_dir: str, root_dir: str, suffix: str) -> tuple[str, int]:
+def _rate_block_worker(block_dir: str, root_dir: str, suffix: str) -> tuple[str, int]:
     """
     Process one <N>_players block:
     - loads keepers + ranked games
@@ -214,25 +214,15 @@ def _rate_block(block_dir: str, root_dir: str, suffix: str) -> tuple[str, int]:
     games = _load_ranked_games(block)          # existing helper in this module
     env   = trueskill.TrueSkill()              # per-process environment
     ratings = _update_ratings(games, keepers, env)
-
-    out = root / f"ratings_{player_count}{suffix}.pkl"
-    with out.open("wb") as fh:
+    
+    pkl_path = root / f"ratings_{player_count}{suffix}.pkl"
+    with pkl_path.open("wb") as fh:
         pickle.dump(ratings, fh)
 
-    return player_count, len(games)
+    # JSON sidecar with plain types (portable)
+    as_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings.items()}
+    (root / f"ratings_{player_count}{suffix}.json").write_text(json.dumps(as_json))
 
-
-def _rate_block_worker(block: Path, root: Path, suffix: str) -> tuple[str, int]:
-    """Compute ratings for one <N>_players block and write the pickle."""
-    player_count = block.name.split("_")[0]
-    keep_path = block / f"keepers_{player_count}.npy"
-    keepers = np.load(keep_path).tolist() if keep_path.exists() else []
-    games = _load_ranked_games(block)
-    env_local = trueskill.TrueSkill()
-    ratings = _update_ratings(games, keepers, env_local)
-    out = root / f"ratings_{player_count}{suffix}.pkl"
-    with out.open("wb") as fh:
-        pickle.dump(ratings, fh)
     return player_count, len(games)
 
 
@@ -293,9 +283,14 @@ def run_trueskill(
                  requested, actual_workers, cpu_cap, len(blocks))
     if actual_workers > 1 and len(blocks) > 1:
         with cf.ProcessPoolExecutor(max_workers=actual_workers) as ex:
-            futures = {ex.submit(_rate_block, str(b), str(root), suffix): b for b in blocks}
+            futures = {ex.submit(_rate_block_worker, str(b), str(root), suffix): b for b in blocks}
             for fut in cf.as_completed(futures):
-                player_count, block_games = fut.result()
+                try:
+                    player_count, block_games = fut.result()
+                except Exception as e:
+                    bad = futures[fut]
+                    log.exception("TrueSkill failed for block %s: %s", bad, e)
+                    continue
                 with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
                     ratings = pickle.load(fh)
                 for k, v in ratings.items():
@@ -312,7 +307,7 @@ def run_trueskill(
                         pooled_weights[k] = block_games
     else:
         for block in blocks:
-            player_count, block_games = _rate_block_worker(block, root, suffix)
+            player_count, block_games = _rate_block_worker(str(block), str(root), suffix)
             with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
                 ratings = pickle.load(fh)
             for k, v in ratings.items():
