@@ -14,7 +14,6 @@ import pyarrow.parquet as pq
 from farkle.analysis_config import (
     PipelineCfg,
     expected_schema_for,
-    n_players_from_schema,
 )
 
 log = logging.getLogger(__name__)
@@ -123,12 +122,6 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _coerce_schema(table: pa.Table) -> pa.Table:
-    n_players = n_players_from_schema(table.schema)
-    target = expected_schema_for(n_players)
-    return table.cast(target, safe=False)
-
-
 def _n_from_block(name: str) -> int:
     m = re.match(r"^(\d+)_players$", name)
     return int(m.group(1)) if m else 0
@@ -167,9 +160,18 @@ def run(cfg: PipelineCfg) -> None:
 
                 shard_df = _fix_winner(shard_df)         # fills winner_* + seat_ranks
 
-                table = pa.Table.from_pandas(shard_df, preserve_index=False)
-                table = _coerce_schema(table)            # cast to expected_schema_for(n)
-                n_players = n_players_from_schema(table.schema)
+                canon = expected_schema_for(n)                   # you already computed 'n' above
+                canon_names = canon.names
+
+                # 1) ensure every canonical column exists (fill with NA)
+                for name in canon_names:
+                    if name not in shard_df.columns:
+                        shard_df[name] = pd.NA
+
+                # 2) reorder to canonical order and build Arrow table in one go
+                shard_df = shard_df[canon_names]
+                table = pa.Table.from_pandas(shard_df, schema=canon, preserve_index=False)
+                n_players = n  # you already know it from the block name
 
                 if n_players not in writers:
                     raw_path = cfg.ingested_rows_raw(n_players)
