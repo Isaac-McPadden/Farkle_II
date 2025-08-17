@@ -45,13 +45,13 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
         if path.suffix == ".csv":
             df = pd.read_csv(path, dtype_backend="pyarrow")
         else:
-            df = pd.read_parquet(path)  # read all columns first
+            df = pd.read_parquet(path)
 
-        wanted = tuple(wanted)  # make size/iteration well-defined
+        wanted = list(wanted)
         present = [c for c in wanted if c in df.columns]
-        if len(present) < len(wanted):  # debug noise only
-            missing = set(wanted) - set(present)
-            log.debug("%s missing cols: %s", path.name, sorted(missing))
+        if log.isEnabledFor(logging.DEBUG) and len(present) < len(wanted):
+            missing = sorted(set(wanted) - set(present))
+            log.debug("%s missing cols: %s", path.name, missing)
         return df[present]
 
     # Newer runs emit a single `<Np_rows>.parquet` file directly under the
@@ -81,72 +81,94 @@ _SEAT_RE = re.compile(r"^P(\d+)_strategy$")
 
 
 def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
-    # 1) winner_seat
-    if "winner_seat" not in df.columns:
+    df = df.copy()
+
+    # winner_seat mirrors winner (add if missing)
+    if "winner_seat" not in df.columns and "winner" in df.columns:
         df["winner_seat"] = df["winner"]
 
-    # 2) winner_strategy
-    seat_cols = [c for c in df.columns if c.endswith("_strategy") and c.startswith("P")]
-    seat_to_strat = {c.split("_", 1)[0]: c for c in seat_cols}  # "P7" -> "P7_strategy"
-    df["winner_strategy"] = df["winner_seat"].map(seat_to_strat).map(df.get)
+    # strategy seat columns (P1_strategy, …)
+    seat_cols = sorted(
+        [c for c in df.columns if _SEAT_RE.match(c)],
+        key=lambda c: int(_SEAT_RE.match(c).group(1)),  # type: ignore[arg-type]
+    )
 
-    # 3) seat_ranks (if rank columns are present)
-    rank_cols = [c.replace("_strategy", "_rank") for c in seat_cols]
-    if all(col in df.columns for col in rank_cols):
-        ranks = df[rank_cols].to_numpy(dtype=float)
-        fill = ranks.shape[1] + 1  # push NaN/empty to the end
-        np.nan_to_num(ranks, copy=False, nan=fill)
+    # winner_strategy as plain strings (add if missing)
+    if "winner_strategy" not in df.columns and seat_cols:
+        seat_idx = (
+            df["winner_seat"].str.extract(r"P(?P<num>\d+)", expand=True)["num"]
+            .astype("Int64")  # robust to missing
+        )
+        S = df[seat_cols].to_numpy(dtype=object)
+        out = np.empty(len(df), dtype=object)
+        rows = np.arange(len(df))
+        has = seat_idx.notna()
+        out[has.to_numpy()] = S[rows[has], (seat_idx[has] - 1).astype(int)]
+        out[~has.to_numpy()] = None
+        df["winner_strategy"] = out
 
-        seat_labels = np.array([c.split("_", 1)[0] for c in seat_cols], dtype=object)
-        order = np.argsort(ranks, axis=1)  # 1 (winner) first
-        df["seat_ranks"] = [list(seat_labels[idx]) for idx in order]
-    else:
-        # fallback: at least put the winner first if ranks are absent
-        df["seat_ranks"] = df["winner_seat"].apply(lambda w: [w])
+    # seat_ranks: list[str] like ["P6","P2",...]
+    if "seat_ranks" not in df.columns and seat_cols:
+        rank_cols = [c.replace("_strategy", "_rank") for c in seat_cols]
+        if all(col in df.columns for col in rank_cols):
+            R = df[rank_cols].to_numpy(dtype=float)
+            fill = R.shape[1] + 1
+            np.nan_to_num(R, copy=False, nan=fill)
+            seats = np.array([c.split("_", 1)[0] for c in seat_cols], dtype=object)
+            order = np.argsort(R, axis=1)
+            df["seat_ranks"] = [list(seats[idx]) for idx in order]
+        elif "winner_seat" in df.columns:
+            df["seat_ranks"] = df["winner_seat"].apply(lambda s: [s])
 
     return df
 
 
 def _coerce_schema(table: pa.Table) -> pa.Table:
     n_players = n_players_from_schema(table.schema)
-    if not n_players:  # harden this if needed: infer from present P#_strategy cols
-        n_players = max(int(c[1:].split("_",1)[0])
-                        for c in table.column_names if c.startswith("P") and "_" in c)
     target = expected_schema_for(n_players)
     return table.cast(target, safe=False)
 
 
+def _n_from_block(name: str) -> int:
+    m = re.match(r"^(\d+)_players$", name)
+    return int(m.group(1)) if m else 0
+
 
 def run(cfg: PipelineCfg) -> None:
-    """Consolidate raw results blocks into parquet files per player-count."""
-
     log.info("Ingest started: root=%s", cfg.results_dir)
-
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
     writers: dict[int, pq.ParquetWriter] = {}
     tmp_paths: dict[int, Path] = {}
     totals: dict[int, int] = {}
 
+    blocks = sorted(
+        (p for p in cfg.results_dir.iterdir()
+         if p.is_dir() and p.name.endswith("_players")),
+        key=lambda p: _n_from_block(p.name)
+    )
+
     try:
-        for block in sorted(cfg.results_dir.glob(cfg.results_glob)):
+        for block in blocks:
             log.info("Reading block %s", block.name)
-            expected_cols = set(cfg.ingest_cols)
-            for shard_df, shard_path in _iter_shards(block, cfg.ingest_cols):
+            n = _n_from_block(block.name)
+
+            # Per-block allow-list: base + all P1..Pn columns from canonical schema
+            canon = expected_schema_for(n)
+            seat_cols = [c for c in canon.names if c.startswith("P")]
+            wanted = ("winner", "n_rounds", "winning_score", *seat_cols)
+
+            for shard_df, shard_path in _iter_shards(block, tuple(wanted)):
                 if shard_df.empty:
                     log.debug("Shard %s is empty — skipped", shard_path.name)
                     continue
 
-                if not set(shard_df.columns).issubset(expected_cols):
-                    log.error("Schema mismatch in %s", shard_path)
-                    raise RuntimeError("Shard DataFrame columns do not match expected columns")
-
                 log.debug("Shard %s → %d rows", shard_path.name, len(shard_df))
 
-                shard_df = _fix_winner(shard_df)
+                shard_df = _fix_winner(shard_df)         # fills winner_* + seat_ranks
 
                 table = pa.Table.from_pandas(shard_df, preserve_index=False)
-                table = _coerce_schema(table)
+                table = _coerce_schema(table)            # cast to expected_schema_for(n)
                 n_players = n_players_from_schema(table.schema)
 
                 if n_players not in writers:
@@ -171,9 +193,8 @@ def run(cfg: PipelineCfg) -> None:
         raw_path = cfg.ingested_rows_raw(n_players)
         if tmp.exists():
             tmp.replace(raw_path)
-        log.info(
-            "Ingest finished — %d rows written to %s", totals.get(n_players, 0), raw_path
-        )
+        log.info("Ingest finished — %d rows written to %s",
+                 totals.get(n_players, 0), raw_path)
 
 
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper

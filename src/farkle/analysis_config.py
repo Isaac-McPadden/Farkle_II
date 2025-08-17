@@ -41,7 +41,7 @@ class PipelineCfg:
             "winner", "n_rounds", "winning_score",  # base inputs we need
             *(
                 f"P{i}_{suffix}"
-                for i in range(1, 13)              # max seats supported
+                for i in range(1, 13)  # max seats supported, gets overwritten when used by ingest
                 for suffix in _SEAT_TEMPLATE
             ),
         )
@@ -120,6 +120,11 @@ class PipelineCfg:
     # Convenience: return kwargs ready for setup_logging()
     def logging_params(self) -> dict[str, object]:
         return {"level": self.log_level, "log_file": self.log_file}
+    
+    def wanted_ingest_cols(self, n: int) -> list[str]:
+        base = ["winner", "n_rounds", "winning_score"]
+        seat = [f"P{i}_{sfx}" for i in range(1, n + 1) for sfx in _SEAT_TEMPLATE]
+        return base + seat
 
     # ------------------------------------------------------------------
     @classmethod
