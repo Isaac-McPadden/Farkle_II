@@ -48,6 +48,7 @@ class PipelineCfg:
     )
     parquet_codec: str = "zstd"
     row_group_size: int = 64_000  # max_shard_mb removed (unused)
+    batch_rows: int = 100_000     # default Arrow batch size for streaming readers
 
     # 3. analytics toggles / params
     run_trueskill: bool = True
@@ -55,6 +56,13 @@ class PipelineCfg:
     run_hgb: bool = True
     hgb_max_iter: int = 500
     trueskill_beta: float = 25 / 6
+
+    # 3b. streaming / memory policy
+    # Cap TrueSkill worker count (None → auto based on CPU; steps will clamp to keep RAM low).
+    trueskill_workers: int | None = None
+    # HGB feature-matrix policy: "auto" | "incore" | "memmap"
+    hgb_mode: str = "auto"
+    hgb_max_ram_mb: int = 1024  # soft cap for in-core fit; above this use memmap in "auto"
 
     # 4. perf
     cores = os.cpu_count()
@@ -204,6 +212,7 @@ def expected_schema_for(n_players: int) -> pa.Schema:
 
 _PNUM_RE = re.compile(r"^P(\d+)_")
 
+
 def n_players_from_schema(schema: pa.Schema) -> int:
     pnums = []
     for name in schema.names:
@@ -211,3 +220,12 @@ def n_players_from_schema(schema: pa.Schema) -> int:
         if m:
             pnums.append(int(m.group(1)))
     return max(pnums) if pnums else 0
+
+
+# Convenience: estimate rows per batch from a RAM budget (MB), column count,
+# and value size (bytes). Used by streaming readers when you want a dynamic size.
+def rows_for_ram(target_mb: int, n_cols: int, bytes_per_val: int = 4, safety: float = 1.5) -> int:
+    """Convenience: estimate rows per batch from a RAM budget (MB), column count,
+    and value size (bytes). Used by streaming readers when you want a dynamic size.
+    """
+    return max(10_000, int((target_mb * 1024**2) / (n_cols * bytes_per_val * safety)))

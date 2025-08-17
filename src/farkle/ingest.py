@@ -59,7 +59,21 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
     row_files = sorted(block.glob("*p_rows.parquet"))
     row_file = row_files[0] if row_files else None
     if row_file is not None:
-        yield _read_subset(row_file, cols), row_file
+        # Stream by row-group to keep memory bounded
+        pf = pq.ParquetFile(row_file)
+        # Determine which of the wanted columns are present once, from schema
+        wanted = list(cols)
+        present = [c for c in wanted if c in pf.schema_arrow.names]
+        missing = sorted(set(wanted) - set(present))
+        if log.isEnabledFor(logging.DEBUG) and missing:
+            log.debug("%s missing cols: %s", row_file.name, missing)
+        for i in range(pf.num_row_groups):
+            tbl = pf.read_row_group(i, columns=present)
+            # Convert this row-group only
+            df = tbl.to_pandas()
+            # Return a pseudo-path for logging context
+            pseudo = row_file.with_name(f"{row_file.name}#rg{i}")
+            yield df, pseudo
         return
 
     # Legacy layout with `<Np_rows>` directory containing shards

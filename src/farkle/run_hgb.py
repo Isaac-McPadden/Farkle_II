@@ -122,7 +122,7 @@ def run_hgb(
         raise TypeError("Unknown rating value type")
     rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [_get_mu(v) for v in ratings.values()]})
     data = metrics.merge(rating_df, on="strategy", how="inner")
-    features = data.drop(columns=["strategy", "mu"]).astype(float)
+    features = data.drop(columns=["strategy", "mu"]).astype("float32")
     target = data["mu"]
 
     model = HistGradientBoostingRegressor(random_state=seed)

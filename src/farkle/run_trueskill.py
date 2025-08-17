@@ -26,13 +26,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
-import pyarrow as pa
+import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 import trueskill
 import yaml
 from trueskill import Rating
 
-from farkle.analysis_config import n_players_from_schema
+from farkle.analysis_config import PipelineCfg, n_players_from_schema
 from farkle.utils import build_tiers
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
@@ -42,7 +42,7 @@ DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results"
 log = logging.getLogger(__name__)
 
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
-
+_DEFAULT_WORKERS = 1
 
 @dataclass(slots=True)
 class RatingStats:
@@ -78,78 +78,6 @@ def _read_manifest_seed(path: Path) -> int:
         return int(data.get("seed", 0))
     except FileNotFoundError:
         return 0
-
-
-def _read_row_shards(row_dir: Path) -> pd.DataFrame:
-    """Return a DataFrame built from all Parquet files in ``row_dir``."""
-    frames = [pd.read_parquet(p) for p in row_dir.glob("*.parquet")]
-    if not frames:
-        return pd.DataFrame()
-    return pd.concat(frames, ignore_index=True)
-
-
-def _read_winners_csv(block: Path) -> pd.DataFrame:
-    """Read ``winners.csv`` from a result block."""
-    return pd.read_csv(block / "winners.csv")
-
-
-def _read_loose_parquets(block: Path) -> pd.DataFrame | None:
-    """Return a DataFrame from loose parquet files or ``None`` when absent."""
-    files = list(block.glob("*.parquet"))
-    if not files:
-        return None
-    frames = [pd.read_parquet(p) for p in files]
-    return pd.concat(frames, ignore_index=True)
-
-
-def _df_to_games(df: pd.DataFrame, n_players: int) -> list[list[str]]:
-    strat_cols = [f"P{i}_strategy" for i in range(1, n_players+1)]
-    rank_cols  = [f"P{i}_rank" for i in range(1, n_players+1)]
-
-    # shape (rows, players)
-    strategies = df[strat_cols].to_numpy()
-    ranks      = df[rank_cols].to_numpy()
-
-    # argsort turns low rank (1) into position 0, etc.
-    order = np.argsort(ranks, axis=1)          # same shape
-    # gather strategies in that order per row
-    row_idx  = np.arange(strategies.shape[0])[:, None]
-    ordered  = strategies[row_idx, order]      # fancy-indexing
-
-    # build python lists only once
-    return ordered.tolist()
-
-
-def _load_ranked_games(block: Path) -> list[list[str]]:
-    """Return one list per game, ordered by finishing position."""
-    # Prefer the consolidated `<Np_rows>.parquet` file when available.
-    row_file = next(block.glob("*p_rows.parquet"), None)
-    if row_file is not None:
-        df = pd.read_parquet(row_file)
-    else:
-        row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
-        if row_dirs:
-            frames = [_read_row_shards(d) for d in row_dirs]
-            df = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-        elif (block / "winners.csv").exists():
-            df = _read_winners_csv(block)
-        else:
-            df = _read_loose_parquets(block)
-            if df is None:
-                return []
-
-    # ----------------------------------------------------------------------
-    n_players = n_players_from_schema(pa.Table.from_pandas(df).schema)
-    if n_players:
-        return _df_to_games(df, n_players)
-
-    if "winner_strategy" in df.columns:
-        return [[s] for s in df["winner_strategy"]]
-    if "winner" in df.columns:
-        return [[s] for s in df["winner"]]
-
-    # unknown schema → ignore rows
-    return []
 
 
 def _update_ratings(
@@ -196,12 +124,50 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
-def _rate_block_worker(block_dir: str, root_dir: str, suffix: str) -> tuple[str, int]:
+def _iter_ranked_strategies(row_file: Path, n: int, batch_size: int = 100_000):
+    """
+    Yield per-game strategies in finish order using seat_ranks + P#_strategy.
+    Memory stays flat: Arrow batches only.
+    """
+    cols = ["seat_ranks"] + [f"P{i}_strategy" for i in range(1, n + 1)]
+    dataset = ds.dataset(row_file, format="parquet")
+    for batch in dataset.to_batches(columns=cols, batch_size=batch_size):
+        ranks = batch["seat_ranks"].to_pylist()  # list[list[str]]
+        strat_cols = [batch[f"P{i}_strategy"] for i in range(1, n + 1)]
+        for r, order in enumerate(ranks):
+            if not order:
+                continue
+            yield [strat_cols[int(seat[1:]) - 1][r].as_py() for seat in order]
+
+
+def _rate_stream(row_file: Path, n: int, keepers: list[str], env: trueskill.TrueSkill,
+                 batch_size: int = 100_000) -> tuple[dict[str, RatingStats], int]:
+    """Stream TrueSkill updates from parquet without materialising all games."""
+    ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
+    n_games = 0
+    for ranked in _iter_ranked_strategies(row_file, n, batch_size):
+        # If keepers are provided, ignore others
+        if keepers:
+            ranked = [s for s in ranked if s in ratings or s in keepers]
+        # Seed missing ratings on the fly
+        for s in ranked:
+            ratings.setdefault(s, env.create_rating())
+        if len(ranked) < 2:
+            continue
+        teams = [[ratings[s]] for s in ranked]  # already ordered
+        new_teams = env.rate(teams)
+        for s, team_rating in zip(ranked, new_teams, strict=False):
+            ratings[s] = team_rating[0]
+        n_games += 1
+    return ({k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}, n_games)
+
+
+def _rate_block_worker(block_dir: str, root_dir: str, suffix: str, batch_rows: int) -> tuple[str, int]:
     """
     Process one <N>_players block:
-    - loads keepers + ranked games
-    - runs TrueSkill updates
-    - writes ratings_<N>{suffix}.pkl under root_dir
+    - loads keepers
+    - streams ranked games directly from curated parquet
+    - runs TrueSkill updates incrementally
     Returns: (player_count_str, n_games)
     """
     block = Path(block_dir)
@@ -211,9 +177,20 @@ def _rate_block_worker(block_dir: str, root_dir: str, suffix: str) -> tuple[str,
     keep_path = block / f"keepers_{player_count}.npy"
     keepers = np.load(keep_path).tolist() if keep_path.exists() else []
 
-    games = _load_ranked_games(block)          # existing helper in this module
-    env   = trueskill.TrueSkill()              # per-process environment
-    ratings = _update_ratings(games, keepers, env)
+    # Read from curated analysis parquet: analysis/data/<n>p/<n>p_ingested_rows.parquet
+    row_file = Path(root) / "data" / f"{player_count}p" / f"{player_count}p_ingested_rows.parquet"
+    if not row_file.exists():
+        # Fallback: try raw block (legacy). This path is rare after ingest/curate.
+        row_file = next(block.glob("*p_rows.parquet"), None)
+        if row_file is None:
+            return player_count, 0
+        # Infer n from schema if needed
+        n = n_players_from_schema(pq.read_schema(row_file).to_arrow_schema())
+    else:
+        n = int(player_count)
+
+    env = trueskill.TrueSkill()  # per-process environment
+    ratings, n_games = _rate_stream(row_file, n, keepers, env, batch_size=batch_rows)
     
     pkl_path = root / f"ratings_{player_count}{suffix}.pkl"
     with pkl_path.open("wb") as fh:
@@ -223,7 +200,7 @@ def _rate_block_worker(block_dir: str, root_dir: str, suffix: str) -> tuple[str,
     as_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings.items()}
     (root / f"ratings_{player_count}{suffix}.json").write_text(json.dumps(as_json))
 
-    return player_count, len(games)
+    return player_count, n_games
 
 
 def run_trueskill(
@@ -231,6 +208,7 @@ def run_trueskill(
     root: Path | None = None,
     dataroot: Path | None = None,
     workers: int | None = None,
+    batch_rows: int = 100_000,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -283,7 +261,7 @@ def run_trueskill(
                  requested, actual_workers, cpu_cap, len(blocks))
     if actual_workers > 1 and len(blocks) > 1:
         with cf.ProcessPoolExecutor(max_workers=actual_workers) as ex:
-            futures = {ex.submit(_rate_block_worker, str(b), str(root), suffix): b for b in blocks}
+            futures = {ex.submit(_rate_block_worker, str(b), str(root), suffix, batch_rows): b for b in blocks}
             for fut in cf.as_completed(futures):
                 try:
                     player_count, block_games = fut.result()
@@ -307,7 +285,7 @@ def run_trueskill(
                         pooled_weights[k] = block_games
     else:
         for block in blocks:
-            player_count, block_games = _rate_block_worker(str(block), str(root), suffix)
+            player_count, block_games = _rate_block_worker(str(block), str(root), suffix, batch_rows)
             with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
                 ratings = pickle.load(fh)
             for k, v in ratings.items():
@@ -371,6 +349,10 @@ def main(argv: list[str] | None = None) -> None:
         "--workers", type=int, default=None,
         help="process <N>_players blocks in parallel (default: cpu_count-1)",
     )
+    # Pull batch/worker policy from PipelineCfg (falls back to CLI if not set).
+    cfg, _, _ = PipelineCfg.parse_cli([])
+    cfg_workers = cfg.trueskill_workers if cfg.trueskill_workers is not None else _DEFAULT_WORKERS
+    cfg_batch_rows = cfg.batch_rows
 
     args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -379,8 +361,9 @@ def main(argv: list[str] | None = None) -> None:
         output_seed=args.output_seed,
         root=args.root,
         dataroot=args.dataroot,
-        workers=args.workers,
-    )
+        workers=cfg_workers,
+        batch_rows=cfg_batch_rows,
+     )
 
 
 if __name__ == "__main__":

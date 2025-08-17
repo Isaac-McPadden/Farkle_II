@@ -21,27 +21,35 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
     return pa.table(cols, names=target.names)
 
 def run(cfg: PipelineCfg) -> None:
-    """Concatenate all per-N parquets into a 12-seat superset with null padding."""
+    """Concatenate all per-N parquets into a 12-seat superset with null padding.
+
+    Streaming implementation: copy row-groups into a single writer to bound RAM.
+    """
     files: list[Path] = sorted((cfg.data_dir).glob("*p/*_ingested_rows.parquet"))
     if not files:
         log.info("aggregate: no per-N files found under %s", cfg.data_dir)
         return
 
     target = expected_schema_for(12)  # superset up to P12_*
-    parts: list[pa.Table] = []
-    total = 0
-    for p in files:
-        t = pq.read_table(p)
-        t = _pad_to_schema(t, target)
-        parts.append(t)
-        total += t.num_rows
-
     out_dir = cfg.data_dir / "all_n_players_combined"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
     tmp = out.with_suffix(out.suffix + ".in-progress")
+    if tmp.exists():
+        tmp.unlink()
 
-    all_tbl = pa.concat_tables(parts, promote_options="default")
-    pq.write_table(all_tbl, tmp, compression=cfg.parquet_codec, use_dictionary=True)
+    total = 0
+    writer = pq.ParquetWriter(tmp, target, compression=cfg.parquet_codec)
+    try:
+        for p in files:
+            pf = pq.ParquetFile(p)
+            for i in range(pf.num_row_groups):
+                t = pf.read_row_group(i)          # small chunk in RAM
+                if t.schema.names != target.names:
+                    t = _pad_to_schema(t, target) # pad/reorder lazily
+                writer.write_table(t)
+                total += t.num_rows
+    finally:
+        writer.close()
     tmp.replace(out)
     log.info("aggregate: wrote %s (%d rows)", out, total)

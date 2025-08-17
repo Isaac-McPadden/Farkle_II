@@ -129,7 +129,10 @@ def run(cfg: PipelineCfg) -> None:
     ]
     all_strategies: set[str] = set()
 
-    for batch in reader.to_batches(columns=_WIN_COLS + strategy_cols):
+    for batch in reader.to_batches(
+            columns=_WIN_COLS + strategy_cols,
+            batch_size=cfg.batch_rows,
+        ):
         # Arrow's ``to_numpy`` has strict zero-copy semantics for string data
         # which can raise ``ArrowInvalid`` even for small, null-free arrays. The
         # win/seat columns are tiny, so converting via ``to_pylist`` is simpler
