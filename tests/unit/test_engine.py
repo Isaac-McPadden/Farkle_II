@@ -285,3 +285,18 @@ def test_take_turn_roll_limit(monkeypatch):
 
     assert p.n_rolls == ROLL_LIMIT + 1
 
+
+def test_game_stops_at_default_max_rounds(monkeypatch):
+    """Ensure the game loop honours the default 200-round cap."""
+
+    def bust_roll(self, n):
+        self.n_rolls += 1
+        return [2, 3, 4, 6, 2, 3][:n]
+
+    monkeypatch.setattr(FarklePlayer, "_roll", bust_roll)
+
+    players = [FarklePlayer("A", AlwaysRoll()), FarklePlayer("B", AlwaysRoll())]
+    gm = FarkleGame(players, target_score=10_000).play()
+
+    assert gm.game.n_rounds == 200
+

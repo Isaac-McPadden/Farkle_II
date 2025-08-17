@@ -430,7 +430,7 @@ class FarkleGame:
         self.table_seed = table_seed
 
     # ---------------------------- gameplay -----------------------------
-    def play(self, max_rounds: int = 50) -> GameMetrics:
+    def play(self, max_rounds: int = 200) -> GameMetrics:
         """Execute the game loop and return final statistics.
 
         Inputs
