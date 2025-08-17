@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Sequence
@@ -37,12 +38,12 @@ class PipelineCfg:
     # 2. ingest
     ingest_cols: tuple[str, ...] = field(
         default_factory=lambda: (
-            "winner",
-            "winner_strategy",
-            "winner_seat",
-            "n_rounds",
-            "winning_score",
-            *[f"P{i}_strategy" for i in range(1, 13)],
+            "winner", "n_rounds", "winning_score",  # base inputs we need
+            *(
+                f"P{i}_{suffix}"
+                for i in range(1, 13)              # max seats supported
+                for suffix in _SEAT_TEMPLATE
+            ),
         )
     )
     parquet_codec: str = "zstd"
@@ -196,14 +197,12 @@ def expected_schema_for(n_players: int) -> pa.Schema:
     return pa.schema(_BASE_FIELDS + seat_fields)
 
 
+_PNUM_RE = re.compile(r"^P(\d+)_")
+
 def n_players_from_schema(schema: pa.Schema) -> int:
-    """Infer player count by counting seat prefixes in a schema."""
-    max_p = 0
+    pnums = []
     for name in schema.names:
-        if name.startswith("P"):
-            try:
-                pnum = int(name[1:].split("_", 1)[0])
-                max_p = max(max_p, pnum)
-            except ValueError:
-                pass
-    return max_p
+        m = _PNUM_RE.match(name)
+        if m:
+            pnums.append(int(m.group(1)))
+    return max(pnums) if pnums else 0

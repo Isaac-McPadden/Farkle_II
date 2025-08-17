@@ -81,52 +81,39 @@ _SEAT_RE = re.compile(r"^P(\d+)_strategy$")
 
 
 def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Enrich *df* with:
-    • winner_strategy - the strategy string for the winning seat
-    • winner_seat     - seat label (P1 … PN)
-    • seat_ranks      - tuple of seat labels ordered by rank (winner first)
+    # 1) winner_seat
+    if "winner_seat" not in df.columns:
+        df["winner_seat"] = df["winner"]
 
-    Leaves all original columns intact so caller can `drop()` later.
-    """
-    if "winner_strategy" in df.columns:
-        # Already processed — nothing to do.
-        return df
+    # 2) winner_strategy
+    seat_cols = [c for c in df.columns if c.endswith("_strategy") and c.startswith("P")]
+    seat_to_strat = {c.split("_", 1)[0]: c for c in seat_cols}  # "P7" -> "P7_strategy"
+    df["winner_strategy"] = df["winner_seat"].map(seat_to_strat).map(df.get)
 
-    df = df.copy()  # cheap shallow copy
-    seat_cols = sorted(
-        [c for c in df.columns if _SEAT_RE.match(c)],
-        key=lambda c: int(_SEAT_RE.match(c).group(1)),  # natural seat order  # type: ignore
-    )
-
-    # --- Step 1: find seat label (P#) that won --------------------------
-    df["winner_seat"] = df["winner"]  # winner column still holds P#
-
-    # --- Step 2: promote strategy string -------------------------------
-    seat_idx = df["winner_seat"].str.extract(r"P(?P<num>\d+)")["num"].astype(int) - 1
-    df["winner_strategy"] = df[seat_cols].to_numpy()[np.arange(len(df)), seat_idx.to_numpy()]
-
-    # --- Step 3: capture finishing order -------------------------------
+    # 3) seat_ranks (if rank columns are present)
     rank_cols = [c.replace("_strategy", "_rank") for c in seat_cols]
     if all(col in df.columns for col in rank_cols):
-        ranks = df[rank_cols].to_numpy()
-        seat_labels = np.array([c[:-9] for c in seat_cols])
-        df["seat_ranks"] = list(map(tuple, seat_labels[ranks.argsort(axis=1)]))
+        ranks = df[rank_cols].to_numpy(dtype=float)
+        fill = ranks.shape[1] + 1  # push NaN/empty to the end
+        np.nan_to_num(ranks, copy=False, nan=fill)
+
+        seat_labels = np.array([c.split("_", 1)[0] for c in seat_cols], dtype=object)
+        order = np.argsort(ranks, axis=1)  # 1 (winner) first
+        df["seat_ranks"] = [list(seat_labels[idx]) for idx in order]
+    else:
+        # fallback: at least put the winner first if ranks are absent
+        df["seat_ranks"] = df["winner_seat"].apply(lambda w: [w])
 
     return df
 
 
-def _coerce_schema(tbl: pa.Table, target: pa.Schema | None = None) -> pa.Table:
-    """Pad/cast *tbl* to the supplied *target* schema (or infer per-N if None)."""
-    if target is None:
-        target = expected_schema_for(n_players_from_schema(tbl.schema))
-    arrays = []
-    for field in target: # type: ignore
-        if field.name in tbl.column_names:
-            arrays.append(tbl[field.name].cast(field.type))
-        else:
-            arrays.append(pa.nulls(len(tbl), field.type))
-    return pa.Table.from_arrays(arrays, names=target.names) # type: ignore
+def _coerce_schema(table: pa.Table) -> pa.Table:
+    n_players = n_players_from_schema(table.schema)
+    if not n_players:  # harden this if needed: infer from present P#_strategy cols
+        n_players = max(int(c[1:].split("_",1)[0])
+                        for c in table.column_names if c.startswith("P") and "_" in c)
+    target = expected_schema_for(n_players)
+    return table.cast(target, safe=False)
 
 
 
