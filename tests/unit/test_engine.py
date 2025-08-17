@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 
 from farkle.engine import ROLL_LIMIT, FarkleGame, FarklePlayer
+from farkle.scoring import default_score
 from farkle.strategies import ThresholdStrategy
 
 
@@ -198,6 +199,53 @@ def test_final_round_stop_when_ahead_run_up_false():
 
     assert p.n_rolls == 1  # stopped automatically when ahead
     assert p.score == 12_000
+
+
+def test_smart_discard_counters_non_negative():
+    roll = [1, 5, 3, 5, 2, 5]
+    # Force a discard to avoid the dice threshold. The roll has no standalone
+    # fives, so the engine should decline to discard any dice.
+    _, _, _, d5, d1 = default_score(
+        roll,
+        turn_score_pre=0,
+        smart_five=True,
+        smart_one=True,
+        score_threshold=1_000,
+        dice_threshold=2,
+        return_discards=True,
+    )
+    assert d5 == 0 and d1 == 0
+
+    player = FarklePlayer(
+        "T",
+        ThresholdStrategy(smart_five=True, smart_one=True, score_threshold=1_000, dice_threshold=2),
+    )
+    player._score_roll(roll, turn_score=0)
+    assert player.n_smart_five_dice == 0
+    assert player.n_smart_one_dice == 0
+
+
+def test_smart_five_discard_count():
+    roll = [1, 2, 3, 5, 5, 6]
+    # Discard one of the single fives to stay above the dice threshold
+    _, _, _, d5, d1 = default_score(
+        roll,
+        turn_score_pre=0,
+        smart_five=True,
+        smart_one=True,
+        score_threshold=1_000,
+        dice_threshold=3,
+        return_discards=True,
+    )
+    assert d5 == 1 and d1 == 0
+
+    player = FarklePlayer(
+        "T",
+        ThresholdStrategy(smart_five=True, smart_one=True, score_threshold=1_000, dice_threshold=3),
+    )
+    player._score_roll(roll, turn_score=0)
+    assert player.n_smart_five_dice == 1
+    assert player.n_smart_one_dice == 0
 
 
 def test_final_round_continue_when_ahead_run_up_true():

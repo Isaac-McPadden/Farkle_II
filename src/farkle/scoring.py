@@ -294,6 +294,7 @@ def _select_candidate(
     *,
     turn_score_pre: int,
     dice_roll_len: int,
+    counts: SixFaceCounts,
     single_fives: int,
     single_ones: int,
     favor_dice_or_score: Union[FavorDiceOrScore, bool] = FavorDiceOrScore.SCORE,
@@ -303,7 +304,16 @@ def _select_candidate(
     best_key: tuple[int, int] | None = None
     best_sf, best_so = single_fives, single_ones
 
-    for _roll, _len, cand_score, cand_used, _cnt, cand_sf, cand_so in candidates:
+    for _roll, _len, cand_score, cand_used, cand_cnt, cand_sf, cand_so in candidates:
+        # Skip options that discard more single 5s or 1s than exist in the
+        # original roll. This prevents breaking up scoring sets which would
+        # otherwise inflate the post-discard single counts and lead to
+        # negative discard totals.
+        drop_5 = counts[4] - cand_cnt[4]
+        drop_1 = counts[0] - cand_cnt[0]
+        if drop_5 > single_fives or drop_1 > single_ones:
+            continue
+
         score_after = turn_score_pre + cand_score  # score entering turn plus candidate score under evaluation
         dice_left_after = dice_roll_len - cand_used  # Dice remaining after candidate under evaluation is scored
         if must_bank(score_after, dice_left_after):  # If must_bank returns true, smart rules don't apply to this candidate
@@ -412,6 +422,7 @@ def _decide_smart_discards_impl(
         candidates,
         turn_score_pre=turn_score_pre,
         dice_roll_len=dice_roll_len,
+        counts=counts,
         single_fives=single_fives,
         single_ones=single_ones,
         favor_dice_or_score=favor_dice_or_score,
@@ -422,7 +433,10 @@ def _decide_smart_discards_impl(
         return 0, 0
 
     best_sf, best_so = best
-    return single_fives - best_sf, single_ones - best_so  # calculates and returns how many fives and ones to discard
+    # Subtract the remaining singles from the originals to determine how many
+    # dice to throw back. The candidate filtering above guarantees these values
+    # never exceed the available singles, so the result is always non-negative.
+    return single_fives - best_sf, single_ones - best_so
 
 
 @functools.lru_cache(maxsize=131_072)

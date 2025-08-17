@@ -131,10 +131,10 @@ class FarklePlayer:
             self.n_farkles += 1
             return 0, 0, True
 
-        if d5:
+        if d5 > 0:
             self.smart_five_uses += 1
             self.n_smart_five_dice += d5
-        if d1:
+        if d1 > 0:
             self.smart_one_uses += 1
             self.n_smart_one_dice += d1
 
