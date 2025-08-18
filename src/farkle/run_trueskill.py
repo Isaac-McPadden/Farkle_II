@@ -122,6 +122,30 @@ def _load_ratings_tuples(path: Path, env: trueskill.TrueSkill) -> dict[str, true
     return out
 
 
+# ---------- Per-N checkpointing ----------
+@dataclass
+class _BlockCkpt:
+    row_file: str
+    row_group: int
+    batch_index: int
+    games_done: int
+    ratings_path: str
+    version: int = 1
+
+
+def _save_block_ckpt(path: Path, ck: _BlockCkpt) -> None:
+    path.write_text(json.dumps(asdict(ck)))
+
+
+def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
+    if not path.exists():
+        return None
+    try:
+        return _BlockCkpt(**json.loads(path.read_text()))
+    except Exception:
+        return None
+
+
 # ---------- Single-pass streaming ----------
 def _find_aggregate_parquet(dataroot: Path) -> Optional[Path]:
     # common location from your aggregate step:
@@ -475,34 +499,37 @@ def _rate_stream(row_file: Path, n: int, keepers: list[str], env: trueskill.True
     return ({k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}, n_games)
 
 
-def _rate_block_worker(block_dir: str, root_dir: str, suffix: str, batch_rows: int) -> tuple[str, int]:
+def _rate_block_worker(
+    block_dir: str,
+    root_dir: str,
+    suffix: str,
+    batch_rows: int,
+    *,
+    resume: bool = True,
+    checkpoint_every_batches: int = 500,
+) -> tuple[str, int]:
     """
-    Process one <N>_players block:
-    - loads keepers
-    - streams ranked games directly from curated parquet
-    - runs TrueSkill updates incrementally
-    Returns: (player_count_str, n_games)
+    Process one <N>_players block with optional checkpointing.
+    Returns (player_count_str, n_games).
     """
     block = Path(block_dir)
-    root  = Path(root_dir)
+    root = Path(root_dir)
 
     player_count = block.name.split("_")[0]
     keep_path = block / f"keepers_{player_count}.npy"
     keepers = np.load(keep_path).tolist() if keep_path.exists() else []
 
-    # Read from curated analysis parquet: analysis/data/<n>p/<n>p_ingested_rows.parquet
+    # Locate curated parquet
     row_file = Path(root) / "data" / f"{player_count}p" / f"{player_count}p_ingested_rows.parquet"
     if not row_file.exists():
-        # Fallback: try raw block (legacy). This path is rare after ingest/curate.
         row_file = next(block.glob("*p_rows.parquet"), None)
         if row_file is None:
             return player_count, 0
-        # Infer n from schema if needed
         n = n_players_from_schema(pq.read_schema(row_file))
     else:
         n = int(player_count)
 
-    # Up-to-date guard: skip recompute if ratings are newer than data
+    # Up-to-date guard
     pkl_path = root / f"ratings_{player_count}{suffix}.pkl"
     if pkl_path.exists() and pkl_path.stat().st_mtime >= row_file.stat().st_mtime:
         try:
@@ -513,16 +540,80 @@ def _rate_block_worker(block_dir: str, root_dir: str, suffix: str, batch_rows: i
         log.info("TrueSkill: %sp up-to-date - skipped", player_count)
         return player_count, n_rows
 
-    env = trueskill.TrueSkill()  # per-process environment
-    ratings, n_games = _rate_stream(row_file, n, keepers, env, batch_size=batch_rows)
+    env = trueskill.TrueSkill()
+    ck_path = root / f"ratings_{player_count}{suffix}.ckpt.json"
+    rk_path = root / f"ratings_{player_count}{suffix}.checkpoint.pkl"
 
-    pkl_path = root / f"ratings_{player_count}{suffix}.pkl"
-    # Write module-free pickle (plain tuples) for portability
+    start_rg = 0
+    start_bi = 0
+    n_games = 0
+    if resume:
+        ck = _load_block_ckpt(ck_path)
+        if ck and Path(ck.row_file) == row_file:
+            start_rg = ck.row_group
+            start_bi = ck.batch_index
+            n_games = ck.games_done
+            if Path(ck.ratings_path).exists():
+                ratings = _load_ratings_tuples(Path(ck.ratings_path), env)
+            else:
+                ratings = {}
+        else:
+            ratings = {}
+    else:
+        ratings = {}
+
+    last_ck = time.time()
+    batches_since_ck = 0
+    schema = pq.read_schema(row_file)
+    columns = list(schema.names)
+    for rg, bi, batch in _stream_batches(
+        row_file,
+        columns,
+        start_row_group=start_rg,
+        start_batch_idx=start_bi,
+        batch_rows=batch_rows,
+    ):
+        for players, ranks in _players_and_ranks_from_batch(batch, n):
+            if keepers:
+                filt = [(p, r) for p, r in zip(players, ranks) if p in keepers]
+                if len(filt) < 2:
+                    continue
+                players = [p for p, _ in filt]
+                ranks = [r for _, r in filt]
+                uq = sorted(set(ranks))
+                rmap = {rv: j for j, rv in enumerate(uq)}
+                ranks = [rmap[r] for r in ranks]
+
+            for s in players:
+                if s not in ratings:
+                    ratings[s] = env.create_rating()
+            teams = [[ratings[s]] for s in players]
+            new = env.rate(teams, ranks=ranks)
+            for s, t in zip(players, new, strict=False):
+                ratings[s] = t[0]
+            n_games += 1
+
+        batches_since_ck += 1
+        if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
+            _save_ratings_tuples(rk_path, ratings)
+            _save_block_ckpt(
+                ck_path,
+                _BlockCkpt(
+                    row_file=str(row_file),
+                    row_group=rg,
+                    batch_index=bi + 1,
+                    games_done=n_games,
+                    ratings_path=str(rk_path),
+                ),
+            )
+            last_ck = time.time()
+            batches_since_ck = 0
+
+    ratings_stats = {k: RatingStats(v.mu, v.sigma) for k, v in ratings.items()}
     with pkl_path.open("wb") as fh:
-        pickle.dump({k: (v.mu, v.sigma) for k, v in ratings.items()}, fh)
+        pickle.dump({k: (v.mu, v.sigma) for k, v in ratings_stats.items()}, fh)
 
-    # JSON sidecar with plain types (portable)
-    as_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings.items()}
+    as_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()}
     (root / f"ratings_{player_count}{suffix}.json").write_text(json.dumps(as_json))
 
     return player_count, n_games
@@ -654,6 +745,8 @@ def run_trueskill(
     dataroot: Path | None = None,
     workers: int | None = None,
     batch_rows: int = 100_000,
+    resume_per_n: bool = True,
+    checkpoint_every_batches: int = 500,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -706,7 +799,18 @@ def run_trueskill(
                  requested, actual_workers, cpu_cap, len(blocks))
     if actual_workers > 1 and len(blocks) > 1:
         with cf.ProcessPoolExecutor(max_workers=actual_workers) as ex:
-            futures = {ex.submit(_rate_block_worker, str(b), str(root), suffix, batch_rows): b for b in blocks}
+            futures = {
+                ex.submit(
+                    _rate_block_worker,
+                    str(b),
+                    str(root),
+                    suffix,
+                    batch_rows,
+                    resume=resume_per_n,
+                    checkpoint_every_batches=checkpoint_every_batches,
+                ): b
+                for b in blocks
+            }
             for fut in cf.as_completed(futures):
                 try:
                     player_count, block_games = fut.result()
@@ -730,7 +834,14 @@ def run_trueskill(
                         pooled_weights[k] = block_games
     else:
         for block in blocks:
-            player_count, block_games = _rate_block_worker(str(block), str(root), suffix, batch_rows)
+            player_count, block_games = _rate_block_worker(
+                str(block),
+                str(root),
+                suffix,
+                batch_rows,
+                resume=resume_per_n,
+                checkpoint_every_batches=checkpoint_every_batches,
+            )
             with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
                 ratings = _coerce_ratings(pickle.load(fh))
             for k, v in ratings.items():
@@ -836,6 +947,13 @@ def main(argv: list[str] | None = None) -> None:
         help="Ignore checkpoint and start fresh.",
     )
     parser.add_argument(
+        "--no-resume-per-n",
+        dest="resume_per_n",
+        action="store_false",
+        default=True,
+        help="Disable per-N resume (default: resume).",
+    )
+    parser.add_argument(
         "--checkpoint-every-batches",
         type=int,
         default=500,
@@ -915,6 +1033,8 @@ def main(argv: list[str] | None = None) -> None:
         dataroot=args.dataroot,
         workers=cfg_workers,
         batch_rows=cfg_batch_rows,
+        resume_per_n=args.resume_per_n,
+        checkpoint_every_batches=args.checkpoint_every_batches,
     )
 
 
