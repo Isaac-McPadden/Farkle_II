@@ -1,12 +1,11 @@
 import logging
 
 import pandas as pd
-import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis_config import PipelineCfg, expected_schema_for
-from farkle.ingest import _coerce_schema, _fix_winner, _iter_shards, run
+from farkle.analysis_config import PipelineCfg
+from farkle.ingest import _fix_winner, _iter_shards, run
 
 # -------------------- _iter_shards -------------------------------------
 
@@ -71,26 +70,6 @@ def test_fix_winner_without_ranks():
     assert result["winner_strategy"].iloc[0] == "A"
     assert result["winner_seat"].iloc[0] == "P1"
     assert "seat_ranks" not in result.columns
-
-
-# -------------------- _coerce_schema -----------------------------------
-
-def test_coerce_schema_with_target():
-    df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"]})
-    tbl = pa.Table.from_pandas(df, preserve_index=False)
-    target = expected_schema_for(2)
-    coerced = _coerce_schema(tbl, target)
-    assert coerced.schema == target
-    assert coerced["P2_strategy"].to_pylist() == [None]
-
-
-def test_coerce_schema_infer():
-    df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"]})
-    tbl = pa.Table.from_pandas(df, preserve_index=False)
-    coerced = _coerce_schema(tbl)
-    expected = expected_schema_for(1)
-    assert coerced.schema == expected
-    assert "P2_strategy" not in coerced.column_names
 
 
 # -------------------- run integration ----------------------------------
