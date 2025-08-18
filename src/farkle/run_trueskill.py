@@ -22,11 +22,13 @@ import json
 import logging
 import os
 import pickle
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, Optional
 
 import numpy as np
+import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import trueskill
@@ -51,6 +53,219 @@ class RatingStats:
 
     mu: float
     sigma: float
+
+
+# ---------- Checkpointing ----------
+@dataclass
+class _TSCheckpoint:
+    source: str                 # parquet path
+    row_group: int              # next row-group to start at
+    batch_index: int            # next batch index within that row-group
+    games_done: int
+    ratings_path: str           # where the tuple-ified ratings live
+    version: int = 1
+
+
+def _save_ckpt(path: Path, ck: _TSCheckpoint) -> None:
+    path.write_text(json.dumps(asdict(ck)))
+
+
+def _load_ckpt(path: Path) -> Optional[_TSCheckpoint]:
+    if not path.exists():
+        return None
+    try:
+        return _TSCheckpoint(**json.loads(path.read_text()))
+    except Exception:
+        return None
+
+
+def _save_ratings_tuples(path: Path, ratings: dict[str, trueskill.Rating]) -> None:
+    import pickle
+
+    with path.open("wb") as fh:
+        pickle.dump({k: (v.mu, v.sigma) for k, v in ratings.items()}, fh)
+
+
+def _load_ratings_tuples(path: Path, env: trueskill.TrueSkill) -> dict[str, trueskill.Rating]:
+    import pickle
+
+    with path.open("rb") as fh:
+        raw = pickle.load(fh)
+    out: dict[str, trueskill.Rating] = {}
+    for k, tup in raw.items():
+        mu, sigma = tup
+        out[k] = env.create_rating(mu=float(mu), sigma=float(sigma))
+    return out
+
+
+# ---------- Single-pass streaming ----------
+def _find_aggregate_parquet(dataroot: Path) -> Optional[Path]:
+    # common location from your aggregate step:
+    cand = dataroot / "all_n_players_combined" / "all_ingested_rows.parquet"
+    if cand.exists():
+        return cand
+    # fallback: search shallowly
+    hits = list(dataroot.glob("**/all_ingested_rows.parquet"))
+    return hits[0] if hits else None
+
+
+def _stream_batches(
+    parquet_path: Path,
+    columns: list[str],
+    *,
+    start_row_group: int = 0,
+    start_batch_idx: int = 0,
+    batch_rows: int = 100_000,
+) -> Iterator[tuple[int, int, pa.Table]]:
+    """Yield (row_group_index, batch_index, batch_table)."""
+    pf = pq.ParquetFile(parquet_path)
+    n_rg = pf.num_row_groups
+    for rg in range(start_row_group, n_rg):
+        table = pf.read_row_group(rg, columns=columns)
+        # chunk the row-group into manageable batches
+        for bi, batch in enumerate(table.to_batches(max_chunksize=batch_rows)):
+            if rg == start_row_group and bi < start_batch_idx:
+                continue
+            yield rg, bi, pa.Table.from_batches([batch])
+
+
+def _players_and_ranks_from_batch(
+    batch: pa.Table, n: int
+) -> Iterator[tuple[list[str], list[int]]]:
+    """Robust per-row extraction:
+       - If seat_ranks exists, use it (strict placements)
+       - Else, derive placements from P#_rank
+       - Else, fallback: winner vs (n-1) tied second.
+    """
+    cols = set(batch.column_names)
+
+    def col(name: str):
+        return batch[name] if name in cols else None
+
+    ranks_list = col("seat_ranks").to_pylist() if "seat_ranks" in cols else None
+    winner_col = col("winner").to_pylist() if "winner" in cols else None
+    strat_cols = [col(f"P{i}_strategy") for i in range(1, n + 1)]
+    rank_cols = [col(f"P{i}_rank") for i in range(1, n + 1)]
+    n_rows = batch.num_rows
+    for r in range(n_rows):
+        seats = [sc[r].as_py() if sc is not None else None for sc in strat_cols]
+        # 1) seat_ranks path
+        if ranks_list is not None and ranks_list[r]:
+            order = ranks_list[r]
+            players = [seats[int(s[1:]) - 1] for s in order]
+            if any(p is None for p in players):  # skip incomplete rows
+                continue
+            yield players, list(range(len(players)))
+            continue
+        # 2) derive from P#_rank if present
+        if rank_cols[0] is not None:
+            pairs = [(i, rank_cols[i][r].as_py()) for i in range(n)]
+            pairs = [(i, rv) if rv is not None else None for i, rv in pairs]
+            pairs = [(i, rv) for i, rv in pairs if rv is not None]
+            if len(pairs) >= 2:
+                pairs.sort(key=lambda x: x[1])
+                uniq = sorted({rv for _, rv in pairs})
+                remap = {rv: j for j, rv in enumerate(uniq)}
+                players, rr = [], []
+                for i, rv in pairs:
+                    p = seats[i]
+                    if p is None:
+                        continue
+                    players.append(p)
+                    rr.append(remap[rv])
+                if len(players) >= 2:
+                    yield players, rr
+                    continue
+        # 3) fallback
+        if winner_col is None or not winner_col[r]:
+            continue
+        try:
+            w_idx = int(str(winner_col[r])[1:]) - 1
+        except Exception:
+            continue
+        winner = seats[w_idx]
+        if winner is None:
+            continue
+        losers = [s for j, s in enumerate(seats) if j != w_idx and s is not None]
+        if losers:
+            yield [winner] + losers, [0] + [1] * len(losers)
+
+
+def _rate_single_pass(
+    source: Path,
+    *,
+    env: trueskill.TrueSkill,
+    resume: bool,
+    checkpoint_path: Path,
+    ratings_ckpt_path: Path,
+    batch_rows: int,
+    checkpoint_every_batches: int = 500,
+) -> tuple[dict[str, RatingStats], int]:
+    """Stream all games from a single aggregated parquet, with checkpoint/resume."""
+    # Find n from schema (max seat present)
+    schema = pq.read_schema(source)
+    names = set(schema.names)
+    n = max(int(nm[1]) for nm in names if nm.startswith("P") and nm.endswith("_strategy"))
+
+    # Initialise ratings & resume point
+    start_rg = 0
+    start_bi = 0
+    games = 0
+    if resume:
+        ck = _load_ckpt(checkpoint_path)
+        if ck and Path(ck.source) == source:
+            start_rg = ck.row_group
+            start_bi = ck.batch_index
+            games = ck.games_done
+            if Path(ck.ratings_path).exists():
+                ratings = _load_ratings_tuples(Path(ck.ratings_path), env)
+            else:
+                ratings = {}
+        else:
+            ratings = {}
+    else:
+        ratings = {}
+
+    last_ck = time.time()
+    batches_since_ck = 0
+    for rg, bi, batch in _stream_batches(
+        source,
+        columns=[c for c in schema.names],
+        start_row_group=start_rg,
+        start_batch_idx=start_bi,
+        batch_rows=batch_rows,
+    ):
+        for players, ranks in _players_and_ranks_from_batch(batch, n):
+            # seed ratings
+            for s in players:
+                if s not in ratings:
+                    ratings[s] = env.create_rating()
+            teams = [[ratings[s]] for s in players]
+            new = env.rate(teams, ranks=ranks)
+            for s, t in zip(players, new, strict=False):
+                ratings[s] = t[0]
+            games += 1
+
+        # periodic checkpoint
+        batches_since_ck += 1
+        if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
+            _save_ratings_tuples(ratings_ckpt_path, ratings)
+            _save_ckpt(
+                checkpoint_path,
+                _TSCheckpoint(
+                    source=str(source),
+                    row_group=rg,
+                    batch_index=bi + 1,
+                    games_done=games,
+                    ratings_path=str(ratings_ckpt_path),
+                ),
+            )
+            last_ck = time.time()
+            batches_since_ck = 0
+
+    # finalise
+    stats = {k: RatingStats(v.mu, v.sigma) for k, v in ratings.items()}
+    return stats, games
 
 
 def _coerce_ratings(obj: dict[str, object]) -> dict[str, RatingStats]:
