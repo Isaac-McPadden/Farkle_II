@@ -53,6 +53,20 @@ class RatingStats:
     sigma: float
 
 
+def _coerce_ratings(obj: dict[str, object]) -> dict[str, RatingStats]:
+    """Accept {strategy: RatingStats | {'mu':..,'sigma':..} | (mu,sigma)}."""
+    out: dict[str, RatingStats] = {}
+    for k, v in obj.items():
+        if isinstance(v, RatingStats):
+            out[k] = v
+        elif isinstance(v, dict) and "mu" in v and "sigma" in v:
+            out[k] = RatingStats(float(v["mu"]), float(v["sigma"]))
+        else:
+            mu, sigma = (v if isinstance(v, (list, tuple)) else (None, None))
+            out[k] = RatingStats(float(mu), float(sigma))
+    return out
+
+
 def _ensure_seed_ratings(ratings: dict[str, Rating], all_strategies: list[str], env: trueskill.TrueSkill) -> None:
     for strat in all_strategies:
         ratings.setdefault(strat, env.create_rating())
@@ -262,10 +276,11 @@ def _rate_block_worker(block_dir: str, root_dir: str, suffix: str, batch_rows: i
 
     env = trueskill.TrueSkill()  # per-process environment
     ratings, n_games = _rate_stream(row_file, n, keepers, env, batch_size=batch_rows)
-    
+
     pkl_path = root / f"ratings_{player_count}{suffix}.pkl"
+    # Write module-free pickle (plain tuples) for portability
     with pkl_path.open("wb") as fh:
-        pickle.dump(ratings, fh)
+        pickle.dump({k: (v.mu, v.sigma) for k, v in ratings.items()}, fh)
 
     # JSON sidecar with plain types (portable)
     as_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings.items()}
@@ -341,7 +356,7 @@ def run_trueskill(
                     log.exception("TrueSkill failed for block %s: %s", bad, e)
                     continue
                 with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
-                    ratings = pickle.load(fh)
+                    ratings = _coerce_ratings(pickle.load(fh))
                 for k, v in ratings.items():
                     if k in pooled:
                         weight = pooled_weights[k]
@@ -358,7 +373,7 @@ def run_trueskill(
         for block in blocks:
             player_count, block_games = _rate_block_worker(str(block), str(root), suffix, batch_rows)
             with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
-                ratings = pickle.load(fh)
+                ratings = _coerce_ratings(pickle.load(fh))
             for k, v in ratings.items():
                 if k in pooled:
                     weight = pooled_weights[k]
@@ -381,8 +396,9 @@ def run_trueskill(
             log.info("TrueSkill: pooled outputs up-to-date - skipped")
             return
 
+    # Pooled pickle also as plain tuples
     with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
-        pickle.dump(pooled, fh)
+        pickle.dump({k: (v.mu, v.sigma) for k, v in pooled.items()}, fh)
     pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled.items()}
     (root / f"ratings_pooled{suffix}.json").write_text(json.dumps(pooled_json))
     tiers = build_tiers(
