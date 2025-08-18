@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import csv
 import logging
-import math
 from collections import Counter
 from pathlib import Path
 from typing import Any
@@ -12,6 +11,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+import json
 
 from farkle.analysis_config import PipelineCfg
 
@@ -20,31 +20,11 @@ log = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 _WIN_COLS = ["winner_strategy", "winner_seat", "winning_score", "n_rounds"]
 
-
-def _wilson_ci(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
-    if n == 0:
-        return 0.0, 0.0
-    p = k / n
-    denom = 1 + z**2 / n
-    center = p + z**2 / (2 * n)
-    margin = z * math.sqrt(p * (1 - p) / n + z**2 / (4 * n**2))
-    return (center - margin) / denom, (center + margin) / denom
-
-
 def _write_parquet(tmp: Path, final: Path, rows: list[dict[str, Any]], schema: pa.Schema) -> None:
     tbl = pa.Table.from_pylist(rows, schema=schema)
     pq.write_table(tbl, tmp, compression="zstd")
     tmp.replace(final)
     log.info("✓ metrics → %s  (%d rows)", final.name, tbl.num_rows)
-
-
-def _write_csv(tmp: Path, final: Path, rows: list[dict[str, Any]]) -> None:
-    with tmp.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0].keys())
-        writer.writeheader()
-        writer.writerows(rows)
-    tmp.replace(final)
-    log.info("✓ seat_advantage → %s", final.name)
 
 
 def _update_batch_counters(
@@ -91,7 +71,7 @@ def run(cfg: PipelineCfg) -> None:
     Outputs
     -------
     <analysis_dir>/metrics.parquet         (per-strategy & overall KPIs)
-    <analysis_dir>/seat_advantage.csv      (P1..P6 win-rates with CI)
+    <analysis_dir>/seat_advantage.csv      (seat-specific win rates)
 
     Notes
     -----
@@ -119,7 +99,6 @@ def run(cfg: PipelineCfg) -> None:
     appearances_by_strategy: Counter[str] = Counter()
 
     wins_by_seat: Counter[str] = Counter()
-    total_games = 0
 
     reader = ds.dataset(data_file, format="parquet")
     strategy_cols = [
@@ -164,7 +143,6 @@ def run(cfg: PipelineCfg) -> None:
             score_by_strategy,
             wins_by_seat,
         )
-        total_games += len(arr_wstrat)
 
     # Build rows ---------------------------------------------------------------
     metrics_rows: list[dict[str, Any]] = []
@@ -183,20 +161,36 @@ def run(cfg: PipelineCfg) -> None:
             }
         )
 
-    seat_rows: list[dict[str, Any]] = []
-    for seat in sorted(wins_by_seat):
-        k = wins_by_seat[seat]
-        lo, hi = _wilson_ci(k, total_games)
-        seat_rows.append(
-            {
-                "seat": seat,
-                "wins": k,
-                "games": total_games,
-                "win_rate": k / total_games,
-                "ci_lower": lo,
-                "ci_upper": hi,
-            }
-        )
+    # Seat denominators from manifests (rows where seat existed)
+    def _rows_for_n(n: int) -> int:
+        mpath = cfg.manifest_for(n)
+        if not mpath.exists():
+            return 0
+        try:
+            meta = json.loads(mpath.read_text())
+            return int(meta.get("rows", 0))
+        except Exception:
+            return 0
+
+    # denom[seat] = sum of rows across all N where that seat exists (i.e., N >= seat)
+    denom = {i: sum(_rows_for_n(n) for n in range(i, 13)) for i in range(1, 13)}
+
+    # wins per seat (from aggregate parquet)
+    ds_all = ds.dataset(data_file, format="parquet")
+    wins_by_seat = {
+        i: ds_all.count_rows(filter=(ds.field("winner") == f"P{i}"))
+        for i in range(1, 13)
+    }
+
+    # Write corrected seat_advantage.csv
+    with out_seats.open("w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["seat", "wins", "games_with_seat", "win_rate"])
+        for i in range(1, 13):
+            games = denom[i]
+            wins = int(wins_by_seat[i] or 0)
+            rate = (wins / games) if games else 0.0
+            w.writerow([i, wins, games, rate])
 
     # Schemas ------------------------------------------------------------------
     metrics_schema = pa.schema(
@@ -213,7 +207,5 @@ def run(cfg: PipelineCfg) -> None:
 
     # Atomic writes ------------------------------------------------------------
     tmp_metrics = out_metrics.with_suffix(".parquet.in-progress")
-    tmp_seats = out_seats.with_suffix(".csv.in-progress")
 
     _write_parquet(tmp_metrics, out_metrics, metrics_rows, metrics_schema)
-    _write_csv(tmp_seats, out_seats, seat_rows)
