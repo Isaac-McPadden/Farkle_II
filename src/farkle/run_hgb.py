@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import pickle
+import re
 import warnings
 from pathlib import Path
 from typing import List
@@ -112,6 +113,7 @@ def run_hgb(
     metrics = pd.read_parquet(metrics_path)
     with open(ratings_path, "rb") as fh:
         ratings = pickle.load(fh)
+
     def _get_mu(v):
         if hasattr(v, "mu"):
             return v.mu
@@ -120,9 +122,53 @@ def run_hgb(
         if isinstance(v, (list, tuple)) and v:
             return v[0]
         raise TypeError("Unknown rating value type")
-    rating_df = pd.DataFrame({"strategy": list(ratings), "mu": [_get_mu(v) for v in ratings.values()]})
+
+    rating_df = pd.DataFrame(
+        {"strategy": list(ratings), "mu": [_get_mu(v) for v in ratings.values()]}
+    )
     data = metrics.merge(rating_df, on="strategy", how="inner")
-    features = data.drop(columns=["strategy", "mu"]).astype("float32")
+
+    # ------------------------------------------------------------------
+    # Parse strategy parameters from the strategy name. This ensures that
+    # the model only trains on configuration parameters and does not leak
+    # outcome-based metrics into the feature set.
+    # ------------------------------------------------------------------
+    _RX = re.compile(
+        r"^Strat\((?P<S>\d+),(?P<D>\d+)\)\[(?P<cs>[S-])(?P<cd>[D-])\]\[(?P<sf>[F-])(?P<so>[O-])(?P<fs>FS|FD)\]\[(?P<rb>AND|OR)\]\[(?P<hd>[H-])(?P<rs>[R-])\]$"
+    )
+
+    def _parse(name: str) -> dict[str, object]:
+        m = _RX.match(name)
+        if not m:
+            return {}
+        g = m.groupdict()
+        return {
+            "score_threshold": int(g["S"]),
+            "dice_threshold": int(g["D"]),
+            "consider_score": 1 if g["cs"] == "S" else 0,
+            "consider_dice": 1 if g["cd"] == "D" else 0,
+            "smart_five": 1 if g["sf"] == "F" else 0,
+            "smart_one": 1 if g["so"] == "O" else 0,
+            "favor_score": 1 if g["fs"] == "FS" else 0,  # 1=FavorScore, 0=FavorDice
+            "require_both": 1 if g["rb"] == "AND" else 0,
+            "auto_hot_dice": 1 if g["hd"] == "H" else 0,
+            "run_up_score": 1 if g["rs"] == "R" else 0,
+        }
+
+    feat_df = pd.DataFrame([_parse(s) for s in data["strategy"]], index=data.index).fillna(0)
+    feature_cols = [
+        "score_threshold",
+        "dice_threshold",
+        "consider_score",
+        "consider_dice",
+        "smart_five",
+        "smart_one",
+        "favor_score",
+        "require_both",
+        "auto_hot_dice",
+        "run_up_score",
+    ]
+    features = feat_df.reindex(columns=feature_cols).astype("float32")
     target = data["mu"]
 
     model = HistGradientBoostingRegressor(random_state=seed)
