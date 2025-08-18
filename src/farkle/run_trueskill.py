@@ -24,6 +24,7 @@ import os
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Iterator
 
 import numpy as np
 import pyarrow.dataset as ds
@@ -124,39 +125,98 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
-def _iter_ranked_strategies(row_file: Path, n: int, batch_size: int = 100_000):
+def _iter_players_and_ranks(row_file: Path, n: int, batch_size: int = 100_000) -> Iterator[tuple[list[str], list[int]]]:
+    """Yield (players, ranks) per game in a streaming fashion.
+    Prefers explicit placements via ``seat_ranks``; if absent, derives placements
+    from ``P#_rank``; if only a winner is known, treats others as a single tied group.
     """
-    Yield per-game strategies in finish order using seat_ranks + P#_strategy.
-    Memory stays flat: Arrow batches only.
-    """
-    cols = ["seat_ranks"] + [f"P{i}_strategy" for i in range(1, n + 1)]
     dataset = ds.dataset(row_file, format="parquet")
+    schema = dataset.schema
+    has_seat_ranks = schema.get_field_index("seat_ranks") != -1
+
+    if has_seat_ranks:
+        cols = ["seat_ranks"] + [f"P{i}_strategy" for i in range(1, n + 1)]
+        for batch in dataset.to_batches(columns=cols, batch_size=batch_size):
+            ranks_col = batch["seat_ranks"].to_pylist()  # list[list[str]] or None
+            strat_cols = [batch[f"P{i}_strategy"] for i in range(1, n + 1)]
+            for r, order in enumerate(ranks_col):
+                if not order:
+                    continue
+                # strict placement: teams already ordered; ranks are 0..K-1
+                players = [strat_cols[int(seat[1:]) - 1][r].as_py() for seat in order]
+                if any(p is None for p in players):
+                    continue
+                yield players, list(range(len(players)))
+        return
+
+    # seat_ranks not present → derive from P#_rank or fall back to winner + tied losers
+    rank_cols = [f"P{i}_rank" for i in range(1, n + 1)]
+    strat_cols = [f"P{i}_strategy" for i in range(1, n + 1)]
+    cols = ["winner"] + rank_cols + strat_cols
     for batch in dataset.to_batches(columns=cols, batch_size=batch_size):
-        ranks = batch["seat_ranks"].to_pylist()  # list[list[str]]
-        strat_cols = [batch[f"P{i}_strategy"] for i in range(1, n + 1)]
-        for r, order in enumerate(ranks):
-            if not order:
+        winner_seats = batch["winner"].to_pylist()
+        ranks = [[batch[c][i].as_py() for c in rank_cols] for i in range(len(batch))]
+        strats = [[batch[c][i].as_py() for c in strat_cols] for i in range(len(batch))]
+
+        for winner_seat, seat_ranks, seat_strats in zip(winner_seats, ranks, strats, strict=True):
+            # try to build placements from P#_rank if we have ≥2 ranks
+            pairs = [(i, rv) for i, rv in enumerate(seat_ranks) if rv is not None]
+            if len(pairs) >= 2:
+                # sort by rank ascending; remap rank values to 0..K-1 to keep them dense
+                pairs.sort(key=lambda x: x[1])
+                uniq = sorted({rv for _, rv in pairs})
+                remap = {rv: j for j, rv in enumerate(uniq)}
+                players = []
+                pranks  = []
+                for i, rv in pairs:
+                    p = seat_strats[i]
+                    if p is None:
+                        continue
+                    players.append(p)
+                    pranks.append(remap[rv])
+                if len(players) >= 2:
+                    yield players, pranks
+                    continue
+
+            # fallback: winner + (n-1) tied for 2nd
+            if not winner_seat:
                 continue
-            yield [strat_cols[int(seat[1:]) - 1][r].as_py() for seat in order]
+            try:
+                w_idx = int(str(winner_seat)[1:]) - 1  # "P3" -> 2
+            except Exception:
+                continue
+            winner = seat_strats[w_idx]
+            if winner is None:
+                continue
+            losers = [s for j, s in enumerate(seat_strats) if j != w_idx and s is not None]
+            if losers:
+                yield [winner] + losers, [0] + [1] * len(losers)
 
 
 def _rate_stream(row_file: Path, n: int, keepers: list[str], env: trueskill.TrueSkill,
                  batch_size: int = 100_000) -> tuple[dict[str, RatingStats], int]:
-    """Stream TrueSkill updates from parquet without materialising all games."""
+    """Stream TrueSkill updates from parquet without materialising all games.
+    Supports ties and multiple sources of placement (seat_ranks or P#_rank)."""
     ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
     n_games = 0
-    for ranked in _iter_ranked_strategies(row_file, n, batch_size):
-        # If keepers are provided, ignore others
+    for players, ranks in _iter_players_and_ranks(row_file, n, batch_size):
+        # Optional keepers filter
         if keepers:
-            ranked = [s for s in ranked if s in ratings or s in keepers]
-        # Seed missing ratings on the fly
-        for s in ranked:
+            filt = [(p, r) for p, r in zip(players, ranks, strict=True) if p in keepers]
+            if len(filt) < 2:
+                continue
+            players = [p for p, _ in filt]
+            ranks   = [r for _, r in filt]
+            # make ranks dense again in case we dropped teams
+            uniq = sorted(set(ranks))
+            rmap = {rv: j for j, rv in enumerate(uniq)}
+            ranks = [rmap[r] for r in ranks]
+        # seed ratings on the fly and rate with ranks=
+        for s in players:
             ratings.setdefault(s, env.create_rating())
-        if len(ranked) < 2:
-            continue
-        teams = [[ratings[s]] for s in ranked]  # already ordered
-        new_teams = env.rate(teams)
-        for s, team_rating in zip(ranked, new_teams, strict=False):
+        teams = [[ratings[s]] for s in players]
+        new_teams = env.rate(teams, ranks=ranks)
+        for s, team_rating in zip(players, new_teams, strict=False):
             ratings[s] = team_rating[0]
         n_games += 1
     return ({k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}, n_games)
@@ -185,9 +245,20 @@ def _rate_block_worker(block_dir: str, root_dir: str, suffix: str, batch_rows: i
         if row_file is None:
             return player_count, 0
         # Infer n from schema if needed
-        n = n_players_from_schema(pq.read_schema(row_file).to_arrow_schema())
+        n = n_players_from_schema(pq.read_schema(row_file))
     else:
         n = int(player_count)
+
+    # Up-to-date guard: skip recompute if ratings are newer than data
+    pkl_path = root / f"ratings_{player_count}{suffix}.pkl"
+    if pkl_path.exists() and pkl_path.stat().st_mtime >= row_file.stat().st_mtime:
+        try:
+            md = pq.read_metadata(row_file)
+            n_rows = md.num_rows
+        except Exception:
+            n_rows = 0
+        log.info("TrueSkill: %sp up-to-date - skipped", player_count)
+        return player_count, n_rows
 
     env = trueskill.TrueSkill()  # per-process environment
     ratings, n_games = _rate_stream(row_file, n, keepers, env, batch_size=batch_rows)
@@ -300,6 +371,16 @@ def run_trueskill(
                 else:
                     pooled[k] = v
                     pooled_weights[k] = block_games
+                    
+    # Up-to-date guard for pooled outputs
+    pooled_pkl = root / f"ratings_pooled{suffix}.pkl"
+    existing_pkls = sorted(root.glob(f"ratings_*{suffix}.pkl"))
+    if pooled_pkl.exists():
+        newest = max((p.stat().st_mtime for p in existing_pkls), default=0.0)
+        if pooled_pkl.stat().st_mtime >= newest:
+            log.info("TrueSkill: pooled outputs up-to-date - skipped")
+            return
+
     with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
         pickle.dump(pooled, fh)
     pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled.items()}

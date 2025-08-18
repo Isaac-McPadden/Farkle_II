@@ -159,6 +159,23 @@ def run(cfg: PipelineCfg) -> None:
         for block in blocks:
             log.info("Reading block %s", block.name)
             n = _n_from_block(block.name)
+            
+            # Up-to-date guard for this N: if output is newer than inputs, skip
+            raw_out = cfg.ingested_rows_raw(n)
+            src_mtime = 0.0
+            row_files = sorted(block.glob("*p_rows.parquet"))
+            if row_files:
+                src_mtime = row_files[0].stat().st_mtime
+            else:
+                row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
+                if row_dirs:
+                    shards = list(row_dirs[0].glob("*.parquet"))
+                    if shards:
+                        src_mtime = max(s.stat().st_mtime for s in shards)
+            if raw_out.exists() and src_mtime and raw_out.stat().st_mtime >= src_mtime:
+                log.info("Ingest: %sp already up-to-date - skipped", n)
+                continue
+
 
             # Per-block allow-list: base + all P1..Pn columns from canonical schema
             canon = expected_schema_for(n)

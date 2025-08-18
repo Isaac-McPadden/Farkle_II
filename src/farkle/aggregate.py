@@ -34,6 +34,14 @@ def run(cfg: PipelineCfg) -> None:
     out_dir = cfg.data_dir / "all_n_players_combined"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
+    
+    # Up-to-date guard: if output is newer than all inputs, skip
+    if out.exists():
+        newest = max((p.stat().st_mtime for p in files), default=0.0)
+        if out.stat().st_mtime >= newest:
+            log.info("aggregate: outputs up-to-date - skipped")
+            return
+
     tmp = out.with_suffix(out.suffix + ".in-progress")
     if tmp.exists():
         tmp.unlink()
