@@ -29,6 +29,7 @@ from typing import Iterator
 import numpy as np
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+import pyarrow as pa
 import trueskill
 import yaml
 from trueskill import Rating
@@ -44,6 +45,29 @@ log = logging.getLogger(__name__)
 
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 _DEFAULT_WORKERS = 1
+
+
+def _find_aggregate_parquet(base: Path | None) -> Path | None:
+    """Return path to aggregated ``all_ingested_rows.parquet`` if it exists.
+
+    The *base* argument may point to a results directory or directly to the
+    ``analysis/data`` directory. This helper tries a few common locations and
+    returns the first existing path. ``None`` is returned when no candidate is
+    found.
+    """
+
+    if base is None:
+        return None
+    base = Path(base)
+    candidates = [
+        base / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
+        base / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
+        base / "all_ingested_rows.parquet",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
 
 @dataclass(slots=True)
 class RatingStats:
@@ -289,6 +313,126 @@ def _rate_block_worker(block_dir: str, root_dir: str, suffix: str, batch_rows: i
     return player_count, n_games
 
 
+def _iter_batch_players_and_ranks(batch: pa.RecordBatch, n: int) -> Iterator[tuple[list[str], list[int]]]:
+    """Yield ``(players, ranks)`` tuples for each game in *batch*.
+
+    This mirrors :func:`_iter_players_and_ranks` but operates on an in-memory
+    :class:`pyarrow.RecordBatch`, allowing callers to control streaming and
+    checkpointing at the batch level.
+    """
+
+    schema = batch.schema
+    has_seat_ranks = schema.get_field_index("seat_ranks") != -1
+
+    if has_seat_ranks:
+        ranks_col = batch["seat_ranks"].to_pylist()
+        strat_cols = [batch[f"P{i}_strategy"] for i in range(1, n + 1)]
+        for r, order in enumerate(ranks_col):
+            if not order:
+                continue
+            players = [strat_cols[int(seat[1:]) - 1][r].as_py() for seat in order]
+            if any(p is None for p in players):
+                continue
+            yield players, list(range(len(players)))
+        return
+
+    rank_cols = [f"P{i}_rank" for i in range(1, n + 1)]
+    strat_cols = [f"P{i}_strategy" for i in range(1, n + 1)]
+    winner_seats = batch["winner"].to_pylist()
+    ranks = [[batch[c][i].as_py() for c in rank_cols] for i in range(len(batch))]
+    strats = [[batch[c][i].as_py() for c in strat_cols] for i in range(len(batch))]
+    for winner_seat, seat_ranks, seat_strats in zip(winner_seats, ranks, strats, strict=True):
+        pairs = [(i, rv) for i, rv in enumerate(seat_ranks) if rv is not None]
+        if len(pairs) >= 2:
+            pairs.sort(key=lambda x: x[1])
+            uniq = sorted({rv for _, rv in pairs})
+            remap = {rv: j for j, rv in enumerate(uniq)}
+            players: list[str] = []
+            pranks: list[int] = []
+            for i, rv in pairs:
+                p = seat_strats[i]
+                if p is None:
+                    continue
+                players.append(p)
+                pranks.append(remap[rv])
+            if len(players) >= 2:
+                yield players, pranks
+                continue
+        if not winner_seat:
+            continue
+        try:
+            w_idx = int(str(winner_seat)[1:]) - 1
+        except Exception:
+            continue
+        players = [s for s in seat_strats if s is not None]
+        if len(players) < 2:
+            continue
+        ranks_out = [1] * len(players)
+        if 0 <= w_idx < len(players):
+            ranks_out[w_idx] = 0
+        yield players, ranks_out
+
+
+def _rate_single_pass(
+    row_file: Path,
+    env: trueskill.TrueSkill,
+    *,
+    resume: bool,
+    checkpoint_path: Path,
+    ratings_ckpt_path: Path,
+    batch_rows: int,
+    checkpoint_every_batches: int,
+) -> tuple[dict[str, trueskill.Rating], int]:
+    """Rate all games in ``row_file`` in a single streaming pass.
+
+    Supports optional checkpointing so long-running runs can be resumed.
+    """
+
+    dataset = ds.dataset(row_file, format="parquet")
+    n = n_players_from_schema(dataset.schema)
+
+    start_batch = 0
+    games_done = 0
+    ratings: dict[str, trueskill.Rating] = {}
+
+    if resume and checkpoint_path.exists() and ratings_ckpt_path.exists():
+        try:
+            ck = json.loads(checkpoint_path.read_text())
+            start_batch = int(ck.get("batch", 0))
+            games_done = int(ck.get("games", 0))
+            with ratings_ckpt_path.open("rb") as fh:
+                saved = pickle.load(fh)
+            ratings = {k: trueskill.Rating(mu, sigma) for k, (mu, sigma) in saved.items()}
+        except Exception:
+            ratings = {}
+            start_batch = 0
+            games_done = 0
+
+    for b_idx, batch in enumerate(dataset.to_batches(batch_size=batch_rows)):
+        if b_idx < start_batch:
+            continue
+        for players, ranks in _iter_batch_players_and_ranks(batch, n):
+            for s in players:
+                ratings.setdefault(s, env.create_rating())
+            teams = [[ratings[s]] for s in players]
+            new_teams = env.rate(teams, ranks=ranks)
+            for s, team_rating in zip(players, new_teams, strict=False):
+                ratings[s] = team_rating[0]
+            games_done += 1
+
+        if checkpoint_every_batches and (b_idx + 1) % checkpoint_every_batches == 0:
+            try:
+                checkpoint_path.write_text(
+                    json.dumps({"batch": b_idx + 1, "games": games_done})
+                )
+                with ratings_ckpt_path.open("wb") as fh:
+                    pickle.dump({k: (r.mu, r.sigma) for k, r in ratings.items()}, fh)
+            except Exception:
+                pass
+
+    return ratings, games_done
+
+
 def run_trueskill(
     output_seed: int = 0,
     root: Path | None = None,
@@ -446,6 +590,54 @@ def main(argv: list[str] | None = None) -> None:
         "--workers", type=int, default=None,
         help="process <N>_players blocks in parallel (default: cpu_count-1)",
     )
+    parser.add_argument(
+        "--batch-rows",
+        type=int,
+        default=None,
+        help="Arrow batch size for streaming readers (default from PipelineCfg)",
+    )
+    parser.add_argument(
+        "--single-pass-from",
+        type=Path,
+        default=None,
+        help="Path to aggregated all_ingested_rows.parquet (single-pass mode).",
+    )
+    parser.add_argument(
+        "--no-single-pass",
+        action="store_true",
+        help="Force legacy per-N mode even if aggregate is present.",
+    )
+    parser.add_argument(
+        "--resume",
+        dest="resume",
+        action="store_true",
+        default=True,
+        help="Resume from checkpoint if present (default: on).",
+    )
+    parser.add_argument(
+        "--no-resume",
+        dest="resume",
+        action="store_false",
+        help="Ignore checkpoint and start fresh.",
+    )
+    parser.add_argument(
+        "--checkpoint-every-batches",
+        type=int,
+        default=500,
+        help="Checkpoint every N batches (default 500).",
+    )
+    parser.add_argument(
+        "--checkpoint-path",
+        type=Path,
+        default=None,
+        help="Where to save the checkpoint JSON (default: <root>/trueskill.checkpoint.json).",
+    )
+    parser.add_argument(
+        "--ratings-checkpoint-path",
+        type=Path,
+        default=None,
+        help="Where to save interim ratings pickle (default: <root>/ratings_checkpoint.pkl).",
+    )
     # Pull batch/worker policy from PipelineCfg (falls back to CLI if not set).
     cfg, _, _ = PipelineCfg.parse_cli([])
     cfg_workers = cfg.trueskill_workers if cfg.trueskill_workers is not None else _DEFAULT_WORKERS
@@ -454,13 +646,61 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv or [])
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
+    cfg_workers = args.workers or cfg_workers
+    cfg_batch_rows = args.batch_rows or cfg_batch_rows
+
+    # Decide single-pass source
+    if not args.no_single_pass:
+        agg = args.single_pass_from or _find_aggregate_parquet(args.dataroot or cfg.data_dir)
+    else:
+        agg = None
+
+    # Default checkpoint locations
+    if args.root:
+        root = Path(args.root)
+    elif args.dataroot:
+        root = Path(args.dataroot) / "analysis"
+    else:
+        root = DEFAULT_DATAROOT / "analysis"
+    ck_path = args.checkpoint_path or (root / "trueskill.checkpoint.json")
+    rk_path = args.ratings_checkpoint_path or (root / "ratings_checkpoint.pkl")
+
+    if agg and agg.exists():
+        log.info("TrueSkill: single-pass over %s (resume=%s)", agg, args.resume)
+        root.mkdir(parents=True, exist_ok=True)
+        env = trueskill.TrueSkill()
+        pooled, games = _rate_single_pass(
+            agg,
+            env=env,
+            resume=args.resume,
+            checkpoint_path=ck_path,
+            ratings_ckpt_path=rk_path,
+            batch_rows=cfg_batch_rows,
+            checkpoint_every_batches=args.checkpoint_every_batches,
+        )
+        suffix = f"_seed{args.output_seed}" if args.output_seed else ""
+        (root / f"ratings_pooled{suffix}.json").write_text(
+            json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled.items()})
+        )
+        with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
+            pickle.dump({k: (v.mu, v.sigma) for k, v in pooled.items()}, fh)
+        tiers = build_tiers(
+            means={k: v.mu for k, v in pooled.items()},
+            stdevs={k: v.sigma for k, v in pooled.items()},
+        )
+        with (root / "tiers.json").open("w") as fh:
+            json.dump(tiers, fh, indent=2, sort_keys=True)
+        log.info("TrueSkill single-pass complete: %d games, %d strategies", games, len(pooled))
+        return
+
+    log.info("TrueSkill: aggregate not found or disabled; using per-N legacy flow.")
     run_trueskill(
         output_seed=args.output_seed,
         root=args.root,
         dataroot=args.dataroot,
         workers=cfg_workers,
         batch_rows=cfg_batch_rows,
-     )
+    )
 
 
 if __name__ == "__main__":
