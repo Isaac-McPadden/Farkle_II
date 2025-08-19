@@ -177,8 +177,8 @@ def run(cfg: PipelineCfg) -> None:
 
     # wins per seat (from aggregate parquet)
     ds_all = ds.dataset(data_file, format="parquet")
-    wins_by_seat = {
-        i: ds_all.count_rows(filter=(ds.field("winner") == f"P{i}"))
+    seat_wins: dict[int, int] = {
+        i: int(ds_all.count_rows(filter=(ds.field("winner") == f"P{i}")))
         for i in range(1, 13)
     }
 
@@ -188,7 +188,7 @@ def run(cfg: PipelineCfg) -> None:
         w.writerow(["seat", "wins", "games_with_seat", "win_rate"])
         for i in range(1, 13):
             games = denom[i]
-            wins = int(wins_by_seat[i] or 0)
+            wins = seat_wins.get(i, 0)
             rate = (wins / games) if games else 0.0
             w.writerow([i, wins, games, rate])
 
