@@ -170,10 +170,10 @@ def _stream_batches(
 def _players_and_ranks_from_batch(
     batch: pa.Table, n: int
 ) -> Iterator[tuple[list[str], list[int]]]:
-    """Robust per-row extraction:
-       - If seat_ranks exists, use it (strict placements)
-       - Else, derive placements from P#_rank
-       - Else, fallback: winner vs (n-1) tied second.
+    """Robust per-row extraction (tie-friendly precedence):
+       1) Derive placements from P#_rank (preserves ties)
+       2) Else, use seat_ranks (strict order, no ties)
+       3) Else, fallback: winner vs (n-1) tied second.
     """
     cols = set(batch.column_names)
 
@@ -189,15 +189,7 @@ def _players_and_ranks_from_batch(
     n_rows = batch.num_rows
     for r in range(n_rows):
         seats = [sc[r].as_py() if sc is not None else None for sc in strat_cols]
-        # 1) seat_ranks path
-        if ranks_list is not None and ranks_list[r]:
-            order = ranks_list[r]
-            players = [seats[int(s[1:]) - 1] for s in order]
-            if any(p is None for p in players):  # skip incomplete rows
-                continue
-            yield cast(list[str], players), list(range(len(players)))
-            continue
-        # 2) derive from P#_rank if present
+        # 1) prefer numeric ranks (preserves ties)
         if any(rc is not None for rc in rank_cols):
             pairs = [(i, rc[r].as_py()) for i, rc in enumerate(rank_cols) if rc is not None]
             pairs = [(i, rv) for i, rv in pairs if rv is not None]
@@ -215,6 +207,14 @@ def _players_and_ranks_from_batch(
                 if len(players) >= 2:
                     yield cast(list[str], players), rr
                     continue
+        # 2) seat_ranks (strict order, no ties)
+        if ranks_list is not None and ranks_list[r]:
+            order = ranks_list[r]
+            players = [seats[int(s[1:]) - 1] for s in order]
+            if any(p is None for p in players):  # skip incomplete rows
+                continue
+            yield cast(list[str], players), list(range(len(players)))
+            continue
         # 3) fallback
         if winner_col is None or not winner_col[r]:
             continue
@@ -501,6 +501,7 @@ def _rate_block_worker(
     *,
     resume: bool = True,
     checkpoint_every_batches: int = 500,
+    env_kwargs: dict | None = None,
 ) -> tuple[str, int]:
     """
     Process one <N>_players block with optional checkpointing.
@@ -535,7 +536,7 @@ def _rate_block_worker(
         log.info("TrueSkill: %sp up-to-date - skipped", player_count)
         return player_count, n_rows
 
-    env = trueskill.TrueSkill()
+    env = trueskill.TrueSkill(**(env_kwargs or {}))
     ck_path = root / f"ratings_{player_count}{suffix}.ckpt.json"
     rk_path = root / f"ratings_{player_count}{suffix}.checkpoint.pkl"
 
@@ -605,11 +606,16 @@ def _rate_block_worker(
             batches_since_ck = 0
 
     ratings_stats = {k: RatingStats(v.mu, v.sigma) for k, v in ratings.items()}
-    with pkl_path.open("wb") as fh:
+    # Atomic writes for per-N outputs
+    tmp_pkl = pkl_path.with_name(pkl_path.name + ".tmp")
+    with tmp_pkl.open("wb") as fh:
         pickle.dump({k: (v.mu, v.sigma) for k, v in ratings_stats.items()}, fh)
+    tmp_pkl.replace(pkl_path)
 
-    as_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()}
-    (root / f"ratings_{player_count}{suffix}.json").write_text(json.dumps(as_json))
+    json_path = root / f"ratings_{player_count}{suffix}.json"
+    tmp_json = json_path.with_name(json_path.name + ".tmp")
+    tmp_json.write_text(json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()}))
+    tmp_json.replace(json_path)
 
     return player_count, n_games
 
@@ -621,6 +627,7 @@ def run_trueskill(
     batch_rows: int = 100_000,
     resume_per_n: bool = True,
     checkpoint_every_batches: int = 500,
+    env_kwargs: dict | None = None,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -643,7 +650,7 @@ def run_trueskill(
         Pickle files containing per-block ratings for each strategy.
     ``ratings_pooled[ _seedX ].pkl``
         A pickle with ratings pooled across all blocks using a games-per-block
-        weighted mean.
+        precision-weighted mean.
     ``tiers.json``
         JSON file with league tiers derived from the pooled ratings.
     """
@@ -659,8 +666,8 @@ def run_trueskill(
     if workers is None:
         workers = max(1, (os.cpu_count() or 1) - 1)
 
-    pooled: dict[str, RatingStats] = {}
-    pooled_weights: dict[str, int] = {}
+    pooled: dict[str, tuple[float, float]] = {}
+    per_block_games: dict[str, int] = {}
 
     blocks = sorted(base.glob("*_players"))
     # Pick a sensible default, then cap to CPUs and number of blocks
@@ -682,6 +689,7 @@ def run_trueskill(
                     batch_rows,
                     resume=resume_per_n,
                     checkpoint_every_batches=checkpoint_every_batches,
+                    env_kwargs=env_kwargs,
                 ): b
                 for b in blocks
             }
@@ -692,20 +700,7 @@ def run_trueskill(
                     bad = futures[fut]
                     log.exception("TrueSkill failed for block %s: %s", bad, e)
                     continue
-                with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
-                    ratings = _coerce_ratings(pickle.load(fh))
-                for k, v in ratings.items():
-                    if k in pooled:
-                        weight = pooled_weights[k]
-                        new_weight = weight + block_games
-                        pooled[k] = RatingStats(
-                            (pooled[k].mu * weight + v.mu * block_games) / new_weight,
-                            (pooled[k].sigma * weight + v.sigma * block_games) / new_weight,
-                        )
-                        pooled_weights[k] = new_weight
-                    else:
-                        pooled[k] = v
-                        pooled_weights[k] = block_games
+                per_block_games[player_count] = block_games
     else:
         for block in blocks:
             player_count, block_games = _rate_block_worker(
@@ -715,23 +710,11 @@ def run_trueskill(
                 batch_rows,
                 resume=resume_per_n,
                 checkpoint_every_batches=checkpoint_every_batches,
+                env_kwargs=env_kwargs,
             )
-            with (root / f"ratings_{player_count}{suffix}.pkl").open("rb") as fh:
-                ratings = _coerce_ratings(pickle.load(fh))
-            for k, v in ratings.items():
-                if k in pooled:
-                    weight = pooled_weights[k]
-                    new_weight = weight + block_games
-                    pooled[k] = RatingStats(
-                        (pooled[k].mu * weight + v.mu * block_games) / new_weight,
-                        (pooled[k].sigma * weight + v.sigma * block_games) / new_weight,
-                    )
-                    pooled_weights[k] = new_weight
-                else:
-                    pooled[k] = v
-                    pooled_weights[k] = block_games
+            per_block_games[player_count] = block_games
                     
-    # Up-to-date guard for pooled outputs
+    # Combine per-N ratings into pooled stats
     pooled_pkl = root / f"ratings_pooled{suffix}.pkl"
     existing_pkls = sorted(root.glob(f"ratings_*{suffix}.pkl"))
     if pooled_pkl.exists():
@@ -740,14 +723,40 @@ def run_trueskill(
             log.info("TrueSkill: pooled outputs up-to-date - skipped")
             return
 
-    # Pooled pickle also as plain tuples
-    with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
-        pickle.dump({k: (v.mu, v.sigma) for k, v in pooled.items()}, fh)
-    pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled.items()}
-    (root / f"ratings_pooled{suffix}.json").write_text(json.dumps(pooled_json))
+    for pkl in existing_pkls:
+        if pkl == pooled_pkl:
+            continue
+        stem = pkl.stem[len("ratings_"):]
+        if suffix:
+            stem = stem[: -len(suffix)]
+        games = per_block_games.get(stem, 0)
+        if games <= 0:
+            continue
+        with pkl.open("rb") as fh:
+            ratings = _coerce_ratings(pickle.load(fh))
+        for k, v in ratings.items():
+            tau = 1.0 / (v.sigma ** 2) if v.sigma > 0 else 0.0
+            s_mu, s_tau = pooled.get(k, (0.0, 0.0))
+            s_mu += tau * v.mu * games
+            s_tau += tau * games
+            pooled[k] = (s_mu, s_tau)
+
+    # Precision-weighted pooling → (sum tau*mu, sum tau) → (mu, sigma)
+    pooled_stats = {k: RatingStats(mu=(s_mu / s_tau), sigma=(s_tau ** -0.5))
+                    for k, (s_mu, s_tau) in pooled.items() if s_tau > 0}
+    # Atomic writes for pooled outputs
+    tmp_pool_pkl = pooled_pkl.with_name(pooled_pkl.name + ".tmp")
+    with tmp_pool_pkl.open("wb") as fh:
+        pickle.dump({k: (v.mu, v.sigma) for k, v in pooled_stats.items()}, fh)
+    tmp_pool_pkl.replace(pooled_pkl)
+    pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled_stats.items()}
+    pooled_json_path = root / f"ratings_pooled{suffix}.json"
+    tmp_pool_json = pooled_json_path.with_name(pooled_json_path.name + ".tmp")
+    tmp_pool_json.write_text(json.dumps(pooled_json))
+    tmp_pool_json.replace(pooled_json_path)
     tiers = build_tiers(
-        means={k: v.mu for k, v in pooled.items()},
-        stdevs={k: v.sigma for k, v in pooled.items()},
+        means={k: v.mu for k, v in pooled_stats.items()},
+        stdevs={k: v.sigma for k, v in pooled_stats.items()},
     )
     with (root / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)
@@ -862,6 +871,9 @@ def main(argv: list[str] | None = None) -> None:
     else:
         agg = None
 
+    # Prepare TrueSkill env kwargs from config (e.g., beta)
+    env_kwargs = {"beta": cfg.trueskill_beta}
+
     # Default checkpoint locations
     if args.root:
         root = Path(args.root)
@@ -875,7 +887,7 @@ def main(argv: list[str] | None = None) -> None:
     if agg and agg.exists():
         log.info("TrueSkill: single-pass over %s (resume=%s)", agg, args.resume)
         root.mkdir(parents=True, exist_ok=True)
-        env = trueskill.TrueSkill()
+        env = trueskill.TrueSkill(**env_kwargs)
         pooled, games = _rate_single_pass(
             agg,
             env=env,
@@ -909,6 +921,7 @@ def main(argv: list[str] | None = None) -> None:
         batch_rows=cfg_batch_rows,
         resume_per_n=args.resume_per_n,
         checkpoint_every_batches=args.checkpoint_every_batches,
+        env_kwargs=env_kwargs,
     )
 
 
