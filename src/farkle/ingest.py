@@ -1,6 +1,7 @@
 # src/farkle/ingest.py
 from __future__ import annotations
 
+import argparse
 import logging
 import re
 from concurrent.futures import ProcessPoolExecutor
@@ -15,6 +16,7 @@ import pyarrow.parquet as pq
 from farkle.analysis_config import (
     PipelineCfg,
     expected_schema_for,
+    load_config,
 )
 
 log = logging.getLogger(__name__)
@@ -224,9 +226,14 @@ def run(cfg: PipelineCfg) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper
-    cfg, _, _ = PipelineCfg.parse_cli(argv)
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--config", type=Path, default=Path("analysis_config.yaml"), help="Path to YAML config"
+    )
+    args = parser.parse_args(argv)
+    cfg, _ = load_config(Path(args.config))
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    run(cfg)
+    run(cfg.to_pipeline_cfg())
 
 
 if __name__ == "__main__":  # pragma: no cover

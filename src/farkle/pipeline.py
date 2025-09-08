@@ -1,89 +1,71 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
-import sys
+from pathlib import Path
 from typing import Callable, Sequence
 
+import yaml
 from tqdm import tqdm
 
 from farkle import aggregate, analytics, curate, ingest, metrics
-from farkle.analysis_config import PipelineCfg
+from farkle.analysis_config import load_config
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Console entry point for the analysis pipeline."""
-    cfg, cli_ns, remaining = PipelineCfg.parse_cli(argv)
 
     parser = argparse.ArgumentParser(prog="farkle-analyze")
+    parser.add_argument(
+        "--config", type=Path, default=Path("analysis_config.yaml"), help="Path to YAML config"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("ingest", "curate", "aggregate", "metrics", "analytics", "all"):
         sub.add_parser(name)
 
-    args = parser.parse_args(remaining)
-    verbose = getattr(cli_ns, "verbose", False)
+    args = parser.parse_args(argv)
 
-    # Ensure DEBUG level is in effect before any sub-modules log
-    effective_level = (
-        logging.DEBUG if verbose else getattr(logging, cfg.log_level.upper(), logging.INFO)
-    )
-    log_kwargs = {
-        "level": effective_level,
-        "format": "%(message)s",
-        "force": True,
-    }
-    if cfg.log_file is not None:
-        log_kwargs["handlers"] = [
-            logging.StreamHandler(),
-            logging.FileHandler(cfg.log_file),
-        ]
-    logging.basicConfig(**log_kwargs)
+    cfg, cfg_sha = load_config(Path(args.config))
+    pipeline_cfg = cfg.to_pipeline_cfg()
+
+    analysis_dir = pipeline_cfg.analysis_dir
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    resolved = analysis_dir / "config.resolved.yaml"
+    resolved.write_text(yaml.safe_dump(cfg.model_dump(), sort_keys=True))
+
+    manifest_path = analysis_dir / pipeline_cfg.manifest_name
+    manifest = {}
+    if manifest_path.exists():
+        try:
+            manifest = json.loads(manifest_path.read_text())
+        except Exception:  # noqa: BLE001
+            manifest = {}
+    manifest["config_sha"] = cfg_sha
+    manifest_path.write_text(json.dumps(manifest, indent=2))
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     if args.command == "ingest":
-        try:
-            ingest.run(cfg)
-        except Exception as e:  # noqa: BLE001
-            print(f"ingest step failed: {e}", file=sys.stderr)
-            return 1
+        ingest.run(pipeline_cfg)
     elif args.command == "curate":
-        try:
-            curate.run(cfg)
-        except Exception as e:  # noqa: BLE001
-            print(f"curate step failed: {e}", file=sys.stderr)
-            return 1
+        curate.run(pipeline_cfg)
     elif args.command == "aggregate":
-        try:
-            aggregate.run(cfg)
-        except Exception as e:  # noqa: BLE001
-            print(f"aggregate step failed: {e}", file=sys.stderr)
-            return 1
+        aggregate.run(pipeline_cfg)
     elif args.command == "metrics":
-        try:
-            metrics.run(cfg)
-        except Exception as e:  # noqa: BLE001
-            print(f"metrics step failed: {e}", file=sys.stderr)
-            return 1
+        metrics.run(pipeline_cfg)
     elif args.command == "analytics":
-        try:
-            analytics.run_all(cfg)
-        except Exception as e:  # noqa: BLE001
-            print(f"analytics step failed: {e}", file=sys.stderr)
-            return 1
+        analytics.run_all(pipeline_cfg)
     elif args.command == "all":
-        steps: list[tuple[str, Callable[[PipelineCfg], None]]] = [
+        steps: list[tuple[str, Callable[[object], None]]] = [
             ("ingest", ingest.run),
             ("curate", curate.run),
             ("aggregate", aggregate.run),
             ("metrics", metrics.run),
             ("analytics", analytics.run_all),
         ]
-        for _name, fn in tqdm(steps, desc="pipeline", disable=not verbose):
-            try:
-                fn(cfg)
-            except Exception as e:  # noqa: BLE001
-                # Propagate the failure so callers (and tests) can detect it.
-                print(f"{_name} step failed: {e}", file=sys.stderr)
-                raise
+        for _name, fn in tqdm(steps, desc="pipeline"):
+            fn(pipeline_cfg)
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")
     return 0

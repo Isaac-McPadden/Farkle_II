@@ -19,9 +19,13 @@ import argparse
 import json
 import os
 import re
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Sequence
+
+import yaml
+from pydantic import BaseModel
 
 import pyarrow as pa
 
@@ -230,3 +234,86 @@ def rows_for_ram(target_mb: int, n_cols: int, bytes_per_val: int = 4, safety: fl
     and value size (bytes). Used by streaming readers when you want a dynamic size.
     """
     return max(10_000, int((target_mb * 1024**2) / (n_cols * bytes_per_val * safety)))
+
+
+# ---------- YAML-based configuration models ---------------------------------
+
+
+class IO(BaseModel):
+    results_dir: Path
+    analysis_subdir: str = "analysis"
+
+
+class Ingest(BaseModel):
+    row_group_size: int = 262_144
+    n_jobs: int = 1
+
+
+class Aggregate(BaseModel):
+    max_players: int = 12
+
+
+class Metrics(BaseModel):
+    seat_range: tuple[int, int] = (1, 12)
+
+
+class TrueSkillCfg(BaseModel):
+    beta: float = 25.0
+    tau: float = 0.1
+    draw_probability: float = 0.0
+
+
+class Head2Head(BaseModel):
+    n_jobs: int = 4
+    games_per_pair: int = 10_000
+    fdr_q: float = 0.02
+
+
+class HGBCfg(BaseModel):
+    max_depth: int = 6
+    n_estimators: int = 300
+
+
+class Experiment(BaseModel):
+    name: str
+    seed: int = 0
+
+
+class Config(BaseModel):
+    experiment: Experiment
+    io: IO
+    ingest: Ingest = Ingest()
+    aggregate: Aggregate = Aggregate()
+    metrics: Metrics = Metrics()
+    trueskill: TrueSkillCfg = TrueSkillCfg()
+    head2head: Head2Head = Head2Head()
+    hgb: HGBCfg = HGBCfg()
+    schema_version: int = 1
+    config_sha: str | None = None
+
+    def to_pipeline_cfg(self) -> "PipelineCfg":
+        """Convert to legacy :class:`PipelineCfg` for existing callers."""
+
+        cfg = PipelineCfg(
+            results_dir=self.io.results_dir,
+            analysis_subdir=self.io.analysis_subdir,
+            row_group_size=self.ingest.row_group_size,
+            n_jobs_ingest=self.ingest.n_jobs,
+            trueskill_beta=self.trueskill.beta,
+            hgb_max_iter=self.hgb.n_estimators,
+        )
+        if self.config_sha is not None:
+            setattr(cfg, "config_sha", self.config_sha)
+        return cfg
+
+
+def load_config(path: Path) -> tuple[Config, str]:
+    """Load YAML → Config; return ``(config, sha12)`` of resolved dict."""
+
+    data = yaml.safe_load(path.read_text())
+    cfg = Config(**data)
+    dumped = json.dumps(cfg.model_dump(), sort_keys=True, default=str).encode()
+    sha = hashlib.sha256(dumped).hexdigest()[:12]
+    cfg.config_sha = sha
+    return cfg, sha
+
