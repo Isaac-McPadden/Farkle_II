@@ -38,9 +38,9 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
     matchup and writes ``data/bonferroni_pairwise.csv`` containing win counts and
     p-values computed via :func:`scipy.stats.binomtest`.
     """
-    root = Path(root)
-    tiers_path = root / "tiers.json"
-    pairwise_csv = root / "bonferroni_pairwise.csv"
+    sub_root = Path(root / "analysis")
+    tiers_path = sub_root / "tiers.json"
+    pairwise_csv = sub_root / "bonferroni_pairwise.csv"
 
     try:
         with tiers_path.open() as fh:
