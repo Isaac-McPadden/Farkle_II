@@ -27,7 +27,7 @@ from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 # ---------------------------------------------------------------------------
 DEFAULT_ROOT = Path("results_seed_0")
 METRICS_NAME = "metrics.parquet"
-RATINGS_NAME = "ratings_pooled.pkl"
+RATINGS_NAME = "ratings_pooled.parquet"
 FIG_DIR = Path("notebooks/figs")
 MAX_PD_PLOTS = 30
 
@@ -96,7 +96,7 @@ def run_hgb(
     -----
     ``<root>/metrics.parquet``
         Per-strategy feature metrics.
-    ``<root>/ratings_pooled.pkl``
+    ``<root>/ratings_pooled.parquet``
         Pickled mapping of strategy names to pooled ``(mu, sigma)`` tuples.
 
     Writes
@@ -226,7 +226,7 @@ def main(argv: List[str] | None = None) -> None:
     parser = argparse.ArgumentParser(
         description=(
             "Train a HistGradientBoostingRegressor using data/metrics.parquet and "
-            "data/ratings_pooled.pkl. Run from the project root. Writes "
+            "data/ratings_pooled.parquet. Run from the project root. Writes "
             "hgb_importance.json to --output and partial dependence plots to "
             "notebooks/figs/."
         )
