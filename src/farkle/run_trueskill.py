@@ -11,8 +11,8 @@ Key CLI flags
 
 Outputs
 -------
-ratings_<N>.pkl(*), ratings_pooled.pkl – pickled RatingStats
-tiers.json                       – mapping of strategy → tier
+ratings_<N>.parquet(*), ratings_pooled.parquet - Parquet tables with columns {strategy, mu, sigma}
+tiers.json - mapping of strategy → tier
 """
 from __future__ import annotations
 
@@ -21,11 +21,10 @@ import concurrent.futures as cf
 import json
 import logging
 import os
-import pickle
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterator, Optional, cast
+from typing import Iterator, Mapping, Optional, Tuple, Union, cast
 
 import numpy as np
 import pyarrow as pa
@@ -85,7 +84,7 @@ class _TSCheckpoint:
     row_group: int              # next row-group to start at
     batch_index: int            # next batch index within that row-group
     games_done: int
-    ratings_path: str           # where the tuple-ified ratings live
+    ratings_path: str           # where the interim ratings parquet lives
     version: int = 1
 
 
@@ -102,22 +101,53 @@ def _load_ckpt(path: Path) -> Optional[_TSCheckpoint]:
         return None
 
 
-def _save_ratings_tuples(path: Path, ratings: dict[str, trueskill.Rating]) -> None:
-    import pickle
+def _ratings_to_table(
+    mapping: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float], float]]
+) -> pa.Table:
+    """Coerce {strategy: Rating|RatingStats|(mu,sigma)|mu} → Arrow table."""
+    strategies: list[str] = []
+    mus: list[float] = []
+    sigmas: list[float] = []
+    for k, v in mapping.items():
+        if isinstance(v, (trueskill.Rating, RatingStats)):
+            mu, sigma = float(v.mu), float(v.sigma)
+        elif isinstance(v, (tuple, list)) and len(v) >= 2:
+            mu, sigma = float(v[0]), float(v[1])
+        else:
+            # fallback: scalar mu with default sigma (not expected here)
+            mu, sigma = float(v), 0.0  # type: ignore[arg-type]
+        strategies.append(k)
+        mus.append(mu)
+        sigmas.append(sigma)
+    return pa.table(
+        {
+            "strategy": pa.array(strategies, type=pa.string()),
+            "mu": pa.array(mus, type=pa.float64()),
+            "sigma": pa.array(sigmas, type=pa.float64()),
+        }
+    )
 
-    with path.open("wb") as fh:
-        pickle.dump({k: (v.mu, v.sigma) for k, v in ratings.items()}, fh)
+
+def _write_parquet_atomic(table: pa.Table, path: Path, *, compression: str = "zstd") -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    pq.write_table(table, tmp, compression=compression)
+    tmp.replace(path)
 
 
-def _load_ratings_tuples(path: Path, env: trueskill.TrueSkill) -> dict[str, trueskill.Rating]:
-    import pickle
+def _save_ratings_parquet(
+    path: Path,
+    ratings: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float]]],
+) -> None:
+    _write_parquet_atomic(_ratings_to_table(ratings), path)
 
-    with path.open("rb") as fh:
-        raw = pickle.load(fh)
-    out: dict[str, trueskill.Rating] = {}
-    for k, tup in raw.items():
-        mu, sigma = tup
-        out[k] = env.create_rating(mu=float(mu), sigma=float(sigma))
+
+def _load_ratings_parquet(path: Path) -> dict[str, "RatingStats"]:
+    """Load ratings parquet → {strategy: RatingStats}."""
+    tbl = pq.read_table(path, columns=["strategy", "mu", "sigma"])
+    data = tbl.to_pydict()
+    out: dict[str, RatingStats] = {}
+    for s, mu, sg in zip(data["strategy"], data["mu"], data["sigma"], strict=True):
+        out[str(s)] = RatingStats(float(mu), float(sg))
     return out
 
 
@@ -250,6 +280,7 @@ def _rate_single_pass(
     start_rg = 0
     start_bi = 0
     games = 0
+    ratings: dict[str, trueskill.Rating] = {}
     if resume:
         ck = _load_ckpt(checkpoint_path)
         if ck and Path(ck.source) == source:
@@ -257,13 +288,9 @@ def _rate_single_pass(
             start_bi = ck.batch_index
             games = ck.games_done
             if Path(ck.ratings_path).exists():
-                ratings = _load_ratings_tuples(Path(ck.ratings_path), env)
-            else:
-                ratings = {}
-        else:
-            ratings = {}
-    else:
-        ratings = {}
+                # load interim ratings from parquet and build env Rating objects
+                interim = _load_ratings_parquet(Path(ck.ratings_path))
+                ratings = {k: env.create_rating(mu=v.mu, sigma=v.sigma) for k, v in interim.items()}
 
     last_ck = time.time()
     batches_since_ck = 0
@@ -288,7 +315,7 @@ def _rate_single_pass(
         # periodic checkpoint
         batches_since_ck += 1
         if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
-            _save_ratings_tuples(ratings_ckpt_path, ratings)
+            _save_ratings_parquet(ratings_ckpt_path, ratings)
             _save_ckpt(
                 checkpoint_path,
                 _TSCheckpoint(
@@ -526,8 +553,8 @@ def _rate_block_worker(
         n = int(player_count)
 
     # Up-to-date guard
-    pkl_path = root / f"ratings_{player_count}{suffix}.pkl"
-    if pkl_path.exists() and pkl_path.stat().st_mtime >= row_file.stat().st_mtime:
+    parquet_path = root / f"ratings_{player_count}{suffix}.parquet"
+    if parquet_path.exists() and parquet_path.stat().st_mtime >= row_file.stat().st_mtime:
         try:
             md = pq.read_metadata(row_file)
             n_rows = md.num_rows
@@ -538,11 +565,12 @@ def _rate_block_worker(
 
     env = trueskill.TrueSkill(**(env_kwargs or {}))
     ck_path = root / f"ratings_{player_count}{suffix}.ckpt.json"
-    rk_path = root / f"ratings_{player_count}{suffix}.checkpoint.pkl"
+    rk_path = root / f"ratings_{player_count}{suffix}.checkpoint.parquet"
 
     start_rg = 0
     start_bi = 0
     n_games = 0
+    ratings: dict[str, trueskill.Rating] = {}
     if resume:
         ck = _load_block_ckpt(ck_path)
         if ck and Path(ck.row_file) == row_file:
@@ -550,13 +578,8 @@ def _rate_block_worker(
             start_bi = ck.batch_index
             n_games = ck.games_done
             if Path(ck.ratings_path).exists():
-                ratings = _load_ratings_tuples(Path(ck.ratings_path), env)
-            else:
-                ratings = {}
-        else:
-            ratings = {}
-    else:
-        ratings = {}
+                interim = _load_ratings_parquet(Path(ck.ratings_path))
+                ratings = {k: env.create_rating(mu=v.mu, sigma=v.sigma) for k, v in interim.items()}
 
     last_ck = time.time()
     batches_since_ck = 0
@@ -591,7 +614,7 @@ def _rate_block_worker(
 
         batches_since_ck += 1
         if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
-            _save_ratings_tuples(rk_path, ratings)
+            _save_ratings_parquet(rk_path, ratings)
             _save_block_ckpt(
                 ck_path,
                 _BlockCkpt(
@@ -607,10 +630,8 @@ def _rate_block_worker(
 
     ratings_stats = {k: RatingStats(v.mu, v.sigma) for k, v in ratings.items()}
     # Atomic writes for per-N outputs
-    tmp_pkl = pkl_path.with_name(pkl_path.name + ".tmp")
-    with tmp_pkl.open("wb") as fh:
-        pickle.dump({k: (v.mu, v.sigma) for k, v in ratings_stats.items()}, fh)
-    tmp_pkl.replace(pkl_path)
+    # Write per-N ratings as Parquet (strategy, mu, sigma)
+    _save_ratings_parquet(parquet_path, ratings_stats)
 
     json_path = root / f"ratings_{player_count}{suffix}.json"
     tmp_json = json_path.with_name(json_path.name + ".tmp")
@@ -646,9 +667,9 @@ def run_trueskill(
 
     Side Effects
     ------------
-    ``ratings_<n>[ _seedX ].pkl``
+    ``ratings_<n>[ _seedX ].parquet``
         Pickle files containing per-block ratings for each strategy.
-    ``ratings_pooled[ _seedX ].pkl``
+    ``ratings_pooled[ _seedX ].parquet``
         A pickle with ratings pooled across all blocks using a games-per-block
         precision-weighted mean.
     ``tiers.json``
@@ -715,25 +736,25 @@ def run_trueskill(
             per_block_games[player_count] = block_games
                     
     # Combine per-N ratings into pooled stats
-    pooled_pkl = root / f"ratings_pooled{suffix}.pkl"
-    existing_pkls = sorted(root.glob(f"ratings_*{suffix}.pkl"))
-    if pooled_pkl.exists():
-        newest = max((p.stat().st_mtime for p in existing_pkls), default=0.0)
-        if pooled_pkl.stat().st_mtime >= newest:
+    pooled_parquet = root / f"ratings_pooled{suffix}.parquet"
+    existing_parquets = sorted(root.glob(f"ratings_*{suffix}.parquet"))
+    if pooled_parquet.exists():
+        newest = max((p.stat().st_mtime for p in existing_parquets), default=0.0)
+        if pooled_parquet.stat().st_mtime >= newest:
             log.info("TrueSkill: pooled outputs up-to-date - skipped")
             return
 
-    for pkl in existing_pkls:
-        if pkl == pooled_pkl:
+    for parquet in existing_parquets:
+        if parquet == pooled_parquet:
             continue
-        stem = pkl.stem[len("ratings_"):]
+        stem = parquet.stem[len("ratings_"):]
         if suffix:
             stem = stem[: -len(suffix)]
         games = per_block_games.get(stem, 0)
         if games <= 0:
             continue
-        with pkl.open("rb") as fh:
-            ratings = _coerce_ratings(pickle.load(fh))
+        with parquet.open("rb") as fh:
+            ratings = _load_ratings_parquet(parquet)
         for k, v in ratings.items():
             tau = 1.0 / (v.sigma ** 2) if v.sigma > 0 else 0.0
             s_mu, s_tau = pooled.get(k, (0.0, 0.0))
@@ -745,10 +766,8 @@ def run_trueskill(
     pooled_stats = {k: RatingStats(mu=(s_mu / s_tau), sigma=(s_tau ** -0.5))
                     for k, (s_mu, s_tau) in pooled.items() if s_tau > 0}
     # Atomic writes for pooled outputs
-    tmp_pool_pkl = pooled_pkl.with_name(pooled_pkl.name + ".tmp")
-    with tmp_pool_pkl.open("wb") as fh:
-        pickle.dump({k: (v.mu, v.sigma) for k, v in pooled_stats.items()}, fh)
-    tmp_pool_pkl.replace(pooled_pkl)
+    # Save pooled ratings as Parquet
+    _save_ratings_parquet(pooled_parquet, pooled_stats)
     pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled_stats.items()}
     pooled_json_path = root / f"ratings_pooled{suffix}.json"
     tmp_pool_json = pooled_json_path.with_name(pooled_json_path.name + ".tmp")
@@ -852,7 +871,7 @@ def main(argv: list[str] | None = None) -> None:
         "--ratings-checkpoint-path",
         type=Path,
         default=None,
-        help="Where to save interim ratings pickle (default: <root>/ratings_checkpoint.pkl).",
+        help="Where to save interim ratings parquet (default: <root>/ratings_checkpoint.parquet).",
     )
     # Pull batch/worker policy from PipelineCfg (falls back to CLI if not set).
     cfg, _, _ = PipelineCfg.parse_cli([])
@@ -882,7 +901,7 @@ def main(argv: list[str] | None = None) -> None:
     else:
         root = DEFAULT_DATAROOT / "analysis"
     ck_path = args.checkpoint_path or (root / "trueskill.checkpoint.json")
-    rk_path = args.ratings_checkpoint_path or (root / "ratings_checkpoint.pkl")
+    rk_path = args.ratings_checkpoint_path or (root / "ratings_checkpoint.parquet")
 
     if agg and agg.exists():
         log.info("TrueSkill: single-pass over %s (resume=%s)", agg, args.resume)
@@ -901,8 +920,7 @@ def main(argv: list[str] | None = None) -> None:
         (root / f"ratings_pooled{suffix}.json").write_text(
             json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled.items()})
         )
-        with (root / f"ratings_pooled{suffix}.pkl").open("wb") as fh:
-            pickle.dump({k: (v.mu, v.sigma) for k, v in pooled.items()}, fh)
+        _save_ratings_parquet(root / f"ratings_pooled{suffix}.parquet", pooled)
         tiers = build_tiers(
             means={k: v.mu for k, v in pooled.items()},
             stdevs={k: v.sigma for k, v in pooled.items()},
