@@ -9,9 +9,9 @@ when inputs are unchanged.
 
 from __future__ import annotations
 
-from datetime import datetime
 import hashlib
 import json
+from datetime import datetime
 from pathlib import Path
 
 __all__ = [
@@ -31,7 +31,7 @@ def main(argv: object | None = None) -> int:
 
     from farkle.pipeline import main as _main
 
-    return _main(argv)
+    return _main(argv) # pyright: ignore[reportArgumentType]
 
 
 # ---------------------------------------------------------------------------
@@ -80,10 +80,7 @@ def is_up_to_date(done_path: Path, inputs: list[Path], outputs: list[Path]) -> b
     for inp in inputs:
         if not inp.exists() or inp.stat().st_mtime > done_mtime:
             return False
-    for out in outputs:
-        if not out.exists():
-            return False
-    return True
+    return all(out.exists() for out in outputs)
 
 
 # ---------------------------------------------------------------------------

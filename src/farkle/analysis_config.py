@@ -16,18 +16,17 @@ Typical usage::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
-import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final, Sequence
 
+import pyarrow as pa
 import yaml
 from pydantic import BaseModel
-
-import pyarrow as pa
 
 
 @dataclass
@@ -303,7 +302,7 @@ class Config(BaseModel):
             hgb_max_iter=self.hgb.n_estimators,
         )
         if self.config_sha is not None:
-            setattr(cfg, "config_sha", self.config_sha)
+            setattr(cfg, "config_sha", self.config_sha)  # noqa: B010
         return cfg
 
 

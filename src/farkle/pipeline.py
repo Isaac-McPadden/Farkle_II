@@ -4,13 +4,16 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import TYPE_CHECKING, Callable, Sequence
 
 import yaml
 from tqdm import tqdm
 
 from farkle import aggregate, analytics, curate, ingest, metrics
 from farkle.analysis_config import load_config
+
+if TYPE_CHECKING:  # for type checkers without creating runtime deps
+    from farkle.analysis_config import PipelineCfg
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -57,7 +60,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "analytics":
         analytics.run_all(pipeline_cfg)
     elif args.command == "all":
-        steps: list[tuple[str, Callable[[object], None]]] = [
+        # Each step consumes a PipelineCfg; be precise for type-checkers
+        steps: list[tuple[str, Callable[["PipelineCfg"], None]]] = [
             ("ingest", ingest.run),
             ("curate", curate.run),
             ("aggregate", aggregate.run),
