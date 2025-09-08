@@ -35,12 +35,12 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
 
     The function reads ``data/tiers.json`` to find strategies in the highest
     tier.  It runs enough games for a Bonferroni-corrected binomial test on each
-    matchup and writes ``data/bonferroni_pairwise.csv`` containing win counts and
+    matchup and writes ``data/bonferroni_pairwise.parquet`` containing win counts and
     p-values computed via :func:`scipy.stats.binomtest`.
     """
     sub_root = Path(root / "analysis")
     tiers_path = sub_root / "tiers.json"
-    pairwise_csv = sub_root / "bonferroni_pairwise.csv"
+    pairwise_parquet = sub_root / "bonferroni_pairwise.parquet"
 
     try:
         with tiers_path.open() as fh:
@@ -75,18 +75,18 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
         records.append({"a": a, "b": b, "wins_a": wa, "wins_b": wb, "pvalue": pval})
 
     out = pd.DataFrame(records)
-    pairwise_csv.parent.mkdir(exist_ok=True)
+    pairwise_parquet.parent.mkdir(exist_ok=True)
 
-    tmp_path = pairwise_csv.with_suffix(".tmp")
+    tmp_path = pairwise_parquet.with_suffix(".tmp")
     out.to_csv(tmp_path, index=False)
-    tmp_path.replace(pairwise_csv)
+    tmp_path.replace(pairwise_parquet)
 
 
 def main(argv: List[str] | None = None) -> None:
     """Command line interface for :func:`run_bonferroni_head2head`.
 
     Usage
-        python -m farkle.run_bonferroni_head2head [--seed N] [--jobs J]
+        python -m farkle.run_bonferroni_head2head [--seed N] [--root R] [--jobs J]
     """
     parser = argparse.ArgumentParser(description="Head-to-head Bonferroni analysis")
     parser.add_argument("--seed", type=int, default=0)
