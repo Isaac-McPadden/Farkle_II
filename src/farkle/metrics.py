@@ -84,13 +84,33 @@ def run(cfg: PipelineCfg) -> None:
     data_file = cfg.curated_parquet
     out_metrics = analysis_dir / cfg.metrics_name
     out_seats = analysis_dir / "seat_advantage.csv"
+    stamp = analysis_dir / "metrics.done.json"
 
-    if all(
-        p.exists() and p.stat().st_mtime >= data_file.stat().st_mtime
-        for p in (out_metrics, out_seats)
-    ):
-        log.info("Metrics: outputs up-to-date - skipped")
-        return
+    if not data_file.exists():
+        raise FileNotFoundError(
+            f"metrics: missing aggregated parquet {data_file} – run aggregate step first"
+        )
+
+    def _stamp(path: Path) -> dict[str, float | int]:
+        st = path.stat()
+        return {"mtime": st.st_mtime, "size": st.st_size}
+
+    if stamp.exists():
+        try:
+            meta = json.loads(stamp.read_text())
+            inputs = meta.get("inputs", {})
+            outputs = meta.get("outputs", {})
+            if (
+                inputs.get(str(data_file)) == _stamp(data_file)
+                and all(
+                    Path(p).exists() and outputs.get(p) == _stamp(Path(p))
+                    for p in (str(out_metrics), str(out_seats))
+                )
+            ):
+                log.info("metrics: outputs up-to-date - skipped")
+                return
+        except Exception:
+            pass
 
     # Running aggregates -------------------------------------------------------
     wins_by_strategy: Counter[str] = Counter()
@@ -209,3 +229,16 @@ def run(cfg: PipelineCfg) -> None:
     tmp_metrics = out_metrics.with_suffix(".parquet.in-progress")
 
     _write_parquet(tmp_metrics, out_metrics, metrics_rows, metrics_schema)
+
+    stamp.write_text(
+        json.dumps(
+            {
+                "inputs": {str(data_file): _stamp(data_file)},
+                "outputs": {
+                    str(out_metrics): _stamp(out_metrics),
+                    str(out_seats): _stamp(out_seats),
+                },
+            },
+            indent=2,
+        )
+    )
