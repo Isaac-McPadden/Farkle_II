@@ -1,0 +1,25 @@
+experiment:
+  name: full_2025_09_07
+  seed: 42
+io:
+  results_dir: results/exp_full_2025_09_07
+  analysis_subdir: analysis
+ingest:
+  row_group_size: 262144
+  n_jobs: 3
+aggregate:
+  max_players: 12
+metrics:
+  seat_range: [1, 12]
+trueskill:
+  beta: 25.0
+  tau: 0.1
+  draw_probability: 0.0
+head2head:
+  n_jobs: 8
+  games_per_pair: 20000
+  fdr_q: 0.02
+hgb:
+  max_depth: 6
+  n_estimators: 300
+schema_version: 1

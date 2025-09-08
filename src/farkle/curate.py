@@ -44,6 +44,7 @@ def _write_manifest(
         "row_count": rows,
         "schema_hash": schema_hash,
         "compression": cfg.parquet_codec,
+        "config_sha": getattr(cfg, "config_sha", None),
         "created_at": datetime.now(UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
