@@ -25,7 +25,7 @@ def _empty_table(schema: pa.Schema) -> pa.Table:
 def test_schema_hash_known_value():
     assert (
         _schema_hash(2)
-        == "c09f3e5e0a9c0ad920d1217f82dcd2f6d871f5f71d28398bd7d8c399f32ae785"
+        == "8d6a2409c58593937b2a9b7c69d12ca745fd16ad064e7e201bbdd1bb7e3a69cf"
     )
 
 
@@ -35,8 +35,7 @@ def test_already_curated_schema_hash(tmp_path):
     schema0 = expected_schema_for(0)
     table1 = pa.table(
         {
-            "winner": ["P1"],
-            "winner_seat": ["1"],
+            "winner_seat": ["P1"],
             "winner_strategy": ["none"],
             "seat_ranks": [[]],
             "winning_score": [100],
@@ -53,8 +52,7 @@ def test_already_curated_schema_hash(tmp_path):
 
     table2 = pa.table(
         {
-            "winner": ["P1"],
-            "winner_seat": ["1"],
+            "winner_seat": ["P1"],
             "winning_score": [100],
             "n_rounds": [1],
             "P1_score": [100],
@@ -72,8 +70,7 @@ def test_already_curated_manifest_failures(tmp_path):
 
     table = pa.table(
         {
-            "winner": ["P1"],
-            "winner_seat": ["1"],
+            "winner_seat": ["P1"],
             "winner_strategy": ["none"],
             "seat_ranks": [[]],
             "winning_score": [100],

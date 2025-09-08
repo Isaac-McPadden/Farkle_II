@@ -212,7 +212,7 @@ def _players_and_ranks_from_batch(
 
     sr_col = col("seat_ranks")
     ranks_list = sr_col.to_pylist() if sr_col is not None else None
-    w_col = col("winner")
+    w_col = col("winner_seat") or col("winner")
     winner_col = w_col.to_pylist() if w_col is not None else None
     strat_cols = [col(f"P{i}_strategy") for i in range(1, n + 1)]
     rank_cols = [col(f"P{i}_rank") for i in range(1, n + 1)]
@@ -450,9 +450,10 @@ def _iter_players_and_ranks(row_file: Path, n: int, batch_size: int = 100_000) -
     # seat_ranks not present → derive from P#_rank or fall back to winner + tied losers
     rank_cols = [f"P{i}_rank" for i in range(1, n + 1)]
     strat_cols = [f"P{i}_strategy" for i in range(1, n + 1)]
-    cols = ["winner"] + rank_cols + strat_cols
+    winner_col_name = "winner_seat" if schema.get_field_index("winner_seat") != -1 else "winner"
+    cols = [winner_col_name] + rank_cols + strat_cols
     for batch in dataset.to_batches(columns=cols, batch_size=batch_size):
-        winner_seats = batch["winner"].to_pylist()
+        winner_seats = batch[winner_col_name].to_pylist()
         ranks = [[batch[c][i].as_py() for c in rank_cols] for i in range(len(batch))]
         strats = [[batch[c][i].as_py() for c in strat_cols] for i in range(len(batch))]
 

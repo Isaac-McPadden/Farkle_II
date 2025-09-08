@@ -61,7 +61,8 @@ def test_fix_winner_with_ranks():
     result = _fix_winner(df)
     assert result["winner_strategy"].iloc[0] == "B"
     assert result["winner_seat"].iloc[0] == "P2"
-    assert result["seat_ranks"].iloc[0] == ("P2", "P1")
+    assert result["seat_ranks"].iloc[0] == ["P2", "P1"]
+    assert "winner" not in result.columns
 
 
 def test_fix_winner_without_ranks():
@@ -69,7 +70,8 @@ def test_fix_winner_without_ranks():
     result = _fix_winner(df)
     assert result["winner_strategy"].iloc[0] == "A"
     assert result["winner_seat"].iloc[0] == "P1"
-    assert "seat_ranks" not in result.columns
+    assert result["seat_ranks"].iloc[0] == ["P1"]
+    assert "winner" not in result.columns
 
 
 # -------------------- run integration ----------------------------------
