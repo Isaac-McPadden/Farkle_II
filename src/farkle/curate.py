@@ -35,22 +35,19 @@ def _schema_hash(n_players: int) -> str:
     return hashlib.sha256(buf_bytes).hexdigest()
 
 
-def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: PipelineCfg) -> None:
-    """Dump a simple JSON manifest next to the curated parquet."""
+def _write_manifest(
+    manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: PipelineCfg
+) -> None:
+    """Dump a JSON manifest next to the curated parquet."""
     n_players = n_players_from_schema(schema)
     schema_hash = _schema_hash(n_players)
-    schema_list = [str(f) for f in schema]
     payload: dict[str, Any] = {
-        "rows": rows,
-        "schema": schema_list,
+        "row_count": rows,
         "schema_hash": schema_hash,
-        "codec": cfg.parquet_codec,
-        "row_group_size": cfg.row_group_size,
-        "git_sha": cfg.git_sha,
-        "created": datetime.now(UTC)
+        "compression": cfg.parquet_codec,
+        "created_at": datetime.now(UTC)
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
-        "pid": str(os.getpid()),
     }
     manifest_path.write_text(json.dumps(payload, indent=2))
     log.info("✓ manifest → %s", manifest_path)
@@ -66,7 +63,7 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
         meta = json.loads(manifest.read_text())
     except Exception:  # corrupt JSON?  redo
         return False
-    expected_rows = meta.get("rows")
+    expected_rows = meta.get("row_count")
     expected_hash = meta.get("schema_hash")
     if expected_rows is None or expected_hash is None:
         return False
@@ -96,6 +93,13 @@ def run(cfg: PipelineCfg) -> None:
     """Curate raw parquet files produced by :func:`farkle.ingest.run`."""
     log = logging.getLogger("curate")
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure existing curated files always have a manifest
+    for curated in sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet")):
+        n = int(curated.parent.name.removesuffix("p"))
+        manifest = cfg.manifest_for(n)
+        if not manifest.exists():
+            raise FileNotFoundError(f"missing manifest for {curated}")
 
     # New layout: analysis/data/*p/*_ingested_rows.raw.parquet
     raw_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.raw.parquet"))

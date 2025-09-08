@@ -115,7 +115,7 @@ class PipelineCfg:
         return (self.data_dir / f"{n_players}p") / f"{n_players}p_ingested_rows.parquet"
 
     def manifest_for(self, n_players: int) -> Path:
-        return (self.data_dir / f"{n_players}p") / f"manifest_{n_players}p.json"
+        return (self.data_dir / f"{n_players}p") / f"manifest_{n_players}.json"
 
     @property
     def curated_parquet(self) -> Path:
