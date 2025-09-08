@@ -97,7 +97,7 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     # strategy seat columns (P1_strategy, …)
     seat_cols = sorted(
         [c for c in df.columns if _SEAT_RE.match(c)],
-        key=lambda c: int(_SEAT_RE.match(c).group(1)),
+        key=lambda c: int(_SEAT_RE.match(c).group(1)), # type: ignore
     )
 
     # winner_strategy as plain strings (add if missing)
