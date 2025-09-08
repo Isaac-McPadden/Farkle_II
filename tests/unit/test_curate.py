@@ -118,7 +118,7 @@ def test_run_new_layout(tmp_path):
         assert manifest.exists()
         assert not raw_path.exists()
         meta = json.loads(manifest.read_text())
-        assert meta["rows"] == 0
+        assert meta["row_count"] == 0
         assert meta["schema_hash"] == _schema_hash(n)
 
 
@@ -149,3 +149,13 @@ def test_run_legacy_already_curated(tmp_path):
     assert curated.exists()
     assert manifest.exists()
     assert not curated.with_suffix(".raw.parquet").exists()
+
+
+def test_run_new_layout_missing_manifest(tmp_path):
+    cfg = PipelineCfg(results_dir=tmp_path)
+    schema = expected_schema_for(1)
+    curated = cfg.ingested_rows_curated(1)
+    curated.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(_empty_table(schema), curated)
+    with pytest.raises(FileNotFoundError):
+        curate_run(cfg)

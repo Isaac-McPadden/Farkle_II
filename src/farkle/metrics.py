@@ -168,7 +168,7 @@ def run(cfg: PipelineCfg) -> None:
             return 0
         try:
             meta = json.loads(mpath.read_text())
-            return int(meta.get("rows", 0))
+            return int(meta.get("row_count", 0))
         except Exception:
             return 0
 
