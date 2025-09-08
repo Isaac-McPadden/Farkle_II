@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import re
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Iterable
 
@@ -31,15 +32,7 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
     """
 
     def _read_subset(path: Path, wanted: Iterable[str]) -> pd.DataFrame:
-        """Read *path* and return only the columns present in *wanted*.
-
-        Pandas' ``usecols`` parameter will raise if any requested column is
-        missing.  To provide a more forgiving interface, load the file normally
-        and then select the intersection of the desired and available columns.
-        ``wanted`` is typically ``cfg.ingest_cols`` which may include seats not
-        present in legacy results blocks (e.g., requesting ``P12_strategy`` when
-        only two players were recorded).
-        """
+        """Read *path* and return only the columns present in *wanted*."""
 
         if path.suffix == ".csv":
             df = pd.read_csv(path, dtype_backend="pyarrow")
@@ -71,9 +64,7 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
             tbl = pf.read_row_group(i, columns=present)
             # Convert this row-group only
             df = tbl.to_pandas()
-            # Return a pseudo-path for logging context
-            pseudo = row_file.with_name(f"{row_file.name}#rg{i}")
-            yield df, pseudo
+            yield df, row_file
         return
 
     # Legacy layout with `<Np_rows>` directory containing shards
@@ -96,21 +87,24 @@ _SEAT_RE = re.compile(r"^P(\d+)_strategy$")
 def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
-    # winner_seat mirrors winner (add if missing)
-    if "winner_seat" not in df.columns and "winner" in df.columns:
-        df["winner_seat"] = df["winner"]
+    # Rename legacy "winner" column to "winner_seat" (drop original)
+    if "winner" in df.columns:
+        if "winner_seat" in df.columns:
+            df.drop(columns=["winner"], inplace=True)
+        else:
+            df.rename(columns={"winner": "winner_seat"}, inplace=True)
 
     # strategy seat columns (P1_strategy, …)
     seat_cols = sorted(
         [c for c in df.columns if _SEAT_RE.match(c)],
-        key=lambda c: int(_SEAT_RE.match(c).group(1)),  # type: ignore[arg-type]
+        key=lambda c: int(_SEAT_RE.match(c).group(1)),
     )
 
     # winner_strategy as plain strings (add if missing)
     if "winner_strategy" not in df.columns and seat_cols:
         seat_idx = (
             df["winner_seat"].str.extract(r"P(?P<num>\d+)", expand=True)["num"]
-            .astype("Int64")  # robust to missing
+            .astype("Int64")
         )
         S = df[seat_cols].to_numpy(dtype=object)
         out = np.empty(len(df), dtype=object)
@@ -141,93 +135,92 @@ def _n_from_block(name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _process_block(block: Path, cfg: PipelineCfg) -> None:
+    """Process a single ``<N>_players`` block."""
+    n = _n_from_block(block.name)
+    log.info("Reading block %s", block.name)
+
+    raw_out = cfg.ingested_rows_raw(n)
+    src_mtime = 0.0
+    row_files = sorted(block.glob("*p_rows.parquet"))
+    if row_files:
+        src_mtime = row_files[0].stat().st_mtime
+    else:
+        row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
+        if row_dirs:
+            shards = list(row_dirs[0].glob("*.parquet"))
+            if shards:
+                src_mtime = max(s.stat().st_mtime for s in shards)
+    if raw_out.exists() and src_mtime and raw_out.stat().st_mtime >= src_mtime:
+        log.info("Ingest: %sp already up-to-date - skipped", n)
+        return
+
+    canon = expected_schema_for(n)
+    seat_cols = [c for c in canon.names if c.startswith("P")]
+    wanted = ("winner", "n_rounds", "winning_score", *seat_cols)
+
+    tmp_path = raw_out.with_suffix(raw_out.suffix + ".in-progress")
+    if tmp_path.exists():
+        tmp_path.unlink()
+    tmp_path.parent.mkdir(parents=True, exist_ok=True)
+
+    writer: pq.ParquetWriter | None = None
+    total = 0
+    try:
+        for shard_df, shard_path in _iter_shards(block, tuple(wanted)):
+            if shard_df.empty:
+                log.debug("Shard %s is empty — skipped", shard_path.name)
+                continue
+            log.debug("Shard %s → %d rows", shard_path.name, len(shard_df))
+
+            shard_df = _fix_winner(shard_df)
+            canon_names = canon.names
+            extras = sorted(
+                c for c in shard_df.columns if c not in canon_names and not c.startswith("P")
+            )
+            if extras:
+                log.error("Schema mismatch in %s: unexpected columns %s", shard_path, extras)
+                raise RuntimeError("Schema mismatch")
+            for name in canon_names:
+                if name not in shard_df.columns:
+                    shard_df[name] = pd.NA
+            shard_df = shard_df[canon_names]
+            table = pa.Table.from_pandas(shard_df, schema=canon, preserve_index=False)
+            if writer is None:
+                writer = pq.ParquetWriter(tmp_path, table.schema, compression=cfg.parquet_codec)
+            writer.write_table(table, row_group_size=cfg.row_group_size)
+            total += len(shard_df)
+    except Exception:
+        if writer is not None:
+            writer.close()
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+    else:
+        if writer is not None:
+            writer.close()
+            if tmp_path.exists():
+                tmp_path.replace(raw_out)
+            log.info("Ingest finished — %d rows written to %s", total, raw_out)
+
+
 def run(cfg: PipelineCfg) -> None:
     log.info("Ingest started: root=%s", cfg.results_dir)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
-    writers: dict[int, pq.ParquetWriter] = {}
-    tmp_paths: dict[int, Path] = {}
-    totals: dict[int, int] = {}
-
     blocks = sorted(
-        (p for p in cfg.results_dir.iterdir()
-         if p.is_dir() and p.name.endswith("_players")),
-        key=lambda p: _n_from_block(p.name)
+        (p for p in cfg.results_dir.iterdir() if p.is_dir() and p.name.endswith("_players")),
+        key=lambda p: _n_from_block(p.name),
     )
 
-    try:
+    if cfg.n_jobs_ingest <= 1:
         for block in blocks:
-            log.info("Reading block %s", block.name)
-            n = _n_from_block(block.name)
-            
-            # Up-to-date guard for this N: if output is newer than inputs, skip
-            raw_out = cfg.ingested_rows_raw(n)
-            src_mtime = 0.0
-            row_files = sorted(block.glob("*p_rows.parquet"))
-            if row_files:
-                src_mtime = row_files[0].stat().st_mtime
-            else:
-                row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
-                if row_dirs:
-                    shards = list(row_dirs[0].glob("*.parquet"))
-                    if shards:
-                        src_mtime = max(s.stat().st_mtime for s in shards)
-            if raw_out.exists() and src_mtime and raw_out.stat().st_mtime >= src_mtime:
-                log.info("Ingest: %sp already up-to-date - skipped", n)
-                continue
-
-
-            # Per-block allow-list: base + all P1..Pn columns from canonical schema
-            canon = expected_schema_for(n)
-            seat_cols = [c for c in canon.names if c.startswith("P")]
-            wanted = ("winner", "n_rounds", "winning_score", *seat_cols)
-
-            for shard_df, shard_path in _iter_shards(block, tuple(wanted)):
-                if shard_df.empty:
-                    log.debug("Shard %s is empty — skipped", shard_path.name)
-                    continue
-
-                log.debug("Shard %s → %d rows", shard_path.name, len(shard_df))
-
-                shard_df = _fix_winner(shard_df)         # fills winner_* + seat_ranks
-
-                canon = expected_schema_for(n)                   # you already computed 'n' above
-                canon_names = canon.names
-
-                # 1) ensure every canonical column exists (fill with NA)
-                for name in canon_names:
-                    if name not in shard_df.columns:
-                        shard_df[name] = pd.NA
-
-                # 2) reorder to canonical order and build Arrow table in one go
-                shard_df = shard_df[canon_names]
-                table = pa.Table.from_pandas(shard_df, schema=canon, preserve_index=False)
-                n_players = n  # you already know it from the block name
-
-                if n_players not in writers:
-                    raw_path = cfg.ingested_rows_raw(n_players)
-                    tmp_path = raw_path.with_suffix(raw_path.suffix + ".in-progress")
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                    tmp_path.parent.mkdir(parents=True, exist_ok=True)
-                    writers[n_players] = pq.ParquetWriter(
-                        tmp_path, table.schema, compression=cfg.parquet_codec
-                    )
-                    tmp_paths[n_players] = tmp_path
-                    totals[n_players] = 0
-
-                writers[n_players].write_table(table, row_group_size=cfg.row_group_size)
-                totals[n_players] += len(shard_df)
-    finally:
-        for w in writers.values():
-            w.close()
-
-    for n_players, tmp in tmp_paths.items():
-        raw_path = cfg.ingested_rows_raw(n_players)
-        if tmp.exists():
-            tmp.replace(raw_path)
-        log.info("Ingest finished — %d rows written to %s",
-                 totals.get(n_players, 0), raw_path)
+            _process_block(block, cfg)
+    else:
+        with ProcessPoolExecutor(max_workers=cfg.n_jobs_ingest) as pool:
+            futures = [pool.submit(_process_block, block, cfg) for block in blocks]
+            for f in futures:
+                f.result()
 
 
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper

@@ -184,7 +184,7 @@ def _play_one_shuffle(
         offset += state.cfg.n_players
 
         row = _play_game(int(gseed), [state.strats[i] for i in idxs])
-        winner = row["winner"]
+        winner = row.get("winner_seat") or row.get("winner")
         strat_repr = row[f"{winner}_strategy"]
         metrics = _extract_winner_metrics(row, winner)
         wins[strat_repr] += 1

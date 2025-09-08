@@ -49,6 +49,8 @@ class PipelineCfg:
     parquet_codec: str = "zstd"
     row_group_size: int = 64_000  # max_shard_mb removed (unused)
     batch_rows: int = 100_000     # default Arrow batch size for streaming readers
+    # Ingest concurrency (1 -> serial, >1 -> process pool)
+    n_jobs_ingest: int = 1
 
     # 3. analytics toggles / params
     run_trueskill: bool = True
@@ -174,7 +176,6 @@ class PipelineCfg:
 
 # ---------- static pieces -------------------------------------------------
 _BASE_FIELDS: Final[list[tuple[str, pa.DataType]]] = [
-    ("winner", pa.string()),
     ("winner_seat", pa.string()),  # P{n} label of the winner
     ("winner_strategy", pa.string()),  # strategy string of the winner
     ("seat_ranks", pa.list_(pa.string())),  # ["P7","P1","P3",...]
