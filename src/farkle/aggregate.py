@@ -42,7 +42,7 @@ def run(cfg: PipelineCfg) -> None:
             log.info("aggregate: outputs up-to-date - skipped")
             return
 
-    tmp = out.with_suffix(out.suffix + ".in-progress")
+    tmp = out.with_name(out.stem + ".in-progress.parquet")
     if tmp.exists():
         tmp.unlink()
 
@@ -60,4 +60,14 @@ def run(cfg: PipelineCfg) -> None:
     finally:
         writer.close()
     tmp.replace(out)
+
+    # Sanity check: file opens and row-count matches
+    pf_out = pq.ParquetFile(out)
+    if pf_out.metadata.num_rows != total:
+        raise RuntimeError(
+            f"aggregate: row-count mismatch {pf_out.metadata.num_rows} != {total}"
+        )
+    if pq.read_schema(out).names != target.names:
+        raise RuntimeError("aggregate: output schema mismatch")
+
     log.info("aggregate: wrote %s (%d rows)", out, total)
