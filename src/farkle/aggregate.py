@@ -8,6 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.analysis_config import PipelineCfg, expected_schema_for
+from farkle.checks import check_post_aggregate
 
 log = logging.getLogger("aggregate")
 
@@ -71,3 +72,4 @@ def run(cfg: PipelineCfg) -> None:
         raise RuntimeError("aggregate: output schema mismatch")
 
     log.info("aggregate: wrote %s (%d rows)", out, total)
+    check_post_aggregate(files, out)

@@ -14,6 +14,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from farkle.analysis_config import PipelineCfg
+from farkle.checks import check_pre_metrics
 
 log = logging.getLogger(__name__)
 
@@ -82,6 +83,7 @@ def run(cfg: PipelineCfg) -> None:
     """
     analysis_dir = cfg.analysis_dir
     data_file = cfg.curated_parquet
+    winner_col = "winner_seat"
     out_metrics = analysis_dir / cfg.metrics_name
     out_seats = analysis_dir / "seat_advantage.csv"
     stamp = analysis_dir / "metrics.done.json"
@@ -111,6 +113,8 @@ def run(cfg: PipelineCfg) -> None:
                 return
         except Exception:
             pass
+
+    check_pre_metrics(data_file, winner_col=winner_col)
 
     # Running aggregates -------------------------------------------------------
     wins_by_strategy: Counter[str] = Counter()
@@ -198,7 +202,7 @@ def run(cfg: PipelineCfg) -> None:
     # wins per seat (from aggregate parquet)
     ds_all = ds.dataset(data_file, format="parquet")
     seat_wins: dict[int, int] = {
-        i: int(ds_all.count_rows(filter=(ds.field("winner") == f"P{i}")))
+        i: int(ds_all.count_rows(filter=(ds.field(winner_col) == f"P{i}")))
         for i in range(1, 13)
     }
 
