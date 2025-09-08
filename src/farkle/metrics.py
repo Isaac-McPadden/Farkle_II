@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import logging
 from collections import Counter
 from pathlib import Path
@@ -11,7 +12,6 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
-import json
 
 from farkle.analysis_config import PipelineCfg
 

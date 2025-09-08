@@ -210,7 +210,7 @@ def expected_schema_for(n_players: int) -> pa.Schema:
     return pa.schema(_BASE_FIELDS + seat_fields)
 
 
-_PNUM_RE = re.compile(r"^P(\d+)_")
+_PNUM_RE = re.compile(r"^P(\d+)_")  # Regex for P<X>_
 
 
 def n_players_from_schema(schema: pa.Schema) -> int:
