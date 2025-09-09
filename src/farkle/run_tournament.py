@@ -11,6 +11,7 @@ row.  A parquet dump of all rows can also be requested via --row-dir.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import logging
 import multiprocessing as mp
 import pickle
@@ -186,7 +187,7 @@ def _play_one_shuffle(
         row = _play_game(int(gseed), [state.strats[i] for i in idxs])
         winner = row.get("winner_seat") or row.get("winner")
         strat_repr = row[f"{winner}_strategy"]
-        metrics = _extract_winner_metrics(row, winner)
+        metrics = _extract_winner_metrics(row, winner)   # pyright: ignore[reportArgumentType]
         wins[strat_repr] += 1
         for label, value in zip(METRIC_LABELS, metrics, strict=True):
             sums[label][strat_repr] += value
@@ -472,74 +473,84 @@ def run_tournament(
     else:
         chunk_fn = _run_chunk
 
-    with ProcessPoolExecutor(
-        max_workers=n_jobs,
-        initializer=_init_worker,
-        initargs=(strategies, cfg, row_queue),
-    ) as pool:
-        futures = {pool.submit(chunk_fn, c): c for c in chunks}
+    try:
+        with ProcessPoolExecutor(
+            max_workers=n_jobs,
+            initializer=_init_worker,
+            initargs=(strategies, cfg, row_queue),
+        ) as pool:
+            futures = {pool.submit(chunk_fn, c): c for c in chunks}
 
-        for done, fut in enumerate(as_completed(futures), 1):
-            # drop the original chunk list to free memory while keeping the key
-            futures[fut] = None
-            result = fut.result()
-            if collect_metrics or collect_rows:
-                wins, sums, sqs = cast(
-                    Tuple[Counter[str], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]],
-                    result,
-                )
-                win_totals.update(wins)
-                if metric_chunk_directory is not None:
-                    chunk_path = metric_chunk_directory / f"metrics_{done:06d}.pkl"
-                    payload = {
-                        "metric_sums": sums,
-                        "metric_square_sums": sqs,
-                    }
-                    chunk_path.write_bytes(
-                        pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+            for done, fut in enumerate(as_completed(futures), 1):
+                # drop the original chunk list to free memory while keeping the key
+                futures[fut] = None
+                result = fut.result()
+                if collect_metrics or collect_rows:
+                    wins, sums, sqs = cast(
+                        Tuple[Counter[str], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]],
+                        result,
                     )
+                    win_totals.update(wins)
+                    if metric_chunk_directory is not None:
+                        chunk_path = metric_chunk_directory / f"metrics_{done:06d}.pkl"
+                        payload = {
+                            "metric_sums": sums,
+                            "metric_square_sums": sqs,
+                        }
+                        chunk_path.write_bytes(
+                            pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+                        )
+                    else:
+                        assert metric_sums is not None and metric_sq_sums is not None
+                        for label in METRIC_LABELS:
+                            for k, v in sums[label].items():
+                                metric_sums[label][k] += v
+                            for k, v in sqs[label].items():
+                                metric_sq_sums[label][k] += v
                 else:
-                    assert metric_sums is not None and metric_sq_sums is not None
-                    for label in METRIC_LABELS:
-                        for k, v in sums[label].items():
-                            metric_sums[label][k] += v
-                        for k, v in sqs[label].items():
-                            metric_sq_sums[label][k] += v
-            else:
-                win_totals.update(cast(Counter[str], result))
+                    win_totals.update(cast(Counter[str], result))
 
-            now = time.perf_counter()
-            if now - last_ckpt >= cfg.ckpt_every_sec:
-                _save_checkpoint(
-                    ckpt_path,
-                    win_totals,
-                    None
-                    if metric_chunk_directory is not None
-                    else (metric_sums if collect_metrics or collect_rows else None),
-                    None
-                    if metric_chunk_directory is not None
-                    else (metric_sq_sums if collect_metrics or collect_rows else None),
-                )
-                log.info(
-                    "checkpoint … %d/%d chunks, %d games",
-                    done,
-                    len(chunks),
-                    sum(win_totals.values()),
-                )
-                last_ckpt = now
+                now = time.perf_counter()
+                if now - last_ckpt >= cfg.ckpt_every_sec:
+                    _save_checkpoint(
+                        ckpt_path,
+                        win_totals,
+                        None
+                        if metric_chunk_directory is not None
+                        else (metric_sums if collect_metrics or collect_rows else None),
+                        None
+                        if metric_chunk_directory is not None
+                        else (metric_sq_sums if collect_metrics or collect_rows else None),
+                    )
+                    log.info(
+                        "checkpoint … %d/%d chunks, %d games",
+                        done,
+                        len(chunks),
+                        sum(win_totals.values()),
+                    )
+                    last_ckpt = now
 
-    if metric_chunk_directory is not None and (collect_metrics or collect_rows):
-        metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
-        metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
-        for path in sorted(metric_chunk_directory.glob("metrics_*.pkl")):
-            data = pickle.loads(path.read_bytes())
-            sums = data["metric_sums"]
-            sqs = data["metric_square_sums"]
-            for label in METRIC_LABELS:
-                for k, v in sums[label].items():
-                    metric_sums[label][k] += v
-                for k, v in sqs[label].items():
-                    metric_sq_sums[label][k] += v
+        if metric_chunk_directory is not None and (collect_metrics or collect_rows):
+            metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
+            metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
+            for path in sorted(metric_chunk_directory.glob("metrics_*.pkl")):
+                data = pickle.loads(path.read_bytes())
+                sums = data["metric_sums"]
+                sqs = data["metric_square_sums"]
+                for label in METRIC_LABELS:
+                    for k, v in sums[label].items():
+                        metric_sums[label][k] += v
+                    for k, v in sqs[label].items():
+                        metric_sq_sums[label][k] += v
+    
+    finally:
+        # Ensure row shards are flushed even on tiny runs
+        if 'row_queue' in locals() and row_queue is not None:
+            with contextlib.suppress(Exception): 
+                row_queue.put(None)
+        if 'writer' in locals() and writer is not None:
+            with contextlib.suppress(Exception): 
+                writer.join(timeout=10)
 
     _save_checkpoint(
         ckpt_path,
