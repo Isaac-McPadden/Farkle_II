@@ -11,7 +11,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis_config import (
+from farkle.analysis.analysis_config import (
     PipelineCfg,
     expected_schema_for,
     n_players_from_schema,

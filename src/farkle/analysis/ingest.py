@@ -13,7 +13,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis_config import (
+from farkle.analysis.analysis_config import (
     PipelineCfg,
     expected_schema_for,
     load_config,

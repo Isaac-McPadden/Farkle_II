@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-import farkle.farkle_io as farkle_io
-from farkle import farkle_cli  # imports the module, not the exe
-from farkle.farkle_io import simulate_many_games_stream
-from farkle.stats import games_for_power
-from farkle.strategies import ThresholdStrategy
+import farkle.utils.farkle_io as farkle_io
+from farkle.cli import farkle_cli  # imports the module, not the exe
+from farkle.simulation.stats import games_for_power
+from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.farkle_io import simulate_many_games_stream
 
 
 def test_games_for_power_monotonic():

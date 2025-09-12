@@ -9,11 +9,12 @@ from typing import TYPE_CHECKING, Callable, Sequence
 import yaml
 from tqdm import tqdm
 
-from farkle import aggregate, analytics, curate, ingest, metrics
-from farkle.analysis_config import load_config
+from farkle import analysis
+from farkle.analysis import aggregate, curate, ingest, metrics
+from farkle.analysis.analysis_config import load_config
 
 if TYPE_CHECKING:  # for type checkers without creating runtime deps
-    from farkle.analysis_config import PipelineCfg
+    from farkle.analysis.analysis_config import PipelineCfg
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -58,7 +59,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif args.command == "metrics":
         metrics.run(pipeline_cfg)
     elif args.command == "analytics":
-        analytics.run_all(pipeline_cfg)
+        analysis.run_all(pipeline_cfg)
     elif args.command == "all":
         # Each step consumes a PipelineCfg; be precise for type-checkers
         steps: list[tuple[str, Callable[["PipelineCfg"], None]]] = [
@@ -66,7 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("curate", curate.run),
             ("aggregate", aggregate.run),
             ("metrics", metrics.run),
-            ("analytics", analytics.run_all),
+            ("analytics", analysis.run_all),
         ]
         for _name, fn in tqdm(steps, desc="pipeline"):
             fn(pipeline_cfg)

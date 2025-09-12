@@ -9,7 +9,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-import farkle.time_farkle as tf
+import farkle.simulation.time_farkle as tf
 
 
 @pytest.fixture(autouse=True)
@@ -60,7 +60,7 @@ def test_dataframe_winner_column(tmp_path, monkeypatch):  # noqa: ARG001
     Trivial smoke test: monkey-patch simulate_many_games so we don't
     actually run heavy sims - return a synthetic DataFrame instead.
     """
-    import farkle.time_farkle as tf
+    import farkle.simulation.time_farkle as tf
 
     def fake_many_games(*_, **__):
         return pd.DataFrame({"winner": ["P1", "P2", "P1"]})

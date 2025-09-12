@@ -7,7 +7,7 @@ When executed as ``python -m farkle`` this module simply delegates to
 
 from __future__ import annotations
 
-from farkle.farkle_cli import main as cli_main
+from farkle.cli.farkle_cli import main as cli_main
 
 
 def main() -> None:

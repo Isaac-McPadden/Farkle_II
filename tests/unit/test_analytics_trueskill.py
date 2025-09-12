@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 from farkle.analysis_config import PipelineCfg
-from farkle.analytics import trueskill
+from farkle.analysis import trueskill
 
 
 def _setup(tmp_path: Path) -> tuple[PipelineCfg, Path, Path]:
@@ -25,7 +25,7 @@ def test_run_skips_when_tiers_up_to_date(tmp_path, monkeypatch):
     def boom(*args, **kwargs):  # noqa: ARG001
         raise AssertionError("should not call run_trueskill.main")
 
-    monkeypatch.setattr(trueskill._rt, "main", boom)
+    monkeypatch.setattr(trueskill.run, "main", boom)
 
     trueskill.run(cfg)
 
@@ -41,7 +41,7 @@ def test_run_invokes_legacy_when_stale(tmp_path, monkeypatch):
     def fake_main(args):  # noqa: ANN001
         captured["args"] = args
 
-    monkeypatch.setattr(trueskill._rt, "main", fake_main)
+    monkeypatch.setattr(trueskill.run, "main", fake_main)
 
     trueskill.run(cfg)
 

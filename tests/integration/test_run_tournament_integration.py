@@ -27,9 +27,9 @@ from typing import List, Sequence  # noqa: F401
 
 import pytest
 
-import farkle.simulation as sim
-from farkle.run_tournament import TournamentConfig
-from farkle.strategies import ThresholdStrategy
+import farkle.simulation.simulation as sim
+from farkle.simulation.run_tournament import TournamentConfig
+from farkle.simulation.strategies import ThresholdStrategy
 
 ###############################################################################
 # 1. A tiny deterministic grid (10 strategies)

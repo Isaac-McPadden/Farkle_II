@@ -34,8 +34,8 @@ import trueskill
 import yaml
 from trueskill import Rating
 
-from farkle.analysis_config import PipelineCfg, n_players_from_schema
-from farkle.utils import build_tiers
+from farkle.analysis.analysis_config import PipelineCfg, n_players_from_schema
+from farkle.utils.utils import build_tiers
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
 # Default location of tournament result blocks when no path is supplied

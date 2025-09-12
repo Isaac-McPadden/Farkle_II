@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from farkle.analysis_config import PipelineCfg
-from farkle.analytics import hgb_feat
+from farkle.analysis import hgb_feat
 
 
 def _setup_cfg(tmp_path: Path) -> tuple[PipelineCfg, Path]:

@@ -5,7 +5,7 @@ from collections import Counter
 import pandas as pd
 import pytest
 
-from farkle.strategies import (
+from farkle.simulation.strategies import (
     FavorDiceOrScore,
     ThresholdStrategy,
     _sample_favor_score,

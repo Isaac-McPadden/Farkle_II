@@ -7,8 +7,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis_config import PipelineCfg, expected_schema_for
-from farkle.checks import check_post_aggregate
+from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
+from farkle.analysis.checks import check_post_aggregate
 
 log = logging.getLogger("aggregate")
 

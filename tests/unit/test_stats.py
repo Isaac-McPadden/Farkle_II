@@ -4,7 +4,7 @@ from typing import Any
 import pytest
 from scipy.stats import norm
 
-from farkle.stats import games_for_power
+from farkle.simulation.stats import games_for_power
 
 
 @pytest.mark.parametrize(

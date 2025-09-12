@@ -13,11 +13,11 @@ import time
 
 import pandas as pd
 
-from farkle.simulation import (
+from farkle.simulation.simulation import (
     simulate_many_games,
     simulate_one_game,
 )
-from farkle.strategies import ThresholdStrategy, random_threshold_strategy
+from farkle.simulation.strategies import ThresholdStrategy, random_threshold_strategy
 
 
 def _positive_int(value: str) -> int:

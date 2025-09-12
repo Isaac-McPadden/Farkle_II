@@ -1,7 +1,7 @@
 import warnings
 from dataclasses import asdict
 
-from farkle.engine import GameMetrics, GameStats, PlayerStats
+from farkle.game.engine import GameMetrics, GameStats, PlayerStats
 
 
 def test_players_dict_and_per_player_alias():

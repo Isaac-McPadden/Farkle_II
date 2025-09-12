@@ -7,8 +7,8 @@ from typing import Any, Dict, Sequence
 
 import numpy as np
 
-from farkle.simulation import _play_game
-from farkle.strategies import ThresholdStrategy
+from farkle.simulation.simulation import _play_game
+from farkle.simulation.strategies import ThresholdStrategy
 
 # Batching and queue sizes for file I/O
 BUFFER_SIZE = 10_000

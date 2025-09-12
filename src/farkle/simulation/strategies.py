@@ -28,7 +28,7 @@ from typing import Any, Callable
 import numba as nb
 import pandas as pd
 
-from farkle.types import DiceRoll  # noqa: F401 Likely needed for decide(*)
+from farkle.utils.types import DiceRoll  # noqa: F401 Likely needed for decide(*)
 
 __all__: list[str] = [
     "FavorDiceOrScore",

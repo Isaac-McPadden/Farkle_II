@@ -3,8 +3,8 @@ import pandas as pd
 import pytest
 from pandas import DataFrame
 
-from farkle.engine import FarkleGame, GameMetrics, GameStats, PlayerStats
-from farkle.simulation import (
+from farkle.game.engine import FarkleGame, GameMetrics, GameStats, PlayerStats
+from farkle.simulation.simulation import (
     _play_game,
     experiment_size,
     generate_strategy_grid,
@@ -12,7 +12,7 @@ from farkle.simulation import (
     simulate_many_games_from_seeds,
     simulate_one_game,
 )
-from farkle.strategies import ThresholdStrategy
+from farkle.simulation.strategies import ThresholdStrategy
 
 
 def test_default_grid_size():

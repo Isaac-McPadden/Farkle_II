@@ -1,6 +1,6 @@
 import pytest
 
-from farkle.scoring_lookup import evaluate, score_roll
+from farkle.game.scoring_lookup import evaluate, score_roll
 
 
 def test_score_roll_rejects_invalid_faces():

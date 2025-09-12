@@ -18,7 +18,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
-import farkle.run_tournament as rt
+import farkle.simulation.run_tournament as rt
 
 # Farkle depends on numba at import time. Provide a light-weight stub so the
 # test suite can run without the real dependency installed.

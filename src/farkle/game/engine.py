@@ -24,8 +24,8 @@ from typing import Dict, List, Sequence
 
 import numpy as np
 
-from farkle.scoring import DiceRoll, default_score
-from farkle.strategies import ThresholdStrategy
+from farkle.game.scoring import DiceRoll, default_score
+from farkle.simulation.strategies import ThresholdStrategy
 
 __all__ = [
     "FarklePlayer",

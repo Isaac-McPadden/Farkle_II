@@ -9,16 +9,16 @@ import yaml
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from farkle.engine import FarkleGame, FarklePlayer
-from farkle.farkle_io import simulate_many_games_stream
-from farkle.scoring import (
+from farkle.game.engine import FarkleGame, FarklePlayer
+from farkle.game.scoring import (
     apply_discards,
     decide_smart_discards,
     default_score,
     score_roll_cached,
 )
-from farkle.simulation import simulate_many_games
-from farkle.strategies import ThresholdStrategy
+from farkle.simulation.simulation import simulate_many_games
+from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.farkle_io import simulate_many_games_stream
 
 TMP = Path(__file__).with_suffix("") / "_tmp"
 TMP.mkdir(parents=True, exist_ok=True)

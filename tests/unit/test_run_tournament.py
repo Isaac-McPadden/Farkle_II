@@ -16,8 +16,8 @@ from unittest.mock import ANY
 import numpy as np  # noqa: F401 | Potentially imports something that needs it
 import pytest
 
-import farkle.run_tournament as rt
-from farkle.strategies import ThresholdStrategy
+import farkle.simulation.run_tournament as rt
+from farkle.simulation.strategies import ThresholdStrategy
 
 # --------------------------------------------------------------------------- #
 # Mini test doubles – replace expensive pieces with cheap determinism
@@ -382,7 +382,7 @@ def test_measure_throughput(monkeypatch):
 
 
 def test_play_shuffle_wrapper(monkeypatch):
-    import farkle.run_tournament as rt
+    import farkle.simulation.run_tournament as rt
 
     called = {}
 

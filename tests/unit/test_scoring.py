@@ -10,7 +10,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from farkle.scoring import (
+from farkle.game.scoring import (
     apply_discards,
     decide_smart_discards,
     default_score,
@@ -18,7 +18,7 @@ from farkle.scoring import (
     score_lister,
     score_roll_cached,
 )
-from farkle.scoring_lookup import build_score_lookup_table, evaluate, score_roll
+from farkle.game.scoring_lookup import build_score_lookup_table, evaluate, score_roll
 
 # ────────────────────────────────────────────────────────────────────────────
 # Tiny helpers – tuple world
@@ -306,7 +306,7 @@ def test_default_score_cases(dice_roll, turn_pre, threshold, smart5, smart1, exp
     ],
 )
 def test_faces_to_counts_tuple_invalid_faces(faces):
-    import farkle.scoring as scoring
+    import farkle.game.scoring as scoring
 
     with pytest.raises(ValueError):
         scoring.faces_to_counts_tuple(faces)

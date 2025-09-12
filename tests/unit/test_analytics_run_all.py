@@ -40,7 +40,7 @@ def test_run_all_invokes_expected_modules(ts, h2h, hgb, monkeypatch: pytest.Monk
     stub.main = lambda *args, **kwargs: None  # noqa: ARG005  # type:ignore
     monkeypatch.setitem(sys.modules, "farkle.run_hgb", stub)
 
-    from farkle.analytics import run_all  # import after stubbing dependencies
+    from farkle.analysis import run_all  # import after stubbing dependencies
 
     ts_mod = __import__("farkle.analytics.trueskill", fromlist=["run"])
     h2h_mod = __import__("farkle.analytics.head2head", fromlist=["run"])

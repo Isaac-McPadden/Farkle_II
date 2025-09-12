@@ -19,7 +19,7 @@ from time import perf_counter
 import pandas as pd
 from scipy.stats import norm
 
-from farkle.scoring_lookup import build_score_lookup_table
+from farkle.game.scoring_lookup import build_score_lookup_table
 
 SCORE_TABLE = build_score_lookup_table()
 
@@ -110,7 +110,7 @@ def main(argv: list[str] | None = None) -> None:
     )
     args = parser.parse_args(argv or [])
 
-    import farkle.run_tournament as tournament_mod  # required for main hook  # noqa: I001
+    import farkle.simulation.run_tournament as tournament_mod  # required for main hook  # noqa: I001
 
     # ────────── GLOBAL CONFIG ─────────────────────────────────────────
     PLAYERS = [2, 3, 4, 5, 6, 8, 10, 12]

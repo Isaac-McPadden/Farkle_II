@@ -3,9 +3,9 @@ import itertools
 import numpy as np
 import pytest
 
-from farkle.engine import ROLL_LIMIT, FarkleGame, FarklePlayer
-from farkle.scoring import default_score
-from farkle.strategies import ThresholdStrategy
+from farkle.game.engine import ROLL_LIMIT, FarkleGame, FarklePlayer
+from farkle.game.scoring import default_score
+from farkle.simulation.strategies import ThresholdStrategy
 
 
 def fixed_rng(seq):

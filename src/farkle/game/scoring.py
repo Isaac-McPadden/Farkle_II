@@ -17,10 +17,10 @@ from typing import Callable, NamedTuple, Sequence, Tuple, Union, cast
 import numba as nb
 import numpy as np
 
-from farkle.scoring_lookup import build_score_lookup_table
-from farkle.scoring_lookup import evaluate as _eval_nb  # fast JIT core
-from farkle.strategies import FavorDiceOrScore
-from farkle.types import DiceRoll, FacesSequence, Int64Array1D, SixFaceCounts
+from farkle.game.scoring_lookup import build_score_lookup_table
+from farkle.game.scoring_lookup import evaluate as _eval_nb  # fast JIT core
+from farkle.simulation.strategies import FavorDiceOrScore
+from farkle.utils.types import DiceRoll, FacesSequence, Int64Array1D, SixFaceCounts
 
 SCORE_TABLE = build_score_lookup_table() 
 

@@ -13,8 +13,8 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
-from farkle.analysis_config import PipelineCfg
-from farkle.checks import check_pre_metrics
+from farkle.analysis.analysis_config import PipelineCfg
+from farkle.analysis.checks import check_pre_metrics
 
 log = logging.getLogger(__name__)
 

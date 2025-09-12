@@ -8,8 +8,8 @@ from types import MethodType
 import numpy as np
 import pytest
 
-import farkle.engine as engine
-import farkle.scoring as scoring
+import farkle.game.engine as engine
+import farkle.game.scoring as scoring
 
 # ---------------------------------------------------------------------------
 # Some modules depend on ``scipy`` at import time.  The real package is heavy

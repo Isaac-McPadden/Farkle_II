@@ -10,8 +10,8 @@ from collections import Counter
 import numpy as np
 import pytest
 
-import farkle.scoring_lookup as sl
-from farkle.strategies import (
+import farkle.game.scoring_lookup as sl
+from farkle.simulation.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
 )

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import logging
 
-from farkle import run_hgb as _hgb
-from farkle.analysis_config import PipelineCfg
+from farkle.analysis import run_hgb as _hgb
+from farkle.analysis.analysis_config import PipelineCfg
 
 log = logging.getLogger(__name__)
 

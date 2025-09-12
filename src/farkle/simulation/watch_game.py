@@ -21,9 +21,9 @@ from types import MethodType
 
 import numpy as np
 
-from farkle.engine import FarkleGame, FarklePlayer
-from farkle.scoring import default_score
-from farkle.strategies import (
+from farkle.game.engine import FarkleGame, FarklePlayer
+from farkle.game.scoring import default_score
+from farkle.simulation.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
 )
@@ -103,8 +103,8 @@ def patch_scoring():
     be undone after tests if necessary.
     """
     global default_score  # module alias
-    import farkle.engine as _engine_mod
-    import farkle.scoring as _scoring_mod
+    import farkle.game.engine as _engine_mod
+    import farkle.game.scoring as _scoring_mod
 
     orig_local = default_score
     orig_mod = _scoring_mod.default_score
@@ -132,8 +132,8 @@ def _patch_default_score() -> None:
     """Backward compatible patch for unit tests."""
 
     global default_score
-    import farkle.engine as _engine_mod
-    import farkle.scoring as _scoring_mod
+    import farkle.game.engine as _engine_mod
+    import farkle.game.scoring as _scoring_mod
 
     orig_local = default_score
     orig_mod = _scoring_mod.default_score

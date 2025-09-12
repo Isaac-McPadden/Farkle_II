@@ -3,8 +3,8 @@ import multiprocessing as mp
 
 from pytest import MonkeyPatch
 
-import farkle.farkle_io as fio
-from farkle.strategies import ThresholdStrategy
+import farkle.utils.farkle_io as fio
+from farkle.simulation.strategies import ThresholdStrategy
 
 
 def test_writer_worker_appends(tmp_path: fio.Path):

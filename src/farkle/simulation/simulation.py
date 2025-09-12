@@ -22,8 +22,8 @@ from typing import Any, Dict, List, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-from farkle.engine import FarkleGame, FarklePlayer
-from farkle.strategies import FavorDiceOrScore, ThresholdStrategy
+from farkle.game.engine import FarkleGame, FarklePlayer
+from farkle.simulation.strategies import FavorDiceOrScore, ThresholdStrategy
 
 __all__: list[str] = [
     "generate_strategy_grid",

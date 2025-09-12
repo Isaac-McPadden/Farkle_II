@@ -3,9 +3,9 @@ import json
 import pandas as pd
 import pytest
 
-import farkle.run_bonferroni_head2head as rb
-from farkle.simulation import simulate_many_games_from_seeds
-from farkle.strategies import ThresholdStrategy
+import farkle.analysis.run_bonferroni_head2head as rb
+from farkle.simulation.simulation import simulate_many_games_from_seeds
+from farkle.simulation.strategies import ThresholdStrategy
 
 
 def test_simulate_many_games_from_seeds(monkeypatch):
@@ -17,7 +17,7 @@ def test_simulate_many_games_from_seeds(monkeypatch):
             "P1_strategy": str(strategies[0]),
         }
 
-    import farkle.simulation as sim
+    import farkle.simulation.simulation as sim
 
     monkeypatch.setattr(sim, "_play_game", fake_play, raising=True)
     seeds1 = [1, 2, 3]

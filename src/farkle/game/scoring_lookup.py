@@ -17,7 +17,7 @@ from typing import Sequence, Tuple
 import numba as nb
 import numpy as np
 
-from farkle.types import Int64Array1D, SixFaceCounts
+from farkle.utils.types import Int64Array1D, SixFaceCounts
 
 # ---------------------------------------------------------------------------
 # 0.  Low-level helpers  (all *nopython*-safe)

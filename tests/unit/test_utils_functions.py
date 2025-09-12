@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from farkle.utils import bh_correct, bonferroni_pairs, build_tiers
+from farkle.utils.utils import bh_correct, bonferroni_pairs, build_tiers
 
 
 def test_build_tiers_empty():
