@@ -84,7 +84,7 @@ def _init_worker_small(  # pragma: no cover
 
     import importlib as _imp  # local import to avoid leak in parent
 
-    _rt = _imp.import_module("farkle.run_tournament")
+    _rt = _imp.import_module("farkle.simulation.run_tournament")
     _rt.TournamentConfig.games_per_shuffle = property(lambda self: 2)  # type: ignore  # noqa: ARG005
     _rt._STATE = _rt.WorkerState(list(strategies), cfg, None)  # type: ignore
 
@@ -137,7 +137,7 @@ def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     # alias is already the tiny version at import -time.
     monkeypatch.setattr(sim, "generate_strategy_grid", lambda: (_tiny_strategy_grid(), None))
 
-    rt = importlib.import_module("farkle.run_tournament")
+    rt = importlib.import_module("farkle.simulation.run_tournament")
     cfg = _apply_fast_patches(monkeypatch, rt)
 
     ckpt = tmp_path / "ppool.pkl"
@@ -170,14 +170,16 @@ def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 def test_run_tournament_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(sim, "generate_strategy_grid", lambda: (_tiny_strategy_grid(), None))
 
-    rt = importlib.reload(importlib.import_module("farkle.run_tournament"))
+    rt = importlib.reload(
+        importlib.import_module("farkle.simulation.run_tournament")
+    )
     _apply_fast_patches(monkeypatch, rt)
 
     ckpt = tmp_path / "cli.pkl"
 
     argv_backup = sys.argv.copy()
     argv = [
-        "farkle.run_tournament",
+        "farkle.simulation.run_tournament",
         "--seed",
         "42",
         "--checkpoint",
