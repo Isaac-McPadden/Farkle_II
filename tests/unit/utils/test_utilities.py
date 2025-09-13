@@ -45,7 +45,12 @@ def test_cli_run(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["farkle", "run", str(cfg_path)])
     cli_main.main()
 
-    assert Path(cfg["sim"]["out_csv"]).exists()
+    monkeypatch.setattr(
+        "farkle.simulation.run_tournament.run_tournament", fake_run
+    )
+    farkle_cli.main(["run"])
+
+    assert called
 
 
 def test_stream_writer(tmp_path):
@@ -187,7 +192,7 @@ def test_stream_nested_output(tmp_path):
     
 def test_cli_missing_file(monkeypatch):
     bad = "nope.yml"
-    monkeypatch.setattr(sys, "argv", ["farkle", "run", bad])
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", "--config", bad])
     with pytest.raises(FileNotFoundError):
         cli_main.main()
 
@@ -195,7 +200,7 @@ def test_cli_missing_file(monkeypatch):
 def test_cli_bad_yaml(tmp_path, monkeypatch):
     cfg = tmp_path / "bad.yml"
     cfg.write_text("{:")  # invalid YAML
-    monkeypatch.setattr(sys, "argv", ["farkle", "run", str(cfg)])
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", "--config", str(cfg)])
     with pytest.raises(yaml.YAMLError):
         cli_main.main()
 

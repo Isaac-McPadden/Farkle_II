@@ -21,23 +21,23 @@ def _setup_cfg(tmp_path: Path) -> tuple[PipelineCfg, Path]:
 
 def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, curated = _setup_cfg(tmp_path)
-    out = cfg.results_dir / "hgb_importance.json"
+    out = cfg.analysis_dir / "hgb_importance.json"
     out.write_text("{}")
     # out newer than curated -> skip
     os.utime(curated, (1000, 1000))
     os.utime(out, (1010, 1010))
 
-    def boom(_args):  # pragma: no cover - should not be called
-        raise AssertionError("_hgb.main should not be called when up-to-date")
+    def boom(**kwargs):  # pragma: no cover - should not be called
+        raise AssertionError("_hgb.run_hgb should not be called when up-to-date")
 
-    monkeypatch.setattr(hgb_feat._hgb, "main", boom)
+    monkeypatch.setattr(hgb_feat._hgb, "run_hgb", boom)
     hgb_feat.run(cfg)
     assert not (cfg.analysis_dir / "ratings_pooled.pkl").exists()
 
 
 def test_hgb_feat_runs_when_outdated_and_copies_ratings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, curated = _setup_cfg(tmp_path)
-    out = cfg.results_dir / "hgb_importance.json"
+    out = cfg.analysis_dir / "hgb_importance.json"
     out.write_text("{}")
     # out older than curated -> run
     os.utime(out, (1000, 1000))
@@ -49,15 +49,16 @@ def test_hgb_feat_runs_when_outdated_and_copies_ratings(tmp_path: Path, monkeypa
 
     called = {}
 
-    def fake_main(argv):
+    def fake_run(*, root: Path, output_path: Path, seed: int = 0):
         ratings_src = cfg.results_dir / "ratings_pooled.pkl"
         ratings_dst = cfg.analysis_dir / "ratings_pooled.pkl"
         assert ratings_dst.exists()
         with open(ratings_src, "rb") as fh_src, open(ratings_dst, "rb") as fh_dst:
             assert fh_src.read() == fh_dst.read()
-        assert argv == ["--root", str(cfg.analysis_dir), "--output", str(out)]
-        called["args"] = argv
+        assert root == cfg.analysis_dir
+        assert output_path == out
+        called["root"] = root
 
-    monkeypatch.setattr(hgb_feat._hgb, "main", fake_main)
+    monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
     hgb_feat.run(cfg)
     assert called
