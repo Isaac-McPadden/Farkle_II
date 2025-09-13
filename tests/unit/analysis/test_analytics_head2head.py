@@ -32,11 +32,11 @@ def test_run_skips_if_up_to_date(tmp_path, monkeypatch, caplog):
 
     called = False
 
-    def fake_main(argv):  # noqa: ARG001
+    def fake_main(*, root: Path, n_jobs: int) -> None:  # noqa: ARG001
         nonlocal called
         called = True
 
-    monkeypatch.setattr(head2head._h2h, "main", fake_main)
+    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", fake_main)
 
     with caplog.at_level(logging.INFO):
         head2head.run(cfg)
@@ -62,12 +62,12 @@ def test_run_handles_exception(tmp_path, monkeypatch, caplog):
 
     called = False
 
-    def boom(argv):  # noqa: ARG001
+    def boom(*, root: Path, n_jobs: int) -> None:  # noqa: ARG001
         nonlocal called
         called = True
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(head2head._h2h, "main", boom)
+    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", boom)
 
     with caplog.at_level(logging.INFO):
         head2head.run(cfg)

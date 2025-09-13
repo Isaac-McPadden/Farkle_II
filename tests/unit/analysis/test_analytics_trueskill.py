@@ -11,7 +11,7 @@ def _setup(tmp_path: Path) -> tuple[PipelineCfg, Path, Path]:
     legacy = cfg.analysis_dir / "data" / cfg.curated_rows_name
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("data")
-    tiers = cfg.results_dir / "tiers.json"
+    tiers = cfg.analysis_dir / "tiers.json"
     tiers.write_text("{}")
     return cfg, legacy, tiers
 
@@ -22,10 +22,10 @@ def test_run_skips_when_tiers_up_to_date(tmp_path, monkeypatch):
     os.utime(curated, (now, now))
     os.utime(tiers, (now + 10, now + 10))
 
-    def boom(*args, **kwargs):  # noqa: ARG001
-        raise AssertionError("should not call run_trueskill.main")
+    def boom(**kwargs):  # noqa: ARG001
+        raise AssertionError("should not call run_trueskill.run_trueskill")
 
-    monkeypatch.setattr(trueskill.run, "main", boom)
+    monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill", boom)
 
     trueskill.run(cfg)
 
@@ -36,14 +36,14 @@ def test_run_invokes_legacy_when_stale(tmp_path, monkeypatch):
     os.utime(tiers, (now, now))
     os.utime(curated, (now + 10, now + 10))
 
-    captured = {}
+    called = {}
 
-    def fake_main(args):  # noqa: ANN001
-        captured["args"] = args
+    def fake_run(root: Path, dataroot: Path | None = None):  # noqa: ANN001
+        called["root"] = root
+        called["dataroot"] = dataroot
 
-    monkeypatch.setattr(trueskill.run, "main", fake_main)
+    monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill", fake_run)
 
     trueskill.run(cfg)
 
-    expected = ["--dataroot", str(cfg.results_dir), "--root", str(cfg.results_dir)]
-    assert captured["args"] == expected
+    assert called["root"] == cfg.analysis_dir
