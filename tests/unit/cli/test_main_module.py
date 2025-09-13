@@ -8,7 +8,7 @@ def test_main_module_calls_cli(monkeypatch):
         nonlocal called
         called = True
 
-    monkeypatch.setattr("farkle.cli.farkle_cli.main", fake_main)
+    monkeypatch.setattr("farkle.cli.main.main", fake_main)
     runpy.run_module("farkle", run_name="__main__")
 
     assert called
