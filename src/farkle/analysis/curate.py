@@ -16,6 +16,7 @@ from farkle.analysis.analysis_config import (
     expected_schema_for,
     n_players_from_schema,
 )
+from farkle.app_config import AppConfig
 
 log = logging.getLogger(__name__)
 
@@ -89,7 +90,12 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-def run(cfg: PipelineCfg) -> None:
+def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
+    return cfg.analysis if isinstance(cfg, AppConfig) else cfg
+
+
+def run(cfg: AppConfig | PipelineCfg) -> None:
+    cfg = _pipeline_cfg(cfg)
     """Curate raw parquet files produced by :func:`farkle.ingest.run`."""
     log = logging.getLogger("curate")
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
