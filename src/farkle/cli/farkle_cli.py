@@ -14,7 +14,7 @@ from typing import Any, Mapping
 import yaml
 
 from farkle.simulation.simulation import generate_strategy_grid
-from farkle.utils.farkle_io import simulate_many_games_stream
+from farkle.utils.parallel import simulate_many_games_stream
 
 
 def load_config(path: str) -> Mapping[str, Any]:

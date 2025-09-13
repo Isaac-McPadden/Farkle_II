@@ -1,6 +1,6 @@
 import logging
 
-from farkle.utils.logging_utils import setup_info_logging, setup_warning_logging
+from farkle.utils.logging import setup_info_logging, setup_warning_logging
 
 
 def test_setup_info_logging_creates_file_and_sets_level(tmp_path):

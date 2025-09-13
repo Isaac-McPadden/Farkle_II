@@ -1,4 +1,5 @@
-# src/farkle/logging_utils.py
+"""Logging helpers."""
+
 from __future__ import annotations
 
 import logging
@@ -8,7 +9,8 @@ from typing import List
 
 
 def _setup_logging(level: str, log_file: Path | None = None) -> None:
-    """Internal: configure the root logger exactly once."""
+    """Configure the root logger exactly once."""
+
     handlers: List[logging.Handler] = [logging.StreamHandler(sys.stderr)]
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -22,13 +24,18 @@ def _setup_logging(level: str, log_file: Path | None = None) -> None:
         force=True,
     )
 
-# ------------------------------------------------------------------------
-# Public convenience wrappers
-# ------------------------------------------------------------------------
+
 def setup_info_logging(log_file: Path | None = None) -> None:
     """INFO-level console/file logging."""
+
     _setup_logging("INFO", log_file)
+
 
 def setup_warning_logging(log_file: Path | None = None) -> None:
     """WARNING-level console/file logging (quieter default)."""
+
     _setup_logging("WARNING", log_file)
+
+
+__all__ = ["setup_info_logging", "setup_warning_logging"]
+

@@ -7,11 +7,11 @@ from pathlib import Path
 import pytest
 import yaml
 
-import farkle.utils.farkle_io as farkle_io
+import farkle.utils.parallel as parallel
 from farkle.cli import farkle_cli  # imports the module, not the exe
 from farkle.simulation.stats import games_for_power
 from farkle.simulation.strategies import ThresholdStrategy
-from farkle.utils.farkle_io import simulate_many_games_stream
+from farkle.utils.parallel import simulate_many_games_stream
 
 
 def test_games_for_power_monotonic():
@@ -125,10 +125,10 @@ def test_stream_buffer_queue_limits(tmp_path, monkeypatch):
             if buf:
                 w.writerows(buf)
 
-    monkeypatch.setattr(farkle_io, "_writer_worker", writer_worker)
+    monkeypatch.setattr(parallel, "_writer_worker", writer_worker)
 
     monkeypatch.setattr(
-        farkle_io.mp,
+        parallel.mp,
         "Queue",
         lambda *a, **k: queue.Queue(maxsize=queue_size),  # noqa: ARG005
     )
@@ -143,7 +143,7 @@ def test_stream_buffer_queue_limits(tmp_path, monkeypatch):
         def join(self):
             self._thread.join()
 
-    monkeypatch.setattr(farkle_io.mp, "Process", ThreadProcess)
+    monkeypatch.setattr(parallel.mp, "Process", ThreadProcess)
 
     class DummyPool:
         def __init__(self, *a, **k):
@@ -159,7 +159,7 @@ def test_stream_buffer_queue_limits(tmp_path, monkeypatch):
             for item in iterable:
                 yield func(item)
 
-    monkeypatch.setattr(farkle_io.mp, "Pool", DummyPool)
+    monkeypatch.setattr(parallel.mp, "Pool", DummyPool)
 
     out_csv = tmp_path / "limits.csv"
     strategies = [ThresholdStrategy(score_threshold=0, dice_threshold=6)]

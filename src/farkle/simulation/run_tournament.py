@@ -30,7 +30,7 @@ import pyarrow.parquet as pq
 
 from farkle.simulation.simulation import _play_game, generate_strategy_grid
 from farkle.simulation.strategies import ThresholdStrategy
-from farkle.utils.logging_utils import setup_info_logging, setup_warning_logging
+from farkle.utils.logging import setup_info_logging, setup_warning_logging
 
 log = logging.getLogger(__name__)
 

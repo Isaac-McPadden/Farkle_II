@@ -9,7 +9,8 @@ simulation framework:
 * ``bonferroni_pairs`` creates deterministic head‑to‑head schedules with RNG
   seeds.
 
-``MAX_UINT32`` is provided for generating 32‑bit seeds.
+The constant :data:`~farkle.utils.random.MAX_UINT32` is re-exported for
+convenience.
 """
 
 from __future__ import annotations
@@ -20,8 +21,7 @@ from typing import Dict, List
 import numpy as np
 import pandas as pd
 
-# Max unsigned 32-bit integer for random seed generation
-MAX_UINT32 = 2**32 - 1
+from .random import MAX_UINT32
 
 
 def build_tiers(
