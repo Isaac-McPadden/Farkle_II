@@ -47,6 +47,22 @@ DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 _DEFAULT_WORKERS = 1
 
 
+def run_trueskill(*, root: Path, dataroot: Path | None = None) -> None:
+    """Convenience wrapper calling :func:`main` with paths.
+
+    Parameters
+    ----------
+    root:
+        Directory where analysis artefacts are written.
+    dataroot:
+        Directory containing tournament results. Defaults to ``root`` when
+        omitted.
+    """
+
+    dr = dataroot or root
+    main(["--dataroot", str(dr), "--root", str(root)])
+
+
 def _find_aggregate_parquet(base: Path | None) -> Path | None:
     """Return path to aggregated ``all_ingested_rows.parquet`` if it exists.
 

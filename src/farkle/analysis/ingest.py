@@ -18,6 +18,7 @@ from farkle.analysis.analysis_config import (
     expected_schema_for,
     load_config,
 )
+from farkle.app_config import AppConfig
 
 log = logging.getLogger(__name__)
 
@@ -206,7 +207,12 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
             log.info("Ingest finished — %d rows written to %s", total, raw_out)
 
 
-def run(cfg: PipelineCfg) -> None:
+def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
+    return cfg.analysis if isinstance(cfg, AppConfig) else cfg
+
+
+def run(cfg: AppConfig | PipelineCfg) -> None:
+    cfg = _pipeline_cfg(cfg)
     log.info("Ingest started: root=%s", cfg.results_dir)
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 

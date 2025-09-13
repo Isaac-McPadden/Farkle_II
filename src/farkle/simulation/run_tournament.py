@@ -10,7 +10,6 @@ row.  A parquet dump of all rows can also be requested via --row-dir.
 
 from __future__ import annotations
 
-import argparse
 import contextlib
 import logging
 import multiprocessing as mp
@@ -30,7 +29,8 @@ import pyarrow.parquet as pq
 
 from farkle.simulation.simulation import _play_game, generate_strategy_grid
 from farkle.simulation.strategies import ThresholdStrategy
-from farkle.utils.logging import setup_info_logging, setup_warning_logging
+
+# from farkle.utils.logging import setup_info_logging, setup_warning_logging
 
 log = logging.getLogger(__name__)
 
@@ -566,67 +566,67 @@ def run_tournament(
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
-    mp.set_start_method("spawn", force=True)
+# def main() -> None:
+#     mp.set_start_method("spawn", force=True)
 
-    p = argparse.ArgumentParser(description="Run a Monte-Carlo Farkle tournament")
-    p.add_argument("--seed", type=int, default=0, help="global RNG seed")
-    p.add_argument("--checkpoint", type=Path, default="checkpoint.pkl", help="pickle output")
-    p.add_argument("--jobs", type=int, default=None, help="worker processes")
-    p.add_argument("--ckpt-sec", type=int, default=CKPT_EVERY_SEC, help="seconds between saves")
-    p.add_argument(
-        "--metrics",
-        action="store_true",
-        help="collect per-strategy means/variances",
-    )
-    p.add_argument(
-        "--num-shuffles",
-        type=int,
-        default=NUM_SHUFFLES,
-        help="number of shuffles to simulate",
-    )
-    p.add_argument(
-        "--row-dir",
-        type=Path,
-        metavar="DIR",
-        help="write full per-game rows to DIR as parquet",
-    )
-    p.add_argument(
-        "--metric-chunk-dir",
-        type=Path,
-        metavar="DIR",
-        help="write per-chunk metric aggregates to DIR",
-    )
-    p.add_argument(
-        "--log_level",
-        choices=["DEBUG", "INFO", "WARNING"],
-        default="INFO",
-        help="logging verbosity",
-    )
-    args = p.parse_args()
+#     p = argparse.ArgumentParser(description="Run a Monte-Carlo Farkle tournament")
+#     p.add_argument("--seed", type=int, default=0, help="global RNG seed")
+#     p.add_argument("--checkpoint", type=Path, default="checkpoint.pkl", help="pickle output")
+#     p.add_argument("--jobs", type=int, default=None, help="worker processes")
+#     p.add_argument("--ckpt-sec", type=int, default=CKPT_EVERY_SEC, help="seconds between saves")
+#     p.add_argument(
+#         "--metrics",
+#         action="store_true",
+#         help="collect per-strategy means/variances",
+#     )
+#     p.add_argument(
+#         "--num-shuffles",
+#         type=int,
+#         default=NUM_SHUFFLES,
+#         help="number of shuffles to simulate",
+#     )
+#     p.add_argument(
+#         "--row-dir",
+#         type=Path,
+#         metavar="DIR",
+#         help="write full per-game rows to DIR as parquet",
+#     )
+#     p.add_argument(
+#         "--metric-chunk-dir",
+#         type=Path,
+#         metavar="DIR",
+#         help="write per-chunk metric aggregates to DIR",
+#     )
+#     p.add_argument(
+#         "--log_level",
+#         choices=["DEBUG", "INFO", "WARNING"],
+#         default="INFO",
+#         help="logging verbosity",
+#     )
+#     args = p.parse_args()
 
-    cfg = TournamentConfig(
-        num_shuffles=NUM_SHUFFLES,
-        desired_sec_per_chunk=DESIRED_SEC_PER_CHUNK,
-        ckpt_every_sec=args.ckpt_sec,
-    )
+#     cfg = TournamentConfig(
+#         num_shuffles=NUM_SHUFFLES,
+#         desired_sec_per_chunk=DESIRED_SEC_PER_CHUNK,
+#         ckpt_every_sec=args.ckpt_sec,
+#     )
 
-    if args.log_level == "INFO":
-        setup_info_logging()
-    else:
-        setup_warning_logging()
+#     if args.log_level == "INFO":
+#         setup_info_logging()
+#     else:
+#         setup_warning_logging()
 
-    run_tournament(
-        config=cfg,
-        global_seed=args.seed,
-        checkpoint_path=args.checkpoint,
-        n_jobs=args.jobs,
-        collect_metrics=args.metrics,
-        row_output_directory=args.row_dir,
-        metric_chunk_directory=args.metric_chunk_dir,
-        num_shuffles=args.num_shuffles,
-    )
+#     run_tournament(
+#         config=cfg,
+#         global_seed=args.seed,
+#         checkpoint_path=args.checkpoint,
+#         n_jobs=args.jobs,
+#         collect_metrics=args.metrics,
+#         row_output_directory=args.row_dir,
+#         metric_chunk_directory=args.metric_chunk_dir,
+#         num_shuffles=args.num_shuffles,
+#     )
 
 
-if __name__ == "__main__":  # pragma: no cover
-    main()
+# if __name__ == "__main__":  # pragma: no cover
+#     main()

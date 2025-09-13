@@ -8,6 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
+from farkle.app_config import AppConfig
 from farkle.analysis.checks import check_post_aggregate
 
 log = logging.getLogger("aggregate")
@@ -21,7 +22,12 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
             cols.append(pa.nulls(len(tbl), f.type))
     return pa.table(cols, names=target.names)
 
-def run(cfg: PipelineCfg) -> None:
+def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
+    return cfg.analysis if isinstance(cfg, AppConfig) else cfg
+
+
+def run(cfg: AppConfig | PipelineCfg) -> None:
+    cfg = _pipeline_cfg(cfg)
     """Concatenate all per-N parquets into a 12-seat superset with null padding.
 
     Streaming implementation: copy row-groups into a single writer to bound RAM.

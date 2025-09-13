@@ -29,4 +29,3 @@ def __getattr__(name: str):  # pragma: no cover - simple dynamic loader
 
         return fn
     raise AttributeError(name)
-
