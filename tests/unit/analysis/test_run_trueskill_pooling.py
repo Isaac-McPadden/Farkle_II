@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from farkle import run_trueskill
+from farkle.analysis import run_trueskill
 
 
 def test_pooled_ratings_are_weighted_mean(tmp_path):
@@ -47,7 +47,7 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
     (res_root / "manifest.yaml").write_text(yaml.safe_dump({"seed": 0}))
 
     # copy source tree so imports work under the tmp cwd
-    root = Path(__file__).resolve().parents[2]
+    root = Path(__file__).resolve().parents[3]
     shutil.copytree(root / "src", tmp_path / "src", dirs_exist_ok=True)
 
     cwd = os.getcwd()

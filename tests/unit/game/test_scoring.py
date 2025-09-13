@@ -50,7 +50,7 @@ def counts_to_list(counts: Tuple[int, int, int, int, int, int]) -> List[int]:
 # ────────────────────────────────────────────────────────────────────────────
 
 def _make_csv_loader(filename: str):
-    repo_root = Path(__file__).resolve().parents[1]  # one above 'tests/'
+    repo_root = Path(__file__).resolve().parents[2]  # one above 'tests/'
     data_path = repo_root / "data" / filename
     if not data_path.exists():
         raise FileNotFoundError(f"Missing test-data file {data_path!s}")

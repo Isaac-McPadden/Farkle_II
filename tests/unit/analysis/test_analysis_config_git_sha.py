@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from farkle.analysis_config import PipelineCfg
+from farkle.analysis.analysis_config import PipelineCfg
 
 
 def test_git_sha_lazily_computed(monkeypatch):

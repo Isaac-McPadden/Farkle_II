@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from farkle.analysis_config import PipelineCfg
+from farkle.analysis.analysis_config import PipelineCfg
 
 pipeline = pytest.importorskip("pipeline")
 
@@ -100,7 +100,7 @@ def test_pipeline_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyP
         def _boom(cfg):  # simulate analytics dependency failure  # noqa: ARG001
             raise RuntimeError("missing dependency")
 
-        monkeypatch.setattr("farkle.analytics.run_all", _boom)
+        monkeypatch.setattr("farkle.analysis.run_all", _boom)
         with pytest.raises(RuntimeError):
             pipeline.main(["all", "--root", str(tmp_path)])
     finally:
@@ -110,11 +110,11 @@ def test_pipeline_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyP
 @pytest.mark.parametrize(
     "command,target",
     [
-        ("ingest", "farkle.ingest.run"),
-        ("curate", "farkle.curate.run"),
-        ("aggregate", "farkle.aggregate.run"),
-        ("metrics", "farkle.metrics.run"),
-        ("analytics", "farkle.analytics.run_all"),
+        ("ingest", "farkle.analysis.ingest.run"),
+        ("curate", "farkle.analysis.curate.run"),
+        ("aggregate", "farkle.analysis.aggregate.run"),
+        ("metrics", "farkle.analysis.metrics.run"),
+        ("analytics", "farkle.analysis.run_all"),
     ],
 )
 def test_individual_step_failure_returns_one(
@@ -163,9 +163,9 @@ def test_pipeline_all_step_failure_prints_and_raises(
     def _boom(cfg: PipelineCfg) -> None:  # noqa: ARG001
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("farkle.ingest.run", _ok)
-    monkeypatch.setattr("farkle.curate.run", _ok)
-    monkeypatch.setattr("farkle.aggregate.run", _boom)
+    monkeypatch.setattr("farkle.analysis.ingest.run", _ok)
+    monkeypatch.setattr("farkle.analysis.curate.run", _ok)
+    monkeypatch.setattr("farkle.analysis.aggregate.run", _boom)
 
     with pytest.raises(RuntimeError):
         pipeline.main(["all", "--root", str(tmp_path)])

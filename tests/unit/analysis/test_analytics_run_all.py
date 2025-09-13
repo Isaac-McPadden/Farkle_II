@@ -38,13 +38,13 @@ def test_run_all_invokes_expected_modules(ts, h2h, hgb, monkeypatch: pytest.Monk
     # Stub out heavy dependency modules before importing run_all
     stub = types.ModuleType("run_hgb")
     stub.main = lambda *args, **kwargs: None  # noqa: ARG005  # type:ignore
-    monkeypatch.setitem(sys.modules, "farkle.run_hgb", stub)
+    monkeypatch.setitem(sys.modules, "farkle.analysis.run_hgb", stub)
 
     from farkle.analysis import run_all  # import after stubbing dependencies
 
-    ts_mod = __import__("farkle.analytics.trueskill", fromlist=["run"])
-    h2h_mod = __import__("farkle.analytics.head2head", fromlist=["run"])
-    hgb_mod = __import__("farkle.analytics.hgb_feat", fromlist=["run"])
+    ts_mod = __import__("farkle.analysis.trueskill", fromlist=["run"])
+    h2h_mod = __import__("farkle.analysis.head2head", fromlist=["run"])
+    hgb_mod = __import__("farkle.analysis.hgb_feat", fromlist=["run"])
     monkeypatch.setattr(ts_mod, "run", make_dummy("trueskill"))
     monkeypatch.setattr(h2h_mod, "run", make_dummy("head2head"))
     monkeypatch.setattr(hgb_mod, "run", make_dummy("hgb"))

@@ -26,7 +26,7 @@ sys.modules.setdefault(
     "numba",
     types.SimpleNamespace(jit=lambda *a, **k: (lambda f: f), njit=lambda *a, **k: (lambda f: f)),  # type: ignore  # noqa: ARG005
 )
-# Provide a minimal pyarrow stub so farkle.run_tournament imports without the real dependency.
+# Provide a minimal pyarrow stub so farkle.simulation.run_tournament imports without the real dependency.
 pa_stub = types.ModuleType("pyarrow")
 pq_stub = types.ModuleType("pyarrow.parquet")
 pa_stub.Table = types.SimpleNamespace(from_pylist=lambda rows: None)  # type: ignore  # noqa: ARG005
@@ -173,10 +173,10 @@ def test_row_writer_flushes_and_shuts_down(monkeypatch, tmp_path: Path):
     # ------------------------------------------------------------------
     # Import (or reload) target module *after* stubbing pyarrow
     # ------------------------------------------------------------------
-    if "farkle.run_tournament" in sys.modules:
-        rt = importlib.reload(sys.modules["farkle.run_tournament"])
+    if "farkle.simulation.run_tournament" in sys.modules:
+        rt = importlib.reload(sys.modules["farkle.simulation.run_tournament"])
     else:
-        rt = importlib.import_module("farkle.run_tournament")
+        rt = importlib.import_module("farkle.simulation.run_tournament")
 
     # Tiny buffer so the test stays quick
     monkeypatch.setattr(rt, "ROW_BUFFER", 2, raising=True)
