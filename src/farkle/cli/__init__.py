@@ -1,3 +1,3 @@
-"""CLI subpackage for the :mod:`farkle` project."""
+"""CLI package for Farkle."""
 
-
+__all__: list[str] = []

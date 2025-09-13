@@ -12,6 +12,7 @@ from tqdm import tqdm
 from farkle import analysis
 from farkle.analysis import aggregate, curate, ingest, metrics
 from farkle.analysis.analysis_config import load_config
+from farkle.app_config import AppConfig
 
 if TYPE_CHECKING:  # for type checkers without creating runtime deps
     from farkle.analysis.analysis_config import PipelineCfg
@@ -31,14 +32,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     cfg, cfg_sha = load_config(Path(args.config))
-    pipeline_cfg = cfg.to_pipeline_cfg()
+    app_cfg = AppConfig(analysis=cfg.to_pipeline_cfg())
 
-    analysis_dir = pipeline_cfg.analysis_dir
+    analysis_dir = app_cfg.analysis.analysis_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
     resolved = analysis_dir / "config.resolved.yaml"
     resolved.write_text(yaml.safe_dump(cfg.model_dump(), sort_keys=True))
 
-    manifest_path = analysis_dir / pipeline_cfg.manifest_name
+    manifest_path = analysis_dir / app_cfg.analysis.manifest_name
     manifest = {}
     if manifest_path.exists():
         try:
@@ -51,18 +52,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 
     if args.command == "ingest":
-        ingest.run(pipeline_cfg)
+        ingest.run(app_cfg)
     elif args.command == "curate":
-        curate.run(pipeline_cfg)
+        curate.run(app_cfg)
     elif args.command == "aggregate":
-        aggregate.run(pipeline_cfg)
+        aggregate.run(app_cfg)
     elif args.command == "metrics":
-        metrics.run(pipeline_cfg)
+        metrics.run(app_cfg)
     elif args.command == "analytics":
-        analysis.run_all(pipeline_cfg)
+        analysis.run_all(app_cfg)
     elif args.command == "all":
-        # Each step consumes a PipelineCfg; be precise for type-checkers
-        steps: list[tuple[str, Callable[["PipelineCfg"], None]]] = [
+        steps: list[tuple[str, Callable[[AppConfig], None]]] = [
             ("ingest", ingest.run),
             ("curate", curate.run),
             ("aggregate", aggregate.run),
@@ -70,7 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("analytics", analysis.run_all),
         ]
         for _name, fn in tqdm(steps, desc="pipeline"):
-            fn(pipeline_cfg)
+            fn(app_cfg)
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")
     return 0

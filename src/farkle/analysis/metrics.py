@@ -14,6 +14,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from farkle.analysis.analysis_config import PipelineCfg
+from farkle.app_config import AppConfig
 from farkle.analysis.checks import check_pre_metrics
 
 log = logging.getLogger(__name__)
@@ -66,7 +67,12 @@ def _update_batch_counters(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-def run(cfg: PipelineCfg) -> None:
+def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
+    return cfg.analysis if isinstance(cfg, AppConfig) else cfg
+
+
+def run(cfg: AppConfig | PipelineCfg) -> None:
+    cfg = _pipeline_cfg(cfg)
     """Compute win statistics and seat advantage tables.
 
     Outputs
