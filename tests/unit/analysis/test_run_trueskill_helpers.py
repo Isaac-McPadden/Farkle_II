@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 import trueskill
 
-import farkle.run_trueskill as rt
+import farkle.analysis.run_trueskill as rt
 
 
 def test_read_manifest_seed(tmp_path):

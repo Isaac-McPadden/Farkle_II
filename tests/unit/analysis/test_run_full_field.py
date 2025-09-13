@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 from pytest import MonkeyPatch
 
-import farkle.run_full_field as rf
+import farkle.analysis.run_full_field as rf
 
 
 def test_concat_row_shards(tmp_path: rf.Path):
@@ -30,7 +30,7 @@ def test_main_invokes_run_tournament(monkeypatch: MonkeyPatch, tmp_path: rf.Path
     def fake_run_tournament(**kwargs):
         calls.append((kwargs["row_output_directory"], kwargs.get("num_shuffles")))
 
-    monkeypatch.setattr("farkle.run_tournament.run_tournament", fake_run_tournament)
+    monkeypatch.setattr("farkle.simulation.run_tournament.run_tournament", fake_run_tournament)
     monkeypatch.setattr(rf.mp, "set_start_method", lambda *a, **k: None)  # noqa: ARG005
     monkeypatch.chdir(tmp_path)
 
@@ -54,7 +54,7 @@ def test_main_skips_complete_and_resets_partial(
         assert not row_dir.exists()
         calls.append(kwargs["n_players"])
 
-    monkeypatch.setattr("farkle.run_tournament.run_tournament", fake_run_tournament)
+    monkeypatch.setattr("farkle.simulation.run_tournament.run_tournament", fake_run_tournament)
     monkeypatch.setattr(rf.mp, "set_start_method", lambda *a, **k: None)  # noqa: ARG005
     monkeypatch.chdir(tmp_path)
 

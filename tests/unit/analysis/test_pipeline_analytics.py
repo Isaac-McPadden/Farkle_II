@@ -27,12 +27,12 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
     # stub tools to create outputs
     def fake_ts(args):
         (analysis / "tiers.json").write_text("{}")
-    monkeypatch.setattr("farkle.run_trueskill.main", fake_ts)
+    monkeypatch.setattr("farkle.analysis.run_trueskill.main", fake_ts)
 
     def fake_h2h(*, root, n_jobs=1):  # noqa: ARG001
         (analysis / "bonferroni_pairwise.csv").write_text("a,b")
     monkeypatch.setattr(
-        "farkle.run_bonferroni_head2head.run_bonferroni_head2head",
+        "farkle.analysis.run_bonferroni_head2head.run_bonferroni_head2head",
         fake_h2h,
     )
 
@@ -40,7 +40,7 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
         output_path.write_text("{}")
     monkeypatch.setitem(
         sys.modules,
-        "farkle.run_hgb",
+        "farkle.analysis.run_hgb",
         types.SimpleNamespace(run_hgb=fake_hgb),
     )
 

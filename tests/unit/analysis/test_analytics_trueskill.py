@@ -2,7 +2,7 @@ import os
 import time
 from pathlib import Path
 
-from farkle.analysis_config import PipelineCfg
+from farkle.analysis.analysis_config import PipelineCfg
 from farkle.analysis import trueskill
 
 

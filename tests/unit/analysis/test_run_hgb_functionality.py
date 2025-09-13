@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from farkle import run_hgb, run_trueskill
+from farkle.analysis import run_hgb, run_trueskill
 
 
 def _setup_data(tmp_path: Path) -> Path:

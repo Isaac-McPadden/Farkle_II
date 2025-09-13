@@ -4,13 +4,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis_config import PipelineCfg, expected_schema_for
-from farkle.curate import (
+from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
+from farkle.analysis.curate import (
     _already_curated,
     _schema_hash,
     _write_manifest,
 )
-from farkle.curate import (
+from farkle.analysis.curate import (
     run as curate_run,
 )
 

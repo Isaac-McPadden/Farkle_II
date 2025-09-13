@@ -4,8 +4,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis_config import PipelineCfg
-from farkle.ingest import _fix_winner, _iter_shards, run
+from farkle.analysis.analysis_config import PipelineCfg
+from farkle.analysis.ingest import _fix_winner, _iter_shards, run
 
 # -------------------- _iter_shards -------------------------------------
 
@@ -111,7 +111,7 @@ def test_run_schema_mismatch_logs_and_closes(tmp_path, caplog, monkeypatch):
             df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"], "bad": [1]})
             yield df, block / "bad.parquet"
 
-    monkeypatch.setattr("farkle.ingest._iter_shards", fake_iter_shards)
+    monkeypatch.setattr("farkle.analysis.ingest._iter_shards", fake_iter_shards)
 
     caplog.set_level(logging.ERROR)
     with pytest.raises(RuntimeError):

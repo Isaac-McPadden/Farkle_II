@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from farkle.analysis_config import PipelineCfg
+from farkle.analysis.analysis_config import PipelineCfg
 from farkle.analysis import hgb_feat
 
 
