@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 import farkle.utils.farkle_io as farkle_io
-import farkle.cli.main as farkle_cli  # imports the module, not the exe
+import farkle.cli.main as cli_main  # imports the module, not the exe
 from farkle.simulation.stats import games_for_power
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.farkle_io import simulate_many_games_stream
@@ -21,13 +21,29 @@ def test_games_for_power_monotonic():
     assert n_large_delta < n_small_delta
 
 
-def test_cli_run(monkeypatch):
-    called = False
+def test_cli_run(tmp_path, monkeypatch):
+    cfg = {
+        "strategy_grid": {
+            "score_thresholds": [300],
+            "dice_thresholds": [2],
+            "smart_five_opts": [False],
+            "smart_one_opts": [False],
+            "consider_score_opts": [True],
+            "consider_dice_opts": [True],
+            "auto_hot_dice_opts": [False],
+        },
+        "sim": {
+            "n_games": 2,
+            "out_csv": str(tmp_path / "out.csv"),
+            "seed": 42,
+            "n_jobs": 1,
+        },
+    }
+    cfg_path = tmp_path / "cfg.yml"
+    cfg_path.write_text(yaml.safe_dump(cfg))
 
-    def fake_run(**cfg):
-        nonlocal called
-        called = True
-        assert cfg == {}
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", str(cfg_path)])
+    cli_main.main()
 
     monkeypatch.setattr(
         "farkle.simulation.run_tournament.run_tournament", fake_run
@@ -178,7 +194,7 @@ def test_cli_missing_file(monkeypatch):
     bad = "nope.yml"
     monkeypatch.setattr(sys, "argv", ["farkle", "run", "--config", bad])
     with pytest.raises(FileNotFoundError):
-        farkle_cli.main()
+        cli_main.main()
 
 
 def test_cli_bad_yaml(tmp_path, monkeypatch):
@@ -186,35 +202,33 @@ def test_cli_bad_yaml(tmp_path, monkeypatch):
     cfg.write_text("{:")  # invalid YAML
     monkeypatch.setattr(sys, "argv", ["farkle", "run", "--config", str(cfg)])
     with pytest.raises(yaml.YAMLError):
-        farkle_cli.main()
+        cli_main.main()
 
 
 def test_cli_missing_keys(tmp_path, monkeypatch):
     cfg = tmp_path / "missing.yml"
     cfg.write_text(yaml.safe_dump({}))
-    monkeypatch.setattr(sys, "argv", ["farkle", "run", "--config", str(cfg)])
-    # No required keys; should simply invoke run_tournament
-    called = False
-
-    def fake_run(**_cfg):
-        nonlocal called
-        called = True
-
-    monkeypatch.setattr(
-        "farkle.simulation.run_tournament.run_tournament", fake_run
-    )
-    farkle_cli.main()
-    assert called
+    monkeypatch.setattr(sys, "argv", ["farkle", "run", str(cfg)])
+    with pytest.raises(KeyError):
+        cli_main.main()
 
 
 def test_load_config_missing_file(tmp_path):
     cfg_path = tmp_path / "missing.yml"
     with pytest.raises(FileNotFoundError):
-        farkle_cli.load_config(str(cfg_path))
+        cli_main.load_config(str(cfg_path))
 
 
 def test_load_config_bad_yaml(tmp_path):
     cfg_path = tmp_path / "bad.yml"
     cfg_path.write_text("strategy_grid: [")
     with pytest.raises(yaml.YAMLError):
-        farkle_cli.load_config(str(cfg_path))
+        cli_main.load_config(str(cfg_path))
+
+
+def test_load_config_missing_keys(tmp_path):
+    cfg_path = tmp_path / "cfg.yml"
+    cfg_path.write_text(yaml.safe_dump({"strategy_grid": {}}))
+    with pytest.raises(KeyError) as excinfo:
+        cli_main.load_config(str(cfg_path))
+    assert "sim" in str(excinfo.value)

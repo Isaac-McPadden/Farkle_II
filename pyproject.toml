@@ -42,11 +42,7 @@ viz   = ["plotly>=5.21", "panel>=1.4", "dask[dataframe]>=2024.5"]
 docs  = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
 
 [project.scripts]
-farkle = "farkle.farkle_cli:main"
-time-farkle = "farkle.time_farkle:main"
-run-full-field = "farkle.run_full_field:main"
-watch-game = "farkle.watch_game:watch_game"
-farkle-analyze = "farkle.pipeline:main"
+farkle = "farkle.cli.main:main"
 
 # ── 3. Tell Hatchling where the code lives ───────────
 [tool.hatch.build.targets.wheel]
