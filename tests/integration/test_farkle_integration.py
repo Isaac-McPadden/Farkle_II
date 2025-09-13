@@ -18,7 +18,7 @@ from farkle.game.scoring import (
 )
 from farkle.simulation.simulation import simulate_many_games
 from farkle.simulation.strategies import ThresholdStrategy
-from farkle.utils.farkle_io import simulate_many_games_stream
+from farkle.utils.parallel import simulate_many_games_stream
 
 TMP = Path(__file__).with_suffix("") / "_tmp"
 TMP.mkdir(parents=True, exist_ok=True)

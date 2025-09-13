@@ -7,7 +7,7 @@ Fast Monte Carlo engine and strategy tools for the dice game Farkle.
 - Lookup table based scoring with Smart Five and Smart One helpers (`scoring.py`, `scoring_lookup.py`)
 - Threshold strategy framework for roll or bank decisions (`strategies.py`)
 - Batch simulation utilities for exploring strategy grids (`simulation.py`)
-- Streaming output for large runs (`farkle_io.py`)
+- Streaming output for large runs (``utils.parallel``)
 - Command line interface: `farkle run <cfg.yml>`
 - Statistical helper to size experiments (`stats.py`)
 
