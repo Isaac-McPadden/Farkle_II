@@ -492,14 +492,18 @@ def run_tournament(
                     )
                     win_totals.update(wins)
                     if metric_chunk_directory is not None:
-                        chunk_path = metric_chunk_directory / f"metrics_{done:06d}.pkl"
-                        payload = {
-                            "metric_sums": sums,
-                            "metric_square_sums": sqs,
-                        }
-                        chunk_path.write_bytes(
-                            pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-                        )
+                        chunk_path = metric_chunk_directory / f"metrics_{done:06d}.parquet"
+                        rows = [
+                            {
+                                "metric": label,
+                                "strategy": strat,
+                                "sum": val,
+                                "square_sum": sqs[label][strat],
+                            }
+                            for label in METRIC_LABELS
+                            for strat, val in sums[label].items()
+                        ]
+                        pq.write_table(pa.Table.from_pylist(rows), chunk_path)
                     else:
                         assert metric_sums is not None and metric_sq_sums is not None
                         for label in METRIC_LABELS:
@@ -533,15 +537,13 @@ def run_tournament(
         if metric_chunk_directory is not None and (collect_metrics or collect_rows):
             metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
             metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
-            for path in sorted(metric_chunk_directory.glob("metrics_*.pkl")):
-                data = pickle.loads(path.read_bytes())
-                sums = data["metric_sums"]
-                sqs = data["metric_square_sums"]
-                for label in METRIC_LABELS:
-                    for k, v in sums[label].items():
-                        metric_sums[label][k] += v
-                    for k, v in sqs[label].items():
-                        metric_sq_sums[label][k] += v
+            for path in sorted(metric_chunk_directory.glob("metrics_*.parquet")):
+                table = pq.read_table(path)
+                for row in table.to_pylist():
+                    label = row["metric"]
+                    strat = row["strategy"]
+                    metric_sums[label][strat] += row["sum"]
+                    metric_sq_sums[label][strat] += row["square_sum"]
     
     finally:
         # Ensure row shards are flushed even on tiny runs
