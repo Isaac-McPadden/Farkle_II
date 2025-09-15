@@ -4,7 +4,7 @@ from pathlib import Path
 
 from pytest import MonkeyPatch
 
-import farkle.utils.files as files
+import farkle.utils.csv_files as csv_files
 import farkle.utils.parallel as parallel
 from farkle.simulation.strategies import ThresholdStrategy
 
@@ -16,12 +16,12 @@ def test_writer_worker_appends(tmp_path: Path):
     q1 = mp.Queue()
     q1.put({"a": 1, "b": 2})
     q1.put(None)
-    files._writer_worker(q1, str(out), header)
+    csv_files._writer_worker(q1, str(out), header)
 
     q2 = mp.Queue()
     q2.put({"a": 3, "b": 4})
     q2.put(None)
-    files._writer_worker(q2, str(out), header)
+    csv_files._writer_worker(q2, str(out), header)
 
     with out.open() as fh:
         rows = list(csv.DictReader(fh))
