@@ -27,13 +27,13 @@ def run_streaming_shard(
         compression=compression, row_group_size=row_group_size
     ) as w:
         w.write_batches(batch_iter)
-
+    rows = getattr(w, "rows_written", None)
     # On success, append a manifest line
     append_manifest_line(
         manifest_path,
         {
             "path": os.path.relpath(out_path),
-            "rows": sum(t.num_rows for t in batch_iter) if hasattr(batch_iter, "__len__") else None,
+            "rows": rows,
             **(manifest_extra or {}),
         },
     )

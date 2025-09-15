@@ -7,10 +7,6 @@ from __future__ import annotations
 
 import contextlib
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import TypeVar
-
-T = TypeVar("T")
-U = TypeVar("U")
 
 
 def process_map(fn, items, *, n_jobs=None, initializer=None, initargs=None, window=0):

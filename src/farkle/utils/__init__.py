@@ -11,10 +11,11 @@ The most commonly used helpers are re-exported here for convenience.
 
 from __future__ import annotations
 
-from .logging import setup_info_logging, setup_warning_logging
+from .logging import configure_logging, setup_info_logging, setup_warning_logging
 from .random import MAX_UINT32, make_rng, spawn_seeds
 
 __all__ = [
+    "configure_logging",
     "setup_info_logging",
     "setup_warning_logging",
     "MAX_UINT32",

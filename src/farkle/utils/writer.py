@@ -50,15 +50,20 @@ class ParquetShardWriter:
     _rows_written: int = 0
 
     def __enter__(self) -> "ParquetShardWriter":
-        with atomic_path(self.out_path) as tmp:
-            # We keep tmp reserved; hold its name and open ParquetWriter on it.
-            self._tmp_path = tmp
-            self._writer = pq.ParquetWriter(
-                self._tmp_path, self.schema,
-                compression=self.compression,
-                use_dictionary=True
-            )
+        dir_ = os.path.dirname(os.path.abspath(self.out_path)) or "."
+        fd, tmp = tempfile.mkstemp(prefix="._tmp_", dir=dir_)
+        os.close(fd)
+        self._tmp_path = tmp
+        self._writer = pq.ParquetWriter(
+            self._tmp_path, self.schema,
+            compression=self.compression,
+            use_dictionary=True
+        )
         return self
+
+    @property
+    def rows_written(self) -> int:
+        return self._rows_written
 
     def write_batches(self, tables: Iterable[pa.Table]) -> None:
         assert self._writer and self._tmp_path
