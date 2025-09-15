@@ -1,14 +1,12 @@
 # src/farkle/writer.py
 from __future__ import annotations
 
-import json
 import os
 import tempfile
-import time
 import zlib
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional
+from typing import Iterable, Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -80,20 +78,3 @@ class ParquetShardWriter:
             # Failure path: drop temp file
             with suppress(FileNotFoundError):
                 os.remove(self._tmp_path)
-
-def append_manifest_line(manifest_path: str, record: Dict[str, Any]) -> None:
-    """Append one JSON line atomically."""
-    line = json.dumps(record, separators=(",", ":"))
-    dir_ = os.path.dirname(os.path.abspath(manifest_path)) or "."
-    os.makedirs(dir_, exist_ok=True)
-    tmp = os.path.join(dir_, f"._tmp_manifest_{time.time_ns()}.jsonl")
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(line + "\n")
-    # atomic append by rename+append is not portable; instead: best-effort lockless append
-    # pragmatic approach: rename to final if it doesn't exist; else append safely
-    if not os.path.exists(manifest_path):
-        os.replace(tmp, manifest_path)
-    else:
-        with open(manifest_path, "a", encoding="utf-8") as f:
-            f.write(line + "\n")
-        os.remove(tmp)

@@ -7,7 +7,8 @@ from typing import Any, Callable, Dict, Iterable
 
 import pyarrow as pa
 
-from .writer import ParquetShardWriter, append_manifest_line
+from .manifest import append_manifest_line
+from .writer import ParquetShardWriter
 
 
 def run_streaming_shard(
