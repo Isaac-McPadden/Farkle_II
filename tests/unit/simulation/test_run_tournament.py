@@ -525,7 +525,7 @@ def test_run_tournament_metric_chunking(monkeypatch, tmp_path):
         num_shuffles=2,
     )
 
-    files = sorted(metric_dir.glob("metrics_*.pkl"))
+    files = sorted(metric_dir.glob("metrics_*.parquet"))
     assert len(files) == 2
     for m in rt.METRIC_LABELS:
         assert captured["sums"][m]["S"] == 2.0
