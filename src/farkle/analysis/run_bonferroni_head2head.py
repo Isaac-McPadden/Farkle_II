@@ -12,9 +12,8 @@ import pandas as pd
 from scipy.stats import binomtest
 
 from farkle.simulation.simulation import simulate_many_games_from_seeds
-from farkle.simulation.stats import games_for_power
 from farkle.simulation.strategies import parse_strategy
-from farkle.utils.utils import bonferroni_pairs
+from farkle.utils.stats import bonferroni_pairs, games_for_power
 
 DEFAULT_ROOT = Path("results_seed_0")
 

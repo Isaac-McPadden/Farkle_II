@@ -90,7 +90,7 @@ _LAZY_IMPORTS = {
     "generate_strategy_grid": "farkle.simulation",
     "simulate_many_games_stream": "farkle.utils.parallel",
     "simulate_many_games_from_seeds": "farkle.simulation",
-    "games_for_power": "farkle.stats",
+    "games_for_power": "farkle.utils.stats",
 }
 
 
