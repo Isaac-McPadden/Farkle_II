@@ -12,8 +12,8 @@ High-level flow
   scoring, and consulting its strategy.
 
 The module keeps no global state; randomness lives inside each
-FarklePlayer via its dedicated random.Random instance (passed in
-from the outer simulation layer).
+FarklePlayer via its dedicated :class:`numpy.random.Generator` instance
+(passed in from the outer simulation layer).
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ import numpy as np
 
 from farkle.game.scoring import DiceRoll, default_score
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.random import make_rng
 
 __all__ = [
     "FarklePlayer",
@@ -52,7 +53,7 @@ class FarklePlayer:
     strategy: ThresholdStrategy
     score: int = 0
     has_scored: bool = False  # entered game (≥500) flag
-    rng: np.random.Generator = field(default_factory=np.random.default_rng, repr=False)
+    rng: np.random.Generator = field(default_factory=make_rng, repr=False)
 
     # counters
     n_farkles: int = 0

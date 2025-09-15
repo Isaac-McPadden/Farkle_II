@@ -19,7 +19,7 @@ import random
 from dataclasses import asdict
 from types import MethodType
 
-import numpy as np
+from farkle.utils.random import make_rng, spawn_seeds
 
 from farkle.game.engine import FarkleGame, FarklePlayer
 from farkle.game.scoring import default_score
@@ -178,14 +178,16 @@ def watch_game(seed: int | None = None) -> None:
     Parameters
     ----------
     seed:
-        Optional seed forwarded to ``numpy.random.default_rng`` to make the game
-        deterministic.
+        Optional seed forwarded to :func:`farkle.utils.random.make_rng` to make
+        the game deterministic.
     """
-    rng = np.random.default_rng(seed)
+    strategy_seed1, strategy_seed2, player_seed1, player_seed2 = spawn_seeds(
+        4, seed=seed
+    )
 
     # --- make two random strategies -------------------------------------
-    strategy1 = random_threshold_strategy(random.Random(int(rng.integers(2**32))))
-    strategy2 = random_threshold_strategy(random.Random(int(rng.integers(2**32))))
+    strategy1 = random_threshold_strategy(random.Random(strategy_seed1))
+    strategy2 = random_threshold_strategy(random.Random(strategy_seed2))
     log.info("P1 strategy\n%s\n", strategy_yaml(strategy1))
     log.info("P2 strategy\n%s\n", strategy_yaml(strategy2))
 
@@ -199,12 +201,12 @@ def watch_game(seed: int | None = None) -> None:
         p1 = TracePlayer(
             "P1",
             strategy1,
-            rng=np.random.default_rng(rng.integers(2**32)),
+            rng=make_rng(player_seed1),
         )
         p2 = TracePlayer(
             "P2",
             strategy2,
-            rng=np.random.default_rng(rng.integers(2**32)),
+            rng=make_rng(player_seed2),
         )
 
         game = FarkleGame([p1, p2], target_score=10_000)
