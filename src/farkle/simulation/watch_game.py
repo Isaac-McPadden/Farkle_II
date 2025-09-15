@@ -19,14 +19,13 @@ import random
 from dataclasses import asdict
 from types import MethodType
 
-from farkle.utils.random import make_rng, spawn_seeds
-
 from farkle.game.engine import FarkleGame, FarklePlayer
 from farkle.game.scoring import default_score
 from farkle.simulation.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
 )
+from farkle.utils.random import make_rng, spawn_seeds
 
 # ── 1.  Plain-text logger ----------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[logging.StreamHandler()])

@@ -23,10 +23,12 @@ from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 import pyarrow as pa
+from pyarrow import parquet as pq
 
 from farkle.simulation.simulation import _play_game, generate_strategy_grid
 from farkle.simulation.strategies import ThresholdStrategy
-from farkle.utils import parallel, random as urandom
+from farkle.utils import parallel
+from farkle.utils import random as urandom
 from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import ParquetShardWriter
 
@@ -258,7 +260,7 @@ def _run_chunk_metrics(
         if row_dir is not None and collect_rows:
             out = row_dir / f"rows_{getpid()}_{seed}.parquet"
             tbl = pa.Table.from_pylist(rows)
-            writer = ParquetShardWriter(out)
+            writer = ParquetShardWriter(str(out))
             writer.write_batch(tbl)
             writer.close()
             if manifest_path is not None:
@@ -420,8 +422,7 @@ def run_tournament(
     if metric_chunk_directory is not None:
         metric_chunk_directory.mkdir(parents=True, exist_ok=True)
 
-    context = mp.get_context("spawn")
-    row_queue = None  # per-worker shards; no central writer
+    mp.get_context("spawn")
 
     if collect_metrics or collect_rows:
         manifest_path = (row_output_directory / "manifest.jsonl") if row_output_directory else None
