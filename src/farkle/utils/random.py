@@ -24,7 +24,7 @@ def spawn_seeds(n: int, *, seed: int | None = None) -> np.ndarray:
     """
 
     rng = make_rng(seed)
-    return rng.integers(0, MAX_UINT32, size=n, dtype=np.uint32).tolist()
+    return rng.integers(0, MAX_UINT32, size=n, dtype=np.uint32)
 
 
 __all__ = ["MAX_UINT32", "make_rng", "spawn_seeds"]

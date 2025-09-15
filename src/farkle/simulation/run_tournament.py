@@ -10,13 +10,11 @@ row.  A parquet dump of all rows can also be requested via --row-dir.
 
 from __future__ import annotations
 
-import contextlib
 import logging
 import multiprocessing as mp
 import pickle
 import time
 from collections import Counter, defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
 from os import getpid
@@ -25,10 +23,12 @@ from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 import pyarrow as pa
-import pyarrow.parquet as pq
 
 from farkle.simulation.simulation import _play_game, generate_strategy_grid
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils import parallel, random as urandom
+from farkle.utils.manifest import append_manifest_line
+from farkle.utils.writer import ParquetShardWriter
 
 # from farkle.utils.logging import setup_info_logging, setup_warning_logging
 
@@ -43,10 +43,6 @@ NUM_SHUFFLES: int = 5_907  # BH-power calculation for default
 # Counting metrics in pkl file
 DESIRED_SEC_PER_CHUNK: int = 10
 CKPT_EVERY_SEC: int = 30
-
-# Full game data capture in parquet rows
-ROW_QUEUE_MAX = 2_000  # limit back-pressure
-ROW_BUFFER    = 50_000  # parquet rows per shard
 
 # ---------------------------------------------------------------------------
 # Dataclass configuration
@@ -82,31 +78,6 @@ METRIC_LABELS: Tuple[str, ...] = (
 )
 
 
-def _row_writer(queue: mp.Queue, row_out_dir: Path) -> None:
-    """Explicit row writing function to properly handle
-    memory usage.
-
-    Args:
-        queue (mp.Queue): The multiprocessor Queue of interest
-        out_dir (Path): _description_
-    """
-    row_out_dir.mkdir(parents=True, exist_ok=True)
-    buffer, shard = [], 0
-    while True:
-        item = queue.get()
-        if item is None:  # poison pill
-            break
-        buffer.append(item)
-        if len(buffer) >= ROW_BUFFER:
-            pq.write_table(pa.Table.from_pylist(buffer),
-                           row_out_dir/f"rows_{shard:06d}.parquet")
-            shard += 1
-            buffer.clear()
-    if buffer:
-        pq.write_table(pa.Table.from_pylist(buffer),
-                       row_out_dir/f"rows_{shard:06d}.parquet")
-
-
 def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
     """Return the metric vector for the winning player."""
 
@@ -133,7 +104,6 @@ def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
 class WorkerState:
     strats: list[ThresholdStrategy]
     cfg: TournamentConfig
-    row_q: mp.Queue | None
 
 
 _STATE: WorkerState | None = None
@@ -142,14 +112,13 @@ _STATE: WorkerState | None = None
 def _init_worker(
     strategies: Sequence[ThresholdStrategy],
     config: TournamentConfig,
-    row_queue: mp.Queue | None
 ) -> None:
     """Initialise per-process state."""
 
     global _STATE
     if 8_160 % config.n_players != 0:
         raise ValueError("n_players must divide 8,160")
-    _STATE = WorkerState(list(strategies), config, row_queue)
+    _STATE = WorkerState(list(strategies), config)
 
 
 # ---------------------------------------------------------------------------
@@ -172,7 +141,7 @@ def _play_one_shuffle(
 
     rng = np.random.default_rng(seed)
     perm = rng.permutation(len(state.strats))
-    game_seeds = rng.integers(0, 2**32 - 1, size=state.cfg.games_per_shuffle)
+    game_seeds = urandom.spawn_seeds(state.cfg.games_per_shuffle, seed=seed)
 
     wins: Counter[str] = Counter()
     sums: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -180,7 +149,7 @@ def _play_one_shuffle(
     rows: List[Dict[str, Any]] = []
 
     offset = 0
-    for gseed in game_seeds.tolist():
+    for gseed in game_seeds:
         idxs = perm[offset : offset + state.cfg.n_players].tolist()
         offset += state.cfg.n_players
 
@@ -246,6 +215,7 @@ def _run_chunk_metrics(
     *,
     collect_rows: bool = False,
     row_dir: Path | None = None,
+    manifest_path: Path | None = None,
 ) -> Tuple[
     Counter[str],
     Dict[str, Dict[str, float]],
@@ -261,19 +231,14 @@ def _run_chunk_metrics(
         If ``True`` return and optionally persist full per-game rows.
     row_dir : Path | None, default None
         Directory used to write parquet files when ``collect_rows`` is ``True``.
+    manifest_path : Path | None, default None
+        When provided, append one NDJSON record per shard.
 
     Returns
     -------
     tuple
         ``(wins, sums, square_sums)`` where each element aggregates the
         respective values over the batch.
-
-    Side Effects
-    ------------
-    *Queue mode* - rows are pushed to a dedicated writer process via
-    ``WorkerState.row_q``.
-    *Fallback mode* - if no queue is set, each shuffle is flushed to its own
-    Parquet shard inside ``row_dir``.
     """
 
     wins_total: Counter[str] = Counter()
@@ -282,29 +247,32 @@ def _run_chunk_metrics(
 
     for seed in shuffle_seed_batch:
         log.info("Shuffle %s started", seed)
-        try:
-            w, s, sq, rows = _play_one_shuffle(int(seed), collect_rows=collect_rows)
-        except Exception:
-            log.error("Shuffle %s failed", seed, exc_info=True)
-            raise
-        else:
-            state = _STATE
-            assert state is not None
-            log.info("Shuffle %s finished: %d games", seed, state.cfg.games_per_shuffle)
-            wins_total.update(w)
+        wins, sums, sqs, rows = _play_one_shuffle(int(seed), collect_rows=collect_rows)
+        wins_total.update(wins)
         for label in METRIC_LABELS:
-            for k, v in s[label].items():
+            for k, v in sums[label].items():
                 sums_total[label][k] += v
-            for k, v in sq[label].items():
+            for k, v in sqs[label].items():
                 sq_total[label][k] += v
-                
-        if collect_rows and _STATE is not None and _STATE.row_q is not None:
-            for r in rows:
-                _STATE.row_q.put(r)
-        elif row_dir is not None:  # no queue → write a shard locally
+
+        if row_dir is not None and collect_rows:
             out = row_dir / f"rows_{getpid()}_{seed}.parquet"
-            pq.write_table(pa.Table.from_pylist(rows), out)
-        
+            tbl = pa.Table.from_pylist(rows)
+            writer = ParquetShardWriter(out)
+            writer.write_batch(tbl)
+            writer.close()
+            if manifest_path is not None:
+                append_manifest_line(
+                    manifest_path,
+                    {
+                        "path": out.name,
+                        "rows": writer.rows_written,
+                        "n_players": _STATE.cfg.n_players if _STATE else None,
+                        "shuffle_seed": int(seed),
+                        "pid": getpid(),
+                    },
+                )
+
         # free memory for this shuffle
         rows.clear()
 
@@ -323,10 +291,9 @@ def _measure_throughput(
 ) -> float:
     """Quick benchmark returning games processed per second."""
 
-    rng = np.random.default_rng(seed)
-    seeds = rng.integers(0, 2**32 - 1, size=sample_games)
+    seeds = urandom.spawn_seeds(sample_games, seed=seed)
     start = time.perf_counter()
-    for gs in seeds.tolist():
+    for gs in seeds:
         _play_game(int(gs), sample_strategies)
     return sample_games / (time.perf_counter() - start)
 
@@ -425,13 +392,11 @@ def run_tournament(
         int(cfg.desired_sec_per_chunk * games_per_sec // cfg.games_per_shuffle),
     )
 
-    master_rng = np.random.default_rng(global_seed)
-    shuffle_seeds = master_rng.integers(0, 2**32 - 1, size=cfg.num_shuffles).tolist()
+    shuffle_seeds = list(urandom.spawn_seeds(cfg.num_shuffles, seed=global_seed))
     chunks = [
         shuffle_seeds[i : i + shuffles_per_chunk]
         for i in range(0, cfg.num_shuffles, shuffles_per_chunk)
     ]
-
 
     win_totals: Counter[str] = Counter()
     metric_sums: Dict[str, Dict[str, float]] | None
@@ -454,81 +419,77 @@ def run_tournament(
 
     if metric_chunk_directory is not None:
         metric_chunk_directory.mkdir(parents=True, exist_ok=True)
-    
+
     context = mp.get_context("spawn")
-    row_queue = writer = None
-    if collect_rows and row_output_directory is not None:
-        row_queue  = context.Queue(maxsize=ROW_QUEUE_MAX)
-        writer = context.Process(
-            target=_row_writer,
-            args=(row_queue, row_output_directory),
-            daemon=True,
-        )
-        writer.start()
+    row_queue = None  # per-worker shards; no central writer
 
     if collect_metrics or collect_rows:
+        manifest_path = (row_output_directory / "manifest.jsonl") if row_output_directory else None
         chunk_fn: Callable[[Sequence[int]], object] = partial(
-            _run_chunk_metrics, collect_rows=collect_rows, row_dir=row_output_directory
+            _run_chunk_metrics,
+            collect_rows=collect_rows,
+            row_dir=row_output_directory,
+            manifest_path=manifest_path,
         )
     else:
         chunk_fn = _run_chunk
 
     try:
-        with ProcessPoolExecutor(
-            max_workers=n_jobs,
-            initializer=_init_worker,
-            initargs=(strategies, cfg, row_queue),
-        ) as pool:
-            futures = {pool.submit(chunk_fn, c): c for c in chunks}
-
-            for done, fut in enumerate(as_completed(futures), 1):
-                # drop the original chunk list to free memory while keeping the key
-                futures[fut] = None
-                result = fut.result()
-                if collect_metrics or collect_rows:
-                    wins, sums, sqs = cast(
-                        Tuple[Counter[str], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]],
-                        result,
+        for done, result in enumerate(
+            parallel.process_map(
+                chunk_fn,
+                chunks,
+                n_jobs=n_jobs,
+                initializer=_init_worker,
+                initargs=(strategies, cfg),
+                window=4 * (n_jobs or 1),
+            ),
+            1,
+        ):
+            if collect_metrics or collect_rows:
+                wins, sums, sqs = cast(
+                    Tuple[Counter[str], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]],
+                    result,
+                )
+                win_totals.update(wins)
+                if metric_chunk_directory is not None:
+                    chunk_path = metric_chunk_directory / f"metrics_{done:06d}.pkl"
+                    payload = {
+                        "metric_sums": sums,
+                        "metric_square_sums": sqs,
+                    }
+                    chunk_path.write_bytes(
+                        pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
                     )
-                    win_totals.update(wins)
-                    if metric_chunk_directory is not None:
-                        chunk_path = metric_chunk_directory / f"metrics_{done:06d}.pkl"
-                        payload = {
-                            "metric_sums": sums,
-                            "metric_square_sums": sqs,
-                        }
-                        chunk_path.write_bytes(
-                            pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
-                        )
-                    else:
-                        assert metric_sums is not None and metric_sq_sums is not None
-                        for label in METRIC_LABELS:
-                            for k, v in sums[label].items():
-                                metric_sums[label][k] += v
-                            for k, v in sqs[label].items():
-                                metric_sq_sums[label][k] += v
                 else:
-                    win_totals.update(cast(Counter[str], result))
+                    assert metric_sums is not None and metric_sq_sums is not None
+                    for label in METRIC_LABELS:
+                        for k, v in sums[label].items():
+                            metric_sums[label][k] += v
+                        for k, v in sqs[label].items():
+                            metric_sq_sums[label][k] += v
+            else:
+                win_totals.update(cast(Counter[str], result))
 
-                now = time.perf_counter()
-                if now - last_ckpt >= cfg.ckpt_every_sec:
-                    _save_checkpoint(
-                        ckpt_path,
-                        win_totals,
-                        None
-                        if metric_chunk_directory is not None
-                        else (metric_sums if collect_metrics or collect_rows else None),
-                        None
-                        if metric_chunk_directory is not None
-                        else (metric_sq_sums if collect_metrics or collect_rows else None),
-                    )
-                    log.info(
-                        "checkpoint … %d/%d chunks, %d games",
-                        done,
-                        len(chunks),
-                        sum(win_totals.values()),
-                    )
-                    last_ckpt = now
+            now = time.perf_counter()
+            if now - last_ckpt >= cfg.ckpt_every_sec:
+                _save_checkpoint(
+                    ckpt_path,
+                    win_totals,
+                    None
+                    if metric_chunk_directory is not None
+                    else (metric_sums if collect_metrics or collect_rows else None),
+                    None
+                    if metric_chunk_directory is not None
+                    else (metric_sq_sums if collect_metrics or collect_rows else None),
+                )
+                log.info(
+                    "checkpoint … %d/%d chunks, %d games",
+                    done,
+                    len(chunks),
+                    sum(win_totals.values()),
+                )
+                last_ckpt = now
 
         if metric_chunk_directory is not None and (collect_metrics or collect_rows):
             metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -542,15 +503,9 @@ def run_tournament(
                         metric_sums[label][k] += v
                     for k, v in sqs[label].items():
                         metric_sq_sums[label][k] += v
-    
     finally:
-        # Ensure row shards are flushed even on tiny runs
-        if 'row_queue' in locals() and row_queue is not None:
-            with contextlib.suppress(Exception): 
-                row_queue.put(None)
-        if 'writer' in locals() and writer is not None:
-            with contextlib.suppress(Exception): 
-                writer.join(timeout=10)
+        # no central writer to tear down
+        pass
 
     _save_checkpoint(
         ckpt_path,
@@ -559,3 +514,4 @@ def run_tournament(
         metric_sq_sums if (collect_metrics or collect_rows) else None,
     )
     log.info("finished - %d games", sum(win_totals.values()))
+

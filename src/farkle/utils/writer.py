@@ -1,9 +1,7 @@
-# src/farkle/writer.py
 from __future__ import annotations
 
 import os
 import tempfile
-import zlib
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import Iterable, Optional
@@ -25,23 +23,11 @@ def atomic_path(final_path: str):
         with suppress(FileNotFoundError):
             os.remove(tmp)
 
-def _crc32_bytesize(path: str) -> tuple[str, int]:
-    buf_size = 1024 * 1024
-    crc = 0
-    total = 0
-    with open(path, "rb") as f:
-        while True:
-            b = f.read(buf_size)
-            if not b:
-                break
-            crc = zlib.crc32(b, crc)
-            total += len(b)
-    return f"{crc & 0xffffffff:08x}", total
 
 @dataclass
 class ParquetShardWriter:
     out_path: str
-    schema: pa.Schema
+    schema: pa.Schema | None = None
     compression: str = "snappy"
     row_group_size: int = 200_000
 
@@ -49,37 +35,52 @@ class ParquetShardWriter:
     _tmp_path: Optional[str] = None
     _rows_written: int = 0
 
-    def __enter__(self) -> "ParquetShardWriter":
+    def __post_init__(self) -> None:
         dir_ = os.path.dirname(os.path.abspath(self.out_path)) or "."
         fd, tmp = tempfile.mkstemp(prefix="._tmp_", dir=dir_)
         os.close(fd)
         self._tmp_path = tmp
-        self._writer = pq.ParquetWriter(
-            self._tmp_path, self.schema,
-            compression=self.compression,
-            use_dictionary=True
-        )
+
+    def __enter__(self) -> "ParquetShardWriter":
         return self
 
     @property
     def rows_written(self) -> int:
         return self._rows_written
 
-    def write_batches(self, tables: Iterable[pa.Table]) -> None:
-        assert self._writer and self._tmp_path
-        for tbl in tables:
-            # Ensure proper row groups (Arrow will split as needed)
-            self._writer.write_table(tbl, row_group_size=self.row_group_size)
-            self._rows_written += tbl.num_rows
+    def _ensure_writer(self, tbl: pa.Table) -> None:
+        if self._writer is None:
+            schema = self.schema or tbl.schema
+            self._writer = pq.ParquetWriter(
+                self._tmp_path,
+                schema,
+                compression=self.compression,
+                use_dictionary=True,
+            )
+            self.schema = schema
 
-    def __exit__(self, exc_type, exc, tb):
-        if not self._writer or not self._tmp_path:
+    def write_batch(self, tbl: pa.Table) -> None:
+        self._ensure_writer(tbl)
+        assert self._writer is not None
+        self._writer.write_table(tbl, row_group_size=self.row_group_size)
+        self._rows_written += tbl.num_rows
+
+    def write_batches(self, tables: Iterable[pa.Table]) -> None:
+        for tbl in tables:
+            self.write_batch(tbl)
+
+    def close(self, success: bool = True) -> None:
+        if not self._tmp_path:
             return
-        self._writer.close()
-        if exc is None:
-            # Success path: swap into place
+        if self._writer is not None:
+            self._writer.close()
+        if success:
             os.replace(self._tmp_path, self.out_path)
         else:
-            # Failure path: drop temp file
             with suppress(FileNotFoundError):
                 os.remove(self._tmp_path)
+        self._tmp_path = None
+        self._writer = None
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close(exc_type is None)
