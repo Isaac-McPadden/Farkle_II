@@ -215,3 +215,5 @@ filenames3.txt
 structure.txt
 
 notebooks/figs/*.png
+
+checkpoint.pkl
