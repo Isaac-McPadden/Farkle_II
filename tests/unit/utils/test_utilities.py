@@ -9,7 +9,7 @@ import yaml
 
 import farkle.utils.parallel as parallel
 from farkle.cli import main as cli_main # imports the module, not the exe
-from farkle.simulation.stats import games_for_power
+from farkle.utils.stats import games_for_power
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.parallel import simulate_many_games_stream
 
