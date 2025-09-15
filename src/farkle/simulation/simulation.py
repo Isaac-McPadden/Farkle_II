@@ -17,13 +17,13 @@ from __future__ import annotations
 import itertools
 import multiprocessing as mp
 from dataclasses import asdict
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Iterable, List, Mapping, Sequence, Tuple
 
-import numpy as np
 import pandas as pd
 
 from farkle.game.engine import FarkleGame, FarklePlayer
 from farkle.simulation.strategies import FavorDiceOrScore, ThresholdStrategy
+from farkle.utils.random import MAX_UINT32, make_rng, spawn_seeds
 
 __all__: list[str] = [
     "generate_strategy_grid",
@@ -229,14 +229,19 @@ def _make_players(
         Players ready to be passed to ``FarkleGame``.
     """
 
-    master = np.random.default_rng(seed)
+    master = make_rng(seed)
+    # derive stable per-player seeds from a single source of truth
+    player_seeds = spawn_seeds(
+        len(strategies),
+        seed=int(master.integers(0, MAX_UINT32)) if seed is not None else None,
+    )
     return [
         FarklePlayer(
-            name=f"P{i + 1}",
+            name=f"P{i+1}",
             strategy=s,
-            rng=np.random.default_rng(master.integers(0, 2**32 - 1)),
+            rng=make_rng(int(ps)),
         )
-        for i, s in enumerate(strategies)
+        for i, (s, ps) in enumerate(zip(strategies, player_seeds, strict=True))
     ]
 
 
@@ -244,7 +249,7 @@ def _play_game(
     seed: int,
     strategies: Sequence[ThresholdStrategy],
     target_score: int = 10_000,
-) -> Dict[str, Any]:
+) -> Mapping[str, Any]:
     """Play a single game and return flattened metrics.
 
     Parameters
@@ -258,7 +263,7 @@ def _play_game(
 
     Returns
     -------
-    Dict[str, Any]
+    Mapping[str, Any]
         Mapping of metric names to values including the winner and
         per-player statistics.
     """
@@ -274,7 +279,7 @@ def _play_game(
         )
     # Determine the winner from the PlayerStats block
     winner = next(name for name, ps in gm.players.items() if ps.rank == 1)
-    flat: Dict[str, Any] = {
+    flat: dict[str, Any] = {
         "winner": winner,
         "winning_score": gm.players[winner].score,
         "n_rounds": gm.game.n_rounds,
@@ -315,9 +320,8 @@ def simulate_many_games(
     pandas.DataFrame
         One row per game as produced by :func:`_play_game`.
     """
-    master_rng = np.random.default_rng(seed)
-    seeds = master_rng.integers(0, 2**32 - 1, size=n_games).tolist()
-    args = [(s, strategies, target_score) for s in seeds]
+    seeds = spawn_seeds(n_games, seed=seed)
+    args = [(int(s), strategies, target_score) for s in list(seeds)]
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]
     else:
@@ -328,7 +332,7 @@ def simulate_many_games(
 
 def simulate_many_games_from_seeds(
     *,
-    seeds: Sequence[int],
+    seeds: Iterable[int],
     strategies: Sequence[ThresholdStrategy],
     target_score: int = 10_000,
     n_jobs: int = 1,
@@ -374,7 +378,7 @@ def simulate_one_game(
 # ---------------------------------------------------------------------------
 
 
-def aggregate_metrics(df: pd.DataFrame) -> Dict[str, Any]:
+def aggregate_metrics(df: pd.DataFrame) -> Mapping[str, Any]:
     """Summarize a DataFrame of game results.
 
     Parameters
@@ -384,7 +388,7 @@ def aggregate_metrics(df: pd.DataFrame) -> Dict[str, Any]:
 
     Returns
     -------
-    Dict[str, Any]
+    Mapping[str, Any]
         Mapping with the total number of games, the mean round count and
         a winner frequency dictionary.
     """
