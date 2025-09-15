@@ -1,6 +1,9 @@
 # Farkle Mk II
 
-Fast Monte Carlo engine and strategy tools for the dice game Farkle.
++ Fast Monte Carlo engine built to stream 100M+ games with bounded RAM.
++ • CLI: `farkle run <cfg.yml>`  (subcommands: run, time, full-field, trueskill)
++ • Streaming Parquet shards (Snappy), atomic temp→rename, append-only manifest
++ • Resume-safe restarts; structured logs per worker
 
 ## Features
 - Pure engine for single games (`engine.py`)
@@ -18,12 +21,17 @@ Requires Python 3.12 or newer.
 pip install farkle
 ```
 
-## Quick Start
-Run a tournament from a config file:
+## Big Run Quick-Start (streaming & resume-safe)
 
 ```bash
-python -m farkle run cfg.yml
-```
+# 6 workers, bounded RAM via batches + backpressure
+farkle run configs/players_2_12.yml \
+  --jobs 6 --log-level INFO \
+  -D io.results_dir=data/results_seed_42 \
+  -D parallelism.batch_size=50000 \
+  -D parallelism.queue_max=4 \
+  --resume
+
 
 You can silence progress logs with `--log-level WARNING`.
 
