@@ -14,8 +14,8 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from farkle.analysis.analysis_config import PipelineCfg
-from farkle.app_config import AppConfig
 from farkle.analysis.checks import check_pre_metrics
+from farkle.app_config import AppConfig
 
 log = logging.getLogger(__name__)
 

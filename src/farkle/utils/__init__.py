@@ -21,11 +21,3 @@ __all__ = [
     "make_rng",
     "spawn_seeds",
 ]
-
-
-def __getattr__(name: str):  # pragma: no cover - simple dynamic loader
-    if name == "simulate_many_games_stream":
-        from .parallel import simulate_many_games_stream as fn
-
-        return fn
-    raise AttributeError(name)

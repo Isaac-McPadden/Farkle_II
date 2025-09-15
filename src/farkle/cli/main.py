@@ -13,7 +13,6 @@ from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
 from farkle.utils.logging import configure_logging
 
-
 # ---------------------------------------------------------------------------
 # Configuration helpers
 # ---------------------------------------------------------------------------
@@ -101,7 +100,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command == "run":
         run_tournament(**cfg)
     elif args.command == "time":
-        measure_sim_times(list(remaining))
+        measure_sim_times()
     elif args.command == "watch":
         watch_game(seed=args.seed)
     elif args.command == "analyze":

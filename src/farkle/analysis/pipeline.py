@@ -15,7 +15,7 @@ from farkle.analysis.analysis_config import load_config
 from farkle.app_config import AppConfig
 
 if TYPE_CHECKING:  # for type checkers without creating runtime deps
-    from farkle.analysis.analysis_config import PipelineCfg
+    from farkle.analysis.analysis_config import PipelineCfg  # noqa: F401
 
 
 def main(argv: Sequence[str] | None = None) -> int:

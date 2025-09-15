@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import logging
 
-from farkle.analysis.analysis_config import PipelineCfg
 from farkle.analysis import head2head as _h2h
 from farkle.analysis import hgb_feat as _hgb
 from farkle.analysis import trueskill as _ts
+from farkle.analysis.analysis_config import PipelineCfg
 from farkle.app_config import AppConfig
 
 log = logging.getLogger(__name__)

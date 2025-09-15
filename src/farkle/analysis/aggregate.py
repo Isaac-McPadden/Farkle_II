@@ -8,8 +8,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
-from farkle.app_config import AppConfig
 from farkle.analysis.checks import check_post_aggregate
+from farkle.app_config import AppConfig
 
 log = logging.getLogger("aggregate")
 

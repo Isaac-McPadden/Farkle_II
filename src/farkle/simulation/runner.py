@@ -13,7 +13,6 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 from farkle.simulation.run_tournament import (
     TournamentConfig,
@@ -21,8 +20,7 @@ from farkle.simulation.run_tournament import (
     _play_shuffle,
     generate_strategy_grid,
 )
-from farkle.utils import parallel, sinks
-
+from farkle.utils import parallel, random, sinks
 
 # ---------------------------------------------------------------------------
 # Configuration containers
@@ -96,7 +94,7 @@ def run_tournament(cfg: AppConfig) -> int:
     # round up to the next whole shuffle so that each strategy participates
     n_shuffles = max(1, -(-cfg.sim.n_games // games_per_shuffle))
 
-    seeds = parallel.spawn_worker_seeds(cfg.sim.seed, n_shuffles)
+    seeds = random.spawn_seeds(n_shuffles, seed=cfg.sim.seed)
 
     win_totals: Counter[str] = Counter()
     for wins in parallel.process_map(

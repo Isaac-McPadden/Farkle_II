@@ -30,7 +30,7 @@ def _writer_worker(queue: mp.Queue, out_csv: str, header: Sequence[str]) -> None
     """
 
     first = not Path(out_csv).exists() or Path(out_csv).stat().st_size == 0
-    with open(out_csv, "a", newline="") as file_handle:
+    with open(out_csv, "a", newline="", encoding="utf-8") as file_handle:
         writer = csv.DictWriter(file_handle, fieldnames=header)
         if first:
             writer.writeheader()

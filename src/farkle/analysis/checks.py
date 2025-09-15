@@ -35,8 +35,11 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     dataset = ds.dataset(combined_parquet, format="parquet")
     neg_cols: list[str] = []
     for field in schema:
-        if pa.types.is_integer(field.type) and field.name != "loss_margin":
-            if dataset.count_rows(filter=ds.field(field.name) < 0) > 0:
+        if (
+            pa.types.is_signed_integer(field.type)
+            and field.name != "loss_margin"
+            and dataset.count_rows(filter=ds.field(field.name) < 0) > 0
+        ):
                 neg_cols.append(field.name)
     if neg_cols:
         raise RuntimeError(

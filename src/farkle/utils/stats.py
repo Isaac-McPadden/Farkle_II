@@ -16,8 +16,8 @@ convenience.
 
 from __future__ import annotations
 
-import warnings
 import itertools
+import warnings
 from math import ceil, sqrt
 from typing import Dict, List
 

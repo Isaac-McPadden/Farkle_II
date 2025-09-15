@@ -5,34 +5,38 @@ ProcessPoolExecutor. Keep simulation-specific logic outside utils.
 """
 from __future__ import annotations
 
+import contextlib
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Callable, Iterable, Iterator, Sequence, TypeVar
-import numpy as np
+from typing import TypeVar
 
 T = TypeVar("T")
 U = TypeVar("U")
 
-def spawn_worker_seeds(master_seed: int, n: int) -> list[int]:
-    """Derive ``n`` independent 32-bit seeds from ``master_seed``."""
-    rng = np.random.default_rng(master_seed)
-    return rng.integers(0, 2**32 - 1, size=n, dtype=np.uint32).tolist()
 
-def process_map(
-    fn: Callable[[T], U],
-    items: Sequence[T] | Iterable[T],
-    *,
-    n_jobs: int | None = None,
-    initializer: Callable[..., object] | None = None,
-    initargs: Sequence[object] | None = None,
-) -> Iterator[U]:
-    """Yield ``fn(item)`` for each item using a process pool."""
-    if initargs is None:
+def process_map(fn, items, *, n_jobs=None, initializer=None, initargs=None, window=0):
+    if initargs is None: 
         initargs = ()
-    with ProcessPoolExecutor(
-        max_workers=n_jobs, initializer=initializer, initargs=tuple(initargs)
-    ) as pool:
-        futs = [pool.submit(fn, it) for it in items]
-        for fut in as_completed(futs):
-            yield fut.result()
+    if n_jobs in (None, 0, 1):
+        for it in items: 
+            yield fn(it)
+        return
+    if window <= 0: 
+        window = (n_jobs or 1) * 4
 
-__all__ = ["spawn_worker_seeds", "process_map"]
+    with ProcessPoolExecutor(max_workers=n_jobs, initializer=initializer, initargs=tuple(initargs)) as pool:
+        it = iter(items)
+        futs = []
+        # prefill the window
+        for _ in range(window):
+            try: 
+                futs.append(pool.submit(fn, next(it)))
+            except StopIteration: 
+                break
+        while futs:
+            done = next(as_completed(futs))
+            futs.remove(done)
+            yield done.result()
+            with contextlib.suppress(StopIteration): 
+                futs.append(pool.submit(fn, next(it)))
+
+__all__ = ["process_map"]

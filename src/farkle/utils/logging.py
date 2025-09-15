@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Iterable
+
 
 def configure_logging(*, level: str | int = "INFO", log_file: str | Path | None = None) -> None:
     """Configure root logging once.
