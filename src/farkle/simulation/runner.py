@@ -10,17 +10,13 @@ public API.
 """
 from __future__ import annotations
 
-from collections import Counter
 from dataclasses import dataclass, field
+import pickle
 from pathlib import Path
 
-from farkle.simulation.run_tournament import (
-    TournamentConfig,
-    _init_worker,
-    _play_shuffle,
-    generate_strategy_grid,
-)
-from farkle.utils import parallel, random, sinks
+import farkle.simulation.run_tournament as tournament_mod
+from farkle.simulation.run_tournament import TournamentConfig
+from farkle.utils import sinks
 
 # ---------------------------------------------------------------------------
 # Configuration containers
@@ -45,6 +41,11 @@ class SimConfig:
         earlier iterations of the project.
     n_players:
         Number of players in each simulated game.
+    collect_metrics:
+        When ``True`` the full tournament driver records per-strategy metric
+        aggregates in addition to win counts.
+    row_dir:
+        Optional output directory for per-game rows written as parquet shards.
     """
 
     jobs: int | None = None
@@ -52,6 +53,8 @@ class SimConfig:
     n_games: int = 0
     checkpoints: int | None = None
     n_players: int = 5
+    collect_metrics: bool = False
+    row_dir: Path | None = None
 
 
 @dataclass
@@ -77,14 +80,13 @@ class AppConfig:
 def run_tournament(cfg: AppConfig) -> int:
     """Run a Farkle tournament according to ``cfg``.
 
-    The function executes a Monte-Carlo tournament by repeatedly invoking
-    :func:`farkle.simulation.run_tournament._play_shuffle`.  Results are
-    aggregated into a ``strategy → wins`` counter which is persisted as a CSV
-    file inside ``cfg.io.results_dir``.  A best-effort integer describing the
-    number of games played is returned.
+    The function delegates to :func:`farkle.simulation.run_tournament.run_tournament`
+    and mirrors its behaviour closely while retaining the simple configuration
+    surface used by older entry points.  Win counts are written to
+    ``cfg.io.results_dir / "win_counts.csv"`` and the total number of games
+    simulated is returned.
     """
 
-    strategies, _ = generate_strategy_grid()
     tcfg = TournamentConfig(n_players=cfg.sim.n_players)
 
     games_per_shuffle = tcfg.games_per_shuffle
@@ -94,20 +96,35 @@ def run_tournament(cfg: AppConfig) -> int:
     # round up to the next whole shuffle so that each strategy participates
     n_shuffles = max(1, -(-cfg.sim.n_games // games_per_shuffle))
 
-    seeds = random.spawn_seeds(n_shuffles, seed=cfg.sim.seed)
-
-    win_totals: Counter[str] = Counter()
-    for wins in parallel.process_map(
-        _play_shuffle,
-        seeds,
-        n_jobs=cfg.sim.jobs,
-        initializer=_init_worker,
-        initargs=(strategies, tcfg, None),
-    ):
-        win_totals.update(wins)
-
     out_dir = cfg.io.results_dir
     out_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint_path = out_dir / "checkpoint.pkl"
+
+    row_dir = cfg.sim.row_dir
+    if row_dir is not None and not row_dir.is_absolute():
+        row_dir = out_dir / row_dir
+
+    kwargs: dict[str, object] = {
+        "config": tcfg,
+        "global_seed": cfg.sim.seed,
+        "n_jobs": cfg.sim.jobs,
+        "num_shuffles": n_shuffles,
+        "checkpoint_path": checkpoint_path,
+    }
+    if cfg.sim.collect_metrics:
+        kwargs["collect_metrics"] = True
+    if row_dir is not None:
+        kwargs["row_output_directory"] = row_dir
+
+    tournament_mod.run_tournament(**kwargs)
+
+    payload = pickle.loads(checkpoint_path.read_bytes())
+    if isinstance(payload, dict) and "win_totals" in payload:
+        win_totals = payload["win_totals"]
+    else:
+        win_totals = payload
+
     sinks.write_counter_csv(win_totals, out_dir / "win_counts.csv")
 
     return n_shuffles * games_per_shuffle

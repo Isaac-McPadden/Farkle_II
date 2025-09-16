@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, get_args, get_origin, get_type_hints
 
 import yaml
 import dataclasses
@@ -23,6 +23,8 @@ class SimConfig:
     n_players: int = 5
     num_shuffles: int = 100
     seed: int = 0
+    collect_metrics: bool = False
+    row_dir: Path | None = None
 
 
 @dataclass
@@ -74,11 +76,18 @@ def load_app_config(*overlays: Path) -> AppConfig:
         data = _deep_merge(data, overlay)
     def build(cls, section: Mapping[str, Any]) -> Any:
         obj = cls()
+        type_hints = get_type_hints(cls)
+
         for f in dataclasses.fields(cls):
             if f.name in section:
                 val = section[f.name]
                 current = getattr(obj, f.name)
-                if isinstance(current, Path) and not isinstance(val, Path):
+                annotation = type_hints.get(f.name)
+                if (
+                    (isinstance(current, Path) or _annotation_contains(annotation, Path))
+                    and val is not None
+                    and not isinstance(val, Path)
+                ):
                     val = Path(val)
                 setattr(obj, f.name, val)
         return obj
@@ -90,10 +99,21 @@ def load_app_config(*overlays: Path) -> AppConfig:
     )
 
 
-def _coerce(value: str, current: Any) -> Any:
+def _annotation_contains(annotation: Any, target: type) -> bool:
+    if annotation is None:
+        return False
+    if annotation is target:
+        return True
+    origin = get_origin(annotation)
+    if origin is None:
+        return False
+    return any(_annotation_contains(arg, target) for arg in get_args(annotation))
+
+
+def _coerce(value: str, current: Any, annotation: Any | None = None) -> Any:
     """Coerce ``value`` to the type of ``current``."""
 
-    if isinstance(current, bool):
+    if isinstance(current, bool) or _annotation_contains(annotation, bool):
         val_lower = value.lower()
         if val_lower in {"1", "true", "yes", "on"}:
             return True
@@ -102,9 +122,19 @@ def _coerce(value: str, current: Any) -> Any:
         raise ValueError(f"Cannot parse boolean value from {value!r}")
     if isinstance(current, int) and not isinstance(current, bool):
         return int(value)
+    if (
+        annotation is not None
+        and _annotation_contains(annotation, int)
+        and not _annotation_contains(annotation, bool)
+    ):
+        return int(value)
     if isinstance(current, float):
         return float(value)
+    if annotation is not None and _annotation_contains(annotation, float):
+        return float(value)
     if isinstance(current, Path):
+        return Path(value)
+    if annotation is not None and _annotation_contains(annotation, Path):
         return Path(value)
     return value
 
@@ -125,7 +155,9 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         if not hasattr(section, option):
             raise AttributeError(f"Unknown option {option!r} in section {section_name!r}")
         current = getattr(section, option)
-        new_value = _coerce(raw, current)
+        type_hints = get_type_hints(type(section))
+        annotation = type_hints.get(option)
+        new_value = _coerce(raw, current, annotation)
         setattr(section, option, new_value)
     return cfg
 

@@ -65,7 +65,17 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     # run
-    sub.add_parser("run", help="Run a tournament")
+    run_parser = sub.add_parser("run", help="Run a tournament")
+    run_parser.add_argument(
+        "--metrics",
+        action="store_true",
+        help="Collect per-strategy metrics in addition to win counts",
+    )
+    run_parser.add_argument(
+        "--row-dir",
+        type=Path,
+        help="Write full per-game rows to this directory",
+    )
 
     # time (delegates to measure_sim_times which parses its own args)
     sub.add_parser("time", help="Benchmark simulation throughput", add_help=False)
@@ -98,6 +108,15 @@ def main(argv: Sequence[str] | None = None) -> None:
     cfg = load_config(args.config, args.overrides)
 
     if args.command == "run":
+        if args.metrics:
+            cfg["collect_metrics"] = True
+        row_dir = args.row_dir
+        if row_dir is not None:
+            cfg["row_output_directory"] = row_dir
+        elif "row_output_directory" in cfg and isinstance(
+            cfg["row_output_directory"], str
+        ):
+            cfg["row_output_directory"] = Path(cfg["row_output_directory"])
         run_tournament(**cfg)
     elif args.command == "time":
         measure_sim_times()
