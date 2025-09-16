@@ -86,28 +86,47 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
     monkeypatch.setattr(rt, "getpid", lambda: 42)
 
-    written = {}
+    recorded: dict[str, object] = {}
 
     class DummyTable:
-        @classmethod
-        def from_pylist(cls, rows):
-            written["rows"] = list(rows)
-            return "tbl"
+        def __init__(self, rows):
+            self.rows = list(rows)
+            self.schema = "dummy-schema"
 
-    pq_mod = types.SimpleNamespace()
-    pa_mod = types.SimpleNamespace(
-        Table=types.SimpleNamespace(from_pylist=DummyTable.from_pylist), parquet=pq_mod
-    )
-    pq_mod.write_table = lambda tbl, path: written.update({"path": Path(path), "tbl": tbl})
-    monkeypatch.setattr(rt, "pa", pa_mod, raising=False)
-    monkeypatch.setattr(rt, "pq", pq_mod, raising=False)
+    def fake_from_pylist(rows):
+        tbl = DummyTable(rows)
+        recorded["rows"] = tbl.rows
+        return tbl
+
+    monkeypatch.setattr(rt.pa.Table, "from_pylist", fake_from_pylist, raising=False)
+
+    def fake_run_streaming_shard(**kwargs):
+        batches = list(kwargs["batch_iter"])
+        recorded.update(
+            {
+                "out_path": Path(kwargs["out_path"]),
+                "manifest_path": Path(kwargs["manifest_path"]),
+                "schema": kwargs["schema"],
+                "batches": batches,
+                "extra": kwargs.get("manifest_extra"),
+            }
+        )
+
+    monkeypatch.setattr(rt, "run_streaming_shard", fake_run_streaming_shard)
 
     wins, sums, sqs = rt._run_chunk_metrics([3], collect_rows=True, row_dir=tmp_path)
 
-    assert written["rows"] == [{"game_seed": 3, "winner_strategy": "S3"}]
-    assert written["tbl"] == "tbl"
-    assert written["path"].parent == tmp_path
-    assert written["path"].name == "rows_42_3.parquet"
+    assert recorded["rows"] == [{"game_seed": 3, "winner_strategy": "S3"}]
+    assert recorded["out_path"] == tmp_path / "rows_42_3.parquet"
+    assert recorded["manifest_path"] == tmp_path / "manifest.jsonl"
+    assert recorded["schema"] == "dummy-schema"
+    assert recorded["batches"] and isinstance(recorded["batches"][0], DummyTable)
+    assert recorded["extra"] == {
+        "path": "rows_42_3.parquet",
+        "n_players": None,
+        "shuffle_seed": 3,
+        "pid": 42,
+    }
 
 
 def test_save_checkpoint_round_trip(tmp_path):

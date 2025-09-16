@@ -1,7 +1,6 @@
 import logging
 
 import pandas as pd
-import pyarrow.parquet as pq
 import pytest
 
 from farkle.analysis.analysis_config import PipelineCfg
@@ -85,23 +84,14 @@ def test_run_schema_mismatch_logs_and_closes(tmp_path, caplog, monkeypatch):
     block2 = cfg.results_dir / "block2_players"
     block2.mkdir()
 
-    created = []
+    calls = []
 
-    class DummyWriter:
-        def __init__(self, path, schema, compression=None):
-            self.path = path
-            self.schema = schema
-            self.compression = compression
-            self.closed = False
-            created.append(self)
+    def fake_run_streaming_shard(**kwargs):
+        # Exhaust the iterator to mirror real behavior and update totals
+        list(kwargs.get("batch_iter", ()))
+        calls.append(kwargs)
 
-        def write_table(self, table, row_group_size=None):
-            pass
-
-        def close(self):
-            self.closed = True
-
-    monkeypatch.setattr(pq, "ParquetWriter", DummyWriter)
+    monkeypatch.setattr("farkle.analysis.ingest.run_streaming_shard", fake_run_streaming_shard)
 
     def fake_iter_shards(block, cols):  # noqa: ARG001
         if block.name.startswith("block1"):
@@ -118,4 +108,4 @@ def test_run_schema_mismatch_logs_and_closes(tmp_path, caplog, monkeypatch):
         run(cfg)
 
     assert any("Schema mismatch" in rec.message for rec in caplog.records)
-    assert created and all(w.closed for w in created)
+    assert len(calls) == 1

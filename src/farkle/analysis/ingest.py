@@ -19,6 +19,7 @@ from farkle.analysis.analysis_config import (
     load_config,
 )
 from farkle.app_config import AppConfig
+from farkle.utils.streaming_loop import run_streaming_shard
 
 log = logging.getLogger(__name__)
 
@@ -162,14 +163,10 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
     seat_cols = [c for c in canon.names if c.startswith("P")]
     wanted = ("winner", "n_rounds", "winning_score", *seat_cols)
 
-    tmp_path = raw_out.with_suffix(raw_out.suffix + ".in-progress")
-    if tmp_path.exists():
-        tmp_path.unlink()
-    tmp_path.parent.mkdir(parents=True, exist_ok=True)
-
-    writer: pq.ParquetWriter | None = None
     total = 0
-    try:
+
+    def _iter_tables():
+        nonlocal total
         for shard_df, shard_path in _iter_shards(block, tuple(wanted)):
             if shard_df.empty:
                 log.debug("Shard %s is empty — skipped", shard_path.name)
@@ -189,22 +186,39 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
                     shard_df[name] = pd.NA
             shard_df = shard_df[canon_names]
             table = pa.Table.from_pandas(shard_df, schema=canon, preserve_index=False)
-            if writer is None:
-                writer = pq.ParquetWriter(tmp_path, table.schema, compression=cfg.parquet_codec)
-            writer.write_table(table, row_group_size=cfg.row_group_size)
             total += len(shard_df)
-    except Exception:
-        if writer is not None:
-            writer.close()
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise
-    else:
-        if writer is not None:
-            writer.close()
-            if tmp_path.exists():
-                tmp_path.replace(raw_out)
-            log.info("Ingest finished — %d rows written to %s", total, raw_out)
+            yield table
+
+    batches = _iter_tables()
+    first = next(batches, None)
+    if first is None:
+        if raw_out.exists():
+            raw_out.unlink()
+        manifest_candidate = raw_out.with_suffix(".manifest.jsonl")
+        if manifest_candidate.exists():
+            manifest_candidate.unlink()
+        log.info("Ingest: %sp produced zero rows - skipped", n)
+        return
+
+    def _all_batches():
+        yield first
+        yield from batches
+
+    manifest_path = raw_out.with_suffix(".manifest.jsonl")
+    run_streaming_shard(
+        out_path=str(raw_out),
+        manifest_path=str(manifest_path),
+        schema=canon,
+        batch_iter=_all_batches(),
+        row_group_size=cfg.row_group_size,
+        compression=cfg.parquet_codec,
+        manifest_extra={
+            "path": raw_out.name,
+            "n_players": n,
+            "source_block": block.name,
+        },
+    )
+    log.info("Ingest finished — %d rows written to %s", total, raw_out)
 
 
 def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
