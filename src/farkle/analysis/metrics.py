@@ -16,16 +16,17 @@ import pyarrow.parquet as pq
 from farkle.analysis.analysis_config import PipelineCfg
 from farkle.analysis.checks import check_pre_metrics
 from farkle.app_config import AppConfig
+from farkle.utils.writer import atomic_path
 
 log = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
 _WIN_COLS = ["winner_strategy", "winner_seat", "winning_score", "n_rounds"]
 
-def _write_parquet(tmp: Path, final: Path, rows: list[dict[str, Any]], schema: pa.Schema) -> None:
+def _write_parquet(final: Path, rows: list[dict[str, Any]], schema: pa.Schema) -> None:
     tbl = pa.Table.from_pylist(rows, schema=schema)
-    pq.write_table(tbl, tmp, compression="zstd")
-    tmp.replace(final)
+    with atomic_path(str(final)) as tmp_path:
+        pq.write_table(tbl, tmp_path, compression="zstd")
     log.info("✓ metrics → %s  (%d rows)", final.name, tbl.num_rows)
 
 
@@ -213,14 +214,15 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     }
 
     # Write corrected seat_advantage.csv
-    with out_seats.open("w", newline="") as fh:
-        w = csv.writer(fh)
-        w.writerow(["seat", "wins", "games_with_seat", "win_rate"])
-        for i in range(1, 13):
-            games = denom[i]
-            wins = seat_wins.get(i, 0)
-            rate = (wins / games) if games else 0.0
-            w.writerow([i, wins, games, rate])
+    with atomic_path(str(out_seats)) as tmp_path:
+        with Path(tmp_path).open("w", newline="") as fh:
+            w = csv.writer(fh)
+            w.writerow(["seat", "wins", "games_with_seat", "win_rate"])
+            for i in range(1, 13):
+                games = denom[i]
+                wins = seat_wins.get(i, 0)
+                rate = (wins / games) if games else 0.0
+                w.writerow([i, wins, games, rate])
 
     # Schemas ------------------------------------------------------------------
     metrics_schema = pa.schema(
@@ -236,19 +238,19 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     )
 
     # Atomic writes ------------------------------------------------------------
-    tmp_metrics = out_metrics.with_suffix(".parquet.in-progress")
+    _write_parquet(out_metrics, metrics_rows, metrics_schema)
 
-    _write_parquet(tmp_metrics, out_metrics, metrics_rows, metrics_schema)
-
-    stamp.write_text(
-        json.dumps(
-            {
-                "inputs": {str(data_file): _stamp(data_file)},
-                "outputs": {
-                    str(out_metrics): _stamp(out_metrics),
-                    str(out_seats): _stamp(out_seats),
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(stamp)) as tmp_path:
+        Path(tmp_path).write_text(
+            json.dumps(
+                {
+                    "inputs": {str(data_file): _stamp(data_file)},
+                    "outputs": {
+                        str(out_metrics): _stamp(out_metrics),
+                        str(out_seats): _stamp(out_seats),
+                    },
                 },
-            },
-            indent=2,
+                indent=2,
+            )
         )
-    )

@@ -29,7 +29,7 @@ from farkle.utils.random import make_rng, spawn_seeds
 
 # ── 1.  Plain-text logger ----------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[logging.StreamHandler()])
-log = logging.getLogger("watch")
+log = logging.getLogger(__name__)
 
 
 # ── 2.  Tiny helpers ---------------------------------------------------------

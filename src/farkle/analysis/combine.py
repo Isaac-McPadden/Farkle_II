@@ -12,7 +12,7 @@ from farkle.analysis.checks import check_post_combine
 from farkle.app_config import AppConfig
 from farkle.utils.streaming_loop import run_streaming_shard
 
-log = logging.getLogger("combine")
+log = logging.getLogger(__name__)
 
 def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
     cols = []

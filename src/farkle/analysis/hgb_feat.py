@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from farkle.analysis import run_hgb as _hgb
 from farkle.analysis.analysis_config import PipelineCfg
 from farkle.app_config import AppConfig
+from farkle.utils.writer import atomic_path
 
 log = logging.getLogger(__name__)
 
@@ -24,6 +26,8 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     ratings_src = cfg.results_dir / "ratings_pooled.pkl"
     ratings_dst = cfg.analysis_dir / "ratings_pooled.pkl"
     if ratings_src.exists() and not ratings_dst.exists():
-        ratings_dst.write_bytes(ratings_src.read_bytes())
+        ratings_dst.parent.mkdir(parents=True, exist_ok=True)
+        with atomic_path(str(ratings_dst)) as tmp_path:
+            Path(tmp_path).write_bytes(ratings_src.read_bytes())
 
     _hgb.run_hgb(root=cfg.analysis_dir, output_path=out)

@@ -18,6 +18,7 @@ import pandas as pd
 from scipy.stats import norm
 
 from farkle.game.scoring_lookup import build_score_lookup_table
+from farkle.utils.writer import atomic_path
 
 SCORE_TABLE = build_score_lookup_table()
 
@@ -39,7 +40,9 @@ def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     if not files:
         return
     df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
-    df.to_parquet(out_dir / f"{n_players}p_rows.parquet")
+    out_path = out_dir / f"{n_players}p_rows.parquet"
+    with atomic_path(str(out_path)) as tmp_path:
+        df.to_parquet(tmp_path)
     shutil.rmtree(row_dir, ignore_errors=True)
     del df  # free memory before returning
 
