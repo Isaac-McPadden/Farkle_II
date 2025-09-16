@@ -105,8 +105,10 @@ examples.
 Compute ratings for a directory of tournament results:
 
 ```bash
-farkle --config analysis/pipeline.yaml analyze metrics
+farkle --config analysis/pipeline.yaml analyze pipeline
 ```
 
 This scans `data/results_seed_0` for blocks and writes rating files and
-`tiers.json` to `data/results_seed_0/analysis` by default.
+`tiers.json` to `data/results_seed_0/analysis` by default. The pipeline includes
+`combine`, which merges curated per-seat Parquet shards into a single
+`all_ingested_rows.parquet` superset used by downstream analytics.

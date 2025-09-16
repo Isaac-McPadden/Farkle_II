@@ -10,7 +10,7 @@ import yaml
 from tqdm import tqdm
 
 from farkle import analysis
-from farkle.analysis import aggregate, curate, ingest, metrics
+from farkle.analysis import combine, curate, ingest, metrics
 from farkle.analysis.analysis_config import load_config
 from farkle.app_config import AppConfig
 
@@ -26,7 +26,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--config", type=Path, default=Path("analysis_config.yaml"), help="Path to YAML config"
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("ingest", "curate", "aggregate", "metrics", "analytics", "all"):
+    for name in ("ingest", "curate", "combine", "metrics", "analytics", "all"):
         sub.add_parser(name)
 
     args = parser.parse_args(argv)
@@ -55,8 +55,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ingest.run(app_cfg)
     elif args.command == "curate":
         curate.run(app_cfg)
-    elif args.command == "aggregate":
-        aggregate.run(app_cfg)
+    elif args.command == "combine":
+        combine.run(app_cfg)
     elif args.command == "metrics":
         metrics.run(app_cfg)
     elif args.command == "analytics":
@@ -65,7 +65,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         steps: list[tuple[str, Callable[[AppConfig], None]]] = [
             ("ingest", ingest.run),
             ("curate", curate.run),
-            ("aggregate", aggregate.run),
+            ("combine", combine.run),
             ("metrics", metrics.run),
             ("analytics", analysis.run_all),
         ]

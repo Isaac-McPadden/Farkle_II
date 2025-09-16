@@ -96,7 +96,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
 
     if not data_file.exists():
         raise FileNotFoundError(
-            f"metrics: missing aggregated parquet {data_file} – run aggregate step first"
+            f"metrics: missing combined parquet {data_file} – run combine step first"
         )
 
     def _stamp(path: Path) -> dict[str, float | int]:
@@ -205,7 +205,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     # denom[seat] = sum of rows across all N where that seat exists (i.e., N >= seat)
     denom = {i: sum(_rows_for_n(n) for n in range(i, 13)) for i in range(1, 13)}
 
-    # wins per seat (from aggregate parquet)
+    # wins per seat (from combined parquet)
     ds_all = ds.dataset(data_file, format="parquet")
     seat_wins: dict[int, int] = {
         i: int(ds_all.count_rows(filter=(ds.field(winner_col) == f"P{i}")))

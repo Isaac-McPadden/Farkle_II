@@ -77,14 +77,14 @@ def test_pipeline_ingest_only(tmp_path: Path) -> None:
     assert not combined.exists()
 
 
-def test_pipeline_aggregate_only(tmp_path: Path) -> None:
+def test_pipeline_combine_only(tmp_path: Path) -> None:
     _write_fixture(tmp_path)
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
         pipeline.main(["ingest", "--root", str(tmp_path)])
         pipeline.main(["curate", "--root", str(tmp_path)])
-        pipeline.main(["aggregate", "--root", str(tmp_path)])
+        pipeline.main(["combine", "--root", str(tmp_path)])
     finally:
         os.chdir(cwd)
 
@@ -112,7 +112,7 @@ def test_pipeline_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyP
     [
         ("ingest", "farkle.analysis.ingest.run"),
         ("curate", "farkle.analysis.curate.run"),
-        ("aggregate", "farkle.analysis.aggregate.run"),
+        ("combine", "farkle.analysis.combine.run"),
         ("metrics", "farkle.analysis.metrics.run"),
         ("analytics", "farkle.analysis.run_all"),
     ],
@@ -165,10 +165,10 @@ def test_pipeline_all_step_failure_prints_and_raises(
 
     monkeypatch.setattr("farkle.analysis.ingest.run", _ok)
     monkeypatch.setattr("farkle.analysis.curate.run", _ok)
-    monkeypatch.setattr("farkle.analysis.aggregate.run", _boom)
+    monkeypatch.setattr("farkle.analysis.combine.run", _boom)
 
     with pytest.raises(RuntimeError):
         pipeline.main(["all", "--root", str(tmp_path)])
 
     err = capsys.readouterr().err
-    assert "aggregate step failed: boom" in err
+    assert "combine step failed: boom" in err
