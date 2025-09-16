@@ -15,7 +15,11 @@ def test_load_app_config_overlay(tmp_path: Path) -> None:
     overlay.write_text(
         yaml.safe_dump(
             {
-                "sim": {"n_players": 3},
+                "sim": {
+                    "n_players": 3,
+                    "collect_metrics": True,
+                    "row_dir": str(tmp_path / "rows"),
+                },
                 "analysis": {"run_trueskill": False},
                 "io": {"results_dir": str(tmp_path / "out")},
             }
@@ -23,6 +27,8 @@ def test_load_app_config_overlay(tmp_path: Path) -> None:
     )
     cfg = load_app_config(BASE_CFG, overlay)
     assert cfg.sim.n_players == 3
+    assert cfg.sim.collect_metrics is True
+    assert cfg.sim.row_dir == tmp_path / "rows"
     assert cfg.analysis.run_trueskill is False
     assert cfg.io.results_dir == tmp_path / "out"
     # Deep merge preserves unspecified keys
@@ -38,9 +44,13 @@ def test_apply_dot_overrides(tmp_path: Path) -> None:
         "analysis.trueskill_beta=3.5",
         "analysis.n_jobs=4",
         "analysis.log_level=DEBUG",
+        "sim.collect_metrics=true",
+        f"sim.row_dir={tmp_path / 'rows'}",
     ]
     apply_dot_overrides(cfg, pairs)
     assert cfg.sim.n_players == 7
+    assert cfg.sim.collect_metrics is True
+    assert cfg.sim.row_dir == tmp_path / "rows"
     assert cfg.analysis.run_trueskill is False
     assert cfg.io.results_dir == tmp_path / "results"
     assert cfg.analysis.trueskill_beta == 3.5
