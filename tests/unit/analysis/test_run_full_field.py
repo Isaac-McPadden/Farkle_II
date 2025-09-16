@@ -24,7 +24,7 @@ def test_concat_row_shards(tmp_path: rf.Path):
     assert list(pd.read_parquet(merged)["v"]) == [1, 2]
 
 
-def test_main_invokes_run_tournament(monkeypatch: MonkeyPatch, tmp_path: rf.Path):
+def test_run_full_field_invokes_run_tournament(monkeypatch: MonkeyPatch, tmp_path: rf.Path):
     calls = []
 
     def fake_run_tournament(**kwargs):
@@ -34,7 +34,7 @@ def test_main_invokes_run_tournament(monkeypatch: MonkeyPatch, tmp_path: rf.Path
     monkeypatch.setattr(rf.mp, "set_start_method", lambda *a, **k: None)  # noqa: ARG005
     monkeypatch.chdir(tmp_path)
 
-    rf.main()
+    rf.run_full_field()
 
     players = [2, 3, 4, 5, 6, 8, 10, 12]
     seen = sorted(int(p[0].parent.name.split("_")[0]) for p in calls)
@@ -43,7 +43,7 @@ def test_main_invokes_run_tournament(monkeypatch: MonkeyPatch, tmp_path: rf.Path
     assert all(isinstance(nshuf, int) for _, nshuf in calls)
 
 
-def test_main_skips_complete_and_resets_partial(
+def test_run_full_field_skips_complete_and_resets_partial(
     monkeypatch: MonkeyPatch, tmp_path: rf.Path
 ) -> None:
     calls = []
@@ -73,7 +73,7 @@ def test_main_skips_complete_and_resets_partial(
     row_dir.mkdir(parents=True)
     (row_dir / "a.parquet").write_text("partial")
 
-    rf.main()
+    rf.run_full_field()
 
     # 2-player run skipped, 3-player run executed with reset
     players_called = calls

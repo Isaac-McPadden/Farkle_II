@@ -53,7 +53,7 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_trueskill.main(["--root", str(data_root)])
+        run_trueskill.run_trueskill(root=data_root)
     finally:
         os.chdir(cwd)
 

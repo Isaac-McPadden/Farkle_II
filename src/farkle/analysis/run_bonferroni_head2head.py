@@ -3,10 +3,8 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
-from typing import List
 
 import pandas as pd
 from scipy.stats import binomtest
@@ -79,21 +77,3 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
     tmp_path = pairwise_parquet.with_suffix(".tmp")
     out.to_csv(tmp_path, index=False)
     tmp_path.replace(pairwise_parquet)
-
-
-def main(argv: List[str] | None = None) -> None:
-    """Command line interface for :func:`run_bonferroni_head2head`.
-
-    Usage
-        python -m farkle.run_bonferroni_head2head [--seed N] [--root R] [--jobs J]
-    """
-    parser = argparse.ArgumentParser(description="Head-to-head Bonferroni analysis")
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    parser.add_argument("--jobs", type=int, default=1, help="worker processes")
-    args = parser.parse_args(argv)
-    run_bonferroni_head2head(seed=args.seed, root=args.root, n_jobs=args.jobs)
-
-
-if __name__ == "__main__":
-    main()

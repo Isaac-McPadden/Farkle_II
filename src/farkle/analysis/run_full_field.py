@@ -1,14 +1,12 @@
 # src/farkle/run_full_field.py
 """
-run_full_field.py  -  Phase-1 full-grid screen for all table sizes
-   • BH FDR (two-sided) Q = 0.02   →  zα = Φ⁻¹(0.99) ≈ 2.326
-   • Power               = 0.95    →  zβ = Φ⁻¹(0.05) ≈ 1.645
-   • Detectable lift Δ   = 0.03     (3-percentage-point edge)
+Full-field tournament sweep across all supported table sizes.
 
-Run with: ``python -m farkle.run_full_field --results-dir runs/my_run``
+This module previously exposed a command line interface; the control flow has
+been refactored into :func:`run_full_field` so the new configuration-driven CLI
+can call it directly.
 """
 
-import argparse
 import logging
 import multiprocessing as mp
 import shutil
@@ -79,37 +77,16 @@ def _reset_partial(out_dir: Path, n_players: int) -> None:
             ckpt.unlink()
 
 
-def main(argv: list[str] | None = None) -> None:
+def run_full_field(
+    results_dir: Path | str = Path("results_seed_0"), *, force_clean: bool = False
+) -> None:
     """Run tournaments for each table size defined in ``PLAYERS``.
 
-    The function iterates over the configured ``PLAYERS`` list. For each
-    table size it computes the number of required shuffles, runs
-    :func:`run_tournament` with those parameters and finally merges any
-    parquet shards produced by the workers into a single file.
-
-    Parameters
-    ----------
-    None
-
-    Returns
-    -------
-    None
+    The function iterates over the configured ``PLAYERS`` list. For each table
+    size it computes the number of required shuffles, runs
+    :func:`run_tournament` with those parameters and finally merges any parquet
+    shards produced by the workers into a single file.
     """
-
-    parser = argparse.ArgumentParser(description="Phase-1 full-grid tournament sweep")
-    parser.add_argument(
-        "--results-dir",
-        type=Path,
-        default=Path("results_seed_0"),
-        help="Directory to store tournament results",
-    )
-    parser.add_argument(
-        "--force-clean",
-        action="store_true",
-        help="remove existing row directories when final parquets are present",
-    )
-    args = parser.parse_args(argv or [])
-
     import farkle.simulation.run_tournament as tournament_mod  # required for main hook  # noqa: I001
 
     # ────────── GLOBAL CONFIG ─────────────────────────────────────────
@@ -120,11 +97,13 @@ def main(argv: list[str] | None = None) -> None:
     Q_FDR = 0.02  # BH, two-sided
     GLOBAL_SEED = 0
     JOBS = None  # None → all logical cores
-    BASE_OUT = args.results_dir
+    BASE_OUT = Path(results_dir)
     if not BASE_OUT.exists():
         candidate = Path("data") / BASE_OUT
         if candidate.exists():
             BASE_OUT = candidate
+    if force_clean:
+        logger.info("force_clean=True - partial row directories will be removed when found")
     BASE_OUT.mkdir(parents=True, exist_ok=True)
     # ------------------------------------------------------------------
 
@@ -152,7 +131,7 @@ def main(argv: list[str] | None = None) -> None:
         out_dir = BASE_OUT / f"{n_players}_players"
         (out_dir).mkdir(parents=True, exist_ok=True)
 
-        if _combo_complete(out_dir, n_players, force_clean=args.force_clean):
+        if _combo_complete(out_dir, n_players, force_clean=force_clean):
             print(f"↩ skipping {n_players}-player - already done", flush=True)
             continue
 
@@ -183,9 +162,3 @@ def main(argv: list[str] | None = None) -> None:
         _concat_row_shards(out_dir, n_players)
         print(f"{n_players}-player parquet shards consolidation process complete.")
     print("🏁  All table sizes completed.")
-
-
-if __name__ == "__main__":
-    import sys
-
-    main(sys.argv[1:])

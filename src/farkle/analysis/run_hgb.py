@@ -8,14 +8,12 @@ permutation feature importances and partial dependence plots.
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import pickle
 import re
 import warnings
 from pathlib import Path
-from typing import List
 
 import matplotlib.pyplot as plt
 import pandas as pd
@@ -211,38 +209,3 @@ def run_hgb(
         )
     for col in cols[:MAX_PD_PLOTS]:
         plot_partial_dependence(model, features, col, FIG_DIR)
-
-
-def main(argv: List[str] | None = None) -> None:
-    """Entry point for ``python -m farkle.run_hgb``.
-
-    Parameters
-    ----------
-    argv : List[str] | None, optional
-        Command line arguments, or ``None`` to use ``sys.argv``. Only a single
-        ``--seed`` option is accepted.
-    """
-
-    parser = argparse.ArgumentParser(
-        description=(
-            "Train a HistGradientBoostingRegressor using data/metrics.parquet and "
-            "data/ratings_pooled.parquet. Run from the project root. Writes "
-            "hgb_importance.json to --output and partial dependence plots to "
-            "notebooks/figs/."
-        )
-    )
-    parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument(
-        "-o",
-        "--output",
-        type=Path,
-        default=None,
-        help="Path to write hgb_importance.json",
-    )
-    parser.add_argument("--root", type=Path, default=DEFAULT_ROOT)
-    args = parser.parse_args(argv or [])
-    run_hgb(seed=args.seed, output_path=args.output, root=args.root)
-
-
-if __name__ == "__main__":
-    main()
