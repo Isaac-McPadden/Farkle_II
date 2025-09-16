@@ -2,14 +2,14 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
-from farkle.analysis import aggregate
+from farkle.analysis import combine
 
 def _write_curated(path: Path, schema: pa.Schema, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tbl = pa.Table.from_pylist(rows, schema=schema)
     pq.write_table(tbl, path)
 
-def test_aggregate_pads_and_counts(tmp_path: Path) -> None:
+def test_combine_pads_and_counts(tmp_path: Path) -> None:
     cfg = PipelineCfg(results_dir=tmp_path)
     # create per-N curated files
     p1 = cfg.ingested_rows_curated(1)
@@ -22,8 +22,8 @@ def test_aggregate_pads_and_counts(tmp_path: Path) -> None:
     _write_curated(p2, schema2, [
         {"winner": "P1", "n_rounds": 1, "winning_score": 200, "P1_strategy": "A", "P2_strategy": "B", "P1_rank": 1, "P2_rank": 2},
     ])
-    # run aggregate
-    aggregate.run(cfg)
+    # run combine
+    combine.run(cfg)
     out = cfg.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
     pf = pq.ParquetFile(out)
     assert pf.metadata.num_rows == 2

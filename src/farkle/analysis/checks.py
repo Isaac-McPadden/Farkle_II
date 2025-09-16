@@ -19,7 +19,7 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     Parameters
     ----------
     combined_parquet:
-        Path to the aggregated parquet produced by :mod:`aggregate`.
+        Path to the combined parquet produced by :mod:`combine`.
     winner_col:
         Name of the column holding the winner label.
     """
@@ -74,20 +74,20 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     log.info("✓ check_pre_metrics OK")
 
 
-def check_post_aggregate(
+def check_post_combine(
     curated_files: list[Path],
     combined_parquet: Path,
     max_players: int = 12,
 ) -> None:
     """Assert sum(rows per N) == combined rows; schema has P1..P12 templates."""
     if not combined_parquet.exists():
-        raise RuntimeError(f"check_post_aggregate: missing {combined_parquet}")
+        raise RuntimeError(f"check_post_combine: missing {combined_parquet}")
 
     try:
         combined_pf = pq.ParquetFile(combined_parquet)
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(
-            f"check_post_aggregate: unable to read {combined_parquet}: {e}"
+            f"check_post_combine: unable to read {combined_parquet}: {e}"
         ) from e
     combined_rows = combined_pf.metadata.num_rows
 
@@ -96,16 +96,16 @@ def check_post_aggregate(
         try:
             total_rows += pq.ParquetFile(f).metadata.num_rows
         except Exception as e:  # noqa: BLE001
-            raise RuntimeError(f"check_post_aggregate: unable to read {f}: {e}") from e
+            raise RuntimeError(f"check_post_combine: unable to read {f}: {e}") from e
     if combined_rows != total_rows:
         raise RuntimeError(
-            "check_post_aggregate: row-count mismatch "
+            "check_post_combine: row-count mismatch "
             f"{combined_rows} != {total_rows}"
         )
 
     expected = expected_schema_for(max_players).names
     actual = pq.read_schema(combined_parquet).names
     if actual != expected:
-        raise RuntimeError("check_post_aggregate: output schema mismatch")
+        raise RuntimeError("check_post_combine: output schema mismatch")
 
-    log.info("✓ check_post_aggregate OK")
+    log.info("✓ check_post_combine OK")

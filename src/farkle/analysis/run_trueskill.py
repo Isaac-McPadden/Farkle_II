@@ -47,8 +47,8 @@ DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 _DEFAULT_WORKERS = 1
 
 
-def _find_aggregate_parquet(base: Path | None) -> Path | None:
-    """Return path to aggregated ``all_ingested_rows.parquet`` if it exists.
+def _find_combined_parquet(base: Path | None) -> Path | None:
+    """Return path to combined ``all_ingested_rows.parquet`` if it exists.
 
     The *base* argument may point to a results directory or directly to the
     ``analysis/data`` directory. This helper tries a few common locations and
@@ -270,7 +270,7 @@ def _rate_single_pass(
     batch_rows: int,
     checkpoint_every_batches: int = 500,
 ) -> tuple[dict[str, RatingStats], int]:
-    """Stream all games from a single aggregated parquet, with checkpoint/resume."""
+    """Stream all games from a single combined parquet, with checkpoint/resume."""
     # Find n from schema (max seat present)
     schema = pq.read_schema(source)
     names = set(schema.names)
@@ -829,12 +829,12 @@ def main(argv: list[str] | None = None) -> None:
         "--single-pass-from",
         type=Path,
         default=None,
-        help="Path to aggregated all_ingested_rows.parquet (single-pass mode).",
+        help="Path to combined all_ingested_rows.parquet (single-pass mode).",
     )
     parser.add_argument(
         "--no-single-pass",
         action="store_true",
-        help="Force legacy per-N mode even if aggregate is present.",
+        help="Force legacy per-N mode even if the combined superset is present.",
     )
     parser.add_argument(
         "--resume",
@@ -887,9 +887,11 @@ def main(argv: list[str] | None = None) -> None:
 
     # Decide single-pass source
     if not args.no_single_pass:
-        agg = args.single_pass_from or _find_aggregate_parquet(args.dataroot or cfg.data_dir)
+        combined_path = args.single_pass_from or _find_combined_parquet(
+            args.dataroot or cfg.data_dir
+        )
     else:
-        agg = None
+        combined_path = None
 
     # Prepare TrueSkill env kwargs from config (e.g., beta)
     env_kwargs = {"beta": cfg.trueskill_beta}
@@ -904,12 +906,12 @@ def main(argv: list[str] | None = None) -> None:
     ck_path = args.checkpoint_path or (root / "trueskill.checkpoint.json")
     rk_path = args.ratings_checkpoint_path or (root / "ratings_checkpoint.parquet")
 
-    if agg and agg.exists():
-        log.info("TrueSkill: single-pass over %s (resume=%s)", agg, args.resume)
+    if combined_path and combined_path.exists():
+        log.info("TrueSkill: single-pass over %s (resume=%s)", combined_path, args.resume)
         root.mkdir(parents=True, exist_ok=True)
         env = trueskill.TrueSkill(**env_kwargs)
         pooled, games = _rate_single_pass(
-            agg,
+            combined_path,
             env=env,
             resume=args.resume,
             checkpoint_path=ck_path,
@@ -931,7 +933,7 @@ def main(argv: list[str] | None = None) -> None:
         log.info("TrueSkill single-pass complete: %d games, %d strategies", games, len(pooled))
         return
 
-    log.info("TrueSkill: aggregate not found or disabled; using per-N legacy flow.")
+    log.info("TrueSkill: combined parquet not found or disabled; using per-N legacy flow.")
     run_trueskill(
         output_seed=args.output_seed,
         root=args.root,

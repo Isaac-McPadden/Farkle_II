@@ -124,7 +124,7 @@ class PipelineCfg:
     def curated_parquet(self) -> Path:
         legacy = self.analysis_dir / "data" / self.curated_rows_name
         combined = self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
-        # Prefer aggregated superset if present; fallback to legacy path
+        # Prefer combined superset if present; fallback to legacy path
         return combined if combined.exists() or not legacy.exists() else legacy
       
     def to_json(self) -> str:
@@ -248,7 +248,7 @@ class Ingest(BaseModel):
     n_jobs: int = 1
 
 
-class Aggregate(BaseModel):
+class Combine(BaseModel):
     max_players: int = 12
 
 
@@ -282,7 +282,7 @@ class Config(BaseModel):
     experiment: Experiment
     io: IO
     ingest: Ingest = Ingest()
-    aggregate: Aggregate = Aggregate()
+    combine: Combine = Combine()
     metrics: Metrics = Metrics()
     trueskill: TrueSkillCfg = TrueSkillCfg()
     head2head: Head2Head = Head2Head()

@@ -7,7 +7,7 @@ from typing import Any, Sequence
 
 import yaml
 
-from farkle.analysis import curate, ingest, metrics
+from farkle.analysis import combine, curate, ingest, metrics
 from farkle.simulation.run_tournament import run_tournament
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
@@ -89,8 +89,9 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_sub = analyze_parser.add_subparsers(dest="an_cmd", required=True)
     analyze_sub.add_parser("ingest", help="Ingest raw CSV data")
     analyze_sub.add_parser("curate", help="Curate ingested data")
+    analyze_sub.add_parser("combine", help="Combine curated data into a superset parquet")
     analyze_sub.add_parser("metrics", help="Compute metrics")
-    analyze_sub.add_parser("pipeline", help="Run ingest→curate→metrics pipeline")
+    analyze_sub.add_parser("pipeline", help="Run ingest→curate→combine→metrics pipeline")
 
     return parser
 
@@ -130,11 +131,14 @@ def main(argv: Sequence[str] | None = None) -> None:
             ingest.run(pipeline_cfg)
         elif args.an_cmd == "curate":
             curate.run(pipeline_cfg)
+        elif args.an_cmd == "combine":
+            combine.run(pipeline_cfg)
         elif args.an_cmd == "metrics":
             metrics.run(pipeline_cfg)
         elif args.an_cmd == "pipeline":
             ingest.run(pipeline_cfg)
             curate.run(pipeline_cfg)
+            combine.run(pipeline_cfg)
             metrics.run(pipeline_cfg)
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")

@@ -57,9 +57,10 @@ compatible with `farkle.analysis.analysis_config.PipelineCfg`.
 Subcommands:
 - `ingest` – load raw CSV data into Parquet shards.
 - `curate` – post-process ingested data and update manifests.
+- `combine` – merge curated Parquet shards into a single superset file.
 - `metrics` – compute aggregate metrics (including TrueSkill ratings when
   enabled in the configuration).
-- `pipeline` – run `ingest`, `curate`, and `metrics` in sequence.
+- `pipeline` – run `ingest`, `curate`, `combine`, and `metrics` in sequence.
 
 Example usage:
 

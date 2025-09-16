@@ -7,7 +7,7 @@ io:
 ingest:
   row_group_size: 262144
   n_jobs: 3
-aggregate:
+combine:
   max_players: 12
 metrics:
   seat_range: [1, 12]
