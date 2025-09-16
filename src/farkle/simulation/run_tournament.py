@@ -29,8 +29,7 @@ from farkle.simulation.simulation import _play_game, generate_strategy_grid
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils import parallel
 from farkle.utils import random as urandom
-from farkle.utils.manifest import append_manifest_line
-from farkle.utils.writer import ParquetShardWriter
+from farkle.utils.streaming_loop import run_streaming_shard
 
 # from farkle.utils.logging import setup_info_logging, setup_warning_logging
 
@@ -260,20 +259,19 @@ def _run_chunk_metrics(
         if row_dir is not None and collect_rows:
             out = row_dir / f"rows_{getpid()}_{seed}.parquet"
             tbl = pa.Table.from_pylist(rows)
-            writer = ParquetShardWriter(str(out))
-            writer.write_batch(tbl)
-            writer.close()
-            if manifest_path is not None:
-                append_manifest_line(
-                    manifest_path,
-                    {
-                        "path": out.name,
-                        "rows": writer.rows_written,
-                        "n_players": _STATE.cfg.n_players if _STATE else None,
-                        "shuffle_seed": int(seed),
-                        "pid": getpid(),
-                    },
-                )
+            manifest_file = manifest_path or (row_dir / "manifest.jsonl")
+            run_streaming_shard(
+                out_path=str(out),
+                manifest_path=str(manifest_file),
+                schema=tbl.schema,
+                batch_iter=(tbl,),
+                manifest_extra={
+                    "path": out.name,
+                    "n_players": _STATE.cfg.n_players if _STATE else None,
+                    "shuffle_seed": int(seed),
+                    "pid": getpid(),
+                },
+            )
 
         # free memory for this shuffle
         rows.clear()
@@ -419,8 +417,10 @@ def run_tournament(
         assert row_output_directory is not None
         row_output_directory.mkdir(parents=True, exist_ok=True)
 
+    metrics_manifest_path: Path | None = None
     if metric_chunk_directory is not None:
         metric_chunk_directory.mkdir(parents=True, exist_ok=True)
+        metrics_manifest_path = metric_chunk_directory / "metrics_manifest.jsonl"
 
     mp.get_context("spawn")
 
@@ -465,7 +465,21 @@ def run_tournament(
                         for label in METRIC_LABELS
                         for strat, val in sums[label].items()
                     ]
-                    pq.write_table(pa.Table.from_pylist(rows), chunk_path)
+                    tbl = pa.Table.from_pylist(rows)
+                    manifest_file = metrics_manifest_path or (
+                        metric_chunk_directory / "metrics_manifest.jsonl"
+                    )
+                    run_streaming_shard(
+                        out_path=str(chunk_path),
+                        manifest_path=str(manifest_file),
+                        schema=tbl.schema,
+                        batch_iter=(tbl,),
+                        manifest_extra={
+                            "path": chunk_path.name,
+                            "chunk_index": done,
+                            "n_players": cfg.n_players,
+                        },
+                    )
                 else:
                     assert metric_sums is not None and metric_sq_sums is not None
                     for label in METRIC_LABELS:

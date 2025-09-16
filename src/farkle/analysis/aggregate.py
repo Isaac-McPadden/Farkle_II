@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
 from farkle.analysis.checks import check_post_aggregate
 from farkle.app_config import AppConfig
+from farkle.utils.streaming_loop import run_streaming_shard
 
 log = logging.getLogger("aggregate")
 
@@ -49,24 +50,49 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
             log.info("aggregate: outputs up-to-date - skipped")
             return
 
-    tmp = out.with_name(out.stem + ".in-progress.parquet")
-    if tmp.exists():
-        tmp.unlink()
-
     total = 0
-    writer = pq.ParquetWriter(tmp, target, compression=cfg.parquet_codec)
-    try:
+
+    def _iter_row_groups():
+        nonlocal total
         for p in files:
             pf = pq.ParquetFile(p)
             for i in range(pf.num_row_groups):
-                t = pf.read_row_group(i)          # small chunk in RAM
+                t = pf.read_row_group(i)  # small chunk in RAM
+                if t.num_rows == 0:
+                    continue
                 if t.schema.names != target.names:
-                    t = _pad_to_schema(t, target) # pad/reorder lazily
-                writer.write_table(t)
+                    t = _pad_to_schema(t, target)  # pad/reorder lazily
                 total += t.num_rows
-    finally:
-        writer.close()
-    tmp.replace(out)
+                yield t
+
+    batches = _iter_row_groups()
+    first = next(batches, None)
+    if first is None:
+        if out.exists():
+            out.unlink()
+        manifest_candidate = out.with_suffix(".manifest.jsonl")
+        if manifest_candidate.exists():
+            manifest_candidate.unlink()
+        log.info("aggregate: inputs produced zero rows - skipped")
+        return
+
+    def _all_batches():
+        yield first
+        yield from batches
+
+    manifest_path = out.with_suffix(".manifest.jsonl")
+    run_streaming_shard(
+        out_path=str(out),
+        manifest_path=str(manifest_path),
+        schema=target,
+        batch_iter=_all_batches(),
+        row_group_size=cfg.row_group_size,
+        compression=cfg.parquet_codec,
+        manifest_extra={
+            "path": out.name,
+            "source_files": len(files),
+        },
+    )
 
     # Sanity check: file opens and row-count matches
     pf_out = pq.ParquetFile(out)
