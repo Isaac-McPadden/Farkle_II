@@ -34,6 +34,7 @@ from trueskill import Rating
 
 from farkle.analysis.analysis_config import n_players_from_schema
 from farkle.utils.stats import build_tiers
+from farkle.utils.writer import atomic_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
 # Default location of tournament result blocks when no path is supplied
@@ -84,7 +85,9 @@ class _TSCheckpoint:
 
 
 def _save_ckpt(path: Path, ck: _TSCheckpoint) -> None:
-    path.write_text(json.dumps(asdict(ck)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(asdict(ck)))
 
 
 def _load_ckpt(path: Path) -> Optional[_TSCheckpoint]:
@@ -124,9 +127,8 @@ def _ratings_to_table(
 
 
 def _write_parquet_atomic(table: pa.Table, path: Path, *, compression: str = "zstd") -> None:
-    tmp = path.with_name(path.name + ".tmp")
-    pq.write_table(table, tmp, compression=compression)
-    tmp.replace(path)
+    with atomic_path(str(path)) as tmp_path:
+        pq.write_table(table, tmp_path, compression=compression)
 
 
 def _save_ratings_parquet(
@@ -158,7 +160,9 @@ class _BlockCkpt:
 
 
 def _save_block_ckpt(path: Path, ck: _BlockCkpt) -> None:
-    path.write_text(json.dumps(asdict(ck)))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(asdict(ck)))
 
 
 def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
@@ -630,9 +634,12 @@ def _rate_block_worker(
     _save_ratings_parquet(parquet_path, ratings_stats)
 
     json_path = root / f"ratings_{player_count}{suffix}.json"
-    tmp_json = json_path.with_name(json_path.name + ".tmp")
-    tmp_json.write_text(json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()}))
-    tmp_json.replace(json_path)
+    with atomic_path(str(json_path)) as tmp_path:
+        Path(tmp_path).write_text(
+            json.dumps(
+                {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()}
+            )
+        )
 
     return player_count, n_games
 
@@ -766,12 +773,13 @@ def run_trueskill(
     _save_ratings_parquet(pooled_parquet, pooled_stats)
     pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled_stats.items()}
     pooled_json_path = root / f"ratings_pooled{suffix}.json"
-    tmp_pool_json = pooled_json_path.with_name(pooled_json_path.name + ".tmp")
-    tmp_pool_json.write_text(json.dumps(pooled_json))
-    tmp_pool_json.replace(pooled_json_path)
+    with atomic_path(str(pooled_json_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(pooled_json))
     tiers = build_tiers(
         means={k: v.mu for k, v in pooled_stats.items()},
         stdevs={k: v.sigma for k, v in pooled_stats.items()},
     )
-    with (root / "tiers.json").open("w") as fh:
-        json.dump(tiers, fh, indent=2, sort_keys=True)
+    tiers_path = root / "tiers.json"
+    with atomic_path(str(tiers_path)) as tmp_path:
+        with Path(tmp_path).open("w") as fh:
+            json.dump(tiers, fh, indent=2, sort_keys=True)

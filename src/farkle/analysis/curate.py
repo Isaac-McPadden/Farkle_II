@@ -17,6 +17,7 @@ from farkle.analysis.analysis_config import (
     n_players_from_schema,
 )
 from farkle.app_config import AppConfig
+from farkle.utils.writer import atomic_path
 
 log = logging.getLogger(__name__)
 
@@ -50,7 +51,9 @@ def _write_manifest(
         .isoformat(timespec="seconds")
         .replace("+00:00", "Z"),
     }
-    manifest_path.write_text(json.dumps(payload, indent=2))
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(manifest_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(payload, indent=2))
     log.info("✓ manifest → %s", manifest_path)
 
 
@@ -97,7 +100,6 @@ def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
 def run(cfg: AppConfig | PipelineCfg) -> None:
     cfg = _pipeline_cfg(cfg)
     """Curate raw parquet files produced by :func:`farkle.ingest.run`."""
-    log = logging.getLogger("curate")
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
     # Ensure existing curated files always have a manifest

@@ -30,6 +30,7 @@ from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils import parallel
 from farkle.utils import random as urandom
 from farkle.utils.streaming_loop import run_streaming_shard
+from farkle.utils.writer import atomic_path
 
 # from farkle.utils.logging import setup_info_logging, setup_warning_logging
 
@@ -310,7 +311,9 @@ def _save_checkpoint(
     if sums is not None and sq_sums is not None:
         payload["metric_sums"] = sums
         payload["metric_square_sums"] = sq_sums
-    path.write_bytes(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(path)) as tmp_path:
+        Path(tmp_path).write_bytes(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
 
 
 # ---------------------------------------------------------------------------

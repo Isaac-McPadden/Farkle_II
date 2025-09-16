@@ -12,6 +12,7 @@ from scipy.stats import binomtest
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy
 from farkle.utils.stats import bonferroni_pairs, games_for_power
+from farkle.utils.writer import atomic_path
 
 DEFAULT_ROOT = Path("results_seed_0")
 
@@ -72,8 +73,7 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
         records.append({"a": a, "b": b, "wins_a": wa, "wins_b": wb, "pvalue": pval})
 
     out = pd.DataFrame(records)
-    pairwise_parquet.parent.mkdir(exist_ok=True)
+    pairwise_parquet.parent.mkdir(parents=True, exist_ok=True)
 
-    tmp_path = pairwise_parquet.with_suffix(".tmp")
-    out.to_csv(tmp_path, index=False)
-    tmp_path.replace(pairwise_parquet)
+    with atomic_path(str(pairwise_parquet)) as tmp_path:
+        out.to_csv(tmp_path, index=False)

@@ -13,6 +13,7 @@ from farkle import analysis
 from farkle.analysis import combine, curate, ingest, metrics
 from farkle.analysis.analysis_config import load_config
 from farkle.app_config import AppConfig
+from farkle.utils.writer import atomic_path
 
 if TYPE_CHECKING:  # for type checkers without creating runtime deps
     from farkle.analysis.analysis_config import PipelineCfg  # noqa: F401
@@ -37,7 +38,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     analysis_dir = app_cfg.analysis.analysis_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
     resolved = analysis_dir / "config.resolved.yaml"
-    resolved.write_text(yaml.safe_dump(cfg.model_dump(), sort_keys=True))
+    with atomic_path(str(resolved)) as tmp_path:
+        Path(tmp_path).write_text(yaml.safe_dump(cfg.model_dump(), sort_keys=True))
 
     manifest_path = analysis_dir / app_cfg.analysis.manifest_name
     manifest = {}
@@ -47,7 +49,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception:  # noqa: BLE001
             manifest = {}
     manifest["config_sha"] = cfg_sha
-    manifest_path.write_text(json.dumps(manifest, indent=2))
+    with atomic_path(str(manifest_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(manifest, indent=2))
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
 

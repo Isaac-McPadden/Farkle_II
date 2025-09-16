@@ -20,6 +20,8 @@ import pandas as pd
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 
+from farkle.utils.writer import atomic_path
+
 # ---------------------------------------------------------------------------
 # Constants for file and directory locations used in this module
 # ---------------------------------------------------------------------------
@@ -69,10 +71,11 @@ def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
             features=[column],
         )
     out_file = out_dir / f"pd_{column}.png"
-    tmp_file = out_file.with_suffix(".tmp")
-    disp.figure_.savefig(tmp_file, format="png")
-    plt.close(disp.figure_)
-    tmp_file.replace(out_file)
+    try:
+        with atomic_path(str(out_file)) as tmp_path:
+            disp.figure_.savefig(tmp_path, format="png")
+    finally:
+        plt.close(disp.figure_)
     return out_file
 
 
@@ -188,15 +191,10 @@ def run_hgb(
     if output_path is None:
         output_path = root / "hgb_importance.json"
 
-    output_path.parent.mkdir(exist_ok=True)
-    tmp_output = output_path.with_suffix(".tmp")
-    try:
-        with tmp_output.open("w") as fh:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(output_path)) as tmp_path:
+        with Path(tmp_path).open("w") as fh:
             json.dump(imp_dict, fh, indent=2, sort_keys=True)
-        tmp_output.replace(output_path)
-    except Exception:
-        tmp_output.unlink(missing_ok=True)
-        raise
 
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     cols = list(features.columns)

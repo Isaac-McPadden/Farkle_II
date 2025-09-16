@@ -14,6 +14,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from farkle.utils.writer import atomic_path
 __all__ = [
     "main",
     "analyze_all",
@@ -68,7 +69,9 @@ def write_done(
         "version": 1,
         "created_at": datetime.utcnow().isoformat(),
     }
-    done_path.write_text(json.dumps(stamp, indent=2, sort_keys=True))
+    done_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(done_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(stamp, indent=2, sort_keys=True))
 
 
 def is_up_to_date(done_path: Path, inputs: list[Path], outputs: list[Path]) -> bool:
