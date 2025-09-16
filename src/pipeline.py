@@ -29,7 +29,7 @@ __all__ = [
 def main(argv: object | None = None) -> int:
     """Thin wrapper importing :func:`farkle.pipeline.main` lazily."""
 
-    from farkle.pipeline import main as _main
+    from farkle.analysis.pipeline import main as _main
 
     return _main(argv) # pyright: ignore[reportArgumentType]
 
@@ -104,9 +104,9 @@ def analyze_trueskill(exp_dir: Path) -> None:
         return
 
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    from farkle import run_trueskill as _rt
+    from farkle.analysis import run_trueskill as _rt
 
-    _rt.main(["--dataroot", str(exp_dir), "--root", str(analysis_dir)])
+    _rt.run_trueskill(root=analysis_dir, dataroot=exp_dir)
     write_done(done, inputs, [out], "farkle.analytics.trueskill")
     print("trueskill")
 
@@ -125,7 +125,7 @@ def analyze_h2h(exp_dir: Path) -> None:
         return
 
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    from farkle import run_bonferroni_head2head as _h2h
+    from farkle.analysis import run_bonferroni_head2head as _h2h
 
     _h2h.run_bonferroni_head2head(root=exp_dir, n_jobs=1)
     write_done(done, inputs, [out], "farkle.analytics.head2head")
@@ -147,7 +147,7 @@ def analyze_hgb(exp_dir: Path) -> None:
         return
 
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    from farkle import run_hgb as _hgb
+    from farkle.analysis import run_hgb as _hgb
 
     _hgb.run_hgb(root=analysis_dir, output_path=out)
     write_done(done, inputs, [out], "farkle.analytics.hgb")

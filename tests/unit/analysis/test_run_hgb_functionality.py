@@ -153,7 +153,7 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
     assert plotted == [f"feat{i}" for i in range(run_hgb.MAX_PD_PLOTS)]
 
 
-def test_main_default_output(tmp_path, monkeypatch):
+def test_run_hgb_default_output(tmp_path, monkeypatch):
     data_dir = _setup_data(tmp_path)
 
     class DummyModel:
@@ -178,5 +178,5 @@ def test_main_default_output(tmp_path, monkeypatch):
         lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
     )
 
-    run_hgb.main(["--root", str(data_dir)])
+    run_hgb.run_hgb(root=data_dir)
     assert (data_dir / "hgb_importance.json").exists()

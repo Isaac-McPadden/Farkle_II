@@ -109,17 +109,3 @@ def test_run_bonferroni_head2head_empty_file(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="No tiers found"):
         rb.run_bonferroni_head2head(root=data_dir)
-
-
-def test_main_delegates_to_runner(monkeypatch):
-    captured = {}
-
-    def fake_run(seed: int = 0, root=None, n_jobs: int = 1) -> None:  # noqa: ANN001
-        _ = root
-        captured["seed"] = seed
-        captured["n_jobs"] = n_jobs
-
-    monkeypatch.setattr(rb, "run_bonferroni_head2head", fake_run)
-    rb.main(["--seed", "42", "--root", "d", "--jobs", "5"])
-    assert captured["seed"] == 42
-    assert captured["n_jobs"] == 5

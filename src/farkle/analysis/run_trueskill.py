@@ -1,22 +1,20 @@
 # src/farkle/run_trueskill.py
 """Compute TrueSkill ratings for Farkle strategies.
 
-The script scans a directory of tournament results, updates ratings with the
-``trueskill`` package and writes per-block as well as pooled rating files.
-
-Key CLI flags
--------------
---dataroot   Directory containing <N>_players blocks            (default: data/results)
---root       Output directory for analysis artefacts            (default: <dataroot>/analysis)
+The helpers in this module scan a directory of tournament results, update
+ratings with the :mod:`trueskill` package, and write both per-block and pooled
+rating files.  Historically this module exposed a standalone command line
+interface; the new configuration-driven CLI calls :func:`run_trueskill`
+directly, so the parsing layer has been removed.
 
 Outputs
 -------
-ratings_<N>.parquet(*), ratings_pooled.parquet - Parquet tables with columns {strategy, mu, sigma}
-tiers.json - mapping of strategy → tier
+``ratings_<N>.parquet`` and ``ratings_pooled.parquet``
+    Parquet tables with columns ``{strategy, mu, sigma}``.
+``tiers.json``
+    Mapping of strategy → tier derived from the pooled ratings.
 """
 from __future__ import annotations
-
-import argparse
 import concurrent.futures as cf
 import json
 import logging
@@ -34,7 +32,7 @@ import trueskill
 import yaml
 from trueskill import Rating
 
-from farkle.analysis.analysis_config import PipelineCfg, n_players_from_schema
+from farkle.analysis.analysis_config import n_players_from_schema
 from farkle.utils.stats import build_tiers
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
@@ -44,9 +42,6 @@ DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results"
 log = logging.getLogger(__name__)
 
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
-_DEFAULT_WORKERS = 1
-
-
 def _find_combined_parquet(base: Path | None) -> Path | None:
     """Return path to combined ``all_ingested_rows.parquet`` if it exists.
 
@@ -780,173 +775,3 @@ def run_trueskill(
     )
     with (root / "tiers.json").open("w") as fh:
         json.dump(tiers, fh, indent=2, sort_keys=True)
-
-
-def main(argv: list[str] | None = None) -> None:
-    """Entry point for the ``run_trueskill`` command line interface.
-
-    Parameters
-    ----------
-    argv : list[str] | None, optional
-        Arguments to parse instead of ``sys.argv``. Each argument should be a
-        separate element in the list.
-
-    Side Effects
-    ------------
-    Invokes :func:`run_trueskill`, which writes rating and tier files to
-    ``--root`` (default ``<dataroot>/analysis``).
-    """
-    parser = argparse.ArgumentParser(description="Compute TrueSkill ratings")
-    parser.add_argument(
-        "--output-seed", type=int, default=0,
-        help="appended to filenames to avoid overwrites",
-    )
-    parser.add_argument(
-        "--dataroot",
-        type=Path,
-        default=None,
-        help=(
-            "Folder that holds <N>_players blocks "
-            "(default: <root>/results or <repo>/data/results). "
-            "Accepts absolute or relative paths."
-        ),
-    )
-    parser.add_argument(
-        "--root", type=Path, default=None,
-        help="output directory (default: <dataroot>/analysis)",
-    )
-    parser.add_argument(
-        "--workers", type=int, default=None,
-        help="process <N>_players blocks in parallel (default: cpu_count-1)",
-    )
-    parser.add_argument(
-        "--batch-rows",
-        type=int,
-        default=None,
-        help="Arrow batch size for streaming readers (default from PipelineCfg)",
-    )
-    parser.add_argument(
-        "--single-pass-from",
-        type=Path,
-        default=None,
-        help="Path to combined all_ingested_rows.parquet (single-pass mode).",
-    )
-    parser.add_argument(
-        "--no-single-pass",
-        action="store_true",
-        help="Force legacy per-N mode even if the combined superset is present.",
-    )
-    parser.add_argument(
-        "--resume",
-        dest="resume",
-        action="store_true",
-        default=True,
-        help="Resume from checkpoint if present (default: on).",
-    )
-    parser.add_argument(
-        "--no-resume",
-        dest="resume",
-        action="store_false",
-        help="Ignore checkpoint and start fresh.",
-    )
-    parser.add_argument(
-        "--no-resume-per-n",
-        dest="resume_per_n",
-        action="store_false",
-        default=True,
-        help="Disable per-N resume (default: resume).",
-    )
-    parser.add_argument(
-        "--checkpoint-every-batches",
-        type=int,
-        default=500,
-        help="Checkpoint every N batches (default 500).",
-    )
-    parser.add_argument(
-        "--checkpoint-path",
-        type=Path,
-        default=None,
-        help="Where to save the checkpoint JSON (default: <root>/trueskill.checkpoint.json).",
-    )
-    parser.add_argument(
-        "--ratings-checkpoint-path",
-        type=Path,
-        default=None,
-        help="Where to save interim ratings parquet (default: <root>/ratings_checkpoint.parquet).",
-    )
-    # Pull batch/worker policy from PipelineCfg (falls back to CLI if not set).
-    cfg, _, _ = PipelineCfg.parse_cli([])
-    cfg_workers = cfg.trueskill_workers if cfg.trueskill_workers is not None else _DEFAULT_WORKERS
-    cfg_batch_rows = cfg.batch_rows
-
-    args = parser.parse_args(argv or [])
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-
-    cfg_workers = args.workers or cfg_workers
-    cfg_batch_rows = args.batch_rows or cfg_batch_rows
-
-    # Decide single-pass source
-    if not args.no_single_pass:
-        combined_path = args.single_pass_from or _find_combined_parquet(
-            args.dataroot or cfg.data_dir
-        )
-    else:
-        combined_path = None
-
-    # Prepare TrueSkill env kwargs from config (e.g., beta)
-    env_kwargs = {"beta": cfg.trueskill_beta}
-
-    # Default checkpoint locations
-    if args.root:
-        root = Path(args.root)
-    elif args.dataroot:
-        root = Path(args.dataroot) / "analysis"
-    else:
-        root = DEFAULT_DATAROOT / "analysis"
-    ck_path = args.checkpoint_path or (root / "trueskill.checkpoint.json")
-    rk_path = args.ratings_checkpoint_path or (root / "ratings_checkpoint.parquet")
-
-    if combined_path and combined_path.exists():
-        log.info("TrueSkill: single-pass over %s (resume=%s)", combined_path, args.resume)
-        root.mkdir(parents=True, exist_ok=True)
-        env = trueskill.TrueSkill(**env_kwargs)
-        pooled, games = _rate_single_pass(
-            combined_path,
-            env=env,
-            resume=args.resume,
-            checkpoint_path=ck_path,
-            ratings_ckpt_path=rk_path,
-            batch_rows=cfg_batch_rows,
-            checkpoint_every_batches=args.checkpoint_every_batches,
-        )
-        suffix = f"_seed{args.output_seed}" if args.output_seed else ""
-        (root / f"ratings_pooled{suffix}.json").write_text(
-            json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled.items()})
-        )
-        _save_ratings_parquet(root / f"ratings_pooled{suffix}.parquet", pooled)
-        tiers = build_tiers(
-            means={k: v.mu for k, v in pooled.items()},
-            stdevs={k: v.sigma for k, v in pooled.items()},
-        )
-        with (root / "tiers.json").open("w") as fh:
-            json.dump(tiers, fh, indent=2, sort_keys=True)
-        log.info("TrueSkill single-pass complete: %d games, %d strategies", games, len(pooled))
-        return
-
-    log.info("TrueSkill: combined parquet not found or disabled; using per-N legacy flow.")
-    run_trueskill(
-        output_seed=args.output_seed,
-        root=args.root,
-        dataroot=args.dataroot,
-        workers=cfg_workers,
-        batch_rows=cfg_batch_rows,
-        resume_per_n=args.resume_per_n,
-        checkpoint_every_batches=args.checkpoint_every_batches,
-        env_kwargs=env_kwargs,
-    )
-
-
-if __name__ == "__main__":
-    import sys
-
-    main(sys.argv[1:])
