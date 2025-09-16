@@ -1,91 +1,73 @@
 # CLI Reference
 
-This document lists the command line entry points provided by the repository and their options.
+The repository exposes a single console entry point: `farkle`.  You can invoke
+it directly or via `python -m farkle`.
 
-## `farkle`
-Invoke with `farkle` or `python -m farkle`.
+```text
+farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
+```
+
+## Global options
+
+- `--config PATH` – load YAML configuration data and pass it to the chosen
+  subcommand.  The mapping is unpacked as keyword arguments, so the keys should
+  match the function parameters used by that command (for example, the
+  arguments of `farkle.simulation.run_tournament.run_tournament`).
+- `--set KEY=VALUE` – apply inline overrides to the loaded configuration.  The
+  option may be repeated.  Keys may include dots to create nested mappings and
+  the values are parsed with `yaml.safe_load`, allowing booleans, integers,
+  lists, and other simple YAML literals.
+- `--log-level LEVEL` – configure the root logger before the command runs.
+
+## Subcommands
+
+### `run`
+Run a Monte Carlo tournament.
+
+Options:
+- `--metrics` – collect per-strategy summary metrics as well as win counts.
+- `--row-dir PATH` – write per-game rows to the given directory (Parquet).
+
+Example usage:
+
+```bash
+# configs/tournament.yaml contains run_tournament keyword arguments such as
+# n_players, num_shuffles, checkpoint_path, n_jobs, etc.
+farkle --config configs/tournament.yaml \
+  --set n_jobs=6 \
+  --set global_seed=42 \
+  run --metrics --row-dir data/results_seed_42/rows
+```
+
+### `time`
+Benchmark simulation throughput.  This forwards to
+`farkle.simulation.time_farkle.measure_sim_times` and accepts the same options
+as that helper.  Use `farkle time --help` for the full list.
+
+### `watch`
+Interactively watch a single game play out.
+
+Options:
+- `--seed INT` – seed the RNG for deterministic behaviour.
+
+### `analyze`
+Convenience wrapper around the analysis pipeline.  Requires configuration
+compatible with `farkle.analysis.analysis_config.PipelineCfg`.
 
 Subcommands:
-- `run <config>` – run a tournament using a YAML configuration file where `config` is the path to the file.
+- `ingest` – load raw CSV data into Parquet shards.
+- `curate` – post-process ingested data and update manifests.
+- `metrics` – compute aggregate metrics (including TrueSkill ratings when
+  enabled in the configuration).
+- `pipeline` – run `ingest`, `curate`, and `metrics` in sequence.
 
-## `time-farkle`
-Measure timings for single and multiple games.
+Example usage:
 
-Options:
-- `-n, --n_games` *(default 1000)* – number of games to simulate in the batch.
-- `-p, --players` *(default 5)* – number of players per game.
-- `-s, --seed` *(default 42)* – master seed for reproducible RNG.
-- `-j, --jobs` *(default 1)* – number of parallel processes.
+```bash
+farkle --config analysis/pipeline.yaml \
+  --set run_trueskill=true \
+  analyze pipeline
+```
 
-## `run-full-field`
-Sweep tournaments across table sizes.
-
-Options:
-- `--results-dir PATH` *(default `results_seed_0`)* – directory to store tournament results.
-- `--force-clean` – remove existing row directories when final parquets are present.
-
-## `watch-game`
-Play a verbose two‑player game. No CLI options; strategies are random.
-
-## `farkle-analyze`
-Run parts of the analysis pipeline. Can also be invoked with `python -m farkle.pipeline`.
-
-Options:
-- `--config PATH` *(default `analysis_config.yaml`)* – path to pipeline YAML configuration.
-
-Subcommands:
-- `ingest`, `curate`, `aggregate`, `metrics`, `analytics`, `all` – run the specified pipeline stage.
-
-## `python -m farkle.ingest`
-Ingest raw tournament results.
-
-Options:
-- `--config PATH` *(default `analysis_config.yaml`)* – path to pipeline YAML configuration.
-
-## `python -m farkle.run_tournament`
-Run a Monte‑Carlo tournament.
-
-Options:
-- `--seed INT` *(default 0)* – global RNG seed.
-- `--checkpoint PATH` *(default `checkpoint.pkl`)* – pickle output for checkpoints.
-- `--jobs INT` – number of worker processes.
-- `--ckpt-sec INT` *(default 30)* – seconds between saves.
-- `--metrics` – collect per‑strategy means and variances.
-- `--num-shuffles INT` *(default 5907)* – number of shuffles to simulate.
-- `--row-dir DIR` – write full per‑game rows to directory as parquet.
-- `--metric-chunk-dir DIR` – write per‑chunk metric aggregates.
-- `--log_level {DEBUG,INFO,WARNING}` *(default INFO)* – logging verbosity.
-
-## `python -m farkle.run_trueskill`
-Compute TrueSkill ratings.
-
-Options:
-- `--output-seed INT` *(default 0)* – append seed to output filenames.
-- `--dataroot PATH` – folder containing `<N>_players` blocks.
-- `--root PATH` – output directory (defaults to `<dataroot>/analysis`).
-- `--workers INT` – process blocks in parallel.
-- `--batch-rows INT` – Arrow batch size for streaming readers.
-- `--single-pass-from PATH` – path to aggregated rows for single-pass mode.
-- `--no-single-pass` – force legacy per‑N mode.
-- `--resume/--no-resume` – resume from checkpoint (default) or start fresh.
-- `--no-resume-per-n` – disable per‑N resume.
-- `--checkpoint-every-batches INT` *(default 500)* – batches between checkpoints.
-- `--checkpoint-path PATH` – where to save checkpoint JSON.
-- `--ratings-checkpoint-path PATH` – where to save interim ratings parquet.
-
-## `python -m farkle.run_hgb`
-Fit a HistGradientBoostingRegressor to ratings and metrics.
-
-Options:
-- `--seed INT` *(default 0)* – random seed for model fitting.
-- `-o, --output PATH` – location to write `hgb_importance.json`.
-- `--root PATH` *(default `results_seed_0`)* – root directory for inputs.
-
-## `python -m farkle.run_bonferroni_head2head`
-Run pairwise Bonferroni-corrected matches between top strategies.
-
-Options:
-- `--seed INT` *(default 0)* – base seed for schedule generation.
-- `--root PATH` *(default `results_seed_0`)* – directory containing `tiers.json` and outputs.
-- `--jobs INT` *(default 1)* – number of worker processes.
-
+Use `--help` on any subcommand for additional details, e.g.
+`farkle analyze metrics --help`.

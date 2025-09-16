@@ -1,7 +1,7 @@
 # Farkle Mk II
 
 + Fast Monte Carlo engine built to stream 100M+ games with bounded RAM.
-+ • CLI: `farkle run <cfg.yml>`  (subcommands: run, time, full-field, trueskill)
++ • CLI: unified `farkle` command with subcommands: run, time, watch, analyze
 + • Streaming Parquet shards (Snappy), atomic temp→rename, append-only manifest
 + • Resume-safe restarts; structured logs per worker
 
@@ -11,7 +11,7 @@
 - Threshold strategy framework for roll or bank decisions (`strategies.py`)
 - Batch simulation utilities for exploring strategy grids (`simulation.py`)
 - Streaming output for large runs (``utils.parallel``)
-- Command line interface: `farkle run <cfg.yml>`
+- Command line interface: `farkle [--config FILE] <command>`
 - Statistical helper to size experiments (`stats.py`)
 
 ## Installation
@@ -23,15 +23,26 @@ pip install farkle
 
 ## Big Run Quick-Start (streaming & resume-safe)
 
-```bash
-# 6 workers, bounded RAM via batches + backpressure
-farkle run configs/players_2_12.yml \
-  --jobs 6 --log-level INFO \
-  -D io.results_dir=data/results_seed_42 \
-  -D parallelism.batch_size=50000 \
-  -D parallelism.queue_max=4 \
-  --resume
+Create a YAML file with the tournament parameters:
 
+```yaml
+# configs/tournament.yaml
+n_players: 5
+num_shuffles: 300
+global_seed: 42
+n_jobs: 6
+checkpoint_path: data/checkpoints/seed_42.pkl
+```
+
+Then launch a run:
+
+```bash
+# Override selected values without editing the file
+farkle --config configs/tournament.yaml \
+  --set num_shuffles=500 \
+  --log-level INFO \
+  run --metrics --row-dir data/results_seed_42/rows
+```
 
 You can silence progress logs with `--log-level WARNING`.
 
@@ -86,7 +97,7 @@ mypy
 This project is licensed under the Apache 2.0 License.
 
 ## Project Usage
-Run `farkle run cfg.yml` to simulate tournaments from a configuration file or use
+Run `farkle --config cfg.yml run` to simulate tournaments from a configuration file or use
 the API as shown above. See the unit tests and module-level docstrings for more
 examples.
 
@@ -94,7 +105,7 @@ examples.
 Compute ratings for a directory of tournament results:
 
 ```bash
-python -m farkle.run_trueskill --dataroot data/results_seed_0
+farkle --config analysis/pipeline.yaml analyze metrics
 ```
 
 This scans `data/results_seed_0` for blocks and writes rating files and
