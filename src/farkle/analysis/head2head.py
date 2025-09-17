@@ -15,7 +15,7 @@ def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
 
 def run(cfg: AppConfig | PipelineCfg) -> None:
     cfg = _pipeline_cfg(cfg)
-    out = cfg.analysis_dir / "bonferroni_pairwise.csv"
+    out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
     if out.exists() and out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
         LOGGER.info(
             "Head-to-head results up-to-date",

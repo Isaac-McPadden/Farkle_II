@@ -1,5 +1,4 @@
 import os
-import pickle
 import shutil
 from pathlib import Path
 
@@ -57,12 +56,9 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
     finally:
         os.chdir(cwd)
 
-    with open(tmp_path / "data" / "ratings_2.pkl", "rb") as fh:
-        r2 = pickle.load(fh)
-    with open(tmp_path / "data" / "ratings_3.pkl", "rb") as fh:
-        r3 = pickle.load(fh)
-    with open(tmp_path / "data" / "ratings_pooled.pkl", "rb") as fh:
-        pooled = pickle.load(fh)
+    r2 = run_trueskill._load_ratings_parquet(tmp_path / "data" / "ratings_2.parquet")
+    r3 = run_trueskill._load_ratings_parquet(tmp_path / "data" / "ratings_3.parquet")
+    pooled = run_trueskill._load_ratings_parquet(tmp_path / "data" / "ratings_pooled.parquet")
 
     env = run_trueskill.trueskill.TrueSkill()
     g2 = [["A", "B"]] * 3

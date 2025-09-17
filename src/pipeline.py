@@ -119,7 +119,7 @@ def analyze_h2h(exp_dir: Path) -> None:
 
     exp_dir = Path(exp_dir)
     analysis_dir = exp_dir / "analysis"
-    out = analysis_dir / "bonferroni_pairwise.csv"
+    out = analysis_dir / "bonferroni_pairwise.parquet"
     done = _done_path(out)
     tiers = analysis_dir / "tiers.json"
     inputs = [tiers]

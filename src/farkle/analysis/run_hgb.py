@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
-import pickle
 import re
 import warnings
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import pandas as pd
+import pyarrow.parquet as pq
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 
@@ -33,6 +33,7 @@ MAX_PD_PLOTS = 30
 
 
 LOGGER = logging.getLogger(__name__)
+logger = LOGGER
 
 
 def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
@@ -98,7 +99,7 @@ def run_hgb(
     ``<root>/metrics.parquet``
         Per-strategy feature metrics.
     ``<root>/ratings_pooled.parquet``
-        Pickled mapping of strategy names to pooled ``(mu, sigma)`` tuples.
+        Parquet table of pooled ratings with columns ``{strategy, mu, sigma}``.
 
     Writes
     ------
@@ -123,21 +124,8 @@ def run_hgb(
     )
 
     metrics = pd.read_parquet(metrics_path)
-    with open(ratings_path, "rb") as fh:
-        ratings = pickle.load(fh)
-
-    def _get_mu(v):
-        if hasattr(v, "mu"):
-            return v.mu
-        if isinstance(v, dict) and "mu" in v:
-            return v["mu"]
-        if isinstance(v, (list, tuple)) and v:
-            return v[0]
-        raise TypeError("Unknown rating value type")
-
-    rating_df = pd.DataFrame(
-        {"strategy": list(ratings), "mu": [_get_mu(v) for v in ratings.values()]}
-    )
+    ratings_table = pq.read_table(ratings_path, columns=["strategy", "mu"])
+    rating_df = ratings_table.to_pandas()
     data = metrics.merge(rating_df, on="strategy", how="inner")
 
     # ------------------------------------------------------------------

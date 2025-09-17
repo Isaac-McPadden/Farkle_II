@@ -35,6 +35,7 @@ from trueskill import Rating
 from farkle.analysis.analysis_config import n_players_from_schema
 from farkle.utils.stats import build_tiers
 from farkle.utils.writer import atomic_path
+from farkle.utils.artifacts import write_parquet_atomic
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
 # Default location of tournament result blocks when no path is supplied
@@ -126,16 +127,11 @@ def _ratings_to_table(
     )
 
 
-def _write_parquet_atomic(table: pa.Table, path: Path, *, compression: str = "zstd") -> None:
-    with atomic_path(str(path)) as tmp_path:
-        pq.write_table(table, tmp_path, compression=compression)
-
-
 def _save_ratings_parquet(
     path: Path,
     ratings: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float]]],
 ) -> None:
-    _write_parquet_atomic(_ratings_to_table(ratings), path)
+    write_parquet_atomic(_ratings_to_table(ratings), path)
 
 
 def _load_ratings_parquet(path: Path) -> dict[str, "RatingStats"]:

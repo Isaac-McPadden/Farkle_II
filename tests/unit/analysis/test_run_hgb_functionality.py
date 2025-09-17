@@ -1,8 +1,6 @@
 import logging
 import os
-import pickle
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -16,12 +14,14 @@ def _setup_data(tmp_path: Path) -> Path:
     data_dir.mkdir()
     metrics = pd.DataFrame({"strategy": ["A", "B"], "feat": [1, 2]})
     metrics.to_parquet(data_dir / "metrics.parquet")
-    ratings = {
-        "A": run_trueskill.RatingStats(0.0, 1.0),
-        "B": run_trueskill.RatingStats(0.0, 1.0),
-    }
-    with open(data_dir / "ratings_pooled.pkl", "wb") as fh:
-        pickle.dump(ratings, fh)
+    ratings = pd.DataFrame(
+        {
+            "strategy": ["A", "B"],
+            "mu": [0.0, 0.0],
+            "sigma": [1.0, 1.0],
+        }
+    )
+    ratings.to_parquet(data_dir / "ratings_pooled.parquet")
     return data_dir
 
 
@@ -56,19 +56,16 @@ def test_run_hgb_importance_length_check(tmp_path, monkeypatch):
         os.chdir(cwd)
 
 
-@pytest.mark.parametrize(
-    "rating_val,mu",
-    [
-        (SimpleNamespace(mu=1.0), 1.0),
-        ({"mu": 2.0}, 2.0),
-        ([3.0, 0.5], 3.0),
-    ],
-)
-def test_get_mu_various_types(tmp_path, monkeypatch, rating_val, mu):
+def test_ratings_mu_values_used(tmp_path, monkeypatch):
     data_dir = _setup_data(tmp_path)
-    ratings = {"A": rating_val, "B": rating_val}
-    with open(data_dir / "ratings_pooled.pkl", "wb") as fh:
-        pickle.dump(ratings, fh)
+    ratings = pd.DataFrame(
+        {
+            "strategy": ["A", "B"],
+            "mu": [1.0, 2.0],
+            "sigma": [1.0, 1.0],
+        }
+    )
+    ratings.to_parquet(data_dir / "ratings_pooled.parquet")
 
     captured = {}
 
@@ -95,17 +92,7 @@ def test_get_mu_various_types(tmp_path, monkeypatch, rating_val, mu):
         lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
     )
     run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
-    assert captured["y"] == [mu, mu]
-
-
-def test_get_mu_unsupported_type(tmp_path):
-    data_dir = _setup_data(tmp_path)
-    ratings = {"A": object(), "B": object()}
-    with open(data_dir / "ratings_pooled.pkl", "wb") as fh:
-        pickle.dump(ratings, fh)
-
-    with pytest.raises(TypeError):
-        run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
+    assert captured["y"] == [1.0, 2.0]
 
 
 def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):

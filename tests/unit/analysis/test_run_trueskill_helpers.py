@@ -1,5 +1,4 @@
 import os
-import pickle
 
 import numpy as np
 import pandas as pd
@@ -164,12 +163,9 @@ def test_run_trueskill_incomplete_block(tmp_path):
     finally:
         os.chdir(cwd)
 
-    with open(data_root / "ratings_2.pkl", "rb") as fh:
-        good = pickle.load(fh)
-    with open(data_root / "ratings_3.pkl", "rb") as fh:
-        empty = pickle.load(fh)
-    with open(data_root / "ratings_pooled.pkl", "rb") as fh:
-        pooled = pickle.load(fh)
+    good = rt._load_ratings_parquet(data_root / "ratings_2.parquet")
+    empty = rt._load_ratings_parquet(data_root / "ratings_3.parquet")
+    pooled = rt._load_ratings_parquet(data_root / "ratings_pooled.parquet")
 
     assert good
     assert empty == {}
@@ -195,5 +191,5 @@ def test_run_trueskill_with_suffix(tmp_path):
     finally:
         os.chdir(cwd)
 
-    assert (data_root / "ratings_2_seed1.pkl").exists()
-    assert (data_root / "ratings_pooled_seed1.pkl").exists()
+    assert (data_root / "ratings_2_seed1.parquet").exists()
+    assert (data_root / "ratings_pooled_seed1.parquet").exists()
