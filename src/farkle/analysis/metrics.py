@@ -284,6 +284,18 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     # Atomic writes ------------------------------------------------------------
     _write_parquet(out_metrics, metrics_rows, metrics_schema)
 
+    if metrics_rows:
+        leader = max(metrics_rows, key=lambda row: row["wins"])
+        LOGGER.info(
+            "Metrics leaderboard computed",
+            extra={
+                "stage": "metrics",
+                "top_strategy": leader["strategy"],
+                "wins": leader["wins"],
+                "games": leader["games"],
+            },
+        )
+
     stamp.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(stamp)) as tmp_path:
         Path(tmp_path).write_text(

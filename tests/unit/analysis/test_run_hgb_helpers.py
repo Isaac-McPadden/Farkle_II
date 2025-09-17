@@ -1,4 +1,9 @@
 import pandas as pd
+import pytest
+
+pytest.importorskip("sklearn")
+pytest.importorskip("matplotlib")
+
 from sklearn.ensemble import HistGradientBoostingRegressor
 
 from farkle.analysis.run_hgb import plot_partial_dependence

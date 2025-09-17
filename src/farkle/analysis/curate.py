@@ -120,6 +120,9 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
         if not manifest.exists():
             raise FileNotFoundError(f"missing manifest for {curated}")
 
+    finalized_files = 0
+    finalized_rows = 0
+
     # New layout: analysis/data/*p/*_ingested_rows.raw.parquet
     raw_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.raw.parquet"))
     if raw_files:
@@ -142,6 +145,16 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
                     "row_groups": md.num_row_groups,
                 },
             )
+            finalized_files += 1
+            finalized_rows += md.num_rows
+        LOGGER.info(
+            "Curate finished",
+            extra={
+                "stage": "curate",
+                "files": finalized_files,
+                "rows": finalized_rows,
+            },
+        )
         return
 
     # Legacy single-file layout
@@ -153,6 +166,10 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
         LOGGER.info(
             "Curate: output up-to-date",
             extra={"stage": "curate", "path": dst_file.name},
+        )
+        LOGGER.info(
+            "Curate finished",
+            extra={"stage": "curate", "files": finalized_files, "rows": finalized_rows},
         )
         return
 
@@ -172,4 +189,10 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
             "rows": md.num_rows,
             "row_groups": md.num_row_groups,
         },
+    )
+    finalized_files += 1
+    finalized_rows += md.num_rows
+    LOGGER.info(
+        "Curate finished",
+        extra={"stage": "curate", "files": finalized_files, "rows": finalized_rows},
     )

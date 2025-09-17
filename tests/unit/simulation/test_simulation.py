@@ -138,3 +138,20 @@ def test_simulate_many_games_from_seeds_matches():
     df1 = simulate_many_games_from_seeds(seeds=seeds, strategies=strats, n_jobs=1)
     df2 = simulate_many_games(n_games=n_games, strategies=strats, seed=rng_seed, n_jobs=1)
     pd.testing.assert_frame_equal(df1, df2)
+
+
+def test_simulate_many_games_deterministic_counts():
+    strategies = [
+        ThresholdStrategy(score_threshold=0, dice_threshold=6),
+        ThresholdStrategy(score_threshold=500, dice_threshold=3),
+        ThresholdStrategy(score_threshold=1000, dice_threshold=2),
+    ]
+    df = simulate_many_games(
+        n_games=10,
+        strategies=strategies,
+        target_score=5000,
+        seed=123,
+        n_jobs=1,
+    )
+    counts = df["winner"].value_counts().to_dict()
+    assert counts == {"P3": 5, "P1": 3, "P2": 2}

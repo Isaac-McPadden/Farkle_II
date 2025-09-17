@@ -20,13 +20,104 @@ import hashlib
 import json
 import os
 import re
-from dataclasses import dataclass, field
+from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
-from typing import Final, Sequence
+from typing import Any, Final, Mapping, Sequence, Union, get_args, get_origin
 
 import pyarrow as pa
 import yaml
-from pydantic import BaseModel
+try:  # pragma: no cover - exercised in tests when dependency missing
+    from pydantic import BaseModel
+except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
+    import types as _types
+
+    def _is_model(cls: type[Any]) -> bool:
+        return isinstance(cls, type) and issubclass(cls, BaseModel)
+
+    def _coerce(value: Any, annotation: Any) -> Any:
+        origin = get_origin(annotation)
+        if origin is None:
+            if annotation in (Any, object):
+                return value
+            if annotation is Path and isinstance(value, (str, bytes)):
+                return Path(value)
+            if _is_model(annotation):
+                if isinstance(value, Mapping):
+                    return annotation(**value)  # type: ignore[arg-type]
+                return value
+            if isinstance(annotation, type) and isinstance(value, annotation):
+                return value
+            return value
+        if origin in (list, Sequence, tuple, set):
+            args = get_args(annotation) or (Any,)
+            coerced = [_coerce(v, args[0]) for v in value]
+            if origin is tuple:
+                return tuple(coerced)
+            if origin is set:
+                return set(coerced)
+            return list(coerced)
+        if origin in (dict, Mapping):
+            key_t, val_t = get_args(annotation) or (Any, Any)
+            return { _coerce(k, key_t): _coerce(v, val_t) for k, v in value.items() }
+        if origin in (_types.UnionType, Union):
+            for arg in get_args(annotation):
+                if arg is type(None):  # noqa: E721
+                    if value is None:
+                        return None
+                    continue
+                coerced = _coerce(value, arg)
+                if coerced is not value or isinstance(value, arg):
+                    return coerced
+            return value
+        return value
+
+    def _dump(value: Any) -> Any:
+        if isinstance(value, BaseModel):
+            return value.model_dump()
+        if isinstance(value, list):
+            return [_dump(v) for v in value]
+        if isinstance(value, tuple):
+            return tuple(_dump(v) for v in value)
+        if isinstance(value, set):
+            return {_dump(v) for v in value}
+        return value
+
+    class BaseModel:
+        def __init_subclass__(cls, **kwargs: Any) -> None:
+            annotations = getattr(cls, "__annotations__", {})
+            for name in annotations:
+                if hasattr(cls, name):
+                    default = getattr(cls, name)
+                    if isinstance(default, BaseModel):
+                        def _factory(template=default):
+                            return template.__class__(**template.model_dump())
+
+                        setattr(cls, name, field(default_factory=_factory))
+            dataclass(cls)
+
+            def __init__(self, **data: Any) -> None:
+                for f in fields(cls):
+                    if f.name in data:
+                        value = data.pop(f.name)
+                    elif f.default is not MISSING:
+                        value = f.default
+                    elif f.default_factory is not MISSING:  # type: ignore[arg-type]
+                        value = f.default_factory()
+                    else:
+                        raise TypeError(f"Missing required field {f.name}")
+                    setattr(self, f.name, _coerce(value, f.type))
+                if data:
+                    raise TypeError(f"Unexpected fields: {', '.join(sorted(data))}")
+
+            cls.__init__ = __init__  # type: ignore[assignment]
+
+            def model_dump(self) -> dict[str, Any]:
+                return {f.name: _dump(getattr(self, f.name)) for f in fields(self)}
+
+            cls.model_dump = model_dump  # type: ignore[assignment]
+
+        def model_dump(self) -> dict[str, Any]:  # pragma: no cover
+            return {}
 
 
 @dataclass
