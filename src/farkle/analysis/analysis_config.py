@@ -20,30 +20,39 @@ import hashlib
 import json
 import os
 import re
+from collections.abc import Mapping as MappingABC
 from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
-from typing import Any, Final, Mapping, Sequence, Union, get_args, get_origin
+from typing import Any, Final, Mapping, Sequence, Union, cast, get_args, get_origin
 
 import pyarrow as pa
 import yaml
 
 try:  # pragma: no cover - exercised in tests when dependency missing
-    from pydantic import BaseModel
+    from pydantic import BaseModel as _RuntimeBaseModel
 except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
     import types as _types
 
+    class _FallbackBaseModel:
+        def model_dump(self) -> dict[str, Any]:  # pragma: no cover
+            return {}
+
     def _is_model(cls: type[Any]) -> bool:
-        return isinstance(cls, type) and issubclass(cls, BaseModel)
+        return isinstance(cls, type) and issubclass(cls, _FallbackBaseModel)
 
     def _coerce(value: Any, annotation: Any) -> Any:
         origin = get_origin(annotation)
         if origin is None:
             if annotation in (Any, object):
                 return value
-            if annotation is Path and isinstance(value, (str, bytes)):
-                return Path(value)
+            if annotation is Path:
+                if isinstance(value, (str, os.PathLike)):
+                    return Path(value)
+                if isinstance(value, bytes):
+                    return Path(os.fsdecode(value))
+                return value
             if _is_model(annotation):
-                if isinstance(value, Mapping):
+                if isinstance(value, MappingABC):
                     return annotation(**value)  # type: ignore[arg-type]
                 return value
             if isinstance(annotation, type) and isinstance(value, annotation):
@@ -59,7 +68,9 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
             return list(coerced)
         if origin in (dict, Mapping):
             key_t, val_t = get_args(annotation) or (Any, Any)
-            return { _coerce(k, key_t): _coerce(v, val_t) for k, v in value.items() }
+            if isinstance(value, MappingABC):
+                return {_coerce(k, key_t): _coerce(v, val_t) for k, v in value.items()}
+            return value
         if origin in (_types.UnionType, Union):
             for arg in get_args(annotation):
                 if arg is type(None):  # noqa: E721
@@ -73,7 +84,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
         return value
 
     def _dump(value: Any) -> Any:
-        if isinstance(value, BaseModel):
+        if isinstance(value, _FallbackBaseModel):
             return value.model_dump()
         if isinstance(value, list):
             return [_dump(v) for v in value]
@@ -83,13 +94,13 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
             return {_dump(v) for v in value}
         return value
 
-    class BaseModel:
+    class _FallbackDataclassBase(_FallbackBaseModel):
         def __init_subclass__(cls, **kwargs: Any) -> None:
             annotations = getattr(cls, "__annotations__", {})
             for name in annotations:
                 if hasattr(cls, name):
                     default = getattr(cls, name)
-                    if isinstance(default, BaseModel):
+                    if isinstance(default, _FallbackBaseModel):
                         def _factory(template=default):
                             return template.__class__(**template.model_dump())
 
@@ -97,7 +108,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
             dataclass(cls)
 
             def __init__(self, **data: Any) -> None:
-                for f in fields(cls):
+                for f in fields(cast(type[Any], cls)):
                     if f.name in data:
                         value = data.pop(f.name)
                     elif f.default is not MISSING:
@@ -113,12 +124,19 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
             cls.__init__ = __init__  # type: ignore[assignment]
 
             def model_dump(self) -> dict[str, Any]:
-                return {f.name: _dump(getattr(self, f.name)) for f in fields(self)}
+                return {f.name: _dump(getattr(self, f.name)) for f in fields(cast(type[Any], cls))}
 
             cls.model_dump = model_dump  # type: ignore[assignment]
 
         def model_dump(self) -> dict[str, Any]:  # pragma: no cover
             return {}
+
+    _RuntimeBaseModel = _FallbackDataclassBase
+
+
+class BaseModel(_FallbackDataclassBase):
+        """Fallback compatible with pydantic.BaseModel API used here."""
+        pass
 
 
 @dataclass
@@ -402,7 +420,10 @@ def load_config(path: Path) -> tuple[Config, str]:
     """Load YAML → Config; return ``(config, sha12)`` of resolved dict."""
 
     data = yaml.safe_load(path.read_text())
-    cfg = Config(**data)
+    if not isinstance(data, dict):
+        raise TypeError(f"Expected mapping in {path}, got {type(data).__name__}")
+    data_dict: dict[str, Any] = data
+    cfg = Config(**data_dict)
     dumped = json.dumps(cfg.model_dump(), sort_keys=True, default=str).encode()
     sha = hashlib.sha256(dumped).hexdigest()[:12]
     cfg.config_sha = sha

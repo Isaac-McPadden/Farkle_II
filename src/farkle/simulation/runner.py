@@ -11,8 +11,10 @@ public API.
 from __future__ import annotations
 
 import pickle
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Mapping
 
 import farkle.simulation.run_tournament as tournament_mod
 from farkle.simulation.run_tournament import TournamentConfig
@@ -105,25 +107,31 @@ def run_tournament(cfg: AppConfig) -> int:
     if row_dir is not None and not row_dir.is_absolute():
         row_dir = out_dir / row_dir
 
-    kwargs: dict[str, object] = {
-        "config": tcfg,
-        "global_seed": cfg.sim.seed,
-        "n_jobs": cfg.sim.jobs,
-        "num_shuffles": n_shuffles,
-        "checkpoint_path": checkpoint_path,
-    }
-    if cfg.sim.collect_metrics:
-        kwargs["collect_metrics"] = True
-    if row_dir is not None:
-        kwargs["row_output_directory"] = row_dir
-
-    tournament_mod.run_tournament(**kwargs)
+    tournament_mod.run_tournament(
+        config=tcfg,
+        global_seed=cfg.sim.seed,
+        n_jobs=cfg.sim.jobs,
+        num_shuffles=n_shuffles,
+        checkpoint_path=checkpoint_path,
+        collect_metrics=cfg.sim.collect_metrics,
+        row_output_directory=row_dir,
+    )
 
     payload = pickle.loads(checkpoint_path.read_bytes())
     if isinstance(payload, dict) and "win_totals" in payload:
-        win_totals = payload["win_totals"]
+        raw_counts = payload["win_totals"]
     else:
-        win_totals = payload
+        raw_counts = payload
+
+    if isinstance(raw_counts, Counter):
+        win_totals = Counter(raw_counts)
+    elif isinstance(raw_counts, Mapping):
+        win_totals = Counter({str(k): int(v) for k, v in raw_counts.items()})
+    else:
+        raise TypeError(
+            "Unexpected win_totals payload type",
+            type(raw_counts),
+        )
 
     sinks.write_counter_csv(win_totals, out_dir / "win_counts.csv")
 
