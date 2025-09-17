@@ -18,16 +18,18 @@ Both the direct API and the CLI wrapper are covered.
 from __future__ import annotations
 
 import importlib
-import inspect
 import pickle
 import random
-import sys
 from pathlib import Path
 from typing import List, Sequence  # noqa: F401
 
 import pytest
+import yaml
+
+pytest.importorskip("pydantic")
 
 import farkle.simulation.simulation as sim
+from farkle.cli import main as cli_main
 from farkle.simulation.run_tournament import TournamentConfig
 from farkle.simulation.strategies import ThresholdStrategy
 
@@ -170,34 +172,22 @@ def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 def test_run_tournament_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(sim, "generate_strategy_grid", lambda: (_tiny_strategy_grid(), None))
 
-    rt = importlib.reload(
-        importlib.import_module("farkle.simulation.run_tournament")
-    )
+    rt = importlib.reload(importlib.import_module("farkle.simulation.run_tournament"))
     _apply_fast_patches(monkeypatch, rt)
+    monkeypatch.setattr(cli_main, "run_tournament", rt.run_tournament)
 
     ckpt = tmp_path / "cli.pkl"
 
-    argv_backup = sys.argv.copy()
-    argv = [
-        "farkle.simulation.run_tournament",
-        "--seed",
-        "42",
-        "--checkpoint",
-        str(ckpt),
-        "--jobs",
-        "2",
-        "--ckpt-sec",
-        "1",
-        "--num-shuffles",
-        "2",
-    ]
-    if "--players" in inspect.getsource(rt.main):
-        argv.extend(["--n_players", str(rt.TournamentConfig().n_players)])
-    sys.argv = argv
-    try:
-        rt.main()
-    finally:
-        sys.argv = argv_backup
+    cfg = {
+        "global_seed": 42,
+        "checkpoint_path": str(ckpt),
+        "n_jobs": 2,
+        "num_shuffles": 2,
+    }
+    cfg_path = tmp_path / "cli.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    cli_main.main(["--config", str(cfg_path), "run"])
 
     # --- assertions ---
     assert ckpt.exists(), "CLI failed to create checkpoint"

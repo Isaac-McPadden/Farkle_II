@@ -8,17 +8,15 @@ logging behavior.
 
 from __future__ import annotations
 
-import importlib
 import pickle
 import sys
 import types
 from collections import Counter, defaultdict
 from pathlib import Path
+from statistics import NormalDist
 from types import ModuleType, SimpleNamespace
 
 import pytest
-
-import farkle.simulation.run_tournament as rt
 
 # Farkle depends on numba at import time. Provide a light-weight stub so the
 # test suite can run without the real dependency installed.
@@ -29,25 +27,51 @@ sys.modules.setdefault(
 # Provide a minimal pyarrow stub so farkle.simulation.run_tournament imports without the real dependency.
 pa_stub = types.ModuleType("pyarrow")
 pq_stub = types.ModuleType("pyarrow.parquet")
-pa_stub.Table = types.SimpleNamespace(from_pylist=lambda rows: None)  # type: ignore  # noqa: ARG005
+
+
+class _DummyTable:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.schema = "dummy-schema"
+
+
+def _from_pylist(rows):  # noqa: ANN001
+    return _DummyTable(rows)
+
+
+pa_stub.Table = types.SimpleNamespace(from_pylist=_from_pylist)  # type: ignore
 pa_stub.parquet = pq_stub  # type: ignore
 pa_stub.__version__ = "0.0.0"  # type: ignore
 pq_stub.write_table = lambda *a, **k: None  # type: ignore  # noqa: ARG005
-sys.modules.setdefault("pyarrow", pa_stub)
-sys.modules.setdefault("pyarrow.parquet", pq_stub)
+sys.modules["pyarrow"] = pa_stub
+sys.modules["pyarrow.parquet"] = pq_stub
 # Stats helpers depend on SciPy – provide a minimal stub
-scipy_stats_stub = types.SimpleNamespace(norm=types.SimpleNamespace(ppf=lambda *a, **k: 0.0))  # noqa: ARG005
+
+
+def _ppf(q, loc=0.0, scale=1.0):  # noqa: ANN001
+    return NormalDist(mu=loc, sigma=scale).inv_cdf(q)
+
+
+def _isf(q, loc=0.0, scale=1.0):  # noqa: ANN001
+    return NormalDist(mu=loc, sigma=scale).inv_cdf(1 - q)
+
+
+scipy_stats_stub = types.SimpleNamespace(
+    norm=types.SimpleNamespace(ppf=_ppf, isf=_isf)
+)
 scipy_mod = types.ModuleType("scipy")
 scipy_mod.stats = scipy_stats_stub  # type: ignore
 sys.modules.setdefault("scipy", scipy_mod)
 sys.modules.setdefault("scipy.stats", scipy_stats_stub)  # type: ignore
 
+import farkle.simulation.run_tournament as rt
+
 
 @pytest.fixture(autouse=True)
 def silence_logging(monkeypatch):
     """Mute info/error logs from run_tournament during tests."""
-    monkeypatch.setattr(rt.log, "info", lambda *a, **k: None)  # noqa: ARG005
-    monkeypatch.setattr(rt.log, "error", lambda *a, **k: None)  # noqa: ARG005
+    monkeypatch.setattr(rt.LOGGER, "info", lambda *a, **k: None)
+    monkeypatch.setattr(rt.LOGGER, "error", lambda *a, **k: None)
 
 # ---------------------------------------------------------------------------
 # Dummy helper for deterministic results
@@ -88,18 +112,6 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
 
     recorded: dict[str, object] = {}
 
-    class DummyTable:
-        def __init__(self, rows):
-            self.rows = list(rows)
-            self.schema = "dummy-schema"
-
-    def fake_from_pylist(rows):
-        tbl = DummyTable(rows)
-        recorded["rows"] = tbl.rows
-        return tbl
-
-    monkeypatch.setattr(rt.pa.Table, "from_pylist", fake_from_pylist, raising=False)
-
     def fake_run_streaming_shard(**kwargs):
         batches = list(kwargs["batch_iter"])
         recorded.update(
@@ -111,16 +123,21 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
                 "extra": kwargs.get("manifest_extra"),
             }
         )
+        if batches:
+            recorded["rows"] = batches[0].rows
 
     monkeypatch.setattr(rt, "run_streaming_shard", fake_run_streaming_shard)
 
-    wins, sums, sqs = rt._run_chunk_metrics([3], collect_rows=True, row_dir=tmp_path)
+    manifest = tmp_path / "manifest.jsonl"
+    wins, sums, sqs = rt._run_chunk_metrics(
+        [3], collect_rows=True, row_dir=tmp_path, manifest_path=manifest
+    )
 
     assert recorded["rows"] == [{"game_seed": 3, "winner_strategy": "S3"}]
     assert recorded["out_path"] == tmp_path / "rows_42_3.parquet"
-    assert recorded["manifest_path"] == tmp_path / "manifest.jsonl"
+    assert recorded["manifest_path"] == manifest
     assert recorded["schema"] == "dummy-schema"
-    assert recorded["batches"] and isinstance(recorded["batches"][0], DummyTable)
+    assert recorded["batches"] and hasattr(recorded["batches"][0], "rows")
     assert recorded["extra"] == {
         "path": "rows_42_3.parquet",
         "n_players": None,
@@ -155,74 +172,4 @@ def test_save_checkpoint_wins_only(tmp_path):
     payload = pickle.loads(ckpt.read_bytes())
 
     assert payload == {"win_totals": wins}
-    
-
-@pytest.mark.unit
-def test_row_writer_flushes_and_shuts_down(monkeypatch, tmp_path: Path):
-    """Verify that
-       1. workers can push rows onto the Queue,
-       2. the writer flushes once ROW_BUFFER rows are reached,
-       3. the poison-pill terminates the loop,
-       4. the parquet shard path is correct."""
-    # ------------------------------------------------------------------
-    # Arrange – patch pyarrow with a lightweight stub
-    # ------------------------------------------------------------------
-    writes: dict[str, object] = {}
-
-    class DummyTable:
-        @classmethod
-        def from_pylist(cls, rows):
-            writes["rows"] = list(rows)          # capture the payload
-            return "dummy-table"
-
-    pa_stub = ModuleType("pyarrow")
-    pq_stub = ModuleType("pyarrow.parquet")
-    pa_stub.Table = SimpleNamespace(from_pylist=DummyTable.from_pylist)  # type: ignore
-    pa_stub.parquet = pq_stub  # type: ignore
-
-    def fake_write_table(tbl, path):
-        writes.setdefault("paths", []).append(Path(path))  # type: ignore
-        writes["tbl"] = tbl
-
-    pq_stub.write_table = fake_write_table  # type: ignore
-
-    monkeypatch.setitem(sys.modules, "pyarrow", pa_stub)
-    monkeypatch.setitem(sys.modules, "pyarrow.parquet", pq_stub)
-
-    # ------------------------------------------------------------------
-    # Import (or reload) target module *after* stubbing pyarrow
-    # ------------------------------------------------------------------
-    if "farkle.simulation.run_tournament" in sys.modules:
-        rt = importlib.reload(sys.modules["farkle.simulation.run_tournament"])
-    else:
-        rt = importlib.import_module("farkle.simulation.run_tournament")
-
-    # Tiny buffer so the test stays quick
-    monkeypatch.setattr(rt, "ROW_BUFFER", 2, raising=True)
-
-    # ------------------------------------------------------------------
-    # Act – push two rows then the poison-pill, run writer synchronously
-    # ------------------------------------------------------------------
-    q = rt.mp.Queue()
-    q.put({"game_seed": 1, "winner_strategy": "S1"})
-    q.put({"game_seed": 2, "winner_strategy": "S2"})      # hits ROW_BUFFER == 2
-    q.put(None)                                           # graceful stop
-
-    rt._row_writer(q, tmp_path)                           # run inside this proc
-
-    # ------------------------------------------------------------------
-    # Assert – one shard written with both rows
-    # ------------------------------------------------------------------
-    assert writes["tbl"] == "dummy-table"
-    assert writes["rows"] == [
-        {"game_seed": 1, "winner_strategy": "S1"},
-        {"game_seed": 2, "winner_strategy": "S2"},
-    ]
-
-    # exactly one parquet file in the tmp dir, with the expected naming scheme
-    shard_paths = writes["paths"]
-    assert len(shard_paths) == 1  # type: ignore
-    shard = shard_paths[0]  # type: ignore
-    assert shard.parent == tmp_path
-    assert shard.name.startswith("rows_") and shard.suffix == ".parquet"
     

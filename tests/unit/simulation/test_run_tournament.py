@@ -12,12 +12,14 @@ import types  # noqa: F401
 from collections import Counter, defaultdict
 from pathlib import Path
 from typing import cast
-from unittest.mock import ANY
 
 import numpy as np  # noqa: F401 | Potentially imports something that needs it
 import pytest
 
+pytest.importorskip("pydantic")
+
 import farkle.simulation.run_tournament as rt
+from farkle.cli import main as cli_main
 from farkle.simulation.strategies import ThresholdStrategy
 
 # --------------------------------------------------------------------------- #
@@ -429,36 +431,32 @@ def test_play_shuffle_wrapper(monkeypatch):
     assert called["seed"] == 123
 
 
-def test_run_tournament_cli(monkeypatch):
-    called = {}
-    monkeypatch.setattr(rt, "run_tournament", lambda **kw: called.update(kw), raising=True)
+def test_run_tournament_cli(monkeypatch, tmp_path):
+    called: dict[str, object] = {}
+    row_dir = tmp_path / "rows"
 
-    class DummyArgs:
-        config, seed, checkpoint, jobs, ckpt_sec, metrics, num_shuffles = (
-            ANY,
-            7,
-            Path("out.pkl"),
-            2,
-            5,
-            True,
-            3,
-        )
-        row_dir = Path("rows")
-        metric_chunk_dir = Path("chunks")
-        log_level = "INFO"
+    monkeypatch.setattr(cli_main, "run_tournament", lambda **kw: called.update(kw))
 
-    monkeypatch.setattr(rt.argparse, "ArgumentParser", lambda *a, **k: type("P", (), {"add_argument": lambda *a, **k: None, "parse_args": lambda _: DummyArgs})())  # noqa: ARG005
+    cli_main.main(
+        [
+            "--set",
+            "global_seed=7",
+            "--set",
+            "num_shuffles=3",
+            "--log-level",
+            "WARNING",
+            "run",
+            "--metrics",
+            "--row-dir",
+            str(row_dir),
+        ]
+    )
 
-    rt.main()
     assert called == {
-        "config": ANY,
         "global_seed": 7,
-        "checkpoint_path": Path("out.pkl"),
-        "n_jobs": 2,
-        "collect_metrics": True,
-        "row_output_directory": Path("rows"),
-        "metric_chunk_directory": Path("chunks"),
         "num_shuffles": 3,
+        "collect_metrics": True,
+        "row_output_directory": row_dir,
     }
 
 

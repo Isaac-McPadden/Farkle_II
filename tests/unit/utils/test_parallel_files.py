@@ -6,7 +6,6 @@ from pytest import MonkeyPatch
 
 import farkle.utils.csv_files as csv_files
 import farkle.utils.parallel as parallel
-from farkle.simulation.strategies import ThresholdStrategy
 
 
 def test_writer_worker_appends(tmp_path: Path):
@@ -32,50 +31,41 @@ def test_writer_worker_appends(tmp_path: Path):
     ]
 
 
-def test_single_game_row(monkeypatch: MonkeyPatch):
-    expected = {
-        "winner": "P2",
-        "winning_score": 99,
-        "n_rounds": 7,
-        "P2_strategy": "S",
-    }
-
-    def fake_play(seed, strategies, target):  # noqa: ARG001
-        return expected
-
-    monkeypatch.setattr(parallel, "_play_game", fake_play, raising=True)
-
-    strat = [ThresholdStrategy(score_threshold=0, dice_threshold=6)]
-    row = parallel._single_game_row(5, 123, strat, 1000)
-
-    assert row == {
-        "game_id": 5,
-        "winner": "P2",
-        "winning_score": 99,
-        "winner_strategy": "S",
-        "n_rounds": 7,
-    }
+def test_process_map_serial():
+    items = [1, 2, 3]
+    result = list(parallel.process_map(lambda x: x + 1, items, n_jobs=1))
+    assert result == [2, 3, 4]
 
 
-def test_single_game_row_mp(monkeypatch: MonkeyPatch):
-    ret = {
-        "winner": "P1",
-        "winning_score": 42,
-        "n_rounds": 3,
-        "P1_strategy": "T",
-    }
+def test_process_map_executor(monkeypatch: MonkeyPatch):
+    submitted = []
 
-    monkeypatch.setattr(parallel, "_play_game", lambda *a, **k: ret, raising=True)
-    strat = [ThresholdStrategy(score_threshold=100, dice_threshold=2)]
+    class DummyFuture:
+        def __init__(self, value):
+            self._value = value
 
-    gid, row = parallel._single_game_row_mp((2, 77, strat, 500))
+        def result(self):
+            return self._value
 
-    assert gid == 2
-    assert row == {
-        "game_id": 2,
-        "winner": "P1",
-        "winning_score": 42,
-        "winner_strategy": "T",
-        "n_rounds": 3,
-    }
+    class DummyExecutor:
+        def __init__(self, **kwargs):  # noqa: ANN003
+            self.kwargs = kwargs
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):  # noqa: ANN002
+            return False
+
+        def submit(self, fn, item):
+            submitted.append(item)
+            return DummyFuture(fn(item))
+
+    monkeypatch.setattr(parallel, "ProcessPoolExecutor", DummyExecutor)
+    monkeypatch.setattr(parallel, "as_completed", lambda futures: iter(futures))
+
+    result = list(parallel.process_map(lambda x: x * 2, [1, 2, 3], n_jobs=2, window=2))
+
+    assert result == [2, 4, 6]
+    assert submitted == [1, 2, 3]
 
