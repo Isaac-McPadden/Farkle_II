@@ -31,6 +31,7 @@ from farkle.utils import parallel
 from farkle.utils import random as urandom
 from farkle.utils.streaming_loop import run_streaming_shard
 from farkle.utils.writer import atomic_path
+from farkle.utils.artifacts import write_parquet_atomic
 
 # from farkle.utils.logging import setup_info_logging, setup_warning_logging
 
@@ -617,6 +618,43 @@ def run_tournament(
         metric_sums if (collect_metrics or collect_rows) else None,
         metric_sq_sums if (collect_metrics or collect_rows) else None,
     )
+    if (collect_metrics or collect_rows) and metric_sums is not None and metric_sq_sums is not None:
+        metrics_rows = []
+        for label in METRIC_LABELS:
+            sums_for_label = metric_sums.get(label, {})
+            squares_for_label = metric_sq_sums.get(label, {})
+            for strat, total in sums_for_label.items():
+                metrics_rows.append(
+                    {
+                        "metric": label,
+                        "strategy": strat,
+                        "sum": float(total),
+                        "square_sum": float(squares_for_label.get(strat, 0.0)),
+                    }
+                )
+
+        metrics_table = pa.Table.from_pylist(
+            metrics_rows,
+            schema=pa.schema(
+                [
+                    ("metric", pa.string()),
+                    ("strategy", pa.string()),
+                    ("sum", pa.float64()),
+                    ("square_sum", pa.float64()),
+                ]
+            ),
+        )
+        metrics_path = ckpt_path.with_name(f"{cfg.n_players}p_metrics.parquet")
+        write_parquet_atomic(metrics_table, metrics_path)
+        LOGGER.info(
+            "Per-table metrics written",
+            extra={
+                "stage": "simulation",
+                "n_players": cfg.n_players,
+                "rows": metrics_table.num_rows,
+                "path": str(metrics_path),
+            },
+        )
     LOGGER.info(
         "Tournament run complete",
         extra={

@@ -6,6 +6,8 @@ from contextlib import redirect_stdout
 import types
 import sys
 
+import pandas as pd
+
 import pipeline
 
 
@@ -30,7 +32,8 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
     monkeypatch.setattr("farkle.analysis.run_trueskill.run_trueskill", fake_ts)
 
     def fake_h2h(*, root, n_jobs=1):  # noqa: ARG001
-        (analysis / "bonferroni_pairwise.csv").write_text("a,b")
+        df = pd.DataFrame({"a": ["A"], "b": ["B"], "wins_a": [1], "wins_b": [0], "pvalue": [0.5]})
+        df.to_parquet(analysis / "bonferroni_pairwise.parquet")
     monkeypatch.setattr(
         "farkle.analysis.run_bonferroni_head2head.run_bonferroni_head2head",
         fake_h2h,

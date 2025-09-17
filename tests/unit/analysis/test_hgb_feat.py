@@ -1,5 +1,4 @@
 import os
-import pickle
 from pathlib import Path
 
 import pytest
@@ -32,10 +31,9 @@ def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", boom)
     hgb_feat.run(cfg)
-    assert not (cfg.analysis_dir / "ratings_pooled.pkl").exists()
 
 
-def test_hgb_feat_runs_when_outdated_and_copies_ratings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, curated = _setup_cfg(tmp_path)
     out = cfg.analysis_dir / "hgb_importance.json"
     out.write_text("{}")
@@ -43,18 +41,9 @@ def test_hgb_feat_runs_when_outdated_and_copies_ratings(tmp_path: Path, monkeypa
     os.utime(out, (1000, 1000))
     os.utime(curated, (1010, 1010))
 
-    ratings = {"A": (1.0, 2.0)}
-    with open(cfg.results_dir / "ratings_pooled.pkl", "wb") as fh:
-        pickle.dump(ratings, fh)
-
     called = {}
 
     def fake_run(*, root: Path, output_path: Path, seed: int = 0):
-        ratings_src = cfg.results_dir / "ratings_pooled.pkl"
-        ratings_dst = cfg.analysis_dir / "ratings_pooled.pkl"
-        assert ratings_dst.exists()
-        with open(ratings_src, "rb") as fh_src, open(ratings_dst, "rb") as fh_dst:
-            assert fh_src.read() == fh_dst.read()
         assert root == cfg.analysis_dir
         assert output_path == out
         called["root"] = root
@@ -62,3 +51,4 @@ def test_hgb_feat_runs_when_outdated_and_copies_ratings(tmp_path: Path, monkeypa
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
     hgb_feat.run(cfg)
     assert called
+    assert not any(cfg.analysis_dir.glob("*.pkl"))

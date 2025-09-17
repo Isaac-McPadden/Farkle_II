@@ -22,7 +22,7 @@ def test_run_skips_if_up_to_date(tmp_path, monkeypatch, caplog):
     data_dir.mkdir(parents=True)
 
     curated = data_dir / cfg.curated_rows_name
-    pairwise = analysis_dir / "bonferroni_pairwise.csv"
+    pairwise = analysis_dir / "bonferroni_pairwise.parquet"
 
     now = time.time()
     curated.touch()
@@ -52,7 +52,7 @@ def test_run_handles_exception(tmp_path, monkeypatch, caplog):
     data_dir.mkdir(parents=True)
 
     curated = data_dir / cfg.curated_rows_name
-    pairwise = analysis_dir / "bonferroni_pairwise.csv"
+    pairwise = analysis_dir / "bonferroni_pairwise.parquet"
 
     now = time.time()
     pairwise.touch()

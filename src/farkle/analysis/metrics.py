@@ -1,7 +1,6 @@
 # src/farkle/metrics.py
 from __future__ import annotations
 
-import csv
 import json
 import logging
 from collections import Counter
@@ -11,12 +10,13 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 import pyarrow.dataset as ds
-import pyarrow.parquet as pq
+import pandas as pd
 
 from farkle.analysis.analysis_config import PipelineCfg
 from farkle.analysis.checks import check_pre_metrics
 from farkle.app_config import AppConfig
 from farkle.utils.writer import atomic_path
+from farkle.utils.artifacts import write_parquet_atomic, write_csv_atomic
 
 LOGGER = logging.getLogger(__name__)
 
@@ -25,8 +25,7 @@ _WIN_COLS = ["winner_strategy", "winner_seat", "winning_score", "n_rounds"]
 
 def _write_parquet(final: Path, rows: list[dict[str, Any]], schema: pa.Schema) -> None:
     tbl = pa.Table.from_pylist(rows, schema=schema)
-    with atomic_path(str(final)) as tmp_path:
-        pq.write_table(tbl, tmp_path, compression="zstd")
+    write_parquet_atomic(tbl, final)
     LOGGER.info(
         "Metrics parquet written",
         extra={
@@ -86,7 +85,8 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     Outputs
     -------
     <analysis_dir>/metrics.parquet         (per-strategy & overall KPIs)
-    <analysis_dir>/seat_advantage.csv      (seat-specific win rates)
+    <analysis_dir>/seat_advantage.csv      (seat-specific win rates, CSV view)
+    <analysis_dir>/seat_advantage.parquet  (seat-specific win rates, Parquet mirror)
 
     Notes
     -----
@@ -100,6 +100,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     winner_col = "winner_seat"
     out_metrics = analysis_dir / cfg.metrics_name
     out_seats = analysis_dir / "seat_advantage.csv"
+    out_seats_parquet = analysis_dir / "seat_advantage.parquet"
     stamp = analysis_dir / "metrics.done.json"
 
     if not data_file.exists():
@@ -130,7 +131,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
                 inputs.get(str(data_file)) == _stamp(data_file)
                 and all(
                     Path(p).exists() and outputs.get(p) == _stamp(Path(p))
-                    for p in (str(out_metrics), str(out_seats))
+                    for p in (str(out_metrics), str(out_seats), str(out_seats_parquet))
                 )
             ):
                 LOGGER.info(
@@ -234,15 +235,38 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     }
 
     # Write corrected seat_advantage.csv
-    with atomic_path(str(out_seats)) as tmp_path:
-        with Path(tmp_path).open("w", newline="") as fh:
-            w = csv.writer(fh)
-            w.writerow(["seat", "wins", "games_with_seat", "win_rate"])
-            for i in range(1, 13):
-                games = denom[i]
-                wins = seat_wins.get(i, 0)
-                rate = (wins / games) if games else 0.0
-                w.writerow([i, wins, games, rate])
+    seat_rows: list[dict[str, Any]] = []
+    for i in range(1, 13):
+        games = denom[i]
+        wins = seat_wins.get(i, 0)
+        rate = (wins / games) if games else 0.0
+        seat_rows.append(
+            {
+                "seat": i,
+                "wins": wins,
+                "games_with_seat": games,
+                "win_rate": rate,
+            }
+        )
+
+    seat_df = pd.DataFrame(
+        seat_rows,
+        columns=["seat", "wins", "games_with_seat", "win_rate"],
+    )
+    write_csv_atomic(seat_df, out_seats)
+    seat_table = pa.Table.from_pandas(
+        seat_df,
+        preserve_index=False,
+        schema=pa.schema(
+            [
+                ("seat", pa.int32()),
+                ("wins", pa.int64()),
+                ("games_with_seat", pa.int64()),
+                ("win_rate", pa.float64()),
+            ]
+        ),
+    )
+    write_parquet_atomic(seat_table, out_seats_parquet)
 
     # Schemas ------------------------------------------------------------------
     metrics_schema = pa.schema(
@@ -269,6 +293,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
                     "outputs": {
                         str(out_metrics): _stamp(out_metrics),
                         str(out_seats): _stamp(out_seats),
+                        str(out_seats_parquet): _stamp(out_seats_parquet),
                     },
                 },
                 indent=2,
@@ -283,5 +308,6 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
             "seat_rows": len(seat_wins),
             "metrics_path": str(out_metrics),
             "seat_path": str(out_seats),
+            "seat_parquet": str(out_seats_parquet),
         },
     )

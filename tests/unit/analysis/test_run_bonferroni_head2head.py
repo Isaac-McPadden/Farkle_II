@@ -60,8 +60,8 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_many_games_from_seeds)
 
     rb.run_bonferroni_head2head(seed=0, root=data_dir, n_jobs=2)
-    out_csv = data_dir / "bonferroni_pairwise.csv"
-    df = pd.read_csv(out_csv)
+    out_csv = data_dir / "bonferroni_pairwise.parquet"
+    df = pd.read_parquet(out_csv)
     assert set(df.columns) == {"a", "b", "wins_a", "wins_b", "pvalue"}
 
 
@@ -91,7 +91,7 @@ def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch, capsys)
     captured = capsys.readouterr().out
     assert "no games needed" in captured
 
-    out_csv = data_dir / "bonferroni_pairwise.csv"
+    out_csv = data_dir / "bonferroni_pairwise.parquet"
     assert not out_csv.exists()
 
 

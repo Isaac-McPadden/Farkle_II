@@ -8,12 +8,13 @@ import logging
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
 from scipy.stats import binomtest
 
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy
 from farkle.utils.stats import bonferroni_pairs, games_for_power
-from farkle.utils.writer import atomic_path
+from farkle.utils.artifacts import write_parquet_atomic
 
 DEFAULT_ROOT = Path("results_seed_0")
 
@@ -120,16 +121,24 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
             },
         )
 
-    out = pd.DataFrame(records)
-    pairwise_parquet.parent.mkdir(parents=True, exist_ok=True)
-
-    with atomic_path(str(pairwise_parquet)) as tmp_path:
-        out.to_csv(tmp_path, index=False)
+    pairwise_table = pa.Table.from_pylist(
+        records,
+        schema=pa.schema(
+            [
+                ("a", pa.string()),
+                ("b", pa.string()),
+                ("wins_a", pa.int64()),
+                ("wins_b", pa.int64()),
+                ("pvalue", pa.float64()),
+            ]
+        ),
+    )
+    write_parquet_atomic(pairwise_table, pairwise_parquet)
     LOGGER.info(
         "Bonferroni head-to-head results written",
         extra={
             "stage": "head2head",
-            "rows": len(out),
+            "rows": pairwise_table.num_rows,
             "path": str(pairwise_parquet),
         },
     )

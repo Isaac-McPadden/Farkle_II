@@ -48,9 +48,10 @@ def test_pipeline_all_creates_outputs(tmp_path: Path) -> None:
     assert combined.exists()
     assert (analysis / "metrics.parquet").exists()
     assert (analysis / "seat_advantage.csv").exists()
+    assert (analysis / "seat_advantage.parquet").exists()
 
     # analytics artefacts
-    assert (tmp_path / "ratings_pooled.pkl").exists()
+    assert (tmp_path / "ratings_pooled.parquet").exists()
     assert (tmp_path / "hgb_importance.json").exists()
     figs = tmp_path / "notebooks" / "figs"
     assert any(figs.glob("pd_*.png"))
