@@ -15,6 +15,7 @@ Outputs
     Mapping of strategy → tier derived from the pooled ratings.
 """
 from __future__ import annotations
+
 import concurrent.futures as cf
 import json
 import logging
@@ -33,9 +34,9 @@ import yaml
 from trueskill import Rating
 
 from farkle.analysis.analysis_config import n_players_from_schema
+from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.stats import build_tiers
 from farkle.utils.writer import atomic_path
-from farkle.utils.artifacts import write_parquet_atomic
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
 # Default location of tournament result blocks when no path is supplied
@@ -812,9 +813,8 @@ def run_trueskill(
         stdevs={k: v.sigma for k, v in pooled_stats.items()},
     )
     tiers_path = root / "tiers.json"
-    with atomic_path(str(tiers_path)) as tmp_path:
-        with Path(tmp_path).open("w") as fh:
-            json.dump(tiers, fh, indent=2, sort_keys=True)
+    with atomic_path(str(tiers_path)) as tmp_path, Path(tmp_path).open("w") as fh:
+        json.dump(tiers, fh, indent=2, sort_keys=True)
     LOGGER.info(
         "TrueSkill run complete",
         extra={

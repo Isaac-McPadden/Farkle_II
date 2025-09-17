@@ -26,6 +26,7 @@ from typing import Any, Final, Mapping, Sequence, Union, get_args, get_origin
 
 import pyarrow as pa
 import yaml
+
 try:  # pragma: no cover - exercised in tests when dependency missing
     from pydantic import BaseModel
 except ModuleNotFoundError:  # pragma: no cover - fallback used in CI

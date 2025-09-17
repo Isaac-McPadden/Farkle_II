@@ -10,8 +10,8 @@ public API.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import pickle
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import farkle.simulation.run_tournament as tournament_mod

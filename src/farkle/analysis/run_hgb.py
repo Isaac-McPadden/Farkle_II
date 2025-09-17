@@ -191,9 +191,8 @@ def run_hgb(
         output_path = root / "hgb_importance.json"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(output_path)) as tmp_path:
-        with Path(tmp_path).open("w") as fh:
-            json.dump(imp_dict, fh, indent=2, sort_keys=True)
+    with atomic_path(str(output_path)) as tmp_path, Path(tmp_path).open("w") as fh:
+        json.dump(imp_dict, fh, indent=2, sort_keys=True)
     LOGGER.info(
         "HGB permutation importances written",
         extra={

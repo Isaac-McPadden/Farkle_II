@@ -81,8 +81,8 @@ class CsvSink:
 def write_counter_csv(counter: Counter[str], path: Path) -> None:
     """Write a Counter[str] to CSV as columns ``strategy,wins``."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as tmp_path:
-        with Path(tmp_path).open("w", newline="", encoding="utf-8") as fh:
+    with atomic_path(str(path)) as tmp_path, \
+        Path(tmp_path).open("w", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             w.writerow(["strategy", "wins"])
             for key, cnt in counter.items():

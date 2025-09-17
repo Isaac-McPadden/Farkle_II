@@ -29,9 +29,9 @@ from farkle.simulation.simulation import _play_game, generate_strategy_grid
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils import parallel
 from farkle.utils import random as urandom
+from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.streaming_loop import run_streaming_shard
 from farkle.utils.writer import atomic_path
-from farkle.utils.artifacts import write_parquet_atomic
 
 # from farkle.utils.logging import setup_info_logging, setup_warning_logging
 

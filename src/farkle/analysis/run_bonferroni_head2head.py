@@ -7,14 +7,13 @@ import json
 import logging
 from pathlib import Path
 
-import pandas as pd
 import pyarrow as pa
 from scipy.stats import binomtest
 
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy
-from farkle.utils.stats import bonferroni_pairs, games_for_power
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.stats import bonferroni_pairs, games_for_power
 
 DEFAULT_ROOT = Path("results_seed_0")
 

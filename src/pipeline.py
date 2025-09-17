@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 
 from farkle.utils.writer import atomic_path
+
 __all__ = [
     "main",
     "analyze_all",

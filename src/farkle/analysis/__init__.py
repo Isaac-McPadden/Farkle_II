@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import importlib
 import logging
-
 from types import ModuleType
+
 from farkle.analysis.analysis_config import PipelineCfg
 from farkle.app_config import AppConfig
 

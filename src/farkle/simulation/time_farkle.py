@@ -19,7 +19,6 @@ from farkle.simulation.simulation import (
 )
 from farkle.simulation.strategies import ThresholdStrategy, random_threshold_strategy
 
-
 LOGGER = logging.getLogger(__name__)
 
 

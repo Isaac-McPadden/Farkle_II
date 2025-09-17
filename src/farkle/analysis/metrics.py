@@ -8,15 +8,15 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
-import pandas as pd
 
 from farkle.analysis.analysis_config import PipelineCfg
 from farkle.analysis.checks import check_pre_metrics
 from farkle.app_config import AppConfig
+from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
 from farkle.utils.writer import atomic_path
-from farkle.utils.artifacts import write_parquet_atomic, write_csv_atomic
 
 LOGGER = logging.getLogger(__name__)
 
