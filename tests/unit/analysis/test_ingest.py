@@ -109,3 +109,18 @@ def test_run_schema_mismatch_logs_and_closes(tmp_path, caplog, monkeypatch):
 
     assert any("Schema mismatch" in rec.message for rec in caplog.records)
     assert len(calls) == 1
+
+
+def test_run_emits_logging(tmp_path, caplog):
+    cfg = PipelineCfg(results_dir=tmp_path, analysis_subdir="analysis")
+    block = cfg.results_dir / "2_players"
+    block.mkdir(parents=True)
+    df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"], "n_rounds": [1], "winning_score": [100]})
+    df.to_parquet(block / "2p_rows.parquet", index=False)
+
+    caplog.set_level(logging.INFO, logger="farkle.analysis.ingest")
+    run(cfg)
+
+    messages = [rec.message for rec in caplog.records]
+    assert any("Ingest started" in msg for msg in messages)
+    assert any("Ingest block complete" in msg for msg in messages)

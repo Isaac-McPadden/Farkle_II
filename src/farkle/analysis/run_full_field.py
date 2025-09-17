@@ -22,10 +22,10 @@ from farkle.utils.writer import atomic_path
 
 SCORE_TABLE = build_score_lookup_table()
 
-logger = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
-def _concat_row_shards(out_dir: Path, n_players: int) -> None:
+def _concat_row_shards(out_dir: Path, n_players: int) -> int:
     """Combine row shard files and remove the temporary directory.
 
     If no shard files are found the function simply returns without
@@ -38,13 +38,43 @@ def _concat_row_shards(out_dir: Path, n_players: int) -> None:
     row_dir = out_dir / f"{n_players}p_rows"
     files = sorted(row_dir.glob("*.parquet"))
     if not files:
-        return
-    df = pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
+        LOGGER.debug(
+            "No row shards to consolidate",
+            extra={"stage": "full_field", "n_players": n_players, "path": str(row_dir)},
+        )
+        return 0
+    frames: list[pd.DataFrame] = []
+    total_rows = 0
+    for shard in files:
+        df = pd.read_parquet(shard)
+        rows = len(df)
+        total_rows += rows
+        LOGGER.debug(
+            "Loaded row shard",
+            extra={
+                "stage": "full_field",
+                "n_players": n_players,
+                "path": str(shard),
+                "rows": rows,
+            },
+        )
+        frames.append(df)
+    df = pd.concat(frames, ignore_index=True)
     out_path = out_dir / f"{n_players}p_rows.parquet"
     with atomic_path(str(out_path)) as tmp_path:
         df.to_parquet(tmp_path)
     shutil.rmtree(row_dir, ignore_errors=True)
     del df  # free memory before returning
+    LOGGER.info(
+        "Row shards consolidated",
+        extra={
+            "stage": "full_field",
+            "n_players": n_players,
+            "rows": total_rows,
+            "path": str(out_path),
+        },
+    )
+    return total_rows
 
 
 def _combo_complete(out_dir: Path, n_players: int, *, force_clean: bool = False) -> bool:
@@ -57,13 +87,20 @@ def _combo_complete(out_dir: Path, n_players: int, *, force_clean: bool = False)
     # leftover shard directories are debris but may be preserved unless forced.
     if rows.is_file() and row_dir.exists():
         if force_clean:
-            logger.warning("Deleting existing row directory %s", row_dir)
+            LOGGER.warning(
+                "Deleting existing row directory",
+                extra={"stage": "full_field", "n_players": n_players, "path": str(row_dir)},
+            )
             shutil.rmtree(row_dir, ignore_errors=True)
         else:
-            logger.warning(
-                "Row directory %s exists alongside final parquet; "
-                "rerun with --force-clean to remove it",
-                row_dir,
+            LOGGER.warning(
+                "Row directory exists alongside final parquet",
+                extra={
+                    "stage": "full_field",
+                    "n_players": n_players,
+                    "path": str(row_dir),
+                    "hint": "rerun with --force-clean to remove",
+                },
             )
     return ckpt.is_file() and rows.is_file()
 
@@ -78,6 +115,14 @@ def _reset_partial(out_dir: Path, n_players: int) -> None:
         ckpt = out_dir / f"{n_players}p_checkpoint.pkl"
         if ckpt.exists():
             ckpt.unlink()
+        LOGGER.info(
+            "Removed partial outputs",
+            extra={
+                "stage": "full_field",
+                "n_players": n_players,
+                "path": str(out_dir),
+            },
+        )
 
 
 def run_full_field(
@@ -105,8 +150,21 @@ def run_full_field(
         candidate = Path("data") / BASE_OUT
         if candidate.exists():
             BASE_OUT = candidate
+    LOGGER.info(
+        "Full-field sweep starting",
+        extra={
+            "stage": "full_field",
+            "results_dir": str(BASE_OUT),
+            "global_seed": GLOBAL_SEED,
+            "n_jobs": JOBS,
+            "players": PLAYERS,
+        },
+    )
     if force_clean:
-        logger.info("force_clean=True - partial row directories will be removed when found")
+        LOGGER.info(
+            "force_clean enabled",
+            extra={"stage": "full_field", "results_dir": str(BASE_OUT)},
+        )
     BASE_OUT.mkdir(parents=True, exist_ok=True)
     # ------------------------------------------------------------------
 
@@ -125,25 +183,46 @@ def run_full_field(
 
     for n_players in PLAYERS:
         if n_players < 2:
-            print(f"Must have two or more players, skipping {n_players} player(s)")
+            LOGGER.warning(
+                "Table size below minimum",
+                extra={"stage": "full_field", "n_players": n_players},
+            )
             continue
         nshuf = shuffles_required(n_players)
         gps = GRID // n_players  # games per shuffle
         ngames = nshuf * gps
+        LOGGER.debug(
+            "Calculated batch sizing",
+            extra={
+                "stage": "full_field",
+                "n_players": n_players,
+                "shuffles": nshuf,
+                "games_per_shuffle": gps,
+                "total_games": ngames,
+            },
+        )
 
         out_dir = BASE_OUT / f"{n_players}_players"
         (out_dir).mkdir(parents=True, exist_ok=True)
 
         if _combo_complete(out_dir, n_players, force_clean=force_clean):
-            print(f"↩ skipping {n_players}-player - already done", flush=True)
+            LOGGER.info(
+                "Skipping completed table size",
+                extra={"stage": "full_field", "n_players": n_players, "path": str(out_dir)},
+            )
             continue
 
         _reset_partial(out_dir, n_players)
-
-        print(
-            f"▶ {n_players:>2}-player  |  {nshuf:>7,} shuffles  "
-            f"{gps:>5} games per shuffle  →  {ngames / 1e6:5.2f} M games",
-            flush=True,
+        LOGGER.info(
+            "Starting tournament sweep",
+            extra={
+                "stage": "full_field",
+                "n_players": n_players,
+                "shuffles": nshuf,
+                "games_per_shuffle": gps,
+                "total_games": ngames,
+                "path": str(out_dir),
+            },
         )
 
         # update shuffle count on the already-imported module
@@ -160,8 +239,24 @@ def run_full_field(
             row_output_directory=out_dir / f"{n_players}p_rows",
         )
         dt = perf_counter() - t0
-        print(f"✅ finished {n_players}-player in {dt / 60:5.1f} min\n", flush=True)
-        print(f"Concatenating and cleaning up {n_players}-player parquet shards...")
-        _concat_row_shards(out_dir, n_players)
-        print(f"{n_players}-player parquet shards consolidation process complete.")
-    print("🏁  All table sizes completed.")
+        LOGGER.info(
+            "Tournament sweep completed",
+            extra={
+                "stage": "full_field",
+                "n_players": n_players,
+                "elapsed_s": dt,
+                "total_games": ngames,
+            },
+        )
+        rows = _concat_row_shards(out_dir, n_players)
+        if rows:
+            LOGGER.debug(
+                "Row shard consolidation summary",
+                extra={
+                    "stage": "full_field",
+                    "n_players": n_players,
+                    "rows": rows,
+                    "path": str(out_dir / f"{n_players}p_rows.parquet"),
+                },
+            )
+    LOGGER.info("Full-field sweep complete", extra={"stage": "full_field"})

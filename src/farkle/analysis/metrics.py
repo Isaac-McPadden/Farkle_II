@@ -18,7 +18,7 @@ from farkle.analysis.checks import check_pre_metrics
 from farkle.app_config import AppConfig
 from farkle.utils.writer import atomic_path
 
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
 _WIN_COLS = ["winner_strategy", "winner_seat", "winning_score", "n_rounds"]
@@ -27,7 +27,14 @@ def _write_parquet(final: Path, rows: list[dict[str, Any]], schema: pa.Schema) -
     tbl = pa.Table.from_pylist(rows, schema=schema)
     with atomic_path(str(final)) as tmp_path:
         pq.write_table(tbl, tmp_path, compression="zstd")
-    log.info("✓ metrics → %s  (%d rows)", final.name, tbl.num_rows)
+    LOGGER.info(
+        "Metrics parquet written",
+        extra={
+            "stage": "metrics",
+            "path": final.name,
+            "rows": tbl.num_rows,
+        },
+    )
 
 
 def _update_batch_counters(
@@ -104,6 +111,16 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
         st = path.stat()
         return {"mtime": st.st_mtime, "size": st.st_size}
 
+    LOGGER.info(
+        "Metrics stage start",
+        extra={
+            "stage": "metrics",
+            "data_file": str(data_file),
+            "analysis_dir": str(analysis_dir),
+            "batch_rows": cfg.batch_rows,
+        },
+    )
+
     if stamp.exists():
         try:
             meta = json.loads(stamp.read_text())
@@ -116,7 +133,10 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
                     for p in (str(out_metrics), str(out_seats))
                 )
             ):
-                log.info("metrics: outputs up-to-date - skipped")
+                LOGGER.info(
+                    "Metrics: outputs up-to-date",
+                    extra={"stage": "metrics", "path": str(analysis_dir)},
+                )
                 return
         except Exception:
             pass
@@ -254,3 +274,14 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
                 indent=2,
             )
         )
+
+    LOGGER.info(
+        "Metrics stage complete",
+        extra={
+            "stage": "metrics",
+            "rows": len(metrics_rows),
+            "seat_rows": len(seat_wins),
+            "metrics_path": str(out_metrics),
+            "seat_path": str(out_seats),
+        },
+    )

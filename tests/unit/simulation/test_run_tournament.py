@@ -7,6 +7,7 @@ We monkey-patch the heavy helpers so no real games are played.
 
 from __future__ import annotations
 
+import logging
 import types  # noqa: F401
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -54,10 +55,14 @@ def fast_helpers(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def silence_logging(monkeypatch):
-    """Disable info/error logging from run_tournament during tests."""
-    monkeypatch.setattr(rt.log, "info", lambda *a, **k: None)  # noqa: ARG005
-    monkeypatch.setattr(rt.log, "error", lambda *a, **k: None)  # noqa: ARG005
+def silence_logging():
+    """Silence run_tournament logs by default while allowing tests to override."""
+    level = rt.LOGGER.level
+    rt.LOGGER.setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        rt.LOGGER.setLevel(level)
 
 
 # --------------------------------------------------------------------------- #
@@ -198,6 +203,30 @@ def test_run_tournament_player_count(monkeypatch, tmp_path):
     with pytest.raises(ValueError):
         cfg_bad = rt.TournamentConfig(n_players=7)
         rt.run_tournament(config=cfg_bad, checkpoint_path=tmp_path / "d.pkl", n_jobs=None)
+
+
+def test_run_tournament_emits_logging(monkeypatch, caplog, tmp_path):
+    caplog.set_level(logging.INFO, logger="farkle.simulation.run_tournament")
+
+    def fake_process_map(fn, iterable, **kwargs):  # noqa: ANN001
+        for item in iterable:
+            yield fn(item)
+
+    monkeypatch.setattr(rt.parallel, "process_map", fake_process_map)
+    monkeypatch.setattr(rt, "_measure_throughput", lambda *a, **k: 1, raising=True)
+    monkeypatch.setattr(rt.urandom, "spawn_seeds", lambda count, seed=0: range(seed, seed + count))
+
+    cfg = rt.TournamentConfig(num_shuffles=2, ckpt_every_sec=1)
+    rt.run_tournament(
+        config=cfg,
+        global_seed=0,
+        checkpoint_path=tmp_path / "logchk.pkl",
+        n_jobs=1,
+    )
+
+    messages = [rec.message for rec in caplog.records]
+    assert any("Tournament run start" in msg for msg in messages)
+    assert any("Tournament run complete" in msg for msg in messages)
 
 
 def test_run_tournament_num_shuffles_override(monkeypatch, tmp_path):

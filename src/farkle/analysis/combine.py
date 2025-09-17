@@ -12,7 +12,7 @@ from farkle.analysis.checks import check_post_combine
 from farkle.app_config import AppConfig
 from farkle.utils.streaming_loop import run_streaming_shard
 
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
     cols = []
@@ -35,7 +35,10 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     """
     files: list[Path] = sorted((cfg.data_dir).glob("*p/*_ingested_rows.parquet"))
     if not files:
-        log.info("combine: no per-N files found under %s", cfg.data_dir)
+        LOGGER.info(
+            "Combine: no inputs discovered",
+            extra={"stage": "combine", "path": str(cfg.data_dir)},
+        )
         return
 
     target = expected_schema_for(12)  # superset up to P12_*
@@ -47,7 +50,10 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     if out.exists():
         newest = max((p.stat().st_mtime for p in files), default=0.0)
         if out.stat().st_mtime >= newest:
-            log.info("combine: outputs up-to-date - skipped")
+            LOGGER.info(
+                "Combine: output up-to-date",
+                extra={"stage": "combine", "path": str(out)},
+            )
             return
 
     total = 0
@@ -73,7 +79,10 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
         manifest_candidate = out.with_suffix(".manifest.jsonl")
         if manifest_candidate.exists():
             manifest_candidate.unlink()
-        log.info("combine: inputs produced zero rows - skipped")
+        LOGGER.info(
+            "Combine: inputs produced zero rows",
+            extra={"stage": "combine", "path": str(cfg.data_dir)},
+        )
         return
 
     def _all_batches():
@@ -103,5 +112,13 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     if pq.read_schema(out).names != target.names:
         raise RuntimeError("combine: output schema mismatch")
 
-    log.info("combine: wrote %s (%d rows)", out, total)
+    LOGGER.info(
+        "Combine: parquet written",
+        extra={
+            "stage": "combine",
+            "path": str(out),
+            "rows": total,
+            "manifest": str(manifest_path),
+        },
+    )
     check_post_combine(files, out)

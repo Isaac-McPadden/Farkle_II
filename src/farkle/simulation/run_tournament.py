@@ -34,7 +34,7 @@ from farkle.utils.writer import atomic_path
 
 # from farkle.utils.logging import setup_info_logging, setup_warning_logging
 
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration constants (patched by tests/CLI)
@@ -194,17 +194,27 @@ def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[str]:
     """
 
     total: Counter[str] = Counter()
+    batch_size = len(shuffle_seed_batch)
+    if LOGGER.isEnabledFor(logging.DEBUG):
+        LOGGER.debug(
+            "Processing shuffle batch",
+            extra={
+                "stage": "simulation",
+                "batch_size": batch_size,
+                "first_seed": int(shuffle_seed_batch[0]) if batch_size else None,
+                "last_seed": int(shuffle_seed_batch[-1]) if batch_size else None,
+            },
+        )
     for sd in shuffle_seed_batch:
-        log.info("Shuffle %s started", sd)
         try:
             result = _play_shuffle(int(sd))
         except Exception:
-            log.error("Shuffle %s failed", sd, exc_info=True)
+            LOGGER.exception(
+                "Shuffle failed",
+                extra={"stage": "simulation", "shuffle_seed": int(sd)},
+            )
             raise
         else:
-            state = _STATE
-            games = state.cfg.games_per_shuffle if state is not None else 0
-            log.info("Shuffle %s finished: %d games", sd, games)
             total.update(result)
     return total
 
@@ -247,8 +257,18 @@ def _run_chunk_metrics(
     sums_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
     sq_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
 
+    batch_size = len(shuffle_seed_batch)
+    if LOGGER.isEnabledFor(logging.DEBUG):
+        LOGGER.debug(
+            "Processing metrics shuffle batch",
+            extra={
+                "stage": "simulation",
+                "batch_size": batch_size,
+                "first_seed": int(shuffle_seed_batch[0]) if batch_size else None,
+                "last_seed": int(shuffle_seed_batch[-1]) if batch_size else None,
+            },
+        )
     for seed in shuffle_seed_batch:
-        log.info("Shuffle %s started", seed)
         wins, sums, sqs, rows = _play_one_shuffle(int(seed), collect_rows=collect_rows)
         wins_total.update(wins)
         for label in METRIC_LABELS:
@@ -271,6 +291,15 @@ def _run_chunk_metrics(
                     "n_players": _STATE.cfg.n_players if _STATE else None,
                     "shuffle_seed": int(seed),
                     "pid": getpid(),
+                },
+            )
+            LOGGER.info(
+                "Row shard written",
+                extra={
+                    "stage": "simulation",
+                    "shuffle_seed": int(seed),
+                    "rows": len(rows),
+                    "path": str(out),
                 },
             )
 
@@ -394,6 +423,15 @@ def run_tournament(
         1,
         int(cfg.desired_sec_per_chunk * games_per_sec // cfg.games_per_shuffle),
     )
+    LOGGER.debug(
+        "Derived chunk sizing",
+        extra={
+            "stage": "simulation",
+            "n_players": cfg.n_players,
+            "games_per_shuffle": cfg.games_per_shuffle,
+            "shuffles_per_chunk": shuffles_per_chunk,
+        },
+    )
 
     shuffle_seeds = list(urandom.spawn_seeds(cfg.num_shuffles, seed=global_seed))
     chunks = [
@@ -426,6 +464,22 @@ def run_tournament(
         metrics_manifest_path = metric_chunk_directory / "metrics_manifest.jsonl"
 
     mp.get_context("spawn")
+
+    LOGGER.info(
+        "Tournament run start",
+        extra={
+            "stage": "simulation",
+            "n_players": cfg.n_players,
+            "num_shuffles": cfg.num_shuffles,
+            "global_seed": global_seed,
+            "n_jobs": n_jobs,
+            "chunks": len(chunks),
+            "collect_metrics": collect_metrics,
+            "collect_rows": collect_rows,
+            "row_dir": str(row_output_directory) if row_output_directory else None,
+            "checkpoint_path": str(ckpt_path),
+        },
+    )
 
     if collect_metrics or collect_rows:
         manifest_path = (row_output_directory / "manifest.jsonl") if row_output_directory else None
@@ -483,6 +537,15 @@ def run_tournament(
                             "n_players": cfg.n_players,
                         },
                     )
+                    LOGGER.info(
+                        "Metrics chunk written",
+                        extra={
+                            "stage": "simulation",
+                            "chunk_index": done,
+                            "rows": len(rows),
+                            "path": str(chunk_path),
+                        },
+                    )
                 else:
                     assert metric_sums is not None and metric_sq_sums is not None
                     for label in METRIC_LABELS:
@@ -490,8 +553,24 @@ def run_tournament(
                             metric_sums[label][k] += v
                         for k, v in sqs[label].items():
                             metric_sq_sums[label][k] += v
+                LOGGER.debug(
+                    "Chunk processed",
+                    extra={
+                        "stage": "simulation",
+                        "chunk_index": done,
+                        "wins": sum(wins.values()),
+                    },
+                )
             else:
                 win_totals.update(cast(Counter[str], result))
+                LOGGER.debug(
+                    "Chunk processed",
+                    extra={
+                        "stage": "simulation",
+                        "chunk_index": done,
+                        "wins": sum(cast(Counter[str], result).values()),
+                    },
+                )
 
             now = time.perf_counter()
             if now - last_ckpt >= cfg.ckpt_every_sec:
@@ -505,11 +584,15 @@ def run_tournament(
                     if metric_chunk_directory is not None
                     else (metric_sq_sums if collect_metrics or collect_rows else None),
                 )
-                log.info(
-                    "checkpoint … %d/%d chunks, %d games",
-                    done,
-                    len(chunks),
-                    sum(win_totals.values()),
+                LOGGER.info(
+                    "Checkpoint written",
+                    extra={
+                        "stage": "simulation",
+                        "chunk_index": done,
+                        "chunks_total": len(chunks),
+                        "games": sum(win_totals.values()),
+                        "path": str(ckpt_path),
+                    },
                 )
                 last_ckpt = now
 
@@ -534,5 +617,14 @@ def run_tournament(
         metric_sums if (collect_metrics or collect_rows) else None,
         metric_sq_sums if (collect_metrics or collect_rows) else None,
     )
-    log.info("finished - %d games", sum(win_totals.values()))
+    LOGGER.info(
+        "Tournament run complete",
+        extra={
+            "stage": "simulation",
+            "games": sum(win_totals.values()),
+            "n_players": cfg.n_players,
+            "chunks": len(chunks),
+            "checkpoint_path": str(ckpt_path),
+        },
+    )
 

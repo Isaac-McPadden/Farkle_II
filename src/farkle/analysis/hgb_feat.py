@@ -8,7 +8,7 @@ from farkle.analysis.analysis_config import PipelineCfg
 from farkle.app_config import AppConfig
 from farkle.utils.writer import atomic_path
 
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
@@ -19,10 +19,19 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     cfg = _pipeline_cfg(cfg)
     out = cfg.analysis_dir / "hgb_importance.json"
     if out.exists() and out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
-        log.info("Hist-Gradient-Boosting: results up-to-date - skipped")
+        LOGGER.info(
+            "HGB feature importance up-to-date",
+            extra={"stage": "hgb", "path": str(out)},
+        )
         return
 
-    log.info("Hist-Gradient-Boosting: running in-process")
+    LOGGER.info(
+        "HGB feature importance running",
+        extra={
+            "stage": "hgb",
+            "analysis_dir": str(cfg.analysis_dir),
+        },
+    )
     ratings_src = cfg.results_dir / "ratings_pooled.pkl"
     ratings_dst = cfg.analysis_dir / "ratings_pooled.pkl"
     if ratings_src.exists() and not ratings_dst.exists():
@@ -31,3 +40,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
             Path(tmp_path).write_bytes(ratings_src.read_bytes())
 
     _hgb.run_hgb(root=cfg.analysis_dir, output_path=out)
+    LOGGER.info(
+        "HGB feature importance complete",
+        extra={"stage": "hgb", "path": str(out)},
+    )

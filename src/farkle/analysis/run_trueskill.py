@@ -40,7 +40,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
 # Default location of tournament result blocks when no path is supplied
 DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results"
 
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 def _find_combined_parquet(base: Path | None) -> Path | None:
@@ -560,7 +560,15 @@ def _rate_block_worker(
             n_rows = md.num_rows
         except Exception:
             n_rows = 0
-        log.info("TrueSkill: %sp up-to-date - skipped", player_count)
+        LOGGER.info(
+            "TrueSkill block up-to-date",
+            extra={
+                "stage": "trueskill",
+                "block": player_count,
+                "row_file": str(row_file),
+                "parquet": str(parquet_path),
+            },
+        )
         return player_count, n_rows
 
     env = trueskill.TrueSkill(**(env_kwargs or {}))
@@ -690,6 +698,20 @@ def run_trueskill(
     if workers is None:
         workers = max(1, (os.cpu_count() or 1) - 1)
 
+    LOGGER.info(
+        "TrueSkill run start",
+        extra={
+            "stage": "trueskill",
+            "root": str(root),
+            "dataroot": str(base),
+            "workers": workers,
+            "batch_rows": batch_rows,
+            "resume": resume_per_n,
+            "checkpoint_batches": checkpoint_every_batches,
+            "seed": output_seed,
+        },
+    )
+
     pooled: dict[str, tuple[float, float]] = {}
     per_block_games: dict[str, int] = {}
 
@@ -700,8 +722,16 @@ def run_trueskill(
     cpu_cap   = (os.cpu_count() or 1)
     actual_workers = max(1, min(requested, cpu_cap, len(blocks)))
     if actual_workers != requested:
-        log.info("Workers capped from %d → %d (cpus=%d, blocks=%d)",
-                 requested, actual_workers, cpu_cap, len(blocks))
+        LOGGER.info(
+            "TrueSkill workers capped",
+            extra={
+                "stage": "trueskill",
+                "requested": requested,
+                "actual": actual_workers,
+                "cpu_cap": cpu_cap,
+                "blocks": len(blocks),
+            },
+        )
     if actual_workers > 1 and len(blocks) > 1:
         with cf.ProcessPoolExecutor(max_workers=actual_workers) as ex:
             futures = {
@@ -722,7 +752,10 @@ def run_trueskill(
                     player_count, block_games = fut.result()
                 except Exception as e:
                     bad = futures[fut]
-                    log.exception("TrueSkill failed for block %s: %s", bad, e)
+                    LOGGER.exception(
+                        "TrueSkill block failed",
+                        extra={"stage": "trueskill", "block": bad.name, "error": str(e)},
+                    )
                     continue
                 per_block_games[player_count] = block_games
     else:
@@ -744,7 +777,10 @@ def run_trueskill(
     if pooled_parquet.exists():
         newest = max((p.stat().st_mtime for p in existing_parquets), default=0.0)
         if pooled_parquet.stat().st_mtime >= newest:
-            log.info("TrueSkill: pooled outputs up-to-date - skipped")
+            LOGGER.info(
+                "TrueSkill pooled outputs up-to-date",
+                extra={"stage": "trueskill", "path": str(pooled_parquet)},
+            )
             return
 
     for parquet in existing_parquets:
@@ -783,3 +819,13 @@ def run_trueskill(
     with atomic_path(str(tiers_path)) as tmp_path:
         with Path(tmp_path).open("w") as fh:
             json.dump(tiers, fh, indent=2, sort_keys=True)
+    LOGGER.info(
+        "TrueSkill run complete",
+        extra={
+            "stage": "trueskill",
+            "root": str(root),
+            "blocks": len(blocks),
+            "pooled_parquet": str(pooled_parquet),
+            "tiers_path": str(tiers_path),
+        },
+    )

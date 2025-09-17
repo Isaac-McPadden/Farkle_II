@@ -19,7 +19,7 @@ from farkle.analysis.analysis_config import (
 from farkle.app_config import AppConfig
 from farkle.utils.writer import atomic_path
 
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
 def _schema_hash(n_players: int) -> str:
@@ -54,7 +54,15 @@ def _write_manifest(
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(manifest_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(payload, indent=2))
-    log.info("✓ manifest → %s", manifest_path)
+    LOGGER.info(
+        "Curate manifest written",
+        extra={
+            "stage": "curate",
+            "path": str(manifest_path),
+            "rows": rows,
+            "n_players": n_players,
+        },
+    )
 
 
 def _already_curated(out_file: Path, manifest: Path) -> bool:
@@ -82,11 +90,14 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
     n_players = n_players_from_schema(schema)
     actual_hash = _schema_hash(n_players)
     if actual_hash != expected_hash:
-        log.info(
-            "Curate: %s schema mismatch (expected %s, found %s)",
-            out_file.name,
-            expected_hash,
-            actual_hash,
+        LOGGER.info(
+            "Curate schema mismatch detected",
+            extra={
+                "stage": "curate",
+                "path": out_file.name,
+                "expected_hash": expected_hash,
+                "actual_hash": actual_hash,
+            },
         )
         return False
     return True
@@ -122,11 +133,14 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
             _write_manifest(manifest, rows=md.num_rows, schema=schema, cfg=cfg)
 
             raw_file.replace(dst_file)
-            log.info(
-                "Curate: wrote %s (%d rows, %d row-groups)",
-                dst_file.name,
-                md.num_rows,
-                md.num_row_groups,
+            LOGGER.info(
+                "Curate: parquet finalized",
+                extra={
+                    "stage": "curate",
+                    "path": dst_file.name,
+                    "rows": md.num_rows,
+                    "row_groups": md.num_row_groups,
+                },
             )
         return
 
@@ -136,7 +150,10 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     manifest = cfg.analysis_dir / cfg.manifest_name
 
     if _already_curated(dst_file, manifest):
-        log.info("Curate: %s already up-to-date - skipped", dst_file.name)
+        LOGGER.info(
+            "Curate: output up-to-date",
+            extra={"stage": "curate", "path": dst_file.name},
+        )
         return
 
     if not raw_file.exists():
@@ -147,9 +164,12 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     _write_manifest(manifest, rows=md.num_rows, schema=schema, cfg=cfg)
 
     raw_file.replace(dst_file)
-    log.info(
-        "Curate: wrote %s (%d rows, %d row-groups)",
-        dst_file.name,
-        md.num_rows,
-        md.num_row_groups,
+    LOGGER.info(
+        "Curate: parquet finalized",
+        extra={
+            "stage": "curate",
+            "path": dst_file.name,
+            "rows": md.num_rows,
+            "row_groups": md.num_row_groups,
+        },
     )

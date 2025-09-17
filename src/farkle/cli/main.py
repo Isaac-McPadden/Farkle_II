@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -11,7 +12,9 @@ from farkle.analysis import combine, curate, ingest, metrics
 from farkle.simulation.run_tournament import run_tournament
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
-from farkle.utils.logging import configure_logging
+from farkle.utils.logging import setup_info_logging
+
+LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration helpers
@@ -100,13 +103,41 @@ def build_parser() -> argparse.ArgumentParser:
 # Entry point
 # ---------------------------------------------------------------------------
 
+def _parse_level(level: str | int) -> int:
+    if isinstance(level, str):
+        return getattr(logging, level.upper(), logging.INFO)
+    return int(level)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     args, remaining = parser.parse_known_args(argv)
 
-    configure_logging(level=args.log_level)
+    setup_info_logging()
+    root_logger = logging.getLogger()
+    root_logger.setLevel(_parse_level(args.log_level))
+
+    LOGGER.info(
+        "CLI arguments parsed",
+        extra={
+            "stage": "cli",
+            "command": args.command,
+            "config_path": str(args.config) if args.config is not None else None,
+            "overrides": list(args.overrides or []),
+            "log_level": logging.getLevelName(root_logger.level),
+        },
+    )
 
     cfg = load_config(args.config, args.overrides)
+
+    LOGGER.info(
+        "Configuration loaded",
+        extra={
+            "stage": "cli",
+            "command": args.command,
+            "config_keys": sorted(cfg.keys()),
+        },
+    )
 
     if args.command == "run":
         if args.metrics:
@@ -118,15 +149,48 @@ def main(argv: Sequence[str] | None = None) -> None:
             cfg["row_output_directory"], str
         ):
             cfg["row_output_directory"] = Path(cfg["row_output_directory"])
+        LOGGER.info(
+            "Dispatching run_tournament",
+            extra={
+                "stage": "cli",
+                "command": "run",
+                "global_seed": cfg.get("global_seed"),
+                "n_jobs": cfg.get("n_jobs"),
+                "row_output_directory": (
+                    str(cfg.get("row_output_directory"))
+                    if cfg.get("row_output_directory") is not None
+                    else None
+                ),
+                "collect_metrics": bool(cfg.get("collect_metrics", False)),
+                "remaining_args": remaining,
+            },
+        )
         run_tournament(**cfg)
+        LOGGER.info(
+            "run_tournament completed",
+            extra={"stage": "cli", "command": "run"},
+        )
     elif args.command == "time":
+        LOGGER.info("Dispatching measure_sim_times", extra={"stage": "cli", "command": "time"})
         measure_sim_times()
     elif args.command == "watch":
+        LOGGER.info(
+            "Dispatching watch_game",
+            extra={"stage": "cli", "command": "watch", "seed": args.seed},
+        )
         watch_game(seed=args.seed)
     elif args.command == "analyze":
         from farkle.analysis.analysis_config import PipelineCfg
 
         pipeline_cfg = PipelineCfg(**cfg)
+        LOGGER.info(
+            "Dispatching analysis command",
+            extra={
+                "stage": "cli",
+                "command": f"analyze:{args.an_cmd}",
+                "config_path": str(args.config) if args.config is not None else None,
+            },
+        )
         if args.an_cmd == "ingest":
             ingest.run(pipeline_cfg)
         elif args.an_cmd == "curate":
@@ -140,6 +204,10 @@ def main(argv: Sequence[str] | None = None) -> None:
             curate.run(pipeline_cfg)
             combine.run(pipeline_cfg)
             metrics.run(pipeline_cfg)
+        LOGGER.info(
+            "Analysis command completed",
+            extra={"stage": "cli", "command": f"analyze:{args.an_cmd}"},
+        )
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")
 
