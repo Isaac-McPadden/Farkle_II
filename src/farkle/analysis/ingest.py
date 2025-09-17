@@ -153,7 +153,7 @@ def _n_from_block(name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _process_block(block: Path, cfg: PipelineCfg) -> None:
+def _process_block(block: Path, cfg: PipelineCfg) -> int:
     """Process a single ``<N>_players`` block."""
     n = _n_from_block(block.name)
     LOGGER.info(
@@ -177,7 +177,7 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
             "Ingest block up-to-date",
             extra={"stage": "ingest", "n_players": n, "path": str(raw_out)},
         )
-        return
+        return 0
 
     canon = expected_schema_for(n)
     seat_cols = [c for c in canon.names if c.startswith("P")]
@@ -238,7 +238,7 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
             "Ingest block produced zero rows",
             extra={"stage": "ingest", "n_players": n, "path": str(block)},
         )
-        return
+        return 0
 
     def _all_batches():
         yield first
@@ -268,6 +268,7 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
             "manifest": str(manifest_path),
         },
     )
+    return total
 
 
 def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
@@ -292,14 +293,24 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
         key=lambda p: _n_from_block(p.name),
     )
 
+    total_rows = 0
     if cfg.n_jobs_ingest <= 1:
         for block in blocks:
-            _process_block(block, cfg)
+            total_rows += _process_block(block, cfg)
     else:
         with ProcessPoolExecutor(max_workers=cfg.n_jobs_ingest) as pool:
             futures = [pool.submit(_process_block, block, cfg) for block in blocks]
             for f in futures:
-                f.result()
+                total_rows += f.result()
+
+    LOGGER.info(
+        "Ingest finished",
+        extra={
+            "stage": "ingest",
+            "blocks": len(blocks),
+            "rows": total_rows,
+        },
+    )
 
 
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper

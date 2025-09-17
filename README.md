@@ -39,7 +39,8 @@ Then launch a run:
 ```bash
 # Override selected values without editing the file
 farkle --config configs/tournament.yaml \
-  --set num_shuffles=500 \
+  --set n_jobs=6 \
+  --set global_seed=42 \
   --log-level INFO \
   run --metrics --row-dir data/results_seed_42/rows
 ```

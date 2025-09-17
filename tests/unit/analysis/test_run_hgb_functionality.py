@@ -6,6 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
+pytest.importorskip("matplotlib")
+pytest.importorskip("sklearn")
+
 from farkle.analysis import run_hgb, run_trueskill
 
 
