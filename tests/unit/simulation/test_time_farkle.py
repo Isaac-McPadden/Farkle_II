@@ -3,7 +3,6 @@ Tiny integration-style tests for time_farkle.py utilities.
 (We don't time anything here - just logic.)
 """
 
-import argparse
 from types import SimpleNamespace
 
 import pandas as pd
@@ -40,12 +39,13 @@ def fast_sim(monkeypatch):
     )
 
 
-def test_measure_sim_times_runs_capfd(capfd):
-    # use argv=[] so argparse sees no flags
-    tf.measure_sim_times(argv=[])
-    out, _ = capfd.readouterr()
-    assert "Single game:" in out
-    assert "Batch of" in out
+def test_measure_sim_times_logs(capinfo):
+    tf.measure_sim_times(n_games=4, players=3, seed=21, jobs=2)
+
+    stages = {(rec.benchmark, rec.stage) for rec in capinfo.records if hasattr(rec, "benchmark")}
+    assert ("time_farkle", "simulation") in stages
+    assert ("batch", "simulation") in stages
+    assert ("single_game", "simulation") in stages
 
 
 def test_make_random_strategies_deterministic():
@@ -70,44 +70,12 @@ def test_dataframe_winner_column(tmp_path, monkeypatch):  # noqa: ARG001
     assert set(df["winner"]) == {"P1", "P2"}
 
 
-@pytest.mark.parametrize(
-    "flag,val",
-    [
-        ("-n", "0"),
-        ("-n", "-1"),
-        ("-p", "0"),
-        ("-p", "-2"),
-        ("-j", "0"),
-        ("-j", "-3"),
-    ],
-)
-def test_cli_rejects_nonpositive_values(flag, val):
-    with pytest.raises(SystemExit):
-        tf.measure_sim_times(argv=[flag, val])
-
-
-def test_build_arg_parser_defaults():
-    parser = tf.build_arg_parser()
-    args = parser.parse_args([])
-    assert args.n_games == 1000 and isinstance(args.n_games, int)
-    assert args.players == 5 and isinstance(args.players, int)
-    assert args.seed == 42 and isinstance(args.seed, int)
-    assert args.jobs == 1 and isinstance(args.jobs, int)
-
-
-def test_winners_breakdown_multiple_winners(monkeypatch, capfd):
+def test_winners_breakdown_multiple_winners(monkeypatch, capinfo):
     df = pd.DataFrame({"winner": ["P1", "P2", "P1"]})
     monkeypatch.setattr(tf, "simulate_many_games", lambda **_: df)
-    tf.measure_sim_times(argv=[])  # defaults
-    out, _ = capfd.readouterr()
-    assert "P1" in out and "2" in out
-    assert "P2" in out and "1" in out
-    
+    tf.measure_sim_times()
 
-def test_measure_sim_times_rejects_invalid_args():
-    with pytest.raises(argparse.ArgumentTypeError):
-        tf.measure_sim_times(["--n_games", "0"])
-    with pytest.raises(argparse.ArgumentTypeError):
-        tf.measure_sim_times(["--players", "0"])
-    with pytest.raises(argparse.ArgumentTypeError):
-        tf.measure_sim_times(["--jobs", "0"])
+    batch_records = [rec for rec in capinfo.records if getattr(rec, "benchmark", None) == "batch"]
+    assert batch_records, "Batch benchmark log missing"
+    winners = getattr(batch_records[-1], "winners", {})
+    assert winners == {"P1": 2, "P2": 1}

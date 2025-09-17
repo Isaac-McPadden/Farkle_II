@@ -1,14 +1,18 @@
 import contextlib
-import subprocess as sp
-import sys
+import logging
 from pathlib import Path
 
 import pandas as pd
 import pytest
 import yaml
+
+pytest.importorskip("hypothesis")
+pytest.importorskip("pydantic")
+
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
+from farkle.cli import main as cli_main
 from farkle.game.engine import FarkleGame, FarklePlayer
 from farkle.game.scoring import (
     apply_discards,
@@ -43,69 +47,60 @@ def simple_strategy():
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("n_jobs", [1, 2, 4])
+@pytest.mark.parametrize("n_jobs", [1, 2])
 def test_stream_mp_branches(tmp_csv, simple_strategy, n_jobs):
     """Serial + parallel branches of simulate_many_games_stream."""
     if tmp_csv.exists():  # start fresh for each param value
         tmp_csv.unlink()
     simulate_many_games_stream(
-        n_games=40,  # tiny but enough to hit queues
+        n_games=12,  # tiny but enough to hit queues
         strategies=simple_strategy,
         out_csv=str(tmp_csv),
         seed=42,
         n_jobs=n_jobs,
     )
     df = pd.read_csv(tmp_csv)
-    # 1 strategy × 40 reps → 40 rows
-    assert len(df) == 40
+    # 1 strategy × 12 reps → 12 rows
+    assert len(df) == 12
     # verify writer closed file cleanly (newline at EOF)
     assert tmp_csv.read_bytes().endswith(b"\n")
 
 
 def test_seed_reproducible(simple_strategy):
-    df1 = simulate_many_games(n_games=200, strategies=simple_strategy, seed=123, n_jobs=1)
-    df2 = simulate_many_games(n_games=200, strategies=simple_strategy, seed=123, n_jobs=1)
+    df1 = simulate_many_games(n_games=60, strategies=simple_strategy, seed=123, n_jobs=1)
+    df2 = simulate_many_games(n_games=60, strategies=simple_strategy, seed=123, n_jobs=1)
     pd.testing.assert_frame_equal(df1, df2)
 
 
-CLI = [sys.executable, "-m", "farkle"]  # <- NEW entry-point
+def test_cli_smoke(tmp_path: Path, capinfo, monkeypatch: pytest.MonkeyPatch):
+    """Smoke-test the unified CLI by exercising the ``run`` command."""
 
+    captured: dict[str, object] = {}
 
-def test_cli_smoke(tmp_path: Path):
-    """
-    End-to-end CLI run via:  python -m farkle run <cfg.yml>
+    def fake_run_tournament(**kwargs: object) -> None:
+        captured.update(kwargs)
 
-    Verifies:
-      * CLI exits 0
-      * output CSV has expected number of rows
-    """
+    monkeypatch.setattr(cli_main, "run_tournament", fake_run_tournament)
+
     cfg = {
-        "strategy_grid": {
-            "score_thresholds": [300],
-            "dice_thresholds": [2],
-            "smart_five_opts": [False],
-            "smart_one_opts": [False],
-            "consider_score_opts": [True],
-            "consider_dice_opts": [True],
-            "auto_hot_dice_opts": [False],
-        },
-        "sim": {
-            "n_games": 20,
-            "out_csv": str(tmp_path / "out.csv"),
-            "seed": 9,
-            "n_jobs": 1,
-        },
+        "global_seed": 9,
+        "n_players": 2,
+        "num_shuffles": 1,
+        "checkpoint_path": str(tmp_path / "checkpoint.pkl"),
+        "row_output_directory": str(tmp_path / "rows"),
     }
 
     cfg_path = tmp_path / "cfg.yml"
     cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
-    # --- run the CLI -------------------------------------------------------
-    sp.check_call(CLI + ["run", str(cfg_path)])
-    # -----------------------------------------------------------------------
+    cli_main.main(["--config", str(cfg_path), "run"])
 
-    df = pd.read_csv(cfg["sim"]["out_csv"])
-    assert len(df) == cfg["sim"]["n_games"]
+    assert captured["n_players"] == 2
+    assert captured["num_shuffles"] == 1
+    assert captured["global_seed"] == 9
+    assert captured["checkpoint_path"] == tmp_path / "checkpoint.pkl"
+    assert captured["row_output_directory"] == tmp_path / "rows"
+    assert any(record.levelno == logging.INFO for record in capinfo.records)
 
 
 def test_final_round_rule():

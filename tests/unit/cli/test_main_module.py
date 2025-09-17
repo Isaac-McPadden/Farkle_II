@@ -1,5 +1,9 @@
 import runpy
 
+import pytest
+
+pytest.importorskip("pydantic")
+
 import farkle.cli.main as cli_main
 
 
