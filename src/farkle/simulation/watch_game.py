@@ -28,8 +28,7 @@ from farkle.simulation.strategies import (
 from farkle.utils.random import make_rng, spawn_seeds
 
 # ── 1.  Plain-text logger ----------------------------------------------------
-logging.basicConfig(level=logging.INFO, format="%(message)s", handlers=[logging.StreamHandler()])
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 # ── 2.  Tiny helpers ---------------------------------------------------------
@@ -80,10 +79,13 @@ def _trace_decide(strategy: ThresholdStrategy, label: str) -> None:
 
     def traced_decide(self: ThresholdStrategy, **kw):  # same signature  # noqa: ARG001
         keep = original(**kw)
-        log.info(
-            f"{label} decide(): turn={kw['turn_score']:<4}  "
-            f"dice_left={kw['dice_left']}  →  "
-            f"{'ROLL' if keep else 'BANK'}"
+        LOGGER.info(
+            "%s decide(): turn=%d dice_left=%d -> %s",
+            label,
+            kw.get("turn_score", 0),
+            kw.get("dice_left", 0),
+            "ROLL" if keep else "BANK",
+            extra={"stage": "watch"},
         )
         return keep
 
@@ -113,7 +115,14 @@ def patch_scoring():
         res = orig_mod(*args, **kw)  # type: ignore[arg-type]
         pts, used, reroll = res[:3]
         roll = args[0] if args else kw.get("dice_roll")
-        log.info(f"score({roll}) -> pts={pts:<4} used={used} reroll={reroll}")
+        LOGGER.info(
+            "score(%s) -> pts=%s used=%s reroll=%s",
+            roll,
+            f"{pts:<4}",
+            used,
+            reroll,
+            extra={"stage": "watch"},
+        )
         return res
 
     _scoring_mod.default_score = traced_default_score  # type: ignore[assignment]
@@ -142,7 +151,14 @@ def _patch_default_score() -> None:
         res = orig_mod(*args, **kw)  # type: ignore[arg-type]
         pts, used, reroll = res[:3]
         roll = args[0] if args else kw.get("dice_roll")
-        log.info(f"score({roll}) -> pts={pts:<4} used={used} reroll={reroll}")
+        LOGGER.info(
+            "score(%s) -> pts=%s used=%s reroll=%s",
+            roll,
+            f"{pts:<4}",
+            used,
+            reroll,
+            extra={"stage": "watch"},
+        )
         return res
 
     _scoring_mod.default_score = traced_default_score  # type: ignore[assignment]
@@ -160,7 +176,12 @@ class TracePlayer(FarklePlayer):
     def _roll(self, n: int) -> list[int]:
         """Return ``n`` dice faces and log the result."""
         faces = super()._roll(n)
-        log.info(f"{self.name} rolls {faces}")
+        LOGGER.info(
+            "%s rolls %s",
+            self.name,
+            faces,
+            extra={"stage": "watch"},
+        )
         return faces
 
 
@@ -187,8 +208,16 @@ def watch_game(seed: int | None = None) -> None:
     # --- make two random strategies -------------------------------------
     strategy1 = random_threshold_strategy(random.Random(strategy_seed1))
     strategy2 = random_threshold_strategy(random.Random(strategy_seed2))
-    log.info("P1 strategy\n%s\n", strategy_yaml(strategy1))
-    log.info("P2 strategy\n%s\n", strategy_yaml(strategy2))
+    LOGGER.info(
+        "P1 strategy\n%s\n",
+        strategy_yaml(strategy1),
+        extra={"stage": "watch"},
+    )
+    LOGGER.info(
+        "P2 strategy\n%s\n",
+        strategy_yaml(strategy2),
+        extra={"stage": "watch"},
+    )
 
     # monkey-patch the *strategy* layer so we can see decide()
     _trace_decide(strategy1, "P1")
@@ -211,11 +240,13 @@ def watch_game(seed: int | None = None) -> None:
         game = FarkleGame([p1, p2], target_score=10_000)
         metrics = game.play()
 
-    log.info("\n===== final result =====")
-    log.info(
-        f"Winner: {metrics.winner}  "
-        f"score={metrics.winning_score}  "
-        f"rounds={metrics.n_rounds}"
+    LOGGER.info("\n===== final result =====", extra={"stage": "watch"})
+    LOGGER.info(
+        "Winner: %s  score=%d  rounds=%d",
+        metrics.winner,
+        metrics.winning_score,
+        metrics.n_rounds,
+        extra={"stage": "watch"},
     )
 
 

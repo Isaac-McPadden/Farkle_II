@@ -10,7 +10,7 @@ from farkle.analysis import trueskill as _ts
 from farkle.analysis.analysis_config import PipelineCfg
 from farkle.app_config import AppConfig
 
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
@@ -20,19 +20,28 @@ def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
 def run_all(cfg: AppConfig | PipelineCfg) -> None:
     """Run every analytics pass in sequence."""
     cfg = _pipeline_cfg(cfg)
-    log.info("Analytics: starting all modules")
+    LOGGER.info("Analytics: starting all modules", extra={"stage": "analysis"})
     if cfg.run_trueskill:
         _ts.run(cfg)
     else:
-        log.info("Analytics: skipping trueskill (run_trueskill=False)")
+        LOGGER.info(
+            "Analytics: skipping trueskill",
+            extra={"stage": "analysis", "reason": "run_trueskill=False"},
+        )
 
     if cfg.run_head2head:
         _h2h.run(cfg)
     else:
-        log.info("Analytics: skipping head-to-head (run_head2head=False)")
+        LOGGER.info(
+            "Analytics: skipping head-to-head",
+            extra={"stage": "analysis", "reason": "run_head2head=False"},
+        )
 
     if cfg.run_hgb:
         _hgb.run(cfg)
     else:
-        log.info("Analytics: skipping hist gradient boosting (run_hgb=False)")
-    log.info("Analytics: all modules finished")
+        LOGGER.info(
+            "Analytics: skipping hist gradient boosting",
+            extra={"stage": "analysis", "reason": "run_hgb=False"},
+        )
+    LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})

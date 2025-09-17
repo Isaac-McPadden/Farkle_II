@@ -32,7 +32,7 @@ FIG_DIR = Path("notebooks/figs")
 MAX_PD_PLOTS = 30
 
 
-logger = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
@@ -110,6 +110,17 @@ def run_hgb(
     root = Path(root)
     metrics_path = root / METRICS_NAME
     ratings_path = root / RATINGS_NAME
+
+    LOGGER.info(
+        "HGB regression start",
+        extra={
+            "stage": "hgb",
+            "root": str(root),
+            "seed": seed,
+            "metrics_path": str(metrics_path),
+            "ratings_path": str(ratings_path),
+        },
+    )
 
     metrics = pd.read_parquet(metrics_path)
     with open(ratings_path, "rb") as fh:
@@ -195,15 +206,33 @@ def run_hgb(
     with atomic_path(str(output_path)) as tmp_path:
         with Path(tmp_path).open("w") as fh:
             json.dump(imp_dict, fh, indent=2, sort_keys=True)
+    LOGGER.info(
+        "HGB permutation importances written",
+        extra={
+            "stage": "hgb",
+            "path": str(output_path),
+            "features": len(features.columns),
+        },
+    )
 
     FIG_DIR.mkdir(parents=True, exist_ok=True)
     cols = list(features.columns)
     if len(cols) > MAX_PD_PLOTS:
-        logger.warning(
-            "More than %d features provided (%d); only plotting the first %d",
-            MAX_PD_PLOTS,
-            len(cols),
-            MAX_PD_PLOTS,
+        LOGGER.warning(
+            "Too many features for partial dependence",
+            extra={
+                "stage": "hgb",
+                "features": len(cols),
+                "max_plots": MAX_PD_PLOTS,
+            },
         )
     for col in cols[:MAX_PD_PLOTS]:
         plot_partial_dependence(model, features, col, FIG_DIR)
+    LOGGER.info(
+        "HGB regression complete",
+        extra={
+            "stage": "hgb",
+            "path": str(output_path),
+            "plots": min(len(cols), MAX_PD_PLOTS),
+        },
+    )

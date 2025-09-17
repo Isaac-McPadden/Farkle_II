@@ -10,7 +10,7 @@ import pyarrow.parquet as pq
 
 from .analysis_config import expected_schema_for
 
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> None:
@@ -71,7 +71,10 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
             f"{combined_rows} != {manifest_rows}"
         )
 
-    log.info("✓ check_pre_metrics OK")
+    LOGGER.info(
+        "check_pre_metrics passed",
+        extra={"stage": "checks", "path": str(combined_parquet)},
+    )
 
 
 def check_post_combine(
@@ -108,4 +111,7 @@ def check_post_combine(
     if actual != expected:
         raise RuntimeError("check_post_combine: output schema mismatch")
 
-    log.info("✓ check_post_combine OK")
+    LOGGER.info(
+        "check_post_combine passed",
+        extra={"stage": "checks", "path": str(combined_parquet)},
+    )

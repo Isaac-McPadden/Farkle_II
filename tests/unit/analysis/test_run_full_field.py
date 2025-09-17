@@ -92,10 +92,10 @@ def test_combo_complete_force_clean(tmp_path: rf.Path, caplog: pytest.LogCapture
     with caplog.at_level("WARNING"):
         rf._combo_complete(out_dir, n)
     assert row_dir.exists()
-    assert "--force-clean" in caplog.text
+    assert any("Row directory exists" in rec.message for rec in caplog.records)
 
     caplog.clear()
     with caplog.at_level("WARNING"):
         rf._combo_complete(out_dir, n, force_clean=True)
     assert not row_dir.exists()
-    assert "Deleting existing row directory" in caplog.text
+    assert any("Deleting existing row directory" in rec.message for rec in caplog.records)

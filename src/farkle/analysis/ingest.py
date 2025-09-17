@@ -21,7 +21,7 @@ from farkle.analysis.analysis_config import (
 from farkle.app_config import AppConfig
 from farkle.utils.streaming_loop import run_streaming_shard
 
-log = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
 
 
 def _iter_shards(block: Path, cols: tuple[str, ...]):
@@ -45,9 +45,16 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
 
         wanted = list(wanted)
         present = [c for c in wanted if c in df.columns]
-        if log.isEnabledFor(logging.DEBUG) and len(present) < len(wanted):
+        if LOGGER.isEnabledFor(logging.DEBUG) and len(present) < len(wanted):
             missing = sorted(set(wanted) - set(present))
-            log.debug("%s missing cols: %s", path.name, missing)
+            LOGGER.debug(
+                "Shard missing requested columns",
+                extra={
+                    "stage": "ingest",
+                    "path": path.name,
+                    "missing": missing,
+                },
+            )
         return df[present]
 
     # Newer runs emit a single `<Np_rows>.parquet` file directly under the
@@ -62,8 +69,15 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
         wanted = list(cols)
         present = [c for c in wanted if c in pf.schema_arrow.names]
         missing = sorted(set(wanted) - set(present))
-        if log.isEnabledFor(logging.DEBUG) and missing:
-            log.debug("%s missing cols: %s", row_file.name, missing)
+        if LOGGER.isEnabledFor(logging.DEBUG) and missing:
+            LOGGER.debug(
+                "Row file missing requested columns",
+                extra={
+                    "stage": "ingest",
+                    "path": row_file.name,
+                    "missing": missing,
+                },
+            )
         for i in range(pf.num_row_groups):
             tbl = pf.read_row_group(i, columns=present)
             # Convert this row-group only
@@ -142,7 +156,10 @@ def _n_from_block(name: str) -> int:
 def _process_block(block: Path, cfg: PipelineCfg) -> None:
     """Process a single ``<N>_players`` block."""
     n = _n_from_block(block.name)
-    log.info("Reading block %s", block.name)
+    LOGGER.info(
+        "Ingest block discovered",
+        extra={"stage": "ingest", "block": block.name, "path": str(block)},
+    )
 
     raw_out = cfg.ingested_rows_raw(n)
     src_mtime = 0.0
@@ -156,7 +173,10 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
             if shards:
                 src_mtime = max(s.stat().st_mtime for s in shards)
     if raw_out.exists() and src_mtime and raw_out.stat().st_mtime >= src_mtime:
-        log.info("Ingest: %sp already up-to-date - skipped", n)
+        LOGGER.info(
+            "Ingest block up-to-date",
+            extra={"stage": "ingest", "n_players": n, "path": str(raw_out)},
+        )
         return
 
     canon = expected_schema_for(n)
@@ -169,9 +189,19 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
         nonlocal total
         for shard_df, shard_path in _iter_shards(block, tuple(wanted)):
             if shard_df.empty:
-                log.debug("Shard %s is empty — skipped", shard_path.name)
+                LOGGER.debug(
+                    "Empty shard skipped",
+                    extra={"stage": "ingest", "path": shard_path.name},
+                )
                 continue
-            log.debug("Shard %s → %d rows", shard_path.name, len(shard_df))
+            LOGGER.debug(
+                "Shard processed",
+                extra={
+                    "stage": "ingest",
+                    "path": shard_path.name,
+                    "rows": len(shard_df),
+                },
+            )
 
             shard_df = _fix_winner(shard_df)
             canon_names = canon.names
@@ -179,7 +209,14 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
                 c for c in shard_df.columns if c not in canon_names and not c.startswith("P")
             )
             if extras:
-                log.error("Schema mismatch in %s: unexpected columns %s", shard_path, extras)
+                LOGGER.error(
+                    "Schema mismatch",
+                    extra={
+                        "stage": "ingest",
+                        "path": str(shard_path),
+                        "unexpected_columns": extras,
+                    },
+                )
                 raise RuntimeError("Schema mismatch")
             for name in canon_names:
                 if name not in shard_df.columns:
@@ -197,7 +234,10 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
         manifest_candidate = raw_out.with_suffix(".manifest.jsonl")
         if manifest_candidate.exists():
             manifest_candidate.unlink()
-        log.info("Ingest: %sp produced zero rows - skipped", n)
+        LOGGER.info(
+            "Ingest block produced zero rows",
+            extra={"stage": "ingest", "n_players": n, "path": str(block)},
+        )
         return
 
     def _all_batches():
@@ -218,7 +258,16 @@ def _process_block(block: Path, cfg: PipelineCfg) -> None:
             "source_block": block.name,
         },
     )
-    log.info("Ingest finished — %d rows written to %s", total, raw_out)
+    LOGGER.info(
+        "Ingest block complete",
+        extra={
+            "stage": "ingest",
+            "n_players": n,
+            "rows": total,
+            "path": str(raw_out),
+            "manifest": str(manifest_path),
+        },
+    )
 
 
 def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
@@ -227,7 +276,15 @@ def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
 
 def run(cfg: AppConfig | PipelineCfg) -> None:
     cfg = _pipeline_cfg(cfg)
-    log.info("Ingest started: root=%s", cfg.results_dir)
+    LOGGER.info(
+        "Ingest started",
+        extra={
+            "stage": "ingest",
+            "root": str(cfg.results_dir),
+            "data_dir": str(cfg.data_dir),
+            "n_jobs": cfg.n_jobs_ingest,
+        },
+    )
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
     blocks = sorted(
@@ -252,7 +309,6 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI 
     )
     args = parser.parse_args(argv)
     cfg, _ = load_config(Path(args.config))
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
     run(cfg.to_pipeline_cfg())
 
 

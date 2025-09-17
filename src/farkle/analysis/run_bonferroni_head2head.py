@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -15,6 +16,8 @@ from farkle.utils.stats import bonferroni_pairs, games_for_power
 from farkle.utils.writer import atomic_path
 
 DEFAULT_ROOT = Path("results_seed_0")
+
+LOGGER = logging.getLogger(__name__)
 
 
 def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs: int = 1) -> None:
@@ -36,6 +39,10 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
     matchup and writes ``data/bonferroni_pairwise.parquet`` containing win counts and
     p-values computed via :func:`scipy.stats.binomtest`.
     """
+    LOGGER.info(
+        "Bonferroni head-to-head start",
+        extra={"stage": "head2head", "root": str(root), "seed": seed, "n_jobs": n_jobs},
+    )
     sub_root = Path(root / "analysis")
     tiers_path = sub_root / "tiers.json"
     pairwise_parquet = sub_root / "bonferroni_pairwise.parquet"
@@ -49,17 +56,47 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
         raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
+    LOGGER.info(
+        "Loaded elite strategies",
+        extra={
+            "stage": "head2head",
+            "path": str(tiers_path),
+            "strategies": len(tiers),
+            "elite_count": len(elites),
+        },
+    )
     games_needed = games_for_power(len(elites), method="bonferroni", full_pairwise=True)
     schedule = bonferroni_pairs(elites, games_needed, seed)
+    LOGGER.debug(
+        "Head-to-head schedule prepared",
+        extra={
+            "stage": "head2head",
+            "pairs": len(schedule.index),
+            "games": len(schedule),
+            "games_needed": games_needed,
+        },
+    )
 
     # Nothing to simulate (e.g., only one elite strategy)
     if schedule.empty:
-        print("\u2713 Bonferroni H2H: no games needed \u2014 exiting early.")
+        LOGGER.info(
+            "Bonferroni head-to-head: no games needed",
+            extra={"stage": "head2head", "elite_count": len(elites)},
+        )
         return
 
     records = []
     for (a, b), grp in schedule.groupby(["a", "b"]):
         seeds = grp["seed"].tolist()
+        LOGGER.debug(
+            "Simulating head-to-head batch",
+            extra={
+                "stage": "head2head",
+                "strategy_a": a,
+                "strategy_b": b,
+                "games": len(seeds),
+            },
+        )
         df = simulate_many_games_from_seeds(
             seeds=seeds,
             strategies=[parse_strategy(a), parse_strategy(b)],
@@ -71,9 +108,28 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
         # One-sided: "A beats B"
         pval = binomtest(wa, wa + wb, alternative="greater").pvalue
         records.append({"a": a, "b": b, "wins_a": wa, "wins_b": wb, "pvalue": pval})
+        LOGGER.debug(
+            "Completed head-to-head batch",
+            extra={
+                "stage": "head2head",
+                "strategy_a": a,
+                "strategy_b": b,
+                "wins_a": wa,
+                "wins_b": wb,
+                "pvalue": pval,
+            },
+        )
 
     out = pd.DataFrame(records)
     pairwise_parquet.parent.mkdir(parents=True, exist_ok=True)
 
     with atomic_path(str(pairwise_parquet)) as tmp_path:
         out.to_csv(tmp_path, index=False)
+    LOGGER.info(
+        "Bonferroni head-to-head results written",
+        extra={
+            "stage": "head2head",
+            "rows": len(out),
+            "path": str(pairwise_parquet),
+        },
+    )

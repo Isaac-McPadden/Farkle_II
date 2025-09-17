@@ -7,6 +7,7 @@ Prints timing for a single game and for a batch of N games
 using random ThresholdStrategy instances for each player.
 """
 
+import logging
 import random
 import time
 
@@ -17,6 +18,9 @@ from farkle.simulation.simulation import (
     simulate_one_game,
 )
 from farkle.simulation.strategies import ThresholdStrategy, random_threshold_strategy
+
+
+LOGGER = logging.getLogger(__name__)
 
 
 def make_random_strategies(num_players: int, seed: int | None) -> list[ThresholdStrategy]:
@@ -35,27 +39,68 @@ def measure_sim_times(
     command-line arguments.  All parameters are supplied directly.
     """
 
+    LOGGER.info(
+        "Simulation timing start",
+        extra={
+            "stage": "simulation",
+            "benchmark": "time_farkle",
+            "players": players,
+            "seed": seed,
+            "jobs": jobs,
+            "n_games": n_games,
+        },
+    )
+
     strategies = make_random_strategies(players, seed)
 
     t0 = time.perf_counter()
     gm = simulate_one_game(strategies=strategies, seed=seed)
     t1 = time.perf_counter()
-    print("\nSingle game:")
-    print(f"  Time elapsed      : {t1 - t0:.6f} s")
     winner = max(gm.players.items(), key=lambda p: p[1].score)[0]
-    print(f"  Winner            : {winner}")
-    print(f"  Winning score     : {gm.players[winner].score}")
-    print(f"  Rounds            : {gm.game.n_rounds}")
+    LOGGER.info(
+        "Single game benchmark",
+        extra={
+            "stage": "simulation",
+            "benchmark": "single_game",
+            "players": players,
+            "seed": seed,
+            "elapsed_s": t1 - t0,
+            "winner": winner,
+            "winning_score": gm.players[winner].score,
+            "rounds": gm.game.n_rounds,
+        },
+    )
 
     t0 = time.perf_counter()
     df: pd.DataFrame = simulate_many_games(
         n_games=n_games, strategies=strategies, seed=seed, n_jobs=jobs
     )
     t1 = time.perf_counter()
-    print(f"\nBatch of {n_games} games (jobs={jobs}):")
-    print(f"  Time elapsed      : {t1 - t0:.6f} s")
-    print("  Winners breakdown :")
-    print(df["winner"].value_counts().to_string())
+    winners = df["winner"].value_counts().to_dict()
+    LOGGER.info(
+        "Batch benchmark",
+        extra={
+            "stage": "simulation",
+            "benchmark": "batch",
+            "players": players,
+            "seed": seed,
+            "jobs": jobs,
+            "n_games": n_games,
+            "elapsed_s": t1 - t0,
+            "winners": winners,
+        },
+    )
+    LOGGER.info(
+        "Simulation timing complete",
+        extra={
+            "stage": "simulation",
+            "benchmark": "time_farkle",
+            "players": players,
+            "seed": seed,
+            "jobs": jobs,
+            "n_games": n_games,
+        },
+    )
 
 
 __all__ = ["measure_sim_times", "make_random_strategies"]
