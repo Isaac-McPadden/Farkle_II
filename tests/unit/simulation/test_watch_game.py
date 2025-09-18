@@ -35,7 +35,7 @@ sys.modules.setdefault("scipy.stats", stats_stub)
 
 
 
-wg = pytest.importorskip("farkle.watch_game")
+wg = pytest.importorskip("farkle.simulation.watch_game")
 
 
 def test_default_score_patch_handles_discards(monkeypatch):  # noqa: ARG001

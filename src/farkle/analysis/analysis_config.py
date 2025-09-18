@@ -134,7 +134,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
     _RuntimeBaseModel = _FallbackDataclassBase
 
 
-class BaseModel(_FallbackDataclassBase):
+class BaseModel(_RuntimeBaseModel): # type: ignore
         """Fallback compatible with pydantic.BaseModel API used here."""
         pass
 

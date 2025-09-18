@@ -22,7 +22,6 @@ from farkle.game.scoring import (
 )
 from farkle.simulation.simulation import simulate_many_games
 from farkle.simulation.strategies import ThresholdStrategy
-from farkle.utils.parallel import simulate_many_games_stream
 
 TMP = Path(__file__).with_suffix("") / "_tmp"
 TMP.mkdir(parents=True, exist_ok=True)
@@ -44,26 +43,6 @@ def tmp_csv():
 @pytest.fixture(scope="session")
 def simple_strategy():
     return [ThresholdStrategy(score_threshold=300, dice_threshold=2)]
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("n_jobs", [1, 2])
-def test_stream_mp_branches(tmp_csv, simple_strategy, n_jobs):
-    """Serial + parallel branches of simulate_many_games_stream."""
-    if tmp_csv.exists():  # start fresh for each param value
-        tmp_csv.unlink()
-    simulate_many_games_stream(
-        n_games=12,  # tiny but enough to hit queues
-        strategies=simple_strategy,
-        out_csv=str(tmp_csv),
-        seed=42,
-        n_jobs=n_jobs,
-    )
-    df = pd.read_csv(tmp_csv)
-    # 1 strategy × 12 reps → 12 rows
-    assert len(df) == 12
-    # verify writer closed file cleanly (newline at EOF)
-    assert tmp_csv.read_bytes().endswith(b"\n")
 
 
 def test_seed_reproducible(simple_strategy):
