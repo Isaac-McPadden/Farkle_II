@@ -61,15 +61,10 @@ src            = ["src"]
 line-length    = 100
 target-version = ["py312"]
 
-[tool.pytest.ini_options]
-addopts   = "-q --cov=farkle --cov-report=term-missing"
-testpaths = ["tests"]                 # ← match actual folder name
-xfail_strict = true
-
 [tool.coverage.run]
 branch  = true
 source  = ["src/farkle"]
-omit = ["*/tests/configure_pytest_options.py"]
+omit = ["*/tests/conftest.py"]
 
 [tool.coverage.report]
 exclude_lines = [

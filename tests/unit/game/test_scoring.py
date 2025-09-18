@@ -9,6 +9,8 @@ from typing import List, Tuple
 import pytest
 
 pytest.importorskip("hypothesis")
+pytest.importorskip("numba")
+pytest.importorskip("numpy")
 
 from hypothesis import given
 from hypothesis import strategies as st

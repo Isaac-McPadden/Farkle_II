@@ -1,5 +1,4 @@
 # pragma: no cover
-# pragma: no cover
 import importlib.util
 import logging
 import pickle

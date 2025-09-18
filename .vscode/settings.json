@@ -1,23 +1,37 @@
+// {
+//   // Use the venv inside the repo
+//   "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+
+//   // Point VS Code at the venv’s pytest
+//   // "python.testing.pytestPath": "${workspaceFolder}\\.venv\\Scripts\\pytest.exe",
+
+//   "python.testing.pytestEnabled": true,
+//   "python.testing.unittestEnabled": false,
+
+//   // Let pytest.ini drive discovery, but keep cwd clean
+//   "python.testing.cwd": "${workspaceFolder}",
+
+//   "python.testing.pytestArgs": ["tests"],
+
+//   "python.terminal.activateEnvironment": true,
+//   "cSpell.words": ["Farkle","strats","farkle"],
+//   "python.analysis.packageIndexDepths": [{ "name": "farkle", "depth": 3 }],
+//   "python.analysis.useLibraryCodeForTypes": true
+// }
+
 {
-    "python.testing.unittestArgs": [
-        "-v",
-        "-s",
-        "./Tests",
-        "-p",
-        "test_*.py"
-    ],
-    "python.testing.pytestEnabled": true,
-    "python.testing.unittestEnabled": false,
-    "cSpell.words": [
-        "Farkle",
-        "strats"
-    ],
-    "python.analysis.packageIndexDepths": [
-        {"name": "Farkle",
-        "depth": 2}
-        ],
-    "python.analysis.useLibraryCodeForTypes": true,
-    "python.testing.pytestArgs": [
-        "Tests"
-    ]
+  // Use the repo's venv (Windows)
+  "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+
+  // Optional but bulletproof: point to venv's pytest
+  "python.testing.pytestPath": "${workspaceFolder}\\.venv\\Scripts\\pytest.exe",
+
+  // Testing
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.cwd": "${workspaceFolder}",
+  "python.testing.pytestArgs": ["tests"],
+
+  // (Optional) help IntelliSense find your src package
+  "python.analysis.extraPaths": ["${workspaceFolder}\\src"]
 }
