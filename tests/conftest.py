@@ -2,10 +2,66 @@
 import importlib.util
 import logging
 import pickle
+import sys
+import types
 from pathlib import Path
 
 import pandas as pd
 import pytest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SRC_PATH = PROJECT_ROOT / "src"
+if SRC_PATH.exists():
+    sys.path.insert(0, str(SRC_PATH))
+
+if "tomllib" not in sys.modules:
+    try:
+        import tomli as _tomli
+    except ModuleNotFoundError:
+        def _load_toml(fh):
+            raw = fh.read()
+            text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
+            project: dict[str, str] = {}
+            in_project = False
+            for line in text.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("[project]"):
+                    in_project = True
+                    continue
+                if in_project:
+                    if stripped.startswith("["):
+                        break
+                    if stripped.startswith("version"):
+                        _, _, value = stripped.partition("=")
+                        project["version"] = value.strip().strip('"').strip("'")
+                        break
+            return {"project": project} if project else {}
+
+        stub = types.ModuleType("tomllib")
+        stub.load = _load_toml  # type: ignore[attr-defined]
+        sys.modules["tomllib"] = stub
+    else:
+        sys.modules["tomllib"] = _tomli
+
+
+def _identity_jit(*jit_args, **jit_kwargs):
+    if jit_args and callable(jit_args[0]) and len(jit_args) == 1 and not jit_kwargs:
+        return jit_args[0]
+
+    def _decorator(func):
+        return func
+
+    return _decorator
+
+
+try:
+    import numba  # type: ignore[import-not-found]
+except ModuleNotFoundError:
+    numba = types.SimpleNamespace(jit=_identity_jit, njit=_identity_jit)  # type: ignore[assignment]
+    sys.modules["numba"] = numba  # type: ignore[assignment]
+else:
+    numba.jit = _identity_jit  # type: ignore[assignment]
+    numba.njit = _identity_jit  # type: ignore[assignment]
 
 spec = importlib.util.find_spec("matplotlib")
 if spec is not None:
@@ -20,12 +76,12 @@ def pytest_configure():
     see the Python source lines inside decorated functions.
     """
     try:
-        import numba
+        import numba  # noqa: F401  # type: ignore[import-not-found]
     except ModuleNotFoundError:
         return
 
-    numba.jit = lambda *a, **k: (lambda f: f)  # type: ignore  # noqa: ARG005
-    numba.njit = numba.jit  # keep both symbols
+    numba.jit = _identity_jit  # type: ignore[assignment]
+    numba.njit = _identity_jit  # keep both symbols  # type: ignore[assignment]
 
 
 @pytest.fixture

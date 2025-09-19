@@ -1,5 +1,6 @@
-import pyarrow as pa
 import pytest
+
+pa = pytest.importorskip("pyarrow")
 
 from farkle.utils.writer import ParquetShardWriter
 

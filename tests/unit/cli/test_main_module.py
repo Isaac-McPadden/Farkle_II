@@ -3,6 +3,7 @@ import runpy
 import pytest
 
 pytest.importorskip("pydantic")
+pytest.importorskip("pyarrow")
 
 import farkle.cli.main as cli_main
 

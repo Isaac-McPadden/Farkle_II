@@ -18,34 +18,16 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 
+pytest.importorskip("pyarrow")
+pytest.importorskip("pyarrow.parquet")
+
 # Farkle depends on numba at import time. Provide a light-weight stub so the
 # test suite can run without the real dependency installed.
 sys.modules.setdefault(
     "numba",
     types.SimpleNamespace(jit=lambda *a, **k: (lambda f: f), njit=lambda *a, **k: (lambda f: f)),  # type: ignore  # noqa: ARG005
 )
-# Provide a minimal pyarrow stub so farkle.simulation.run_tournament imports without the real dependency.
-pa_stub = types.ModuleType("pyarrow")
-pq_stub = types.ModuleType("pyarrow.parquet")
-
-
-class _DummyTable:
-    def __init__(self, rows):
-        self.rows = list(rows)
-        self.schema = "dummy-schema"
-
-
-def _from_pylist(rows):  # noqa: ANN001
-    return _DummyTable(rows)
-
-
-pa_stub.Table = types.SimpleNamespace(from_pylist=_from_pylist)  # type: ignore
-pa_stub.parquet = pq_stub  # type: ignore
-pa_stub.__version__ = "0.0.0"  # type: ignore
-pq_stub.write_table = lambda *a, **k: None  # type: ignore  # noqa: ARG005
-sys.modules["pyarrow"] = pa_stub
-sys.modules["pyarrow.parquet"] = pq_stub
-# Stats helpers depend on SciPy – provide a minimal stub
+# Stats helpers depend on SciPy ?+? provide a minimal stub
 
 
 def _ppf(q, loc=0.0, scale=1.0):  # noqa: ANN001
@@ -59,11 +41,13 @@ def _isf(q, loc=0.0, scale=1.0):  # noqa: ANN001
 scipy_stats_stub = types.SimpleNamespace(
     norm=types.SimpleNamespace(ppf=_ppf, isf=_isf)
 )
-scipy_mod = types.ModuleType("scipy")
+scipy_mod = ModuleType("scipy")
 scipy_mod.stats = scipy_stats_stub  # type: ignore
 sys.modules.setdefault("scipy", scipy_mod)
 sys.modules.setdefault("scipy.stats", scipy_stats_stub)  # type: ignore
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import farkle.simulation.run_tournament as rt
 
 
@@ -172,4 +156,4 @@ def test_save_checkpoint_wins_only(tmp_path):
     payload = pickle.loads(ckpt.read_bytes())
 
     assert payload == {"win_totals": wins}
-    
+

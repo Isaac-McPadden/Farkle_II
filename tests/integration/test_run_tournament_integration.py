@@ -27,6 +27,7 @@ import pytest
 import yaml
 
 pytest.importorskip("pydantic")
+pytest.importorskip("pyarrow")
 
 import farkle.simulation.simulation as sim
 from farkle.cli import main as cli_main
@@ -73,7 +74,7 @@ def _tiny_strategy_grid(seed: int = 0) -> List[ThresholdStrategy]:
 def _init_worker_small(  # pragma: no cover
     strategies: Sequence[ThresholdStrategy],
     cfg: object,
-    *_extra: object,            # ← swallow optional 3rd positional arg
+    *_extra: object,            # ? swallow optional 3rd positional arg
 ) -> None:
     """Accepts 2 or 3 positional arguments so we can reuse it after the row-queue
     parameter was added.
@@ -105,7 +106,7 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> TournamentConfig
       10 strategies to every worker via initargs.
     """
 
-    # Compute once and reuse → deterministic
+    # Compute once and reuse ? deterministic
     _tiny_grid = _tiny_strategy_grid()
 
     # 3a. Constants in parent (affects chunking logic)
@@ -115,7 +116,7 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> TournamentConfig
     # 3b. Replace the worker -initializer
     monkeypatch.setattr(rt, "_init_worker", _init_worker_small, raising=True)
 
-    # 3c. Make *this* interpreter use the tiny grid → the list also travels to
+    # 3c. Make *this* interpreter use the tiny grid ? the list also travels to
     #      every worker because run_tournament passes it via *initargs*.
     monkeypatch.setattr(rt, "generate_strategy_grid", lambda: (_tiny_grid, None), raising=True)
 

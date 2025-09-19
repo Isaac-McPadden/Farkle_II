@@ -6,6 +6,7 @@ import pytest
 import yaml
 
 pytest.importorskip("pydantic")
+pytest.importorskip("pyarrow")
 
 from farkle.cli import main as cli_main
 from farkle.utils.stats import games_for_power
@@ -14,7 +15,7 @@ from farkle.utils.stats import games_for_power
 def test_games_for_power_monotonic():
     n_small_delta = games_for_power(n_strategies=2, delta=0.05)
     n_large_delta = games_for_power(n_strategies=2, delta=0.10)
-    # Larger effect size ⇒ fewer games required
+    # Larger effect size ??' fewer games required
     assert n_large_delta < n_small_delta
 
 

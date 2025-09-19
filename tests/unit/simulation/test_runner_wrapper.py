@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+pytest.importorskip("pyarrow")
 
 import farkle.simulation.runner as runner
 
@@ -53,3 +54,4 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, tmp_artifacts_with_le
     except Exception:
         metrics_df = pd.read_csv(metrics_path)
     assert metrics_df.iloc[0].strategy == "alpha"
+
