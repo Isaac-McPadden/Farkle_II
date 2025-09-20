@@ -290,7 +290,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
 
     blocks = sorted(
         (p for p in cfg.results_dir.iterdir() if p.is_dir() and p.name.endswith("_players")),
-        key=lambda p: _n_from_block(p.name),
+        key=lambda p: (_n_from_block(p.name), p.name),
     )
 
     total_rows = 0
