@@ -57,7 +57,9 @@ def test_patched_score_used_in_turn(monkeypatch):  # noqa: ARG001
     wg._patch_default_score()
     calls: list[str] = []
 
-    monkeypatch.setattr(wg.log, "info", lambda msg, *a, **k: calls.append(msg))  # noqa: ARG005
+    monkeypatch.setattr(
+        wg.LOGGER, "info", lambda msg, *a, **k: calls.append(msg)
+    )  # noqa: ARG005
 
     class FixedGen(np.random.Generator):
         def __init__(self) -> None:
@@ -86,7 +88,7 @@ def test_patched_score_traces_take_turn(caplog):  # noqa: D103
     orig_e = engine.default_score
     wg._patch_default_score()
     try:
-        caplog.set_level(logging.INFO, logger="watch")
+        caplog.set_level(logging.INFO, logger=wg.LOGGER.name)
 
         class StubGen(np.random.Generator):
             def __init__(self):
@@ -147,7 +149,7 @@ def test_trace_decide_logs_and_returns(caplog):
     strat.decide = MethodType(dummy, strat)
     wg._trace_decide(strat, "DBG")
 
-    caplog.set_level(logging.INFO, logger="watch")
+    caplog.set_level(logging.INFO, logger=wg.LOGGER.name)
     assert strat.decide(turn_score=1, dice_left=6) is True
     assert strat.decide(turn_score=10, dice_left=2) is False
 
@@ -161,7 +163,7 @@ def test_patch_scoring_logs_and_restores(caplog):
     roll = [1, 5]
 
     orig = scoring.default_score
-    caplog.set_level(logging.INFO, logger="watch")
+    caplog.set_level(logging.INFO, logger=wg.LOGGER.name)
     with wg.patch_scoring():
         res = scoring.default_score(roll, turn_score_pre=0)
         assert res[0] > 0
@@ -186,7 +188,7 @@ def test_traceplayer_roll_logs(caplog):
         rng=FixedRng(),
     )
 
-    caplog.set_level(logging.INFO, logger="watch")
+    caplog.set_level(logging.INFO, logger=wg.LOGGER.name)
     faces = p._roll(3)
     assert faces == [3, 3, 3]
     assert any("X rolls [3, 3, 3]" in rec.message for rec in caplog.records)
@@ -218,7 +220,8 @@ def test_watch_game_runs_with_dummies(monkeypatch, caplog):
     monkeypatch.setattr(wg, "TracePlayer", wg.FarklePlayer)
     monkeypatch.setattr(wg, "_trace_decide", lambda *a, **k: None)  # noqa: ARG005
 
-    caplog.set_level(logging.INFO, logger="watch")
+    caplog.set_level(logging.INFO, logger=wg.LOGGER.name)
+    monkeypatch.setattr(wg, "spawn_seeds", lambda n, seed=None: (1, 2, 3, 4))
     wg.watch_game(seed=1)
 
     msgs = "\n".join(rec.message for rec in caplog.records)

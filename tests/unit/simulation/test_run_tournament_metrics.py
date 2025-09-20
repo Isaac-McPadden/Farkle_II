@@ -108,7 +108,7 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
             }
         )
         if batches:
-            recorded["rows"] = batches[0].rows
+            recorded["rows"] = batches[0].to_pylist()
 
     monkeypatch.setattr(rt, "run_streaming_shard", fake_run_streaming_shard)
 
@@ -120,8 +120,10 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     assert recorded["rows"] == [{"game_seed": 3, "winner_strategy": "S3"}]
     assert recorded["out_path"] == tmp_path / "rows_42_3.parquet"
     assert recorded["manifest_path"] == manifest
-    assert recorded["schema"] == "dummy-schema"
-    assert recorded["batches"] and hasattr(recorded["batches"][0], "rows")
+    assert recorded["schema"] == pa.schema(
+        [("game_seed", pa.int64()), ("winner_strategy", pa.string())]
+    )
+    assert recorded["batches"] and isinstance(recorded["batches"][0], pa.Table)
     assert recorded["extra"] == {
         "path": "rows_42_3.parquet",
         "n_players": None,
