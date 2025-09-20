@@ -13,6 +13,7 @@ from farkle.analysis.curate import (
 from farkle.analysis.curate import (
     run as curate_run,
 )
+from farkle.app_config import AppConfig
 
 
 def _empty_table(schema: pa.Schema) -> pa.Table:
@@ -119,6 +120,26 @@ def test_run_new_layout(tmp_path):
         assert meta["schema_hash"] == _schema_hash(n)
 
 
+def test_run_with_app_config(tmp_path):
+    cfg = PipelineCfg(results_dir=tmp_path)
+    app_cfg = AppConfig(analysis=cfg)
+
+    schema = expected_schema_for(1)
+    raw_path = cfg.ingested_rows_raw(1)
+    pq.write_table(_empty_table(schema), raw_path)
+
+    curate_run(app_cfg)
+
+    curated = cfg.ingested_rows_curated(1)
+    manifest = cfg.manifest_for(1)
+    assert curated.exists()
+    assert manifest.exists()
+    assert not raw_path.exists()
+    meta = json.loads(manifest.read_text())
+    assert meta["row_count"] == 0
+    assert meta["schema_hash"] == _schema_hash(1)
+
+
 def test_run_legacy_missing_raw(tmp_path):
     cfg = PipelineCfg(results_dir=tmp_path)
     legacy_dir = cfg.analysis_dir / "data"
@@ -128,6 +149,39 @@ def test_run_legacy_missing_raw(tmp_path):
 
     with pytest.raises(FileNotFoundError):
         curate_run(cfg)
+
+
+def test_write_manifest_includes_config_sha(tmp_path):
+    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg.config_sha = "abc123"
+    manifest = tmp_path / "manifest.json"
+    schema = expected_schema_for(1)
+
+    _write_manifest(manifest, rows=5, schema=schema, cfg=cfg)
+
+    meta = json.loads(manifest.read_text())
+    assert meta["row_count"] == 5
+    assert meta["compression"] == cfg.parquet_codec
+    assert meta["config_sha"] == "abc123"
+
+
+def test_already_curated_logs_schema_mismatch(tmp_path, caplog):
+    cfg = PipelineCfg(results_dir=tmp_path)
+    schema = expected_schema_for(1)
+    table = _empty_table(schema)
+    parquet_path = tmp_path / "file.parquet"
+    pq.write_table(table, parquet_path)
+    manifest = tmp_path / "manifest.json"
+
+    _write_manifest(manifest, rows=0, schema=schema, cfg=cfg)
+    meta = json.loads(manifest.read_text())
+    meta["schema_hash"] = "tampered"
+    manifest.write_text(json.dumps(meta))
+
+    with caplog.at_level("INFO"):
+        assert not _already_curated(parquet_path, manifest)
+
+    assert any("Curate schema mismatch detected" in message for message in caplog.messages)
 
 
 def test_run_legacy_already_curated(tmp_path):
