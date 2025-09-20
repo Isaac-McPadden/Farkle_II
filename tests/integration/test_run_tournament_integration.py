@@ -20,14 +20,60 @@ from __future__ import annotations
 import importlib
 import pickle
 import random
+import sys
+import types
 from pathlib import Path
 from typing import List, Sequence  # noqa: F401
 
 import pytest
 import yaml
 
-pytest.importorskip("pydantic")
-pytest.importorskip("pyarrow")
+
+try:  # pragma: no cover - exercised when optional dependency missing
+    import pyarrow  # type: ignore[unused-import]
+except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
+    class _StubTable:
+        def __init__(self, rows: Sequence[dict[str, object]] | None = None, schema=None):
+            self._rows = list(rows or [])
+            self.schema = schema
+            self.num_rows = len(self._rows)
+
+        @classmethod
+        def from_pylist(cls, rows: Sequence[dict[str, object]], schema=None):
+            return cls(rows, schema)
+
+        def to_pylist(self) -> list[dict[str, object]]:
+            return list(self._rows)
+
+    def _schema(fields):
+        return tuple(fields)
+
+    def _string():
+        return "string"
+
+    def _float64():
+        return "float64"
+
+    parquet_stub = types.ModuleType("pyarrow.parquet")
+
+    def _write_table(table: _StubTable, path, compression=None):  # type: ignore[unused-argument]
+        Path(path).write_bytes(b"stub")
+
+    def _read_table(path):  # pragma: no cover - unused in tests
+        return _StubTable()
+
+    parquet_stub.write_table = _write_table  # type: ignore[attr-defined]
+    parquet_stub.read_table = _read_table  # type: ignore[attr-defined]
+
+    pa_stub = types.ModuleType("pyarrow")
+    pa_stub.Table = _StubTable  # type: ignore[attr-defined]
+    pa_stub.schema = _schema  # type: ignore[attr-defined]
+    pa_stub.string = _string  # type: ignore[attr-defined]
+    pa_stub.float64 = _float64  # type: ignore[attr-defined]
+    pa_stub.parquet = parquet_stub  # type: ignore[attr-defined]
+
+    sys.modules.setdefault("pyarrow", pa_stub)
+    sys.modules.setdefault("pyarrow.parquet", parquet_stub)
 
 import farkle.simulation.simulation as sim
 from farkle.cli import main as cli_main
@@ -89,7 +135,7 @@ def _init_worker_small(  # pragma: no cover
 
     _rt = _imp.import_module("farkle.simulation.run_tournament")
     _rt.TournamentConfig.games_per_shuffle = property(lambda self: 2)  # type: ignore  # noqa: ARG005
-    _rt._STATE = _rt.WorkerState(list(strategies), cfg, None)  # type: ignore
+    _rt._STATE = _rt.WorkerState(list(strategies), cfg)  # type: ignore[arg-type]
 
 
 ###############################################################################
