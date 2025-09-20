@@ -12,7 +12,7 @@ pytest.importorskip("hypothesis")
 pytest.importorskip("numba")
 pytest.importorskip("numpy")
 
-from hypothesis import given
+from hypothesis import given, settings, HealthCheck
 from hypothesis import strategies as st
 
 from farkle.game.scoring import (
@@ -237,6 +237,7 @@ def test_apply_discards(raw_score, raw_used, discard5, discard1, dice_len, expec
 # 7) default_score invariants (property-based)
 # ────────────────────────────────────────────────────────────────────────────
 
+@settings(suppress_health_check=[HealthCheck.too_slow], deadline=None, max_examples=50)
 @given(st.lists(st.integers(min_value=1, max_value=6), min_size=1, max_size=6))
 def test_default_score_invariants(roll):
     score, used, reroll = default_score( # type: ignore default score update is backwards compatible

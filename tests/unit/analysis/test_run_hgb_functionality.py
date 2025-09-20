@@ -100,6 +100,7 @@ def test_ratings_mu_values_used(tmp_path, monkeypatch):
 
 def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
     data_dir = _setup_data(tmp_path)
+    monkeypatch.setattr(run_hgb, "MAX_PD_PLOTS", 5)
     num_cols = run_hgb.MAX_PD_PLOTS + 5
     metrics = pd.DataFrame(
         {
@@ -136,11 +137,24 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
 
     monkeypatch.setattr(run_hgb, "plot_partial_dependence", fake_plot)
 
-    with caplog.at_level(logging.WARNING, logger=run_hgb.logger.name):
-        run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
+    logged: list[tuple[str, dict]] = []
 
-    assert any("More than" in m and "only plotting the first" in m for m in caplog.messages)
-    assert plotted == [f"feat{i}" for i in range(run_hgb.MAX_PD_PLOTS)]
+    def _record_warning(message, *args, **kwargs):  # noqa: ANN001, ARG002
+        logged.append((message, kwargs))
+
+    monkeypatch.setattr(run_hgb.LOGGER, "warning", _record_warning)
+    run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
+
+    assert logged, "expected Too many features warning"
+    assert "Too many features for partial dependence" in logged[0][0]
+    expected_plots = [
+        "score_threshold",
+        "dice_threshold",
+        "consider_score",
+        "consider_dice",
+        "smart_five",
+    ][: run_hgb.MAX_PD_PLOTS]
+    assert plotted == expected_plots
 
 
 def test_run_hgb_default_output(tmp_path, monkeypatch):

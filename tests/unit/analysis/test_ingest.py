@@ -75,8 +75,8 @@ def test_fix_winner_without_ranks():
 
 # -------------------- run integration ----------------------------------
 
-def test_run_schema_mismatch_logs_and_closes(tmp_path, caplog, monkeypatch):
-    cfg = PipelineCfg(results_dir=tmp_path, analysis_subdir="analysis")
+def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatch):
+    cfg = PipelineCfg(results_dir=tmp_results_dir, analysis_subdir="analysis")
 
     # create two block dirs so run() discovers them
     block1 = cfg.results_dir / "block1_players"
@@ -111,8 +111,8 @@ def test_run_schema_mismatch_logs_and_closes(tmp_path, caplog, monkeypatch):
     assert len(calls) == 1
 
 
-def test_run_emits_logging(tmp_path, caplog):
-    cfg = PipelineCfg(results_dir=tmp_path, analysis_subdir="analysis")
+def test_run_emits_logging(tmp_results_dir, caplog):
+    cfg = PipelineCfg(results_dir=tmp_results_dir, analysis_subdir="analysis")
     block = cfg.results_dir / "2_players"
     block.mkdir(parents=True)
     df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"], "n_rounds": [1], "winning_score": [100]})

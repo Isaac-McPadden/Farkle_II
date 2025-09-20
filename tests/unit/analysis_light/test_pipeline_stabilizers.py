@@ -1,3 +1,4 @@
+import datetime as _dt
 import json
 import logging
 
@@ -5,15 +6,25 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis import combine, curate, ingest, metrics
-from farkle.analysis.analysis_config import PipelineCfg
+HAS_UTC = hasattr(_dt, "UTC")
+pytestmark = pytest.mark.skipif(
+    not HAS_UTC,
+    reason="analysis pipeline stabilizers require datetime.UTC (Python 3.11+)",
+)
+
+if HAS_UTC:
+    from farkle.analysis import combine, curate, ingest, metrics
+    from farkle.analysis.analysis_config import PipelineCfg
+else:  # pragma: no cover - tests skipped when UTC unavailable
+    combine = curate = ingest = metrics = None  # type: ignore[assignment]
+    PipelineCfg = object  # type: ignore[assignment]
 
 
 STRATEGY_MAP = {"P1": "Aggro", "P2": "Balanced", "P3": "Cautious"}
 
 
-def test_ingest_golden_dataset(tmp_path, caplog, golden_dataset):
-    cfg = PipelineCfg(results_dir=tmp_path)
+def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
+    cfg = PipelineCfg(results_dir=tmp_results_dir)
     golden_dataset.copy_into(cfg.results_dir)
 
     caplog.set_level(logging.INFO, logger="farkle.analysis.ingest")
@@ -50,8 +61,8 @@ def test_ingest_golden_dataset(tmp_path, caplog, golden_dataset):
     assert any("Ingest finished" in msg for msg in messages)
 
 
-def test_curate_golden_dataset(tmp_path, caplog, golden_dataset):
-    cfg = PipelineCfg(results_dir=tmp_path)
+def test_curate_golden_dataset(tmp_results_dir, caplog, golden_dataset):
+    cfg = PipelineCfg(results_dir=tmp_results_dir)
     golden_dataset.copy_into(cfg.results_dir)
     raw_path = cfg.ingested_rows_raw(3)
     ingest.run(cfg)
@@ -78,8 +89,8 @@ def test_curate_golden_dataset(tmp_path, caplog, golden_dataset):
     assert any("Curate finished" in msg for msg in messages)
 
 
-def test_metrics_golden_dataset(tmp_path, caplog, golden_dataset):
-    cfg = PipelineCfg(results_dir=tmp_path)
+def test_metrics_golden_dataset(tmp_results_dir, caplog, golden_dataset):
+    cfg = PipelineCfg(results_dir=tmp_results_dir)
     golden_dataset.copy_into(cfg.results_dir)
     ingest.run(cfg)
     curate.run(cfg)

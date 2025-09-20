@@ -4,13 +4,15 @@ import pyarrow.parquet as pq
 from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
 from farkle.analysis import combine
 
+
 def _write_curated(path: Path, schema: pa.Schema, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tbl = pa.Table.from_pylist(rows, schema=schema)
     pq.write_table(tbl, path)
 
-def test_combine_pads_and_counts(tmp_path: Path) -> None:
-    cfg = PipelineCfg(results_dir=tmp_path)
+
+def test_combine_pads_and_counts(tmp_results_dir: Path) -> None:
+    cfg = PipelineCfg(results_dir=tmp_results_dir)
     # create per-N curated files
     p1 = cfg.ingested_rows_curated(1)
     schema1 = expected_schema_for(1)

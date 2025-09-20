@@ -1,4 +1,5 @@
 # pragma: no cover
+import os
 import importlib.util
 import logging
 import pickle
@@ -82,6 +83,16 @@ def pytest_configure():
 
     numba.jit = _identity_jit  # type: ignore[assignment]
     numba.njit = _identity_jit  # keep both symbols  # type: ignore[assignment]
+
+
+@pytest.fixture
+def tmp_results_dir(tmp_path: Path) -> Path:
+    prev = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        yield tmp_path
+    finally:
+        os.chdir(prev)
 
 
 @pytest.fixture

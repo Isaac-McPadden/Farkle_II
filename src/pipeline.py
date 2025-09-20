@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from farkle.utils.writer import atomic_path
@@ -68,7 +68,7 @@ def write_done(
         "outputs": [{"path": str(p)} for p in outputs],
         "tool": tool,
         "version": 1,
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
     }
     done_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(done_path)) as tmp_path:
