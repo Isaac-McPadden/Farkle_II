@@ -1,7 +1,5 @@
 import csv
 import queue
-import logging
-
 import pytest
 import yaml
 
@@ -19,7 +17,7 @@ def test_games_for_power_monotonic():
     assert n_large_delta < n_small_delta
 
 
-def test_cli_run(tmp_path, monkeypatch, capinfo):
+def test_cli_run(tmp_path, monkeypatch, capsys):
     called: dict[str, object] = {}
 
     monkeypatch.setattr(cli_main, "run_tournament", lambda **kw: called.update(kw))
@@ -39,7 +37,10 @@ def test_cli_run(tmp_path, monkeypatch, capinfo):
     assert called["n_players"] == 2
     assert called["num_shuffles"] == 1
     assert called["checkpoint_path"] == str(tmp_path / "checkpoint.pkl")
-    assert any(record.levelno == logging.INFO for record in capinfo.records)
+
+    stderr = capsys.readouterr().err
+    assert "CLI arguments parsed" in stderr
+    assert "Dispatching run_tournament" in stderr
 
 
 @pytest.mark.parametrize(
