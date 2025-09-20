@@ -29,10 +29,24 @@ def run_streaming_shard(
         w.write_batches(batch_iter)
     rows = getattr(w, "rows_written", None)
     # On success, append a manifest line
+    manifest_dir = os.path.dirname(manifest_path)
+    if manifest_dir:
+        manifest_dir = os.path.abspath(manifest_dir)
+    else:
+        manifest_dir = os.path.abspath(os.curdir)
+
+    try:
+        rel_path = os.path.relpath(out_path)
+    except ValueError:
+        try:
+            rel_path = os.path.relpath(out_path, start=manifest_dir)
+        except ValueError:
+            rel_path = os.path.abspath(out_path)
+
     append_manifest_line(
         manifest_path,
         {
-            "path": os.path.relpath(out_path),
+            "path": rel_path,
             "rows": rows,
             **(manifest_extra or {}),
         },
