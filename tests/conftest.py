@@ -1,5 +1,6 @@
 # pragma: no cover
 import os
+import importlib.machinery
 import importlib.util
 import logging
 import pickle
@@ -69,6 +70,64 @@ if spec is not None:
     import matplotlib  # type: ignore[import-not-found]
 
     matplotlib.use("Agg", force=True)
+else:
+    matplotlib = types.ModuleType("matplotlib")
+    pyplot = types.ModuleType("pyplot")
+    matplotlib.pyplot = pyplot  # type: ignore[attr-defined]
+    matplotlib.use = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+    matplotlib.__spec__ = importlib.machinery.ModuleSpec("matplotlib", loader=None)  # type: ignore[attr-defined]
+    pyplot.__spec__ = importlib.machinery.ModuleSpec("matplotlib.pyplot", loader=None)  # type: ignore[attr-defined]
+    pyplot.close = lambda *args, **kwargs: None  # type: ignore[attr-defined]
+    sys.modules.setdefault("matplotlib", matplotlib)
+    sys.modules.setdefault("matplotlib.pyplot", pyplot)
+
+sklearn_spec = importlib.util.find_spec("sklearn")
+if sklearn_spec is None:
+    sklearn = types.ModuleType("sklearn")
+    ensemble = types.ModuleType("ensemble")
+    inspection = types.ModuleType("inspection")
+
+    class _DummyHGB:  # pragma: no cover - simple stub
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def fit(self, *args, **kwargs):  # noqa: D401 - behavior irrelevant for tests
+            return self
+
+        def predict(self, X):  # noqa: D401 - behavior irrelevant for tests
+            return [0.0] * len(X)
+
+    ensemble.HistGradientBoostingRegressor = _DummyHGB  # type: ignore[attr-defined]
+    sklearn.ensemble = ensemble  # type: ignore[attr-defined]
+    sklearn.__spec__ = importlib.machinery.ModuleSpec("sklearn", loader=None)  # type: ignore[attr-defined]
+    ensemble.__spec__ = importlib.machinery.ModuleSpec("sklearn.ensemble", loader=None)  # type: ignore[attr-defined]
+
+    class _DummyPDP:  # pragma: no cover - simple stub
+        def __init__(self) -> None:
+            class _Fig:
+                def savefig(self, path, format="png") -> None:  # noqa: D401 - stub
+                    Path(path).touch()
+
+            self.figure_ = _Fig()
+
+        @classmethod
+        def from_estimator(cls, *args, **kwargs):  # noqa: D401 - stub
+            return cls()
+
+    def _dummy_permutation_importance(model, X, y, *args, **kwargs):  # noqa: D401 - stub
+        n = len(getattr(X, "columns", []))
+        return {
+            "importances_mean": [0.0] * n,
+            "importances_std": [0.0] * n,
+        }
+
+    inspection.PartialDependenceDisplay = _DummyPDP  # type: ignore[attr-defined]
+    inspection.permutation_importance = _dummy_permutation_importance  # type: ignore[attr-defined]
+    sklearn.inspection = inspection  # type: ignore[attr-defined]
+    inspection.__spec__ = importlib.machinery.ModuleSpec("sklearn.inspection", loader=None)  # type: ignore[attr-defined]
+    sys.modules.setdefault("sklearn", sklearn)
+    sys.modules.setdefault("sklearn.ensemble", ensemble)
+    sys.modules.setdefault("sklearn.inspection", inspection)
 
 
 def pytest_configure():
