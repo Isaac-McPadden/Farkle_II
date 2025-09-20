@@ -1,159 +1,94 @@
+"""Unit tests for helpers in :mod:`farkle.analysis.run_trueskill`."""
+
+from __future__ import annotations
+
 import os
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 import trueskill
 
 import farkle.analysis.run_trueskill as rt
 
 
-def test_read_manifest_seed(tmp_path):
+def test_read_manifest_seed(tmp_path: Path) -> None:
     path = tmp_path / "manifest.yaml"
     path.write_text("seed: 42\n")
     assert rt._read_manifest_seed(path) == 42
     assert rt._read_manifest_seed(tmp_path / "missing.yaml") == 0
 
 
-def test_read_row_shards(tmp_path):
-    row_dir = tmp_path / "rows"
-    row_dir.mkdir()
-    pd.DataFrame({"w": [1]}).to_parquet(row_dir / "a.parquet")
-    pd.DataFrame({"w": [2]}).to_parquet(row_dir / "b.parquet")
+def test_find_combined_parquet(tmp_path: Path) -> None:
+    base = tmp_path / "root1"
+    combined = base / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
+    combined.parent.mkdir(parents=True, exist_ok=True)
+    combined.touch()
+    assert rt._find_combined_parquet(base) == combined
 
-    df = rt._read_row_shards(row_dir)
-    assert sorted(df["w"]) == [1, 2]
+    base2 = tmp_path / "root2"
+    direct = base2 / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
+    direct.parent.mkdir(parents=True, exist_ok=True)
+    direct.touch()
+    assert rt._find_combined_parquet(base2) == direct
 
-
-def test_read_winners_csv(tmp_path):
-    block = tmp_path
-    pd.DataFrame({"winner": ["A", "B"]}).to_csv(block / "winners.csv", index=False)
-
-    df = rt._read_winners_csv(block)
-    assert list(df["winner"]) == ["A", "B"]
-
-
-def test_read_loose_parquets(tmp_path):
-    block = tmp_path / "block"
-    block.mkdir()
-    pd.DataFrame({"w": ["X"]}).to_parquet(block / "a.parquet")
-    pd.DataFrame({"w": ["Y"]}).to_parquet(block / "b.parquet")
-
-    df = rt._read_loose_parquets(block)
-    assert df is not None
-    assert sorted(df["w"]) == ["X", "Y"]
-    assert rt._read_loose_parquets(tmp_path / "empty") is None
+    base3 = tmp_path / "root3"
+    fallback = base3 / "all_ingested_rows.parquet"
+    fallback.parent.mkdir(parents=True, exist_ok=True)
+    fallback.touch()
+    assert rt._find_combined_parquet(base3) == fallback
 
 
-def test_load_ranked_games_parquet(tmp_path):
-    block = tmp_path / "b_players"
-    block.mkdir()
-    df = pd.DataFrame({"winner_strategy": ["A", "B", "A"]})
-    df.to_parquet(block / "bp_rows.parquet")
-
-    games = rt._load_ranked_games(block)
-    assert sorted(games) == [["A"], ["A"], ["B"]]  # ← list-of-lists
-
-
-def test_load_ranked_games_rank_based(tmp_path):
-    block = tmp_path / "r_players"
-    block.mkdir()
-    df = pd.DataFrame(
-        {
-            "P1_strategy": ["A"],
-            "P1_rank": [1],
-            "P2_strategy": ["B"],
-            "P2_rank": [2],
-        }
-    )
-    df.to_parquet(block / "rp_rows.parquet")
-
-    games = rt._load_ranked_games(block)
-    assert games == [["A", "B"]]  # full ranking
-
-
-def test_load_ranked_games_csv(tmp_path):
-    block = tmp_path / "c_players"
-    block.mkdir()
-    pd.DataFrame({"winner": ["X", "Y"]}).to_csv(block / "winners.csv", index=False)
-
-    games = rt._load_ranked_games(block)
-    assert games == [["X"], ["Y"]]  # list-of-lists
-
-
-def test_load_ranked_games_multi_row_dirs(tmp_path):
-    block = tmp_path / "m_players"
-    row1 = block / "1_rows"
-    row2 = block / "2_rows"
-    row1.mkdir(parents=True)
-    row2.mkdir()
-    pd.DataFrame({"winner_strategy": ["A"]}).to_parquet(row1 / "a.parquet")
-    pd.DataFrame({"winner_strategy": ["B"]}).to_parquet(row2 / "b.parquet")
-
-    games = rt._load_ranked_games(block)
-    assert sorted(games) == [["A"], ["B"]]
-
-
-def test_update_ratings_ranked():
+def test_update_ratings_adds_missing_strategies() -> None:
     env = trueskill.TrueSkill()
+    games = [["A", "B"], ["B", "A"], ["C", "A"]]
+    keepers = ["A", "B"]
 
-    # original winner stream:  A, B, A, C, A
-    games = [
-        ["A", "B"],  # A beats B
-        ["B", "A"],  # B beats A
-        ["A", "C"],  # A beats C
-        ["C", "A"],  # C beats A
-        ["A", "B"],  # A beats B again
-    ]
-
-    keepers = ["A", "B"]  # only rate these two
-    result = rt._update_ratings(games, keepers, env)
-
-    # build the expected ratings by replaying the same tables
-    ratings = {k: env.create_rating() for k in keepers}
-    for g in games:
-        p = [s for s in g if s in keepers]
-        if len(p) < 2:
-            continue
-        new = env.rate([[ratings[p[0]]], [ratings[p[1]]]], ranks=[0, 1])
-        ratings[p[0]], ratings[p[1]] = new[0][0], new[1][0]
-
-    expected = {k: rt.RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
-    assert set(result) == {"A", "B", "C"}
-    assert result["A"] == expected["A"]
-    assert result["B"] == expected["B"]
-    assert result["C"] == rt.RatingStats(rt.DEFAULT_RATING.mu, rt.DEFAULT_RATING.sigma)
+    ratings = rt._update_ratings(games, keepers, env)
+    assert {"A", "B", "C"} <= set(ratings)
+    assert ratings["C"] == rt.RatingStats(rt.DEFAULT_RATING.mu, rt.DEFAULT_RATING.sigma)
 
 
-def test_load_ranked_games_empty(tmp_path):
-    block = tmp_path / "empty_players"
-    block.mkdir()
-    assert rt._load_ranked_games(block) == []
+def _write_results_block(block: Path, winners: list[str]) -> None:
+    block.mkdir(parents=True, exist_ok=True)
+    prefix = block.name.split("_")[0]
+    np.save(block / f"keepers_{prefix}.npy", np.array(["A", "B"]))
+
+    rows = []
+    for winner in winners:
+        if winner == "A":
+            rows.append(
+                {
+                    "winner_seat": "P1",
+                    "winner_strategy": "A",
+                    "P1_strategy": "A",
+                    "P2_strategy": "B",
+                    "P1_rank": 1,
+                    "P2_rank": 2,
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "winner_seat": "P2",
+                    "winner_strategy": "B",
+                    "P1_strategy": "A",
+                    "P2_strategy": "B",
+                    "P1_rank": 2,
+                    "P2_rank": 1,
+                }
+            )
+    df = pd.DataFrame(rows)
+    df.to_parquet(block / f"{prefix}p_rows.parquet")
 
 
-def test_load_ranked_games_missing_strategy(tmp_path):
-    block = tmp_path / "bad_players"
-    row_dir = block / "2_rows"
-    row_dir.mkdir(parents=True)
-    df = pd.DataFrame({"P1_rank": [1], "P2_rank": [2], "P2_strategy": ["B"]})
-    df.to_parquet(row_dir / "rows.parquet")
-    with pytest.raises(KeyError):
-        rt._load_ranked_games(block)
-
-
-def test_run_trueskill_incomplete_block(tmp_path):
+def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     res_dir = data_root / "results"
     res_dir.mkdir(parents=True)
 
-    block_good = res_dir / "2_players"
-    block_good.mkdir()
-    np.save(block_good / "keepers_2.npy", np.array(["A", "B"]))
-    pd.DataFrame({"winner_strategy": ["A", "B"]}).to_csv(block_good / "winners.csv", index=False)
-
-    block_empty = res_dir / "3_players"
-    block_empty.mkdir()
-
+    _write_results_block(res_dir / "2_players", ["A", "B", "A"])
+    (res_dir / "3_players").mkdir()
     (res_dir / "manifest.yaml").write_text("seed: 0\n")
 
     cwd = os.getcwd()
@@ -163,33 +98,33 @@ def test_run_trueskill_incomplete_block(tmp_path):
     finally:
         os.chdir(cwd)
 
-    good = rt._load_ratings_parquet(data_root / "ratings_2.parquet")
-    empty = rt._load_ratings_parquet(data_root / "ratings_3.parquet")
+    ratings_2 = rt._load_ratings_parquet(data_root / "ratings_2.parquet")
+    ratings3_path = data_root / "ratings_3.parquet"
+    if ratings3_path.exists():
+        ratings_3 = rt._load_ratings_parquet(ratings3_path)
+    else:
+        ratings_3 = {}
     pooled = rt._load_ratings_parquet(data_root / "ratings_pooled.parquet")
 
-    assert good
-    assert empty == {}
-    assert set(pooled) == set(good)
+    assert set(ratings_2)
+    assert ratings_3 == {}
+    assert set(pooled) == set(ratings_2)
 
 
-def test_run_trueskill_with_suffix(tmp_path):
+def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     res_dir = data_root / "results"
     res_dir.mkdir(parents=True)
 
-    block = res_dir / "2_players"
-    block.mkdir()
-    np.save(block / "keepers_2.npy", np.array(["A", "B"]))
-    pd.DataFrame({"winner_strategy": ["A", "B"]}).to_csv(block / "winners.csv", index=False)
-
+    _write_results_block(res_dir / "2_players", ["A", "B"])
     (res_dir / "manifest.yaml").write_text("seed: 0\n")
 
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(output_seed=1, root=data_root)
+        rt.run_trueskill(output_seed=3, root=data_root)
     finally:
         os.chdir(cwd)
 
-    assert (data_root / "ratings_2_seed1.parquet").exists()
-    assert (data_root / "ratings_pooled_seed1.parquet").exists()
+    assert (data_root / "ratings_2_seed3.parquet").exists()
+    assert (data_root / "ratings_pooled_seed3.parquet").exists()

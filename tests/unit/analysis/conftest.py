@@ -1,16 +1,9 @@
-"""Shared fixtures and dependency guards for analysis tests."""
+"""Shared fixtures and helpers for analysis tests."""
 
 from __future__ import annotations
 
-import importlib.util
-
-import pytest
-
-
-if importlib.util.find_spec("pydantic") is None:
-    pytest.skip("pydantic is required for analysis tests", allow_module_level=True)
-
-
-if importlib.util.find_spec("sklearn") is None:
-    pytest.skip("scikit-learn is required for analysis tests", allow_module_level=True)
-
+# The analysis modules now provide internal fallbacks when optional dependencies
+# such as ``pydantic`` are unavailable. The legacy tests used to skip entirely
+# when these packages were missing, but the modern pipeline should operate (and
+# therefore be exercised) without them. Keeping this file allows future shared
+# fixtures to be added without reintroducing the hard dependency checks.

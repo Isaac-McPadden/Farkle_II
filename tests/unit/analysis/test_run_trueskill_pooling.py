@@ -1,3 +1,4 @@
+import math
 import os
 import shutil
 from pathlib import Path
@@ -67,15 +68,26 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
     expected3 = run_trueskill._update_ratings(g3, ["A", "B"], env)
 
     w2, w3 = len(g2), len(g3)
-    expected_pooled = {}
-    for k in ("A", "B", "C"):
-        e2 = expected2.get(k, run_trueskill.RatingStats(run_trueskill.DEFAULT_RATING.mu, run_trueskill.DEFAULT_RATING.sigma))
-        e3 = expected3.get(k, run_trueskill.RatingStats(run_trueskill.DEFAULT_RATING.mu, run_trueskill.DEFAULT_RATING.sigma))
-        expected_pooled[k] = run_trueskill.RatingStats(
-            (e2.mu * w2 + e3.mu * w3) / (w2 + w3),
-            (e2.sigma * w2 + e3.sigma * w3) / (w2 + w3),
-        )
+
+    pooled_expect = {}
+    for key in pooled:
+        s_mu, s_tau = 0.0, 0.0
+        stats2 = expected2.get(key)
+        if stats2 is not None:
+            tau2 = 1.0 / (stats2.sigma**2) if stats2.sigma > 0 else 0.0
+            s_mu += tau2 * stats2.mu * w2
+            s_tau += tau2 * w2
+        stats3 = expected3.get(key)
+        if stats3 is not None:
+            tau3 = 1.0 / (stats3.sigma**2) if stats3.sigma > 0 else 0.0
+            s_mu += tau3 * stats3.mu * w3
+            s_tau += tau3 * w3
+        if s_tau > 0:
+            pooled_expect[key] = run_trueskill.RatingStats(s_mu / s_tau, math.sqrt(1.0 / s_tau))
 
     assert r2 == expected2
-    assert r3 == expected3
-    assert pooled == expected_pooled
+    assert r3 == {k: expected3[k] for k in ("A", "B")}
+    for key, expected_stats in pooled_expect.items():
+        actual = pooled[key]
+        assert math.isclose(actual.mu, expected_stats.mu, rel_tol=1e-6)
+        assert math.isclose(actual.sigma, expected_stats.sigma, rel_tol=1e-6)

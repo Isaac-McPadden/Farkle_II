@@ -1,3 +1,4 @@
+import importlib.machinery
 import logging
 import sys
 import types
@@ -27,27 +28,29 @@ class DummyCfg:
         (False, False, False),
     ],
 )
-def test_run_all_invokes_expected_modules(ts, h2h, hgb, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_run_all_invokes_expected_modules(
+    ts, h2h, hgb, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     calls: List[str] = []
 
-    def make_dummy(name: str):
-        def _run(cfg):  # noqa: ANN001, ARG001
-            calls.append(name)
-        return _run
+    def make_module(name: str, label: str) -> types.ModuleType:
+        module = types.ModuleType(f"farkle.analysis.{name}")
+        module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
 
-    # Stub out heavy dependency modules before importing run_all
-    stub = types.ModuleType("run_hgb")
-    stub.main = lambda *args, **kwargs: None  # noqa: ARG005  # type:ignore
-    monkeypatch.setitem(sys.modules, "farkle.analysis.run_hgb", stub)
+        def _run(cfg):  # noqa: ANN001, ARG001
+            calls.append(label)
+
+        module.run = _run  # type: ignore[attr-defined]
+        return module
+
+    labels = {"trueskill": "trueskill", "head2head": "head2head", "hgb_feat": "hgb"}
+
+    for mod_name, label in labels.items():
+        monkeypatch.setitem(
+            sys.modules, f"farkle.analysis.{mod_name}", make_module(mod_name, label)
+        )
 
     from farkle.analysis import run_all  # import after stubbing dependencies
-
-    ts_mod = __import__("farkle.analysis.trueskill", fromlist=["run"])
-    h2h_mod = __import__("farkle.analysis.head2head", fromlist=["run"])
-    hgb_mod = __import__("farkle.analysis.hgb_feat", fromlist=["run"])
-    monkeypatch.setattr(ts_mod, "run", make_dummy("trueskill"))
-    monkeypatch.setattr(h2h_mod, "run", make_dummy("head2head"))
-    monkeypatch.setattr(hgb_mod, "run", make_dummy("hgb"))
 
     cfg = DummyCfg(ts, h2h, hgb)
 

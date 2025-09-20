@@ -1,5 +1,8 @@
 import json
 
+import json
+from pathlib import Path
+
 import pandas as pd
 import pytest
 
@@ -31,12 +34,13 @@ def test_simulate_many_games_from_seeds(monkeypatch):
     assert not df1.equals(df2)
 
 
-def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    tiers_path = data_dir / "tiers.json"
+def test_run_bonferroni_head2head_writes_csv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    root = tmp_path
+    analysis_dir = root / "analysis"
+    analysis_dir.mkdir()
+    tiers_path = analysis_dir / "tiers.json"
     tiers_path.write_text(json.dumps({"A": 1, "B": 1}))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root)
 
     monkeypatch.setattr(
         rb,
@@ -59,20 +63,23 @@ def test_run_bonferroni_head2head_writes_csv(tmp_path, monkeypatch):
 
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_many_games_from_seeds)
 
-    rb.run_bonferroni_head2head(seed=0, root=data_dir, n_jobs=2)
-    out_csv = data_dir / "bonferroni_pairwise.parquet"
+    rb.run_bonferroni_head2head(seed=0, root=root, n_jobs=2)
+    out_csv = analysis_dir / "bonferroni_pairwise.parquet"
     df = pd.read_parquet(out_csv)
     assert set(df.columns) == {"a", "b", "wins_a", "wins_b", "pvalue"}
 
 
-def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch, capsys):
+def test_run_bonferroni_head2head_single_strategy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """Gracefully handle tiers.json with only one strategy."""
 
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    tiers_path = data_dir / "tiers.json"
+    root = tmp_path
+    analysis_dir = root / "analysis"
+    analysis_dir.mkdir()
+    tiers_path = analysis_dir / "tiers.json"
     tiers_path.write_text(json.dumps({"A": 1}))
-    monkeypatch.chdir(tmp_path)
+    monkeypatch.chdir(root)
 
     monkeypatch.setattr(rb, "games_for_power", lambda *a, **k: 0)  # noqa: ARG005
     monkeypatch.setattr(
@@ -87,25 +94,26 @@ def test_run_bonferroni_head2head_single_strategy(tmp_path, monkeypatch, capsys)
         lambda **k: pd.DataFrame({"winner_strategy": []}),  # noqa: ARG005
     )
 
-    rb.run_bonferroni_head2head(seed=0, root=data_dir)
-    captured = capsys.readouterr().out
-    assert "no games needed" in captured
+    with caplog.at_level("INFO"):
+        rb.run_bonferroni_head2head(seed=0, root=root)
 
-    out_csv = data_dir / "bonferroni_pairwise.parquet"
+    assert "Bonferroni head-to-head: no games needed" in caplog.text
+
+    out_csv = analysis_dir / "bonferroni_pairwise.parquet"
     assert not out_csv.exists()
 
 
-def test_run_bonferroni_head2head_missing_file(tmp_path, monkeypatch):
+def test_run_bonferroni_head2head_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """An informative error is raised when tiers.json is absent."""
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="Tier file not found"):
-        rb.run_bonferroni_head2head(seed=1, root=tmp_path / "data")
+        rb.run_bonferroni_head2head(seed=1, root=tmp_path)
 
 
-def test_run_bonferroni_head2head_empty_file(tmp_path, monkeypatch):
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-    (data_dir / "tiers.json").write_text("{}")
+def test_run_bonferroni_head2head_empty_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    (analysis_dir / "tiers.json").write_text("{}")
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="No tiers found"):
-        rb.run_bonferroni_head2head(root=data_dir)
+        rb.run_bonferroni_head2head(root=tmp_path)
