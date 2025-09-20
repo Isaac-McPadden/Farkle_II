@@ -1,64 +1,57 @@
-import importlib.util
+"""Tests for the lightweight head-to-head orchestrator."""
+
+from __future__ import annotations
+
 import logging
 import os
-import time
 from pathlib import Path
 
+import pytest
+
+from farkle.analysis import head2head
 from farkle.analysis.analysis_config import PipelineCfg
 
-_spec = importlib.util.spec_from_file_location(
-    "head2head", Path(__file__).resolve().parents[3] / "src" / "farkle" / "analysis" / "head2head.py"
-)
-assert _spec is not None
-assert _spec.loader is not None
-head2head = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(head2head)
 
-
-def test_run_skips_if_up_to_date(tmp_path, monkeypatch, caplog):
+@pytest.fixture
+def _cfg(tmp_path: Path) -> PipelineCfg:
     cfg = PipelineCfg(results_dir=tmp_path)
-    analysis_dir = cfg.analysis_dir
-    data_dir = analysis_dir / "data"
-    data_dir.mkdir(parents=True)
+    data_dir = cfg.analysis_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+    (data_dir / cfg.curated_rows_name).touch()
+    return cfg
 
-    curated = data_dir / cfg.curated_rows_name
-    pairwise = analysis_dir / "bonferroni_pairwise.parquet"
 
-    now = time.time()
-    curated.touch()
-    pairwise.touch()
-    os.utime(curated, (now - 10, now - 10))
-    os.utime(pairwise, (now, now))
+def test_run_skips_if_up_to_date(
+    _cfg: PipelineCfg, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = _cfg
+    out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
+    curated = cfg.curated_parquet
+    out.touch()
+    os.utime(curated, (1000, 1000))
+    os.utime(out, (2000, 2000))
 
-    called = False
+    def boom(*, root: Path, n_jobs: int) -> None:  # noqa: ARG001
+        raise AssertionError("head2head helper should not run when outputs are fresh")
 
-    def fake_main(*, root: Path, n_jobs: int) -> None:  # noqa: ARG001
-        nonlocal called
-        called = True
-
-    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", fake_main)
+    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", boom)
 
     with caplog.at_level(logging.INFO):
         head2head.run(cfg)
 
-    assert not called
-    assert "Head-to-Head: results up-to-date - skipped" in caplog.text
+    assert "Head-to-head results up-to-date" in caplog.text
 
 
-def test_run_handles_exception(tmp_path, monkeypatch, caplog):
-    cfg = PipelineCfg(results_dir=tmp_path)
-    analysis_dir = cfg.analysis_dir
-    data_dir = analysis_dir / "data"
-    data_dir.mkdir(parents=True)
-
-    curated = data_dir / cfg.curated_rows_name
-    pairwise = analysis_dir / "bonferroni_pairwise.parquet"
-
-    now = time.time()
-    pairwise.touch()
+def test_run_logs_warning_on_failure(
+    _cfg: PipelineCfg, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = _cfg
+    out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
+    curated = cfg.curated_parquet
+    out.touch()
     curated.touch()
-    os.utime(pairwise, (now - 10, now - 10))
-    os.utime(curated, (now, now))
+    os.utime(out, (1000, 1000))
+    os.utime(curated, (2000, 2000))
 
     called = False
 
@@ -73,7 +66,4 @@ def test_run_handles_exception(tmp_path, monkeypatch, caplog):
         head2head.run(cfg)
 
     assert called
-    assert any(
-        rec.levelname == "WARNING" and "Head-to-Head: skipped" in rec.message
-        for rec in caplog.records
-    )
+    assert any(rec.levelname == "WARNING" and rec.message == "Head-to-head skipped" for rec in caplog.records)

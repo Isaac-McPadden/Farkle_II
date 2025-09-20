@@ -1,115 +1,72 @@
-import argparse
-import logging
-import os
-from pathlib import Path
+"""Tests for the CLI-facing analysis pipeline entry point."""
 
-import numpy as np
-import pandas as pd
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Callable
+
 import pytest
 
-from farkle.analysis.analysis_config import PipelineCfg
+import pipeline
 
-pipeline = pytest.importorskip("pipeline")
-
-
-def _write_fixture(root: Path) -> None:
-    """Create a minimal results block under *root* for two players."""
-    block = root / "2_players"
-    block.mkdir()
-    np.save(block / "keepers_2.npy", np.array(["A", "B"]))
-    df = pd.DataFrame(
-        {
-            "winner": ["P1", "P2"],
-            "n_rounds": [5, 6],
-            "winning_score": [1000, 1100],
-            "P1_strategy": ["A", "A"],
-            "P2_strategy": ["B", "B"],
-            "P1_rank": [1, 2],
-            "P2_rank": [2, 1],
-        }
-    )
-    df.to_csv(block / "winners.csv", index=False)
+from farkle.analysis.analysis_config import Config, Experiment, IO
 
 
-def test_pipeline_all_creates_outputs(tmp_path: Path) -> None:
-    _write_fixture(tmp_path)
-    cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        pipeline.main(["all", "--root", str(tmp_path)])
-    finally:
-        os.chdir(cwd)
+def _make_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Config]:
+    cfg = Config(experiment=Experiment(name="test", seed=0), io=IO(results_dir=tmp_path))
+    cfg_path = tmp_path / "analysis_config.yaml"
+    cfg_path.write_text("experiment:\n  name: test\n")
+    original_model_dump = cfg.model_dump
 
-    analysis = tmp_path / "analysis"
-    p2_dir = analysis / "data" / "2p"
-    assert (p2_dir / "2p_ingested_rows.parquet").exists()
-    assert not (p2_dir / "2p_ingested_rows.raw.parquet").exists()
-    combined = analysis / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
-    assert combined.exists()
-    assert (analysis / "metrics.parquet").exists()
-    assert (analysis / "seat_advantage.csv").exists()
-    assert (analysis / "seat_advantage.parquet").exists()
+    def _model_dump(*args, **kwargs):  # noqa: ANN002
+        data = original_model_dump(*args, **kwargs)
 
-    # analytics artefacts
-    assert (tmp_path / "ratings_pooled.parquet").exists()
-    assert (tmp_path / "hgb_importance.json").exists()
-    figs = tmp_path / "notebooks" / "figs"
-    assert any(figs.glob("pd_*.png"))
+        def _normalise(value):
+            if isinstance(value, Path):
+                return str(value)
+            if isinstance(value, dict):
+                return {k: _normalise(v) for k, v in value.items()}
+            if isinstance(value, list):
+                return [_normalise(v) for v in value]
+            return value
 
+        return _normalise(data)
 
-def test_pipeline_ingest_only(tmp_path: Path) -> None:
-    _write_fixture(tmp_path)
-    cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        pipeline.main(["ingest", "--root", str(tmp_path)])
-    finally:
-        os.chdir(cwd)
+    cfg.model_dump = _model_dump  # type: ignore[assignment]
 
-    analysis = tmp_path / "analysis"
-    p2_dir = analysis / "data" / "2p"
-    raw = p2_dir / "2p_ingested_rows.raw.parquet"
-    curated = p2_dir / "2p_ingested_rows.parquet"
-    assert raw.exists()
-    assert not curated.exists()
-    assert not (analysis / "metrics.parquet").exists()
-    assert not (tmp_path / "hgb_importance.json").exists()
-    combined = analysis / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
-    assert not combined.exists()
+    monkeypatch.setattr("farkle.analysis.pipeline.load_config", lambda path: (cfg, "deadbeef"))
+    return cfg_path, cfg
 
 
-def test_pipeline_combine_only(tmp_path: Path) -> None:
-    _write_fixture(tmp_path)
-    cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        pipeline.main(["ingest", "--root", str(tmp_path)])
-        pipeline.main(["curate", "--root", str(tmp_path)])
-        pipeline.main(["combine", "--root", str(tmp_path)])
-    finally:
-        os.chdir(cwd)
+def test_pipeline_writes_resolved_config_and_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg_path, cfg = _make_config(tmp_path, monkeypatch)
 
-    combined = tmp_path / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
-    assert combined.exists()
+    called = False
 
+    def _fake_ingest(app_cfg):  # noqa: ANN001
+        nonlocal called
+        called = True
+        assert app_cfg.analysis.results_dir == tmp_path
 
-def test_pipeline_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _write_fixture(tmp_path)
-    cwd = os.getcwd()
-    os.chdir(tmp_path)
-    try:
-        def _boom(cfg):  # simulate analytics dependency failure  # noqa: ARG001
-            raise RuntimeError("missing dependency")
+    monkeypatch.setattr("farkle.analysis.ingest.run", _fake_ingest)
 
-        monkeypatch.setattr("farkle.analysis.run_all", _boom)
-        with pytest.raises(RuntimeError):
-            pipeline.main(["all", "--root", str(tmp_path)])
-    finally:
-        os.chdir(cwd)
+    rc = pipeline.main(["--config", str(cfg_path), "ingest"])
+    assert rc == 0
+    assert called
+
+    analysis_dir = tmp_path / cfg.io.analysis_subdir
+    resolved = analysis_dir / "config.resolved.yaml"
+    manifest = analysis_dir / cfg.to_pipeline_cfg().manifest_name
+    assert resolved.exists()
+    assert manifest.exists()
+
+    manifest_data = json.loads(manifest.read_text())
+    assert manifest_data == {"config_sha": "deadbeef"}
 
 
 @pytest.mark.parametrize(
-    "command,target",
+    "command, target",
     [
         ("ingest", "farkle.analysis.ingest.run"),
         ("curate", "farkle.analysis.curate.run"),
@@ -118,58 +75,63 @@ def test_pipeline_missing_dependency(tmp_path: Path, monkeypatch: pytest.MonkeyP
         ("analytics", "farkle.analysis.run_all"),
     ],
 )
-def test_individual_step_failure_returns_one(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    command: str,
-    target: str,
+def test_pipeline_individual_commands_invoke_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, target: str
 ) -> None:
-    log_file = tmp_path / "pipeline.log"
+    cfg_path, _ = _make_config(tmp_path, monkeypatch)
 
-    def _boom(cfg: PipelineCfg) -> None:  # noqa: ARG001
-        logging.getLogger().debug("running %s", command)
+    called: list[str] = []
+
+    def _record(app_cfg):  # noqa: ANN001
+        called.append(command)
+        assert app_cfg.analysis.results_dir == tmp_path
+
+    monkeypatch.setattr(target, _record)
+    rc = pipeline.main(["--config", str(cfg_path), command])
+    assert rc == 0
+    assert called == [command]
+
+
+def test_pipeline_all_runs_all_steps(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg_path, _ = _make_config(tmp_path, monkeypatch)
+
+    calls: list[str] = []
+
+    def _make_stub(name: str) -> Callable[[object], None]:
+        def _stub(app_cfg):  # noqa: ANN001
+            calls.append(name)
+            assert app_cfg.analysis.results_dir == tmp_path
+
+        return _stub
+
+    monkeypatch.setattr("farkle.analysis.ingest.run", _make_stub("ingest"))
+    monkeypatch.setattr("farkle.analysis.curate.run", _make_stub("curate"))
+    monkeypatch.setattr("farkle.analysis.combine.run", _make_stub("combine"))
+    monkeypatch.setattr("farkle.analysis.metrics.run", _make_stub("metrics"))
+    monkeypatch.setattr("farkle.analysis.run_all", _make_stub("analytics"))
+
+    rc = pipeline.main(["--config", str(cfg_path), "all"])
+    assert rc == 0
+    assert calls == ["ingest", "curate", "combine", "metrics", "analytics"]
+
+
+@pytest.mark.parametrize(
+    "command, target",
+    [
+        ("ingest", "farkle.analysis.ingest.run"),
+        ("combine", "farkle.analysis.combine.run"),
+        ("analytics", "farkle.analysis.run_all"),
+    ],
+)
+def test_pipeline_step_failure_propagates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, command: str, target: str
+) -> None:
+    cfg_path, _ = _make_config(tmp_path, monkeypatch)
+
+    def _boom(app_cfg):  # noqa: ANN001
         raise RuntimeError("boom")
 
     monkeypatch.setattr(target, _boom)
 
-    def _parse_cli(cls, argv):  # noqa: ARG001
-        parser = argparse.ArgumentParser(add_help=False)
-        parser.add_argument("--root", dest="results_dir", type=Path, default=tmp_path)
-        parser.add_argument("-v", "--verbose", action="store_true")
-        parser.add_argument("--log-file", type=Path)
-        ns, remaining = parser.parse_known_args(argv)
-        cfg = PipelineCfg(results_dir=ns.results_dir)
-        cfg.log_file = ns.log_file
-        if ns.verbose:
-            cfg.log_level = "DEBUG"
-        return cfg, ns, remaining
-
-    monkeypatch.setattr(PipelineCfg, "parse_cli", classmethod(_parse_cli))
-
-    rc = pipeline.main(
-        [command, "--root", str(tmp_path), "--verbose", "--log-file", str(log_file)]
-    )
-    assert rc == 1
-    assert logging.getLogger().getEffectiveLevel() == logging.DEBUG
-    assert log_file.exists()
-    assert f"running {command}" in log_file.read_text()
-
-
-def test_pipeline_all_step_failure_prints_and_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    def _ok(cfg: PipelineCfg) -> None:  # noqa: ARG001
-        return None
-
-    def _boom(cfg: PipelineCfg) -> None:  # noqa: ARG001
-        raise RuntimeError("boom")
-
-    monkeypatch.setattr("farkle.analysis.ingest.run", _ok)
-    monkeypatch.setattr("farkle.analysis.curate.run", _ok)
-    monkeypatch.setattr("farkle.analysis.combine.run", _boom)
-
     with pytest.raises(RuntimeError):
-        pipeline.main(["all", "--root", str(tmp_path)])
-
-    err = capsys.readouterr().err
-    assert "combine step failed: boom" in err
+        pipeline.main(["--config", str(cfg_path), command])
