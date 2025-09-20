@@ -1,34 +1,81 @@
 import csv
 import multiprocessing as mp
+import threading
 from pathlib import Path
 
+import pytest
 from pytest import MonkeyPatch
 
 import farkle.utils.csv_files as csv_files
 import farkle.utils.parallel as parallel
 
 
-def test_writer_worker_appends(tmp_path: Path):
+@pytest.fixture
+def writer_queue() -> mp.Queue:
+    queue: mp.Queue = mp.Queue()
+    try:
+        yield queue
+    finally:
+        queue.close()
+        queue.join_thread()
+
+
+def test_writer_worker_background_thread(tmp_path: Path, writer_queue: mp.Queue) -> None:
     header = ["a", "b"]
     out = tmp_path / "out.csv"
 
-    q1 = mp.Queue()
-    q1.put({"a": 1, "b": 2})
-    q1.put(None)
-    csv_files._writer_worker(q1, str(out), header)
+    worker = threading.Thread(
+        target=csv_files._writer_worker, args=(writer_queue, str(out), header)
+    )
+    worker.start()
 
-    q2 = mp.Queue()
-    q2.put({"a": 3, "b": 4})
-    q2.put(None)
-    csv_files._writer_worker(q2, str(out), header)
+    writer_queue.put({"a": 1, "b": 2})
+    writer_queue.put({"a": 3, "b": 4})
+    writer_queue.put(None)
 
-    with out.open() as fh:
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    with out.open(encoding="utf-8") as fh:
+        text_lines = fh.read().splitlines()
+
+    assert text_lines[0] == "a,b"
+    assert text_lines.count("a,b") == 1
+    assert len(text_lines) == 3
+
+    with out.open(encoding="utf-8") as fh:
         rows = list(csv.DictReader(fh))
 
     assert rows == [
         {"a": "1", "b": "2"},
         {"a": "3", "b": "4"},
     ]
+
+
+def test_writer_worker_respects_existing_header(
+    tmp_path: Path, writer_queue: mp.Queue
+) -> None:
+    header = ["a", "b"]
+    out = tmp_path / "out.csv"
+    out.write_text("a,b\n5,6\n", encoding="utf-8")
+
+    worker = threading.Thread(
+        target=csv_files._writer_worker, args=(writer_queue, str(out), header)
+    )
+    worker.start()
+
+    writer_queue.put({"a": 7, "b": 8})
+    writer_queue.put(None)
+
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    with out.open(encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+
+    assert lines[0] == "a,b"
+    assert lines.count("a,b") == 1
+    assert lines[1:] == ["5,6", "7,8"]
 
 
 def test_process_map_serial():
