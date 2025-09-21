@@ -33,6 +33,43 @@ def test_append_manifest_helpers(tmp_path):
         assert "ts" in record and record["ts"]
 
 
+def test_append_manifest_without_timestamp(tmp_path):
+    manifest_path = tmp_path / "manifest.ndjson"
+
+    append_manifest_line(
+        manifest_path,
+        {"path": "delta"},
+        add_timestamp=False,
+    )
+
+    records = list(iter_manifest(manifest_path))
+    assert len(records) == 1
+    assert records[0]["path"] == "delta"
+    assert "ts" not in records[0]
+
+
+def test_append_manifest_many_noop_on_empty_iterable(tmp_path):
+    manifest_path = tmp_path / "manifest.ndjson"
+
+    append_manifest_many(manifest_path, [])
+    assert not manifest_path.exists()
+
+    manifest_path.write_text('{"path":"existing"}\n', encoding="utf-8")
+    before_bytes = manifest_path.read_bytes()
+    before_mtime = manifest_path.stat().st_mtime_ns
+
+    append_manifest_many(manifest_path, iter(()))
+
+    assert manifest_path.read_bytes() == before_bytes
+    assert manifest_path.stat().st_mtime_ns == before_mtime
+
+
+def test_iter_manifest_missing_file(tmp_path):
+    missing_path = Path(tmp_path) / "missing.ndjson"
+
+    assert list(iter_manifest(missing_path)) == []
+
+
 def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
     tables = [
         pa.table({"value": [1, 2]}),
@@ -102,14 +139,22 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
 
     assert manifest_calls and manifest_calls[0][0] == str(manifest_path)
     manifest_record = manifest_calls[0][1]
-    # Compute relative path from the manifest's directory (matches production code).
+    # Production code prefers paths relative to the current working directory, but
+    # falls back to the manifest directory (and ultimately an absolute path) when
+    # necessary. Accept any of those equivalents to avoid sensitivity to the
+    # runner's working directory.
     manifest_dir = os.fspath(Path(manifest_path).parent)
+    expected_paths = set()
     try:
-        expected_rel = os.path.relpath(os.fspath(out_path), start=manifest_dir)
+        expected_paths.add(os.path.relpath(os.fspath(out_path)))
     except ValueError:
-        # Cross-drive fallback on Windows: use absolute path
-        expected_rel = os.fspath(out_path)
-    assert manifest_record["path"] == expected_rel
+        # Cross-drive relative paths may not be representable.
+        expected_paths.add(os.fspath(out_path))
+    try:
+        expected_paths.add(os.path.relpath(os.fspath(out_path), start=manifest_dir))
+    except ValueError:
+        expected_paths.add(os.fspath(out_path))
+    assert manifest_record["path"] in expected_paths
     assert manifest_record["rows"] == sum(tbl.num_rows for tbl in tables)
     for key, value in run_extra.items():
         assert manifest_record[key] == value
