@@ -56,3 +56,48 @@ def fast_helpers(monkeypatch):
 
     monkeypatch.setattr(rt, "_play_shuffle", fake_play_shuffle, raising=True)
 
+
+@pytest.mark.parametrize(
+    ("n_players", "expected"),
+    [
+        (1, "n_players must be ≥2"),
+        (7, "n_players must divide 8,160"),
+    ],
+)
+def test_run_tournament_invalid_player_counts(n_players: int, expected: str) -> None:
+    cfg = rt.TournamentConfig()
+    cfg.num_shuffles = 1
+
+    with pytest.raises(ValueError) as excinfo:
+        rt.run_tournament(config=cfg, n_players=n_players)
+
+    assert expected in str(excinfo.value)
+
+
+def test_init_worker_rejects_bad_player_counts(monkeypatch) -> None:
+    strats = _mini_strats(3)
+    cfg = rt.TournamentConfig(n_players=7)
+    monkeypatch.setattr(rt, "_STATE", None, raising=False)
+
+    with pytest.raises(ValueError, match="n_players must divide 8,160"):
+        rt._init_worker(strats, cfg)
+
+
+def test_run_chunk_logs_and_propagates(monkeypatch, caplog) -> None:
+    class BoomError(RuntimeError):
+        pass
+
+    def boom(_seed: int):
+        raise BoomError("boom")
+
+    monkeypatch.setattr(rt, "_play_shuffle", boom, raising=True)
+
+    with caplog.at_level(logging.ERROR, logger=rt.LOGGER.name):
+        with pytest.raises(BoomError):
+            rt._run_chunk([123])
+
+    assert any("Shuffle failed" in rec.getMessage() for rec in caplog.records)
+    logged = [rec for rec in caplog.records if "Shuffle failed" in rec.getMessage()][0]
+    assert logged.stage == "simulation"
+    assert logged.shuffle_seed == 123
+
