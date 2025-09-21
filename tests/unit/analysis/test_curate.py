@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 import pyarrow as pa
@@ -28,6 +29,35 @@ def test_schema_hash_known_value():
         _schema_hash(2)
         == "8d6a2409c58593937b2a9b7c69d12ca745fd16ad064e7e201bbdd1bb7e3a69cf"
     )
+
+
+def test_schema_hash_uses_schema_serialize_when_pa_ipc_missing(monkeypatch):
+    class DummySchema:
+        def __init__(self):
+            self.serialize_calls = 0
+
+        def serialize(self):
+            self.serialize_calls += 1
+
+            class DummyBuffer:
+                @staticmethod
+                def to_pybytes():
+                    return b"dummy-bytes"
+
+            return DummyBuffer()
+
+    dummy_schema = DummySchema()
+
+    monkeypatch.setattr(pa.ipc, "serialize", None, raising=False)
+    monkeypatch.setattr(
+        "farkle.analysis.curate.expected_schema_for",
+        lambda n_players: dummy_schema,
+    )
+
+    result = _schema_hash(3)
+
+    assert dummy_schema.serialize_calls == 1
+    assert result == hashlib.sha256(b"dummy-bytes").hexdigest()
 
 
 def test_already_curated_schema_hash(tmp_path):
@@ -63,6 +93,24 @@ def test_already_curated_schema_hash(tmp_path):
     pq.write_table(table2, file2)
 
     assert not _already_curated(file2, manifest)
+
+
+def test_already_curated_missing_files(tmp_path):
+    cfg = PipelineCfg(results_dir=tmp_path)
+    schema = expected_schema_for(1)
+
+    # Missing parquet file
+    manifest = tmp_path / "manifest.json"
+    _write_manifest(manifest, rows=0, schema=schema, cfg=cfg)
+    missing_parquet = tmp_path / "missing.parquet"
+    assert not _already_curated(missing_parquet, manifest)
+
+    # Missing manifest file
+    table = _empty_table(schema)
+    parquet_path = tmp_path / "curated.parquet"
+    pq.write_table(table, parquet_path)
+    missing_manifest = tmp_path / "missing.json"
+    assert not _already_curated(parquet_path, missing_manifest)
 
 
 def test_already_curated_manifest_failures(tmp_path):
