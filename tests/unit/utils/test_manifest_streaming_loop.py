@@ -1,6 +1,7 @@
 import os
 import threading
 
+from pathlib import Path
 import pytest
 
 pa = pytest.importorskip("pyarrow")
@@ -101,7 +102,14 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
 
     assert manifest_calls and manifest_calls[0][0] == str(manifest_path)
     manifest_record = manifest_calls[0][1]
-    assert manifest_record["path"] == os.path.relpath(str(out_path))
+    # Compute relative path from the manifest's directory (matches production code).
+    manifest_dir = os.fspath(Path(manifest_path).parent)
+    try:
+        expected_rel = os.path.relpath(os.fspath(out_path), start=manifest_dir)
+    except ValueError:
+        # Cross-drive fallback on Windows: use absolute path
+        expected_rel = os.fspath(out_path)
+    assert manifest_record["path"] == expected_rel
     assert manifest_record["rows"] == sum(tbl.num_rows for tbl in tables)
     for key, value in run_extra.items():
         assert manifest_record[key] == value
