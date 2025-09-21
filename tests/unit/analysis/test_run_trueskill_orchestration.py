@@ -140,3 +140,47 @@ def test_run_trueskill_pooling_and_short_circuit(tmp_path: Path, monkeypatch: py
 
     assert not tier_calls
     assert pooled_path.stat().st_mtime == before
+
+
+def test_run_trueskill_skips_zero_game_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    data_root = tmp_path / "results"
+    block2 = data_root / "2_players"
+    block3 = data_root / "3_players"
+    block2.mkdir(parents=True, exist_ok=True)
+    block3.mkdir(parents=True, exist_ok=True)
+
+    analysis_root = tmp_path / "analysis"
+
+    per_block = {
+        "2": ("A", rt.RatingStats(10.0, 2.0), 12),
+        "3": ("B", rt.RatingStats(50.0, 5.0), 0),
+    }
+
+    def immediate_write(table: pa.Table, path: Path | str, *, codec: str = "snappy") -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(table, path, compression=codec)
+
+    def fake_rate_block_worker(
+        block_dir: str,
+        root_dir: str,
+        suffix: str,
+        batch_rows: int,
+        *,
+        resume: bool,
+        checkpoint_every_batches: int,
+        env_kwargs: dict | None,
+    ) -> tuple[str, int]:
+        player_count = Path(block_dir).name.split("_")[0]
+        name, stats, games = per_block[player_count]
+        rt._save_ratings_parquet(Path(root_dir) / f"ratings_{player_count}{suffix}.parquet", {name: stats})
+        return player_count, games
+
+    monkeypatch.setattr(rt, "write_parquet_atomic", immediate_write)
+    monkeypatch.setattr(rt, "_rate_block_worker", fake_rate_block_worker)
+
+    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
+
+    pooled = rt._load_ratings_parquet(analysis_root / "ratings_pooled.parquet")
+    assert set(pooled) == {"A"}
+    assert pooled["A"].mu == pytest.approx(10.0)
