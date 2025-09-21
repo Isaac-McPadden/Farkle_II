@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import pyarrow as pa
@@ -230,6 +230,42 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
 
     interim = rt._load_ratings_parquet(ratings_ck)
     assert set(interim) == {"A", "C"}
+
+
+@pytest.mark.parametrize(
+    ("loader", "filename"),
+    [
+        (rt._load_ckpt, "ratings.ckpt.json"),
+        (rt._load_block_ckpt, "block.ckpt.json"),
+    ],
+)
+def test_load_ckpts_handle_missing_and_invalid(
+    tmp_path: Path, loader: Callable[[Path], Any], filename: str
+) -> None:
+    path = tmp_path / filename
+    assert loader(path) is None
+
+    path.write_text("{not json")
+    assert loader(path) is None
+
+
+def test_rate_block_worker_missing_curated_and_fallback(tmp_path: Path) -> None:
+    root = tmp_path / "analysis"
+    root.mkdir(parents=True, exist_ok=True)
+    block = tmp_path / "results" / "2_players"
+    block.mkdir(parents=True, exist_ok=True)
+
+    player_count, games = rt._rate_block_worker(
+        str(block),
+        str(root),
+        "",
+        batch_rows=1,
+        resume=False,
+        checkpoint_every_batches=1,
+    )
+
+    assert player_count == "2"
+    assert games == 0
 
 
 def test_coerce_and_seed_ratings() -> None:
