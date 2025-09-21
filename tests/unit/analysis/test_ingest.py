@@ -1,10 +1,11 @@
 import logging
+import os
 
 import pandas as pd
 import pytest
 
 from farkle.analysis.analysis_config import PipelineCfg
-from farkle.analysis.ingest import _fix_winner, _iter_shards, run
+from farkle.analysis.ingest import _fix_winner, _iter_shards, _process_block, run
 
 # -------------------- _iter_shards -------------------------------------
 
@@ -71,6 +72,67 @@ def test_fix_winner_without_ranks():
     assert result["winner_seat"].iloc[0] == "P1"
     assert result["seat_ranks"].iloc[0] == ["P1"]
     assert "winner" not in result.columns
+
+
+# -------------------- _process_block -----------------------------------
+
+
+def test_process_block_skips_when_output_newer(tmp_results_dir, monkeypatch):
+    cfg = PipelineCfg(results_dir=tmp_results_dir, analysis_subdir="analysis")
+    block = cfg.results_dir / "3_players"
+    block.mkdir(parents=True)
+
+    shard = block / "3p_rows.parquet"
+    df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"], "n_rounds": [1], "winning_score": [10]})
+    df.to_parquet(shard, index=False)
+    shard_mtime = shard.stat().st_mtime
+
+    raw_out = cfg.ingested_rows_raw(3)
+    raw_out.write_text("existing")
+    newer = shard_mtime + 10
+    os.utime(raw_out, (newer, newer))
+
+    calls: list[tuple[tuple, dict]] = []
+
+    def fake_run_streaming_shard(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr("farkle.analysis.ingest.run_streaming_shard", fake_run_streaming_shard)
+
+    result = _process_block(block, cfg)
+
+    assert result == 0
+    assert not calls
+
+
+def test_process_block_zero_rows_cleans_outputs(tmp_results_dir, monkeypatch):
+    cfg = PipelineCfg(results_dir=tmp_results_dir, analysis_subdir="analysis")
+    block = cfg.results_dir / "4_players"
+    block.mkdir(parents=True)
+
+    raw_out = cfg.ingested_rows_raw(4)
+    raw_out.write_text("stale")
+    manifest = raw_out.with_suffix(".manifest.jsonl")
+    manifest.write_text("old")
+
+    def fake_iter_shards(block_path, cols):
+        empty = pd.DataFrame(columns=cols)
+        yield empty, block_path / "empty.parquet"
+
+    calls: list[tuple[tuple, dict]] = []
+
+    def fake_run_streaming_shard(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr("farkle.analysis.ingest._iter_shards", fake_iter_shards)
+    monkeypatch.setattr("farkle.analysis.ingest.run_streaming_shard", fake_run_streaming_shard)
+
+    result = _process_block(block, cfg)
+
+    assert result == 0
+    assert not raw_out.exists()
+    assert not manifest.exists()
+    assert not calls
 
 
 # -------------------- run integration ----------------------------------
