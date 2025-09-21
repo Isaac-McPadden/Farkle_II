@@ -2,6 +2,7 @@ import csv
 import multiprocessing as mp
 import threading
 from pathlib import Path
+from typing import Mapping, Sequence
 
 import pytest
 from pytest import MonkeyPatch
@@ -52,6 +53,47 @@ def test_writer_worker_background_thread(tmp_path: Path, writer_queue: mp.Queue)
     ]
 
 
+def test_writer_worker_flushes_when_buffer_full(
+    tmp_path: Path, writer_queue: mp.Queue, monkeypatch: MonkeyPatch
+) -> None:
+    header = ["a", "b"]
+    out = tmp_path / "out.csv"
+
+    monkeypatch.setattr(csv_files, "BUFFER_SIZE", 1)
+
+    batches: list[list[Mapping[str, object]]] = []
+
+    class DummyWriter:
+        def __init__(self, *_: object, **__: object) -> None:
+            pass
+
+        def writeheader(self) -> None:
+            return None
+
+        def writerows(self, rows: Sequence[Mapping[str, object]]) -> None:
+            batches.append([dict(row) for row in rows])
+
+    monkeypatch.setattr(
+        csv_files.csv, "DictWriter", lambda *_args, **_kwargs: DummyWriter()
+    )
+
+    worker = threading.Thread(
+        target=csv_files._writer_worker, args=(writer_queue, str(out), header)
+    )
+    worker.start()
+
+    writer_queue.put({"a": 1, "b": 2})
+    writer_queue.put({"a": 3, "b": 4})
+    writer_queue.put({"a": 5, "b": 6})
+    writer_queue.put(None)
+
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    assert len(batches) == 3
+    assert all(len(batch) == 1 for batch in batches)
+
+
 def test_writer_worker_respects_existing_header(
     tmp_path: Path, writer_queue: mp.Queue
 ) -> None:
@@ -76,6 +118,54 @@ def test_writer_worker_respects_existing_header(
     assert lines[0] == "a,b"
     assert lines.count("a,b") == 1
     assert lines[1:] == ["5,6", "7,8"]
+
+
+def test_writer_worker_handles_immediate_termination(
+    tmp_path: Path, writer_queue: mp.Queue
+) -> None:
+    header = ["a", "b"]
+    out = tmp_path / "out.csv"
+
+    worker = threading.Thread(
+        target=csv_files._writer_worker, args=(writer_queue, str(out), header)
+    )
+    worker.start()
+
+    writer_queue.put(None)
+
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert out.exists()
+
+    with out.open(encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+
+    assert lines == ["a,b"]
+
+
+def test_writer_worker_detects_empty_existing_file(
+    tmp_path: Path, writer_queue: mp.Queue
+) -> None:
+    header = ["a", "b"]
+    out = tmp_path / "out.csv"
+    out.touch()
+
+    worker = threading.Thread(
+        target=csv_files._writer_worker, args=(writer_queue, str(out), header)
+    )
+    worker.start()
+
+    writer_queue.put({"a": 1, "b": 2})
+    writer_queue.put(None)
+
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+
+    with out.open(encoding="utf-8") as fh:
+        lines = fh.read().splitlines()
+
+    assert lines[0] == "a,b"
+    assert lines[1:] == ["1,2"]
 
 
 def test_process_map_serial():
