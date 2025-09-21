@@ -160,6 +160,71 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
         assert manifest_record[key] == value
 
 
+def test_run_streaming_shard_manifest_path_without_dir(tmp_path, monkeypatch):
+    tables = [
+        pa.table({"value": [1, 2]}),
+        pa.table({"value": [3]}),
+    ]
+    schema = tables[0].schema
+    out_path = tmp_path / "nested" / "out.parquet"
+    out_path_str = os.fspath(out_path)
+    manifest_path = "manifest.ndjson"
+
+    class DummyWriter:
+        def __init__(self, *, out_path, schema, compression, row_group_size):
+            self.rows_written = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def write_batches(self, batch_iterable):
+            for tbl in batch_iterable:
+                self.rows_written += tbl.num_rows
+
+    monkeypatch.setattr(streaming_loop, "ParquetShardWriter", DummyWriter)
+
+    manifest_calls = []
+
+    def fake_append(path, record):
+        manifest_calls.append((path, record))
+
+    monkeypatch.setattr(streaming_loop, "append_manifest_line", fake_append)
+
+    relpath_calls = []
+    real_relpath = os.path.relpath
+
+    def fake_relpath(path, start=os.curdir):
+        relpath_calls.append((path, start))
+        if len(relpath_calls) <= 2:
+            raise ValueError("boom")
+        return real_relpath(path, start=start)
+
+    monkeypatch.setattr(os.path, "relpath", fake_relpath)
+
+    expected_manifest_dir = os.path.abspath(os.curdir)
+    streaming_loop.run_streaming_shard(
+        out_path=out_path_str,
+        manifest_path=manifest_path,
+        schema=schema,
+        batch_iter=iter(tables),
+        row_group_size=10,
+        compression="zstd",
+        manifest_extra=None,
+    )
+
+    assert len(relpath_calls) == 2
+    assert relpath_calls[0] == (out_path_str, os.curdir)
+    assert relpath_calls[1] == (out_path_str, expected_manifest_dir)
+
+    assert manifest_calls and manifest_calls[0][0] == manifest_path
+    manifest_record = manifest_calls[0][1]
+    assert manifest_record["path"] == os.path.abspath(out_path_str)
+    assert manifest_record["rows"] == sum(tbl.num_rows for tbl in tables)
+
+
 def test_writer_thread_forwards_manifest(monkeypatch):
     tables = [
         pa.table({"value": [1]}),
@@ -202,6 +267,27 @@ def test_writer_thread_forwards_manifest(monkeypatch):
     assert captured["manifest_extra"] == manifest_extra
     assert len(captured["batches"]) == len(tables)
     for expected, actual in zip(tables, captured["batches"]):
+        assert actual is expected
+
+
+def test_producer_thread_pushes_all_tables():
+    tables = [
+        pa.table({"value": [1]}),
+        pa.table({"value": [2]}),
+    ]
+
+    pushed = []
+
+    def fake_push(tbl):
+        pushed.append(tbl)
+
+    def mk_batches():
+        return iter(tables)
+
+    streaming_loop.producer_thread(fake_push, mk_batches)
+
+    assert pushed == tables
+    for expected, actual in zip(tables, pushed):
         assert actual is expected
 
 
