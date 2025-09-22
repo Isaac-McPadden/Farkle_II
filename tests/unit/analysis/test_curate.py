@@ -258,3 +258,96 @@ def test_run_new_layout_missing_manifest(tmp_path):
     pq.write_table(_empty_table(schema), curated)
     with pytest.raises(FileNotFoundError):
         curate_run(cfg)
+
+def test_schema_hash_prefers_pa_ipc_serialize(monkeypatch):
+    class DummySchema:
+        def __init__(self):
+            self.serialize_calls = 0
+
+        def serialize(self):
+            self.serialize_calls += 1
+            raise AssertionError('schema.serialize should not run when pa.ipc.serialize is available')
+
+    buffer_bytes = b'pa-ipc-bytes'
+
+    def fake_serialize(schema):
+        assert schema is dummy_schema
+
+        class DummySerialized:
+            def to_buffer(self):
+                class DummyBuffer:
+                    @staticmethod
+                    def to_pybytes():
+                        return buffer_bytes
+
+                return DummyBuffer()
+
+        return DummySerialized()
+
+    dummy_schema = DummySchema()
+    monkeypatch.setattr(
+        'farkle.analysis.curate.expected_schema_for',
+        lambda n_players: dummy_schema,
+    )
+    monkeypatch.setattr(pa.ipc, 'serialize', fake_serialize, raising=False)
+
+    result = _schema_hash(4)
+
+    assert dummy_schema.serialize_calls == 0
+    assert result == hashlib.sha256(buffer_bytes).hexdigest()
+
+def test_already_curated_handles_metadata_error(tmp_path, monkeypatch):
+    cfg = PipelineCfg(results_dir=tmp_path)
+    schema = expected_schema_for(1)
+    parquet_path = tmp_path / 'broken.parquet'
+    pq.write_table(_empty_table(schema), parquet_path)
+    manifest = tmp_path / 'manifest.json'
+    _write_manifest(manifest, rows=0, schema=schema, cfg=cfg)
+
+    def boom(_):
+        raise RuntimeError('broken metadata')
+
+    monkeypatch.setattr('farkle.analysis.curate.pq.read_metadata', boom)
+    assert not _already_curated(parquet_path, manifest)
+
+def test_run_existing_curated_manifest_allows_proceed(tmp_path):
+    cfg = PipelineCfg(results_dir=tmp_path)
+
+    schema_existing = expected_schema_for(2)
+    curated_existing = cfg.ingested_rows_curated(2)
+    curated_existing.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(_empty_table(schema_existing), curated_existing)
+    manifest_existing = cfg.manifest_for(2)
+    _write_manifest(manifest_existing, rows=0, schema=schema_existing, cfg=cfg)
+
+    schema_new = expected_schema_for(1)
+    raw_path = cfg.ingested_rows_raw(1)
+    pq.write_table(_empty_table(schema_new), raw_path)
+
+    curate_run(cfg)
+
+    curated_new = cfg.ingested_rows_curated(1)
+    manifest_new = cfg.manifest_for(1)
+    assert curated_new.exists()
+    assert manifest_new.exists()
+    assert not raw_path.exists()
+    assert curated_existing.exists()
+    assert manifest_existing.exists()
+
+def test_run_legacy_finalizes_raw_file(tmp_path):
+    cfg = PipelineCfg(results_dir=tmp_path)
+    dst_file = cfg.curated_parquet
+    raw_file = dst_file.with_suffix('.raw.parquet')
+    raw_file.parent.mkdir(parents=True, exist_ok=True)
+    schema = expected_schema_for(0)
+    pq.write_table(_empty_table(schema), raw_file)
+
+    curate_run(cfg)
+
+    manifest = cfg.analysis_dir / cfg.manifest_name
+    assert dst_file.exists()
+    assert not raw_file.exists()
+    meta = json.loads(manifest.read_text())
+    assert meta['row_count'] == 0
+    assert meta['schema_hash'] == _schema_hash(0)
+
