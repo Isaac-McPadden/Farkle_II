@@ -1,6 +1,6 @@
 # CLI Reference
 
-The repository exposes a single console entry point: `farkle`.  You can invoke
+The repository exposes a single console entry point: `farkle`. You can invoke
 it directly or via `python -m farkle`.
 
 ```text
@@ -9,15 +9,16 @@ farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
 
 ## Global options
 
-- `--config PATH` – load YAML configuration data and pass it to the chosen
-  subcommand.  The mapping is unpacked as keyword arguments, so the keys should
+- `--config PATH` - load YAML configuration data and pass it to the chosen
+  subcommand. The mapping is unpacked as keyword arguments, so the keys should
   match the function parameters used by that command (for example, the
   arguments of `farkle.simulation.run_tournament.run_tournament`).
-- `--set KEY=VALUE` – apply inline overrides to the loaded configuration.  The
-  option may be repeated.  Keys may include dots to create nested mappings and
-  the values are parsed with `yaml.safe_load`, allowing booleans, integers,
-  lists, and other simple YAML literals.
-- `--log-level LEVEL` – configure the root logger before the command runs.
+- `--set KEY=VALUE` - apply inline overrides to the loaded configuration.
+  Keys may include dots to create nested mappings and the values are parsed
+  with `yaml.safe_load`, allowing booleans, integers, lists, and other simple
+  YAML literals.
+- `--log-level LEVEL` - configure the root logger before the command runs.
+  The default is `INFO`.
 
 ## Subcommands
 
@@ -25,8 +26,10 @@ farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
 Run a Monte Carlo tournament.
 
 Options:
-- `--metrics` – collect per-strategy summary metrics as well as win counts.
-- `--row-dir PATH` – write per-game rows to the given directory (Parquet).
+- `--metrics` - collect per-strategy summary metrics as well as win counts
+  (sets `collect_metrics` when calling `run_tournament`).
+- `--row-dir PATH` - write per-game rows to the given directory (Parquet
+  shards plus a manifest; forwarded as `row_output_directory`).
 
 Example usage:
 
@@ -40,35 +43,31 @@ farkle --config configs/tournament.yaml \
 ```
 
 ### `time`
-Benchmark simulation throughput.  This forwards to
-`farkle.simulation.time_farkle.measure_sim_times` and accepts the same options
-as that helper.  Use `farkle time --help` for the full list.
+Benchmark simulation throughput using the defaults from
+`farkle.simulation.time_farkle.measure_sim_times`.
+
+This subcommand does not accept additional command options. Global
+configuration files and `--set` overrides are currently ignored; call the
+helper from Python for custom benchmarks.
 
 ### `watch`
 Interactively watch a single game play out.
 
 Options:
-- `--seed INT` – seed the RNG for deterministic behaviour.
+- `--seed INT` - seed the RNG for deterministic behaviour.
 
 ### `analyze`
-Convenience wrapper around the analysis pipeline.  Requires configuration
+Convenience wrapper around the analysis pipeline. Requires configuration
 compatible with `farkle.analysis.analysis_config.PipelineCfg`.
 
 Subcommands:
-- `ingest` – load raw CSV data into Parquet shards.
-- `curate` – post-process ingested data and update manifests.
-- `combine` – merge curated Parquet shards into a single superset file.
-- `metrics` – compute aggregate metrics (including TrueSkill ratings when
+- `ingest` - load raw CSV data into Parquet shards.
+- `curate` - post-process ingested data and update manifests.
+- `combine` - merge curated Parquet shards into a single superset file.
+- `metrics` - compute aggregate metrics (including TrueSkill ratings when
   enabled in the configuration).
-- `pipeline` – run `ingest`, `curate`, `combine`, and `metrics` in sequence.
+- `pipeline` - run `ingest`, `curate`, `combine`, and `metrics` in sequence.
 
-Example usage:
-
-```bash
-farkle --config analysis/pipeline.yaml \
-  --set run_trueskill=true \
-  analyze pipeline
-```
-
-Use `--help` on any subcommand for additional details, e.g.
+Use `--help` on any subcommand for additional details, for example
 `farkle analyze metrics --help`.
+
