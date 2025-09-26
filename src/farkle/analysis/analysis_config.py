@@ -28,6 +28,8 @@ from typing import Any, Final, Mapping, Sequence, Union, cast, get_args, get_ori
 import pyarrow as pa
 import yaml
 
+from farkle.utils.yaml_helpers import expand_dotted_keys
+
 try:  # pragma: no cover - exercised in tests when dependency missing
     from pydantic import BaseModel as _RuntimeBaseModel
 except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
@@ -422,7 +424,8 @@ def load_config(path: Path) -> tuple[Config, str]:
     data = yaml.safe_load(path.read_text())
     if not isinstance(data, dict):
         raise TypeError(f"Expected mapping in {path}, got {type(data).__name__}")
-    data_dict: dict[str, Any] = data
+    expanded = expand_dotted_keys(data)
+    data_dict: dict[str, Any] = expanded
     cfg = Config(**data_dict)
     dumped = json.dumps(cfg.model_dump(), sort_keys=True, default=str).encode()
     sha = hashlib.sha256(dumped).hexdigest()[:12]

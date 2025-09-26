@@ -1,11 +1,11 @@
-from pathlib import Path
 import os
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
 from farkle.analysis import combine
+from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
 
 
 def _write_curated(path: Path, schema: pa.Schema, rows: list[dict]) -> None:

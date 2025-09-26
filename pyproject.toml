@@ -57,6 +57,9 @@ extend-select  = ["I", "B", "C4", "SIM", "ARG", "NPY"]
 unsafe-fixes   = true
 src            = ["src"]
 
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["E402", "ARG001", "ARG002", "ARG003", "ARG005"]
+
 [tool.black]
 line-length    = 100
 target-version = ["py312"]

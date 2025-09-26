@@ -16,8 +16,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 from farkle.analysis import pipeline
-
-from farkle.analysis.analysis_config import Config, Experiment, IO
+from farkle.analysis.analysis_config import IO, Config, Experiment
 
 
 def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Config]:

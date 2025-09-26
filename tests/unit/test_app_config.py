@@ -7,13 +7,11 @@ import pytest
 import yaml
 
 from farkle.config import (
-    AppConfig,
     _annotation_contains,
     _coerce,
     apply_dot_overrides,
     load_app_config,
 )
-
 
 BASE_CFG = Path("configs/base.yaml")
 
@@ -28,8 +26,8 @@ def test_load_app_config_overlay(tmp_path: Path) -> None:
                     "collect_metrics": True,
                     "row_dir": str(tmp_path / "rows"),
                 },
-                "analysis": {"run_trueskill": False},
-                "io": {"results_dir": str(tmp_path / "out")},
+                "analysis.run_trueskill": False,
+                "io.results_dir": str(tmp_path / "out"),
             }
         )
     )

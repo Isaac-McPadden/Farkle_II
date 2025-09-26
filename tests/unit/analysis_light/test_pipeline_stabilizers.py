@@ -1,10 +1,25 @@
+# tests/unit/analysis_light/test_pipeline_stabilizers.py
 import datetime as _dt
 import json
 import logging
+from pathlib import Path
+from typing import Protocol, cast
 
 import pandas as pd
 import pyarrow.parquet as pq
 import pytest
+
+
+class _CfgProto(Protocol):
+    results_dir: Path
+    analysis_dir: Path
+    metrics_name: str
+    parquet_codec: str
+    curated_parquet: Path
+    def ingested_rows_raw(self, n: int) -> Path: ...
+    def ingested_rows_curated(self, n: int) -> Path: ...
+    def manifest_for(self, n: int) -> Path: ...
+
 
 HAS_UTC = hasattr(_dt, "UTC")
 pytestmark = pytest.mark.skipif(
@@ -24,7 +39,7 @@ STRATEGY_MAP = {"P1": "Aggro", "P2": "Balanced", "P3": "Cautious"}
 
 
 def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
-    cfg = PipelineCfg(results_dir=tmp_results_dir)
+    cfg = cast(_CfgProto, PipelineCfg(results_dir=tmp_results_dir))
     golden_dataset.copy_into(cfg.results_dir)
 
     caplog.set_level(logging.INFO, logger="farkle.analysis.ingest")

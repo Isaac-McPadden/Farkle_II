@@ -1,5 +1,3 @@
-import csv
-import queue
 import pytest
 import yaml
 

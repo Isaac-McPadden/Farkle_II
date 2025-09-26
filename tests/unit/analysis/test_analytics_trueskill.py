@@ -2,8 +2,8 @@ import os
 import time
 from pathlib import Path
 
-from farkle.analysis.analysis_config import PipelineCfg
 from farkle.analysis import trueskill
+from farkle.analysis.analysis_config import PipelineCfg
 
 
 def _setup(tmp_path: Path) -> tuple[PipelineCfg, Path, Path]:

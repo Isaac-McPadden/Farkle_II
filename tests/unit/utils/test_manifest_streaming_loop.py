@@ -1,17 +1,17 @@
 import os
 import threading
-
 from pathlib import Path
+
 import pytest
 
 pa = pytest.importorskip("pyarrow")
 
+from farkle.utils import streaming_loop
 from farkle.utils.manifest import (
     append_manifest_line,
     append_manifest_many,
     iter_manifest,
 )
-from farkle.utils import streaming_loop
 
 
 def test_append_manifest_helpers(tmp_path):
@@ -134,7 +134,7 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
     }
     assert len(captured_batches) == 1
     assert len(captured_batches[0]) == len(tables)
-    for expected, actual in zip(tables, captured_batches[0]):
+    for expected, actual in zip(tables, captured_batches[0], strict=False):
         assert actual is expected
 
     assert manifest_calls and manifest_calls[0][0] == str(manifest_path)
@@ -266,7 +266,7 @@ def test_writer_thread_forwards_manifest(monkeypatch):
     assert captured["compression"] == "snappy"
     assert captured["manifest_extra"] == manifest_extra
     assert len(captured["batches"]) == len(tables)
-    for expected, actual in zip(tables, captured["batches"]):
+    for expected, actual in zip(tables, captured["batches"], strict=False):
         assert actual is expected
 
 
@@ -287,7 +287,7 @@ def test_producer_thread_pushes_all_tables():
     streaming_loop.producer_thread(fake_push, mk_batches)
 
     assert pushed == tables
-    for expected, actual in zip(tables, pushed):
+    for expected, actual in zip(tables, pushed, strict=False):
         assert actual is expected
 
 

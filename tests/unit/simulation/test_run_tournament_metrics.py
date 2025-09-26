@@ -1,3 +1,4 @@
+# ruff: noqa: ARG005 ARG003 ARG002 ARG001 E402
 """
 Tests for the metric-collecting helpers in run_tournament.py.
 
@@ -14,7 +15,7 @@ import types
 from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import NormalDist
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 
 import pytest
 
@@ -48,6 +49,7 @@ sys.modules.setdefault("scipy.stats", scipy_stats_stub)  # type: ignore
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
 import farkle.simulation.run_tournament as rt
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils import manifest

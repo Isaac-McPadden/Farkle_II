@@ -100,10 +100,7 @@ def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
 
     ratings_2 = rt._load_ratings_parquet(data_root / "ratings_2.parquet")
     ratings3_path = data_root / "ratings_3.parquet"
-    if ratings3_path.exists():
-        ratings_3 = rt._load_ratings_parquet(ratings3_path)
-    else:
-        ratings_3 = {}
+    ratings_3 = rt._load_ratings_parquet(ratings3_path) if ratings3_path.exists() else {}
     pooled = rt._load_ratings_parquet(data_root / "ratings_pooled.parquet")
 
     assert set(ratings_2)

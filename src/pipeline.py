@@ -1,3 +1,4 @@
+# src/pipeline.py
 """Front door helpers for running the analytics pipeline.
 
 This module used to only re-export :func:`farkle.pipeline.main` for

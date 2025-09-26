@@ -6,8 +6,8 @@ import pytest
 pytest.importorskip("matplotlib")
 pytest.importorskip("sklearn")
 
-from farkle.analysis.analysis_config import PipelineCfg
 from farkle.analysis import hgb_feat
+from farkle.analysis.analysis_config import PipelineCfg
 
 
 def _setup_cfg(tmp_path: Path) -> tuple[PipelineCfg, Path]:

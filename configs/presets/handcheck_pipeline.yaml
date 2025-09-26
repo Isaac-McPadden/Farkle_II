@@ -1,0 +1,36 @@
+﻿# Handcheck preset using the dummy 4/5/6-player datasets (<100k games each)
+
+# Experiment
+experiment.name: handcheck_small_tables
+experiment.seed: 0
+
+# IO
+io.results_dir: data/results_dummy
+io.analysis_subdir: analysis_handcheck
+
+# Ingest
+ingest.row_group_size: 16384
+ingest.n_jobs: 1
+
+# Combine
+combine.max_players: 6
+
+# Metrics
+metrics.seat_range: [4, 6]
+
+# TrueSkill
+trueskill.beta: 4.166666666666667
+trueskill.tau: 0.1
+trueskill.draw_probability: 0.0
+
+# Head2Head
+head2head.n_jobs: 1
+head2head.games_per_pair: 500
+head2head.fdr_q: 0.02
+
+# Gradient Boosting
+hgb.max_depth: 4
+hgb.n_estimators: 120
+
+# Schema
+schema_version: 1

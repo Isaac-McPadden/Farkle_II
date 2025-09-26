@@ -71,3 +71,12 @@ Subcommands:
 Use `--help` on any subcommand for additional details, for example
 `farkle analyze metrics --help`.
 
+#### Handchecking the Pipeline
+
+Use the preset `configs/presets/handcheck_pipeline.yaml` when you want a quick end-to-end run over the bundled dummy data. The sample results at `data/results_dummy` only contain `4_players`, `5_players`, and `6_players` blocks, each with roughly two thousand games (<100k as a safety margin).
+
+```bash
+farkle --config configs/presets/handcheck_pipeline.yaml analyze pipeline
+```
+
+The pipeline writes fresh artifacts to `data/results_dummy/analysis_handcheck`. Per-seat manifests such as `analysis_handcheck/data/4p/manifest_4p.json` record the ingested `row_count`, while the combined parquet lives at `analysis_handcheck/data/all_n_players_combined/all_ingested_rows.parquet`. Review those files (or open them in a Parquet viewer) to handcheck the totals after the run.

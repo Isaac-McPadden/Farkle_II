@@ -30,10 +30,7 @@ def run_streaming_shard(
     rows = getattr(w, "rows_written", None)
     # On success, append a manifest line
     manifest_dir = os.path.dirname(manifest_path)
-    if manifest_dir:
-        manifest_dir = os.path.abspath(manifest_dir)
-    else:
-        manifest_dir = os.path.abspath(os.curdir)
+    manifest_dir = os.path.abspath(manifest_dir) if manifest_dir else os.path.abspath(os.curdir)
 
     try:
         rel_path = os.path.relpath(out_path)

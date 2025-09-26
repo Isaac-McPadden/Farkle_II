@@ -8,6 +8,7 @@ from typing import Callable
 
 import pandas as pd
 import pytest
+
 pytest.importorskip("pyarrow")
 
 import farkle.simulation.runner as runner

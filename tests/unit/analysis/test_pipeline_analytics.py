@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
 import io
 from contextlib import redirect_stdout
+from pathlib import Path
 
 import pandas as pd
 

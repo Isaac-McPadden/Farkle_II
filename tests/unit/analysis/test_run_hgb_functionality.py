@@ -1,4 +1,3 @@
-import logging
 import os
 from pathlib import Path
 
@@ -9,7 +8,7 @@ import pytest
 pytest.importorskip("matplotlib")
 pytest.importorskip("sklearn")
 
-from farkle.analysis import run_hgb, run_trueskill
+from farkle.analysis import run_hgb
 
 
 def _setup_data(tmp_path: Path) -> Path:

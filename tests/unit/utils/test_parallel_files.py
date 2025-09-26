@@ -12,10 +12,10 @@ import farkle.utils.parallel as parallel
 
 
 @pytest.fixture
-def writer_queue() -> mp.Queue:
+def writer_queue() -> mp.Queue: # type: ignore
     queue: mp.Queue = mp.Queue()
     try:
-        yield queue
+        yield queue # type: ignore
     finally:
         queue.close()
         queue.join_thread()

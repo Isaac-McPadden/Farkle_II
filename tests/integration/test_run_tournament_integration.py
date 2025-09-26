@@ -28,9 +28,8 @@ from typing import List, Sequence  # noqa: F401
 import pytest
 import yaml
 
-
 try:  # pragma: no cover - exercised when optional dependency missing
-    import pyarrow  # type: ignore[unused-import]
+    import pyarrow  # type: ignore[unused-import]  # noqa: F401
 except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
     class _StubTable:
         def __init__(self, rows: Sequence[dict[str, object]] | None = None, schema=None):

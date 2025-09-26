@@ -535,7 +535,7 @@ def test_run_trueskill_rebuilds_outdated_pooled(monkeypatch: pytest.MonkeyPatch,
 
     def fake_build_tiers(means: dict[str, float], stdevs: dict[str, float]) -> dict[str, int]:
         tier_calls.append((means, stdevs))
-        return {name: 1 for name in means}
+        return dict.fromkeys(means, 1)
 
     pooled_path = analysis_root / "ratings_pooled.parquet"
     pooled_path.touch()

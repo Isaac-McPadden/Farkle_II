@@ -29,13 +29,12 @@ def test_csv_sink_context_manager_writes_and_exception_cleanup(tmp_path):
     assert not any(ctx_dir.glob("._tmp_*")), "temporary files should be cleaned"
 
     failing_path = ctx_dir / "failing.csv"
-    with pytest.raises(RuntimeError):
-        with CsvSink(failing_path, header=["value"]) as sink:
-            def boom(row):
-                raise RuntimeError("boom")
+    with pytest.raises(RuntimeError), CsvSink(failing_path, header=["value"]) as sink:
+        def boom(row):
+            raise RuntimeError("boom")
 
-            sink._writer.writerow = boom  # type: ignore[assignment]
-            sink.write_row({"value": 10})
+        sink._writer.writerow = boom  # type: ignore[assignment]
+        sink.write_row({"value": 10})
 
     assert not failing_path.exists()
     assert not any(ctx_dir.glob("._tmp_*")), "atomic tmp should be removed on failure"

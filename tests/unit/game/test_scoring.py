@@ -12,7 +12,7 @@ pytest.importorskip("hypothesis")
 pytest.importorskip("numba")
 pytest.importorskip("numpy")
 
-from hypothesis import given, settings, HealthCheck
+from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
 from farkle.game.scoring import (

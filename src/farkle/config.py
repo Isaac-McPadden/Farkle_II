@@ -1,3 +1,4 @@
+# src/farkle/config.py
 from __future__ import annotations
 
 import dataclasses
@@ -6,6 +7,8 @@ from pathlib import Path
 from typing import Any, Mapping, get_args, get_origin, get_type_hints
 
 import yaml
+
+from farkle.utils.yaml_helpers import expand_dotted_keys
 
 
 @dataclass
@@ -73,7 +76,8 @@ def load_app_config(*overlays: Path) -> AppConfig:
             overlay = yaml.safe_load(fh) or {}
         if not isinstance(overlay, Mapping):
             raise TypeError(f"Config file {path} must contain a mapping")
-        data = _deep_merge(data, overlay)
+        expanded = expand_dotted_keys(overlay)
+        data = _deep_merge(data, expanded)
     def build(cls, section: Mapping[str, Any]) -> Any:
         obj = cls()
         type_hints = get_type_hints(cls)

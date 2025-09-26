@@ -9,9 +9,7 @@ from __future__ import annotations
 
 import logging
 import types  # noqa: F401
-from collections import Counter, defaultdict
-from pathlib import Path
-from typing import cast
+from collections import Counter
 
 import numpy as np  # noqa: F401 | Potentially imports something that needs it
 import pytest
@@ -20,7 +18,6 @@ pytest.importorskip("pydantic")
 pytest.importorskip("pyarrow")
 
 import farkle.simulation.run_tournament as rt
-from farkle.cli import main as cli_main
 from farkle.simulation.strategies import ThresholdStrategy
 
 # --------------------------------------------------------------------------- #
@@ -92,9 +89,8 @@ def test_run_chunk_logs_and_propagates(monkeypatch, caplog) -> None:
 
     monkeypatch.setattr(rt, "_play_shuffle", boom, raising=True)
 
-    with caplog.at_level(logging.ERROR, logger=rt.LOGGER.name):
-        with pytest.raises(BoomError):
-            rt._run_chunk([123])
+    with caplog.at_level(logging.ERROR, logger=rt.LOGGER.name), pytest.raises(BoomError):
+        rt._run_chunk([123])
 
     assert any("Shuffle failed" in rec.getMessage() for rec in caplog.records)
     logged = [rec for rec in caplog.records if "Shuffle failed" in rec.getMessage()][0]

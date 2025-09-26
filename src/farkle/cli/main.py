@@ -1,3 +1,4 @@
+# src/farkle/cly/main.py
 """Command line interface for the :mod:`farkle` package."""
 from __future__ import annotations
 
@@ -43,7 +44,31 @@ def load_config(path: str | Path | None, overrides: Sequence[str] | None = None)
         _apply_override(cfg, expr)
     return cfg
 
-
+def normalize_cfg(raw: dict[str, Any], command: str) -> dict[str, Any]:  # noqa: ARG001
+    """Flatten/translate keys so they match what run_tournament / PipelineCfg expect."""
+    # Handle nested sim/io/analysis
+    if "sim" in raw:
+        sim = raw["sim"]
+        if "seed" in sim:
+            raw["global_seed"] = sim.pop("seed")
+        if "n_players" in sim:
+            raw["n_players"] = sim["n_players"]
+        if "num_shuffles" in sim:
+            raw["n_games"] = sim["num_shuffles"] * sim.get("games_per_shuffle", 1)
+        if "row_dir" in sim:
+            raw["row_output_directory"] = sim["row_dir"]
+    if "io" in raw:
+        io = raw["io"]
+        if "results_dir" in io:
+            raw["results_dir"] = io["results_dir"]
+        if "analysis_dir" in io:
+            raw["analysis_subdir"] = io["analysis_dir"]
+    if "analysis" in raw:
+        a = raw["analysis"]
+        for key in ("run_trueskill", "run_head2head", "run_hgb", "n_jobs", "trueskill_beta"):
+            if key in a:
+                raw[key] = a[key]
+    return raw
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
@@ -129,6 +154,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     cfg = load_config(args.config, args.overrides)
+    cfg = normalize_cfg(cfg, args.command)
 
     LOGGER.info(
         "Configuration loaded",

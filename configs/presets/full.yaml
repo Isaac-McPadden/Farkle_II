@@ -1,25 +1,34 @@
-experiment:
-  name: full_2025_09_07
-  seed: 42
-io:
-  results_dir: results/exp_full_2025_09_07
-  analysis_subdir: analysis
-ingest:
-  row_group_size: 262144
-  n_jobs: 3
-combine:
-  max_players: 12
-metrics:
-  seat_range: [1, 12]
-trueskill:
-  beta: 25.0
-  tau: 0.1
-  draw_probability: 0.0
-head2head:
-  n_jobs: 8
-  games_per_pair: 20000
-  fdr_q: 0.02
-hgb:
-  max_depth: 6
-  n_estimators: 300
+﻿# Experiment
+experiment.name: full_2025_09_07
+experiment.seed: 42
+
+# IO
+io.results_dir: data/results_seed_42
+io.analysis_subdir: analysis
+
+# Ingest
+ingest.row_group_size: 262144
+ingest.n_jobs: 3
+
+# Combine
+combine.max_players: 12
+
+# Metrics
+metrics.seat_range: [1, 12]
+
+# TrueSkill
+trueskill.beta: 25.0
+trueskill.tau: 0.1
+trueskill.draw_probability: 0.0
+
+# Head2Head
+head2head.n_jobs: 8
+head2head.games_per_pair: 20000
+head2head.fdr_q: 0.02
+
+# Gradient Boosting
+hgb.max_depth: 6
+hgb.n_estimators: 300
+
+# Schema
 schema_version: 1

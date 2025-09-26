@@ -9,8 +9,6 @@ pytest.importorskip("pydantic")
 pytest.importorskip("pyarrow")
 
 import farkle.cli.main as cli_main
-from farkle.analysis.analysis_config import PipelineCfg
-from farkle.app_config import AppConfig
 
 
 @pytest.fixture(autouse=True)
