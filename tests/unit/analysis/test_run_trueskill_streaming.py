@@ -305,8 +305,7 @@ def test_rate_stream_applies_keeper_filter(tmp_path: Path) -> None:
     )
     path = tmp_path / "stream.parquet"
     pq.write_table(table, path)
-
-    ratings, games = rt._rate_stream(path, 3, ["A", "C"], env, batch_size=1)
+    ratings, games = rt._rate_stream(path, 3, ["A", "C"], env, batch_size=1)   # type: ignore[arg-type]
     assert games == 1
     assert env.rate_calls == [[0, 1]]
     assert set(ratings) == {"A", "C"}

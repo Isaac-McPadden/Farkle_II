@@ -16,6 +16,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import NormalDist
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -138,7 +139,7 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
     monkeypatch.setattr(rt, "getpid", lambda: 42)
 
-    recorded: dict[str, object] = {}
+    recorded: dict[str, Any] = {}
 
     def fake_run_streaming_shard(**kwargs):
         batches = list(kwargs["batch_iter"])
@@ -386,6 +387,6 @@ def test_run_tournament_no_metrics_wins_only_checkpoint(
     chunk_debugs = [extra for msg, extra in debug_logs if msg == "Chunk processed"]
     assert len(chunk_debugs) == 2
     for idx, extra in enumerate(chunk_debugs, start=1):
+        assert extra is not None
         assert extra["chunk_index"] == idx
         assert extra["wins"] == 1
-

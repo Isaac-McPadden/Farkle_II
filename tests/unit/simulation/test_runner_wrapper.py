@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import pickle
 import shutil
 from collections import Counter
@@ -59,7 +60,9 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, tmp_artifacts_with_le
 
     assert calls["collect_metrics"] is True
     assert calls["row_output_directory"] == tmp_path / "out" / "rows"
-    assert Path(calls["row_output_directory"]).is_absolute()
+    check_absolute = calls["row_output_directory"]
+    assert isinstance(check_absolute, (str, os.PathLike))
+    assert Path(check_absolute).is_absolute()
     assert calls["checkpoint_path"] == tmp_path / "out" / "checkpoint.pkl"
     expected_games = runner.TournamentConfig(n_players=2).games_per_shuffle
     assert total_games == expected_games

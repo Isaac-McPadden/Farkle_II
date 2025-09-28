@@ -1,5 +1,6 @@
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pyarrow as pa
@@ -37,7 +38,7 @@ def test_update_batch_counters_accumulates_multiple_strategies_and_seats() -> No
 
 
 def test_write_parquet_delegates_to_atomic(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     def _capture(table: pa.Table, path: Path) -> None:
         captured["table"] = table

@@ -3,7 +3,7 @@ import datetime as _dt
 import json
 import logging
 from pathlib import Path
-from typing import Protocol, cast
+from typing import TYPE_CHECKING, Protocol, cast
 
 import pandas as pd
 import pyarrow.parquet as pq
@@ -27,7 +27,7 @@ pytestmark = pytest.mark.skipif(
     reason="analysis pipeline stabilizers require datetime.UTC (Python 3.11+)",
 )
 
-if HAS_UTC:
+if TYPE_CHECKING or HAS_UTC:
     from farkle.analysis import combine, curate, ingest, metrics
     from farkle.analysis.analysis_config import PipelineCfg
 else:  # pragma: no cover - tests skipped when UTC unavailable
@@ -39,13 +39,14 @@ STRATEGY_MAP = {"P1": "Aggro", "P2": "Balanced", "P3": "Cautious"}
 
 
 def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
-    cfg = cast(_CfgProto, PipelineCfg(results_dir=tmp_results_dir))
-    golden_dataset.copy_into(cfg.results_dir)
+    cfg = PipelineCfg(results_dir=tmp_results_dir)
+    cfg_proto = cast(_CfgProto, cfg)
+    golden_dataset.copy_into(cfg_proto.results_dir)
 
     caplog.set_level(logging.INFO, logger="farkle.analysis.ingest")
     ingest.run(cfg)
 
-    raw_file = cfg.ingested_rows_raw(3)
+    raw_file = cfg_proto.ingested_rows_raw(3)
     assert raw_file.exists()
     table = pq.read_table(raw_file)
     columns = set(table.column_names)
@@ -78,16 +79,17 @@ def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
 
 def test_curate_golden_dataset(tmp_results_dir, caplog, golden_dataset):
     cfg = PipelineCfg(results_dir=tmp_results_dir)
-    golden_dataset.copy_into(cfg.results_dir)
-    raw_path = cfg.ingested_rows_raw(3)
+    cfg_proto = cast(_CfgProto, cfg)
+    golden_dataset.copy_into(cfg_proto.results_dir)
+    raw_path = cfg_proto.ingested_rows_raw(3)
     ingest.run(cfg)
     assert raw_path.exists()
 
     caplog.set_level(logging.INFO, logger="farkle.analysis.curate")
     curate.run(cfg)
 
-    curated = cfg.ingested_rows_curated(3)
-    manifest = cfg.manifest_for(3)
+    curated = cfg_proto.ingested_rows_curated(3)
+    manifest = cfg_proto.manifest_for(3)
     assert curated.exists()
     assert manifest.exists()
     assert not raw_path.exists()
@@ -97,7 +99,7 @@ def test_curate_golden_dataset(tmp_results_dir, caplog, golden_dataset):
     meta = json.loads(manifest.read_text())
     assert meta["row_count"] == len(golden_dataset.dataframe)
     assert meta["schema_hash"]
-    assert meta.get("compression") == cfg.parquet_codec
+    assert meta.get("compression") == cfg_proto.parquet_codec
     assert "created_at" in meta
 
     messages = [rec.message for rec in caplog.records]
@@ -106,7 +108,8 @@ def test_curate_golden_dataset(tmp_results_dir, caplog, golden_dataset):
 
 def test_metrics_golden_dataset(tmp_results_dir, caplog, golden_dataset):
     cfg = PipelineCfg(results_dir=tmp_results_dir)
-    golden_dataset.copy_into(cfg.results_dir)
+    cfg_proto = cast(_CfgProto, cfg)
+    golden_dataset.copy_into(cfg_proto.results_dir)
     ingest.run(cfg)
     curate.run(cfg)
     combine.run(cfg)
@@ -114,10 +117,10 @@ def test_metrics_golden_dataset(tmp_results_dir, caplog, golden_dataset):
     caplog.set_level(logging.INFO, logger="farkle.analysis.metrics")
     metrics.run(cfg)
 
-    metrics_path = cfg.analysis_dir / cfg.metrics_name
-    seat_csv = cfg.analysis_dir / "seat_advantage.csv"
-    seat_parquet = cfg.analysis_dir / "seat_advantage.parquet"
-    stamp_path = cfg.analysis_dir / "metrics.done.json"
+    metrics_path = cfg_proto.analysis_dir / cfg_proto.metrics_name
+    seat_csv = cfg_proto.analysis_dir / "seat_advantage.csv"
+    seat_parquet = cfg_proto.analysis_dir / "seat_advantage.parquet"
+    stamp_path = cfg_proto.analysis_dir / "metrics.done.json"
 
     assert metrics_path.exists()
     assert seat_csv.exists()
@@ -126,7 +129,7 @@ def test_metrics_golden_dataset(tmp_results_dir, caplog, golden_dataset):
 
     metrics_df = pq.read_table(metrics_path).to_pandas()
     stamp = json.loads(stamp_path.read_text())
-    expected_input = str(cfg.curated_parquet)
+    expected_input = str(cfg_proto.curated_parquet)
     assert expected_input in stamp.get("inputs", {})
     for expected_output in (metrics_path, seat_csv, seat_parquet):
         assert str(expected_output) in stamp.get("outputs", {})

@@ -46,10 +46,12 @@ def test_analysis_config_fallback_without_pydantic(monkeypatch, tmp_path):
         if original_pydantic is sentinel:
             sys.modules.pop("pydantic", None)
         else:
+            assert isinstance(original_pydantic, types.ModuleType)
             sys.modules["pydantic"] = original_pydantic
         if original_analysis is sentinel:
             sys.modules.pop("farkle.analysis.analysis_config", None)
         else:
+            assert isinstance(original_analysis, types.ModuleType)
             sys.modules["farkle.analysis.analysis_config"] = original_analysis
             importlib.reload(original_analysis)
 

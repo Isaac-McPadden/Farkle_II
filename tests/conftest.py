@@ -8,6 +8,7 @@ import pickle
 import sys
 import types
 from pathlib import Path
+from typing import Generator
 
 import pandas as pd
 import pytest
@@ -146,7 +147,7 @@ def pytest_configure():
 
 
 @pytest.fixture
-def tmp_results_dir(tmp_path: Path) -> Path:
+def tmp_results_dir(tmp_path: Path) -> Generator[Path, None, None]:
     prev = os.getcwd()
     os.chdir(tmp_path)
     try:

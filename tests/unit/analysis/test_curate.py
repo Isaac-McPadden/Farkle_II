@@ -1,3 +1,4 @@
+# ruff: noqa: ARG005
 import hashlib
 import json
 
@@ -199,9 +200,9 @@ def test_run_legacy_missing_raw(tmp_path):
         curate_run(cfg)
 
 
-def test_write_manifest_includes_config_sha(tmp_path):
+def test_write_manifest_includes_config_sha(tmp_path, monkeypatch):
     cfg = PipelineCfg(results_dir=tmp_path)
-    cfg.config_sha = "abc123"
+    monkeypatch.setattr(cfg, "config_sha", "abc123", raising=False)
     manifest = tmp_path / "manifest.json"
     schema = expected_schema_for(1)
 

@@ -205,7 +205,7 @@ def test_smart_discard_counters_non_negative():
     roll = [1, 5, 3, 5, 2, 5]
     # Force a discard to avoid the dice threshold. The roll has no standalone
     # fives, so the engine should decline to discard any dice.
-    _, _, _, d5, d1 = default_score(
+    _, _, _, *rest = default_score(
         roll,
         turn_score_pre=0,
         smart_five=True,
@@ -214,6 +214,7 @@ def test_smart_discard_counters_non_negative():
         dice_threshold=2,
         return_discards=True,
     )
+    d5, d1 = rest if len(rest) == 2 else (0, 0)
     assert d5 == 0 and d1 == 0
 
     player = FarklePlayer(
@@ -228,7 +229,7 @@ def test_smart_discard_counters_non_negative():
 def test_smart_five_discard_count():
     roll = [1, 2, 3, 5, 5, 6]
     # Discard one of the single fives to stay above the dice threshold
-    _, _, _, d5, d1 = default_score(
+    _, _, _, *rest = default_score(
         roll,
         turn_score_pre=0,
         smart_five=True,
@@ -237,6 +238,7 @@ def test_smart_five_discard_count():
         dice_threshold=3,
         return_discards=True,
     )
+    d5, d1 = rest if len(rest) == 2 else (0, 0)
     assert d5 == 1 and d1 == 0
 
     player = FarklePlayer(

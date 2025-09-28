@@ -1,4 +1,5 @@
 import contextlib
+import os
 from pathlib import Path
 
 import pandas as pd
@@ -70,8 +71,13 @@ def test_cli_smoke(tmp_path: Path, capinfo, monkeypatch: pytest.MonkeyPatch):
     assert captured["n_players"] == 2
     assert captured["num_shuffles"] == 1
     assert captured["global_seed"] == 9
-    assert Path(captured["checkpoint_path"]) == tmp_path / "checkpoint.pkl"
-    assert Path(captured["row_output_directory"]) == tmp_path / "rows"
+    chk = captured["checkpoint_path"]
+    assert isinstance(chk, (str, os.PathLike))
+    assert Path(chk) == tmp_path / "checkpoint.pkl"
+
+    rowdir = captured["row_output_directory"]
+    assert isinstance(rowdir, (str, os.PathLike))
+    assert Path(rowdir) == tmp_path / "rows"
     if capinfo.text:
         assert "CLI arguments parsed" in capinfo.text
 
