@@ -34,14 +34,16 @@ def test_main_dispatches_run(monkeypatch, tmp_path, preserve_root_logger):
 
     monkeypatch.setattr(cli_main, "run_tournament", fake_run_tournament)
 
-    cli_main.main([
-        "--log-level",
-        "DEBUG",
-        "run",
-        "--metrics",
-        "--row-dir",
-        str(tmp_path),
-    ])
+    cli_main.main(
+        [
+            "--log-level",
+            "DEBUG",
+            "run",
+            "--metrics",
+            "--row-dir",
+            str(tmp_path),
+        ]
+    )
 
     assert recorded["collect_metrics"] is True
     assert recorded["row_output_directory"] == tmp_path
@@ -85,7 +87,9 @@ def test_main_dispatches_watch(monkeypatch, preserve_root_logger):
         ("pipeline", ["ingest", "curate", "combine", "metrics"]),
     ],
 )
-def test_main_dispatches_analyze_variants(monkeypatch, subcommand, expected_order, preserve_root_logger):
+def test_main_dispatches_analyze_variants(
+    monkeypatch, subcommand, expected_order, preserve_root_logger
+):
     calls: list[tuple[str, object]] = []
 
     def make_recorder(name: str):

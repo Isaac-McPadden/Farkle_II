@@ -34,12 +34,13 @@ def main(argv: object | None = None) -> int:
 
     from farkle.analysis.pipeline import main as _main
 
-    return _main(argv) # pyright: ignore[reportArgumentType]
+    return _main(argv)  # pyright: ignore[reportArgumentType]
 
 
 # ---------------------------------------------------------------------------
 # Helper utilities for done-file tracking
 # ---------------------------------------------------------------------------
+
 
 def fingerprint(paths: list[Path]) -> list[dict]:
     """Return ``[{path, mtime, sha256}]`` fingerprint for *paths*.
@@ -59,9 +60,7 @@ def fingerprint(paths: list[Path]) -> list[dict]:
     return out
 
 
-def write_done(
-    done_path: Path, inputs: list[Path], outputs: list[Path], tool: str
-) -> None:
+def write_done(done_path: Path, inputs: list[Path], outputs: list[Path], tool: str) -> None:
     """Write a ``.done.json`` stamp for ``tool``."""
 
     stamp = {
@@ -91,6 +90,7 @@ def is_up_to_date(done_path: Path, inputs: list[Path], outputs: list[Path]) -> b
 # ---------------------------------------------------------------------------
 # Individual analytics stages
 # ---------------------------------------------------------------------------
+
 
 def _done_path(out: Path) -> Path:
     return out.with_name(out.name + ".done.json")
@@ -163,11 +163,10 @@ def analyze_hgb(exp_dir: Path) -> None:
 # Orchestrator
 # ---------------------------------------------------------------------------
 
+
 def analyze_all(exp_dir: Path) -> None:
     """Run all analytics passes in order."""
 
     analyze_trueskill(exp_dir)
     analyze_h2h(exp_dir)
     analyze_hgb(exp_dir)
-
-

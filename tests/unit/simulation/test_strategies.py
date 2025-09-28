@@ -322,18 +322,20 @@ def test_sample_favor_score_deterministic():
 
 
 def test_load_farkle_results(tmp_path):
-    counter = Counter({
-        'Strat(300,2)[SD][FOFS][AND][HR]': 5,
-        'Strat(250,3)[--][--FD][OR][--]': 3,
-    })
+    counter = Counter(
+        {
+            "Strat(300,2)[SD][FOFS][AND][HR]": 5,
+            "Strat(250,3)[--][--FD][OR][--]": 3,
+        }
+    )
     pkl = tmp_path / "results.pkl"
     pkl.write_bytes(pickle.dumps(counter))
 
     df = load_farkle_results(pkl)
 
-    row1 = {"strategy": 'Strat(300,2)[SD][FOFS][AND][HR]', "wins": 5}
+    row1 = {"strategy": "Strat(300,2)[SD][FOFS][AND][HR]", "wins": 5}
     row1.update(parse_strategy_for_df(row1["strategy"]))
-    row2 = {"strategy": 'Strat(250,3)[--][--FD][OR][--]', "wins": 3}
+    row2 = {"strategy": "Strat(250,3)[--][--FD][OR][--]", "wins": 3}
     row2.update(parse_strategy_for_df(row2["strategy"]))
     expected = pd.DataFrame([row1, row2])
     expected = expected[df.columns]
@@ -341,19 +343,26 @@ def test_load_farkle_results(tmp_path):
 
 
 def test_load_farkle_results_unordered(tmp_path):
-    counter = Counter({
-        'Strat(300,2)[SD][FOFS][AND][HR]': 5,
-    })
+    counter = Counter(
+        {
+            "Strat(300,2)[SD][FOFS][AND][HR]": 5,
+        }
+    )
     pkl = tmp_path / "results.pkl"
     pkl.write_bytes(pickle.dumps(counter))
 
     df = load_farkle_results(pkl, ordered=False)
     assert df.columns.tolist() == [
-        "strategy", "wins",
-        "score_threshold", "dice_threshold",
-        "smart_five", "smart_one",
-        "consider_score", "consider_dice", "require_both",
-        "auto_hot_dice", "run_up_score", "favor_dice_or_score",
+        "strategy",
+        "wins",
+        "score_threshold",
+        "dice_threshold",
+        "smart_five",
+        "smart_one",
+        "consider_score",
+        "consider_dice",
+        "require_both",
+        "auto_hot_dice",
+        "run_up_score",
+        "favor_dice_or_score",
     ]
-
-

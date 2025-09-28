@@ -11,7 +11,9 @@ import pytest
 import farkle.analysis.run_trueskill as rt
 
 
-def test_run_trueskill_pooling_and_short_circuit(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_trueskill_pooling_and_short_circuit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     data_root = tmp_path / "results"
     block2 = data_root / "2_players"
     block3 = data_root / "3_players"
@@ -142,7 +144,9 @@ def test_run_trueskill_pooling_and_short_circuit(tmp_path: Path, monkeypatch: py
     assert pooled_path.stat().st_mtime == before
 
 
-def test_run_trueskill_skips_zero_game_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_trueskill_skips_zero_game_block(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     data_root = tmp_path / "results"
     block2 = data_root / "2_players"
     block3 = data_root / "3_players"
@@ -173,7 +177,9 @@ def test_run_trueskill_skips_zero_game_block(tmp_path: Path, monkeypatch: pytest
     ) -> tuple[str, int]:
         player_count = Path(block_dir).name.split("_")[0]
         name, stats, games = per_block[player_count]
-        rt._save_ratings_parquet(Path(root_dir) / f"ratings_{player_count}{suffix}.parquet", {name: stats})
+        rt._save_ratings_parquet(
+            Path(root_dir) / f"ratings_{player_count}{suffix}.parquet", {name: stats}
+        )
         return player_count, games
 
     monkeypatch.setattr(rt, "write_parquet_atomic", immediate_write)

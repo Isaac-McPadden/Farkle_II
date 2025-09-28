@@ -129,9 +129,7 @@ def _init_worker(
 # ---------------------------------------------------------------------------
 
 
-def _play_one_shuffle(
-    seed: int, *, collect_rows: bool = False
-) -> Tuple[
+def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
     Counter[str],
     Dict[str, Dict[str, float]],
     Dict[str, Dict[str, float]],
@@ -159,7 +157,7 @@ def _play_one_shuffle(
         row = _play_game(int(gseed), [state.strats[i] for i in idxs])
         winner = row.get("winner_seat") or row.get("winner")
         strat_repr = row[f"{winner}_strategy"]
-        metrics = _extract_winner_metrics(row, winner)   # pyright: ignore[reportArgumentType]
+        metrics = _extract_winner_metrics(row, winner)  # pyright: ignore[reportArgumentType]
         wins[strat_repr] += 1
         for label, value in zip(METRIC_LABELS, metrics, strict=True):
             sums[label][strat_repr] += value
@@ -578,12 +576,16 @@ def run_tournament(
                 _save_checkpoint(
                     ckpt_path,
                     win_totals,
-                    None
-                    if metric_chunk_directory is not None
-                    else (metric_sums if collect_metrics or collect_rows else None),
-                    None
-                    if metric_chunk_directory is not None
-                    else (metric_sq_sums if collect_metrics or collect_rows else None),
+                    (
+                        None
+                        if metric_chunk_directory is not None
+                        else (metric_sums if collect_metrics or collect_rows else None)
+                    ),
+                    (
+                        None
+                        if metric_chunk_directory is not None
+                        else (metric_sq_sums if collect_metrics or collect_rows else None)
+                    ),
                 )
                 LOGGER.info(
                     "Checkpoint written",
@@ -665,4 +667,3 @@ def run_tournament(
             "checkpoint_path": str(ckpt_path),
         },
     )
-

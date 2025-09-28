@@ -24,9 +24,7 @@ def _write_table(path: Path, schema: pa.Schema, rows: list[dict]) -> None:
     pq.write_table(table, path)
 
 
-def _write_manifest(
-    data_dir: Path, n_players: int, payload: dict[str, object] | str
-) -> Path:
+def _write_manifest(data_dir: Path, n_players: int, payload: dict[str, object] | str) -> Path:
     manifest = data_dir / f"{n_players}p" / f"manifest_{n_players}p.json"
     manifest.parent.mkdir(parents=True, exist_ok=True)
     if isinstance(payload, str):

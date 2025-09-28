@@ -103,6 +103,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
                 if hasattr(cls, name):
                     default = getattr(cls, name)
                     if isinstance(default, _FallbackBaseModel):
+
                         def _factory(template=default):
                             return template.__class__(**template.model_dump())
 
@@ -136,9 +137,10 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
     _RuntimeBaseModel = _FallbackDataclassBase
 
 
-class BaseModel(_RuntimeBaseModel): # type: ignore
-        """Fallback compatible with pydantic.BaseModel API used here."""
-        pass
+class BaseModel(_RuntimeBaseModel):  # type: ignore
+    """Fallback compatible with pydantic.BaseModel API used here."""
+
+    pass
 
 
 @dataclass
@@ -153,7 +155,9 @@ class PipelineCfg:
     # 2. ingest
     ingest_cols: tuple[str, ...] = field(
         default_factory=lambda: (
-            "winner", "n_rounds", "winning_score",  # base inputs we need
+            "winner",
+            "n_rounds",
+            "winning_score",  # base inputs we need
             *(
                 f"P{i}_{suffix}"
                 for i in range(1, 13)  # max seats supported, gets overwritten when used by ingest
@@ -163,7 +167,7 @@ class PipelineCfg:
     )
     parquet_codec: str = "zstd"
     row_group_size: int = 64_000  # max_shard_mb removed (unused)
-    batch_rows: int = 100_000     # default Arrow batch size for streaming readers
+    batch_rows: int = 100_000  # default Arrow batch size for streaming readers
     # Ingest concurrency (1 -> serial, >1 -> process pool)
     n_jobs_ingest: int = 1
 
@@ -238,14 +242,14 @@ class PipelineCfg:
         combined = self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
         # Prefer combined superset if present; fallback to legacy path
         return combined if combined.exists() or not legacy.exists() else legacy
-      
+
     def to_json(self) -> str:
         return json.dumps(self, default=lambda o: str(o) if isinstance(o, Path) else o, indent=2)
 
     # Convenience: return kwargs ready for setup_logging()
     def logging_params(self) -> dict[str, object]:
         return {"level": self.log_level, "log_file": self.log_file}
-    
+
     def wanted_ingest_cols(self, n: int) -> list[str]:
         base = ["winner", "n_rounds", "winning_score"]
         seat = [f"P{i}_{sfx}" for i in range(1, n + 1) for sfx in _SEAT_TEMPLATE]
@@ -431,4 +435,3 @@ def load_config(path: Path) -> tuple[Config, str]:
     sha = hashlib.sha256(dumped).hexdigest()[:12]
     cfg.config_sha = sha
     return cfg, sha
-

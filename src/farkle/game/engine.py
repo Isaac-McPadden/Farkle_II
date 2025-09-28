@@ -234,9 +234,7 @@ class FarklePlayer:
 
         while dice > 0:
             if rolls_this_turn > ROLL_LIMIT:
-                raise RuntimeError(
-                    f"Turn exceeded {ROLL_LIMIT} rolls - aborting."
-                )
+                raise RuntimeError(f"Turn exceeded {ROLL_LIMIT} rolls - aborting.")
             roll = self._roll(dice)
             rolls_this_turn += 1
             pts, dice, bust = self._score_roll(roll, turn_score)
@@ -470,36 +468,35 @@ class FarkleGame:
         winner = sorted_players[0]
         runner = sorted_players[1] if len(sorted_players) > 1 else None
         ranks = {player.name: rk for rk, player in enumerate(sorted_players, start=1)}
-        
+
         players_block: Dict[str, PlayerStats] = {}
         for player in sorted_players:
             players_block[player.name] = PlayerStats(
-                score = player.score,
-                farkles = player.n_farkles,
-                rolls = player.n_rolls,
-                highest_turn = player.highest_turn,
-                strategy = str(player.strategy),
-                rank = ranks[player.name],
-                loss_margin = winner.score - player.score,
-                smart_five_uses = player.smart_five_uses,
-                n_smart_five_dice = player.n_smart_five_dice,
-                smart_one_uses = player.smart_one_uses,
-                n_smart_one_dice = player.n_smart_one_dice,
-                hot_dice = player.n_hot_dice,
+                score=player.score,
+                farkles=player.n_farkles,
+                rolls=player.n_rolls,
+                highest_turn=player.highest_turn,
+                strategy=str(player.strategy),
+                rank=ranks[player.name],
+                loss_margin=winner.score - player.score,
+                smart_five_uses=player.smart_five_uses,
+                n_smart_five_dice=player.n_smart_five_dice,
+                smart_one_uses=player.smart_one_uses,
+                n_smart_one_dice=player.n_smart_one_dice,
+                hot_dice=player.n_hot_dice,
             )
 
         game_block = GameStats(
-            n_players = len(self.players),
-            table_seed = self.table_seed,
-            n_rounds = rounds,
-            total_rolls = sum(player.n_rolls for player in self.players),
-            total_farkles = sum(player.n_farkles for player in self.players),
-            margin = winner.score - (runner.score if runner else 0),
+            n_players=len(self.players),
+            table_seed=self.table_seed,
+            n_rounds=rounds,
+            total_rolls=sum(player.n_rolls for player in self.players),
+            total_farkles=sum(player.n_farkles for player in self.players),
+            margin=winner.score - (runner.score if runner else 0),
         )
-        
+
         return GameMetrics(players_block, game_block)
 
-      
     def _run_final_round(self, final_players: Sequence[FarklePlayer], score_to_beat: int) -> int:
         """Give each remaining player one last turn.
 

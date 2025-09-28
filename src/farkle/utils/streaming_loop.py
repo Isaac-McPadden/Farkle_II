@@ -23,8 +23,7 @@ def run_streaming_shard(
 ):
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with ParquetShardWriter(
-        out_path=out_path, schema=schema,
-        compression=compression, row_group_size=row_group_size
+        out_path=out_path, schema=schema, compression=compression, row_group_size=row_group_size
     ) as w:
         w.write_batches(batch_iter)
     rows = getattr(w, "rows_written", None)
@@ -49,12 +48,14 @@ def run_streaming_shard(
         },
     )
 
+
 def producer_thread(
     push: Callable[[pa.Table], None],
     mk_batches: Callable[[], Iterable[pa.Table]],
 ):
     for tbl in mk_batches():
         push(tbl)
+
 
 def writer_thread(
     pop: Callable[[], pa.Table],
@@ -83,9 +84,16 @@ def writer_thread(
         manifest_extra=manifest_extra,
     )
 
+
 class BoundedQueue:
     def __init__(self, maxsize: int):
         self.q = queue.Queue(maxsize=maxsize)
-    def push(self, tbl: pa.Table): self.q.put(tbl)
-    def pop(self): return self.q.get()
-    def close(self): self.q.put(None)
+
+    def push(self, tbl: pa.Table):
+        self.q.put(tbl)
+
+    def pop(self):
+        return self.q.get()
+
+    def close(self):
+        self.q.put(None)

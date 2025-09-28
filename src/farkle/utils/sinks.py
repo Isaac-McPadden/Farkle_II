@@ -1,4 +1,5 @@
 """Output sinks and helpers for simulation/analysis results."""
+
 from __future__ import annotations
 
 import csv
@@ -14,11 +15,13 @@ from .writer import atomic_path
 # CSV sink (stream-friendly)
 # ------------------------
 
+
 class CsvSink:
     """Append dictionaries to a CSV file.
 
     Creates parent dirs. Use as a context manager or call open()/write_row[s]()/close().
     """
+
     def __init__(self, path: str | Path, header: Sequence[str], mode: str = "w"):
         self.path = Path(path)
         self.header = list(header)
@@ -44,7 +47,7 @@ class CsvSink:
             ctx = atomic_path(str(self.path))
         tmp_path = ctx.__enter__()
         try:
-            self._file = open(tmp_path, self.mode, newline="", encoding="utf-8")  #noqa:SIM115
+            self._file = open(tmp_path, self.mode, newline="", encoding="utf-8")  # noqa:SIM115
         except Exception:
             ctx.__exit__(*sys.exc_info())
             raise
@@ -78,14 +81,18 @@ class CsvSink:
 # Simple helpers for aggregates
 # ------------------------
 
+
 def write_counter_csv(counter: Counter[str], path: Path) -> None:
     """Write a Counter[str] to CSV as columns ``strategy,wins``."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as tmp_path, \
-        Path(tmp_path).open("w", newline="", encoding="utf-8") as fh:
-            w = csv.writer(fh)
-            w.writerow(["strategy", "wins"])
-            for key, cnt in counter.items():
-                w.writerow([key, cnt])
+    with (
+        atomic_path(str(path)) as tmp_path,
+        Path(tmp_path).open("w", newline="", encoding="utf-8") as fh,
+    ):
+        w = csv.writer(fh)
+        w.writerow(["strategy", "wins"])
+        for key, cnt in counter.items():
+            w.writerow([key, cnt])
+
 
 __all__ = ["CsvSink", "write_counter_csv"]

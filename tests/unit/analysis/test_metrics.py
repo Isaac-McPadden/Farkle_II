@@ -46,10 +46,12 @@ def test_write_parquet_delegates_to_atomic(monkeypatch: pytest.MonkeyPatch, tmp_
 
     monkeypatch.setattr(metrics, "write_parquet_atomic", _capture)
 
-    schema = pa.schema([
-        ("strategy", pa.string()),
-        ("wins", pa.int64()),
-    ])
+    schema = pa.schema(
+        [
+            ("strategy", pa.string()),
+            ("wins", pa.int64()),
+        ]
+    )
     rows = [
         {"strategy": "alpha", "wins": 2},
         {"strategy": "beta", "wins": 1},

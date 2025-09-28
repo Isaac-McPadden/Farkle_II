@@ -13,10 +13,12 @@ def test_csv_sink_context_manager_writes_and_exception_cleanup(tmp_path):
 
     with CsvSink(data_path, header=["step", "value"]) as sink:
         sink.write_row({"step": 1, "value": 2})
-        sink.write_rows([
-            {"step": 2, "value": 3},
-            {"step": 3, "value": 5},
-        ])
+        sink.write_rows(
+            [
+                {"step": 2, "value": 3},
+                {"step": 3, "value": 5},
+            ]
+        )
 
     assert data_path.exists()
     lines = data_path.read_text(encoding="utf-8").splitlines()
@@ -30,6 +32,7 @@ def test_csv_sink_context_manager_writes_and_exception_cleanup(tmp_path):
 
     failing_path = ctx_dir / "failing.csv"
     with pytest.raises(RuntimeError), CsvSink(failing_path, header=["value"]) as sink:
+
         def boom(row):
             raise RuntimeError("boom")
 
@@ -47,10 +50,12 @@ def test_csv_sink_manual_open_close_and_cleanup(tmp_path):
     sink = CsvSink(manual_path, header=["id", "score"])
     sink.open()
     sink.write_row({"id": "A", "score": 10})
-    sink.write_rows([
-        {"id": "B", "score": 12},
-        {"id": "C", "score": 14},
-    ])
+    sink.write_rows(
+        [
+            {"id": "B", "score": 12},
+            {"id": "C", "score": 14},
+        ]
+    )
     sink.close()
 
     assert manual_path.exists()
@@ -90,10 +95,12 @@ def test_csv_sink_append_mode(tmp_path):
         sink.write_row({"name": "first"})
 
     with CsvSink(append_path, header=["name"], mode="a") as sink:
-        sink.write_rows([
-            {"name": "second"},
-            {"name": "third"},
-        ])
+        sink.write_rows(
+            [
+                {"name": "second"},
+                {"name": "third"},
+            ]
+        )
 
     lines = append_path.read_text(encoding="utf-8").splitlines()
     assert lines == [

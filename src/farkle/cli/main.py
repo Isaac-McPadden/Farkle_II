@@ -21,6 +21,7 @@ LOGGER = logging.getLogger(__name__)
 # Configuration helpers
 # ---------------------------------------------------------------------------
 
+
 def _apply_override(cfg: dict[str, Any], expr: str) -> None:
     """Apply a ``key=value`` override to *cfg* (nested keys via dots)."""
     key, value = expr.split("=", 1)
@@ -43,6 +44,7 @@ def load_config(path: str | Path | None, overrides: Sequence[str] | None = None)
     for expr in overrides or []:
         _apply_override(cfg, expr)
     return cfg
+
 
 def normalize_cfg(raw: dict[str, Any], command: str) -> dict[str, Any]:  # noqa: ARG001
     """Flatten/translate keys so they match what run_tournament / PipelineCfg expect."""
@@ -69,9 +71,12 @@ def normalize_cfg(raw: dict[str, Any], command: str) -> dict[str, Any]:  # noqa:
             if key in a:
                 raw[key] = a[key]
     return raw
+
+
 # ---------------------------------------------------------------------------
 # Argument parser
 # ---------------------------------------------------------------------------
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="farkle")
@@ -128,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
 # Entry point
 # ---------------------------------------------------------------------------
 
+
 def _parse_level(level: str | int) -> int:
     if isinstance(level, str):
         return getattr(logging, level.upper(), logging.INFO)
@@ -171,9 +177,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         row_dir = args.row_dir
         if row_dir is not None:
             cfg["row_output_directory"] = row_dir
-        elif "row_output_directory" in cfg and isinstance(
-            cfg["row_output_directory"], str
-        ):
+        elif "row_output_directory" in cfg and isinstance(cfg["row_output_directory"], str):
             cfg["row_output_directory"] = Path(cfg["row_output_directory"])
         LOGGER.info(
             "Dispatching run_tournament",

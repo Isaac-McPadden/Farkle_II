@@ -29,6 +29,7 @@ from farkle.game.scoring_lookup import build_score_lookup_table, evaluate, score
 # Tiny helpers – tuple world
 # ────────────────────────────────────────────────────────────────────────────
 
+
 def faces_to_counts_tuple(faces: List[int]) -> Tuple[int, int, int, int, int, int]:
     """Convert a raw dice list to the 6-tuple (ones … sixes)."""
     counts_tup = tuple(faces.count(face) for face in range(1, 7))
@@ -50,9 +51,11 @@ def counts_to_list(counts: Tuple[int, int, int, int, int, int]) -> List[int]:
         out.extend([face] * n)
     return out
 
+
 # ────────────────────────────────────────────────────────────────────────────
 # CSV loader for golden test cases
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def _make_csv_loader(filename: str):
     repo_root = Path(__file__).resolve().parents[2]  # one above 'tests/'
@@ -78,8 +81,10 @@ def load_score_cases():
         except Exception as exc:  # pragma: no cover
             raise ValueError(f"Row {idx}: bad Dice_Roll {row['Dice_Roll']!r}") from exc
 
-        vals = [int(row[f]) for f in
-                ("Score", "Used_Dice", "Reroll_Dice", "Single_Fives", "Single_Ones")]
+        vals = [
+            int(row[f])
+            for f in ("Score", "Used_Dice", "Reroll_Dice", "Single_Fives", "Single_Ones")
+        ]
         param_id = f"row{idx:03d}:{roll}"
         cases.append(pytest.param(roll, *vals, id=param_id))
     return cases
@@ -89,36 +94,37 @@ def load_score_cases():
 # Convenience wrapper for decide_smart_discards (same as before)
 # ────────────────────────────────────────────────────────────────────────────
 
+
 def _call(
     roll,
     *,
-    turn_pre = 0,
-    score_thr = 300,
-    dice_thr = 2,
-    smart_five = True,
-    smart_one = False,
-    consider_score = True,
-    consider_dice = True,
-    require_both = False,
-    favor_dice_or_score = True,
+    turn_pre=0,
+    score_thr=300,
+    dice_thr=2,
+    smart_five=True,
+    smart_one=False,
+    consider_score=True,
+    consider_dice=True,
+    require_both=False,
+    favor_dice_or_score=True,
 ):
     raw_s, raw_u, counts, sf, so = score_roll_cached(roll)
     return decide_smart_discards(
-        counts = counts,
-        single_fives = sf,
-        single_ones = so,
-        raw_score = raw_s,
-        raw_used = raw_u,
-        dice_roll_len = len(roll),
-        turn_score_pre = turn_pre,
-        score_threshold = score_thr,
-        dice_threshold = dice_thr,
-        smart_five = smart_five,
-        smart_one = smart_one,
-        consider_score = consider_score,
-        consider_dice = consider_dice,
-        require_both = require_both,
-        favor_dice_or_score = favor_dice_or_score,
+        counts=counts,
+        single_fives=sf,
+        single_ones=so,
+        raw_score=raw_s,
+        raw_used=raw_u,
+        dice_roll_len=len(roll),
+        turn_score_pre=turn_pre,
+        score_threshold=score_thr,
+        dice_threshold=dice_thr,
+        smart_five=smart_five,
+        smart_one=smart_one,
+        consider_score=consider_score,
+        consider_dice=consider_dice,
+        require_both=require_both,
+        favor_dice_or_score=favor_dice_or_score,
     )
 
 
@@ -126,12 +132,13 @@ def _call(
 # 1) early-exit guards
 # ────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.parametrize(
     "kw, expected",
     [
         ({"smart_five": False, "roll": [5, 2, 3, 4, 6]}, (0, 0)),
-        ({"roll": [2, 2, 2, 3, 3, 3]}, (0, 0)), # hot dice
-        ({"roll": [2, 2, 2, 3, 4, 6]}, (0, 0)), # no single 1/5
+        ({"roll": [2, 2, 2, 3, 3, 3]}, (0, 0)),  # hot dice
+        ({"roll": [2, 2, 2, 3, 4, 6]}, (0, 0)),  # no single 1/5
     ],
 )
 def test_early_exits(kw, expected):
@@ -141,6 +148,7 @@ def test_early_exits(kw, expected):
 # ────────────────────────────────────────────────────────────────────────────
 # 2) require_both logic branch
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def test_require_both_logic():
     roll = [5, 5, 2, 3, 4]
@@ -152,6 +160,7 @@ def test_require_both_logic():
 # ────────────────────────────────────────────────────────────────────────────
 # 3) favor-score vs favor-dice
 # ────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize(
     "favor_dice_or_score, expected",
@@ -175,7 +184,11 @@ def test_favor_score_vs_dice(favor_dice_or_score, expected):
 def test_score_roll_cached(roll, exp_score, exp_used, exp_reroll, exp_sfives, exp_sones):
     score, used, _counts, sf, so = score_roll_cached(roll)
     assert (score, used, sf, so, len(roll) - used) == (
-        exp_score, exp_used, exp_sfives, exp_sones, exp_reroll
+        exp_score,
+        exp_used,
+        exp_sfives,
+        exp_sones,
+        exp_reroll,
     )
 
 
@@ -183,17 +196,16 @@ def test_score_roll_cached(roll, exp_score, exp_used, exp_reroll, exp_sfives, ex
 # 5) generate_sequences  &  score_lister  (tuple API)
 # ────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.parametrize(
     "counts_dict, smart_one, expected",
     [
-        ({2: 3, 5: 2}, False,
-         [[2, 2, 2, 5, 5], [2, 2, 2, 5], [2, 2, 2]]),
-        ({1: 2, 2: 1, 3: 1, 5: 2}, True,
-         [[1, 1, 2, 3, 5, 5],
-          [1, 1, 2, 3, 5],
-          [1, 1, 2, 3],
-          [1, 2, 3],
-          [2, 3]]),
+        ({2: 3, 5: 2}, False, [[2, 2, 2, 5, 5], [2, 2, 2, 5], [2, 2, 2]]),
+        (
+            {1: 2, 2: 1, 3: 1, 5: 2},
+            True,
+            [[1, 1, 2, 3, 5, 5], [1, 1, 2, 3, 5], [1, 1, 2, 3], [1, 2, 3], [2, 3]],
+        ),
     ],
 )
 def test_generate_sequences(counts_dict, smart_one, expected):
@@ -220,6 +232,7 @@ def test_score_lister_filters_busts():
 # 6) apply_discards
 # ────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.parametrize(
     "raw_score, raw_used, discard5, discard1, dice_len, expected",
     [
@@ -237,14 +250,15 @@ def test_apply_discards(raw_score, raw_used, discard5, discard1, dice_len, expec
 # 7) default_score invariants (property-based)
 # ────────────────────────────────────────────────────────────────────────────
 
+
 @settings(suppress_health_check=[HealthCheck.too_slow], deadline=None, max_examples=50)
 @given(st.lists(st.integers(min_value=1, max_value=6), min_size=1, max_size=6))
 def test_default_score_invariants(roll):
-    score, used, reroll = default_score( # type: ignore default score update is backwards compatible
-        dice_roll = roll,
-        turn_score_pre = 0,
-        smart_five = False,
-        smart_one = False,
+    score, used, reroll = default_score(  # type: ignore default score update is backwards compatible
+        dice_roll=roll,
+        turn_score_pre=0,
+        smart_five=False,
+        smart_one=False,
     )
     assert used + reroll == len(roll)
     if score == 0:
@@ -256,21 +270,20 @@ def test_default_score_invariants(roll):
 # ────────────────────────────────────────────────────────────────────────────
 
 table = build_score_lookup_table()
-_HOT_DICE_ROLLS = [
-    counts_to_list(k) for k, info in table.items() if info[1] == 6
-]
+_HOT_DICE_ROLLS = [counts_to_list(k) for k, info in table.items() if info[1] == 6]
 _HOT_ROLL_STRAT = st.sampled_from(_HOT_DICE_ROLLS)
 
 
 @given(roll=_HOT_ROLL_STRAT)
 def test_hot_dice_discard_never_trims_six(roll):
-    _score, used, reroll = default_score(roll, turn_score_pre=0) # type: ignore default score update is backwards compatible
+    _score, used, reroll = default_score(roll, turn_score_pre=0)  # type: ignore default score update is backwards compatible
     assert used == 6 and reroll == 0
 
 
 # ────────────────────────────────────────────────────────────────────────────
 # 9) quick wrapper vs. low-level evaluate agreement
 # ────────────────────────────────────────────────────────────────────────────
+
 
 def test_score_roll_wrapper_agrees_with_evaluate():
     roll = [1, 5, 5, 2, 2, 2]  # 350 pts
@@ -281,6 +294,7 @@ def test_score_roll_wrapper_agrees_with_evaluate():
 # ────────────────────────────────────────────────────────────────────────────
 # 10) concrete default_score branch cases
 # ────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.parametrize(
     "dice_roll, turn_pre, threshold, smart5, smart1, expected",
@@ -293,12 +307,12 @@ def test_score_roll_wrapper_agrees_with_evaluate():
 )
 def test_default_score_cases(dice_roll, turn_pre, threshold, smart5, smart1, expected):
     out = default_score(
-        dice_roll = dice_roll,
-        turn_score_pre = turn_pre,
-        smart_five = smart5,
-        smart_one = smart1,
-        score_threshold = threshold,
-        dice_threshold = 3,
+        dice_roll=dice_roll,
+        turn_score_pre=turn_pre,
+        smart_five=smart5,
+        smart_one=smart1,
+        score_threshold=threshold,
+        dice_threshold=3,
     )
     assert out == expected
 

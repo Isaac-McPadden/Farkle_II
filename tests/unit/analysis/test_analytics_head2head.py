@@ -66,4 +66,7 @@ def test_run_logs_warning_on_failure(
         head2head.run(cfg)
 
     assert called
-    assert any(rec.levelname == "WARNING" and rec.message == "Head-to-head skipped" for rec in caplog.records)
+    assert any(
+        rec.levelname == "WARNING" and rec.message == "Head-to-head skipped"
+        for rec in caplog.records
+    )

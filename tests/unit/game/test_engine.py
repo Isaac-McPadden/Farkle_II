@@ -11,17 +11,17 @@ from farkle.simulation.strategies import ThresholdStrategy
 def fixed_rng(seq):
     """Return a numpy Generator that cycles through *seq* forever."""
     arr = np.array(seq)
-    
+
     class _G(np.random.Generator):
         def integers(self, low, high, size):  # noqa: ARG002
             idxs = np.arange(size) % len(arr)
             return arr[idxs]
-        
+
     return _G(np.random.PCG64())
 
 
 def test_take_turn_success(monkeypatch):
-    seq = [6, 6, 6, 2, 3, 4]  # 3×6 = 600 pts, uses 3 dice, reroll 3 → decide() false ⇒ stop 
+    seq = [6, 6, 6, 2, 3, 4]  # 3×6 = 600 pts, uses 3 dice, reroll 3 → decide() false ⇒ stop
     # must finish turn above 500 pts
     monkeypatch.setattr(np.random, "default_rng", lambda *_: fixed_rng(seq))
     strat = ThresholdStrategy(score_threshold=0, dice_threshold=6)  # stop after first roll
@@ -35,6 +35,7 @@ def test_take_turn_success(monkeypatch):
 
 def stop_after_one():
     return ThresholdStrategy(score_threshold=100, dice_threshold=6, run_up_score=False)
+
 
 def test_game_play_deterministic():
     # make every roll be six 1-s  ⇒  (3000, 6, 0)
@@ -52,7 +53,7 @@ def test_game_play_deterministic():
     assert gm.players[winner].score == 6000
     # both players still only had one round
     total_rolls = [gm.players[name].rolls for name in sorted(gm.players)]
-        
+
     assert total_rolls == [1, 2]
     assert gm.game.n_rounds == 1
 
@@ -65,7 +66,7 @@ class _SeqGen(np.random.Generator):
     static type-checkers are happy and the production code
     needs no changes.
     """
-    
+
     def __init__(self, seq):
         # Initialise the parent class with *any* BitGenerator
         super().__init__(np.random.PCG64())
@@ -92,8 +93,8 @@ class _SeqGen(np.random.Generator):
 def fixed_rng_2(seq):
     """Return a numpy.random.Generator that cycles through *seq*."""
     return _SeqGen(seq)
-    
-    
+
+
 def test_auto_hot_dice_forces_roll():
     seq = [1, 1, 1, 5, 5, 5, 2, 2, 3, 3, 4, 6]  # 6 scoring + 6 busting dice
     rng = fixed_rng_2(seq)
@@ -112,12 +113,14 @@ def test_auto_hot_dice_forces_roll():
     assert p_cold.score == 2500  # banked after first roll
     assert p_hot.n_hot_dice == 1  # records auto_hot_dice option taken
     assert p_hot.n_rolls == 2  # records correct roll count: 2 rolls, busts on second roll
-    assert p_cold.n_rolls == 1  # records correct roll count: declines auto_hot_dice, rolls once and banks
+    assert (
+        p_cold.n_rolls == 1
+    )  # records correct roll count: declines auto_hot_dice, rolls once and banks
 
 
 class SeqGen2(np.random.Generator):
     """Deterministic RNG that cycles through *seq* forever."""
-    
+
     def __init__(self, seq):
         super().__init__(np.random.PCG64())
         self._seq = list(seq)
@@ -141,7 +144,9 @@ def test_final_round_override():
     p1.has_scored = True
 
     # ---------- Player 2 would normally STOP after 1 roll ----------
-    p2_rng = SeqGen2([1, 1, 2, 3, 4, 6, 2, 2, 3, 4])  # rolls: 200 pts (would bank) then 0 pts → bust
+    p2_rng = SeqGen2(
+        [1, 1, 2, 3, 4, 6, 2, 2, 3, 4]
+    )  # rolls: 200 pts (would bank) then 0 pts → bust
     strat2 = ThresholdStrategy(
         score_threshold=150, dice_threshold=6, consider_score=True, consider_dice=False
     )
@@ -162,14 +167,13 @@ def test_final_round_override():
 def test_turn_roll_fuse():
     # RNG that always returns hot dice: 1,1,1,2,2,2 …
     class HotGen(np.random.Generator):
-        def __init__(self): 
+        def __init__(self):
             super().__init__(np.random.PCG64())
-            
+
         def integers(self, *a, size=None, **k):  # noqa: ARG002, D401
-            return np.array([1, 1, 1, 2, 2, 2][:size or 1])
-        
-    p = FarklePlayer("X", ThresholdStrategy(auto_hot_dice=True),
-                     rng=HotGen())
+            return np.array([1, 1, 1, 2, 2, 2][: size or 1])
+
+    p = FarklePlayer("X", ThresholdStrategy(auto_hot_dice=True), rng=HotGen())
     with pytest.raises(RuntimeError):
         p.take_turn(target_score=10_000)
 
@@ -301,4 +305,3 @@ def test_game_stops_at_default_max_rounds(monkeypatch):
     gm = FarkleGame(players, target_score=10_000).play()
 
     assert gm.game.n_rounds == 200
-

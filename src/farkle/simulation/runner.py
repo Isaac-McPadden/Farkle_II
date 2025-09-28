@@ -8,6 +8,7 @@ configuration surface is supported – just enough for the unit tests –
 but additional fields can be added in the future without touching the
 public API.
 """
+
 from __future__ import annotations
 
 import pickle

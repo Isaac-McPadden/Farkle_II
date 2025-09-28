@@ -34,7 +34,6 @@ sys.modules.setdefault("scipy", scipy_stub)
 sys.modules.setdefault("scipy.stats", stats_stub)
 
 
-
 wg = pytest.importorskip("farkle.simulation.watch_game")
 
 
@@ -57,9 +56,7 @@ def test_patched_score_used_in_turn(monkeypatch):  # noqa: ARG001
     wg._patch_default_score()
     calls: list[str] = []
 
-    monkeypatch.setattr(
-        wg.LOGGER, "info", lambda msg, *a, **k: calls.append(msg)
-    )  # noqa: ARG005
+    monkeypatch.setattr(wg.LOGGER, "info", lambda msg, *a, **k: calls.append(msg))  # noqa: ARG005
 
     class FixedGen(np.random.Generator):
         def __init__(self) -> None:

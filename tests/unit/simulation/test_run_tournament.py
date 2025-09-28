@@ -31,9 +31,9 @@ def _mini_strats(n: int = 6):
 
 
 def fake_play_shuffle(seed: int) -> Counter[str]:
-        # pretend player at index (seed % len(strats)) always wins
-        strats = _mini_strats(12)
-        return Counter({str(strats[seed % len(strats)]): 1})
+    # pretend player at index (seed % len(strats)) always wins
+    strats = _mini_strats(12)
+    return Counter({str(strats[seed % len(strats)]): 1})
 
 
 @pytest.fixture(autouse=True)
@@ -49,7 +49,7 @@ def fast_helpers(monkeypatch):
 
     # save the genuine function on the module *once*
     if not hasattr(rt, "_ORIG_PLAY_SHUFFLE"):
-        rt._ORIG_PLAY_SHUFFLE = rt._play_shuffle # type: ignore
+        rt._ORIG_PLAY_SHUFFLE = rt._play_shuffle  # type: ignore
 
     monkeypatch.setattr(rt, "_play_shuffle", fake_play_shuffle, raising=True)
 
@@ -96,4 +96,3 @@ def test_run_chunk_logs_and_propagates(monkeypatch, caplog) -> None:
     logged = [rec for rec in caplog.records if "Shuffle failed" in rec.getMessage()][0]
     assert logged.stage == "simulation"
     assert logged.shuffle_seed == 123
-

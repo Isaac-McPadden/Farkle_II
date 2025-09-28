@@ -19,9 +19,7 @@ class AppConfig:
     analysis: PipelineCfg = field(default_factory=PipelineCfg)
 
     @classmethod
-    def parse_cli(
-        cls, argv: Sequence[str] | None = None
-    ) -> Tuple["AppConfig", object, list[str]]:
+    def parse_cli(cls, argv: Sequence[str] | None = None) -> Tuple["AppConfig", object, list[str]]:
         """Parse command line options into an :class:`AppConfig`.
 
         This simply forwards to :meth:`PipelineCfg.parse_cli` and wraps the

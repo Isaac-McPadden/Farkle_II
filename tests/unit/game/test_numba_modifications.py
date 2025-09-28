@@ -70,6 +70,7 @@ def test_build_and_roundtrip():
 # `random_threshold_strategy` helper.
 # """
 
+
 @pytest.mark.parametrize(
     "turn_score, dice_left, expect_roll",
     [
@@ -81,10 +82,9 @@ def test_build_and_roundtrip():
     ],
 )
 def test_decide_basic(turn_score, dice_left, expect_roll):
-    strat = ThresholdStrategy(score_threshold=1000,
-                              dice_threshold=2,
-                              consider_score=True,
-                              consider_dice=True)
+    strat = ThresholdStrategy(
+        score_threshold=1000, dice_threshold=2, consider_score=True, consider_dice=True
+    )
     keep_rolling = strat.decide(
         turn_score=turn_score,
         dice_left=dice_left,
@@ -96,10 +96,7 @@ def test_decide_basic(turn_score, dice_left, expect_roll):
 
 def test_random_threshold_strategy_diversity():
     """Just make sure we don't always get the same parameters."""
-    seen = Counter(
-        random_threshold_strategy().score_threshold
-        for _ in range(10)
-    )
+    seen = Counter(random_threshold_strategy().score_threshold for _ in range(10))
     # heuristic – at least three distinct thresholds in 10 draws
     assert len(seen) >= 3
 

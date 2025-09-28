@@ -27,5 +27,5 @@ def test_pytest_configure_patches_numba(monkeypatch):
     def func():
         return 42
 
-    assert dummy.jit()(func) is func # type: ignore
-    assert dummy.njit()(func) is func # type: ignore
+    assert dummy.jit()(func) is func  # type: ignore
+    assert dummy.njit()(func) is func  # type: ignore

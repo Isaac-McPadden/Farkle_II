@@ -22,6 +22,7 @@ if "tomllib" not in sys.modules:
     try:
         import tomli as _tomli
     except ModuleNotFoundError:
+
         def _load_toml(fh):
             raw = fh.read()
             text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)

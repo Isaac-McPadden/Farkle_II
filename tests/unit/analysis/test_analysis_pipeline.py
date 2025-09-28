@@ -144,5 +144,3 @@ def test_pipeline_step_failure_propagates(
 
     with pytest.raises(RuntimeError):
         pipeline.main(["--config", str(cfg_path), command])
-
-

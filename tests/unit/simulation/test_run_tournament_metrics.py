@@ -40,9 +40,7 @@ def _isf(q, loc=0.0, scale=1.0):  # noqa: ANN001
     return NormalDist(mu=loc, sigma=scale).inv_cdf(1 - q)
 
 
-scipy_stats_stub = types.SimpleNamespace(
-    norm=types.SimpleNamespace(ppf=_ppf, isf=_isf)
-)
+scipy_stats_stub = types.SimpleNamespace(norm=types.SimpleNamespace(ppf=_ppf, isf=_isf))
 scipy_mod = ModuleType("scipy")
 scipy_mod.stats = scipy_stats_stub  # type: ignore
 sys.modules.setdefault("scipy", scipy_mod)
@@ -61,6 +59,7 @@ def silence_logging(monkeypatch):
     """Mute info/error logs from run_tournament during tests."""
     monkeypatch.setattr(rt.LOGGER, "info", lambda *a, **k: None)
     monkeypatch.setattr(rt.LOGGER, "error", lambda *a, **k: None)
+
 
 # ---------------------------------------------------------------------------
 # Dummy helper for deterministic results
@@ -102,7 +101,9 @@ def _setup_serial_run(monkeypatch: pytest.MonkeyPatch) -> list[ThresholdStrategy
         rt, "generate_strategy_grid", lambda *a, **kw: (strategies, None), raising=True
     )
 
-    def fake_measure(sample_strategies, sample_games: int = 2_000, seed: int = 0) -> float:  # noqa: ARG001
+    def fake_measure(
+        sample_strategies, sample_games: int = 2_000, seed: int = 0
+    ) -> float:  # noqa: ARG001
         n_players = max(1, len(sample_strategies))
         return 8_160 / n_players
 
@@ -243,10 +244,13 @@ def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch
     metrics_path = checkpoint_path.with_name("2p_metrics.parquet")
     table = pq.read_table(metrics_path)
     assert table.num_rows == len(rt.METRIC_LABELS) * 3
-    metrics_rows = {(
-        row["metric"],
-        row["strategy"],
-    ): (row["sum"], row["square_sum"]) for row in table.to_pylist()}
+    metrics_rows = {
+        (
+            row["metric"],
+            row["strategy"],
+        ): (row["sum"], row["square_sum"])
+        for row in table.to_pylist()
+    }
     for seed in range(3):
         for label in rt.METRIC_LABELS:
             assert metrics_rows[(label, f"S{seed}")] == (float(seed), float(seed * seed))

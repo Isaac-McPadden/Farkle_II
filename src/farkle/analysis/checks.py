@@ -40,11 +40,9 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
             and field.name != "loss_margin"
             and dataset.count_rows(filter=ds.field(field.name) < 0) > 0
         ):
-                neg_cols.append(field.name)
+            neg_cols.append(field.name)
     if neg_cols:
-        raise RuntimeError(
-            f"check_pre_metrics: negative values present in {', '.join(neg_cols)}"
-        )
+        raise RuntimeError(f"check_pre_metrics: negative values present in {', '.join(neg_cols)}")
 
     data_dir = (
         combined_parquet.parent.parent
@@ -53,9 +51,7 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     )
     manifests = sorted(data_dir.glob("*p/manifest_*p.json"))
     if not manifests:
-        raise RuntimeError(
-            f"check_pre_metrics: no manifest files found under {data_dir}"
-        )
+        raise RuntimeError(f"check_pre_metrics: no manifest files found under {data_dir}")
     manifest_rows = 0
     for m in manifests:
         try:
@@ -67,8 +63,7 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     combined_rows = dataset.count_rows()
     if combined_rows != manifest_rows:
         raise RuntimeError(
-            "check_pre_metrics: row-count mismatch "
-            f"{combined_rows} != {manifest_rows}"
+            "check_pre_metrics: row-count mismatch " f"{combined_rows} != {manifest_rows}"
         )
 
     LOGGER.info(
@@ -89,9 +84,7 @@ def check_post_combine(
     try:
         combined_pf = pq.ParquetFile(combined_parquet)
     except Exception as e:  # noqa: BLE001
-        raise RuntimeError(
-            f"check_post_combine: unable to read {combined_parquet}: {e}"
-        ) from e
+        raise RuntimeError(f"check_post_combine: unable to read {combined_parquet}: {e}") from e
     combined_rows = combined_pf.metadata.num_rows
 
     total_rows = 0
@@ -102,8 +95,7 @@ def check_post_combine(
             raise RuntimeError(f"check_post_combine: unable to read {f}: {e}") from e
     if combined_rows != total_rows:
         raise RuntimeError(
-            "check_post_combine: row-count mismatch "
-            f"{combined_rows} != {total_rows}"
+            "check_post_combine: row-count mismatch " f"{combined_rows} != {total_rows}"
         )
 
     expected = expected_schema_for(max_players).names

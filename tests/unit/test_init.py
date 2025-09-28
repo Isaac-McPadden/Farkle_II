@@ -22,6 +22,7 @@ def test_version_patch(monkeypatch):
 def test_version_fallback(monkeypatch):
     def raise_pkg(_pkg):
         raise importlib.metadata.PackageNotFoundError
+
     monkeypatch.setattr(importlib.metadata, "version", raise_pkg)
     mod = _reload(monkeypatch)
     assert mod.__version__ == mod._read_version_from_toml()

@@ -49,4 +49,3 @@ def _writer_worker(queue: mp.Queue, out_csv: str, header: Sequence[str]) -> None
 
 
 __all__ = ["BUFFER_SIZE", "QUEUE_SIZE", "_writer_worker"]
-

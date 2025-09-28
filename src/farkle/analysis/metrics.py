@@ -23,6 +23,7 @@ LOGGER = logging.getLogger(__name__)
 # ──────────────────────────────────────────────────────────────────────────────
 _WIN_COLS = ["winner_strategy", "winner_seat", "winning_score", "n_rounds"]
 
+
 def _write_parquet(final: Path, rows: list[dict[str, Any]], schema: pa.Schema) -> None:
     tbl = pa.Table.from_pylist(rows, schema=schema)
     write_parquet_atomic(tbl, final)
@@ -127,12 +128,9 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
             meta = json.loads(stamp.read_text())
             inputs = meta.get("inputs", {})
             outputs = meta.get("outputs", {})
-            if (
-                inputs.get(str(data_file)) == _stamp(data_file)
-                and all(
-                    Path(p).exists() and outputs.get(p) == _stamp(Path(p))
-                    for p in (str(out_metrics), str(out_seats), str(out_seats_parquet))
-                )
+            if inputs.get(str(data_file)) == _stamp(data_file) and all(
+                Path(p).exists() and outputs.get(p) == _stamp(Path(p))
+                for p in (str(out_metrics), str(out_seats), str(out_seats_parquet))
             ):
                 LOGGER.info(
                     "Metrics: outputs up-to-date",
@@ -161,9 +159,9 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     all_strategies: set[str] = set()
 
     for batch in reader.to_batches(
-            columns=_WIN_COLS + strategy_cols,
-            batch_size=cfg.batch_rows,
-        ):
+        columns=_WIN_COLS + strategy_cols,
+        batch_size=cfg.batch_rows,
+    ):
         # Arrow's ``to_numpy`` has strict zero-copy semantics for string data
         # which can raise ``ArrowInvalid`` even for small, null-free arrays. The
         # win/seat columns are tiny, so converting via ``to_pylist`` is simpler
@@ -230,8 +228,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     # wins per seat (from combined parquet)
     ds_all = ds.dataset(data_file, format="parquet")
     seat_wins: dict[int, int] = {
-        i: int(ds_all.count_rows(filter=(ds.field(winner_col) == f"P{i}")))
-        for i in range(1, 13)
+        i: int(ds_all.count_rows(filter=(ds.field(winner_col) == f"P{i}"))) for i in range(1, 13)
     }
 
     # Write corrected seat_advantage.csv

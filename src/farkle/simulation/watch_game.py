@@ -201,9 +201,7 @@ def watch_game(seed: int | None = None) -> None:
         Optional seed forwarded to :func:`farkle.utils.random.make_rng` to make
         the game deterministic.
     """
-    strategy_seed1, strategy_seed2, player_seed1, player_seed2 = spawn_seeds(
-        4, seed=seed
-    )
+    strategy_seed1, strategy_seed2, player_seed1, player_seed2 = spawn_seeds(4, seed=seed)
 
     # --- make two random strategies -------------------------------------
     strategy1 = random_threshold_strategy(random.Random(strategy_seed1))

@@ -34,15 +34,12 @@ def test_handlers_replaced_and_console_logging(tmp_path, capsys):
 
     root = logging.getLogger()
     assert any(
-        isinstance(h, logging.FileHandler) and h.baseFilename == str(log2)
-        for h in root.handlers
+        isinstance(h, logging.FileHandler) and h.baseFilename == str(log2) for h in root.handlers
     )
     assert not any(
-        isinstance(h, logging.FileHandler) and h.baseFilename == str(log1)
-        for h in root.handlers
+        isinstance(h, logging.FileHandler) and h.baseFilename == str(log1) for h in root.handlers
     )
 
     assert "first" in log1.read_text()
     assert "second" not in log1.read_text()
     assert "second" in log2.read_text()
-

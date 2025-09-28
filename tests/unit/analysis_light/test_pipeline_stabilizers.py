@@ -16,6 +16,7 @@ class _CfgProto(Protocol):
     metrics_name: str
     parquet_codec: str
     curated_parquet: Path
+
     def ingested_rows_raw(self, n: int) -> Path: ...
     def ingested_rows_curated(self, n: int) -> Path: ...
     def manifest_for(self, n: int) -> Path: ...
@@ -56,16 +57,14 @@ def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
     observed_strategies = (
         df[["winner_seat", "winner_strategy"]]
         .drop_duplicates()
-        .set_index("winner_seat")
-        ["winner_strategy"]
+        .set_index("winner_seat")["winner_strategy"]
         .to_dict()
     )
     expected_strategies = (
         golden_dataset.dataframe[["winner"]]
         .drop_duplicates()
         .assign(winner_strategy=lambda frame: frame["winner"].map(STRATEGY_MAP))
-        .set_index("winner")
-        ["winner_strategy"]
+        .set_index("winner")["winner_strategy"]
         .to_dict()
     )
     assert observed_strategies == expected_strategies

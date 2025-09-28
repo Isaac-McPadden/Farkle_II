@@ -12,10 +12,10 @@ import farkle.utils.parallel as parallel
 
 
 @pytest.fixture
-def writer_queue() -> mp.Queue: # type: ignore
+def writer_queue() -> mp.Queue:  # type: ignore
     queue: mp.Queue = mp.Queue()
     try:
-        yield queue # type: ignore
+        yield queue  # type: ignore
     finally:
         queue.close()
         queue.join_thread()
@@ -73,9 +73,7 @@ def test_writer_worker_flushes_when_buffer_full(
         def writerows(self, rows: Sequence[Mapping[str, object]]) -> None:
             batches.append([dict(row) for row in rows])
 
-    monkeypatch.setattr(
-        csv_files.csv, "DictWriter", lambda *_args, **_kwargs: DummyWriter()
-    )
+    monkeypatch.setattr(csv_files.csv, "DictWriter", lambda *_args, **_kwargs: DummyWriter())
 
     worker = threading.Thread(
         target=csv_files._writer_worker, args=(writer_queue, str(out), header)
@@ -94,9 +92,7 @@ def test_writer_worker_flushes_when_buffer_full(
     assert all(len(batch) == 1 for batch in batches)
 
 
-def test_writer_worker_respects_existing_header(
-    tmp_path: Path, writer_queue: mp.Queue
-) -> None:
+def test_writer_worker_respects_existing_header(tmp_path: Path, writer_queue: mp.Queue) -> None:
     header = ["a", "b"]
     out = tmp_path / "out.csv"
     out.write_text("a,b\n5,6\n", encoding="utf-8")
@@ -143,9 +139,7 @@ def test_writer_worker_handles_immediate_termination(
     assert lines == ["a,b"]
 
 
-def test_writer_worker_detects_empty_existing_file(
-    tmp_path: Path, writer_queue: mp.Queue
-) -> None:
+def test_writer_worker_detects_empty_existing_file(tmp_path: Path, writer_queue: mp.Queue) -> None:
     header = ["a", "b"]
     out = tmp_path / "out.csv"
     out.touch()
@@ -205,4 +199,3 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
 
     assert result == [2, 4, 6]
     assert submitted == [1, 2, 3]
-

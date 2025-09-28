@@ -54,11 +54,7 @@ def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str
 
     result: dict[str, Any] = dict(base)
     for key, val in overlay.items():
-        if (
-            key in result
-            and isinstance(result[key], Mapping)
-            and isinstance(val, Mapping)
-        ):
+        if key in result and isinstance(result[key], Mapping) and isinstance(val, Mapping):
             result[key] = _deep_merge(result[key], val)
         else:
             result[key] = val
@@ -78,6 +74,7 @@ def load_app_config(*overlays: Path) -> AppConfig:
             raise TypeError(f"Config file {path} must contain a mapping")
         expanded = expand_dotted_keys(overlay)
         data = _deep_merge(data, expanded)
+
     def build(cls, section: Mapping[str, Any]) -> Any:
         obj = cls()
         type_hints = get_type_hints(cls)
@@ -174,4 +171,3 @@ __all__ = [
     "load_app_config",
     "apply_dot_overrides",
 ]
-

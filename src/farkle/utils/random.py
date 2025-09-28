@@ -28,4 +28,3 @@ def spawn_seeds(n: int, *, seed: int | None = None) -> np.ndarray:
 
 
 __all__ = ["MAX_UINT32", "make_rng", "spawn_seeds"]
-

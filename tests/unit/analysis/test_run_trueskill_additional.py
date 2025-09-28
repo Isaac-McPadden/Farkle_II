@@ -30,7 +30,10 @@ def test_ratings_to_table_handles_tuple_and_scalar() -> None:
         }
     )
     data = table.to_pydict()
-    rows = {s: (mu, sigma) for s, mu, sigma in zip(data["strategy"], data["mu"], data["sigma"], strict=True)}
+    rows = {
+        s: (mu, sigma)
+        for s, mu, sigma in zip(data["strategy"], data["mu"], data["sigma"], strict=True)
+    }
     assert rows["tuple"] == pytest.approx((10.5, 3.2))
     assert rows["scalar"][1] == pytest.approx(0.0)
     assert rows["stats"] == pytest.approx((5.0, 1.0))
@@ -315,7 +318,14 @@ def test_rate_block_worker_up_to_date_guard(tmp_path: Path) -> None:
     block.mkdir(parents=True, exist_ok=True)
 
     row_file = root / "data" / "2p" / "2p_ingested_rows.parquet"
-    df = pd.DataFrame({"P1_strategy": ["A", "B", "C"], "P1_rank": [1, 2, 3], "P2_strategy": ["D", "E", "F"], "P2_rank": [2, 3, 4]})
+    df = pd.DataFrame(
+        {
+            "P1_strategy": ["A", "B", "C"],
+            "P1_rank": [1, 2, 3],
+            "P2_strategy": ["D", "E", "F"],
+            "P2_rank": [2, 3, 4],
+        }
+    )
     df.to_parquet(row_file)
 
     parquet_path = root / "ratings_2.parquet"
@@ -327,7 +337,9 @@ def test_rate_block_worker_up_to_date_guard(tmp_path: Path) -> None:
     assert result == ("2", 3)
 
 
-def test_rate_block_worker_metadata_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_rate_block_worker_metadata_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
     (root / "data" / "2p").mkdir(parents=True, exist_ok=True)
@@ -364,7 +376,9 @@ def test_rate_block_worker_without_resume_processes(tmp_path: Path) -> None:
     )
     df.to_parquet(row_file)
 
-    result = rt._rate_block_worker(str(block), str(root), "", batch_rows=10, resume=False, checkpoint_every_batches=10)
+    result = rt._rate_block_worker(
+        str(block), str(root), "", batch_rows=10, resume=False, checkpoint_every_batches=10
+    )
     assert result == ("2", 2)
 
 
@@ -399,7 +413,9 @@ def test_rate_block_worker_resume_with_keepers(tmp_path: Path) -> None:
     )
     rt._save_block_ckpt(ck_path, block_ck)
 
-    result = rt._rate_block_worker(str(block), str(root), "", batch_rows=1, resume=True, checkpoint_every_batches=1)
+    result = rt._rate_block_worker(
+        str(block), str(root), "", batch_rows=1, resume=True, checkpoint_every_batches=1
+    )
 
     assert result == ("2", 5)
     assert parquet_path.exists()
@@ -433,12 +449,16 @@ def test_rate_block_worker_resume_missing_checkpoint_ratings_file(tmp_path: Path
     )
     rt._save_block_ckpt(ck_path, ck)
 
-    result = rt._rate_block_worker(str(block), str(root), "", batch_rows=10, resume=True, checkpoint_every_batches=10)
+    result = rt._rate_block_worker(
+        str(block), str(root), "", batch_rows=10, resume=True, checkpoint_every_batches=10
+    )
     assert result[0] == "2"
     assert result[1] >= 1
 
 
-def test_run_trueskill_handles_worker_exception(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_trueskill_handles_worker_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     data_root = tmp_path / "results"
     block2 = data_root / "2_players"
     block3 = data_root / "3_players"
@@ -492,7 +512,16 @@ def test_run_trueskill_handles_worker_exception(monkeypatch: pytest.MonkeyPatch,
     def fake_exception(msg, *args, extra=None, **kwargs):
         exceptions.append(extra or {})
 
-    def fake_rate_block_worker(block_dir: str, root_dir: str, suffix: str, batch_rows: int, *, resume: bool, checkpoint_every_batches: int, env_kwargs: dict | None) -> tuple[str, int]:
+    def fake_rate_block_worker(
+        block_dir: str,
+        root_dir: str,
+        suffix: str,
+        batch_rows: int,
+        *,
+        resume: bool,
+        checkpoint_every_batches: int,
+        env_kwargs: dict | None,
+    ) -> tuple[str, int]:
         player_count = Path(block_dir).name.split("_")[0]
         stats, games = per_block[player_count]
         rt._save_ratings_parquet(Path(root_dir) / f"ratings_{player_count}{suffix}.parquet", stats)
@@ -510,7 +539,9 @@ def test_run_trueskill_handles_worker_exception(monkeypatch: pytest.MonkeyPatch,
     assert (analysis_root / "ratings_pooled.parquet").exists()
 
 
-def test_run_trueskill_rebuilds_outdated_pooled(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_run_trueskill_rebuilds_outdated_pooled(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     data_root = tmp_path / "results"
     block = data_root / "2_players"
     block.mkdir(parents=True, exist_ok=True)
@@ -526,7 +557,16 @@ def test_run_trueskill_rebuilds_outdated_pooled(monkeypatch: pytest.MonkeyPatch,
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(table, path, compression=codec)
 
-    def fake_rate_block_worker(block_dir: str, root_dir: str, suffix: str, batch_rows: int, *, resume: bool, checkpoint_every_batches: int, env_kwargs: dict | None) -> tuple[str, int]:
+    def fake_rate_block_worker(
+        block_dir: str,
+        root_dir: str,
+        suffix: str,
+        batch_rows: int,
+        *,
+        resume: bool,
+        checkpoint_every_batches: int,
+        env_kwargs: dict | None,
+    ) -> tuple[str, int]:
         stats, games = per_block["2"]
         rt._save_ratings_parquet(Path(root_dir) / f"ratings_2{suffix}.parquet", stats)
         return "2", games

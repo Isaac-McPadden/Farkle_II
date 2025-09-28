@@ -31,6 +31,7 @@ import yaml
 try:  # pragma: no cover - exercised when optional dependency missing
     import pyarrow  # type: ignore[unused-import]  # noqa: F401
 except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
+
     class _StubTable:
         def __init__(self, rows: Sequence[dict[str, object]] | None = None, schema=None):
             self._rows = list(rows or [])
@@ -119,7 +120,7 @@ def _tiny_strategy_grid(seed: int = 0) -> List[ThresholdStrategy]:
 def _init_worker_small(  # pragma: no cover
     strategies: Sequence[ThresholdStrategy],
     cfg: object,
-    *_extra: object,            # ? swallow optional 3rd positional arg
+    *_extra: object,  # ? swallow optional 3rd positional arg
 ) -> None:
     """Accepts 2 or 3 positional arguments so we can reuse it after the row-queue
     parameter was added.
@@ -165,7 +166,9 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> TournamentConfig
     #      every worker because run_tournament passes it via *initargs*.
     monkeypatch.setattr(rt, "generate_strategy_grid", lambda: (_tiny_grid, None), raising=True)
 
-    monkeypatch.setattr(rt.TournamentConfig, "games_per_shuffle", property(lambda self: 2), raising=False)  # noqa: ARG005
+    monkeypatch.setattr(
+        rt.TournamentConfig, "games_per_shuffle", property(lambda self: 2), raising=False
+    )  # noqa: ARG005
 
     return rt.TournamentConfig(
         n_players=rt.TournamentConfig().n_players,

@@ -1,4 +1,5 @@
 """Logging helpers for Farkle."""
+
 from __future__ import annotations
 
 import logging
@@ -32,11 +33,14 @@ def configure_logging(*, level: str | int = "INFO", log_file: str | Path | None 
         force=True,  # ensure a clean config when re-running in notebooks/CLIs
     )
 
+
 # Back-compat convenience wrappers (used in some tests)
 def setup_info_logging(log_file: Path | None = None) -> None:
     configure_logging(level="INFO", log_file=log_file)
 
+
 def setup_warning_logging(log_file: Path | None = None) -> None:
     configure_logging(level="WARNING", log_file=log_file)
+
 
 __all__ = ["configure_logging", "setup_info_logging", "setup_warning_logging"]

@@ -115,14 +115,13 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     # strategy seat columns (P1_strategy, …)
     seat_cols = sorted(
         [c for c in df.columns if _SEAT_RE.match(c)],
-        key=lambda c: int(_SEAT_RE.match(c).group(1)), # type: ignore
+        key=lambda c: int(_SEAT_RE.match(c).group(1)),  # type: ignore
     )
 
     # winner_strategy as plain strings (add if missing)
     if "winner_strategy" not in df.columns and seat_cols:
         seat_idx = (
-            df["winner_seat"].str.extract(r"P(?P<num>\d+)", expand=True)["num"]
-            .astype("Int64")
+            df["winner_seat"].str.extract(r"P(?P<num>\d+)", expand=True)["num"].astype("Int64")
         )
         S = df[seat_cols].to_numpy(dtype=object)
         out = np.empty(len(df), dtype=object)

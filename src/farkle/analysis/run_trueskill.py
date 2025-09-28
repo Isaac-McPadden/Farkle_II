@@ -45,6 +45,8 @@ DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results"
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
+
+
 def _find_combined_parquet(base: Path | None) -> Path | None:
     """Return path to combined ``all_ingested_rows.parquet`` if it exists.
 
@@ -67,6 +69,7 @@ def _find_combined_parquet(base: Path | None) -> Path | None:
             return c
     return None
 
+
 @dataclass(slots=True)
 class RatingStats:
     """Simple TrueSkill rating stats container."""
@@ -78,11 +81,11 @@ class RatingStats:
 # ---------- Checkpointing ----------
 @dataclass
 class _TSCheckpoint:
-    source: str                 # parquet path
-    row_group: int              # next row-group to start at
-    batch_index: int            # next batch index within that row-group
+    source: str  # parquet path
+    row_group: int  # next row-group to start at
+    batch_index: int  # next batch index within that row-group
     games_done: int
-    ratings_path: str           # where the interim ratings parquet lives
+    ratings_path: str  # where the interim ratings parquet lives
     version: int = 1
 
 
@@ -102,7 +105,7 @@ def _load_ckpt(path: Path) -> Optional[_TSCheckpoint]:
 
 
 def _ratings_to_table(
-    mapping: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float], float]]
+    mapping: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float], float]],
 ) -> pa.Table:
     """Coerce {strategy: Rating|RatingStats|(mu,sigma)|mu} → Arrow table."""
     strategies: list[str] = []
@@ -170,6 +173,7 @@ def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
     except Exception:
         return None
 
+
 # ---------- Single-pass streaming ----------
 
 
@@ -193,13 +197,11 @@ def _stream_batches(
             yield rg, bi, pa.Table.from_batches([batch])
 
 
-def _players_and_ranks_from_batch(
-    batch: pa.Table, n: int
-) -> Iterator[tuple[list[str], list[int]]]:
+def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[list[str], list[int]]]:
     """Robust per-row extraction (tie-friendly precedence):
-       1) Derive placements from P#_rank (preserves ties)
-       2) Else, use seat_ranks (strict order, no ties)
-       3) Else, fallback: winner vs (n-1) tied second.
+    1) Derive placements from P#_rank (preserves ties)
+    2) Else, use seat_ranks (strict order, no ties)
+    3) Else, fallback: winner vs (n-1) tied second.
     """
     cols = set(batch.column_names)
 
@@ -347,7 +349,9 @@ def _coerce_ratings(obj: dict[str, object]) -> dict[str, RatingStats]:
     return out
 
 
-def _ensure_seed_ratings(ratings: dict[str, Rating], all_strategies: list[str], env: trueskill.TrueSkill) -> None:
+def _ensure_seed_ratings(
+    ratings: dict[str, Rating], all_strategies: list[str], env: trueskill.TrueSkill
+) -> None:
     for strat in all_strategies:
         ratings.setdefault(strat, env.create_rating())
 
@@ -419,7 +423,9 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
-def _iter_players_and_ranks(row_file: Path, n: int, batch_size: int = 100_000) -> Iterator[tuple[list[str], list[int]]]:
+def _iter_players_and_ranks(
+    row_file: Path, n: int, batch_size: int = 100_000
+) -> Iterator[tuple[list[str], list[int]]]:
     """Yield (players, ranks) per game in a streaming fashion.
     Prefers explicit placements via ``seat_ranks``; if absent, derives placements
     from ``P#_rank``; if only a winner is known, treats others as a single tied group.
@@ -462,7 +468,7 @@ def _iter_players_and_ranks(row_file: Path, n: int, batch_size: int = 100_000) -
                 uniq = sorted({rv for _, rv in pairs})
                 remap = {rv: j for j, rv in enumerate(uniq)}
                 players = []
-                pranks  = []
+                pranks = []
                 for i, rv in pairs:
                     p = seat_strats[i]
                     if p is None:
@@ -488,8 +494,9 @@ def _iter_players_and_ranks(row_file: Path, n: int, batch_size: int = 100_000) -
                 yield [winner] + losers, [0] + [1] * len(losers)
 
 
-def _rate_stream(row_file: Path, n: int, keepers: list[str], env: trueskill.TrueSkill,
-                 batch_size: int = 100_000) -> tuple[dict[str, RatingStats], int]:
+def _rate_stream(
+    row_file: Path, n: int, keepers: list[str], env: trueskill.TrueSkill, batch_size: int = 100_000
+) -> tuple[dict[str, RatingStats], int]:
     """Stream TrueSkill updates from parquet without materialising all games.
     Supports ties and multiple sources of placement (seat_ranks or P#_rank)."""
     ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
@@ -501,7 +508,7 @@ def _rate_stream(row_file: Path, n: int, keepers: list[str], env: trueskill.True
             if len(filt) < 2:
                 continue
             players = [p for p, _ in filt]
-            ranks   = [r for _, r in filt]
+            ranks = [r for _, r in filt]
             # make ranks dense again in case we dropped teams
             uniq = sorted(set(ranks))
             rmap = {rv: j for j, rv in enumerate(uniq)}
@@ -641,12 +648,11 @@ def _rate_block_worker(
     json_path = root / f"ratings_{player_count}{suffix}.json"
     with atomic_path(str(json_path)) as tmp_path:
         Path(tmp_path).write_text(
-            json.dumps(
-                {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()}
-            )
+            json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
         )
 
     return player_count, n_games
+
 
 def run_trueskill(
     output_seed: int = 0,
@@ -716,7 +722,7 @@ def run_trueskill(
     # Pick a sensible default, then cap to CPUs and number of blocks
     auto_default = max(1, (os.cpu_count() or 1) - 1)
     requested = workers or auto_default
-    cpu_cap   = (os.cpu_count() or 1)
+    cpu_cap = os.cpu_count() or 1
     actual_workers = max(1, min(requested, cpu_cap, len(blocks)))
     if actual_workers != requested:
         LOGGER.info(
@@ -767,7 +773,7 @@ def run_trueskill(
                 env_kwargs=env_kwargs,
             )
             per_block_games[player_count] = block_games
-                    
+
     # Combine per-N ratings into pooled stats
     pooled_parquet = root / f"ratings_pooled{suffix}.parquet"
     existing_parquets = sorted(root.glob(f"ratings_*{suffix}.parquet"))
@@ -783,7 +789,7 @@ def run_trueskill(
     for parquet in existing_parquets:
         if parquet == pooled_parquet:
             continue
-        stem = parquet.stem[len("ratings_"):]
+        stem = parquet.stem[len("ratings_") :]
         if suffix:
             stem = stem[: -len(suffix)]
         games = per_block_games.get(stem, 0)
@@ -792,15 +798,18 @@ def run_trueskill(
         with parquet.open("rb") as fh:
             ratings = _load_ratings_parquet(parquet)
         for k, v in ratings.items():
-            tau = 1.0 / (v.sigma ** 2) if v.sigma > 0 else 0.0
+            tau = 1.0 / (v.sigma**2) if v.sigma > 0 else 0.0
             s_mu, s_tau = pooled.get(k, (0.0, 0.0))
             s_mu += tau * v.mu * games
             s_tau += tau * games
             pooled[k] = (s_mu, s_tau)
 
     # Precision-weighted pooling → (sum tau*mu, sum tau) → (mu, sigma)
-    pooled_stats = {k: RatingStats(mu=(s_mu / s_tau), sigma=(s_tau ** -0.5))
-                    for k, (s_mu, s_tau) in pooled.items() if s_tau > 0}
+    pooled_stats = {
+        k: RatingStats(mu=(s_mu / s_tau), sigma=(s_tau**-0.5))
+        for k, (s_mu, s_tau) in pooled.items()
+        if s_tau > 0
+    }
     # Atomic writes for pooled outputs
     # Save pooled ratings as Parquet
     _save_ratings_parquet(pooled_parquet, pooled_stats)

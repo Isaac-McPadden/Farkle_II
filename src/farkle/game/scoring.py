@@ -22,7 +22,7 @@ from farkle.game.scoring_lookup import evaluate as _eval_nb  # fast JIT core
 from farkle.simulation.strategies import FavorDiceOrScore
 from farkle.utils.types import DiceRoll, FacesSequence, Int64Array1D, SixFaceCounts
 
-SCORE_TABLE = build_score_lookup_table() 
+SCORE_TABLE = build_score_lookup_table()
 
 # --------------------------------------------------------------------------- #
 # 0.  Public type alias
@@ -93,7 +93,7 @@ def faces_to_counts_tuple(faces: Sequence[int]) -> SixFaceCounts:
 @functools.lru_cache(maxsize=32_768)
 def _score_by_counts(key: SixFaceCounts) -> Tuple[int, int, SixFaceCounts, int, int]:
     """Score a roll represented by face counts.
-    
+
     Performance tip
     -----------------
     Pre-build the global lookup once at import time:
@@ -102,7 +102,7 @@ def _score_by_counts(key: SixFaceCounts) -> Tuple[int, int, SixFaceCounts, int, 
         >>> SCORE_TABLE = build_score_lookup_table()
 
     All subsequent calls become an O(1) dict lookup
-    
+
     Inputs
     ------
     key (SixFaceCounts):
@@ -189,7 +189,9 @@ def _expand_sorted(counts: SixFaceCounts) -> FacesSequence:
 # 4.  Enumerate every post-discard state  (cached)
 # --------------------------------------------------------------------------- #
 @functools.lru_cache(maxsize=4096)
-def generate_sequences(counts: SixFaceCounts, *, smart_one: bool = False) -> tuple[FacesSequence, ...]:
+def generate_sequences(
+    counts: SixFaceCounts, *, smart_one: bool = False
+) -> tuple[FacesSequence, ...]:
     """Enumerate all post-discard face sequences.
     Only ever run by functions with smart_five == True.
 
@@ -314,13 +316,20 @@ def _select_candidate(
         if drop_5 > single_fives or drop_1 > single_ones:
             continue
 
-        score_after = turn_score_pre + cand_score  # score entering turn plus candidate score under evaluation
-        dice_left_after = dice_roll_len - cand_used  # Dice remaining after candidate under evaluation is scored
-        if must_bank(score_after, dice_left_after):  # If must_bank returns true, smart rules don't apply to this candidate
+        score_after = (
+            turn_score_pre + cand_score
+        )  # score entering turn plus candidate score under evaluation
+        dice_left_after = (
+            dice_roll_len - cand_used
+        )  # Dice remaining after candidate under evaluation is scored
+        if must_bank(
+            score_after, dice_left_after
+        ):  # If must_bank returns true, smart rules don't apply to this candidate
             continue
 
         _prefer_score = (  # convert FavorDiceOrScore attribute into usable boolean
-            favor_dice_or_score is True or favor_dice_or_score is FavorDiceOrScore.SCORE  # bool vs enum normalization
+            favor_dice_or_score is True
+            or favor_dice_or_score is FavorDiceOrScore.SCORE  # bool vs enum normalization
         )
         key = (  # favor_dice_or_score prioritization encoded in tuple position
             (score_after, dice_left_after)
@@ -332,11 +341,17 @@ def _select_candidate(
         )
         if best_key is None or key > best_key:  # compare candidate key to current best key
             best_key = key  # Holding current best key (dice-score or score-dice outcome)
-            best_sf, best_so = cand_sf, cand_so  # if a new best was found, record the candidate single five and single one counts
+            best_sf, best_so = (
+                cand_sf,
+                cand_so,
+            )  # if a new best was found, record the candidate single five and single one counts
 
     if best_key is None:  # every path banks → keep everything
         return None
-    return best_sf, best_so  # discards will be applied by subtracting these from original single fives and ones
+    return (
+        best_sf,
+        best_so,
+    )  # discards will be applied by subtracting these from original single fives and ones
 
 
 def _decide_smart_discards_impl(
@@ -364,7 +379,7 @@ def _decide_smart_discards_impl(
 
     This is the implementation that gets run by decide_smart_discards which exists
     to cache outcomes for a small speed boost.
-    
+
     Inputs
     ------
     counts (SixFaceCounts):

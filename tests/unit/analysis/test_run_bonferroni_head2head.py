@@ -32,7 +32,9 @@ def test_simulate_many_games_from_seeds(monkeypatch):
     assert not df1.equals(df2)
 
 
-def test_run_bonferroni_head2head_writes_csv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_bonferroni_head2head_writes_csv(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = tmp_path
     analysis_dir = root / "analysis"
     analysis_dir.mkdir()
@@ -101,14 +103,18 @@ def test_run_bonferroni_head2head_single_strategy(
     assert not out_csv.exists()
 
 
-def test_run_bonferroni_head2head_missing_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_bonferroni_head2head_missing_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An informative error is raised when tiers.json is absent."""
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="Tier file not found"):
         rb.run_bonferroni_head2head(seed=1, root=tmp_path)
 
 
-def test_run_bonferroni_head2head_empty_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_bonferroni_head2head_empty_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     analysis_dir = tmp_path / "analysis"
     analysis_dir.mkdir()
     (analysis_dir / "tiers.json").write_text("{}")

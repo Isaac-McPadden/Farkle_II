@@ -9,6 +9,7 @@ from farkle.analysis.ingest import _fix_winner, _iter_shards, _process_block, ru
 
 # -------------------- _iter_shards -------------------------------------
 
+
 def test_iter_shards_consolidated(tmp_path, caplog):
     caplog.set_level(logging.DEBUG, logger="farkle.analysis.ingest")
     block = tmp_path
@@ -21,7 +22,9 @@ def test_iter_shards_consolidated(tmp_path, caplog):
     assert shard_path.name == "2p_rows.parquet"
     assert list(shard_df.columns) == ["winner", "P1_strategy"]
 
-    messages = [record.message for record in caplog.records if record.name == "farkle.analysis.ingest"]
+    messages = [
+        record.message for record in caplog.records if record.name == "farkle.analysis.ingest"
+    ]
     assert "Row file missing requested columns" in messages
 
 
@@ -62,11 +65,14 @@ def test_iter_shards_subset_logs_missing(tmp_path, caplog):
     assert shard_path.name == "solo.parquet"
     assert list(shard_df.columns) == ["winner", "P1_strategy"]
 
-    messages = [record.message for record in caplog.records if record.name == "farkle.analysis.ingest"]
+    messages = [
+        record.message for record in caplog.records if record.name == "farkle.analysis.ingest"
+    ]
     assert "Shard missing requested columns" in messages
 
 
 # -------------------- _fix_winner --------------------------------------
+
 
 def test_fix_winner_with_ranks():
     df = pd.DataFrame(
@@ -121,7 +127,9 @@ def test_process_block_skips_when_output_newer(tmp_results_dir, monkeypatch):
     block.mkdir(parents=True)
 
     shard = block / "3p_rows.parquet"
-    df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"], "n_rounds": [1], "winning_score": [10]})
+    df = pd.DataFrame(
+        {"winner": ["P1"], "P1_strategy": ["A"], "n_rounds": [1], "winning_score": [10]}
+    )
     df.to_parquet(shard, index=False)
     shard_mtime = shard.stat().st_mtime
 
@@ -235,6 +243,7 @@ def test_process_block_zero_rows_without_outputs(tmp_results_dir, monkeypatch):
 
 # -------------------- run integration ----------------------------------
 
+
 def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatch):
     cfg = PipelineCfg(results_dir=tmp_results_dir, analysis_subdir="analysis")
 
@@ -322,7 +331,9 @@ def test_run_emits_logging(tmp_results_dir, caplog):
     cfg = PipelineCfg(results_dir=tmp_results_dir, analysis_subdir="analysis")
     block = cfg.results_dir / "2_players"
     block.mkdir(parents=True)
-    df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"], "n_rounds": [1], "winning_score": [100]})
+    df = pd.DataFrame(
+        {"winner": ["P1"], "P1_strategy": ["A"], "n_rounds": [1], "winning_score": [100]}
+    )
     df.to_parquet(block / "2p_rows.parquet", index=False)
 
     caplog.set_level(logging.INFO, logger="farkle.analysis.ingest")

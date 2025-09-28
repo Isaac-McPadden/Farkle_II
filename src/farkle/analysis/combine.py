@@ -14,6 +14,7 @@ from farkle.utils.streaming_loop import run_streaming_shard
 
 LOGGER = logging.getLogger(__name__)
 
+
 def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
     cols = []
     for f in target:
@@ -22,6 +23,7 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
         else:
             cols.append(pa.nulls(len(tbl), f.type))
     return pa.table(cols, names=target.names)
+
 
 def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
     return cfg.analysis if isinstance(cfg, AppConfig) else cfg
@@ -45,7 +47,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     out_dir = cfg.data_dir / "all_n_players_combined"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
-    
+
     # Up-to-date guard: if output is newer than all inputs, skip
     if out.exists():
         newest = max((p.stat().st_mtime for p in files), default=0.0)
@@ -106,9 +108,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     # Sanity check: file opens and row-count matches
     pf_out = pq.ParquetFile(out)
     if pf_out.metadata.num_rows != total:
-        raise RuntimeError(
-            f"combine: row-count mismatch {pf_out.metadata.num_rows} != {total}"
-        )
+        raise RuntimeError(f"combine: row-count mismatch {pf_out.metadata.num_rows} != {total}")
     if pq.read_schema(out).names != target.names:
         raise RuntimeError("combine: output schema mismatch")
 

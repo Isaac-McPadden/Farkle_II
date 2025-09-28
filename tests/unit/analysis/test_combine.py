@@ -19,14 +19,30 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
     # create per-N curated files
     p1 = cfg.ingested_rows_curated(1)
     schema1 = expected_schema_for(1)
-    _write_curated(p1, schema1, [
-        {"winner": "P1", "n_rounds": 1, "winning_score": 100, "P1_strategy": "A", "P1_rank": 1},
-    ])
+    _write_curated(
+        p1,
+        schema1,
+        [
+            {"winner": "P1", "n_rounds": 1, "winning_score": 100, "P1_strategy": "A", "P1_rank": 1},
+        ],
+    )
     p2 = cfg.ingested_rows_curated(2)
     schema2 = expected_schema_for(2)
-    _write_curated(p2, schema2, [
-        {"winner": "P1", "n_rounds": 1, "winning_score": 200, "P1_strategy": "A", "P2_strategy": "B", "P1_rank": 1, "P2_rank": 2},
-    ])
+    _write_curated(
+        p2,
+        schema2,
+        [
+            {
+                "winner": "P1",
+                "n_rounds": 1,
+                "winning_score": 200,
+                "P1_strategy": "A",
+                "P2_strategy": "B",
+                "P1_rank": 1,
+                "P2_rank": 2,
+            },
+        ],
+    )
     calls: list[tuple[list[Path], Path, int]] = []
 
     def _capture(files: list[Path], combined: Path, max_players: int = 12) -> None:
@@ -124,7 +140,8 @@ def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeyp
     combine.run(cfg)
 
     assert any(
-        rec.message == "Combine: inputs produced zero rows" and getattr(rec, "stage", None) == "combine"
+        rec.message == "Combine: inputs produced zero rows"
+        and getattr(rec, "stage", None) == "combine"
         for rec in capinfo.records
     )
     assert not out.exists()

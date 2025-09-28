@@ -124,7 +124,7 @@ PIPELINE_CASES: list[tuple[list[int], int, bool, bool]] = [
 def test_pipeline_matches_default(roll, turn_pre, smart_five, smart_one):
 
     # ---------- (A) single-call pipeline ----------
-    d_score, d_used, d_reroll = default_score( # type: ignore (refactor allows 3 or 5 outputs)
+    d_score, d_used, d_reroll = default_score(  # type: ignore (refactor allows 3 or 5 outputs)
         dice_roll=roll,
         turn_score_pre=turn_pre,
         smart_five=smart_five,
@@ -160,4 +160,3 @@ def test_pipeline_matches_default(roll, turn_pre, smart_five, smart_one):
 
     # ---------- agreement check ----------
     assert (d_score, d_used, d_reroll) == (f_score, f_used, f_reroll)
-    

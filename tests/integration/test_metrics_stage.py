@@ -111,10 +111,7 @@ def test_metrics_run_creates_outputs_and_stamp(tmp_path: Path) -> None:
     assert stamp.exists()
 
     metrics_df = (
-        pq.read_table(metrics_path)
-        .to_pandas()
-        .sort_values("strategy")
-        .reset_index(drop=True)
+        pq.read_table(metrics_path).to_pandas().sort_values("strategy").reset_index(drop=True)
     )
     expected_rows = [
         {

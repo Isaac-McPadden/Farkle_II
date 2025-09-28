@@ -130,4 +130,3 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
 
     expected_total = 2 * games_per_shuffle
     assert total_games == expected_total
-

@@ -62,14 +62,14 @@ def test_limited_consider_opts_grid_and_size():
     strategies, _ = generate_strategy_grid(**opts)
     # hand-computed: base combinations (1020) × 2 ps values
     assert len(strategies) == 2040
-    assert experiment_size(**opts) == 2040 # type: ignore
+    assert experiment_size(**opts) == 2040  # type: ignore
 
 
 def test_consider_true_true_options():
     opts = {"consider_score_opts": [True], "consider_dice_opts": [True]}
     strategies, _ = generate_strategy_grid(**opts)
     assert len(strategies) == 4080  # 1020 base × 4 variants
-    assert experiment_size(**opts) == 4080 # type: ignore
+    assert experiment_size(**opts) == 4080  # type: ignore
 
 
 def test_parallel_simulation():
@@ -128,7 +128,7 @@ def test_experiment_size_subset_options():
     size = experiment_size(consider_score_opts=cs_opts, consider_dice_opts=cd_opts)
     assert size == len(strats)
 
-    
+
 def test_simulate_many_games_from_seeds_matches():
     strats = [ThresholdStrategy(score_threshold=100, dice_threshold=0)]
     rng_seed = 42

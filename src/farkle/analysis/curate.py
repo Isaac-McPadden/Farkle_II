@@ -21,24 +21,23 @@ from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
+
 # ──────────────────────────────────────────────────────────────────────────────
 def _schema_hash(n_players: int) -> str:
     schema = expected_schema_for(n_players)
 
     # ---- get raw bytes ---------------------------------------------------
     pa_serialize = getattr(pa.ipc, "serialize", None)
-    if pa_serialize is not None:                      # PyArrow ≤ 19
+    if pa_serialize is not None:  # PyArrow ≤ 19
         buf_bytes = pa_serialize(schema).to_buffer().to_pybytes()
-    else:                                             # PyArrow ≥ 20
+    else:  # PyArrow ≥ 20
         buf_bytes = schema.serialize().to_pybytes()
 
     # ---- hash ------------------------------------------------------------
     return hashlib.sha256(buf_bytes).hexdigest()
 
 
-def _write_manifest(
-    manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: PipelineCfg
-) -> None:
+def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: PipelineCfg) -> None:
     """Dump a JSON manifest next to the curated parquet."""
     n_players = n_players_from_schema(schema)
     schema_hash = _schema_hash(n_players)
@@ -47,9 +46,7 @@ def _write_manifest(
         "schema_hash": schema_hash,
         "compression": cfg.parquet_codec,
         "config_sha": getattr(cfg, "config_sha", None),
-        "created_at": datetime.now(UTC)
-        .isoformat(timespec="seconds")
-        .replace("+00:00", "Z"),
+        "created_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(manifest_path)) as tmp_path:

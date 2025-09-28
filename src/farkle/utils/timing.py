@@ -29,4 +29,3 @@ def time_block(description: str, log: Callable[[str], None] | None = None) -> It
 
 
 __all__ = ["time_block"]
-

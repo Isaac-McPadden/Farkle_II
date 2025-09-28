@@ -97,9 +97,9 @@ def _decide_continue(
     consider_score, consider_dice
         Flags enabling the above limits.
     require_both
-        When both consider_score and consider_dice flags are set to ``True``, 
-        if ``require_both`` is ``True`` the function continues when *either* 
-        limit is still unmet (``OR``); 
+        When both consider_score and consider_dice flags are set to ``True``,
+        if ``require_both`` is ``True`` the function continues when *either*
+        limit is still unmet (``OR``);
         if ``False`` it continues only when *both* limits are unmet (``AND``).
     """
     # The function asks if we continue while the thresholds dictate when to stop.
@@ -108,7 +108,7 @@ def _decide_continue(
     want_s = consider_score and turn_score < score_threshold  # want higher score
     want_d = consider_dice and dice_left > dice_threshold  # want to spend more dice
     if consider_score and consider_dice:  # the booleans here are counterintuitive but correct
-        return (want_s or want_d) if require_both else (want_s and want_d)  
+        return (want_s or want_d) if require_both else (want_s and want_d)
     if consider_score:
         return want_s
     if consider_dice:
@@ -145,7 +145,7 @@ class ThresholdStrategy:
     auto_hot_dice: bool = False
     run_up_score: bool = False
     favor_dice_or_score: FavorDiceOrScore = FavorDiceOrScore.SCORE
-    
+
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
         if self.smart_one and not self.smart_five:
@@ -177,7 +177,7 @@ class ThresholdStrategy:
         Return **True** to keep rolling, *False** to bank.
 
         Counterintuitively, require_both = True is riskier play
-        
+
         Outcomes of combinations of consider_score = True, consider_dice = True,
         require_both = [True, False] for score_threshold = 300 and dice_threshold = 3:
 
@@ -218,7 +218,6 @@ class ThresholdStrategy:
     # ------------------------------------------------------------------
     # Representation helpers
     # ------------------------------------------------------------------
-
 
     def __str__(self) -> str:  # noqa: D401 - magic method
         cs = "S" if self.consider_score else "-"
