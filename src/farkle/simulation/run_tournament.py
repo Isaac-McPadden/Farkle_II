@@ -157,6 +157,7 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
         row = _play_game(int(gseed), [state.strats[i] for i in idxs])
         winner = row.get("winner_seat") or row.get("winner")
         strat_repr = row[f"{winner}_strategy"]
+        winner = cast(str, winner)
         metrics = _extract_winner_metrics(row, winner)  # pyright: ignore[reportArgumentType]
         wins[strat_repr] += 1
         for label, value in zip(METRIC_LABELS, metrics, strict=True):
@@ -166,9 +167,6 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
             rows.append({"game_seed": int(gseed), **row})
 
     return wins, sums, sq_sums, rows
-
-
-# Legacy helper retained for unit tests --------------------------------------
 
 
 def _play_shuffle(seed: int) -> Counter[str]:

@@ -87,7 +87,7 @@ def writer_thread(
 
 class BoundedQueue:
     def __init__(self, maxsize: int):
-        self.q = queue.Queue(maxsize=maxsize)
+        self.q: queue.Queue[int | None] = queue.Queue(maxsize=maxsize)
 
     def push(self, tbl: pa.Table):
         self.q.put(tbl)

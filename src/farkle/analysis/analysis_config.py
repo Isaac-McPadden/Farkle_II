@@ -134,7 +134,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
         def model_dump(self) -> dict[str, Any]:  # pragma: no cover
             return {}
 
-    _RuntimeBaseModel = _FallbackDataclassBase
+    _RuntimeBaseModel = cast(type[_FallbackBaseModel], _FallbackDataclassBase)
 
 
 class BaseModel(_RuntimeBaseModel):  # type: ignore
