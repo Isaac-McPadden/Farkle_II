@@ -14,6 +14,7 @@ from farkle.simulation.run_tournament import run_tournament
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
 from farkle.utils.logging import setup_info_logging
+from farkle.utils.yaml_helpers import expand_dotted_keys
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,30 +48,73 @@ def load_config(path: str | Path | None, overrides: Sequence[str] | None = None)
 
 
 def normalize_cfg(raw: dict[str, Any], command: str) -> dict[str, Any]:  # noqa: ARG001
-    """Flatten/translate keys so they match what run_tournament / PipelineCfg expect."""
-    # Handle nested sim/io/analysis
-    if "sim" in raw:
-        sim = raw["sim"]
-        if "seed" in sim:
-            raw["global_seed"] = sim.pop("seed")
-        if "n_players" in sim:
-            raw["n_players"] = sim["n_players"]
-        if "num_shuffles" in sim:
-            raw["n_games"] = sim["num_shuffles"] * sim.get("games_per_shuffle", 1)
-        if "row_dir" in sim:
-            raw["row_output_directory"] = sim["row_dir"]
-    if "io" in raw:
-        io = raw["io"]
+    """
+    Accepts:
+      - dotted keys (e.g. 'io.results_dir')
+      - nested keys (e.g. {'io': {'results_dir': ...}})
+      - flat legacy keys
+    Produces:
+      - flat keys needed by run_tournament(**cfg) for 'run'
+      - keys matching PipelineCfg(**cfg) for 'analyze'
+    """
+    # 1) expand dotted -> nested
+    nested = expand_dotted_keys(raw)
+
+    # 2) lift nested into the flat names both sides expect
+    out: dict[str, Any] = dict(nested)  # keep originals too (harmless for PipelineCfg)
+
+    # --- IO / analysis roots ---
+    io = nested.get("io", {})
+    if isinstance(io, dict):
         if "results_dir" in io:
-            raw["results_dir"] = io["results_dir"]
-        if "analysis_dir" in io:
-            raw["analysis_subdir"] = io["analysis_dir"]
-    if "analysis" in raw:
-        a = raw["analysis"]
-        for key in ("run_trueskill", "run_head2head", "run_hgb", "n_jobs", "trueskill_beta"):
-            if key in a:
-                raw[key] = a[key]
-    return raw
+            out["results_dir"] = io["results_dir"]
+        # prefer 'analysis_subdir' if provided in io (your YAML uses this)
+        if "analysis_subdir" in io:
+            out["analysis_subdir"] = io["analysis_subdir"]
+        # fallback mapper in case someone used 'analysis_dir'
+        if "analysis_dir" in io and "analysis_subdir" not in out:
+            out["analysis_subdir"] = io["analysis_dir"]
+
+    # --- analysis toggles & params (PipelineCfg) ---
+    # These keys are read directly by PipelineCfg(**cfg)
+    analysis = nested.get("analysis", {})
+    if isinstance(analysis, dict):
+        for k in ("run_trueskill", "run_head2head", "run_hgb", "n_jobs", "trueskill_beta"):
+            if k in analysis:
+                out[k] = analysis[k]
+
+    # Optional sections (mapped to PipelineCfg fields where applicable)
+    for sect, mapping in (
+        ("ingest",   {"row_group_size": "row_group_size", "n_jobs": "n_jobs_ingest"}),
+        ("combine",  {"max_players": "combine_max_players"}),  # only if consumed later
+        ("metrics",  {"seat_range": "metrics_seat_range"}),
+        ("trueskill",{"beta": "trueskill_beta"}),
+        ("head2head",{}),
+        ("hgb",      {"n_estimators": "hgb_max_iter"}),
+    ):
+        val = nested.get(sect, {})
+        if isinstance(val, dict):
+            for src, dst in mapping.items():
+                if src in val:
+                    out[dst] = val[src]
+
+    # --- simulation (run_tournament) ---
+    sim = nested.get("sim", {})
+    if isinstance(sim, dict):
+        # adjust if your run_tournament signature differs
+        if "n_players" in sim:
+            out["n_players"] = sim["n_players"]
+        if "num_shuffles" in sim:
+            # If you also track games_per_shuffle, multiply here.
+            out["n_games"] = sim["num_shuffles"] * sim.get("games_per_shuffle", 1)
+        if "seed" in sim:
+            out["global_seed"] = sim["seed"]
+        if "n_jobs" in sim:
+            out["n_jobs"] = sim["n_jobs"]
+        if "row_dir" in sim:
+            out["row_output_directory"] = Path(sim["row_dir"]) if not isinstance(sim["row_dir"], Path) else sim["row_dir"]
+
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +204,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     cfg = load_config(args.config, args.overrides)
+    # accept dotted, nested, or flat YAML and normalize for run/analysis
     cfg = normalize_cfg(cfg, args.command)
 
     LOGGER.info(
