@@ -16,7 +16,7 @@ from farkle.analysis.analysis_config import (
     expected_schema_for,
     n_players_from_schema,
 )
-from farkle.app_config import AppConfig
+from farkle.config import AppConfig
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -101,8 +101,13 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
-    return cfg.analysis if isinstance(cfg, AppConfig) else cfg
+def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
+    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
+        return cfg
+    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
+        return cfg.analysis
+    else:
+        return cfg
 
 
 def run(cfg: AppConfig | PipelineCfg) -> None:

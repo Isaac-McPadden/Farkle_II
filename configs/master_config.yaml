@@ -1,0 +1,81 @@
+# farkle_mega_config.yaml — unified config (v2)
+# Drives BOTH simulation and analysis. Defaults are sensible and match your layout.
+
+experiment:
+  name: "default_experiment"
+  seed: 0
+
+io:
+  results_dir: "results_seed_0"   # where per-N run folders are created
+  analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
+
+sim:
+  # Table sizes to run (single-N works by giving a 1-item list)
+  n_players_list: [2, 3, 4, 5, 6, 8, 10, 12]
+
+  # Schedule & runtime controls
+  num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
+  seed: 0                         # RNG seed used by the tournament core
+  n_jobs: null                    # null = auto; otherwise an int
+  expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
+  row_dir: null                   # null => per-N rows under {results}/{N}_players/rows/
+
+  # Optional per-N overrides (keys are strings)
+  per_n:
+    "12":
+      num_shuffles: 200           # example: heavier schedule for 12-player games
+
+  # Benjamini–Hochberg design: when enabled+recompute, overrides num_shuffles per N
+  bh_design:
+    enabled: false
+    power: 0.95
+    alpha: 0.05
+    fdr_q: 0.02
+    detectable_lift: 0.03         # absolute lift in win-rate
+    baseline_rate: 0.50
+    tail: "two_sided"             # "one_sided" | "two_sided"
+    min_games_floor: 2000
+    max_games_cap: null
+    recompute: true               # true => derive per-N num_shuffles from targets
+
+analysis:
+  run_trueskill: true
+  run_head2head: true
+  run_hgb: true
+  log_level: "INFO"
+
+ingest:
+  row_group_size: 64000           # parquet/arrow row group target
+  n_jobs: 1
+
+combine:
+  max_players: 12
+
+metrics:
+  seat_range: [1, 12]
+
+trueskill:
+  beta: 4.166667                  # 25/6
+  tau: 0.1
+  draw_probability: 0.0
+
+head_to_head:
+  n_jobs: 4
+  games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
+
+  # Bonferroni design: when enabled+recompute, updates BOTH per-N schedules and H2H games
+  bonferroni_design:
+    enabled: false
+    power: 0.95
+    alpha: 0.05
+    fdr_q: 0.02                   # kept for parity; typically ignored by strict Bonferroni
+    detectable_lift: 0.03
+    baseline_rate: 0.50
+    tail: "two_sided"
+    min_games_floor: 2000
+    max_games_cap: null
+    recompute: true               # true => derive per-N num_shuffles & games_per_pair
+
+hgb:
+  max_depth: 6
+  n_estimators: 300

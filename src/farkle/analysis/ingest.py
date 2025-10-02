@@ -18,7 +18,7 @@ from farkle.analysis.analysis_config import (
     expected_schema_for,
     load_config,
 )
-from farkle.app_config import AppConfig
+from farkle.config import AppConfig
 from farkle.utils.streaming_loop import run_streaming_shard
 
 LOGGER = logging.getLogger(__name__)
@@ -270,8 +270,13 @@ def _process_block(block: Path, cfg: PipelineCfg) -> int:
     return total
 
 
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
-    return cfg.analysis if isinstance(cfg, AppConfig) else cfg
+def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
+    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
+        return cfg
+    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
+        return cfg.analysis
+    else:
+        return cfg
 
 
 def run(cfg: AppConfig | PipelineCfg) -> None:
@@ -295,10 +300,10 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     total_rows = 0
     if cfg.n_jobs_ingest <= 1:
         for block in blocks:
-            total_rows += _process_block(block, cfg)
+            total_rows += _process_block(block, cfg) # type: ignore
     else:
         with ProcessPoolExecutor(max_workers=cfg.n_jobs_ingest) as pool:
-            futures = [pool.submit(_process_block, block, cfg) for block in blocks]
+            futures = [pool.submit(_process_block, block, cfg) for block in blocks] # type: ignore
             for f in futures:
                 total_rows += f.result()
 

@@ -7,7 +7,7 @@ import logging
 from types import ModuleType
 
 from farkle.analysis.analysis_config import PipelineCfg
-from farkle.app_config import AppConfig
+from farkle.config import AppConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -23,8 +23,13 @@ def _optional_import(module: str) -> ModuleType | None:
         return None
 
 
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> PipelineCfg:
-    return cfg.analysis if isinstance(cfg, AppConfig) else cfg
+def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
+    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
+        return cfg
+    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
+        return cfg.analysis
+    else:
+        return cfg
 
 
 def run_all(cfg: AppConfig | PipelineCfg) -> None:
