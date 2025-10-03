@@ -58,7 +58,7 @@ Options:
 
 ### `analyze`
 Convenience wrapper around the analysis pipeline. Requires configuration
-compatible with `farkle.analysis.analysis_config.PipelineCfg`.
+compatible with `farkle.config.AppConfig`.
 
 Subcommands:
 - `ingest` - load raw CSV data into Parquet shards.

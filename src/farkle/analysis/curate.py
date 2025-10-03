@@ -1,52 +1,41 @@
-# src/farkle/curate.py
+# src/farkle/analysis/curate.py
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.analysis_config import (
-    PipelineCfg,
-    expected_schema_for,
-    n_players_from_schema,
-)
+from farkle.analysis.schema import expected_schema_for, n_players_from_schema
 from farkle.config import AppConfig
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
 def _schema_hash(n_players: int) -> str:
     schema = expected_schema_for(n_players)
-
-    # ---- get raw bytes ---------------------------------------------------
-    pa_serialize = getattr(pa.ipc, "serialize", None)
-    if pa_serialize is not None:  # PyArrow ≤ 19
-        buf_bytes = pa_serialize(schema).to_buffer().to_pybytes()
-    else:  # PyArrow ≥ 20
-        buf_bytes = schema.serialize().to_pybytes()
-
-    # ---- hash ------------------------------------------------------------
-    return hashlib.sha256(buf_bytes).hexdigest()
+    serialise = getattr(pa.ipc, "serialize", None)
+    if serialise is not None:
+        buf = serialise(schema).to_buffer().to_pybytes()
+    else:
+        buf = schema.serialize().to_pybytes()
+    return hashlib.sha256(buf).hexdigest()
 
 
-def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: PipelineCfg) -> None:
-    """Dump a JSON manifest next to the curated parquet."""
+def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: AppConfig) -> None:
     n_players = n_players_from_schema(schema)
-    schema_hash = _schema_hash(n_players)
     payload: dict[str, Any] = {
         "row_count": rows,
-        "schema_hash": schema_hash,
-        "compression": cfg.parquet_codec,
-        "config_sha": getattr(cfg, "config_sha", None),
-        "created_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "schema_hash": _schema_hash(n_players),
+        "compression": cfg.ingest.parquet_codec,
+        "config_sha": cfg.config_sha,
+        "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(manifest_path)) as tmp_path:
@@ -63,29 +52,30 @@ def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: P
 
 
 def _already_curated(out_file: Path, manifest: Path) -> bool:
-    """Return True if both parquet & manifest exist and appear consistent.
-    Prevents redoing analyses. Expected behavior is to return a silent False.
-    """
     if not (out_file.exists() and manifest.exists()):
         return False
     try:
         meta = json.loads(manifest.read_text())
-    except Exception:  # corrupt JSON?  redo
-        return False
-    expected_rows = meta.get("row_count")
-    expected_hash = meta.get("schema_hash")
-    if expected_rows is None or expected_hash is None:
+    except Exception:
         return False
     try:
-        md = pq.read_metadata(out_file)
-        parquet_rows = md.num_rows
-        schema = md.schema.to_arrow_schema()
+        expected_rows = int(meta.get("row_count", 0))
+        expected_hash = meta.get("schema_hash")
+    except Exception:
+        return False
+    if expected_hash in (None, ""):
+        return False
+    try:
+        metadata = pq.read_metadata(out_file)
+        parquet_rows = metadata.num_rows
+        schema = metadata.schema.to_arrow_schema()
     except Exception:
         return False
     if parquet_rows != expected_rows:
         return False
-    n_players = n_players_from_schema(schema)
-    actual_hash = _schema_hash(n_players)
+    if parquet_rows == 0 and expected_rows == 0:
+        return True
+    actual_hash = _schema_hash(n_players_from_schema(schema))
     if actual_hash != expected_hash:
         LOGGER.info(
             "Curate schema mismatch detected",
@@ -100,66 +90,54 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
     return True
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
-    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
-        return cfg
-    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
-        return cfg.analysis
-    else:
-        return cfg
+def run(cfg: AppConfig) -> None:
+    """Promote raw parquet files produced by :func:`farkle.analysis.ingest.run`."""
 
-
-def run(cfg: AppConfig | PipelineCfg) -> None:
-    cfg = _pipeline_cfg(cfg)
-    """Curate raw parquet files produced by :func:`farkle.ingest.run`."""
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ensure existing curated files always have a manifest
     for curated in sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet")):
         n = int(curated.parent.name.removesuffix("p"))
         manifest = cfg.manifest_for(n)
         if not manifest.exists():
             raise FileNotFoundError(f"missing manifest for {curated}")
 
-    finalized_files = 0
-    finalized_rows = 0
+    finalised_files = 0
+    finalised_rows = 0
 
-    # New layout: analysis/data/*p/*_ingested_rows.raw.parquet
-    raw_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.raw.parquet"))
+    raw_files = sorted(cfg.data_dir.glob("*p/*_ingested_rows.raw.parquet"))
     if raw_files:
         for raw_file in raw_files:
             n = int(raw_file.parent.name.removesuffix("p"))
             dst_file = cfg.ingested_rows_curated(n)
             manifest = cfg.manifest_for(n)
 
-            md = pq.read_metadata(raw_file)
-            schema = md.schema.to_arrow_schema()
-            _write_manifest(manifest, rows=md.num_rows, schema=schema, cfg=cfg)
+            metadata = pq.read_metadata(raw_file)
+            schema = metadata.schema.to_arrow_schema()
+            _write_manifest(manifest, rows=metadata.num_rows, schema=schema, cfg=cfg)
 
             raw_file.replace(dst_file)
             LOGGER.info(
-                "Curate: parquet finalized",
+                "Curate: parquet finalised",
                 extra={
                     "stage": "curate",
                     "path": dst_file.name,
-                    "rows": md.num_rows,
-                    "row_groups": md.num_row_groups,
+                    "rows": metadata.num_rows,
+                    "row_groups": metadata.num_row_groups,
                 },
             )
-            finalized_files += 1
-            finalized_rows += md.num_rows
+            finalised_files += 1
+            finalised_rows += metadata.num_rows
+
         LOGGER.info(
             "Curate finished",
             extra={
                 "stage": "curate",
-                "files": finalized_files,
-                "rows": finalized_rows,
+                "files": finalised_files,
+                "rows": finalised_rows,
             },
         )
         return
 
-    # Legacy single-file layout
     raw_file = cfg.curated_parquet.with_suffix(".raw.parquet")
     dst_file = cfg.curated_parquet
     manifest = cfg.analysis_dir / cfg.manifest_name
@@ -171,30 +149,34 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
         )
         LOGGER.info(
             "Curate finished",
-            extra={"stage": "curate", "files": finalized_files, "rows": finalized_rows},
+            extra={"stage": "curate", "files": finalised_files, "rows": finalised_rows},
         )
         return
 
     if not raw_file.exists():
         raise FileNotFoundError(raw_file)
 
-    md = pq.read_metadata(raw_file)
-    schema = md.schema.to_arrow_schema()
-    _write_manifest(manifest, rows=md.num_rows, schema=schema, cfg=cfg)
+    metadata = pq.read_metadata(raw_file)
+    schema = metadata.schema.to_arrow_schema()
+    _write_manifest(manifest, rows=metadata.num_rows, schema=schema, cfg=cfg)
 
     raw_file.replace(dst_file)
     LOGGER.info(
-        "Curate: parquet finalized",
+        "Curate: parquet finalised",
         extra={
             "stage": "curate",
             "path": dst_file.name,
-            "rows": md.num_rows,
-            "row_groups": md.num_row_groups,
+            "rows": metadata.num_rows,
+            "row_groups": metadata.num_row_groups,
         },
     )
-    finalized_files += 1
-    finalized_rows += md.num_rows
+    finalised_files += 1
+    finalised_rows += metadata.num_rows
     LOGGER.info(
         "Curate finished",
-        extra={"stage": "curate", "files": finalized_files, "rows": finalized_rows},
+        extra={"stage": "curate", "files": finalised_files, "rows": finalised_rows},
     )
+
+
+
+

@@ -1,4 +1,4 @@
-# src/farkle/combine.py
+﻿# src/farkle/analysis/combine.py
 from __future__ import annotations
 
 import logging
@@ -7,8 +7,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
 from farkle.analysis.checks import check_post_combine
+from farkle.analysis.schema import expected_schema_for
 from farkle.config import AppConfig
 from farkle.utils.streaming_loop import run_streaming_shard
 
@@ -16,31 +16,19 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
-    cols = []
-    for f in target:
-        if f.name in tbl.column_names:
-            cols.append(tbl[f.name].cast(f.type))
+    columns = []
+    for field in target:
+        if field.name in tbl.column_names:
+            columns.append(tbl[field.name].cast(field.type))
         else:
-            cols.append(pa.nulls(len(tbl), f.type))
-    return pa.table(cols, names=target.names)
+            columns.append(pa.nulls(len(tbl), field.type))
+    return pa.table(columns, names=target.names)
 
 
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
-    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
-        return cfg
-    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
-        return cfg.analysis
-    else:
-        return cfg
+def run(cfg: AppConfig) -> None:
+    """Concatenate all per-N parquet files into a superset with null padding."""
 
-
-def run(cfg: AppConfig | PipelineCfg) -> None:
-    cfg = _pipeline_cfg(cfg)
-    """Concatenate all per-N parquets into a 12-seat superset with null padding.
-
-    Streaming implementation: copy row-groups into a single writer to bound RAM.
-    """
-    files: list[Path] = sorted((cfg.data_dir).glob("*p/*_ingested_rows.parquet"))
+    files: list[Path] = sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet"))
     if not files:
         LOGGER.info(
             "Combine: no inputs discovered",
@@ -48,14 +36,13 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
         )
         return
 
-    target = expected_schema_for(12)  # superset up to P12_*
+    target = expected_schema_for(cfg.combine.max_players)
     out_dir = cfg.data_dir / "all_n_players_combined"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / "all_ingested_rows.parquet"
+    out = out_dir / cfg.analysis.combined_filename
 
-    # Up-to-date guard: if output is newer than all inputs, skip
     if out.exists():
-        newest = max((p.stat().st_mtime for p in files), default=0.0)
+        newest = max((path.stat().st_mtime for path in files), default=0.0)
         if out.stat().st_mtime >= newest:
             LOGGER.info(
                 "Combine: output up-to-date",
@@ -67,16 +54,16 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
 
     def _iter_row_groups():
         nonlocal total
-        for p in files:
-            pf = pq.ParquetFile(p)
-            for i in range(pf.num_row_groups):
-                t = pf.read_row_group(i)  # small chunk in RAM
-                if t.num_rows == 0:
+        for path in files:
+            parquet = pq.ParquetFile(path)
+            for index in range(parquet.num_row_groups):
+                table = parquet.read_row_group(index)
+                if table.num_rows == 0:
                     continue
-                if t.schema.names != target.names:
-                    t = _pad_to_schema(t, target)  # pad/reorder lazily
-                total += t.num_rows
-                yield t
+                if table.schema.names != target.names:
+                    table = _pad_to_schema(table, target)
+                total += table.num_rows
+                yield table
 
     batches = _iter_row_groups()
     first = next(batches, None)
@@ -102,18 +89,19 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
         manifest_path=str(manifest_path),
         schema=target,
         batch_iter=_all_batches(),
-        row_group_size=cfg.row_group_size,
-        compression=cfg.parquet_codec,
+        row_group_size=cfg.ingest.row_group_size,
+        compression=cfg.ingest.parquet_codec,
         manifest_extra={
             "path": out.name,
             "source_files": len(files),
         },
     )
 
-    # Sanity check: file opens and row-count matches
-    pf_out = pq.ParquetFile(out)
-    if pf_out.metadata.num_rows != total:
-        raise RuntimeError(f"combine: row-count mismatch {pf_out.metadata.num_rows} != {total}")
+    parquet_out = pq.ParquetFile(out)
+    if parquet_out.metadata.num_rows != total:
+        raise RuntimeError(
+            f"combine: row-count mismatch {parquet_out.metadata.num_rows} != {total}",
+        )
     if pq.read_schema(out).names != target.names:
         raise RuntimeError("combine: output schema mismatch")
 
@@ -126,4 +114,4 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
             "manifest": str(manifest_path),
         },
     )
-    check_post_combine(files, out)
+    check_post_combine(files, out, max_players=cfg.combine.max_players)

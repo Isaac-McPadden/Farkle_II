@@ -1,14 +1,15 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
+from pathlib import Path
+from typing import List
 
 import pytest
-import yaml
 
-pytest.importorskip("pydantic")
 pytest.importorskip("pyarrow")
 
 import farkle.cli.main as cli_main
+from farkle.config import AppConfig
 
 
 @pytest.fixture(autouse=True)
@@ -26,13 +27,24 @@ def preserve_root_logger():
     root.handlers[:] = handlers
 
 
-def test_main_dispatches_run(monkeypatch, tmp_path, preserve_root_logger):
+def test_main_dispatches_run(monkeypatch, tmp_path: Path, preserve_root_logger):
+    cfg = AppConfig()
+    cfg.sim.n_players_list = [4]
+
+    def fake_build(config_path, overrides):  # noqa: ANN001
+        assert config_path is None
+        assert overrides == []
+        return cfg
+
     recorded: dict[str, object] = {}
 
-    def fake_run_tournament(**kwargs):
-        recorded.update(kwargs)
+    def fake_run_single(cfg_obj, n_players):  # noqa: ANN001
+        recorded["cfg"] = cfg_obj
+        recorded["n"] = n_players
 
-    monkeypatch.setattr(cli_main, "run_tournament", fake_run_tournament)
+    monkeypatch.setattr(cli_main, "_build_config", fake_build)
+    monkeypatch.setattr(cli_main.runner, "run_single_n", fake_run_single)
+    monkeypatch.setattr(cli_main.runner, "run_multi", lambda cfg_obj: (_ for _ in ()).throw(RuntimeError("run_multi should not be called")))
 
     cli_main.main(
         [
@@ -45,39 +57,38 @@ def test_main_dispatches_run(monkeypatch, tmp_path, preserve_root_logger):
         ]
     )
 
-    assert recorded["collect_metrics"] is True
-    assert recorded["row_output_directory"] == tmp_path
+    assert recorded["cfg"] is cfg
+    assert recorded["n"] == 4
+    assert cfg.sim.expanded_metrics is True
+    assert cfg.sim.row_dir == tmp_path
     assert logging.getLogger().level == logging.DEBUG
-
 
 def test_main_dispatches_time(monkeypatch, preserve_root_logger):
     called = False
 
-    def fake_measure_sim_times():
+    def fake_measure():
         nonlocal called
         called = True
 
-    monkeypatch.setattr(cli_main, "measure_sim_times", fake_measure_sim_times)
+    monkeypatch.setattr(cli_main, "measure_sim_times", fake_measure)
 
     cli_main.main(["time"])
 
     assert called is True
 
-
 def test_main_dispatches_watch(monkeypatch, preserve_root_logger):
     captured: dict[str, object] = {}
 
-    def fake_watch_game(*, seed):
+    def fake_watch(*, seed):
         captured["seed"] = seed
 
-    monkeypatch.setattr(cli_main, "watch_game", fake_watch_game)
+    monkeypatch.setattr(cli_main, "watch_game", fake_watch)
 
     cli_main.main(["watch", "--seed", "123"])
 
     assert captured == {"seed": 123}
 
-
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(
     "subcommand, expected_order",
     [
         ("ingest", ["ingest"]),
@@ -87,14 +98,18 @@ def test_main_dispatches_watch(monkeypatch, preserve_root_logger):
         ("pipeline", ["ingest", "curate", "combine", "metrics"]),
     ],
 )
-def test_main_dispatches_analyze_variants(
-    monkeypatch, subcommand, expected_order, preserve_root_logger
-):
-    calls: list[tuple[str, object]] = []
+def test_main_dispatches_analyze_variants(monkeypatch, subcommand, expected_order, preserve_root_logger):
+    cfg = AppConfig()
+    cfg.sim.n_players_list = [2]
+
+    monkeypatch.setattr(cli_main, "_build_config", lambda *args, **kwargs: cfg)
+
+    calls: List[str] = []
 
     def make_recorder(name: str):
-        def _recorder(cfg: object) -> None:
-            calls.append((name, cfg))
+        def _recorder(cfg_obj: AppConfig) -> None:
+            assert cfg_obj is cfg
+            calls.append(name)
 
         return _recorder
 
@@ -104,74 +119,7 @@ def test_main_dispatches_analyze_variants(
 
     cli_main.main(["analyze", subcommand])
 
-    assert [name for name, _ in calls] == expected_order
-
-    def _as_pipeline_cfg(obj: object):
-        """
-        Convert whatever the CLI passes into a PipelineCfg-like object
-        without relying on class identity (suite-safe).
-        Accepts:
-          - PipelineCfg-like objects (have .results_dir & .analysis_subdir)
-          - AppConfig-like objects (have .analysis)
-          - Objects exposing .to_pipeline_cfg()
-        """
-        # Already a PipelineCfg-like thing? (duck-typed, not isinstance)
-        if hasattr(obj, "results_dir") and hasattr(obj, "analysis_subdir"):
-            return obj
-        # AppConfig-like wrapper?
-        analysis_attr = getattr(obj, "analysis", None)
-        if analysis_attr is not None and hasattr(analysis_attr, "results_dir"):
-            return analysis_attr
-        # Explicit converter?
-        to_pipeline = getattr(obj, "to_pipeline_cfg", None)
-        if callable(to_pipeline):
-            return to_pipeline()
-        raise AssertionError(f"Unexpected config shape: {type(obj).__name__}")
-
-    # Suite-safe: just prove each cfg is convertible to a PipelineCfg-like object
-    converted = [_as_pipeline_cfg(cfg) for _, cfg in calls]  # raises if not convertible
-    # Light duck-typing sanity: must have fields the pipeline actually uses
-    for pcfg in converted:
-        assert hasattr(pcfg, "results_dir"), "pipeline cfg should expose results_dir"
-
-
-def test_apply_override_creates_nested_keys():
-    cfg: dict[str, object] = {}
-    cli_main._apply_override(cfg, "sim.n_players=6")
-    cli_main._apply_override(cfg, "sim.options.collect_metrics=true")
-    cli_main._apply_override(cfg, "analysis.log_level=debug")
-
-    assert cfg == {
-        "sim": {"n_players": 6, "options": {"collect_metrics": True}},
-        "analysis": {"log_level": "debug"},
-    }
-
-
-def test_load_config_with_overrides(tmp_path):
-    cfg_path = tmp_path / "cfg.yaml"
-    cfg_path.write_text(
-        yaml.safe_dump(
-            {
-                "global_seed": 7,
-                "nested": {"value": 1},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    cfg = cli_main.load_config(cfg_path, overrides=["nested.extra=2", "new.option='text'"])
-
-    assert cfg["global_seed"] == 7
-    assert cfg["nested"] == {"value": 1, "extra": 2}
-    assert cfg["new"] == {"option": "text"}
-
-
-def test_load_config_rejects_non_mapping(tmp_path):
-    cfg_path = tmp_path / "cfg.yaml"
-    cfg_path.write_text(yaml.safe_dump([1, 2, 3]), encoding="utf-8")
-
-    with pytest.raises(TypeError):
-        cli_main.load_config(cfg_path)
+    assert calls == expected_order
 
 
 def test_parse_level_accepts_string(preserve_root_logger):
@@ -182,7 +130,6 @@ def test_parse_level_accepts_string(preserve_root_logger):
     root.setLevel(level)
 
     assert root.level == logging.DEBUG
-
 
 def test_parse_level_accepts_int(preserve_root_logger):
     root = logging.getLogger()

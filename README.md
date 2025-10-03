@@ -103,7 +103,7 @@ the API as shown above. See the unit tests and module-level docstrings for more
 examples.
 
 ## TrueSkill Ratings
-Provide a pipeline configuration compatible with `farkle.analysis.analysis_config.PipelineCfg`, then run:
+Provide a Unified configuration compatible with `farkle.config.AppConfig`, then run:
 
 ```bash
 farkle --config analysis/pipeline.yaml analyze pipeline

@@ -1,14 +1,15 @@
-import os
+﻿import os
 import time
 from pathlib import Path
 
 from farkle.analysis import trueskill
-from farkle.analysis.analysis_config import PipelineCfg
+from farkle.config import AppConfig
 
 
-def _setup(tmp_path: Path) -> tuple[PipelineCfg, Path, Path]:
-    cfg = PipelineCfg(results_dir=tmp_path)
-    legacy = cfg.analysis_dir / "data" / cfg.curated_rows_name
+def _setup(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
+    cfg = AppConfig()
+    cfg.io.results_dir = tmp_path
+    legacy = cfg.analysis_dir / "data" / cfg.analysis.curated_rows_name
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("data")
     tiers = cfg.analysis_dir / "tiers.json"
@@ -23,7 +24,7 @@ def test_run_skips_when_tiers_up_to_date(tmp_path, monkeypatch):
     os.utime(tiers, (now + 10, now + 10))
 
     def boom(**kwargs):  # noqa: ARG001
-        raise AssertionError("should not call run_trueskill.run_trueskill")
+        raise AssertionError("run_trueskill.run_trueskill should not execute when outputs are fresh")
 
     monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill", boom)
 

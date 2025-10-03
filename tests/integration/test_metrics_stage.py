@@ -8,7 +8,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from farkle.analysis import metrics
-from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
+from farkle.analysis.schema import expected_schema_for`r`nfrom farkle.config import AppConfig
 
 
 def _sample_combined_table() -> pa.Table:
@@ -77,8 +77,9 @@ def _sample_combined_table() -> pa.Table:
     return pa.Table.from_pylist(rows, schema=schema)
 
 
-def _prepare_metrics_inputs(tmp_path: Path) -> tuple[PipelineCfg, Path]:
-    cfg = PipelineCfg(results_dir=tmp_path / "results")
+def _prepare_metrics_inputs(tmp_path: Path) -> tuple[AppConfig, Path]:
+    cfg = AppConfig()
+    cfg.io.results_dir = tmp_path / "results"
     combined_dir = cfg.analysis_dir / "data" / "all_n_players_combined"
     combined_dir.mkdir(parents=True, exist_ok=True)
     table = _sample_combined_table()
@@ -100,10 +101,10 @@ def test_metrics_run_creates_outputs_and_stamp(tmp_path: Path) -> None:
     metrics.run(cfg)
 
     analysis_dir = cfg.analysis_dir
-    metrics_path = analysis_dir / cfg.metrics_name
+    metrics_path = analysis_dir / cfg.analysis.metrics_filename
     seat_csv = analysis_dir / "seat_advantage.csv"
     seat_parquet = analysis_dir / "seat_advantage.parquet"
-    stamp = analysis_dir / "metrics.done.json"
+    stamp = analysis_dir / (cfg.analysis.metrics_filename + cfg.analysis.done_suffix)
 
     assert metrics_path.exists()
     assert seat_csv.exists()
@@ -203,14 +204,14 @@ def test_metrics_run_short_circuits_when_outputs_current(
     cfg, data_file = _prepare_metrics_inputs(tmp_path)
     analysis_dir = cfg.analysis_dir
 
-    metrics_path = analysis_dir / cfg.metrics_name
+    metrics_path = analysis_dir / cfg.analysis.metrics_filename
     seat_csv = analysis_dir / "seat_advantage.csv"
     seat_parquet = analysis_dir / "seat_advantage.parquet"
     for path in (metrics_path, seat_csv, seat_parquet):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"placeholder for {path.name}")
 
-    stamp = analysis_dir / "metrics.done.json"
+    stamp = analysis_dir / (cfg.analysis.metrics_filename + cfg.analysis.done_suffix)
     stamp.parent.mkdir(parents=True, exist_ok=True)
     stamp.write_text(
         json.dumps(
@@ -251,3 +252,4 @@ def test_metrics_run_short_circuits_when_outputs_current(
     metrics.run(cfg)
 
     assert any("Metrics: outputs up-to-date" in rec.getMessage() for rec in caplog.records)
+
