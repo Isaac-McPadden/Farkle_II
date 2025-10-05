@@ -48,6 +48,59 @@ class AppConfig:
     sim: SimConfig = field(default_factory=SimConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
 
+    # --- Minimal convenience properties so analysis modules don't need PipelineCfg ---
+    @property
+    def results_dir(self) -> Path:
+        return self.io.results_dir
+
+    @property
+    def analysis_dir(self) -> Path:
+        return self.io.analysis_dir
+
+    @property
+    def data_dir(self) -> Path:
+        # analysis root for per-N curated/ingested artifacts
+        return self.analysis_dir / "data"
+
+    # Ingest/streaming knobs used by ingest/combine (keep simple defaults)
+    @property
+    def row_group_size(self) -> int:
+        return 64_000
+
+    @property
+    def parquet_codec(self) -> str:
+        return "zstd"
+
+    @property
+    def n_jobs_ingest(self) -> int:
+        # separate from analysis.n_jobs; keep conservative default
+        return 1
+
+    # Batch sizing used by metrics
+    @property
+    def batch_rows(self) -> int:
+        return 100_000
+
+    # Standardized output names (keep centralized)
+    @property
+    def metrics_name(self) -> str:
+        return "metrics.parquet"
+
+    # Canonical combined parquet path after "combine" step
+    @property
+    def curated_parquet(self) -> Path:
+        return self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
+
+    # Per-N file helpers used by ingest/curate/metrics
+    def manifest_for(self, n: int) -> Path:
+        return self.data_dir / f"{n}p" / f"{n}p_ingested_rows.manifest.jsonl"
+
+    def ingested_rows_raw(self, n: int) -> Path:
+        return self.data_dir / f"{n}p" / f"{n}p_ingested_rows.raw.parquet"
+
+    def ingested_rows_curated(self, n: int) -> Path:
+        return self.data_dir / f"{n}p" / f"{n}p_ingested_rows.parquet"
+
 
 def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
     """Recursively merge ``overlay`` onto ``base`` and return a new mapping."""
