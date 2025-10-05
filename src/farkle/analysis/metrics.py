@@ -12,7 +12,6 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 
-from farkle.analysis.analysis_config import PipelineCfg
 from farkle.analysis.checks import check_pre_metrics
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
@@ -75,17 +74,9 @@ def _update_batch_counters(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
-    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
-        return cfg
-    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
-        return cfg.analysis
-    else:
-        return cfg
 
 
-def run(cfg: AppConfig | PipelineCfg) -> None:
-    cfg = _pipeline_cfg(cfg)
+def run(cfg: AppConfig) -> None:
     """Compute win statistics and seat advantage tables.
 
     Outputs
