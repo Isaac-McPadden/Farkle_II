@@ -12,7 +12,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.analysis.analysis_config import (
-    PipelineCfg,
     expected_schema_for,
     n_players_from_schema,
 )
@@ -37,7 +36,7 @@ def _schema_hash(n_players: int) -> str:
     return hashlib.sha256(buf_bytes).hexdigest()
 
 
-def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: PipelineCfg) -> None:
+def _write_manifest(manifest_path: Path, *, rows: int, schema: pa.Schema, cfg: AppConfig) -> None:
     """Dump a JSON manifest next to the curated parquet."""
     n_players = n_players_from_schema(schema)
     schema_hash = _schema_hash(n_players)
@@ -101,17 +100,7 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
-    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
-        return cfg
-    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
-        return cfg.analysis
-    else:
-        return cfg
-
-
-def run(cfg: AppConfig | PipelineCfg) -> None:
-    cfg = _pipeline_cfg(cfg)
+def run(cfg: AppConfig) -> None:
     """Curate raw parquet files produced by :func:`farkle.ingest.run`."""
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -162,7 +151,7 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     # Legacy single-file layout
     raw_file = cfg.curated_parquet.with_suffix(".raw.parquet")
     dst_file = cfg.curated_parquet
-    manifest = cfg.analysis_dir / cfg.manifest_name
+    manifest = cfg.analysis_dir / "manifest.jsonl"
 
     if _already_curated(dst_file, manifest):
         LOGGER.info(
