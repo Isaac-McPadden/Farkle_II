@@ -3,23 +3,12 @@ from __future__ import annotations
 import logging
 
 from farkle.analysis import run_hgb as _hgb
-from farkle.analysis.analysis_config import PipelineCfg
 from farkle.config import AppConfig
 
 LOGGER = logging.getLogger(__name__)
 
 
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
-    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
-        return cfg
-    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
-        return cfg.analysis
-    else:
-        return cfg
-
-
-def run(cfg: AppConfig | PipelineCfg) -> None:
-    cfg = _pipeline_cfg(cfg)
+def run(cfg: AppConfig) -> None:
     out = cfg.analysis_dir / "hgb_importance.json"
     if out.exists() and out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
         LOGGER.info(
