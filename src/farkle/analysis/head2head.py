@@ -3,23 +3,12 @@ from __future__ import annotations
 import logging
 
 from farkle.analysis import run_bonferroni_head2head as _h2h
-from farkle.analysis.analysis_config import PipelineCfg
 from farkle.config import AppConfig
 
 LOGGER = logging.getLogger(__name__)
 
 
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
-    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
-        return cfg
-    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
-        return cfg.analysis
-    else:
-        return cfg
-
-
-def run(cfg: AppConfig | PipelineCfg) -> None:
-    cfg = _pipeline_cfg(cfg)
+def run(cfg: AppConfig) -> None:
     out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
     if out.exists() and out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
         LOGGER.info(
@@ -33,11 +22,11 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
         extra={
             "stage": "head2head",
             "results_dir": str(cfg.results_dir),
-            "n_jobs": cfg.n_jobs,
+            "n_jobs": cfg.analysis.n_jobs,
         },
     )
     try:
-        _h2h.run_bonferroni_head2head(root=cfg.results_dir, n_jobs=cfg.n_jobs)
+        _h2h.run_bonferroni_head2head(root=cfg.results_dir, n_jobs=cfg.analysis.n_jobs)
     except Exception as e:  # noqa: BLE001
         # Strategy strings in small test fixtures may not be parseable by the
         # legacy head-to-head script. Rather than abort the entire analytics
