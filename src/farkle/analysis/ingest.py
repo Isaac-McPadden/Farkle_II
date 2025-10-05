@@ -14,7 +14,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.analysis.analysis_config import (
-    PipelineCfg,
     expected_schema_for,
     load_config,
 )
@@ -152,7 +151,7 @@ def _n_from_block(name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
-def _process_block(block: Path, cfg: PipelineCfg) -> int:
+def _process_block(block: Path, cfg: AppConfig) -> int:
     """Process a single ``<N>_players`` block."""
     n = _n_from_block(block.name)
     LOGGER.info(
@@ -270,17 +269,7 @@ def _process_block(block: Path, cfg: PipelineCfg) -> int:
     return total
 
 
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
-    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
-        return cfg
-    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
-        return cfg.analysis
-    else:
-        return cfg
-
-
-def run(cfg: AppConfig | PipelineCfg) -> None:
-    cfg = _pipeline_cfg(cfg)
+def run(cfg: AppConfig) -> None:
     LOGGER.info(
         "Ingest started",
         extra={
@@ -300,10 +289,10 @@ def run(cfg: AppConfig | PipelineCfg) -> None:
     total_rows = 0
     if cfg.n_jobs_ingest <= 1:
         for block in blocks:
-            total_rows += _process_block(block, cfg) # type: ignore
+            total_rows += _process_block(block, cfg)
     else:
         with ProcessPoolExecutor(max_workers=cfg.n_jobs_ingest) as pool:
-            futures = [pool.submit(_process_block, block, cfg) for block in blocks] # type: ignore
+            futures = [pool.submit(_process_block, block, cfg) for block in blocks]
             for f in futures:
                 total_rows += f.result()
 
