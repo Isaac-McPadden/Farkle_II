@@ -7,7 +7,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
+from farkle.analysis.analysis_config import expected_schema_for
 from farkle.analysis.checks import check_post_combine
 from farkle.config import AppConfig
 from farkle.utils.streaming_loop import run_streaming_shard
@@ -25,17 +25,7 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
     return pa.table(cols, names=target.names)
 
 
-def _pipeline_cfg(cfg: AppConfig | PipelineCfg) -> AppConfig | PipelineCfg:
-    if hasattr(cfg, "results_dir") and hasattr(cfg, "analysis_dir") or isinstance(cfg, PipelineCfg):
-        return cfg
-    elif hasattr(cfg, "analysis") and isinstance(cfg.analysis, PipelineCfg):
-        return cfg.analysis
-    else:
-        return cfg
-
-
-def run(cfg: AppConfig | PipelineCfg) -> None:
-    cfg = _pipeline_cfg(cfg)
+def run(cfg: AppConfig) -> None:
     """Concatenate all per-N parquets into a 12-seat superset with null padding.
 
     Streaming implementation: copy row-groups into a single writer to bound RAM.
