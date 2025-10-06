@@ -1,4 +1,4 @@
-# src/farkle/ingest.py
+﻿# src/farkle/ingest.py
 from __future__ import annotations
 
 import argparse
@@ -13,11 +13,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.analysis_config import (
-    expected_schema_for,
-    load_config,
-)
-from farkle.config import AppConfig
+from farkle.analysis.analysis_config import expected_schema_for
+from farkle.config import AppConfig, load_app_config
 from farkle.utils.streaming_loop import run_streaming_shard
 
 LOGGER = logging.getLogger(__name__)
@@ -312,8 +309,8 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI 
         "--config", type=Path, default=Path("analysis_config.yaml"), help="Path to YAML config"
     )
     args = parser.parse_args(argv)
-    cfg, _ = load_config(Path(args.config))
-    run(cfg.to_pipeline_cfg())
+    app_cfg = load_app_config(Path(args.config))
+    run(app_cfg)
 
 
 if __name__ == "__main__":  # pragma: no cover

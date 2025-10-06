@@ -1,4 +1,4 @@
-# src/farkle/cly/main.py
+﻿# src/farkle/cly/main.py
 """Command line interface for the :mod:`farkle` package."""
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ from typing import Any, Sequence
 import yaml
 
 from farkle.analysis import combine, curate, ingest, metrics
+from farkle.config import AppConfig, apply_dot_overrides, load_app_config
 from farkle.simulation import runner
-from farkle.config import load_app_config, apply_dot_overrides, AppConfig
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
 from farkle.utils.logging import setup_info_logging

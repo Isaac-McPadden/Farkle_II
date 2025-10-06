@@ -1,24 +1,23 @@
+﻿# src/farkle/analysis/pipeline.py
 from __future__ import annotations
 
 import argparse
-import json
+import dataclasses
+import hashlib
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Sequence
+from typing import Callable, Sequence
 
 import yaml
 from tqdm import tqdm
 
 from farkle import analysis
 from farkle.analysis import combine, curate, ingest, metrics
-from farkle.analysis.analysis_config import load_config
-from farkle.app_config import AppConfig
+from farkle.config import AppConfig, load_app_config
+from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
-
-if TYPE_CHECKING:  # for type checkers without creating runtime deps
-    from farkle.analysis.analysis_config import PipelineCfg  # noqa: F401
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -38,42 +37,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         "Analysis pipeline start",
         extra={"stage": "pipeline", "command": args.command, "config": str(args.config)},
     )
-    cfg, cfg_sha = load_config(Path(args.config))
-    app_cfg = AppConfig(analysis=cfg.to_pipeline_cfg())
+    app_cfg = load_app_config(Path(args.config))
 
-    analysis_dir = app_cfg.analysis.analysis_dir
+    analysis_dir = app_cfg.analysis_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
     resolved = analysis_dir / "config.resolved.yaml"
+    # Best-effort: write out the resolved (merged) config we actually used
+    resolved_dict = dataclasses.asdict(app_cfg)
+    resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     with atomic_path(str(resolved)) as tmp_path:
-        Path(tmp_path).write_text(yaml.safe_dump(cfg.model_dump(), sort_keys=True))
+        Path(tmp_path).write_text(resolved_yaml)
 
-    manifest_path = analysis_dir / app_cfg.analysis.manifest_name
-    manifest = {}
-    if manifest_path.exists():
-        try:
-            manifest = json.loads(manifest_path.read_text())
-        except Exception:  # noqa: BLE001
-            manifest = {}
-    manifest["config_sha"] = cfg_sha
-    with atomic_path(str(manifest_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(manifest, indent=2))
+    # NDJSON manifest (append-only)
+    manifest_path = analysis_dir / app_cfg.manifest_name
+    config_sha = hashlib.sha256(resolved_yaml.encode("utf-8")).hexdigest()
+    append_manifest_line(
+        manifest_path,
+        {
+            "event": "run_start",
+            "command": args.command,
+            "config_sha": config_sha,
+            "resolved_config": str(resolved),
+            "results_dir": str(app_cfg.results_dir),
+            "analysis_dir": str(analysis_dir),
+        },
+    )
 
-    if args.command == "ingest":
-        LOGGER.info("Pipeline step: ingest", extra={"stage": "pipeline"})
-        ingest.run(app_cfg)
-    elif args.command == "curate":
-        LOGGER.info("Pipeline step: curate", extra={"stage": "pipeline"})
-        curate.run(app_cfg)
-    elif args.command == "combine":
-        LOGGER.info("Pipeline step: combine", extra={"stage": "pipeline"})
-        combine.run(app_cfg)
-    elif args.command == "metrics":
-        LOGGER.info("Pipeline step: metrics", extra={"stage": "pipeline"})
-        metrics.run(app_cfg)
-    elif args.command == "analytics":
-        LOGGER.info("Pipeline step: analytics", extra={"stage": "pipeline"})
-        analysis.run_all(app_cfg)
-    elif args.command == "all":
+    # Build the step plan
+    if args.command == "all":
         steps: list[tuple[str, Callable[[AppConfig], None]]] = [
             ("ingest", ingest.run),
             ("curate", curate.run),
@@ -81,14 +72,33 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("metrics", metrics.run),
             ("analytics", analysis.run_all),
         ]
-        for _name, fn in tqdm(steps, desc="pipeline"):
-            LOGGER.info(
-                "Pipeline step",
-                extra={"stage": "pipeline", "step": _name},
-            )
+    else:
+        name_map: dict[str, Callable[[AppConfig], None]] = {
+            "ingest": ingest.run,
+            "curate": curate.run,
+            "combine": combine.run,
+            "metrics": metrics.run,
+            "analytics": analysis.run_all,
+        }
+        if args.command not in name_map:  # pragma: no cover - argparse enforces valid choices
+            parser.error(f"Unknown command {args.command}")
+        steps = [(args.command, name_map[args.command])]
+
+    # Execute with per-step manifest events
+    iterator = tqdm(steps, desc="pipeline") if len(steps) > 1 else steps
+    for _name, fn in iterator:
+        LOGGER.info("Pipeline step", extra={"stage": "pipeline", "step": _name})
+        append_manifest_line(manifest_path, {"event": "step_start", "step": _name})
+        try:
             fn(app_cfg)
-    else:  # pragma: no cover - argparse enforces valid choices
-        parser.error(f"Unknown command {args.command}")
+            append_manifest_line(manifest_path, {"event": "step_end", "step": _name, "ok": True})
+        except Exception as e:  # noqa: BLE001
+            append_manifest_line(
+                manifest_path, {"event": "step_end", "step": _name, "ok": False, "error": f"{type(e).__name__}: {e}"}
+            )
+            raise
+
+    append_manifest_line(manifest_path, {"event": "run_end", "config_sha": config_sha})
     LOGGER.info("Analysis pipeline complete", extra={"stage": "pipeline"})
     return 0
 
