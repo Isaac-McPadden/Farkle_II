@@ -10,101 +10,213 @@ import yaml
 
 from farkle.utils.yaml_helpers import expand_dotted_keys
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Dataclasses (schema)
+# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class IOConfig:
     """File-system locations for the application."""
+    results_dir: Path = Path("results_seed_0")
+    # Keep this as a plain string in YAML to avoid Path(dict) mistakes.
+    analysis_subdir: str = "analysis"
 
-    results_dir: Path = Path("results")
-    analysis_dir: Path = Path("analysis")
+
+@dataclass
+class BHDesign:
+    enabled: bool = False
+    recompute: bool = False
+
+
+@dataclass
+class BonferroniDesign:
+    enabled: bool = False
+    recompute: bool = False
 
 
 @dataclass
 class SimConfig:
     """Simulation parameters."""
-
-    n_players: int = 5
+    n_players_list: list[int] = field(default_factory=lambda: [5])
     num_shuffles: int = 100
     seed: int = 0
-    collect_metrics: bool = False
+    expanded_metrics: bool = False
     row_dir: Path | None = None
+    per_n: dict[int, 'SimConfig'] = field(default_factory=dict)
+    bh_design: BHDesign = field(default_factory=BHDesign)
+    bonferroni_design: BonferroniDesign = field(default_factory=BonferroniDesign)
+    n_jobs: int | None = None
 
 
 @dataclass
 class AnalysisConfig:
     """Analysis-stage parameters."""
-
     run_trueskill: bool = True
-    trueskill_beta: float = 4.166666666666667
+    run_head2head: bool = True
+    run_hgb: bool = True
     n_jobs: int = 1
     log_level: str = "INFO"
+    results_glob: str = "*_players"
+    # Optional outputs block may be provided in YAML
+    # outputs:
+    #   curated_rows_name: "game_rows.parquet"
+    #   metrics_name: "metrics.parquet"
+    #   manifest_name: "manifest.jsonl"
+    outputs: dict[str, Any] = field(default_factory=dict)
 
+
+@dataclass
+class IngestConfig:
+    row_group_size: int = 64_000
+    parquet_codec: str = "zstd"
+    batch_rows: int = 100_000
+    n_jobs: int = 1
+
+
+@dataclass
+class CombineConfig:
+    max_players: int = 12
+
+
+@dataclass
+class MetricsConfig:
+    seat_range: tuple[int, int] = (1, 12)
+
+
+@dataclass
+class TrueSkillConfig:
+    beta: float = 25.0
+    tau: float = 0.1
+    draw_probability: float = 0.0
+
+
+@dataclass
+class Head2HeadConfig:
+    n_jobs: int = 4
+    games_per_pair: int = 10_000
+    fdr_q: float = 0.02
+    # If you ever add a nested design block here, it will still parse:
+    bonferroni_design: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class HGBConfig:
+    max_depth: int = 6
+    n_estimators: int = 300
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AppConfig + convenience properties used by analysis code
+# ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass
 class AppConfig:
     """Top-level configuration container."""
-
     io: IOConfig = field(default_factory=IOConfig)
     sim: SimConfig = field(default_factory=SimConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
+    ingest: IngestConfig = field(default_factory=IngestConfig)
+    combine: CombineConfig = field(default_factory=CombineConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
+    trueskill: TrueSkillConfig = field(default_factory=TrueSkillConfig)
+    head2head: Head2HeadConfig = field(default_factory=Head2HeadConfig)
+    hgb: HGBConfig = field(default_factory=HGBConfig)
 
-    # --- Minimal convenience properties so analysis modules don't need PipelineCfg ---
+    # —— Paths ——
     @property
     def results_dir(self) -> Path:
         return self.io.results_dir
 
     @property
     def analysis_dir(self) -> Path:
-        return self.io.analysis_dir
+        return self.io.results_dir / self.io.analysis_subdir
 
     @property
     def data_dir(self) -> Path:
-        # analysis root for per-N curated/ingested artifacts
         return self.analysis_dir / "data"
 
-    # Ingest/streaming knobs used by ingest/combine (keep simple defaults)
+    def n_dir(self, n: int) -> Path:
+        return self.results_dir / f"{n}_players"
+
+    def checkpoint_path(self, n: int) -> Path:
+        return self.n_dir(n) / f"{n}p_checkpoint.pkl"
+
+    def metrics_path(self, n: int) -> Path:
+        return self.n_dir(n) / f"{n}p_metrics.parquet"
+
+    # —— Ingest/streaming knobs ——
     @property
     def row_group_size(self) -> int:
-        return 64_000
+        return self.ingest.row_group_size
 
     @property
     def parquet_codec(self) -> str:
-        return "zstd"
+        return self.ingest.parquet_codec
 
     @property
     def n_jobs_ingest(self) -> int:
-        # separate from analysis.n_jobs; keep conservative default
-        return 1
+        return self.ingest.n_jobs
 
-    # Batch sizing used by metrics
     @property
     def batch_rows(self) -> int:
-        return 100_000
+        return self.ingest.batch_rows
 
-    # Standardized output names (keep centralized)
+    # —— Handy aliases used by some modules (kept to minimize edits) ——
+    @property
+    def trueskill_beta(self) -> float:
+        return self.trueskill.beta
+
+    @property
+    def hgb_max_iter(self) -> int:
+        return self.hgb.n_estimators
+
+    @property
+    def combine_max_players(self) -> int:
+        return self.combine.max_players
+
+    @property
+    def metrics_seat_range(self) -> tuple[int, int]:
+        return self.metrics.seat_range
+
+    # —— Output filenames and standard derived locations ——
     @property
     def metrics_name(self) -> str:
-        return "metrics.parquet"
+        # prefer analysis.outputs.metrics_name if provided
+        outputs = self.analysis.outputs or {}
+        return str(outputs.get("metrics_name", "metrics.parquet"))
 
-    # Canonical combined parquet path after "combine" step
+    @property
+    def curated_rows_name(self) -> str:
+        outputs = self.analysis.outputs or {}
+        return str(outputs.get("curated_rows_name", "game_rows.parquet"))
+
+    @property
+    def manifest_name(self) -> str:
+        outputs = self.analysis.outputs or {}
+        return str(outputs.get("manifest_name", "manifest.jsonl"))
+
     @property
     def curated_parquet(self) -> Path:
-        return self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
+        # combined superset parquet after "combine" step
+        return self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
 
-    # Per-N file helpers used by ingest/curate/metrics
+    # Per-N helper paths used by ingest/curate/metrics
     def manifest_for(self, n: int) -> Path:
-        return self.data_dir / f"{n}p" / f"{n}p_ingested_rows.manifest.jsonl"
+        return self.data_dir / f"{n}p" / self.manifest_name
 
     def ingested_rows_raw(self, n: int) -> Path:
         return self.data_dir / f"{n}p" / f"{n}p_ingested_rows.raw.parquet"
 
     def ingested_rows_curated(self, n: int) -> Path:
-        return self.data_dir / f"{n}p" / f"{n}p_ingested_rows.parquet"
+        return self.data_dir / f"{n}p" / self.curated_rows_name
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Loader (one or more YAML overlays; dotted keys allowed)
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
     """Recursively merge ``overlay`` onto ``base`` and return a new mapping."""
-
     result: dict[str, Any] = dict(base)
     for key, val in overlay.items():
         if key in result and isinstance(result[key], Mapping) and isinstance(val, Mapping):
@@ -112,45 +224,6 @@ def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str
         else:
             result[key] = val
     return result
-
-
-def load_app_config(*overlays: Path) -> AppConfig:
-    """Load one or more YAML overlays and return an :class:`AppConfig`.
-
-    Later overlays take precedence over earlier ones and are deep-merged."""
-
-    data: dict[str, Any] = {}
-    for path in overlays:
-        with path.open("r", encoding="utf-8") as fh:
-            overlay = yaml.safe_load(fh) or {}
-        if not isinstance(overlay, Mapping):
-            raise TypeError(f"Config file {path} must contain a mapping")
-        expanded = expand_dotted_keys(overlay)
-        data = _deep_merge(data, expanded)
-
-    def build(cls, section: Mapping[str, Any]) -> Any:
-        obj = cls()
-        type_hints = get_type_hints(cls)
-
-        for f in dataclasses.fields(cls):
-            if f.name in section:
-                val = section[f.name]
-                current = getattr(obj, f.name)
-                annotation = type_hints.get(f.name)
-                if (
-                    (isinstance(current, Path) or _annotation_contains(annotation, Path))
-                    and val is not None
-                    and not isinstance(val, Path)
-                ):
-                    val = Path(val)
-                setattr(obj, f.name, val)
-        return obj
-
-    return AppConfig(
-        io=build(IOConfig, data.get("io", {})),
-        sim=build(SimConfig, data.get("sim", {})),
-        analysis=build(AnalysisConfig, data.get("analysis", {})),
-    )
 
 
 def _annotation_contains(annotation: Any, target: type) -> bool:
@@ -164,9 +237,72 @@ def _annotation_contains(annotation: Any, target: type) -> bool:
     return any(_annotation_contains(arg, target) for arg in get_args(annotation))
 
 
+def load_app_config(*overlays: Path) -> AppConfig:
+    """Load one or more YAML overlays and return an :class:`AppConfig`.
+    Later overlays take precedence and are deep-merged. Dotted keys supported.
+    """
+    data: dict[str, Any] = {}
+    for path in overlays:
+        with path.open("r", encoding="utf-8") as fh:
+            overlay = yaml.safe_load(fh) or {}
+        if not isinstance(overlay, Mapping):
+            raise TypeError(f"Config file {path} must contain a mapping")
+        expanded = expand_dotted_keys(overlay)
+        data = _deep_merge(data, expanded)
+
+    # Light compatibility if someone uses old keys
+    if "io" in data:
+        io_section = data["io"]
+        if "analysis_dir" in io_section and "analysis_subdir" not in io_section:
+            io_section["analysis_subdir"] = io_section.pop("analysis_dir")
+    if "sim" in data:
+        sim_section = data["sim"]
+        if "n_players" in sim_section and "n_players_list" not in sim_section:
+            sim_section["n_players_list"] = [sim_section.pop("n_players")]
+        if "collect_metrics" in sim_section and "expanded_metrics" not in sim_section and sim_section.pop("collect_metrics"):
+            sim_section["expanded_metrics"] = True
+
+    def build(cls, section: Mapping[str, Any]) -> Any:
+        obj = cls()
+        type_hints = get_type_hints(cls)
+        for f in dataclasses.fields(cls):
+            if f.name not in section:
+                continue
+            val = section[f.name]
+            current = getattr(obj, f.name)
+            annotation = type_hints.get(f.name)
+
+            # Map nested dict values to dataclass instances if needed (for dict[int, Dataclass])
+            if annotation is not None and get_origin(annotation) is dict:
+                key_t, val_t = get_args(annotation)
+                if dataclasses.is_dataclass(val_t):
+                    val = {
+                        (int(k) if key_t is int else k): build(val_t, v) if isinstance(v, Mapping) else v
+                        for k, v in (val or {}).items()
+                    }
+
+            # Coerce Path-like fields (only from str/Path-like, never dicts)
+            if (isinstance(current, Path) or _annotation_contains(annotation, Path)) and isinstance(val, (str, Path)):
+                val = Path(val)
+
+            setattr(obj, f.name, val)
+        return obj
+
+    return AppConfig(
+        io=build(IOConfig, data.get("io", {})),
+        sim=build(SimConfig, data.get("sim", {})),
+        analysis=build(AnalysisConfig, data.get("analysis", {})),
+        ingest=build(IngestConfig, data.get("ingest", {})),
+        combine=build(CombineConfig, data.get("combine", {})),
+        metrics=build(MetricsConfig, data.get("metrics", {})),
+        trueskill=build(TrueSkillConfig, data.get("trueskill", {})),
+        head2head=build(Head2HeadConfig, data.get("head2head", {})),
+        hgb=build(HGBConfig, data.get("hgb", {})),
+    )
+
+
 def _coerce(value: str, current: Any, annotation: Any | None = None) -> Any:
     """Coerce ``value`` to the type of ``current``."""
-
     if isinstance(current, bool) or _annotation_contains(annotation, bool):
         val_lower = value.lower()
         if val_lower in {"1", "true", "yes", "on"}:
@@ -176,28 +312,17 @@ def _coerce(value: str, current: Any, annotation: Any | None = None) -> Any:
         raise ValueError(f"Cannot parse boolean value from {value!r}")
     if isinstance(current, int) and not isinstance(current, bool):
         return int(value)
-    if (
-        annotation is not None
-        and _annotation_contains(annotation, int)
-        and not _annotation_contains(annotation, bool)
-    ):
+    if annotation is not None and _annotation_contains(annotation, int) and not _annotation_contains(annotation, bool):
         return int(value)
-    if isinstance(current, float):
+    if isinstance(current, float) or (annotation is not None and _annotation_contains(annotation, float)):
         return float(value)
-    if annotation is not None and _annotation_contains(annotation, float):
-        return float(value)
-    if isinstance(current, Path):
-        return Path(value)
-    if annotation is not None and _annotation_contains(annotation, Path):
+    if isinstance(current, Path) or (annotation is not None and _annotation_contains(annotation, Path)):
         return Path(value)
     return value
 
 
 def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
-    """Apply ``section.option=value`` overrides to *cfg*.
-
-    Types are inferred from existing values for bool/int/float/Path/str."""
-
+    """Apply ``section.option=value`` overrides to *cfg*."""
     for pair in pairs:
         if "=" not in pair:
             raise ValueError(f"Invalid override {pair!r}")
@@ -220,6 +345,14 @@ __all__ = [
     "IOConfig",
     "SimConfig",
     "AnalysisConfig",
+    "IngestConfig",
+    "CombineConfig",
+    "MetricsConfig",
+    "TrueSkillConfig",
+    "Head2HeadConfig",
+    "HGBConfig",
+    "BHDesign",
+    "BonferroniDesign",
     "AppConfig",
     "load_app_config",
     "apply_dot_overrides",
