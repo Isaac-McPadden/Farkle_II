@@ -211,7 +211,11 @@ class AppConfig:
     @property
     def curated_parquet(self) -> Path:
         # combined superset parquet after "combine" step
-        return self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
+        preferred = self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
+        legacy = self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
+        if preferred.exists() or not legacy.exists():
+            return preferred
+        return legacy
 
     # Per-N helper paths used by ingest/curate/metrics
     def manifest_for(self, n: int) -> Path:

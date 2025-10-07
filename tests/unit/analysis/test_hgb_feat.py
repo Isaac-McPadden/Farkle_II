@@ -1,4 +1,5 @@
 import os
+import os
 from pathlib import Path
 
 import pytest
@@ -7,14 +8,13 @@ pytest.importorskip("matplotlib")
 pytest.importorskip("sklearn")
 
 from farkle.analysis import hgb_feat
-from farkle.analysis.analysis_config import PipelineCfg
+from farkle.config import AppConfig, IOConfig
 
 
-def _setup_cfg(tmp_path: Path) -> tuple[PipelineCfg, Path]:
-    cfg = PipelineCfg(results_dir=tmp_path)
+def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
     analysis_dir = cfg.analysis_dir
-    # ensure directories exist
-    combined = analysis_dir / "data" / "all_n_players_combined"
+    combined = cfg.curated_parquet.parent
     combined.mkdir(parents=True, exist_ok=True)
     curated = combined / "all_ingested_rows.parquet"
     curated.touch()

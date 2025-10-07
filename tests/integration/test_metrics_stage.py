@@ -8,7 +8,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from farkle.analysis import metrics
-from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
+from farkle.config import AppConfig, IOConfig
+from farkle.utils.schema_helpers import expected_schema_for
 
 
 def _sample_combined_table() -> pa.Table:
@@ -77,9 +78,11 @@ def _sample_combined_table() -> pa.Table:
     return pa.Table.from_pylist(rows, schema=schema)
 
 
-def _prepare_metrics_inputs(tmp_path: Path) -> tuple[PipelineCfg, Path]:
-    cfg = PipelineCfg(results_dir=tmp_path / "results")
-    combined_dir = cfg.analysis_dir / "data" / "all_n_players_combined"
+def _prepare_metrics_inputs(tmp_path: Path) -> tuple[AppConfig, Path]:
+    cfg = AppConfig(
+        io=IOConfig(results_dir=tmp_path / "results", append_seed=False),
+    )
+    combined_dir = cfg.curated_parquet.parent
     combined_dir.mkdir(parents=True, exist_ok=True)
     table = _sample_combined_table()
     data_file = combined_dir / "all_ingested_rows.parquet"

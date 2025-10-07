@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis.analysis_config import expected_schema_for
+from farkle.utils.schema_helpers import expected_schema_for
 from farkle.analysis.checks import check_post_combine, check_pre_metrics
 
 

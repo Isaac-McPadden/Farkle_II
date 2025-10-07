@@ -5,7 +5,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.analysis import combine
-from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
+from farkle.config import AppConfig, IOConfig
+from farkle.utils.schema_helpers import expected_schema_for
 
 
 def _write_curated(path: Path, schema: pa.Schema, rows: list[dict]) -> None:
@@ -15,7 +16,7 @@ def _write_curated(path: Path, schema: pa.Schema, rows: list[dict]) -> None:
 
 
 def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = PipelineCfg(results_dir=tmp_results_dir)
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
     # create per-N curated files
     p1 = cfg.ingested_rows_curated(1)
     schema1 = expected_schema_for(1)
@@ -68,7 +69,7 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
 
 
 def test_combine_logs_when_no_inputs(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = PipelineCfg(results_dir=tmp_results_dir)
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
     calls: list[tuple[list[Path], Path, int]] = []
 
     monkeypatch.setattr(
@@ -87,7 +88,7 @@ def test_combine_logs_when_no_inputs(tmp_results_dir: Path, capinfo, monkeypatch
 
 
 def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = PipelineCfg(results_dir=tmp_results_dir)
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
     calls: list[tuple[list[Path], Path, int]] = []
 
     monkeypatch.setattr(
@@ -116,7 +117,7 @@ def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeyp
 
 
 def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = PipelineCfg(results_dir=tmp_results_dir)
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
     calls: list[tuple[list[Path], Path, int]] = []
 
     monkeypatch.setattr(

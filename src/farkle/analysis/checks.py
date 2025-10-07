@@ -49,16 +49,26 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
         if combined_parquet.parent.name == "all_n_players_combined"
         else combined_parquet.parent
     )
-    manifests = sorted(data_dir.glob("*p/manifest_*p.json"))
-    if not manifests:
-        raise RuntimeError(f"check_pre_metrics: no manifest files found under {data_dir}")
     manifest_rows = 0
-    for m in manifests:
+    seen_manifest = False
+    for seat_dir in sorted(p for p in data_dir.glob("*p") if p.is_dir()):
+        manifest_candidates = [
+            seat_dir / "manifest.jsonl",
+            *seat_dir.glob("manifest_*p.json"),
+        ]
+        manifest_path = next((m for m in manifest_candidates if m.exists()), None)
+        if manifest_path is None:
+            continue
         try:
-            meta = json.loads(m.read_text())
+            meta = json.loads(manifest_path.read_text())
             manifest_rows += int(meta.get("row_count", 0))
+            seen_manifest = True
         except Exception as e:  # noqa: BLE001
-            raise RuntimeError(f"check_pre_metrics: failed to parse {m}: {e}") from e
+            raise RuntimeError(
+                f"check_pre_metrics: failed to parse {manifest_path}: {e}"
+            ) from e
+    if not seen_manifest:
+        raise RuntimeError(f"check_pre_metrics: no manifest files found under {data_dir}")
 
     combined_rows = dataset.count_rows()
     if combined_rows != manifest_rows:

@@ -2,17 +2,11 @@ import importlib.machinery
 import logging
 import sys
 import types
-from dataclasses import dataclass
 from typing import List
 
 import pytest
 
-
-@dataclass
-class DummyCfg:
-    run_trueskill: bool
-    run_head2head: bool
-    run_hgb: bool
+from farkle.config import AppConfig
 
 
 @pytest.mark.parametrize(
@@ -52,10 +46,13 @@ def test_run_all_invokes_expected_modules(
 
     from farkle.analysis import run_all  # import after stubbing dependencies
 
-    cfg = DummyCfg(ts, h2h, hgb)
+    cfg = AppConfig()
+    cfg.analysis.run_trueskill = ts
+    cfg.analysis.run_head2head = h2h
+    cfg.analysis.run_hgb = hgb
 
     with caplog.at_level(logging.INFO):
-        run_all(cfg)  # type: ignore[arg-type]
+        run_all(cfg)
 
     expected_calls = []
     if ts:

@@ -9,6 +9,8 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
+from farkle.config import AppConfig, IOConfig
+
 
 class _CfgProto(Protocol):
     results_dir: Path
@@ -30,17 +32,15 @@ pytestmark = pytest.mark.skipif(
 
 if TYPE_CHECKING or HAS_UTC:
     from farkle.analysis import combine, curate, ingest, metrics
-    from farkle.analysis.analysis_config import PipelineCfg
 else:  # pragma: no cover - tests skipped when UTC unavailable
     combine = curate = ingest = metrics = None  # type: ignore[assignment]
-    PipelineCfg = object  # type: ignore[assignment]
 
 
 STRATEGY_MAP = {"P1": "Aggro", "P2": "Balanced", "P3": "Cautious"}
 
 
 def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
-    cfg = PipelineCfg(results_dir=tmp_results_dir)
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_dir)
 
@@ -77,7 +77,7 @@ def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
 
 
 def test_curate_golden_dataset(tmp_results_dir, caplog, golden_dataset):
-    cfg = PipelineCfg(results_dir=tmp_results_dir)
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_dir)
     raw_path = cfg_proto.ingested_rows_raw(3)
@@ -106,7 +106,7 @@ def test_curate_golden_dataset(tmp_results_dir, caplog, golden_dataset):
 
 
 def test_metrics_golden_dataset(tmp_results_dir, caplog, golden_dataset):
-    cfg = PipelineCfg(results_dir=tmp_results_dir)
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_dir)
     ingest.run(cfg)
