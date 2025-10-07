@@ -1,4 +1,4 @@
-﻿# src/farkle/cly/main.py
+﻿# src/farkle/cli/main.py
 """Command line interface for the :mod:`farkle` package."""
 from __future__ import annotations
 
