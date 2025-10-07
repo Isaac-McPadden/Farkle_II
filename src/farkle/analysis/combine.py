@@ -30,7 +30,9 @@ def run(cfg: AppConfig) -> None:
 
     Streaming implementation: copy row-groups into a single writer to bound RAM.
     """
-    files: list[Path] = sorted((cfg.data_dir).glob("*p/*_ingested_rows.parquet"))
+    preferred = sorted(cfg.data_dir.glob(f"*p/{cfg.curated_rows_name}"))
+    legacy = sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet"))
+    files: list[Path] = preferred or legacy
     if not files:
         LOGGER.info(
             "Combine: no inputs discovered",

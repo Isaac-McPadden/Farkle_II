@@ -20,6 +20,18 @@ from farkle.utils.writer import atomic_path
 LOGGER = logging.getLogger(__name__)
 
 
+def _stringify_paths(obj: object) -> object:
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {k: _stringify_paths(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_stringify_paths(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_stringify_paths(v) for v in obj)
+    return obj
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Console entry point for the analysis pipeline."""
 
@@ -43,7 +55,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     analysis_dir.mkdir(parents=True, exist_ok=True)
     resolved = analysis_dir / "config.resolved.yaml"
     # Best-effort: write out the resolved (merged) config we actually used
-    resolved_dict = dataclasses.asdict(app_cfg)
+    resolved_dict = _stringify_paths(dataclasses.asdict(app_cfg))
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     with atomic_path(str(resolved)) as tmp_path:
         Path(tmp_path).write_text(resolved_yaml)

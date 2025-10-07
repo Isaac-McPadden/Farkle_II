@@ -1,12 +1,12 @@
 # ruff: noqa: ARG005
 import hashlib
 import json
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis.analysis_config import PipelineCfg, expected_schema_for
 from farkle.analysis.curate import (
     _already_curated,
     _schema_hash,
@@ -15,7 +15,12 @@ from farkle.analysis.curate import (
 from farkle.analysis.curate import (
     run as curate_run,
 )
-from farkle.app_config import AppConfig
+from farkle.config import AppConfig, IOConfig
+from farkle.utils.schema_helpers import expected_schema_for
+
+
+def _make_cfg(tmp_path: Path) -> AppConfig:
+    return AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
 
 
 def _empty_table(schema: pa.Schema) -> pa.Table:
@@ -59,7 +64,7 @@ def test_schema_hash_uses_schema_serialize_when_pa_ipc_missing(monkeypatch):
 
 
 def test_already_curated_schema_hash(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
 
     schema0 = expected_schema_for(0)
     table1 = pa.table(
@@ -94,7 +99,7 @@ def test_already_curated_schema_hash(tmp_path):
 
 
 def test_already_curated_missing_files(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
     schema = expected_schema_for(1)
 
     # Missing parquet file
@@ -112,7 +117,7 @@ def test_already_curated_missing_files(tmp_path):
 
 
 def test_already_curated_manifest_failures(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
     schema = expected_schema_for(0)
 
     table = pa.table(
@@ -145,11 +150,12 @@ def test_already_curated_manifest_failures(tmp_path):
 
 
 def test_run_new_layout(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
     raw_files = {}
     for n in (1, 2):
         schema = expected_schema_for(n)
         raw_path = cfg.ingested_rows_raw(n)
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(_empty_table(schema), raw_path)
         raw_files[n] = raw_path
 
@@ -167,14 +173,14 @@ def test_run_new_layout(tmp_path):
 
 
 def test_run_with_app_config(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
-    app_cfg = AppConfig(analysis=cfg)
+    cfg = _make_cfg(tmp_path)
 
     schema = expected_schema_for(1)
     raw_path = cfg.ingested_rows_raw(1)
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(_empty_table(schema), raw_path)
 
-    curate_run(app_cfg)
+    curate_run(cfg)
 
     curated = cfg.ingested_rows_curated(1)
     manifest = cfg.manifest_for(1)
@@ -187,7 +193,7 @@ def test_run_with_app_config(tmp_path):
 
 
 def test_run_legacy_missing_raw(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
     legacy_dir = cfg.analysis_dir / "data"
     legacy_dir.mkdir(parents=True, exist_ok=True)
     curated = legacy_dir / cfg.curated_rows_name
@@ -198,7 +204,7 @@ def test_run_legacy_missing_raw(tmp_path):
 
 
 def test_write_manifest_includes_config_sha(tmp_path, monkeypatch):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
     monkeypatch.setattr(cfg, "config_sha", "abc123", raising=False)
     manifest = tmp_path / "manifest.json"
     schema = expected_schema_for(1)
@@ -212,7 +218,7 @@ def test_write_manifest_includes_config_sha(tmp_path, monkeypatch):
 
 
 def test_already_curated_logs_schema_mismatch(tmp_path, caplog):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
     schema = expected_schema_for(1)
     table = _empty_table(schema)
     parquet_path = tmp_path / "file.parquet"
@@ -231,10 +237,9 @@ def test_already_curated_logs_schema_mismatch(tmp_path, caplog):
 
 
 def test_run_legacy_already_curated(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
-    legacy_dir = cfg.analysis_dir / "data"
-    legacy_dir.mkdir(parents=True, exist_ok=True)
-    curated = legacy_dir / cfg.curated_rows_name
+    cfg = _make_cfg(tmp_path)
+    curated = cfg.curated_parquet
+    curated.parent.mkdir(parents=True, exist_ok=True)
     schema = expected_schema_for(0)
     pq.write_table(_empty_table(schema), curated)
     manifest = cfg.analysis_dir / cfg.manifest_name
@@ -249,7 +254,7 @@ def test_run_legacy_already_curated(tmp_path):
 
 
 def test_run_new_layout_missing_manifest(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
     schema = expected_schema_for(1)
     curated = cfg.ingested_rows_curated(1)
     curated.parent.mkdir(parents=True, exist_ok=True)
@@ -299,7 +304,7 @@ def test_schema_hash_prefers_pa_ipc_serialize(monkeypatch):
 
 
 def test_already_curated_handles_metadata_error(tmp_path, monkeypatch):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
     schema = expected_schema_for(1)
     parquet_path = tmp_path / "broken.parquet"
     pq.write_table(_empty_table(schema), parquet_path)
@@ -314,7 +319,7 @@ def test_already_curated_handles_metadata_error(tmp_path, monkeypatch):
 
 
 def test_run_existing_curated_manifest_allows_proceed(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
 
     schema_existing = expected_schema_for(2)
     curated_existing = cfg.ingested_rows_curated(2)
@@ -325,6 +330,7 @@ def test_run_existing_curated_manifest_allows_proceed(tmp_path):
 
     schema_new = expected_schema_for(1)
     raw_path = cfg.ingested_rows_raw(1)
+    raw_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(_empty_table(schema_new), raw_path)
 
     curate_run(cfg)
@@ -339,7 +345,7 @@ def test_run_existing_curated_manifest_allows_proceed(tmp_path):
 
 
 def test_run_legacy_finalizes_raw_file(tmp_path):
-    cfg = PipelineCfg(results_dir=tmp_path)
+    cfg = _make_cfg(tmp_path)
     dst_file = cfg.curated_parquet
     raw_file = dst_file.with_suffix(".raw.parquet")
     raw_file.parent.mkdir(parents=True, exist_ok=True)

@@ -9,20 +9,23 @@ from pathlib import Path
 import pytest
 
 from farkle.analysis import head2head
-from farkle.analysis.analysis_config import PipelineCfg
+from farkle.config import AppConfig, IOConfig
 
 
 @pytest.fixture
-def _cfg(tmp_path: Path) -> PipelineCfg:
-    cfg = PipelineCfg(results_dir=tmp_path)
+def _cfg(tmp_path: Path) -> AppConfig:
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
     data_dir = cfg.analysis_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / cfg.curated_rows_name).touch()
+    curated = cfg.curated_parquet
+    curated.parent.mkdir(parents=True, exist_ok=True)
+    curated.touch()
     return cfg
 
 
 def test_run_skips_if_up_to_date(
-    _cfg: PipelineCfg, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    _cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     cfg = _cfg
     out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
@@ -43,7 +46,7 @@ def test_run_skips_if_up_to_date(
 
 
 def test_run_logs_warning_on_failure(
-    _cfg: PipelineCfg, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    _cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     cfg = _cfg
     out = cfg.analysis_dir / "bonferroni_pairwise.parquet"

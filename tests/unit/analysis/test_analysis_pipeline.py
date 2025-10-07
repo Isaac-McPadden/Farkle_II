@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import datetime as _dt
+import hashlib
 import json
-import types
 from pathlib import Path
 from typing import Callable
 
@@ -16,31 +16,21 @@ pytestmark = pytest.mark.skipif(
 )
 
 from farkle.analysis import pipeline
-from farkle.analysis.analysis_config import IO, Config, Experiment
+from farkle.config import AppConfig, IOConfig
 
 
-def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Config]:
-    cfg = Config(experiment=Experiment(name="test", seed=0), io=IO(results_dir=tmp_results_dir))
+def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, AppConfig]:
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
     cfg_path = tmp_results_dir / "configs/fast_config.yaml"
-    cfg_path.write_text("experiment:\n  name: test\n")
-    original_model_dump = cfg.model_dump
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg_path.write_text("io:\n  results_dir: dummy\n")
 
-    def _model_dump(self, **kwargs):  # noqa: ANN001
-        data = original_model_dump(**kwargs)
+    def _load_app_config(path: Path) -> AppConfig:
+        assert path == cfg_path
+        return cfg
 
-        def _coerce(value):
-            if isinstance(value, Path):
-                return str(value)
-            if isinstance(value, dict):
-                return {k: _coerce(v) for k, v in value.items()}
-            if isinstance(value, (list, tuple)):
-                return type(value)(_coerce(v) for v in value)
-            return value
-
-        return _coerce(data)
-
-    object.__setattr__(cfg, "model_dump", types.MethodType(_model_dump, cfg))
-    monkeypatch.setattr("farkle.analysis.pipeline.load_config", lambda path: (cfg, "deadbeef"))
+    monkeypatch.setattr("farkle.analysis.pipeline.load_app_config", _load_app_config, raising=True)
+    monkeypatch.setattr("farkle.config.load_app_config", _load_app_config, raising=False)
     return cfg_path, cfg
 
 
@@ -54,7 +44,7 @@ def test_pipeline_writes_resolved_config_and_manifest(
     def _fake_ingest(app_cfg):  # noqa: ANN001
         nonlocal called
         called = True
-        assert app_cfg.analysis.results_dir == tmp_results_dir
+        assert app_cfg.results_dir == tmp_results_dir
 
     monkeypatch.setattr("farkle.analysis.ingest.run", _fake_ingest, raising=True)
 
@@ -62,14 +52,20 @@ def test_pipeline_writes_resolved_config_and_manifest(
     assert rc == 0
     assert called
 
-    analysis_dir = tmp_results_dir / cfg.io.analysis_subdir
+    analysis_dir = cfg.analysis_dir
     resolved = analysis_dir / "config.resolved.yaml"
-    manifest = analysis_dir / cfg.to_pipeline_cfg().manifest_name
+    manifest = analysis_dir / cfg.manifest_name
     assert resolved.exists()
     assert manifest.exists()
 
-    manifest_data = json.loads(manifest.read_text())
-    assert manifest_data == {"config_sha": "deadbeef"}
+    resolved_yaml = resolved.read_text()
+    expected_sha = hashlib.sha256(resolved_yaml.encode("utf-8")).hexdigest()
+    records = [json.loads(line) for line in manifest.read_text().splitlines() if line.strip()]
+    assert records
+    run_start = next(rec for rec in records if rec.get("event") == "run_start")
+    assert run_start["config_sha"] == expected_sha
+    assert run_start["resolved_config"] == str(resolved)
+    assert records[-1]["event"] == "run_end"
 
 
 @pytest.mark.parametrize(
@@ -91,7 +87,7 @@ def test_pipeline_individual_commands_invoke_target(
 
     def _record(app_cfg):  # noqa: ANN001
         called.append(command)
-        assert app_cfg.analysis.results_dir == tmp_results_dir
+        assert app_cfg.results_dir == tmp_results_dir
 
     monkeypatch.setattr(target, _record, raising=True)
     rc = pipeline.main(["--config", str(cfg_path), command])
@@ -109,7 +105,7 @@ def test_pipeline_all_runs_all_steps(
     def _make_stub(name: str) -> Callable[[object], None]:
         def _stub(app_cfg):  # noqa: ANN001
             calls.append(name)
-            assert app_cfg.analysis.results_dir == tmp_results_dir
+            assert app_cfg.results_dir == tmp_results_dir
 
         return _stub
 

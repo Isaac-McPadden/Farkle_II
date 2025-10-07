@@ -1,25 +1,27 @@
 import os
+import os
+import os
 import time
 from pathlib import Path
 
 from farkle.analysis import trueskill
-from farkle.analysis.analysis_config import PipelineCfg
+from farkle.config import AppConfig, IOConfig
 
 
-def _setup(tmp_path: Path) -> tuple[PipelineCfg, Path, Path]:
-    cfg = PipelineCfg(results_dir=tmp_path)
-    legacy = cfg.analysis_dir / "data" / cfg.curated_rows_name
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text("data")
+def _setup(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
+    combined = cfg.curated_parquet
+    combined.parent.mkdir(parents=True, exist_ok=True)
+    combined.write_text("data")
     tiers = cfg.analysis_dir / "tiers.json"
     tiers.write_text("{}")
-    return cfg, legacy, tiers
+    return cfg, combined, tiers
 
 
 def test_run_skips_when_tiers_up_to_date(tmp_path, monkeypatch):
-    cfg, curated, tiers = _setup(tmp_path)
+    cfg, combined, tiers = _setup(tmp_path)
     now = time.time()
-    os.utime(curated, (now, now))
+    os.utime(combined, (now, now))
     os.utime(tiers, (now + 10, now + 10))
 
     def boom(**kwargs):  # noqa: ARG001
@@ -31,10 +33,10 @@ def test_run_skips_when_tiers_up_to_date(tmp_path, monkeypatch):
 
 
 def test_run_invokes_legacy_when_stale(tmp_path, monkeypatch):
-    cfg, curated, tiers = _setup(tmp_path)
+    cfg, combined, tiers = _setup(tmp_path)
     now = time.time()
     os.utime(tiers, (now, now))
-    os.utime(curated, (now + 10, now + 10))
+    os.utime(combined, (now + 10, now + 10))
 
     called = {}
 
