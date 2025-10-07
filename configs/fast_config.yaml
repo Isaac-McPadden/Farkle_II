@@ -1,16 +1,16 @@
-# configs/farkle_mega_config.yaml
+# configs/fast_config.yaml
 # Drives BOTH simulation and analysis.
 
 experiment:
-  seed: 0
+  seed: 14
 
 io:
-  results_dir: "results_seed_0"   # where per-N run folders are created
+  results_dir: "results_seed_14"   # where per-N run folders are created
   analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
 
 sim:
   # Table sizes to run (single-N works by giving a 1-item list)
-  n_players_list: [2, 3, 4, 5, 6, 7, 10, 12]
+  n_players_list: [4, 5]
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
@@ -18,18 +18,6 @@ sim:
   n_jobs: null                    # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
   row_dir: null                   # null => per-N rows under {results}/{N}_players/rows/
-
-  # Customize strategy grid
-  # null (yaml) / None (py) loads default values for that variable
-  strategy:
-    score_thresholds: null      # None -> use [200, 250, ..., 1000]
-    dice_thresholds: null       # None -> use [0, 1, 2, 3, 4]
-    consider_score_opts: null   # None -> [True, False]
-    consider_dice_opts: null    # None -> [True, False]
-    smart_five_opts: null       # None -> [True, False]
-    smart_one_opts: null        # None -> [True, False]
-    auto_hot_dice_opts: null    # None -> [False, True]
-    run_up_score_opts: null     # None -> [True, False]
 
   # Optional per-N overrides (keys are strings)
   per_n:
@@ -39,9 +27,9 @@ sim:
   # Benjamini–Hochberg design: when enabled+recompute, overrides num_shuffles per N
   bh_design:
     enabled: false
-    power: 0.95
-    alpha: 0.05
-    fdr_q: 0.02
+    power: 0.8
+    alpha: 0.1
+    fdr_q: 0.1
     detectable_lift: 0.03         # absolute lift in win-rate
     baseline_rate: 0.50
     tail: "two_sided"             # "one_sided" | "two_sided"
@@ -77,9 +65,9 @@ head_to_head:
   # Bonferroni design: when enabled+recompute, updates BOTH per-N schedules and H2H games
   bonferroni_design:
     enabled: false
-    power: 0.95
-    alpha: 0.05
-    fdr_q: 0.02                   # kept for parity; typically ignored by strict Bonferroni
+    power: 0.8
+    alpha: 0.1
+    fdr_q: 0.1                  # kept for parity; typically ignored by strict Bonferroni
     detectable_lift: 0.03
     baseline_rate: 0.50
     tail: "two_sided"

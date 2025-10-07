@@ -100,7 +100,10 @@ def generate_strategy_grid(
         elif cd and not cs:
             ps_values = [FavorDiceOrScore.DICE]
         else:
-            ps_values = [FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE]
+            if sf:
+                ps_values = [FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE]
+            else:
+                ps_values = [FavorDiceOrScore.SCORE] # Only need one value if smart logic is off
 
         for rb in rb_values:
             for ps in ps_values:
@@ -149,55 +152,49 @@ def experiment_size(
     smart_five_and_one_options: Sequence[Sequence[bool]] | None = None,
     consider_score_opts: Sequence[bool] = (True, False),
     consider_dice_opts: Sequence[bool] = (True, False),
-    auto_hot_dice_opts: Sequence[bool] = (True, False),
+    auto_hot_dice_opts: Sequence[bool] = (False, True),  # order doesn't matter; len does
     run_up_score_opts: Sequence[bool] = (True, False),
 ) -> int:
-    """Compute *a priori* size of a strategy grid.
-
-    Parameters
-    ----------
-    score_thresholds, dice_thresholds, smart_five_and_one_options,
-    consider_score_opts, consider_dice_opts, auto_hot_dice_opts,
-    run_up_score_opts
-        Option sequences mirroring those accepted by
-        :func:`generate_strategy_grid`. ``None`` falls back to that
-        function's defaults.
-
-    Returns
-    -------
-    int
-        Number of unique strategy combinations that would be generated.
-    """
+    """Compute *a priori* size of a strategy grid that matches generate_strategy_grid."""
+    # Defaults must mirror generate_strategy_grid
     score_thresholds = score_thresholds or list(range(200, 1050, 50))
     dice_thresholds = dice_thresholds or list(range(0, 5))
     smart_five_and_one_options = smart_five_and_one_options or [
         [True, True],
         [True, False],
-        [False, False],
+        [False, False],  # (not sf and so) is disallowed, so it's excluded here
     ]
+
+    # Parts of the grid that are independent of (cs, cd, sf) logic
     base = (
         len(score_thresholds)
         * len(dice_thresholds)
-        * len(smart_five_and_one_options)
         * len(auto_hot_dice_opts)
         * len(run_up_score_opts)
     )
 
-    # ----- how many CS/CD pairs? ----------------------------------------
-    # generate_strategy_grid loops over each (cs, cd) pair and then
-    # selects ``require_both`` and ``favor_dice_or_score`` options based on the
-    # truth table described in the function's docstring.  ``pair_count``
-    # should therefore mirror that logic directly so that the predicted
-    # size matches ``generate_strategy_grid`` for any subset of options.
+    def _pair_variations(cs: bool, cd: bool, sf: bool) -> int:
+        # require_both choices
+        rb_choices = 1 + int(cs and cd)
 
-    def _pair_variations(cs: bool, cd: bool) -> int:
-        rb_choices = 2 if cs and cd else 1
-        ps_choices = 1 if cs ^ cd else 2
+        # favor_dice_or_score choices
+        # - if exactly one of (cs, cd) is true, ps is forced (1 choice)
+        # - if both true or both false:
+        #     - when smart_five is True -> both SCORE and DICE (2 choices)
+        #     - when smart_five is False -> only SCORE (1 choice)
+        ps_choices = 1 + int(sf and (cs == cd))
+
         return rb_choices * ps_choices
 
-    pair_count = sum(
-        _pair_variations(cs, cd) for cs in consider_score_opts for cd in consider_dice_opts
-    )
+    # Sum over every allowed (smart_five, smart_one) pair AND every (cs, cd)
+    pair_count = 0
+    for sf, so in ((opts[0], opts[1]) for opts in smart_five_and_one_options):
+        # safety: skip any illegal (not sf and so) combo if someone passes custom options
+        if not sf and so:
+            continue
+        for cs in consider_score_opts:
+            for cd in consider_dice_opts:
+                pair_count += _pair_variations(cs, cd, sf)
 
     return base * pair_count
 

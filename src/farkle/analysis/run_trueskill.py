@@ -33,8 +33,8 @@ import trueskill
 import yaml
 from trueskill import Rating
 
-from farkle.analysis.analysis_config import n_players_from_schema
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.stats import build_tiers
 from farkle.utils.writer import atomic_path
 

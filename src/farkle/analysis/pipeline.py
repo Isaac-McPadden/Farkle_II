@@ -25,7 +25,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="farkle-analyze")
     parser.add_argument(
-        "--config", type=Path, default=Path("analysis_config.yaml"), help="Path to YAML config"
+        "--config", type=Path, default=Path("configs/fast_config.yaml"), help="Path to YAML config"
     )
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("ingest", "curate", "combine", "metrics", "analytics", "all"):

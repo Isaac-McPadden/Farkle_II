@@ -21,7 +21,7 @@ from farkle.analysis.analysis_config import IO, Config, Experiment
 
 def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Config]:
     cfg = Config(experiment=Experiment(name="test", seed=0), io=IO(results_dir=tmp_results_dir))
-    cfg_path = tmp_results_dir / "analysis_config.yaml"
+    cfg_path = tmp_results_dir / "configs/fast_config.yaml"
     cfg_path.write_text("experiment:\n  name: test\n")
     original_model_dump = cfg.model_dump
 

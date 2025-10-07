@@ -36,7 +36,7 @@ def test_run_full_field_invokes_run_tournament(monkeypatch: MonkeyPatch, tmp_pat
 
     rf.run_full_field()
 
-    players = [2, 3, 4, 5, 6, 8, 10, 12]
+    players = [2, 3, 4, 5, 6, 7, 10, 12]
     seen = sorted(int(p[0].parent.name.split("_")[0]) for p in calls)
     assert seen == players
     assert len(calls) == len(players)

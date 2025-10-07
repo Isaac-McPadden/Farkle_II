@@ -1,4 +1,4 @@
-# src/farkle/curate.py
+﻿# src/farkle/curate.py
 from __future__ import annotations
 
 import hashlib
@@ -11,11 +11,11 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.analysis_config import (
+from farkle.config import AppConfig
+from farkle.utils.schema_helpers import (
     expected_schema_for,
     n_players_from_schema,
 )
-from farkle.config import AppConfig
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)

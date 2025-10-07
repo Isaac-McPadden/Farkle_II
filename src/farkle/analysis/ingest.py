@@ -13,8 +13,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.analysis_config import expected_schema_for
 from farkle.config import AppConfig, load_app_config
+from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.streaming_loop import run_streaming_shard
 
 LOGGER = logging.getLogger(__name__)
@@ -306,7 +306,7 @@ def run(cfg: AppConfig) -> None:
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--config", type=Path, default=Path("analysis_config.yaml"), help="Path to YAML config"
+        "--config", type=Path, default=Path("configs/fast_config.yaml"), help="Path to YAML config"
     )
     args = parser.parse_args(argv)
     app_cfg = load_app_config(Path(args.config))

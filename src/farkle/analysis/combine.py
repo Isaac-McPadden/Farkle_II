@@ -1,4 +1,4 @@
-# src/farkle/combine.py
+﻿# src/farkle/combine.py
 from __future__ import annotations
 
 import logging
@@ -7,9 +7,9 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.analysis_config import expected_schema_for
 from farkle.analysis.checks import check_post_combine
 from farkle.config import AppConfig
+from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.streaming_loop import run_streaming_shard
 
 LOGGER = logging.getLogger(__name__)

@@ -138,7 +138,7 @@ def run_full_field(
     import farkle.simulation.run_tournament as tournament_mod  # required for main hook  # noqa: I001
 
     # ────────── GLOBAL CONFIG ─────────────────────────────────────────
-    PLAYERS = [2, 3, 4, 5, 6, 8, 10, 12]
+    PLAYERS = [2, 3, 4, 5, 6, 7, 10, 12]
     GRID = 8_160  # total strategies
     DELTA = 0.03  # abs lift to detect
     POWER = 0.95  # 1 – β

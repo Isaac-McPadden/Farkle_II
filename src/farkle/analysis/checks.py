@@ -8,7 +8,7 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
-from .analysis_config import expected_schema_for
+from farkle.utils.schema_helpers import expected_schema_for
 
 LOGGER = logging.getLogger(__name__)
 
