@@ -5,9 +5,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Any, Sequence
-
-import yaml
+from typing import Sequence
 
 from farkle.analysis import combine, curate, ingest, metrics
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
@@ -15,108 +13,8 @@ from farkle.simulation import runner
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
 from farkle.utils.logging import setup_info_logging
-from farkle.utils.yaml_helpers import expand_dotted_keys
 
 LOGGER = logging.getLogger(__name__)
-
-# ---------------------------------------------------------------------------
-# Configuration helpers
-# ---------------------------------------------------------------------------
-
-
-def _apply_override(cfg: dict[str, Any], expr: str) -> None:
-    """Apply a ``key=value`` override to *cfg* (nested keys via dots)."""
-    key, value = expr.split("=", 1)
-    target = cfg
-    parts = key.split(".")
-    for part in parts[:-1]:
-        target = target.setdefault(part, {})
-    target[parts[-1]] = yaml.safe_load(value)
-
-
-def load_config(path: str | Path | None, overrides: Sequence[str] | None = None) -> dict[str, Any]:
-    """Load a YAML configuration file and apply overrides."""
-    cfg: dict[str, Any] = {}
-    if path is not None:
-        with open(path, "r", encoding="utf-8") as fh:
-            loaded = yaml.safe_load(fh) or {}
-            if not isinstance(loaded, dict):
-                raise TypeError("Config root must be a mapping")
-            cfg.update(loaded)
-    for expr in overrides or []:
-        _apply_override(cfg, expr)
-    return cfg
-
-
-def normalize_cfg(raw: dict[str, Any], command: str) -> dict[str, Any]:  # noqa: ARG001
-    """
-    Accepts:
-      - dotted keys (e.g. 'io.results_dir')
-      - nested keys (e.g. {'io': {'results_dir': ...}})
-      - flat legacy keys
-    Produces:
-      - flat keys needed by run_tournament(**cfg) for 'run'
-      - keys matching PipelineCfg(**cfg) for 'analyze'
-    """
-    # 1) expand dotted -> nested
-    nested = expand_dotted_keys(raw)
-
-    # 2) lift nested into the flat names both sides expect
-    out: dict[str, Any] = dict(nested)  # keep originals too (harmless for PipelineCfg)
-
-    # --- IO / analysis roots ---
-    io = nested.get("io", {})
-    if isinstance(io, dict):
-        if "results_dir" in io:
-            out["results_dir"] = io["results_dir"]
-        # prefer 'analysis_subdir' if provided in io (your YAML uses this)
-        if "analysis_subdir" in io:
-            out["analysis_subdir"] = io["analysis_subdir"]
-        # fallback mapper in case someone used 'analysis_dir'
-        if "analysis_dir" in io and "analysis_subdir" not in out:
-            out["analysis_subdir"] = io["analysis_dir"]
-
-    # --- analysis toggles & params (PipelineCfg) ---
-    # These keys are read directly by PipelineCfg(**cfg)
-    analysis = nested.get("analysis", {})
-    if isinstance(analysis, dict):
-        for k in ("run_trueskill", "run_head2head", "run_hgb", "n_jobs", "trueskill_beta"):
-            if k in analysis:
-                out[k] = analysis[k]
-
-    # Optional sections (mapped to PipelineCfg fields where applicable)
-    for sect, mapping in (
-        ("ingest",   {"row_group_size": "row_group_size", "n_jobs": "n_jobs_ingest"}),
-        ("combine",  {"max_players": "combine_max_players"}),  # only if consumed later
-        ("metrics",  {"seat_range": "metrics_seat_range"}),
-        ("trueskill",{"beta": "trueskill_beta"}),
-        ("head2head",{}),
-        ("hgb",      {"n_estimators": "hgb_max_iter"}),
-    ):
-        val = nested.get(sect, {})
-        if isinstance(val, dict):
-            for src, dst in mapping.items():
-                if src in val:
-                    out[dst] = val[src]
-
-    # --- simulation (run_tournament) ---
-    sim = nested.get("sim", {})
-    if isinstance(sim, dict):
-        # adjust if your run_tournament signature differs
-        if "n_players" in sim:
-            out["n_players"] = sim["n_players"]
-        if "num_shuffles" in sim:
-            # If you also track games_per_shuffle, multiply here.
-            out["n_games"] = sim["num_shuffles"] * sim.get("games_per_shuffle", 1)
-        if "seed" in sim:
-            out["global_seed"] = sim["seed"]
-        if "n_jobs" in sim:
-            out["n_jobs"] = sim["n_jobs"]
-        if "row_dir" in sim:
-            out["row_output_directory"] = Path(sim["row_dir"]) if not isinstance(sim["row_dir"], Path) else sim["row_dir"]
-
-    return out
-
 
 # ---------------------------------------------------------------------------
 # Argument parser
@@ -187,7 +85,7 @@ def _parse_level(level: str | int) -> int:
 
 def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
-    args, remaining = parser.parse_known_args(argv)
+    args, _ = parser.parse_known_args(argv)
 
     setup_info_logging()
     root_logger = logging.getLogger()
@@ -204,22 +102,27 @@ def main(argv: Sequence[str] | None = None) -> None:
         },
     )
 
-    cfg = load_config(args.config, args.overrides)
-    # accept dotted, nested, or flat YAML and normalize for run/analysis
-    cfg = normalize_cfg(cfg, args.command)
+    cfg: AppConfig | None = None
+    if args.command in {"run", "analyze"}:
+        overlays: list[Path] = [args.config] if args.config is not None else []
+        cfg = load_app_config(*overlays) if overlays else AppConfig()
+        cfg = apply_dot_overrides(cfg, list(args.overrides or []))
 
-    LOGGER.info(
-        "Configuration loaded",
-        extra={
-            "stage": "cli",
-            "command": args.command,
-            "config_keys": sorted(cfg.keys()),
-        },
-    )
+        LOGGER.info(
+            "Configuration prepared",
+            extra={
+                "stage": "cli",
+                "command": args.command,
+                "results_dir": str(cfg.io.results_dir),
+                "analysis_dir": str(cfg.analysis_dir),
+                "n_players_list": list(cfg.sim.n_players_list),
+                "expanded_metrics": cfg.sim.expanded_metrics,
+                "append_seed": cfg.io.append_seed,
+            },
+        )
 
     if args.command == "run":
-        cfg = load_app_config(args.config) if args.config is not None else AppConfig()
-        cfg = apply_dot_overrides(cfg, args.overrides)
+        assert cfg is not None  # for type checkers
         if args.metrics:
             cfg.sim.expanded_metrics = True
         if args.row_dir is not None:
@@ -232,6 +135,8 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "seed": cfg.sim.seed,
                 "n_players_list": cfg.sim.n_players_list,
                 "expanded_metrics": cfg.sim.expanded_metrics,
+                "results_dir": str(cfg.io.results_dir),
+                "row_dir": str(cfg.sim.row_dir) if cfg.sim.row_dir is not None else None,
             },
         )
         if len(cfg.sim.n_players_list) > 1:
@@ -249,14 +154,15 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         watch_game(seed=args.seed)
     elif args.command == "analyze":
-        cfg = load_app_config(args.config) if args.config is not None else AppConfig()
-        cfg = apply_dot_overrides(cfg, args.overrides)
+        assert cfg is not None  # for type checkers
         LOGGER.info(
             "Dispatching analysis command",
             extra={
                 "stage": "cli",
                 "command": f"analyze:{args.an_cmd}",
                 "config_path": str(args.config) if args.config else None,
+                "results_dir": str(cfg.io.results_dir),
+                "analysis_dir": str(cfg.analysis_dir),
             },
         )
         if args.an_cmd == "ingest":
