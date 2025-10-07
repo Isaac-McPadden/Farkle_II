@@ -4,7 +4,7 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping, get_args, get_origin, get_type_hints
+from typing import Any, Mapping, Sequence, get_args, get_origin, get_type_hints
 
 import yaml
 
@@ -17,8 +17,9 @@ from farkle.utils.yaml_helpers import expand_dotted_keys
 @dataclass
 class IOConfig:
     """File-system locations for the application."""
-    results_dir: Path = Path("results_seed_0")
+    results_dir: Path = Path("results")
     # Keep this as a plain string in YAML to avoid Path(dict) mistakes.
+    append_seed: bool = True
     analysis_subdir: str = "analysis"
 
 
@@ -46,6 +47,18 @@ class SimConfig:
     bh_design: BHDesign = field(default_factory=BHDesign)
     bonferroni_design: BonferroniDesign = field(default_factory=BonferroniDesign)
     n_jobs: int | None = None
+    desired_sec_per_chunk: int = 10
+    ckpt_every_sec: int = 30
+    
+    # Alter strategy grid
+    score_thresholds: list[int] | None = None 
+    dice_thresholds: list[int] | None = None 
+    smart_five_opts: Sequence[bool] | None = None
+    smart_one_opts: Sequence[bool] | None = None
+    consider_score_opts: Sequence[bool] = (True, False)
+    consider_dice_opts: Sequence[bool] = (True, False)
+    auto_hot_dice_opts: Sequence[bool] = (True, False)
+    run_up_score_opts: Sequence[bool] = (True, False)
 
 
 @dataclass
@@ -288,7 +301,7 @@ def load_app_config(*overlays: Path) -> AppConfig:
             setattr(obj, f.name, val)
         return obj
 
-    return AppConfig(
+    cfg =  AppConfig(
         io=build(IOConfig, data.get("io", {})),
         sim=build(SimConfig, data.get("sim", {})),
         analysis=build(AnalysisConfig, data.get("analysis", {})),
@@ -299,6 +312,11 @@ def load_app_config(*overlays: Path) -> AppConfig:
         head2head=build(Head2HeadConfig, data.get("head2head", {})),
         hgb=build(HGBConfig, data.get("hgb", {})),
     )
+    if cfg.io.append_seed:
+        # Append the seed number to the results_dir name
+        base = str(cfg.io.results_dir)
+        cfg.io.results_dir = Path(f"{base}_seed_{cfg.sim.seed}")
+    return cfg
 
 
 def _coerce(value: str, current: Any, annotation: Any | None = None) -> Any:

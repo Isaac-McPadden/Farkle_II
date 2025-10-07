@@ -20,7 +20,7 @@ import pyarrow as pa
 
 import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig
-from farkle.simulation.run_tournament import METRIC_LABELS
+from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
 from farkle.simulation.simulation import generate_strategy_grid
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.stats import games_for_power
@@ -74,9 +74,18 @@ def run_tournament(cfg: AppConfig) -> int:
 def run_single_n(cfg: AppConfig, n: int, grid_size: int | None = None) -> int:
     """Run a Farkle tournament for a single player count *n*."""
     if grid_size is None:
-        strategies, _ = generate_strategy_grid()
+        strategies, _ = generate_strategy_grid(
+            score_thresholds = cfg.sim.score_thresholds,
+            dice_thresholds = cfg.sim.dice_thresholds,
+            smart_five_opts = cfg.sim.smart_five_opts,
+            smart_one_opts = cfg.sim.smart_one_opts,
+            consider_score_opts = cfg.sim.consider_score_opts,
+            consider_dice_opts = cfg.sim.consider_dice_opts,
+            auto_hot_dice_opts = cfg.sim.auto_hot_dice_opts,
+            run_up_score_opts = cfg.sim.run_up_score_opts,
+        )
         grid_size = len(strategies)
-    m_tests = grid_size
+    m_tests = grid_size    
     if cfg.sim.bonferroni_design.enabled and cfg.sim.bonferroni_design.recompute:
         n_shuffles = games_for_power(m_tests, method="bonferroni", full_pairwise=True)
     elif cfg.sim.bh_design.enabled and cfg.sim.bh_design.recompute:
@@ -101,6 +110,12 @@ def run_single_n(cfg: AppConfig, n: int, grid_size: int | None = None) -> int:
         row_dir = cfg.sim.row_dir
         if not row_dir.is_absolute():
             row_dir = n_dir / row_dir
+    tourn_cfg = TournamentConfig(
+    n_players = n,
+    num_shuffles = n_shuffles,
+    desired_sec_per_chunk = cfg.sim.desired_sec_per_chunk,
+    ckpt_every_sec = cfg.sim.ckpt_every_sec
+    )
     tournament_mod.run_tournament(
         n_players=n,
         global_seed=cfg.sim.seed,
@@ -109,8 +124,9 @@ def run_single_n(cfg: AppConfig, n: int, grid_size: int | None = None) -> int:
         collect_metrics=cfg.sim.expanded_metrics,
         row_output_directory=row_dir,
         num_shuffles=n_shuffles,
+        config=tourn_cfg
     )
-    games_per_shuffle = 8160 // n
+    games_per_shuffle = grid_size // n
     total_games = n_shuffles * games_per_shuffle
     # ---- Final checkpoint handling: always create a parquet summary, and
     # when expanded_metrics=True also create a richer metrics parquet that includes sq-sums. ----

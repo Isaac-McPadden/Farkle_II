@@ -5,7 +5,8 @@ experiment:
   seed: 0
 
 io:
-  results_dir: "results_seed_0"   # where per-N run folders are created
+  results_dir: "results"   # where per-N run folders are created
+  append_seed: true
   analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
 
 sim:
@@ -18,23 +19,26 @@ sim:
   n_jobs: null                    # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
   row_dir: null                   # null => per-N rows under {results}/{N}_players/rows/
+  desired_sec_per_chunk: 10
+  ckpt_every_sec: 30
+
 
   # Customize strategy grid
   # null (yaml) / None (py) loads default values for that variable
   strategy:
     score_thresholds: null      # None -> use [200, 250, ..., 1000]
     dice_thresholds: null       # None -> use [0, 1, 2, 3, 4]
-    consider_score_opts: null   # None -> [True, False]
-    consider_dice_opts: null    # None -> [True, False]
     smart_five_opts: null       # None -> [True, False]
     smart_one_opts: null        # None -> [True, False]
-    auto_hot_dice_opts: null    # None -> [False, True]
+    consider_score_opts: null   # None -> [True, False]
+    consider_dice_opts: null    # None -> [True, False]
+    auto_hot_dice_opts: null    # None -> [True, False]
     run_up_score_opts: null     # None -> [True, False]
 
   # Optional per-N overrides (keys are strings)
   per_n:
-    "12":
-      num_shuffles: 200           # example: heavier schedule for 12-player games
+    # "12":
+      # num_shuffles: 200           # example: heavier schedule for 12-player games
 
   # Benjamini–Hochberg design: when enabled+recompute, overrides num_shuffles per N
   bh_design:
