@@ -42,7 +42,7 @@ sim:
 
   # Benjamini–Hochberg design: when enabled+recompute, overrides num_shuffles per N
   bh_design:
-    enabled: false
+    enabled: true
     power: 0.95
     alpha: 0.05
     fdr_q: 0.02
@@ -80,7 +80,7 @@ head_to_head:
 
   # Bonferroni design: when enabled+recompute, updates BOTH per-N schedules and H2H games
   bonferroni_design:
-    enabled: false
+    enabled: true
     power: 0.95
     alpha: 0.05
     fdr_q: 0.02                   # kept for parity; typically ignored by strict Bonferroni

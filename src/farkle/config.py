@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import dataclasses
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence, get_args, get_origin, get_type_hints
 
@@ -289,16 +289,20 @@ def load_app_config(*overlays: Path) -> AppConfig:
             current = getattr(obj, f.name)
             annotation = type_hints.get(f.name)
 
-            # Map nested dict values to dataclass instances if needed (for dict[int, Dataclass])
+            # NEW: plain nested dataclass support (e.g., BHDesign / BonferroniDesign)
+            if annotation is not None and is_dataclass(annotation) and isinstance(val, Mapping):
+                val = build(annotation, val)
+
+            # Existing: map dict[int, Dataclass] (e.g., per_n)
             if annotation is not None and get_origin(annotation) is dict:
                 key_t, val_t = get_args(annotation)
-                if dataclasses.is_dataclass(val_t):
+                if is_dataclass(val_t):
                     val = {
                         (int(k) if key_t is int else k): build(val_t, v) if isinstance(v, Mapping) else v
                         for k, v in (val or {}).items()
                     }
 
-            # Coerce Path-like fields (only from str/Path-like, never dicts)
+            # Path coercion (works for nested too because we use type hints)
             if (isinstance(current, Path) or _annotation_contains(annotation, Path)) and isinstance(val, (str, Path)):
                 val = Path(val)
 

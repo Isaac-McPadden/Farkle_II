@@ -1,5 +1,4 @@
-import os
-import os
+﻿import os
 from pathlib import Path
 
 import pytest
@@ -13,7 +12,7 @@ from farkle.config import AppConfig, IOConfig
 
 def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
     cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
-    analysis_dir = cfg.analysis_dir
+    analysis_dir = cfg.analysis_dir  # noqa: F841
     combined = cfg.curated_parquet.parent
     combined.mkdir(parents=True, exist_ok=True)
     curated = combined / "all_ingested_rows.parquet"

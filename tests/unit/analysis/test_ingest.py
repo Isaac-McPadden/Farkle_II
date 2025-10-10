@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from farkle.analysis.ingest import _fix_winner, _iter_shards, _process_block, run
-from farkle.config import AppConfig, IOConfig, IngestConfig
+from farkle.config import AppConfig, IngestConfig, IOConfig
 
 
 def _make_cfg(tmp_results_dir: Path, *, ingest_overrides: dict[str, Any] | None = None) -> AppConfig:

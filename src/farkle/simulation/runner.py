@@ -22,6 +22,7 @@ import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
 from farkle.simulation.simulation import generate_strategy_grid
+from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.stats import games_for_power
 
@@ -71,9 +72,9 @@ def run_tournament(cfg: AppConfig) -> int:
     totals = run_multi(cfg)
     return int(sum(totals.values()))
 
-def run_single_n(cfg: AppConfig, n: int, grid_size: int | None = None) -> int:
+def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | None = None) -> int:
     """Run a Farkle tournament for a single player count *n*."""
-    if grid_size is None:
+    if strategies is None:
         strategies, _ = generate_strategy_grid(
             score_thresholds = cfg.sim.score_thresholds,
             dice_thresholds = cfg.sim.dice_thresholds,
@@ -111,10 +112,11 @@ def run_single_n(cfg: AppConfig, n: int, grid_size: int | None = None) -> int:
         if not row_dir.is_absolute():
             row_dir = n_dir / row_dir
     tourn_cfg = TournamentConfig(
-    n_players = n,
-    num_shuffles = n_shuffles,
-    desired_sec_per_chunk = cfg.sim.desired_sec_per_chunk,
-    ckpt_every_sec = cfg.sim.ckpt_every_sec
+        n_players = n,
+        num_shuffles = n_shuffles,
+        desired_sec_per_chunk = cfg.sim.desired_sec_per_chunk,
+        ckpt_every_sec = cfg.sim.ckpt_every_sec,
+        n_strategies = grid_size,
     )
     tournament_mod.run_tournament(
         n_players=n,
@@ -124,7 +126,8 @@ def run_single_n(cfg: AppConfig, n: int, grid_size: int | None = None) -> int:
         collect_metrics=cfg.sim.expanded_metrics,
         row_output_directory=row_dir,
         num_shuffles=n_shuffles,
-        config=tourn_cfg
+        config=tourn_cfg,
+        strategies=strategies,      # <-- pass the actual list
     )
     games_per_shuffle = grid_size // n
     total_games = n_shuffles * games_per_shuffle
@@ -212,10 +215,18 @@ def run_single_n(cfg: AppConfig, n: int, grid_size: int | None = None) -> int:
 def run_multi(cfg: AppConfig) -> dict[int, int]:
     """Run tournaments for multiple player counts."""
     results: dict[int, int] = {}
-    strategies, _ = generate_strategy_grid()
-    grid_size = len(strategies)
+    strategies, _ = generate_strategy_grid(
+        score_thresholds = cfg.sim.score_thresholds,
+        dice_thresholds = cfg.sim.dice_thresholds,
+        smart_five_opts = cfg.sim.smart_five_opts,
+        smart_one_opts = cfg.sim.smart_one_opts,
+        consider_score_opts = cfg.sim.consider_score_opts,
+        consider_dice_opts = cfg.sim.consider_dice_opts,
+        auto_hot_dice_opts = cfg.sim.auto_hot_dice_opts,
+        run_up_score_opts = cfg.sim.run_up_score_opts,
+    )
     for n in cfg.sim.n_players_list:
-        games = run_single_n(cfg, n, grid_size)
+        games = run_single_n(cfg, n, strategies=strategies)
         results[n] = games
     return results
 

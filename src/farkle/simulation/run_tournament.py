@@ -40,7 +40,7 @@ LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration constants (patched by tests/CLI)
 # ---------------------------------------------------------------------------
-NUM_SHUFFLES: int = 5_907  # BH-power calculation for default
+NUM_SHUFFLES: int = 5_907  # BH-power calculation for default (can be overridden)
 # Default result of NUM_SHUFFLES * games_per_shuffle is 9_640_224 games total
 
 # Counting metrics in pkl file
@@ -60,10 +60,11 @@ class TournamentConfig:
     num_shuffles: int = NUM_SHUFFLES
     desired_sec_per_chunk: int = DESIRED_SEC_PER_CHUNK
     ckpt_every_sec: int = CKPT_EVERY_SEC
+    n_strategies: int = 7_140  # overridden when strategies are provided
 
     @property
     def games_per_shuffle(self) -> int:
-        return 8_160 // self.n_players
+        return self.n_strategies // self.n_players
 
 
 # metric fields tracked per winning strategy
@@ -119,8 +120,8 @@ def _init_worker(
     """Initialise per-process state."""
 
     global _STATE
-    if 8_160 % config.n_players != 0:
-        raise ValueError("n_players must divide 8,160")
+    if len(strategies) % config.n_players != 0:
+        raise ValueError(f"n_players must divide {len(strategies):,}")
     _STATE = WorkerState(list(strategies), config)
 
 
@@ -358,6 +359,7 @@ def run_tournament(
     row_output_directory: Path | None = None,  # None if --row-dir omitted
     metric_chunk_directory: Path | None = None,
     num_shuffles: int = NUM_SHUFFLES,
+    strategies: Sequence[ThresholdStrategy] | None = None,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
@@ -403,7 +405,8 @@ def run_tournament(
     ``metric_chunk_directory`` is set, per-chunk metric aggregates are also
     written there.
     """
-    strategies, _ = generate_strategy_grid()  # 8_160 strategies
+    if strategies is None:
+        strategies, _ = generate_strategy_grid()  # 7_140 strategies
 
     cfg = config or TournamentConfig()
     if n_players is not None:
@@ -412,8 +415,9 @@ def run_tournament(
         cfg.num_shuffles = num_shuffles
     if cfg.n_players < 2:
         raise ValueError("n_players must be ≥2")
-    if 8_160 % cfg.n_players != 0:
-        raise ValueError("n_players must divide 8,160")
+    cfg.n_strategies = len(strategies)
+    if cfg.n_strategies % cfg.n_players != 0:
+        raise ValueError(f"n_players must divide {cfg.n_strategies:,}")
 
     games_per_sec = _measure_throughput(strategies[: cfg.n_players])
     shuffles_per_chunk = max(
