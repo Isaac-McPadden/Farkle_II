@@ -86,6 +86,8 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
             run_up_score_opts = cfg.sim.run_up_score_opts,
         )
         grid_size = len(strategies)
+    else:
+        grid_size = len(strategies)
     m_tests = grid_size    
     if cfg.sim.bonferroni_design.enabled and cfg.sim.bonferroni_design.recompute:
         n_shuffles = games_for_power(m_tests, method="bonferroni", full_pairwise=True)

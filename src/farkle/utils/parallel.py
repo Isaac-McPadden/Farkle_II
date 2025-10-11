@@ -14,6 +14,10 @@ def process_map(fn, items, *, n_jobs=None, initializer=None, initargs=None, wind
     if initargs is None:
         initargs = ()
     if n_jobs in (None, 0, 1):
+        # Single-process path: still run initializer so modules relying on
+        # per-process globals (e.g., run_tournament._STATE) are set up.
+        if initializer is not None:
+            initializer(*tuple(initargs))
         for it in items:
             yield fn(it)
         return

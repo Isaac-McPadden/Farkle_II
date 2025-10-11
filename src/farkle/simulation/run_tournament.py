@@ -41,7 +41,6 @@ LOGGER = logging.getLogger(__name__)
 # Configuration constants (patched by tests/CLI)
 # ---------------------------------------------------------------------------
 NUM_SHUFFLES: int = 5_907  # BH-power calculation for default (can be overridden)
-# Default result of NUM_SHUFFLES * games_per_shuffle is 9_640_224 games total
 
 # Counting metrics in pkl file
 DESIRED_SEC_PER_CHUNK: int = 10
@@ -139,11 +138,10 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
     """Play all games for one shuffle and aggregate the results."""
 
     state = _STATE
-    assert state is not None
 
     rng = np.random.default_rng(seed)
-    perm = rng.permutation(len(state.strats))
-    game_seeds = urandom.spawn_seeds(state.cfg.games_per_shuffle, seed=seed)
+    perm = rng.permutation(len(state.strats))  # type: ignore
+    game_seeds = urandom.spawn_seeds(state.cfg.games_per_shuffle, seed=seed)  # type: ignore
 
     wins: Counter[str] = Counter()
     sums: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -152,10 +150,10 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
 
     offset = 0
     for gseed in game_seeds:
-        idxs = perm[offset : offset + state.cfg.n_players].tolist()
-        offset += state.cfg.n_players
+        idxs = perm[offset : offset + state.cfg.n_players].tolist()  # type: ignore
+        offset += state.cfg.n_players  # type: ignore
 
-        row = _play_game(int(gseed), [state.strats[i] for i in idxs])
+        row = _play_game(int(gseed), [state.strats[i] for i in idxs])  # type: ignore
         winner = row.get("winner_seat") or row.get("winner")
         strat_repr = row[f"{winner}_strategy"]
         winner = cast(str, winner)

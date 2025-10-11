@@ -1,11 +1,8 @@
 # configs/fast_config.yaml
 # Drives BOTH simulation and analysis.
 
-experiment:
-  seed: 14
-
 io:
-  results_dir: "results"   # where per-N run folders are created
+  results_dir: "data/results"   # where per-N run folders are created
   append_seed: true
   analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
 
@@ -15,10 +12,13 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 0                         # RNG seed used by the tournament core
-  n_jobs: null                    # null = auto; otherwise an int
+  seed: 15                         # RNG seed used by the tournament core
+  n_jobs: 12                    # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
-  row_dir: null                   # null => per-N rows under {results}/{N}_players/rows/
+  row_dir: "rows"                   # rows => per-N rows under {results}/{N}_players/rows/
+                                    # If row_dir == null, row writing skipped
+  desired_sec_per_chunk: 10
+  ckpt_every_sec: 30
 
   # Customize strategy grid
   # null (yaml) / None (py) loads default values for that variable
