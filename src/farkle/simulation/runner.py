@@ -102,9 +102,17 @@ def _compute_num_shuffles_from_config(
             method=method,
             design=design,
         )
+        
+        m_tests = (n_strategies * (n_strategies - 1)) // 2 if design.full_pairwise else (n_strategies - 1)
+        
         LOGGER.info(
-            "Power recompute: method=%s, n_strategies=%d, k_players=%d -> num_shuffles=%d",
-            method, n_strategies, n_players, n_shuffles,
+            ("Power recompute: method=%s | n_strategies=%d | k_players=%d | m_tests=%d | "
+            "power=%.3f | control=%.4g | tail=%s | full_pairwise=%s | use_BY=%s | "
+            "detectable_lift=%.4f | baseline_rate=%.3f -> num_shuffles=%d"),
+            method, n_strategies, n_players, m_tests,
+            design.power, design.control, design.tail, design.full_pairwise,
+            (bool(design.use_BY) if method == "bh" else False),
+            design.detectable_lift, design.baseline_rate, n_shuffles,
         )
         return n_shuffles
 
@@ -158,11 +166,11 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     """Run a Farkle tournament for a single player count *n*."""
     # --- Grid & tests ---
     strategies, grid_size, _used_custom = _resolve_strategies(cfg, strategies)
-    m_tests = grid_size  # used for hypotheses count for power calcs
-
+    n_strategies = grid_size  # used for hypotheses count for power calcs
+    LOGGER.info(f"{grid_size} total strategies, used custom state: {_used_custom}")
     # --- Tournament shuffles ---
-    n_shuffles = _compute_num_shuffles_from_config(cfg, m_tests, n_players=n)
-
+    n_shuffles = _compute_num_shuffles_from_config(cfg, n_strategies=n_strategies, n_players=n)
+    LOGGER.info(f"n_shuffles calculated to be {n_shuffles}")
     # --- Planned totals (log before executing) ---
     games_per_shuffle = grid_size // n
     total_games = n_shuffles * games_per_shuffle
