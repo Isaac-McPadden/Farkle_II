@@ -24,16 +24,16 @@ class IOConfig:
 
 
 @dataclass
-class BHDesign:
-    enabled: bool = False
-    recompute: bool = False
-
-
-@dataclass
-class BonferroniDesign:
-    enabled: bool = False
-    recompute: bool = False
-
+class PowerDesign:
+    power: float = 0.8
+    control: float = 0.1  # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
+    detectable_lift: float = 0.03  # absolute lift in win-rate
+    baseline_rate: float = 0.50
+    tail: str = "two_sided"  # "one_sided" | "two_sided"
+    full_pairwise: bool = True
+    min_games_floor: int = 2000
+    max_games_cap: int | None = None
+    use_BY: bool | None = False  # if true and using BH, use q/H_m (more conservative)
 
 @dataclass
 class SimConfig:
@@ -44,8 +44,9 @@ class SimConfig:
     expanded_metrics: bool = False
     row_dir: Path | None = None
     per_n: dict[int, 'SimConfig'] = field(default_factory=dict)
-    bh_design: BHDesign = field(default_factory=BHDesign)
-    bonferroni_design: BonferroniDesign = field(default_factory=BonferroniDesign)
+    power_method: str = "bh"
+    recompute_num_shuffles: bool = True
+    power_design: PowerDesign = field(default_factory=PowerDesign)
     n_jobs: int | None = None
     desired_sec_per_chunk: int = 10
     ckpt_every_sec: int = 30
@@ -377,8 +378,7 @@ __all__ = [
     "TrueSkillConfig",
     "Head2HeadConfig",
     "HGBConfig",
-    "BHDesign",
-    "BonferroniDesign",
+    "PowerDesign",
     "AppConfig",
     "load_app_config",
     "apply_dot_overrides",

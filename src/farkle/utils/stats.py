@@ -17,7 +17,6 @@ convenience.
 from __future__ import annotations
 
 import itertools
-import warnings
 from math import ceil, sqrt
 from typing import Dict, List
 
@@ -25,110 +24,139 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-from .random import MAX_UINT32
+from farkle.utils.random import MAX_UINT32
+
+
+def _num_hypotheses(n: int, full_pairwise: bool) -> int:
+    return n * (n - 1) // 2 if full_pairwise else n - 1
+
+
+def _per_test_level(method: str, m: int, control: float, use_BY: bool) -> float:
+    """
+    control = alpha (Bonferroni/FWER) or q (BH/FDR).
+    Returns the planning per-test level α* (or q* surrogate).
+    """
+    if not (0 < control < 1):
+        raise ValueError("control must be in (0,1)")
+    if method == "bonferroni":
+        return control / m
+    if use_BY:
+        H_m = sum(1.0 / i for i in range(1, m + 1))
+        return control / (m * H_m)       # BY surrogate (more conservative)
+    return control / m             # BH planning surrogate (power-friendlier)
 
 
 def games_for_power(
-    n_strategies: int,
-    delta: float = 0.03,
-    base_p: float = 0.5,
-    alpha: float = 0.05,
-    power: float = 0.8,
-    method: str = "bh",  # "bh" or "bonferroni"
-    full_pairwise: bool = True,  # baseline-vs-all or full pairwise
     *,
-    pairwise: bool | None = None,  # deprecated alias
+    n_strategies: int = 7140,
+    k_players: int = 2,
+    method: str = "bh",          # "bh" or "bonferroni"
+    power: float = 0.8,
+    control: float = 0.1,           # q for BH, alpha for Bonferroni
+    detectable_lift: float = 0.03,
+    baseline_rate: float = 0.5,
+    tail: str = "two_sided",
+    full_pairwise: bool = True,     # m = n(n-1)/2 if True else n-1
+    use_BY: bool = False,           # only meaningful for BH, makes BH more conservative
+    min_games_floor: int | None = None,
+    max_games_cap: int | None = None,
 ) -> int:
-    """Calculate the number of games needed for each strategy.
+    """
+    Returns the required number of GAMES PER STRATEGY (rounded up) for a
+    k-player round-robin style experiment, using BH false discovery rate (FDR) 
+    or Bonferroni family-wise error rate (FWER).
+
+    Notes:
+    H0 is strategies have identical winrates.  H1 is strategies have different winrates.
+      - Converts per-pair co-appearance requirement to k-player games by dividing by (k-1).
+      - For BH, 'control' is FDR q; for Bonferroni, 'control' is FWER alpha.
+      - 'tail' controls whether α*/2 or α* is used inside the normal quantile.
+    Calculate the number of games needed for each strategy.
 
     Parameters
     ----------
     n_strategies : int
         Total number of strategies included in the experiment.
-    delta : float, default 0.03
-        Smallest detectable difference in win probability between two
-        strategies.
-    base_p : float, default 0.5
-        Baseline probability of winning against which ``delta`` is
-        measured.
-    alpha : float, default 0.05
-        Desired family wise error rate.
+    k_players : int
+        Game-match size, e.g. 5 players
+    method : str
+        "bh" or "bonferroni"
     power : float, default 0.8
         Target statistical power for each comparison.
-    method : {{'bh', 'bonferroni'}}, default ``'bh'``
-        Multiple comparison correction to apply.
+    control : float
+        For BH, 'control' is FDR q; for Bonferroni, 'control' is FWER alpha.
+    detectable_lift : float, default 0.03
+        Smallest detectable difference in win probability between two
+        strategies.
+    baseline_rate : float, default 0.5
+        Baseline probability of winning against which ``delta`` is
+        measured. Game count is maximized at 0.5.
+    tail : str
+        "two_sided" or "one_sided".  "two_sided" adds more games but detects better 
+        and worse while "one_sided" can only detect better 
     full_pairwise :
         ``True`` → compare every pair of strategies (k = *n*·(*n*-1)/2).
         ``False`` → compare each strategy only to a single baseline (*n*-1 tests).
-    pairwise :
-        **Deprecated** alias for ``full_pairwise``.  Will be removed in a future
-        version.
-
+    use_BY : bool
+        Accounts for dependencies between data where BH assumes independent outcomes.
+        Method is more conservative and results in a higher game count.
+        Defaults to False
+    min_games_floor : int
+       Manual override available if needed.
+       Forces each strategy to play at least ``min_games_floor`` games.
+    max_games_cap : int
+        Manual override available if needed.
+        Forces each strategy to play at most ``max_games_cap`` games.
+        
     Returns
     -------
     int
         Number of games required per strategy (rounded up to the next
         integer).
-
-    Raises
-    ------
-    ValueError
-        If ``method`` is not ``'bh'`` or ``'bonferroni'``.
-
-    Examples
-    --------
-    >>> games_for_power(n_strategies=3, delta=0.2, method='bh')
-    111
     """
-    # per-test alpha*
-
-    # ------------------ handle deprecated alias ---------------------------
-    if pairwise is not None:
-        warnings.warn(
-            "`pairwise` is deprecated; use `full_pairwise` instead",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        full_pairwise = pairwise
-
-    # ------------------ argument validation -------------------------------
-    if not 0 < base_p < 1:
-        raise ValueError("base_p must be in (0, 1)")
-    if not 0 < delta < 1:
-        raise ValueError("delta must be in (0, 1)")
-    if base_p + delta >= 1:
-        raise ValueError("base_p + delta must be < 1")
-    if method == "bonferroni" and n_strategies <= 1:
-        raise ValueError("bonferroni adjustment requires more than one strategy")
-    if n_strategies <= 1:
+    # ---- validation ----
+    if n_strategies <= 1: 
         raise ValueError("n_strategies must be > 1")
-    if not (0 < alpha < 1):
-        raise ValueError("alpha must be between 0 and 1")
-    if not (0 < power < 1):
-        raise ValueError("power must be between 0 and 1")
+    if k_players   <  2:  
+        raise ValueError("k_players must be >= 2")
+    if not (0 < power < 1):            
+        raise ValueError("power must be in (0,1)")
+    if not (0 < baseline_rate < 1):    
+        raise ValueError("baseline_rate must be in (0,1)")
+    if not (0 < detectable_lift < 1):  
+        raise ValueError("detectable_lift must be in (0,1)")
+    if baseline_rate + detectable_lift >= 1:
+        raise ValueError("baseline_rate + detectable_lift must be < 1")
+    if tail not in {"one_sided", "two_sided"}:
+        raise ValueError("tail must be 'one_sided' or 'two_sided'")
 
-    # ------------------ per-test alpha* -----------------------------------
-    if method == "bonferroni":
-        k = n_strategies * (n_strategies - 1) // 2 if full_pairwise else n_strategies - 1
-        alpha_star = alpha / k
-    elif method == "bh":
-        h_m = sum(1 / i for i in range(1, n_strategies + 1))  # harmonic number
-        alpha_star = alpha / h_m
-    else:
-        raise ValueError("method must be 'bh' or 'bonferroni'")
+    # ---- hypotheses & per-test level ----
+    m = _num_hypotheses(n_strategies, full_pairwise)
+    if m < 1:
+        raise ValueError("No hypotheses implied; check n_strategies/full_pairwise")
 
-    # ------------------ sample-size formula -------------------------------
-    z_alpha = norm.ppf(1 - alpha_star / 2)
-    z_beta = norm.ppf(power)
+    alpha_star = _per_test_level(method=method, m=m, control=control, use_BY=(use_BY if method=="bh" else False))
 
-    p1, p2 = base_p, base_p + delta
-    p_bar = (p1 + p2) / 2
-    numerator = z_alpha * sqrt(2 * p_bar * (1 - p_bar)) + z_beta * sqrt(
-        p1 * (1 - p1) + p2 * (1 - p2)
-    )
-    n = (numerator / delta) ** 2
+    # ---- z-quantiles with tailing ----
+    z_alpha = norm.ppf(1 - (alpha_star / 2.0 if tail == "two_sided" else alpha_star))
+    z_beta  = norm.ppf(power)
 
-    return ceil(n)  # always round *up* to the next whole game
+    # ---- two-proportion per-pair (per arm) ----
+    p1, p2 = baseline_rate, baseline_rate + detectable_lift
+    pbar = 0.5 * (p1 + p2)
+    num  = z_alpha * sqrt(2 * pbar * (1 - pbar)) + z_beta * sqrt(p1 * (1 - p1) + p2 * (1 - p2))
+    n_arm = (num / detectable_lift) ** 2   # required co-appearances per pair, per arm
+
+    # ---- convert to k-player games per strategy ----
+    games_per_strategy = ceil(n_arm * (n_strategies - 1) / (k_players - 1))
+
+    # ---- floor/cap ----
+    if min_games_floor is not None:
+        games_per_strategy = max(games_per_strategy, int(min_games_floor))
+    if max_games_cap   is not None:
+        games_per_strategy = min(games_per_strategy, int(max_games_cap))
+
+    return int(games_per_strategy)
 
 
 def build_tiers(

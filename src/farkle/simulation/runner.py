@@ -20,11 +20,11 @@ import pyarrow as pa
 
 import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig
+from farkle.simulation.power_helpers import games_for_power_from_design
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
 from farkle.simulation.simulation import generate_strategy_grid
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifacts import write_parquet_atomic
-from farkle.utils.stats import games_for_power
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -33,18 +33,99 @@ from farkle.utils.stats import games_for_power
 LOGGER = logging.getLogger(__name__)
 
 
+def _resolve_strategies(
+    cfg: AppConfig, 
+    strategies: list[ThresholdStrategy] | None
+    ) -> tuple[list[ThresholdStrategy], int, bool]:
+    """
+    Returns (strategies_list, grid_size, used_custom_grid: bool).
+    """
+    if strategies is None:
+        strategies, _ = generate_strategy_grid(
+            score_thresholds=cfg.sim.score_thresholds,
+            dice_thresholds=cfg.sim.dice_thresholds,
+            smart_five_opts=cfg.sim.smart_five_opts,
+            smart_one_opts=cfg.sim.smart_one_opts,
+            consider_score_opts=cfg.sim.consider_score_opts,
+            consider_dice_opts=cfg.sim.consider_dice_opts,
+            auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
+            run_up_score_opts=cfg.sim.run_up_score_opts,
+            # prefer_score is and must be handled automatically
+        )
+        used_custom = any([
+            cfg.sim.score_thresholds is not None,
+            cfg.sim.dice_thresholds is not None,
+            cfg.sim.smart_five_opts is not None,
+            cfg.sim.smart_one_opts is not None,
+            cfg.sim.consider_score_opts not in [(True, False), [True, False], None],
+            cfg.sim.consider_dice_opts not in [(True, False), [True, False], None],
+            cfg.sim.auto_hot_dice_opts not in [(False, True), [False, True], None],
+            cfg.sim.run_up_score_opts not in [(False, True), [False, True], None],
+        ])
+    else:
+        used_custom = True  # caller provided a custom grid explicitly
+
+    grid_size = len(strategies)
+
+    LOGGER.info(
+        "Strategy grid prepared: %d strategies (%s grid)",
+        grid_size, "custom" if used_custom else "default",
+    )
+    return strategies, grid_size, used_custom
+
+
+def _compute_num_shuffles_from_config(
+    cfg: AppConfig,
+    n_strategies: int,
+    n_players: int,
+) -> int:
+    """
+    Precedence:
+      1) per-n override
+      2) recompute from power_method (if enabled)
+      3) static sim.num_shuffles
+    """
+    # 1) per-n override
+    if n_players in cfg.sim.per_n and hasattr(cfg.sim.per_n[n_players], "num_shuffles"):
+        n_shuffles = cfg.sim.per_n[n_players].num_shuffles
+        LOGGER.info("Using per-n override: n=%d -> num_shuffles=%d", n_players, n_shuffles)
+        return n_shuffles
+
+    # 2) recompute via selected method
+    if cfg.sim.recompute_num_shuffles:
+        method = cfg.sim.power_method  # "bh" | "bonferroni"
+        design = cfg.sim.power_design
+
+        n_shuffles = games_for_power_from_design(
+            n_strategies=n_strategies,
+            k_players=n_players,
+            method=method,
+            design=design,
+        )
+        LOGGER.info(
+            "Power recompute: method=%s, n_strategies=%d, k_players=%d -> num_shuffles=%d",
+            method, n_strategies, n_players, n_shuffles,
+        )
+        return n_shuffles
+
+    # 3) fallback
+    n_shuffles = cfg.sim.num_shuffles
+    LOGGER.info("Using configured num_shuffles=%d", n_shuffles)
+    return n_shuffles
+
+
 def run_tournament(cfg: AppConfig) -> int:
     """Top-level dispatcher that runs single-N or multi-N based on the config.
 
     - If ``sim.n_players_list`` has one element, runs that N and returns total games (int).
     - If it has multiple elements, runs them all and returns the **sum** of total games.
     """
-    ns = list(cfg.sim.n_players_list)
-    if not ns:
+    n_vals = list(cfg.sim.n_players_list)
+    if not n_vals:
         raise ValueError("sim.n_players_list must contain at least one player count")
 
-    if len(ns) == 1:
-        n = ns[0]
+    if len(n_vals) == 1:
+        n = n_vals[0]
         LOGGER.info(
             "Running single-N tournament",
             extra={
@@ -62,7 +143,7 @@ def run_tournament(cfg: AppConfig) -> int:
         "Running multi-N tournaments",
         extra={
             "stage": "simulation",
-            "n_players_list": ns,
+            "n_players_list": n_vals,
             "num_shuffles_default": cfg.sim.num_shuffles,
             "seed": cfg.sim.seed,
             "n_jobs": cfg.sim.n_jobs,
@@ -72,38 +153,25 @@ def run_tournament(cfg: AppConfig) -> int:
     totals = run_multi(cfg)
     return int(sum(totals.values()))
 
+
 def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | None = None) -> int:
     """Run a Farkle tournament for a single player count *n*."""
-    if strategies is None:
-        strategies, _ = generate_strategy_grid(
-            score_thresholds = cfg.sim.score_thresholds,
-            dice_thresholds = cfg.sim.dice_thresholds,
-            smart_five_opts = cfg.sim.smart_five_opts,
-            smart_one_opts = cfg.sim.smart_one_opts,
-            consider_score_opts = cfg.sim.consider_score_opts,
-            consider_dice_opts = cfg.sim.consider_dice_opts,
-            auto_hot_dice_opts = cfg.sim.auto_hot_dice_opts,
-            run_up_score_opts = cfg.sim.run_up_score_opts,
-        )
-        grid_size = len(strategies)
-    else:
-        grid_size = len(strategies)
-    m_tests = grid_size    
-    if cfg.sim.bonferroni_design.enabled and cfg.sim.bonferroni_design.recompute:
-        n_shuffles = games_for_power(m_tests, method="bonferroni", full_pairwise=True)
-    elif cfg.sim.bh_design.enabled and cfg.sim.bh_design.recompute:
-        n_shuffles = games_for_power(m_tests, method="bh", full_pairwise=True)
-    else:
-        if n in cfg.sim.per_n and hasattr(cfg.sim.per_n[n], "num_shuffles"):
-            n_shuffles = cfg.sim.per_n[n].num_shuffles
-        else:
-            n_shuffles = cfg.sim.num_shuffles
-    # Update head-to-head games if needed
-    if cfg.sim.bonferroni_design.enabled and cfg.sim.bonferroni_design.recompute:
-        cfg.head2head.games_per_pair = games_for_power(m_tests, method="bonferroni", full_pairwise=True)
-    elif cfg.sim.bh_design.enabled and cfg.sim.bh_design.recompute:
-        cfg.head2head.games_per_pair = games_for_power(m_tests, method="bh", full_pairwise=True)
-    # Prepare output paths
+    # --- Grid & tests ---
+    strategies, grid_size, _used_custom = _resolve_strategies(cfg, strategies)
+    m_tests = grid_size  # used for hypotheses count for power calcs
+
+    # --- Tournament shuffles ---
+    n_shuffles = _compute_num_shuffles_from_config(cfg, m_tests, n_players=n)
+
+    # --- Planned totals (log before executing) ---
+    games_per_shuffle = grid_size // n
+    total_games = n_shuffles * games_per_shuffle
+    LOGGER.info(
+        "Planned: %dp games, %d strategies -> %d games/shuffle; %d shuffles; %d total games",
+        n, grid_size, games_per_shuffle, n_shuffles, total_games
+    )
+
+    # --- Output paths ---
     results_dir = cfg.io.results_dir
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
@@ -113,12 +181,14 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
         row_dir = cfg.sim.row_dir
         if not row_dir.is_absolute():
             row_dir = n_dir / row_dir
+
+    # --- Tournament run ---
     tourn_cfg = TournamentConfig(
-        n_players = n,
-        num_shuffles = n_shuffles,
-        desired_sec_per_chunk = cfg.sim.desired_sec_per_chunk,
-        ckpt_every_sec = cfg.sim.ckpt_every_sec,
-        n_strategies = grid_size,
+        n_players=n,
+        num_shuffles=n_shuffles,
+        desired_sec_per_chunk=cfg.sim.desired_sec_per_chunk,
+        ckpt_every_sec=cfg.sim.ckpt_every_sec,
+        n_strategies=grid_size,
     )
     tournament_mod.run_tournament(
         n_players=n,
@@ -129,14 +199,11 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
         row_output_directory=row_dir,
         num_shuffles=n_shuffles,
         config=tourn_cfg,
-        strategies=strategies,      # <-- pass the actual list
+        strategies=strategies,
     )
-    games_per_shuffle = grid_size // n
-    total_games = n_shuffles * games_per_shuffle
-    # ---- Final checkpoint handling: always create a parquet summary, and
-    # when expanded_metrics=True also create a richer metrics parquet that includes sq-sums. ----
+
+    # --- Final checkpoint post-processing ---
     payload = pickle.loads(ckpt_path.read_bytes())
-    # win_totals may be a Counter, dict, or embedded under "win_totals"
     raw_counts = payload.get("win_totals", payload)
     if isinstance(raw_counts, Counter):
         win_totals = Counter(raw_counts)
@@ -148,7 +215,7 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     metric_sums: dict[str, dict[str, float]] = payload.get("metric_sums", {})
     metric_sq_sums: dict[str, dict[str, float]] = payload.get("metric_sq_sums", {})
 
-    # (A) Canonical checkpoint summary parquet: strategy, wins, win_rate, and means if available.
+    # (A) Summary parquet
     summary_rows: list[dict[str, float]] = []
     for strat, wins in win_totals.items():
         wins = int(wins)
@@ -171,7 +238,7 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
         ckpt_parquet = n_dir / f"{n}p_checkpoint.parquet"
         write_parquet_atomic(pa.Table.from_pylist(summary_rows), ckpt_parquet)
 
-    # (B) Expanded metrics parquet: include raw sums and square sums per label (plus means/vars).
+    # (B) Expanded metrics parquet
     if cfg.sim.expanded_metrics:
         metrics_rows: list[dict[str, float]] = []
         for strat, wins in win_totals.items():
@@ -185,7 +252,6 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
                 "total_games_strat": total_games_strat,
                 "win_rate": wins / total_games_strat,
             }
-            # For each tracked label, record sum, sq_sum, mean, and variance (if we have both).
             for label in METRIC_LABELS:
                 sums_for_label = metric_sums.get(label, {})
                 sq_for_label = metric_sq_sums.get(label, {})
@@ -193,17 +259,14 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
                 sq_val = sq_for_label.get(str(strat), sq_for_label.get(strat, 0.0))
                 base[f"sum_{label}"] = float(sum_val)
                 base[f"sq_sum_{label}"] = float(sq_val)
-                # Means are typically over wins when metrics are accumulated on winning rows
                 mean_val = (sum_val / wins) if wins > 0 else 0.0
                 base[f"mean_{label}"] = float(mean_val)
-                # Population variance from raw second moment if available; guard negatives due to numeric error
                 if wins > 0:
                     ex2 = sq_val / wins
                     var = max(ex2 - (mean_val ** 2), 0.0)
                 else:
                     var = 0.0
                 base[f"var_{label}"] = float(var)
-            # Optional convenience: expected_score over *all* games if present in sums
             ws = metric_sums.get("winning_score", {}).get(str(strat),
                   metric_sums.get("winning_score", {}).get(strat, 0.0))
             base["expected_score"] = (ws / total_games_strat) if total_games_strat > 0 else 0.0
@@ -212,24 +275,29 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
         if metrics_rows:
             metrics_file = n_dir / f"{n}p_metrics.parquet"
             write_parquet_atomic(pa.Table.from_pylist(metrics_rows), metrics_file)
+
     return total_games
 
 def run_multi(cfg: AppConfig) -> dict[int, int]:
     """Run tournaments for multiple player counts."""
     results: dict[int, int] = {}
     strategies, _ = generate_strategy_grid(
-        score_thresholds = cfg.sim.score_thresholds,
-        dice_thresholds = cfg.sim.dice_thresholds,
-        smart_five_opts = cfg.sim.smart_five_opts,
-        smart_one_opts = cfg.sim.smart_one_opts,
-        consider_score_opts = cfg.sim.consider_score_opts,
-        consider_dice_opts = cfg.sim.consider_dice_opts,
-        auto_hot_dice_opts = cfg.sim.auto_hot_dice_opts,
-        run_up_score_opts = cfg.sim.run_up_score_opts,
+        score_thresholds=cfg.sim.score_thresholds,
+        dice_thresholds=cfg.sim.dice_thresholds,
+        smart_five_opts=cfg.sim.smart_five_opts,
+        smart_one_opts=cfg.sim.smart_one_opts,
+        consider_score_opts=cfg.sim.consider_score_opts,
+        consider_dice_opts=cfg.sim.consider_dice_opts,
+        auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
+        run_up_score_opts=cfg.sim.run_up_score_opts,
     )
+    # If you want the grid log here too, resolve + log once:
+    strategies, grid_size, used_custom = _resolve_strategies(cfg, strategies)
+
     for n in cfg.sim.n_players_list:
         games = run_single_n(cfg, n, strategies=strategies)
         results[n] = games
     return results
+
 
 __all__ = ["run_tournament", "run_single_n", "run_multi"]

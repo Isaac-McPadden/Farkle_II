@@ -36,19 +36,23 @@ sim:
   per_n:
     # "12":
       # num_shuffles: 200           # example: heavier schedule for 12-player games
+  
+  # Games and Shuffles Calculations
 
-  # Benjamini–Hochberg design: when enabled+recompute, overrides num_shuffles per N
-  bh_design:
-    enabled: true
+  power_method: bh                  # or bonferroni
+  recompute_num_shuffles: true      # true => derive per-N num_shuffles from targets
+
+  # Benjamini–Hochberg or Bonferroni design
+  power_design:
     power: 0.8
-    alpha: 0.1
-    fdr_q: 0.1
+    control: 0.1                 # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
     detectable_lift: 0.03         # absolute lift in win-rate
     baseline_rate: 0.50
+    full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
     tail: "two_sided"             # "one_sided" | "two_sided"
     min_games_floor: 2000
     max_games_cap: null
-    recompute: true               # true => derive per-N num_shuffles from targets
+    use_BY: false                 # if true and using BH, use q/H_m (more conservative)
 
 analysis:
   run_trueskill: true
@@ -75,18 +79,17 @@ head_to_head:
   n_jobs: 4
   games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
 
-  # Bonferroni design: when enabled+recompute, updates BOTH per-N schedules and H2H games
+  # Bonferroni design for H2H only
   bonferroni_design:
-    enabled: true
     power: 0.8
-    alpha: 0.1
-    fdr_q: 0.1                  # kept for parity; typically ignored by strict Bonferroni
+    control: 0.1                 # alpha (Bonferroni - FWER)
     detectable_lift: 0.03
     baseline_rate: 0.50
+    full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
     tail: "two_sided"
     min_games_floor: 2000
     max_games_cap: null
-    recompute: true               # true => derive per-N num_shuffles & games_per_pair
+    use_BY: null                  # unused, here for the PowerDesign class
 
 hgb:
   max_depth: 6
