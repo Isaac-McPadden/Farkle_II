@@ -35,6 +35,7 @@ class PowerDesign:
     max_games_cap: int | None = None
     use_BY: bool | None = False  # if true and using BH, use q/H_m (more conservative)
 
+
 @dataclass
 class SimConfig:
     """Simulation parameters."""

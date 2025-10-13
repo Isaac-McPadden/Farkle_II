@@ -23,15 +23,14 @@ sim:
 
   # Customize strategy grid
   # null (yaml) / None (py) loads default values for that variable
-  strategy:
-    score_thresholds: null      # None -> use [200, 250, ..., 1000]
-    dice_thresholds: null       # None -> use [0, 1, 2, 3, 4]
-    smart_five_opts: null       # None -> [True, False]
-    smart_one_opts: null        # None -> [True, False]
-    consider_score_opts: null   # None -> [True, False]
-    consider_dice_opts: null    # None -> [True, False]
-    auto_hot_dice_opts: null    # None -> [True, False]
-    run_up_score_opts: null     # None -> [True, False]
+  score_thresholds: null      # None -> use [200, 250, ..., 1000]
+  dice_thresholds: null       # None -> use [0, 1, 2, 3, 4]
+  smart_five_opts: null       # None -> [True, False]
+  smart_one_opts: null        # None -> [True, False]
+  consider_score_opts: null   # None -> [True, False]
+  consider_dice_opts: null    # None -> [True, False]
+  auto_hot_dice_opts: null    # None -> [True, False]
+  run_up_score_opts: null     # None -> [True, False]
 
   # Optional per-N overrides (keys are strings)
   per_n:
@@ -54,6 +53,8 @@ sim:
     min_games_floor: 2000
     max_games_cap: null
     use_BY: false                 # if true and using BH, use q/H_m (more conservative)
+    bh_target_rank: null
+    bh_target_frac: 0.03
 
 analysis:
   run_trueskill: true

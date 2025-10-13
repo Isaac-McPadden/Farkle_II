@@ -17,6 +17,7 @@ convenience.
 from __future__ import annotations
 
 import itertools
+import logging
 from math import ceil, sqrt
 from typing import Dict, List
 
@@ -31,19 +32,45 @@ def _num_hypotheses(n: int, full_pairwise: bool) -> int:
     return n * (n - 1) // 2 if full_pairwise else n - 1
 
 
-def _per_test_level(method: str, m: int, control: float, use_BY: bool) -> float:
+def _per_test_level(
+    method: str,
+    m: int,
+    control: float,      # q for BH, alpha for Bonferroni
+    use_BY: bool,
+    bh_target_rank: int | None = None,    # e.g., K (top-K pairs you want power for)
+    bh_target_frac: float | None = None,  # e.g., 0.01 for top 1% of tests
+) -> float:
     """
-    control = alpha (Bonferroni/FWER) or q (BH/FDR).
-    Returns the planning per-test level α* (or q* surrogate).
+    Returns a planning per-test level α*:
+      - Bonferroni: α*/test = alpha / m
+      - BH:         α* ≈ (i*/m) * q, where i* is target rank (or fraction*m)
+      - BY-BH:      α* ≈ (i*/m) * (q / H_m)
     """
     if not (0 < control < 1):
         raise ValueError("control must be in (0,1)")
+    if m <= 0:
+        raise ValueError("m must be positive")
+
     if method == "bonferroni":
         return control / m
-    if use_BY:
-        H_m = sum(1.0 / i for i in range(1, m + 1))
-        return control / (m * H_m)       # BY surrogate (more conservative)
-    return control / m             # BH planning surrogate (power-friendlier)
+
+    # --- BH (optionally BY-corrected) ---
+    q = control
+    c_m = (sum(1.0/i for i in range(1, m+1)) if use_BY else 1.0)
+
+    # Choose a target rank i*:
+    if bh_target_rank is not None:
+        i_star = max(1, min(m, int(bh_target_rank)))
+    elif bh_target_frac is not None:
+        i_star = max(1, min(m, int(round(bh_target_frac * m))))
+    else:
+        # Reasonable default if caller doesn't specify:
+        #   - full_pairwise: power around the top 1% discoveries
+        #   - baseline (m ~ n-1): power at the first discovery
+        # You can override this default from the caller based on full_pairwise.
+        i_star = max(1, int(round(0.01 * m)))
+
+    return (i_star / m) * (q / c_m)
 
 
 def games_for_power(
@@ -114,6 +141,8 @@ def games_for_power(
         Number of games required per strategy (rounded up to the next
         integer).
     """
+    LOGGER = logging.getLogger(__name__)
+    
     # ---- validation ----
     if n_strategies <= 1: 
         raise ValueError("n_strategies must be > 1")
@@ -156,6 +185,7 @@ def games_for_power(
     if max_games_cap   is not None:
         games_per_strategy = min(games_per_strategy, int(max_games_cap))
 
+    LOGGER.info(f"stats.py calculates {games_per_strategy} games per strategy.")
     return int(games_per_strategy)
 
 

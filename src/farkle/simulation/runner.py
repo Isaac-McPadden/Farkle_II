@@ -96,7 +96,7 @@ def _compute_num_shuffles_from_config(
         method = cfg.sim.power_method  # "bh" | "bonferroni"
         design = cfg.sim.power_design
 
-        n_shuffles = games_for_power_from_design(
+        n_games_per_strat = games_for_power_from_design(
             n_strategies=n_strategies,
             k_players=n_players,
             method=method,
@@ -104,15 +104,15 @@ def _compute_num_shuffles_from_config(
         )
         
         m_tests = (n_strategies * (n_strategies - 1)) // 2 if design.full_pairwise else (n_strategies - 1)
-        
+        n_shuffles = n_strategies * n_games_per_strat // n_players
         LOGGER.info(
             ("Power recompute: method=%s | n_strategies=%d | k_players=%d | m_tests=%d | "
             "power=%.3f | control=%.4g | tail=%s | full_pairwise=%s | use_BY=%s | "
-            "detectable_lift=%.4f | baseline_rate=%.3f -> num_shuffles=%d"),
+            "detectable_lift=%.4f | baseline_rate=%.3f -> n_games_per_strat=%d -> num_shuffles=%d"),
             method, n_strategies, n_players, m_tests,
             design.power, design.control, design.tail, design.full_pairwise,
             (bool(design.use_BY) if method == "bh" else False),
-            design.detectable_lift, design.baseline_rate, n_shuffles,
+            design.detectable_lift, design.baseline_rate, n_games_per_strat, n_shuffles,
         )
         return n_shuffles
 
