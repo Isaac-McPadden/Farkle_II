@@ -43,6 +43,8 @@ def _unpack_power_design(
         "use_BY": d["use_BY"],
         "min_games_floor": d.get("min_games_floor"),
         "max_games_cap": d.get("max_games_cap"),
+        "bh_target_rank": d.get("bh_target_rank"),
+        "bh_target_frac": d.get("bh_target_frac"),
     }
     return mapped
 

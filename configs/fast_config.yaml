@@ -47,11 +47,13 @@ sim:
     control: 0.1                 # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
     detectable_lift: 0.03         # absolute lift in win-rate
     baseline_rate: 0.50
-    full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
+    full_pairwise: false           # num_hypotheses is n*(n-1)/2 if true else n-1
     tail: "two_sided"             # "one_sided" | "two_sided"
     min_games_floor: 2000
     max_games_cap: null
     use_BY: false                 # if true and using BH, use q/H_m (more conservative)
+    bh_target_rank: null
+    bh_target_frac: 0.03
 
 analysis:
   run_trueskill: true

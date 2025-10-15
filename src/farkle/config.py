@@ -34,6 +34,8 @@ class PowerDesign:
     min_games_floor: int = 2000
     max_games_cap: int | None = None
     use_BY: bool | None = False  # if true and using BH, use q/H_m (more conservative)
+    bh_target_rank: int | None = None  # target BH order statistic (i*), optional
+    bh_target_frac: float | None = 0.03  # target fraction of discoveries for BH planning
 
 
 @dataclass

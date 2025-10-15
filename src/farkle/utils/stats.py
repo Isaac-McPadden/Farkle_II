@@ -60,9 +60,11 @@ def _per_test_level(
 
     # Choose a target rank i*:
     if bh_target_rank is not None:
-        i_star = max(1, min(m, int(bh_target_rank)))
+        i_star = max(1, min(m, int(ceil(bh_target_rank))))
     elif bh_target_frac is not None:
-        i_star = max(1, min(m, int(round(bh_target_frac * m))))
+        # ceil prevents small m from undershooting the requested fraction
+        target = bh_target_frac * m
+        i_star = max(1, min(m, int(ceil(target))))
     else:
         # Reasonable default if caller doesn't specify:
         #   - full_pairwise: power around the top 1% discoveries
@@ -77,16 +79,19 @@ def games_for_power(
     *,
     n_strategies: int = 7140,
     k_players: int = 2,
-    method: str = "bh",          # "bh" or "bonferroni"
+    method: str = "bh",            # "bh" or "bonferroni"
     power: float = 0.8,
-    control: float = 0.1,           # q for BH, alpha for Bonferroni
-    detectable_lift: float = 0.03,
-    baseline_rate: float = 0.5,
+    control: float = 0.1,          # q for BH, alpha for Bonferroni
+    detectable_lift: float = 0.03, # absolute lift
+    baseline_rate: float | None = None,
     tail: str = "two_sided",
-    full_pairwise: bool = True,     # m = n(n-1)/2 if True else n-1
-    use_BY: bool = False,           # only meaningful for BH, makes BH more conservative
+    full_pairwise: bool = False,    # only used for endpoint="pairwise"
+    use_BY: bool = False,          # BH-only; conservative
     min_games_floor: int | None = None,
     max_games_cap: int | None = None,
+    bh_target_rank: int | None = None,
+    bh_target_frac: float | None = None,
+    endpoint: str = "top1",    # "pairwise" (A vs B) or "top1" (wins whole game)
 ) -> int:
     """
     Returns the required number of GAMES PER STRATEGY (rounded up) for a
@@ -94,11 +99,16 @@ def games_for_power(
     or Bonferroni family-wise error rate (FWER).
 
     Notes:
-    H0 is strategies have identical winrates.  H1 is strategies have different winrates.
+      - H0 is strategies have identical winrates.  H1 is strategies have different winrates.
       - Converts per-pair co-appearance requirement to k-player games by dividing by (k-1).
       - For BH, 'control' is FDR q; for Bonferroni, 'control' is FWER alpha.
       - 'tail' controls whether α*/2 or α* is used inside the normal quantile.
-    Calculate the number of games needed for each strategy.
+      - endpoint="pairwise" plans per-pair co-appearances via two-sample proportion sizing (baseline ~0.5),
+        then converts to games by dividing by (k_players - 1).
+      - endpoint="top1" plans directly in games per strategy via one-sample proportion sizing against
+        p0 = 1/k_players (or given baseline_rate). No /(k-1) conversion.
+    
+    Function calculates the number of games needed for each strategy.
 
     Parameters
     ----------
@@ -126,6 +136,10 @@ def games_for_power(
         ``False`` → compare each strategy only to a single baseline (*n*-1 tests).
     use_BY : bool
         Accounts for dependencies between data where BH assumes independent outcomes.
+    bh_target_rank : int, optional
+        Target order statistic ``i*`` for BH planning (e.g., power for top-K tests).
+    bh_target_frac : float, optional
+        Fractional version of the target rank (e.g., 0.03 focuses on top 3%).
         Method is more conservative and results in a higher game count.
         Defaults to False
     min_games_floor : int
@@ -134,7 +148,10 @@ def games_for_power(
     max_games_cap : int
         Manual override available if needed.
         Forces each strategy to play at most ``max_games_cap`` games.
-        
+    endpoint : str
+        "pairwise" or "top1".  "pairwise" considers outcomes based on all players in 
+        a match.  "top1" only cares about the winner.  "pairwise" is extremely granular
+        and better used after screening with "top1".
     Returns
     -------
     int
@@ -150,42 +167,88 @@ def games_for_power(
         raise ValueError("k_players must be >= 2")
     if not (0 < power < 1):            
         raise ValueError("power must be in (0,1)")
-    if not (0 < baseline_rate < 1):    
+    if isinstance(baseline_rate, float) and not (0 < baseline_rate < 1):    
         raise ValueError("baseline_rate must be in (0,1)")
     if not (0 < detectable_lift < 1):  
         raise ValueError("detectable_lift must be in (0,1)")
-    if baseline_rate + detectable_lift >= 1:
+    if isinstance(baseline_rate, float) and baseline_rate + detectable_lift >= 1:
         raise ValueError("baseline_rate + detectable_lift must be < 1")
     if tail not in {"one_sided", "two_sided"}:
         raise ValueError("tail must be 'one_sided' or 'two_sided'")
 
-    # ---- hypotheses & per-test level ----
-    m = _num_hypotheses(n_strategies, full_pairwise)
+    # Endpoint-specific baseline default
+    if endpoint == "pairwise":
+        # default to 0.5 if not provided
+        p0 = 0.5 if baseline_rate is None else baseline_rate
+    else:  # endpoint == "top1"
+        # default to 1/k if not provided
+        p0 = (1.0 / k_players) if baseline_rate is None else baseline_rate
+
+    if not (0 < p0 < 1):
+        raise ValueError("baseline_rate (effective p0) must be in (0,1)")
+    if p0 + detectable_lift >= 1:
+        raise ValueError("baseline_rate + detectable_lift must be < 1")
+
+    # -------------------- number of hypotheses (m) ----------------------
+    if endpoint == "pairwise":
+        # full_pairwise => all pairs; else => each vs single baseline
+        m = (n_strategies * (n_strategies - 1)) // 2 if full_pairwise else (n_strategies - 1)
+    else:
+        # one test per strategy: "is this strategy's top-1 win rate > p0?"
+        m = n_strategies
+
     if m < 1:
-        raise ValueError("No hypotheses implied; check n_strategies/full_pairwise")
+        raise ValueError("No hypotheses implied; check inputs")
 
-    alpha_star = _per_test_level(method=method, m=m, control=control, use_BY=(use_BY if method=="bh" else False))
+    # -------------------- per-test planning level α* --------------------
+    alpha_star = _per_test_level(
+        method=method,
+        m=m,
+        control=control,
+        use_BY=(use_BY if method == "bh" else False),
+        bh_target_rank=(bh_target_rank if method == "bh" else None),
+        bh_target_frac=(bh_target_frac if method == "bh" else None),
+    )
+    alpha_for_z = (alpha_star / 2.0) if tail == "two_sided" else alpha_star
 
-    # ---- z-quantiles with tailing ----
-    z_alpha = norm.ppf(1 - (alpha_star / 2.0 if tail == "two_sided" else alpha_star))
+    z_alpha = norm.ppf(1.0 - alpha_for_z)
     z_beta  = norm.ppf(power)
 
-    # ---- two-proportion per-pair (per arm) ----
-    p1, p2 = baseline_rate, baseline_rate + detectable_lift
-    pbar = 0.5 * (p1 + p2)
-    num  = z_alpha * sqrt(2 * pbar * (1 - pbar)) + z_beta * sqrt(p1 * (1 - p1) + p2 * (1 - p2))
-    n_arm = (num / detectable_lift) ** 2   # required co-appearances per pair, per arm
+    # -------------------- endpoint-specific sizing ----------------------
+    if endpoint == "pairwise":
+        # Two-sample proportions (equal allocation), per-pair per-arm co-appearances
+        p1, p2 = p0, p0 + detectable_lift
+        pbar = 0.5 * (p1 + p2)
+        numerator = (
+            z_alpha * sqrt(2.0 * pbar * (1.0 - pbar))
+            + z_beta  * sqrt(p1 * (1.0 - p1) + p2 * (1.0 - p2))
+        )
+        n_arm_per_pair = (numerator / detectable_lift) ** 2
 
-    # ---- convert to k-player games per strategy ----
-    games_per_strategy = ceil(n_arm * (n_strategies - 1) / (k_players - 1))
+        # Convert co-appearances → games per strategy via /(k-1)
+        games_per_strategy = ceil(n_arm_per_pair * (n_strategies - 1) / (k_players - 1))
 
-    # ---- floor/cap ----
+    else:  # endpoint == "top1"
+        # One-sample proportion vs known p0; each game yields one Bernoulli for strategy i
+        p1 = p0 + detectable_lift
+        numerator = z_alpha * sqrt(p0 * (1.0 - p0)) + z_beta * sqrt(p1 * (1.0 - p1))
+        n_games_per_strategy = (numerator / (p1 - p0)) ** 2
+        games_per_strategy = ceil(n_games_per_strategy)
+
+    # -------------------- floors / caps --------------------
     if min_games_floor is not None:
         games_per_strategy = max(games_per_strategy, int(min_games_floor))
-    if max_games_cap   is not None:
+    if max_games_cap is not None:
         games_per_strategy = min(games_per_strategy, int(max_games_cap))
 
-    LOGGER.info(f"stats.py calculates {games_per_strategy} games per strategy.")
+    LOGGER.info(
+        "stats.py: endpoint=%s method=%s full_pairwise=%s | n=%d k=%d m=%d | "
+        "control=%.6g tail=%s BY=%s | p0=%.6g delta=%.6g power=%.3f -> games/strategy=%d",
+        endpoint, method, full_pairwise if endpoint == "pairwise" else False,
+        n_strategies, k_players, m,
+        control, tail, bool(use_BY) if method == "bh" else False,
+        p0, detectable_lift, power, games_per_strategy
+    )
     return int(games_per_strategy)
 
 
