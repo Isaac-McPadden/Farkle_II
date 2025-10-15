@@ -32,6 +32,11 @@ def _unpack_power_design(
         raise ValueError("tail must be 'one_sided' or 'two_sided'")
     d["tail"] = tail
 
+    endpoint = str(d.get("endpoint", "pairwise")).lower().replace("-", "_").replace(" ", "_")
+    if endpoint not in {"pairwise", "top1"}:
+        raise ValueError("endpoint must be 'pairwise' or 'top1'")
+    d["endpoint"] = endpoint
+
     # Map to the general-purpose function's names
     mapped = {
         "power": d["power"],
@@ -45,6 +50,7 @@ def _unpack_power_design(
         "max_games_cap": d.get("max_games_cap"),
         "bh_target_rank": d.get("bh_target_rank"),
         "bh_target_frac": d.get("bh_target_frac"),
+        "endpoint": d["endpoint"],
     }
     return mapped
 

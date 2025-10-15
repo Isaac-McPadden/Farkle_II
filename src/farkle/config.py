@@ -31,6 +31,7 @@ class PowerDesign:
     baseline_rate: float = 0.50
     tail: str = "two_sided"  # "one_sided" | "two_sided"
     full_pairwise: bool = True
+    endpoint: str = "pairwise"  # "pairwise" | "top1"
     min_games_floor: int = 2000
     max_games_cap: int | None = None
     use_BY: bool | None = False  # if true and using BH, use q/H_m (more conservative)

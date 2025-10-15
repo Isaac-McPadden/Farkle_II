@@ -102,15 +102,21 @@ def _compute_num_shuffles_from_config(
             method=method,
             design=design,
         )
-        
-        m_tests = (n_strategies * (n_strategies - 1)) // 2 if design.full_pairwise else (n_strategies - 1)
+
+        endpoint = str(getattr(design, "endpoint", "pairwise")).lower().replace("-", "_").replace(" ", "_")
+        if endpoint == "pairwise":
+            m_tests = (n_strategies * (n_strategies - 1)) // 2 if design.full_pairwise else (n_strategies - 1)
+            full_pairwise = design.full_pairwise
+        else:
+            m_tests = n_strategies
+            full_pairwise = False
         n_shuffles = n_strategies * n_games_per_strat // n_players
         LOGGER.info(
-            ("Power recompute: method=%s | n_strategies=%d | k_players=%d | m_tests=%d | "
+            ("Power recompute: method=%s | endpoint=%s | n_strategies=%d | k_players=%d | m_tests=%d | "
             "power=%.3f | control=%.4g | tail=%s | full_pairwise=%s | use_BY=%s | "
             "detectable_lift=%.4f | baseline_rate=%.3f -> n_games_per_strat=%d -> num_shuffles=%d"),
-            method, n_strategies, n_players, m_tests,
-            design.power, design.control, design.tail, design.full_pairwise,
+            method, endpoint, n_strategies, n_players, m_tests,
+            design.power, design.control, design.tail, full_pairwise,
             (bool(design.use_BY) if method == "bh" else False),
             design.detectable_lift, design.baseline_rate, n_games_per_strat, n_shuffles,
         )
