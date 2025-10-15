@@ -65,7 +65,7 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
             "elite_count": len(elites),
         },
     )
-    games_needed = games_for_power(len(elites), method="bonferroni", full_pairwise=True)
+    games_needed = games_for_power(n_strategies=len(elites), method="bonferroni", full_pairwise=True)
     schedule = bonferroni_pairs(elites, games_needed, seed)
     LOGGER.debug(
         "Head-to-head schedule prepared",
