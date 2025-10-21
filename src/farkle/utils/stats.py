@@ -183,6 +183,15 @@ def games_for_power(
     else:  # endpoint == "top1"
         # default to 1/k if not provided
         p0 = (1.0 / k_players) if baseline_rate is None else baseline_rate
+    # in games_for_power(), after computing p0 for top1
+    if endpoint == "top1" and baseline_rate is not None:
+        ideal = 1.0 / k_players
+        if abs(baseline_rate - ideal) > 1e-6:
+            LOGGER.warning(
+                "top1 baseline_rate=%.6f differs from 1/k (%.6f) for k=%d; "
+                "sample size may be miscalibrated. Set baseline_rate: null to use 1/k.",
+                baseline_rate, ideal, k_players
+            )
 
     if not (0 < p0 < 1):
         raise ValueError("baseline_rate (effective p0) must be in (0,1)")
@@ -200,6 +209,36 @@ def games_for_power(
     if m < 1:
         raise ValueError("No hypotheses implied; check inputs")
 
+    # --- Resolve BH target defaults/overrides (after m is known) ---
+    if method == "bh":
+        if (bh_target_rank is not None) and (bh_target_frac is not None):
+            LOGGER.info(
+                "Both bh_target_rank (%s) and bh_target_frac (%.6g) supplied; "
+                "ignoring rank and using fraction.", str(bh_target_rank), bh_target_frac
+            )
+            bh_target_rank = None
+
+        if (bh_target_rank is None) and (bh_target_frac is None):
+            bh_target_frac = 0.01
+            # i* uses ceil to avoid undershooting at small m; clamp to [1, m]
+            i_star = max(1, min(m, int(ceil(bh_target_frac * m))))
+            LOGGER.info(
+                "No BH target supplied; defaulting to bh_target_frac=%.4f -> i*=%d of m=%d",
+                bh_target_frac, i_star, m
+            )
+        elif bh_target_frac is not None:
+            i_star = max(1, min(m, int(ceil(bh_target_frac * m))))
+            LOGGER.info(
+                "BH using fraction: bh_target_frac=%.6g -> i*=%d of m=%d",
+                bh_target_frac, i_star, m
+            )
+        else:
+            # rank provided
+            assert bh_target_rank is not None
+            i_star = max(1, min(m, int(ceil(bh_target_rank))))
+            LOGGER.info(
+                "BH using rank: bh_target_rank=%d of m=%d", i_star, m
+            )
     # -------------------- per-test planning level α* --------------------
     alpha_star = _per_test_level(
         method=method,
@@ -242,12 +281,14 @@ def games_for_power(
         games_per_strategy = min(games_per_strategy, int(max_games_cap))
 
     LOGGER.info(
-        "stats.py: endpoint=%s method=%s full_pairwise=%s | n=%d k=%d m=%d | "
-        "control=%.6g tail=%s BY=%s | p0=%.6g delta=%.6g power=%.3f -> games/strategy=%d",
-        endpoint, method, full_pairwise if endpoint == "pairwise" else False,
-        n_strategies, k_players, m,
-        control, tail, bool(use_BY) if method == "bh" else False,
-        p0, detectable_lift, power, games_per_strategy
+    "stats.py: endpoint=%s method=%s full_pairwise=%s | n=%d k=%d m=%d | "
+    "control=%.6g tail=%s BY=%s | p0=%.6g p1=%.6g delta=%.6g | "
+    "alpha*=%.6g alpha_for_z=%.6g z_alpha=%.4f z_beta=%.4f -> games/strategy=%d",
+    endpoint, method, full_pairwise if endpoint == "pairwise" else False,
+    n_strategies, k_players, m,
+    control, tail, bool(use_BY) if method == "bh" else False,
+    p0, (p0 + detectable_lift), detectable_lift,
+    alpha_star, alpha_for_z, z_alpha, z_beta, games_per_strategy
     )
     return int(games_per_strategy)
 

@@ -103,14 +103,14 @@ def _compute_num_shuffles_from_config(
             design=design,
         )
 
-        endpoint = str(getattr(design, "endpoint", "pairwise")).lower().replace("-", "_").replace(" ", "_")
+        endpoint = str(getattr(design, "endpoint", "top1")).lower().replace("-", "_").replace(" ", "_")
         if endpoint == "pairwise":
             m_tests = (n_strategies * (n_strategies - 1)) // 2 if design.full_pairwise else (n_strategies - 1)
             full_pairwise = design.full_pairwise
         else:
             m_tests = n_strategies
             full_pairwise = False
-        n_shuffles = n_strategies * n_games_per_strat // n_players
+        n_shuffles = n_games_per_strat
         LOGGER.info(
             ("Power recompute: method=%s | endpoint=%s | n_strategies=%d | k_players=%d | m_tests=%d | "
             "power=%.3f | control=%.4g | tail=%s | full_pairwise=%s | use_BY=%s | "
@@ -169,7 +169,7 @@ def run_tournament(cfg: AppConfig) -> int:
 
 
 def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | None = None) -> int:
-    """Run a Farkle tournament for a single player count *n*."""
+    """Run a Farkle tournament for a single tournament with player count *n*."""
     # --- Grid & tests ---
     strategies, grid_size, _used_custom = _resolve_strategies(cfg, strategies)
     n_strategies = grid_size  # used for hypotheses count for power calcs
@@ -179,7 +179,7 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     LOGGER.info(f"n_shuffles calculated to be {n_shuffles}")
     # --- Planned totals (log before executing) ---
     games_per_shuffle = grid_size // n
-    total_games = n_shuffles * games_per_shuffle
+    total_games = n_shuffles * games_per_shuffle 
     LOGGER.info(
         "Planned: %dp games, %d strategies -> %d games/shuffle; %d shuffles; %d total games",
         n, grid_size, games_per_shuffle, n_shuffles, total_games

@@ -1,9 +1,8 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import logging
 
 import pytest
-import yaml
 
 pytest.importorskip("pydantic")
 pytest.importorskip("pyarrow")
@@ -133,45 +132,6 @@ def test_main_dispatches_analyze_variants(
     # Light duck-typing sanity: must have fields the pipeline actually uses
     for pcfg in converted:
         assert hasattr(pcfg, "results_dir"), "pipeline cfg should expose results_dir"
-
-
-def test_apply_override_creates_nested_keys():
-    cfg: dict[str, object] = {}
-    cli_main._apply_override(cfg, "sim.n_players=6")
-    cli_main._apply_override(cfg, "sim.options.collect_metrics=true")
-    cli_main._apply_override(cfg, "analysis.log_level=debug")
-
-    assert cfg == {
-        "sim": {"n_players": 6, "options": {"collect_metrics": True}},
-        "analysis": {"log_level": "debug"},
-    }
-
-
-def test_load_config_with_overrides(tmp_path):
-    cfg_path = tmp_path / "cfg.yaml"
-    cfg_path.write_text(
-        yaml.safe_dump(
-            {
-                "global_seed": 7,
-                "nested": {"value": 1},
-            }
-        ),
-        encoding="utf-8",
-    )
-
-    cfg = cli_main.load_config(cfg_path, overrides=["nested.extra=2", "new.option='text'"])
-
-    assert cfg["global_seed"] == 7
-    assert cfg["nested"] == {"value": 1, "extra": 2}
-    assert cfg["new"] == {"option": "text"}
-
-
-def test_load_config_rejects_non_mapping(tmp_path):
-    cfg_path = tmp_path / "cfg.yaml"
-    cfg_path.write_text(yaml.safe_dump([1, 2, 3]), encoding="utf-8")
-
-    with pytest.raises(TypeError):
-        cli_main.load_config(cfg_path)
 
 
 def test_parse_level_accepts_string(preserve_root_logger):

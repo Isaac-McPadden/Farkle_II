@@ -76,6 +76,14 @@ def generate_strategy_grid(
         smart_five_opts = [True, False]
     if smart_one_opts is None:
         smart_one_opts = [True, False]
+    if consider_score_opts is None:
+        consider_score_opts = [True, False]
+    if consider_dice_opts is None:
+        consider_dice_opts = [True, False]
+    if auto_hot_dice_opts is None:
+        auto_hot_dice_opts = [True, False]
+    if run_up_score_opts is None:
+        run_up_score_opts = [True, False]
     combos: List[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]] = []
 
     # Iterate over the basic option grid using itertools.product and filter
