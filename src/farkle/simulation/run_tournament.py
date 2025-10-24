@@ -439,6 +439,7 @@ def run_tournament(
     ]
 
     win_totals: Counter[str] = Counter()
+    games_completed = 0
     metric_sums: Dict[str, Dict[str, float]] | None
     metric_sq_sums: Dict[str, Dict[str, float]] | None
     if metric_chunk_directory is None:
@@ -509,6 +510,8 @@ def run_tournament(
                     result,
                 )
                 win_totals.update(wins)
+                chunk_games = int(sum(wins.values()))
+                games_completed += chunk_games
                 if metric_chunk_directory is not None:
                     chunk_path = metric_chunk_directory / f"metrics_{done:06d}.parquet"
                     rows = [
@@ -557,17 +560,20 @@ def run_tournament(
                     extra={
                         "stage": "simulation",
                         "chunk_index": done,
-                        "wins": sum(wins.values()),
+                        "wins": chunk_games,
                     },
                 )
             else:
-                win_totals.update(cast(Counter[str], result))
+                chunk_wins = cast(Counter[str], result)
+                win_totals.update(chunk_wins)
+                chunk_games = int(sum(chunk_wins.values()))
+                games_completed += chunk_games
                 LOGGER.debug(
                     "Chunk processed",
                     extra={
                         "stage": "simulation",
                         "chunk_index": done,
-                        "wins": sum(cast(Counter[str], result).values()),
+                        "wins": chunk_games,
                     },
                 )
 
@@ -588,12 +594,14 @@ def run_tournament(
                     ),
                 )
                 LOGGER.info(
-                    "Checkpoint written",
+                    "Checkpoint written after %d games",
+                    games_completed,
                     extra={
                         "stage": "simulation",
                         "chunk_index": done,
                         "chunks_total": len(chunks),
-                        "games": sum(win_totals.values()),
+                        "games": games_completed,
+                        "games_completed": games_completed,
                         "path": str(ckpt_path),
                     },
                 )
@@ -658,10 +666,12 @@ def run_tournament(
             },
         )
     LOGGER.info(
-        "Tournament run complete",
+        "Tournament run complete after %d games",
+        games_completed,
         extra={
             "stage": "simulation",
-            "games": sum(win_totals.values()),
+            "games": games_completed,
+            "games_completed": games_completed,
             "n_players": cfg.n_players,
             "chunks": len(chunks),
             "checkpoint_path": str(ckpt_path),

@@ -2,7 +2,7 @@
 # Drives BOTH simulation and analysis.
 
 io:
-  results_dir: "results"   # where per-N run folders are created
+  results_dir: "data/results"   # where per-N run folders are created
   append_seed: true
   analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
 
