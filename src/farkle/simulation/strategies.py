@@ -200,7 +200,15 @@ class ThresholdStrategy:
 
         # final-round catch-up rule
         if final_round:
-            return running_total <= score_to_beat
+            # Must beat the leader; ties don't win.
+            if running_total <= score_to_beat:
+                return True  # keep rolling until you beat them
+
+            # Already ahead:
+            if not self.run_up_score:
+                return False  # auto-bank if not running up
+
+        # self.run_up_score == True -> fall through to normal thresholds
 
         # -----------------------------------------------------------------------------
         keep_rolling = _decide_continue(
