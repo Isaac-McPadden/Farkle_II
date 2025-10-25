@@ -207,17 +207,26 @@ def generate_sequences(
     tuple[FacesSequence, ...]:
         All possible remaining dice as sorted tuples.
     """
-    c = list(counts)  # mutable copy
-    seqs: list[FacesSequence] = [_expand_sorted(counts)]
+    base_counts = list(counts)
+    seqs: list[FacesSequence] = []
+    seen: set[FacesSequence] = set()
 
-    while c[4]:  # index 4 == face-value 5
-        c[4] -= 1
-        seqs.append(_expand_sorted(cast(SixFaceCounts, tuple(c))))
+    max_fives = base_counts[4]
+    max_ones = base_counts[0] if smart_one else 0
 
-    if smart_one:
-        while c[0]:  # index 0 == face-value 1
-            c[0] -= 1
-            seqs.append(_expand_sorted(cast(SixFaceCounts, tuple(c))))
+    ones_range = range(max_ones + 1) if smart_one else range(1)
+
+    for drop_fives in range(max_fives + 1):
+        for drop_ones in ones_range:
+            new_counts = list(base_counts)
+            new_counts[4] -= drop_fives
+            new_counts[0] -= drop_ones
+            if new_counts[4] < 0 or new_counts[0] < 0:
+                continue
+            seq = _expand_sorted(cast(SixFaceCounts, tuple(new_counts)))
+            if seq not in seen:
+                seen.add(seq)
+                seqs.append(seq)
 
     return tuple(seqs)
 

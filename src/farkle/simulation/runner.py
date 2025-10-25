@@ -114,7 +114,7 @@ def _compute_num_shuffles_from_config(
         LOGGER.info(
             ("Power recompute: method=%s | endpoint=%s | n_strategies=%d | k_players=%d | m_tests=%d | "
             "power=%.3f | control=%.4g | tail=%s | full_pairwise=%s | use_BY=%s | "
-            "detectable_lift=%.4f | baseline_rate=%.3f -> n_games_per_strat=%d -> num_shuffles=%d"),
+            "detectable_lift=%.4f | baseline_rate=%s -> n_games_per_strat=%d -> num_shuffles=%d"),
             method, endpoint, n_strategies, n_players, m_tests,
             design.power, design.control, design.tail, full_pairwise,
             (bool(design.use_BY) if method == "bh" else False),

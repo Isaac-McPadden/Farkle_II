@@ -14,10 +14,9 @@ This is the entry point most users will reach for:
 
 from __future__ import annotations
 
-import itertools
 import multiprocessing as mp
 from dataclasses import asdict
-from typing import Any, Iterable, List, Mapping, Sequence, Tuple
+from typing import Any, Iterable, List, Mapping, Sequence, Tuple, TypeVar
 
 import pandas as pd
 
@@ -33,6 +32,79 @@ __all__: list[str] = [
     "simulate_many_games_from_seeds",
     "aggregate_metrics",
 ]
+
+_T = TypeVar("_T")
+
+
+def _coerce_options(options: Sequence[_T] | None, fallback: Iterable[_T]) -> list[_T]:
+    """Return a mutable list using ``fallback`` when ``options`` is None."""
+    return list(fallback) if options is None else list(options)
+
+
+def _favor_options(sf: bool, cs: bool, cd: bool) -> tuple[FavorDiceOrScore, ...]:
+    """Return valid FavorDiceOrScore choices for the given flag combination."""
+    if cs and cd:
+        return (FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE) if sf else (FavorDiceOrScore.SCORE,)
+    if cs:
+        return (FavorDiceOrScore.SCORE,)
+    if cd:
+        return (FavorDiceOrScore.DICE,)
+    return (FavorDiceOrScore.SCORE,)
+
+
+def _iter_strategy_combos(
+    *,
+    score_thresholds: Sequence[int],
+    dice_thresholds: Sequence[int],
+    smart_five_opts: Sequence[bool],
+    smart_one_opts: Sequence[bool],
+    consider_score_opts: Sequence[bool],
+    consider_dice_opts: Sequence[bool],
+    auto_hot_dice_opts: Sequence[bool],
+    run_up_score_opts: Sequence[bool],
+    inactive_score_threshold: int,
+    inactive_dice_threshold: int,
+    allowed_smart_pairs: set[tuple[bool, bool]] | None = None,
+) -> Iterable[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]]:
+    """
+    Yield canonical strategy parameter combinations honoring the flag rules.
+    """
+    for sf in smart_five_opts:
+        smart_one_candidates = [
+            so
+            for so in smart_one_opts
+            if (sf or not so) and (allowed_smart_pairs is None or (sf, so) in allowed_smart_pairs)
+        ]
+        if not smart_one_candidates:
+            continue
+
+        for so in smart_one_candidates:
+            for cs in consider_score_opts:
+                score_values = score_thresholds if cs else [inactive_score_threshold]
+
+                for cd in consider_dice_opts:
+                    dice_values = dice_thresholds if cd else [inactive_dice_threshold]
+                    rb_values = [True, False] if (cs and cd) else [False]
+                    favor_choices = _favor_options(sf, cs, cd)
+
+                    for st in score_values:
+                        for dt in dice_values:
+                            for hd in auto_hot_dice_opts:
+                                for rs in run_up_score_opts:
+                                    for rb in rb_values:
+                                        for ps in favor_choices:
+                                            yield (
+                                                st,
+                                                dt,
+                                                sf,
+                                                so,
+                                                cs,
+                                                cd,
+                                                rb,
+                                                hd,
+                                                rs,
+                                                ps,
+                                            )
 
 
 # ---------------------------------------------------------------------------
@@ -65,57 +137,43 @@ def generate_strategy_grid(
     Tuple[List[ThresholdStrategy], pandas.DataFrame]
         The first element contains fully constructed strategies in the
         same order as the metadata ``DataFrame`` returned as the second
-        element.  The default grid consists of 8 160 strategies.
+        element.  The default grid consists of 3,676 strategies.
+        When a threshold flag is disabled the corresponding threshold column
+        uses a sentinel value (one less than the minimum configured threshold)
+        to indicate that it is inactive.
     """
 
-    if score_thresholds is None:
-        score_thresholds = list(range(200, 1050, 50))
-    if dice_thresholds is None:
-        dice_thresholds = list(range(0, 5))
-    if smart_five_opts is None:
-        smart_five_opts = [True, False]
-    if smart_one_opts is None:
-        smart_one_opts = [True, False]
-    if consider_score_opts is None:
-        consider_score_opts = [True, False]
-    if consider_dice_opts is None:
-        consider_dice_opts = [True, False]
-    if auto_hot_dice_opts is None:
-        auto_hot_dice_opts = [True, False]
-    if run_up_score_opts is None:
-        run_up_score_opts = [True, False]
-    combos: List[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]] = []
+    score_thresholds = _coerce_options(score_thresholds, range(200, 1400, 50))
+    dice_thresholds = _coerce_options(dice_thresholds, range(0, 5))
+    smart_five_opts = _coerce_options(smart_five_opts, (True, False))
+    smart_one_opts = _coerce_options(smart_one_opts, (True, False))
+    consider_score_opts = _coerce_options(consider_score_opts, (True, False))
+    consider_dice_opts = _coerce_options(consider_dice_opts, (True, False))
+    auto_hot_dice_opts = _coerce_options(auto_hot_dice_opts, (False, True))
+    run_up_score_opts = _coerce_options(run_up_score_opts, (True, False))
 
-    # Iterate over the basic option grid using itertools.product and filter
-    for st, dt, sf, so, cs, cd, hd, rs in itertools.product(
-        score_thresholds,
-        dice_thresholds,
-        smart_five_opts,
-        smart_one_opts,
-        consider_score_opts,
-        consider_dice_opts,
-        auto_hot_dice_opts,
-        run_up_score_opts,
-    ):
-        # Can't be smart one without smart five
-        if not sf and so:
-            continue
+    if not score_thresholds:
+        raise ValueError("score_thresholds must contain at least one value")
+    if not dice_thresholds:
+        raise ValueError("dice_thresholds must contain at least one value")
 
-        rb_values = [True, False] if cs and cd else [False]
+    inactive_score_threshold = min(score_thresholds) - 1
+    inactive_dice_threshold = min(dice_thresholds) - 1
 
-        if cs and not cd:
-            ps_values = [FavorDiceOrScore.SCORE]
-        elif cd and not cs:
-            ps_values = [FavorDiceOrScore.DICE]
-        else:
-            if sf:
-                ps_values = [FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE]
-            else:
-                ps_values = [FavorDiceOrScore.SCORE] # Only need one value if smart logic is off
-
-        for rb in rb_values:
-            for ps in ps_values:
-                combos.append((st, dt, sf, so, cs, cd, rb, hd, rs, ps))
+    combos = list(
+        _iter_strategy_combos(
+            score_thresholds=score_thresholds,
+            dice_thresholds=dice_thresholds,
+            smart_five_opts=smart_five_opts,
+            smart_one_opts=smart_one_opts,
+            consider_score_opts=consider_score_opts,
+            consider_dice_opts=consider_dice_opts,
+            auto_hot_dice_opts=auto_hot_dice_opts,
+            run_up_score_opts=run_up_score_opts,
+            inactive_score_threshold=inactive_score_threshold,
+            inactive_dice_threshold=inactive_dice_threshold,
+        )
+    )
 
     # Build actual strategy objects and a DataFrame
     strategies = [
@@ -164,47 +222,51 @@ def experiment_size(
     run_up_score_opts: Sequence[bool] = (True, False),
 ) -> int:
     """Compute *a priori* size of a strategy grid that matches generate_strategy_grid."""
-    # Defaults must mirror generate_strategy_grid
-    score_thresholds = score_thresholds or list(range(200, 1050, 50))
-    dice_thresholds = dice_thresholds or list(range(0, 5))
-    smart_five_and_one_options = smart_five_and_one_options or [
-        [True, True],
-        [True, False],
-        [False, False],  # (not sf and so) is disallowed, so it's excluded here
-    ]
+    score_thresholds_list = _coerce_options(score_thresholds, range(200, 1400, 50))
+    dice_thresholds_list = _coerce_options(dice_thresholds, range(0, 5))
+    consider_score_opts_list = _coerce_options(consider_score_opts, (True, False))
+    consider_dice_opts_list = _coerce_options(consider_dice_opts, (True, False))
+    auto_hot_dice_opts_list = _coerce_options(auto_hot_dice_opts, (False, True))
+    run_up_score_opts_list = _coerce_options(run_up_score_opts, (True, False))
 
-    # Parts of the grid that are independent of (cs, cd, sf) logic
-    base = (
-        len(score_thresholds)
-        * len(dice_thresholds)
-        * len(auto_hot_dice_opts)
-        * len(run_up_score_opts)
+    if not score_thresholds_list:
+        raise ValueError("score_thresholds must contain at least one value")
+    if not dice_thresholds_list:
+        raise ValueError("dice_thresholds must contain at least one value")
+
+    inactive_score_threshold = min(score_thresholds_list) - 1
+    inactive_dice_threshold = min(dice_thresholds_list) - 1
+
+    if smart_five_and_one_options is None:
+        smart_five_opts_list = _coerce_options(None, (True, False))
+        smart_one_opts_list = _coerce_options(None, (True, False))
+        allowed_pairs: set[tuple[bool, bool]] | None = None
+    else:
+        normalized_pairs: list[tuple[bool, bool]] = []
+        for opts in smart_five_and_one_options:
+            if len(opts) != 2:
+                raise ValueError("smart_five_and_one_options entries must contain exactly two booleans")
+            normalized_pairs.append((bool(opts[0]), bool(opts[1])))
+        allowed_pairs = set(normalized_pairs)
+        smart_five_opts_list = list(dict.fromkeys(sf for sf, _ in normalized_pairs))
+        smart_one_opts_list = list(dict.fromkeys(so for _, so in normalized_pairs))
+        if not smart_five_opts_list or not smart_one_opts_list:
+            return 0
+
+    combo_iter = _iter_strategy_combos(
+        score_thresholds=score_thresholds_list,
+        dice_thresholds=dice_thresholds_list,
+        smart_five_opts=smart_five_opts_list,
+        smart_one_opts=smart_one_opts_list,
+        consider_score_opts=consider_score_opts_list,
+        consider_dice_opts=consider_dice_opts_list,
+        auto_hot_dice_opts=auto_hot_dice_opts_list,
+        run_up_score_opts=run_up_score_opts_list,
+        inactive_score_threshold=inactive_score_threshold,
+        inactive_dice_threshold=inactive_dice_threshold,
+        allowed_smart_pairs=allowed_pairs,
     )
-
-    def _pair_variations(cs: bool, cd: bool, sf: bool) -> int:
-        # require_both choices
-        rb_choices = 1 + int(cs and cd)
-
-        # favor_dice_or_score choices
-        # - if exactly one of (cs, cd) is true, ps is forced (1 choice)
-        # - if both true or both false:
-        #     - when smart_five is True -> both SCORE and DICE (2 choices)
-        #     - when smart_five is False -> only SCORE (1 choice)
-        ps_choices = 1 + int(sf and (cs == cd))
-
-        return rb_choices * ps_choices
-
-    # Sum over every allowed (smart_five, smart_one) pair AND every (cs, cd)
-    pair_count = 0
-    for sf, so in ((opts[0], opts[1]) for opts in smart_five_and_one_options):
-        # safety: skip any illegal (not sf and so) combo if someone passes custom options
-        if not sf and so:
-            continue
-        for cs in consider_score_opts:
-            for cd in consider_dice_opts:
-                pair_count += _pair_variations(cs, cd, sf)
-
-    return base * pair_count
+    return sum(1 for _ in combo_iter)
 
 
 # ---------------------------------------------------------------------------
