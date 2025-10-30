@@ -12,8 +12,8 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 16                         # RNG seed used by the tournament core
-  n_jobs: 12                    # null = auto; otherwise an int
+  seed: 18                         # RNG seed used by the tournament core
+  n_jobs: 16                    # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
   row_dir: "rows"                   # rows => per-N rows under {results}/{N}_players/rows/
                                     # If row_dir == null, row writing skipped
@@ -47,14 +47,14 @@ sim:
     power: 0.95
     control: 0.02                 # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
     detectable_lift: 0.03         # absolute lift in win-rate
-    baseline_rate: 0.50
-    full_pairwise: false           # num_hypotheses is n*(n-1)/2 if true else n-1
+    baseline_rate: null           # None -> 1/n_players
+    full_pairwise: false          # num_hypotheses is n*(n-1)/2 if true else n-1
     tail: "two_sided"             # "one_sided" | "two_sided"
     min_games_floor: 2000
     max_games_cap: null
     use_BY: false                 # if true and using BH, use q/H_m (more conservative)
-    bh_target_rank: null
-    bh_target_frac: 0.03
+    bh_target_rank: null          # Only use one of bh_target_rank and bh_target_frac /
+    bh_target_frac: 0.03          # and set the other to null
     endpoint: "top1"
 
 analysis:
