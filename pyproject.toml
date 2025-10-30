@@ -6,12 +6,12 @@ build-backend = "hatchling.build"
 # ── 2. Core project metadata ─────────────────────────
 [project]
 name            = "farkle"
-version         = "0.3.0"
+version         = "0.8.0"
 description     = "Fast Monte Carlo simulation & strategy analysis for the dice game Farkle."
 readme          = "README.md"
 requires-python = ">=3.12"
 authors         = [{ name = "Isaac McPadden", email = "imcpadden523@gmail.com" }]
-license         = { text = "Apache-2.0" }                # SPDX string is fine
+license         = { file = "LICENSE" }                # SPDX string is fine
 classifiers     = [
     "License :: OSI Approved :: Apache Software License",    # ← fixed!
     "Programming Language :: Python :: 3",

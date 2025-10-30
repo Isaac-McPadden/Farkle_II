@@ -1,5 +1,8 @@
 ﻿# src/farkle/cli/main.py
-"""Command line interface for the :mod:`farkle` package."""
+"""
+Command line interface for the :mod:`farkle` package.
+See ../../../cli_args.md for details.
+"""
 from __future__ import annotations
 
 import argparse
@@ -50,7 +53,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument(
         "--row-dir",
         type=Path,
-        help="Write full per-game rows to this directory",
+        help="Write full per-game rows to this directory.  If None, rows will not be recorded",
     )
 
     # time (delegates to measure_sim_times which parses its own args)

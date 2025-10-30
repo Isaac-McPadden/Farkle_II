@@ -1,114 +1,151 @@
 # Farkle Mk II
 
-- Fast Monte Carlo engine built to stream 100M+ games with bounded RAM.
-- CLI: unified `farkle` command with subcommands: `run`, `time`, `watch`, `analyze`.
-- Streaming Parquet shards (Snappy), atomic temp+rename, append-only manifests.
-- Resume-safe restarts; structured logs per worker.
+Farkle Mk II is a high-throughput Monte Carlo engine and analytics toolkit for
+running large Farkle tournaments. It ships a unified CLI, streaming-friendly
+artifacts, and statistical helpers for sizing experiments.
 
-## Features
-- Pure engine for single games (`src/farkle/game/engine.py`).
-- Lookup table based scoring with Smart Five and Smart One helpers (`src/farkle/game/scoring.py`, `src/farkle/game/scoring_lookup.py`).
-- Threshold strategy framework for roll-or-bank decisions (`src/farkle/simulation/strategies.py`).
-- Batch simulation utilities for exploring strategy grids (`src/farkle/simulation/simulation.py`).
-- Streaming output for large runs (`src/farkle/utils/parallel.py`, `src/farkle/utils/streaming_loop.py`).
-- Command line interface: `farkle [--config FILE] <command>`.
-- Statistical helpers to size experiments (`src/farkle/utils/stats.py`).
+## Highlights
+
+- Deterministic-friendly engine for single games (`src/farkle/game/engine.py`).
+- Threshold strategy framework for roll-or-bank heuristics
+  (`src/farkle/simulation/strategies.py`).
+- Streaming parquet writers and append-only manifests that survive restarts.
+- Unified `farkle` CLI with `run`, `time`, `watch`, and `analyze` subcommands.
+- Config-driven analysis pipeline with metrics, TrueSkill, and head-to-head
+  reporting.
 
 ## Installation
+
 Requires Python 3.12 or newer.
 
 ```bash
 pip install farkle
 ```
 
-## Big Run Quick-Start (streaming & resume-safe)
+## Unified Configuration
 
-Create a YAML file with the tournament parameters (for example `configs/tournament.yaml`):
+All CLI workflows consume a single YAML document that maps to
+`farkle.config.AppConfig`. The top-level keys correspond to dataclass sections:
+`io`, `sim`, `analysis`, `ingest`, `combine`, `metrics`, `trueskill`,
+`head2head`, and `hgb`. Missing values fall back to sensible defaults.
 
 ```yaml
-# configs/tournament.yaml
-n_players: 5
-num_shuffles: 300
-global_seed: 42
-n_jobs: 6
-checkpoint_path: data/checkpoints/seed_42.pkl
+# configs/fast_config.yaml
+io:
+  results_dir: data/results/fast
+  append_seed: true  # append "_seed_<sim.seed>" to results_dir automatically
+
+sim:
+  n_players_list: [5]
+  num_shuffles: 300
+  seed: 42
+  n_jobs: 6
+  expanded_metrics: false
+  row_dir: data/results/fast/rows
+
+analysis:
+  results_glob: "*_players"
+  log_level: INFO
+
+ingest:
+  n_jobs: 4
+  row_group_size: 64000
 ```
 
-Then launch a run:
+Configuration overlays supplied with `--config` are loaded in order; inline
+overrides use dotted keys that match the dataclass structure. For example:
+`--set sim.n_jobs=12 --set io.append_seed=false`.
+
+## CLI Commands
+
+```text
+farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
+```
+
+**Global options**
+- `--config PATH` - load an `AppConfig` from YAML. Used by `run` and `analyze`.
+- `--set SECTION.OPTION=VALUE` - override a single field in the loaded config
+  (coerced to the field type when possible). May be supplied multiple times.
+- `--log-level LEVEL` - set the root logging level before executing the command.
+
+### `run`
+
+Launch the tournament runner using `cfg.sim`. The `--metrics` flag forces
+`cfg.sim.expanded_metrics = True`; `--row-dir PATH` updates `cfg.sim.row_dir`
+before execution. When `cfg.sim.n_players_list` contains more than one value the
+runner sweeps each player count sequentially.
 
 ```bash
-# Override selected values without editing the file
-farkle --config configs/tournament.yaml \
-  --set n_jobs=6 \
-  --set global_seed=42 \
-  --log-level INFO \
-  run --metrics --row-dir data/results_seed_42/rows
+farkle --config configs/fast_config.yaml \
+  --set sim.seed=123 \
+  --set sim.num_shuffles=200 \
+  run --metrics --row-dir data/results_fast/rows
 ```
 
-You can silence progress logs with `--log-level WARNING`.
+### `time`
 
-Use the API directly:
+Benchmark simulation throughput using the defaults in
+`farkle.simulation.time_farkle.measure_sim_times`. No additional command
+options are parsed apart from the global logging level.
+
+### `watch`
+
+Interactively watch a single game. `--seed INT` locks the RNG for deterministic
+replays.
+
+### `analyze`
+
+Wrapper around the analysis helpers that operate on streaming results. The
+subcommands share the same `AppConfig` and read from its `analysis`, `ingest`,
+`combine`, `metrics`, `trueskill`, `head2head`, and `hgb` sections.
+
+- `ingest` - convert raw CSV rows into parquet shards.
+- `curate` - post-process ingested shards and refresh manifests.
+- `combine` - merge curated shards into a consolidated parquet file.
+- `metrics` - compute aggregate metrics, including TrueSkill when enabled.
+- `pipeline` - run `ingest`, `curate`, `combine`, and `metrics` sequentially.
+
+```bash
+farkle --config configs/farkle_mega_config.yaml analyze pipeline
+```
+
+## Direct Engine Usage
+
+The engine remains importable for bespoke experiments:
 
 ```python
-from farkle import FarklePlayer, ThresholdStrategy, FarkleGame
+from farkle.game.engine import FarkleGame, FarklePlayer
+from farkle.simulation.strategies import ThresholdStrategy
 
 players = [
-    FarklePlayer('P1', ThresholdStrategy()),
-    FarklePlayer('P2', ThresholdStrategy(score_threshold=400))
+    FarklePlayer("P1", ThresholdStrategy()),
+    FarklePlayer("P2", ThresholdStrategy(score_threshold=450)),
 ]
 
 game = FarkleGame(players)
-metrics = game.play()
-print(metrics)
+summary = game.play()
+print(summary.game)
 ```
 
-## Strategy Variables
-The `ThresholdStrategy` dataclass controls how a player decides
-whether to keep rolling or bank points. Key options:
-
-- `score_threshold` - minimum points to collect in a turn before banking.
-- `dice_threshold` - bank when remaining dice fall to this number or lower.
-- `consider_score` - enable the score threshold check.
-- `consider_dice` - enable the dice threshold check.
-- `require_both` - when true, wait for both score and dice conditions; otherwise stop when either triggers.
-- `smart_five` - re-roll single fives when allowed by the thresholds.
-- `smart_one` - re-roll single ones; valid only if `smart_five` is true.
-- `favor_dice_or_score` - choose whether to favor the score or dice threshold when both are met.
-- `auto_hot_dice` - automatically roll again if every die scores.
-- `run_up_score` - in the final round, keep rolling even after taking the lead.
-
 ## Repository Layout
-- `src/farkle` - core package code
-- `tests` - unit and integration tests
-- `notebooks` - sample notebooks and HTML reports
-- `data` - small datasets used in examples
-- `experiments` - configuration files for larger runs
 
-## Code Checks
-Install dev dependencies and run the linters and type checker:
+- `src/farkle` - core package code
+- `configs` - configuration presets for simulations and analysis
+- `tests` - unit and integration tests
+- `notebooks` - exploratory notebooks and reports
+- `data` - small sample datasets and cached artifacts
+
+## Development
+
+Install dev dependencies and run checks:
 
 ```bash
-pip install -e .[dev] mypy
+pip install -e .[dev]
 ruff .
 black --check .
 mypy
 ```
 
 ## License
+
 This project is licensed under the Apache 2.0 License.
-
-## Project Usage
-Run `farkle --config cfg.yml run` to simulate tournaments from a configuration file or use
-the API as shown above. See the unit tests and module-level docstrings for more
-examples.
-
-## TrueSkill Ratings
-Provide a pipeline configuration compatible with `farkle.analysis.analysis_config.PipelineCfg`, then run:
-
-```bash
-farkle --config analysis/pipeline.yaml analyze pipeline
-```
-
-This scans the configured results directory for blocks and writes rating files and `tiers.json` to the corresponding `analysis` subdirectory by default.
-The pipeline includes `combine`, which merges curated per-seat Parquet shards into a single `all_ingested_rows.parquet` superset used by downstream analytics.
-
