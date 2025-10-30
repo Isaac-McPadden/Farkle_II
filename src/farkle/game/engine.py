@@ -387,6 +387,8 @@ class PlayerStats:
         Counts for Smart-1 heuristic usage and dice removed.
     hot_dice
         Number of hot-dice rerolls.
+    hit_max_rounds
+        Flag indicating the safety cap (``max_rounds``) aborted the game.
     """
 
     score: int
@@ -395,12 +397,13 @@ class PlayerStats:
     highest_turn: int
     strategy: str
     rank: int  # 1 = winner
-    loss_margin: int  # 0 for winner, >0 otherwise
+    loss_margin: int  # 0 for winner, > 0 otherwise
     smart_five_uses: int = 0
     n_smart_five_dice: int = 0
     smart_one_uses: int = 0
     n_smart_one_dice: int = 0
     hot_dice: int = 0
+    hit_max_rounds: int = 0
 
 
 class FarkleGame:
@@ -427,6 +430,7 @@ class FarkleGame:
         self.players: List[FarklePlayer] = list(players)
         self.target_score: int = target_score
         self.table_seed = table_seed
+        self.max_rounds_hit: bool = False
 
     # ---------------------------- gameplay -----------------------------
     def play(self, max_rounds: int = 200) -> GameMetrics:
@@ -443,6 +447,7 @@ class FarkleGame:
             Dataclass summarising the winner and per-player stats.
         """
         final_round = False
+        self.max_rounds_hit = False
         score_to_beat = self.target_score  # updated when someone triggers
         rounds = 0
         while rounds < max_rounds:
@@ -464,6 +469,8 @@ class FarkleGame:
             if final_round:
                 break
 
+        self.max_rounds_hit = (not final_round) and rounds >= max_rounds
+
         sorted_players = sorted(self.players, key=lambda pl: pl.score, reverse=True)
         winner = sorted_players[0]
         runner = sorted_players[1] if len(sorted_players) > 1 else None
@@ -484,6 +491,7 @@ class FarkleGame:
                 smart_one_uses=player.smart_one_uses,
                 n_smart_one_dice=player.n_smart_one_dice,
                 hot_dice=player.n_hot_dice,
+                hit_max_rounds=int(self.max_rounds_hit)
             )
 
         game_block = GameStats(

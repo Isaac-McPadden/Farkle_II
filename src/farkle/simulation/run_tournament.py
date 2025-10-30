@@ -78,6 +78,7 @@ METRIC_LABELS: Tuple[str, ...] = (
     "winner_smart_one_uses",
     "winner_n_smart_one_dice",
     "winner_hot_dice",
+    "winner_hit_max_rounds",
 )
 
 
@@ -95,6 +96,7 @@ def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
         row[f"{winner}_smart_one_uses"],
         row[f"{winner}_n_smart_one_dice"],
         row[f"{winner}_hot_dice"],
+        row[f"{winner}_hit_max_rounds"],
     ]
 
 

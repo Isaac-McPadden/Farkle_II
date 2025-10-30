@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import pickle
 from collections import Counter
-from typing import Mapping
+from typing import Mapping, Sequence
 
 import pyarrow as pa
 
@@ -22,7 +22,7 @@ import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig
 from farkle.simulation.power_helpers import games_for_power_from_design
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
-from farkle.simulation.simulation import generate_strategy_grid
+from farkle.simulation.simulation import experiment_size, generate_strategy_grid
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifacts import write_parquet_atomic
 
@@ -72,6 +72,81 @@ def _resolve_strategies(
         grid_size, "custom" if used_custom else "default",
     )
     return strategies, grid_size, used_custom
+
+
+def _smart_option_pairs_from_config(cfg: AppConfig) -> list[tuple[bool, bool]] | None:
+    """Return allowed (smart_five, smart_one) combinations from the config."""
+    smart_five_opts = cfg.sim.smart_five_opts
+    smart_one_opts = cfg.sim.smart_one_opts
+
+    if smart_five_opts is None and smart_one_opts is None:
+        return None
+
+    smart_five_values = list(smart_five_opts) if smart_five_opts is not None else [True, False]
+    smart_one_values = list(smart_one_opts) if smart_one_opts is not None else [True, False]
+
+    pairs = [
+        (bool(sf), bool(so))
+        for sf in smart_five_values
+        for so in smart_one_values
+        if bool(sf) or not bool(so)
+    ]
+    return pairs
+
+
+def _grid_size_for_validation(
+    cfg: AppConfig,
+    strategies: Sequence[ThresholdStrategy] | None,
+) -> tuple[int, str]:
+    """Return the strategy count and its source label for validation logs."""
+    if strategies is not None:
+        return len(strategies), "len(strategies)"
+
+    smart_pairs = _smart_option_pairs_from_config(cfg)
+    size = experiment_size(
+        score_thresholds=cfg.sim.score_thresholds,
+        dice_thresholds=cfg.sim.dice_thresholds,
+        smart_five_and_one_options=smart_pairs,
+        consider_score_opts=cfg.sim.consider_score_opts,
+        consider_dice_opts=cfg.sim.consider_dice_opts,
+        auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
+        run_up_score_opts=cfg.sim.run_up_score_opts,
+    )
+    return size, "experiment_size"
+
+
+def _filter_player_counts(
+    cfg: AppConfig,
+    player_counts: Sequence[int],
+    strategies: Sequence[ThresholdStrategy] | None = None,
+) -> tuple[list[int], list[int], int, str]:
+    """Partition player counts into valid/invalid buckets and log the result."""
+    grid_size, source = _grid_size_for_validation(cfg, strategies)
+    valid: list[int] = []
+    invalid: list[int] = []
+
+    for n in player_counts:
+        if n <= 0 or (grid_size % n) != 0:
+            invalid.append(n)
+        else:
+            valid.append(n)
+
+    log_extra = {
+        "stage": "simulation",
+        "grid_size": grid_size,
+        "grid_source": source,
+        "valid_player_counts": valid,
+        "invalid_player_counts": invalid,
+    }
+    LOGGER.info(
+        "Validated player counts against %s=%d", source, grid_size, extra=log_extra
+    )
+    if invalid:
+        LOGGER.warning(
+            "Dropping incompatible player counts: %s", invalid, extra=log_extra
+        )
+
+    return valid, invalid, grid_size, source
 
 
 def _compute_num_shuffles_from_config(
@@ -134,9 +209,16 @@ def run_tournament(cfg: AppConfig) -> int:
     - If ``sim.n_players_list`` has one element, runs that N and returns total games (int).
     - If it has multiple elements, runs them all and returns the **sum** of total games.
     """
-    n_vals = list(cfg.sim.n_players_list)
-    if not n_vals:
+    configured_n_vals = list(cfg.sim.n_players_list)
+    if not configured_n_vals:
         raise ValueError("sim.n_players_list must contain at least one player count")
+
+    n_vals, invalid_n_vals, grid_size_est, grid_source = _filter_player_counts(cfg, configured_n_vals)
+    if not n_vals:
+        raise ValueError(
+            f"No valid player counts remain after validating against {grid_source}={grid_size_est}. "
+            f"Invalid values: {invalid_n_vals}"
+        )
 
     if len(n_vals) == 1:
         n = n_vals[0]
@@ -164,7 +246,7 @@ def run_tournament(cfg: AppConfig) -> int:
             "expanded_metrics": cfg.sim.expanded_metrics,
         },
     )
-    totals = run_multi(cfg)
+    totals = run_multi(cfg, player_counts=n_vals)
     return int(sum(totals.values()))
 
 
@@ -227,7 +309,10 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
         raise TypeError(f"Unexpected win_totals payload type: {type(raw_counts)}")
 
     metric_sums: dict[str, dict[str, float]] = payload.get("metric_sums", {})
-    metric_sq_sums: dict[str, dict[str, float]] = payload.get("metric_sq_sums", {})
+    metric_sq_sums: dict[str, dict[str, float]] = payload.get(
+        "metric_square_sums",
+        payload.get("metric_sq_sums", {}),
+    )
 
     # (A) Summary parquet
     summary_rows: list[dict[str, float]] = []
@@ -292,9 +377,10 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
 
     return total_games
 
-def run_multi(cfg: AppConfig) -> dict[int, int]:
+def run_multi(cfg: AppConfig, player_counts: Sequence[int] | None = None) -> dict[int, int]:
     """Run tournaments for multiple player counts."""
     results: dict[int, int] = {}
+    player_counts = list(player_counts) if player_counts is not None else list(cfg.sim.n_players_list)
     strategies, _ = generate_strategy_grid(
         score_thresholds=cfg.sim.score_thresholds,
         dice_thresholds=cfg.sim.dice_thresholds,
@@ -308,7 +394,22 @@ def run_multi(cfg: AppConfig) -> dict[int, int]:
     # If you want the grid log here too, resolve + log once:
     strategies, grid_size, used_custom = _resolve_strategies(cfg, strategies)
 
-    for n in cfg.sim.n_players_list:
+    valid_counts, invalid_counts, _, _ = _filter_player_counts(cfg, player_counts, strategies=strategies)
+    if not valid_counts:
+        LOGGER.warning(
+            "No valid player counts remain after validating against len(strategies)=%d",
+            grid_size,
+            extra={
+                "stage": "simulation",
+                "grid_size": grid_size,
+                "grid_source": "len(strategies)",
+                "invalid_player_counts": invalid_counts,
+                "valid_player_counts": valid_counts,
+            },
+        )
+        return results
+
+    for n in valid_counts:
         games = run_single_n(cfg, n, strategies=strategies)
         results[n] = games
     return results
