@@ -1,15 +1,12 @@
-# src/farkle/simulation.py
-"""simulation.py
-================
-High-level utilities for *batch* and *grid* simulations.
+# src/farkle/simulation/simulation.py
+"""Utilities for constructing strategy grids and running Farkle simulations.
 
-This is the entry point most users will reach for:
+Key entry points include:
 
-* ``generate_strategy_grid`` - produce the canonical 800-strategy (or
-  custom) grid and its accompanying ``DataFrame``.
-* ``simulate_many_games`` - run *N* games, optionally in parallel, and
-  return tidy metrics.
-* ``aggregate_metrics`` - summarize a DataFrame of game results.
+* ``generate_strategy_grid`` for building the canonical 800-strategy (or custom) grid
+  and returning both strategies and a DataFrame view.
+* ``simulate_many_games`` for executing batches of games, with optional parallelism.
+* ``aggregate_metrics`` for summarizing simulation results into lightweight metrics.
 """
 
 from __future__ import annotations
@@ -66,8 +63,39 @@ def _iter_strategy_combos(
     inactive_dice_threshold: int,
     allowed_smart_pairs: set[tuple[bool, bool]] | None = None,
 ) -> Iterable[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]]:
-    """
-    Yield canonical strategy parameter combinations honoring the flag rules.
+    """Iterate over strategy parameter tuples that respect flag constraints.
+
+    Parameters
+    ----------
+    score_thresholds : Sequence[int]
+        Candidate turn-score limits used when ``consider_score`` is enabled.
+    dice_thresholds : Sequence[int]
+        Candidate dice-count limits used when ``consider_dice`` is enabled.
+    smart_five_opts : Sequence[bool]
+        Allowed values for the smart-five heuristic flag.
+    smart_one_opts : Sequence[bool]
+        Allowed values for the smart-one heuristic flag.
+    consider_score_opts : Sequence[bool]
+        Boolean options indicating whether score thresholds participate.
+    consider_dice_opts : Sequence[bool]
+        Boolean options indicating whether dice thresholds participate.
+    auto_hot_dice_opts : Sequence[bool]
+        Allowed values for the auto-hot-dice behavior flag.
+    run_up_score_opts : Sequence[bool]
+        Allowed values for the run-up-score behavior flag.
+    inactive_score_threshold : int
+        Placeholder score threshold inserted when ``consider_score`` is ``False``.
+    inactive_dice_threshold : int
+        Placeholder dice threshold inserted when ``consider_dice`` is ``False``.
+    allowed_smart_pairs : set[tuple[bool, bool]] | None, optional
+        Restricted set of ``(smart_five, smart_one)`` combinations. ``None`` allows
+        all pairs consistent with the smart-one dependency.
+
+    Yields
+    ------
+    tuple
+        Ten-element tuples containing the score threshold, dice threshold, heuristic
+        booleans, gating flags, and resulting ``FavorDiceOrScore`` preference.
     """
     for sf in smart_five_opts:
         smart_one_candidates = [
@@ -221,7 +249,31 @@ def experiment_size(
     auto_hot_dice_opts: Sequence[bool] = (False, True),  # order doesn't matter; len does
     run_up_score_opts: Sequence[bool] = (True, False),
 ) -> int:
-    """Compute *a priori* size of a strategy grid that matches generate_strategy_grid."""
+    """Compute the number of strategies a grid configuration will yield.
+
+    Parameters
+    ----------
+    score_thresholds : Sequence[int] | None, optional
+        Candidate turn-score thresholds. ``None`` falls back to ``range(200, 1400, 50)``.
+    dice_thresholds : Sequence[int] | None, optional
+        Candidate dice thresholds. ``None`` falls back to ``range(0, 5)``.
+    smart_five_and_one_options : Sequence[Sequence[bool]] | None, optional
+        Explicit ``(smart_five, smart_one)`` pairs to allow. ``None`` permits all valid
+        combinations with the implicit dependency that smart-one requires smart-five.
+    consider_score_opts : Sequence[bool], optional
+        Boolean values indicating whether score thresholds are considered.
+    consider_dice_opts : Sequence[bool], optional
+        Boolean values indicating whether dice thresholds are considered.
+    auto_hot_dice_opts : Sequence[bool], optional
+        Allowed values for the auto-hot-dice flag.
+    run_up_score_opts : Sequence[bool], optional
+        Allowed values for the run-up-score flag.
+
+    Returns
+    -------
+    int
+        Total number of unique strategy configurations that would be generated.
+    """
     score_thresholds_list = _coerce_options(score_thresholds, range(200, 1400, 50))
     dice_thresholds_list = _coerce_options(dice_thresholds, range(0, 5))
     consider_score_opts_list = _coerce_options(consider_score_opts, (True, False))
@@ -399,7 +451,25 @@ def simulate_many_games_from_seeds(
     target_score: int = 10_000,
     n_jobs: int = 1,
 ) -> pd.DataFrame:
-    """Run games for a predetermined list of seeds."""
+    """Run games for a predetermined list of seeds.
+
+    Parameters
+    ----------
+    seeds : Iterable[int]
+        Deterministic seeds to feed into :func:`_play_game`. Each seed produces one game.
+    strategies : Sequence[ThresholdStrategy]
+        Strategies assigned to players in every simulated game.
+    target_score : int, optional
+        Score required to trigger the final round; defaults to ``10_000``.
+    n_jobs : int, optional
+        Number of worker processes to use. ``1`` executes serially; larger values spawn a pool.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per simulated game, identical in shape to the output of
+        :func:`simulate_many_games`.
+    """
     args = [(s, strategies, target_score) for s in seeds]
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]

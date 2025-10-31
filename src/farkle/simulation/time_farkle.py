@@ -1,10 +1,8 @@
 # src/farkle/simulation/time_farkle.py
 """
-Usage:
-    python time_farkle.py [--n_games N] [--players P] [--seed S] [--jobs J]
-
-Prints timing for a single game and for a batch of N games
-using random ThresholdStrategy instances for each player.
+Functions used timing for a single game and for a batch of N games
+using random ThresholdStrategy instances for each player.  Used 
+for determining chunk size when running tournaments.
 """
 
 import logging
@@ -23,7 +21,15 @@ LOGGER = logging.getLogger(__name__)
 
 
 def make_random_strategies(num_players: int, seed: int | None) -> list[ThresholdStrategy]:
-    """Generate random strategies for each player."""
+    """Create randomized player strategies for a single simulation run.
+
+    Inputs:
+        num_players: Total number of ThresholdStrategy instances to generate.
+        seed: Optional seed that makes the random generation reproducible.
+
+    Returns:
+        A list of ThresholdStrategy objects, one for each simulated player.
+    """
 
     rng = random.Random(seed)
     return [random_threshold_strategy(rng) for _ in range(num_players)]
@@ -32,10 +38,16 @@ def make_random_strategies(num_players: int, seed: int | None) -> list[Threshold
 def measure_sim_times(
     *, n_games: int = 1000, players: int = 5, seed: int = 42, jobs: int = 1
 ) -> None:
-    """Run timing benchmarks for one game and a batch of games.
+    """Benchmark single-game and multi-game simulation performance.
 
-    The function keeps the original printed output but no longer parses
-    command-line arguments.  All parameters are supplied directly.
+    Inputs:
+        n_games: Number of games to run in the batch benchmark.
+        players: Number of players that participate in each simulated game.
+        seed: Seed used both for strategy creation and simulation reproducibility.
+        jobs: Parallel job count to use when simulating many games.
+
+    Returns:
+        None. Logging output captures timing, winners, and benchmark metadata.
     """
 
     LOGGER.info(

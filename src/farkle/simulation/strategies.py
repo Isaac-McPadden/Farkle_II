@@ -1,19 +1,9 @@
-# src/farkle/strategies.py
-"""strategies.py
-================
-Strategy abstractions used by the Farkle simulation engine.  A *strategy*
-object decides **whether to continue rolling** based on the current turn
-context, independent of dice-scoring rules.
+# src/farkle/simulation/strategies.py
+"""Simulation strategy helpers for the Farkle engine.
 
-Classes
--------
-`ThresholdStrategy` - simple heuristic combining score & dice limits plus
-an optional Smart-5 flag.
-
-Functions
----------
-`random_threshold_strategy` - convenience generator for Monte-Carlo
-sweeps.
+Provides the FavorDiceOrScore tie-break enum, the ThresholdStrategy decision
+heuristic, and utilities that randomize or parse strategy definitions used by
+the simulation pipeline.
 """
 from __future__ import annotations
 
@@ -169,29 +159,33 @@ class ThresholdStrategy:
         dice_left: int,
         has_scored: bool,
         score_needed: int,  # noqa: ARG002 (vestigial/reserved for richer strats)
-        final_round: bool = False,  # (new end-game hooks – harmless defaults)
+        final_round: bool = False,  # (new end-game hooks - harmless defaults)
         score_to_beat: int = 0,
         running_total: int = 0,
-    ) -> bool:  # noqa: D401 – imperative name
-        """
-        Return **True** to keep rolling, *False** to bank.
+    ) -> bool:  # noqa: D401 - imperative name
+        """Decide whether the player should keep rolling this turn.
 
-        Counterintuitively, require_both = True is riskier play
+        Parameters
+        ----------
+        turn_score : int
+            Points accumulated so far during the current turn.
+        dice_left : int
+            Number of dice that remain available to roll.
+        has_scored : bool
+            Whether the player has banked any scoring dice this turn.
+        score_needed : int
+            Margin required to win; retained for compatibility with richer strategies.
+        final_round : bool, default False
+            True when the table is in the final round and catch-up logic applies.
+        score_to_beat : int, default 0
+            Opponent score threshold to surpass during the final round.
+        running_total : int, default 0
+            Player total score before banking the current turn.
 
-        Outcomes of combinations of consider_score = True, consider_dice = True,
-        require_both = [True, False] for score_threshold = 300 and dice_threshold = 3:
-
-        cs and cd are True, require_both = True (AND logic)
-        (400, 4, True),  # Enough dice but too many points
-        (200, 2, True),  # Low enough points but not enough dice
-        (200, 4, True),   # Low enough points and enough dice available
-        (400, 2, False),  # # Too many points and not enough dice available
-
-        cs and cd are True, require_both = False (OR logic)
-        (400, 4, False),  # Enough dice but too many points
-        (200, 2, False),  # Low enough points but not enough dice
-        (200, 4, True),   # Low enough points and enough dice available
-        (400, 2, False),  # # Too many points and not enough dice available
+        Returns
+        -------
+        bool
+            True to continue rolling; False to bank the current turn score.
         """
 
         # --------------------------------- fast exits ---------------------------------
@@ -264,7 +258,19 @@ def _sample_favor_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrSc
 
 
 def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
-    """Return a random ThresholdStrategy that always satisfies the two constraints."""
+    """Create a randomized threshold strategy consistent with engine rules.
+
+    Parameters
+    ----------
+    rng : random.Random | None, default None
+        Source of randomness. A new generator is created when ``None`` is provided.
+
+    Returns
+    -------
+    ThresholdStrategy
+        Strategy instance populated with randomly sampled thresholds and flags that
+        respect required invariants.
+    """
 
     rng_inst = rng if rng is not None else random.Random()
 
@@ -314,17 +320,22 @@ def _parse_strategy_flags(s: str) -> dict[str, Any]:
 
 
 def parse_strategy(s: str) -> ThresholdStrategy:
-    """
-    Reverse of ThresholdStrategy.__str__.
+    """Parse a serialized strategy string into a ThresholdStrategy instance.
 
-    Accepts strings of the form:
-      Strat(300,2)[SD][FO][AND][H-]
-    or (for example):
-      Strat(500,1)[S-][-O][OR][-R]
+    Parameters
+    ----------
+    s : str
+        Strategy literal produced by ``ThresholdStrategy.__str__``, e.g.
+        ``'Strat(300,2)[SD][FO][AND][H-]'``.
 
-    Returns a ThresholdStrategy(...) with all booleans parsed.
+    Returns
+    -------
+    ThresholdStrategy
+        Strategy configured with the thresholds and flags encoded in ``s``.
 
-    NOTE: this is meant for analysis/log-parsing, not the hot path.
+    Notes
+    -----
+    Intended for analysis and tooling rather than the simulation hot path.
     """
     # 1) Top-level pattern:  Strat(score_threshold, dice_threshold)
     # 2) Four bracketed blocks:
@@ -350,17 +361,23 @@ def parse_strategy(s: str) -> ThresholdStrategy:
 
 
 def parse_strategy_for_df(s: str) -> dict:
-    """
-    Reverse of ThresholdStrategy.__str__.
+    """Convert a strategy string into a dictionary of parsed attributes.
 
-    Accepts strings of the form:
-      Strat(300,2)[SD][FO][AND][H-]
-    or (for example):
-      Strat(500,1)[S-][-O][OR][-R]
+    Parameters
+    ----------
+    s : str
+        Strategy literal in the ``Strat(score,dice)[...][...]`` format produced by
+        ``ThresholdStrategy.__str__``.
 
-    Returns a dictionary with all booleans parsed.
+    Returns
+    -------
+    dict
+        Mapping of ThresholdStrategy field names to their parsed values, suitable
+        for expansion into a DataFrame row.
 
-    NOTE: this is meant for analysis/log-parsing, not the hot path.
+    Notes
+    -----
+    Designed for analysis and log processing, not the simulation hot path.
     """
     # 1) Top-level pattern:  Strat(score_threshold, dice_threshold)
     # 2) Four bracketed blocks:

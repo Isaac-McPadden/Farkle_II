@@ -1,19 +1,15 @@
-# src/farkle/engine.py
-"""engine.py
-============
-Player and single-game engine for Farkle simulations.
+# src/farkle/game/engine.py
+"""Player and single-game engine for Farkle simulations.
 
-High-level flow
----------------
-* FarkleGame.play drives a game loop until someone reaches
-  target_score.  When that happens the *final round* rule is applied:
-  every other player gets one last turn.
-* FarklePlayer.take_turn handles the intra-turn loop of rolling,
-  scoring, and consulting its strategy.
+High-level flow:
+- ``FarkleGame.play`` drives the overall game loop until someone reaches the
+  target score, then enforces the final-round rule that grants opponents one
+  last turn.
+- ``FarklePlayer.take_turn`` manages the intra-turn cycle of rolling, scoring,
+  and consulting its strategy object.
 
-The module keeps no global state; randomness lives inside each
-FarklePlayer via its dedicated :class:`numpy.random.Generator` instance
-(passed in from the outer simulation layer).
+The module keeps no global state; each ``FarklePlayer`` owns a dedicated
+:class:`numpy.random.Generator` seeded by the outer simulation layer.
 """
 
 from __future__ import annotations
@@ -79,11 +75,11 @@ class FarklePlayer:
 
     # ----------------------------- helpers -----------------------------
     def _roll(self, n: int) -> DiceRoll:
-        """Produce n dice using this player's RNG.
+        """Produce ``n`` dice using this player's RNG.
 
-        Inputs
-        ------
-        n
+        Parameters
+        ----------
+        n : int
             Number of dice to roll.
 
         Returns
@@ -210,19 +206,20 @@ class FarklePlayer:
     ) -> None:
         """Simulates a full turn for this player.
 
-        Inputs
-        ------
-        target_score
+        Parameters
+        ----------
+        target_score : int
             Score that ends the game and triggers the final round.
-        final_round
+        final_round : bool, optional
             Whether this turn occurs during the closing round.
-        score_to_beat
-            Current leading score in the final round.
+        score_to_beat : int, optional
+            Current leading score that must be surpassed in the final round.
 
         Returns
         -------
         None
             The player's internal state is updated in place.
+
         Raises
         ------
         RuntimeError
@@ -418,13 +415,13 @@ class FarkleGame:
     ) -> None:
         """Create a new game instance.
 
-        Inputs
-        ------
-        players
+        Parameters
+        ----------
+        players : Sequence[FarklePlayer]
             Participants in turn order.
-        target_score
+        target_score : int, optional
             Score that triggers the final round.
-        table_seed
+        table_seed : int, optional
             Seed for any table-level randomness.
         """
         self.players: List[FarklePlayer] = list(players)
@@ -436,9 +433,9 @@ class FarkleGame:
     def play(self, max_rounds: int = 200) -> GameMetrics:
         """Execute the game loop and return final statistics.
 
-        Inputs
-        ------
-        max_rounds
+        Parameters
+        ----------
+        max_rounds : int, optional
             Safety cap on the number of rounds played.
 
         Returns
