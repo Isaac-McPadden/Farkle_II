@@ -4,6 +4,8 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
+import shutil
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -126,12 +128,22 @@ def run(cfg: AppConfig) -> None:
             schema = md.schema.to_arrow_schema()
             _write_manifest(manifest, rows=md.num_rows, schema=schema, cfg=cfg)
 
-            raw_file.replace(dst_file)
+            canonical = raw_file.parent / f"{n}p_ingested_rows.parquet"
+            raw_file.replace(canonical)
+
+            if dst_file != canonical:
+                if dst_file.exists():
+                    dst_file.unlink()
+                try:
+                    os.link(canonical, dst_file)
+                except OSError:
+                    shutil.copy2(canonical, dst_file)
+
             LOGGER.info(
                 "Curate: parquet finalized",
                 extra={
                     "stage": "curate",
-                    "path": dst_file.name,
+                    "path": canonical.name,
                     "rows": md.num_rows,
                     "row_groups": md.num_row_groups,
                 },

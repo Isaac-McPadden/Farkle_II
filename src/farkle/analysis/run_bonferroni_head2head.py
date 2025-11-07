@@ -10,6 +10,8 @@ from pathlib import Path
 import pyarrow as pa
 from scipy.stats import binomtest
 
+from typing import Any, Dict
+
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy
 from farkle.utils.artifacts import write_parquet_atomic
@@ -20,7 +22,13 @@ DEFAULT_ROOT = Path("results_seed_0")
 LOGGER = logging.getLogger(__name__)
 
 
-def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs: int = 1) -> None:
+def run_bonferroni_head2head(
+    *,
+    seed: int = 0,
+    root: Path = DEFAULT_ROOT,
+    n_jobs: int = 1,
+    design: Dict[str, Any] | None = None,
+) -> None:
     """Run pairwise games between top-tier strategies using Bonferroni tests.
 
     Parameters
@@ -65,7 +73,17 @@ def run_bonferroni_head2head(*, seed: int = 0, root: Path = DEFAULT_ROOT, n_jobs
             "elite_count": len(elites),
         },
     )
-    games_needed = games_for_power(n_strategies=len(elites), method="bonferroni", full_pairwise=True)
+    design_kwargs = dict(design or {})
+    method = design_kwargs.pop("method", "bonferroni")
+    full_pairwise = design_kwargs.pop("full_pairwise", True)
+    design_kwargs.setdefault("endpoint", "pairwise")
+    design_kwargs.setdefault("k_players", 2)
+    games_needed = games_for_power(
+        len(elites),
+        method=method,
+        full_pairwise=full_pairwise,
+        **design_kwargs,
+    )
     schedule = bonferroni_pairs(elites, games_needed, seed)
     LOGGER.debug(
         "Head-to-head schedule prepared",

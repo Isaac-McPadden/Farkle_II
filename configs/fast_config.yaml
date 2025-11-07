@@ -12,7 +12,7 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 17                         # RNG seed used by the tournament core
+  seed: 117                         # RNG seed used by the tournament core
   n_jobs: 12                    # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
   row_dir: "rows"                   # rows => per-N rows under {results}/{N}_players/rows/
@@ -60,7 +60,11 @@ analysis:
   run_trueskill: true
   run_head2head: true
   run_hgb: true
+  n_jobs: 1
   log_level: "INFO"
+  head2head_target_hours: null
+  head2head_tolerance_pct: 5.0
+  head2head_games_per_sec: null
 
 ingest:
   row_group_size: 64000           # parquet/arrow row group target

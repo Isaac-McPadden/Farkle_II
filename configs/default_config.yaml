@@ -1,0 +1,81 @@
+# configs/default_config.yaml
+# Drives BOTH simulation and analysis.
+# This config pins the library defaults for reference use only.
+
+io:
+  results_dir: "results"    # Path|str: base results directory
+  append_seed: true         # bool: append sim.seed suffix to results_dir
+  analysis_subdir: "analysis"    # str: analysis outputs subdirectory under results_dir
+
+sim:
+  n_players_list: [5]       # list[int]: table sizes to simulate
+  num_shuffles: 100         # int: default shuffle count per table size
+  seed: 0                   # int: RNG seed for deterministic runs
+  expanded_metrics: false   # bool: write expanded metrics parquet
+  row_dir: null             # Path|str|None: relative folder for row dumps; null skips write
+  per_n: {}                 # dict[int, SimConfig]: per-table overrides mirroring sim options
+  power_method: "bh"        # str: 'bh' or 'bonferroni' for scheduling strategy
+  recompute_num_shuffles: true    # bool: derive per-N shuffles from power design
+  power_design:
+    power: 0.8              # float: target statistical power
+    control: 0.1            # float: FDR q (BH) or alpha (Bonferroni)
+    detectable_lift: 0.03   # float: minimum absolute lift to detect
+    baseline_rate: 0.5      # float: assumed baseline win rate
+    tail: "two_sided"       # str: 'one_sided' or 'two_sided'
+    full_pairwise: true     # bool: compare all pairs vs top-1
+    endpoint: "pairwise"    # str: 'pairwise' or 'top1'
+    min_games_floor: 2000   # int: minimum scheduled games
+    max_games_cap: null     # int|None: optional cap on games
+    use_BY: false           # bool: enable Benjamini-Yekutieli correction for BH
+    bh_target_rank: null    # int|None: target BH order statistic i*
+    bh_target_frac: 0.03    # float|None: target discovery fraction for BH
+  n_jobs: null              # int|None: parallel workers for simulation
+  desired_sec_per_chunk: 10 # int: target seconds per work chunk
+  ckpt_every_sec: 30        # int: checkpoint interval in seconds
+  score_thresholds: null    # list[int]|None: custom threshold grid for scoring
+  dice_thresholds: null     # list[int]|None: custom dice thresholds
+  smart_five_opts: null     # sequence[bool]|None: toggle smart five behavior
+  smart_one_opts: null      # sequence[bool]|None: toggle smart one behavior
+  consider_score_opts: [true, false]   # sequence[bool]: include score-based branching
+  consider_dice_opts: [true, false]    # sequence[bool]: include dice-count branching
+  auto_hot_dice_opts: [true, false]    # sequence[bool]: auto roll on hot dice
+  run_up_score_opts: [true, false]     # sequence[bool]: allow run-up scoring strategy
+
+analysis:
+  run_trueskill: true       # bool: compute TrueSkill ratings
+  run_head2head: true       # bool: execute head-to-head analysis
+  run_hgb: true             # bool: train histogram gradient boosting model
+  n_jobs: 1                 # int: parallel workers for analysis
+  log_level: "INFO"         # str: logger level during analysis
+  results_glob: "*_players" # str: glob selecting per-N result folders
+  head2head_target_hours: null        # float|None: target runtime window for Bonferroni H2H
+  head2head_tolerance_pct: 5.0        # float: acceptable +/- percent around target hours
+  head2head_games_per_sec: null       # float|None: measured H2H throughput (games per second)
+  outputs: {}               # dict[str, Any]: optional custom output filenames
+
+ingest:
+  row_group_size: 64000     # int: parquet row-group size
+  parquet_codec: "snappy"   # str: parquet compression codec
+  batch_rows: 100000        # int: rows processed per batch
+  n_jobs: 1                 # int: concurrent ingest workers
+
+combine:
+  max_players: 12           # int: maximum table size to combine
+
+metrics:
+  seat_range: [1, 12]       # list[int]|tuple[int,int]: seats included in metrics
+
+trueskill:
+  beta: 25.0                # float: performance variability parameter
+  tau: 0.1                  # float: dynamics factor between runs
+  draw_probability: 0.0     # float: draw probability
+
+head2head:
+  n_jobs: 4                 # int: parallel workers for head-to-head stage
+  games_per_pair: 10000     # int: baseline games scheduled per pair
+  fdr_q: 0.02               # float: FDR control threshold for BH
+  bonferroni_design: {}     # dict[str, Any]: optional Bonferroni scheduling overrides
+
+hgb:
+  max_depth: 6              # int: maximum tree depth
+  n_estimators: 300         # int: boosting iterations

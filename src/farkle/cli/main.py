@@ -6,16 +6,21 @@ See ../../../cli_args.md for details.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import logging
 from pathlib import Path
 from typing import Sequence
 
+import yaml
+
+from farkle import analysis as analysis_pkg
 from farkle.analysis import combine, curate, ingest, metrics
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
 from farkle.simulation import runner
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
 from farkle.utils.logging import setup_info_logging
+from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -70,7 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_sub.add_parser("curate", help="Curate ingested data")
     analyze_sub.add_parser("combine", help="Combine curated data into a superset parquet")
     analyze_sub.add_parser("metrics", help="Compute metrics")
-    analyze_sub.add_parser("pipeline", help="Run ingest→curate→combine→metrics pipeline")
+    analyze_sub.add_parser("preprocess", help="Run ingest, curate, combine, and metrics")
+    analyze_sub.add_parser("pipeline", help="Run ingest->curate->combine->metrics->analytics pipeline")
+    analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
 
     return parser
 
@@ -84,6 +91,35 @@ def _parse_level(level: str | int) -> int:
     if isinstance(level, str):
         return getattr(logging, level.upper(), logging.INFO)
     return int(level)
+
+
+def _stringify_paths(obj: object) -> object:
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {k: _stringify_paths(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_stringify_paths(v) for v in obj]
+    if isinstance(obj, tuple):
+        return tuple(_stringify_paths(v) for v in obj)
+    return obj
+
+
+def _write_active_config(cfg: AppConfig, dest_dir: Path) -> None:
+    """Persist the resolved configuration alongside simulation results."""
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    resolved_dict = _stringify_paths(dataclasses.asdict(cfg))
+    resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
+    target = dest_dir / "active_config.yaml"
+    with atomic_path(str(target)) as tmp_path:
+        Path(tmp_path).write_text(resolved_yaml, encoding="utf-8")
+
+
+def _run_preprocess(cfg: AppConfig) -> None:
+    ingest.run(cfg)
+    curate.run(cfg)
+    combine.run(cfg)
+    metrics.run(cfg)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -130,6 +166,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             cfg.sim.expanded_metrics = True
         if args.row_dir is not None:
             cfg.sim.row_dir = args.row_dir
+        _write_active_config(cfg, cfg.io.results_dir)
         LOGGER.info(
             "Dispatching run command",
             extra={
@@ -176,11 +213,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             combine.run(cfg)
         elif args.an_cmd == "metrics":
             metrics.run(cfg)
+        elif args.an_cmd == "preprocess":
+            _run_preprocess(cfg)
+        elif args.an_cmd == "analytics":
+            analysis_pkg.run_all(cfg)
         elif args.an_cmd == "pipeline":
-            ingest.run(cfg)
-            curate.run(cfg)
-            combine.run(cfg)
-            metrics.run(cfg)
+            _run_preprocess(cfg)
+            analysis_pkg.run_all(cfg)
         LOGGER.info("Analysis command completed", extra={"stage": "cli", "command": f"analyze:{args.an_cmd}"})
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")

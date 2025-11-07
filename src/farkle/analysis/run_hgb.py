@@ -127,6 +127,16 @@ def run_hgb(
     ratings_table = pq.read_table(ratings_path, columns=["strategy", "mu"])
     rating_df = ratings_table.to_pandas()
     data = metrics.merge(rating_df, on="strategy", how="inner")
+    if data.empty:
+        LOGGER.warning(
+            "HGB regression skipped: no overlapping strategies between metrics and ratings",
+            extra={
+                "stage": "hgb",
+                "metrics_rows": len(metrics),
+                "ratings_rows": len(rating_df),
+            },
+        )
+        return
 
     # ------------------------------------------------------------------
     # Parse strategy parameters from the strategy name. This ensures that

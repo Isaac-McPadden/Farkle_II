@@ -45,7 +45,7 @@ def test_run_bonferroni_head2head_writes_csv(
     monkeypatch.setattr(
         rb,
         "games_for_power",
-        lambda n, method="bonferroni", full_pairwise=True: 1,  # noqa: ARG005
+        lambda n, method="bonferroni", full_pairwise=True, **kwargs: 1,  # noqa: ARG005
     )
     monkeypatch.setattr(
         rb,

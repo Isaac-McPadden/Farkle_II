@@ -76,6 +76,56 @@ def _update_batch_counters(
 # ──────────────────────────────────────────────────────────────────────────────
 
 
+def _correct_round_limit_wins(
+    *,
+    round_limit: int,
+    wins_by_strategy: Counter[str],
+    rounds_by_strategy: Counter[str],
+    score_by_strategy: Counter[str],
+    flagged_counts: Counter[str],
+    flagged_rounds: Counter[str],
+    flagged_scores: Counter[str],
+) -> int:
+    """Subtract wins recorded only because player one exhausted the round cap."""
+    if round_limit <= 0 or not flagged_counts:
+        return 0
+
+    removed = 0
+    for strat, bad_wins in flagged_counts.items():
+        if bad_wins <= 0:
+            continue
+
+        current_wins = wins_by_strategy.get(strat, 0)
+        if bad_wins > current_wins:
+            LOGGER.warning(
+                "Round-limit correction would drop wins below zero; clamping removal",
+                extra={
+                    "stage": "metrics",
+                    "strategy": strat,
+                    "current_wins": current_wins,
+                    "bad_wins": bad_wins,
+                },
+            )
+            bad_wins = current_wins
+
+        if bad_wins == 0:
+            continue
+
+        wins_by_strategy[strat] = current_wins - bad_wins
+        rounds_by_strategy[strat] = max(
+            0, rounds_by_strategy.get(strat, 0) - flagged_rounds.get(strat, 0)
+        )
+        score_by_strategy[strat] = max(
+            0, score_by_strategy.get(strat, 0) - flagged_scores.get(strat, 0)
+        )
+        removed += bad_wins
+
+    return removed
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+
+
 def run(cfg: AppConfig) -> None:
     """Compute win statistics and seat advantage tables.
 
@@ -146,15 +196,25 @@ def run(cfg: AppConfig) -> None:
 
     wins_by_seat: Counter[str] = Counter()
 
-    reader = ds.dataset(data_file, format="parquet")
+    dataset = ds.dataset(data_file, format="parquet")
     strategy_cols = [
         name
-        for name in reader.schema.names
+        for name in dataset.schema.names
         if name.endswith("_strategy") and name != "winner_strategy"
     ]
     all_strategies: set[str] = set()
 
-    for batch in reader.to_batches(
+    round_limit = 0
+    for batch in dataset.to_batches(columns=["n_rounds"], batch_size=cfg.batch_rows):
+        arr = batch["n_rounds"].to_numpy(zero_copy_only=True)
+        if arr.size:
+            round_limit = max(round_limit, int(arr.max()))
+
+    bad_win_counts: Counter[str] = Counter()
+    bad_win_scores: Counter[str] = Counter()
+    bad_win_rounds: Counter[str] = Counter()
+
+    for batch in dataset.to_batches(
         columns=_WIN_COLS + strategy_cols,
         batch_size=cfg.batch_rows,
     ):
@@ -188,6 +248,47 @@ def run(cfg: AppConfig) -> None:
             rounds_by_strategy,
             score_by_strategy,
             wins_by_seat,
+        )
+
+        if round_limit > 0:
+            mask_round_limit = (arr_wseat == "P1") & (arr_nrounds == round_limit)
+            if np.any(mask_round_limit):
+                flagged_strats = arr_wstrat[mask_round_limit]
+                flagged_scores = arr_score[mask_round_limit].astype(np.int64, copy=False)
+                flagged_rounds = arr_nrounds[mask_round_limit].astype(np.int64, copy=False)
+                uniq, inverse = np.unique(flagged_strats, return_inverse=True)
+                counts = np.bincount(inverse)
+                score_sums = np.bincount(inverse, weights=flagged_scores)
+                round_sums = np.bincount(inverse, weights=flagged_rounds)
+                for strat, count, score_sum, round_sum in zip(
+                    uniq.tolist(),
+                    counts.tolist(),
+                    score_sums.tolist(),
+                    round_sums.tolist(),
+                    strict=True,
+                ):
+                    bad_win_counts[strat] += int(count)
+                    bad_win_scores[strat] += int(score_sum)
+                    bad_win_rounds[strat] += int(round_sum)
+
+    removed = _correct_round_limit_wins(
+        round_limit=round_limit,
+        wins_by_strategy=wins_by_strategy,
+        rounds_by_strategy=rounds_by_strategy,
+        score_by_strategy=score_by_strategy,
+        flagged_counts=bad_win_counts,
+        flagged_rounds=bad_win_rounds,
+        flagged_scores=bad_win_scores,
+    )
+    if removed:
+        LOGGER.info(
+            "Round-cap wins removed",
+            extra={
+                "stage": "metrics",
+                "round_limit": round_limit,
+                "wins_removed": removed,
+                "affected_strategies": len(bad_win_counts),
+            },
         )
 
     # Build rows ---------------------------------------------------------------

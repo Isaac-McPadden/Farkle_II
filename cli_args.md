@@ -60,9 +60,10 @@ Subcommands:
 - `ingest` - convert raw CSV rows into curated parquet shards.
 - `curate` - post-process ingested rows and update manifests.
 - `combine` - merge curated shards into a consolidated parquet file.
-- `metrics` - compute aggregate metrics (TrueSkill, head-to-head summaries,
-  etc.) according to the configuration.
-- `pipeline` - run `ingest`, `curate`, `combine`, and `metrics` sequentially.
+- `metrics` - compute aggregate metrics and engineer useful features from curated data.
+- `preprocess` - run `ingest`, `curate`, `combine`, and `metrics` sequentially.
+- `analytics` - perform statistical analysis computation steps (TrueSkill, Bonferroni head-to-head, HGB modeling, etc.) according to the configuration.
+- `pipeline` - run `preprocess` followed by `analytics` for a full end-to-end pass.
 
 Use `--help` on any subcommand for additional details (for example,
 `farkle analyze metrics --help`).

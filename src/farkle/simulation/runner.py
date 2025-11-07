@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 import pickle
 from collections import Counter
+from pathlib import Path
 from typing import Mapping, Sequence
 
 import pyarrow as pa
@@ -203,6 +204,38 @@ def _compute_num_shuffles_from_config(
     return n_shuffles
 
 
+def _resolve_row_output_dir(cfg: AppConfig, n_players: int) -> Path | None:
+    """Return the per-N row output directory or ``None`` if rows are disabled."""
+    raw_value = cfg.sim.row_dir
+    if not raw_value:
+        return None
+
+    raw_str = str(raw_value)
+    placeholders = {
+        "n": n_players,
+        "n_players": n_players,
+        "p": f"{n_players}p",
+    }
+    used_placeholders = False
+    try:
+        formatted_str = raw_str.format(**placeholders)
+        used_placeholders = formatted_str != raw_str
+    except KeyError:
+        formatted_str = raw_str
+
+    row_path = Path(formatted_str)
+    if not used_placeholders:
+        tail = row_path.name
+        prefix = f"{n_players}p"
+        if tail and not tail.startswith(prefix):
+            row_path = row_path.parent / f"{prefix}_{tail}"
+    if row_path.is_absolute():
+        return row_path
+
+    n_dir = cfg.io.results_dir / f"{n_players}_players"
+    return n_dir / row_path
+
+
 def run_tournament(cfg: AppConfig) -> int:
     """Top-level dispatcher that runs single-N or multi-N based on the config.
 
@@ -272,11 +305,7 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = n_dir / f"{n}p_checkpoint.pkl"
-    row_dir = None
-    if cfg.sim.row_dir:
-        row_dir = cfg.sim.row_dir
-        if not row_dir.is_absolute():
-            row_dir = n_dir / row_dir
+    row_dir = _resolve_row_output_dir(cfg, n)
 
     # --- Tournament run ---
     tourn_cfg = TournamentConfig(

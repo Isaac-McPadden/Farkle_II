@@ -34,7 +34,7 @@ def test_run_skips_if_up_to_date(
     os.utime(curated, (1000, 1000))
     os.utime(out, (2000, 2000))
 
-    def boom(*, root: Path, n_jobs: int) -> None:  # noqa: ARG001
+    def boom(*, root: Path, n_jobs: int, **kwargs) -> None:  # noqa: ARG001
         raise AssertionError("head2head helper should not run when outputs are fresh")
 
     monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", boom)
@@ -58,7 +58,7 @@ def test_run_logs_warning_on_failure(
 
     called = False
 
-    def boom(*, root: Path, n_jobs: int) -> None:  # noqa: ARG001
+    def boom(*, root: Path, n_jobs: int, **kwargs) -> None:  # noqa: ARG001
         nonlocal called
         called = True
         raise RuntimeError("boom")

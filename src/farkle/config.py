@@ -75,6 +75,9 @@ class AnalysisConfig:
     n_jobs: int = 1
     log_level: str = "INFO"
     results_glob: str = "*_players"
+    head2head_target_hours: float | None = None
+    head2head_tolerance_pct: float = 5.0
+    head2head_games_per_sec: float | None = None
     # Optional outputs block may be provided in YAML
     # outputs:
     #   curated_rows_name: "game_rows.parquet"
@@ -86,7 +89,7 @@ class AnalysisConfig:
 @dataclass
 class IngestConfig:
     row_group_size: int = 64_000
-    parquet_codec: str = "zstd"
+    parquet_codec: str = "snappy"
     batch_rows: int = 100_000
     n_jobs: int = 1
 
