@@ -60,4 +60,18 @@ def run_all(cfg: AppConfig) -> None:
                 "reason": "run_hgb=False" if not cfg.analysis.run_hgb else "unavailable",
             },
         )
+
+    tier_mod = _optional_import("farkle.analysis.tiering_report")
+    if cfg.analysis.run_tiering_report and tier_mod is not None:
+        tier_mod.run(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping tiering report",
+            extra={
+                "stage": "analysis",
+                "reason": "run_tiering_report=False"
+                if not cfg.analysis.run_tiering_report
+                else "unavailable",
+            },
+        )
     LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})

@@ -72,12 +72,16 @@ class AnalysisConfig:
     run_trueskill: bool = True
     run_head2head: bool = True
     run_hgb: bool = True
+    run_tiering_report: bool = False
     n_jobs: int = 1
     log_level: str = "INFO"
     results_glob: str = "*_players"
     head2head_target_hours: float | None = None
     head2head_tolerance_pct: float = 5.0
     head2head_games_per_sec: float | None = None
+    tiering_seeds: list[int] | None = None
+    tiering_z_star: float = 2.0
+    tiering_weights_by_k: dict[int, float] | None = None
     # Optional outputs block may be provided in YAML
     # outputs:
     #   curated_rows_name: "game_rows.parquet"

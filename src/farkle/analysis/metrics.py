@@ -1,150 +1,28 @@
-# src/farkle/metrics.py
 from __future__ import annotations
 
 import json
 import logging
-from collections import Counter
 from pathlib import Path
-from typing import Any
+from typing import Iterable, Sequence
 
-import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 
 from farkle.analysis.checks import check_pre_metrics
+from farkle.analysis.isolated_metrics import build_isolated_metrics
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
-# ──────────────────────────────────────────────────────────────────────────────
-_WIN_COLS = ["winner_strategy", "winner_seat", "winning_score", "n_rounds"]
-
-
-def _write_parquet(final: Path, rows: list[dict[str, Any]], schema: pa.Schema) -> None:
-    tbl = pa.Table.from_pylist(rows, schema=schema)
-    write_parquet_atomic(tbl, final)
-    LOGGER.info(
-        "Metrics parquet written",
-        extra={
-            "stage": "metrics",
-            "path": final.name,
-            "rows": tbl.num_rows,
-        },
-    )
-
-
-def _update_batch_counters(
-    arr_win_strategy: Any,
-    arr_wseat: Any,
-    arr_score: Any,
-    arr_nrounds: Any,
-    wins_by_strategy: Counter[str],
-    rounds_by_strategy: Counter[str],
-    score_by_strategy: Counter[str],
-    wins_by_seat: Counter[str],
-) -> None:
-    """Vectorised in-memory update using NumPy; no pandas required."""
-    # Convert once – arrow → NumPy (zero-copy for numeric columns)
-    win = np.asarray(arr_win_strategy)
-    wseat = np.asarray(arr_wseat)
-    score = np.asarray(arr_score, dtype=np.int64)
-    nrounds = np.asarray(arr_nrounds, dtype=np.int64)
-
-    # 1) wins by strategy  ────────────────────────────────────────────
-    uniq, counts = np.unique(win, return_counts=True)
-    wins_by_strategy.update(dict(zip(uniq.tolist(), counts.tolist(), strict=True)))
-
-    # 2) wins by seat (P1, P2 …)  ────────────────────────────────────
-    uniq_seat, counts_s = np.unique(wseat, return_counts=True)
-    wins_by_seat.update(dict(zip(uniq_seat.tolist(), counts_s.tolist(), strict=True)))
-
-    # 3) rounds & scores per winning strategy  ───────────────────────
-    # build an index map strategy→idx
-    strat_idx = {s: i for i, s in enumerate(uniq)}
-    # aggregate via bincount on aligned index array
-    idx = np.vectorize(strat_idx.get, otypes=[np.int64])(win)
-    rounds_sum = np.bincount(idx, weights=nrounds, minlength=len(uniq))
-    score_sum = np.bincount(idx, weights=score, minlength=len(uniq))
-
-    rounds_by_strategy.update(dict(zip(uniq.tolist(), rounds_sum.tolist(), strict=True)))
-    score_by_strategy.update(dict(zip(uniq.tolist(), score_sum.tolist(), strict=True)))
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-
-
-def _correct_round_limit_wins(
-    *,
-    round_limit: int,
-    wins_by_strategy: Counter[str],
-    rounds_by_strategy: Counter[str],
-    score_by_strategy: Counter[str],
-    flagged_counts: Counter[str],
-    flagged_rounds: Counter[str],
-    flagged_scores: Counter[str],
-) -> int:
-    """Subtract wins recorded only because player one exhausted the round cap."""
-    if round_limit <= 0 or not flagged_counts:
-        return 0
-
-    removed = 0
-    for strat, bad_wins in flagged_counts.items():
-        if bad_wins <= 0:
-            continue
-
-        current_wins = wins_by_strategy.get(strat, 0)
-        if bad_wins > current_wins:
-            LOGGER.warning(
-                "Round-limit correction would drop wins below zero; clamping removal",
-                extra={
-                    "stage": "metrics",
-                    "strategy": strat,
-                    "current_wins": current_wins,
-                    "bad_wins": bad_wins,
-                },
-            )
-            bad_wins = current_wins
-
-        if bad_wins == 0:
-            continue
-
-        wins_by_strategy[strat] = current_wins - bad_wins
-        rounds_by_strategy[strat] = max(
-            0, rounds_by_strategy.get(strat, 0) - flagged_rounds.get(strat, 0)
-        )
-        score_by_strategy[strat] = max(
-            0, score_by_strategy.get(strat, 0) - flagged_scores.get(strat, 0)
-        )
-        removed += bad_wins
-
-    return removed
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-
 
 def run(cfg: AppConfig) -> None:
-    """Compute win statistics and seat advantage tables.
+    """Compute per-strategy metrics and seat-advantage tables."""
 
-    Outputs
-    -------
-    <analysis_dir>/metrics.parquet         (per-strategy & overall KPIs)
-    <analysis_dir>/seat_advantage.csv      (seat-specific win rates, CSV view)
-    <analysis_dir>/seat_advantage.parquet  (seat-specific win rates, Parquet mirror)
-
-    Notes
-    -----
-    ``mean_score`` and ``mean_rounds`` are conditional averages over games
-    the strategy actually won, capturing a typical winning performance. The
-    ``expected_score`` divides total points by ``total_games`` to give the
-    per-game score expectation with losses counted as zero.
-    """
     analysis_dir = cfg.analysis_dir
     data_file = cfg.curated_parquet
-    winner_col = "winner_seat"
     out_metrics = analysis_dir / cfg.metrics_name
     out_seats = analysis_dir / "seat_advantage.csv"
     out_seats_parquet = analysis_dir / "seat_advantage.parquet"
@@ -155,198 +33,27 @@ def run(cfg: AppConfig) -> None:
             f"metrics: missing combined parquet {data_file} – run combine step first"
         )
 
-    def _stamp(path: Path) -> dict[str, float | int]:
-        st = path.stat()
-        return {"mtime": st.st_mtime, "size": st.st_size}
-
     LOGGER.info(
         "Metrics stage start",
         extra={
             "stage": "metrics",
             "data_file": str(data_file),
             "analysis_dir": str(analysis_dir),
-            "batch_rows": cfg.batch_rows,
         },
     )
 
-    if stamp.exists():
-        try:
-            meta = json.loads(stamp.read_text())
-            inputs = meta.get("inputs", {})
-            outputs = meta.get("outputs", {})
-            if inputs.get(str(data_file)) == _stamp(data_file) and all(
-                Path(p).exists() and outputs.get(p) == _stamp(Path(p))
-                for p in (str(out_metrics), str(out_seats), str(out_seats_parquet))
-            ):
-                LOGGER.info(
-                    "Metrics: outputs up-to-date",
-                    extra={"stage": "metrics", "path": str(analysis_dir)},
-                )
-                return
-        except Exception:
-            pass
+    check_pre_metrics(data_file, winner_col="winner_seat")
 
-    check_pre_metrics(data_file, winner_col=winner_col)
+    player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
+    iso_paths, raw_inputs = _ensure_isolated_metrics(cfg, player_counts)
+    metrics_df = _collect_metrics_frames(iso_paths)
+    if metrics_df.empty:
+        raise RuntimeError("metrics: no isolated metric files generated")
 
-    # Running aggregates -------------------------------------------------------
-    wins_by_strategy: Counter[str] = Counter()
-    rounds_by_strategy: Counter[str] = Counter()
-    score_by_strategy: Counter[str] = Counter()
-    appearances_by_strategy: Counter[str] = Counter()
+    metrics_table = pa.Table.from_pandas(metrics_df, preserve_index=False)
+    write_parquet_atomic(metrics_table, out_metrics)
 
-    wins_by_seat: Counter[str] = Counter()
-
-    dataset = ds.dataset(data_file, format="parquet")
-    strategy_cols = [
-        name
-        for name in dataset.schema.names
-        if name.endswith("_strategy") and name != "winner_strategy"
-    ]
-    all_strategies: set[str] = set()
-
-    round_limit = 0
-    for batch in dataset.to_batches(columns=["n_rounds"], batch_size=cfg.batch_rows):
-        arr = batch["n_rounds"].to_numpy(zero_copy_only=True)
-        if arr.size:
-            round_limit = max(round_limit, int(arr.max()))
-
-    bad_win_counts: Counter[str] = Counter()
-    bad_win_scores: Counter[str] = Counter()
-    bad_win_rounds: Counter[str] = Counter()
-
-    for batch in dataset.to_batches(
-        columns=_WIN_COLS + strategy_cols,
-        batch_size=cfg.batch_rows,
-    ):
-        # Arrow's ``to_numpy`` has strict zero-copy semantics for string data
-        # which can raise ``ArrowInvalid`` even for small, null-free arrays. The
-        # win/seat columns are tiny, so converting via ``to_pylist`` is simpler
-        # and avoids these edge cases.
-        arr_wstrat = np.asarray(batch["winner_strategy"].to_pylist())
-        arr_wseat = np.asarray(batch["winner_seat"].to_pylist())
-
-        arr_score = batch["winning_score"].to_numpy(zero_copy_only=True)
-        arr_nrounds = batch["n_rounds"].to_numpy(zero_copy_only=True)
-
-        all_strategies.update(arr_wstrat)
-        for col in strategy_cols:
-            col_vals = [s for s in batch[col].to_pylist() if s is not None]
-            all_strategies.update(col_vals)
-            # appearances denominator for win_rate/expected_score
-            if col_vals:
-                uniq, counts = np.unique(np.asarray(col_vals), return_counts=True)
-                appearances_by_strategy.update(
-                    dict(zip(uniq.tolist(), counts.tolist(), strict=True))
-                )
-
-        _update_batch_counters(
-            arr_wstrat,
-            arr_wseat,
-            arr_score,
-            arr_nrounds,
-            wins_by_strategy,
-            rounds_by_strategy,
-            score_by_strategy,
-            wins_by_seat,
-        )
-
-        if round_limit > 0:
-            mask_round_limit = (arr_wseat == "P1") & (arr_nrounds == round_limit)
-            if np.any(mask_round_limit):
-                flagged_strats = arr_wstrat[mask_round_limit]
-                flagged_scores = arr_score[mask_round_limit].astype(np.int64, copy=False)
-                flagged_rounds = arr_nrounds[mask_round_limit].astype(np.int64, copy=False)
-                uniq, inverse = np.unique(flagged_strats, return_inverse=True)
-                counts = np.bincount(inverse)
-                score_sums = np.bincount(inverse, weights=flagged_scores)
-                round_sums = np.bincount(inverse, weights=flagged_rounds)
-                for strat, count, score_sum, round_sum in zip(
-                    uniq.tolist(),
-                    counts.tolist(),
-                    score_sums.tolist(),
-                    round_sums.tolist(),
-                    strict=True,
-                ):
-                    bad_win_counts[strat] += int(count)
-                    bad_win_scores[strat] += int(score_sum)
-                    bad_win_rounds[strat] += int(round_sum)
-
-    removed = _correct_round_limit_wins(
-        round_limit=round_limit,
-        wins_by_strategy=wins_by_strategy,
-        rounds_by_strategy=rounds_by_strategy,
-        score_by_strategy=score_by_strategy,
-        flagged_counts=bad_win_counts,
-        flagged_rounds=bad_win_rounds,
-        flagged_scores=bad_win_scores,
-    )
-    if removed:
-        LOGGER.info(
-            "Round-cap wins removed",
-            extra={
-                "stage": "metrics",
-                "round_limit": round_limit,
-                "wins_removed": removed,
-                "affected_strategies": len(bad_win_counts),
-            },
-        )
-
-    # Build rows ---------------------------------------------------------------
-    metrics_rows: list[dict[str, Any]] = []
-    for strat in sorted(all_strategies):
-        n_wins = wins_by_strategy[strat]
-        n_games = appearances_by_strategy[strat]
-        metrics_rows.append(
-            {
-                "strategy": strat,
-                "games": n_games,
-                "wins": n_wins,
-                "win_rate": (n_wins / n_games) if n_games else 0.0,
-                "expected_score": (score_by_strategy[strat] / n_games) if n_games else 0.0,
-                "mean_score": None if n_wins == 0 else (score_by_strategy[strat] / n_wins),
-                "mean_rounds": None if n_wins == 0 else (rounds_by_strategy[strat] / n_wins),
-            }
-        )
-
-    # Seat denominators from manifests (rows where seat existed)
-    def _rows_for_n(n: int) -> int:
-        mpath = cfg.manifest_for(n)
-        if not mpath.exists():
-            return 0
-        try:
-            meta = json.loads(mpath.read_text())
-            return int(meta.get("row_count", 0))
-        except Exception:
-            return 0
-
-    # denom[seat] = sum of rows across all N where that seat exists (i.e., N >= seat)
-    denom = {i: sum(_rows_for_n(n) for n in range(i, 13)) for i in range(1, 13)}
-
-    # wins per seat (from combined parquet)
-    ds_all = ds.dataset(data_file, format="parquet")
-    seat_wins: dict[int, int] = {
-        i: int(ds_all.count_rows(filter=(ds.field(winner_col) == f"P{i}"))) for i in range(1, 13)
-    }
-
-    # Write corrected seat_advantage.csv
-    seat_rows: list[dict[str, Any]] = []
-    for i in range(1, 13):
-        games = denom[i]
-        wins = seat_wins.get(i, 0)
-        rate = (wins / games) if games else 0.0
-        seat_rows.append(
-            {
-                "seat": i,
-                "wins": wins,
-                "games_with_seat": games,
-                "win_rate": rate,
-            }
-        )
-
-    seat_df = pd.DataFrame(
-        seat_rows,
-        columns=["seat", "wins", "games_with_seat", "win_rate"],
-    )
+    seat_df = _compute_seat_advantage(cfg, data_file)
     write_csv_atomic(seat_df, out_seats)
     seat_table = pa.Table.from_pandas(
         seat_df,
@@ -362,58 +69,134 @@ def run(cfg: AppConfig) -> None:
     )
     write_parquet_atomic(seat_table, out_seats_parquet)
 
-    # Schemas ------------------------------------------------------------------
-    metrics_schema = pa.schema(
-        [
-            ("strategy", pa.string()),
-            ("games", pa.int32()),
-            ("wins", pa.int32()),
-            ("win_rate", pa.float32()),
-            ("expected_score", pa.float32()),
-            ("mean_score", pa.float32()),
-            ("mean_rounds", pa.float32()),
-        ]
-    )
-
-    # Atomic writes ------------------------------------------------------------
-    _write_parquet(out_metrics, metrics_rows, metrics_schema)
-
-    if metrics_rows:
-        leader = max(metrics_rows, key=lambda row: row["wins"])
+    if not metrics_df.empty:
+        leader = metrics_df.sort_values(["wins", "win_rate"], ascending=False).iloc[0]
         LOGGER.info(
             "Metrics leaderboard computed",
             extra={
                 "stage": "metrics",
                 "top_strategy": leader["strategy"],
-                "wins": leader["wins"],
-                "games": leader["games"],
+                "wins": int(leader["wins"]),
+                "games": int(leader["games"]),
             },
         )
 
-    stamp.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(stamp)) as tmp_path:
-        Path(tmp_path).write_text(
-            json.dumps(
-                {
-                    "inputs": {str(data_file): _stamp(data_file)},
-                    "outputs": {
-                        str(out_metrics): _stamp(out_metrics),
-                        str(out_seats): _stamp(out_seats),
-                        str(out_seats_parquet): _stamp(out_seats_parquet),
-                    },
-                },
-                indent=2,
-            )
-        )
+    _write_stamp(
+        stamp,
+        inputs=[data_file, *raw_inputs],
+        outputs=[out_metrics, out_seats, out_seats_parquet, *iso_paths],
+    )
 
     LOGGER.info(
         "Metrics stage complete",
         extra={
             "stage": "metrics",
-            "rows": len(metrics_rows),
-            "seat_rows": len(seat_wins),
+            "rows": len(metrics_df),
+            "seat_rows": len(seat_df),
             "metrics_path": str(out_metrics),
             "seat_path": str(out_seats),
             "seat_parquet": str(out_seats_parquet),
         },
     )
+
+
+def _ensure_isolated_metrics(cfg: AppConfig, player_counts: Sequence[int]) -> tuple[list[Path], list[Path]]:
+    iso_paths: list[Path] = []
+    raw_inputs: list[Path] = []
+    for n in player_counts:
+        raw_path = cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet"
+        raw_inputs.append(raw_path)
+        if not raw_path.exists():
+            LOGGER.warning(
+                "Expanded metrics missing",
+                extra={"stage": "metrics", "player_count": n, "path": str(raw_path)},
+            )
+            continue
+        try:
+            iso_paths.append(build_isolated_metrics(cfg, n))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to normalize metrics parquet",
+                extra={
+                    "stage": "metrics",
+                    "player_count": n,
+                    "path": str(raw_path),
+                    "error": str(exc),
+                },
+            )
+    return iso_paths, raw_inputs
+
+
+def _collect_metrics_frames(paths: Iterable[Path]) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for path in paths:
+        if not path.exists():
+            continue
+        frames.append(pd.read_parquet(path))
+    if not frames:
+        return pd.DataFrame(
+            columns=[
+                "strategy",
+                "n_players",
+                "games",
+                "wins",
+                "win_rate",
+                "expected_score",
+            ]
+        )
+    df = pd.concat(frames, ignore_index=True)
+    base_cols = ["strategy", "n_players", "games", "wins", "win_rate", "expected_score"]
+    remainder = [c for c in df.columns if c not in base_cols]
+    return df[base_cols + remainder]
+
+
+def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
+    def _rows_for_n(n: int) -> int:
+        manifest = cfg.manifest_for(n)
+        if not manifest.exists():
+            return 0
+        try:
+            meta = json.loads(manifest.read_text())
+            return int(meta.get("row_count", 0))
+        except Exception:  # noqa: BLE001
+            return 0
+
+    denom = {i: sum(_rows_for_n(n) for n in range(i, 13)) for i in range(1, 13)}
+    ds_all = ds.dataset(combined, format="parquet")
+    seat_wins = {
+        i: int(ds_all.count_rows(filter=(ds.field("winner_seat") == f"P{i}")))
+        for i in range(1, 13)
+    }
+
+    seat_rows: list[dict[str, float]] = []
+    for i in range(1, 13):
+        games = denom[i]
+        wins = seat_wins.get(i, 0)
+        rate = (wins / games) if games else 0.0
+        seat_rows.append(
+            {"seat": i, "wins": wins, "games_with_seat": games, "win_rate": rate}
+        )
+    return pd.DataFrame(seat_rows, columns=["seat", "wins", "games_with_seat", "win_rate"])
+
+
+def _stamp(path: Path) -> dict[str, float | int]:
+    stat = path.stat()
+    return {"mtime": stat.st_mtime, "size": stat.st_size}
+
+
+def _write_stamp(stamp_path: Path, *, inputs: Iterable[Path], outputs: Iterable[Path]) -> None:
+    payload = {
+        "inputs": {
+            str(p): _stamp(p)
+            for p in inputs
+            if p.exists()
+        },
+        "outputs": {
+            str(p): _stamp(p)
+            for p in outputs
+            if p.exists()
+        },
+    }
+    stamp_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(stamp_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(payload, indent=2))

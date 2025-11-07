@@ -45,16 +45,12 @@ analysis:
   run_trueskill: true       # bool: compute TrueSkill ratings
   run_head2head: true       # bool: execute head-to-head analysis
   run_hgb: true             # bool: train histogram gradient boosting model
-  run_tiering_report: false # bool: compare frequentist vs Bayesian tiers
   n_jobs: 1                 # int: parallel workers for analysis
   log_level: "INFO"         # str: logger level during analysis
   results_glob: "*_players" # str: glob selecting per-N result folders
   head2head_target_hours: null        # float|None: target runtime window for Bonferroni H2H
   head2head_tolerance_pct: 5.0        # float: acceptable +/- percent around target hours
   head2head_games_per_sec: null       # float|None: measured H2H throughput (games per second)
-  tiering_seeds: null       # list[int]|None: seeds to include in tiering report (default current seed)
-  tiering_z_star: 2.0       # float: z* threshold for MDD tiers
-  tiering_weights_by_k: null  # dict[int,float]|None: optional weights for player counts
   outputs: {}               # dict[str, Any]: optional custom output filenames
 
 ingest:

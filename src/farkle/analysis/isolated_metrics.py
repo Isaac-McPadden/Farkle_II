@@ -8,8 +8,12 @@ from typing import Iterator, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 
 from farkle.config import AppConfig
+from farkle.simulation.simulation import generate_strategy_grid
+from farkle.simulation.run_tournament import METRIC_LABELS
+from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.parallel import process_map
 
 LOGGER = logging.getLogger(__name__)
@@ -298,10 +302,201 @@ def _summarize(locator: MetricsLocator, frame: pd.DataFrame, missing: list[Metri
     return summary
 
 
+# ---------------------------------------------------------------------------
+# Expanded metrics normalization
+# ---------------------------------------------------------------------------
+
+def build_isolated_metrics(cfg: AppConfig, player_count: int, *, force: bool = False) -> Path:
+    """
+    Normalize a per-k metrics parquet into ``analysis/data/<kp>/<kp>_isolated_metrics.parquet``.
+    """
+
+    src = cfg.results_dir / f"{player_count}_players" / f"{player_count}p_metrics.parquet"
+    if not src.exists():
+        raise FileNotFoundError(src)
+
+    out_dir = cfg.analysis_dir / "data" / f"{player_count}p"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    dst = out_dir / f"{player_count}p_isolated_metrics.parquet"
+    if not force and dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
+        return dst
+
+    df = pd.read_parquet(src)
+    processed = _prepare_metrics_dataframe(cfg, df, player_count)
+    table = pa.Table.from_pandas(processed, preserve_index=False)
+    write_parquet_atomic(table, dst)
+    LOGGER.info(
+        "Isolated metrics written",
+        extra={
+            "stage": "metrics",
+            "player_count": player_count,
+            "rows": table.num_rows,
+            "path": str(dst),
+        },
+    )
+    return dst
+
+
+def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: int) -> pd.DataFrame:
+    df = df.copy()
+    if "strategy" not in df.columns:
+        df["strategy"] = []
+
+    df["wins"] = df["wins"].fillna(0).astype(float)
+    correction = df.get("sum_winner_hit_max_rounds", 0).fillna(0.0)
+    df["false_wins_handled"] = correction
+    df["_hit_flag"] = correction
+    df["wins"] = df["wins"] - correction
+    df["wins"] = df["wins"].clip(lower=0.0)
+
+    needs_recalc = correction.gt(0) & df["wins"].gt(0)
+    if needs_recalc.any():
+        wins = df.loc[needs_recalc, "wins"].replace(0, np.nan)
+        for label in METRIC_LABELS:
+            sum_col = f"sum_{label}"
+            sq_col = f"sq_sum_{label}"
+            mean_col = f"mean_{label}"
+            var_col = f"var_{label}"
+            if {sum_col, sq_col, mean_col, var_col}.issubset(df.columns):
+                sums = df.loc[needs_recalc, sum_col]
+                sqs = df.loc[needs_recalc, sq_col]
+                new_mean = (sums / wins).fillna(0.0)
+                df.loc[needs_recalc, mean_col] = new_mean
+                ex2 = (sqs / wins).fillna(0.0)
+                new_var = np.maximum(ex2 - (new_mean**2), 0.0)
+                df.loc[needs_recalc, var_col] = new_var
+
+    games_col = "total_games_strat"
+    if games_col not in df.columns:
+        df[games_col] = df.get("games", 0)
+    df[games_col] = df[games_col].fillna(df[games_col].max()).astype(float)
+    df["games"] = df[games_col].astype(np.int64)
+    safe_games = df[games_col].replace(0, np.nan)
+    df["win_rate"] = (df["wins"] / safe_games).fillna(0.0)
+    if "sum_winning_score" in df.columns:
+        df["expected_score"] = (df["sum_winning_score"] / safe_games).fillna(0.0)
+
+    df = df.set_index("strategy")
+    df = _pad_strategies(cfg, df)
+
+    games_mode = int(_games_mode(df["games"]))
+    missing_mask = df["wins"].isna()
+    if missing_mask.any():
+        df.loc[missing_mask, "wins"] = 0
+        df.loc[missing_mask, "games"] = games_mode
+        df.loc[missing_mask, games_col] = games_mode
+        df.loc[missing_mask, "win_rate"] = 0.0
+        if "expected_score" in df.columns:
+            df.loc[missing_mask, "expected_score"] = np.nan
+        numeric_cols = [
+            c
+            for c in df.columns
+            if c not in {"wins", games_col, "games", "win_rate", "expected_score", "_hit_flag"}
+        ]
+        for col in numeric_cols:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                df.loc[missing_mask, col] = 0.0
+
+    penalty_mask = df["_hit_flag"].fillna(0) >= 1
+    penalty_mask &= df["wins"].eq(0)
+    if penalty_mask.any():
+        df.loc[penalty_mask, "games"] = games_mode
+        df.loc[penalty_mask, games_col] = games_mode
+        df.loc[penalty_mask, "win_rate"] = 0.0
+        if "expected_score" in df.columns:
+            df.loc[penalty_mask, "expected_score"] = np.nan
+        numeric_cols = [
+            c
+            for c in df.columns
+            if c not in {"wins", games_col, "games", "win_rate", "expected_score", "_hit_flag"}
+        ]
+        for col in numeric_cols:
+            if pd.api.types.is_numeric_dtype(df[col]):
+                df.loc[penalty_mask, col] = 0.0
+
+    df["_hit_flag"] = df["_hit_flag"].fillna(0)
+
+    df = _compress_metric_columns(df)
+    df = df.drop(columns=[c for c in df.columns if "winner_hit_max_rounds" in c], errors="ignore")
+    df.drop(columns=["_hit_flag"], inplace=True, errors="ignore")
+    df["wins"] = df["wins"].round().astype(int)
+    df["false_wins_handled"] = df["false_wins_handled"].round().astype(int)
+    df["n_players"] = player_count
+    df.reset_index(inplace=True)
+    desired_order = ["strategy", "n_players", "games", "wins", "win_rate", "expected_score"]
+    remaining = [c for c in df.columns if c not in desired_order]
+    return df[desired_order + remaining]
+
+
+_STRATEGY_CACHE: dict[int, list[str]] = {}
+
+
+def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
+    cache_key = id(cfg)
+    if cache_key not in _STRATEGY_CACHE:
+        strategies, _ = generate_strategy_grid(
+        score_thresholds=cfg.sim.score_thresholds,
+        dice_thresholds=cfg.sim.dice_thresholds,
+        smart_five_opts=cfg.sim.smart_five_opts,
+        smart_one_opts=cfg.sim.smart_one_opts,
+        consider_score_opts=cfg.sim.consider_score_opts,
+        consider_dice_opts=cfg.sim.consider_dice_opts,
+        auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
+        run_up_score_opts=cfg.sim.run_up_score_opts,
+        )
+        _STRATEGY_CACHE[cache_key] = [str(s) for s in strategies]
+    strategy_index = pd.Index(_STRATEGY_CACHE[cache_key], name="strategy")
+    return df.reindex(strategy_index)
+
+
+def _games_mode(series: pd.Series) -> float:
+    mode = series.dropna().mode()
+    if not mode.empty:
+        return mode.iloc[0]
+    valid = series.dropna()
+    if not valid.empty:
+        return valid.iloc[0]
+    return 0.0
+
+
+def _normalize_metric_name(name: str) -> str:
+    if name.startswith("winning_"):
+        name = name.removeprefix("winning_")
+    if name.startswith("winner_"):
+        name = name.removeprefix("winner_")
+    return name
+
+
+def _compress_metric_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map: dict[str, str] = {}
+    var_cols = [c for c in df.columns if c.startswith("var_")]
+    for var_col in var_cols:
+        base = var_col.removeprefix("var_")
+        if base == "winner_hit_max_rounds":
+            drops = [var_col, f"sum_{base}", f"sq_sum_{base}", f"mean_{base}"]
+            df.drop(columns=[c for c in drops if c in df.columns], inplace=True, errors="ignore")
+            continue
+        mean_col = f"mean_{base}"
+        if mean_col not in df.columns:
+            continue
+        sd_col = f"sd_{base}"
+        df[sd_col] = np.sqrt(df[var_col].clip(lower=0.0))
+        drops = [var_col, f"sum_{base}", f"sq_sum_{base}"]
+        df.drop(columns=[c for c in drops if c in df.columns], inplace=True, errors="ignore")
+        normalized = _normalize_metric_name(base)
+        rename_map[mean_col] = f"mean_{normalized}"
+        rename_map[sd_col] = f"sd_{normalized}"
+
+    if rename_map:
+        df.rename(columns=rename_map, inplace=True)
+    return df
+
+
 __all__ = [
     "MetricJob",
     "MetricsLocator",
     "MetricsSummary",
+    "build_isolated_metrics",
     "collect_isolated_metrics",
     "locator_from_config",
 ]

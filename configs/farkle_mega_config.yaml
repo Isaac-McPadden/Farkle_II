@@ -66,6 +66,10 @@ analysis:
   head2head_target_hours: null
   head2head_tolerance_pct: 5.0
   head2head_games_per_sec: null
+  run_tiering_report: false
+  tiering_seeds: null
+  tiering_z_star: 2.0
+  tiering_weights_by_k: null
 
 ingest:
   row_group_size: 64000           # parquet/arrow row group target
