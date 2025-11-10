@@ -87,6 +87,8 @@ def measure_sim_times(
         n_games=n_games, strategies=strategies, seed=seed, n_jobs=jobs
     )
     t1 = time.perf_counter()
+    elapsed = t1 - t0
+    gps = (n_games / elapsed) if elapsed > 0 else 0.0
     winners = df["winner"].value_counts().to_dict()
     LOGGER.info(
         "Batch benchmark",
@@ -97,7 +99,8 @@ def measure_sim_times(
             "seed": seed,
             "jobs": jobs,
             "n_games": n_games,
-            "elapsed_s": t1 - t0,
+            "elapsed_s": elapsed,
+            "games_per_sec": gps,
             "winners": winners,
         },
     )

@@ -61,8 +61,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write full per-game rows to this directory.  If None, rows will not be recorded",
     )
 
-    # time (delegates to measure_sim_times which parses its own args)
-    sub.add_parser("time", help="Benchmark simulation throughput", add_help=False)
+    # time (benchmark simulation throughput)
+    time_parser = sub.add_parser("time", help="Benchmark simulation throughput")
+    time_parser.add_argument("--players", type=int, default=5, help="Players per game (default: 5)")
+    time_parser.add_argument("--n-games", dest="n_games", type=int, default=1000, help="Number of games to run (default: 1000)")
+    time_parser.add_argument("--jobs", type=int, default=1, help="Parallel jobs (default: 1)")
+    time_parser.add_argument("--seed", type=int, default=42, help="Seed (default: 42)")
 
     # watch
     watch_parser = sub.add_parser("watch", help="Interactively watch a game")
@@ -185,8 +189,18 @@ def main(argv: Sequence[str] | None = None) -> None:
             runner.run_single_n(cfg, cfg.sim.n_players_list[0])
         LOGGER.info("Run command completed", extra={"stage": "cli", "command": "run"})
     elif args.command == "time":
-        LOGGER.info("Dispatching measure_sim_times", extra={"stage": "cli", "command": "time"})
-        measure_sim_times()
+        LOGGER.info(
+            "Dispatching measure_sim_times",
+            extra={
+                "stage": "cli",
+                "command": "time",
+                "players": args.players,
+                "n_games": args.n_games,
+                "jobs": args.jobs,
+                "seed": args.seed,
+            },
+        )
+        measure_sim_times(n_games=args.n_games, players=args.players, seed=args.seed, jobs=args.jobs)
     elif args.command == "watch":
         LOGGER.info(
             "Dispatching watch_game",
