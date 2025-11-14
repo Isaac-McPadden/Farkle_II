@@ -1,3 +1,4 @@
+# src/farkle/analysis/head2head.py
 from __future__ import annotations
 
 import json

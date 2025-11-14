@@ -1,3 +1,4 @@
+# src/farkle/utils/random.py
 """Random number generator helpers."""
 
 from __future__ import annotations

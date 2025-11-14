@@ -1,4 +1,4 @@
-﻿# src/farkle/curate.py
+﻿# src/farkle/analysis/curate.py
 from __future__ import annotations
 
 import hashlib

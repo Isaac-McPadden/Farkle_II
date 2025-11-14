@@ -1,4 +1,4 @@
-# src/farkle/run_tournament.py
+# src/farkle/simulation/run_tournament.py
 """Parallel Monte-Carlo tournament driver.
 
 This version keeps the original fast win-count loop used in the unit tests but

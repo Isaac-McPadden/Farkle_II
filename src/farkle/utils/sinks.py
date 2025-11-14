@@ -1,3 +1,4 @@
+# src/farkle/utils/sinks.py
 """Output sinks and helpers for simulation/analysis results."""
 
 from __future__ import annotations

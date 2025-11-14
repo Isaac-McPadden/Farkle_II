@@ -1,4 +1,4 @@
-# src/farkle/run_bonferroni_head2head
+# src/farkle/analysis/run_bonferroni_head2head.py
 """Bonferroni-corrected head-to-head comparison of top-tier strategies."""
 
 from __future__ import annotations

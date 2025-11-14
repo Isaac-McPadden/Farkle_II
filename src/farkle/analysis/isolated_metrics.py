@@ -1,3 +1,4 @@
+# src/farkle/analysis/isolated_metrics.py
 from __future__ import annotations
 
 import functools

@@ -1,4 +1,4 @@
-# src/farkle/run_trueskill.py
+# src/farkle/analysis/run_trueskill.py
 """Compute TrueSkill ratings for Farkle strategies.
 
 The helpers in this module scan a directory of tournament results, update

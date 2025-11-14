@@ -1,4 +1,4 @@
-# src/farkle/streaming_loop.py
+# src/farkle/utils/streaming_loop.py
 from __future__ import annotations
 
 import os

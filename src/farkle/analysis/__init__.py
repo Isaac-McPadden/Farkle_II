@@ -1,3 +1,4 @@
+# src/farkle/analysis/__init__.py
 """Lightweight orchestrator for downstream statistical analyses."""
 
 from __future__ import annotations

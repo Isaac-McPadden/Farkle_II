@@ -1,4 +1,4 @@
-# src/farkle/run_hgb.py
+# src/farkle/analysis/run_hgb.py
 """Train a hist gradient boosting model to analyze strategy metrics.
 
 This script reads the feature metrics and pooled ratings, fits a

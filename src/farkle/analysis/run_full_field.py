@@ -1,4 +1,4 @@
-# src/farkle/run_full_field.py
+# src/farkle/analysis/run_full_field.py
 """
 Full-field tournament sweep across all supported table sizes.
 

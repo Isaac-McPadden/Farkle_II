@@ -1,3 +1,4 @@
+# src/farkle/utils/mdd.py
 """
 Variance decomposition and minimum detectable difference helpers.
 

@@ -1,4 +1,4 @@
-# src/farkle/types.py
+# src/farkle/utils/types.py
 """Shared type aliases for the Farkle project.
 
 This module centralizes a few simple ``TypeAlias`` definitions used across

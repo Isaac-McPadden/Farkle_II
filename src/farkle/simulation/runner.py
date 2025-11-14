@@ -1,3 +1,4 @@
+# src/farkle/simulation/runner.py
 """High level tournament runner using configuration objects.
 
 The :func:`run_tournament` function acts as a thin wrapper around the

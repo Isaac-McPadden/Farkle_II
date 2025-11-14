@@ -1,3 +1,4 @@
+# src/farkle/utils/csv_files.py
 """File related helper functions.
 
 Only very small, generic utilities live here so that modules which

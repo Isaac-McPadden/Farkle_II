@@ -1,3 +1,4 @@
+# src/farkle/utils/__init__.py
 """Utility subpackage for Farkle.
 
 This package collects small helpers that are shared by the

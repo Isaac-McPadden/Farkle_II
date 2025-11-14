@@ -1,3 +1,4 @@
+# src/farkle/utils/timing.py
 """Timing helpers."""
 
 from __future__ import annotations

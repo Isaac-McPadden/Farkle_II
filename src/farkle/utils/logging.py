@@ -1,3 +1,4 @@
+# src/farkle/utils/logging.py
 """Logging helpers for Farkle."""
 
 from __future__ import annotations

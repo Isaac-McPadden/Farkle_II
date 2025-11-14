@@ -1,3 +1,4 @@
+# src/farkle/utils/parallel.py
 """Parallel execution helpers used by simulations.
 
 Small, testable utilities for seeding workers and mapping work with a

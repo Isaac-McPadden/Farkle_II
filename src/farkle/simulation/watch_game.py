@@ -1,4 +1,4 @@
-# src/farkle/watch_game.py
+# src/farkle/simulation/watch_game.py
 """
 watch_game.py - run a *single* Farkle game with very chatty logging.
 
