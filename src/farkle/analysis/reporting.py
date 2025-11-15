@@ -1,0 +1,860 @@
+"""Generate per-player Markdown reports and Matplotlib figures.
+
+This module reads previously generated analysis artifacts (TrueSkill ratings,
+meta win-rate summaries, head-to-head decisions, etc.) and produces a small
+collection of visualisations alongside a Markdown summary for each configured
+player count.  All outputs are derived from existing files – no simulations or
+heavy recomputation occurs here.
+
+Each helper inspects timestamps so rerunning the report is idempotent unless a
+``force`` flag is provided.  Outputs are written via :func:`atomic_path` to
+avoid partially written files.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import math
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterable, Mapping, MutableMapping, Sequence
+
+import matplotlib
+
+# Force a non-interactive backend so the code works in headless environments.
+matplotlib.use("Agg", force=True)
+
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+
+from farkle.config import AppConfig, AnalysisConfig
+from farkle.utils.writer import atomic_path
+
+LOGGER = logging.getLogger(__name__)
+
+LADDER_TOP_N = 25
+FEATURE_TOP_N = 20
+SEED_TOP_N = 10
+PLOT_DPI = 150
+
+
+class ReportError(RuntimeError):
+    """Raised when required artifacts are missing or malformed."""
+
+
+@dataclass(slots=True)
+class _ReportArtifacts:
+    """Container for the small set of data frames used to build a report."""
+
+    ratings: pd.DataFrame
+    meta_summary: pd.DataFrame
+    feature_importance: pd.DataFrame
+    seed_summaries: pd.DataFrame
+    tiers: dict[str, int]
+    h2h_decisions: pd.DataFrame
+    h2h_ranking: pd.DataFrame
+    heterogeneity: dict[str, float]
+    run_metadata: dict[str, object]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Utility helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _analysis_dir(cfg: AnalysisConfig | AppConfig) -> Path:
+    """Return the analysis directory for the provided config."""
+
+    if hasattr(cfg, "analysis_dir"):
+        return Path(getattr(cfg, "analysis_dir"))
+    if hasattr(cfg, "io") and hasattr(cfg.io, "results_dir"):
+        return Path(cfg.io.results_dir) / "analysis"
+    raise AttributeError("Configuration object does not expose an analysis_dir")
+
+
+def _sim_player_counts(cfg: AnalysisConfig | AppConfig, analysis_dir: Path) -> list[int]:
+    """Determine the list of player counts that should be reported."""
+
+    players: set[int] = set()
+    # ``cfg`` may be an ``AppConfig`` or a bare ``AnalysisConfig``.
+    if hasattr(cfg, "analysis") and hasattr(cfg.analysis, "n_players_list"):
+        players.update(int(p) for p in getattr(cfg.analysis, "n_players_list") or [])
+    if hasattr(cfg, "sim") and hasattr(cfg.sim, "n_players_list"):
+        players.update(int(p) for p in getattr(cfg.sim, "n_players_list") or [])
+
+    ratings_path = analysis_dir / "ratings_pooled.parquet"
+    if ratings_path.exists():
+        try:
+            df = pd.read_parquet(ratings_path, columns=["strategy", "mu", "sigma", "players"])
+        except ValueError:
+            df = pd.read_parquet(ratings_path)
+        for column in ("players", "n_players", "player_count"):
+            if column in df.columns:
+                series = df[column].dropna().astype(int)
+                players.update(series.unique().tolist())
+                break
+
+    if not players:
+        raise ReportError("Unable to determine player counts for reporting")
+
+    return sorted(players)
+
+
+def _output_is_fresh(output: Path, inputs: Iterable[Path], *, force: bool) -> bool:
+    """Return ``True`` if ``output`` is newer than every file in ``inputs``."""
+
+    if force or not output.exists():
+        return False
+    out_mtime = output.stat().st_mtime
+    for path in inputs:
+        if not path.exists():
+            return False
+        if path.stat().st_mtime > out_mtime:
+            return False
+    return True
+
+
+def _load_ratings(analysis_dir: Path, players: int) -> pd.DataFrame:
+    path = analysis_dir / "ratings_pooled.parquet"
+    if not path.exists():
+        raise ReportError(f"Missing ratings parquet: {path}")
+
+    df = pd.read_parquet(path)
+    df = df.copy()
+    if "strategy" not in df.columns or "mu" not in df.columns or "sigma" not in df.columns:
+        raise ReportError("ratings_pooled.parquet missing required columns")
+
+    player_column = None
+    for column in ("players", "n_players", "player_count"):
+        if column in df.columns:
+            player_column = column
+            break
+    if player_column is None:
+        raise ReportError("ratings parquet does not contain a player-count column")
+
+    df["strategy"] = df["strategy"].astype(str)
+    df[player_column] = df[player_column].astype(int)
+    subset = df[df[player_column] == int(players)]
+    if subset.empty:
+        raise ReportError(f"No ratings found for {players}-player games")
+    subset = subset.sort_values(["mu", "strategy"], ascending=[False, True], kind="mergesort")
+    subset.reset_index(drop=True, inplace=True)
+    subset.rename(columns={player_column: "players"}, inplace=True)
+    return subset[["strategy", "players", "mu", "sigma"]]
+
+
+def _load_meta_summary(analysis_dir: Path, players: int) -> pd.DataFrame:
+    path = analysis_dir / f"strategy_summary_{players}p_meta.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    if "strategy_id" in df.columns:
+        df = df.rename(columns={"strategy_id": "strategy"})
+    if "strategy" not in df.columns or "win_rate" not in df.columns:
+        return pd.DataFrame()
+    df = df.copy()
+    df["strategy"] = df["strategy"].astype(str)
+    if "players" in df.columns:
+        df["players"] = df["players"].astype(int)
+        df = df[df["players"] == int(players)]
+    df.sort_values(["win_rate", "strategy"], ascending=[False, True], inplace=True, kind="mergesort")
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+
+def _load_feature_importance(analysis_dir: Path, players: int) -> pd.DataFrame:
+    path = analysis_dir / f"feature_importance_{players}p.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    df = df.copy()
+    feature_column = None
+    for column in ("feature", "name", "column"):
+        if column in df.columns:
+            feature_column = column
+            break
+    if feature_column is None:
+        return pd.DataFrame()
+    value_column = None
+    for column in ("importance", "value", "gain", "weight"):
+        if column in df.columns:
+            value_column = column
+            break
+    if value_column is None:
+        return pd.DataFrame()
+    df[feature_column] = df[feature_column].astype(str)
+    df[value_column] = df[value_column].astype(float)
+    df = df[[feature_column, value_column]].rename(columns={feature_column: "feature", value_column: "importance"})
+    total = df["importance"].sum()
+    if total > 0:
+        df["importance"] = df["importance"] / total
+    df.sort_values(["importance", "feature"], ascending=[False, True], inplace=True, kind="mergesort")
+    df.reset_index(drop=True, inplace=True)
+    return df
+
+
+def _load_seed_summaries(analysis_dir: Path, players: int) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    pattern = f"strategy_summary_{players}p_seed"
+    for path in sorted(analysis_dir.glob(f"{pattern}*.parquet")):
+        df = pd.read_parquet(path)
+        if df.empty:
+            continue
+        frame = df.copy()
+        if "strategy" in frame.columns:
+            frame.rename(columns={"strategy": "strategy_id"}, inplace=True)
+        if "strategy_id" not in frame.columns or "win_rate" not in frame.columns:
+            continue
+        frame["strategy_id"] = frame["strategy_id"].astype(str)
+        if "players" in frame.columns:
+            frame["players"] = frame["players"].astype(int)
+            frame = frame[frame["players"] == int(players)]
+        frames.append(frame)
+    if not frames:
+        return pd.DataFrame(columns=["strategy_id", "seed", "win_rate"])
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    if "seed" in combined.columns:
+        combined["seed"] = combined["seed"].astype(int)
+    else:
+        combined["seed"] = 0
+    combined = combined[[c for c in combined.columns if c in {"strategy_id", "seed", "win_rate", "ci_lo", "ci_hi"}]]
+    combined = combined.sort_values(["strategy_id", "seed"], kind="mergesort").reset_index(drop=True)
+    return combined
+
+
+def _load_tiers(analysis_dir: Path, players: int) -> dict[str, int]:
+    path = analysis_dir / "tiers.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        LOGGER.warning("tiers.json could not be parsed", extra={"stage": "report", "path": str(path)})
+        return {}
+
+    def _normalize(mapping: Mapping[str, object]) -> dict[str, int]:
+        result: dict[str, int] = {}
+        for key, value in mapping.items():
+            try:
+                result[str(key)] = int(value)  # type: ignore[arg-type]
+            except Exception:  # noqa: BLE001
+                continue
+        return result
+
+    # Direct mapping {strategy: tier}
+    if isinstance(payload, dict) and all(isinstance(v, (int, float)) for v in payload.values()):
+        return _normalize(payload)
+
+    key_variants = [str(players), players]
+    for key in key_variants:
+        if isinstance(payload, Mapping) and key in payload and isinstance(payload[key], Mapping):
+            return _normalize(payload[key])
+
+    if isinstance(payload, Mapping):
+        result: dict[str, int] = {}
+        for strategy, data in payload.items():
+            if not isinstance(data, Mapping):
+                continue
+            raw_players = data.get("players") if hasattr(data, "get") else None
+            if raw_players is not None and int(raw_players) != int(players):
+                continue
+            tier_val = data.get("tier") or data.get("rank") or data.get("tier_index")
+            if tier_val is None:
+                continue
+            try:
+                result[strategy] = int(tier_val)
+            except Exception:  # noqa: BLE001
+                continue
+        if result:
+            return dict(sorted(result.items()))
+    return {}
+
+
+def _load_h2h_decisions(analysis_dir: Path, players: int) -> pd.DataFrame:
+    path = analysis_dir / "bonferroni_decisions.parquet"
+    if not path.exists():
+        return pd.DataFrame()
+    df = pd.read_parquet(path)
+    if df.empty:
+        return df
+    df = df.copy()
+    for column in ("a", "b"):
+        if column not in df.columns:
+            return pd.DataFrame()
+        df[column] = df[column].astype(str)
+    if "players" in df.columns:
+        df["players"] = df["players"].astype(int)
+        df = df[df["players"] == int(players)]
+    return df
+
+
+def _load_h2h_ranking(analysis_dir: Path, players: int) -> pd.DataFrame:
+    path = analysis_dir / "h2h_significant_ranking.csv"
+    if not path.exists():
+        return pd.DataFrame(columns=["strategy", "rank"])
+    df = pd.read_csv(path)
+    if "strategy" not in df.columns:
+        return pd.DataFrame(columns=["strategy", "rank"])
+    df = df.copy()
+    df["strategy"] = df["strategy"].astype(str)
+    if "rank" not in df.columns:
+        df["rank"] = np.arange(1, len(df) + 1)
+    if "players" in df.columns:
+        df["players"] = df["players"].astype(int)
+        df = df[df["players"] == int(players)]
+    df = df.sort_values(["rank", "strategy"], kind="mergesort").reset_index(drop=True)
+    return df[["strategy", "rank"]]
+
+
+def _load_meta_json(analysis_dir: Path, players: int) -> dict[str, float]:
+    path = analysis_dir / f"meta_{players}p.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    result: dict[str, float] = {}
+    for key, value in payload.items():
+        try:
+            result[str(key)] = float(value)  # type: ignore[arg-type]
+        except Exception:  # noqa: BLE001
+            continue
+    return result
+
+
+def _load_run_metadata(analysis_dir: Path) -> dict[str, object]:
+    path = analysis_dir / "run_metadata.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    if isinstance(payload, Mapping):
+        return dict(payload)
+    return {}
+
+
+def _gather_artifacts(cfg: AnalysisConfig | AppConfig, players: int) -> _ReportArtifacts:
+    analysis_dir = _analysis_dir(cfg)
+    ratings = _load_ratings(analysis_dir, players)
+    meta_summary = _load_meta_summary(analysis_dir, players)
+    feature_importance = _load_feature_importance(analysis_dir, players)
+    seed_summaries = _load_seed_summaries(analysis_dir, players)
+    tiers = _load_tiers(analysis_dir, players)
+    h2h_decisions = _load_h2h_decisions(analysis_dir, players)
+    h2h_ranking = _load_h2h_ranking(analysis_dir, players)
+    heterogeneity = _load_meta_json(analysis_dir, players)
+    run_metadata = _load_run_metadata(analysis_dir)
+    return _ReportArtifacts(
+        ratings=ratings,
+        meta_summary=meta_summary,
+        feature_importance=feature_importance,
+        seed_summaries=seed_summaries,
+        tiers=tiers,
+        h2h_decisions=h2h_decisions,
+        h2h_ranking=h2h_ranking,
+        heterogeneity=heterogeneity,
+        run_metadata=run_metadata,
+    )
+
+
+def _plot_output_path(cfg: AnalysisConfig | AppConfig, players: int, name: str) -> Path:
+    analysis_dir = _analysis_dir(cfg)
+    plot_dir = analysis_dir / "plots" / f"{players}p"
+    plot_dir.mkdir(parents=True, exist_ok=True)
+    return plot_dir / name
+
+
+def _prepare_axis(fig: plt.Figure, count: int, *, base_height: float = 3.5, row_scale: float = 0.35) -> plt.Axes:
+    height = max(base_height, row_scale * max(1, count) + 1.5)
+    fig.set_size_inches(8.5, height)
+    ax = fig.add_subplot(1, 1, 1)
+    return ax
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Plotting helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def plot_ladder_for_players(cfg: AnalysisConfig | AppConfig, players: int, *, force: bool = False) -> Path:
+    """Create a ladder plot of the top strategies by TrueSkill rating."""
+
+    analysis_dir = _analysis_dir(cfg)
+    ratings = _load_ratings(analysis_dir, players)
+    top = ratings.head(LADDER_TOP_N)
+    output = _plot_output_path(cfg, players, f"ladder_{players}p.png")
+
+    if _output_is_fresh(output, [analysis_dir / "ratings_pooled.parquet"], force=force):
+        return output
+
+    fig = plt.figure()
+    ax = _prepare_axis(fig, len(top))
+    y_positions = np.arange(len(top))[::-1]
+    mu = top["mu"].to_numpy(dtype=float)
+    sigma = top["sigma"].to_numpy(dtype=float)
+    error = sigma * 2.0
+    ax.errorbar(mu, y_positions, xerr=error, fmt="o", color="#1f77b4", ecolor="#1f77b4", capsize=4)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(top["strategy"].tolist())
+    ax.set_xlabel("TrueSkill μ (± 2σ)")
+    ax.set_title(f"Top strategies for {players}-player games")
+    ax.axvline(mu.mean(), linestyle="--", color="#aaaaaa", linewidth=1)
+    ax.grid(axis="x", linestyle="--", linewidth=0.5, alpha=0.5)
+    fig.tight_layout()
+
+    with atomic_path(str(output)) as tmp_path:
+        fig.savefig(tmp_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    LOGGER.info(
+        "Ladder plot written",
+        extra={"stage": "report", "players": players, "path": str(output)},
+    )
+    return output
+
+
+def _determine_heatmap_order(
+    artifacts: _ReportArtifacts, players: int
+) -> list[str]:
+    if not artifacts.tiers and artifacts.h2h_ranking.empty:
+        return artifacts.ratings.head(LADDER_TOP_N)["strategy"].tolist()
+
+    if not artifacts.h2h_ranking.empty:
+        return artifacts.h2h_ranking["strategy"].tolist()
+
+    tiers = artifacts.tiers
+    sorted_items = sorted(tiers.items(), key=lambda kv: (kv[1], kv[0]))
+    return [strategy for strategy, _ in sorted_items]
+
+
+def plot_h2h_heatmap_for_players(
+    cfg: AnalysisConfig | AppConfig, players: int, *, force: bool = False
+) -> Path | None:
+    """Render a heatmap of head-to-head win rates for available strategies."""
+
+    analysis_dir = _analysis_dir(cfg)
+    decisions = _load_h2h_decisions(analysis_dir, players)
+    if decisions.empty:
+        return None
+
+    if "wins_a" in decisions.columns and "wins_b" in decisions.columns and "games" in decisions.columns:
+        wins_a = decisions["wins_a"].astype(float)
+        games = decisions["games"].replace(0, np.nan).astype(float)
+        decisions = decisions.assign(win_rate=wins_a / games)
+    elif "win_rate" not in decisions.columns:
+        LOGGER.info(
+            "Skipping head-to-head heatmap: win rates unavailable",
+            extra={"stage": "report", "players": players},
+        )
+        return None
+
+    output = _plot_output_path(cfg, players, f"h2h_heatmap_{players}p.png")
+    inputs = [
+        _analysis_dir(cfg) / "bonferroni_decisions.parquet",
+        _analysis_dir(cfg) / "tiers.json",
+        _analysis_dir(cfg) / "h2h_significant_ranking.csv",
+    ]
+    if _output_is_fresh(output, inputs, force=force):
+        return output
+
+    artifacts = _ReportArtifacts(
+        ratings=_load_ratings(analysis_dir, players),
+        meta_summary=pd.DataFrame(),
+        feature_importance=pd.DataFrame(),
+        seed_summaries=pd.DataFrame(),
+        tiers=_load_tiers(analysis_dir, players),
+        h2h_decisions=decisions,
+        h2h_ranking=_load_h2h_ranking(analysis_dir, players),
+        heterogeneity={},
+        run_metadata={},
+    )
+
+    order = _determine_heatmap_order(artifacts, players)
+    if not order:
+        LOGGER.info(
+            "Skipping head-to-head heatmap: no strategies available",
+            extra={"stage": "report", "players": players},
+        )
+        return None
+
+    matrix = pd.DataFrame(
+        np.nan,
+        index=pd.Index(order, name="row"),
+        columns=pd.Index(order, name="col"),
+    )
+
+    for row in decisions.itertuples(index=False):
+        if row.a in matrix.index and row.b in matrix.columns:
+            matrix.loc[row.a, row.b] = getattr(row, "win_rate", np.nan)
+        if hasattr(row, "wins_b") and hasattr(row, "games") and row.b in matrix.index and row.a in matrix.columns:
+            try:
+                matrix.loc[row.b, row.a] = float(row.wins_b) / float(row.games)
+            except ZeroDivisionError:
+                matrix.loc[row.b, row.a] = np.nan
+        elif hasattr(row, "win_rate") and row.b in matrix.index and row.a in matrix.columns:
+            matrix.loc[row.b, row.a] = 1.0 - float(row.win_rate)
+
+    fig = plt.figure()
+    ax = fig.add_subplot(1, 1, 1)
+    fig.set_size_inches(8 + max(0, len(order) - 10) * 0.3, 7 + max(0, len(order) - 10) * 0.3)
+    im = ax.imshow(matrix.to_numpy(dtype=float), vmin=0, vmax=1, cmap="viridis", aspect="auto")
+    ax.set_xticks(np.arange(len(order)))
+    ax.set_xticklabels(order, rotation=45, ha="right")
+    ax.set_yticks(np.arange(len(order)))
+    ax.set_yticklabels(order)
+    ax.set_title(f"Head-to-head win rates for {players}-player games")
+    cbar = fig.colorbar(im, ax=ax)
+    cbar.set_label("Win probability (row vs column)")
+    fig.tight_layout()
+
+    with atomic_path(str(output)) as tmp_path:
+        fig.savefig(tmp_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    LOGGER.info(
+        "Head-to-head heatmap written",
+        extra={"stage": "report", "players": players, "path": str(output)},
+    )
+    return output
+
+
+def plot_feature_importance_for_players(
+    cfg: AnalysisConfig | AppConfig, players: int, *, force: bool = False
+) -> Path | None:
+    """Render a horizontal bar chart of feature importances."""
+
+    analysis_dir = _analysis_dir(cfg)
+    source = analysis_dir / f"feature_importance_{players}p.parquet"
+    if not source.exists():
+        return None
+
+    df = _load_feature_importance(analysis_dir, players)
+    if df.empty:
+        return None
+    top = df.head(FEATURE_TOP_N)
+    output = _plot_output_path(cfg, players, f"feature_importance_{players}p.png")
+    if _output_is_fresh(output, [source], force=force):
+        return output
+
+    fig = plt.figure()
+    ax = _prepare_axis(fig, len(top))
+    positions = np.arange(len(top))[::-1]
+    ax.barh(positions, top["importance"], color="#2ca02c")
+    ax.set_yticks(positions)
+    ax.set_yticklabels(top["feature"].tolist())
+    ax.set_xlabel("Relative importance")
+    ax.set_title(f"Feature importance ({players}-player HGB)")
+    ax.grid(axis="x", linestyle="--", linewidth=0.5, alpha=0.5)
+    fig.tight_layout()
+
+    with atomic_path(str(output)) as tmp_path:
+        fig.savefig(tmp_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    LOGGER.info(
+        "Feature importance plot written",
+        extra={"stage": "report", "players": players, "path": str(output)},
+    )
+    return output
+
+
+def plot_seed_variability_for_players(
+    cfg: AnalysisConfig | AppConfig, players: int, *, force: bool = False
+) -> Path | None:
+    """Visualise seed-to-seed variability for the top strategies."""
+
+    analysis_dir = _analysis_dir(cfg)
+    pattern = list(analysis_dir.glob(f"strategy_summary_{players}p_seed*.parquet"))
+    if len(pattern) <= 1:
+        return None
+
+    seeds_df = _load_seed_summaries(analysis_dir, players)
+    if seeds_df.empty:
+        return None
+
+    available = seeds_df["strategy_id"].unique().tolist()
+    meta_df = _load_meta_summary(analysis_dir, players)
+    if not meta_df.empty:
+        preferred = [s for s in meta_df["strategy"].tolist() if s in available]
+    else:
+        preferred = _load_ratings(analysis_dir, players)["strategy"].tolist()
+    chosen = preferred[:SEED_TOP_N]
+    if not chosen:
+        return None
+
+    filtered = seeds_df[seeds_df["strategy_id"].isin(chosen)].copy()
+    grouped = filtered.groupby("strategy_id")
+    summary = grouped["win_rate"].agg(["mean", "std", "count"]).reset_index()
+    summary.rename(columns={"strategy_id": "strategy"}, inplace=True)
+    summary["sem"] = summary.apply(
+        lambda row: 0.0 if row["count"] <= 1 else row["std"] / math.sqrt(row["count"]),
+        axis=1,
+    )
+    summary["ci"] = summary["sem"] * 1.96
+    summary.sort_values(["mean", "strategy"], ascending=[False, True], inplace=True, kind="mergesort")
+
+    output = _plot_output_path(cfg, players, f"seed_forest_{players}p.png")
+    inputs = list(pattern)
+    if _output_is_fresh(output, inputs, force=force):
+        return output
+
+    fig = plt.figure()
+    ax = _prepare_axis(fig, len(summary), base_height=4.0)
+    positions = np.arange(len(summary))[::-1]
+    ax.errorbar(
+        summary["mean"],
+        positions,
+        xerr=summary["ci"],
+        fmt="o",
+        color="#d62728",
+        ecolor="#d62728",
+        capsize=4,
+    )
+    ax.set_yticks(positions)
+    ax.set_yticklabels(summary["strategy"].tolist())
+    ax.set_xlabel("Win rate across seeds (mean ± 95% CI)")
+    ax.set_xlim(0, 1)
+    ax.set_title(f"Seed variability for top {len(summary)} strategies ({players}-player)")
+    ax.grid(axis="x", linestyle="--", linewidth=0.5, alpha=0.5)
+    fig.tight_layout()
+
+    with atomic_path(str(output)) as tmp_path:
+        fig.savefig(tmp_path, dpi=PLOT_DPI, bbox_inches="tight")
+    plt.close(fig)
+    LOGGER.info(
+        "Seed variability plot written",
+        extra={"stage": "report", "players": players, "path": str(output)},
+    )
+    return output
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Markdown report generation
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _format_rate(value: float) -> str:
+    return f"{value:.3f}" if not math.isnan(value) else "nan"
+
+
+def _top_strategy_bullets(ratings: pd.DataFrame, meta_summary: pd.DataFrame) -> list[str]:
+    items: list[str] = []
+    top_ratings = ratings.head(3)
+    for row in top_ratings.itertuples(index=False):
+        spread = 2.0 * float(row.sigma)
+        items.append(
+            f"{row.strategy}: μ={row.mu:.2f} ± {spread:.2f}"
+        )
+    if not meta_summary.empty:
+        top_meta = meta_summary.head(3)
+        meta_items = [f"{row.strategy} ({row.win_rate:.1%})" for row in top_meta.itertuples(index=False)]
+        items.append("Win rates: " + ", ".join(meta_items))
+    return items
+
+
+def _top_feature_bullets(features: pd.DataFrame) -> list[str]:
+    if features.empty:
+        return ["Feature importances unavailable"]
+    items = [f"{row.feature}: {row.importance:.1%}" for row in features.head(3).itertuples(index=False)]
+    return items
+
+
+def _seed_stability_summary(seed_df: pd.DataFrame) -> str:
+    seeds = seed_df["seed"].nunique()
+    if seeds <= 1:
+        return "Single seed available; stability not assessed."
+    grouped = seed_df.groupby("strategy_id")["win_rate"].std(ddof=1)
+    if grouped.empty or grouped.isna().all():
+        return "Seed variability data unavailable."
+    median_std = float(grouped.fillna(0).median())
+    if median_std < 0.01:
+        level = "small"
+    elif median_std < 0.03:
+        level = "moderate"
+    else:
+        level = "large"
+    return f"Results appear {level} across {seeds} seeds (median σ≈{median_std:.3f})."
+
+
+def _tiers_section(tiers: Mapping[str, int]) -> str:
+    if not tiers:
+        return "No tier information available."
+    tiers_by_rank: MutableMapping[int, list[str]] = {}
+    for strategy, tier in tiers.items():
+        tiers_by_rank.setdefault(int(tier), []).append(strategy)
+    lines = []
+    for tier, strategies in sorted(tiers_by_rank.items()):
+        strategies = sorted(strategies)
+        joined = ", ".join(strategies)
+        lines.append(f"- Tier {tier}: {joined}")
+    return "\n".join(lines)
+
+
+def _build_report_body(players: int, artifacts: _ReportArtifacts, plot_paths: dict[str, Path | None]) -> str:
+    ratings = artifacts.ratings
+    meta_summary = artifacts.meta_summary
+    features = artifacts.feature_importance
+    seed_df = artifacts.seed_summaries
+    tiers = artifacts.tiers
+    heterogeneity = artifacts.heterogeneity
+    run_meta = artifacts.run_metadata
+
+    n_strategies = len(ratings)
+    n_seeds = int(meta_summary["n_seeds"].max()) if "n_seeds" in meta_summary.columns else seed_df["seed"].nunique()
+    n_seeds = int(n_seeds) if n_seeds else max(1, seed_df["seed"].nunique())
+    top_tier = 0
+    if tiers:
+        min_tier = min(tiers.values())
+        top_tier = sum(1 for value in tiers.values() if value == min_tier)
+
+    meta_line = [
+        f"- config_hash: {run_meta.get('config_hash', 'unknown')}",
+        f"- git_commit: {run_meta.get('git_commit', 'unknown')}",
+        f"- run_timestamp: {run_meta.get('run_timestamp', 'unknown')}",
+        f"- n_strategies: {n_strategies}",
+        f"- n_seeds: {n_seeds}",
+        f"- top_tier_size: {top_tier if top_tier else 'n/a'}",
+    ]
+
+    hetero_lines = []
+    for key in sorted(heterogeneity):
+        hetero_lines.append(f"    - {key}: {heterogeneity[key]:.3f}")
+
+    exec_summary = []
+    exec_summary.extend(_top_strategy_bullets(ratings, meta_summary))
+    exec_summary.extend(_top_feature_bullets(features))
+    exec_summary.append(_seed_stability_summary(seed_df))
+
+    ladder_rows = []
+    for row in ratings.head(5).itertuples(index=False):
+        ci_lo = row.mu - 2 * row.sigma
+        ci_hi = row.mu + 2 * row.sigma
+        ladder_rows.append(f"| {row.strategy} | {row.mu:.2f} | [{ci_lo:.2f}, {ci_hi:.2f}] |")
+
+    ladder_table = "\n".join(["| Strategy | μ | μ ± 2σ |", "| --- | --- | --- |"] + ladder_rows)
+
+    feature_lines = []
+    if features.empty:
+        feature_lines.append("- Feature importances unavailable")
+    else:
+        for row in features.head(5).itertuples(index=False):
+            feature_lines.append(f"- {row.feature}: {row.importance:.1%}")
+
+    stability_line = _seed_stability_summary(seed_df)
+    if plot_paths.get("seed") is None:
+        stability_line += " (plot not generated)"
+
+    h2h_section: str
+    if plot_paths.get("h2h"):
+        h2h_section = f"![Head-to-head](plots/{players}p/h2h_heatmap_{players}p.png)"
+    else:
+        h2h_section = "Head-to-head results not available for this player count."
+
+    feature_img = (
+        f"![Feature importance](plots/{players}p/feature_importance_{players}p.png)"
+        if plot_paths.get("features")
+        else "Feature importance data not available."
+    )
+
+    seed_img = (
+        f"![Seed variability](plots/{players}p/seed_forest_{players}p.png)"
+        if plot_paths.get("seed")
+        else "Seed variability plot not generated."
+    )
+
+    ladder_img = f"![Ladder](plots/{players}p/ladder_{players}p.png)"
+
+    report_lines = [
+        f"# {players}-player Farkle strategy report",
+        "",
+        *meta_line,
+        "",
+        "## Executive summary",
+        *[f"- {line}" for line in exec_summary],
+        "",
+        "## Ladder: top strategies",
+        ladder_img,
+        "",
+        ladder_table,
+        "",
+        "## Head-to-head comparisons",
+        h2h_section,
+        "",
+        "## Which features matter?",
+        feature_img,
+        "",
+        *feature_lines,
+        "",
+        "## Stability across seeds",
+        seed_img,
+        "",
+        stability_line,
+        "",
+        "## Tiers and rankings",
+        _tiers_section(tiers),
+    ]
+    if hetero_lines:
+        report_lines.extend(["", "### Meta-analysis metrics", *hetero_lines])
+    return "\n".join(report_lines).rstrip() + "\n"
+
+
+def generate_report_for_players(
+    cfg: AnalysisConfig | AppConfig, players: int, *, force: bool = False
+) -> Path:
+    """Generate the Markdown report and associated figures for ``players``."""
+
+    artifacts = _gather_artifacts(cfg, players)
+    ladder_path = plot_ladder_for_players(cfg, players, force=force)
+    h2h_path = plot_h2h_heatmap_for_players(cfg, players, force=force)
+    feature_path = plot_feature_importance_for_players(cfg, players, force=force)
+    seed_path = plot_seed_variability_for_players(cfg, players, force=force)
+
+    plot_paths: dict[str, Path | None] = {
+        "ladder": ladder_path,
+        "h2h": h2h_path,
+        "features": feature_path,
+        "seed": seed_path,
+    }
+
+    report_body = _build_report_body(players, artifacts, plot_paths)
+    analysis_dir = _analysis_dir(cfg)
+    report_path = analysis_dir / f"report_{players}p.md"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+
+    inputs = [analysis_dir / "ratings_pooled.parquet", analysis_dir / f"strategy_summary_{players}p_meta.parquet"]
+    if _output_is_fresh(report_path, inputs, force=force):
+        return report_path
+
+    with atomic_path(str(report_path)) as tmp_path:
+        Path(tmp_path).write_text(report_body)
+    LOGGER.info(
+        "Markdown report written",
+        extra={"stage": "report", "players": players, "path": str(report_path)},
+    )
+    return report_path
+
+
+def run_report(cfg: AnalysisConfig | AppConfig, *, force: bool = False) -> None:
+    """Generate reports for every discovered player count."""
+
+    analysis_dir = _analysis_dir(cfg)
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    players_list = _sim_player_counts(cfg, analysis_dir)
+    LOGGER.info(
+        "Report generation starting",
+        extra={"stage": "report", "players": players_list},
+    )
+    for players in players_list:
+        try:
+            generate_report_for_players(cfg, players, force=force)
+        except ReportError as exc:
+            LOGGER.warning(
+                "Skipping report due to missing artifacts",
+                extra={"stage": "report", "players": players, "error": str(exc)},
+            )
+    LOGGER.info("Report generation complete", extra={"stage": "report"})
+

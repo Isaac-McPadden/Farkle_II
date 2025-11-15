@@ -15,8 +15,19 @@ def _setup(tmp_path: Path) -> Path:
     analysis.mkdir()
     # minimal inputs
     (exp / "sim.txt").write_text("data")  # simulation placeholder
-    (analysis / "metrics.parquet").write_text("m")
-    (analysis / "ratings_pooled.parquet").write_text("r")
+    metrics_df = pd.DataFrame(
+        {
+            "strategy": ["A", "B"],
+            "n_players": [5, 5],
+            "games": [10, 10],
+            "wins": [6, 4],
+            "win_rate": [0.6, 0.4],
+            "expected_score": [0.0, 0.0],
+        }
+    )
+    metrics_df.to_parquet(analysis / "metrics.parquet")
+    ratings_df = pd.DataFrame({"strategy": ["A", "B"], "mu": [1.0, 0.5], "sigma": [1.0, 1.0]})
+    ratings_df.to_parquet(analysis / "ratings_pooled.parquet")
     return exp
 
 
@@ -49,7 +60,7 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
     buf = io.StringIO()
     with redirect_stdout(buf):
         analyze_all(exp)
-    assert buf.getvalue().strip().splitlines() == ["trueskill", "h2h", "hgb"]
+    assert buf.getvalue().strip().splitlines() == ["trueskill", "h2h", "hgb", "agreement"]
 
     # second run: all stages skipped
     buf = io.StringIO()
@@ -59,4 +70,5 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
         "SKIP trueskill (up to date)",
         "SKIP h2h (up to date)",
         "SKIP hgb (up to date)",
+        "SKIP agreement (up to date)",
     ]

@@ -43,6 +43,7 @@ def run_all(cfg: AppConfig) -> None:
     ts_mod = _optional_import("farkle.analysis.trueskill")
     if cfg.analysis.run_trueskill and ts_mod is not None:
         ts_mod.run(cfg)
+<<<<<<< ours
     else:
         LOGGER.info(
             "Analytics: skipping trueskill",
@@ -116,6 +117,124 @@ def run_all(cfg: AppConfig) -> None:
                 "stage": "analysis",
                 "reason": "run_tiering_report=False"
                 if not cfg.analysis.run_tiering_report
+=======
+    else:
+        LOGGER.info(
+            "Analytics: skipping trueskill",
+            extra={
+                "stage": "analysis",
+                "reason": "run_trueskill=False" if not cfg.analysis.run_trueskill else "unavailable",
+            },
+        )
+
+    h2h_mod = _optional_import("farkle.analysis.head2head")
+    if cfg.analysis.run_head2head and h2h_mod is not None:
+        h2h_mod.run(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping head-to-head",
+            extra={
+                "stage": "analysis",
+                "reason": "run_head2head=False" if not cfg.analysis.run_head2head else "unavailable",
+            },
+        )
+
+    post_h2h_mod = _optional_import("farkle.analysis.h2h_analysis")
+    if cfg.analysis.run_post_h2h_analysis and post_h2h_mod is not None:
+        post_h2h_mod.run_post_h2h(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping post head-to-head analysis",
+            extra={
+                "stage": "analysis",
+                "reason": (
+                    "run_post_h2h_analysis=False"
+                    if not cfg.analysis.run_post_h2h_analysis
+                    else "unavailable"
+                ),
+            },
+        )
+
+    hgb_mod = _optional_import("farkle.analysis.hgb_feat")
+    if cfg.analysis.run_hgb and hgb_mod is not None:
+        hgb_mod.run(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping hist gradient boosting",
+            extra={
+                "stage": "analysis",
+                "reason": "run_hgb=False" if not cfg.analysis.run_hgb else "unavailable",
+            },
+        )
+
+    freq_mod = _optional_import("farkle.analysis.frequentist")
+    if getattr(cfg.analysis, "run_frequentist", False) and freq_mod is not None:
+        freq_mod.run(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping frequentist ranking",
+            extra={
+                "stage": "analysis",
+                "reason": "run_frequentist=False"
+                if not getattr(cfg.analysis, "run_frequentist", False)
+>>>>>>> theirs
+                else "unavailable",
+            },
+        )
+
+<<<<<<< ours
+<<<<<<< ours
+<<<<<<< ours
+    agreement_mod = _optional_import("farkle.analysis.agreement")
+    if getattr(cfg.analysis, "run_agreement", False) and agreement_mod is not None:
+        agreement_mod.run(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping agreement analysis",
+            extra={
+                "stage": "analysis",
+                "reason": "run_agreement=False"
+                if not getattr(cfg.analysis, "run_agreement", False)
+                else "unavailable",
+            },
+        )
+
+    run_seed_summaries(cfg)
+    run_meta(cfg)
+
+    report_mod = _optional_import("farkle.analysis.reporting")
+    if getattr(cfg.analysis, "run_report", False) and report_mod is not None:
+        report_mod.run_report(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping report",
+            extra={
+                "stage": "analysis",
+                "reason": "run_report=False"
+                if not getattr(cfg.analysis, "run_report", False)
+                else "unavailable",
+            },
+        )
+    LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})
+=======
+    LOGGER.info("Analytics: pipeline complete", extra={"stage": "analysis"})
+>>>>>>> theirs
+=======
+    run_seed_summaries(cfg)
+    run_meta(cfg)
+    LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})
+>>>>>>> theirs
+=======
+    tier_mod = _optional_import("farkle.analysis.tiering_report")
+    if cfg.analysis.run_tiering_report and tier_mod is not None:
+        tier_mod.run(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping tiering report",
+            extra={
+                "stage": "analysis",
+                "reason": "run_tiering_report=False"
+                if not cfg.analysis.run_tiering_report
                 else "unavailable",
             },
         )
@@ -123,3 +242,4 @@ def run_all(cfg: AppConfig) -> None:
     run_seed_summaries(cfg)
     run_meta(cfg)
     LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})
+>>>>>>> theirs

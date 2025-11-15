@@ -9,21 +9,53 @@ pytest.importorskip("matplotlib")
 pytest.importorskip("sklearn")
 
 from farkle.analysis import run_hgb
+from farkle.simulation.strategies import FavorDiceOrScore, ThresholdStrategy
+
+
+def _strategy_literal(**kwargs) -> str:
+    strat = ThresholdStrategy(**kwargs)
+    return str(strat)
 
 
 def _setup_data(tmp_path: Path) -> Path:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
-    metrics = pd.DataFrame({"strategy": ["A", "B"], "feat": [1, 2]})
-    metrics.to_parquet(data_dir / "metrics.parquet")
+    strategies = [
+        _strategy_literal(
+            score_threshold=300,
+            dice_threshold=2,
+            smart_five=True,
+            smart_one=True,
+            consider_score=True,
+            consider_dice=True,
+            require_both=True,
+            auto_hot_dice=True,
+            run_up_score=False,
+            favor_dice_or_score=FavorDiceOrScore.SCORE,
+        ),
+        _strategy_literal(
+            score_threshold=450,
+            dice_threshold=1,
+            smart_five=True,
+            smart_one=False,
+            consider_score=True,
+            consider_dice=False,
+            require_both=False,
+            auto_hot_dice=False,
+            run_up_score=True,
+            favor_dice_or_score=FavorDiceOrScore.SCORE,
+        ),
+    ]
+    metrics = pd.DataFrame({"strategy": strategies, "n_players": [2, 2], "games": [10, 10]})
+    metrics.to_parquet(data_dir / "metrics.parquet", index=False)
     ratings = pd.DataFrame(
         {
-            "strategy": ["A", "B"],
+            "strategy": strategies,
             "mu": [0.0, 0.0],
             "sigma": [1.0, 1.0],
         }
     )
-    ratings.to_parquet(data_dir / "ratings_pooled.parquet")
+    ratings.to_parquet(data_dir / "ratings_pooled.parquet", index=False)
     return data_dir
 
 
@@ -37,6 +69,8 @@ def test_run_hgb_custom_output_path(tmp_path):
     finally:
         os.chdir(cwd)
     assert out_file.exists()
+    parquet_path = data_dir / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    assert parquet_path.exists()
     assert not (data_dir / "hgb_importance.json").exists()
 
 
@@ -60,14 +94,15 @@ def test_run_hgb_importance_length_check(tmp_path, monkeypatch):
 
 def test_ratings_mu_values_used(tmp_path, monkeypatch):
     data_dir = _setup_data(tmp_path)
+    strategies = pd.read_parquet(data_dir / "metrics.parquet")["strategy"].tolist()
     ratings = pd.DataFrame(
         {
-            "strategy": ["A", "B"],
+            "strategy": strategies,
             "mu": [1.0, 2.0],
             "sigma": [1.0, 1.0],
         }
     )
-    ratings.to_parquet(data_dir / "ratings_pooled.parquet")
+    ratings.to_parquet(data_dir / "ratings_pooled.parquet", index=False)
 
     captured = {}
 
@@ -101,13 +136,16 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
     data_dir = _setup_data(tmp_path)
     monkeypatch.setattr(run_hgb, "MAX_PD_PLOTS", 5)
     num_cols = run_hgb.MAX_PD_PLOTS + 5
+    strategies = pd.read_parquet(data_dir / "metrics.parquet")["strategy"].tolist()
     metrics = pd.DataFrame(
         {
-            "strategy": ["A", "B"],
-            **{f"feat{i}": [i, i + 1] for i in range(num_cols)},
+            "strategy": strategies,
+            "n_players": [2, 2],
+            "games": [10, 10],
+            **{f"extra_{i}": [i, i + 1] for i in range(num_cols)},
         }
     )
-    metrics.to_parquet(data_dir / "metrics.parquet")
+    metrics.to_parquet(data_dir / "metrics.parquet", index=False)
 
     class DummyModel:
         def fit(self, _X, _y):
@@ -125,7 +163,7 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
             "importances_mean": np.zeros(X.shape[1])
         },
     )
-    plotted = []
+    plotted: list[str] = []
 
     def fake_plot(model, X, column, out_dir):  # noqa: ARG001
         plotted.append(column)
@@ -136,16 +174,16 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
 
     monkeypatch.setattr(run_hgb, "plot_partial_dependence", fake_plot)
 
-    logged: list[tuple[str, dict]] = []
+    warnings: list[tuple[str, dict]] = []
 
     def _record_warning(message, *args, **kwargs):  # noqa: ANN001, ARG002
-        logged.append((message, kwargs))
+        warnings.append((message, kwargs))
 
     monkeypatch.setattr(run_hgb.LOGGER, "warning", _record_warning)
     run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
 
-    assert logged, "expected Too many features warning"
-    assert "Too many features for partial dependence" in logged[0][0]
+    assert warnings, "expected Too many features warning"
+    assert "Too many features for partial dependence" in warnings[0][0]
     expected_plots = [
         "score_threshold",
         "dice_threshold",
@@ -183,3 +221,5 @@ def test_run_hgb_default_output(tmp_path, monkeypatch):
 
     run_hgb.run_hgb(root=data_dir)
     assert (data_dir / "hgb_importance.json").exists()
+    parquet_path = data_dir / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    assert parquet_path.exists()

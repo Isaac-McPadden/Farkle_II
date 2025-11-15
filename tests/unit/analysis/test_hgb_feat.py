@@ -1,6 +1,7 @@
-﻿import os
+import os
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 pytest.importorskip("matplotlib")
@@ -12,7 +13,19 @@ from farkle.config import AppConfig, IOConfig
 
 def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
     cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
-    analysis_dir = cfg.analysis_dir  # noqa: F841
+    cfg.sim.n_players_list = [2]
+    analysis_dir = cfg.analysis_dir
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = analysis_dir / cfg.metrics_name
+    ratings_path = analysis_dir / hgb_feat._hgb.RATINGS_NAME
+    pd.DataFrame({"strategy": ["Strat(300,2)[SD][FOFS][AND][H-]"], "n_players": [2]}).to_parquet(
+        metrics_path, index=False
+    )
+    pd.DataFrame({"strategy": ["Strat(300,2)[SD][FOFS][AND][H-]"], "mu": [0.0]}).to_parquet(
+        ratings_path, index=False
+    )
+    os.utime(metrics_path, (1000, 1000))
+    os.utime(ratings_path, (1000, 1000))
     combined = cfg.curated_parquet.parent
     combined.mkdir(parents=True, exist_ok=True)
     curated = combined / "all_ingested_rows.parquet"
@@ -22,11 +35,15 @@ def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
 
 def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, curated = _setup_cfg(tmp_path)
-    out = cfg.analysis_dir / "hgb_importance.json"
-    out.write_text("{}")
-    # out newer than curated -> skip
+    json_out = cfg.analysis_dir / "hgb_importance.json"
+    parquet_out = cfg.analysis_dir / hgb_feat._hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    json_out.write_text("{}")
+    pd.DataFrame({"feature": [], "importance_mean": [], "importance_std": []}).to_parquet(
+        parquet_out, index=False
+    )
     os.utime(curated, (1000, 1000))
-    os.utime(out, (1010, 1010))
+    os.utime(json_out, (1010, 1010))
+    os.utime(parquet_out, (1010, 1010))
 
     def boom(**kwargs):  # pragma: no cover - should not be called
         raise AssertionError("_hgb.run_hgb should not be called when up-to-date")
@@ -37,17 +54,21 @@ def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, curated = _setup_cfg(tmp_path)
-    out = cfg.analysis_dir / "hgb_importance.json"
-    out.write_text("{}")
-    # out older than curated -> run
-    os.utime(out, (1000, 1000))
+    json_out = cfg.analysis_dir / "hgb_importance.json"
+    parquet_out = cfg.analysis_dir / hgb_feat._hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    json_out.write_text("{}")
+    pd.DataFrame({"feature": [], "importance_mean": [], "importance_std": []}).to_parquet(
+        parquet_out, index=False
+    )
+    os.utime(json_out, (1000, 1000))
+    os.utime(parquet_out, (1000, 1000))
     os.utime(curated, (1010, 1010))
 
     called = {}
 
     def fake_run(*, root: Path, output_path: Path, seed: int = 0):
         assert root == cfg.analysis_dir
-        assert output_path == out
+        assert output_path == json_out
         called["root"] = root
 
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)

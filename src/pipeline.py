@@ -24,6 +24,7 @@ __all__ = [
     "analyze_trueskill",
     "analyze_h2h",
     "analyze_hgb",
+    "analyze_agreement",
     "fingerprint",
     "write_done",
     "is_up_to_date",
@@ -161,6 +162,57 @@ def analyze_hgb(exp_dir: Path) -> None:
     print("hgb")
 
 
+def analyze_agreement(exp_dir: Path) -> None:
+    """Compute cross-method agreement metrics."""
+
+    exp_dir = Path(exp_dir)
+    analysis_dir = exp_dir / "analysis"
+    ratings = analysis_dir / "ratings_pooled.parquet"
+    if not ratings.exists():
+        raise FileNotFoundError(
+            "agreement analysis requires ratings_pooled.parquet; run trueskill first"
+        )
+
+    players = _detect_player_counts(analysis_dir)
+    outputs = [analysis_dir / f"agreement_{p}p.json" for p in players]
+    done = _done_path(outputs[0])
+    inputs = [ratings]
+    for candidate in (
+        analysis_dir / "frequentist_scores.parquet",
+        analysis_dir / "bonferroni_decisions.parquet",
+    ):
+        if candidate.exists():
+            inputs.append(candidate)
+
+    if is_up_to_date(done, inputs, outputs):
+        print("SKIP agreement (up to date)")
+        return
+
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    from farkle.analysis import agreement as _agreement
+
+    cfg = AppConfig(io=IOConfig(results_dir=exp_dir))
+    cfg.sim.n_players_list = players
+    _agreement.run(cfg)
+    write_done(done, inputs, outputs, "farkle.analytics.agreement")
+    print("agreement")
+
+
+def _detect_player_counts(analysis_dir: Path) -> list[int]:
+    metrics = analysis_dir / "metrics.parquet"
+    if metrics.exists():
+        try:
+            import pandas as pd
+
+            df = pd.read_parquet(metrics, columns=["n_players"])
+            values = sorted({int(v) for v in df["n_players"].dropna().unique()})
+            if values:
+                return values
+        except Exception:  # noqa: BLE001 - fall back to default
+            pass
+    return [5]
+
+
 # ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
@@ -172,3 +224,4 @@ def analyze_all(exp_dir: Path) -> None:
     analyze_trueskill(exp_dir)
     analyze_h2h(exp_dir)
     analyze_hgb(exp_dir)
+    analyze_agreement(exp_dir)
