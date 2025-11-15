@@ -46,10 +46,14 @@ analysis:
   run_head2head: true       # bool: execute head-to-head analysis
   run_hgb: true             # bool: train histogram gradient boosting model
   run_tiering_report: false # bool: compare frequentist vs Bayesian tiers
+  run_post_h2h_analysis: false  # bool: post head-to-head cleanup (plan step 5)
+  run_frequentist: false    # bool: frequentist tier construction (plan step 6)
+  run_agreement: false      # bool: agreement heuristics (plan step 8)
+  run_report: true          # bool: report writer / publishing (plan step 9)
   n_jobs: 1                 # int: parallel workers for analysis
   log_level: "INFO"         # str: logger level during analysis
   results_glob: "*_players" # str: glob selecting per-N result folders
-  head2head_target_hours: null        # float|None: target runtime window for Bonferroni H2H
+  head2head_target_hours: 8.0         # float: target runtime window for Bonferroni H2H (<=0 disables)
   head2head_tolerance_pct: 5.0        # float: acceptable +/- percent around target hours
   head2head_games_per_sec: null       # float|None: measured H2H throughput (games per second)
   tiering_seeds: null       # list[int]|None: seeds to include in tiering report (default current seed)

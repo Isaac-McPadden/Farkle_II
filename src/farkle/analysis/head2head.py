@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import shutil
 from dataclasses import dataclass
 import time
@@ -94,6 +95,12 @@ def _build_design_kwargs(cfg: AppConfig) -> dict[str, Any]:
     filtered["method"] = "bonferroni"
     filtered["full_pairwise"] = True
     filtered.setdefault("endpoint", "pairwise")
+    tail = str(filtered.get("tail", "one_sided")).lower().replace("-", "_")
+    if tail != "one_sided":
+        raise ValueError(
+            "Bonferroni head-to-head uses a one-sided exact test; set tail='one_sided'",
+        )
+    filtered["tail"] = "one_sided"
     return filtered
 
 
@@ -277,7 +284,14 @@ def _predict_runtime(
             "endpoint": "pairwise",
         }
     )
-    games_per_pair = games_for_power(**kwargs)
+    games_per_strategy = games_for_power(**kwargs)
+    per_pair = max(0, elite_count - 1)
+    k_players = int(kwargs.get("k_players", 2))
+    games_per_pair = (
+        0
+        if per_pair == 0
+        else int(math.ceil(games_per_strategy * max(1, k_players - 1) / per_pair))
+    )
     pairs = elite_count * (elite_count - 1) // 2
     total_games = games_per_pair * pairs
     runtime_hours = total_games / (games_per_sec * 3600.0)

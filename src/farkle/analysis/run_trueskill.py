@@ -13,17 +13,21 @@ Outputs
     Parquet tables with columns ``{strategy, mu, sigma}``.
 ``tiers.json``
     Mapping of strategy → tier derived from the pooled ratings.
+``tiers_trueskill.json``
+    Conservative backup tiers derived from the same pooled TrueSkill ratings.
 """
 from __future__ import annotations
 
 import concurrent.futures as cf
 import json
 import logging
+import math
 import os
+import random
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterator, Mapping, Optional, Tuple, Union, cast
+from typing import Iterable, Iterator, Mapping, Optional, Tuple, Union, cast
 
 import numpy as np
 import pyarrow as pa
@@ -33,6 +37,7 @@ import trueskill
 import yaml
 from trueskill import Rating
 
+from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.stats import build_tiers
@@ -688,6 +693,8 @@ def run_trueskill(
         precision-weighted mean.
     ``tiers.json``
         JSON file with league tiers derived from the pooled ratings.
+    ``tiers_trueskill.json``
+        Backup copy of the conservative TrueSkill tiers (written once).
     """
     if dataroot is None:
         base = Path(root) / "results" if root is not None else DEFAULT_DATAROOT
@@ -821,15 +828,206 @@ def run_trueskill(
         means={k: v.mu for k, v in pooled_stats.items()},
         stdevs={k: v.sigma for k, v in pooled_stats.items()},
     )
+    _write_conservative_tiers(root, tiers)
     tiers_path = root / "tiers.json"
-    with atomic_path(str(tiers_path)) as tmp_path, Path(tmp_path).open("w") as fh:
-        json.dump(tiers, fh, indent=2, sort_keys=True)
     LOGGER.info(
         "TrueSkill run complete",
         extra={
             "stage": "trueskill",
             "root": str(root),
             "blocks": len(blocks),
+            "pooled_parquet": str(pooled_parquet),
+            "tiers_path": str(tiers_path),
+        },
+    )
+
+
+def _seed_everything(seed: int) -> None:
+    """Seed Python and NumPy RNGs (best-effort)."""
+
+    random.seed(seed)
+    np.random.seed(seed)
+    try:  # optional dependency; ignore if unavailable
+        import torch
+
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():  # pragma: no cover - CUDA not in CI
+            torch.cuda.manual_seed_all(seed)
+    except Exception:  # pragma: no cover - torch optional / CUDA absence
+        pass
+
+
+def _sorted_ratings(ratings: Mapping[str, RatingStats]) -> Mapping[str, RatingStats]:
+    """Return ratings ordered by strategy for stable materialisation."""
+
+    return dict(sorted(ratings.items(), key=lambda kv: kv[0]))
+
+
+def _precision_pool(runs: Iterable[Mapping[str, RatingStats]]) -> dict[str, RatingStats]:
+    """Combine multiple rating mappings using precision weighting."""
+
+    accum: dict[str, tuple[float, float]] = {}
+    for mapping in runs:
+        for strategy, stats in mapping.items():
+            tau = 1.0 / (stats.sigma**2) if stats.sigma > 0 else 0.0
+            if tau <= 0:
+                continue
+            sum_mu_tau, sum_tau = accum.get(strategy, (0.0, 0.0))
+            sum_mu_tau += tau * stats.mu
+            sum_tau += tau
+            accum[strategy] = (sum_mu_tau, sum_tau)
+
+    pooled: dict[str, RatingStats] = {}
+    for strategy, (sum_mu_tau, sum_tau) in accum.items():
+        if sum_tau <= 0:
+            continue
+        pooled[strategy] = RatingStats(mu=sum_mu_tau / sum_tau, sigma=math.sqrt(1.0 / sum_tau))
+    return pooled
+
+
+def _ensure_strict_mu_ordering(ratings: Mapping[str, RatingStats]) -> None:
+    """Raise if any strategies share identical means (ties not expected)."""
+
+    mus = [stats.mu for _, stats in sorted(ratings.items(), key=lambda kv: kv[1].mu, reverse=True)]
+    for prev, curr in zip(mus, mus[1:], strict=False):
+        if math.isclose(prev, curr, rel_tol=0.0, abs_tol=1e-12):
+            raise RuntimeError("TrueSkill pooling produced tied means; inputs should prevent ties.")
+
+
+def _write_conservative_tiers(root: Path, tiers: Mapping[str, int]) -> None:
+    """Write ``tiers.json`` and (once) ``tiers_trueskill.json`` atomically."""
+
+    tiers_dict = dict(tiers)
+
+    tiers_path = root / "tiers.json"
+    with atomic_path(str(tiers_path)) as tmp_path, Path(tmp_path).open("w") as fh:
+        json.dump(tiers_dict, fh, indent=2, sort_keys=True)
+
+    backup_path = root / "tiers_trueskill.json"
+    try:
+        fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError:
+        LOGGER.debug(
+            "tiers_trueskill.json exists; keeping original backup",
+            extra={"stage": "trueskill", "path": str(backup_path)},
+        )
+    else:
+        os.close(fd)
+        with atomic_path(str(backup_path)) as tmp_path, Path(tmp_path).open("w") as fh:
+            json.dump(tiers_dict, fh, indent=2, sort_keys=True)
+
+
+def run_trueskill_all_seeds(cfg: AppConfig) -> None:
+    """Run TrueSkill for each configured seed and pool the results."""
+
+    analysis_cfg = cfg.analysis
+    seeds_cfg = analysis_cfg.tiering_seeds or [cfg.sim.seed]
+    deduped: list[int] = []
+    seen: set[int] = set()
+    for raw in seeds_cfg:
+        seed = int(raw)
+        if seed in seen:
+            continue
+        seen.add(seed)
+        deduped.append(seed)
+    seeds = sorted(deduped)
+
+    analysis_dir = cfg.analysis_dir
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    env_kwargs = {
+        "beta": cfg.trueskill.beta,
+        "tau": cfg.trueskill.tau,
+        "draw_probability": cfg.trueskill.draw_probability,
+    }
+
+    per_seed_results: dict[int, dict[str, RatingStats]] = {}
+    per_seed_outputs: dict[int, dict[str, RatingStats]] = {}
+
+    for seed in seeds:
+        _seed_everything(seed)
+        LOGGER.info(
+            "TrueSkill seed run start",
+            extra={
+                "stage": "trueskill",
+                "seed": seed,
+                "analysis_dir": str(analysis_dir),
+            },
+        )
+        run_trueskill(
+            output_seed=seed,
+            root=analysis_dir,
+            dataroot=cfg.results_dir,
+            workers=analysis_cfg.n_jobs or None,
+            env_kwargs=env_kwargs,
+        )
+
+        pooled_path = analysis_dir / f"ratings_pooled_seed{seed}.parquet"
+        if not pooled_path.exists():
+            raise FileNotFoundError(f"Missing pooled ratings for seed {seed}: {pooled_path}")
+        per_seed_results[seed] = _load_ratings_parquet(pooled_path)
+
+        seed_outputs: dict[str, RatingStats] = {}
+        for parquet in sorted(analysis_dir.glob(f"ratings_*_seed{seed}.parquet")):
+            stem = parquet.stem
+            if stem.startswith("ratings_pooled"):
+                continue
+            parts = stem.split("_")
+            if len(parts) < 3 or not parts[1].isdigit():
+                continue
+            players = int(parts[1])
+            stats = _load_ratings_parquet(parquet)
+            ordered_stats = _sorted_ratings(stats)
+            dest = analysis_dir / f"trueskill_{players}p_seed{seed}.parquet"
+            _save_ratings_parquet(dest, ordered_stats)
+            seed_outputs[f"{players}p"] = ordered_stats  # keyed for logging/debug
+
+        if not seed_outputs:
+            raise RuntimeError(f"No per-player outputs generated for seed {seed}")
+        per_seed_outputs[seed] = seed_outputs
+
+        LOGGER.info(
+            "TrueSkill seed run complete",
+            extra={
+                "stage": "trueskill",
+                "seed": seed,
+                "pooled": str(pooled_path),
+                "per_players": sorted(seed_outputs.keys()),
+            },
+        )
+
+    pooled_stats = _precision_pool(per_seed_results.values())
+    if not pooled_stats:
+        raise RuntimeError("TrueSkill pooling produced no results")
+    ordered_pooled = _sorted_ratings(pooled_stats)
+    _ensure_strict_mu_ordering(ordered_pooled)
+
+    pooled_parquet = analysis_dir / "ratings_pooled.parquet"
+    _save_ratings_parquet(pooled_parquet, ordered_pooled)
+
+    pooled_json_path = analysis_dir / "ratings_pooled.json"
+    with atomic_path(str(pooled_json_path)) as tmp_path:
+        Path(tmp_path).write_text(
+            json.dumps(
+                {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ordered_pooled.items()},
+                indent=2,
+                sort_keys=True,
+            )
+        )
+
+    tiers = build_tiers(
+        means={k: v.mu for k, v in ordered_pooled.items()},
+        stdevs={k: v.sigma for k, v in ordered_pooled.items()},
+        z=float(analysis_cfg.tiering_z_star or 2.0),
+    )
+    _write_conservative_tiers(analysis_dir, tiers)
+    tiers_path = analysis_dir / "tiers.json"
+
+    LOGGER.info(
+        "TrueSkill pooled results complete",
+        extra={
+            "stage": "trueskill",
+            "seeds": seeds,
             "pooled_parquet": str(pooled_parquet),
             "tiers_path": str(tiers_path),
         },

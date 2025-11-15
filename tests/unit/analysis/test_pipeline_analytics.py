@@ -25,10 +25,10 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
     analysis = exp / "analysis"
 
     # stub tools to create outputs
-    def fake_ts(*, root=None, dataroot=None, **_: object):  # noqa: ANN001, ARG001
+    def fake_ts(cfg):  # noqa: ANN001
         (analysis / "tiers.json").write_text("{}")
 
-    monkeypatch.setattr("farkle.analysis.run_trueskill.run_trueskill", fake_ts)
+    monkeypatch.setattr("farkle.analysis.run_trueskill.run_trueskill_all_seeds", fake_ts)
 
     def fake_h2h(*, root, n_jobs=1):  # noqa: ARG001
         df = pd.DataFrame({"a": ["A"], "b": ["B"], "wins_a": [1], "wins_b": [0], "pvalue": [0.5]})

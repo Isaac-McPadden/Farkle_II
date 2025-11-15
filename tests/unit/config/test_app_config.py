@@ -51,6 +51,48 @@ def test_load_app_config_merges_overlays(write_yaml) -> None:
     assert cfg.analysis_dir == Path("results") / "custom"
 
 
+def test_load_app_config_applies_analysis_controls(write_yaml) -> None:
+    config = write_yaml(
+        "analysis_fields.yaml",
+        {
+            "analysis": {
+                "run_post_h2h_analysis": True,
+                "run_frequentist": True,
+                "run_agreement": True,
+                "run_report": False,
+                "head2head_target_hours": 4.5,
+                "head2head_tolerance_pct": 2.5,
+                "head2head_games_per_sec": 11.0,
+                "tiering_seeds": [3, 7],
+            }
+        },
+    )
+
+    cfg = load_app_config(config)
+
+    assert cfg.analysis.run_post_h2h_analysis is True
+    assert cfg.analysis.run_frequentist is True
+    assert cfg.analysis.run_agreement is True
+    assert cfg.analysis.run_report is False
+    assert cfg.analysis.head2head_target_hours == pytest.approx(4.5)
+    assert cfg.analysis.head2head_tolerance_pct == pytest.approx(2.5)
+    assert cfg.analysis.head2head_games_per_sec == pytest.approx(11.0)
+    assert cfg.analysis.tiering_seeds == [3, 7]
+
+    apply_dot_overrides(
+        cfg,
+        [
+            "analysis.head2head_target_hours=1.25",
+            "analysis.run_report=true",
+            "analysis.run_agreement=false",
+        ],
+    )
+
+    assert cfg.analysis.head2head_target_hours == pytest.approx(1.25)
+    assert cfg.analysis.run_report is True
+    assert cfg.analysis.run_agreement is False
+
+
 def test_load_app_config_normalizes_legacy_keys(write_yaml) -> None:
     legacy = write_yaml(
         "legacy.yaml",

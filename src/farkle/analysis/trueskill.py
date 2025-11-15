@@ -23,7 +23,7 @@ def run(cfg: AppConfig) -> None:
         "TrueSkill analysis running",
         extra={"stage": "trueskill", "analysis_dir": str(cfg.analysis_dir)},
     )
-    run_trueskill.run_trueskill(root=cfg.analysis_dir, dataroot=cfg.results_dir)
+    run_trueskill.run_trueskill_all_seeds(cfg)
     LOGGER.info(
         "TrueSkill analysis complete",
         extra={"stage": "trueskill", "path": str(out)},

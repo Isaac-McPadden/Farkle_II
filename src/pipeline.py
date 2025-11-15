@@ -15,6 +15,7 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+from farkle.config import AppConfig, IOConfig
 from farkle.utils.writer import atomic_path
 
 __all__ = [
@@ -111,7 +112,8 @@ def analyze_trueskill(exp_dir: Path) -> None:
     analysis_dir.mkdir(parents=True, exist_ok=True)
     from farkle.analysis import run_trueskill as _rt
 
-    _rt.run_trueskill(root=analysis_dir, dataroot=exp_dir)
+    cfg = AppConfig(io=IOConfig(results_dir=exp_dir))
+    _rt.run_trueskill_all_seeds(cfg)
     write_done(done, inputs, [out], "farkle.analytics.trueskill")
     print("trueskill")
 

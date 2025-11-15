@@ -28,6 +28,54 @@ from scipy.stats import norm
 from farkle.utils.random import MAX_UINT32
 
 
+def wilson_ci(k: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
+    """Return the Wilson score confidence interval for a binomial proportion.
+
+    Parameters
+    ----------
+    k :
+        Number of observed successes. Must satisfy ``0 <= k <= n``.
+    n :
+        Total number of Bernoulli trials. Must be positive.
+    alpha :
+        Two-sided significance level. ``alpha=0.05`` yields a 95 % interval.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(lower, upper)`` bounds clipped to ``[0, 1]`` with ``lower <= upper``.
+
+    Raises
+    ------
+    ValueError
+        If ``n <= 0``, ``k`` lies outside ``[0, n]``, or ``alpha`` is not in ``(0, 1)``.
+    """
+
+    if n <= 0:
+        raise ValueError("n must be positive")
+    if not 0 <= k <= n:
+        raise ValueError("k must be between 0 and n (inclusive)")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be in (0, 1)")
+
+    if n == 0:  # pragma: no cover - defensive (guard above already rejects)
+        return 0.0, 1.0
+
+    proportion = k / n
+    z = norm.ppf(1.0 - alpha / 2.0)
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = proportion + z2 / (2.0 * n)
+    margin = z * sqrt((proportion * (1.0 - proportion) + z2 / (4.0 * n)) / n)
+    lower = (center - margin) / denom
+    upper = (center + margin) / denom
+    lower = float(max(0.0, min(1.0, lower)))
+    upper = float(max(0.0, min(1.0, upper)))
+    if lower > upper:  # possible if numeric noise occurs
+        lower = upper
+    return lower, upper
+
+
 def _num_hypotheses(n: int, full_pairwise: bool) -> int:
     return n * (n - 1) // 2 if full_pairwise else n - 1
 

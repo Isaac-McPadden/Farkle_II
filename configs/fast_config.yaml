@@ -61,9 +61,13 @@ analysis:
   run_head2head: true
   run_hgb: true
   run_tiering_report: false
+  run_post_h2h_analysis: false
+  run_frequentist: false
+  run_agreement: false
+  run_report: true
   n_jobs: 1
   log_level: "INFO"
-  head2head_target_hours: null
+  head2head_target_hours: 8.0
   head2head_tolerance_pct: 5.0
   head2head_games_per_sec: null
   tiering_seeds: null

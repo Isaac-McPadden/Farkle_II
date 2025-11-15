@@ -68,18 +68,42 @@ class SimConfig:
 
 @dataclass
 class AnalysisConfig:
-    """Analysis-stage parameters."""
+    """Analysis-stage parameters controlling downstream analytics."""
+
     run_trueskill: bool = True
     run_head2head: bool = True
     run_hgb: bool = True
+    run_frequentist: bool = False
     run_tiering_report: bool = False
+    run_post_h2h_analysis: bool = False
+    """Execute the post head-to-head clean-up pass (plan step 5)."""
+
+    run_frequentist: bool = False
+    """Run the frequentist tiering comparison pass (plan step 6)."""
+
+    run_agreement: bool = False
+    """Generate the agreement analysis between model outputs (plan step 8)."""
+
+    run_report: bool = True
+    """Emit the final report artifacts (plan step 9)."""
+
     n_jobs: int = 1
     log_level: str = "INFO"
     results_glob: str = "*_players"
-    head2head_target_hours: float | None = None
+    meta_random_if_I2_gt: float = 25.0
+    """Switch to random-effects pooling once I^2 crosses this threshold."""
+    head2head_target_hours: float = 8.0
+    """Target runtime (in hours) for head-to-head autotuning; <=0 disables the feature."""
+
     head2head_tolerance_pct: float = 5.0
+    """Allowed +/- percent variance when computing the target head-to-head runtime."""
+
     head2head_games_per_sec: float | None = None
+    """Measured throughput override for head-to-head simulations (games/second)."""
+    head2head_force_calibrate: bool = False
     tiering_seeds: list[int] | None = None
+    """Explicit seeds to use when running the tiering report."""
+
     tiering_z_star: float = 2.0
     tiering_weights_by_k: dict[int, float] | None = None
     # Optional outputs block may be provided in YAML
@@ -267,8 +291,11 @@ def _annotation_contains(annotation: Any, target: type) -> bool:
 
 
 def load_app_config(*overlays: Path) -> AppConfig:
-    """Load one or more YAML overlays and return an :class:`AppConfig`.
-    Later overlays take precedence and are deep-merged. Dotted keys supported.
+    """Deterministically merge one or more YAML overlays into an :class:`AppConfig`.
+
+    Files are read in the order provided, dotted keys are expanded, and later overlays
+    always win. Re-loading the same sequence therefore yields identical configs, which
+    keeps resume semantics predictable.
     """
     data: dict[str, Any] = {}
     for path in overlays:

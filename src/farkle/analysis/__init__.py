@@ -23,6 +23,20 @@ def _optional_import(module: str) -> ModuleType | None:
         return None
 
 
+def run_seed_summaries(cfg: AppConfig, *, force: bool = False) -> None:
+    """Wrapper around :mod:`farkle.analysis.seed_summaries`."""
+    from farkle.analysis import seed_summaries
+
+    seed_summaries.run(cfg, force=force)
+
+
+def run_meta(cfg: AppConfig, *, force: bool = False) -> None:
+    """Wrapper around :mod:`farkle.analysis.meta`."""
+    from farkle.analysis import meta
+
+    meta.run(cfg, force=force)
+
+
 def run_all(cfg: AppConfig) -> None:
     """Run every analytics pass in sequence."""
     LOGGER.info("Analytics: starting all modules", extra={"stage": "analysis"})
@@ -50,6 +64,22 @@ def run_all(cfg: AppConfig) -> None:
             },
         )
 
+    post_h2h_mod = _optional_import("farkle.analysis.h2h_analysis")
+    if cfg.analysis.run_post_h2h_analysis and post_h2h_mod is not None:
+        post_h2h_mod.run_post_h2h(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping post head-to-head analysis",
+            extra={
+                "stage": "analysis",
+                "reason": (
+                    "run_post_h2h_analysis=False"
+                    if not cfg.analysis.run_post_h2h_analysis
+                    else "unavailable"
+                ),
+            },
+        )
+
     hgb_mod = _optional_import("farkle.analysis.hgb_feat")
     if cfg.analysis.run_hgb and hgb_mod is not None:
         hgb_mod.run(cfg)
@@ -59,6 +89,20 @@ def run_all(cfg: AppConfig) -> None:
             extra={
                 "stage": "analysis",
                 "reason": "run_hgb=False" if not cfg.analysis.run_hgb else "unavailable",
+            },
+        )
+
+    freq_mod = _optional_import("farkle.analysis.frequentist")
+    if getattr(cfg.analysis, "run_frequentist", False) and freq_mod is not None:
+        freq_mod.run(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping frequentist ranking",
+            extra={
+                "stage": "analysis",
+                "reason": "run_frequentist=False"
+                if not getattr(cfg.analysis, "run_frequentist", False)
+                else "unavailable",
             },
         )
 
@@ -75,4 +119,7 @@ def run_all(cfg: AppConfig) -> None:
                 else "unavailable",
             },
         )
+
+    run_seed_summaries(cfg)
+    run_meta(cfg)
     LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})

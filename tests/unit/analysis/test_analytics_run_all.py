@@ -31,20 +31,31 @@ def test_run_all_invokes_expected_modules(
         module = types.ModuleType(f"farkle.analysis.{name}")
         module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
 
-        def _run(cfg):  # noqa: ANN001, ARG001
+        def _run(cfg, **_):  # noqa: ANN001
             calls.append(label)
 
         module.run = _run  # type: ignore[attr-defined]
         return module
 
-    labels = {"trueskill": "trueskill", "head2head": "head2head", "hgb_feat": "hgb"}
+    labels = {
+        "trueskill": "trueskill",
+        "head2head": "head2head",
+        "hgb_feat": "hgb",
+    }
 
     for mod_name, label in labels.items():
         monkeypatch.setitem(
             sys.modules, f"farkle.analysis.{mod_name}", make_module(mod_name, label)
         )
 
-    from farkle.analysis import run_all  # import after stubbing dependencies
+    import farkle.analysis as analysis_mod  # import after stubbing dependencies
+
+    run_all = analysis_mod.run_all
+
+    def _seed_stub(cfg, **_):  # noqa: ANN001
+        calls.append("seed_summaries")
+
+    monkeypatch.setattr(analysis_mod, "run_seed_summaries", _seed_stub)
 
     cfg = AppConfig()
     cfg.analysis.run_trueskill = ts
@@ -71,6 +82,7 @@ def test_run_all_invokes_expected_modules(
     else:
         assert "Analytics: skipping hist gradient boosting" in caplog.text
 
+    expected_calls.append("seed_summaries")
     assert calls == expected_calls
     assert "Analytics: starting all modules" in caplog.text
     assert "Analytics: all modules finished" in caplog.text

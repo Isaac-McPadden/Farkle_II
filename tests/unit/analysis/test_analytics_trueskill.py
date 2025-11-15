@@ -22,10 +22,10 @@ def test_run_skips_when_tiers_up_to_date(tmp_path, monkeypatch):
     os.utime(combined, (now, now))
     os.utime(tiers, (now + 10, now + 10))
 
-    def boom(**kwargs):  # noqa: ARG001
-        raise AssertionError("should not call run_trueskill.run_trueskill")
+    def boom(cfg):  # noqa: ARG001
+        raise AssertionError("should not call run_trueskill.run_trueskill_all_seeds")
 
-    monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill", boom)
+    monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill_all_seeds", boom)
 
     trueskill.run(cfg)
 
@@ -38,12 +38,11 @@ def test_run_invokes_legacy_when_stale(tmp_path, monkeypatch):
 
     called = {}
 
-    def fake_run(root: Path, dataroot: Path | None = None):  # noqa: ANN001
-        called["root"] = root
-        called["dataroot"] = dataroot
+    def fake_run(app_cfg):  # noqa: ANN001
+        called["cfg"] = app_cfg
 
-    monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill", fake_run)
+    monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill_all_seeds", fake_run)
 
     trueskill.run(cfg)
 
-    assert called["root"] == cfg.analysis_dir
+    assert called["cfg"] is cfg
