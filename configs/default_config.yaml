@@ -45,9 +45,8 @@ analysis:
   run_trueskill: true       # bool: compute TrueSkill ratings
   run_head2head: true       # bool: execute head-to-head analysis
   run_hgb: true             # bool: train histogram gradient boosting model
-  run_tiering_report: false # bool: compare frequentist vs Bayesian tiers
+  run_frequentist: false    # bool: plan step 6 frequentist/MDD tiering + tiering_report
   run_post_h2h_analysis: false  # bool: post head-to-head cleanup (plan step 5)
-  run_frequentist: false    # bool: frequentist tier construction (plan step 6)
   run_agreement: false      # bool: agreement heuristics (plan step 8)
   run_report: true          # bool: report writer / publishing (plan step 9)
   n_jobs: 1                 # int: parallel workers for analysis

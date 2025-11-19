@@ -27,7 +27,7 @@ class TieringInputs:
 
 
 def run(cfg: AppConfig) -> None:
-    if not (cfg.analysis.run_tiering_report or getattr(cfg.analysis, "run_frequentist", False)):
+    if not getattr(cfg.analysis, "run_frequentist", False):
         LOGGER.info("Tiering report disabled", extra={"stage": "tiering"})
         return
 

@@ -74,12 +74,9 @@ class AnalysisConfig:
     run_head2head: bool = True
     run_hgb: bool = True
     run_frequentist: bool = False
-    run_tiering_report: bool = False
+    """Plan step 6: frequentist / MDD-based tiering (tiering_report)."""
     run_post_h2h_analysis: bool = False
     """Execute the post head-to-head clean-up pass (plan step 5)."""
-
-    run_frequentist: bool = False
-    """Run the frequentist tiering comparison pass (plan step 6)."""
 
     run_agreement: bool = False
     """Generate the agreement analysis between model outputs (plan step 8)."""
@@ -112,6 +109,15 @@ class AnalysisConfig:
     #   metrics_name: "metrics.parquet"
     #   manifest_name: "manifest.jsonl"
     outputs: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def run_tiering_report(self) -> bool:
+        """Deprecated alias for run_frequentist; kept for config compatibility."""
+        return self.run_frequentist
+
+    @run_tiering_report.setter
+    def run_tiering_report(self, value: bool) -> None:
+        self.run_frequentist = bool(value)
 
 
 @dataclass
@@ -317,6 +323,11 @@ def load_app_config(*overlays: Path) -> AppConfig:
             sim_section["n_players_list"] = [sim_section.pop("n_players")]
         if "collect_metrics" in sim_section and "expanded_metrics" not in sim_section and sim_section.pop("collect_metrics"):
             sim_section["expanded_metrics"] = True
+    if "analysis" in data:
+        analysis_section = data["analysis"]
+        if "run_tiering_report" in analysis_section:
+            alias_val = analysis_section.pop("run_tiering_report")
+            analysis_section.setdefault("run_frequentist", alias_val)
 
     def build(cls, section: Mapping[str, Any]) -> Any:
         obj = cls()

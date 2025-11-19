@@ -61,9 +61,8 @@ analysis:
   run_trueskill: true
   run_head2head: true
   run_hgb: true
-  run_tiering_report: false
-  run_post_h2h_analysis: false
   run_frequentist: false
+  run_post_h2h_analysis: false
   run_agreement: false
   run_report: true
   n_jobs: 12
