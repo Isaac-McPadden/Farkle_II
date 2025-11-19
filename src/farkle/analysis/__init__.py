@@ -111,12 +111,12 @@ def run_all(cfg: AppConfig) -> None:
             ),
         )
 
-    freq_mod = _optional_import("farkle.analysis.frequentist")
-    if getattr(cfg.analysis, "run_frequentist", False) and freq_mod is not None:
-        freq_mod.run(cfg)
+    freq_tiering_mod = _optional_import("farkle.analysis.frequentist_tiering_report")
+    if getattr(cfg.analysis, "run_frequentist", False) and freq_tiering_mod is not None:
+        freq_tiering_mod.run(cfg)
     else:
         _log_skip(
-            "frequentist ranking",
+            "frequentist tiering",
             reason=(
                 "run_frequentist=False"
                 if not getattr(cfg.analysis, "run_frequentist", False)

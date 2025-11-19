@@ -27,7 +27,7 @@ class TieringInputs:
 
 
 def run(cfg: AppConfig) -> None:
-    if not cfg.analysis.run_tiering_report:
+    if not (cfg.analysis.run_tiering_report or getattr(cfg.analysis, "run_frequentist", False)):
         LOGGER.info("Tiering report disabled", extra={"stage": "tiering"})
         return
 
@@ -60,10 +60,12 @@ def run(cfg: AppConfig) -> None:
         z_star=inputs.z_star,
     )
 
-    frequentist_tiers = _build_frequentist_tiers(df, tier_data["mdd"])
+    winrates, winrates_by_players = _weighted_winrate(df, inputs.weights_by_k)
+    frequentist_tiers = _build_frequentist_tiers(winrates, tier_data["mdd"])
     ts_tiers = json.loads(tier_file.read_text())
     report = _build_report(frequentist_tiers, ts_tiers)
     _write_outputs(cfg, report, tier_data)
+    _write_frequentist_scores(cfg, frequentist_tiers, winrates, winrates_by_players)
 
 
 def _prepare_inputs(cfg: AppConfig) -> TieringInputs:
@@ -127,26 +129,28 @@ def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFram
     return pd.concat(frames, ignore_index=True, sort=False)
 
 
-def _weighted_winrate(df: pd.DataFrame, weights_by_k: Mapping[int, float] | None) -> pd.Series:
+def _weighted_winrate(
+    df: pd.DataFrame, weights_by_k: Mapping[int, float] | None
+) -> tuple[pd.Series, pd.DataFrame]:
     def _agg(group: pd.DataFrame) -> float:
         weights = group["games"].clip(lower=1).astype(float)
         if weights.sum() == 0:
             return group["win_rate"].mean()
         return float(np.average(group["win_rate"], weights=weights))
 
-    per_k = df.groupby(["strategy", "n_players"]).apply(_agg).reset_index(name="rate")
+    per_k = (
+        df.groupby(["strategy", "n_players"]).apply(_agg).reset_index(name="win_rate")
+    )
     if weights_by_k:
         per_k["w"] = per_k["n_players"].map(weights_by_k).fillna(0.0)
-        per_k["weighted"] = per_k["rate"] * per_k["w"]
+        per_k["weighted"] = per_k["win_rate"] * per_k["w"]
         collapsed = per_k.groupby("strategy")["weighted"].sum()
     else:
-        collapsed = per_k.groupby("strategy")["rate"].mean()
-    return collapsed.sort_values(ascending=False)
+        collapsed = per_k.groupby("strategy")["win_rate"].mean()
+    return collapsed.sort_values(ascending=False), per_k
 
 
-def _build_frequentist_tiers(df: pd.DataFrame, mdd: float) -> pd.DataFrame:
-    weights = None
-    winrates = _weighted_winrate(df, weights)
+def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
     tiers: dict[str, int] = {}
     current_tier = 1
     threshold = None
@@ -177,6 +181,57 @@ def _build_report(freq_df: pd.DataFrame, ts_tiers: Mapping[str, int]) -> pd.Data
     report["in_mdd_top"] = report["mdd_tier"] == min_mdd
     report["in_ts_top"] = report["trueskill_tier"] == min_ts
     return report.reset_index()
+
+
+def _write_frequentist_scores(
+    cfg: AppConfig,
+    frequentist_tiers: pd.DataFrame,
+    winrates: pd.Series,
+    winrates_by_players: pd.DataFrame,
+) -> None:
+    if winrates.empty:
+        return
+
+    tier_map = frequentist_tiers.set_index("strategy")["mdd_tier"]
+    base = winrates_by_players.copy()
+    base["players"] = base["n_players"].astype(int)
+    base["strategy"] = base["strategy"].astype(str)
+    base["strategy_id"] = base["strategy"]
+    base["tier"] = base["strategy"].map(tier_map).astype(int)
+    base["mdd_tier"] = base["tier"]
+    base = base[
+        [
+            c
+            for c in ["strategy", "strategy_id", "players", "n_players", "win_rate", "tier", "mdd_tier"]
+            if c in base.columns
+        ]
+    ]
+
+    aggregated = pd.DataFrame(
+        {
+            "strategy": winrates.index.astype(str),
+            "strategy_id": winrates.index.astype(str),
+            "players": 0,
+            "n_players": 0,
+            "win_rate": winrates.values,
+            "tier": tier_map.loc[winrates.index].astype(int).values,
+            "mdd_tier": tier_map.loc[winrates.index].astype(int).values,
+        }
+    )
+
+    scores = pd.concat([base, aggregated], ignore_index=True, sort=False)
+    scores_path = cfg.analysis_dir / "frequentist_scores.parquet"
+    with atomic_path(str(scores_path)) as tmp_path:
+        scores.to_parquet(tmp_path, index=False)
+
+    LOGGER.info(
+        "Frequentist scores written",
+        extra={
+            "stage": "frequentist",
+            "rows": len(scores),
+            "path": str(scores_path),
+        },
+    )
 
 
 def _write_outputs(cfg: AppConfig, report: pd.DataFrame, tier_data: dict) -> None:
