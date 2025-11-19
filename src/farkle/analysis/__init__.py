@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+from collections.abc import Callable
 from types import ModuleType
 
 from farkle.config import AppConfig
@@ -12,10 +13,12 @@ from farkle.config import AppConfig
 LOGGER = logging.getLogger(__name__)
 
 
-def _optional_import(module: str) -> ModuleType | None:
-    """Import *module* if available, logging when dependencies are missing."""
+def _optional_import(module: str, attribute: str | None = None) -> ModuleType | Callable[..., object] | None:
+    """Import *module* (and optional *attribute*) if available, logging when missing."""
+
     try:
-        return importlib.import_module(module)
+        mod = importlib.import_module(module)
+        return getattr(mod, attribute) if attribute is not None else mod
     except ModuleNotFoundError as exc:  # pragma: no cover - exercised in tests
         LOGGER.info(
             "Analytics module skipped due to missing dependency",
@@ -33,9 +36,13 @@ def run_seed_summaries(cfg: AppConfig, *, force: bool = False) -> None:
 
 def run_meta(cfg: AppConfig, *, force: bool = False) -> None:
     """Wrapper around :mod:`farkle.analysis.meta`."""
-    from farkle.analysis import meta
 
-    meta.run(cfg, force=force)
+    meta_run = _optional_import("farkle.analysis.meta", "run")
+    if meta_run is None:
+        _log_skip("meta", reason="unavailable")
+        return
+
+    meta_run(cfg, force=force)
 
 
 def _log_skip(label: str, *, reason: str) -> None:
@@ -52,6 +59,7 @@ def run_all(cfg: AppConfig) -> None:
 
     # Always refresh seed-level summaries first so downstream steps have inputs.
     run_seed_summaries(cfg)
+    run_meta(cfg)
 
     ts_mod = _optional_import("farkle.analysis.run_trueskill")
     if cfg.analysis.run_trueskill and ts_mod is not None:
