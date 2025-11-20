@@ -1,0 +1,1005 @@
+doc_audit.py
+  - L13: Missing docstring for ClassDef 'Issue'
+  - L24: Missing docstring for ClassDef 'FileReport'
+  - L55: Missing docstring for FunctionDef 'git_tracked_py_files'
+  - L70: Missing docstring for FunctionDef 'is_ignored'
+  - L75: Missing docstring for FunctionDef 'read_lines'
+  - L104: Missing docstring for FunctionDef 'module_docstring_is_immediate'
+  - L109: Missing docstring for FunctionDef 'is_trivial_body'
+  - L131: Missing docstring for FunctionDef 'collect_docstring_issues'
+  - L142: Missing docstring for FunctionDef 'audit_file'
+  - L164: Missing docstring for FunctionDef 'generate_report'
+  - L171: Missing docstring for FunctionDef 'print_report'
+  - L17: Missing docstring for FunctionDef 'format'
+  - L28: Missing docstring for FunctionDef 'add'
+  - L32: Missing docstring for FunctionDef 'has_issues'
+  - L35: Missing docstring for FunctionDef 'format'
+
+src/farkle/analysis/__init__.py
+  - L15: Missing docstring for FunctionDef '_optional_import'
+  - L40: Missing docstring for FunctionDef '_skip_message'
+
+src/farkle/analysis/agreement.py
+  - First comment is missing or not at top of file
+  - L71: Missing docstring for FunctionDef '_build_payload'
+  - L115: Missing docstring for FunctionDef '_load_trueskill'
+  - L150: Missing docstring for FunctionDef '_load_frequentist'
+  - L187: Missing docstring for FunctionDef '_load_head2head'
+  - L221: Missing docstring for FunctionDef '_filter_by_players'
+  - L229: Missing docstring for FunctionDef '_select_score_column'
+  - L243: Missing docstring for FunctionDef '_assert_no_ties'
+  - L249: Missing docstring for FunctionDef '_rank_correlations'
+  - L281: Missing docstring for FunctionDef '_normalize_tiers'
+  - L293: Missing docstring for FunctionDef '_tier_agreements'
+  - L328: Missing docstring for FunctionDef '_summarize_seed_stability'
+  - L362: Missing docstring for FunctionDef '_tiers_from_graph'
+
+src/farkle/analysis/checks.py
+  - Missing module docstring
+
+src/farkle/analysis/combine.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid non-printable character U+FEFF (<unknown>, line 1)
+
+src/farkle/analysis/curate.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid non-printable character U+FEFF (<unknown>, line 1)
+
+src/farkle/analysis/frequentist_tiering_report.py
+  - First comment is missing or not at top of file
+
+src/farkle/analysis/h2h_analysis.py
+  - First comment is missing or not at top of file
+  - L201: Missing docstring for FunctionDef '_resolve_alpha'
+  - L210: Missing docstring for FunctionDef '_write_graph_json'
+
+src/farkle/analysis/head2head.py
+  - Missing module docstring
+  - L45: Missing docstring for ClassDef 'TierCandidate'
+  - L55: Missing docstring for FunctionDef 'run'
+  - L91: Missing docstring for FunctionDef '_build_design_kwargs'
+  - L107: Missing docstring for FunctionDef '_maybe_autotune_tiers'
+  - L212: Missing docstring for FunctionDef '_search_candidate'
+  - L270: Missing docstring for FunctionDef '_predict_runtime'
+  - L227: Missing docstring for FunctionDef 'evaluate'
+
+src/farkle/analysis/hgb_feat.py
+  - Missing module docstring
+  - L17: Missing docstring for FunctionDef '_unique_players'
+  - L34: Missing docstring for FunctionDef '_latest_mtime'
+  - L39: Missing docstring for FunctionDef 'run'
+
+src/farkle/analysis/ingest.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid non-printable character U+FEFF (<unknown>, line 1)
+
+src/farkle/analysis/isolated_metrics.py
+  - Missing module docstring
+  - L197: Missing docstring for FunctionDef '_load_job'
+  - L235: Missing docstring for FunctionDef '_summarize'
+  - L341: Missing docstring for FunctionDef '_prepare_metrics_dataframe'
+  - L435: Missing docstring for FunctionDef '_pad_strategies'
+  - L453: Missing docstring for FunctionDef '_games_mode'
+  - L463: Missing docstring for FunctionDef '_normalize_metric_name'
+  - L471: Missing docstring for FunctionDef '_compress_metric_columns'
+  - L123: Missing docstring for FunctionDef 'has_missing'
+
+src/farkle/analysis/meta.py
+  - First comment is missing or not at top of file
+  - L49: Missing docstring for ClassDef 'MetaResult'
+  - L57: Missing docstring for FunctionDef '_logit'
+  - L62: Missing docstring for FunctionDef '_inv_logit'
+  - L224: Missing docstring for FunctionDef '_parse_seed_file'
+  - L233: Missing docstring for FunctionDef '_apply_strategy_presence'
+  - L252: Missing docstring for FunctionDef '_normalize_meta_frame'
+  - L268: Missing docstring for FunctionDef '_parquet_matches'
+  - L286: Missing docstring for FunctionDef '_write_json_atomic'
+
+src/farkle/analysis/metrics.py
+  - Missing module docstring
+  - L104: Missing docstring for FunctionDef '_ensure_isolated_metrics'
+  - L131: Missing docstring for FunctionDef '_collect_metrics_frames'
+  - L154: Missing docstring for FunctionDef '_compute_seat_advantage'
+  - L183: Missing docstring for FunctionDef '_stamp'
+  - L188: Missing docstring for FunctionDef '_write_stamp'
+  - L155: Missing docstring for FunctionDef '_rows_for_n'
+
+src/farkle/analysis/pipeline.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid non-printable character U+FEFF (<unknown>, line 1)
+
+src/farkle/analysis/reporting.py
+  - First comment is missing or not at top of file
+  - L119: Missing docstring for FunctionDef '_load_ratings'
+  - L148: Missing docstring for FunctionDef '_load_meta_summary'
+  - L167: Missing docstring for FunctionDef '_load_feature_importance'
+  - L198: Missing docstring for FunctionDef '_load_seed_summaries'
+  - L227: Missing docstring for FunctionDef '_load_tiers'
+  - L275: Missing docstring for FunctionDef '_load_h2h_decisions'
+  - L293: Missing docstring for FunctionDef '_load_h2h_ranking'
+  - L311: Missing docstring for FunctionDef '_load_meta_json'
+  - L330: Missing docstring for FunctionDef '_load_run_metadata'
+  - L343: Missing docstring for FunctionDef '_gather_artifacts'
+  - L367: Missing docstring for FunctionDef '_plot_output_path'
+  - L374: Missing docstring for FunctionDef '_prepare_axis'
+  - L422: Missing docstring for FunctionDef '_determine_heatmap_order'
+  - L640: Missing docstring for FunctionDef '_format_rate'
+  - L644: Missing docstring for FunctionDef '_top_strategy_bullets'
+  - L659: Missing docstring for FunctionDef '_top_feature_bullets'
+  - L666: Missing docstring for FunctionDef '_seed_stability_summary'
+  - L683: Missing docstring for FunctionDef '_tiers_section'
+  - L697: Missing docstring for FunctionDef '_build_report_body'
+  - L237: Missing docstring for FunctionDef '_normalize'
+
+src/farkle/analysis/run_hgb.py
+  - L166: Missing docstring for FunctionDef '_load_seed_targets'
+  - L185: Missing docstring for FunctionDef '_write_importances'
+  - L190: Missing docstring for FunctionDef '_mae'
+  - L196: Missing docstring for FunctionDef '_r2'
+  - L207: Missing docstring for FunctionDef '_run_grouped_cv'
+  - L51: Missing docstring for FunctionDef 'permutation_importance'
+  - L58: Missing docstring for ClassDef 'GroupKFold'
+  - L73: Missing docstring for ClassDef '_FallbackPD'
+  - L41: Missing docstring for FunctionDef 'fit'
+  - L45: Missing docstring for FunctionDef 'predict'
+  - L62: Missing docstring for FunctionDef 'split'
+  - L75: Missing docstring for FunctionDef 'from_estimator'
+  - L78: Missing docstring for ClassDef '_Fig'
+  - L79: Missing docstring for FunctionDef 'savefig'
+
+src/farkle/analysis/run_trueskill.py
+  - L88: Missing docstring for ClassDef '_TSCheckpoint'
+  - L97: Missing docstring for FunctionDef '_save_ckpt'
+  - L103: Missing docstring for FunctionDef '_load_ckpt'
+  - L139: Missing docstring for FunctionDef '_save_ratings_parquet'
+  - L158: Missing docstring for ClassDef '_BlockCkpt'
+  - L167: Missing docstring for FunctionDef '_save_block_ckpt'
+  - L173: Missing docstring for FunctionDef '_load_block_ckpt'
+  - L357: Missing docstring for FunctionDef '_ensure_seed_ratings'
+  - L213: Missing docstring for FunctionDef 'col'
+
+src/farkle/analysis/seed_summaries.py
+  - First comment is missing or not at top of file
+  - L100: Missing docstring for FunctionDef '_load_metrics_frame'
+  - L127: Missing docstring for FunctionDef '_build_summary'
+  - L176: Missing docstring for FunctionDef '_mean_output_name'
+  - L182: Missing docstring for FunctionDef '_weighted_mean'
+  - L191: Missing docstring for FunctionDef '_normalize_summary'
+  - L204: Missing docstring for FunctionDef '_existing_summary_matches'
+
+src/farkle/analysis/tiering_report.py
+  - Missing module docstring
+  - L22: Missing docstring for ClassDef 'TieringInputs'
+  - L29: Missing docstring for FunctionDef 'run'
+  - L71: Missing docstring for FunctionDef '_prepare_inputs'
+  - L89: Missing docstring for FunctionDef '_results_dir_for_seed'
+  - L101: Missing docstring for FunctionDef '_load_isolated_metrics'
+  - L132: Missing docstring for FunctionDef '_weighted_winrate'
+  - L153: Missing docstring for FunctionDef '_build_frequentist_tiers'
+  - L173: Missing docstring for FunctionDef '_build_report'
+  - L186: Missing docstring for FunctionDef '_write_frequentist_scores'
+  - L237: Missing docstring for FunctionDef '_write_outputs'
+  - L135: Missing docstring for FunctionDef '_agg'
+
+src/farkle/analysis/trueskill.py
+  - Missing module docstring
+
+src/farkle/cli/main.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid non-printable character U+FEFF (<unknown>, line 1)
+
+src/farkle/config.py
+  - Missing module docstring
+  - L27: Missing docstring for ClassDef 'PowerDesign'
+  - L124: Missing docstring for ClassDef 'IngestConfig'
+  - L132: Missing docstring for ClassDef 'CombineConfig'
+  - L137: Missing docstring for ClassDef 'MetricsConfig'
+  - L142: Missing docstring for ClassDef 'TrueSkillConfig'
+  - L149: Missing docstring for ClassDef 'Head2HeadConfig'
+  - L158: Missing docstring for ClassDef 'HGBConfig'
+  - L288: Missing docstring for FunctionDef '_annotation_contains'
+  - L119: Missing docstring for FunctionDef 'run_tiering_report'
+  - L182: Missing docstring for FunctionDef 'results_dir'
+  - L186: Missing docstring for FunctionDef 'analysis_dir'
+  - L190: Missing docstring for FunctionDef 'data_dir'
+  - L193: Missing docstring for FunctionDef 'n_dir'
+  - L196: Missing docstring for FunctionDef 'checkpoint_path'
+  - L199: Missing docstring for FunctionDef 'metrics_path'
+  - L204: Missing docstring for FunctionDef 'row_group_size'
+  - L208: Missing docstring for FunctionDef 'parquet_codec'
+  - L212: Missing docstring for FunctionDef 'n_jobs_ingest'
+  - L216: Missing docstring for FunctionDef 'batch_rows'
+  - L221: Missing docstring for FunctionDef 'trueskill_beta'
+  - L225: Missing docstring for FunctionDef 'hgb_max_iter'
+  - L229: Missing docstring for FunctionDef 'combine_max_players'
+  - L233: Missing docstring for FunctionDef 'metrics_seat_range'
+  - L238: Missing docstring for FunctionDef 'metrics_name'
+  - L244: Missing docstring for FunctionDef 'curated_rows_name'
+  - L249: Missing docstring for FunctionDef 'manifest_name'
+  - L254: Missing docstring for FunctionDef 'curated_parquet'
+  - L263: Missing docstring for FunctionDef 'manifest_for'
+  - L266: Missing docstring for FunctionDef 'ingested_rows_raw'
+  - L269: Missing docstring for FunctionDef 'ingested_rows_curated'
+  - L332: Missing docstring for FunctionDef 'build'
+
+src/farkle/game/scoring.py
+  - L436: Missing docstring for FunctionDef 'must_bank'
+
+src/farkle/game/tests/__init__.py
+  - Missing path comment (file is empty)
+  - Missing module docstring
+
+src/farkle/game/tests/test_engine_final_round.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L47: Missing docstring for FunctionDef 'test_final_round_respects_score_to_beat_and_reruns'
+  - L20: Missing docstring for FunctionDef 'integers'
+  - L42: Missing docstring for FunctionDef 'decide'
+
+src/farkle/game/tests/test_scoring_properties.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L11: Missing docstring for FunctionDef 'test_score_roll_cached_is_permutation_invariant'
+  - L20: Missing docstring for FunctionDef 'test_faces_to_counts_total_matches_roll_length'
+
+src/farkle/simulation/power_helpers.py
+  - Missing module docstring
+  - L57: Missing docstring for FunctionDef 'games_for_power_from_design'
+
+src/farkle/simulation/run_tournament.py
+  - L109: Missing docstring for ClassDef 'WorkerState'
+  - L65: Missing docstring for FunctionDef 'games_per_shuffle'
+
+src/farkle/simulation/watch_game.py
+  - L62: Missing docstring for FunctionDef 'format_bool'
+  - L80: Missing docstring for FunctionDef 'traced_decide'
+  - L114: Missing docstring for FunctionDef 'traced_default_score'
+  - L150: Missing docstring for FunctionDef 'traced_default_score'
+
+src/farkle/utils/artifacts.py
+  - Missing module docstring
+
+src/farkle/utils/logging.py
+  - L39: Missing docstring for FunctionDef 'setup_info_logging'
+  - L43: Missing docstring for FunctionDef 'setup_warning_logging'
+
+src/farkle/utils/manifest.py
+  - L40: Missing docstring for FunctionDef '_ensure_parent_dir'
+
+src/farkle/utils/parallel.py
+  - L14: Missing docstring for FunctionDef 'process_map'
+
+src/farkle/utils/schema_helpers.py
+  - Missing module docstring
+  - L49: Missing docstring for FunctionDef 'n_players_from_schema'
+
+src/farkle/utils/sinks.py
+  - L44: Missing docstring for FunctionDef 'open'
+  - L61: Missing docstring for FunctionDef 'close'
+  - L72: Missing docstring for FunctionDef 'write_row'
+  - L76: Missing docstring for FunctionDef 'write_rows'
+
+src/farkle/utils/stats.py
+  - L79: Missing docstring for FunctionDef '_num_hypotheses'
+
+src/farkle/utils/streaming_loop.py
+  - Missing module docstring
+  - L14: Missing docstring for FunctionDef 'run_streaming_shard'
+  - L52: Missing docstring for FunctionDef 'producer_thread'
+  - L60: Missing docstring for FunctionDef 'writer_thread'
+  - L88: Missing docstring for ClassDef 'BoundedQueue'
+  - L70: Missing docstring for FunctionDef 'batches'
+  - L92: Missing docstring for FunctionDef 'push'
+  - L95: Missing docstring for FunctionDef 'pop'
+  - L98: Missing docstring for FunctionDef 'close'
+
+src/farkle/utils/writer.py
+  - Missing module docstring
+  - L29: Missing docstring for ClassDef 'ParquetShardWriter'
+  - L49: Missing docstring for FunctionDef 'rows_written'
+  - L52: Missing docstring for FunctionDef '_ensure_writer'
+  - L63: Missing docstring for FunctionDef 'write_batch'
+  - L69: Missing docstring for FunctionDef 'write_batches'
+  - L73: Missing docstring for FunctionDef 'close'
+
+src/farkle/utils/yaml_helpers.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid non-printable character U+FEFF (<unknown>, line 1)
+
+src/pipeline.py
+  - L97: Missing docstring for FunctionDef '_done_path'
+  - L201: Missing docstring for FunctionDef '_detect_player_counts'
+
+tests/__init__.py
+  - Missing path comment (file is empty)
+  - Missing module docstring
+
+tests/conftest.py
+  - L1: Path comment mismatch (expected: '# tests/conftest.py')
+  - Missing module docstring
+  - L60: Missing docstring for FunctionDef '_identity_jit'
+  - L144: Missing docstring for FunctionDef 'pytest_addoption'
+  - L154: Missing docstring for FunctionDef 'update_goldens'
+  - L220: Missing docstring for FunctionDef 'capinfo'
+  - L64: Missing docstring for FunctionDef '_decorator'
+  - L101: Missing docstring for ClassDef '_DummyHGB'
+  - L116: Missing docstring for ClassDef '_DummyPDP'
+  - L128: Missing docstring for FunctionDef '_dummy_permutation_importance'
+  - L105: Missing docstring for FunctionDef 'fit'
+  - L108: Missing docstring for FunctionDef 'predict'
+  - L125: Missing docstring for FunctionDef 'from_estimator'
+  - L34: Missing docstring for FunctionDef '_load_toml'
+  - L118: Missing docstring for ClassDef '_Fig'
+  - L119: Missing docstring for FunctionDef 'savefig'
+
+tests/helpers/golden_utils.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L18: Missing docstring for FunctionDef '_normalize_frame'
+  - L67: Missing docstring for FunctionDef '_assert_frame_golden'
+
+tests/helpers/metrics_samples.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L208: Missing docstring for FunctionDef '_write_version_note'
+  - L214: Missing docstring for FunctionDef '_parquet_inputs_exist'
+  - L255: Missing docstring for FunctionDef 'build_config'
+  - L259: Missing docstring for FunctionDef 'stage_sample_run'
+  - L268: Missing docstring for FunctionDef 'validate_outputs'
+
+tests/integration/test_farkle_integration.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L31: Missing docstring for FunctionDef 'simple_strategy'
+  - L35: Missing docstring for FunctionDef 'test_seed_reproducible'
+  - L41: Missing docstring for FunctionDef 'test_final_round_rule'
+  - L80: Missing docstring for FunctionDef 'test_pipeline_matches_default'
+
+tests/integration/test_metrics_stage.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L11: Missing docstring for FunctionDef 'test_metrics_run_matches_goldens'
+  - L17: Missing docstring for FunctionDef 'test_golden_mismatch_requires_update_flag'
+
+tests/integration/test_run_tournament_integration.py
+  - First comment is missing or not at top of file
+  - L186: Missing docstring for FunctionDef 'test_run_tournament_process_pool'
+  - L35: Missing docstring for ClassDef '_StubTable'
+  - L48: Missing docstring for FunctionDef '_schema'
+  - L51: Missing docstring for FunctionDef '_string'
+  - L54: Missing docstring for FunctionDef '_float64'
+  - L59: Missing docstring for FunctionDef '_write_table'
+  - L62: Missing docstring for FunctionDef '_read_table'
+  - L42: Missing docstring for FunctionDef 'from_pylist'
+  - L45: Missing docstring for FunctionDef 'to_pylist'
+
+tests/test_stats_wilson.py
+  - First comment is missing or not at top of file
+  - L10: Missing docstring for FunctionDef 'test_wilson_ci_balanced_sample'
+  - L17: Missing docstring for FunctionDef 'test_wilson_ci_handles_extreme_counts'
+  - L29: Missing docstring for FunctionDef 'test_wilson_ci_alpha_variation'
+  - L46: Missing docstring for FunctionDef 'test_wilson_ci_invalid_inputs'
+
+tests/unit/analysis/conftest.py
+  - First comment is missing or not at top of file
+
+tests/unit/analysis/test_analysis_pipeline.py
+  - First comment is missing or not at top of file
+  - L22: Missing docstring for FunctionDef '_make_config'
+  - L37: Missing docstring for FunctionDef 'test_pipeline_writes_resolved_config_and_manifest'
+  - L81: Missing docstring for FunctionDef 'test_pipeline_individual_commands_invoke_target'
+  - L98: Missing docstring for FunctionDef 'test_pipeline_all_runs_all_steps'
+  - L131: Missing docstring for FunctionDef 'test_pipeline_step_failure_propagates'
+  - L28: Missing docstring for FunctionDef '_load_app_config'
+  - L44: Missing docstring for FunctionDef '_fake_ingest'
+  - L88: Missing docstring for FunctionDef '_record'
+  - L105: Missing docstring for FunctionDef '_make_stub'
+  - L136: Missing docstring for FunctionDef '_boom'
+  - L106: Missing docstring for FunctionDef '_stub'
+
+tests/unit/analysis/test_analytics_head2head.py
+  - First comment is missing or not at top of file
+  - L16: Missing docstring for FunctionDef '_cfg'
+  - L27: Missing docstring for FunctionDef 'test_run_skips_if_up_to_date'
+  - L48: Missing docstring for FunctionDef 'test_run_logs_warning_on_failure'
+  - L37: Missing docstring for FunctionDef 'boom'
+  - L61: Missing docstring for FunctionDef 'boom'
+
+tests/unit/analysis/test_analytics_run_all.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L25: Missing docstring for FunctionDef 'test_run_all_invokes_expected_modules'
+  - L30: Missing docstring for FunctionDef 'make_module'
+  - L99: Missing docstring for FunctionDef '_seed_stub'
+  - L36: Missing docstring for FunctionDef '_run'
+
+tests/unit/analysis/test_analytics_trueskill.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid non-printable character U+FEFF (<unknown>, line 1)
+
+tests/unit/analysis/test_checks.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L14: Missing docstring for FunctionDef '_combined_path'
+  - L21: Missing docstring for FunctionDef '_write_table'
+  - L27: Missing docstring for FunctionDef '_write_manifest'
+  - L37: Missing docstring for FunctionDef 'test_check_pre_metrics_missing_winner_column'
+  - L47: Missing docstring for FunctionDef 'test_check_pre_metrics_negative_integer_column'
+  - L67: Missing docstring for FunctionDef 'test_check_pre_metrics_unreadable_manifest'
+  - L87: Missing docstring for FunctionDef 'test_check_pre_metrics_manifest_row_mismatch'
+  - L110: Missing docstring for FunctionDef 'test_check_post_combine_missing_output'
+  - L117: Missing docstring for FunctionDef 'test_check_post_combine_unreadable_output'
+  - L125: Missing docstring for FunctionDef 'test_check_post_combine_row_count_mismatch'
+  - L141: Missing docstring for FunctionDef 'test_check_post_combine_schema_mismatch'
+
+tests/unit/analysis/test_combine.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L12: Missing docstring for FunctionDef '_write_curated'
+  - L18: Missing docstring for FunctionDef 'test_combine_pads_and_counts'
+  - L71: Missing docstring for FunctionDef 'test_combine_logs_when_no_inputs'
+  - L90: Missing docstring for FunctionDef 'test_combine_skips_when_output_newer'
+  - L119: Missing docstring for FunctionDef 'test_combine_zero_row_inputs_cleanup'
+  - L49: Missing docstring for FunctionDef '_capture'
+
+tests/unit/analysis/test_curate.py
+  - L1: Path comment mismatch (expected: '# tests/unit/analysis/test_curate.py')
+  - Missing module docstring
+  - L22: Missing docstring for FunctionDef '_make_cfg'
+  - L26: Missing docstring for FunctionDef '_empty_table'
+  - L33: Missing docstring for FunctionDef 'test_schema_hash_known_value'
+  - L37: Missing docstring for FunctionDef 'test_schema_hash_uses_schema_serialize_when_pa_ipc_missing'
+  - L66: Missing docstring for FunctionDef 'test_already_curated_schema_hash'
+  - L101: Missing docstring for FunctionDef 'test_already_curated_missing_files'
+  - L119: Missing docstring for FunctionDef 'test_already_curated_manifest_failures'
+  - L152: Missing docstring for FunctionDef 'test_run_new_layout'
+  - L175: Missing docstring for FunctionDef 'test_run_with_app_config'
+  - L195: Missing docstring for FunctionDef 'test_run_legacy_missing_raw'
+  - L206: Missing docstring for FunctionDef 'test_write_manifest_includes_config_sha'
+  - L220: Missing docstring for FunctionDef 'test_already_curated_logs_schema_mismatch'
+  - L239: Missing docstring for FunctionDef 'test_run_legacy_already_curated'
+  - L256: Missing docstring for FunctionDef 'test_run_new_layout_missing_manifest'
+  - L266: Missing docstring for FunctionDef 'test_schema_hash_prefers_pa_ipc_serialize'
+  - L306: Missing docstring for FunctionDef 'test_already_curated_handles_metadata_error'
+  - L321: Missing docstring for FunctionDef 'test_run_existing_curated_manifest_allows_proceed'
+  - L347: Missing docstring for FunctionDef 'test_run_legacy_finalizes_raw_file'
+  - L38: Missing docstring for ClassDef 'DummySchema'
+  - L267: Missing docstring for ClassDef 'DummySchema'
+  - L279: Missing docstring for FunctionDef 'fake_serialize'
+  - L314: Missing docstring for FunctionDef 'boom'
+  - L42: Missing docstring for FunctionDef 'serialize'
+  - L271: Missing docstring for FunctionDef 'serialize'
+  - L282: Missing docstring for ClassDef 'DummySerialized'
+  - L45: Missing docstring for ClassDef 'DummyBuffer'
+  - L283: Missing docstring for FunctionDef 'to_buffer'
+  - L47: Missing docstring for FunctionDef 'to_pybytes'
+  - L284: Missing docstring for ClassDef 'DummyBuffer'
+  - L286: Missing docstring for FunctionDef 'to_pybytes'
+
+tests/unit/analysis/test_hgb_feat.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L14: Missing docstring for FunctionDef '_setup_cfg'
+  - L36: Missing docstring for FunctionDef 'test_hgb_feat_skips_when_up_to_date'
+  - L55: Missing docstring for FunctionDef 'test_hgb_feat_runs_when_outdated'
+  - L48: Missing docstring for FunctionDef 'boom'
+  - L69: Missing docstring for FunctionDef 'fake_run'
+
+tests/unit/analysis/test_ingest.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid non-printable character U+FEFF (<unknown>, line 1)
+
+tests/unit/analysis/test_meta.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L14: Missing docstring for FunctionDef '_make_cfg'
+  - L24: Missing docstring for FunctionDef 'test_pool_winrates_prefers_fixed_effects_when_I2_low'
+  - L52: Missing docstring for FunctionDef 'test_meta_run_writes_pooled_outputs'
+
+tests/unit/analysis/test_metrics.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L11: Missing docstring for FunctionDef 'sample_config'
+  - L17: Missing docstring for FunctionDef 'test_collect_metrics_frames_preserves_stats'
+  - L30: Missing docstring for FunctionDef 'test_compute_seat_advantage_matches_manifest'
+
+tests/unit/analysis/test_pipeline_analytics.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L12: Missing docstring for FunctionDef '_setup'
+  - L34: Missing docstring for FunctionDef 'test_analyze_all_skips_when_up_to_date'
+  - L39: Missing docstring for FunctionDef 'fake_ts'
+  - L44: Missing docstring for FunctionDef 'fake_h2h'
+  - L53: Missing docstring for FunctionDef 'fake_hgb'
+
+tests/unit/analysis/test_run_bonferroni_head2head.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L12: Missing docstring for FunctionDef 'test_simulate_many_games_from_seeds'
+  - L44: Missing docstring for FunctionDef 'test_run_bonferroni_head2head_empty_file'
+  - L13: Missing docstring for FunctionDef 'fake_play'
+
+tests/unit/analysis/test_run_full_field.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L8: Missing docstring for FunctionDef 'test_concat_row_shards'
+  - L27: Missing docstring for FunctionDef 'test_run_full_field_invokes_run_tournament'
+  - L46: Missing docstring for FunctionDef 'test_run_full_field_skips_complete_and_resets_partial'
+  - L84: Missing docstring for FunctionDef 'test_combo_complete_force_clean'
+  - L30: Missing docstring for FunctionDef 'fake_run_tournament'
+  - L51: Missing docstring for FunctionDef 'fake_run_tournament'
+
+tests/unit/analysis/test_run_hgb_functionality.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L15: Missing docstring for FunctionDef '_strategy_literal'
+  - L20: Missing docstring for FunctionDef '_setup_data'
+  - L62: Missing docstring for FunctionDef 'test_run_hgb_custom_output_path'
+  - L77: Missing docstring for FunctionDef 'test_run_hgb_importance_length_check'
+  - L95: Missing docstring for FunctionDef 'test_ratings_mu_values_used'
+  - L135: Missing docstring for FunctionDef 'test_partial_dependence_warning_and_limit'
+  - L197: Missing docstring for FunctionDef 'test_run_hgb_default_output'
+  - L80: Missing docstring for FunctionDef 'fake_perm_importance'
+  - L109: Missing docstring for ClassDef 'DummyModel'
+  - L150: Missing docstring for ClassDef 'DummyModel'
+  - L168: Missing docstring for FunctionDef 'fake_plot'
+  - L179: Missing docstring for FunctionDef '_record_warning'
+  - L200: Missing docstring for ClassDef 'DummyModel'
+  - L110: Missing docstring for FunctionDef 'fit'
+  - L151: Missing docstring for FunctionDef 'fit'
+  - L201: Missing docstring for FunctionDef 'fit'
+
+tests/unit/analysis/test_run_hgb_helpers.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L12: Missing docstring for FunctionDef 'test_plot_partial_dependence'
+
+tests/unit/analysis/test_run_trueskill_additional.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L17: Missing docstring for FunctionDef 'test_find_combined_parquet_none_cases'
+  - L24: Missing docstring for FunctionDef 'test_ratings_to_table_handles_tuple_and_scalar'
+  - L42: Missing docstring for FunctionDef 'test_players_and_ranks_from_batch_branching'
+  - L85: Missing docstring for FunctionDef 'test_players_and_ranks_from_batch_without_rank_columns'
+  - L98: Missing docstring for FunctionDef 'test_players_and_ranks_from_batch_missing_strategy'
+  - L111: Missing docstring for FunctionDef 'test_rate_single_pass_resume_checkpoint'
+  - L154: Missing docstring for FunctionDef 'test_rate_single_pass_without_resume'
+  - L181: Missing docstring for FunctionDef 'test_rate_single_pass_resume_without_ratings_file'
+  - L219: Missing docstring for FunctionDef 'test_rate_single_pass_resume_without_checkpoint'
+  - L246: Missing docstring for FunctionDef 'test_iter_players_and_ranks_seat_ranks_branch'
+  - L261: Missing docstring for FunctionDef 'test_iter_players_and_ranks_fallback_cases'
+  - L278: Missing docstring for FunctionDef 'test_rate_stream_honors_keepers'
+  - L300: Missing docstring for FunctionDef 'test_rate_stream_without_keeper_filter'
+  - L314: Missing docstring for FunctionDef 'test_rate_block_worker_up_to_date_guard'
+  - L340: Missing docstring for FunctionDef 'test_rate_block_worker_metadata_failure'
+  - L364: Missing docstring for FunctionDef 'test_rate_block_worker_without_resume_processes'
+  - L385: Missing docstring for FunctionDef 'test_rate_block_worker_resume_with_keepers'
+  - L427: Missing docstring for FunctionDef 'test_rate_block_worker_resume_missing_checkpoint_ratings_file'
+  - L459: Missing docstring for FunctionDef 'test_run_trueskill_handles_worker_exception'
+  - L542: Missing docstring for FunctionDef 'test_run_trueskill_rebuilds_outdated_pooled'
+  - L288: Missing docstring for FunctionDef 'fake_iter'
+  - L304: Missing docstring for FunctionDef 'fake_iter'
+  - L356: Missing docstring for FunctionDef 'boom'
+  - L476: Missing docstring for FunctionDef 'immediate_write'
+  - L481: Missing docstring for ClassDef '_Future'
+  - L495: Missing docstring for ClassDef '_Executor'
+  - L512: Missing docstring for FunctionDef 'fake_exception'
+  - L515: Missing docstring for FunctionDef 'fake_rate_block_worker'
+  - L555: Missing docstring for FunctionDef 'immediate_write'
+  - L560: Missing docstring for FunctionDef 'fake_rate_block_worker'
+  - L576: Missing docstring for FunctionDef 'fake_build_tiers'
+  - L490: Missing docstring for FunctionDef 'result'
+  - L499: Missing docstring for FunctionDef 'submit'
+
+tests/unit/analysis/test_run_trueskill_helpers.py
+  - First comment is missing or not at top of file
+  - L15: Missing docstring for FunctionDef 'test_read_manifest_seed'
+  - L22: Missing docstring for FunctionDef 'test_find_combined_parquet'
+  - L42: Missing docstring for FunctionDef 'test_update_ratings_adds_missing_strategies'
+  - L52: Missing docstring for FunctionDef '_write_results_block'
+  - L85: Missing docstring for FunctionDef 'test_run_trueskill_skips_empty_blocks'
+  - L111: Missing docstring for FunctionDef 'test_run_trueskill_with_seed_suffix'
+
+tests/unit/analysis/test_run_trueskill_orchestration.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L14: Missing docstring for FunctionDef 'test_run_trueskill_pooling_and_short_circuit'
+  - L147: Missing docstring for FunctionDef 'test_run_trueskill_skips_zero_game_block'
+  - L42: Missing docstring for FunctionDef 'immediate_write'
+  - L49: Missing docstring for ClassDef '_FakeFuture'
+  - L63: Missing docstring for ClassDef '_FakeExecutor'
+  - L79: Missing docstring for FunctionDef 'fake_as_completed'
+  - L82: Missing docstring for FunctionDef 'fake_rate_block_worker'
+  - L101: Missing docstring for FunctionDef 'fake_build_tiers'
+  - L163: Missing docstring for FunctionDef 'immediate_write'
+  - L168: Missing docstring for FunctionDef 'fake_rate_block_worker'
+  - L58: Missing docstring for FunctionDef 'result'
+  - L69: Missing docstring for FunctionDef 'submit'
+
+tests/unit/analysis/test_run_trueskill_pooling.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L13: Missing docstring for FunctionDef 'test_pooled_ratings_are_weighted_mean'
+
+tests/unit/analysis/test_run_trueskill_streaming.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L14: Missing docstring for ClassDef '_DummyRating'
+  - L20: Missing docstring for ClassDef '_DummyEnv'
+  - L37: Missing docstring for FunctionDef 'sample_parquet'
+  - L50: Missing docstring for FunctionDef 'test_stream_batches_respects_resume_offsets'
+  - L88: Missing docstring for FunctionDef 'test_players_and_ranks_precedence'
+  - L127: Missing docstring for FunctionDef 'test_rate_single_pass_resumes_from_checkpoint'
+  - L177: Missing docstring for FunctionDef 'test_rate_block_worker_resumes_from_checkpoint'
+  - L244: Missing docstring for FunctionDef 'test_load_ckpts_handle_missing_and_invalid'
+  - L254: Missing docstring for FunctionDef 'test_rate_block_worker_missing_curated_and_fallback'
+  - L273: Missing docstring for FunctionDef 'test_coerce_and_seed_ratings'
+  - L295: Missing docstring for FunctionDef 'test_rate_stream_applies_keeper_filter'
+  - L24: Missing docstring for FunctionDef 'create_rating'
+  - L27: Missing docstring for FunctionDef 'rate'
+
+tests/unit/analysis/test_seed_summaries.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L13: Missing docstring for FunctionDef '_make_cfg'
+  - L24: Missing docstring for FunctionDef '_write_metrics'
+  - L30: Missing docstring for FunctionDef 'test_seed_summaries_writes_expected_columns'
+  - L71: Missing docstring for FunctionDef 'test_seed_summaries_respects_input_seed_column'
+  - L90: Missing docstring for FunctionDef 'test_seed_summaries_skips_when_unchanged'
+  - L107: Missing docstring for FunctionDef 'test_seed_summaries_force_rewrites'
+  - L100: Missing docstring for FunctionDef '_fail'
+  - L120: Missing docstring for FunctionDef '_record'
+
+tests/unit/analysis_light/conftest.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L18: Missing docstring for ClassDef 'GoldenDataset'
+  - L71: Missing docstring for FunctionDef '_build_golden_df'
+  - L99: Missing docstring for FunctionDef 'golden_dataset'
+  - L111: Missing docstring for FunctionDef 'patched_strategy_grid'
+  - L132: Missing docstring for FunctionDef 'analysis_config'
+  - L23: Missing docstring for FunctionDef 'copy_into'
+  - L30: Missing docstring for FunctionDef 'write_metrics'
+  - L112: Missing docstring for ClassDef '_StubStrategy'
+  - L121: Missing docstring for FunctionDef '_grid'
+  - L133: Missing docstring for FunctionDef '_factory'
+
+tests/unit/analysis_light/test_pipeline_stabilizers.py
+  - Missing module docstring
+  - L13: Missing docstring for ClassDef '_CfgProto'
+  - L37: Missing docstring for FunctionDef 'test_ingest_golden_dataset'
+  - L74: Missing docstring for FunctionDef 'test_curate_golden_dataset'
+  - L103: Missing docstring for FunctionDef 'test_metrics_golden_dataset'
+
+tests/unit/cli/test_main_cli.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid non-printable character U+FEFF (<unknown>, line 1)
+
+tests/unit/cli/test_main_module.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L11: Missing docstring for FunctionDef 'test_main_module_calls_cli'
+  - L14: Missing docstring for FunctionDef 'fake_main'
+
+tests/unit/config/test_app_config.py
+  - First comment is missing or not at top of file
+  - L14: Missing docstring for FunctionDef 'write_yaml'
+  - L23: Missing docstring for FunctionDef 'test_load_app_config_merges_overlays'
+  - L54: Missing docstring for FunctionDef 'test_load_app_config_applies_analysis_controls'
+  - L96: Missing docstring for FunctionDef 'test_load_app_config_normalizes_legacy_keys'
+  - L112: Missing docstring for FunctionDef 'test_load_app_config_appends_seed'
+  - L127: Missing docstring for FunctionDef 'test_load_app_config_rejects_non_mapping'
+  - L135: Missing docstring for FunctionDef 'test_apply_dot_overrides_coerces_values'
+  - L158: Missing docstring for FunctionDef 'test_apply_dot_overrides_rejects_bad_pairs'
+  - L165: Missing docstring for FunctionDef 'test_apply_dot_overrides_unknown_option'
+  - L15: Missing docstring for FunctionDef '_write'
+
+tests/unit/game/test_engine.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L23: Missing docstring for FunctionDef 'test_take_turn_success'
+  - L36: Missing docstring for FunctionDef 'stop_after_one'
+  - L40: Missing docstring for FunctionDef 'test_game_play_deterministic'
+  - L98: Missing docstring for FunctionDef 'test_auto_hot_dice_forces_roll'
+  - L138: Missing docstring for FunctionDef 'test_final_round_override'
+  - L167: Missing docstring for FunctionDef 'test_turn_roll_fuse'
+  - L188: Missing docstring for FunctionDef 'test_final_round_stop_when_ahead_run_up_false'
+  - L208: Missing docstring for FunctionDef 'test_smart_discard_counters_non_negative'
+  - L233: Missing docstring for FunctionDef 'test_smart_five_discard_count'
+  - L257: Missing docstring for FunctionDef 'test_final_round_continue_when_ahead_run_up_true'
+  - L15: Missing docstring for ClassDef '_G'
+  - L76: Missing docstring for FunctionDef 'integers'
+  - L129: Missing docstring for FunctionDef 'integers'
+  - L169: Missing docstring for ClassDef 'HotGen'
+  - L184: Missing docstring for FunctionDef 'decide'
+  - L281: Missing docstring for FunctionDef 'scoring_roll'
+  - L298: Missing docstring for FunctionDef 'bust_roll'
+  - L16: Missing docstring for FunctionDef 'integers'
+  - L173: Missing docstring for FunctionDef 'integers'
+
+tests/unit/game/test_gamemetrics.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L7: Missing docstring for FunctionDef 'test_players_dict_and_per_player_alias'
+
+tests/unit/game/test_numba_modifications.py
+  - L1: Path comment mismatch (expected: '# tests/unit/game/test_numba_modifications.py')
+  - Missing module docstring
+  - L32: Missing docstring for FunctionDef 'test_lookup_known_patterns'
+  - L54: Missing docstring for FunctionDef 'test_build_and_roundtrip'
+  - L84: Missing docstring for FunctionDef 'test_decide_basic'
+  - L111: Missing docstring for FunctionDef 'test_decide_final_round_ignores_other_flags'
+
+tests/unit/game/test_scoring.py
+  - L1: Path comment mismatch (expected: '# tests/unit/game/test_scoring.py')
+  - Missing module docstring
+  - L60: Missing docstring for FunctionDef '_make_csv_loader'
+  - L75: Missing docstring for FunctionDef 'load_score_cases'
+  - L98: Missing docstring for FunctionDef '_call'
+  - L144: Missing docstring for FunctionDef 'test_early_exits'
+  - L153: Missing docstring for FunctionDef 'test_require_both_logic'
+  - L169: Missing docstring for FunctionDef 'test_favor_score_vs_dice'
+  - L184: Missing docstring for FunctionDef 'test_score_roll_cached'
+  - L218: Missing docstring for FunctionDef 'test_generate_sequences'
+  - L224: Missing docstring for FunctionDef 'test_score_lister_filters_busts'
+  - L252: Missing docstring for FunctionDef 'test_apply_discards'
+  - L263: Missing docstring for FunctionDef 'test_default_score_invariants'
+  - L285: Missing docstring for FunctionDef 'test_hot_dice_discard_never_trims_six'
+  - L295: Missing docstring for FunctionDef 'test_score_roll_wrapper_agrees_with_evaluate'
+  - L315: Missing docstring for FunctionDef 'test_default_score_cases'
+  - L335: Missing docstring for FunctionDef 'test_faces_to_counts_tuple_invalid_faces'
+  - L66: Missing docstring for FunctionDef '_loader'
+
+tests/unit/game/test_scoring_lookup_validation.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L6: Missing docstring for FunctionDef 'test_score_roll_rejects_invalid_faces'
+  - L11: Missing docstring for FunctionDef 'test_score_roll_rejects_too_many_dice'
+  - L16: Missing docstring for FunctionDef 'test_evaluate_rejects_sum_over_six'
+  - L21: Missing docstring for FunctionDef 'test_evaluate_rejects_negative_counts'
+
+tests/unit/simulation/test_run_tournament.py
+  - First comment is missing or not at top of file
+  - L33: Missing docstring for FunctionDef 'fake_play_shuffle'
+  - L64: Missing docstring for FunctionDef 'test_run_tournament_invalid_player_counts'
+  - L72: Missing docstring for FunctionDef 'test_init_worker_rejects_bad_player_counts'
+  - L81: Missing docstring for FunctionDef 'test_run_chunk_logs_and_propagates'
+  - L85: Missing docstring for FunctionDef 'boom'
+
+tests/unit/simulation/test_run_tournament_metrics.py
+  - L1: Path comment mismatch (expected: '# tests/unit/simulation/test_run_tournament_metrics.py')
+  - L43: Missing docstring for FunctionDef '_ppf'
+  - L47: Missing docstring for FunctionDef '_isf'
+  - L92: Missing docstring for FunctionDef '_mini_strategies'
+  - L96: Missing docstring for FunctionDef '_install_serial_process_map'
+  - L106: Missing docstring for FunctionDef '_setup_serial_run'
+  - L134: Missing docstring for FunctionDef 'test_run_chunk_metrics_accumulates'
+  - L147: Missing docstring for FunctionDef 'test_run_chunk_metrics_row_logging'
+  - L189: Missing docstring for FunctionDef 'test_save_checkpoint_round_trip'
+  - L217: Missing docstring for FunctionDef 'test_run_tournament_metric_chunks_round_trip'
+  - L267: Missing docstring for FunctionDef 'test_run_tournament_checkpoint_cadence'
+  - L311: Missing docstring for FunctionDef 'test_run_tournament_reuses_existing_metric_chunks'
+  - L357: Missing docstring for FunctionDef 'test_run_tournament_no_metrics_wins_only_checkpoint'
+  - L97: Missing docstring for FunctionDef 'fake_process_map'
+  - L112: Missing docstring for FunctionDef 'fake_measure'
+  - L153: Missing docstring for FunctionDef 'fake_run_streaming_shard'
+  - L276: Missing docstring for FunctionDef 'fake_save_checkpoint'
+  - L283: Missing docstring for FunctionDef 'fake_perf_counter'
+  - L362: Missing docstring for FunctionDef 'fake_play_shuffle'
+  - L372: Missing docstring for FunctionDef 'fake_save_checkpoint'
+  - L379: Missing docstring for FunctionDef 'fake_debug'
+
+tests/unit/simulation/test_runner_wrapper.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L25: Missing docstring for FunctionDef '_patch_tournament'
+  - L45: Missing docstring for FunctionDef 'test_runner_passes_metric_flags'
+  - L94: Missing docstring for FunctionDef 'test_runner_rejects_malformed_checkpoints'
+  - L108: Missing docstring for FunctionDef 'test_runner_writes_normalized_counters'
+  - L33: Missing docstring for FunctionDef 'fake_run_tournament'
+
+tests/unit/simulation/test_simulation.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L18: Missing docstring for FunctionDef 'test_default_grid_size'
+  - L28: Missing docstring for FunctionDef 'test_default_size'
+  - L32: Missing docstring for FunctionDef 'test_size_and_grid_match'
+  - L38: Missing docstring for FunctionDef 'test_play_helpers_consistency'
+  - L53: Missing docstring for FunctionDef 'test_custom_grid_size'
+  - L67: Missing docstring for FunctionDef 'test_consider_true_true_options'
+  - L122: Missing docstring for FunctionDef 'test_experiment_size_subset_options'
+  - L130: Missing docstring for FunctionDef 'test_simulate_many_games_from_seeds_matches'
+  - L141: Missing docstring for FunctionDef 'test_simulate_many_games_deterministic_counts'
+  - L91: Missing docstring for FunctionDef 'fake_play'
+
+tests/unit/simulation/test_stats.py
+  - First comment is missing or not at top of file
+  - Syntax error prevents parsing: invalid syntax (<unknown>, line 33)
+
+tests/unit/simulation/test_strategies.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L46: Missing docstring for FunctionDef 'test_decide'
+  - L56: Missing docstring for FunctionDef 'test_smart1_requires_smart5'
+  - L61: Missing docstring for FunctionDef 'test_require_both_guard'
+  - L66: Missing docstring for FunctionDef 'test_random_strategy_factory'
+  - L199: Missing docstring for FunctionDef 'test_parse_strategy_valid'
+  - L231: Missing docstring for FunctionDef 'test_parse_strategy_round_trip_str'
+  - L236: Missing docstring for FunctionDef 'test_entry_gate_requires_rolling'
+  - L273: Missing docstring for FunctionDef 'test_parse_strategy_invalid'
+  - L278: Missing docstring for FunctionDef 'test_parse_strategy_for_df'
+  - L309: Missing docstring for FunctionDef 'test_sample_favor_score_deterministic'
+  - L324: Missing docstring for FunctionDef 'test_load_farkle_results'
+  - L345: Missing docstring for FunctionDef 'test_load_farkle_results_unordered'
+
+tests/unit/simulation/test_time_farkle.py
+  - First comment is missing or not at top of file
+  - L42: Missing docstring for FunctionDef 'test_measure_sim_times_logs'
+  - L51: Missing docstring for FunctionDef 'test_make_random_strategies_deterministic'
+  - L73: Missing docstring for FunctionDef 'test_winners_breakdown_multiple_winners'
+  - L65: Missing docstring for FunctionDef 'fake_many_games'
+
+tests/unit/simulation/test_watch_game.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L24: Missing docstring for ClassDef '_Norm'
+  - L40: Missing docstring for FunctionDef 'test_default_score_patch_handles_discards'
+  - L83: Missing docstring for FunctionDef 'test_patched_score_traces_take_turn'
+  - L26: Missing docstring for FunctionDef 'ppf'
+  - L61: Missing docstring for ClassDef 'FixedGen'
+  - L143: Missing docstring for FunctionDef 'dummy'
+  - L175: Missing docstring for ClassDef 'FixedRng'
+  - L199: Missing docstring for ClassDef 'DummyGame'
+  - L207: Missing docstring for FunctionDef 'dummy_strategy'
+  - L211: Missing docstring for FunctionDef 'dummy_patch_scoring'
+  - L65: Missing docstring for FunctionDef 'integers'
+  - L90: Missing docstring for ClassDef 'StubGen'
+  - L179: Missing docstring for FunctionDef 'integers'
+  - L204: Missing docstring for FunctionDef 'play'
+  - L94: Missing docstring for FunctionDef 'integers'
+
+tests/unit/test_conftest_numba.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L14: Missing docstring for FunctionDef 'test_pytest_configure_patches_numba'
+  - L27: Missing docstring for FunctionDef 'func'
+
+tests/unit/test_init.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L10: Missing docstring for FunctionDef '_reload'
+  - L16: Missing docstring for FunctionDef 'test_version_patch'
+  - L22: Missing docstring for FunctionDef 'test_version_fallback'
+  - L31: Missing docstring for FunctionDef 'test_safe_unlink_permissionerror_winerror32'
+  - L47: Missing docstring for FunctionDef 'test_safe_unlink_permissionerror_other'
+  - L23: Missing docstring for FunctionDef 'raise_pkg'
+  - L35: Missing docstring for FunctionDef 'raise_perm'
+  - L51: Missing docstring for FunctionDef 'raise_perm'
+
+tests/unit/utils/test_logging.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L6: Missing docstring for FunctionDef 'test_setup_info_logging_creates_file_and_sets_level'
+  - L14: Missing docstring for FunctionDef 'test_setup_warning_logging_creates_file_and_sets_level'
+  - L22: Missing docstring for FunctionDef 'test_handlers_replaced_and_console_logging'
+
+tests/unit/utils/test_manifest_streaming_loop.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L17: Missing docstring for FunctionDef 'test_append_manifest_helpers'
+  - L36: Missing docstring for FunctionDef 'test_append_manifest_without_timestamp'
+  - L51: Missing docstring for FunctionDef 'test_append_manifest_many_noop_on_empty_iterable'
+  - L67: Missing docstring for FunctionDef 'test_iter_manifest_missing_file'
+  - L73: Missing docstring for FunctionDef 'test_run_streaming_shard_invocation'
+  - L163: Missing docstring for FunctionDef 'test_run_streaming_shard_manifest_path_without_dir'
+  - L228: Missing docstring for FunctionDef 'test_writer_thread_forwards_manifest'
+  - L273: Missing docstring for FunctionDef 'test_producer_thread_pushes_all_tables'
+  - L294: Missing docstring for FunctionDef 'test_bounded_queue_blocks_and_closes'
+  - L85: Missing docstring for ClassDef 'DummyWriter'
+  - L112: Missing docstring for FunctionDef 'fake_append'
+  - L173: Missing docstring for ClassDef 'DummyWriter'
+  - L191: Missing docstring for FunctionDef 'fake_append'
+  - L199: Missing docstring for FunctionDef 'fake_relpath'
+  - L236: Missing docstring for FunctionDef 'fake_pop'
+  - L243: Missing docstring for FunctionDef 'fake_run_streaming_shard'
+  - L281: Missing docstring for FunctionDef 'fake_push'
+  - L284: Missing docstring for FunctionDef 'mk_batches'
+  - L304: Missing docstring for FunctionDef 'push_second'
+  - L103: Missing docstring for FunctionDef 'write_batches'
+  - L183: Missing docstring for FunctionDef 'write_batches'
+
+tests/unit/utils/test_parallel_files.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L15: Missing docstring for FunctionDef 'writer_queue'
+  - L24: Missing docstring for FunctionDef 'test_writer_worker_background_thread'
+  - L56: Missing docstring for FunctionDef 'test_writer_worker_flushes_when_buffer_full'
+  - L95: Missing docstring for FunctionDef 'test_writer_worker_respects_existing_header'
+  - L119: Missing docstring for FunctionDef 'test_writer_worker_handles_immediate_termination'
+  - L142: Missing docstring for FunctionDef 'test_writer_worker_detects_empty_existing_file'
+  - L165: Missing docstring for FunctionDef 'test_process_map_serial'
+  - L171: Missing docstring for FunctionDef 'test_process_map_executor'
+  - L66: Missing docstring for ClassDef 'DummyWriter'
+  - L174: Missing docstring for ClassDef 'DummyFuture'
+  - L181: Missing docstring for ClassDef 'DummyExecutor'
+  - L70: Missing docstring for FunctionDef 'writeheader'
+  - L73: Missing docstring for FunctionDef 'writerows'
+  - L178: Missing docstring for FunctionDef 'result'
+  - L191: Missing docstring for FunctionDef 'submit'
+
+tests/unit/utils/test_schema_helpers.py
+  - First comment is missing or not at top of file
+  - L6: Missing docstring for FunctionDef 'test_rows_for_ram_enforces_minimum'
+  - L10: Missing docstring for FunctionDef 'test_rows_for_ram_scales_with_parameters'
+  - L15: Missing docstring for FunctionDef 'test_rows_for_ram_respects_custom_value_size'
+
+tests/unit/utils/test_sinks.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L10: Missing docstring for FunctionDef 'test_csv_sink_context_manager_writes_and_exception_cleanup'
+  - L46: Missing docstring for FunctionDef 'test_csv_sink_manual_open_close_and_cleanup'
+  - L91: Missing docstring for FunctionDef 'test_csv_sink_append_mode'
+  - L114: Missing docstring for FunctionDef 'test_write_counter_csv_creates_dirs_and_preserves_order'
+  - L75: Missing docstring for FunctionDef 'boom'
+  - L36: Missing docstring for FunctionDef 'boom'
+
+tests/unit/utils/test_utilities.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L16: Missing docstring for FunctionDef 'test_games_for_power_monotonic'
+  - L23: Missing docstring for FunctionDef 'test_cli_run'
+  - L67: Missing docstring for FunctionDef 'test_games_for_power_branches'
+  - L77: Missing docstring for FunctionDef 'test_games_for_power_pairwise_requires_more_games'
+  - L83: Missing docstring for FunctionDef 'test_cli_missing_file'
+  - L89: Missing docstring for FunctionDef 'test_cli_bad_yaml'
+  - L96: Missing docstring for FunctionDef 'test_cli_missing_keys'
+  - L116: Missing docstring for FunctionDef 'test_load_config_missing_file'
+  - L122: Missing docstring for FunctionDef 'test_load_config_bad_yaml'
+  - L129: Missing docstring for FunctionDef 'test_load_config_missing_keys'
+  - L26: Missing docstring for FunctionDef 'fake_run_single_n'
+  - L101: Missing docstring for FunctionDef 'fake_run_single_n'
+
+tests/unit/utils/test_utils_functions.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L8: Missing docstring for FunctionDef 'test_build_tiers_empty'
+  - L12: Missing docstring for FunctionDef 'test_build_tiers_overlapping'
+  - L19: Missing docstring for FunctionDef 'test_build_tiers_multiple_tiers'
+  - L28: Missing docstring for FunctionDef 'test_build_tiers_mismatched_sigma'
+  - L36: Missing docstring for FunctionDef 'test_build_tiers_key_mismatch'
+  - L43: Missing docstring for FunctionDef 'test_bh_correct_typical'
+  - L49: Missing docstring for FunctionDef 'test_bh_correct_none_pass'
+  - L55: Missing docstring for FunctionDef 'test_bh_correct_zero_one'
+  - L62: Missing docstring for FunctionDef 'test_bh_correct_all_high_pvals'
+  - L68: Missing docstring for FunctionDef 'test_bh_correct_empty'
+  - L73: Missing docstring for FunctionDef 'test_bonferroni_pairs_basic_determinism'
+  - L85: Missing docstring for FunctionDef 'test_bonferroni_pairs_not_enough_strategies'
+  - L90: Missing docstring for FunctionDef 'test_bonferroni_pairs_zero_games'
+  - L97: Missing docstring for FunctionDef 'test_bonferroni_pairs_negative_games'
+
+tests/unit/utils/test_writer.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L8: Missing docstring for FunctionDef 'test_parquet_shard_writer_atomic'
+
+tmp_debug.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L6: Missing docstring for FunctionDef 'load'
+
+tmp_debug2.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L5: Missing docstring for FunctionDef 'load'
+  - L33: Missing docstring for FunctionDef 'must_bank'
+
+tmp_test.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L7: Missing docstring for FunctionDef 'load'
+
+tmp_test2.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+  - L7: Missing docstring for FunctionDef 'load'
+
