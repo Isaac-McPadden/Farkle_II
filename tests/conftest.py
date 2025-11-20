@@ -13,6 +13,8 @@ from typing import Generator
 import pandas as pd
 import pytest
 
+from farkle.config import AppConfig, IOConfig, SimConfig
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
 if SRC_PATH.exists():
@@ -148,8 +150,22 @@ def pytest_configure():
 
 
 @pytest.fixture
-def tmp_results_dir(tmp_path: Path) -> Generator[Path, None, None]:
+def tmp_results_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Generator[Path, None, None]:
+    """Isolated working directory for tests that touch the filesystem.
+
+    The fixture pre-creates the ``analysis/data`` hierarchy expected by the
+    modern :class:`farkle.config.AppConfig` layout and pins the process CWD to
+    avoid cross-test pollution. An environment variable is also set so any code
+    that falls back to ``FARKLE_RESULTS_DIR`` will resolve to the same
+    temporary root.
+    """
+
     prev = os.getcwd()
+    analysis_root = tmp_path / "analysis" / "data"
+    analysis_root.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("FARKLE_RESULTS_DIR", str(tmp_path))
     os.chdir(tmp_path)
     try:
         yield tmp_path
@@ -164,26 +180,35 @@ def capinfo(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
 
 
 @pytest.fixture
-def tmp_artifacts_with_legacy(tmp_path: Path) -> dict[str, Path]:
-    artifacts_dir = tmp_path / "artifacts"
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
+def sim_artifacts(tmp_path: Path) -> dict[str, Path]:
+    """Synthetic simulation outputs that mirror the current directory layout."""
 
-    checkpoint = artifacts_dir / "checkpoint.pkl"
+    cfg = AppConfig(
+        io=IOConfig(results_dir=tmp_path, append_seed=False),
+        sim=SimConfig(n_players_list=[2], expanded_metrics=True),
+    )
+    n_players = cfg.sim.n_players_list[0]
+    n_dir = cfg.n_dir(n_players)
+    n_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint = cfg.checkpoint_path(n_players)
     payload = {"win_totals": {"alpha": 1}}
     checkpoint.write_bytes(pickle.dumps(payload))
 
-    metrics_path = artifacts_dir / "metrics.parquet"
+    metrics_path = cfg.metrics_path(n_players)
     metrics_df = pd.DataFrame(
         {
-            "metric": ["wins"],
             "strategy": ["alpha"],
-            "sum": [1.0],
-            "square_sum": [1.0],
+            "wins": [1],
+            "total_games_strat": [1],
+            "win_rate": [1.0],
+            "sum_winning_score": [10.0],
+            "sq_sum_winning_score": [100.0],
+            "sum_n_rounds": [1.0],
+            "sq_sum_n_rounds": [1.0],
+            "sum_winner_hit_max_rounds": [0.0],
         }
     )
-    try:
-        metrics_df.to_parquet(metrics_path, index=False)
-    except Exception:
-        metrics_path.write_text(metrics_df.to_csv(index=False))
+    metrics_df.to_parquet(metrics_path, index=False)
 
     return {"checkpoint": checkpoint, "metrics": metrics_path}

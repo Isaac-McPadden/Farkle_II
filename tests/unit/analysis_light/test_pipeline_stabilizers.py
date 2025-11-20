@@ -9,8 +9,6 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.config import AppConfig, IOConfig
-
 
 class _CfgProto(Protocol):
     results_dir: Path
@@ -36,11 +34,8 @@ else:  # pragma: no cover - tests skipped when UTC unavailable
     combine = curate = ingest = metrics = None  # type: ignore[assignment]
 
 
-STRATEGY_MAP = {"P1": "Aggro", "P2": "Balanced", "P3": "Cautious"}
-
-
-def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
+def test_ingest_golden_dataset(analysis_config, caplog, golden_dataset):
+    cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_dir)
 
@@ -63,7 +58,7 @@ def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
     expected_strategies = (
         golden_dataset.dataframe[["winner"]]
         .drop_duplicates()
-        .assign(winner_strategy=lambda frame: frame["winner"].map(STRATEGY_MAP))
+        .assign(winner_strategy=lambda frame: frame["winner"].map(golden_dataset.strategy_map))
         .set_index("winner")["winner_strategy"]
         .to_dict()
     )
@@ -76,8 +71,8 @@ def test_ingest_golden_dataset(tmp_results_dir, caplog, golden_dataset):
     assert any("Ingest finished" in msg for msg in messages)
 
 
-def test_curate_golden_dataset(tmp_results_dir, caplog, golden_dataset):
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
+def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
+    cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_dir)
     raw_path = cfg_proto.ingested_rows_raw(3)
@@ -105,10 +100,13 @@ def test_curate_golden_dataset(tmp_results_dir, caplog, golden_dataset):
     assert any("Curate finished" in msg for msg in messages)
 
 
-def test_metrics_golden_dataset(tmp_results_dir, caplog, golden_dataset):
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
+def test_metrics_golden_dataset(
+    analysis_config, caplog, golden_dataset, patched_strategy_grid
+):
+    cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_dir)
+    golden_dataset.write_metrics(cfg_proto.results_dir)
     ingest.run(cfg)
     curate.run(cfg)
     combine.run(cfg)
@@ -132,7 +130,7 @@ def test_metrics_golden_dataset(tmp_results_dir, caplog, golden_dataset):
     assert expected_input in stamp.get("inputs", {})
     for expected_output in (metrics_path, seat_csv, seat_parquet):
         assert str(expected_output) in stamp.get("outputs", {})
-    strategy_series = golden_dataset.dataframe["winner"].map(STRATEGY_MAP)
+    strategy_series = golden_dataset.dataframe["winner"].map(golden_dataset.strategy_map)
     expected_wins = strategy_series.value_counts()
     total_games = len(golden_dataset.dataframe)
     metrics_by_strategy = metrics_df.set_index("strategy")
@@ -154,7 +152,7 @@ def test_metrics_golden_dataset(tmp_results_dir, caplog, golden_dataset):
         observed = metrics_by_strategy.loc[strategy]
         assert observed["expected_score"] == pytest.approx(score_sum / total_games)
         assert observed["mean_score"] == pytest.approx(score_sum / wins)
-        assert observed["mean_rounds"] == pytest.approx(round_sum / wins)
+        assert observed["mean_n_rounds"] == pytest.approx(round_sum / wins)
 
     seat_df = pd.read_csv(seat_csv)
     seat_df["seat"] = seat_df["seat"].apply(lambda s: f"P{int(s)}")
