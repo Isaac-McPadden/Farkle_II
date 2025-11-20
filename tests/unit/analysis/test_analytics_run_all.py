@@ -27,26 +27,70 @@ def test_run_all_invokes_expected_modules(
 ) -> None:
     calls: List[str] = []
 
-    def make_module(name: str, label: str) -> types.ModuleType:
+    def make_module(
+        name: str, label: str, *, func_name: str = "run", record_call: bool = True
+    ) -> types.ModuleType:
         module = types.ModuleType(f"farkle.analysis.{name}")
         module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
 
         def _run(cfg, **_):  # noqa: ANN001
-            calls.append(label)
+            if record_call:
+                calls.append(label)
 
-        module.run = _run  # type: ignore[attr-defined]
+        setattr(module, func_name, _run)
         return module
 
-    labels = {
-        "trueskill": "trueskill",
-        "head2head": "head2head",
-        "hgb_feat": "hgb",
-    }
-
-    for mod_name, label in labels.items():
-        monkeypatch.setitem(
-            sys.modules, f"farkle.analysis.{mod_name}", make_module(mod_name, label)
-        )
+    monkeypatch.setitem(
+        sys.modules,
+        "farkle.analysis.meta",
+        make_module("meta", "meta", record_call=False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "farkle.analysis.run_trueskill",
+        make_module("run_trueskill", "trueskill", func_name="run_trueskill_all_seeds"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "farkle.analysis.head2head",
+        make_module("head2head", "head2head"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "farkle.analysis.hgb_feat",
+        make_module("hgb_feat", "hgb"),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "farkle.analysis.h2h_analysis",
+        make_module(
+            "h2h_analysis",
+            "h2h_analysis",
+            func_name="run_post_h2h",
+            record_call=False,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "farkle.analysis.frequentist_tiering_report",
+        make_module(
+            "frequentist_tiering_report",
+            "frequentist_tiering_report",
+            record_call=False,
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "farkle.analysis.agreement",
+        make_module("agreement", "agreement", record_call=False),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "farkle.analysis.reporting",
+        make_module(
+            "reporting", "reporting", func_name="run_report", record_call=False
+        ),
+    )
 
     import farkle.analysis as analysis_mod  # import after stubbing dependencies
 
@@ -56,16 +100,24 @@ def test_run_all_invokes_expected_modules(
         calls.append("seed_summaries")
 
     monkeypatch.setattr(analysis_mod, "run_seed_summaries", _seed_stub)
+    monkeypatch.setattr(
+        analysis_mod,
+        "_log_skip",
+        lambda label, **__: analysis_mod.LOGGER.info("Analytics: skipping %s", label),
+    )
 
     cfg = AppConfig()
     cfg.analysis.run_trueskill = ts
     cfg.analysis.run_head2head = h2h
     cfg.analysis.run_hgb = hgb
+    cfg.analysis.run_post_h2h_analysis = True
+    cfg.analysis.run_frequentist = True
+    cfg.analysis.run_agreement = True
 
     with caplog.at_level(logging.INFO):
         run_all(cfg)
 
-    expected_calls = []
+    expected_calls = ["seed_summaries"]
     if ts:
         expected_calls.append("trueskill")
         assert "Analytics: skipping trueskill" not in caplog.text
@@ -82,7 +134,6 @@ def test_run_all_invokes_expected_modules(
     else:
         assert "Analytics: skipping hist gradient boosting" in caplog.text
 
-    expected_calls.append("seed_summaries")
     assert calls == expected_calls
-    assert "Analytics: starting all modules" in caplog.text
-    assert "Analytics: all modules finished" in caplog.text
+    assert "Analytics: pipeline starting" in caplog.text
+    assert "Analytics: pipeline complete" in caplog.text
