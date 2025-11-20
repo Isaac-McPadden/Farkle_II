@@ -5,13 +5,16 @@ import importlib.util
 import logging
 import os
 import pickle
+import random
 import sys
 import types
 from pathlib import Path
 from typing import Generator
 
+import numpy as np
 import pandas as pd
 import pytest
+from freezegun import freeze_time
 
 from farkle.config import AppConfig, IOConfig, SimConfig
 
@@ -150,6 +153,29 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 @pytest.fixture(scope="session")
 def update_goldens(pytestconfig: pytest.Config) -> bool:
     return bool(pytestconfig.getoption("--update-goldens"))
+
+
+@pytest.fixture(autouse=True)
+def _freeze_time() -> Generator[None, None, None]:
+    """Pin wall-clock time for deterministic file stamps.
+
+    ``tick=True`` allows monotonic progression across calls without exposing the
+    real clock, which keeps elapsed-time calculations predictable while avoiding
+    drift across test processes.
+    """
+
+    with freeze_time("2024-01-01 00:00:00", tick=True):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _seed_random_generators(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
+    """Force deterministic randomness for every test function."""
+
+    random.seed(1337)
+    np.random.seed(1337)
+    monkeypatch.setenv("PYTHONHASHSEED", "0")
+    yield
 
 
 def pytest_configure():
