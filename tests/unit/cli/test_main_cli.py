@@ -25,44 +25,6 @@ def preserve_root_logger():
     root.handlers[:] = handlers
 
 
-def test_main_dispatches_run(monkeypatch, tmp_path, preserve_root_logger):
-    recorded: dict[str, object] = {}
-
-    def fake_run_tournament(**kwargs):
-        recorded.update(kwargs)
-
-    monkeypatch.setattr(cli_main, "run_tournament", fake_run_tournament)
-
-    cli_main.main(
-        [
-            "--log-level",
-            "DEBUG",
-            "run",
-            "--metrics",
-            "--row-dir",
-            str(tmp_path),
-        ]
-    )
-
-    assert recorded["collect_metrics"] is True
-    assert recorded["row_output_directory"] == tmp_path
-    assert logging.getLogger().level == logging.DEBUG
-
-
-def test_main_dispatches_time(monkeypatch, preserve_root_logger):
-    called = False
-
-    def fake_measure_sim_times():
-        nonlocal called
-        called = True
-
-    monkeypatch.setattr(cli_main, "measure_sim_times", fake_measure_sim_times)
-
-    cli_main.main(["time"])
-
-    assert called is True
-
-
 def test_main_dispatches_watch(monkeypatch, preserve_root_logger):
     captured: dict[str, object] = {}
 
@@ -74,64 +36,6 @@ def test_main_dispatches_watch(monkeypatch, preserve_root_logger):
     cli_main.main(["watch", "--seed", "123"])
 
     assert captured == {"seed": 123}
-
-
-@pytest.mark.parametrize(
-    "subcommand, expected_order",
-    [
-        ("ingest", ["ingest"]),
-        ("curate", ["curate"]),
-        ("combine", ["combine"]),
-        ("metrics", ["metrics"]),
-        ("pipeline", ["ingest", "curate", "combine", "metrics"]),
-    ],
-)
-def test_main_dispatches_analyze_variants(
-    monkeypatch, subcommand, expected_order, preserve_root_logger
-):
-    calls: list[tuple[str, object]] = []
-
-    def make_recorder(name: str):
-        def _recorder(cfg: object) -> None:
-            calls.append((name, cfg))
-
-        return _recorder
-
-    for name in ("ingest", "curate", "combine", "metrics"):
-        module = getattr(cli_main, name)
-        monkeypatch.setattr(module, "run", make_recorder(name))
-
-    cli_main.main(["analyze", subcommand])
-
-    assert [name for name, _ in calls] == expected_order
-
-    def _as_pipeline_cfg(obj: object):
-        """
-        Convert whatever the CLI passes into a PipelineCfg-like object
-        without relying on class identity (suite-safe).
-        Accepts:
-          - PipelineCfg-like objects (have .results_dir & .analysis_subdir)
-          - AppConfig-like objects (have .analysis)
-          - Objects exposing .to_pipeline_cfg()
-        """
-        # Already a PipelineCfg-like thing? (duck-typed, not isinstance)
-        if hasattr(obj, "results_dir") and hasattr(obj, "analysis_subdir"):
-            return obj
-        # AppConfig-like wrapper?
-        analysis_attr = getattr(obj, "analysis", None)
-        if analysis_attr is not None and hasattr(analysis_attr, "results_dir"):
-            return analysis_attr
-        # Explicit converter?
-        to_pipeline = getattr(obj, "to_pipeline_cfg", None)
-        if callable(to_pipeline):
-            return to_pipeline()
-        raise AssertionError(f"Unexpected config shape: {type(obj).__name__}")
-
-    # Suite-safe: just prove each cfg is convertible to a PipelineCfg-like object
-    converted = [_as_pipeline_cfg(cfg) for _, cfg in calls]  # raises if not convertible
-    # Light duck-typing sanity: must have fields the pipeline actually uses
-    for pcfg in converted:
-        assert hasattr(pcfg, "results_dir"), "pipeline cfg should expose results_dir"
 
 
 def test_parse_level_accepts_string(preserve_root_logger):

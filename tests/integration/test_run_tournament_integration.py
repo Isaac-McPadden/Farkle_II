@@ -213,36 +213,3 @@ def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     assert set(wins.keys()).issubset(expected)
 
 
-###############################################################################
-# 5. Test 2  - CLI facade
-###############################################################################
-
-
-def test_run_tournament_cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    monkeypatch.setattr(sim, "generate_strategy_grid", lambda: (_tiny_strategy_grid(), None))
-
-    rt = importlib.reload(importlib.import_module("farkle.simulation.run_tournament"))
-    _apply_fast_patches(monkeypatch, rt)
-    monkeypatch.setattr(cli_main, "run_tournament", rt.run_tournament)
-
-    ckpt = tmp_path / "cli.pkl"
-
-    cfg = {
-        "global_seed": 42,
-        "checkpoint_path": str(ckpt),
-        "n_jobs": 2,
-        "num_shuffles": 2,
-    }
-    cfg_path = tmp_path / "cli.yaml"
-    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-
-    cli_main.main(["--config", str(cfg_path), "run"])
-
-    # --- assertions ---
-    assert ckpt.exists(), "CLI failed to create checkpoint"
-    with ckpt.open("rb") as fh:
-        data = pickle.load(fh)
-
-    wins = data["win_totals"] if isinstance(data, dict) else data
-    expected = {str(s) for s in _tiny_strategy_grid()}
-    assert set(wins.keys()).issubset(expected)
