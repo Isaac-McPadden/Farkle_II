@@ -1,4 +1,3 @@
-import contextlib
 import os
 from pathlib import Path
 
@@ -17,21 +16,15 @@ from farkle.game.scoring import (
 from farkle.simulation.simulation import simulate_many_games
 from farkle.simulation.strategies import ThresholdStrategy
 
-TMP = Path(__file__).with_suffix("") / "_tmp"
-TMP.mkdir(parents=True, exist_ok=True)
-
 
 @pytest.fixture(scope="session")
-def tmp_csv():
+def tmp_csv(tmp_path_factory: pytest.TempPathFactory):
     """Unique CSV path per test-session that we can freely overwrite."""
-    csv_path = TMP / "sim.csv"
-    # clean between test runs
-    if csv_path.exists():
-        with contextlib.suppress(PermissionError):
-            csv_path.unlink()
+
+    base = tmp_path_factory.mktemp("farkle_cli_tmp")
+    csv_path = base / "sim.csv"
     yield csv_path
-    with contextlib.suppress(PermissionError):
-        csv_path.unlink(missing_ok=True)
+    csv_path.unlink(missing_ok=True)
 
 
 @pytest.fixture(scope="session")
