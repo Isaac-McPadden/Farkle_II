@@ -34,8 +34,8 @@ def _patch_tournament(
     return calls
 
 
-def test_runner_passes_metric_flags(tmp_path, monkeypatch, tmp_artifacts_with_legacy):
-    payload = pickle.loads(tmp_artifacts_with_legacy["checkpoint"].read_bytes())
+def test_runner_passes_metric_flags(tmp_path, monkeypatch, sim_artifacts):
+    payload = pickle.loads(sim_artifacts["checkpoint"].read_bytes())
 
     calls = _patch_tournament(monkeypatch, payload)
 

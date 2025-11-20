@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Callable, Mapping, Sequence
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+
+from farkle.config import AppConfig, IOConfig, SimConfig
 
 pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
@@ -15,6 +18,7 @@ pq = pytest.importorskip("pyarrow.parquet")
 class GoldenDataset:
     parquet: Path
     dataframe: pd.DataFrame
+    strategy_map: Mapping[str, str] | None = None
 
     def copy_into(self, results_root: Path) -> Path:
         block = results_root / "3_players"
@@ -22,6 +26,46 @@ class GoldenDataset:
         target = block / "3p_rows.parquet"
         target.write_bytes(self.parquet.read_bytes())
         return target
+
+    def write_metrics(
+        self,
+        results_root: Path,
+        *,
+        player_count: int = 3,
+        strategy_map: Mapping[str, str] | None = None,
+    ) -> Path:
+        mapping = dict(strategy_map or self.strategy_map or {})
+        strategies = self.dataframe["winner"].map(mapping)
+        total_games = len(self.dataframe)
+
+        records = []
+        for strategy, wins in strategies.value_counts().items():
+            mask = strategies == strategy
+            scores = self.dataframe.loc[mask, "winning_score"]
+            rounds = self.dataframe.loc[mask, "n_rounds"]
+            records.append(
+                {
+                    "strategy": strategy,
+                    "wins": float(wins),
+                    "total_games_strat": float(total_games),
+                    "win_rate": float(wins / total_games),
+                    "sum_winning_score": float(scores.sum()),
+                    "sq_sum_winning_score": float((scores**2).sum()),
+                    "mean_winning_score": float(scores.mean()),
+                    "var_winning_score": float(scores.var(ddof=0)),
+                    "sum_n_rounds": float(rounds.sum()),
+                    "sq_sum_n_rounds": float((rounds**2).sum()),
+                    "mean_n_rounds": float(rounds.mean()),
+                    "var_n_rounds": float(rounds.var(ddof=0)),
+                    "sum_winner_hit_max_rounds": 0.0,
+                }
+            )
+
+        metrics_df = pd.DataFrame(records)
+        metrics_path = results_root / f"{player_count}_players" / f"{player_count}p_metrics.parquet"
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics_df.to_parquet(metrics_path, index=False)
+        return metrics_path
 
 
 def _build_golden_df() -> pd.DataFrame:
@@ -58,4 +102,39 @@ def golden_dataset(tmp_path_factory: pytest.TempPathFactory) -> GoldenDataset:
     parquet = base / "3p_rows.parquet"
     table = pa.Table.from_pandas(df, preserve_index=False)
     pq.write_table(table, parquet)
-    return GoldenDataset(parquet=parquet, dataframe=df)
+
+    strategy_map = {"P1": "Aggro", "P2": "Balanced", "P3": "Cautious"}
+    return GoldenDataset(parquet=parquet, dataframe=df, strategy_map=strategy_map)
+
+
+@pytest.fixture
+def patched_strategy_grid(monkeypatch: pytest.MonkeyPatch) -> Sequence[object]:
+    class _StubStrategy:
+        def __init__(self, label: str) -> None:
+            self._label = label
+
+        def __str__(self) -> str:  # pragma: no cover - trivial
+            return self._label
+
+    strategies = [_StubStrategy(name) for name in ("Aggro", "Balanced", "Cautious")]
+
+    def _grid(**_: object):
+        return strategies, {}
+
+    monkeypatch.setattr(
+        "farkle.analysis.isolated_metrics.generate_strategy_grid", _grid, raising=False
+    )
+    monkeypatch.setattr("farkle.analysis.isolated_metrics._STRATEGY_CACHE", {}, raising=False)
+    return strategies
+
+
+@pytest.fixture
+def analysis_config(tmp_results_dir: Path) -> Callable[..., AppConfig]:
+    def _factory(**overrides: object) -> AppConfig:
+        sim_cfg = overrides.pop("sim", None)
+        if sim_cfg is None:
+            sim_cfg = SimConfig(n_players_list=[3], expanded_metrics=True)
+        io_cfg = IOConfig(results_dir=tmp_results_dir, append_seed=False)
+        return AppConfig(io=io_cfg, sim=sim_cfg, **overrides)
+
+    return _factory
