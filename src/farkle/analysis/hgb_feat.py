@@ -1,4 +1,9 @@
 # src/farkle/analysis/hgb_feat.py
+"""Feature selection wrapper for histogram gradient boosting models.
+
+Loads isolated metrics, infers player counts, and delegates to the shared
+``run_hgb`` routines to train feature-importance models for strategy rankings.
+"""
 from __future__ import annotations
 
 import logging

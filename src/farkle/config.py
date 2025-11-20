@@ -1,4 +1,9 @@
 # src/farkle/config.py
+"""Configuration schemas and helpers for the Farkle analysis pipeline.
+
+Defines dataclasses describing I/O, simulation, and analysis settings and
+includes utilities for loading and validating YAML-based application configs.
+"""
 from __future__ import annotations
 
 import dataclasses

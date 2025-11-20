@@ -1,4 +1,5 @@
 # src/farkle/analysis/trueskill.py
+"""Wrapper to trigger TrueSkill tier generation within the analysis pipeline."""
 from __future__ import annotations
 
 import logging

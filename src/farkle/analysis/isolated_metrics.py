@@ -1,4 +1,10 @@
 # src/farkle/analysis/isolated_metrics.py
+"""Compute per-strategy isolated metrics from tournament outputs.
+
+Generates win-rate frames for individual strategies, handles padding across
+player counts, and writes parquet artifacts consumed by downstream reporting
+and ranking modules.
+"""
 from __future__ import annotations
 
 import functools

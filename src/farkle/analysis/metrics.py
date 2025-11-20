@@ -1,4 +1,9 @@
 # src/farkle/analysis/metrics.py
+"""Aggregate curated data into per-strategy metrics and outputs.
+
+Computes win rates and seat advantages from combined parquet shards, validates
+input schemas, and emits CSV/Parquet artifacts for downstream reporting.
+"""
 from __future__ import annotations
 
 import json

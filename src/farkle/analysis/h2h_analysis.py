@@ -1,4 +1,9 @@
-"""Post head-to-head significance (Holm-Bonferroni) plus graph utilities."""
+# src/farkle/analysis/h2h_analysis.py
+"""Post head-to-head significance (Holm-Bonferroni) plus graph utilities.
+
+Loads head-to-head decision tables, performs Holm-Bonferroni correction, and
+derives graph-based tiering orders for reporting and downstream comparisons.
+"""
 
 from __future__ import annotations
 
