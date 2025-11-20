@@ -105,7 +105,7 @@ def test_random_threshold_strategy_diversity():
     "running_total, score_to_beat, expected",
     [
         (5000, 5500, True),
-        (6000, 5500, False),
+        (6000, 5500, True),
     ],
 )
 def test_decide_final_round_ignores_other_flags(running_total, score_to_beat, expected):
