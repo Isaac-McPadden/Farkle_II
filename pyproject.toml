@@ -71,6 +71,7 @@ source  = ["src/farkle"]
 omit = ["*/tests/conftest.py"]
 
 [tool.coverage.report]
+fail_under = 60
 exclude_lines = [
     "if __name__ == .__main__.:",
     "pragma: no cover",

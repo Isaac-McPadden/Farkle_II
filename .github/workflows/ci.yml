@@ -6,14 +6,24 @@ on:
     branches: [ main ]
 
 jobs:
-  lint:
+  ci:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install .[dev] mypy ruff
-      - run: ruff check src/farkle
-      - run: black --check .
-      - run: mypy
+      - name: Install dependencies
+        run: python -m pip install .[dev]
+      - name: Run checks
+        run: |
+          set -o pipefail
+          make ci | tee ci.log
+      - name: Upload logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-logs
+          path: ci.log
