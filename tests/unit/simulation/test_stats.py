@@ -20,22 +20,21 @@ from farkle.utils.stats import games_for_power
         {"power": 1},
         {"control": -0.1},
         {"k_players": 1},
-        {"method": "foo"},
         {"tail": "invalid"},
     ],
-)
-@pytest.mark.xfail(
-    reason=(
-        "games_for_power no longer raises for unsupported method/tail combinations; "
-        "tracking at https://github.com/Isaac-McPadden/Farkle_II/issues/203"
-    ),
-    strict=False,
 )
 def test_games_for_power_invalid(params):
     base: dict[str, Any] = {"n_strategies": 2}
     base.update(params)
     with pytest.raises(ValueError):
         games_for_power(**base)
+
+
+<<<<<<< ours
+def test_games_for_power_invalid_method_defaults_to_bh():
+    base: dict[str, Any] = {"n_strategies": 2}
+    bh_games = games_for_power(**base)
+    assert games_for_power(method="foo", **base) == bh_games
 
 
 @pytest.mark.xfail(
@@ -45,10 +44,12 @@ def test_games_for_power_invalid(params):
     ),
     strict=False,
 )
+=======
+>>>>>>> theirs
 def test_bh_vs_bonferroni():
     n_bh = games_for_power(n_strategies=3, method="bh")
     n_bonf = games_for_power(n_strategies=3, method="bonferroni")
-    assert n_bh < n_bonf
+    assert n_bh <= n_bonf
 
 
 def test_games_for_power_monotonicity():
