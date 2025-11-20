@@ -55,42 +55,26 @@ def fast_helpers(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("n_players", "expected"),
+    ("n_players", "pattern"),
     [
-        (1, "n_players must be ≥2"),
-        (7, "n_players must divide 8,160"),
+        (1, r"n_players must be ≥2"),
+        (7, r"n_players must divide [\\d,]+"),
     ],
 )
-@pytest.mark.xfail(
-    reason=(
-        "Validation messaging changed with reduced strategy roster; "
-        "see https://github.com/Isaac-McPadden/Farkle_II/issues/202"
-    ),
-    strict=False,
-)
-def test_run_tournament_invalid_player_counts(n_players: int, expected: str) -> None:
+def test_run_tournament_invalid_player_counts(n_players: int, pattern: str) -> None:
     cfg = rt.TournamentConfig()
     cfg.num_shuffles = 1
 
-    with pytest.raises(ValueError) as excinfo:
+    with pytest.raises(ValueError, match=pattern):
         rt.run_tournament(config=cfg, n_players=n_players)
 
-    assert expected in str(excinfo.value)
 
-
-@pytest.mark.xfail(
-    reason=(
-        "Validation messaging changed with reduced strategy roster; "
-        "see https://github.com/Isaac-McPadden/Farkle_II/issues/202"
-    ),
-    strict=False,
-)
 def test_init_worker_rejects_bad_player_counts(monkeypatch) -> None:
     strats = _mini_strats(3)
     cfg = rt.TournamentConfig(n_players=7)
     monkeypatch.setattr(rt, "_STATE", None, raising=False)
 
-    with pytest.raises(ValueError, match="n_players must divide 8,160"):
+    with pytest.raises(ValueError, match=r"n_players must divide [\\d,]+"):
         rt._init_worker(strats, cfg)
 
 
