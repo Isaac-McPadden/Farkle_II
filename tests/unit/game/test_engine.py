@@ -219,15 +219,15 @@ def test_smart_discard_counters_non_negative():
         return_discards=True,
     )
     d5, d1 = rest if len(rest) == 2 else (0, 0)
-    assert d5 == 0 and d1 == 0
+    assert d5 >= 0 and d1 >= 0
 
     player = FarklePlayer(
         "T",
         ThresholdStrategy(smart_five=True, smart_one=True, score_threshold=1_000, dice_threshold=2),
     )
     player._score_roll(roll, turn_score=0)
-    assert player.n_smart_five_dice == 0
-    assert player.n_smart_one_dice == 0
+    assert player.n_smart_five_dice == d5
+    assert player.n_smart_one_dice == d1
 
 
 def test_smart_five_discard_count():

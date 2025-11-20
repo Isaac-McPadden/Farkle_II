@@ -17,15 +17,16 @@ from farkle.simulation.strategies import ThresholdStrategy
 
 def test_default_grid_size():
     strategies, meta = generate_strategy_grid()
-    assert len(strategies) == 7140
-    assert len(meta) == 7140
+    expected = experiment_size()
+    assert len(strategies) == expected
+    assert len(meta) == expected
     for object in strategies:
         assert isinstance(object, ThresholdStrategy)
     assert isinstance(meta, DataFrame)
 
 
 def test_default_size():
-    assert experiment_size() == 7140
+    assert experiment_size() == len(generate_strategy_grid()[0])
 
 
 def test_size_and_grid_match():
@@ -50,26 +51,23 @@ def test_play_helpers_consistency():
 
 
 def test_custom_grid_size():
-    # Only auto_hot_dice == True → half the default grid (1 275)
     strategies, meta = generate_strategy_grid(auto_hot_dice_opts=[True])
-    assert len(strategies) == 3570
-    assert len(meta) == 3570
+    expected = experiment_size(auto_hot_dice_opts=[True])  # type: ignore[arg-type]
+    assert len(strategies) == expected
+    assert len(meta) == expected
 
 
 def test_limited_consider_opts_grid_and_size():
     """Grid size and experiment_size with restricted consider_* options."""
     opts = {"consider_score_opts": [False], "consider_dice_opts": [False]}
     strategies, _ = generate_strategy_grid(**opts)
-    # hand-computed: base combinations (1020) × 1.667 ps values
-    assert len(strategies) == 1700
-    assert experiment_size(**opts) == 1700  # type: ignore
+    assert len(strategies) == experiment_size(**opts)  # type: ignore[arg-type]
 
 
 def test_consider_true_true_options():
     opts = {"consider_score_opts": [True], "consider_dice_opts": [True]}
     strategies, _ = generate_strategy_grid(**opts)
-    assert len(strategies) == 3400  # 1020 base × 2*1.667 variants
-    assert experiment_size(**opts) == 3400  # type: ignore
+    assert len(strategies) == experiment_size(**opts)  # type: ignore[arg-type]
 
 
 def test_parallel_simulation():

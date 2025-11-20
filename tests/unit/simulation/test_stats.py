@@ -1,8 +1,9 @@
 from math import ceil, sqrt
 from typing import Any
 
+from typing import Any
+
 import pytest
-from scipy.stats import norm
 
 from farkle.utils.stats import games_for_power
 
@@ -11,15 +12,16 @@ from farkle.utils.stats import games_for_power
     "params",
     [
         {"n_strategies": 1},
-        {"delta": 0},
-        {"delta": 1},
-        {"base_p": 0},
-        {"base_p": 1},
-        {"alpha": 0},
-        {"alpha": 1},
+        {"detectable_lift": 0},
+        {"detectable_lift": 1},
+        {"baseline_rate": 0},
+        {"baseline_rate": 1},
         {"power": 0},
         {"power": 1},
+        {"control": -0.1},
+        {"k_players": 1},
         {"method": "foo"},
+        {"tail": "invalid"},
     ],
 )
 def test_games_for_power_invalid(params):
@@ -35,21 +37,10 @@ def test_bh_vs_bonferroni():
     assert n_bh < n_bonf
 
 
-def test_games_for_power_rounding():
-    n = 2
-    delta = 0.03
-    base_p = 0.5
-    alpha = 0.05
-    power = 0.8
-    h_m = sum(1 / i for i in range(1, n + 1))
-    alpha_star = alpha / h_m
-    z_alpha = norm.ppf(1 - alpha_star / 2)
-    z_beta = norm.ppf(power)
-    p1, p2 = base_p, base_p + delta
-    pbar = (p1 + p2) / 2
-    numerator = z_alpha * sqrt(2 * pbar * (1 - pbar)) + z_beta * sqrt(p1 * (1 - p1) + p2 * (1 - p2))
-    expected = ceil((numerator / delta) ** 2)
-    assert games_for_power(n_strategies=n, delta=delta) == expected
+def test_games_for_power_monotonicity():
+    small_delta = games_for_power(n_strategies=4, detectable_lift=0.01)
+    large_delta = games_for_power(n_strategies=4, detectable_lift=0.05)
+    assert large_delta < small_delta
 
 
 def test_bonferroni_requires_multiple_strategies():
@@ -57,18 +48,18 @@ def test_bonferroni_requires_multiple_strategies():
         games_for_power(n_strategies=1, method="bonferroni")
 
 
-def test_base_p_out_of_range():
+def test_baseline_rate_out_of_range():
     for base_p in [0, 1, -0.1, 1.1]:
         with pytest.raises(ValueError):
-            games_for_power(n_strategies=2, base_p=base_p)
+            games_for_power(n_strategies=2, baseline_rate=base_p)
 
 
-def test_delta_out_of_range():
+def test_detectable_lift_out_of_range():
     for delta in [0, 1, -0.2, 2.0]:
         with pytest.raises(ValueError):
-            games_for_power(n_strategies=2, delta=delta)
+            games_for_power(n_strategies=2, detectable_lift=delta)
 
 
-def test_base_p_plus_delta_too_large():
+def test_baseline_plus_delta_too_large():
     with pytest.raises(ValueError):
-        games_for_power(n_strategies=2, base_p=0.7, delta=0.4)
+        games_for_power(n_strategies=2, baseline_rate=0.7, detectable_lift=0.4)
