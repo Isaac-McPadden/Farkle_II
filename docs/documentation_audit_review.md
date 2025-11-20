@@ -15,6 +15,6 @@ These items represent genuine documentation gaps (missing path comments, module 
 ## Items marked as skip (false positives / low-value fixes)
 | File(s) | Rationale |
 | --- | --- |
-| `tests/__init__.py`, `src/farkle/game/tests/__init__.py` | Empty package initializers; adding path comments or docstrings would add no value. |
+| `tests/__init__.py`, `src/farkle/game/tests/__init__.py` | Empty package initializers; adding path comments is worthwhile to tell __init__.py files apart but adding docstrings would add no value. |
 | `tmp_debug.py`, `tmp_debug2.py`, `tmp_test.py`, `tmp_test2.py` | Temporary local debugging helpers not shipped to users; documenting them is unnecessary. |
 | Broad unit/integration test modules flagged for missing module/function docstrings | Test cases already use descriptive names; adding docstrings or path comments would be noisy and provide little additional clarity. |
