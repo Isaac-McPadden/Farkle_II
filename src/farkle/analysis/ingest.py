@@ -1,4 +1,10 @@
-﻿# src/farkle/analysis/ingest.py
+# src/farkle/analysis/ingest.py
+"""Ingest raw simulation results into parquet shards for curation.
+
+This entry point streams over experiment outputs, validates schemas, and
+writes player-count-specific shards that feed the downstream combine and
+metrics stages.
+"""
 from __future__ import annotations
 
 import argparse

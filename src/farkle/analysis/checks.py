@@ -1,4 +1,9 @@
 # src/farkle/analysis/checks.py
+"""Parquet validation helpers for the analysis pipeline outputs.
+
+These routines assert expected schemas, positive counters, and manifest
+consistency before later stages consume combined or metrics datasets.
+"""
 from __future__ import annotations
 
 import json

@@ -1,4 +1,10 @@
-﻿# src/farkle/analysis/combine.py
+# src/farkle/analysis/combine.py
+"""Combine curated shards into a unified metrics parquet file.
+
+This stage reads per-strategy shards emitted during ingestion, pads them to a
+common schema, and concatenates the results into a single dataset for later
+analysis steps.
+"""
 from __future__ import annotations
 
 import logging

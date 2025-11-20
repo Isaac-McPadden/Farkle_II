@@ -1,3 +1,4 @@
+# src/farkle/analysis/seed_summaries.py
 """Build per-seed, per-player summaries with Wilson confidence intervals.
 
 The summaries are derived strictly from the resolved metrics parquet written by

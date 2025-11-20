@@ -1,4 +1,10 @@
-"""Cross-method agreement metrics between TrueSkill, frequentist, and H2H outputs."""
+# src/farkle/analysis/agreement.py
+"""Cross-method agreement metrics between TrueSkill, frequentist, and H2H outputs.
+
+This module loads per-player results from multiple analytical approaches,
+computes agreement metrics across rankings and tiers, and writes JSON payloads
+summarizing consistency between methods.
+"""
 
 from __future__ import annotations
 

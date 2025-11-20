@@ -1,4 +1,9 @@
 # src/farkle/analysis/tiering_report.py
+"""Generate tiering reports from isolated metrics and meta inputs.
+
+Prepares tiering inputs, computes weighted win rates, and writes consolidated
+outputs for both frequentist and TrueSkill-derived tiers across player counts.
+"""
 from __future__ import annotations
 
 import json

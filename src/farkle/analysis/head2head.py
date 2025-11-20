@@ -1,4 +1,10 @@
 # src/farkle/analysis/head2head.py
+"""Run head-to-head significance tests and derive tier candidates.
+
+This module orchestrates game simulations, calculates Bonferroni-corrected
+pairwise outcomes, and searches for tier configurations that satisfy specified
+power and runtime targets.
+"""
 from __future__ import annotations
 
 import json

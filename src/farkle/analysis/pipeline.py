@@ -1,4 +1,9 @@
-﻿# src/farkle/analysis/pipeline.py
+# src/farkle/analysis/pipeline.py
+"""CLI pipeline orchestrator for ingest, curation, and analysis.
+
+Defines sequential stages for loading simulation outputs, combining metrics,
+and generating reports, mirroring the repository's documented workflow.
+"""
 from __future__ import annotations
 
 import argparse

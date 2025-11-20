@@ -1,4 +1,9 @@
-﻿# src/farkle/analysis/curate.py
+# src/farkle/analysis/curate.py
+"""Curate raw simulation shards into normalized parquet outputs.
+
+Curated files enforce expected schemas, stable naming conventions, and
+timestamped manifests so downstream analysis stages can resume reliably.
+"""
 from __future__ import annotations
 
 import hashlib

@@ -1,3 +1,4 @@
+# src/farkle/analysis/reporting.py
 """Generate per-player Markdown reports and Matplotlib figures.
 
 This module reads previously generated analysis artifacts (TrueSkill ratings,

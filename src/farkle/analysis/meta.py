@@ -1,3 +1,4 @@
+# src/farkle/analysis/meta.py
 """Pool per-seed strategy summaries into per-player meta estimates.
 
 This module aggregates the ``strategy_summary_{players}p_seed*.parquet`` files
