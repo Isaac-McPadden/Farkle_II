@@ -19,6 +19,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = PROJECT_ROOT / "src"
 if SRC_PATH.exists():
     sys.path.insert(0, str(SRC_PATH))
+TEST_PATH = PROJECT_ROOT / "tests"
+if TEST_PATH.exists():
+    sys.path.insert(0, str(TEST_PATH))
 
 if "tomllib" not in sys.modules:
     try:
@@ -133,6 +136,20 @@ if sklearn_spec is None:
     sys.modules.setdefault("sklearn", sklearn)
     sys.modules.setdefault("sklearn.ensemble", ensemble)
     sys.modules.setdefault("sklearn.inspection", inspection)
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--update-goldens",
+        action="store_true",
+        default=False,
+        help="Regenerate stored golden files for deterministic tests.",
+    )
+
+
+@pytest.fixture(scope="session")
+def update_goldens(pytestconfig: pytest.Config) -> bool:
+    return bool(pytestconfig.getoption("--update-goldens"))
 
 
 def pytest_configure():

@@ -1,0 +1,5 @@
+strategy,n_players,games,wins,win_rate,expected_score,total_games_strat,sum_winning_score,sq_sum_winning_score,sum_n_rounds,sq_sum_n_rounds,false_wins_handled
+"Strat(200,0)[SD][F-FD][AND][HR]",2,20,7,0.35,70.0,20.0,1400.0,150000.0,80.0,900.0,1
+"Strat(200,0)[SD][F-FD][OR][HR]",2,20,1,0.05,10.0,20.0,200.0,21000.0,40.0,420.0,0
+"Strat(200,0)[SD][F-FS][AND][HR]",2,20,12,0.6,100.0,20.0,2000.0,210000.0,100.0,1100.0,0
+"Strat(200,0)[SD][F-FS][OR][HR]",2,20,5,0.25,45.0,20.0,900.0,95000.0,70.0,750.0,0
