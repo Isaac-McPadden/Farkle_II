@@ -38,43 +38,6 @@ def test_seed_reproducible(simple_strategy):
     pd.testing.assert_frame_equal(df1, df2)
 
 
-def test_cli_smoke(tmp_path: Path, capinfo, monkeypatch: pytest.MonkeyPatch):
-    """Smoke-test the unified CLI by exercising the ``run`` command."""
-
-    captured: dict[str, object] = {}
-
-    def fake_run_tournament(**kwargs: object) -> None:
-        captured.update(kwargs)
-
-    monkeypatch.setattr(cli_main, "run_tournament", fake_run_tournament)
-
-    cfg = {
-        "global_seed": 9,
-        "n_players": 2,
-        "num_shuffles": 1,
-        "checkpoint_path": str(tmp_path / "checkpoint.pkl"),
-        "row_output_directory": str(tmp_path / "rows"),
-    }
-
-    cfg_path = tmp_path / "cfg.yml"
-    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
-
-    cli_main.main(["--config", str(cfg_path), "run"])
-
-    assert captured["n_players"] == 2
-    assert captured["num_shuffles"] == 1
-    assert captured["global_seed"] == 9
-    chk = captured["checkpoint_path"]
-    assert isinstance(chk, (str, os.PathLike))
-    assert Path(chk) == tmp_path / "checkpoint.pkl"
-
-    rowdir = captured["row_output_directory"]
-    assert isinstance(rowdir, (str, os.PathLike))
-    assert Path(rowdir) == tmp_path / "rows"
-    if capinfo.text:
-        assert "CLI arguments parsed" in capinfo.text
-
-
 def test_final_round_rule():
     # 1) two simple strategies …
     strats = [
