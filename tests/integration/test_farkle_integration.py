@@ -5,6 +5,9 @@ import pandas as pd
 import pytest
 import yaml
 
+# tests/integration/test_farkle_integration.py
+"""Integration tests covering CLI paths and scoring consistency."""
+
 from farkle.cli import main as cli_main
 from farkle.game.engine import FarkleGame, FarklePlayer
 from farkle.game.scoring import (
@@ -19,7 +22,14 @@ from farkle.simulation.strategies import ThresholdStrategy
 
 @pytest.fixture(scope="session")
 def tmp_csv(tmp_path_factory: pytest.TempPathFactory):
-    """Unique CSV path per test-session that we can freely overwrite."""
+    """Provision a reusable CSV path for CLI-based simulations.
+
+    Args:
+        tmp_path_factory: Factory fixture used to create session-level paths.
+
+    Returns:
+        Generator yielding the CSV path and cleaning it up afterward.
+    """
 
     base = tmp_path_factory.mktemp("farkle_cli_tmp")
     csv_path = base / "sim.csv"
@@ -29,16 +39,37 @@ def tmp_csv(tmp_path_factory: pytest.TempPathFactory):
 
 @pytest.fixture(scope="session")
 def simple_strategy():
+    """Build a baseline ThresholdStrategy list for integration scenarios.
+
+    Returns:
+        Single-element list containing a conservative strategy.
+    """
+
     return [ThresholdStrategy(score_threshold=300, dice_threshold=2)]
 
 
 def test_seed_reproducible(simple_strategy):
+    """Ensure simulations are deterministic when seeding RNGs.
+
+    Args:
+        simple_strategy: Strategy list fixture shared across tests.
+
+    Returns:
+        None
+    """
+
     df1 = simulate_many_games(n_games=60, strategies=simple_strategy, seed=123, n_jobs=1)
     df2 = simulate_many_games(n_games=60, strategies=simple_strategy, seed=123, n_jobs=1)
     pd.testing.assert_frame_equal(df1, df2)
 
 
 def test_final_round_rule():
+    """Validate final-round enforcement within a short simulated game.
+
+    Returns:
+        None
+    """
+
     # 1) two simple strategies …
     strats = [
         ThresholdStrategy(score_threshold=100, dice_threshold=0),  # very aggressive
@@ -78,6 +109,18 @@ PIPELINE_CASES: list[tuple[list[int], int, bool, bool]] = [
 
 @pytest.mark.parametrize("roll, turn_pre, smart_five, smart_one", PIPELINE_CASES)
 def test_pipeline_matches_default(roll, turn_pre, smart_five, smart_one):
+    """Confirm manual scoring pipeline matches the default helper output.
+
+    Args:
+        roll: Sequence of dice results for the turn.
+        turn_pre: Pre-existing score in the current turn.
+        smart_five: Whether smart five-discard rules are active.
+        smart_one: Whether smart one-discard rules are active.
+
+    Returns:
+        None
+    """
+
 
     # ---------- (A) single-call pipeline ----------
     d_score, d_used, d_reroll = default_score(  # type: ignore (refactor allows 3 or 5 outputs)

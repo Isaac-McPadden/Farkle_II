@@ -5,6 +5,14 @@ import shutil
 from pathlib import Path
 from typing import Iterable, Sequence
 
+# tests/helpers/golden_utils.py
+"""Utilities for comparing generated artifacts to stored goldens."""
+
+import json
+import shutil
+from pathlib import Path
+from typing import Iterable, Sequence
+
 import pandas as pd
 
 
@@ -16,6 +24,16 @@ _MESSAGE = "Run tests with --update-goldens to refresh stored artifacts."
 
 
 def _normalize_frame(df: pd.DataFrame, sort_by: Sequence[str] | None) -> pd.DataFrame:
+    """Sort and reset a DataFrame to enable stable comparisons.
+
+    Args:
+        df: DataFrame being normalized.
+        sort_by: Optional column names to sort by before comparison.
+
+    Returns:
+        Normalized DataFrame suitable for equality checks.
+    """
+
     if sort_by:
         df = df.sort_values(list(sort_by)).reset_index(drop=True)
     return df
@@ -72,6 +90,19 @@ def _assert_frame_golden(
     sort_by: Sequence[str] | None,
     loader,
 ) -> None:
+    """Compare a tabular artifact to a stored golden copy.
+
+    Args:
+        actual: Path to the DataFrame produced by the test.
+        golden: Path to the corresponding golden CSV artifact.
+        update: Whether the golden should be rewritten from ``actual``.
+        sort_by: Optional column names used to normalize ordering.
+        loader: Callable that reads ``actual`` into a pandas DataFrame.
+
+    Returns:
+        None
+    """
+
     actual_df = loader(actual)
     actual_df = _normalize_frame(actual_df, sort_by)
 
