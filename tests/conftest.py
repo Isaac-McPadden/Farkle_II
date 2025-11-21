@@ -1,6 +1,9 @@
 # pragma: no cover
 # ruff: noqa: ARG005 ARG003 ARG002 ARG001
 import importlib.machinery
+# tests/conftest.py
+"""Shared pytest fixtures and compatibility shims for the test suite."""
+
 import importlib.util
 import logging
 import os
@@ -32,6 +35,16 @@ if "tomllib" not in sys.modules:
     except ModuleNotFoundError:
 
         def _load_toml(fh):
+            """Minimal TOML loader that only extracts a version string.
+
+            Args:
+                fh: File-like object pointing at a ``pyproject.toml`` file.
+
+            Returns:
+                Mapping with a ``project`` section containing a ``version`` key
+                when present, otherwise an empty mapping.
+            """
+
             raw = fh.read()
             text = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else str(raw)
             project: dict[str, str] = {}
@@ -58,10 +71,30 @@ if "tomllib" not in sys.modules:
 
 
 def _identity_jit(*jit_args, **jit_kwargs):
+    """Return the decorated function unchanged when Numba is unavailable.
+
+    Args:
+        *jit_args: Positional arguments that may include the decorated callable.
+        **jit_kwargs: Keyword arguments normally passed to :func:`numba.jit`.
+
+    Returns:
+        The original callable when used as a decorator or a passthrough
+        decorator that yields the input function.
+    """
+
     if jit_args and callable(jit_args[0]) and len(jit_args) == 1 and not jit_kwargs:
         return jit_args[0]
 
     def _decorator(func):
+        """Passthrough decorator preserving the wrapped function.
+
+        Args:
+            func: Function being wrapped.
+
+        Returns:
+            The unmodified ``func`` reference.
+        """
+
         return func
 
     return _decorator
@@ -99,13 +132,30 @@ if sklearn_spec is None:
     inspection = types.ModuleType("inspection")
 
     class _DummyHGB:  # pragma: no cover - simple stub
+        """Lightweight Histogram Gradient Boosting stub used in tests."""
+
         def __init__(self, *args, **kwargs):
-            pass
+            """Accept arbitrary initialization arguments without storing state."""
 
         def fit(self, *args, **kwargs):  # noqa: D401 - behavior irrelevant for tests
+            """Mimic estimator fit by returning self.
+
+            Returns:
+                The stub instance so chained calls behave like scikit-learn.
+            """
+
             return self
 
         def predict(self, X):  # noqa: D401 - behavior irrelevant for tests
+            """Produce zero-valued predictions matching the input length.
+
+            Args:
+                X: Iterable of samples to score.
+
+            Returns:
+                List of float predictions aligned to ``X`` length.
+            """
+
             return [0.0] * len(X)
 
     ensemble.HistGradientBoostingRegressor = _DummyHGB  # type: ignore[attr-defined]
@@ -114,18 +164,51 @@ if sklearn_spec is None:
     ensemble.__spec__ = importlib.machinery.ModuleSpec("sklearn.ensemble", loader=None)  # type: ignore[attr-defined]
 
     class _DummyPDP:  # pragma: no cover - simple stub
+        """Simple partial dependence display stub with a file-writing figure."""
+
         def __init__(self) -> None:
             class _Fig:
+                """Placeholder figure object that writes an empty file."""
+
                 def savefig(self, path, format="png") -> None:  # noqa: D401 - stub
+                    """Create an empty image file path to satisfy callers.
+
+                    Args:
+                        path: Destination file path.
+                        format: Image format extension.
+
+                    Returns:
+                        None
+                    """
+
                     Path(path).touch()
 
             self.figure_ = _Fig()
 
         @classmethod
         def from_estimator(cls, *args, **kwargs):  # noqa: D401 - stub
+            """Construct a stub display irrespective of estimator inputs.
+
+            Returns:
+                A new :class:`_DummyPDP` instance.
+            """
+
             return cls()
 
     def _dummy_permutation_importance(model, X, y, *args, **kwargs):  # noqa: D401 - stub
+        """Return deterministic zero-valued permutation importance results.
+
+        Args:
+            model: Estimator being inspected.
+            X: Feature matrix with column metadata.
+            y: Target vector.
+            *args: Additional positional arguments ignored in the stub.
+            **kwargs: Additional keyword arguments ignored in the stub.
+
+        Returns:
+            Dictionary mirroring scikit-learn's importance structure filled with zeros.
+        """
+
         n = len(getattr(X, "columns", []))
         return {
             "importances_mean": [0.0] * n,
@@ -142,6 +225,15 @@ if sklearn_spec is None:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register CLI flags used by the test suite.
+
+    Args:
+        parser: Pytest option parser object to extend.
+
+    Returns:
+        None
+    """
+
     parser.addoption(
         "--update-goldens",
         action="store_true",
@@ -152,6 +244,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 
 @pytest.fixture(scope="session")
 def update_goldens(pytestconfig: pytest.Config) -> bool:
+    """Expose the ``--update-goldens`` flag to tests.
+
+    Args:
+        pytestconfig: Active pytest configuration instance.
+
+    Returns:
+        True when golden files should be regenerated.
+    """
+
     return bool(pytestconfig.getoption("--update-goldens"))
 
 
@@ -159,9 +260,8 @@ def update_goldens(pytestconfig: pytest.Config) -> bool:
 def _freeze_time() -> Generator[None, None, None]:
     """Pin wall-clock time for deterministic file stamps.
 
-    ``tick=True`` allows monotonic progression across calls without exposing the
-    real clock, which keeps elapsed-time calculations predictable while avoiding
-    drift across test processes.
+    Returns:
+        Generator that freezes time while the test executes.
     """
 
     with freeze_time("2024-01-01 00:00:00", tick=True):
@@ -170,7 +270,14 @@ def _freeze_time() -> Generator[None, None, None]:
 
 @pytest.fixture(autouse=True)
 def _seed_random_generators(monkeypatch: pytest.MonkeyPatch) -> Generator[None, None, None]:
-    """Force deterministic randomness for every test function."""
+    """Force deterministic randomness for every test function.
+
+    Args:
+        monkeypatch: Pytest monkeypatch fixture used to set environment vars.
+
+    Returns:
+        Generator that seeds randomness before yielding to the test.
+    """
 
     random.seed(1337)
     np.random.seed(1337)
@@ -179,9 +286,10 @@ def _seed_random_generators(monkeypatch: pytest.MonkeyPatch) -> Generator[None, 
 
 
 def pytest_configure():
-    """
-    During unit-tests we don't need Numba's jit - disable it so coverage can
-    see the Python source lines inside decorated functions.
+    """Disable Numba JIT during unit tests to preserve coverage reporting.
+
+    Returns:
+        None
     """
     try:
         import numba  # noqa: F401  # type: ignore[import-not-found]
@@ -196,13 +304,14 @@ def pytest_configure():
 def tmp_results_dir(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Generator[Path, None, None]:
-    """Isolated working directory for tests that touch the filesystem.
+    """Provide an isolated working directory for filesystem interactions.
 
-    The fixture pre-creates the ``analysis/data`` hierarchy expected by the
-    modern :class:`farkle.config.AppConfig` layout and pins the process CWD to
-    avoid cross-test pollution. An environment variable is also set so any code
-    that falls back to ``FARKLE_RESULTS_DIR`` will resolve to the same
-    temporary root.
+    Args:
+        tmp_path: Unique temporary directory provided by pytest.
+        monkeypatch: Fixture used to override environment variables.
+
+    Returns:
+        Generator yielding the temporary root path while the test runs.
     """
 
     prev = os.getcwd()
@@ -218,13 +327,28 @@ def tmp_results_dir(
 
 @pytest.fixture
 def capinfo(caplog: pytest.LogCaptureFixture) -> pytest.LogCaptureFixture:
+    """Set the log capture level to INFO for assertions.
+
+    Args:
+        caplog: Pytest logging capture fixture.
+
+    Returns:
+        The configured log capture fixture.
+    """
     caplog.set_level(logging.INFO)
     return caplog
 
 
 @pytest.fixture
 def sim_artifacts(tmp_path: Path) -> dict[str, Path]:
-    """Synthetic simulation outputs that mirror the current directory layout."""
+    """Create synthetic simulation outputs that mirror the expected layout.
+
+    Args:
+        tmp_path: Temporary directory root for writing artifacts.
+
+    Returns:
+        Mapping of artifact names to their generated paths.
+    """
 
     cfg = AppConfig(
         io=IOConfig(results_dir=tmp_path, append_seed=False),

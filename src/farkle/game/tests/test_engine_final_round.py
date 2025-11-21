@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+"""Tests covering final-round behavior for the game engine."""
+
 from dataclasses import dataclass
 from typing import Sequence
 
@@ -18,6 +20,17 @@ class ScriptedRNG:
     pos: int = 0
 
     def integers(self, low: int, high: int, size: int) -> np.ndarray:  # noqa: ARG002
+        """Return the next scripted die roll sequence.
+
+        Args:
+            low: Lower bound for faces (unused in the scripted path).
+            high: Upper bound for faces (unused in the scripted path).
+            size: Number of dice expected for the roll.
+
+        Returns:
+            A NumPy array containing the next set of predetermined faces.
+        """
+
         try:
             faces: Sequence[int] = self.script[self.pos]
         except IndexError as exc:  # pragma: no cover - defensive guard
@@ -40,11 +53,23 @@ class _QuietStrategy(ThresholdStrategy):
     run_up_score: bool = False
 
     def decide(self, *_, **__) -> bool:  # type: ignore[override]
+        """Always bank after scoring.
+
+        Returns:
+            False to indicate no additional reroll should occur.
+        """
+
         return False
 
 
 @pytest.mark.unit
 def test_final_round_respects_score_to_beat_and_reruns():
+    """Ensure the final round replays until the leading score is surpassed.
+
+    Returns:
+        None
+    """
+
     # Player 1 triggers the final round by crossing the target on the opening turn.
     p1 = FarklePlayer(
         name="opener",

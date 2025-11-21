@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+# tests/helpers/metrics_samples.py
+"""Helpers for generating and validating metrics-stage sample artifacts."""
+
 import json
 import shutil
 from pathlib import Path
@@ -206,12 +209,27 @@ _RAW_METRICS = {
 
 
 def _write_version_note() -> None:
+    """Record the generator version used for the golden artifacts.
+
+    Returns:
+        None
+    """
+
     VERSION_FILE.write_text(
         "v2 metrics goldens generated via tests/helpers/metrics_samples.py using metrics.run (CSV goldens)\n"
     )
 
 
 def _parquet_inputs_exist(root: Path) -> bool:
+    """Check whether the expected parquet inputs already exist.
+
+    Args:
+        root: Directory containing the metrics inputs.
+
+    Returns:
+        True when all required parquet inputs are present.
+    """
+
     expected = [
         root / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
         root / "2_players" / "2p_metrics.parquet",
@@ -253,10 +271,29 @@ def regenerate_inputs(target_root: Path) -> None:
 
 
 def build_config(results_root: Path) -> AppConfig:
+    """Construct an application config bound to a results directory.
+
+    Args:
+        results_root: Root directory containing metrics artifacts.
+
+    Returns:
+        Application configuration tailored for the sample metrics stage.
+    """
+
     return AppConfig(io=IOConfig(results_dir=results_root, append_seed=False), sim=SimConfig(**_SIM_KWARGS))
 
 
 def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
+    """Prepare a workspace populated with synthetic metrics inputs.
+
+    Args:
+        tmp_path: Base temporary directory provided by pytest.
+        refresh_inputs: Whether to rebuild the static parquet inputs.
+
+    Returns:
+        Configuration pointing at the prepared workspace.
+    """
+
     if refresh_inputs or not _parquet_inputs_exist(INPUT_ROOT):
         regenerate_inputs(INPUT_ROOT)
     workspace = tmp_path / "results"
@@ -266,6 +303,16 @@ def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
 
 
 def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
+    """Compare generated metrics artifacts against stored goldens.
+
+    Args:
+        cfg: Application configuration with analysis directory details.
+        update_goldens: Whether to refresh existing golden artifacts.
+
+    Returns:
+        None
+    """
+
     metrics_path = cfg.analysis_dir / cfg.metrics_name
     seat_csv = cfg.analysis_dir / "seat_advantage.csv"
     seat_parquet = cfg.analysis_dir / "seat_advantage.parquet"
