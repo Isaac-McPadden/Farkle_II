@@ -11,6 +11,7 @@ when inputs are unchanged.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -203,15 +204,17 @@ def _detect_player_counts(analysis_dir: Path) -> list[int]:
     """Infer available player counts from existing metrics outputs."""
     metrics = analysis_dir / "metrics.parquet"
     if metrics.exists():
-        try:
+        pandas_spec = importlib.util.find_spec("pandas")
+        if pandas_spec is not None:
             import pandas as pd
 
-            df = pd.read_parquet(metrics, columns=["n_players"])
-            values = sorted({int(v) for v in df["n_players"].dropna().unique()})
-            if values:
-                return values
-        except Exception:  # noqa: BLE001 - fall back to default
-            pass
+            try:
+                df = pd.read_parquet(metrics, columns=["n_players"])
+                values = sorted({int(v) for v in df["n_players"].dropna().unique()})
+                if values:
+                    return values
+            except Exception:  # noqa: BLE001 - fall back to default
+                pass
     return [5]
 
 
