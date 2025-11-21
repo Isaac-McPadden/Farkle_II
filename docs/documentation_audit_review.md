@@ -1,20 +1,18 @@
-# Documentation Audit Review
+# Documentation audit review
 
 ## Audit command
-- Ran `python doc_audit.py > audit_report.txt` to capture the current documentation issues flagged across tracked Python files.
-- The generated `audit_report.txt` in the repo root contains the raw output for reference.
+- Ran `python doc_audit.py > audit_report.txt` to refresh the documentation issues currently flagged across tracked Python files.
 
 ## True-positive findings
-These items represent genuine documentation gaps (missing path comments, module docstrings, or function/class docstrings) that should be addressed:
-- `doc_audit.py`: helper dataclasses and functions lack docstrings, so the tool itself fails its own checks.
-- Core analysis modules such as `src/farkle/analysis/agreement.py`, `head2head.py`, `isolated_metrics.py`, `metrics.py`, and `reporting.py` are missing required path comments and docstrings for key helpers noted in `audit_report.txt`.
-- CLI and configuration entry points (`src/farkle/cli/main.py`, `src/farkle/config.py`) show missing module and function/class docstrings.
-- Utility modules (`src/farkle/utils/artifacts.py`, `logging.py`, `manifest.py`, `parallel.py`, `schema_helpers.py`, `sinks.py`, `streaming_loop.py`, `writer.py`) are flagged for missing module or helper docstrings.
-- Game and simulation code (`src/farkle/game/scoring.py`, `src/farkle/simulation/power_helpers.py`, `run_tournament.py`, `watch_game.py`) includes undocumented helpers.
+- `doc_audit.py` itself still lacks docstrings for its helper dataclasses and functions, so the tool continues to fail its own checks.
+- Core analytics code under `src/farkle/analysis/` (e.g., `agreement.py`, `combine.py`, `head2head.py`, `reporting.py`, `seed_summaries.py`, `tiering_report.py`) is missing function and class docstrings that would help explain preprocessing and reporting behaviors.
+- Entry points and configuration helpers (`src/farkle/cli/main.py`, `src/farkle/config.py`, `src/pipeline.py`) are missing docstrings for CLI wiring, config schemas, and pipeline helpers and should be filled in.
+- Game and simulation helpers (`src/farkle/game/scoring.py`, `src/farkle/simulation/power_helpers.py`, `run_tournament.py`, `watch_game.py`) have undocumented helpers that should be described.
+- Utility modules (`src/farkle/utils/artifacts.py`, `logging.py`, `manifest.py`, `parallel.py`, `schema_helpers.py`, `sinks.py`, `stats.py`, `streaming_loop.py`, `writer.py`, `yaml_helpers.py`) need module and helper docstrings to clarify their behaviors.
+- Package initializers `src/farkle/game/tests/__init__.py` and `tests/__init__.py` need the required first-line path comment strings; other docstring gaps in those files can be considered trivial.
 
-## Items marked as skip (false positives / low-value fixes)
+## Items marked as skip (false positives / low-value)
 | File(s) | Rationale |
 | --- | --- |
-| `tests/__init__.py`, `src/farkle/game/tests/__init__.py` | Empty package initializers; adding path comments is worthwhile to tell __init__.py files apart but adding docstrings would add no value. |
-| `tmp_debug.py`, `tmp_debug2.py`, `tmp_test.py`, `tmp_test2.py` | Temporary local debugging helpers not shipped to users; documenting them is unnecessary. |
-| Broad unit/integration test modules flagged for missing module/function docstrings | Test cases already use descriptive names; adding docstrings or path comments would be noisy and provide little additional clarity. |
+| Test modules across `tests/` (integration, unit, helpers, and `tests/conftest.py`) | Test names already communicate intent; adding module or function docstrings would add noise without improving readability for maintainers. |
+| Temporary scratch files (`tmp_debug.py`, `tmp_debug2.py`, `tmp_test.py`, `tmp_test2.py`) | Local debugging/testing harnesses not part of shipped code; documenting them is unnecessary unless they are promoted into supported modules. |
