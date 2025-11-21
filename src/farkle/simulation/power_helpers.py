@@ -1,4 +1,9 @@
 # src/farkle/simulation/power_helpers.py
+"""
+Utilities for translating power analysis configurations into concrete game
+counts. Normalizes ``PowerDesign`` inputs and delegates to ``games_for_power``
+to calculate the number of simulations needed for a target effect.
+"""
 from __future__ import annotations
 
 from dataclasses import asdict, is_dataclass

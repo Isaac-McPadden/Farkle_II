@@ -1,4 +1,9 @@
 # src/farkle/utils/streaming_loop.py
+"""
+Helpers for streaming Parquet shard creation. Provides producer/consumer
+thread utilities, a bounded queue wrapper, and the runner that writes batches
+while recording manifest metadata.
+"""
 from __future__ import annotations
 
 import os
