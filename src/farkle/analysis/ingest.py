@@ -105,6 +105,15 @@ _SEAT_RE = re.compile(r"^P(\d+)_strategy$")
 
 
 def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize winner-related columns for compatibility with downstream code.
+
+    Args:
+        df: Raw results dataframe containing winner and seat strategy columns.
+
+    Returns:
+        A copy of the dataframe with standardized ``winner_seat``,
+        ``winner_strategy``, and ``seat_ranks`` columns.
+    """
     df = df.copy()
 
     # Rename legacy "winner" column to "winner_seat" (drop original)
@@ -150,6 +159,15 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _n_from_block(name: str) -> int:
+    """Extract the player count from a ``<N>_players`` directory name.
+
+    Args:
+        name: Directory basename encoded with the player count.
+
+    Returns:
+        Parsed number of players, or ``0`` when the name does not follow the
+        expected pattern.
+    """
     m = re.match(r"^(\d+)_players$", name)
     return int(m.group(1)) if m else 0
 
@@ -187,6 +205,12 @@ def _process_block(block: Path, cfg: AppConfig) -> int:
     total = 0
 
     def _iter_tables():
+        """Yield canonicalized parquet tables from discovered shards.
+
+        Returns:
+            An iterator over :class:`pyarrow.Table` objects aligned to the
+            expected schema for the current player count.
+        """
         nonlocal total
         for shard_df, shard_path in _iter_shards(block, tuple(wanted)):
             if shard_df.empty:
@@ -242,6 +266,7 @@ def _process_block(block: Path, cfg: AppConfig) -> int:
         return 0
 
     def _all_batches():
+        """Iterate over the first and remaining batches for streaming writes."""
         yield first
         yield from batches
 
@@ -273,6 +298,12 @@ def _process_block(block: Path, cfg: AppConfig) -> int:
 
 
 def run(cfg: AppConfig) -> None:
+    """Ingest raw game results into curated parquet files and manifests.
+
+    Args:
+        cfg: Application configuration containing input/output paths and
+            parallelism controls.
+    """
     LOGGER.info(
         "Ingest started",
         extra={
@@ -310,6 +341,7 @@ def run(cfg: AppConfig) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI wrapper
+    """Parse command-line arguments and invoke :func:`run`."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--config", type=Path, default=Path("configs/fast_config.yaml"), help="Path to YAML config"

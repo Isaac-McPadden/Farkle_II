@@ -52,6 +52,7 @@ _PNUM_RE = re.compile(r"^P(\d+)_")  # Regex for P<X>_
 
 
 def n_players_from_schema(schema: pa.Schema) -> int:
+    """Infer the maximum player index from seat-oriented schema fields."""
     pnums = []
     for name in schema.names:
         m = _PNUM_RE.match(name)

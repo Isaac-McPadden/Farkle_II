@@ -95,6 +95,7 @@ def is_up_to_date(done_path: Path, inputs: list[Path], outputs: list[Path]) -> b
 
 
 def _done_path(out: Path) -> Path:
+    """Return the companion ``.done.json`` path for a given output file."""
     return out.with_name(out.name + ".done.json")
 
 
@@ -199,6 +200,7 @@ def analyze_agreement(exp_dir: Path) -> None:
 
 
 def _detect_player_counts(analysis_dir: Path) -> list[int]:
+    """Infer available player counts from existing metrics outputs."""
     metrics = analysis_dir / "metrics.parquet"
     if metrics.exists():
         try:

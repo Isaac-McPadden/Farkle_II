@@ -26,6 +26,7 @@ def run_streaming_shard(
     compression: str = "snappy",
     manifest_extra: Dict[str, Any] | None = None,
 ):
+    """Stream batches to parquet and append a manifest entry on success."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with ParquetShardWriter(
         out_path=out_path, schema=schema, compression=compression, row_group_size=row_group_size
@@ -58,6 +59,7 @@ def producer_thread(
     push: Callable[[pa.Table], None],
     mk_batches: Callable[[], Iterable[pa.Table]],
 ):
+    """Produce tables from ``mk_batches`` and hand them to ``push``."""
     for tbl in mk_batches():
         push(tbl)
 
@@ -72,7 +74,9 @@ def writer_thread(
     compression: str,
     manifest_extra: Dict[str, Any] | None,
 ):
+    """Consume tables from ``pop`` and write them via :func:`run_streaming_shard`."""
     def batches():
+        """Yield tables until a ``None`` sentinel is received."""
         while True:
             tbl = pop()
             if tbl is None:  # poison pill
@@ -91,14 +95,19 @@ def writer_thread(
 
 
 class BoundedQueue:
+    """Thin wrapper around :class:`queue.Queue` with explicit push/pop methods."""
+
     def __init__(self, maxsize: int):
         self.q: queue.Queue[int | None] = queue.Queue(maxsize=maxsize)
 
     def push(self, tbl: pa.Table):
+        """Enqueue a table, blocking if the queue is full."""
         self.q.put(tbl)
 
     def pop(self):
+        """Dequeue a table, blocking until available."""
         return self.q.get()
 
     def close(self):
+        """Signal consumers to stop by enqueuing a sentinel ``None``."""
         self.q.put(None)
