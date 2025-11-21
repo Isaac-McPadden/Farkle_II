@@ -1,63 +1,5 @@
-doc_audit.py
-  - L13: Missing docstring for ClassDef 'Issue'
-  - L24: Missing docstring for ClassDef 'FileReport'
-  - L55: Missing docstring for FunctionDef 'git_tracked_py_files'
-  - L70: Missing docstring for FunctionDef 'is_ignored'
-  - L75: Missing docstring for FunctionDef 'read_lines'
-  - L104: Missing docstring for FunctionDef 'module_docstring_is_immediate'
-  - L109: Missing docstring for FunctionDef 'is_trivial_body'
-  - L131: Missing docstring for FunctionDef 'collect_docstring_issues'
-  - L142: Missing docstring for FunctionDef 'audit_file'
-  - L164: Missing docstring for FunctionDef 'generate_report'
-  - L171: Missing docstring for FunctionDef 'print_report'
-  - L17: Missing docstring for FunctionDef 'format'
-  - L28: Missing docstring for FunctionDef 'add'
-  - L32: Missing docstring for FunctionDef 'has_issues'
-  - L35: Missing docstring for FunctionDef 'format'
-
-src/farkle/analysis/__init__.py
-  - L15: Missing docstring for FunctionDef '_optional_import'
-  - L40: Missing docstring for FunctionDef '_skip_message'
-
-src/farkle/analysis/agreement.py
-  - L77: Missing docstring for FunctionDef '_build_payload'
-  - L121: Missing docstring for FunctionDef '_load_trueskill'
-  - L156: Missing docstring for FunctionDef '_load_frequentist'
-  - L193: Missing docstring for FunctionDef '_load_head2head'
-  - L227: Missing docstring for FunctionDef '_filter_by_players'
-  - L235: Missing docstring for FunctionDef '_select_score_column'
-  - L249: Missing docstring for FunctionDef '_assert_no_ties'
-  - L255: Missing docstring for FunctionDef '_rank_correlations'
-  - L287: Missing docstring for FunctionDef '_normalize_tiers'
-  - L299: Missing docstring for FunctionDef '_tier_agreements'
-  - L334: Missing docstring for FunctionDef '_summarize_seed_stability'
-  - L368: Missing docstring for FunctionDef '_tiers_from_graph'
-
-src/farkle/analysis/combine.py
-  - L24: Missing docstring for FunctionDef '_pad_to_schema'
-  - L66: Missing docstring for FunctionDef '_iter_row_groups'
-  - L93: Missing docstring for FunctionDef '_all_batches'
-
-src/farkle/analysis/curate.py
-  - L32: Missing docstring for FunctionDef '_schema_hash'
-
-src/farkle/analysis/h2h_analysis.py
-  - L206: Missing docstring for FunctionDef '_resolve_alpha'
-  - L215: Missing docstring for FunctionDef '_write_graph_json'
-
 src/farkle/analysis/head2head.py
-  - L51: Missing docstring for ClassDef 'TierCandidate'
-  - L61: Missing docstring for FunctionDef 'run'
-  - L97: Missing docstring for FunctionDef '_build_design_kwargs'
-  - L113: Missing docstring for FunctionDef '_maybe_autotune_tiers'
-  - L218: Missing docstring for FunctionDef '_search_candidate'
-  - L276: Missing docstring for FunctionDef '_predict_runtime'
-  - L233: Missing docstring for FunctionDef 'evaluate'
-
-src/farkle/analysis/hgb_feat.py
-  - L22: Missing docstring for FunctionDef '_unique_players'
-  - L39: Missing docstring for FunctionDef '_latest_mtime'
-  - L44: Missing docstring for FunctionDef 'run'
+  - L268: Missing docstring for FunctionDef 'evaluate'
 
 src/farkle/analysis/ingest.py
   - L107: Missing docstring for FunctionDef '_fix_winner'
@@ -211,10 +153,6 @@ src/farkle/config.py
 src/farkle/game/scoring.py
   - L436: Missing docstring for FunctionDef 'must_bank'
 
-src/farkle/game/tests/__init__.py
-  - Missing path comment (file is empty)
-  - Missing module docstring
-
 src/farkle/game/tests/test_engine_final_round.py
   - First comment is missing or not at top of file
   - Missing module docstring
@@ -229,8 +167,7 @@ src/farkle/game/tests/test_scoring_properties.py
   - L20: Missing docstring for FunctionDef 'test_faces_to_counts_total_matches_roll_length'
 
 src/farkle/simulation/power_helpers.py
-  - Missing module docstring
-  - L57: Missing docstring for FunctionDef 'games_for_power_from_design'
+  - L62: Missing docstring for FunctionDef 'games_for_power_from_design'
 
 src/farkle/simulation/run_tournament.py
   - L109: Missing docstring for ClassDef 'WorkerState'
@@ -241,9 +178,6 @@ src/farkle/simulation/watch_game.py
   - L80: Missing docstring for FunctionDef 'traced_decide'
   - L114: Missing docstring for FunctionDef 'traced_default_score'
   - L150: Missing docstring for FunctionDef 'traced_default_score'
-
-src/farkle/utils/artifacts.py
-  - Missing module docstring
 
 src/farkle/utils/logging.py
   - L39: Missing docstring for FunctionDef 'setup_info_logging'
@@ -256,8 +190,7 @@ src/farkle/utils/parallel.py
   - L14: Missing docstring for FunctionDef 'process_map'
 
 src/farkle/utils/schema_helpers.py
-  - Missing module docstring
-  - L49: Missing docstring for FunctionDef 'n_players_from_schema'
+  - L54: Missing docstring for FunctionDef 'n_players_from_schema'
 
 src/farkle/utils/sinks.py
   - L44: Missing docstring for FunctionDef 'open'
@@ -269,35 +202,26 @@ src/farkle/utils/stats.py
   - L79: Missing docstring for FunctionDef '_num_hypotheses'
 
 src/farkle/utils/streaming_loop.py
-  - Missing module docstring
-  - L14: Missing docstring for FunctionDef 'run_streaming_shard'
-  - L52: Missing docstring for FunctionDef 'producer_thread'
-  - L60: Missing docstring for FunctionDef 'writer_thread'
-  - L88: Missing docstring for ClassDef 'BoundedQueue'
-  - L70: Missing docstring for FunctionDef 'batches'
-  - L92: Missing docstring for FunctionDef 'push'
-  - L95: Missing docstring for FunctionDef 'pop'
-  - L98: Missing docstring for FunctionDef 'close'
+  - L19: Missing docstring for FunctionDef 'run_streaming_shard'
+  - L57: Missing docstring for FunctionDef 'producer_thread'
+  - L65: Missing docstring for FunctionDef 'writer_thread'
+  - L93: Missing docstring for ClassDef 'BoundedQueue'
+  - L75: Missing docstring for FunctionDef 'batches'
+  - L97: Missing docstring for FunctionDef 'push'
+  - L100: Missing docstring for FunctionDef 'pop'
+  - L103: Missing docstring for FunctionDef 'close'
 
 src/farkle/utils/writer.py
-  - Missing module docstring
-  - L29: Missing docstring for ClassDef 'ParquetShardWriter'
-  - L49: Missing docstring for FunctionDef 'rows_written'
-  - L52: Missing docstring for FunctionDef '_ensure_writer'
-  - L63: Missing docstring for FunctionDef 'write_batch'
-  - L69: Missing docstring for FunctionDef 'write_batches'
-  - L73: Missing docstring for FunctionDef 'close'
-
-src/farkle/utils/yaml_helpers.py
-  - Missing module docstring
+  - L34: Missing docstring for ClassDef 'ParquetShardWriter'
+  - L54: Missing docstring for FunctionDef 'rows_written'
+  - L57: Missing docstring for FunctionDef '_ensure_writer'
+  - L68: Missing docstring for FunctionDef 'write_batch'
+  - L74: Missing docstring for FunctionDef 'write_batches'
+  - L78: Missing docstring for FunctionDef 'close'
 
 src/pipeline.py
   - L97: Missing docstring for FunctionDef '_done_path'
   - L201: Missing docstring for FunctionDef '_detect_player_counts'
-
-tests/__init__.py
-  - Missing path comment (file is empty)
-  - Missing module docstring
 
 tests/conftest.py
   - L1: Path comment mismatch (expected: '# tests/conftest.py')
