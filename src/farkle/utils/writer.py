@@ -1,4 +1,9 @@
 # src/farkle/utils/writer.py
+"""
+Atomic Parquet writing helpers. Exposes :func:`atomic_path` for safe file
+replacement and :class:`ParquetShardWriter` for streaming Parquet shards with
+row tracking.
+"""
 from __future__ import annotations
 
 import os

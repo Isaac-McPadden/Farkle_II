@@ -1,4 +1,9 @@
 # src/farkle/utils/schema_helpers.py
+"""
+Schema utilities for game outputs. Defines the canonical seat-level columns,
+builds expected schemas for a given player count, and offers helpers for
+deriving metadata such as player counts or batch sizes.
+"""
 from __future__ import annotations
 
 import re

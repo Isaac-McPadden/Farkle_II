@@ -1,4 +1,9 @@
 # src/farkle/utils/artifacts.py
+"""
+Atomic artifact helpers for writing Parquet and CSV outputs. Uses temporary
+files via :func:`atomic_path` to ensure durable writes before replacing the
+target path.
+"""
 from __future__ import annotations
 
 from pathlib import Path

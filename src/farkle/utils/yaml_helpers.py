@@ -1,4 +1,8 @@
 # src/farkle/utils/yaml_helpers.py
+"""
+YAML parsing helpers. Currently exposes ``expand_dotted_keys`` to convert flat
+mapping structures with dotted keys into nested dictionaries.
+"""
 from __future__ import annotations
 
 from collections.abc import Mapping
