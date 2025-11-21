@@ -20,6 +20,15 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _unique_players(metrics_path: Path, hints: Iterable[int]) -> list[int]:
+    """Infer player counts from metric parquet data and provided hints.
+
+    Args:
+        metrics_path: Path to the isolated metrics parquet file.
+        hints: Player counts expected from configuration.
+
+    Returns:
+        Sorted list of distinct player counts discovered.
+    """
     players: set[int] = set(int(p) for p in hints)
     if not metrics_path.exists():
         return sorted(players)
@@ -37,11 +46,24 @@ def _unique_players(metrics_path: Path, hints: Iterable[int]) -> list[int]:
 
 
 def _latest_mtime(paths: Iterable[Path]) -> float:
+    """Compute the most recent modification time among existing paths.
+
+    Args:
+        paths: Files whose modification times should be checked.
+
+    Returns:
+        Most recent mtime in seconds since the epoch, or 0.0 when none exist.
+    """
     mtimes = [p.stat().st_mtime for p in paths if p.exists()]
     return max(mtimes, default=0.0)
 
 
 def run(cfg: AppConfig) -> None:
+    """Train histogram gradient boosting feature importance models per player count.
+
+    Args:
+        cfg: Application configuration containing analysis directories and names.
+    """
     analysis_dir = cfg.analysis_dir
     metrics_path = analysis_dir / cfg.metrics_name
     ratings_path = analysis_dir / _hgb.RATINGS_NAME

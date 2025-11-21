@@ -75,6 +75,15 @@ def run(cfg: AppConfig) -> None:
 
 
 def _build_payload(analysis_dir: Path, players: int) -> dict[str, object]:
+    """Assemble agreement metrics for the requested player count.
+
+    Args:
+        analysis_dir: Directory containing prior analytics outputs.
+        players: Number of players for which to compute agreement.
+
+    Returns:
+        Dictionary of correlation, stability, and coverage metrics keyed by method.
+    """
     methods: dict[str, MethodData] = {}
 
     ts = _load_trueskill(analysis_dir, players)
@@ -119,6 +128,15 @@ def _build_payload(analysis_dir: Path, players: int) -> dict[str, object]:
 
 
 def _load_trueskill(analysis_dir: Path, players: int) -> MethodData | None:
+    """Load pooled TrueSkill ratings and optional tiers for a given player count.
+
+    Args:
+        analysis_dir: Directory containing rating parquet files.
+        players: Number of players to filter the ratings to.
+
+    Returns:
+        Prepared ``MethodData`` or ``None`` when no ratings are available.
+    """
     path = analysis_dir / "ratings_pooled.parquet"
     if not path.exists():
         return None
@@ -154,6 +172,15 @@ def _load_trueskill(analysis_dir: Path, players: int) -> MethodData | None:
 
 
 def _load_frequentist(analysis_dir: Path, players: int) -> MethodData | None:
+    """Load frequentist scoring outputs and optional tiers.
+
+    Args:
+        analysis_dir: Directory containing frequentist parquet outputs.
+        players: Number of players to filter the scores to.
+
+    Returns:
+        Populated ``MethodData`` or ``None`` when the file is absent or empty.
+    """
     path = analysis_dir / "frequentist_scores.parquet"
     if not path.exists():
         return None
@@ -191,6 +218,14 @@ def _load_frequentist(analysis_dir: Path, players: int) -> MethodData | None:
 
 
 def _load_head2head(analysis_dir: Path) -> MethodData | None:
+    """Translate head-to-head significance results into score/tier data.
+
+    Args:
+        analysis_dir: Directory containing head-to-head decision artifacts.
+
+    Returns:
+        ``MethodData`` when ranking information can be derived, otherwise ``None``.
+    """
     if build_significant_graph is None or derive_sig_ranking is None or nx is None:
         LOGGER.info(
             "Agreement: skipping head-to-head inputs (networkx unavailable)",
@@ -225,6 +260,15 @@ def _load_head2head(analysis_dir: Path) -> MethodData | None:
 
 
 def _filter_by_players(df: pd.DataFrame, players: int) -> pd.DataFrame:
+    """Restrict a DataFrame to rows matching the requested player count.
+
+    Args:
+        df: Source DataFrame containing a players column.
+        players: Expected number of players.
+
+    Returns:
+        Filtered DataFrame containing only rows that match ``players``.
+    """
     for column in ("players", "n_players"):
         if column in df.columns:
             mask = df[column].astype(int) == int(players)
@@ -233,6 +277,18 @@ def _filter_by_players(df: pd.DataFrame, players: int) -> pd.DataFrame:
 
 
 def _select_score_column(df: pd.DataFrame, candidates: Iterable[str]) -> str:
+    """Pick a score-like column from preferred candidates or numeric columns.
+
+    Args:
+        df: DataFrame of scores and metadata.
+        candidates: Ordered column names to try first.
+
+    Returns:
+        Name of the chosen column.
+
+    Raises:
+        ValueError: If no numeric columns are available for selection.
+    """
     for col in candidates:
         if col in df.columns:
             return col
@@ -247,12 +303,29 @@ def _select_score_column(df: pd.DataFrame, candidates: Iterable[str]) -> str:
 
 
 def _assert_no_ties(series: pd.Series, label: str) -> None:
+    """Validate that a score series does not contain duplicate values.
+
+    Args:
+        series: Scores indexed by strategy.
+        label: Human-readable identifier used in error messages.
+
+    Raises:
+        ValueError: If duplicate values are detected in the series.
+    """
     values = series.to_numpy()
     if np.unique(values).size != values.size:
         raise ValueError(f"Ties detected in {label}")
 
 
 def _rank_correlations(score_vectors: Mapping[str, pd.Series]) -> tuple[dict | None, dict | None, dict]:
+    """Compute pairwise correlation statistics between scoring methods.
+
+    Args:
+        score_vectors: Mapping of method name to score series keyed by strategy.
+
+    Returns:
+        Tuple of (Spearman correlations, Kendall correlations, coverage counts).
+    """
     spearman: dict[str, float | None] = {}
     kendall: dict[str, float | None] = {}
     coverage: dict[str, dict[str, int]] = {}
@@ -285,6 +358,14 @@ def _rank_correlations(score_vectors: Mapping[str, pd.Series]) -> tuple[dict | N
 
 
 def _normalize_tiers(tiers: Mapping[str, int] | None) -> dict[str, int] | None:
+    """Normalize arbitrary tier labels into zero-based consecutive integers.
+
+    Args:
+        tiers: Mapping of strategy to tier label.
+
+    Returns:
+        Normalized tier mapping or ``None`` when no tiers are provided.
+    """
     if not tiers:
         return None
     normalized: dict[str, int] = {}
@@ -297,6 +378,14 @@ def _normalize_tiers(tiers: Mapping[str, int] | None) -> dict[str, int] | None:
 
 
 def _tier_agreements(tier_maps: Mapping[str, dict[str, int]]) -> tuple[dict | None, dict | None]:
+    """Calculate clustering agreement metrics for overlapping tier maps.
+
+    Args:
+        tier_maps: Mapping of method name to normalized tier assignments.
+
+    Returns:
+        Tuple of (adjusted Rand index map, normalized mutual information map).
+    """
     if adjusted_rand_score is None or normalized_mutual_info_score is None:
         return (None, None)
     ari: dict[str, float | None] = {}
@@ -332,6 +421,14 @@ def _tier_agreements(tier_maps: Mapping[str, dict[str, int]]) -> tuple[dict | No
 
 
 def _summarize_seed_stability(per_seed: list[pd.Series]) -> dict[str, object] | None:
+    """Summarize variability of scores across seeds for common strategies.
+
+    Args:
+        per_seed: Score series per seed, indexed by strategy.
+
+    Returns:
+        Statistics describing score dispersion or ``None`` when insufficient data.
+    """
     if not per_seed:
         return None
 
@@ -366,6 +463,14 @@ def _summarize_seed_stability(per_seed: list[pd.Series]) -> dict[str, object] | 
 
 
 def _tiers_from_graph(graph: nx.DiGraph) -> dict[str, int]:
+    """Derive tier labels from a condensed graph of significant results.
+
+    Args:
+        graph: Directed graph representing significant pairwise outcomes.
+
+    Returns:
+        Mapping of strategy identifiers to tier index, defaulting to empty when unavailable.
+    """
     if nx is None:
         return {}
     if graph.number_of_nodes() == 0:

@@ -13,6 +13,14 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _optional_import(module: str) -> ModuleType | None:
+    """Attempt to import an analytics module while tolerating missing deps.
+
+    Args:
+        module: Fully qualified module path to import.
+
+    Returns:
+        Imported module object, or ``None`` when the dependency is absent.
+    """
     try:
         return importlib.import_module(module)
     except ModuleNotFoundError as exc:  # pragma: no cover - exercised in tests
@@ -38,6 +46,12 @@ def run_meta(cfg: AppConfig, *, force: bool = False) -> None:
 
 
 def _skip_message(step: str, reason: str) -> None:
+    """Log a standardized skip message for optional analysis stages.
+
+    Args:
+        step: Name of the analytics step being skipped.
+        reason: Human-readable explanation for the skip condition.
+    """
     LOGGER.info(
         "Analytics: skipping %s",
         step,

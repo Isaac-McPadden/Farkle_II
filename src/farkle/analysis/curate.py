@@ -30,6 +30,14 @@ LOGGER = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────────────
 def _schema_hash(n_players: int) -> str:
+    """Compute a deterministic hash for the expected schema for ``n_players``.
+
+    Args:
+        n_players: Player count used to select the schema variant.
+
+    Returns:
+        Hex digest representing the serialized schema contents.
+    """
     schema = expected_schema_for(n_players)
 
     # ---- get raw bytes ---------------------------------------------------

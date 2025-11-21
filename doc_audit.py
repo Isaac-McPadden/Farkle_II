@@ -11,10 +11,22 @@ from typing import Iterable, List
 
 @dataclass
 class Issue:
+    """Represents a single documentation issue discovered in a file.
+
+    Attributes:
+        description: Human-readable explanation of the issue.
+        line: Optional line number associated with the issue.
+    """
+
     description: str
     line: int | None = None
 
     def format(self) -> str:
+        """Format the issue for human-readable report output.
+
+        Returns:
+            Formatted string containing the line (if present) and description.
+        """
         if self.line is None:
             return f"- {self.description}"
         return f"- L{self.line}: {self.description}"
@@ -22,17 +34,43 @@ class Issue:
 
 @dataclass
 class FileReport:
+    """Aggregates documentation issues for a single file.
+
+    Attributes:
+        path: Filesystem path to the Python source being audited.
+        issues: Collection of issues discovered during auditing.
+    """
+
     path: Path
     issues: List[Issue] = field(default_factory=list)
 
     def add(self, description: str, line: int | None = None) -> None:
+        """Append a discovered issue to the report.
+
+        Args:
+            description: Explanation of the missing documentation detail.
+            line: Optional line number where the issue was detected.
+        """
         self.issues.append(Issue(description, line))
 
     @property
     def has_issues(self) -> bool:
+        """Indicate whether any issues have been recorded.
+
+        Returns:
+            True if issues are present; otherwise False.
+        """
         return bool(self.issues)
 
     def format(self, repo_root: Path) -> str:
+        """Return a multi-line string summarizing all issues for a file.
+
+        Args:
+            repo_root: Repository root used to render relative paths.
+
+        Returns:
+            A formatted string starting with the relative path followed by indented issues.
+        """
         rel = self.path.relative_to(repo_root)
         parts = [f"{rel.as_posix()}"]
         for issue in self.issues:
@@ -53,6 +91,14 @@ IGNORED_DIRS = {
 
 
 def git_tracked_py_files(repo_root: Path) -> list[Path]:
+    """List tracked Python files, falling back to globbing if git is unavailable.
+
+    Args:
+        repo_root: Root directory of the repository to inspect.
+
+    Returns:
+        Paths to Python files that are not ignored by the audit rules.
+    """
     try:
         output = subprocess.check_output(
             ["git", "-C", str(repo_root), "ls-files", "*.py"], text=True
@@ -68,11 +114,28 @@ def git_tracked_py_files(repo_root: Path) -> list[Path]:
 
 
 def is_ignored(path: Path, repo_root: Path) -> bool:
+    """Determine whether a path should be excluded from the audit.
+
+    Args:
+        path: Candidate file path.
+        repo_root: Repository root used to compute relative segments.
+
+    Returns:
+        True if any part of the path matches the ignored directory list.
+    """
     rel_parts = path.relative_to(repo_root).parts
     return any(part in IGNORED_DIRS for part in rel_parts)
 
 
 def read_lines(path: Path) -> list[str]:
+    """Read a UTF-8 text file into individual lines.
+
+    Args:
+        path: File to read.
+
+    Returns:
+        List of lines without trailing newline characters.
+    """
     return path.read_text(encoding="utf-8").splitlines()
 
 
@@ -102,11 +165,28 @@ def check_path_comment(path: Path, lines: list[str], report: FileReport, repo_ro
 
 
 def module_docstring_is_immediate(lines: list[str], path_comment_idx: int) -> bool:
+    """Check whether a module docstring directly follows the path comment.
+
+    Args:
+        lines: File contents split into lines.
+        path_comment_idx: Index of the verified path comment line.
+
+    Returns:
+        True when the docstring is immediately after the path comment.
+    """
     next_idx = path_comment_idx + 1
     return next_idx < len(lines) and lines[next_idx].lstrip().startswith(("\"\"\"", "'''"))
 
 
 def is_trivial_body(body: list[ast.stmt]) -> bool:
+    """Determine whether a node body contains only no-op statements.
+
+    Args:
+        body: AST statements representing a function or class body.
+
+    Returns:
+        True if the body is empty or only contains pass/ellipsis placeholders.
+    """
     body_iter = iter(body)
     first = next(body_iter, None)
     if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(
@@ -129,6 +209,12 @@ def is_trivial_body(body: list[ast.stmt]) -> bool:
 
 
 def collect_docstring_issues(tree: ast.AST, report: FileReport) -> None:
+    """Record missing docstrings for functions and classes in the AST.
+
+    Args:
+        tree: Parsed Python AST for a module.
+        report: Accumulator receiving any missing-docstring issues.
+    """
     for node in ast.walk(tree):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             if node.name.startswith("__") and node.name.endswith("__"):
@@ -140,6 +226,15 @@ def collect_docstring_issues(tree: ast.AST, report: FileReport) -> None:
 
 
 def audit_file(path: Path, repo_root: Path) -> FileReport:
+    """Audit a single file for required path comments and docstrings.
+
+    Args:
+        path: File path to inspect.
+        repo_root: Repository root for relative path calculations.
+
+    Returns:
+        Report containing any discovered documentation issues.
+    """
     report = FileReport(path)
     lines = read_lines(path)
 
@@ -162,6 +257,14 @@ def audit_file(path: Path, repo_root: Path) -> FileReport:
 
 
 def generate_report(repo_root: Path) -> list[FileReport]:
+    """Run the audit across all tracked Python files.
+
+    Args:
+        repo_root: Root directory for the repository being checked.
+
+    Returns:
+        Collection of per-file reports representing audit findings.
+    """
     reports: list[FileReport] = []
     for path in git_tracked_py_files(repo_root):
         reports.append(audit_file(path, repo_root))
@@ -169,6 +272,12 @@ def generate_report(repo_root: Path) -> list[FileReport]:
 
 
 def print_report(reports: Iterable[FileReport], repo_root: Path) -> None:
+    """Print formatted reports and summarize whether issues were found.
+
+    Args:
+        reports: Iterable of completed file reports.
+        repo_root: Repository root used for path display.
+    """
     reports = list(reports)
     any_issues = False
     for report in reports:

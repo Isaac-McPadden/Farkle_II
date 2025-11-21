@@ -22,6 +22,15 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
+    """Align a table to a target schema by casting or adding null columns.
+
+    Args:
+        tbl: Input Arrow table to adjust.
+        target: Desired schema ordering and types.
+
+    Returns:
+        Table whose columns match ``target`` in order and dtype.
+    """
     cols = []
     for f in target:
         if f.name in tbl.column_names:
@@ -64,6 +73,7 @@ def run(cfg: AppConfig) -> None:
     total = 0
 
     def _iter_row_groups():
+        """Yield padded row groups from all input parquet shards."""
         nonlocal total
         for p in files:
             pf = pq.ParquetFile(p)
@@ -91,6 +101,7 @@ def run(cfg: AppConfig) -> None:
         return
 
     def _all_batches():
+        """Yield the first batch followed by all remaining batches."""
         yield first
         yield from batches
 
