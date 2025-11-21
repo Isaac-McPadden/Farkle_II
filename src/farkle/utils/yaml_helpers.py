@@ -1,4 +1,4 @@
-﻿# src/farkle/utils/yaml_helpers.py
+# src/farkle/utils/yaml_helpers.py
 from __future__ import annotations
 
 from collections.abc import Mapping
