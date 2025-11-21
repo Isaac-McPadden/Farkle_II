@@ -1,9 +1,10 @@
-# pragma: no cover
-# ruff: noqa: ARG005 ARG003 ARG002 ARG001
-import importlib.machinery
 # tests/conftest.py
 """Shared pytest fixtures and compatibility shims for the test suite."""
 
+# pragma: no cover
+# ruff: noqa: ARG005 ARG003 ARG002 ARG001
+import importlib
+import importlib.machinery
 import importlib.util
 import logging
 import os
@@ -30,9 +31,13 @@ if TEST_PATH.exists():
     sys.path.insert(0, str(TEST_PATH))
 
 if "tomllib" not in sys.modules:
-    try:
-        import tomli as _tomli
-    except ModuleNotFoundError:
+    tomllib_spec = importlib.util.find_spec("tomllib")
+    tomli_spec = importlib.util.find_spec("tomli")
+    if tomllib_spec is not None:
+        sys.modules["tomllib"] = importlib.import_module("tomllib")
+    elif tomli_spec is not None:
+        sys.modules["tomllib"] = importlib.import_module("tomli")
+    else:
 
         def _load_toml(fh):
             """Minimal TOML loader that only extracts a version string.
@@ -66,8 +71,6 @@ if "tomllib" not in sys.modules:
         stub = types.ModuleType("tomllib")
         stub.load = _load_toml  # type: ignore[attr-defined]
         sys.modules["tomllib"] = stub
-    else:
-        sys.modules["tomllib"] = _tomli
 
 
 def _identity_jit(*jit_args, **jit_kwargs):
@@ -100,12 +103,13 @@ def _identity_jit(*jit_args, **jit_kwargs):
     return _decorator
 
 
-try:
-    import numba  # type: ignore[import-not-found]
-except ModuleNotFoundError:
+numba_spec = importlib.util.find_spec("numba")
+if numba_spec is None:
     numba = types.SimpleNamespace(jit=_identity_jit, njit=_identity_jit)  # type: ignore[assignment]
     sys.modules["numba"] = numba  # type: ignore[assignment]
 else:
+    import numba  # type: ignore[import-not-found]
+
     numba.jit = _identity_jit  # type: ignore[assignment]
     numba.njit = _identity_jit  # type: ignore[assignment]
 
@@ -286,15 +290,9 @@ def _seed_random_generators(monkeypatch: pytest.MonkeyPatch) -> Generator[None, 
 
 
 def pytest_configure():
-    """Disable Numba JIT during unit tests to preserve coverage reporting.
+    """Disable Numba JIT during unit tests to preserve coverage reporting."""
 
-    Returns:
-        None
-    """
-    try:
-        import numba  # noqa: F401  # type: ignore[import-not-found]
-    except ModuleNotFoundError:
-        return
+    import numba  # type: ignore[import-not-found]
 
     numba.jit = _identity_jit  # type: ignore[assignment]
     numba.njit = _identity_jit  # keep both symbols  # type: ignore[assignment]
