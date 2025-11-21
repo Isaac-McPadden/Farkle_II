@@ -32,6 +32,8 @@ def atomic_path(final_path: str):
 
 @dataclass
 class ParquetShardWriter:
+    """Context manager for streaming parquet writes with atomic finalization."""
+
     out_path: str
     schema: pa.Schema | None = None
     compression: str = "snappy"
@@ -52,9 +54,11 @@ class ParquetShardWriter:
 
     @property
     def rows_written(self) -> int:
+        """Number of rows written so far."""
         return self._rows_written
 
     def _ensure_writer(self, tbl: pa.Table) -> None:
+        """Create the underlying writer lazily based on the first batch."""
         if self._writer is None:
             schema = self.schema or tbl.schema
             self._writer = pq.ParquetWriter(
@@ -66,16 +70,19 @@ class ParquetShardWriter:
             self.schema = schema
 
     def write_batch(self, tbl: pa.Table) -> None:
+        """Write a single table batch to the parquet file."""
         self._ensure_writer(tbl)
         assert self._writer is not None
         self._writer.write_table(tbl, row_group_size=self.row_group_size)
         self._rows_written += tbl.num_rows
 
     def write_batches(self, tables: Iterable[pa.Table]) -> None:
+        """Write multiple batches sequentially."""
         for tbl in tables:
             self.write_batch(tbl)
 
     def close(self, success: bool = True) -> None:
+        """Close the writer and atomically move the temp file into place."""
         if not self._tmp_path:
             return
         if self._writer is not None:
@@ -89,4 +96,5 @@ class ParquetShardWriter:
         self._writer = None
 
     def __exit__(self, exc_type, exc, tb):
+        """Ensure resources are closed, cleaning up on exception."""
         self.close(exc_type is None)

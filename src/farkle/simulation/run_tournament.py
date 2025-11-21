@@ -63,6 +63,7 @@ class TournamentConfig:
 
     @property
     def games_per_shuffle(self) -> int:
+        """Number of unique games produced for a full shuffle of strategies."""
         return self.n_strategies // self.n_players
 
 
@@ -107,6 +108,8 @@ def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
 
 @dataclass(slots=True)
 class WorkerState:
+    """State container shared between tournament worker processes."""
+
     strats: list[ThresholdStrategy]
     cfg: TournamentConfig
 

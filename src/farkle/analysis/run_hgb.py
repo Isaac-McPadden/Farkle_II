@@ -39,16 +39,19 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
             self._mean: float | None = None
 
         def fit(self, _X, y):  # noqa: D401 - sklearn compatibility signature
+            """Fit by recording the mean of ``y`` for later predictions."""
             self._mean = float(np.mean(y)) if len(y) else 0.0
             return self
 
         def predict(self, X):
+            """Return constant predictions based on the fitted mean."""
             if self._mean is None:
                 return np.zeros(len(X), dtype=float)
             return np.full(len(X), self._mean, dtype=float)
 
 
     def permutation_importance(model, X, y, n_repeats=10, random_state=None):  # type: ignore[override]
+        """Fallback permutation importance returning zeroed importances."""
         _ = model, X, y, n_repeats, random_state
         n_features = X.shape[1]
         zeros = np.zeros(n_features, dtype=float)
@@ -56,10 +59,13 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
 
 
     class GroupKFold:  # type: ignore[override]
+        """Minimal replacement for sklearn's grouped cross-validation splitter."""
+
         def __init__(self, n_splits: int):
             self.n_splits = max(2, int(n_splits))
 
         def split(self, X, y, groups):  # noqa: D401 - sklearn compatibility signature
+            """Yield train/test indices while grouping by the provided labels."""
             _ = X, y
             unique_groups = list(dict.fromkeys(groups))
             for grp in unique_groups:
@@ -71,12 +77,18 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
 
 
     class _FallbackPD:
+        """Shim for partial dependence plotting when sklearn is unavailable."""
+
         @staticmethod
         def from_estimator(model, X, features):
+            """Provide an object exposing an empty matplotlib-like figure."""
             _ = model, X, features
 
             class _Fig:
+                """Placeholder figure that writes an empty file to ``path``."""
+
                 def savefig(self, path, format="png") -> None:  # noqa: A003 - match matplotlib API
+                    """Create an empty placeholder artifact at ``path``."""
                     _ = format
                     Path(path).write_bytes(b"")
 
@@ -164,6 +176,7 @@ def _parse_strategy_features(strategies: pd.Series) -> pd.DataFrame:
 
 
 def _load_seed_targets(root: Path) -> pd.DataFrame:
+    """Load per-seed TrueSkill targets used for grouped CV."""
     frames: list[pd.DataFrame] = []
     for path in sorted(root.glob("ratings_pooled_seed*.parquet")):
         match = _SEED_PATTERN.match(path.name)
@@ -183,17 +196,20 @@ def _load_seed_targets(root: Path) -> pd.DataFrame:
 
 
 def _write_importances(path: Path, frame: pd.DataFrame) -> None:
+    """Write permutation importance results to parquet atomically."""
     table = pa.Table.from_pandas(frame, preserve_index=False)
     write_parquet_atomic(table, path)
 
 
 def _mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Compute mean absolute error with an empty-guard."""
     if y_true.size == 0:
         return 0.0
     return float(np.mean(np.abs(y_true - y_pred)))
 
 
 def _r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    """Compute coefficient of determination with zero-variance guard."""
     if y_true.size == 0:
         return 0.0
     mean = float(np.mean(y_true))
@@ -212,6 +228,7 @@ def _run_grouped_cv(
     seed_targets: pd.DataFrame,
     random_state: int,
 ) -> None:
+    """Run grouped cross-validation when per-seed ratings are available."""
     if seed_targets.empty:
         LOGGER.info(
             "Grouped CV skipped: no per-seed ratings",

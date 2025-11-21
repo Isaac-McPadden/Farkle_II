@@ -77,6 +77,7 @@ def wilson_ci(k: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
 
 
 def _num_hypotheses(n: int, full_pairwise: bool) -> int:
+    """Count hypotheses under full pairwise or top-vs-rest testing."""
     return n * (n - 1) // 2 if full_pairwise else n - 1
 
 

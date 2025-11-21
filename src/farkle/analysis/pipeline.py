@@ -26,6 +26,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _stringify_paths(obj: object) -> object:
+    """Convert Paths nested inside mappings/sequences into plain strings."""
     if isinstance(obj, Path):
         return str(obj)
     if isinstance(obj, dict):

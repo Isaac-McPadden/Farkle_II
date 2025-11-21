@@ -60,6 +60,7 @@ def strategy_yaml(strategy: ThresholdStrategy) -> str:
 
     # YAML-friendly booleans (lowercase)
     def format_bool(v):
+        """Render booleans in lowercase to align with YAML style."""
         return str(v).lower() if isinstance(v, bool) else v
 
     lines = [f"{k:<15}: {format_bool(v)}" for k, v in d.items()]
@@ -78,6 +79,7 @@ def _trace_decide(strategy: ThresholdStrategy, label: str) -> None:
     original = strategy.decide
 
     def traced_decide(self: ThresholdStrategy, **kw):  # same signature  # noqa: ARG001
+        """Log the decision outcome before returning it."""
         keep = original(**kw)
         LOGGER.info(
             "%s decide(): turn=%d dice_left=%d -> %s",
@@ -112,6 +114,7 @@ def patch_scoring():
     orig_engine = _engine_mod.default_score
 
     def traced_default_score(*args, **kw):
+        """Log scoring inputs and outputs while delegating to the original."""
         res = orig_mod(*args, **kw)  # type: ignore[arg-type]
         pts, used, reroll = res[:3]
         roll = args[0] if args else kw.get("dice_roll")
@@ -148,6 +151,7 @@ def _patch_default_score() -> None:
     orig_engine = _engine_mod.default_score
 
     def traced_default_score(*args, **kw):
+        """Log scoring outputs while delegating to the original implementation."""
         res = orig_mod(*args, **kw)  # type: ignore[arg-type]
         pts, used, reroll = res[:3]
         roll = args[0] if args else kw.get("dice_roll")

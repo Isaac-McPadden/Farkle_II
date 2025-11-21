@@ -37,10 +37,12 @@ def configure_logging(*, level: str | int = "INFO", log_file: str | Path | None 
 
 # Back-compat convenience wrappers (used in some tests)
 def setup_info_logging(log_file: Path | None = None) -> None:
+    """Configure INFO-level logging, optionally teeing to ``log_file``."""
     configure_logging(level="INFO", log_file=log_file)
 
 
 def setup_warning_logging(log_file: Path | None = None) -> None:
+    """Configure WARNING-level logging, optionally teeing to ``log_file``."""
     configure_logging(level="WARNING", log_file=log_file)
 
 

@@ -30,6 +30,8 @@ class IOConfig:
 
 @dataclass
 class PowerDesign:
+    """Parameters controlling power analyses for tournament planning."""
+
     power: float = 0.8
     control: float = 0.1  # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
     detectable_lift: float = 0.03  # absolute lift in win-rate
@@ -122,11 +124,13 @@ class AnalysisConfig:
 
     @run_tiering_report.setter
     def run_tiering_report(self, value: bool) -> None:
+        """Propagate legacy setter calls to ``run_frequentist``."""
         self.run_frequentist = bool(value)
 
 
 @dataclass
 class IngestConfig:
+    """Ingestion tuning for streaming parquet writes."""
     row_group_size: int = 64_000
     parquet_codec: str = "snappy"
     batch_rows: int = 100_000
@@ -135,16 +139,19 @@ class IngestConfig:
 
 @dataclass
 class CombineConfig:
+    """Settings for merging per-player-count ingested data."""
     max_players: int = 12
 
 
 @dataclass
 class MetricsConfig:
+    """Metric computation options."""
     seat_range: tuple[int, int] = (1, 12)
 
 
 @dataclass
 class TrueSkillConfig:
+    """Hyperparameters for TrueSkill updates."""
     beta: float = 25.0
     tau: float = 0.1
     draw_probability: float = 0.0
@@ -152,6 +159,7 @@ class TrueSkillConfig:
 
 @dataclass
 class Head2HeadConfig:
+    """Configuration for head-to-head tournament simulations."""
     n_jobs: int = 4
     games_per_pair: int = 10_000
     fdr_q: float = 0.02
@@ -161,6 +169,7 @@ class Head2HeadConfig:
 
 @dataclass
 class HGBConfig:
+    """Hyperparameters for histogram-based gradient boosting models."""
     max_depth: int = 6
     n_estimators: int = 300
 
@@ -185,78 +194,96 @@ class AppConfig:
     # —— Paths ——
     @property
     def results_dir(self) -> Path:
+        """Root directory where simulation outputs are written."""
         return self.io.results_dir
 
     @property
     def analysis_dir(self) -> Path:
+        """Directory containing derived analysis artifacts."""
         return self.io.results_dir / self.io.analysis_subdir
 
     @property
     def data_dir(self) -> Path:
+        """Data directory under the analysis folder."""
         return self.analysis_dir / "data"
 
     def n_dir(self, n: int) -> Path:
+        """Convenience accessor for a specific ``<n>_players`` directory."""
         return self.results_dir / f"{n}_players"
 
     def checkpoint_path(self, n: int) -> Path:
+        """Path to a head-to-head checkpoint for ``n`` players."""
         return self.n_dir(n) / f"{n}p_checkpoint.pkl"
 
     def metrics_path(self, n: int) -> Path:
+        """Path to the metrics parquet for ``n`` players."""
         return self.n_dir(n) / f"{n}p_metrics.parquet"
 
     # —— Ingest/streaming knobs ——
     @property
     def row_group_size(self) -> int:
+        """Row-group size used when writing parquet outputs during ingest."""
         return self.ingest.row_group_size
 
     @property
     def parquet_codec(self) -> str:
+        """Compression codec used for ingest parquet outputs."""
         return self.ingest.parquet_codec
 
     @property
     def n_jobs_ingest(self) -> int:
+        """Parallel worker count for ingestion tasks."""
         return self.ingest.n_jobs
 
     @property
     def batch_rows(self) -> int:
+        """Rows per batch fed to streaming writers."""
         return self.ingest.batch_rows
 
     # —— Handy aliases used by some modules (kept to minimize edits) ——
     @property
     def trueskill_beta(self) -> float:
+        """Alias for :class:`TrueSkillConfig` ``beta`` value."""
         return self.trueskill.beta
 
     @property
     def hgb_max_iter(self) -> int:
+        """Alias for the histogram-based gradient boosting estimator count."""
         return self.hgb.n_estimators
 
     @property
     def combine_max_players(self) -> int:
+        """Maximum player count to combine when consolidating parquet files."""
         return self.combine.max_players
 
     @property
     def metrics_seat_range(self) -> tuple[int, int]:
+        """Seat indices included when computing seat-level metrics."""
         return self.metrics.seat_range
 
     # —— Output filenames and standard derived locations ——
     @property
     def metrics_name(self) -> str:
+        """Filename for combined metrics parquet outputs."""
         # prefer analysis.outputs.metrics_name if provided
         outputs = self.analysis.outputs or {}
         return str(outputs.get("metrics_name", "metrics.parquet"))
 
     @property
     def curated_rows_name(self) -> str:
+        """Filename for curated row-level parquet outputs."""
         outputs = self.analysis.outputs or {}
         return str(outputs.get("curated_rows_name", "game_rows.parquet"))
 
     @property
     def manifest_name(self) -> str:
+        """Filename used for append-only manifests."""
         outputs = self.analysis.outputs or {}
         return str(outputs.get("manifest_name", "manifest.jsonl"))
 
     @property
     def curated_parquet(self) -> Path:
+        """Location of the combined curated parquet spanning all player counts."""
         # combined superset parquet after "combine" step
         preferred = self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
         legacy = self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
@@ -266,12 +293,15 @@ class AppConfig:
 
     # Per-N helper paths used by ingest/curate/metrics
     def manifest_for(self, n: int) -> Path:
+        """Path to the manifest for a specific player count."""
         return self.data_dir / f"{n}p" / self.manifest_name
 
     def ingested_rows_raw(self, n: int) -> Path:
+        """Path to the raw ingested parquet for ``n`` players."""
         return self.data_dir / f"{n}p" / f"{n}p_ingested_rows.raw.parquet"
 
     def ingested_rows_curated(self, n: int) -> Path:
+        """Path to the curated ingested parquet for ``n`` players."""
         return self.data_dir / f"{n}p" / self.curated_rows_name
 
 
@@ -291,6 +321,7 @@ def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str
 
 
 def _annotation_contains(annotation: Any, target: type) -> bool:
+    """Recursively inspect type annotations for the presence of ``target``."""
     if annotation is None:
         return False
     if annotation is target:
@@ -335,6 +366,7 @@ def load_app_config(*overlays: Path) -> AppConfig:
             analysis_section.setdefault("run_frequentist", alias_val)
 
     def build(cls, section: Mapping[str, Any]) -> Any:
+        """Instantiate a dataclass ``cls`` from a mapping of attributes."""
         obj = cls()
         type_hints = get_type_hints(cls)
         for f in dataclasses.fields(cls):

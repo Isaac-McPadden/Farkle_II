@@ -48,6 +48,8 @@ POOLED_COLUMNS = ["strategy_id", "players", "win_rate", "se", "ci_lo", "ci_hi", 
 
 @dataclass
 class MetaResult:
+    """Meta-analysis outputs paired with pooling diagnostics."""
+
     pooled: pd.DataFrame
     Q: float
     I2: float
@@ -56,11 +58,13 @@ class MetaResult:
 
 
 def _logit(p: float) -> float:
+    """Compute the log-odds while guarding against boundary values."""
     clipped = min(max(p, MIN_PROPORTION), 1.0 - MIN_PROPORTION)
     return math.log(clipped / (1.0 - clipped))
 
 
 def _inv_logit(x: float) -> float:
+    """Convert a log-odds value back to probability space."""
     if x >= 0:
         z = math.exp(-x)
         return 1.0 / (1.0 + z)
@@ -223,6 +227,7 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
 
 
 def _parse_seed_file(path: Path) -> tuple[int, int] | None:
+    """Extract player count and seed identifiers from a summary filename."""
     match = SUMMARY_PATTERN.match(path.name)
     if match is None:
         return None
@@ -232,6 +237,15 @@ def _parse_seed_file(path: Path) -> tuple[int, int] | None:
 
 
 def _apply_strategy_presence(frames: list[pd.DataFrame]) -> tuple[list[pd.DataFrame], dict[str, list[int]]]:
+    """Filter strategies to those present in every seed-specific summary.
+
+    Args:
+        frames: Per-seed dataframes containing ``strategy_id`` columns.
+
+    Returns:
+        Tuple of filtered frames and a mapping of missing strategies to the
+        seeds where they were absent.
+    """
     if not frames:
         return [], {}
     seeds = [int(df["seed"].iloc[0]) for df in frames]
@@ -251,6 +265,7 @@ def _apply_strategy_presence(frames: list[pd.DataFrame]) -> tuple[list[pd.DataFr
 
 
 def _normalize_meta_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Standardize column types and ordering for meta summary comparisons."""
     normalized = df.copy()
     if "strategy_id" in normalized:
         normalized["strategy_id"] = normalized["strategy_id"].astype(str)
@@ -267,6 +282,7 @@ def _normalize_meta_frame(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _parquet_matches(path: Path, new_df: pd.DataFrame) -> bool:
+    """Check whether an existing parquet already matches the proposed content."""
     if not path.exists():
         return False
     try:
@@ -285,6 +301,7 @@ def _parquet_matches(path: Path, new_df: pd.DataFrame) -> bool:
 
 
 def _write_json_atomic(payload: dict[str, float | str], path: Path) -> None:
+    """Write a JSON file atomically to avoid partial outputs."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))

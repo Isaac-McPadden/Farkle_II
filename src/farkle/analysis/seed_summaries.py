@@ -99,6 +99,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
 
 def _load_metrics_frame(cfg: AppConfig) -> tuple[pd.DataFrame, Path]:
+    """Load the combined metrics parquet and standardize core columns."""
     metrics_path = cfg.analysis_dir / cfg.metrics_name
     if not metrics_path.exists():
         raise FileNotFoundError(metrics_path)
@@ -126,6 +127,7 @@ def _load_metrics_frame(cfg: AppConfig) -> tuple[pd.DataFrame, Path]:
 
 
 def _build_summary(frame: pd.DataFrame, *, players: int, seed: int) -> pd.DataFrame:
+    """Aggregate metrics for a seed/player subset into summary rows."""
     subset = frame.copy()
     if subset.empty:
         return pd.DataFrame(columns=BASE_COLUMNS)
@@ -175,12 +177,14 @@ def _build_summary(frame: pd.DataFrame, *, players: int, seed: int) -> pd.DataFr
 
 
 def _mean_output_name(column: str) -> str:
+    """Convert a ``mean_<metric>`` column into a user-facing label."""
     base = column.removeprefix("mean_")
     label = MEAN_NAME_OVERRIDES.get(base, base)
     return f"{label}_mean"
 
 
 def _weighted_mean(frame: pd.DataFrame, column: str) -> float:
+    """Compute a weighted mean using ``games`` as the weight column."""
     weights = frame["games"].astype(float)
     values = frame[column].astype(float)
     mask = (weights > 0) & values.notna()
@@ -190,6 +194,7 @@ def _weighted_mean(frame: pd.DataFrame, column: str) -> float:
 
 
 def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
+    """Enforce deterministic types and ordering for summary comparison."""
     normalized = df.copy()
     normalized["strategy_id"] = normalized["strategy_id"].astype(str)
     for col in ("players", "seed", "games", "wins"):
@@ -203,6 +208,7 @@ def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _existing_summary_matches(path: Path, new_df: pd.DataFrame) -> bool:
+    """Check if an existing summary parquet matches ``new_df`` exactly."""
     if not path.exists():
         return False
     try:

@@ -127,6 +127,7 @@ class MetricsSummary:
 
     @property
     def has_missing(self) -> bool:
+        """Indicate whether any expected metric files were absent."""
         return bool(self.missing_jobs)
 
 
@@ -201,6 +202,17 @@ def collect_isolated_metrics(
 
 
 def _load_job(job: MetricJob, *, columns: Sequence[str] | None = None) -> pd.DataFrame:
+    """Load and normalize a single metrics parquet shard.
+
+    Args:
+        job: Descriptor containing seed, player count, and file path.
+        columns: Optional subset of columns to read; required metric fields are
+            always included.
+
+    Returns:
+        Dataframe with standardized columns for wins, games, winrate, and
+        locator metadata.
+    """
     needed = {"strategy", "wins", "total_games_strat", "games", "win_rate", "winrate"}
     read_cols: Sequence[str] | None
     if columns is None:
@@ -239,6 +251,17 @@ def _load_job(job: MetricJob, *, columns: Sequence[str] | None = None) -> pd.Dat
 
 
 def _summarize(locator: MetricsLocator, frame: pd.DataFrame, missing: list[MetricJob]) -> MetricsSummary:
+    """Produce QA diagnostics for loaded metrics across seeds and player counts.
+
+    Args:
+        locator: Metrics locator used to determine expected seed/player pairs.
+        frame: Concatenated metrics dataframe across available jobs.
+        missing: Jobs that could not be loaded because files were absent.
+
+    Returns:
+        A :class:`MetricsSummary` containing per-seed counts and warning
+        messages highlighting gaps or mismatches.
+    """
     seeds = list(locator.seeds)
     ks = list(locator.player_counts)
     expected_pairs = len(seeds) * len(ks)
@@ -345,6 +368,17 @@ def build_isolated_metrics(cfg: AppConfig, player_count: int, *, force: bool = F
 
 
 def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: int) -> pd.DataFrame:
+    """Clean metric columns and enforce consistent shapes for downstream use.
+
+    Args:
+        cfg: Application configuration providing strategy grid options.
+        df: Raw metrics dataframe produced by simulation.
+        player_count: Number of players associated with the metrics file.
+
+    Returns:
+        Normalized dataframe with padded strategies, corrected win metrics, and
+        compressed metric columns.
+    """
     df = df.copy()
     if "strategy" not in df.columns:
         df["strategy"] = []
@@ -439,6 +473,16 @@ _STRATEGY_CACHE: dict[int, list[str]] = {}
 
 
 def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
+    """Align metric rows to the full strategy grid defined in the config.
+
+    Args:
+        cfg: Application configuration containing simulation strategy options.
+        df: Metrics dataframe indexed by strategy.
+
+    Returns:
+        Dataframe reindexed to include all possible strategies, introducing
+        ``NaN`` rows where metrics are missing.
+    """
     cache_key = id(cfg)
     if cache_key not in _STRATEGY_CACHE:
         strategies, _ = generate_strategy_grid(
@@ -457,6 +501,7 @@ def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _games_mode(series: pd.Series) -> float:
+    """Return a sensible fill value for missing game counts."""
     mode = series.dropna().mode()
     if not mode.empty:
         return mode.iloc[0]
@@ -467,6 +512,7 @@ def _games_mode(series: pd.Series) -> float:
 
 
 def _normalize_metric_name(name: str) -> str:
+    """Remove redundant prefixes from metric names for presentation consistency."""
     if name.startswith("winning_"):
         name = name.removeprefix("winning_")
     if name.startswith("winner_"):
@@ -475,6 +521,15 @@ def _normalize_metric_name(name: str) -> str:
 
 
 def _compress_metric_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Condense sum/variance columns into mean and standard deviation pairs.
+
+    Args:
+        df: Metrics dataframe containing per-strategy aggregate columns.
+
+    Returns:
+        Dataframe with variance-derived standard deviation columns and
+        simplified metric naming.
+    """
     rename_map: dict[str, str] = {}
     var_cols = [c for c in df.columns if c.startswith("var_")]
     for var_col in var_cols:

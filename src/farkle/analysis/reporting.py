@@ -118,6 +118,16 @@ def _output_is_fresh(output: Path, inputs: Iterable[Path], *, force: bool) -> bo
 
 
 def _load_ratings(analysis_dir: Path, players: int) -> pd.DataFrame:
+    """Load pooled TrueSkill ratings filtered for the requested player count.
+
+    Args:
+        analysis_dir: Root directory containing analysis outputs.
+        players: Player count to select within the ratings parquet.
+
+    Returns:
+        Dataframe with ``strategy``, ``players``, ``mu``, and ``sigma`` columns
+        sorted by rating.
+    """
     path = analysis_dir / "ratings_pooled.parquet"
     if not path.exists():
         raise ReportError(f"Missing ratings parquet: {path}")
@@ -147,6 +157,7 @@ def _load_ratings(analysis_dir: Path, players: int) -> pd.DataFrame:
 
 
 def _load_meta_summary(analysis_dir: Path, players: int) -> pd.DataFrame:
+    """Load pooled win-rate meta summary if available for ``players``."""
     path = analysis_dir / f"strategy_summary_{players}p_meta.parquet"
     if not path.exists():
         return pd.DataFrame()
@@ -166,6 +177,7 @@ def _load_meta_summary(analysis_dir: Path, players: int) -> pd.DataFrame:
 
 
 def _load_feature_importance(analysis_dir: Path, players: int) -> pd.DataFrame:
+    """Load model feature importances for the given player count."""
     path = analysis_dir / f"feature_importance_{players}p.parquet"
     if not path.exists():
         return pd.DataFrame()
@@ -197,6 +209,7 @@ def _load_feature_importance(analysis_dir: Path, players: int) -> pd.DataFrame:
 
 
 def _load_seed_summaries(analysis_dir: Path, players: int) -> pd.DataFrame:
+    """Collect per-seed win-rate summaries across available parquet files."""
     frames: list[pd.DataFrame] = []
     pattern = f"strategy_summary_{players}p_seed"
     for path in sorted(analysis_dir.glob(f"{pattern}*.parquet")):
@@ -226,6 +239,7 @@ def _load_seed_summaries(analysis_dir: Path, players: int) -> pd.DataFrame:
 
 
 def _load_tiers(analysis_dir: Path, players: int) -> dict[str, int]:
+    """Parse tier assignments from JSON, scoped to the desired player count."""
     path = analysis_dir / "tiers.json"
     if not path.exists():
         return {}
@@ -236,6 +250,7 @@ def _load_tiers(analysis_dir: Path, players: int) -> dict[str, int]:
         return {}
 
     def _normalize(mapping: Mapping[str, object]) -> dict[str, int]:
+        """Convert mapping values to integer tiers keyed by strategy string."""
         result: dict[str, int] = {}
         for key, value in mapping.items():
             try:
@@ -274,6 +289,7 @@ def _load_tiers(analysis_dir: Path, players: int) -> dict[str, int]:
 
 
 def _load_h2h_decisions(analysis_dir: Path, players: int) -> pd.DataFrame:
+    """Load pairwise significance decisions for head-to-head comparisons."""
     path = analysis_dir / "bonferroni_decisions.parquet"
     if not path.exists():
         return pd.DataFrame()
@@ -292,6 +308,7 @@ def _load_h2h_decisions(analysis_dir: Path, players: int) -> pd.DataFrame:
 
 
 def _load_h2h_ranking(analysis_dir: Path, players: int) -> pd.DataFrame:
+    """Load significant ranking output produced from head-to-head tests."""
     path = analysis_dir / "h2h_significant_ranking.csv"
     if not path.exists():
         return pd.DataFrame(columns=["strategy", "rank"])
@@ -310,6 +327,7 @@ def _load_h2h_ranking(analysis_dir: Path, players: int) -> pd.DataFrame:
 
 
 def _load_meta_json(analysis_dir: Path, players: int) -> dict[str, float]:
+    """Load heterogeneity metrics from the meta-analysis JSON payload."""
     path = analysis_dir / f"meta_{players}p.json"
     if not path.exists():
         return {}
@@ -329,6 +347,7 @@ def _load_meta_json(analysis_dir: Path, players: int) -> dict[str, float]:
 
 
 def _load_run_metadata(analysis_dir: Path) -> dict[str, object]:
+    """Load recorded run metadata such as config hash and git commit."""
     path = analysis_dir / "run_metadata.json"
     if not path.exists():
         return {}
@@ -342,6 +361,7 @@ def _load_run_metadata(analysis_dir: Path) -> dict[str, object]:
 
 
 def _gather_artifacts(cfg: AnalysisConfig | AppConfig, players: int) -> _ReportArtifacts:
+    """Load all report prerequisites for the specified player count."""
     analysis_dir = _analysis_dir(cfg)
     ratings = _load_ratings(analysis_dir, players)
     meta_summary = _load_meta_summary(analysis_dir, players)
@@ -366,6 +386,7 @@ def _gather_artifacts(cfg: AnalysisConfig | AppConfig, players: int) -> _ReportA
 
 
 def _plot_output_path(cfg: AnalysisConfig | AppConfig, players: int, name: str) -> Path:
+    """Create (and ensure) the plot output path for a given filename."""
     analysis_dir = _analysis_dir(cfg)
     plot_dir = analysis_dir / "plots" / f"{players}p"
     plot_dir.mkdir(parents=True, exist_ok=True)
@@ -373,6 +394,7 @@ def _plot_output_path(cfg: AnalysisConfig | AppConfig, players: int, name: str) 
 
 
 def _prepare_axis(fig: plt.Figure, count: int, *, base_height: float = 3.5, row_scale: float = 0.35) -> plt.Axes:
+    """Set figure size based on row count and return a single subplot."""
     height = max(base_height, row_scale * max(1, count) + 1.5)
     fig.set_size_inches(8.5, height)
     ax = fig.add_subplot(1, 1, 1)
@@ -423,6 +445,7 @@ def plot_ladder_for_players(cfg: AnalysisConfig | AppConfig, players: int, *, fo
 def _determine_heatmap_order(
     artifacts: _ReportArtifacts, players: int
 ) -> list[str]:
+    """Choose strategy ordering for heatmap plotting preferences."""
     if not artifacts.tiers and artifacts.h2h_ranking.empty:
         return artifacts.ratings.head(LADDER_TOP_N)["strategy"].tolist()
 
@@ -639,10 +662,12 @@ def plot_seed_variability_for_players(
 
 
 def _format_rate(value: float) -> str:
+    """Format a win rate with three decimals, preserving ``nan`` text."""
     return f"{value:.3f}" if not math.isnan(value) else "nan"
 
 
 def _top_strategy_bullets(ratings: pd.DataFrame, meta_summary: pd.DataFrame) -> list[str]:
+    """Summarize top-performing strategies for the executive summary."""
     items: list[str] = []
     top_ratings = ratings.head(3)
     for row in top_ratings.itertuples(index=False):
@@ -658,6 +683,7 @@ def _top_strategy_bullets(ratings: pd.DataFrame, meta_summary: pd.DataFrame) -> 
 
 
 def _top_feature_bullets(features: pd.DataFrame) -> list[str]:
+    """Build bullet points highlighting key predictive features."""
     if features.empty:
         return ["Feature importances unavailable"]
     items = [f"{row.feature}: {row.importance:.1%}" for row in features.head(3).itertuples(index=False)]
@@ -665,6 +691,7 @@ def _top_feature_bullets(features: pd.DataFrame) -> list[str]:
 
 
 def _seed_stability_summary(seed_df: pd.DataFrame) -> str:
+    """Describe seed-to-seed variability using a qualitative label."""
     seeds = seed_df["seed"].nunique()
     if seeds <= 1:
         return "Single seed available; stability not assessed."
@@ -682,6 +709,7 @@ def _seed_stability_summary(seed_df: pd.DataFrame) -> str:
 
 
 def _tiers_section(tiers: Mapping[str, int]) -> str:
+    """Render tier membership as Markdown bullet lines."""
     if not tiers:
         return "No tier information available."
     tiers_by_rank: MutableMapping[int, list[str]] = {}
@@ -696,6 +724,7 @@ def _tiers_section(tiers: Mapping[str, int]) -> str:
 
 
 def _build_report_body(players: int, artifacts: _ReportArtifacts, plot_paths: dict[str, Path | None]) -> str:
+    """Assemble the Markdown body for a per-player-count report."""
     ratings = artifacts.ratings
     meta_summary = artifacts.meta_summary
     features = artifacts.feature_importance

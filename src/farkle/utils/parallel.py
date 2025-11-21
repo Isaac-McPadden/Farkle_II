@@ -12,6 +12,7 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 
 def process_map(fn, items, *, n_jobs=None, initializer=None, initargs=None, window=0):
+    """Map ``fn`` across ``items`` with optional multiprocessing support."""
     if initargs is None:
         initargs = ()
     if n_jobs in (None, 0, 1):

@@ -434,6 +434,7 @@ def _decide_smart_discards_impl(
         return 0, 0
 
     def must_bank(score_after: int, dice_left_after: int) -> bool:
+        """Decide whether the turn should bank after discarding singles."""
         return _must_bank(
             score_after,
             dice_left_after,

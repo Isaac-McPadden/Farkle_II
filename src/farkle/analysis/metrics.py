@@ -107,6 +107,16 @@ def run(cfg: AppConfig) -> None:
 
 
 def _ensure_isolated_metrics(cfg: AppConfig, player_counts: Sequence[int]) -> tuple[list[Path], list[Path]]:
+    """Generate normalized per-player-count metrics where available.
+
+    Args:
+        cfg: Application configuration containing metrics locations.
+        player_counts: Player counts to process.
+
+    Returns:
+        Tuple of normalized parquet paths discovered and the corresponding raw
+        inputs checked on disk.
+    """
     iso_paths: list[Path] = []
     raw_inputs: list[Path] = []
     for n in player_counts:
@@ -134,6 +144,7 @@ def _ensure_isolated_metrics(cfg: AppConfig, player_counts: Sequence[int]) -> tu
 
 
 def _collect_metrics_frames(paths: Iterable[Path]) -> pd.DataFrame:
+    """Load multiple metrics parquets into a single DataFrame."""
     frames: list[pd.DataFrame] = []
     for path in paths:
         if not path.exists():
@@ -157,7 +168,9 @@ def _collect_metrics_frames(paths: Iterable[Path]) -> pd.DataFrame:
 
 
 def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
+    """Aggregate win rates by seat position across all player counts."""
     def _rows_for_n(n: int) -> int:
+        """Return the number of rows recorded for a player-count manifest."""
         manifest = cfg.manifest_for(n)
         if not manifest.exists():
             return 0
@@ -186,11 +199,13 @@ def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
 
 
 def _stamp(path: Path) -> dict[str, float | int]:
+    """Capture filesystem metadata for cache stamps."""
     stat = path.stat()
     return {"mtime": stat.st_mtime, "size": stat.st_size}
 
 
 def _write_stamp(stamp_path: Path, *, inputs: Iterable[Path], outputs: Iterable[Path]) -> None:
+    """Persist a JSON stamp summarizing inputs and outputs for auditing."""
     payload = {
         "inputs": {
             str(p): _stamp(p)

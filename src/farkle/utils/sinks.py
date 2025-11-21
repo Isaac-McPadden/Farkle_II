@@ -42,6 +42,7 @@ class CsvSink:
 
     # --- lifecycle ---
     def open(self):
+        """Open the CSV sink for writing, creating parent directories."""
         self.path.parent.mkdir(parents=True, exist_ok=True)
         ctx = nullcontext(str(self.path))
         if "w" in self.mode and "a" not in self.mode:
@@ -59,6 +60,7 @@ class CsvSink:
         return self  # allow `with CsvSink(...) as sink:`
 
     def close(self, exc_type=None, exc=None, tb=None):  # pragma: no cover - trivial
+        """Close the sink and commit atomic writes when applicable."""
         if self._file is not None:
             self._file.flush()
             self._file.close()
@@ -70,10 +72,12 @@ class CsvSink:
 
     # --- writes ---
     def write_row(self, row: Mapping[str, object]) -> None:
+        """Write a single row mapping to the CSV file."""
         assert self._writer is not None, "CsvSink not opened"
         self._writer.writerow(row)
 
     def write_rows(self, rows: Iterable[Mapping[str, object]]) -> None:
+        """Write an iterable of row mappings to the CSV file."""
         assert self._writer is not None, "CsvSink not opened"
         self._writer.writerows(rows)
 

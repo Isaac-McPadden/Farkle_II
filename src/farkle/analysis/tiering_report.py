@@ -25,6 +25,8 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass
 class TieringInputs:
+    """Configuration bundle for generating frequentist tier reports."""
+
     seeds: list[int]
     player_counts: list[int]
     weights_by_k: Mapping[int, float] | None
@@ -32,6 +34,7 @@ class TieringInputs:
 
 
 def run(cfg: AppConfig) -> None:
+    """Generate a tier comparison report when frequentist analysis is enabled."""
     if not getattr(cfg.analysis, "run_frequentist", False):
         LOGGER.info("Tiering report disabled", extra={"stage": "tiering"})
         return
@@ -74,6 +77,7 @@ def run(cfg: AppConfig) -> None:
 
 
 def _prepare_inputs(cfg: AppConfig) -> TieringInputs:
+    """Normalize tiering configuration values from :class:`AppConfig`."""
     seeds = cfg.analysis.tiering_seeds or [cfg.sim.seed]
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
     weights = cfg.analysis.tiering_weights_by_k
@@ -92,6 +96,7 @@ def _prepare_inputs(cfg: AppConfig) -> TieringInputs:
 
 
 def _results_dir_for_seed(cfg: AppConfig, seed: int) -> Path:
+    """Resolve the results directory for a given seed, validating existence."""
     current = cfg.io.results_dir
     name = current.name
     if str(seed) in name:
@@ -104,6 +109,7 @@ def _results_dir_for_seed(cfg: AppConfig, seed: int) -> Path:
 
 
 def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFrame:
+    """Load per-seed isolated metrics for the desired player counts."""
     frames: list[pd.DataFrame] = []
     for seed in inputs.seeds:
         try:
@@ -137,7 +143,9 @@ def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFram
 def _weighted_winrate(
     df: pd.DataFrame, weights_by_k: Mapping[int, float] | None
 ) -> tuple[pd.Series, pd.DataFrame]:
+    """Compute overall and per-k weighted win rates."""
     def _agg(group: pd.DataFrame) -> float:
+        """Weighted average win rate for a strategy/player-count slice."""
         weights = group["games"].clip(lower=1).astype(float)
         if weights.sum() == 0:
             return group["win_rate"].mean()
@@ -156,6 +164,7 @@ def _weighted_winrate(
 
 
 def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
+    """Assign strategies to tiers using minimum detectable difference."""
     tiers: dict[str, int] = {}
     current_tier = 1
     threshold = None
@@ -176,6 +185,7 @@ def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
 
 
 def _build_report(freq_df: pd.DataFrame, ts_tiers: Mapping[str, int]) -> pd.DataFrame:
+    """Join frequentist and TrueSkill tiers, adding disagreement markers."""
     ts_series = pd.Series(ts_tiers, name="trueskill_tier")
     freq_df = freq_df.set_index("strategy")
     report = freq_df.join(ts_series, how="outer")
@@ -194,6 +204,7 @@ def _write_frequentist_scores(
     winrates: pd.Series,
     winrates_by_players: pd.DataFrame,
 ) -> None:
+    """Persist per-strategy tier assignments and win rates."""
     if winrates.empty:
         return
 
@@ -240,6 +251,7 @@ def _write_frequentist_scores(
 
 
 def _write_outputs(cfg: AppConfig, report: pd.DataFrame, tier_data: dict) -> None:
+    """Write tier comparison outputs to CSV and JSON files."""
     out_csv = cfg.analysis_dir / "tiering_report.csv"
     out_json = cfg.analysis_dir / "tiering_report.json"
     report.sort_values(["mdd_tier", "win_rate"], ascending=[True, False]).to_csv(out_csv, index=False)

@@ -30,6 +30,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Construct the top-level CLI parser for simulation and analysis tasks."""
     parser = argparse.ArgumentParser(prog="farkle")
     parser.add_argument("--config", type=Path, help="Path to YAML configuration")
     parser.add_argument(
@@ -92,12 +93,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _parse_level(level: str | int) -> int:
+    """Normalize a logging level string or integer to ``logging`` constants."""
     if isinstance(level, str):
         return getattr(logging, level.upper(), logging.INFO)
     return int(level)
 
 
 def _stringify_paths(obj: object) -> object:
+    """Recursively convert :class:`pathlib.Path` instances to strings."""
     if isinstance(obj, Path):
         return str(obj)
     if isinstance(obj, dict):
@@ -120,6 +123,7 @@ def _write_active_config(cfg: AppConfig, dest_dir: Path) -> None:
 
 
 def _run_preprocess(cfg: AppConfig) -> None:
+    """Run ingest, curate, combine, and metrics sequentially."""
     ingest.run(cfg)
     curate.run(cfg)
     combine.run(cfg)
@@ -127,6 +131,7 @@ def _run_preprocess(cfg: AppConfig) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
+    """Entry point for the ``farkle`` CLI dispatcher."""
     parser = build_parser()
     args, _ = parser.parse_known_args(argv)
 

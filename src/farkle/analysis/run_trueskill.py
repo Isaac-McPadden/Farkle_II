@@ -86,6 +86,8 @@ class RatingStats:
 # ---------- Checkpointing ----------
 @dataclass
 class _TSCheckpoint:
+    """Serialize streaming progress for the combined ratings pass."""
+
     source: str  # parquet path
     row_group: int  # next row-group to start at
     batch_index: int  # next batch index within that row-group
@@ -95,12 +97,14 @@ class _TSCheckpoint:
 
 
 def _save_ckpt(path: Path, ck: _TSCheckpoint) -> None:
+    """Persist a meta-level checkpoint atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(asdict(ck)))
 
 
 def _load_ckpt(path: Path) -> Optional[_TSCheckpoint]:
+    """Load a previously written checkpoint if it exists and parses cleanly."""
     if not path.exists():
         return None
     try:
@@ -140,6 +144,7 @@ def _save_ratings_parquet(
     path: Path,
     ratings: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float]]],
 ) -> None:
+    """Write ratings to parquet in a consistent schema."""
     write_parquet_atomic(_ratings_to_table(ratings), path)
 
 
@@ -156,6 +161,8 @@ def _load_ratings_parquet(path: Path) -> dict[str, "RatingStats"]:
 # ---------- Per-N checkpointing ----------
 @dataclass
 class _BlockCkpt:
+    """Checkpoint progress for a single player-count block."""
+
     row_file: str
     row_group: int
     batch_index: int
@@ -165,12 +172,14 @@ class _BlockCkpt:
 
 
 def _save_block_ckpt(path: Path, ck: _BlockCkpt) -> None:
+    """Persist a per-block checkpoint atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(asdict(ck)))
 
 
 def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
+    """Load a per-block checkpoint, returning ``None`` on failure."""
     if not path.exists():
         return None
     try:
@@ -211,6 +220,7 @@ def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[lis
     cols = set(batch.column_names)
 
     def col(name: str):
+        """Return column from the batch when present, otherwise ``None``."""
         return batch[name] if name in cols else None
 
     sr_col = col("seat_ranks")
@@ -357,6 +367,7 @@ def _coerce_ratings(obj: dict[str, object]) -> dict[str, RatingStats]:
 def _ensure_seed_ratings(
     ratings: dict[str, Rating], all_strategies: list[str], env: trueskill.TrueSkill
 ) -> None:
+    """Guarantee every strategy has an initial rating for the current seed."""
     for strat in all_strategies:
         ratings.setdefault(strat, env.create_rating())
 

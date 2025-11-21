@@ -266,6 +266,15 @@ def _search_candidate(
     target_high = target_hours * (1.0 + tolerance_pct / 100.0)
 
     def evaluate(z: float) -> TierCandidate:
+        """Build a tier candidate and runtime estimate for a z-threshold.
+
+        Args:
+            z: Z-score threshold applied when grouping strategies into tiers.
+
+        Returns:
+            A populated :class:`TierCandidate` describing tier assignments and
+            runtime predictions for the supplied threshold.
+        """
         tiers = build_tiers(means, stdevs, z=z)
         top_tier = min(tiers.values()) if tiers else 1
         elite_count = sum(1 for val in tiers.values() if val == top_tier)

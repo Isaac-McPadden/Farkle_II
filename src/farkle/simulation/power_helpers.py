@@ -66,6 +66,7 @@ def games_for_power_from_design(
     method: str = "bh",
     design: "PowerDesign | Mapping[str, Any]",
 ) -> int:
+    """Proxy to :func:`games_for_power` using a :class:`PowerDesign` payload."""
     params = _unpack_power_design(method, design)
     return games_for_power(
         n_strategies=n_strategies,

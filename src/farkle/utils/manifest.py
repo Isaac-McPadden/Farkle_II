@@ -38,6 +38,7 @@ __all__ = ["append_manifest_line", "append_manifest_many", "iter_manifest"]
 
 
 def _ensure_parent_dir(path: os.PathLike[str] | str) -> None:
+    """Create parent directories for ``path`` if they do not exist."""
     parent = Path(path).expanduser().resolve().parent
     parent.mkdir(parents=True, exist_ok=True)
 
