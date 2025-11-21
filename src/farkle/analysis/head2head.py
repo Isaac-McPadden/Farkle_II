@@ -49,6 +49,8 @@ _GFP_FIELDS = {
 
 @dataclass
 class TierCandidate:
+    """Estimated tier grouping plus runtime characteristics for head-to-head."""
+
     z: float
     runtime_hours: float
     tiers: dict[str, int]
@@ -59,6 +61,11 @@ class TierCandidate:
 
 
 def run(cfg: AppConfig) -> None:
+    """Execute Bonferroni head-to-head analysis and manage tier artifacts.
+
+    Args:
+        cfg: Application configuration with analysis and file path settings.
+    """
     # Always try to auto-tune tiers first so the human-facing tier file
     # reflects the Bonferroni H2H budget even if results are already present.
     design_kwargs = _build_design_kwargs(cfg)
@@ -95,6 +102,14 @@ def run(cfg: AppConfig) -> None:
 
 
 def _build_design_kwargs(cfg: AppConfig) -> dict[str, Any]:
+    """Construct sanitized design kwargs for Bonferroni power calculations.
+
+    Args:
+        cfg: Application configuration containing head-to-head options.
+
+    Returns:
+        Filtered and normalized kwargs compatible with ``games_for_power``.
+    """
     design = dict(getattr(cfg.head2head, "bonferroni_design", {}) or {})
     filtered = {k: v for k, v in design.items() if k in _GFP_FIELDS}
     filtered.setdefault("k_players", 2)
@@ -111,6 +126,12 @@ def _build_design_kwargs(cfg: AppConfig) -> dict[str, Any]:
 
 
 def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None:
+    """Calibrate tier thresholds to hit a target runtime budget when possible.
+
+    Args:
+        cfg: Application configuration including throughput targets.
+        design_kwargs: Prepared Bonferroni design parameters.
+    """
     target_hours = cfg.analysis.head2head_target_hours
     games_per_sec = cfg.analysis.head2head_games_per_sec
     if not target_hours or target_hours <= 0:
@@ -224,6 +245,20 @@ def _search_candidate(
     games_per_sec: float,
     design_kwargs: dict[str, Any],
 ) -> TierCandidate | None:
+    """Search for a z-threshold that meets the runtime budget.
+
+    Args:
+        means: Strategy means from pooled ratings.
+        stdevs: Strategy standard deviations.
+        target_hours: Desired runtime budget for head-to-head matches.
+        tolerance_pct: Allowed deviation from the runtime target.
+        games_per_sec: Estimated throughput used for runtime predictions.
+        design_kwargs: Additional parameters passed to power calculations.
+
+    Returns:
+        Candidate tier configuration closest to the target runtime, or ``None`` when
+        no strategies are available.
+    """
     if not means:
         return None
 
@@ -278,6 +313,16 @@ def _predict_runtime(
     games_per_sec: float,
     design_kwargs: dict[str, Any],
 ) -> tuple[float, int, int, int]:
+    """Estimate runtime and workload counts for a given elite tier size.
+
+    Args:
+        elite_count: Number of strategies in the top tier.
+        games_per_sec: Throughput used to convert games to hours.
+        design_kwargs: Power-calculation options used for games estimation.
+
+    Returns:
+        Tuple of (runtime hours, games per pair, total games, total pairs).
+    """
     if elite_count <= 1:
         return 0.0, 0, 0, 0
 
@@ -311,11 +356,19 @@ def _calibrate_h2h_games_per_sec(
     n_jobs: int | None,
     sample_games: int = 2000,
 ) -> float:
-    """Measure head-to-head throughput automatically using two strategies.
+    """Measure head-to-head throughput using a small sample of games.
 
-    Picks the top 2 strategies by pooled mu and runs a small head-to-head batch
-    with ``simulate_many_games_from_seeds`` to estimate games/second under the
-    same code paths used by Bonferroni H2H.
+    Args:
+        ratings_df: Pooled ratings including strategy and mu columns.
+        seed: Seed used to create reproducible game seeds.
+        n_jobs: Number of worker processes for simulation.
+        sample_games: Number of games to simulate for calibration.
+
+    Returns:
+        Estimated games-per-second throughput.
+
+    Raises:
+        ValueError: If fewer than two strategies are available for calibration.
     """
     if ratings_df.shape[0] < 2:
         raise ValueError("Need at least two strategies to calibrate throughput")

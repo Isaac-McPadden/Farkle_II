@@ -204,6 +204,14 @@ def run_post_h2h(cfg: AppConfig) -> None:
 
 
 def _resolve_alpha(cfg: AppConfig) -> float:
+    """Resolve the significance threshold from configuration defaults.
+
+    Args:
+        cfg: Application configuration containing head-to-head settings.
+
+    Returns:
+        Alpha value sourced from Bonferroni design or FDR fallback.
+    """
     design = dict(getattr(cfg.head2head, "bonferroni_design", {}) or {})
     for key in ("control", "alpha"):
         if key in design and design[key] is not None:
@@ -213,6 +221,12 @@ def _resolve_alpha(cfg: AppConfig) -> float:
 
 
 def _write_graph_json(graph: nx.DiGraph, path) -> None:
+    """Serialize a head-to-head significance graph to JSON.
+
+    Args:
+        graph: Directed graph of pairwise comparisons with p-values.
+        path: Destination file path for the JSON artifact.
+    """
     payload = {
         "nodes": sorted(graph.nodes()),
         "edges": [
