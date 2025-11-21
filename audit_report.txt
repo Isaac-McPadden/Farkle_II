@@ -1,62 +1,18 @@
-src/farkle/game/tests/test_engine_final_round.py
-  - First comment is missing or not at top of file
-  - Missing module docstring
-  - L47: Missing docstring for FunctionDef 'test_final_round_respects_score_to_beat_and_reruns'
-  - L20: Missing docstring for FunctionDef 'integers'
-  - L42: Missing docstring for FunctionDef 'decide'
-
-src/farkle/game/tests/test_scoring_properties.py
-  - First comment is missing or not at top of file
-  - Missing module docstring
-  - L11: Missing docstring for FunctionDef 'test_score_roll_cached_is_permutation_invariant'
-  - L20: Missing docstring for FunctionDef 'test_faces_to_counts_total_matches_roll_length'
-
-tests/conftest.py
-  - L1: Path comment mismatch (expected: '# tests/conftest.py')
-  - Missing module docstring
-  - L60: Missing docstring for FunctionDef '_identity_jit'
-  - L144: Missing docstring for FunctionDef 'pytest_addoption'
-  - L154: Missing docstring for FunctionDef 'update_goldens'
-  - L220: Missing docstring for FunctionDef 'capinfo'
-  - L64: Missing docstring for FunctionDef '_decorator'
-  - L101: Missing docstring for ClassDef '_DummyHGB'
-  - L116: Missing docstring for ClassDef '_DummyPDP'
-  - L128: Missing docstring for FunctionDef '_dummy_permutation_importance'
-  - L105: Missing docstring for FunctionDef 'fit'
-  - L108: Missing docstring for FunctionDef 'predict'
-  - L125: Missing docstring for FunctionDef 'from_estimator'
-  - L34: Missing docstring for FunctionDef '_load_toml'
-  - L118: Missing docstring for ClassDef '_Fig'
-  - L119: Missing docstring for FunctionDef 'savefig'
-
 tests/helpers/golden_utils.py
   - First comment is missing or not at top of file
   - Missing module docstring
-  - L18: Missing docstring for FunctionDef '_normalize_frame'
-  - L67: Missing docstring for FunctionDef '_assert_frame_golden'
 
 tests/helpers/metrics_samples.py
   - First comment is missing or not at top of file
   - Missing module docstring
-  - L208: Missing docstring for FunctionDef '_write_version_note'
-  - L214: Missing docstring for FunctionDef '_parquet_inputs_exist'
-  - L255: Missing docstring for FunctionDef 'build_config'
-  - L259: Missing docstring for FunctionDef 'stage_sample_run'
-  - L268: Missing docstring for FunctionDef 'validate_outputs'
 
 tests/integration/test_farkle_integration.py
   - First comment is missing or not at top of file
   - Missing module docstring
-  - L31: Missing docstring for FunctionDef 'simple_strategy'
-  - L35: Missing docstring for FunctionDef 'test_seed_reproducible'
-  - L41: Missing docstring for FunctionDef 'test_final_round_rule'
-  - L80: Missing docstring for FunctionDef 'test_pipeline_matches_default'
 
 tests/integration/test_metrics_stage.py
   - First comment is missing or not at top of file
   - Missing module docstring
-  - L11: Missing docstring for FunctionDef 'test_metrics_run_matches_goldens'
-  - L17: Missing docstring for FunctionDef 'test_golden_mismatch_requires_update_flag'
 
 tests/integration/test_run_tournament_integration.py
   - First comment is missing or not at top of file
@@ -72,10 +28,6 @@ tests/integration/test_run_tournament_integration.py
 
 tests/test_stats_wilson.py
   - First comment is missing or not at top of file
-  - L10: Missing docstring for FunctionDef 'test_wilson_ci_balanced_sample'
-  - L17: Missing docstring for FunctionDef 'test_wilson_ci_handles_extreme_counts'
-  - L29: Missing docstring for FunctionDef 'test_wilson_ci_alpha_variation'
-  - L46: Missing docstring for FunctionDef 'test_wilson_ci_invalid_inputs'
 
 tests/unit/analysis/conftest.py
   - First comment is missing or not at top of file
@@ -452,6 +404,10 @@ tests/unit/game/test_engine.py
   - L16: Missing docstring for FunctionDef 'integers'
   - L173: Missing docstring for FunctionDef 'integers'
 
+tests/unit/game/test_engine_final_round.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
+
 tests/unit/game/test_gamemetrics.py
   - First comment is missing or not at top of file
   - Missing module docstring
@@ -492,6 +448,10 @@ tests/unit/game/test_scoring_lookup_validation.py
   - L11: Missing docstring for FunctionDef 'test_score_roll_rejects_too_many_dice'
   - L16: Missing docstring for FunctionDef 'test_evaluate_rejects_sum_over_six'
   - L21: Missing docstring for FunctionDef 'test_evaluate_rejects_negative_counts'
+
+tests/unit/game/test_scoring_properties.py
+  - First comment is missing or not at top of file
+  - Missing module docstring
 
 tests/unit/simulation/test_run_tournament.py
   - First comment is missing or not at top of file
