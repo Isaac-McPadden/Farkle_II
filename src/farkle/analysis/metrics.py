@@ -106,7 +106,9 @@ def run(cfg: AppConfig) -> None:
     )
 
 
-def _ensure_isolated_metrics(cfg: AppConfig, player_counts: Sequence[int]) -> tuple[list[Path], list[Path]]:
+def _ensure_isolated_metrics(
+    cfg: AppConfig, player_counts: Sequence[int]
+) -> tuple[list[Path], list[Path]]:
     """Generate normalized per-player-count metrics where available.
 
     Args:
@@ -169,6 +171,7 @@ def _collect_metrics_frames(paths: Iterable[Path]) -> pd.DataFrame:
 
 def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
     """Aggregate win rates by seat position across all player counts."""
+
     def _rows_for_n(n: int) -> int:
         """Return the number of rows recorded for a player-count manifest."""
         manifest = cfg.manifest_for(n)
@@ -183,8 +186,7 @@ def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
     denom = {i: sum(_rows_for_n(n) for n in range(i, 13)) for i in range(1, 13)}
     ds_all = ds.dataset(combined, format="parquet")
     seat_wins = {
-        i: int(ds_all.count_rows(filter=(ds.field("winner_seat") == f"P{i}")))
-        for i in range(1, 13)
+        i: int(ds_all.count_rows(filter=(ds.field("winner_seat") == f"P{i}"))) for i in range(1, 13)
     }
 
     seat_rows: list[dict[str, float]] = []
@@ -192,9 +194,7 @@ def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
         games = denom[i]
         wins = seat_wins.get(i, 0)
         rate = (wins / games) if games else 0.0
-        seat_rows.append(
-            {"seat": i, "wins": wins, "games_with_seat": games, "win_rate": rate}
-        )
+        seat_rows.append({"seat": i, "wins": wins, "games_with_seat": games, "win_rate": rate})
     return pd.DataFrame(seat_rows, columns=["seat", "wins", "games_with_seat", "win_rate"])
 
 
@@ -207,16 +207,8 @@ def _stamp(path: Path) -> dict[str, float | int]:
 def _write_stamp(stamp_path: Path, *, inputs: Iterable[Path], outputs: Iterable[Path]) -> None:
     """Persist a JSON stamp summarizing inputs and outputs for auditing."""
     payload = {
-        "inputs": {
-            str(p): _stamp(p)
-            for p in inputs
-            if p.exists()
-        },
-        "outputs": {
-            str(p): _stamp(p)
-            for p in outputs
-            if p.exists()
-        },
+        "inputs": {str(p): _stamp(p) for p in inputs if p.exists()},
+        "outputs": {str(p): _stamp(p) for p in outputs if p.exists()},
     }
     stamp_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(stamp_path)) as tmp_path:

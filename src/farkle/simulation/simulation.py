@@ -297,7 +297,9 @@ def experiment_size(
         normalized_pairs: list[tuple[bool, bool]] = []
         for opts in smart_five_and_one_options:
             if len(opts) != 2:
-                raise ValueError("smart_five_and_one_options entries must contain exactly two booleans")
+                raise ValueError(
+                    "smart_five_and_one_options entries must contain exactly two booleans"
+                )
             normalized_pairs.append((bool(opts[0]), bool(opts[1])))
         allowed_pairs = set(normalized_pairs)
         smart_five_opts_list = list(dict.fromkeys(sf for sf, _ in normalized_pairs))

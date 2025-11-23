@@ -29,7 +29,7 @@ def _unique_players(metrics_path: Path, hints: Iterable[int]) -> list[int]:
     Returns:
         Sorted list of distinct player counts discovered.
     """
-    players: set[int] = set(int(p) for p in hints)
+    players: set[int] = {int(p) for p in hints}
     if not metrics_path.exists():
         return sorted(players)
 
@@ -70,9 +70,7 @@ def run(cfg: AppConfig) -> None:
     json_out = analysis_dir / "hgb_importance.json"
 
     players = _unique_players(metrics_path, cfg.sim.n_players_list)
-    importance_paths = [
-        analysis_dir / _hgb.IMPORTANCE_TEMPLATE.format(players=p) for p in players
-    ]
+    importance_paths = [analysis_dir / _hgb.IMPORTANCE_TEMPLATE.format(players=p) for p in players]
 
     inputs = [cfg.curated_parquet, metrics_path, ratings_path]
     latest_input = _latest_mtime(inputs)

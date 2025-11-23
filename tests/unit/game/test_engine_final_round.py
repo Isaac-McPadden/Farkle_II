@@ -78,9 +78,7 @@ def test_final_round_respects_score_to_beat_and_reruns():
     )
 
     # Player 2 farkles immediately during the final round.
-    p2 = FarklePlayer(
-        name="bust", strategy=_QuietStrategy(), rng=ScriptedRNG([[2, 3, 4, 6, 2, 4]])
-    )
+    p2 = FarklePlayer(name="bust", strategy=_QuietStrategy(), rng=ScriptedRNG([[2, 3, 4, 6, 2, 4]]))
 
     # Player 3 leaps past the score_to_beat with a single roll and should bank.
     p3 = FarklePlayer(

@@ -3,17 +3,16 @@
 
 from __future__ import annotations
 
-import math
 import json
 import logging
+import math
 from itertools import combinations
 from pathlib import Path
-
-import pyarrow as pa
-import numpy as np
-from scipy.stats import binomtest
-
 from typing import Any, Dict
+
+import numpy as np
+import pyarrow as pa
+from scipy.stats import binomtest
 
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy

@@ -70,7 +70,9 @@ def run_all(cfg: AppConfig) -> None:
             "Analytics: skipping trueskill",
             extra={
                 "stage": "analysis",
-                "reason": "run_trueskill=False" if not cfg.analysis.run_trueskill else "unavailable",
+                "reason": (
+                    "run_trueskill=False" if not cfg.analysis.run_trueskill else "unavailable"
+                ),
             },
         )
 
@@ -82,7 +84,9 @@ def run_all(cfg: AppConfig) -> None:
             "Analytics: skipping head-to-head",
             extra={
                 "stage": "analysis",
-                "reason": "run_head2head=False" if not cfg.analysis.run_head2head else "unavailable",
+                "reason": (
+                    "run_head2head=False" if not cfg.analysis.run_head2head else "unavailable"
+                ),
             },
         )
 
@@ -122,9 +126,11 @@ def run_all(cfg: AppConfig) -> None:
             "Analytics: skipping frequentist ranking",
             extra={
                 "stage": "analysis",
-                "reason": "run_frequentist=False"
-                if not getattr(cfg.analysis, "run_frequentist", False)
-                else "unavailable",
+                "reason": (
+                    "run_frequentist=False"
+                    if not getattr(cfg.analysis, "run_frequentist", False)
+                    else "unavailable"
+                ),
             },
         )
 
@@ -136,9 +142,11 @@ def run_all(cfg: AppConfig) -> None:
             "Analytics: skipping tiering report",
             extra={
                 "stage": "analysis",
-                "reason": "run_tiering_report=False"
-                if not cfg.analysis.run_tiering_report
-                else "unavailable",
+                "reason": (
+                    "run_tiering_report=False"
+                    if not cfg.analysis.run_tiering_report
+                    else "unavailable"
+                ),
             },
         )
 

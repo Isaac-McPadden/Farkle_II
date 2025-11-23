@@ -1,7 +1,5 @@
-import json
 from pathlib import Path
 
-import pandas as pd
 import pytest
 
 import farkle.analysis.run_bonferroni_head2head as rb

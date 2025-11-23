@@ -4,15 +4,17 @@ from pathlib import Path
 
 fake = types.ModuleType("tomllib")
 
+
 def load(fh):
     data = fh.read()
     if isinstance(data, bytes):
         data = data.decode("utf-8")
     return {"project": {"version": "0.0.0"}}
 
+
 fake.load = load
-sys.modules['tomllib'] = fake
-sys.path.insert(0, str(Path('src').resolve()))
+sys.modules["tomllib"] = fake
+sys.path.insert(0, str(Path("src").resolve()))
 
 from farkle.game.scoring import default_score
 

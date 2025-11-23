@@ -24,14 +24,42 @@ def _make_cfg(tmp_path: Path) -> AppConfig:
 def test_pool_winrates_prefers_fixed_effects_when_I2_low() -> None:
     df_seed1 = pd.DataFrame(
         [
-            {"strategy_id": "S1", "players": 2, "seed": 1, "games": 50, "wins": 25, "win_rate": 0.50},
-            {"strategy_id": "S2", "players": 2, "seed": 1, "games": 50, "wins": 20, "win_rate": 0.40},
+            {
+                "strategy_id": "S1",
+                "players": 2,
+                "seed": 1,
+                "games": 50,
+                "wins": 25,
+                "win_rate": 0.50,
+            },
+            {
+                "strategy_id": "S2",
+                "players": 2,
+                "seed": 1,
+                "games": 50,
+                "wins": 20,
+                "win_rate": 0.40,
+            },
         ]
     )
     df_seed2 = pd.DataFrame(
         [
-            {"strategy_id": "S1", "players": 2, "seed": 2, "games": 50, "wins": 26, "win_rate": 0.52},
-            {"strategy_id": "S2", "players": 2, "seed": 2, "games": 50, "wins": 18, "win_rate": 0.36},
+            {
+                "strategy_id": "S1",
+                "players": 2,
+                "seed": 2,
+                "games": 50,
+                "wins": 26,
+                "win_rate": 0.52,
+            },
+            {
+                "strategy_id": "S2",
+                "players": 2,
+                "seed": 2,
+                "games": 50,
+                "wins": 18,
+                "win_rate": 0.36,
+            },
         ]
     )
 
@@ -46,7 +74,7 @@ def test_pool_winrates_prefers_fixed_effects_when_I2_low() -> None:
     assert s1["win_rate"] == pytest.approx(expected)
     expected_se = math.sqrt(1.0 / (weight_a + weight_b))
     assert s1["se"] == pytest.approx(expected_se)
-    assert result.I2 == pytest.approx(0.0)
+    assert pytest.approx(0.0) == result.I2
 
 
 def test_meta_run_writes_pooled_outputs(tmp_path: Path) -> None:
@@ -54,13 +82,34 @@ def test_meta_run_writes_pooled_outputs(tmp_path: Path) -> None:
 
     df_seed1 = pd.DataFrame(
         [
-            {"strategy_id": "Keep", "players": 2, "seed": 1, "games": 30, "wins": 18, "win_rate": 0.60},
-            {"strategy_id": "Drop", "players": 2, "seed": 1, "games": 30, "wins": 10, "win_rate": 0.33},
+            {
+                "strategy_id": "Keep",
+                "players": 2,
+                "seed": 1,
+                "games": 30,
+                "wins": 18,
+                "win_rate": 0.60,
+            },
+            {
+                "strategy_id": "Drop",
+                "players": 2,
+                "seed": 1,
+                "games": 30,
+                "wins": 10,
+                "win_rate": 0.33,
+            },
         ]
     )
     df_seed2 = pd.DataFrame(
         [
-            {"strategy_id": "Keep", "players": 2, "seed": 2, "games": 40, "wins": 20, "win_rate": 0.50},
+            {
+                "strategy_id": "Keep",
+                "players": 2,
+                "seed": 2,
+                "games": 40,
+                "wins": 20,
+                "win_rate": 0.50,
+            },
             # "Drop" missing here to trigger the presence rule.
         ]
     )

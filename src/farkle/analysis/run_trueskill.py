@@ -813,7 +813,7 @@ def run_trueskill(
         games = per_block_games.get(stem, 0)
         if games <= 0:
             continue
-        with parquet.open("rb") as fh:
+        with parquet.open("rb"):
             ratings = _load_ratings_parquet(parquet)
         for k, v in ratings.items():
             tau = 1.0 / (v.sigma**2) if v.sigma > 0 else 0.0

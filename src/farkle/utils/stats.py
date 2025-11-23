@@ -84,9 +84,9 @@ def _num_hypotheses(n: int, full_pairwise: bool) -> int:
 def _per_test_level(
     method: str,
     m: int,
-    control: float,      # q for BH, alpha for Bonferroni
+    control: float,  # q for BH, alpha for Bonferroni
     use_BY: bool,
-    bh_target_rank: int | None = None,    # e.g., K (top-K pairs you want power for)
+    bh_target_rank: int | None = None,  # e.g., K (top-K pairs you want power for)
     bh_target_frac: float | None = None,  # e.g., 0.01 for top 1% of tests
 ) -> float:
     """
@@ -105,7 +105,7 @@ def _per_test_level(
 
     # --- BH (optionally BY-corrected) ---
     q = control
-    c_m = (sum(1.0/i for i in range(1, m+1)) if use_BY else 1.0)
+    c_m = sum(1.0 / i for i in range(1, m + 1)) if use_BY else 1.0
 
     # Choose a target rank i*:
     if bh_target_rank is not None:
@@ -128,23 +128,23 @@ def games_for_power(
     *,
     n_strategies: int = 7140,
     k_players: int = 2,
-    method: str = "bh",            # "bh" or "bonferroni"
+    method: str = "bh",  # "bh" or "bonferroni"
     power: float = 0.8,
-    control: float = 0.1,          # q for BH, alpha for Bonferroni
-    detectable_lift: float = 0.03, # absolute lift
+    control: float = 0.1,  # q for BH, alpha for Bonferroni
+    detectable_lift: float = 0.03,  # absolute lift
     baseline_rate: float | None = None,
     tail: str = "two_sided",
-    full_pairwise: bool = False,    # only used for endpoint="pairwise"
-    use_BY: bool = False,          # BH-only; conservative
+    full_pairwise: bool = False,  # only used for endpoint="pairwise"
+    use_BY: bool = False,  # BH-only; conservative
     min_games_floor: int | None = None,
     max_games_cap: int | None = None,
     bh_target_rank: int | None = None,
     bh_target_frac: float | None = None,
-    endpoint: str = "top1",    # "pairwise" (A vs B) or "top1" (wins whole game)
+    endpoint: str = "top1",  # "pairwise" (A vs B) or "top1" (wins whole game)
 ) -> int:
     """
     Returns the required number of GAMES PER STRATEGY (rounded up) for a
-    k-player round-robin style experiment, using BH false discovery rate (FDR) 
+    k-player round-robin style experiment, using BH false discovery rate (FDR)
     or Bonferroni family-wise error rate (FWER).
 
     Notes:
@@ -156,7 +156,7 @@ def games_for_power(
         then converts to games by dividing by (k_players - 1).
       - endpoint="top1" plans directly in games per strategy via one-sample proportion sizing against
         p0 = 1/k_players (or given baseline_rate). No /(k-1) conversion.
-    
+
     Function calculates the number of games needed for each strategy.
 
     Parameters
@@ -178,8 +178,8 @@ def games_for_power(
         Baseline probability of winning against which ``delta`` is
         measured. Game count is maximized at 0.5.
     tail : str
-        "two_sided" or "one_sided".  "two_sided" adds more games but detects better 
-        and worse while "one_sided" can only detect better 
+        "two_sided" or "one_sided".  "two_sided" adds more games but detects better
+        and worse while "one_sided" can only detect better
     full_pairwise :
         ``True`` → compare every pair of strategies (k = *n*·(*n*-1)/2).
         ``False`` → compare each strategy only to a single baseline (*n*-1 tests).
@@ -198,7 +198,7 @@ def games_for_power(
         Manual override available if needed.
         Forces each strategy to play at most ``max_games_cap`` games.
     endpoint : str
-        "pairwise" or "top1".  "pairwise" considers outcomes based on all players in 
+        "pairwise" or "top1".  "pairwise" considers outcomes based on all players in
         a match.  "top1" only cares about the winner.  "pairwise" is extremely granular
         and better used after screening with "top1".
     Returns
@@ -208,17 +208,17 @@ def games_for_power(
         integer).
     """
     LOGGER = logging.getLogger(__name__)
-    
+
     # ---- validation ----
-    if n_strategies <= 1: 
+    if n_strategies <= 1:
         raise ValueError("n_strategies must be > 1")
-    if k_players   <  2:  
+    if k_players < 2:
         raise ValueError("k_players must be >= 2")
-    if not (0 < power < 1):            
+    if not (0 < power < 1):
         raise ValueError("power must be in (0,1)")
-    if isinstance(baseline_rate, float) and not (0 < baseline_rate < 1):    
+    if isinstance(baseline_rate, float) and not (0 < baseline_rate < 1):
         raise ValueError("baseline_rate must be in (0,1)")
-    if not (0 < detectable_lift < 1):  
+    if not (0 < detectable_lift < 1):
         raise ValueError("detectable_lift must be in (0,1)")
     if isinstance(baseline_rate, float) and baseline_rate + detectable_lift >= 1:
         raise ValueError("baseline_rate + detectable_lift must be < 1")
@@ -239,7 +239,9 @@ def games_for_power(
             LOGGER.warning(
                 "top1 baseline_rate=%.6f differs from 1/k (%.6f) for k=%d; "
                 "sample size may be miscalibrated. Set baseline_rate: null to use 1/k.",
-                baseline_rate, ideal, k_players
+                baseline_rate,
+                ideal,
+                k_players,
             )
 
     if not (0 < p0 < 1):
@@ -263,7 +265,9 @@ def games_for_power(
         if (bh_target_rank is not None) and (bh_target_frac is not None):
             LOGGER.info(
                 "Both bh_target_rank (%s) and bh_target_frac (%.6g) supplied; "
-                "ignoring rank and using fraction.", str(bh_target_rank), bh_target_frac
+                "ignoring rank and using fraction.",
+                str(bh_target_rank),
+                bh_target_frac,
             )
             bh_target_rank = None
 
@@ -273,21 +277,20 @@ def games_for_power(
             i_star = max(1, min(m, int(ceil(bh_target_frac * m))))
             LOGGER.info(
                 "No BH target supplied; defaulting to bh_target_frac=%.4f -> i*=%d of m=%d",
-                bh_target_frac, i_star, m
+                bh_target_frac,
+                i_star,
+                m,
             )
         elif bh_target_frac is not None:
             i_star = max(1, min(m, int(ceil(bh_target_frac * m))))
             LOGGER.info(
-                "BH using fraction: bh_target_frac=%.6g -> i*=%d of m=%d",
-                bh_target_frac, i_star, m
+                "BH using fraction: bh_target_frac=%.6g -> i*=%d of m=%d", bh_target_frac, i_star, m
             )
         else:
             # rank provided
             assert bh_target_rank is not None
             i_star = max(1, min(m, int(ceil(bh_target_rank))))
-            LOGGER.info(
-                "BH using rank: bh_target_rank=%d of m=%d", i_star, m
-            )
+            LOGGER.info("BH using rank: bh_target_rank=%d of m=%d", i_star, m)
     # -------------------- per-test planning level α* --------------------
     alpha_star = _per_test_level(
         method=method,
@@ -300,16 +303,15 @@ def games_for_power(
     alpha_for_z = (alpha_star / 2.0) if tail == "two_sided" else alpha_star
 
     z_alpha = norm.ppf(1.0 - alpha_for_z)
-    z_beta  = norm.ppf(power)
+    z_beta = norm.ppf(power)
 
     # -------------------- endpoint-specific sizing ----------------------
     if endpoint == "pairwise":
         # Two-sample proportions (equal allocation), per-pair per-arm co-appearances
         p1, p2 = p0, p0 + detectable_lift
         pbar = 0.5 * (p1 + p2)
-        numerator = (
-            z_alpha * sqrt(2.0 * pbar * (1.0 - pbar))
-            + z_beta  * sqrt(p1 * (1.0 - p1) + p2 * (1.0 - p2))
+        numerator = z_alpha * sqrt(2.0 * pbar * (1.0 - pbar)) + z_beta * sqrt(
+            p1 * (1.0 - p1) + p2 * (1.0 - p2)
         )
         n_arm_per_pair = (numerator / detectable_lift) ** 2
 
@@ -330,14 +332,26 @@ def games_for_power(
         games_per_strategy = min(games_per_strategy, int(max_games_cap))
 
     LOGGER.info(
-    "stats.py: endpoint=%s method=%s full_pairwise=%s | n=%d k=%d m=%d | "
-    "control=%.6g tail=%s BY=%s | p0=%.6g p1=%.6g delta=%.6g | "
-    "alpha*=%.6g alpha_for_z=%.6g z_alpha=%.4f z_beta=%.4f -> games/strategy=%d",
-    endpoint, method, full_pairwise if endpoint == "pairwise" else False,
-    n_strategies, k_players, m,
-    control, tail, bool(use_BY) if method == "bh" else False,
-    p0, (p0 + detectable_lift), detectable_lift,
-    alpha_star, alpha_for_z, z_alpha, z_beta, games_per_strategy
+        "stats.py: endpoint=%s method=%s full_pairwise=%s | n=%d k=%d m=%d | "
+        "control=%.6g tail=%s BY=%s | p0=%.6g p1=%.6g delta=%.6g | "
+        "alpha*=%.6g alpha_for_z=%.6g z_alpha=%.4f z_beta=%.4f -> games/strategy=%d",
+        endpoint,
+        method,
+        full_pairwise if endpoint == "pairwise" else False,
+        n_strategies,
+        k_players,
+        m,
+        control,
+        tail,
+        bool(use_BY) if method == "bh" else False,
+        p0,
+        (p0 + detectable_lift),
+        detectable_lift,
+        alpha_star,
+        alpha_for_z,
+        z_alpha,
+        z_beta,
+        games_per_strategy,
     )
     return int(games_per_strategy)
 

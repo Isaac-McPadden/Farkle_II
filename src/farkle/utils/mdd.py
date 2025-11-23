@@ -87,9 +87,7 @@ def prepare_cell_means(
     gb = df.groupby([strategy_col, k_col, seed_col], as_index=False)
     out = gb.agg(winrate=("__winrate__", "mean"), games=("__games__", "sum"))
 
-    out = out.rename(
-        columns={strategy_col: "strategy", k_col: "k", seed_col: "seed"}
-    )
+    out = out.rename(columns={strategy_col: "strategy", k_col: "k", seed_col: "seed"})
     return out[["strategy", "k", "seed", "winrate", "games"]]
 
 
@@ -118,7 +116,7 @@ def estimate_tau2_seed(
 
     R = int(cell["seed"].nunique())
     K = int(cell["k"].nunique())
-    
+
     return VarianceComponents(
         tau2_seed=float(tau2_seed),
         tau2_sxk=None,
@@ -154,22 +152,23 @@ def estimate_tau2_sxk(
 
     # Per-(s,k) noise feeding into the weighted mean across k:
     sk["v_binom_seeded"] = (
-        (sk["mean_p"] * (1 - sk["mean_p"]) / sk["mean_games"].clip(lower=1.0)) / sk["R"]
-    )
+        sk["mean_p"] * (1 - sk["mean_p"]) / sk["mean_games"].clip(lower=1.0)
+    ) / sk["R"]
     sk["v_seed_only"] = tau2_seed / sk["R"]
     sk["_w"] = sk["k"].map(weights).astype(float)
 
     # Use squared weights for variance propagation
-    noise_by_s = sk.groupby("strategy").apply(
-        lambda g: float(((g["_w"] ** 2) * (g["v_binom_seeded"] + g["v_seed_only"])).sum())
-    ).rename("noise_into_k")
+    noise_by_s = (
+        sk.groupby("strategy")
+        .apply(lambda g: float(((g["_w"] ** 2) * (g["v_binom_seeded"] + g["v_seed_only"])).sum()))
+        .rename("noise_into_k")
+    )
 
     s = s.merge(noise_by_s, on="strategy", how="left")
     s["tau2_sxk_s"] = (s["var_across_k"] - s["noise_into_k"]).clip(lower=0.0)
 
     tau2_sxk = s["tau2_sxk_s"].median() if robust else s["tau2_sxk_s"].mean()
     return float(tau2_sxk)
-
 
 
 def compute_mdd_for_tiers(
@@ -198,10 +197,12 @@ def compute_mdd_for_tiers(
         raise ValueError("weights_by_k produced no entries")
 
     # Ensure binom_by_k has an Int64Index so .loc[int(k)] is safe
-    if not np.issubdtype(binom_by_k.index.dtype, np.integer): # pyright: ignore[reportArgumentType]
+    if not np.issubdtype(binom_by_k.index.dtype, np.integer):  # pyright: ignore[reportArgumentType]
         binom_by_k = pd.Series(
             binom_by_k.values,
-            index=pd.Index([int(k) for k in binom_by_k.index], dtype="int64", name=binom_by_k.index.name),
+            index=pd.Index(
+                [int(k) for k in binom_by_k.index], dtype="int64", name=binom_by_k.index.name
+            ),
             name=binom_by_k.name,
         )
 
@@ -216,14 +217,13 @@ def compute_mdd_for_tiers(
     # Squared-weights variance propagation
     sum_w2 = sum(wk**2 for wk in weights.values())
     v_binom = sum((wk**2) * (float(binom_by_k.loc[k]) / R) for k, wk in weights.items())
-    v_seed  = tau2_seed / R
-    v_sxk   = tau2_sxk * sum_w2
+    v_seed = tau2_seed / R
+    v_sxk = tau2_sxk * sum_w2
 
     var_theta = v_binom + v_seed + v_sxk
     se_diff = np.sqrt(2.0 * var_theta)
     mdd = z_star * se_diff
     return float(mdd)
-
 
 
 def tiering_ingredients_from_df(
@@ -286,7 +286,6 @@ def tiering_ingredients_from_df(
         "tau2_sxk": tau2_sxk,
         "mdd": mdd,
     }
-
 
 
 __all__ = [

@@ -19,9 +19,11 @@ from farkle.utils.yaml_helpers import expand_dotted_keys
 # Dataclasses (schema)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class IOConfig:
     """File-system locations for the application."""
+
     results_dir: Path = Path("results")
     # Keep this as a plain string in YAML to avoid Path(dict) mistakes.
     append_seed: bool = True
@@ -49,22 +51,23 @@ class PowerDesign:
 @dataclass
 class SimConfig:
     """Simulation parameters."""
+
     n_players_list: list[int] = field(default_factory=lambda: [5])
     num_shuffles: int = 100
     seed: int = 0
     expanded_metrics: bool = False
     row_dir: Path | None = None
-    per_n: dict[int, 'SimConfig'] = field(default_factory=dict)
+    per_n: dict[int, "SimConfig"] = field(default_factory=dict)
     power_method: str = "bh"
     recompute_num_shuffles: bool = True
     power_design: PowerDesign = field(default_factory=PowerDesign)
     n_jobs: int | None = None
     desired_sec_per_chunk: int = 10
     ckpt_every_sec: int = 30
-    
+
     # Alter strategy grid
-    score_thresholds: list[int] | None = None 
-    dice_thresholds: list[int] | None = None 
+    score_thresholds: list[int] | None = None
+    dice_thresholds: list[int] | None = None
     smart_five_opts: Sequence[bool] | None = None
     smart_one_opts: Sequence[bool] | None = None
     consider_score_opts: Sequence[bool] = (True, False)
@@ -131,6 +134,7 @@ class AnalysisConfig:
 @dataclass
 class IngestConfig:
     """Ingestion tuning for streaming parquet writes."""
+
     row_group_size: int = 64_000
     parquet_codec: str = "snappy"
     batch_rows: int = 100_000
@@ -140,18 +144,21 @@ class IngestConfig:
 @dataclass
 class CombineConfig:
     """Settings for merging per-player-count ingested data."""
+
     max_players: int = 12
 
 
 @dataclass
 class MetricsConfig:
     """Metric computation options."""
+
     seat_range: tuple[int, int] = (1, 12)
 
 
 @dataclass
 class TrueSkillConfig:
     """Hyperparameters for TrueSkill updates."""
+
     beta: float = 25.0
     tau: float = 0.1
     draw_probability: float = 0.0
@@ -160,6 +167,7 @@ class TrueSkillConfig:
 @dataclass
 class Head2HeadConfig:
     """Configuration for head-to-head tournament simulations."""
+
     n_jobs: int = 4
     games_per_pair: int = 10_000
     fdr_q: float = 0.02
@@ -170,6 +178,7 @@ class Head2HeadConfig:
 @dataclass
 class HGBConfig:
     """Hyperparameters for histogram-based gradient boosting models."""
+
     max_depth: int = 6
     n_estimators: int = 300
 
@@ -178,9 +187,11 @@ class HGBConfig:
 # AppConfig + convenience properties used by analysis code
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 @dataclass
 class AppConfig:
     """Top-level configuration container."""
+
     io: IOConfig = field(default_factory=IOConfig)
     sim: SimConfig = field(default_factory=SimConfig)
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
@@ -309,6 +320,7 @@ class AppConfig:
 # Loader (one or more YAML overlays; dotted keys allowed)
 # ─────────────────────────────────────────────────────────────────────────────
 
+
 def _deep_merge(base: Mapping[str, Any], overlay: Mapping[str, Any]) -> dict[str, Any]:
     """Recursively merge ``overlay`` onto ``base`` and return a new mapping."""
     result: dict[str, Any] = dict(base)
@@ -357,7 +369,11 @@ def load_app_config(*overlays: Path) -> AppConfig:
         sim_section = data["sim"]
         if "n_players" in sim_section and "n_players_list" not in sim_section:
             sim_section["n_players_list"] = [sim_section.pop("n_players")]
-        if "collect_metrics" in sim_section and "expanded_metrics" not in sim_section and sim_section.pop("collect_metrics"):
+        if (
+            "collect_metrics" in sim_section
+            and "expanded_metrics" not in sim_section
+            and sim_section.pop("collect_metrics")
+        ):
             sim_section["expanded_metrics"] = True
     if "analysis" in data:
         analysis_section = data["analysis"]
@@ -385,18 +401,22 @@ def load_app_config(*overlays: Path) -> AppConfig:
                 key_t, val_t = get_args(annotation)
                 if is_dataclass(val_t):
                     val = {
-                        (int(k) if key_t is int else k): build(val_t, v) if isinstance(v, Mapping) else v
+                        (int(k) if key_t is int else k): (
+                            build(val_t, v) if isinstance(v, Mapping) else v
+                        )
                         for k, v in (val or {}).items()
                     }
 
             # Path coercion (works for nested too because we use type hints)
-            if (isinstance(current, Path) or _annotation_contains(annotation, Path)) and isinstance(val, (str, Path)):
+            if (isinstance(current, Path) or _annotation_contains(annotation, Path)) and isinstance(
+                val, (str, Path)
+            ):
                 val = Path(val)
 
             setattr(obj, f.name, val)
         return obj
 
-    cfg =  AppConfig(
+    cfg = AppConfig(
         io=build(IOConfig, data.get("io", {})),
         sim=build(SimConfig, data.get("sim", {})),
         analysis=build(AnalysisConfig, data.get("analysis", {})),
@@ -425,11 +445,19 @@ def _coerce(value: str, current: Any, annotation: Any | None = None) -> Any:
         raise ValueError(f"Cannot parse boolean value from {value!r}")
     if isinstance(current, int) and not isinstance(current, bool):
         return int(value)
-    if annotation is not None and _annotation_contains(annotation, int) and not _annotation_contains(annotation, bool):
+    if (
+        annotation is not None
+        and _annotation_contains(annotation, int)
+        and not _annotation_contains(annotation, bool)
+    ):
         return int(value)
-    if isinstance(current, float) or (annotation is not None and _annotation_contains(annotation, float)):
+    if isinstance(current, float) or (
+        annotation is not None and _annotation_contains(annotation, float)
+    ):
         return float(value)
-    if isinstance(current, Path) or (annotation is not None and _annotation_contains(annotation, Path)):
+    if isinstance(current, Path) or (
+        annotation is not None and _annotation_contains(annotation, Path)
+    ):
         return Path(value)
     return value
 

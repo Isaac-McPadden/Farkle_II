@@ -17,13 +17,13 @@ import logging
 import re
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from types import SimpleNamespace
 
 try:  # pragma: no cover - optional dependency
     from sklearn.ensemble import HistGradientBoostingRegressor
@@ -49,14 +49,12 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
                 return np.zeros(len(X), dtype=float)
             return np.full(len(X), self._mean, dtype=float)
 
-
     def permutation_importance(model, X, y, n_repeats=10, random_state=None):  # type: ignore[override]
         """Fallback permutation importance returning zeroed importances."""
         _ = model, X, y, n_repeats, random_state
         n_features = X.shape[1]
         zeros = np.zeros(n_features, dtype=float)
         return {"importances_mean": zeros, "importances_std": zeros}
-
 
     class GroupKFold:  # type: ignore[override]
         """Minimal replacement for sklearn's grouped cross-validation splitter."""
@@ -75,7 +73,6 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
                     continue
                 yield train_idx, test_idx
 
-
     class _FallbackPD:
         """Shim for partial dependence plotting when sklearn is unavailable."""
 
@@ -93,7 +90,6 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
                     Path(path).write_bytes(b"")
 
             return SimpleNamespace(figure_=_Fig())
-
 
     PartialDependenceDisplay = _FallbackPD  # type: ignore[assignment]
 
@@ -236,9 +232,7 @@ def _run_grouped_cv(
         )
         return
 
-    cv_frame = seed_targets.merge(
-        subset[["strategy", *feature_cols]], on="strategy", how="inner"
-    )
+    cv_frame = seed_targets.merge(subset[["strategy", *feature_cols]], on="strategy", how="inner")
     cv_frame.dropna(subset=["mu", "seed"], inplace=True)
     if cv_frame.empty:
         LOGGER.info(
@@ -397,7 +391,9 @@ def run_hgb(
         )
         return
 
-    metrics_players = sorted(raw_players) if raw_players else sorted({int(p) for p in data["players"].unique()})
+    metrics_players = (
+        sorted(raw_players) if raw_players else sorted({int(p) for p in data["players"].unique()})
+    )
     importance_summary: dict[str, dict[str, float]] = {}
     seed_targets = _load_seed_targets(root)
 
@@ -438,9 +434,7 @@ def run_hgb(
         model = HistGradientBoostingRegressor(random_state=seed)
         model.fit(features, target)
 
-        perm = permutation_importance(
-            model, features, target, n_repeats=10, random_state=seed
-        )
+        perm = permutation_importance(model, features, target, n_repeats=10, random_state=seed)
         if len(perm["importances_mean"]) != len(features.columns):
             msg = (
                 "Mismatch between number of features and permutation importances: "

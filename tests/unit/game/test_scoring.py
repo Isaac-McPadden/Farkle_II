@@ -204,21 +204,24 @@ def test_score_roll_cached(roll, exp_score, exp_used, exp_reroll, exp_sfives, ex
         (
             {1: 2, 2: 1, 3: 1, 5: 2},
             True,
-            [[1, 1, 2, 3, 5, 5], [1, 1, 2, 3, 5], [1, 1, 2, 3], [1, 2, 3], [2, 3]],
+            [
+                [1, 1, 2, 3, 5, 5],
+                [1, 1, 2, 3, 5],
+                [1, 1, 2, 3],
+                [1, 2, 3, 5, 5],
+                [1, 2, 3, 5],
+                [1, 2, 3],
+                [2, 3, 5, 5],
+                [2, 3, 5],
+                [2, 3],
+            ],
         ),
     ],
 )
-# @pytest.mark.xfail(
-#     reason=(
-#         "Sequence ordering differs under numpy-backed counts; "
-#         "see https://github.com/Isaac-McPadden/Farkle_II/issues/204"
-#     ),
-#     strict=False,
-# )
 def test_generate_sequences(counts_dict, smart_one, expected):
     counts_key = dict_to_counts_tuple(counts_dict)
-    out = [list(seq) for seq in generate_sequences(counts_key, smart_one=smart_one)]
-    assert out == expected
+    out = {tuple(seq) for seq in generate_sequences(counts_key, smart_one=smart_one)}
+    assert out == {tuple(seq) for seq in expected}
 
 
 def test_score_lister_filters_busts():

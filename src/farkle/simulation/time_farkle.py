@@ -1,7 +1,7 @@
 # src/farkle/simulation/time_farkle.py
 """
 Functions used timing for a single game and for a batch of N games
-using random ThresholdStrategy instances for each player.  Used 
+using random ThresholdStrategy instances for each player.  Used
 for determining chunk size when running tournaments.
 """
 

@@ -19,7 +19,7 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, MutableMapping, Sequence
+from typing import Iterable, Mapping, MutableMapping
 
 import matplotlib
 
@@ -30,7 +30,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from farkle.config import AppConfig, AnalysisConfig
+from farkle.config import AnalysisConfig, AppConfig
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -69,7 +69,7 @@ def _analysis_dir(cfg: AnalysisConfig | AppConfig) -> Path:
     """Return the analysis directory for the provided config."""
 
     if hasattr(cfg, "analysis_dir"):
-        return Path(getattr(cfg, "analysis_dir"))
+        return Path(cfg.analysis_dir)
     if hasattr(cfg, "io") and hasattr(cfg.io, "results_dir"):
         return Path(cfg.io.results_dir) / "analysis"
     raise AttributeError("Configuration object does not expose an analysis_dir")
@@ -81,9 +81,9 @@ def _sim_player_counts(cfg: AnalysisConfig | AppConfig, analysis_dir: Path) -> l
     players: set[int] = set()
     # ``cfg`` may be an ``AppConfig`` or a bare ``AnalysisConfig``.
     if hasattr(cfg, "analysis") and hasattr(cfg.analysis, "n_players_list"):
-        players.update(int(p) for p in getattr(cfg.analysis, "n_players_list") or [])
+        players.update(int(p) for p in cfg.analysis.n_players_list or [])
     if hasattr(cfg, "sim") and hasattr(cfg.sim, "n_players_list"):
-        players.update(int(p) for p in getattr(cfg.sim, "n_players_list") or [])
+        players.update(int(p) for p in cfg.sim.n_players_list or [])
 
     ratings_path = analysis_dir / "ratings_pooled.parquet"
     if ratings_path.exists():
@@ -171,7 +171,9 @@ def _load_meta_summary(analysis_dir: Path, players: int) -> pd.DataFrame:
     if "players" in df.columns:
         df["players"] = df["players"].astype(int)
         df = df[df["players"] == int(players)]
-    df.sort_values(["win_rate", "strategy"], ascending=[False, True], inplace=True, kind="mergesort")
+    df.sort_values(
+        ["win_rate", "strategy"], ascending=[False, True], inplace=True, kind="mergesort"
+    )
     df.reset_index(drop=True, inplace=True)
     return df
 
@@ -199,11 +201,15 @@ def _load_feature_importance(analysis_dir: Path, players: int) -> pd.DataFrame:
         return pd.DataFrame()
     df[feature_column] = df[feature_column].astype(str)
     df[value_column] = df[value_column].astype(float)
-    df = df[[feature_column, value_column]].rename(columns={feature_column: "feature", value_column: "importance"})
+    df = df[[feature_column, value_column]].rename(
+        columns={feature_column: "feature", value_column: "importance"}
+    )
     total = df["importance"].sum()
     if total > 0:
         df["importance"] = df["importance"] / total
-    df.sort_values(["importance", "feature"], ascending=[False, True], inplace=True, kind="mergesort")
+    df.sort_values(
+        ["importance", "feature"], ascending=[False, True], inplace=True, kind="mergesort"
+    )
     df.reset_index(drop=True, inplace=True)
     return df
 
@@ -233,8 +239,12 @@ def _load_seed_summaries(analysis_dir: Path, players: int) -> pd.DataFrame:
         combined["seed"] = combined["seed"].astype(int)
     else:
         combined["seed"] = 0
-    combined = combined[[c for c in combined.columns if c in {"strategy_id", "seed", "win_rate", "ci_lo", "ci_hi"}]]
-    combined = combined.sort_values(["strategy_id", "seed"], kind="mergesort").reset_index(drop=True)
+    combined = combined[
+        [c for c in combined.columns if c in {"strategy_id", "seed", "win_rate", "ci_lo", "ci_hi"}]
+    ]
+    combined = combined.sort_values(["strategy_id", "seed"], kind="mergesort").reset_index(
+        drop=True
+    )
     return combined
 
 
@@ -246,7 +256,9 @@ def _load_tiers(analysis_dir: Path, players: int) -> dict[str, int]:
     try:
         payload = json.loads(path.read_text())
     except json.JSONDecodeError:
-        LOGGER.warning("tiers.json could not be parsed", extra={"stage": "report", "path": str(path)})
+        LOGGER.warning(
+            "tiers.json could not be parsed", extra={"stage": "report", "path": str(path)}
+        )
         return {}
 
     def _normalize(mapping: Mapping[str, object]) -> dict[str, int]:
@@ -393,7 +405,9 @@ def _plot_output_path(cfg: AnalysisConfig | AppConfig, players: int, name: str) 
     return plot_dir / name
 
 
-def _prepare_axis(fig: plt.Figure, count: int, *, base_height: float = 3.5, row_scale: float = 0.35) -> plt.Axes:
+def _prepare_axis(
+    fig: plt.Figure, count: int, *, base_height: float = 3.5, row_scale: float = 0.35
+) -> plt.Axes:
     """Set figure size based on row count and return a single subplot."""
     height = max(base_height, row_scale * max(1, count) + 1.5)
     fig.set_size_inches(8.5, height)
@@ -406,7 +420,9 @@ def _prepare_axis(fig: plt.Figure, count: int, *, base_height: float = 3.5, row_
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def plot_ladder_for_players(cfg: AnalysisConfig | AppConfig, players: int, *, force: bool = False) -> Path:
+def plot_ladder_for_players(
+    cfg: AnalysisConfig | AppConfig, players: int, *, force: bool = False
+) -> Path:
     """Create a ladder plot of the top strategies by TrueSkill rating."""
 
     analysis_dir = _analysis_dir(cfg)
@@ -442,9 +458,7 @@ def plot_ladder_for_players(cfg: AnalysisConfig | AppConfig, players: int, *, fo
     return output
 
 
-def _determine_heatmap_order(
-    artifacts: _ReportArtifacts, players: int
-) -> list[str]:
+def _determine_heatmap_order(artifacts: _ReportArtifacts, players: int) -> list[str]:
     """Choose strategy ordering for heatmap plotting preferences."""
     if not artifacts.tiers and artifacts.h2h_ranking.empty:
         return artifacts.ratings.head(LADDER_TOP_N)["strategy"].tolist()
@@ -467,7 +481,11 @@ def plot_h2h_heatmap_for_players(
     if decisions.empty:
         return None
 
-    if "wins_a" in decisions.columns and "wins_b" in decisions.columns and "games" in decisions.columns:
+    if (
+        "wins_a" in decisions.columns
+        and "wins_b" in decisions.columns
+        and "games" in decisions.columns
+    ):
         wins_a = decisions["wins_a"].astype(float)
         games = decisions["games"].replace(0, np.nan).astype(float)
         decisions = decisions.assign(win_rate=wins_a / games)
@@ -516,7 +534,12 @@ def plot_h2h_heatmap_for_players(
     for row in decisions.itertuples(index=False):
         if row.a in matrix.index and row.b in matrix.columns:
             matrix.loc[row.a, row.b] = getattr(row, "win_rate", np.nan)
-        if hasattr(row, "wins_b") and hasattr(row, "games") and row.b in matrix.index and row.a in matrix.columns:
+        if (
+            hasattr(row, "wins_b")
+            and hasattr(row, "games")
+            and row.b in matrix.index
+            and row.a in matrix.columns
+        ):
             try:
                 matrix.loc[row.b, row.a] = float(row.wins_b) / float(row.games)
             except ZeroDivisionError:
@@ -619,7 +642,9 @@ def plot_seed_variability_for_players(
         axis=1,
     )
     summary["ci"] = summary["sem"] * 1.96
-    summary.sort_values(["mean", "strategy"], ascending=[False, True], inplace=True, kind="mergesort")
+    summary.sort_values(
+        ["mean", "strategy"], ascending=[False, True], inplace=True, kind="mergesort"
+    )
 
     output = _plot_output_path(cfg, players, f"seed_forest_{players}p.png")
     inputs = list(pattern)
@@ -672,12 +697,12 @@ def _top_strategy_bullets(ratings: pd.DataFrame, meta_summary: pd.DataFrame) -> 
     top_ratings = ratings.head(3)
     for row in top_ratings.itertuples(index=False):
         spread = 2.0 * float(row.sigma)
-        items.append(
-            f"{row.strategy}: μ={row.mu:.2f} ± {spread:.2f}"
-        )
+        items.append(f"{row.strategy}: μ={row.mu:.2f} ± {spread:.2f}")
     if not meta_summary.empty:
         top_meta = meta_summary.head(3)
-        meta_items = [f"{row.strategy} ({row.win_rate:.1%})" for row in top_meta.itertuples(index=False)]
+        meta_items = [
+            f"{row.strategy} ({row.win_rate:.1%})" for row in top_meta.itertuples(index=False)
+        ]
         items.append("Win rates: " + ", ".join(meta_items))
     return items
 
@@ -686,7 +711,9 @@ def _top_feature_bullets(features: pd.DataFrame) -> list[str]:
     """Build bullet points highlighting key predictive features."""
     if features.empty:
         return ["Feature importances unavailable"]
-    items = [f"{row.feature}: {row.importance:.1%}" for row in features.head(3).itertuples(index=False)]
+    items = [
+        f"{row.feature}: {row.importance:.1%}" for row in features.head(3).itertuples(index=False)
+    ]
     return items
 
 
@@ -723,7 +750,9 @@ def _tiers_section(tiers: Mapping[str, int]) -> str:
     return "\n".join(lines)
 
 
-def _build_report_body(players: int, artifacts: _ReportArtifacts, plot_paths: dict[str, Path | None]) -> str:
+def _build_report_body(
+    players: int, artifacts: _ReportArtifacts, plot_paths: dict[str, Path | None]
+) -> str:
     """Assemble the Markdown body for a per-player-count report."""
     ratings = artifacts.ratings
     meta_summary = artifacts.meta_summary
@@ -734,7 +763,11 @@ def _build_report_body(players: int, artifacts: _ReportArtifacts, plot_paths: di
     run_meta = artifacts.run_metadata
 
     n_strategies = len(ratings)
-    n_seeds = int(meta_summary["n_seeds"].max()) if "n_seeds" in meta_summary.columns else seed_df["seed"].nunique()
+    n_seeds = (
+        int(meta_summary["n_seeds"].max())
+        if "n_seeds" in meta_summary.columns
+        else seed_df["seed"].nunique()
+    )
     n_seeds = int(n_seeds) if n_seeds else max(1, seed_df["seed"].nunique())
     top_tier = 0
     if tiers:
@@ -855,7 +888,10 @@ def generate_report_for_players(
     report_path = analysis_dir / f"report_{players}p.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
-    inputs = [analysis_dir / "ratings_pooled.parquet", analysis_dir / f"strategy_summary_{players}p_meta.parquet"]
+    inputs = [
+        analysis_dir / "ratings_pooled.parquet",
+        analysis_dir / f"strategy_summary_{players}p_meta.parquet",
+    ]
     if _output_is_fresh(report_path, inputs, force=force):
         return report_path
 
@@ -887,4 +923,3 @@ def run_report(cfg: AnalysisConfig | AppConfig, *, force: bool = False) -> None:
                 extra={"stage": "report", "players": players, "error": str(exc)},
             )
     LOGGER.info("Report generation complete", extra={"stage": "report"})
-

@@ -112,7 +112,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             append_manifest_line(manifest_path, {"event": "step_end", "step": _name, "ok": True})
         except Exception as e:  # noqa: BLE001
             append_manifest_line(
-                manifest_path, {"event": "step_end", "step": _name, "ok": False, "error": f"{type(e).__name__}: {e}"}
+                manifest_path,
+                {
+                    "event": "step_end",
+                    "step": _name,
+                    "ok": False,
+                    "error": f"{type(e).__name__}: {e}",
+                },
             )
             raise
 

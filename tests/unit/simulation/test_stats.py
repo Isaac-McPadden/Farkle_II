@@ -1,6 +1,3 @@
-from math import ceil, sqrt
-from typing import Any
-
 from typing import Any
 
 import pytest
@@ -42,7 +39,7 @@ def test_bh_vs_bonferroni():
     n_bh_2 = games_for_power(n_strategies=500, method="bh")
     n_bonf_2 = games_for_power(n_strategies=500, method="bonferroni")
     assert n_bh_1 == n_bonf_1
-    assert n_bh_2 < n_bonf_2   
+    assert n_bh_2 < n_bonf_2
 
 
 def test_games_for_power_monotonicity():

@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import shutil
 from pathlib import Path
-from typing import Iterable
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -21,17 +20,17 @@ INPUT_ROOT = DATA_ROOT / "inputs"
 GOLDEN_ROOT = DATA_ROOT / "goldens"
 VERSION_FILE = DATA_ROOT / "VERSION.txt"
 
-_SIM_KWARGS = dict(
-    n_players_list=[2, 3],
-    score_thresholds=[200],
-    dice_thresholds=[0],
-    smart_five_opts=[True],
-    smart_one_opts=[False],
-    consider_score_opts=[True],
-    consider_dice_opts=[True],
-    auto_hot_dice_opts=[True],
-    run_up_score_opts=[True],
-)
+_SIM_KWARGS = {
+    "n_players_list": [2, 3],
+    "score_thresholds": [200],
+    "dice_thresholds": [0],
+    "smart_five_opts": [True],
+    "smart_one_opts": [False],
+    "consider_score_opts": [True],
+    "consider_dice_opts": [True],
+    "auto_hot_dice_opts": [True],
+    "run_up_score_opts": [True],
+}
 
 _STRATEGIES = [
     "Strat(200,0)[SD][F-FS][AND][HR]",
@@ -280,7 +279,9 @@ def build_config(results_root: Path) -> AppConfig:
         Application configuration tailored for the sample metrics stage.
     """
 
-    return AppConfig(io=IOConfig(results_dir=results_root, append_seed=False), sim=SimConfig(**_SIM_KWARGS))
+    return AppConfig(
+        io=IOConfig(results_dir=results_root, append_seed=False), sim=SimConfig(**_SIM_KWARGS)
+    )
 
 
 def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
@@ -320,7 +321,9 @@ def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
     metrics_golden = GOLDEN_ROOT / "metrics.csv"
     seat_golden = GOLDEN_ROOT / "seat_advantage.csv"
 
-    assert_parquet_golden(metrics_path, metrics_golden, update=update_goldens, sort_by=["n_players", "strategy"])
+    assert_parquet_golden(
+        metrics_path, metrics_golden, update=update_goldens, sort_by=["n_players", "strategy"]
+    )
     assert_csv_golden(seat_csv, seat_golden, update=update_goldens, sort_by=["seat"])
     assert_parquet_golden(seat_parquet, seat_golden, update=update_goldens, sort_by=["seat"])
 
@@ -331,7 +334,10 @@ def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
     stamp = cfg.analysis_dir / "metrics.done.json"
     assert_stamp_has_paths(
         stamp,
-        expected_inputs=[cfg.curated_parquet, *[cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet" for n in _MANIFEST_ROWS]],
+        expected_inputs=[
+            cfg.curated_parquet,
+            *[cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet" for n in _MANIFEST_ROWS],
+        ],
         expected_outputs=[metrics_path, seat_csv, seat_parquet, *iso_paths],
     )
 

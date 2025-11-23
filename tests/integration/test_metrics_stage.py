@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import pandas as pd
 import pytest
-
-from farkle.analysis import metrics
 from tests.helpers.golden_utils import GoldenMismatchError
 from tests.helpers.metrics_samples import stage_sample_run, validate_outputs
+
+from farkle.analysis import metrics
 
 
 def test_metrics_run_matches_goldens(tmp_path, update_goldens):

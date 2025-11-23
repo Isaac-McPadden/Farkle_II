@@ -53,9 +53,7 @@ def test_run_all_invokes_expected_modules(
     monkeypatch.setitem(
         sys.modules,
         "farkle.analysis.h2h_analysis",
-        make_module(
-            "h2h_analysis", "h2h_analysis", func_name="run_post_h2h", record_call=False
-        ),
+        make_module("h2h_analysis", "h2h_analysis", func_name="run_post_h2h", record_call=False),
     )
     monkeypatch.setitem(
         sys.modules,

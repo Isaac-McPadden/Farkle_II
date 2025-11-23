@@ -56,7 +56,9 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
 
     ties = base.loc[base["wins_a"] == base["wins_b"], ["a", "b", "wins_a"]]
     if not ties.empty:
-        raise RuntimeError(f"Ties detected in head-to-head results: {ties.to_dict(orient='records')}")
+        raise RuntimeError(
+            f"Ties detected in head-to-head results: {ties.to_dict(orient='records')}"
+        )
 
     if base.empty:
         return pd.DataFrame(
@@ -75,7 +77,7 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
     total_games = base["games"].astype(int)
     pvals = [
         float(binomtest(wins, games, alternative="greater").pvalue)
-        for wins, games in zip(winner_wins.tolist(), total_games.tolist())
+        for wins, games in zip(winner_wins.tolist(), total_games.tolist(), strict=False)
     ]
     decisions = pd.DataFrame(
         {
@@ -160,9 +162,7 @@ def run_post_h2h(cfg: AppConfig) -> None:
     if not pairwise_path.exists():
         raise FileNotFoundError(pairwise_path)
 
-    df_pairs = pd.read_parquet(
-        pairwise_path, columns=["a", "b", "wins_a", "wins_b", "games"]
-    )
+    df_pairs = pd.read_parquet(pairwise_path, columns=["a", "b", "wins_a", "wins_b", "games"])
     alpha = _resolve_alpha(cfg)
     LOGGER.info(
         "Post H2H: adjusting Holm-Bonferroni",
@@ -188,7 +188,9 @@ def run_post_h2h(cfg: AppConfig) -> None:
         }
         for idx, node in enumerate(ranking, start=1)
     ]
-    ranking_df = pd.DataFrame(ranking_records, columns=["rank", "strategy", "in_degree", "out_degree"])
+    ranking_df = pd.DataFrame(
+        ranking_records, columns=["rank", "strategy", "in_degree", "out_degree"]
+    )
     ranking_path = analysis_dir / "h2h_significant_ranking.csv"
     write_csv_atomic(ranking_df, ranking_path)
 
@@ -242,6 +244,5 @@ def _write_graph_json(graph: nx.DiGraph, path) -> None:
         ],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as tmp_path:
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, indent=2, sort_keys=True)
+    with atomic_path(str(path)) as tmp_path, open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)

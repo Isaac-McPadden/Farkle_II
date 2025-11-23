@@ -18,8 +18,8 @@ import pandas as pd
 import pyarrow as pa
 
 from farkle.config import AppConfig
-from farkle.simulation.simulation import generate_strategy_grid
 from farkle.simulation.run_tournament import METRIC_LABELS
+from farkle.simulation.simulation import generate_strategy_grid
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.parallel import process_map
 
@@ -108,8 +108,7 @@ class MetricsLocator:
     def as_mapping(self) -> dict[int, dict[int, Path]]:
         """Nested dictionary view ``{seed: {player_count: Path}}``."""
         return {
-            seed: {k: self.path_for(seed, k) for k in self.player_counts}
-            for seed in self.seeds
+            seed: {k: self.path_for(seed, k) for k in self.player_counts} for seed in self.seeds
         }
 
 
@@ -194,7 +193,16 @@ def collect_isolated_metrics(
         frame = pd.concat(frames, ignore_index=True, sort=False)
     else:
         frame = pd.DataFrame(
-            columns=["strategy", "wins", "games", "win_rate", "winrate", "seed", "player_count", "k"]
+            columns=[
+                "strategy",
+                "wins",
+                "games",
+                "win_rate",
+                "winrate",
+                "seed",
+                "player_count",
+                "k",
+            ]
         )
 
     summary = _summarize(locator, frame, missing)
@@ -215,10 +223,7 @@ def _load_job(job: MetricJob, *, columns: Sequence[str] | None = None) -> pd.Dat
     """
     needed = {"strategy", "wins", "total_games_strat", "games", "win_rate", "winrate"}
     read_cols: Sequence[str] | None
-    if columns is None:
-        read_cols = None
-    else:
-        read_cols = sorted(set(columns).union(needed))
+    read_cols = None if columns is None else sorted(set(columns).union(needed))
 
     df = pd.read_parquet(job.path, columns=read_cols)
     df = df.copy()
@@ -250,7 +255,9 @@ def _load_job(job: MetricJob, *, columns: Sequence[str] | None = None) -> pd.Dat
     return df
 
 
-def _summarize(locator: MetricsLocator, frame: pd.DataFrame, missing: list[MetricJob]) -> MetricsSummary:
+def _summarize(
+    locator: MetricsLocator, frame: pd.DataFrame, missing: list[MetricJob]
+) -> MetricsSummary:
     """Produce QA diagnostics for loaded metrics across seeds and player counts.
 
     Args:
@@ -306,16 +313,12 @@ def _summarize(locator: MetricsLocator, frame: pd.DataFrame, missing: list[Metri
     for seed in seeds:
         zero_ks = [k for k in ks if row_counts.loc[seed, k] == 0]
         if zero_ks:
-            warnings.append(
-                f"Seed {seed} missing data for player counts {sorted(zero_ks)}"
-            )
+            warnings.append(f"Seed {seed} missing data for player counts {sorted(zero_ks)}")
 
     for k in ks:
         zero_seeds = [seed for seed in seeds if row_counts.loc[seed, k] == 0]
         if zero_seeds:
-            warnings.append(
-                f"Player count {k} missing data for seeds {sorted(zero_seeds)}"
-            )
+            warnings.append(f"Player count {k} missing data for seeds {sorted(zero_seeds)}")
 
     if frame.empty and not missing:
         warnings.append("No metrics data loaded; verify locator paths.")
@@ -335,6 +338,7 @@ def _summarize(locator: MetricsLocator, frame: pd.DataFrame, missing: list[Metri
 # ---------------------------------------------------------------------------
 # Expanded metrics normalization
 # ---------------------------------------------------------------------------
+
 
 def build_isolated_metrics(cfg: AppConfig, player_count: int, *, force: bool = False) -> Path:
     """
@@ -486,14 +490,14 @@ def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
     cache_key = id(cfg)
     if cache_key not in _STRATEGY_CACHE:
         strategies, _ = generate_strategy_grid(
-        score_thresholds=cfg.sim.score_thresholds,
-        dice_thresholds=cfg.sim.dice_thresholds,
-        smart_five_opts=cfg.sim.smart_five_opts,
-        smart_one_opts=cfg.sim.smart_one_opts,
-        consider_score_opts=cfg.sim.consider_score_opts,
-        consider_dice_opts=cfg.sim.consider_dice_opts,
-        auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
-        run_up_score_opts=cfg.sim.run_up_score_opts,
+            score_thresholds=cfg.sim.score_thresholds,
+            dice_thresholds=cfg.sim.dice_thresholds,
+            smart_five_opts=cfg.sim.smart_five_opts,
+            smart_one_opts=cfg.sim.smart_one_opts,
+            consider_score_opts=cfg.sim.consider_score_opts,
+            consider_dice_opts=cfg.sim.consider_dice_opts,
+            auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
+            run_up_score_opts=cfg.sim.run_up_score_opts,
         )
         _STRATEGY_CACHE[cache_key] = [str(s) for s in strategies]
     strategy_index = pd.Index(_STRATEGY_CACHE[cache_key], name="strategy")

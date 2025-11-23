@@ -106,11 +106,7 @@ def git_tracked_py_files(repo_root: Path) -> list[Path]:
         files = [repo_root / line.strip() for line in output.splitlines() if line.strip()]
         return [path for path in files if not is_ignored(path, repo_root)]
     except (subprocess.CalledProcessError, FileNotFoundError):
-        return [
-            path
-            for path in repo_root.rglob("*.py")
-            if not is_ignored(path, repo_root)
-        ]
+        return [path for path in repo_root.rglob("*.py") if not is_ignored(path, repo_root)]
 
 
 def is_ignored(path: Path, repo_root: Path) -> bool:
@@ -139,7 +135,9 @@ def read_lines(path: Path) -> list[str]:
     return path.read_text(encoding="utf-8").splitlines()
 
 
-def check_path_comment(path: Path, lines: list[str], report: FileReport, repo_root: Path) -> int | None:
+def check_path_comment(
+    path: Path, lines: list[str], report: FileReport, repo_root: Path
+) -> int | None:
     """Return the index of the path comment line if valid, else None."""
     index = 0
     if lines and lines[0].startswith("#!/"):
@@ -175,7 +173,7 @@ def module_docstring_is_immediate(lines: list[str], path_comment_idx: int) -> bo
         True when the docstring is immediately after the path comment.
     """
     next_idx = path_comment_idx + 1
-    return next_idx < len(lines) and lines[next_idx].lstrip().startswith(("\"\"\"", "'''"))
+    return next_idx < len(lines) and lines[next_idx].lstrip().startswith(('"""', "'''"))
 
 
 def is_trivial_body(body: list[ast.stmt]) -> bool:
@@ -189,8 +187,10 @@ def is_trivial_body(body: list[ast.stmt]) -> bool:
     """
     body_iter = iter(body)
     first = next(body_iter, None)
-    if isinstance(first, ast.Expr) and isinstance(first.value, ast.Constant) and isinstance(
-        first.value.value, str
+    if (
+        isinstance(first, ast.Expr)
+        and isinstance(first.value, ast.Constant)
+        and isinstance(first.value.value, str)
     ):
         # Skip docstring expression
         first = next(body_iter, None)
@@ -202,7 +202,11 @@ def is_trivial_body(body: list[ast.stmt]) -> bool:
     for stmt in remaining:
         if isinstance(stmt, ast.Pass):
             continue
-        if isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Constant) and stmt.value.value is Ellipsis:
+        if (
+            isinstance(stmt, ast.Expr)
+            and isinstance(stmt.value, ast.Constant)
+            and stmt.value.value is Ellipsis
+        ):
             continue
         return False
     return True
@@ -222,7 +226,9 @@ def collect_docstring_issues(tree: ast.AST, report: FileReport) -> None:
             if is_trivial_body(node.body):
                 continue
             if ast.get_docstring(node) is None:
-                report.add(f"Missing docstring for {node.__class__.__name__} '{node.name}'", node.lineno)
+                report.add(
+                    f"Missing docstring for {node.__class__.__name__} '{node.name}'", node.lineno
+                )
 
 
 def audit_file(path: Path, repo_root: Path) -> FileReport:

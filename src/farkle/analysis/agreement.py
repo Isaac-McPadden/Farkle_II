@@ -105,14 +105,11 @@ def _build_payload(analysis_dir: Path, players: int) -> dict[str, object]:
 
     spearman, kendall, coverage = _rank_correlations(score_vectors)
 
-    tier_maps = {
-        name: _normalize_tiers(data.tiers) for name, data in methods.items() if data.tiers
-    }
+    tier_maps = {name: _normalize_tiers(data.tiers) for name, data in methods.items() if data.tiers}
     ari, nmi = _tier_agreements(tier_maps)
 
     stability = {
-        name: _summarize_seed_stability(data.per_seed_scores)
-        for name, data in methods.items()
+        name: _summarize_seed_stability(data.per_seed_scores) for name, data in methods.items()
     }
 
     return {
@@ -198,9 +195,7 @@ def _load_frequentist(analysis_dir: Path, players: int) -> MethodData | None:
     tier_cols = [c for c in ("tier", "tier_label", "mdd_tier") if c in df.columns]
     tiers = None
     if tier_cols:
-        tier_series = (
-            df.set_index(df["strategy"].astype(str))[tier_cols[0]].dropna().astype(float)
-        )
+        tier_series = df.set_index(df["strategy"].astype(str))[tier_cols[0]].dropna().astype(float)
         if not tier_series.empty:
             tiers = {k: int(v) for k, v in tier_series.items()}
 
@@ -317,7 +312,9 @@ def _assert_no_ties(series: pd.Series, label: str) -> None:
         raise ValueError(f"Ties detected in {label}")
 
 
-def _rank_correlations(score_vectors: Mapping[str, pd.Series]) -> tuple[dict | None, dict | None, dict]:
+def _rank_correlations(
+    score_vectors: Mapping[str, pd.Series],
+) -> tuple[dict | None, dict | None, dict]:
     """Compute pairwise correlation statistics between scoring methods.
 
     Args:
@@ -454,9 +451,7 @@ def _summarize_seed_stability(per_seed: list[pd.Series]) -> dict[str, object] | 
         "p95_stddev": float(np.quantile(std, 0.95)),
         "top_strategies": [
             {"strategy": order[idx], "stddev": float(val)}
-            for idx, val in sorted(
-                enumerate(std), key=lambda item: item[1], reverse=True
-            )[:5]
+            for idx, val in sorted(enumerate(std), key=lambda item: item[1], reverse=True)[:5]
         ],
     }
     return summary
@@ -483,4 +478,3 @@ def _tiers_from_graph(graph: nx.DiGraph) -> dict[str, int]:
         for member in sorted(members):
             tiers[str(member)] = tier_idx
     return tiers
-

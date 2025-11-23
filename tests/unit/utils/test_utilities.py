@@ -1,6 +1,7 @@
+import datetime as _datetime
+
 import pytest
 import yaml
-import datetime as _datetime
 
 pytest.importorskip("pydantic")
 pytest.importorskip("pyarrow")

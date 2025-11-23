@@ -1,14 +1,9 @@
-import os
-from pathlib import Path
-
 import pandas as pd
 import pytest
-import yaml
 
 # tests/integration/test_farkle_integration.py
 """Integration tests covering CLI paths and scoring consistency."""
 
-from farkle.cli import main as cli_main
 from farkle.game.engine import FarkleGame, FarklePlayer
 from farkle.game.scoring import (
     apply_discards,
@@ -120,7 +115,6 @@ def test_pipeline_matches_default(roll, turn_pre, smart_five, smart_one):
     Returns:
         None
     """
-
 
     # ---------- (A) single-call pipeline ----------
     d_score, d_used, d_reroll = default_score(  # type: ignore (refactor allows 3 or 5 outputs)

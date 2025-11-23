@@ -488,7 +488,7 @@ class FarkleGame:
                 smart_one_uses=player.smart_one_uses,
                 n_smart_one_dice=player.n_smart_one_dice,
                 hot_dice=player.n_hot_dice,
-                hit_max_rounds=int(self.max_rounds_hit)
+                hit_max_rounds=int(self.max_rounds_hit),
             )
 
         game_block = GameStats(

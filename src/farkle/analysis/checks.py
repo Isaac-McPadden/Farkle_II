@@ -70,9 +70,7 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
             manifest_rows += int(meta.get("row_count", 0))
             seen_manifest = True
         except Exception as e:  # noqa: BLE001
-            raise RuntimeError(
-                f"check_pre_metrics: failed to parse {manifest_path}: {e}"
-            ) from e
+            raise RuntimeError(f"check_pre_metrics: failed to parse {manifest_path}: {e}") from e
     if not seen_manifest:
         raise RuntimeError(f"check_pre_metrics: no manifest files found under {data_dir}")
 

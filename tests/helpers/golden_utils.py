@@ -8,10 +8,6 @@ from typing import Iterable, Sequence
 # tests/helpers/golden_utils.py
 """Utilities for comparing generated artifacts to stored goldens."""
 
-import json
-import shutil
-from pathlib import Path
-from typing import Iterable, Sequence
 
 import pandas as pd
 
@@ -116,14 +112,18 @@ def _assert_frame_golden(
 
     golden_df = pd.read_csv(golden)
     golden_df = _normalize_frame(golden_df, sort_by)
-    golden_df = golden_df.astype({col: dtype for col, dtype in actual_df.dtypes.items() if col in golden_df.columns})
+    golden_df = golden_df.astype(
+        {col: dtype for col, dtype in actual_df.dtypes.items() if col in golden_df.columns}
+    )
     try:
         pd.testing.assert_frame_equal(actual_df, golden_df, check_like=True)
     except AssertionError as exc:  # pragma: no cover - assertion branch exercised in tests
         raise GoldenMismatchError(f"CSV golden mismatch for {golden}. {_MESSAGE}") from exc
 
 
-def assert_stamp_has_paths(stamp_path: Path, expected_inputs: Iterable[Path], expected_outputs: Iterable[Path]) -> None:
+def assert_stamp_has_paths(
+    stamp_path: Path, expected_inputs: Iterable[Path], expected_outputs: Iterable[Path]
+) -> None:
     """Validate that the metrics stamp records the required inputs/outputs."""
 
     payload = json.loads(stamp_path.read_text())

@@ -36,9 +36,8 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _resolve_strategies(
-    cfg: AppConfig, 
-    strategies: list[ThresholdStrategy] | None
-    ) -> tuple[list[ThresholdStrategy], int, bool]:
+    cfg: AppConfig, strategies: list[ThresholdStrategy] | None
+) -> tuple[list[ThresholdStrategy], int, bool]:
     """
     Returns (strategies_list, grid_size, used_custom_grid: bool).
     """
@@ -54,16 +53,18 @@ def _resolve_strategies(
             run_up_score_opts=cfg.sim.run_up_score_opts,
             # prefer_score is and must be handled automatically
         )
-        used_custom = any([
-            cfg.sim.score_thresholds is not None,
-            cfg.sim.dice_thresholds is not None,
-            cfg.sim.smart_five_opts is not None,
-            cfg.sim.smart_one_opts is not None,
-            cfg.sim.consider_score_opts not in [(True, False), [True, False], None],
-            cfg.sim.consider_dice_opts not in [(True, False), [True, False], None],
-            cfg.sim.auto_hot_dice_opts not in [(False, True), [False, True], None],
-            cfg.sim.run_up_score_opts not in [(False, True), [False, True], None],
-        ])
+        used_custom = any(
+            [
+                cfg.sim.score_thresholds is not None,
+                cfg.sim.dice_thresholds is not None,
+                cfg.sim.smart_five_opts is not None,
+                cfg.sim.smart_one_opts is not None,
+                cfg.sim.consider_score_opts not in [(True, False), [True, False], None],
+                cfg.sim.consider_dice_opts not in [(True, False), [True, False], None],
+                cfg.sim.auto_hot_dice_opts not in [(False, True), [False, True], None],
+                cfg.sim.run_up_score_opts not in [(False, True), [False, True], None],
+            ]
+        )
     else:
         used_custom = True  # caller provided a custom grid explicitly
 
@@ -71,7 +72,8 @@ def _resolve_strategies(
 
     LOGGER.info(
         "Strategy grid prepared: %d strategies (%s grid)",
-        grid_size, "custom" if used_custom else "default",
+        grid_size,
+        "custom" if used_custom else "default",
     )
     return strategies, grid_size, used_custom
 
@@ -140,13 +142,9 @@ def _filter_player_counts(
         "valid_player_counts": valid,
         "invalid_player_counts": invalid,
     }
-    LOGGER.info(
-        "Validated player counts against %s=%d", source, grid_size, extra=log_extra
-    )
+    LOGGER.info("Validated player counts against %s=%d", source, grid_size, extra=log_extra)
     if invalid:
-        LOGGER.warning(
-            "Dropping incompatible player counts: %s", invalid, extra=log_extra
-        )
+        LOGGER.warning("Dropping incompatible player counts: %s", invalid, extra=log_extra)
 
     return valid, invalid, grid_size, source
 
@@ -180,22 +178,40 @@ def _compute_num_shuffles_from_config(
             design=design,
         )
 
-        endpoint = str(getattr(design, "endpoint", "top1")).lower().replace("-", "_").replace(" ", "_")
+        endpoint = (
+            str(getattr(design, "endpoint", "top1")).lower().replace("-", "_").replace(" ", "_")
+        )
         if endpoint == "pairwise":
-            m_tests = (n_strategies * (n_strategies - 1)) // 2 if design.full_pairwise else (n_strategies - 1)
+            m_tests = (
+                (n_strategies * (n_strategies - 1)) // 2
+                if design.full_pairwise
+                else (n_strategies - 1)
+            )
             full_pairwise = design.full_pairwise
         else:
             m_tests = n_strategies
             full_pairwise = False
         n_shuffles = n_games_per_strat
         LOGGER.info(
-            ("Power recompute: method=%s | endpoint=%s | n_strategies=%d | k_players=%d | m_tests=%d | "
-            "power=%.3f | control=%.4g | tail=%s | full_pairwise=%s | use_BY=%s | "
-            "detectable_lift=%.4f | baseline_rate=%s -> n_games_per_strat=%d -> num_shuffles=%d"),
-            method, endpoint, n_strategies, n_players, m_tests,
-            design.power, design.control, design.tail, full_pairwise,
+            (
+                "Power recompute: method=%s | endpoint=%s | n_strategies=%d | k_players=%d | m_tests=%d | "
+                "power=%.3f | control=%.4g | tail=%s | full_pairwise=%s | use_BY=%s | "
+                "detectable_lift=%.4f | baseline_rate=%s -> n_games_per_strat=%d -> num_shuffles=%d"
+            ),
+            method,
+            endpoint,
+            n_strategies,
+            n_players,
+            m_tests,
+            design.power,
+            design.control,
+            design.tail,
+            full_pairwise,
             (bool(design.use_BY) if method == "bh" else False),
-            design.detectable_lift, design.baseline_rate, n_games_per_strat, n_shuffles,
+            design.detectable_lift,
+            design.baseline_rate,
+            n_games_per_strat,
+            n_shuffles,
         )
         return n_shuffles
 
@@ -247,7 +263,9 @@ def run_tournament(cfg: AppConfig) -> int:
     if not configured_n_vals:
         raise ValueError("sim.n_players_list must contain at least one player count")
 
-    n_vals, invalid_n_vals, grid_size_est, grid_source = _filter_player_counts(cfg, configured_n_vals)
+    n_vals, invalid_n_vals, grid_size_est, grid_source = _filter_player_counts(
+        cfg, configured_n_vals
+    )
     if not n_vals:
         raise ValueError(
             f"No valid player counts remain after validating against {grid_source}={grid_size_est}. "
@@ -295,10 +313,14 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     LOGGER.info(f"n_shuffles calculated to be {n_shuffles}")
     # --- Planned totals (log before executing) ---
     games_per_shuffle = grid_size // n
-    total_games = n_shuffles * games_per_shuffle 
+    total_games = n_shuffles * games_per_shuffle
     LOGGER.info(
         "Planned: %dp games, %d strategies -> %d games/shuffle; %d shuffles; %d total games",
-        n, grid_size, games_per_shuffle, n_shuffles, total_games
+        n,
+        grid_size,
+        games_per_shuffle,
+        n_shuffles,
+        total_games,
     )
 
     # --- Output paths ---
@@ -392,12 +414,13 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
                 base[f"mean_{label}"] = float(mean_val)
                 if wins > 0:
                     ex2 = sq_val / wins
-                    var = max(ex2 - (mean_val ** 2), 0.0)
+                    var = max(ex2 - (mean_val**2), 0.0)
                 else:
                     var = 0.0
                 base[f"var_{label}"] = float(var)
-            ws = metric_sums.get("winning_score", {}).get(str(strat),
-                  metric_sums.get("winning_score", {}).get(strat, 0.0))
+            ws = metric_sums.get("winning_score", {}).get(
+                str(strat), metric_sums.get("winning_score", {}).get(strat, 0.0)
+            )
             base["expected_score"] = (ws / total_games_strat) if total_games_strat > 0 else 0.0
             metrics_rows.append(base)
 
@@ -407,10 +430,13 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
 
     return total_games
 
+
 def run_multi(cfg: AppConfig, player_counts: Sequence[int] | None = None) -> dict[int, int]:
     """Run tournaments for multiple player counts."""
     results: dict[int, int] = {}
-    player_counts = list(player_counts) if player_counts is not None else list(cfg.sim.n_players_list)
+    player_counts = (
+        list(player_counts) if player_counts is not None else list(cfg.sim.n_players_list)
+    )
     strategies, _ = generate_strategy_grid(
         score_thresholds=cfg.sim.score_thresholds,
         dice_thresholds=cfg.sim.dice_thresholds,
@@ -424,7 +450,9 @@ def run_multi(cfg: AppConfig, player_counts: Sequence[int] | None = None) -> dic
     # If you want the grid log here too, resolve + log once:
     strategies, grid_size, used_custom = _resolve_strategies(cfg, strategies)
 
-    valid_counts, invalid_counts, _, _ = _filter_player_counts(cfg, player_counts, strategies=strategies)
+    valid_counts, invalid_counts, _, _ = _filter_player_counts(
+        cfg, player_counts, strategies=strategies
+    )
     if not valid_counts:
         LOGGER.warning(
             "No valid player counts remain after validating against len(strategies)=%d",

@@ -10,7 +10,7 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Mapping
 
 import numpy as np
 import pandas as pd
@@ -83,10 +83,7 @@ def _prepare_inputs(cfg: AppConfig) -> TieringInputs:
     weights = cfg.analysis.tiering_weights_by_k
     if weights is not None:
         total = sum(weights.values())
-        if total > 0:
-            weights = {int(k): v / total for k, v in weights.items()}
-        else:
-            weights = None
+        weights = {int(k): v / total for k, v in weights.items()} if total > 0 else None
     return TieringInputs(
         seeds=[int(s) for s in seeds],
         player_counts=player_counts,
@@ -134,9 +131,7 @@ def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFram
             df["seed"] = seed
             frames.append(df)
     if not frames:
-        return pd.DataFrame(
-            columns=["strategy", "seed", "n_players", "games", "wins", "win_rate"]
-        )
+        return pd.DataFrame(columns=["strategy", "seed", "n_players", "games", "wins", "win_rate"])
     return pd.concat(frames, ignore_index=True, sort=False)
 
 
@@ -144,6 +139,7 @@ def _weighted_winrate(
     df: pd.DataFrame, weights_by_k: Mapping[int, float] | None
 ) -> tuple[pd.Series, pd.DataFrame]:
     """Compute overall and per-k weighted win rates."""
+
     def _agg(group: pd.DataFrame) -> float:
         """Weighted average win rate for a strategy/player-count slice."""
         weights = group["games"].clip(lower=1).astype(float)
@@ -151,9 +147,7 @@ def _weighted_winrate(
             return group["win_rate"].mean()
         return float(np.average(group["win_rate"], weights=weights))
 
-    per_k = (
-        df.groupby(["strategy", "n_players"]).apply(_agg).reset_index(name="win_rate")
-    )
+    per_k = df.groupby(["strategy", "n_players"]).apply(_agg).reset_index(name="win_rate")
     if weights_by_k:
         per_k["w"] = per_k["n_players"].map(weights_by_k).fillna(0.0)
         per_k["weighted"] = per_k["win_rate"] * per_k["w"]
@@ -189,7 +183,9 @@ def _build_report(freq_df: pd.DataFrame, ts_tiers: Mapping[str, int]) -> pd.Data
     ts_series = pd.Series(ts_tiers, name="trueskill_tier")
     freq_df = freq_df.set_index("strategy")
     report = freq_df.join(ts_series, how="outer")
-    report["trueskill_tier"] = report["trueskill_tier"].fillna(report["mdd_tier"].max() + 1).astype(int)
+    report["trueskill_tier"] = (
+        report["trueskill_tier"].fillna(report["mdd_tier"].max() + 1).astype(int)
+    )
     report["delta_tier"] = report["mdd_tier"] - report["trueskill_tier"]
     min_mdd = report["mdd_tier"].min()
     min_ts = report["trueskill_tier"].min()
@@ -218,7 +214,15 @@ def _write_frequentist_scores(
     base = base[
         [
             c
-            for c in ["strategy", "strategy_id", "players", "n_players", "win_rate", "tier", "mdd_tier"]
+            for c in [
+                "strategy",
+                "strategy_id",
+                "players",
+                "n_players",
+                "win_rate",
+                "tier",
+                "mdd_tier",
+            ]
             if c in base.columns
         ]
     ]
@@ -254,7 +258,9 @@ def _write_outputs(cfg: AppConfig, report: pd.DataFrame, tier_data: dict) -> Non
     """Write tier comparison outputs to CSV and JSON files."""
     out_csv = cfg.analysis_dir / "tiering_report.csv"
     out_json = cfg.analysis_dir / "tiering_report.json"
-    report.sort_values(["mdd_tier", "win_rate"], ascending=[True, False]).to_csv(out_csv, index=False)
+    report.sort_values(["mdd_tier", "win_rate"], ascending=[True, False]).to_csv(
+        out_csv, index=False
+    )
 
     components = tier_data["components"]
     summary = {

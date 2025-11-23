@@ -236,17 +236,18 @@ def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch
     )
 
     chunk_files = sorted(metrics_dir.glob("metrics_*.parquet"))
-    assert len(chunk_files) == 3
+    assert len(chunk_files) == 1
 
     metrics_manifest = metrics_dir / "metrics_manifest.jsonl"
     metric_records = list(manifest.iter_manifest(metrics_manifest))
-    assert len(metric_records) == 3
+    assert len(metric_records) == 1
     assert {record["path"] for record in metric_records} == {f.name for f in chunk_files}
 
     row_files = list(row_dir.glob("rows_*.parquet"))
-    assert len(row_files) == 3
+    assert len(row_files) == config.num_shuffles
     row_records = list(manifest.iter_manifest(row_dir / "manifest.jsonl"))
-    assert len(row_records) == 3
+    assert len(row_records) == config.num_shuffles
+    assert {Path(record["path"]).name for record in row_records} == {f.name for f in row_files}
     assert all(record.get("rows") == 1 for record in row_records)
 
     metrics_path = checkpoint_path.with_name("2p_metrics.parquet")
@@ -299,7 +300,7 @@ def test_run_tournament_checkpoint_cadence(monkeypatch: pytest.MonkeyPatch, tmp_
         num_shuffles=2,
     )
 
-    assert len(calls) >= 3  # two in-loop checkpoints plus the final flush
+    assert len(calls) == 2  # one in-loop checkpoint plus the final flush
     mid_run_calls = calls[:-1]
     assert all(call[2] is None and call[3] is None for call in mid_run_calls)
     final_path, final_wins, final_sums, final_sq = calls[-1]
@@ -397,8 +398,8 @@ def test_run_tournament_no_metrics_wins_only_checkpoint(
     assert sums is None and sqs is None
 
     chunk_debugs = [extra for msg, extra in debug_logs if msg == "Chunk processed"]
-    assert len(chunk_debugs) == 2
+    assert len(chunk_debugs) == 1
     for idx, extra in enumerate(chunk_debugs, start=1):
         assert extra is not None
         assert extra["chunk_index"] == idx
-        assert extra["wins"] == 1
+        assert extra["wins"] == 2

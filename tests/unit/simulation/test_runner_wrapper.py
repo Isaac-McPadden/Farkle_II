@@ -18,8 +18,8 @@ import pytest
 
 pytest.importorskip("pyarrow")
 
-from farkle.config import AppConfig, IOConfig, SimConfig
 import farkle.simulation.runner as runner
+from farkle.config import AppConfig, IOConfig, SimConfig
 
 
 def _patch_tournament(
@@ -62,7 +62,7 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, sim_artifacts):
     total_games = runner.run_tournament(cfg)
 
     assert calls["collect_metrics"] is True
-    assert calls["row_output_directory"] == tmp_path / "out" / "2_players" / "rows"
+    assert calls["row_output_directory"] == tmp_path / "out" / "2_players" / "2p_rows"
     check_absolute = calls["row_output_directory"]
     assert isinstance(check_absolute, (str, os.PathLike))
     assert Path(check_absolute).is_absolute()
@@ -109,7 +109,7 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
     payload = {"win_totals": {"alpha": "2", 9: 3}}
     calls = _patch_tournament(monkeypatch, payload)
 
-    games_per_shuffle = runner.TournamentConfig(n_players=3).games_per_shuffle
+    runner.TournamentConfig(n_players=3).games_per_shuffle
     cfg = AppConfig(
         io=IOConfig(results_dir=tmp_path / "out", append_seed=False),
         sim=SimConfig(
@@ -124,8 +124,8 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
     summary_path = tmp_path / "out" / "3_players" / "3p_checkpoint.parquet"
     assert summary_path.exists()
     summary_df = pd.read_parquet(summary_path)
-    counters = dict(zip(summary_df["strategy"], summary_df["wins"]))
+    counters = dict(zip(summary_df["strategy"], summary_df["wins"], strict=False))
     assert counters == {"alpha": 2, "9": 3}
 
-    expected_total = 2 * games_per_shuffle
+    expected_total = calls["config"].games_per_shuffle * cfg.sim.num_shuffles
     assert total_games == expected_total

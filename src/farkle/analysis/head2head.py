@@ -11,8 +11,8 @@ import json
 import logging
 import math
 import shutil
-from dataclasses import dataclass
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
 
@@ -20,10 +20,10 @@ import pandas as pd
 
 from farkle.analysis import run_bonferroni_head2head as _h2h
 from farkle.config import AppConfig
-from farkle.utils.stats import build_tiers, games_for_power
-from farkle.utils.random import spawn_seeds
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy
+from farkle.utils.random import spawn_seeds
+from farkle.utils.stats import build_tiers, games_for_power
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -154,13 +154,15 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
         )
         return
 
-    means = dict(zip(df["strategy"], df["mu"]))
-    stdevs = dict(zip(df["strategy"], df["sigma"]))
+    means = dict(zip(df["strategy"], df["mu"], strict=False))
+    stdevs = dict(zip(df["strategy"], df["sigma"], strict=False))
 
     # Auto-calibrate throughput if not provided
     if not games_per_sec or games_per_sec <= 0:
         try:
-            games_per_sec = _calibrate_h2h_games_per_sec(df, seed=cfg.sim.seed, n_jobs=cfg.analysis.n_jobs)
+            games_per_sec = _calibrate_h2h_games_per_sec(
+                df, seed=cfg.sim.seed, n_jobs=cfg.analysis.n_jobs
+            )
             LOGGER.info(
                 "Measured head-to-head throughput",
                 extra={

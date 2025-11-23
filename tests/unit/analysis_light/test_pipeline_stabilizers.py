@@ -100,9 +100,7 @@ def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
     assert any("Curate finished" in msg for msg in messages)
 
 
-def test_metrics_golden_dataset(
-    analysis_config, caplog, golden_dataset, patched_strategy_grid
-):
+def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched_strategy_grid):
     cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_dir)

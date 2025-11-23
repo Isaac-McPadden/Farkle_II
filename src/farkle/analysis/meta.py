@@ -82,7 +82,9 @@ def _wilson_logit_center(wins: float, games: float) -> float:
     return _inv_logit(center)
 
 
-def _estimate_rate_and_variance(wins: float, games: float, win_rate: float | None) -> tuple[float, float]:
+def _estimate_rate_and_variance(
+    wins: float, games: float, win_rate: float | None
+) -> tuple[float, float]:
     """Convert raw counts into a rate and variance suitable for pooling."""
 
     if games <= 0:
@@ -90,10 +92,7 @@ def _estimate_rate_and_variance(wins: float, games: float, win_rate: float | Non
     if wins < 0 or wins > games:
         raise ValueError("wins must satisfy 0 <= wins <= games")
 
-    if win_rate is None or math.isnan(win_rate):
-        rate = wins / games
-    else:
-        rate = float(win_rate)
+    rate = wins / games if win_rate is None or math.isnan(win_rate) else float(win_rate)
     rate = min(max(rate, 0.0), 1.0)
     if rate <= 0.0 or rate >= 1.0:
         rate = _wilson_logit_center(wins, games)
@@ -159,8 +158,8 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
         if sum_w <= 0.0:
             continue
         sum_w_sq = sum(w**2 for w in weights)
-        fixed_mean = sum(w * y for w, (y, _) in zip(weights, obs)) / sum_w
-        Q = sum(w * (y - fixed_mean) ** 2 for w, (y, _) in zip(weights, obs))
+        fixed_mean = sum(w * y for w, (y, _) in zip(weights, obs, strict=False)) / sum_w
+        Q = sum(w * (y - fixed_mean) ** 2 for w, (y, _) in zip(weights, obs, strict=False))
         df_count = max(0, len(obs) - 1)
 
         per_strategy_obs[strategy] = obs
@@ -188,7 +187,7 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
             tau2 = max(0.0, (total_Q - total_df) / c)
         if total_Q > total_df:
             I2 = max(0.0, (total_Q - total_df) / total_Q) * 100.0
-        if tau2 > 0.0 and I2 > use_random_if_I2_gt:
+        if tau2 > 0.0 and use_random_if_I2_gt < I2:
             method = "random"
         else:
             tau2 = 0.0
@@ -204,7 +203,9 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
         denom = sum(adjusted_weights)
         if denom <= 0.0:
             continue
-        pooled_rate = sum(w * rate for w, (rate, _) in zip(adjusted_weights, obs)) / denom
+        pooled_rate = (
+            sum(w * rate for w, (rate, _) in zip(adjusted_weights, obs, strict=False)) / denom
+        )
         se = math.sqrt(1.0 / denom)
         ci_lo = max(0.0, pooled_rate - Z_975 * se)
         ci_hi = min(1.0, pooled_rate + Z_975 * se)
@@ -236,7 +237,9 @@ def _parse_seed_file(path: Path) -> tuple[int, int] | None:
     return players, seed
 
 
-def _apply_strategy_presence(frames: list[pd.DataFrame]) -> tuple[list[pd.DataFrame], dict[str, list[int]]]:
+def _apply_strategy_presence(
+    frames: list[pd.DataFrame],
+) -> tuple[list[pd.DataFrame], dict[str, list[int]]]:
     """Filter strategies to those present in every seed-specific summary.
 
     Args:
@@ -257,7 +260,9 @@ def _apply_strategy_presence(frames: list[pd.DataFrame]) -> tuple[list[pd.DataFr
 
     missing: dict[str, list[int]] = {}
     for strategy in sorted(union - common):
-        missing_seeds = [seed for seed, sset in zip(seeds, strategy_sets) if strategy not in sset]
+        missing_seeds = [
+            seed for seed, sset in zip(seeds, strategy_sets, strict=False) if strategy not in sset
+        ]
         missing[strategy] = missing_seeds
 
     filtered = [df[df["strategy_id"].isin(common)].copy() for df in frames]
@@ -401,4 +406,3 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
 
 
 __all__ = ["MetaResult", "pool_winrates", "run"]
-

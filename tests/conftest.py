@@ -299,9 +299,7 @@ def pytest_configure():
 
 
 @pytest.fixture
-def tmp_results_dir(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Generator[Path, None, None]:
+def tmp_results_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Generator[Path, None, None]:
     """Provide an isolated working directory for filesystem interactions.
 
     Args:

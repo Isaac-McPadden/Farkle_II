@@ -3,7 +3,8 @@ from __future__ import annotations
 """Property-based tests for scoring helpers."""
 
 import pytest
-from hypothesis import given, strategies as st
+from hypothesis import given
+from hypothesis import strategies as st
 
 from farkle.game.scoring import faces_to_counts_tuple, score_roll_cached
 

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import pandas as pd
 import pytest
+from tests.helpers import metrics_samples as sample_data
 
 from farkle.analysis import metrics
-from tests.helpers import metrics_samples as sample_data
 
 
 @pytest.fixture
@@ -20,7 +19,9 @@ def test_collect_metrics_frames_preserves_stats(sample_config):
 
     assert set(frame["n_players"]) == {2, 3}
 
-    alpha_two = frame[(frame["strategy"] == sample_data.STRATEGIES[0]) & (frame["n_players"] == 2)].iloc[0]
+    alpha_two = frame[
+        (frame["strategy"] == sample_data.STRATEGIES[0]) & (frame["n_players"] == 2)
+    ].iloc[0]
     assert alpha_two["wins"] == 12
     assert alpha_two["games"] == 20
     assert alpha_two["win_rate"] == pytest.approx(0.6)

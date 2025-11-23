@@ -4,11 +4,13 @@ from pathlib import Path
 
 fake = types.ModuleType("tomllib")
 
+
 def load(fh):
     data = fh.read()
     if isinstance(data, bytes):
         data = data.decode("utf-8")
     return {"project": {"version": "0.0.0"}}
+
 
 fake.load = load
 sys.modules["tomllib"] = fake
@@ -32,12 +34,12 @@ result = default_score(
     favor_dice_or_score=True,
     return_discards=True,
 )
-print('default_score', result)
+print("default_score", result)
 
 # direct call (clearing cache first)
 decide_smart_discards.cache_clear()
 res = decide_smart_discards(
-    counts=(1,0,0,0,1,0),
+    counts=(1, 0, 0, 0, 1, 0),
     single_fives=1,
     single_ones=1,
     raw_score=150,
@@ -53,4 +55,4 @@ res = decide_smart_discards(
     require_both=False,
     favor_dice_or_score=True,
 )
-print('decide', res)
+print("decide", res)

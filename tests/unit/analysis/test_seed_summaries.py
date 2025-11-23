@@ -31,9 +31,30 @@ def test_seed_summaries_writes_expected_columns(tmp_path) -> None:
     cfg = _make_cfg(tmp_path)
     metrics = pd.DataFrame(
         [
-            {"strategy": "S1", "n_players": 2, "games": 10, "wins": 6, "mean_n_rounds": 17.0, "mean_farkles": 1.2},
-            {"strategy": "S1", "n_players": 2, "games": 5, "wins": 3, "mean_n_rounds": 18.0, "mean_farkles": 1.0},
-            {"strategy": "S2", "n_players": 2, "games": 15, "wins": 4, "mean_n_rounds": 20.0, "mean_farkles": 1.4},
+            {
+                "strategy": "S1",
+                "n_players": 2,
+                "games": 10,
+                "wins": 6,
+                "mean_n_rounds": 17.0,
+                "mean_farkles": 1.2,
+            },
+            {
+                "strategy": "S1",
+                "n_players": 2,
+                "games": 5,
+                "wins": 3,
+                "mean_n_rounds": 18.0,
+                "mean_farkles": 1.0,
+            },
+            {
+                "strategy": "S2",
+                "n_players": 2,
+                "games": 15,
+                "wins": 4,
+                "mean_n_rounds": 20.0,
+                "mean_farkles": 1.4,
+            },
         ]
     )
     _write_metrics(cfg, metrics)
@@ -123,7 +144,7 @@ def test_seed_summaries_force_rewrites(tmp_path, monkeypatch) -> None:
     monkeypatch.setattr(seed_summaries, "write_parquet_atomic", _record)
     seed_summaries.run(cfg, force=True)
 
-    assert set(p.name for p in calls) == {
+    assert {p.name for p in calls} == {
         "strategy_summary_2p_seed18.parquet",
         "strategy_summary_3p_seed18.parquet",
     }

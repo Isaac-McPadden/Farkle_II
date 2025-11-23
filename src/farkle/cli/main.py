@@ -65,7 +65,13 @@ def build_parser() -> argparse.ArgumentParser:
     # time (benchmark simulation throughput)
     time_parser = sub.add_parser("time", help="Benchmark simulation throughput")
     time_parser.add_argument("--players", type=int, default=5, help="Players per game (default: 5)")
-    time_parser.add_argument("--n-games", dest="n_games", type=int, default=1000, help="Number of games to run (default: 1000)")
+    time_parser.add_argument(
+        "--n-games",
+        dest="n_games",
+        type=int,
+        default=1000,
+        help="Number of games to run (default: 1000)",
+    )
     time_parser.add_argument("--jobs", type=int, default=1, help="Parallel jobs (default: 1)")
     time_parser.add_argument("--seed", type=int, default=42, help="Seed (default: 42)")
 
@@ -81,7 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_sub.add_parser("combine", help="Combine curated data into a superset parquet")
     analyze_sub.add_parser("metrics", help="Compute metrics")
     analyze_sub.add_parser("preprocess", help="Run ingest, curate, combine, and metrics")
-    analyze_sub.add_parser("pipeline", help="Run ingest->curate->combine->metrics->analytics pipeline")
+    analyze_sub.add_parser(
+        "pipeline", help="Run ingest->curate->combine->metrics->analytics pipeline"
+    )
     analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
 
     return parser
@@ -205,7 +213,9 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "seed": args.seed,
             },
         )
-        measure_sim_times(n_games=args.n_games, players=args.players, seed=args.seed, jobs=args.jobs)
+        measure_sim_times(
+            n_games=args.n_games, players=args.players, seed=args.seed, jobs=args.jobs
+        )
     elif args.command == "watch":
         LOGGER.info(
             "Dispatching watch_game",
@@ -239,7 +249,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif args.an_cmd == "pipeline":
             _run_preprocess(cfg)
             analysis_pkg.run_all(cfg)
-        LOGGER.info("Analysis command completed", extra={"stage": "cli", "command": f"analyze:{args.an_cmd}"})
+        LOGGER.info(
+            "Analysis command completed",
+            extra={"stage": "cli", "command": f"analyze:{args.an_cmd}"},
+        )
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")
 

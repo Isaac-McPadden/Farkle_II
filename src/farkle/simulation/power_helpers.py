@@ -59,6 +59,7 @@ def _unpack_power_design(
     }
     return mapped
 
+
 def games_for_power_from_design(
     *,
     n_strategies: int,

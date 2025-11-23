@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Mapping, Sequence
 from pathlib import Path
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd

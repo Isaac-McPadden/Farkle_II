@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import List, Sequence  # noqa: F401
 
 import pytest
-import yaml
 
 try:  # pragma: no cover - exercised when optional dependency missing
     import pyarrow  # type: ignore[unused-import]  # noqa: F401
@@ -76,7 +75,6 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
     sys.modules.setdefault("pyarrow.parquet", parquet_stub)
 
 import farkle.simulation.simulation as sim
-from farkle.cli import main as cli_main
 from farkle.simulation.run_tournament import TournamentConfig
 from farkle.simulation.strategies import ThresholdStrategy
 
@@ -211,5 +209,3 @@ def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: 
 
     expected = {str(s) for s in _tiny_strategy_grid()}
     assert set(wins.keys()).issubset(expected)
-
-

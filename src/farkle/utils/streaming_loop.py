@@ -75,6 +75,7 @@ def writer_thread(
     manifest_extra: Dict[str, Any] | None,
 ):
     """Consume tables from ``pop`` and write them via :func:`run_streaming_shard`."""
+
     def batches():
         """Yield tables until a ``None`` sentinel is received."""
         while True:
