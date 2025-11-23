@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence, get_args, get_origin, get_type_hints
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from farkle.utils.yaml_helpers import expand_dotted_keys
 

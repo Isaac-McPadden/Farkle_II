@@ -10,7 +10,7 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, cast
 
 import numpy as np
 import pandas as pd
@@ -64,12 +64,12 @@ def run(cfg: AppConfig) -> None:
         wins_col="wins",
         games_col="games",
         winrate_col="win_rate",
-        weights_by_k=inputs.weights_by_k,
+        weights_by_k=dict(inputs.weights_by_k) if inputs.weights_by_k is not None else None,
         z_star=inputs.z_star,
     )
 
     winrates, winrates_by_players = _weighted_winrate(df, inputs.weights_by_k)
-    frequentist_tiers = _build_frequentist_tiers(winrates, tier_data["mdd"])
+    frequentist_tiers = _build_frequentist_tiers(winrates, cast(float, tier_data["mdd"]))
     ts_tiers = json.loads(tier_file.read_text())
     report = _build_report(frequentist_tiers, ts_tiers)
     _write_outputs(cfg, report, tier_data)

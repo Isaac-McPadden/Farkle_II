@@ -374,7 +374,9 @@ def _normalize_tiers(tiers: Mapping[str, int] | None) -> dict[str, int] | None:
     return normalized
 
 
-def _tier_agreements(tier_maps: Mapping[str, dict[str, int]]) -> tuple[dict | None, dict | None]:
+def _tier_agreements(
+    tier_maps: Mapping[str, dict[str, int] | None],
+) -> tuple[dict | None, dict | None]:
     """Calculate clustering agreement metrics for overlapping tier maps.
 
     Args:

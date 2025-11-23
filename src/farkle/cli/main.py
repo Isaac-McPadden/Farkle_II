@@ -11,7 +11,7 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from farkle import analysis as analysis_pkg
 from farkle.analysis import combine, curate, ingest, metrics

@@ -31,7 +31,7 @@ try:  # pragma: no cover - optional dependency
     from sklearn.model_selection import GroupKFold
 except ModuleNotFoundError:  # pragma: no cover - handled at runtime
 
-    class HistGradientBoostingRegressor:  # type: ignore[override]
+    class _HistGradientBoostingRegressor:  # type: ignore[override]
         """Fallback regressor that predicts the mean target."""
 
         def __init__(self, random_state: int | None = None):
@@ -56,7 +56,7 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
         zeros = np.zeros(n_features, dtype=float)
         return {"importances_mean": zeros, "importances_std": zeros}
 
-    class GroupKFold:  # type: ignore[override]
+    class _GroupKFold:  # type: ignore[override]
         """Minimal replacement for sklearn's grouped cross-validation splitter."""
 
         def __init__(self, n_splits: int):
@@ -72,6 +72,9 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
                 if train_idx.size == 0 or test_idx.size == 0:
                     continue
                 yield train_idx, test_idx
+
+    HistGradientBoostingRegressor = _HistGradientBoostingRegressor
+    GroupKFold = _GroupKFold
 
     class _FallbackPD:
         """Shim for partial dependence plotting when sklearn is unavailable."""

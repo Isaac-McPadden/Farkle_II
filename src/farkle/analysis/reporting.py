@@ -265,10 +265,11 @@ def _load_tiers(analysis_dir: Path, players: int) -> dict[str, int]:
         """Convert mapping values to integer tiers keyed by strategy string."""
         result: dict[str, int] = {}
         for key, value in mapping.items():
-            try:
-                result[str(key)] = int(value)  # type: ignore[arg-type]
-            except Exception:  # noqa: BLE001
-                continue
+            if isinstance(value, (int, float, str)):
+                try:
+                    result[str(key)] = int(value)
+                except Exception:  # noqa: BLE001
+                    continue
         return result
 
     # Direct mapping {strategy: tier}

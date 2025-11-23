@@ -15,6 +15,7 @@ import importlib.util
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 
 from farkle.config import AppConfig, IOConfig
 from farkle.utils.writer import atomic_path
@@ -32,7 +33,7 @@ __all__ = [
 ]
 
 
-def main(argv: object | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> int:
     """Thin wrapper importing :func:`farkle.pipeline.main` lazily."""
 
     from farkle.analysis.pipeline import main as _main

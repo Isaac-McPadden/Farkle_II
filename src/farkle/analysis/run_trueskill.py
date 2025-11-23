@@ -34,7 +34,7 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import trueskill
-import yaml
+import yaml  # type: ignore[import-untyped]
 from trueskill import Rating
 
 from farkle.config import AppConfig
@@ -953,7 +953,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     }
 
     per_seed_results: dict[int, dict[str, RatingStats]] = {}
-    per_seed_outputs: dict[int, dict[str, RatingStats]] = {}
+    per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
 
     for seed in seeds:
         _seed_everything(seed)
@@ -978,7 +978,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             raise FileNotFoundError(f"Missing pooled ratings for seed {seed}: {pooled_path}")
         per_seed_results[seed] = _load_ratings_parquet(pooled_path)
 
-        seed_outputs: dict[str, RatingStats] = {}
+        seed_outputs: dict[str, Mapping[str, RatingStats]] = {}
         for parquet in sorted(analysis_dir.glob(f"ratings_*_seed{seed}.parquet")):
             stem = parquet.stem
             if stem.startswith("ratings_pooled"):

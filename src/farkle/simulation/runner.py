@@ -367,15 +367,15 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     )
 
     # (A) Summary parquet
-    summary_rows: list[dict[str, float]] = []
+    summary_rows: list[dict[str, float | str]] = []
     for strat, wins in win_totals.items():
         wins = int(wins)
         if wins < 0:
             continue
         total_games_strat = max(n_shuffles, 1)
-        row = {
+        row: dict[str, float | str] = {
             "strategy": str(strat),
-            "wins": wins,
+            "wins": float(wins),
             "win_rate": wins / total_games_strat,
         }
         if metric_sums:
@@ -391,13 +391,13 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
 
     # (B) Expanded metrics parquet
     if cfg.sim.expanded_metrics:
-        metrics_rows: list[dict[str, float]] = []
+        metrics_rows: list[dict[str, float | str]] = []
         for strat, wins in win_totals.items():
             wins = int(wins)
             if wins < 0:
                 continue
             total_games_strat = max(n_shuffles, 1)
-            base = {
+            base: dict[str, float | str] = {
                 "strategy": str(strat),
                 "wins": wins,
                 "total_games_strat": total_games_strat,

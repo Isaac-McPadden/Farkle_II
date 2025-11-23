@@ -388,6 +388,6 @@ def _calibrate_h2h_games_per_sec(
     strats = [parse_strategy(top2[0]), parse_strategy(top2[1])]
     seeds = spawn_seeds(sample_games, seed=seed)
     t0 = time.perf_counter()
-    simulate_many_games_from_seeds(seeds=seeds, strategies=strats, n_jobs=n_jobs)
+    simulate_many_games_from_seeds(seeds=seeds, strategies=strats, n_jobs=n_jobs or 1)
     elapsed = max(1e-9, time.perf_counter() - t0)
     return float(sample_games / elapsed)

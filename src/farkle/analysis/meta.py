@@ -24,7 +24,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Mapping
 
 import pandas as pd
 import pandas.testing as pdt
@@ -194,7 +194,7 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
 
     pooled_rows: list[dict[str, float | int]] = []
     for strategy in strategy_ids:
-        obs = per_strategy_obs.get(strategy)
+        obs = per_strategy_obs.get(strategy, [])
         if not obs:
             continue
         adjusted_weights = [
@@ -305,7 +305,7 @@ def _parquet_matches(path: Path, new_df: pd.DataFrame) -> bool:
         return False
 
 
-def _write_json_atomic(payload: dict[str, float | str], path: Path) -> None:
+def _write_json_atomic(payload: Mapping[str, float | str], path: Path) -> None:
     """Write a JSON file atomically to avoid partial outputs."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(path)) as tmp_path:

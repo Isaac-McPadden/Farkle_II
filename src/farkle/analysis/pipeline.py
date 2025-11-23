@@ -13,7 +13,7 @@ import logging
 from pathlib import Path
 from typing import Callable, Sequence
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from tqdm import tqdm
 
 from farkle import analysis
