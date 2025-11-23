@@ -197,7 +197,7 @@ def _load_frequentist(analysis_dir: Path, players: int) -> MethodData | None:
     if tier_cols:
         tier_series = df.set_index(df["strategy"].astype(str))[tier_cols[0]].dropna().astype(float)
         if not tier_series.empty:
-            tiers = {k: int(v) for k, v in tier_series.items()}
+            tiers = {str(k): int(v) for k, v in tier_series.items()}
 
     per_seed: list[pd.Series] = []
     for seed_path in sorted(analysis_dir.glob("frequentist_scores_seed*.parquet")):
@@ -346,10 +346,13 @@ def _rank_correlations(
 
         a_vals = series_a.loc[common].to_numpy()
         b_vals = series_b.loc[common].to_numpy()
-        corr_s, _ = spearmanr(a_vals, b_vals)
-        corr_k, _ = kendalltau(a_vals, b_vals)
-        spearman[f"{a}_vs_{b}"] = float(corr_s) if np.isfinite(corr_s) else None
-        kendall[f"{a}_vs_{b}"] = float(corr_k) if np.isfinite(corr_k) else None
+        corr_s = spearmanr(a_vals, b_vals)
+        corr_k = kendalltau(a_vals, b_vals)
+        corr_s_value = float(corr_s)
+        corr_k_value = float(corr_k)
+        spearman[f"{a}_vs_{b}"] = corr_s_value if np.isfinite(corr_s_value) else None
+        kendall[f"{a}_vs_{b}"] = corr_k_value if np.isfinite(corr_k_value) else None
+
 
     return (spearman or None, kendall or None, coverage)
 
