@@ -58,7 +58,7 @@ def fast_helpers(monkeypatch):
     ("n_players", "pattern"),
     [
         (1, r"n_players must be ≥2"),
-        (7, r"n_players must divide [\\d,]+"),
+        (8, r"n_players must divide [\d,]+"),
     ],
 )
 def test_run_tournament_invalid_player_counts(n_players: int, pattern: str) -> None:
@@ -74,7 +74,7 @@ def test_init_worker_rejects_bad_player_counts(monkeypatch) -> None:
     cfg = rt.TournamentConfig(n_players=7)
     monkeypatch.setattr(rt, "_STATE", None, raising=False)
 
-    with pytest.raises(ValueError, match=r"n_players must divide [\\d,]+"):
+    with pytest.raises(ValueError, match=r"n_players must divide [\d,]+"):
         rt._init_worker(strats, cfg)
 
 

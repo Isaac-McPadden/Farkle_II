@@ -208,13 +208,13 @@ def test_score_roll_cached(roll, exp_score, exp_used, exp_reroll, exp_sfives, ex
         ),
     ],
 )
-@pytest.mark.xfail(
-    reason=(
-        "Sequence ordering differs under numpy-backed counts; "
-        "see https://github.com/Isaac-McPadden/Farkle_II/issues/204"
-    ),
-    strict=False,
-)
+# @pytest.mark.xfail(
+#     reason=(
+#         "Sequence ordering differs under numpy-backed counts; "
+#         "see https://github.com/Isaac-McPadden/Farkle_II/issues/204"
+#     ),
+#     strict=False,
+# )
 def test_generate_sequences(counts_dict, smart_one, expected):
     counts_key = dict_to_counts_tuple(counts_dict)
     out = [list(seq) for seq in generate_sequences(counts_key, smart_one=smart_one)]

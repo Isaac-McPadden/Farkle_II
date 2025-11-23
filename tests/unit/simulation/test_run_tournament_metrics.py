@@ -20,13 +20,13 @@ from typing import Any
 
 import pytest
 
-pytestmark = pytest.mark.xfail(
-    reason=(
-        "Metric chunk aggregation is currently non-deterministic; "
-        "tracked at https://github.com/Isaac-McPadden/Farkle_II/issues/201"
-    ),
-    strict=False,
-)
+# pytestmark = pytest.mark.xfail(
+#     reason=(
+#         "Metric chunk aggregation is currently non-deterministic; "
+#         "tracked at https://github.com/Isaac-McPadden/Farkle_II/issues/201"
+#     ),
+#     strict=False,
+# )
 
 pytest.importorskip("pyarrow")
 pytest.importorskip("pyarrow.parquet")

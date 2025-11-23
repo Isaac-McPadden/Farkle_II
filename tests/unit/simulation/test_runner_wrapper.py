@@ -8,13 +8,13 @@ from typing import Callable
 import pandas as pd
 import pytest
 
-pytestmark = pytest.mark.xfail(
-    reason=(
-        "Runner output normalization is flaky under randomized seeds; "
-        "see https://github.com/Isaac-McPadden/Farkle_II/issues/201"
-    ),
-    strict=False,
-)
+# pytestmark = pytest.mark.xfail(
+#     reason=(
+#         "Runner output normalization is flaky under randomized seeds; "
+#         "see https://github.com/Isaac-McPadden/Farkle_II/issues/201"
+#     ),
+#     strict=False,
+# )
 
 pytest.importorskip("pyarrow")
 

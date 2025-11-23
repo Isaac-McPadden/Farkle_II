@@ -30,32 +30,19 @@ def test_games_for_power_invalid(params):
         games_for_power(**base)
 
 
-<<<<<<< ours
-<<<<<<< ours
 def test_games_for_power_invalid_method_defaults_to_bh():
     base: dict[str, Any] = {"n_strategies": 2}
     bh_games = games_for_power(**base)
     assert games_for_power(method="foo", **base) == bh_games
 
 
-=======
->>>>>>> theirs
-@pytest.mark.xfail(
-    reason=(
-        "Updated power sizing yields equal counts for bh vs bonferroni; "
-        "see https://github.com/Isaac-McPadden/Farkle_II/issues/203"
-    ),
-    strict=False,
-)
-<<<<<<< ours
-=======
->>>>>>> theirs
-=======
->>>>>>> theirs
 def test_bh_vs_bonferroni():
-    n_bh = games_for_power(n_strategies=3, method="bh")
-    n_bonf = games_for_power(n_strategies=3, method="bonferroni")
-    assert n_bh < n_bonf
+    n_bh_1 = games_for_power(n_strategies=3, method="bh")
+    n_bonf_1 = games_for_power(n_strategies=3, method="bonferroni")
+    n_bh_2 = games_for_power(n_strategies=500, method="bh")
+    n_bonf_2 = games_for_power(n_strategies=500, method="bonferroni")
+    assert n_bh_1 == n_bonf_1
+    assert n_bh_2 < n_bonf_2   
 
 
 def test_games_for_power_monotonicity():
