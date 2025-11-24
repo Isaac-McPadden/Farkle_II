@@ -17,28 +17,14 @@ from typing import Iterable, Mapping
 
 import numpy as np
 import pandas as pd
+import networkx as nx
+from networkx import DiGraph as nx_digraph
 from scipy.stats import kendalltau, spearmanr
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
 from farkle.config import AppConfig
+from farkle.analysis.h2h_analysis import build_significant_graph, derive_sig_ranking
 from farkle.utils.writer import atomic_path
-
-try:  # optional dependency for head-to-head tiers
-    import networkx as nx
-    from networkx import DiGraph as nx_digraph
-except ModuleNotFoundError:  # pragma: no cover - optional import
-    nx = None  # type: ignore[assignment]
-
-try:  # optional dependency: h2h analysis module may require networkx
-    from farkle.analysis.h2h_analysis import build_significant_graph, derive_sig_ranking
-except ModuleNotFoundError:  # pragma: no cover - optional import
-    build_significant_graph = None  # type: ignore[assignment]
-    derive_sig_ranking = None  # type: ignore[assignment]
-
-try:  # optional dependency for clustering agreement
-    from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
-except ModuleNotFoundError:  # pragma: no cover - optional import
-    adjusted_rand_score = None  # type: ignore[assignment]
-    normalized_mutual_info_score = None  # type: ignore[assignment]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -222,13 +208,6 @@ def _load_head2head(analysis_dir: Path) -> MethodData | None:
     Returns:
         ``MethodData`` when ranking information can be derived, otherwise ``None``.
     """
-    if build_significant_graph is None or derive_sig_ranking is None or nx is None:
-        LOGGER.info(
-            "Agreement: skipping head-to-head inputs (networkx unavailable)",
-            extra={"stage": "agreement"},
-        )
-        return None
-
     path = analysis_dir / "bonferroni_decisions.parquet"
     if not path.exists():
         return None
@@ -388,8 +367,6 @@ def _tier_agreements(
     Returns:
         Tuple of (adjusted Rand index map, normalized mutual information map).
     """
-    if adjusted_rand_score is None or normalized_mutual_info_score is None:
-        return (None, None)
     ari: dict[str, float | None] = {}
     nmi: dict[str, float | None] = {}
 
@@ -471,8 +448,6 @@ def _tiers_from_graph(graph: nx_digraph) -> dict[str, int]:
     Returns:
         Mapping of strategy identifiers to tier index, defaulting to empty when unavailable.
     """
-    if nx is None:
-        return {}
     if graph.number_of_nodes() == 0:
         return {}
     condensed = nx.condensation(graph)

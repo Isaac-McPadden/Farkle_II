@@ -17,14 +17,17 @@ import logging
 import re
 import warnings
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.inspection import PartialDependenceDisplay
+from sklearn.inspection import permutation_importance
+from sklearn.model_selection import GroupKFold
 
 from farkle.simulation.strategies import FavorDiceOrScore, parse_strategy_for_df
 from farkle.utils.artifacts import write_parquet_atomic
@@ -34,105 +37,6 @@ from farkle.utils.writer import atomic_path
 class PermutationImportanceResult(Protocol):
     importances_mean: np.ndarray
     importances_std: np.ndarray
-
-
-try:  # pragma: no cover - optional dependency
-    from sklearn.ensemble import HistGradientBoostingRegressor
-    from sklearn.inspection import PartialDependenceDisplay
-    from sklearn.inspection import permutation_importance as _sklearn_permutation_importance
-    from sklearn.model_selection import GroupKFold
-    from sklearn.utils import Bunch
-except ModuleNotFoundError:  # pragma: no cover - handled at runtime
-
-    class _HistGradientBoostingRegressor:  # type: ignore[override]
-        """Fallback regressor that predicts the mean target."""
-
-        def __init__(self, random_state: int | None = None):
-            self.random_state = random_state
-            self._mean: float | None = None
-
-        def fit(self, _X, y):  # noqa: D401 - sklearn compatibility signature
-            """Fit by recording the mean of ``y`` for later predictions."""
-            self._mean = float(np.mean(y)) if len(y) else 0.0
-            return self
-
-        def predict(self, X):
-            """Return constant predictions based on the fitted mean."""
-            if self._mean is None:
-                return np.zeros(len(X), dtype=float)
-            return np.full(len(X), self._mean, dtype=float)
-
-    class _Bunch(dict[str, Any]):
-        """Lightweight substitute for :class:`sklearn.utils.Bunch`."""
-
-        importances_mean: np.ndarray
-        importances_std: np.ndarray
-
-        def __init__(self, **kwargs: Any) -> None:
-            super().__init__(**kwargs)
-            self.__dict__ = self
-
-    Bunch = _Bunch
-
-    def permutation_importance(  # type: ignore[override]
-        estimator: Any,
-        X,
-        y,
-        *,
-        scoring: Any = None,
-        n_repeats: int = 5,
-        n_jobs: int | None = None,
-        random_state: Any = None,
-        sample_weight: Any = None,
-        max_samples: float = 1,
-    ) -> Bunch | dict[str, Bunch]:  # pyright: ignore[reportInvalidTypeForm]
-        """Fallback permutation importance returning zeroed importances."""
-        _ = estimator, X, y, scoring, n_repeats, n_jobs, random_state, sample_weight, max_samples
-        n_features = X.shape[1]
-        zeros = np.zeros(n_features, dtype=float)
-        return Bunch(importances_mean=zeros, importances_std=zeros)
-
-    class _GroupKFold:  # type: ignore[override]
-        """Minimal replacement for sklearn's grouped cross-validation splitter."""
-
-        def __init__(self, n_splits: int):
-            self.n_splits = max(2, int(n_splits))
-
-        def split(self, X, y, groups):  # noqa: D401 - sklearn compatibility signature
-            """Yield train/test indices while grouping by the provided labels."""
-            _ = X, y
-            unique_groups = list(dict.fromkeys(groups))
-            for grp in unique_groups:
-                test_idx = np.where(groups == grp)[0]
-                train_idx = np.where(groups != grp)[0]
-                if train_idx.size == 0 or test_idx.size == 0:
-                    continue
-                yield train_idx, test_idx
-
-    HistGradientBoostingRegressor = _HistGradientBoostingRegressor
-    GroupKFold = _GroupKFold
-
-    class _FallbackPD:
-        """Shim for partial dependence plotting when sklearn is unavailable."""
-
-        @staticmethod
-        def from_estimator(model, X, features):
-            """Provide an object exposing an empty matplotlib-like figure."""
-            _ = model, X, features
-
-            class _Fig:
-                """Placeholder figure that writes an empty file to ``path``."""
-
-                def savefig(self, path, format="png") -> None:  # noqa: A003 - match matplotlib API
-                    """Create an empty placeholder artifact at ``path``."""
-                    _ = format
-                    Path(path).write_bytes(b"")
-
-            return SimpleNamespace(figure_=_Fig())
-
-    PartialDependenceDisplay = _FallbackPD  # type: ignore[assignment]
-else:
-    permutation_importance = _sklearn_permutation_importance
 
 # ---------------------------------------------------------------------------
 # Constants for file and directory locations used in this module
