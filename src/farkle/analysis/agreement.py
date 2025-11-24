@@ -23,6 +23,7 @@ from farkle.config import AppConfig
 from farkle.utils.writer import atomic_path
 
 try:  # optional dependency for head-to-head tiers
+    import networkx as nx
     from networkx import DiGraph as nx_digraph
 except ModuleNotFoundError:  # pragma: no cover - optional import
     nx = None  # type: ignore[assignment]
