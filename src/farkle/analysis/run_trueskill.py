@@ -19,6 +19,7 @@ Outputs
 from __future__ import annotations
 
 import concurrent.futures as cf
+import importlib
 import json
 import logging
 import math
@@ -857,9 +858,9 @@ def _seed_everything(seed: int) -> None:
     """Seed Python and NumPy RNGs (best-effort)."""
 
     random.seed(seed)
-    np.random.seed(seed)
+    _ = np.random.default_rng(seed)
     try:  # optional dependency; ignore if unavailable
-        import torch
+        torch = importlib.import_module("torch")
 
         torch.manual_seed(seed)
         if torch.cuda.is_available():  # pragma: no cover - CUDA not in CI

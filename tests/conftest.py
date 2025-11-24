@@ -284,7 +284,7 @@ def _seed_random_generators(monkeypatch: pytest.MonkeyPatch) -> Generator[None, 
     """
 
     random.seed(1337)
-    np.random.seed(1337)
+    _ = np.random.default_rng(1337)
     monkeypatch.setenv("PYTHONHASHSEED", "0")
     yield
 

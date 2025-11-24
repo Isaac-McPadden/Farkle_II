@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import pickle
 from pathlib import Path
-from typing import Callable
+from typing import Callable, cast
 
 import pandas as pd
 import pytest
@@ -67,7 +67,8 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, sim_artifacts):
     assert isinstance(check_absolute, (str, os.PathLike))
     assert Path(check_absolute).is_absolute()
     assert calls["checkpoint_path"] == tmp_path / "out" / "2_players" / "2p_checkpoint.pkl"
-    expected_games = calls["config"].games_per_shuffle
+    config = cast(runner.TournamentConfig, calls["config"])
+    expected_games = config.games_per_shuffle
     assert total_games == expected_games
 
     summary_path = tmp_path / "out" / "2_players" / "2p_checkpoint.parquet"
@@ -109,7 +110,8 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
     payload = {"win_totals": {"alpha": "2", 9: 3}}
     calls = _patch_tournament(monkeypatch, payload)
 
-    runner.TournamentConfig(n_players=3).games_per_shuffle
+    tournament = runner.TournamentConfig(n_players=3)
+    assert tournament.games_per_shuffle > 0
     cfg = AppConfig(
         io=IOConfig(results_dir=tmp_path / "out", append_seed=False),
         sim=SimConfig(
@@ -127,5 +129,6 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
     counters = dict(zip(summary_df["strategy"], summary_df["wins"], strict=False))
     assert counters == {"alpha": 2, "9": 3}
 
-    expected_total = calls["config"].games_per_shuffle * cfg.sim.num_shuffles
+    config = cast(runner.TournamentConfig, calls["config"])
+    expected_total = config.games_per_shuffle * cfg.sim.num_shuffles
     assert total_games == expected_total

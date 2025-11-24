@@ -10,10 +10,15 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Mapping, cast
+from typing import Hashable, Mapping, cast
 
 import numpy as np
 import pandas as pd
+
+try:  # pragma: no cover - pandas typing is optional at runtime
+    from pandas._typing import Scalar
+except ImportError:  # pragma: no cover - fallback for older pandas
+    Scalar = Hashable  # type: ignore[assignment]
 
 from farkle.analysis.isolated_metrics import build_isolated_metrics
 from farkle.config import AppConfig
@@ -159,7 +164,7 @@ def _weighted_winrate(
 
 def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
     """Assign strategies to tiers using minimum detectable difference."""
-    tiers: dict[str, int] = {}
+    tiers: dict[Hashable, int] = {}
     current_tier = 1
     threshold = None
     for strategy, rate in winrates.items():
@@ -172,7 +177,7 @@ def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
     return pd.DataFrame(
         {
             "strategy": list(tiers.keys()),
-            "win_rate": [winrates[s] for s in tiers],
+            "win_rate": [winrates[cast(Scalar, s)] for s in tiers],
             "mdd_tier": list(tiers.values()),
         }
     )

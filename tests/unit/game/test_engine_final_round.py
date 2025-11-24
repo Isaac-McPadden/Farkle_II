@@ -3,7 +3,7 @@ from __future__ import annotations
 """Tests covering final-round behavior for the game engine."""
 
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Sequence, cast
 
 import numpy as np
 import pytest
@@ -74,17 +74,21 @@ def test_final_round_respects_score_to_beat_and_reruns():
     p1 = FarklePlayer(
         name="opener",
         strategy=_QuietStrategy(),
-        rng=ScriptedRNG([[5, 5, 5, 2, 3, 4]]),
+        rng=cast(np.random.Generator, ScriptedRNG([[5, 5, 5, 2, 3, 4]])),
     )
 
     # Player 2 farkles immediately during the final round.
-    p2 = FarklePlayer(name="bust", strategy=_QuietStrategy(), rng=ScriptedRNG([[2, 3, 4, 6, 2, 4]]))
+    p2 = FarklePlayer(
+        name="bust",
+        strategy=_QuietStrategy(),
+        rng=cast(np.random.Generator, ScriptedRNG([[2, 3, 4, 6, 2, 4]])),
+    )
 
     # Player 3 leaps past the score_to_beat with a single roll and should bank.
     p3 = FarklePlayer(
         name="closer",
         strategy=_QuietStrategy(),
-        rng=ScriptedRNG([[1, 1, 1, 2, 2, 2]]),
+        rng=cast(np.random.Generator, ScriptedRNG([[1, 1, 1, 2, 2, 2]])),
     )
 
     game = FarkleGame([p1, p2, p3], target_score=500)

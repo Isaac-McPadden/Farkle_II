@@ -10,6 +10,7 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+from typing import cast
 
 import networkx as nx
 import numpy as np
@@ -97,8 +98,9 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
     running = 0.0
     adjusted: list[float] = []
     for rank, row in enumerate(ordered.itertuples(index=False), start=1):
-        mult = m - rank + 1
-        adj = min(row.pval * mult, 1.0)
+        mult = float(m - rank + 1)
+        pval = float(cast(float, row.pval))
+        adj = min(pval * mult, 1.0)
         running = max(running, adj)
         adjusted.append(running)
     ordered["adj_p"] = adjusted
@@ -128,7 +130,9 @@ def build_significant_graph(df_adj: pd.DataFrame) -> nx.DiGraph:
             raise ValueError(f"Unknown direction {row.dir!r}")
         if graph.has_edge(source, target):
             raise RuntimeError(f"Duplicate edge detected: {source}->{target}")
-        graph.add_edge(source, target, pval=float(row.pval), adj_p=float(row.adj_p))
+        pval = float(cast(float, row.pval))
+        adj_p = float(cast(float, row.adj_p))
+        graph.add_edge(source, target, pval=pval, adj_p=adj_p)
     return graph
 
 

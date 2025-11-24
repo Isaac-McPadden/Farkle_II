@@ -19,7 +19,7 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, MutableMapping
+from typing import Iterable, Mapping, MutableMapping, SupportsFloat, cast
 
 import matplotlib
 
@@ -29,6 +29,8 @@ matplotlib.use("Agg", force=True)
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+from matplotlib.axes import Axes
+from matplotlib.figure import Figure
 
 from farkle.config import AnalysisConfig, AppConfig
 from farkle.utils.writer import atomic_path
@@ -68,10 +70,15 @@ class _ReportArtifacts:
 def _analysis_dir(cfg: AnalysisConfig | AppConfig) -> Path:
     """Return the analysis directory for the provided config."""
 
-    if hasattr(cfg, "analysis_dir"):
-        return Path(cfg.analysis_dir)
-    if hasattr(cfg, "io") and hasattr(cfg.io, "results_dir"):
-        return Path(cfg.io.results_dir) / "analysis"
+    analysis_dir = getattr(cfg, "analysis_dir", None)
+    if analysis_dir is not None:
+        return Path(str(analysis_dir))
+
+    io_cfg = getattr(cfg, "io", None)
+    results_dir = getattr(io_cfg, "results_dir", None) if io_cfg is not None else None
+    if results_dir is not None:
+        return Path(str(results_dir)) / "analysis"
+
     raise AttributeError("Configuration object does not expose an analysis_dir")
 
 
@@ -80,10 +87,16 @@ def _sim_player_counts(cfg: AnalysisConfig | AppConfig, analysis_dir: Path) -> l
 
     players: set[int] = set()
     # ``cfg`` may be an ``AppConfig`` or a bare ``AnalysisConfig``.
-    if hasattr(cfg, "analysis") and hasattr(cfg.analysis, "n_players_list"):
-        players.update(int(p) for p in cfg.analysis.n_players_list or [])
-    if hasattr(cfg, "sim") and hasattr(cfg.sim, "n_players_list"):
-        players.update(int(p) for p in cfg.sim.n_players_list or [])
+    analysis_cfg = getattr(cfg, "analysis", None)
+    sim_cfg = getattr(cfg, "sim", None)
+
+    if analysis_cfg is not None:
+        analysis_players = getattr(analysis_cfg, "n_players_list", None) or []
+        players.update(int(p) for p in analysis_players)
+
+    if sim_cfg is not None:
+        sim_players = getattr(sim_cfg, "n_players_list", None) or []
+        players.update(int(p) for p in sim_players)
 
     ratings_path = analysis_dir / "ratings_pooled.parquet"
     if ratings_path.exists():
@@ -115,6 +128,12 @@ def _output_is_fresh(output: Path, inputs: Iterable[Path], *, force: bool) -> bo
         if path.stat().st_mtime > out_mtime:
             return False
     return True
+
+
+def _as_float(value: object) -> float:
+    """Convert pandas scalars and numpy numbers to builtin ``float`` for typing."""
+
+    return float(cast(SupportsFloat, value))
 
 
 def _load_ratings(analysis_dir: Path, players: int) -> pd.DataFrame:
@@ -407,8 +426,8 @@ def _plot_output_path(cfg: AnalysisConfig | AppConfig, players: int, name: str) 
 
 
 def _prepare_axis(
-    fig: plt.Figure, count: int, *, base_height: float = 3.5, row_scale: float = 0.35
-) -> plt.Axes:
+    fig: Figure, count: int, *, base_height: float = 3.5, row_scale: float = 0.35
+) -> Axes:
     """Set figure size based on row count and return a single subplot."""
     height = max(base_height, row_scale * max(1, count) + 1.5)
     fig.set_size_inches(8.5, height)
@@ -459,7 +478,7 @@ def plot_ladder_for_players(
     return output
 
 
-def _determine_heatmap_order(artifacts: _ReportArtifacts, players: int) -> list[str]:
+def _determine_heatmap_order(artifacts: _ReportArtifacts, _players: int) -> list[str]:
     """Choose strategy ordering for heatmap plotting preferences."""
     if not artifacts.tiers and artifacts.h2h_ranking.empty:
         return artifacts.ratings.head(LADDER_TOP_N)["strategy"].tolist()
@@ -542,11 +561,13 @@ def plot_h2h_heatmap_for_players(
             and row.a in matrix.columns
         ):
             try:
-                matrix.loc[row.b, row.a] = float(row.wins_b) / float(row.games)
+                wins_b = _as_float(row.wins_b)
+                games = _as_float(row.games)
+                matrix.loc[row.b, row.a] = wins_b / games
             except ZeroDivisionError:
                 matrix.loc[row.b, row.a] = np.nan
         elif hasattr(row, "win_rate") and row.b in matrix.index and row.a in matrix.columns:
-            matrix.loc[row.b, row.a] = 1.0 - float(row.win_rate)
+            matrix.loc[row.b, row.a] = 1.0 - _as_float(row.win_rate)
 
     fig = plt.figure()
     ax = fig.add_subplot(1, 1, 1)
@@ -697,8 +718,10 @@ def _top_strategy_bullets(ratings: pd.DataFrame, meta_summary: pd.DataFrame) -> 
     items: list[str] = []
     top_ratings = ratings.head(3)
     for row in top_ratings.itertuples(index=False):
-        spread = 2.0 * float(row.sigma)
-        items.append(f"{row.strategy}: μ={row.mu:.2f} ± {spread:.2f}")
+        sigma = _as_float(row.sigma)
+        mu_value = _as_float(row.mu)
+        spread = 2.0 * sigma
+        items.append(f"{row.strategy}: μ={mu_value:.2f} ± {spread:.2f}")
     if not meta_summary.empty:
         top_meta = meta_summary.head(3)
         meta_items = [
@@ -795,9 +818,11 @@ def _build_report_body(
 
     ladder_rows = []
     for row in ratings.head(5).itertuples(index=False):
-        ci_lo = row.mu - 2 * row.sigma
-        ci_hi = row.mu + 2 * row.sigma
-        ladder_rows.append(f"| {row.strategy} | {row.mu:.2f} | [{ci_lo:.2f}, {ci_hi:.2f}] |")
+        mu_value = _as_float(row.mu)
+        sigma = _as_float(row.sigma)
+        ci_lo = mu_value - 2 * sigma
+        ci_hi = mu_value + 2 * sigma
+        ladder_rows.append(f"| {row.strategy} | {mu_value:.2f} | [{ci_lo:.2f}, {ci_hi:.2f}] |")
 
     ladder_table = "\n".join(["| Strategy | μ | μ ± 2σ |", "| --- | --- | --- |"] + ladder_rows)
 

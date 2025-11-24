@@ -36,7 +36,7 @@ def _unique_players(metrics_path: Path, hints: Iterable[int]) -> list[int]:
     for column in ("n_players", "players"):
         try:
             table = pq.read_table(metrics_path, columns=[column])
-        except (pa.lib.ArrowInvalid, KeyError, FileNotFoundError):
+        except (pa.ArrowInvalid, KeyError, FileNotFoundError):
             continue
         except Exception:  # noqa: BLE001 - best effort read
             continue

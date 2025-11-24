@@ -334,7 +334,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
 
     for players, entries in sorted(files_by_players.items()):
         frames: list[pd.DataFrame] = []
-        for seed, path in sorted(entries):
+        for _seed, path in sorted(entries):
             df = pd.read_parquet(path)
             if df.empty:
                 continue

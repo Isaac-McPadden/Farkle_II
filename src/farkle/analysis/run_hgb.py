@@ -18,6 +18,7 @@ import re
 import warnings
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any, Protocol, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,10 +26,22 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from farkle.simulation.strategies import FavorDiceOrScore, parse_strategy_for_df
+from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.writer import atomic_path
+
+
+class PermutationImportanceResult(Protocol):
+    importances_mean: np.ndarray
+    importances_std: np.ndarray
+
+
 try:  # pragma: no cover - optional dependency
     from sklearn.ensemble import HistGradientBoostingRegressor
-    from sklearn.inspection import PartialDependenceDisplay, permutation_importance
+    from sklearn.inspection import PartialDependenceDisplay
+    from sklearn.inspection import permutation_importance as _sklearn_permutation_importance
     from sklearn.model_selection import GroupKFold
+    from sklearn.utils import Bunch
 except ModuleNotFoundError:  # pragma: no cover - handled at runtime
 
     class _HistGradientBoostingRegressor:  # type: ignore[override]
@@ -49,12 +62,35 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
                 return np.zeros(len(X), dtype=float)
             return np.full(len(X), self._mean, dtype=float)
 
-    def permutation_importance(model, X, y, n_repeats=10, random_state=None):  # type: ignore[override]
+    class _Bunch(dict[str, Any]):
+        """Lightweight substitute for :class:`sklearn.utils.Bunch`."""
+
+        importances_mean: np.ndarray
+        importances_std: np.ndarray
+
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__(**kwargs)
+            self.__dict__ = self
+
+    Bunch = _Bunch
+
+    def permutation_importance(  # type: ignore[override]
+        estimator: Any,
+        X,
+        y,
+        *,
+        scoring: Any = None,
+        n_repeats: int = 5,
+        n_jobs: int | None = None,
+        random_state: Any = None,
+        sample_weight: Any = None,
+        max_samples: float = 1,
+    ) -> Bunch | dict[str, Bunch]:  # pyright: ignore[reportInvalidTypeForm]
         """Fallback permutation importance returning zeroed importances."""
-        _ = model, X, y, n_repeats, random_state
+        _ = estimator, X, y, scoring, n_repeats, n_jobs, random_state, sample_weight, max_samples
         n_features = X.shape[1]
         zeros = np.zeros(n_features, dtype=float)
-        return {"importances_mean": zeros, "importances_std": zeros}
+        return Bunch(importances_mean=zeros, importances_std=zeros)
 
     class _GroupKFold:  # type: ignore[override]
         """Minimal replacement for sklearn's grouped cross-validation splitter."""
@@ -95,10 +131,8 @@ except ModuleNotFoundError:  # pragma: no cover - handled at runtime
             return SimpleNamespace(figure_=_Fig())
 
     PartialDependenceDisplay = _FallbackPD  # type: ignore[assignment]
-
-from farkle.simulation.strategies import FavorDiceOrScore, parse_strategy_for_df
-from farkle.utils.artifacts import write_parquet_atomic
-from farkle.utils.writer import atomic_path
+else:
+    permutation_importance = _sklearn_permutation_importance
 
 # ---------------------------------------------------------------------------
 # Constants for file and directory locations used in this module
@@ -170,7 +204,8 @@ def _parse_strategy_features(strategies: pd.Series) -> pd.DataFrame:
     for name, dtype in FEATURE_SPECS:
         if name not in features.columns:
             features[name] = 0.0
-        features[name] = features[name].astype(dtype)
+        np_dtype = np.dtype(dtype)
+        features[name] = features[name].astype(np_dtype)
     return features[[name for name, _dtype in FEATURE_SPECS]]
 
 
@@ -437,29 +472,40 @@ def run_hgb(
         model = HistGradientBoostingRegressor(random_state=seed)
         model.fit(features, target)
 
-        perm = permutation_importance(model, features, target, n_repeats=10, random_state=seed)
-        if len(perm["importances_mean"]) != len(features.columns):
+        perm_raw = permutation_importance(
+            model,
+            features,
+            target,
+            n_repeats=10,
+            random_state=seed,
+        )
+        perm = cast(PermutationImportanceResult, perm_raw)
+
+        importances_mean = perm.importances_mean
+        importances_std = (
+            perm.importances_std
+        )  # sklearn always provides this, and so does our fallback
+
+        if len(importances_mean) != len(features.columns):
             msg = (
                 "Mismatch between number of features and permutation importances: "
-                f"expected {len(features.columns)}, got {len(perm['importances_mean'])}"
+                f"expected {len(features.columns)}, got {len(importances_mean)}"
             )
             raise ValueError(msg)
 
         importance_summary[f"{players}p"] = {
-            col: float(val)
-            for col, val in zip(feature_cols, perm["importances_mean"], strict=False)
+            col: float(val) for col, val in zip(feature_cols, importances_mean, strict=False)
         }
 
         importance_df = pd.DataFrame(
             {
                 "feature": feature_cols,
-                "importance_mean": perm["importances_mean"],
-                "importance_std": perm.get(
-                    "importances_std", np.zeros_like(perm["importances_mean"])
-                ),
+                "importance_mean": importances_mean,
+                "importance_std": importances_std,
                 "players": players,
             }
         )
+
         _write_importances(importance_path, importance_df)
         LOGGER.info(
             "Permutation importances written",

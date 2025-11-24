@@ -11,7 +11,7 @@ import functools
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Mapping, Sequence
+from typing import Iterator, Mapping, Sequence, cast
 
 import numpy as np
 import pandas as pd
@@ -295,11 +295,12 @@ def _summarize(
     warnings: list[str] = []
     if not frame.empty:
         expected_per_k = strat_counts.max(axis=0)
-        for k, expected in expected_per_k.items():
-            if expected <= 0:
-                continue
-            for seed in seeds:
-                actual = int(strat_counts.loc[seed, k])
+        for seed in seeds:
+            seed_counts = cast(pd.Series, strat_counts.loc[seed])
+            for k, expected in expected_per_k.items():
+                if expected <= 0:
+                    continue
+                actual = int(seed_counts.at[k])
                 if actual != expected:
                     warnings.append(
                         f"Strategy count mismatch for seed {seed}, k={k}: {actual} != {expected}"
@@ -388,7 +389,12 @@ def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: i
         df["strategy"] = []
 
     df["wins"] = df["wins"].fillna(0).astype(float)
-    correction = df.get("sum_winner_hit_max_rounds", 0).fillna(0.0)
+    default_correction = pd.Series(0.0, index=df.index)
+    if "sum_winner_hit_max_rounds" in df.columns:
+        correction_source: pd.Series = df["sum_winner_hit_max_rounds"]
+    else:
+        correction_source = default_correction
+    correction = correction_source.fillna(0.0)
     df["false_wins_handled"] = correction
     df["_hit_flag"] = correction
     df["wins"] = df["wins"] - correction

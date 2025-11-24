@@ -23,7 +23,7 @@ from farkle.config import AppConfig
 from farkle.utils.writer import atomic_path
 
 try:  # optional dependency for head-to-head tiers
-    import networkx as nx
+    from networkx import DiGraph as nx_digraph
 except ModuleNotFoundError:  # pragma: no cover - optional import
     nx = None  # type: ignore[assignment]
 
@@ -346,13 +346,12 @@ def _rank_correlations(
 
         a_vals = series_a.loc[common].to_numpy()
         b_vals = series_b.loc[common].to_numpy()
-        corr_s = spearmanr(a_vals, b_vals)
-        corr_k = kendalltau(a_vals, b_vals)
+        corr_s = list(spearmanr(a_vals, b_vals))[0]
+        corr_k = list(kendalltau(a_vals, b_vals))[0]
         corr_s_value = float(corr_s)
         corr_k_value = float(corr_k)
         spearman[f"{a}_vs_{b}"] = corr_s_value if np.isfinite(corr_s_value) else None
         kendall[f"{a}_vs_{b}"] = corr_k_value if np.isfinite(corr_k_value) else None
-
 
     return (spearman or None, kendall or None, coverage)
 
@@ -462,7 +461,7 @@ def _summarize_seed_stability(per_seed: list[pd.Series]) -> dict[str, object] | 
     return summary
 
 
-def _tiers_from_graph(graph: nx.DiGraph) -> dict[str, int]:
+def _tiers_from_graph(graph: nx_digraph) -> dict[str, int]:
     """Derive tier labels from a condensed graph of significant results.
 
     Args:

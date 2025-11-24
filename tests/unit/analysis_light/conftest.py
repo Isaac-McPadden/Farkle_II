@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, SupportsFloat, cast
 
 import numpy as np
 import pandas as pd
@@ -52,11 +52,11 @@ class GoldenDataset:
                     "sum_winning_score": float(scores.sum()),
                     "sq_sum_winning_score": float((scores**2).sum()),
                     "mean_winning_score": float(scores.mean()),
-                    "var_winning_score": float(scores.var(ddof=0)),
+                    "var_winning_score": float(cast(SupportsFloat, scores.var(ddof=0))),
                     "sum_n_rounds": float(rounds.sum()),
                     "sq_sum_n_rounds": float((rounds**2).sum()),
                     "mean_n_rounds": float(rounds.mean()),
-                    "var_n_rounds": float(rounds.var(ddof=0)),
+                    "var_n_rounds": float(cast(SupportsFloat, rounds.var(ddof=0))),
                     "sum_winner_hit_max_rounds": 0.0,
                 }
             )
@@ -130,8 +130,8 @@ def patched_strategy_grid(monkeypatch: pytest.MonkeyPatch) -> Sequence[object]:
 
 @pytest.fixture
 def analysis_config(tmp_results_dir: Path) -> Callable[..., AppConfig]:
-    def _factory(**overrides: object) -> AppConfig:
-        sim_cfg = overrides.pop("sim", None)
+    def _factory(**overrides: Any) -> AppConfig:
+        sim_cfg = cast(SimConfig | None, overrides.pop("sim", None))
         if sim_cfg is None:
             sim_cfg = SimConfig(n_players_list=[3], expanded_metrics=True)
         io_cfg = IOConfig(results_dir=tmp_results_dir, append_seed=False)
