@@ -19,12 +19,10 @@ Outputs
 from __future__ import annotations
 
 import concurrent.futures as cf
-import importlib
 import json
 import logging
 import math
 import os
-import random
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -40,6 +38,7 @@ from trueskill import Rating
 
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.random import seed_everything
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.stats import build_tiers
 from farkle.utils.writer import atomic_path
@@ -854,21 +853,6 @@ def run_trueskill(
     )
 
 
-def _seed_everything(seed: int) -> None:
-    """Seed Python and NumPy RNGs (best-effort)."""
-
-    random.seed(seed)
-    _ = np.random.default_rng(seed)
-    try:  # optional dependency; ignore if unavailable
-        torch = importlib.import_module("torch")
-
-        torch.manual_seed(seed)
-        if torch.cuda.is_available():  # pragma: no cover - CUDA not in CI
-            torch.cuda.manual_seed_all(seed)
-    except Exception:  # pragma: no cover - torch optional / CUDA absence
-        pass
-
-
 def _sorted_ratings(ratings: Mapping[str, RatingStats]) -> Mapping[str, RatingStats]:
     """Return ratings ordered by strategy for stable materialisation."""
 
@@ -957,7 +941,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
 
     for seed in seeds:
-        _seed_everything(seed)
+        seed_everything(seed)
         LOGGER.info(
             "TrueSkill seed run start",
             extra={
