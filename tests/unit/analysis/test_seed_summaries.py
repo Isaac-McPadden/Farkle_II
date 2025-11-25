@@ -148,3 +148,24 @@ def test_seed_summaries_force_rewrites(tmp_path, monkeypatch) -> None:
         "strategy_summary_2p_seed18.parquet",
         "strategy_summary_3p_seed18.parquet",
     }
+
+
+def test_seed_summaries_syncs_to_meta_dir(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    cfg.io.meta_analysis_dir = Path("shared_meta")
+
+    metrics = pd.DataFrame(
+        [
+            {"strategy": "S1", "n_players": 2, "games": 10, "wins": 5},
+        ]
+    )
+    _write_metrics(cfg, metrics)
+
+    seed_summaries.run(cfg)
+
+    meta_path = cfg.meta_analysis_dir / "strategy_summary_2p_seed18.parquet"
+    assert meta_path.exists()
+
+    summary = pd.read_parquet(meta_path)
+    assert summary["seed"].unique().tolist() == [18]
+    assert summary["players"].unique().tolist() == [2]

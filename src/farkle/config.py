@@ -28,6 +28,7 @@ class IOConfig:
     # Keep this as a plain string in YAML to avoid Path(dict) mistakes.
     append_seed: bool = True
     analysis_subdir: str = "analysis"
+    meta_analysis_dir: Path | None = None
 
 
 @dataclass
@@ -99,6 +100,10 @@ class AnalysisConfig:
     results_glob: str = "*_players"
     meta_random_if_I2_gt: float = 25.0
     """Switch to random-effects pooling once I^2 crosses this threshold."""
+    meta_max_other_seeds: int | None = None
+    """Optional cap on comparison seeds (excluding the current sim.seed)."""
+    meta_comparison_seed: int | None = None
+    """Optional fixed comparison seed when limiting meta analysis partners."""
     head2head_target_hours: float = 8.0
     """Target runtime (in hours) for head-to-head autotuning; <=0 disables the feature."""
 
@@ -212,6 +217,19 @@ class AppConfig:
     def analysis_dir(self) -> Path:
         """Directory containing derived analysis artifacts."""
         return self.io.results_dir / self.io.analysis_subdir
+
+    @property
+    def meta_analysis_dir(self) -> Path:
+        """Directory containing per-seed summaries pooled across runs."""
+
+        configured = self.io.meta_analysis_dir
+        if configured is None:
+            return self.analysis_dir
+        meta_path = Path(configured)
+        if meta_path.is_absolute():
+            return meta_path
+        # Anchor relative paths to the parent of the seed-suffixed results_dir
+        return self.io.results_dir.parent / meta_path
 
     @property
     def data_dir(self) -> Path:

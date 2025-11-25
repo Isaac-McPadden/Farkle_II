@@ -83,19 +83,20 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                         "path": str(output_path),
                     },
                 )
-                continue
-            table = pa.Table.from_pandas(summary, preserve_index=False)
-            write_parquet_atomic(table, output_path)
-            LOGGER.info(
-                "Seed summary written",
-                extra={
-                    "stage": "seed_summaries",
-                    "players": players,
-                    "seed": seed,
-                    "rows": len(summary),
-                    "path": str(output_path),
-                },
-            )
+            else:
+                _write_summary(summary, output_path)
+                LOGGER.info(
+                    "Seed summary written",
+                    extra={
+                        "stage": "seed_summaries",
+                        "players": players,
+                        "seed": seed,
+                        "rows": len(summary),
+                        "path": str(output_path),
+                    },
+                )
+
+            _sync_meta_summary(cfg, summary, output_path)
 
 
 def _load_metrics_frame(cfg: AppConfig) -> tuple[pd.DataFrame, Path]:
@@ -224,6 +225,35 @@ def _existing_summary_matches(path: Path, new_df: pd.DataFrame) -> bool:
         return True
     except AssertionError:
         return False
+
+
+def _write_summary(df: pd.DataFrame, path: Path) -> None:
+    """Write a summary frame to parquet using atomic semantics."""
+
+    table = pa.Table.from_pandas(df, preserve_index=False)
+    write_parquet_atomic(table, path)
+
+
+def _sync_meta_summary(cfg: AppConfig, summary: pd.DataFrame, analysis_path: Path) -> None:
+    """Copy the latest summary into the shared meta directory when configured."""
+
+    meta_dir = cfg.meta_analysis_dir
+    meta_path = meta_dir / analysis_path.name
+    if meta_path == analysis_path:
+        return
+    if _existing_summary_matches(meta_path, summary):
+        return
+
+    _write_summary(summary, meta_path)
+    LOGGER.info(
+        "Seed summary synced to meta directory",
+        extra={
+            "stage": "seed_summaries",
+            "players": summary["players"].iloc[0] if not summary.empty else None,
+            "seed": summary["seed"].iloc[0] if not summary.empty else None,
+            "path": str(meta_path),
+        },
+    )
 
 
 __all__ = ["run"]

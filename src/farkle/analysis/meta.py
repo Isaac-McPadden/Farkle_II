@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -312,6 +313,64 @@ def _write_json_atomic(payload: Mapping[str, float | str], path: Path) -> None:
         Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def _collect_seed_summaries(cfg: AppConfig) -> dict[int, dict[int, Path]]:
+    """Collect per-seed summary files keyed by player count and seed."""
+
+    search_dirs = [cfg.meta_analysis_dir]
+    if cfg.analysis_dir != cfg.meta_analysis_dir:
+        search_dirs.append(cfg.analysis_dir)
+
+    files_by_players: dict[int, dict[int, Path]] = {}
+    for base in search_dirs:
+        if not base.exists():
+            continue
+        for path in sorted(base.glob("strategy_summary_*p_seed*.parquet")):
+            parsed = _parse_seed_file(path)
+            if parsed is None:
+                continue
+            players, seed = parsed
+            files_by_players.setdefault(players, {})
+            files_by_players[players].setdefault(seed, path)
+    return files_by_players
+
+
+def _select_seed_entries(
+    entries: list[tuple[int, Path]],
+    primary_seed: int,
+    *,
+    max_other_seeds: int | None,
+    comparison_seed: int | None,
+) -> list[tuple[int, Path]]:
+    """Select which seed files participate in pooling.
+
+    Always prefers the primary seed when present, then either a fixed comparison
+    seed or a deterministic random subset of the remaining seeds.
+    """
+
+    by_seed = {seed: path for seed, path in entries}
+    selected: list[tuple[int, Path]] = []
+
+    primary_path = by_seed.pop(primary_seed, None)
+    if primary_path is not None:
+        selected.append((primary_seed, primary_path))
+
+    if comparison_seed is not None:
+        comparison_path = by_seed.get(comparison_seed)
+        if comparison_path is not None:
+            selected.append((comparison_seed, comparison_path))
+        return sorted(selected)
+
+    remaining = list(by_seed.items())
+    if max_other_seeds is None:
+        selected.extend(remaining)
+    else:
+        rng = random.Random(primary_seed)
+        rng.shuffle(remaining)
+        selected.extend(remaining[: max_other_seeds])
+
+    return sorted(selected)
+
+
 def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | None = None) -> None:
     """Materialize per-player meta summaries."""
 
@@ -319,22 +378,50 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
     if threshold is None:
         threshold = getattr(cfg.analysis, "meta_random_if_I2_gt", 25.0)
 
+    max_other_seeds = getattr(cfg.analysis, "meta_max_other_seeds", None)
+    comparison_seed = getattr(cfg.analysis, "meta_comparison_seed", None)
     analysis_dir = cfg.analysis_dir
-    files_by_players: dict[int, list[tuple[int, Path]]] = {}
-    for path in sorted(analysis_dir.glob("strategy_summary_*p_seed*.parquet")):
-        parsed = _parse_seed_file(path)
-        if parsed is None:
-            continue
-        players, seed = parsed
-        files_by_players.setdefault(players, []).append((seed, path))
+    files_by_players = _collect_seed_summaries(cfg)
 
     if not files_by_players:
         LOGGER.info("Meta pooling skipped: no per-seed summaries found", extra={"stage": "meta"})
         return
 
     for players, entries in sorted(files_by_players.items()):
+        selected_entries = _select_seed_entries(
+            sorted(entries.items()),
+            cfg.sim.seed,
+            max_other_seeds=max_other_seeds,
+            comparison_seed=comparison_seed,
+        )
+        selected_seed_ids = [seed for seed, _path in selected_entries]
+        if (
+            max_other_seeds is not None
+            or comparison_seed is not None
+            or len(selected_seed_ids) != len(entries)
+        ):
+            LOGGER.info(
+                "Meta seed selection",
+                extra={
+                    "stage": "meta",
+                    "players": players,
+                    "selected_seeds": selected_seed_ids,
+                    "available_seeds": sorted(entries),
+                },
+            )
+        if len(selected_entries) <= 1:
+            LOGGER.info(
+                "Meta pooling skipped: requires multiple seeds",
+                extra={
+                    "stage": "meta",
+                    "players": players,
+                    "available_seeds": sorted(entries),
+                },
+            )
+            continue
+
         frames: list[pd.DataFrame] = []
-        for _seed, path in sorted(entries):
+        for _seed, path in selected_entries:
             df = pd.read_parquet(path)
             if df.empty:
                 continue
