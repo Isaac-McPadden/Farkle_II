@@ -1,5 +1,6 @@
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -59,6 +60,14 @@ def _setup_data(tmp_path: Path) -> Path:
     return data_dir
 
 
+def _perm_result(values: np.ndarray | list[float]) -> SimpleNamespace:
+    arr = np.asarray(values, dtype=float)
+    return SimpleNamespace(
+        importances_mean=arr,
+        importances_std=np.zeros_like(arr),
+    )
+
+
 def test_run_hgb_custom_output_path(tmp_path):
     data_dir = _setup_data(tmp_path)
     out_file = data_dir / "custom.json"
@@ -79,7 +88,7 @@ def test_run_hgb_importance_length_check(tmp_path, monkeypatch):
 
     def fake_perm_importance(_model, _X, _y, n_repeats=5, random_state=None):
         _ = n_repeats, random_state
-        return {"importances_mean": np.array([0.1, 0.2])}
+        return _perm_result([0.1, 0.2])
 
     monkeypatch.setattr(run_hgb, "permutation_importance", fake_perm_importance)
     cwd = os.getcwd()
@@ -119,9 +128,9 @@ def test_ratings_mu_values_used(tmp_path, monkeypatch):
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: {  # noqa: ARG005
-            "importances_mean": np.zeros(X.shape[1])
-        },
+        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+            np.zeros(X.shape[1])
+        ),
     )
     monkeypatch.setattr(
         run_hgb,
@@ -159,9 +168,9 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: {  # noqa: ARG005
-            "importances_mean": np.zeros(X.shape[1])
-        },
+        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+            np.zeros(X.shape[1])
+        ),
     )
     plotted: list[str] = []
 
@@ -209,9 +218,9 @@ def test_run_hgb_default_output(tmp_path, monkeypatch):
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: {  # noqa: ARG005
-            "importances_mean": np.zeros(X.shape[1])
-        },
+        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+            np.zeros(X.shape[1])
+        ),
     )
     monkeypatch.setattr(
         run_hgb,

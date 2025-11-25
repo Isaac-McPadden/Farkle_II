@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import random
 
@@ -35,7 +36,6 @@ def seed_everything(seed: int) -> None:
     """Best-effort seeding across common RNG systems."""
 
     random.seed(seed)
-    np.random.seed(seed)
     _ = np.random.default_rng(seed)
 
     try:  # optional dependency; ignore if unavailable
@@ -50,10 +50,8 @@ def seed_everything(seed: int) -> None:
     try:  # optional dependency; ignore if unavailable
         tf = importlib.import_module("tensorflow")
 
-        try:
+        with contextlib.suppress(Exception):
             tf.random.set_seed(seed)
-        except Exception:
-            pass
         try:
             keras_utils = getattr(tf.keras, "utils", None)
             if keras_utils and hasattr(keras_utils, "set_random_seed"):

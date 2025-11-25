@@ -25,8 +25,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.inspection import PartialDependenceDisplay
-from sklearn.inspection import permutation_importance
+from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 from sklearn.model_selection import GroupKFold
 
 from farkle.simulation.strategies import FavorDiceOrScore, parse_strategy_for_df
@@ -384,11 +383,10 @@ def run_hgb(
             random_state=seed,
         )
         perm = cast(PermutationImportanceResult, perm_raw)
-
         importances_mean = perm.importances_mean
         importances_std = (
             perm.importances_std
-        )  # sklearn always provides this, and so does our fallback
+        )
 
         if len(importances_mean) != len(features.columns):
             msg = (

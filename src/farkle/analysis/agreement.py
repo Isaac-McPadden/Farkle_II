@@ -15,15 +15,15 @@ from itertools import combinations
 from pathlib import Path
 from typing import Iterable, Mapping
 
+import networkx as nx
 import numpy as np
 import pandas as pd
-import networkx as nx
 from networkx import DiGraph as nx_digraph
 from scipy.stats import kendalltau, spearmanr
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
-from farkle.config import AppConfig
 from farkle.analysis.h2h_analysis import build_significant_graph, derive_sig_ranking
+from farkle.config import AppConfig
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
