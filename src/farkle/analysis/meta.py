@@ -347,7 +347,7 @@ def _select_seed_entries(
     seed or a deterministic random subset of the remaining seeds.
     """
 
-    by_seed = {seed: path for seed, path in entries}
+    by_seed = dict(entries)
     selected: list[tuple[int, Path]] = []
 
     primary_path = by_seed.pop(primary_seed, None)
