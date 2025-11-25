@@ -1,0 +1,111 @@
+# configs/farkle_mega_config.yaml
+# Drives BOTH simulation and analysis.
+
+io:
+  results_dir: "data/results"   # where per-N run folders are created
+  append_seed: true
+  analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
+
+sim:
+  # Table sizes to run (single-N works by giving a 1-item list)
+  n_players_list: [2, 3, 4, 5, 6, 8, 10, 12]
+
+  # Schedule & runtime controls
+  num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
+  seed: 20                         # RNG seed used by the tournament core
+  n_jobs: 16                    # null = auto; otherwise an int
+  expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
+  row_dir: "rows"                   # rows => per-N rows under {results}/{N}_players/rows/
+                                    # If row_dir == null, row writing skipped
+  desired_sec_per_chunk: 10
+  ckpt_every_sec: 30
+
+
+  # Customize strategy grid
+  # null (yaml) / None (py) loads default values for that variable
+  score_thresholds: null      # None -> use [200, 250, ..., 1000]
+  dice_thresholds: null       # None -> use [0, 1, 2, 3, 4]
+  smart_five_opts: null       # None -> [True, False]
+  smart_one_opts: null        # None -> [True, False]
+  consider_score_opts: null   # None -> [True, False]
+  consider_dice_opts: null    # None -> [True, False]
+  auto_hot_dice_opts: null    # None -> [True, False]
+  run_up_score_opts: null     # None -> [True, False]
+
+  # Optional per-N overrides (keys are strings)
+  per_n:
+    # "12":
+      # num_shuffles: 200           # example: heavier schedule for 12-player games
+  
+  # Games and Shuffles Calculations
+
+  power_method: bh                  # or bonferroni
+  recompute_num_shuffles: true      # true => derive per-N num_shuffles from targets
+
+  # Benjamini–Hochberg or Bonferroni design
+  power_design:
+    power: 0.95
+    control: 0.02                 # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
+    detectable_lift: 0.03         # absolute lift in win-rate
+    baseline_rate: null           # None -> 1/n_players
+    full_pairwise: false          # num_hypotheses is n*(n-1)/2 if true else n-1
+    tail: "two_sided"             # "one_sided" | "two_sided"
+    min_games_floor: 2000
+    max_games_cap: null
+    use_BY: false                 # if true and using BH, use q/H_m (more conservative)
+    bh_target_rank: null          # Only use one of bh_target_rank and bh_target_frac /
+    bh_target_frac: 0.03          # and set the other to null
+    endpoint: "top1"
+
+analysis:
+  run_trueskill: true
+  run_head2head: true
+  run_hgb: true
+  run_frequentist: false
+  run_post_h2h_analysis: false
+  run_agreement: false
+  run_report: true
+  n_jobs: 12
+  log_level: "INFO"
+  head2head_target_hours: 8.0
+  head2head_tolerance_pct: 5.0
+  head2head_games_per_sec: null
+  tiering_seeds: null
+  tiering_z_star: 2.0
+  tiering_weights_by_k: null
+
+ingest:
+  row_group_size: 64000           # parquet/arrow row group target
+  n_jobs: 1
+  parquet_codec: "snappy"
+
+combine:
+  max_players: 12
+
+metrics:
+  seat_range: [1, 12]
+
+trueskill:
+  beta: 4.166667                  # 25/6
+  tau: 0.1
+  draw_probability: 0.0
+
+head2head:
+  n_jobs: 4
+  games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
+
+  # Bonferroni design for H2H only
+  bonferroni_design:
+    power: 0.95
+    control: 0.02                 # alpha (Bonferroni - FWER)
+    detectable_lift: 0.03
+    baseline_rate: 0.50
+    full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
+    tail: "two_sided"
+    min_games_floor: 2000
+    max_games_cap: null
+    use_BY: null                  # unused, here for the PowerDesign class
+
+hgb:
+  max_depth: 6
+  n_estimators: 300

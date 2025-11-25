@@ -2,9 +2,10 @@
 # Drives BOTH simulation and analysis.
 
 io:
-  results_dir: "data/results"   # where per-N run folders are created
-  append_seed: true
+  results_dir: "data/results"     # where per-N run folders are created
+  append_seed: true               # append sim.seed suffix to results_dir
   analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
+  meta_analysis_dir: "data/meta_analysis"         # optional shared dir for per-seed/meta summaries
 
 sim:
   # Table sizes to run (single-N works by giving a 1-item list)
@@ -12,35 +13,33 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 20                         # RNG seed used by the tournament core
-  n_jobs: 16                    # null = auto; otherwise an int
-  expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
-  row_dir: "rows"                   # rows => per-N rows under {results}/{N}_players/rows/
-                                    # If row_dir == null, row writing skipped
+  seed: 20                        # RNG seed used by the tournament core
+  n_jobs: 16                      # null = auto; otherwise an int
+  expanded_metrics: true          # if true, also write {N}p_metrics.parquet with sums & sq_sums
+  row_dir: "rows"                 # rows => per-N rows under {results}/{N}_players/rows/
+                                  # If row_dir == null, row writing skipped
   desired_sec_per_chunk: 10
   ckpt_every_sec: 30
 
-
   # Customize strategy grid
   # null (yaml) / None (py) loads default values for that variable
-  score_thresholds: null      # None -> use [200, 250, ..., 1000]
-  dice_thresholds: null       # None -> use [0, 1, 2, 3, 4]
-  smart_five_opts: null       # None -> [True, False]
-  smart_one_opts: null        # None -> [True, False]
-  consider_score_opts: null   # None -> [True, False]
-  consider_dice_opts: null    # None -> [True, False]
-  auto_hot_dice_opts: null    # None -> [True, False]
-  run_up_score_opts: null     # None -> [True, False]
+  score_thresholds: null          # None -> use [200, 250, ..., 1000]
+  dice_thresholds: null           # None -> use [0, 1, 2, 3, 4]
+  smart_five_opts: null           # None -> [True, False]
+  smart_one_opts: null            # None -> [True, False]
+  consider_score_opts: null       # None -> [True, False]
+  consider_dice_opts: null        # None -> [True, False]
+  auto_hot_dice_opts: null        # None -> [True, False]
+  run_up_score_opts: null         # None -> [True, False]
 
   # Optional per-N overrides (keys are strings)
   per_n:
     # "12":
-      # num_shuffles: 200           # example: heavier schedule for 12-player games
-  
-  # Games and Shuffles Calculations
+    #   num_shuffles: 200         # example: heavier schedule for 12-player games
 
-  power_method: bh                  # or bonferroni
-  recompute_num_shuffles: true      # true => derive per-N num_shuffles from targets
+  # Games and shuffles calculations
+  power_method: bh                # "bh" or "bonferroni"
+  recompute_num_shuffles: true    # true => derive per-N num_shuffles from targets
 
   # Benjamini–Hochberg or Bonferroni design
   power_design:
@@ -48,51 +47,69 @@ sim:
     control: 0.02                 # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
     detectable_lift: 0.03         # absolute lift in win-rate
     baseline_rate: null           # None -> 1/n_players
-    full_pairwise: false          # num_hypotheses is n*(n-1)/2 if true else n-1
+    full_pairwise: false          # hypotheses = n*(n-1)/2 if true else n-1
     tail: "two_sided"             # "one_sided" | "two_sided"
     min_games_floor: 2000
     max_games_cap: null
     use_BY: false                 # if true and using BH, use q/H_m (more conservative)
-    bh_target_rank: null          # Only use one of bh_target_rank and bh_target_frac /
+    bh_target_rank: null          # Only use one of bh_target_rank and bh_target_frac
     bh_target_frac: 0.03          # and set the other to null
-    endpoint: "top1"
+    endpoint: "top1"              # "pairwise" or "top1"
 
 analysis:
-  run_trueskill: true
-  run_head2head: true
-  run_hgb: true
-  run_frequentist: false
-  run_post_h2h_analysis: false
-  run_agreement: false
-  run_report: true
-  n_jobs: 12
-  log_level: "INFO"
-  head2head_target_hours: 8.0
-  head2head_tolerance_pct: 5.0
-  head2head_games_per_sec: null
-  tiering_seeds: null
-  tiering_z_star: 2.0
-  tiering_weights_by_k: null
+  # Which analytics modules to run
+  run_trueskill: true             # compute TrueSkill ratings
+  run_head2head: true             # execute head-to-head analysis
+  run_hgb: true                   # train histogram gradient boosting model
+  run_frequentist: true           # frequentist/MDD tiering + tiering_report
+  run_post_h2h_analysis: true     # Holm-Bonferroni post-H2H cleanup
+  run_agreement: true             # agreement heuristics (manual run until wired into run_all)
+  run_report: true                # report writer / publishing (manual until wired)
+
+  n_jobs: 12                      # parallel workers for analysis
+  log_level: "INFO"               # logger level during analysis
+
+  # How to discover per-N results
+  results_glob: "*_players"       # glob selecting per-N result folders under results_dir
+
+  # Head-to-head autotuning controls
+  head2head_target_hours: 8.0     # target runtime window for Bonferroni H2H (<=0 disables)
+  head2head_tolerance_pct: 5.0    # acceptable +/- percent around target hours
+  head2head_games_per_sec: null   # measured H2H throughput (games per second), or null to calibrate
+
+  # Tiering / frequentist controls
+  tiering_seeds: null             # list[int]|None: seeds to include in tiering report
+  tiering_z_star: 2.0             # z* threshold for MDD tiers
+  tiering_weights_by_k: null      # dict[int,float]|None: optional weights for player counts
+
+  # Meta-analysis controls (seed-to-seed pooling / comparison)
+  meta_max_other_seeds: null      # int|None: cap on non-primary seeds used in meta pooling
+  meta_comparison_seed: null      # int|None: fixed comparison seed when limiting meta pooling
+
+  # Optional custom output filenames / aliases
+  outputs: {}                     # dict[str, Any]: e.g. override metrics/parquet names if desired
 
 ingest:
   row_group_size: 64000           # parquet/arrow row group target
-  n_jobs: 1
-  parquet_codec: "snappy"
+  parquet_codec: "snappy"         # parquet compression codec
+  batch_rows: 100000              # rows processed per batch
+  n_jobs: 1                       # concurrent ingest workers
 
 combine:
-  max_players: 12
+  max_players: 12                 # maximum table size to combine
 
 metrics:
-  seat_range: [1, 12]
+  seat_range: [1, 12]             # seats included in metrics
 
 trueskill:
-  beta: 4.166667                  # 25/6
+  beta: 4.166667                  # 25/6 (tighter prior than default_config)
   tau: 0.1
   draw_probability: 0.0
 
 head2head:
   n_jobs: 4
   games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
+  fdr_q: 0.02                     # FDR control threshold for BH H2H design (if/where used)
 
   # Bonferroni design for H2H only
   bonferroni_design:
@@ -104,7 +121,7 @@ head2head:
     tail: "two_sided"
     min_games_floor: 2000
     max_games_cap: null
-    use_BY: null                  # unused, here for the PowerDesign class
+    use_BY: null                  # unused here; present for PowerDesign compatibility
 
 hgb:
   max_depth: 6
