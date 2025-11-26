@@ -234,26 +234,23 @@ def run_bonferroni_head2head(
         return
 
     sorted_elites = sorted(elites)
-    pairings = list(combinations(sorted_elites, 2))
-    rng = np.random.default_rng(seed)
-    pair_seeds = []
-    for pair_id, (a, b) in enumerate(pairings):
-        seeds = rng.integers(0, MAX_UINT32, size=games_per_pair, dtype=np.uint32).tolist()
-        pair_seeds.append((pair_id, a, b, seeds))
-    total_games = games_per_pair * len(pairings)
+    pair_count = math.comb(len(sorted_elites), 2)
+    total_games = games_per_pair * pair_count
     LOGGER.debug(
         "Head-to-head schedule prepared",
         extra={
             "stage": "head2head",
-            "pairs": len(pairings),
+            "pairs": pair_count,
             "games": total_games,
             "games_per_pair": games_per_pair,
         },
     )
 
+    rng = np.random.default_rng(seed)
     records = []
     strategies_cache: Dict[str, Any] = {}
-    for pair_id, a, b, seeds in pair_seeds:
+    for pair_id, (a, b) in enumerate(combinations(sorted_elites, 2)):
+        seeds = rng.integers(0, MAX_UINT32, size=games_per_pair, dtype=np.uint32).tolist()
         LOGGER.debug(
             "Simulating head-to-head batch",
             extra={
