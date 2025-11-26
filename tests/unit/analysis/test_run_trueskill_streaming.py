@@ -194,11 +194,11 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
     row_file = data_dir / "2p_ingested_rows.parquet"
     pq.write_table(table, row_file, row_group_size=1)
 
-    ratings_ck = root / "ratings_2.checkpoint.parquet"
+    ratings_ck = data_dir / "ratings_2.checkpoint.parquet"
     rt._save_ratings_parquet(
         ratings_ck, {"A": trueskill.TrueSkill().create_rating(mu=25.0, sigma=8.0)}
     )
-    ck_path = root / "ratings_2.ckpt.json"
+    ck_path = data_dir / "ratings_2.ckpt.json"
     rt._save_block_ckpt(
         ck_path,
         rt._BlockCkpt(
@@ -221,7 +221,7 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
     assert player_count == "2"
     assert games == 8
 
-    ratings = rt._load_ratings_parquet(root / "ratings_2.parquet")
+    ratings = rt._load_ratings_parquet(data_dir / "ratings_2.parquet")
     assert set(ratings) == {"A", "C"}
     assert "B" not in ratings
 

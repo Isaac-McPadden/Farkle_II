@@ -52,6 +52,59 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 
 
+def _per_player_dir(root: Path, player_count: str) -> Path:
+    """Canonical directory for per-player-count artifacts."""
+
+    return root / "data" / f"{player_count}p"
+
+
+def _ensure_new_location(dest: Path, legacy: Path) -> Path:
+    """Return *dest*, migrating a legacy file into place when present."""
+
+    if dest.exists():
+        return dest
+    if legacy.exists():
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        legacy.replace(dest)
+    return dest
+
+
+def _rating_artifact_paths(root: Path, player_count: str, suffix: str) -> dict[str, Path]:
+    """Return canonical and legacy paths for per-player artifacts."""
+
+    per_dir = _per_player_dir(root, player_count)
+    base_name = f"ratings_{player_count}{suffix}"
+    return {
+        "dir": per_dir,
+        "parquet": per_dir / f"{base_name}.parquet",
+        "json": per_dir / f"{base_name}.json",
+        "ckpt": per_dir / f"{base_name}.ckpt.json",
+        "checkpoint": per_dir / f"{base_name}.checkpoint.parquet",
+        "legacy_parquet": root / f"{base_name}.parquet",
+        "legacy_json": root / f"{base_name}.json",
+        "legacy_ckpt": root / f"{base_name}.ckpt.json",
+        "legacy_checkpoint": root / f"{base_name}.checkpoint.parquet",
+    }
+
+
+def _iter_rating_parquets(root: Path, suffix: str) -> list[Path]:
+    """Discover per-player rating parquet files with legacy fallback."""
+
+    per_player = sorted((root / "data").glob(f"*p/ratings_*{suffix}.parquet"))
+    legacy = sorted(root.glob(f"ratings_*{suffix}.parquet"))
+    out: list[Path] = []
+    seen: set[str] = set()
+    for path in per_player + legacy:
+        if path.stem.startswith("ratings_pooled"):
+            continue
+        key = path.resolve().as_posix()
+        if key in seen:
+            continue
+        out.append(path)
+        seen.add(key)
+    return out
+
+
 def _find_combined_parquet(base: Path | None) -> Path | None:
     """Return path to combined ``all_ingested_rows.parquet`` if it exists.
 
@@ -558,11 +611,13 @@ def _rate_block_worker(
     root = Path(root_dir)
 
     player_count = block.name.split("_")[0]
+    per_player_dir = _per_player_dir(root, player_count)
+    per_player_dir.mkdir(parents=True, exist_ok=True)
     keep_path = block / f"keepers_{player_count}.npy"
     keepers = np.load(keep_path).tolist() if keep_path.exists() else []
 
     # Locate curated parquet
-    row_file = Path(root) / "data" / f"{player_count}p" / f"{player_count}p_ingested_rows.parquet"
+    row_file = per_player_dir / f"{player_count}p_ingested_rows.parquet"
     if not row_file.exists():
         candidate = next(block.glob("*p_rows.parquet"), None)
         if candidate is None:
@@ -573,7 +628,12 @@ def _rate_block_worker(
         n = int(player_count)
 
     # Up-to-date guard
-    parquet_path = root / f"ratings_{player_count}{suffix}.parquet"
+    paths = _rating_artifact_paths(root, player_count, suffix)
+    parquet_path = _ensure_new_location(paths["parquet"], paths["legacy_parquet"])
+    ck_path = _ensure_new_location(paths["ckpt"], paths["legacy_ckpt"])
+    rk_path = _ensure_new_location(paths["checkpoint"], paths["legacy_checkpoint"])
+    json_path = _ensure_new_location(paths["json"], paths["legacy_json"])
+
     if parquet_path.exists() and parquet_path.stat().st_mtime >= row_file.stat().st_mtime:
         try:
             md = pq.read_metadata(row_file)
@@ -592,8 +652,6 @@ def _rate_block_worker(
         return player_count, n_rows
 
     env = trueskill.TrueSkill(**(env_kwargs or {}))
-    ck_path = root / f"ratings_{player_count}{suffix}.ckpt.json"
-    rk_path = root / f"ratings_{player_count}{suffix}.checkpoint.parquet"
 
     start_rg = 0
     start_bi = 0
@@ -661,7 +719,7 @@ def _rate_block_worker(
     # Write per-N ratings as Parquet (strategy, mu, sigma)
     _save_ratings_parquet(parquet_path, ratings_stats)
 
-    json_path = root / f"ratings_{player_count}{suffix}.json"
+    json_path = _ensure_new_location(paths["json"], paths["legacy_json"])
     with atomic_path(str(json_path)) as tmp_path:
         Path(tmp_path).write_text(
             json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
@@ -794,9 +852,9 @@ def run_trueskill(
 
     # Combine per-N ratings into pooled stats
     pooled_parquet = root / f"ratings_pooled{suffix}.parquet"
-    existing_parquets = sorted(root.glob(f"ratings_*{suffix}.parquet"))
+    per_player_parquets = _iter_rating_parquets(root, suffix)
     if pooled_parquet.exists():
-        newest = max((p.stat().st_mtime for p in existing_parquets), default=0.0)
+        newest = max((p.stat().st_mtime for p in per_player_parquets), default=0.0)
         if pooled_parquet.stat().st_mtime >= newest:
             LOGGER.info(
                 "TrueSkill pooled outputs up-to-date",
@@ -804,9 +862,7 @@ def run_trueskill(
             )
             return
 
-    for parquet in existing_parquets:
-        if parquet == pooled_parquet:
-            continue
+    for parquet in per_player_parquets:
         stem = parquet.stem[len("ratings_") :]
         if suffix:
             stem = stem[: -len(suffix)]
@@ -964,10 +1020,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
         per_seed_results[seed] = _load_ratings_parquet(pooled_path)
 
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}
-        for parquet in sorted(analysis_dir.glob(f"ratings_*_seed{seed}.parquet")):
+        for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}"):
             stem = parquet.stem
-            if stem.startswith("ratings_pooled"):
-                continue
             parts = stem.split("_")
             if len(parts) < 3 or not parts[1].isdigit():
                 continue

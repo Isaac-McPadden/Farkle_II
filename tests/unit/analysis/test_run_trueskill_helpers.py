@@ -98,8 +98,9 @@ def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
     finally:
         os.chdir(cwd)
 
-    ratings_2 = rt._load_ratings_parquet(data_root / "ratings_2.parquet")
-    ratings3_path = data_root / "ratings_3.parquet"
+    ratings_dir = data_root / "data"
+    ratings_2 = rt._load_ratings_parquet(ratings_dir / "2p" / "ratings_2.parquet")
+    ratings3_path = ratings_dir / "3p" / "ratings_3.parquet"
     ratings_3 = rt._load_ratings_parquet(ratings3_path) if ratings3_path.exists() else {}
     pooled = rt._load_ratings_parquet(data_root / "ratings_pooled.parquet")
 
@@ -123,5 +124,5 @@ def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
     finally:
         os.chdir(cwd)
 
-    assert (data_root / "ratings_2_seed3.parquet").exists()
+    assert (data_root / "data" / "2p" / "ratings_2_seed3.parquet").exists()
     assert (data_root / "ratings_pooled_seed3.parquet").exists()

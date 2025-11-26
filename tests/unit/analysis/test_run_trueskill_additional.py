@@ -314,10 +314,11 @@ def test_rate_stream_without_keeper_filter(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_rate_block_worker_up_to_date_guard(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    (root / "data" / "2p").mkdir(parents=True, exist_ok=True)
+    per_player_dir = root / "data" / "2p"
+    per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
-    row_file = root / "data" / "2p" / "2p_ingested_rows.parquet"
+    row_file = per_player_dir / "2p_ingested_rows.parquet"
     df = pd.DataFrame(
         {
             "P1_strategy": ["A", "B", "C"],
@@ -328,7 +329,7 @@ def test_rate_block_worker_up_to_date_guard(tmp_path: Path) -> None:
     )
     df.to_parquet(row_file)
 
-    parquet_path = root / "ratings_2.parquet"
+    parquet_path = per_player_dir / "ratings_2.parquet"
     rt._save_ratings_parquet(parquet_path, {"A": rt.RatingStats(10.0, 1.0)})
     newer = row_file.stat().st_mtime + 100.0
     os.utime(parquet_path, (newer, newer))
@@ -342,14 +343,15 @@ def test_rate_block_worker_metadata_failure(
 ) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    (root / "data" / "2p").mkdir(parents=True, exist_ok=True)
+    per_player_dir = root / "data" / "2p"
+    per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
-    row_file = root / "data" / "2p" / "2p_ingested_rows.parquet"
+    row_file = per_player_dir / "2p_ingested_rows.parquet"
     df = pd.DataFrame({"P1_strategy": ["A"], "P1_rank": [1], "P2_strategy": ["B"], "P2_rank": [2]})
     df.to_parquet(row_file)
 
-    parquet_path = root / "ratings_2.parquet"
+    parquet_path = per_player_dir / "ratings_2.parquet"
     rt._save_ratings_parquet(parquet_path, {"A": rt.RatingStats(10.0, 1.0)})
     os.utime(parquet_path, (row_file.stat().st_mtime + 10, row_file.stat().st_mtime + 10))
 
@@ -364,10 +366,11 @@ def test_rate_block_worker_metadata_failure(
 def test_rate_block_worker_without_resume_processes(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    (root / "data" / "2p").mkdir(parents=True, exist_ok=True)
+    per_player_dir = root / "data" / "2p"
+    per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
-    row_file = root / "data" / "2p" / "2p_ingested_rows.parquet"
+    row_file = per_player_dir / "2p_ingested_rows.parquet"
     df = pd.DataFrame(
         [
             {"P1_strategy": "A", "P1_rank": 1, "P2_strategy": "B", "P2_rank": 2},
@@ -385,13 +388,14 @@ def test_rate_block_worker_without_resume_processes(tmp_path: Path) -> None:
 def test_rate_block_worker_resume_with_keepers(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    (root / "data" / "2p").mkdir(parents=True, exist_ok=True)
+    per_player_dir = root / "data" / "2p"
+    per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
     keepers = np.array(["A", "B"])
     np.save(block / "keepers_2.npy", keepers)
 
-    row_file = root / "data" / "2p" / "2p_ingested_rows.parquet"
+    row_file = per_player_dir / "2p_ingested_rows.parquet"
     df = pd.DataFrame(
         [
             {"P1_strategy": "C", "P1_rank": 1, "P2_strategy": "D", "P2_rank": 2},
@@ -400,9 +404,9 @@ def test_rate_block_worker_resume_with_keepers(tmp_path: Path) -> None:
     )
     df.to_parquet(row_file)
 
-    parquet_path = root / "ratings_2.parquet"
-    ck_path = root / "ratings_2.ckpt.json"
-    rk_path = root / "ratings_2.checkpoint.parquet"
+    parquet_path = per_player_dir / "ratings_2.parquet"
+    ck_path = per_player_dir / "ratings_2.ckpt.json"
+    rk_path = per_player_dir / "ratings_2.checkpoint.parquet"
     rt._save_ratings_parquet(rk_path, {"A": rt.RatingStats(21.0, 2.0)})
     block_ck = rt._BlockCkpt(
         row_file=str(row_file),
@@ -419,7 +423,7 @@ def test_rate_block_worker_resume_with_keepers(tmp_path: Path) -> None:
 
     assert result == ("2", 5)
     assert parquet_path.exists()
-    assert (root / "ratings_2.json").exists()
+    assert (per_player_dir / "ratings_2.json").exists()
     new_ck = json.loads(ck_path.read_text())
     assert new_ck["games_done"] == 5
 
@@ -427,10 +431,11 @@ def test_rate_block_worker_resume_with_keepers(tmp_path: Path) -> None:
 def test_rate_block_worker_resume_missing_checkpoint_ratings_file(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    (root / "data" / "2p").mkdir(parents=True, exist_ok=True)
+    per_player_dir = root / "data" / "2p"
+    per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
-    row_file = root / "data" / "2p" / "2p_ingested_rows.parquet"
+    row_file = per_player_dir / "2p_ingested_rows.parquet"
     df = pd.DataFrame(
         [
             {"P1_strategy": "A", "P1_rank": 1, "P2_strategy": "B", "P2_rank": 2},
@@ -438,8 +443,8 @@ def test_rate_block_worker_resume_missing_checkpoint_ratings_file(tmp_path: Path
     )
     df.to_parquet(row_file)
 
-    ck_path = root / "ratings_2.ckpt.json"
-    missing_rk = root / "ratings_2.checkpoint.parquet"
+    ck_path = per_player_dir / "ratings_2.ckpt.json"
+    missing_rk = per_player_dir / "ratings_2.checkpoint.parquet"
     ck = rt._BlockCkpt(
         row_file=str(row_file),
         row_group=0,
@@ -524,7 +529,11 @@ def test_run_trueskill_handles_worker_exception(
     ) -> tuple[str, int]:
         player_count = Path(block_dir).name.split("_")[0]
         stats, games = per_block[player_count]
-        rt._save_ratings_parquet(Path(root_dir) / f"ratings_{player_count}{suffix}.parquet", stats)
+        per_player_dir = Path(root_dir) / "data" / f"{player_count}p"
+        per_player_dir.mkdir(parents=True, exist_ok=True)
+        rt._save_ratings_parquet(
+            per_player_dir / f"ratings_{player_count}{suffix}.parquet", stats
+        )
         return player_count, games
 
     monkeypatch.setattr(rt, "write_parquet_atomic", immediate_write)
@@ -568,7 +577,9 @@ def test_run_trueskill_rebuilds_outdated_pooled(
         env_kwargs: dict | None,
     ) -> tuple[str, int]:
         stats, games = per_block["2"]
-        rt._save_ratings_parquet(Path(root_dir) / f"ratings_2{suffix}.parquet", stats)
+        per_player_dir = Path(root_dir) / "data" / "2p"
+        per_player_dir.mkdir(parents=True, exist_ok=True)
+        rt._save_ratings_parquet(per_player_dir / f"ratings_2{suffix}.parquet", stats)
         return "2", games
 
     tier_calls: list[tuple[dict[str, float], dict[str, float]]] = []
