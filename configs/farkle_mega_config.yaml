@@ -113,12 +113,12 @@ head2head:
 
   # Bonferroni design for H2H only
   bonferroni_design:
-    power: 0.95
-    control: 0.02                 # alpha (Bonferroni - FWER)
-    detectable_lift: 0.03
+    power: 0.8
+    control: 0.1               # alpha (Bonferroni - FWER)
+    detectable_lift: 0.05
     baseline_rate: 0.50
     full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
-    tail: "two_sided"
+    tail: "one_sided"             # must be "one_sided" for H2H
     min_games_floor: 2000
     max_games_cap: null
     use_BY: null                  # unused here; present for PowerDesign compatibility

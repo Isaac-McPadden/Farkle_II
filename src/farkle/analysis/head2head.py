@@ -118,8 +118,9 @@ def _build_design_kwargs(cfg: AppConfig) -> dict[str, Any]:
     filtered.setdefault("endpoint", "pairwise")
     tail = str(filtered.get("tail", "one_sided")).lower().replace("-", "_")
     if tail != "one_sided":
-        raise ValueError(
-            "Bonferroni head-to-head uses a one-sided exact test; set tail='one_sided'",
+        LOGGER.info(
+            "\"one_sided\" is required, tail changed to \"one_sided\"",
+            extra={"stage": "head2head", "tail": tail},
         )
     filtered["tail"] = "one_sided"
     return filtered

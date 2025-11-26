@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Dict
 
 import numpy as np
+import pandas as pd
 import pyarrow as pa
 from scipy.stats import binomtest
 
@@ -23,6 +24,73 @@ from farkle.utils.stats import games_for_power
 DEFAULT_ROOT = Path("results_seed_0")
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _load_top_strategies(
+    *,
+    ratings_path: Path,
+    metrics_path: Path,
+    ratings_limit: int = 200,
+    metrics_limit: int = 200,
+) -> list[str]:
+    """Collect fallback strategies from pooled ratings and metrics tables.
+
+    Strategies are sorted by their respective performance indicators and trimmed to
+    the provided limits before being combined into a de-duplicated list.
+    """
+
+    def _sorted_from_parquet(path: Path, sort_col: str, limit: int, label: str) -> list[str]:
+        if not path.exists():
+            LOGGER.warning(
+                "Fallback selection skipped: missing %s parquet",
+                label,
+                extra={"stage": "head2head", "path": str(path)},
+            )
+            return []
+
+        try:
+            df = pd.read_parquet(path, columns=["strategy", sort_col])
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Fallback selection skipped: failed to read %s parquet",
+                label,
+                extra={"stage": "head2head", "path": str(path), "error": str(exc)},
+            )
+            return []
+
+        if df.empty or sort_col not in df:
+            LOGGER.warning(
+                "Fallback selection skipped: %s parquet missing data",
+                label,
+                extra={"stage": "head2head", "path": str(path)},
+            )
+            return []
+
+        return (
+            df.sort_values(sort_col, ascending=False)["strategy"].head(limit).dropna().tolist()
+        )
+
+    top_by_rating = _sorted_from_parquet(ratings_path, "mu", ratings_limit, "ratings")
+    top_by_win_rate = _sorted_from_parquet(metrics_path, "win_rate", metrics_limit, "metrics")
+
+    combined: list[str] = []
+    seen: set[str] = set()
+    for source in (top_by_rating, top_by_win_rate):
+        for strategy in source:
+            if strategy not in seen:
+                combined.append(strategy)
+                seen.add(strategy)
+
+    LOGGER.info(
+        "Fallback strategy selection prepared",
+        extra={
+            "stage": "head2head",
+            "ratings_count": len(top_by_rating),
+            "metrics_count": len(top_by_win_rate),
+            "combined_count": len(combined),
+        },
+    )
+    return combined
 
 
 def run_bonferroni_head2head(
@@ -82,6 +150,31 @@ def run_bonferroni_head2head(
         raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
+    ratings_path = sub_root / "ratings_pooled.parquet"
+    metrics_path = sub_root / "metrics.parquet"
+    if len(elites) < 2:
+        fallback = _load_top_strategies(
+            ratings_path=ratings_path,
+            metrics_path=metrics_path,
+        )
+        if fallback:
+            combined = []
+            seen = set()
+            for name in (*elites, *fallback):
+                if name not in seen:
+                    combined.append(name)
+                    seen.add(name)
+            elites = combined
+            LOGGER.info(
+                "Elite tier too small; using fallback strategy union",
+                extra={
+                    "stage": "head2head",
+                    "elite_count": len(elites),
+                    "tiers_path": str(tiers_path),
+                    "ratings_path": str(ratings_path),
+                    "metrics_path": str(metrics_path),
+                },
+            )
     LOGGER.info(
         "Loaded elite strategies",
         extra={
