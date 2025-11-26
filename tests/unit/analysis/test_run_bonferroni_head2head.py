@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 import farkle.analysis.run_bonferroni_head2head as rb
@@ -48,3 +49,15 @@ def test_run_bonferroni_head2head_empty_file(
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="No tiers found"):
         rb.run_bonferroni_head2head(root=tmp_path)
+
+
+def test_count_pair_wins_prefers_strategy_column() -> None:
+    df = pd.DataFrame({"winner_strategy": ["A", "B", "A", "A"]})
+    wins = rb._count_pair_wins(df, "A", "B")
+    assert wins == (3, 1)
+
+
+def test_count_pair_wins_falls_back_to_seat_column() -> None:
+    df = pd.DataFrame({"winner": ["P1", "P2", "P2", "P1", "P1"]})
+    wins = rb._count_pair_wins(df, "A", "B")
+    assert wins == (3, 2)

@@ -30,8 +30,8 @@ def _load_top_strategies(
     *,
     ratings_path: Path,
     metrics_path: Path,
-    ratings_limit: int = 200,
-    metrics_limit: int = 200,
+    ratings_limit: int = 150,
+    metrics_limit: int = 150,
 ) -> list[str]:
     """Collect fallback strategies from pooled ratings and metrics tables.
 
@@ -91,6 +91,33 @@ def _load_top_strategies(
         },
     )
     return combined
+
+
+def _count_pair_wins(df: pd.DataFrame, strategy_a: str, strategy_b: str) -> tuple[int, int]:
+    """Count how many times each strategy won within a simulated batch."""
+    if "winner_strategy" in df.columns:
+        winners = df["winner_strategy"].astype(str)
+        counts = winners.value_counts()
+        return int(counts.get(strategy_a, 0)), int(counts.get(strategy_b, 0))
+
+    seat_column = None
+    for candidate in ("winner", "winner_seat"):
+        if candidate in df.columns:
+            seat_column = candidate
+            break
+    if seat_column is None:
+        raise KeyError("winner_strategy column missing and no winner identifier available")
+
+    seat_numbers = (
+        df[seat_column]
+        .astype(str)
+        .str.extract(r"P(?P<num>\d+)", expand=True)["num"]
+        .astype("Int64")
+    )
+    seat_counts = seat_numbers.value_counts()
+    wins_a = int(seat_counts.get(1, 0))
+    wins_b = int(seat_counts.get(2, 0))
+    return wins_a, wins_b
 
 
 def run_bonferroni_head2head(
@@ -269,9 +296,7 @@ def run_bonferroni_head2head(
             strategies=[strat_a, strat_b],
             n_jobs=n_jobs,
         )
-        wins = df["winner_strategy"].value_counts()
-        wa = int(wins.get(a, 0))
-        wb = int(wins.get(b, 0))
+        wa, wb = _count_pair_wins(df, a, b)
         games_played = len(seeds)
         if wa + wb != games_played:
             raise RuntimeError(
