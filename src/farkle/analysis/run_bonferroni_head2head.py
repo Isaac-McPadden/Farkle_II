@@ -6,9 +6,10 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -126,6 +127,10 @@ def run_bonferroni_head2head(
     root: Path = DEFAULT_ROOT,
     n_jobs: int = 1,
     design: Dict[str, Any] | None = None,
+    completed_pair_ids: Iterable[int] | None = None,
+    shard_dir: Path | None = None,
+    shard_size: int = 25,
+    progress_schedule: Sequence[float] | None = None,
 ) -> None:
     """Run pairwise games between top-tier strategies using Bonferroni tests.
 
@@ -167,6 +172,7 @@ def run_bonferroni_head2head(
     sub_root = Path(root / "analysis")
     tiers_path = sub_root / "tiers.json"
     pairwise_parquet = sub_root / "bonferroni_pairwise.parquet"
+    shard_dir = shard_dir or sub_root / "bonferroni_pairwise_shards"
 
     try:
         with tiers_path.open() as fh:
@@ -274,9 +280,129 @@ def run_bonferroni_head2head(
     )
 
     rng = np.random.default_rng(seed)
-    records = []
+    records: list[dict[str, Any]] = []
+    pending_shard_records: list[dict[str, Any]] = []
     strategies_cache: Dict[str, Any] = {}
+    shard_dir.mkdir(parents=True, exist_ok=True)
+    shard_schema = pa.schema(
+        [
+            pa.field("players", pa.int64()),
+            pa.field("seed", pa.int64()),
+            pa.field("pair_id", pa.int64()),
+            pa.field("a", pa.string()),
+            pa.field("b", pa.string()),
+            pa.field("games", pa.int64()),
+            pa.field("wins_a", pa.int64()),
+            pa.field("wins_b", pa.int64()),
+            pa.field("win_rate_a", pa.float64()),
+            pa.field("pval_one_sided", pa.float64()),
+        ]
+    )
+
+    def _read_pair_ids_from_parquet(path: Path) -> set[int]:
+        if not path.exists():
+            return set()
+        try:
+            df = pd.read_parquet(path, columns=["pair_id"])
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load completed pair ids",
+                extra={"stage": "head2head", "path": str(path), "error": str(exc)},
+            )
+            return set()
+        if "pair_id" not in df:
+            LOGGER.warning(
+                "Existing parquet missing pair_id column",
+                extra={"stage": "head2head", "path": str(path)},
+            )
+            return set()
+        return {int(pid) for pid in df["pair_id"].dropna().astype(int).tolist()}
+
+    shard_paths = sorted(shard_dir.glob("bonferroni_pairwise_shard_*.parquet"))
+    shard_count = len(shard_paths)
+    existing_shard_frames: list[pd.DataFrame] = []
+    completed_pairs: set[int] = {int(pid) for pid in (completed_pair_ids or ())}
+    for shard_path in shard_paths:
+        completed_pairs.update(_read_pair_ids_from_parquet(shard_path))
+        try:
+            df = pd.read_parquet(shard_path)
+            existing_shard_frames.append(df)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load shard data",
+                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
+            )
+    existing_final_pairs = _read_pair_ids_from_parquet(pairwise_parquet)
+    completed_pairs.update(existing_final_pairs)
+
+    LOGGER.info(
+        "Resuming head-to-head schedule",
+        extra={
+            "stage": "head2head",
+            "precompleted_pairs": len(completed_pairs),
+            "shards": shard_count,
+        },
+    )
+
+    def flush_shard(records_to_flush: List[dict[str, Any]], shard_index: int) -> int:
+        if not records_to_flush:
+            return shard_index
+        shard_path = shard_dir / f"bonferroni_pairwise_shard_{shard_index:04d}.parquet"
+        shard_table = pa.Table.from_pylist(records_to_flush, schema=shard_schema)
+        write_parquet_atomic(shard_table, shard_path)
+        LOGGER.info(
+            "Shard written",
+            extra={
+                "stage": "head2head",
+                "rows": shard_table.num_rows,
+                "path": str(shard_path),
+            },
+        )
+        existing_shard_frames.append(shard_table.to_pandas())
+        records_to_flush.clear()
+        return shard_index + 1
+
+    fast_interval = 30.0
+    fast_phase_seconds = 600.0
+    slow_interval = 600.0
+    schedule: Sequence[float] = progress_schedule or [fast_interval, fast_phase_seconds, slow_interval]
+    if len(schedule) != 3:
+        raise ValueError(
+            "progress_schedule must have three values: fast interval, fast phase seconds, slow interval",
+        )
+    fast_interval, fast_phase_seconds, slow_interval = (float(x) for x in schedule)
+    start_time = time.monotonic()
+    next_progress = start_time + fast_interval
+    fast_phase_end = start_time + fast_phase_seconds
+
+    def maybe_log_progress(completed: int) -> None:
+        nonlocal next_progress
+        now = time.monotonic()
+        if now < next_progress:
+            return
+        LOGGER.info(
+            "Head-to-head progress",
+            extra={
+                "stage": "head2head",
+                "pairs_completed": completed,
+                "pairs_total": pair_count,
+                "elapsed_seconds": round(now - start_time, 1),
+            },
+        )
+        if now < fast_phase_end:
+            next_progress += fast_interval
+        else:
+            next_progress = max(next_progress, fast_phase_end) + slow_interval
+
+    processed_pairs = len(completed_pairs)
     for pair_id, (a, b) in enumerate(combinations(sorted_elites, 2)):
+        if pair_id in completed_pairs:
+            LOGGER.debug(
+                "Skipping completed pair",
+                extra={"stage": "head2head", "pair_id": pair_id, "strategy_a": a, "strategy_b": b},
+            )
+            maybe_log_progress(processed_pairs)
+            continue
         seeds = rng.integers(0, MAX_UINT32, size=games_per_pair, dtype=np.uint32).tolist()
         LOGGER.debug(
             "Simulating head-to-head batch",
@@ -318,6 +444,12 @@ def run_bonferroni_head2head(
                 "pval_one_sided": pval,
             }
         )
+        pending_shard_records.append(records[-1])
+        if len(pending_shard_records) >= shard_size:
+            shard_count = flush_shard(pending_shard_records, shard_count)
+        completed_pairs.add(pair_id)
+        processed_pairs += 1
+        maybe_log_progress(processed_pairs)
         LOGGER.debug(
             "Completed head-to-head batch",
             extra={
@@ -330,23 +462,31 @@ def run_bonferroni_head2head(
             },
         )
 
-    pairwise_table = pa.Table.from_pylist(
-        sorted(records, key=lambda r: r["pair_id"]),
-        schema=pa.schema(
-            [
-                pa.field("players", pa.int64()),
-                pa.field("seed", pa.int64()),
-                pa.field("pair_id", pa.int64()),
-                pa.field("a", pa.string()),
-                pa.field("b", pa.string()),
-                pa.field("games", pa.int64()),
-                pa.field("wins_a", pa.int64()),
-                pa.field("wins_b", pa.int64()),
-                pa.field("win_rate_a", pa.float64()),
-                pa.field("pval_one_sided", pa.float64()),
-            ]
-        ),
+    shard_count = flush_shard(pending_shard_records, shard_count)
+    all_frames: list[pd.DataFrame] = []
+    if records:
+        all_frames.append(pd.DataFrame.from_records(records))
+    all_frames.extend(existing_shard_frames)
+    if pairwise_parquet.exists():
+        try:
+            all_frames.append(pd.read_parquet(pairwise_parquet))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load existing pairwise parquet",
+                extra={"stage": "head2head", "path": str(pairwise_parquet), "error": str(exc)},
+            )
+    if not all_frames:
+        LOGGER.info(
+            "Bonferroni head-to-head: no results to write",
+            extra={"stage": "head2head", "elite_count": len(elites)},
+        )
+        return
+    combined_df = (
+        pd.concat(all_frames, ignore_index=True)
+        .sort_values("pair_id")
+        .drop_duplicates(subset=["pair_id"], keep="last")
     )
+    pairwise_table = pa.Table.from_pandas(combined_df, schema=shard_schema, preserve_index=False)
     write_parquet_atomic(pairwise_table, pairwise_parquet)
     LOGGER.info(
         "Bonferroni head-to-head results written",
