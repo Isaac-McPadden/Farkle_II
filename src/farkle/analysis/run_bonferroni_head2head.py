@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
@@ -143,7 +144,7 @@ def run_bonferroni_head2head(
         Directory containing ``tiers.json`` and where results are written.
     n_jobs : int, default ``1``
         Number of worker processes; when greater than one, games are simulated in
-        parallel.
+        parallel and queued in batches so multiple pairs advance concurrently.
 
     The function reads ``data/tiers.json`` to find strategies in the highest
     tier. It derives a per-pair game budget from :func:`~farkle.utils.stats.games_for_power`
@@ -394,6 +395,7 @@ def run_bonferroni_head2head(
         else:
             next_progress = max(next_progress, fast_phase_end) + slow_interval
 
+    scheduled_pairs: list[tuple[int, str, str, list[int]]] = []
     processed_pairs = len(completed_pairs)
     for pair_id, (a, b) in enumerate(combinations(sorted_elites, 2)):
         if pair_id in completed_pairs:
@@ -405,7 +407,7 @@ def run_bonferroni_head2head(
             continue
         seeds = rng.integers(0, MAX_UINT32, size=games_per_pair, dtype=np.uint32).tolist()
         LOGGER.debug(
-            "Simulating head-to-head batch",
+            "Queueing head-to-head batch",
             extra={
                 "stage": "head2head",
                 "strategy_a": a,
@@ -415,23 +417,30 @@ def run_bonferroni_head2head(
         )
         if not seeds:
             continue
-        strat_a = strategies_cache.setdefault(a, parse_strategy(a))
-        strat_b = strategies_cache.setdefault(b, parse_strategy(b))
-        df = simulate_many_games_from_seeds(
-            seeds=seeds,
-            strategies=[strat_a, strat_b],
-            n_jobs=n_jobs,
-        )
-        wa, wb = _count_pair_wins(df, a, b)
-        games_played = len(seeds)
-        if wa + wb != games_played:
-            raise RuntimeError(
-                f"Tie or missing outcome detected for pair ({a}, {b}); wins_a={wa} wins_b={wb} games={games_played}",
+        scheduled_pairs.append((pair_id, a, b, seeds))
+
+    if not scheduled_pairs:
+        shard_count = flush_shard(pending_shard_records, shard_count)
+    else:
+        strategy_names = {name for _, a, b, _ in scheduled_pairs for name in (a, b)}
+        strategies_cache = {name: parse_strategy(name) for name in strategy_names}
+        worker_count = max(1, min(len(scheduled_pairs), n_jobs if n_jobs > 0 else 1))
+
+        def simulate_pair(job: tuple[int, str, str, list[int]]) -> dict[str, Any]:
+            pair_id, a, b, seeds = job
+            df = simulate_many_games_from_seeds(
+                seeds=seeds,
+                strategies=[strategies_cache[a], strategies_cache[b]],
+                n_jobs=n_jobs,
             )
-        # One-sided: "A beats B"
-        pval = binomtest(wa, games_played, alternative="greater").pvalue
-        records.append(
-            {
+            wa, wb = _count_pair_wins(df, a, b)
+            games_played = len(seeds)
+            if wa + wb != games_played:
+                raise RuntimeError(
+                    f"Tie or missing outcome detected for pair ({a}, {b}); wins_a={wa} wins_b={wb} games={games_played}",
+                )
+            pval = binomtest(wa, games_played, alternative="greater").pvalue
+            return {
                 "players": k_players,
                 "seed": seed,
                 "pair_id": pair_id,
@@ -443,24 +452,40 @@ def run_bonferroni_head2head(
                 "win_rate_a": wa / games_played if games_played else math.nan,
                 "pval_one_sided": pval,
             }
-        )
-        pending_shard_records.append(records[-1])
-        if len(pending_shard_records) >= shard_size:
-            shard_count = flush_shard(pending_shard_records, shard_count)
-        completed_pairs.add(pair_id)
-        processed_pairs += 1
-        maybe_log_progress(processed_pairs)
-        LOGGER.debug(
-            "Completed head-to-head batch",
+
+        LOGGER.info(
+            "Dispatching head-to-head batches",
             extra={
                 "stage": "head2head",
-                "strategy_a": a,
-                "strategy_b": b,
-                "wins_a": wa,
-                "wins_b": wb,
-                "pvalue": pval,
+                "pending_pairs": len(scheduled_pairs),
+                "workers": worker_count,
             },
         )
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_job = {
+                executor.submit(simulate_pair, job): job for job in scheduled_pairs
+            }
+            for future in as_completed(future_to_job):
+                job_pair_id, job_a, job_b, _ = future_to_job[future]
+                record = future.result()
+                records.append(record)
+                pending_shard_records.append(record)
+                if len(pending_shard_records) >= shard_size:
+                    shard_count = flush_shard(pending_shard_records, shard_count)
+                completed_pairs.add(job_pair_id)
+                processed_pairs += 1
+                maybe_log_progress(processed_pairs)
+                LOGGER.debug(
+                    "Completed head-to-head batch",
+                    extra={
+                        "stage": "head2head",
+                        "strategy_a": job_a,
+                        "strategy_b": job_b,
+                        "wins_a": record["wins_a"],
+                        "wins_b": record["wins_b"],
+                        "pvalue": record["pval_one_sided"],
+                    },
+                )
 
     shard_count = flush_shard(pending_shard_records, shard_count)
     all_frames: list[pd.DataFrame] = []

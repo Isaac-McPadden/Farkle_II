@@ -62,13 +62,13 @@ def test_run_all_invokes_expected_modules(
     )
     monkeypatch.setitem(
         sys.modules,
-        "farkle.analysis.frequentist_tiering_report",
-        make_module("frequentist_tiering_report", "frequentist", record_call=False),
+        "farkle.analysis.tiering_report",
+        make_module("tiering_report", "tiering_report", record_call=False),
     )
     monkeypatch.setitem(
         sys.modules,
         "farkle.analysis.agreement",
-        make_module("agreement", "agreement", record_call=False),
+        make_module("agreement", "agreement"),
     )
     monkeypatch.setitem(
         sys.modules,
@@ -113,6 +113,11 @@ def test_run_all_invokes_expected_modules(
     else:
         assert "Analytics: skipping hist gradient boosting" in caplog.text
 
+    if cfg.analysis.run_agreement:
+        expected_calls.append("agreement")
+        assert "Analytics: skipping agreement" not in caplog.text
+    else:
+        assert "Analytics: skipping agreement" in caplog.text
     expected_calls.append("seed_summaries")
     assert calls == expected_calls
     assert "Analytics: starting all modules" in caplog.text
