@@ -122,7 +122,7 @@ def run_all(cfg: AppConfig) -> None:
             },
         )
 
-    freq_mod = _optional_import("farkle.analysis.frequentist_tiering_report")
+    freq_mod = _optional_import("farkle.analysis.tiering_report")
     if getattr(cfg.analysis, "run_frequentist", False) and freq_mod is not None:
         freq_mod.run(cfg)
     else:
@@ -133,6 +133,22 @@ def run_all(cfg: AppConfig) -> None:
                 "reason": (
                     "run_frequentist=False"
                     if not getattr(cfg.analysis, "run_frequentist", False)
+                    else "unavailable"
+                ),
+            },
+        )
+
+    agreement_mod = _optional_import("farkle.analysis.agreement")
+    if getattr(cfg.analysis, "run_agreement", False) and agreement_mod is not None:
+        agreement_mod.run(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping agreement",
+            extra={
+                "stage": "analysis",
+                "reason": (
+                    "run_agreement=False"
+                    if not getattr(cfg.analysis, "run_agreement", False)
                     else "unavailable"
                 ),
             },
