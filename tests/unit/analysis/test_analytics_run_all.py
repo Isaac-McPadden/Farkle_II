@@ -62,13 +62,8 @@ def test_run_all_invokes_expected_modules(
     )
     monkeypatch.setitem(
         sys.modules,
-        "farkle.analysis.frequentist",
-        make_module("frequentist", "frequentist", record_call=False),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "farkle.analysis.tiering_report",
-        make_module("tiering_report", "tiering_report", record_call=False),
+        "farkle.analysis.frequentist_tiering_report",
+        make_module("frequentist_tiering_report", "frequentist", record_call=False),
     )
     monkeypatch.setitem(
         sys.modules,

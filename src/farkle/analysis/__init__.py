@@ -122,33 +122,17 @@ def run_all(cfg: AppConfig) -> None:
             },
         )
 
-    freq_mod = _optional_import("farkle.analysis.frequentist")
+    freq_mod = _optional_import("farkle.analysis.frequentist_tiering_report")
     if getattr(cfg.analysis, "run_frequentist", False) and freq_mod is not None:
         freq_mod.run(cfg)
-    else:
-        LOGGER.info(
-            "Analytics: skipping frequentist ranking",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_frequentist=False"
-                    if not getattr(cfg.analysis, "run_frequentist", False)
-                    else "unavailable"
-                ),
-            },
-        )
-
-    tier_mod = _optional_import("farkle.analysis.tiering_report")
-    if cfg.analysis.run_tiering_report and tier_mod is not None:
-        tier_mod.run(cfg)
     else:
         LOGGER.info(
             "Analytics: skipping tiering report",
             extra={
                 "stage": "analysis",
                 "reason": (
-                    "run_tiering_report=False"
-                    if not cfg.analysis.run_tiering_report
+                    "run_frequentist=False"
+                    if not getattr(cfg.analysis, "run_frequentist", False)
                     else "unavailable"
                 ),
             },
