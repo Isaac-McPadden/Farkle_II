@@ -31,8 +31,8 @@ def _load_top_strategies(
     *,
     ratings_path: Path,
     metrics_path: Path,
-    ratings_limit: int = 150,
-    metrics_limit: int = 150,
+    ratings_limit: int = 100,
+    metrics_limit: int = 100,
 ) -> list[str]:
     """Collect fallback strategies from pooled ratings and metrics tables.
 
