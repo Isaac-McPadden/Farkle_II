@@ -26,7 +26,11 @@ def _optional_import(module: str) -> ModuleType | None:
     except ModuleNotFoundError as exc:  # pragma: no cover - exercised in tests
         LOGGER.info(
             "Analytics module skipped due to missing dependency",
-            extra={"stage": "analysis", "module": module, "missing": str(exc)},
+            extra={
+                "stage": "analysis",
+                "missing_module": module,
+                "missing": str(exc),
+            },
         )
         return None
 
