@@ -425,13 +425,14 @@ def run_bonferroni_head2head(
         strategy_names = {name for _, a, b, _ in scheduled_pairs for name in (a, b)}
         strategies_cache = {name: parse_strategy(name) for name in strategy_names}
         worker_count = max(1, min(len(scheduled_pairs), n_jobs if n_jobs > 0 else 1))
+        pair_jobs = 1 if worker_count == 1 else max(1, n_jobs // worker_count)
 
         def simulate_pair(job: tuple[int, str, str, list[int]]) -> dict[str, Any]:
             pair_id, a, b, seeds = job
             df = simulate_many_games_from_seeds(
                 seeds=seeds,
                 strategies=[strategies_cache[a], strategies_cache[b]],
-                n_jobs=n_jobs,
+                n_jobs=pair_jobs,
             )
             wa, wb = _count_pair_wins(df, a, b)
             games_played = len(seeds)
@@ -459,6 +460,7 @@ def run_bonferroni_head2head(
                 "stage": "head2head",
                 "pending_pairs": len(scheduled_pairs),
                 "workers": worker_count,
+                "pair_jobs": pair_jobs,
             },
         )
         with ThreadPoolExecutor(max_workers=worker_count) as executor:

@@ -13,7 +13,7 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 20                        # RNG seed used by the tournament core
+  seed: 21                        # RNG seed used by the tournament core
   n_jobs: 16                      # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {N}p_metrics.parquet with sums & sq_sums
   row_dir: "rows"                 # rows => per-N rows under {results}/{N}_players/rows/
@@ -107,7 +107,7 @@ trueskill:
   draw_probability: 0.0
 
 head2head:
-  n_jobs: 4
+  n_jobs: 16
   games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
   fdr_q: 0.02                     # FDR control threshold for BH H2H design (if/where used)
 

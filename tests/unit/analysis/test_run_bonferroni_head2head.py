@@ -135,3 +135,25 @@ def test_run_bonferroni_head2head_progress_schedule_validation(
 
     with pytest.raises(ValueError, match="progress_schedule must have three values"):
         rb.run_bonferroni_head2head(root=tmp_path, progress_schedule=[1, 2])
+
+
+def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    analysis_dir = tmp_path / "analysis"
+    analysis_dir.mkdir()
+    (analysis_dir / "tiers.json").write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
+
+    monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: 1)  # noqa: ANN001
+    monkeypatch.setattr(rb, "parse_strategy", lambda name: name)
+
+    pair_jobs: list[int] = []
+
+    def fake_simulate(seeds, strategies, n_jobs):  # noqa: ANN001,ARG001
+        pair_jobs.append(n_jobs)
+        return pd.DataFrame({"winner_strategy": [str(strategies[0])] * len(seeds)})
+
+    monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_simulate)
+
+    rb.run_bonferroni_head2head(root=tmp_path, n_jobs=4)
+
+    assert pair_jobs
+    assert all(job == 1 for job in pair_jobs)
