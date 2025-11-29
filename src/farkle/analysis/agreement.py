@@ -70,6 +70,10 @@ def _build_payload(analysis_dir: Path, players: int) -> dict[str, object]:
 
     Returns:
         Dictionary of correlation, stability, and coverage metrics keyed by method.
+
+    Notes:
+        Score ties are permitted because downstream correlation metrics already
+        account for them; ties are only logged for visibility.
     """
     methods: dict[str, MethodData] = {}
 
@@ -278,18 +282,15 @@ def _select_score_column(df: pd.DataFrame, candidates: Iterable[str]) -> str:
 
 
 def _assert_no_ties(series: pd.Series, label: str) -> None:
-    """Validate that a score series does not contain duplicate values.
+    """Log a warning when a score series contains duplicate values.
 
     Args:
         series: Scores indexed by strategy.
         label: Human-readable identifier used in error messages.
-
-    Raises:
-        ValueError: If duplicate values are detected in the series.
     """
     values = series.to_numpy()
     if np.unique(values).size != values.size:
-        raise ValueError(f"Ties detected in {label}")
+        LOGGER.warning("Ties detected in %s; correlation metrics handle ties.", label)
 
 
 def _rank_correlations(
