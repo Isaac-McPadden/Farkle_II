@@ -156,4 +156,4 @@ def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.Mon
     rb.run_bonferroni_head2head(root=tmp_path, n_jobs=4)
 
     assert pair_jobs
-    assert all(job == 1 for job in pair_jobs)
+    assert all(job == 2 for job in pair_jobs)

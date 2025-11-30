@@ -424,8 +424,14 @@ def run_bonferroni_head2head(
     else:
         strategy_names = {name for _, a, b, _ in scheduled_pairs for name in (a, b)}
         strategies_cache = {name: parse_strategy(name) for name in strategy_names}
-        worker_count = max(1, min(len(scheduled_pairs), n_jobs if n_jobs > 0 else 1))
-        pair_jobs = 1 if worker_count == 1 else max(1, n_jobs // worker_count)
+
+        effective_jobs = n_jobs if n_jobs > 0 else 1
+        if effective_jobs <= 1:
+            worker_count = 1
+            pair_jobs = 1
+        else:
+            worker_count = min(len(scheduled_pairs), max(1, effective_jobs // 2))
+            pair_jobs = max(1, effective_jobs // worker_count)
 
         def simulate_pair(job: tuple[int, str, str, list[int]]) -> dict[str, Any]:
             pair_id, a, b, seeds = job
