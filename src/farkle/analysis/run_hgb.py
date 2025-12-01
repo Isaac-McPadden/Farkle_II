@@ -433,11 +433,13 @@ def run_hgb(
             )
             .assign(players="overall")
         )
+        grouped = grouped.astype(
+            {"importance_mean": "float", "importance_std": "float"}
+        )
         _write_importances(root / OVERALL_IMPORTANCE_NAME, grouped)
-        importance_summary["overall"] = {
-            str(row.feature): float(row.importance_mean)
-            for row in grouped.itertuples(index=False)
-        }
+        importance_summary["overall"] = grouped.set_index("feature")[
+            "importance_mean"
+        ].to_dict()
 
     if output_path is None:
         output_path = root / "hgb_importance.json"
