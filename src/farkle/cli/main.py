@@ -85,10 +85,29 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_sub.add_parser("ingest", help="Ingest raw CSV data")
     analyze_sub.add_parser("curate", help="Curate ingested data")
     analyze_sub.add_parser("combine", help="Combine curated data into a superset parquet")
-    analyze_sub.add_parser("metrics", help="Compute metrics")
-    analyze_sub.add_parser("preprocess", help="Run ingest, curate, combine, and metrics")
-    analyze_sub.add_parser(
+    metrics_parser = analyze_sub.add_parser("metrics", help="Compute metrics")
+    metrics_parser.add_argument(
+        "--compute-game-stats",
+        action="store_true",
+        help="Also compute game-length statistics from curated rows",
+    )
+
+    preprocess_parser = analyze_sub.add_parser(
+        "preprocess", help="Run ingest, curate, combine, and metrics"
+    )
+    preprocess_parser.add_argument(
+        "--compute-game-stats",
+        action="store_true",
+        help="Also compute game-length statistics from curated rows",
+    )
+
+    pipeline_parser = analyze_sub.add_parser(
         "pipeline", help="Run ingest->curate->combine->metrics->analytics pipeline"
+    )
+    pipeline_parser.add_argument(
+        "--compute-game-stats",
+        action="store_true",
+        help="Also compute game-length statistics from curated rows",
     )
     analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
 
@@ -130,12 +149,16 @@ def _write_active_config(cfg: AppConfig, dest_dir: Path) -> None:
         Path(tmp_path).write_text(resolved_yaml, encoding="utf-8")
 
 
-def _run_preprocess(cfg: AppConfig) -> None:
-    """Run ingest, curate, combine, and metrics sequentially."""
+def _run_preprocess(cfg: AppConfig, *, compute_game_stats: bool = False) -> None:
+    """Run ingest, curate, combine, metrics, and optional game stats."""
     ingest.run(cfg)
     curate.run(cfg)
     combine.run(cfg)
     metrics.run(cfg)
+    if compute_game_stats:
+        from farkle.analysis import game_stats
+
+        game_stats.run(cfg)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -234,6 +257,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "analysis_dir": str(cfg.analysis_dir),
             },
         )
+        compute_game_stats = getattr(args, "compute_game_stats", False)
         if args.an_cmd == "ingest":
             ingest.run(cfg)
         elif args.an_cmd == "curate":
@@ -243,12 +267,16 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif args.an_cmd == "metrics":
             metrics.run(cfg)
         elif args.an_cmd == "preprocess":
-            _run_preprocess(cfg)
+            _run_preprocess(cfg, compute_game_stats=compute_game_stats)
         elif args.an_cmd == "analytics":
             analysis_pkg.run_all(cfg)
         elif args.an_cmd == "pipeline":
-            _run_preprocess(cfg)
+            _run_preprocess(cfg, compute_game_stats=compute_game_stats)
             analysis_pkg.run_all(cfg)
+        if args.an_cmd == "metrics" and compute_game_stats:
+            from farkle.analysis import game_stats
+
+            game_stats.run(cfg)
         LOGGER.info(
             "Analysis command completed",
             extra={"stage": "cli", "command": f"analyze:{args.an_cmd}"},
