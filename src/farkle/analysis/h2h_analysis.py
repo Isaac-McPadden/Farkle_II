@@ -28,6 +28,11 @@ _DECISION_SCHEMA = pa.schema(
     [
         pa.field("a", pa.string()),
         pa.field("b", pa.string()),
+        pa.field("wins_a", pa.int64()),
+        pa.field("wins_b", pa.int64()),
+        pa.field("games", pa.int64()),
+        pa.field("P1_win_rate", pa.float64()),
+        pa.field("P2_win_rate", pa.float64()),
         pa.field("pval", pa.float64()),
         pa.field("adj_p", pa.float64()),
         pa.field("is_sig", pa.bool_()),
@@ -110,6 +115,42 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
     return decisions[["a", "b", "pval", "adj_p", "is_sig", "dir"]]
 
 
+def _aggregate_pairwise(df_pairs: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate mirrored matchups so seat order does not skew win rates."""
+
+    if df_pairs.empty:
+        return df_pairs.assign(P1_win_rate=pd.Series(dtype="float64"), P2_win_rate=pd.Series(dtype="float64"))
+
+    base = df_pairs.copy()
+    base["a"] = base["a"].astype(str)
+    base["b"] = base["b"].astype(str)
+    base["wins_a"] = pd.to_numeric(base["wins_a"], errors="coerce").fillna(0).astype(int)
+    base["wins_b"] = pd.to_numeric(base["wins_b"], errors="coerce").fillna(0).astype(int)
+    base["games"] = pd.to_numeric(base["games"], errors="coerce").fillna(0).astype(int)
+
+    canonical_is_ab = base["a"] <= base["b"]
+    base["p1"] = np.where(canonical_is_ab, base["a"], base["b"])
+    base["p2"] = np.where(canonical_is_ab, base["b"], base["a"])
+    base["p1_wins"] = np.where(canonical_is_ab, base["wins_a"], base["wins_b"])
+    base["p2_wins"] = np.where(canonical_is_ab, base["wins_b"], base["wins_a"])
+
+    grouped = (
+        base.groupby(["p1", "p2"], as_index=False)[["p1_wins", "p2_wins", "games"]]
+        .sum()
+        .rename(
+            columns={
+                "p1": "a",
+                "p2": "b",
+                "p1_wins": "wins_a",
+                "p2_wins": "wins_b",
+            }
+        )
+    )
+    grouped["P1_win_rate"] = (grouped["wins_a"] / grouped["games"]).fillna(0.0)
+    grouped["P2_win_rate"] = (grouped["wins_b"] / grouped["games"]).fillna(0.0)
+    return grouped[["a", "b", "wins_a", "wins_b", "games", "P1_win_rate", "P2_win_rate"]]
+
+
 def build_significant_graph(df_adj: pd.DataFrame) -> nx.DiGraph:
     """Construct a directed graph from Holm-adjusted significance decisions."""
     expected = {"a", "b", "dir", "is_sig", "pval", "adj_p"}
@@ -167,6 +208,7 @@ def run_post_h2h(cfg: AppConfig) -> None:
         raise FileNotFoundError(pairwise_path)
 
     df_pairs = pd.read_parquet(pairwise_path, columns=["a", "b", "wins_a", "wins_b", "games"])
+    df_pairs = _aggregate_pairwise(df_pairs)
     alpha = _resolve_alpha(cfg)
     LOGGER.info(
         "Post H2H: adjusting Holm-Bonferroni",
@@ -174,7 +216,9 @@ def run_post_h2h(cfg: AppConfig) -> None:
     )
 
     df_adj = holm_bonferroni(df_pairs, alpha)
-    decisions_tbl = pa.Table.from_pandas(df_adj, schema=_DECISION_SCHEMA, preserve_index=False)
+    decisions = df_adj.merge(df_pairs, on=["a", "b"], how="left")
+    decisions = decisions[[field.name for field in _DECISION_SCHEMA]]
+    decisions_tbl = pa.Table.from_pandas(decisions, schema=_DECISION_SCHEMA, preserve_index=False)
     decisions_path = analysis_dir / "bonferroni_decisions.parquet"
     write_parquet_atomic(decisions_tbl, decisions_path)
 

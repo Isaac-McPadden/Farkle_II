@@ -160,11 +160,22 @@ def _collect_metrics_frames(paths: Iterable[Path]) -> pd.DataFrame:
                 "games",
                 "wins",
                 "win_rate",
+                "win_prob",
                 "expected_score",
             ]
         )
     df = pd.concat(frames, ignore_index=True)
-    base_cols = ["strategy", "n_players", "games", "wins", "win_rate", "expected_score"]
+    if "win_prob" not in df.columns:
+        df["win_prob"] = df["win_rate"]
+    base_cols = [
+        "strategy",
+        "n_players",
+        "games",
+        "wins",
+        "win_rate",
+        "win_prob",
+        "expected_score",
+    ]
     remainder = [c for c in df.columns if c not in base_cols]
     return df[base_cols + remainder]
 

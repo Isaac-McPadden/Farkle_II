@@ -474,7 +474,16 @@ def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: i
     df["false_wins_handled"] = df["false_wins_handled"].round().astype(int)
     df["n_players"] = player_count
     df.reset_index(inplace=True)
-    desired_order = ["strategy", "n_players", "games", "wins", "win_rate", "expected_score"]
+    df["win_prob"] = df["win_rate"]
+    desired_order = [
+        "strategy",
+        "n_players",
+        "games",
+        "wins",
+        "win_rate",
+        "win_prob",
+        "expected_score",
+    ]
     remaining = [c for c in df.columns if c not in desired_order]
     return df[desired_order + remaining]
 
