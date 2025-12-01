@@ -8,7 +8,9 @@ heuristic (distance from a fair coin scaled by the cross-seed standard error).
 
 The outputs are written to ``analysis/variance.parquet`` and a compact summary
 aggregated by ``n_players`` is written to ``analysis/variance_summary.parquet``.
-Both files share a done-stamp that captures input/output freshness so that the
+The module also derives seed-level variance components for win rate, total
+score, and game length and writes them to ``analysis/variance_components.parquet``.
+All outputs share a done-stamp that captures input/output freshness so that the
 module can be skipped when rerun unless ``force`` is requested.
 """
 
@@ -34,7 +36,15 @@ LOGGER = logging.getLogger(__name__)
 SUMMARY_PATTERN = re.compile(r"strategy_summary_(\d+)p_seed(\d+)\.parquet$")
 VARIANCE_OUTPUT = "variance.parquet"
 SUMMARY_OUTPUT = "variance_summary.parquet"
+COMPONENTS_OUTPUT = "variance_components.parquet"
 STAMP_NAME = "variance.done.json"
+MIN_SEEDS = 2
+
+COMPONENT_COLUMN_MAP = {
+    "win_rate": "win_rate",
+    "total_score": "score_mean",
+    "game_length": "turns_mean",
+}
 
 
 def run(cfg: AppConfig, *, force: bool = False) -> None:
@@ -49,6 +59,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     metrics_path = analysis_dir / cfg.metrics_name
     variance_path = analysis_dir / VARIANCE_OUTPUT
     summary_path = analysis_dir / SUMMARY_OUTPUT
+    components_path = analysis_dir / COMPONENTS_OUTPUT
     stamp_path = analysis_dir / STAMP_NAME
 
     if not metrics_path.exists():
@@ -63,7 +74,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         return
 
     inputs = [metrics_path, *seed_summary_paths]
-    outputs = [variance_path, summary_path]
+    outputs = [variance_path, summary_path, components_path]
     if not force and _is_up_to_date(stamp_path, inputs=inputs, outputs=outputs):
         LOGGER.info(
             "Variance outputs up-to-date",
@@ -71,6 +82,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 "stage": "variance",
                 "variance_path": str(variance_path),
                 "summary_path": str(summary_path),
+                "components_path": str(components_path),
                 "stamp": str(stamp_path),
             },
         )
@@ -84,6 +96,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             "metrics_path": str(metrics_path),
             "variance_path": str(variance_path),
             "summary_path": str(summary_path),
+            "components_path": str(components_path),
             "force": force,
         },
     )
@@ -98,6 +111,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         return
 
     variance_frame = _compute_variance(seed_frame)
+    components_frame = _compute_variance_components(seed_frame)
     detailed = _merge_metrics(metrics_frame, variance_frame)
     if detailed.empty:
         LOGGER.info(
@@ -110,8 +124,14 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     variance_table = pa.Table.from_pandas(detailed, preserve_index=False)
     summary_table = pa.Table.from_pandas(summary, preserve_index=False)
+    components_table = pa.Table.from_pandas(
+        components_frame, preserve_index=False
+    )
     write_parquet_atomic(variance_table, variance_path, codec=cfg.parquet_codec)
     write_parquet_atomic(summary_table, summary_path, codec=cfg.parquet_codec)
+    write_parquet_atomic(
+        components_table, components_path, codec=cfg.parquet_codec
+    )
     _write_stamp(stamp_path, inputs=inputs, outputs=outputs)
 
     LOGGER.info(
@@ -121,6 +141,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             "rows": len(detailed),
             "variance_path": str(variance_path),
             "summary_path": str(summary_path),
+            "components_path": str(components_path),
         },
     )
 
@@ -155,19 +176,23 @@ def _load_metrics(path: Path) -> pd.DataFrame:
 def _load_seed_summaries(paths: Iterable[Path]) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for path in paths:
-        df = pd.read_parquet(path, columns=["strategy_id", "players", "seed", "win_rate"])
+        df = pd.read_parquet(path)
         if df.empty:
             continue
         df = df.copy()
         df["strategy_id"] = df["strategy_id"].astype(str)
         df["players"] = df["players"].astype(int)
         df["seed"] = df["seed"].astype(int)
-        df["win_rate"] = pd.to_numeric(df["win_rate"], errors="coerce")
+        for column in {"win_rate", *COMPONENT_COLUMN_MAP.values()}:
+            if column not in df.columns:
+                df[column] = float("nan")
+            df[column] = pd.to_numeric(df[column], errors="coerce")
         frames.append(df)
 
     if frames:
         return pd.concat(frames, ignore_index=True, sort=False)
-    return pd.DataFrame(columns=["strategy_id", "players", "seed", "win_rate"])
+    columns = ["strategy_id", "players", "seed", "win_rate", *COMPONENT_COLUMN_MAP.values()]
+    return pd.DataFrame(columns=columns)
 
 
 def _compute_variance(seed_frame: pd.DataFrame) -> pd.DataFrame:
@@ -206,6 +231,91 @@ def _compute_variance(seed_frame: pd.DataFrame) -> pd.DataFrame:
         "se_win_rate",
     ]
     return pd.DataFrame(records, columns=cols)
+
+
+def _compute_variance_components(
+    seed_frame: pd.DataFrame, *, min_seeds: int = MIN_SEEDS
+) -> pd.DataFrame:
+    columns = [
+        "strategy_id",
+        "players",
+        "component",
+        "n_seeds",
+        "mean",
+        "variance",
+        "std_dev",
+        "se_mean",
+        "ci_lower",
+        "ci_upper",
+    ]
+
+    if seed_frame.empty:
+        return pd.DataFrame(columns=columns)
+
+    records: list[dict[str, float | int | str]] = []
+    grouped = seed_frame.groupby(["strategy_id", "players"], sort=True)
+    for (strategy_id, players), group in grouped:
+        seed_count = group["seed"].nunique()
+        if seed_count < min_seeds:
+            LOGGER.info(
+                "Skipping variance components: insufficient seeds",
+                extra={
+                    "stage": "variance",
+                    "strategy_id": strategy_id,
+                    "players": int(players),
+                    "seeds": int(seed_count),
+                    "min_seeds": int(min_seeds),
+                },
+            )
+            continue
+
+        for component, column in COMPONENT_COLUMN_MAP.items():
+            values = pd.to_numeric(group[column], errors="coerce").dropna()
+            observations = int(values.size)
+            if observations < min_seeds:
+                LOGGER.info(
+                    "Skipping component metric: insufficient observations",
+                    extra={
+                        "stage": "variance",
+                        "strategy_id": strategy_id,
+                        "players": int(players),
+                        "component": component,
+                        "observations": observations,
+                        "min_seeds": int(min_seeds),
+                    },
+                )
+                continue
+
+            variance = float(values.var(ddof=1)) if observations > 1 else float("nan")
+            variance = max(variance, 0.0) if not math.isnan(variance) else variance
+            std_dev = math.sqrt(variance) if variance == variance else float("nan")
+            se_mean = (
+                std_dev / math.sqrt(observations)
+                if observations > 0 and std_dev == std_dev
+                else float("nan")
+            )
+            ci_bounds = (
+                (values.mean() - 1.96 * se_mean, values.mean() + 1.96 * se_mean)
+                if observations > 1 and se_mean == se_mean
+                else (float("nan"), float("nan"))
+            )
+
+            records.append(
+                {
+                    "strategy_id": strategy_id,
+                    "players": int(players),
+                    "component": component,
+                    "n_seeds": observations,
+                    "mean": float(values.mean()),
+                    "variance": variance,
+                    "std_dev": std_dev,
+                    "se_mean": se_mean,
+                    "ci_lower": ci_bounds[0],
+                    "ci_upper": ci_bounds[1],
+                }
+            )
+
+    return pd.DataFrame(records, columns=columns)
 
 
 def _merge_metrics(metrics_frame: pd.DataFrame, variance_frame: pd.DataFrame) -> pd.DataFrame:
