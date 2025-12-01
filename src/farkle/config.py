@@ -124,6 +124,10 @@ class AnalysisConfig:
     #   metrics_name: "metrics.parquet"
     #   manifest_name: "manifest.jsonl"
     outputs: dict[str, Any] = field(default_factory=dict)
+    game_stats_margin_thresholds: tuple[int, ...] = (500, 1000)
+    """Victory-margin thresholds used by game stats and rare-event summaries."""
+    rare_event_target_score: int = 10_000
+    """Score threshold used to flag games where multiple players crossed the target."""
 
     @property
     def run_tiering_report(self) -> bool:
@@ -319,6 +323,16 @@ class AppConfig:
         if preferred.exists() or not legacy.exists():
             return preferred
         return legacy
+
+    @property
+    def game_stats_margin_thresholds(self) -> tuple[int, ...]:
+        """Victory-margin thresholds used by game-stat summaries."""
+        return tuple(self.analysis.game_stats_margin_thresholds)
+
+    @property
+    def rare_event_target_score(self) -> int:
+        """Score threshold used to flag multiple players crossing the target."""
+        return int(self.analysis.rare_event_target_score)
 
     # Per-N helper paths used by ingest/curate/metrics
     def manifest_for(self, n: int) -> Path:
