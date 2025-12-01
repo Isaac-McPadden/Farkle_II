@@ -41,6 +41,8 @@ sim:
   consider_dice_opts: [true, false]    # sequence[bool]: include dice-count branching
   auto_hot_dice_opts: [true, false]    # sequence[bool]: auto roll on hot dice
   run_up_score_opts: [true, false]     # sequence[bool]: allow run-up scoring strategy
+  include_stop_at: false               # bool: append stop_at_{350,400,450,500} variants
+  include_stop_at_heuristic: false     # bool: append heuristic stop-at variants
 
 analysis:
   run_trueskill: true       # bool: compute TrueSkill ratings

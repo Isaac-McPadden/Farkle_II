@@ -75,6 +75,8 @@ class SimConfig:
     consider_dice_opts: Sequence[bool] = (True, False)
     auto_hot_dice_opts: Sequence[bool] = (True, False)
     run_up_score_opts: Sequence[bool] = (True, False)
+    include_stop_at: bool = False
+    include_stop_at_heuristic: bool = False
 
 
 @dataclass

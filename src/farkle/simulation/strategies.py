@@ -10,6 +10,7 @@ from __future__ import annotations
 import pickle
 import random
 import re
+from functools import partial
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -22,6 +23,10 @@ from farkle.utils.types import DiceRoll  # noqa: F401 Likely needed for decide(*
 
 __all__: list[str] = [
     "FavorDiceOrScore",
+    "StopAtStrategy",
+    "STOP_AT_THRESHOLDS",
+    "build_stop_at_strategy",
+    "STOP_AT_REGISTRY",
     "ThresholdStrategy",
     "random_threshold_strategy",
 ]
@@ -35,6 +40,10 @@ class FavorDiceOrScore(Enum):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return self.value
+
+
+STOP_AT_THRESHOLDS: tuple[int, ...] = (350, 400, 450, 500)
+"""Named stop-at thresholds available via the strategy registry."""
 
 
 _STRAT_RE = re.compile(
@@ -233,6 +242,22 @@ class ThresholdStrategy:
         return f"Strat({self.score_threshold},{self.dice_threshold})[{cs}{cd}][{sf}{so}{fs}][{rb}][{hd}{rs}]"
 
 
+@dataclass
+class StopAtStrategy(ThresholdStrategy):
+    """Named strategy that banks once a turn score crosses a fixed level."""
+
+    label: str = ""
+    heuristic: bool = False
+
+    def __post_init__(self):
+        super().__post_init__()
+        if not re.match(r"stop_at_\d+(?:_heuristic)?\Z", self.label):
+            raise ValueError(f"Invalid stop-at strategy label: {self.label!r}")
+
+    def __str__(self) -> str:  # noqa: D401 - magic method
+        return self.label
+
+
 # ---------------------------------------------------------------------------
 # Convenience factory
 # ---------------------------------------------------------------------------
@@ -294,6 +319,50 @@ def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStra
         require_both=rb,
         favor_dice_or_score=fs,
     )
+
+
+def build_stop_at_strategy(
+    threshold: int,
+    *,
+    heuristic: bool = False,
+    inactive_dice_threshold: int | None = None,
+) -> StopAtStrategy:
+    """Create a stop-at strategy with an optional heuristic variant."""
+
+    if threshold not in STOP_AT_THRESHOLDS:
+        raise ValueError(f"Unregistered stop-at threshold: {threshold}")
+
+    dice_threshold = -1 if inactive_dice_threshold is None else inactive_dice_threshold
+    label = f"stop_at_{threshold}" + ("_heuristic" if heuristic else "")
+
+    return StopAtStrategy(
+        score_threshold=threshold,
+        dice_threshold=dice_threshold,
+        smart_five=heuristic,
+        smart_one=heuristic,
+        consider_score=True,
+        consider_dice=False,
+        require_both=False,
+        auto_hot_dice=heuristic,
+        run_up_score=False,
+        favor_dice_or_score=FavorDiceOrScore.SCORE,
+        label=label,
+        heuristic=heuristic,
+    )
+
+
+STOP_AT_REGISTRY: dict[str, Callable[..., StopAtStrategy]] = {
+    **{
+        f"stop_at_{threshold}": partial(build_stop_at_strategy, threshold)
+        for threshold in STOP_AT_THRESHOLDS
+    },
+    **{
+        f"stop_at_{threshold}_heuristic": partial(
+            build_stop_at_strategy, threshold, heuristic=True
+        )
+        for threshold in STOP_AT_THRESHOLDS
+    },
+}
 
 
 def _parse_strategy_flags(s: str) -> dict[str, Any]:

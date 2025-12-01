@@ -51,6 +51,8 @@ def _resolve_strategies(
             consider_dice_opts=cfg.sim.consider_dice_opts,
             auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
             run_up_score_opts=cfg.sim.run_up_score_opts,
+            include_stop_at=cfg.sim.include_stop_at,
+            include_stop_at_heuristic=cfg.sim.include_stop_at_heuristic,
             # prefer_score is and must be handled automatically
         )
         used_custom = any(
@@ -63,6 +65,8 @@ def _resolve_strategies(
                 cfg.sim.consider_dice_opts not in [(True, False), [True, False], None],
                 cfg.sim.auto_hot_dice_opts not in [(False, True), [False, True], None],
                 cfg.sim.run_up_score_opts not in [(False, True), [False, True], None],
+                cfg.sim.include_stop_at,
+                cfg.sim.include_stop_at_heuristic,
             ]
         )
     else:
@@ -446,6 +450,8 @@ def run_multi(cfg: AppConfig, player_counts: Sequence[int] | None = None) -> dic
         consider_dice_opts=cfg.sim.consider_dice_opts,
         auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
         run_up_score_opts=cfg.sim.run_up_score_opts,
+        include_stop_at=cfg.sim.include_stop_at,
+        include_stop_at_heuristic=cfg.sim.include_stop_at_heuristic,
     )
     # If you want the grid log here too, resolve + log once:
     strategies, grid_size, used_custom = _resolve_strategies(cfg, strategies)
