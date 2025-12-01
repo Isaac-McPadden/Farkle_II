@@ -1,9 +1,26 @@
 # src/farkle/analysis/game_stats.py
-"""Compute descriptive statistics for game lengths by strategy and player count.
+"""Compute descriptive statistics for game lengths and victory margins.
 
 Reads curated row-level parquet files (per-``n`` shards and the combined
 superset) and aggregates the ``n_rounds`` column. Outputs both per-strategy
 statistics and a small global summary grouped by ``n_players``.
+
+The module also derives per-game ``margin_of_victory`` from seat-level scores
+and writes ``analysis/margin_stats.parquet`` with per-``(strategy, n_players)``
+summaries. Margin schema:
+
+``summary_level``
+    Literal "strategy" for compatibility with ``game_length.parquet``.
+``strategy``
+    Strategy string taken from ``P#_strategy`` columns.
+``n_players``
+    Player count inferred from the shard path.
+``observations``
+    Number of games with at least two valid seat scores.
+``mean_margin`` / ``median_margin`` / ``std_margin``
+    Descriptive statistics over ``margin_of_victory``.
+``prob_margin_le_500`` / ``prob_margin_le_1000``
+    Close-game shares for the given thresholds.
 """
 
 from __future__ import annotations
@@ -23,10 +40,11 @@ from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.schema_helpers import n_players_from_schema
 
 LOGGER = logging.getLogger(__name__)
+_MARGIN_THRESHOLDS = (500, 1000)
 
 
 def run(cfg: AppConfig, *, force: bool = False) -> None:
-    """Compute game-length statistics and write them to ``game_length.parquet``.
+    """Compute game statistics and write them to parquet outputs.
 
     Args:
         cfg: Application configuration used to resolve file locations.
@@ -34,7 +52,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     """
 
     analysis_dir = cfg.analysis_dir
-    output_path = analysis_dir / "game_length.parquet"
+    game_length_output = analysis_dir / "game_length.parquet"
+    margin_output = analysis_dir / "margin_stats.parquet"
     stamp_path = analysis_dir / "game_length.done.json"
 
     per_n_inputs = _discover_per_n_inputs(cfg)
@@ -48,12 +67,14 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             "game-stats: no curated parquet files found under analysis/data"
         )
 
-    if not force and _is_up_to_date(stamp_path, inputs=input_paths, outputs=[output_path]):
+    outputs = [game_length_output, margin_output]
+    if not force and _is_up_to_date(stamp_path, inputs=input_paths, outputs=outputs):
         LOGGER.info(
             "Game-length stats up-to-date",
             extra={
                 "stage": "game_stats",
-                "output": str(output_path),
+                "game_length_output": str(game_length_output),
+                "margin_output": str(margin_output),
                 "stamp": str(stamp_path),
             },
         )
@@ -64,7 +85,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         extra={
             "stage": "game_stats",
             "analysis_dir": str(analysis_dir),
-            "output": str(output_path),
+            "game_length_output": str(game_length_output),
+            "margin_output": str(margin_output),
             "force": force,
         },
     )
@@ -77,15 +99,23 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         raise RuntimeError("game-stats: no rows available to summarize")
 
     table = pa.Table.from_pandas(combined, preserve_index=False)
-    write_parquet_atomic(table, output_path, codec=cfg.parquet_codec)
-    _write_stamp(stamp_path, inputs=input_paths, outputs=[output_path])
+    write_parquet_atomic(table, game_length_output, codec=cfg.parquet_codec)
+
+    margin_stats = _per_strategy_margin_stats(per_n_inputs)
+    if margin_stats.empty:
+        raise RuntimeError("game-stats: no margins available to summarize")
+
+    margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
+    write_parquet_atomic(margin_table, margin_output, codec=cfg.parquet_codec)
+    _write_stamp(stamp_path, inputs=input_paths, outputs=outputs)
 
     LOGGER.info(
         "Game-length stats written",
         extra={
             "stage": "game_stats",
             "rows": len(combined),
-            "output": str(output_path),
+            "game_length_output": str(game_length_output),
+            "margin_output": str(margin_output),
         },
     )
 
@@ -165,6 +195,73 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
     return pd.DataFrame(rows)
 
 
+def _per_strategy_margin_stats(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    thresholds: Sequence[int] = _MARGIN_THRESHOLDS,
+) -> pd.DataFrame:
+    """Compute victory-margin statistics grouped by strategy and player count."""
+
+    rows: list[pd.Series] = []
+    for n_players, path in per_n_inputs:
+        ds_in = ds.dataset(path)
+        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+        score_cols = [name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")]
+
+        if not strategy_cols:
+            LOGGER.warning(
+                "Per-N parquet missing strategy columns",
+                extra={"stage": "game_stats", "path": str(path)},
+            )
+            continue
+
+        if not score_cols:
+            LOGGER.warning(
+                "Per-N parquet missing seat score columns; skipping margins",
+                extra={"stage": "game_stats", "path": str(path)},
+            )
+            continue
+
+        columns = [*score_cols, *strategy_cols]
+        tbl = ds_in.to_table(columns=columns)
+        df = tbl.to_pandas()
+        df["margin_of_victory"] = _compute_margins(df, score_cols)
+
+        melted = df.melt(
+            id_vars=["margin_of_victory"],
+            value_vars=strategy_cols,
+            value_name="strategy",
+        )
+        melted = melted.dropna(subset=["strategy", "margin_of_victory"])
+        melted["n_players"] = n_players
+
+        grouped = melted.groupby(["strategy", "n_players"], sort=False)["margin_of_victory"]
+        for (strategy, players), margins in grouped:
+            stats = _summarize_margins(margins, thresholds)
+            stats.update(
+                {
+                    "summary_level": "strategy",
+                    "strategy": strategy,
+                    "n_players": players,
+                }
+            )
+            rows.append(pd.Series(stats))
+
+    if not rows:
+        columns = [
+            "summary_level",
+            "strategy",
+            "n_players",
+            "observations",
+            "mean_margin",
+            "median_margin",
+            "std_margin",
+            *[f"prob_margin_le_{thr}" for thr in thresholds],
+        ]
+        return pd.DataFrame(columns=columns)
+
+    return pd.DataFrame(rows)
+
+
 def _global_stats(combined_path: Path) -> pd.DataFrame:
     """Aggregate ``n_rounds`` across all strategies, grouped by ``n_players``."""
 
@@ -200,6 +297,49 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
         rows.append(pd.Series(stats))
 
     return pd.DataFrame(rows)
+
+
+def _compute_margins(df: pd.DataFrame, score_cols: Sequence[str]) -> pd.Series:
+    """Derive per-game margin of victory from seat scores.
+
+    For two-player games, this is ``|P1_score - P2_score|``. For more than two
+    players, this is ``max(score) - min(score)`` based on available seat scores.
+    Games with fewer than two valid scores return ``NaN`` margins.
+    """
+
+    scores = df.loc[:, score_cols].apply(pd.to_numeric, errors="coerce")
+    valid_counts = scores.notna().sum(axis=1)
+    margins = scores.max(axis=1, skipna=True) - scores.min(axis=1, skipna=True)
+    margins[valid_counts < 2] = np.nan
+    return margins.astype(float)
+
+
+def _summarize_margins(
+    values: Iterable[int | float | np.integer | np.floating],
+    thresholds: Sequence[int],
+) -> dict[str, float | int]:
+    """Return descriptive statistics for per-game victory margins."""
+
+    series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
+    prob_keys = [f"prob_margin_le_{thr}" for thr in thresholds]
+    if series.empty:
+        base = {
+            "observations": 0,
+            "mean_margin": float("nan"),
+            "median_margin": float("nan"),
+            "std_margin": float("nan"),
+        }
+        base.update({key: float("nan") for key in prob_keys})
+        return base
+
+    stats: dict[str, float | int] = {
+        "observations": int(series.size),
+        "mean_margin": float(series.mean()),
+        "median_margin": float(series.median()),
+        "std_margin": float(series.std(ddof=0)),
+    }
+    stats.update({key: float((series <= thr).mean()) for key, thr in zip(prob_keys, thresholds, strict=True)})
+    return stats
 
 
 def _summarize_rounds(values: Iterable[int | float | np.integer | np.floating]) -> dict[str, float | int]:
