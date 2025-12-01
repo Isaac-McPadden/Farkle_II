@@ -13,6 +13,7 @@ from typing import Iterable, Sequence
 
 import pandas as pd
 import pyarrow as pa
+
 from farkle.analysis.checks import check_pre_metrics
 from farkle.analysis.isolated_metrics import build_isolated_metrics
 from farkle.analysis.seat_stats import (

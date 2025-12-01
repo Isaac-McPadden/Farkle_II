@@ -1,6 +1,5 @@
 import pandas as pd
 import pytest
-
 from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import game_stats

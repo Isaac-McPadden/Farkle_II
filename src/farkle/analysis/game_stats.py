@@ -41,8 +41,8 @@ import pyarrow.dataset as ds
 
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
-from farkle.utils.writer import atomic_path
 from farkle.utils.schema_helpers import n_players_from_schema
+from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 

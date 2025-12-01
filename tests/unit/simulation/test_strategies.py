@@ -7,7 +7,6 @@ import pytest
 
 from farkle.simulation.strategies import (
     FavorDiceOrScore,
-    STOP_AT_THRESHOLDS,
     StopAtStrategy,
     ThresholdStrategy,
     _sample_favor_score,

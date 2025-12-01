@@ -13,13 +13,11 @@ import logging
 from pathlib import Path
 from typing import Callable, Sequence
 
-from farkle.analysis import game_stats, rng_diagnostics
-
 import yaml  # type: ignore[import-untyped]
 from tqdm import tqdm
 
 from farkle import analysis
-from farkle.analysis import combine, curate, ingest, metrics
+from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
 from farkle.config import AppConfig, load_app_config
 from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import atomic_path

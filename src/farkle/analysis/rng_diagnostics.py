@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-import pyarrow.dataset as ds
 import pyarrow as pa
+import pyarrow.dataset as ds
 
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic

@@ -19,8 +19,8 @@ import pandas as pd
 
 from farkle.game.engine import FarkleGame, FarklePlayer
 from farkle.simulation.strategies import (
-    FavorDiceOrScore,
     STOP_AT_THRESHOLDS,
+    FavorDiceOrScore,
     ThresholdStrategy,
     build_stop_at_strategy,
 )

@@ -10,9 +10,9 @@ from __future__ import annotations
 import pickle
 import random
 import re
-from functools import partial
 from dataclasses import dataclass
 from enum import Enum
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 

@@ -40,7 +40,7 @@ def compute_seat_metrics(combined: Path, seat_config: SeatMetricConfig) -> pd.Da
     schema = ds_in.schema
     n_players_fallback = n_players_from_schema(schema)
 
-    seats = [s for s in range(seat_config.seat_range[0], seat_config.seat_range[1] + 1)]
+    seats = list(range(seat_config.seat_range[0], seat_config.seat_range[1] + 1))
     seat_columns = []
     for seat in seats:
         strat = f"P{seat}_strategy"

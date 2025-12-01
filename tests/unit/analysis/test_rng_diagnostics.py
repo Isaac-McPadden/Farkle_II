@@ -1,7 +1,6 @@
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-
 from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import rng_diagnostics
