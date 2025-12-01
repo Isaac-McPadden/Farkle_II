@@ -13,6 +13,8 @@ import logging
 from pathlib import Path
 from typing import Callable, Sequence
 
+from farkle.analysis import game_stats, rng_diagnostics
+
 import yaml  # type: ignore[import-untyped]
 from tqdm import tqdm
 
@@ -45,17 +47,54 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--config", type=Path, default=Path("configs/fast_config.yaml"), help="Path to YAML config"
     )
+    parser.add_argument(
+        "--compute-game-stats",
+        action="store_true",
+        help="Run the game-length/margin statistics step after combine/metrics",
+    )
+    parser.add_argument(
+        "--rng-diagnostics",
+        action="store_true",
+        help="Run RNG diagnostics over curated rows after combine",
+    )
+    parser.add_argument(
+        "--margin-thresholds",
+        type=int,
+        nargs="+",
+        help="Override victory-margin thresholds used by game-stats outputs",
+    )
+    parser.add_argument(
+        "--rare-event-target",
+        type=int,
+        help="Override the target score used to flag rare-event summaries",
+    )
+    parser.add_argument(
+        "--rng-lags",
+        dest="rng_lags",
+        type=int,
+        action="append",
+        help="Optional lags for RNG diagnostics (repeatable; defaults to 1)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("ingest", "curate", "combine", "metrics", "analytics", "all"):
         sub.add_parser(name)
 
-    args = parser.parse_args(argv)
+    parse = getattr(parser, "parse_intermixed_args", None)
+    try:
+        args = parse(argv) if parse else parser.parse_args(argv)
+    except TypeError:
+        args = parser.parse_args(argv)
 
     LOGGER.info(
         "Analysis pipeline start",
         extra={"stage": "pipeline", "command": args.command, "config": str(args.config)},
     )
     app_cfg = load_app_config(Path(args.config))
+    if args.margin_thresholds:
+        app_cfg.analysis.game_stats_margin_thresholds = tuple(args.margin_thresholds)
+    if args.rare_event_target is not None:
+        app_cfg.analysis.rare_event_target_score = int(args.rare_event_target)
+    rng_lags = tuple(int(lag) for lag in args.rng_lags) if args.rng_lags else None
 
     analysis_dir = app_cfg.analysis_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -102,6 +141,19 @@ def main(argv: Sequence[str] | None = None) -> int:
             parser.error(f"Unknown command {args.command}")
         steps = [(args.command, name_map[args.command])]
 
+    def _insert_after(target: str, new: tuple[str, Callable[[AppConfig], None]]) -> None:
+        for idx, (name, _fn) in enumerate(list(steps)):
+            if name == target:
+                steps.insert(idx + 1, new)
+                return
+        steps.append(new)
+
+    if args.compute_game_stats:
+        _insert_after("metrics", ("game_stats", lambda cfg: game_stats.run(cfg)))
+    if args.rng_diagnostics:
+        _insert_after(
+            "combine", ("rng_diagnostics", lambda cfg: rng_diagnostics.run(cfg, lags=rng_lags))
+        )
     # Execute with per-step manifest events
     iterator = tqdm(steps, desc="pipeline") if len(steps) > 1 else steps
     for _name, fn in iterator:
