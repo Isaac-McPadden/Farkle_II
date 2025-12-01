@@ -23,7 +23,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import PartialDependenceDisplay, permutation_importance
 from sklearn.model_selection import GroupKFold
@@ -42,10 +41,10 @@ class PermutationImportanceResult(Protocol):
 # ---------------------------------------------------------------------------
 DEFAULT_ROOT = Path("results_seed_0")
 METRICS_NAME = "metrics.parquet"
-RATINGS_NAME = "ratings_pooled.parquet"
 FIG_DIR = Path("notebooks/figs")
 MAX_PD_PLOTS = 30
 IMPORTANCE_TEMPLATE = "feature_importance_{players}p.parquet"
+OVERALL_IMPORTANCE_NAME = "feature_importance_overall.parquet"
 
 FEATURE_SPECS: list[tuple[str, str]] = [
     ("score_threshold", "float32"),
@@ -271,7 +270,6 @@ def run_hgb(
 
     root = Path(root)
     metrics_path = root / METRICS_NAME
-    ratings_path = root / RATINGS_NAME
 
     LOGGER.info(
         "HGB regression start",
@@ -280,7 +278,6 @@ def run_hgb(
             "root": str(root),
             "seed": seed,
             "metrics_path": str(metrics_path),
-            "ratings_path": str(ratings_path),
         },
     )
 
@@ -296,23 +293,10 @@ def run_hgb(
     raw_players.update(int(p) for p in metrics["players"].dropna().astype(int).unique())
     metrics["players"] = metrics["players"].fillna(0).astype(int)
 
-    ratings_table = pq.read_table(ratings_path, columns=["strategy", "mu"])
-    rating_df = ratings_table.to_pandas()
-    rating_df["strategy"] = rating_df["strategy"].astype(str)
+    if "win_rate" not in metrics.columns:
+        raise ValueError("metrics parquet missing win_rate column required for HGB regression")
 
-    data = metrics.merge(rating_df, on="strategy", how="inner")
-    if data.empty:
-        LOGGER.warning(
-            "HGB regression skipped: no overlapping strategies between metrics and ratings",
-            extra={
-                "stage": "hgb",
-                "metrics_rows": len(metrics),
-                "ratings_rows": len(rating_df),
-            },
-        )
-        return
-
-    data["players"] = data["players"].fillna(0).astype(int)
+    data = metrics
 
     feature_frame = _parse_strategy_features(data["strategy"])
     if feature_frame.empty:
@@ -336,7 +320,7 @@ def run_hgb(
         sorted(raw_players) if raw_players else sorted({int(p) for p in data["players"].unique()})
     )
     importance_summary: dict[str, dict[str, float]] = {}
-    seed_targets = _load_seed_targets(root)
+    collected_frames: list[pd.DataFrame] = []
 
     for players in metrics_players:
         subset = data[data["players"] == players].copy()
@@ -357,7 +341,7 @@ def run_hgb(
             continue
 
         features = subset[feature_cols].astype(np.float32)
-        target = subset["mu"].astype(np.float32)
+        target = subset["win_rate"].astype(np.float32)
 
         if len(subset) < 2:
             LOGGER.warning(
@@ -409,6 +393,7 @@ def run_hgb(
         )
 
         _write_importances(importance_path, importance_df)
+        collected_frames.append(importance_df)
         LOGGER.info(
             "Permutation importances written",
             extra={
@@ -434,13 +419,20 @@ def run_hgb(
         for col in cols[:MAX_PD_PLOTS]:
             plot_partial_dependence(model, features, col, fig_dir)
 
-        _run_grouped_cv(
-            players=players,
-            subset=subset[["strategy", *feature_cols]],
-            feature_cols=feature_cols,
-            seed_targets=seed_targets,
-            random_state=seed,
+    if collected_frames:
+        overall_frame = pd.concat(collected_frames, ignore_index=True)
+        grouped = (
+            overall_frame.groupby("feature", as_index=False)
+            .agg(
+                importance_mean=("importance_mean", "mean"),
+                importance_std=("importance_std", "mean"),
+            )
+            .assign(players="overall")
         )
+        _write_importances(root / OVERALL_IMPORTANCE_NAME, grouped)
+        importance_summary["overall"] = {
+            row.feature: float(row.importance_mean) for row in grouped.itertuples(index=False)
+        }
 
     if output_path is None:
         output_path = root / "hgb_importance.json"

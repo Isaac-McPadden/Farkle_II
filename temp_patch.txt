@@ -1,0 +1,9 @@
+*** Begin Patch
+*** Update File: src/farkle/analysis/run_hgb.py
+@@
+-import pyarrow.parquet as pq
+@@
+-IMPORTANCE_TEMPLATE = "feature_importance_{players}p.parquet"
++IMPORTANCE_TEMPLATE = "feature_importance_{players}p.parquet"
++OVERALL_IMPORTANCE_NAME = "feature_importance_overall.parquet"
+*** End Patch
