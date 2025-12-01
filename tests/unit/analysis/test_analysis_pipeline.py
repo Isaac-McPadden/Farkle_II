@@ -184,7 +184,10 @@ def test_pipeline_rng_diagnostics_flag(monkeypatch: pytest.MonkeyPatch, tmp_resu
     def _fake_combine(app_cfg):  # noqa: ANN001
         calls.append(("combine", None))
 
-    def _fake_rng(app_cfg, *, lags=None, force=False):  # noqa: ANN001
+    def _fake_rng(
+        app_cfg, *, lags: tuple[int, ...] | None = None, force: bool = False
+    ):  # noqa: ANN001
+        assert lags is not None
         calls.append(("rng_diagnostics", lags))
         assert tuple(sorted(lags)) == (1, 3)
 

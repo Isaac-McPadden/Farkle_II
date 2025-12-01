@@ -23,9 +23,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-from sklearn.ensemble import HistGradientBoostingRegressor
-from sklearn.inspection import PartialDependenceDisplay, permutation_importance
-from sklearn.model_selection import GroupKFold
+import pyarrow.parquet as pq
 
 from farkle.simulation.strategies import FavorDiceOrScore, parse_strategy_for_df
 from farkle.utils.artifacts import write_parquet_atomic
@@ -41,6 +39,7 @@ class PermutationImportanceResult(Protocol):
 # ---------------------------------------------------------------------------
 DEFAULT_ROOT = Path("results_seed_0")
 METRICS_NAME = "metrics.parquet"
+RATINGS_NAME = "ratings_pooled.parquet"
 FIG_DIR = Path("notebooks/figs")
 MAX_PD_PLOTS = 30
 IMPORTANCE_TEMPLATE = "feature_importance_{players}p.parquet"
@@ -165,6 +164,9 @@ def _run_grouped_cv(
     random_state: int,
 ) -> None:
     """Run grouped cross-validation when per-seed ratings are available."""
+
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    from sklearn.model_selection import GroupKFold
     if seed_targets.empty:
         LOGGER.info(
             "Grouped CV skipped: no per-seed ratings",
@@ -237,8 +239,7 @@ def _run_grouped_cv(
 def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
     """Return a saved partial dependence plot for ``column``."""
 
-    if PartialDependenceDisplay is None:
-        raise ModuleNotFoundError("scikit-learn is required for partial dependence plots")
+    from sklearn.inspection import PartialDependenceDisplay
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -267,6 +268,9 @@ def run_hgb(
     root: Path = DEFAULT_ROOT,
 ) -> None:
     """Train the regressor and output feature importance and plots."""
+
+    from sklearn.ensemble import HistGradientBoostingRegressor
+    from sklearn.inspection import permutation_importance
 
     root = Path(root)
     metrics_path = root / METRICS_NAME
@@ -431,7 +435,8 @@ def run_hgb(
         )
         _write_importances(root / OVERALL_IMPORTANCE_NAME, grouped)
         importance_summary["overall"] = {
-            row.feature: float(row.importance_mean) for row in grouped.itertuples(index=False)
+            str(row.feature): float(row.importance_mean)
+            for row in grouped.itertuples(index=False)
         }
 
     if output_path is None:
