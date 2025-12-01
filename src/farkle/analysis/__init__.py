@@ -49,6 +49,13 @@ def run_meta(cfg: AppConfig, *, force: bool = False) -> None:
     meta.run(cfg, force=force)
 
 
+def run_variance(cfg: AppConfig, *, force: bool = False) -> None:
+    """Wrapper around :mod:`farkle.analysis.variance`."""
+    from farkle.analysis import variance
+
+    variance.run(cfg, force=force)
+
+
 def _skip_message(step: str, reason: str) -> None:
     """Log a standardized skip message for optional analysis stages.
 
@@ -155,5 +162,6 @@ def run_all(cfg: AppConfig) -> None:
         )
 
     run_seed_summaries(cfg)
+    run_variance(cfg)
     run_meta(cfg)
     LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})
