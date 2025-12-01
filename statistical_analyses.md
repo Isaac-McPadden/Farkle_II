@@ -14,11 +14,21 @@ farkle.analysis.checks: Provides validation routines that enforce schema expecta
 
 farkle.analysis.metrics: Aggregates combined data into per-strategy metrics (wins, games, win rates, expected scores) and seat-advantage tables, producing the core descriptive statistics for strategies and positions.
 
+farkle.analysis.metrics (win probability/uncertainty): Adds a win_prob alias for symmetric matchups and computes standard errors/CI bounds for win rates before writing consolidated metrics.
+
+farkle.analysis.game_stats: Derives per-game lengths, margins of victory, close-game shares, and rare tie-like flags from curated rows, emitting aggregated length/margin tables per strategy and player count.
+
+farkle.analysis.seat_stats: Extends seat-advantage outputs with per-seat win rates, score/farkle/round averages, and symmetry diagnostics comparing seats in symmetric matchups.
+
 farkle.analysis.isolated_metrics: Collects per-seed, per–player-count tournament metrics into “isolated” parquet frames, enabling seed-aware downstream analyses such as meta-analysis, tiering, and feature models.
 
 farkle.analysis.seed_summaries: Builds per-seed, per–player-count strategy summaries with Wilson confidence intervals, capturing uncertainty on win rates for each (seed, players) combination.
 
+farkle.analysis.variance: Summarizes randomness vs player count using win-rate variance across seeds, signal-to-noise heuristics, and variance decomposition of win rates, scores, and game lengths.
+
 farkle.analysis.meta: Performs fixed- and random-effects meta-analysis of the per-seed summaries to pool win-rate estimates across seeds, computing heterogeneity diagnostics (e.g., I²) and pooled strategy performance.
+
+farkle.analysis.rng_diagnostics: Computes autocorrelation diagnostics over game seeds for win indicators and game length to flag RNG ordering artifacts; optional and lightweight.
 
 farkle.analysis.trueskill: Thin pipeline wrapper that triggers the TrueSkill analysis, ensuring that TrueSkill-based tier files are (re)computed when curated game data change.
 
