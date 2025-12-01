@@ -18,7 +18,12 @@ from typing import Any, Iterable, List, Mapping, Sequence, Tuple, TypeVar
 import pandas as pd
 
 from farkle.game.engine import FarkleGame, FarklePlayer
-from farkle.simulation.strategies import FavorDiceOrScore, ThresholdStrategy
+from farkle.simulation.strategies import (
+    FavorDiceOrScore,
+    STOP_AT_THRESHOLDS,
+    ThresholdStrategy,
+    build_stop_at_strategy,
+)
 from farkle.utils.random import MAX_UINT32, make_rng, spawn_seeds
 
 __all__: list[str] = [
@@ -150,6 +155,8 @@ def generate_strategy_grid(
     consider_dice_opts: Sequence[bool] = (True, False),
     auto_hot_dice_opts: Sequence[bool] = (False, True),
     run_up_score_opts: Sequence[bool] = (True, False),
+    include_stop_at: bool = False,
+    include_stop_at_heuristic: bool = False,
 ) -> Tuple[List[ThresholdStrategy], pd.DataFrame]:
     """Create the Cartesian product of all parameter choices.
 
@@ -159,6 +166,9 @@ def generate_strategy_grid(
     consider_score_opts, consider_dice_opts, auto_hot_dice_opts, run_up_score_opts
         Sequences of options for the corresponding ``ThresholdStrategy``
         fields. ``None`` selects sensible defaults for each parameter.
+    include_stop_at, include_stop_at_heuristic
+        When enabled, append the named stop-at strategies (with or without
+        heuristics) to the generated grid.
 
     Returns
     -------
@@ -235,6 +245,76 @@ def generate_strategy_grid(
             "favor_dice_or_score",
         ],
     )
+
+    stop_at_rows: list[list[object]] = []
+    if include_stop_at:
+        strategies.extend(
+            build_stop_at_strategy(threshold, inactive_dice_threshold=inactive_dice_threshold)
+            for threshold in STOP_AT_THRESHOLDS
+        )
+        stop_at_rows.extend(
+            [
+                threshold,
+                inactive_dice_threshold,
+                False,
+                False,
+                True,
+                False,
+                False,
+                False,
+                False,
+                FavorDiceOrScore.SCORE,
+            ]
+            for threshold in STOP_AT_THRESHOLDS
+        )
+
+    if include_stop_at_heuristic:
+        strategies.extend(
+            build_stop_at_strategy(
+                threshold,
+                heuristic=True,
+                inactive_dice_threshold=inactive_dice_threshold,
+            )
+            for threshold in STOP_AT_THRESHOLDS
+        )
+        stop_at_rows.extend(
+            [
+                threshold,
+                inactive_dice_threshold,
+                True,
+                True,
+                True,
+                False,
+                False,
+                True,
+                False,
+                FavorDiceOrScore.SCORE,
+            ]
+            for threshold in STOP_AT_THRESHOLDS
+        )
+
+    if stop_at_rows:
+        meta = pd.concat(
+            [
+                meta,
+                pd.DataFrame(
+                    stop_at_rows,
+                    columns=[
+                        "score_threshold",
+                        "dice_threshold",
+                        "smart_five",
+                        "smart_one",
+                        "consider_score",
+                        "consider_dice",
+                        "require_both",
+                        "auto_hot_dice",
+                        "run_up_score",
+                        "favor_dice_or_score",
+                    ],
+                ),
+            ],
+            ignore_index=True,
+        )
     meta["strategy_idx"] = meta.index
     return strategies, meta
 
@@ -248,6 +328,8 @@ def experiment_size(
     consider_dice_opts: Sequence[bool] = (True, False),
     auto_hot_dice_opts: Sequence[bool] = (False, True),  # order doesn't matter; len does
     run_up_score_opts: Sequence[bool] = (True, False),
+    include_stop_at: bool = False,
+    include_stop_at_heuristic: bool = False,
 ) -> int:
     """Compute the number of strategies a grid configuration will yield.
 
@@ -268,6 +350,9 @@ def experiment_size(
         Allowed values for the auto-hot-dice flag.
     run_up_score_opts : Sequence[bool], optional
         Allowed values for the run-up-score flag.
+    include_stop_at, include_stop_at_heuristic
+        When enabled, accounts for the registered stop-at strategies (with or
+        without heuristics) that will be appended to the generated grid.
 
     Returns
     -------
@@ -320,7 +405,15 @@ def experiment_size(
         inactive_dice_threshold=inactive_dice_threshold,
         allowed_smart_pairs=allowed_pairs,
     )
-    return sum(1 for _ in combo_iter)
+
+    base_count = sum(1 for _ in combo_iter)
+    stop_at_count = 0
+    if include_stop_at:
+        stop_at_count += len(STOP_AT_THRESHOLDS)
+    if include_stop_at_heuristic:
+        stop_at_count += len(STOP_AT_THRESHOLDS)
+
+    return base_count + stop_at_count
 
 
 # ---------------------------------------------------------------------------

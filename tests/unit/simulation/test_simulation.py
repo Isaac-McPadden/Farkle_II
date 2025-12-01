@@ -12,7 +12,7 @@ from farkle.simulation.simulation import (
     simulate_many_games_from_seeds,
     simulate_one_game,
 )
-from farkle.simulation.strategies import ThresholdStrategy
+from farkle.simulation.strategies import STOP_AT_THRESHOLDS, StopAtStrategy, ThresholdStrategy
 
 
 def test_default_grid_size():
@@ -68,6 +68,23 @@ def test_consider_true_true_options():
     opts = {"consider_score_opts": [True], "consider_dice_opts": [True]}
     strategies, _ = generate_strategy_grid(**opts)
     assert len(strategies) == experiment_size(**opts)  # type: ignore[arg-type]
+
+
+def test_stop_at_strategies_opt_in_only():
+    default_strategies, _ = generate_strategy_grid()
+    assert not any(isinstance(s, StopAtStrategy) for s in default_strategies)
+
+    enabled_strategies, _ = generate_strategy_grid(
+        include_stop_at=True, include_stop_at_heuristic=True
+    )
+    expected = experiment_size(include_stop_at=True, include_stop_at_heuristic=True)
+    assert len(enabled_strategies) == expected
+
+    labels = {str(s) for s in enabled_strategies if isinstance(s, StopAtStrategy)}
+    expected_labels = {f"stop_at_{th}" for th in STOP_AT_THRESHOLDS} | {
+        f"stop_at_{th}_heuristic" for th in STOP_AT_THRESHOLDS
+    }
+    assert labels == expected_labels
 
 
 def test_parallel_simulation():

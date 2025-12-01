@@ -7,8 +7,11 @@ import pytest
 
 from farkle.simulation.strategies import (
     FavorDiceOrScore,
+    STOP_AT_THRESHOLDS,
+    StopAtStrategy,
     ThresholdStrategy,
     _sample_favor_score,
+    build_stop_at_strategy,
     load_farkle_results,
     parse_strategy,
     parse_strategy_for_df,
@@ -76,6 +79,24 @@ def test_random_strategy_factory():
             assert ts.favor_dice_or_score is FavorDiceOrScore.SCORE
         elif ts.consider_dice and not ts.consider_score:
             assert ts.favor_dice_or_score is FavorDiceOrScore.DICE
+
+
+def test_build_stop_at_strategy_and_naming():
+    strat = build_stop_at_strategy(350)
+    assert isinstance(strat, StopAtStrategy)
+    assert str(strat) == "stop_at_350"
+    assert strat.consider_score and not strat.consider_dice
+    assert not strat.auto_hot_dice
+
+    heuristic = build_stop_at_strategy(500, heuristic=True, inactive_dice_threshold=-2)
+    assert isinstance(heuristic, StopAtStrategy)
+    assert heuristic.smart_five and heuristic.smart_one
+    assert heuristic.auto_hot_dice
+    assert heuristic.dice_threshold == -2
+    assert str(heuristic) == "stop_at_500_heuristic"
+
+    with pytest.raises(ValueError):
+        build_stop_at_strategy(999)
 
 
 # ────────────────────────────────────────────────────────────────────────────

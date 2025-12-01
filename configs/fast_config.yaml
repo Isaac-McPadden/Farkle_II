@@ -30,6 +30,8 @@ sim:
   consider_dice_opts: [true]    # None -> (True, False)
   auto_hot_dice_opts: [true]    # None -> (True, False)
   run_up_score_opts: [true]     # None -> (True, False)
+  include_stop_at: false
+  include_stop_at_heuristic: false
 
   # Optional per-N overrides (keys are strings)
   per_n:
