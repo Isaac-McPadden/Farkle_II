@@ -91,6 +91,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also compute game-length statistics from curated rows",
     )
+    metrics_parser.add_argument(
+        "--margin-thresholds",
+        type=int,
+        nargs="+",
+        help="Victory-margin thresholds used for close-game summaries",
+    )
+    metrics_parser.add_argument(
+        "--rare-event-target",
+        type=int,
+        help="Target score for multi-player reach flags (default: 10000)",
+    )
 
     variance_parser = analyze_sub.add_parser(
         "variance", help="Compute cross-seed win-rate variance"
@@ -109,6 +120,17 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Also compute game-length statistics from curated rows",
     )
+    preprocess_parser.add_argument(
+        "--margin-thresholds",
+        type=int,
+        nargs="+",
+        help="Victory-margin thresholds used for close-game summaries",
+    )
+    preprocess_parser.add_argument(
+        "--rare-event-target",
+        type=int,
+        help="Target score for multi-player reach flags (default: 10000)",
+    )
 
     pipeline_parser = analyze_sub.add_parser(
         "pipeline", help="Run ingest->curate->combine->metrics->analytics pipeline"
@@ -117,6 +139,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--compute-game-stats",
         action="store_true",
         help="Also compute game-length statistics from curated rows",
+    )
+    pipeline_parser.add_argument(
+        "--margin-thresholds",
+        type=int,
+        nargs="+",
+        help="Victory-margin thresholds used for close-game summaries",
+    )
+    pipeline_parser.add_argument(
+        "--rare-event-target",
+        type=int,
+        help="Target score for multi-player reach flags (default: 10000)",
     )
     analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
 
@@ -195,6 +228,13 @@ def main(argv: Sequence[str] | None = None) -> None:
         overlays: list[Path] = [args.config] if args.config is not None else []
         cfg = load_app_config(*overlays) if overlays else AppConfig()
         cfg = apply_dot_overrides(cfg, list(args.overrides or []))
+
+        margin_thresholds = getattr(args, "margin_thresholds", None)
+        if margin_thresholds:
+            cfg.analysis.game_stats_margin_thresholds = tuple(margin_thresholds)
+        rare_event_target = getattr(args, "rare_event_target", None)
+        if rare_event_target is not None:
+            cfg.analysis.rare_event_target_score = int(rare_event_target)
 
         LOGGER.info(
             "Configuration prepared",
