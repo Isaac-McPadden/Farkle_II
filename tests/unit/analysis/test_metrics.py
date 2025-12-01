@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pandas as pd
 import pytest
 from tests.helpers import metrics_samples as sample_data
 
@@ -36,7 +37,34 @@ def test_compute_seat_advantage_matches_manifest(sample_config):
     assert seat1["wins"] == 2
     assert seat1["games_with_seat"] == 3
     assert seat1["win_rate"] == pytest.approx(2 / 3)
+    assert seat1["win_rate_delta_seat1"] == pytest.approx(0.0)
+
+    seat2 = seat_df[seat_df["seat"] == 2].iloc[0]
+    assert seat2["win_rate_delta_prev"] == pytest.approx(seat2["win_rate"] - seat1["win_rate"])
 
     seat4 = seat_df[seat_df["seat"] == 4].iloc[0]
     assert seat4["games_with_seat"] == 0
     assert seat4["win_rate"] == pytest.approx(0.0)
+
+
+def test_seat_metrics_include_per_seat_stats(sample_config):
+    seat_metrics = sample_config.analysis_dir / "seat_metrics.parquet"
+    df = pd.read_parquet(seat_metrics)
+
+    row = df[
+        (df["strategy"] == sample_data.STRATEGIES[0])
+        & (df["seat"] == 1)
+        & (df["n_players"] == 3)
+    ].iloc[0]
+
+    assert row["games"] == 2
+    assert row["wins"] == 1
+    assert row["win_rate"] == pytest.approx(0.5)
+    assert row["mean_rounds"] == pytest.approx(10.5)
+
+
+def test_symmetry_checks_empty_when_no_symmetric_pairs(sample_config):
+    symmetry_path = sample_config.analysis_dir / "symmetry_checks.parquet"
+    df = pd.read_parquet(symmetry_path)
+
+    assert df.empty

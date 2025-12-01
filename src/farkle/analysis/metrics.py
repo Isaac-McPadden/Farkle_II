@@ -13,10 +13,14 @@ from typing import Iterable, Sequence
 
 import pandas as pd
 import pyarrow as pa
-import pyarrow.dataset as ds
-
 from farkle.analysis.checks import check_pre_metrics
 from farkle.analysis.isolated_metrics import build_isolated_metrics
+from farkle.analysis.seat_stats import (
+    SeatMetricConfig,
+    compute_seat_advantage,
+    compute_seat_metrics,
+    compute_symmetry_checks,
+)
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
 from farkle.utils.writer import atomic_path
@@ -32,6 +36,10 @@ def run(cfg: AppConfig) -> None:
     out_metrics = analysis_dir / cfg.metrics_name
     out_seats = analysis_dir / "seat_advantage.csv"
     out_seats_parquet = analysis_dir / "seat_advantage.parquet"
+    out_seat_metrics = analysis_dir / "seat_metrics.parquet"
+    out_seat_metrics_csv = analysis_dir / "seat_metrics.csv"
+    out_symmetry = analysis_dir / "symmetry_checks.parquet"
+    out_symmetry_csv = analysis_dir / "symmetry_checks.csv"
     stamp = analysis_dir / "metrics.done.json"
 
     if not data_file.exists():
@@ -61,21 +69,21 @@ def run(cfg: AppConfig) -> None:
     metrics_table = pa.Table.from_pandas(metrics_df, preserve_index=False)
     write_parquet_atomic(metrics_table, out_metrics)
 
-    seat_df = _compute_seat_advantage(cfg, data_file)
+    seat_cfg = SeatMetricConfig(seat_range=cfg.metrics_seat_range)
+    seat_df = compute_seat_advantage(cfg, data_file, seat_cfg)
     write_csv_atomic(seat_df, out_seats)
-    seat_table = pa.Table.from_pandas(
-        seat_df,
-        preserve_index=False,
-        schema=pa.schema(
-            [
-                ("seat", pa.int32()),
-                ("wins", pa.int64()),
-                ("games_with_seat", pa.int64()),
-                ("win_rate", pa.float64()),
-            ]
-        ),
-    )
+    seat_table = pa.Table.from_pandas(seat_df, preserve_index=False)
     write_parquet_atomic(seat_table, out_seats_parquet)
+
+    seat_metrics_df = compute_seat_metrics(data_file, seat_cfg)
+    seat_metrics_table = pa.Table.from_pandas(seat_metrics_df, preserve_index=False)
+    write_parquet_atomic(seat_metrics_table, out_seat_metrics)
+    write_csv_atomic(seat_metrics_df, out_seat_metrics_csv)
+
+    symmetry_df = compute_symmetry_checks(data_file, seat_cfg)
+    symmetry_table = pa.Table.from_pandas(symmetry_df, preserve_index=False)
+    write_parquet_atomic(symmetry_table, out_symmetry)
+    write_csv_atomic(symmetry_df, out_symmetry_csv)
 
     if not metrics_df.empty:
         leader = metrics_df.sort_values(["wins", "win_rate"], ascending=False).iloc[0]
@@ -92,7 +100,16 @@ def run(cfg: AppConfig) -> None:
     _write_stamp(
         stamp,
         inputs=[data_file, *raw_inputs],
-        outputs=[out_metrics, out_seats, out_seats_parquet, *iso_paths],
+        outputs=[
+            out_metrics,
+            out_seats,
+            out_seats_parquet,
+            out_seat_metrics,
+            out_seat_metrics_csv,
+            out_symmetry,
+            out_symmetry_csv,
+            *iso_paths,
+        ],
     )
 
     LOGGER.info(
@@ -104,6 +121,8 @@ def run(cfg: AppConfig) -> None:
             "metrics_path": str(out_metrics),
             "seat_path": str(out_seats),
             "seat_parquet": str(out_seats_parquet),
+            "seat_metrics": str(out_seat_metrics),
+            "symmetry_checks": str(out_symmetry),
         },
     )
 
@@ -220,32 +239,10 @@ def _add_win_rate_uncertainty(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
-    """Aggregate win rates by seat position across all player counts."""
+    """Backwards-compatible wrapper for seat-advantage calculations."""
 
-    def _rows_for_n(n: int) -> int:
-        """Return the number of rows recorded for a player-count manifest."""
-        manifest = cfg.manifest_for(n)
-        if not manifest.exists():
-            return 0
-        try:
-            meta = json.loads(manifest.read_text())
-            return int(meta.get("row_count", 0))
-        except Exception:  # noqa: BLE001
-            return 0
-
-    denom = {i: sum(_rows_for_n(n) for n in range(i, 13)) for i in range(1, 13)}
-    ds_all = ds.dataset(combined, format="parquet")
-    seat_wins = {
-        i: int(ds_all.count_rows(filter=(ds.field("winner_seat") == f"P{i}"))) for i in range(1, 13)
-    }
-
-    seat_rows: list[dict[str, float]] = []
-    for i in range(1, 13):
-        games = denom[i]
-        wins = seat_wins.get(i, 0)
-        rate = (wins / games) if games else 0.0
-        seat_rows.append({"seat": i, "wins": wins, "games_with_seat": games, "win_rate": rate})
-    return pd.DataFrame(seat_rows, columns=["seat", "wins", "games_with_seat", "win_rate"])
+    seat_cfg = SeatMetricConfig(seat_range=cfg.metrics_seat_range)
+    return compute_seat_advantage(cfg, combined, seat_cfg)
 
 
 def _stamp(path: Path) -> dict[str, float | int]:
