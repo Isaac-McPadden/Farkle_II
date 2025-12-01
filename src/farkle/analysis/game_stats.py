@@ -41,6 +41,7 @@ import pyarrow.dataset as ds
 
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.writer import atomic_path
 from farkle.utils.schema_helpers import n_players_from_schema
 
 LOGGER = logging.getLogger(__name__)
@@ -517,7 +518,8 @@ def _write_stamp(stamp_path: Path, *, inputs: Iterable[Path], outputs: Iterable[
         "outputs": {str(p): _stamp(p) for p in outputs if p.exists()},
     }
     stamp_path.parent.mkdir(parents=True, exist_ok=True)
-    stamp_path.write_text(json.dumps(payload, indent=2))
+    with atomic_path(str(stamp_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(payload, indent=2))
 
 
 def _is_up_to_date(stamp_path: Path, *, inputs: Iterable[Path], outputs: Iterable[Path]) -> bool:

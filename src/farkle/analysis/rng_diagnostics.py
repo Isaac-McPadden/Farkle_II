@@ -8,8 +8,10 @@ module logs a skip instead of raising.
 """
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Iterable, Sequence
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -18,22 +20,25 @@ import pyarrow as pa
 
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
 _EXPECTED_NOTE = "Expected ~0 under IID seeds"
 
 
-def run(cfg: AppConfig, *, lags: Sequence[int] | None = None) -> None:
+def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = False) -> None:
     """Compute lagged autocorrelation diagnostics for curated rows.
 
     Args:
         cfg: Application configuration for locating curated inputs and outputs.
         lags: Optional sequence of positive lags (defaults to ``(1,)``).
+        force: Recompute even when the done-stamp matches inputs/outputs.
     """
 
     data_file = cfg.curated_parquet
     out_file = cfg.analysis_dir / "rng_diagnostics.parquet"
+    stamp_path = cfg.analysis_dir / "rng_diagnostics.done.json"
 
     lags = _normalize_lags(lags)
     if not lags:
@@ -44,6 +49,13 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None) -> None:
         LOGGER.info(
             "rng-diagnostics: missing curated parquet; skipping",
             extra={"stage": "rng_diagnostics", "path": str(data_file)},
+        )
+        return
+
+    if not force and _is_up_to_date(stamp_path, inputs=[data_file], outputs=[out_file], lags=lags):
+        LOGGER.info(
+            "rng-diagnostics: up-to-date",
+            extra={"stage": "rng_diagnostics", "path": str(out_file), "stamp": str(stamp_path)},
         )
         return
 
@@ -89,6 +101,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None) -> None:
 
     table_out = pa.Table.from_pandas(diagnostics, preserve_index=False)
     write_parquet_atomic(table_out, out_file, codec=cfg.parquet_codec)
+    _write_stamp(stamp_path, inputs=[data_file], outputs=[out_file], lags=lags)
     LOGGER.info(
         "rng-diagnostics: written",
         extra={"stage": "rng_diagnostics", "rows": len(diagnostics), "path": str(out_file)},
@@ -226,6 +239,61 @@ def _group_diagnostics(
                 )
             )
     return rows
+
+
+def _stamp(path: Path) -> dict[str, float | int]:
+    stat = path.stat()
+    return {"mtime": stat.st_mtime, "size": stat.st_size}
+
+
+def _write_stamp(
+    stamp_path: Path,
+    *,
+    inputs: Iterable[Path],
+    outputs: Iterable[Path],
+    lags: Sequence[int],
+) -> None:
+    payload = {
+        "inputs": {str(p): _stamp(p) for p in inputs if p.exists()},
+        "outputs": {str(p): _stamp(p) for p in outputs if p.exists()},
+        "params": {"lags": list(lags)},
+    }
+    stamp_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(stamp_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(payload, indent=2))
+
+
+def _is_up_to_date(
+    stamp_path: Path,
+    *,
+    inputs: Iterable[Path],
+    outputs: Iterable[Path],
+    lags: Sequence[int],
+) -> bool:
+    if not (stamp_path.exists() and all(p.exists() for p in outputs)):
+        return False
+    try:
+        meta = json.loads(stamp_path.read_text())
+    except Exception:  # noqa: BLE001
+        return False
+
+    if meta.get("params", {}).get("lags") != list(lags):
+        return False
+
+    in_meta = meta.get("inputs", {})
+    out_meta = meta.get("outputs", {})
+
+    def _matches(paths: Iterable[Path], recorded: dict[str, dict[str, float | int]]) -> bool:
+        for p in paths:
+            data = recorded.get(str(p))
+            if data is None:
+                return False
+            stat = p.stat()
+            if data.get("mtime") != stat.st_mtime or data.get("size") != stat.st_size:
+                return False
+        return True
+
+    return _matches(inputs, in_meta) and _matches(outputs, out_meta)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -140,3 +140,67 @@ def test_pipeline_step_failure_propagates(
 
     with pytest.raises(RuntimeError):
         pipeline.main(["--config", str(cfg_path), command])
+
+
+def test_pipeline_game_stats_flag(monkeypatch: pytest.MonkeyPatch, tmp_results_dir: Path) -> None:
+    cfg_path, cfg = _make_config(tmp_results_dir, monkeypatch)
+
+    calls: list[str] = []
+
+    def _fake_metrics(app_cfg):  # noqa: ANN001
+        calls.append("metrics")
+        assert app_cfg.analysis.game_stats_margin_thresholds == (700, 900)
+
+    def _fake_game_stats(app_cfg):  # noqa: ANN001
+        calls.append("game_stats")
+        assert app_cfg.analysis.rare_event_target_score == 12345
+
+    monkeypatch.setattr("farkle.analysis.metrics.run", _fake_metrics, raising=True)
+    monkeypatch.setattr("farkle.analysis.game_stats.run", _fake_game_stats, raising=True)
+
+    rc = pipeline.main(
+        [
+            "--config",
+            str(cfg_path),
+            "--compute-game-stats",
+            "--margin-thresholds",
+            "700",
+            "900",
+            "--rare-event-target",
+            "12345",
+            "metrics",
+        ]
+    )
+
+    assert rc == 0
+    assert calls == ["metrics", "game_stats"]
+
+
+def test_pipeline_rng_diagnostics_flag(monkeypatch: pytest.MonkeyPatch, tmp_results_dir: Path) -> None:
+    cfg_path, _ = _make_config(tmp_results_dir, monkeypatch)
+
+    calls: list[tuple[str, tuple[int, ...] | None]] = []
+
+    def _fake_combine(app_cfg):  # noqa: ANN001
+        calls.append(("combine", None))
+
+    def _fake_rng(app_cfg, *, lags=None, force=False):  # noqa: ANN001
+        calls.append(("rng_diagnostics", lags))
+        assert tuple(sorted(lags)) == (1, 3)
+
+    monkeypatch.setattr("farkle.analysis.combine.run", _fake_combine, raising=True)
+    monkeypatch.setattr("farkle.analysis.rng_diagnostics.run", _fake_rng, raising=True)
+
+    rc = pipeline.main([
+        "--config",
+        str(cfg_path),
+        "--rng-diagnostics",
+        "--rng-lags",
+        "3",
+        "--rng-lags",
+        "1",
+        "combine",
+    ])
+
+    assert rc == 0
+    assert calls == [("combine", None), ("rng_diagnostics", (3, 1))]
