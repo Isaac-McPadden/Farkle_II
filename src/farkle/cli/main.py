@@ -92,6 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also compute game-length statistics from curated rows",
     )
 
+    variance_parser = analyze_sub.add_parser(
+        "variance", help="Compute cross-seed win-rate variance"
+    )
+    variance_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recompute even when the done-stamp appears fresh",
+    )
+
     preprocess_parser = analyze_sub.add_parser(
         "preprocess", help="Run ingest, curate, combine, and metrics"
     )
@@ -270,6 +279,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             _run_preprocess(cfg, compute_game_stats=compute_game_stats)
         elif args.an_cmd == "analytics":
             analysis_pkg.run_all(cfg)
+        elif args.an_cmd == "variance":
+            analysis_pkg.run_variance(cfg, force=getattr(args, "force", False))
         elif args.an_cmd == "pipeline":
             _run_preprocess(cfg, compute_game_stats=compute_game_stats)
             analysis_pkg.run_all(cfg)
