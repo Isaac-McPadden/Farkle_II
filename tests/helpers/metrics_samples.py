@@ -317,15 +317,39 @@ def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
     metrics_path = cfg.analysis_dir / cfg.metrics_name
     seat_csv = cfg.analysis_dir / "seat_advantage.csv"
     seat_parquet = cfg.analysis_dir / "seat_advantage.parquet"
+    seat_metrics = cfg.analysis_dir / "seat_metrics.parquet"
+    seat_metrics_csv = cfg.analysis_dir / "seat_metrics.csv"
+    symmetry_path = cfg.analysis_dir / "symmetry_checks.parquet"
+    symmetry_csv = cfg.analysis_dir / "symmetry_checks.csv"
     iso_paths = sorted((cfg.analysis_dir / "data").glob("*p/*_isolated_metrics.parquet"))
     metrics_golden = GOLDEN_ROOT / "metrics.csv"
     seat_golden = GOLDEN_ROOT / "seat_advantage.csv"
+    seat_metrics_golden = GOLDEN_ROOT / "seat_metrics.csv"
+    symmetry_golden = GOLDEN_ROOT / "symmetry_checks.csv"
 
     assert_parquet_golden(
         metrics_path, metrics_golden, update=update_goldens, sort_by=["n_players", "strategy"]
     )
     assert_csv_golden(seat_csv, seat_golden, update=update_goldens, sort_by=["seat"])
     assert_parquet_golden(seat_parquet, seat_golden, update=update_goldens, sort_by=["seat"])
+    assert_parquet_golden(
+        seat_metrics, seat_metrics_golden, update=update_goldens, sort_by=["strategy", "seat", "n_players"]
+    )
+    assert_csv_golden(
+        seat_metrics_csv,
+        seat_metrics_golden,
+        update=update_goldens,
+        sort_by=["strategy", "seat", "n_players"],
+    )
+    assert_parquet_golden(
+        symmetry_path, symmetry_golden, update=update_goldens, sort_by=["strategy", "n_players"]
+    )
+    assert_csv_golden(
+        symmetry_csv,
+        symmetry_golden,
+        update=update_goldens,
+        sort_by=["strategy", "n_players"],
+    )
 
     for iso_path in iso_paths:
         golden_iso = GOLDEN_ROOT / iso_path.relative_to(cfg.analysis_dir).with_suffix(".csv")
@@ -338,7 +362,16 @@ def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
             cfg.curated_parquet,
             *[cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet" for n in _MANIFEST_ROWS],
         ],
-        expected_outputs=[metrics_path, seat_csv, seat_parquet, *iso_paths],
+        expected_outputs=[
+            metrics_path,
+            seat_csv,
+            seat_parquet,
+            seat_metrics,
+            seat_metrics_csv,
+            symmetry_path,
+            symmetry_csv,
+            *iso_paths,
+        ],
     )
 
 
