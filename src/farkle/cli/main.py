@@ -92,6 +92,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also compute game-length statistics from curated rows",
     )
     metrics_parser.add_argument(
+        "--rng-diagnostics",
+        action="store_true",
+        help="Compute RNG autocorrelation diagnostics from curated rows",
+    )
+    metrics_parser.add_argument(
+        "--rng-lags",
+        type=int,
+        nargs="+",
+        help="Positive lags (default: 1) for RNG diagnostics",
+    )
+    metrics_parser.add_argument(
         "--margin-thresholds",
         type=int,
         nargs="+",
@@ -121,6 +132,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also compute game-length statistics from curated rows",
     )
     preprocess_parser.add_argument(
+        "--rng-diagnostics",
+        action="store_true",
+        help="Also compute RNG autocorrelation diagnostics",
+    )
+    preprocess_parser.add_argument(
+        "--rng-lags",
+        type=int,
+        nargs="+",
+        help="Positive lags (default: 1) for RNG diagnostics",
+    )
+    preprocess_parser.add_argument(
         "--margin-thresholds",
         type=int,
         nargs="+",
@@ -139,6 +161,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--compute-game-stats",
         action="store_true",
         help="Also compute game-length statistics from curated rows",
+    )
+    pipeline_parser.add_argument(
+        "--rng-diagnostics",
+        action="store_true",
+        help="Also compute RNG autocorrelation diagnostics",
+    )
+    pipeline_parser.add_argument(
+        "--rng-lags",
+        type=int,
+        nargs="+",
+        help="Positive lags (default: 1) for RNG diagnostics",
     )
     pipeline_parser.add_argument(
         "--margin-thresholds",
@@ -191,12 +224,22 @@ def _write_active_config(cfg: AppConfig, dest_dir: Path) -> None:
         Path(tmp_path).write_text(resolved_yaml, encoding="utf-8")
 
 
-def _run_preprocess(cfg: AppConfig, *, compute_game_stats: bool = False) -> None:
-    """Run ingest, curate, combine, metrics, and optional game stats."""
+def _run_preprocess(
+    cfg: AppConfig,
+    *,
+    compute_game_stats: bool = False,
+    compute_rng_diagnostics: bool = False,
+    rng_lags: tuple[int, ...] | None = None,
+) -> None:
+    """Run ingest, curate, combine, metrics, and optional diagnostics."""
     ingest.run(cfg)
     curate.run(cfg)
     combine.run(cfg)
     metrics.run(cfg)
+    if compute_rng_diagnostics:
+        from farkle.analysis import rng_diagnostics
+
+        rng_diagnostics.run(cfg, lags=rng_lags)
     if compute_game_stats:
         from farkle.analysis import game_stats
 
@@ -224,6 +267,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     cfg: AppConfig | None = None
+    rng_lags: tuple[int, ...] | None = None
+    compute_rng_diagnostics = False
     if args.command in {"run", "analyze"}:
         overlays: list[Path] = [args.config] if args.config is not None else []
         cfg = load_app_config(*overlays) if overlays else AppConfig()
@@ -235,6 +280,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         rare_event_target = getattr(args, "rare_event_target", None)
         if rare_event_target is not None:
             cfg.analysis.rare_event_target_score = int(rare_event_target)
+        rng_lags_arg = getattr(args, "rng_lags", None)
+        if rng_lags_arg:
+            rng_lags = tuple(int(lag) for lag in rng_lags_arg)
+        compute_rng_diagnostics = getattr(args, "rng_diagnostics", False)
 
         LOGGER.info(
             "Configuration prepared",
@@ -315,14 +364,28 @@ def main(argv: Sequence[str] | None = None) -> None:
             combine.run(cfg)
         elif args.an_cmd == "metrics":
             metrics.run(cfg)
+            if compute_rng_diagnostics:
+                from farkle.analysis import rng_diagnostics
+
+                rng_diagnostics.run(cfg, lags=rng_lags)
         elif args.an_cmd == "preprocess":
-            _run_preprocess(cfg, compute_game_stats=compute_game_stats)
+            _run_preprocess(
+                cfg,
+                compute_game_stats=compute_game_stats,
+                compute_rng_diagnostics=compute_rng_diagnostics,
+                rng_lags=rng_lags,
+            )
         elif args.an_cmd == "analytics":
             analysis_pkg.run_all(cfg)
         elif args.an_cmd == "variance":
             analysis_pkg.run_variance(cfg, force=getattr(args, "force", False))
         elif args.an_cmd == "pipeline":
-            _run_preprocess(cfg, compute_game_stats=compute_game_stats)
+            _run_preprocess(
+                cfg,
+                compute_game_stats=compute_game_stats,
+                compute_rng_diagnostics=compute_rng_diagnostics,
+                rng_lags=rng_lags,
+            )
             analysis_pkg.run_all(cfg)
         if args.an_cmd == "metrics" and compute_game_stats:
             from farkle.analysis import game_stats
