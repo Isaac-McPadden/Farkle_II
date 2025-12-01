@@ -56,6 +56,8 @@ def run(cfg: AppConfig) -> None:
     if metrics_df.empty:
         raise RuntimeError("metrics: no isolated metric files generated")
 
+    metrics_df = _add_win_rate_uncertainty(metrics_df)
+
     metrics_table = pa.Table.from_pandas(metrics_df, preserve_index=False)
     write_parquet_atomic(metrics_table, out_metrics)
 
@@ -178,6 +180,43 @@ def _collect_metrics_frames(paths: Iterable[Path]) -> pd.DataFrame:
     ]
     remainder = [c for c in df.columns if c not in base_cols]
     return df[base_cols + remainder]
+
+
+def _add_win_rate_uncertainty(df: pd.DataFrame) -> pd.DataFrame:
+    """Attach standard errors and normal-approximation CIs for win rates."""
+
+    if df.empty:
+        return df
+
+    out = df.copy()
+    games = pd.to_numeric(out["games"], errors="coerce")
+    win_rate = pd.to_numeric(out["win_rate"], errors="coerce")
+    positive_games = games > 0
+
+    se = pd.Series(0.0, index=out.index, dtype="float64")
+    safe_games = games.where(positive_games)
+    win_prob = win_rate.loc[positive_games]
+    se.loc[positive_games] = ((win_prob * (1.0 - win_prob)) / safe_games.loc[positive_games]).pow(0.5)
+    out["se_win_rate"] = se
+
+    z = 1.96
+    ci_lo = (win_rate - z * se).clip(lower=0.0, upper=1.0)
+    ci_hi = (win_rate + z * se).clip(lower=0.0, upper=1.0)
+    out["win_rate_ci_lo"] = ci_lo.where(positive_games, win_rate)
+    out["win_rate_ci_hi"] = ci_hi.where(positive_games, win_rate)
+
+    desired_order = [
+        "strategy",
+        "n_players",
+        "games",
+        "wins",
+        "win_rate",
+        "se_win_rate",
+        "win_rate_ci_lo",
+        "win_rate_ci_hi",
+    ]
+    remaining = [c for c in out.columns if c not in desired_order]
+    return out[desired_order + remaining]
 
 
 def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
