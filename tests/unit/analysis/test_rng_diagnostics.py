@@ -1,0 +1,41 @@
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from tests.helpers.diagnostic_fixtures import build_curated_fixture
+
+from farkle.analysis import rng_diagnostics
+
+
+def test_collect_diagnostics_empty_input():
+    empty = pd.DataFrame(columns=["strategy", "n_players", "win_indicator", "n_rounds", "game_seed", "matchup"])
+    result = rng_diagnostics._collect_diagnostics(empty, lags=(1, 2))
+
+    assert result.empty
+
+
+def test_run_skips_when_missing_columns(tmp_path):
+    cfg, _, _ = build_curated_fixture(tmp_path)
+    curated = cfg.curated_parquet
+    curated.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pydict({"only": [1, 2, 3]}), curated)
+
+    rng_diagnostics.run(cfg, lags=(1,))
+
+    assert not (cfg.analysis_dir / "rng_diagnostics.parquet").exists()
+
+
+def test_collect_diagnostics_deterministic_sort(tmp_path):
+    cfg, combined, _ = build_curated_fixture(tmp_path)
+    table = pa.parquet.read_table(combined)
+    df = table.to_pandas()
+    df["matchup"] = df[["P1_strategy", "P2_strategy"]].agg(" vs ".join, axis=1)
+    df["n_players"] = 2
+    df["strategy"] = df["P1_strategy"]
+    df["win_indicator"] = (df["winner_strategy"] == df["P1_strategy"]).astype(int)
+    df = df[["strategy", "n_players", "win_indicator", "n_rounds", "game_seed", "matchup"]].copy()
+
+    diag = rng_diagnostics._collect_diagnostics(df, lags=(1,))
+
+    assert set(diag["summary_level"].unique()) == {"strategy", "matchup_strategy"}
+    assert diag.iloc[0]["lag"] == 1

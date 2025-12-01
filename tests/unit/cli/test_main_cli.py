@@ -56,3 +56,19 @@ def test_parse_level_accepts_int(preserve_root_logger):
     root.setLevel(level)
 
     assert root.level == logging.ERROR
+
+
+def test_analyze_metrics_dispatches_rng(monkeypatch, preserve_root_logger):
+    calls: list[tuple[str, tuple[int, ...] | None]] = []
+
+    monkeypatch.setattr(cli_main.metrics, "run", lambda cfg: calls.append(("metrics", None)))
+
+    def _fake_rng(cfg, *, lags=None, force=False):  # noqa: ANN001
+        calls.append(("rng", tuple(lags) if lags is not None else None))
+
+    monkeypatch.setattr("farkle.analysis.rng_diagnostics.run", _fake_rng, raising=True)
+
+    cli_main.main(["analyze", "metrics", "--rng-diagnostics", "--rng-lags", "2", "--rng-lags", "1"])
+
+    assert ("metrics", None) in calls
+    assert ("rng", (1, 2)) in calls
