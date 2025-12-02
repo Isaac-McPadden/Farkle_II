@@ -40,6 +40,21 @@ class TieringInputs:
     min_gap: float | None
 
 
+def _tiering_artifact(cfg: AppConfig, name: str) -> Path:
+    """Return a tiering-stage path, migrating legacy outputs when present."""
+
+    stage_dir = cfg.tiering_stage_dir
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    stage_path = stage_dir / name
+    legacy_path = cfg.analysis_dir / name
+    if legacy_path.exists() and not stage_path.exists():
+        try:
+            legacy_path.replace(stage_path)
+        except Exception:  # noqa: BLE001 - best-effort migration
+            pass
+    return stage_path if stage_path.exists() or not legacy_path.exists() else legacy_path
+
+
 def run(cfg: AppConfig) -> None:
     """Generate a tier comparison report when frequentist analysis is enabled."""
     if not getattr(cfg.analysis, "run_frequentist", False):
@@ -47,7 +62,7 @@ def run(cfg: AppConfig) -> None:
         return
 
     inputs = _prepare_inputs(cfg)
-    tier_file = cfg.analysis_dir / "tiers.json"
+    tier_file = cfg.preferred_tiers_path()
     tier_payload = load_tier_payload(tier_file)
     ts_tiers = tier_mapping_from_payload(tier_payload, prefer="trueskill")
     if not ts_tiers:
@@ -256,7 +271,7 @@ def _write_frequentist_scores(
     )
 
     scores = pd.concat([base, aggregated], ignore_index=True, sort=False)
-    scores_path = cfg.analysis_dir / "frequentist_scores.parquet"
+    scores_path = _tiering_artifact(cfg, "frequentist_scores.parquet")
     with atomic_path(str(scores_path)) as tmp_path:
         scores.to_parquet(tmp_path, index=False)
 
@@ -274,8 +289,8 @@ def _write_outputs(
     cfg: AppConfig, report: pd.DataFrame, tier_data: dict, inputs: TieringInputs
 ) -> None:
     """Write tier comparison outputs to CSV and JSON files."""
-    out_csv = cfg.analysis_dir / "tiering_report.csv"
-    out_json = cfg.analysis_dir / "tiering_report.json"
+    out_csv = _tiering_artifact(cfg, "tiering_report.csv")
+    out_json = _tiering_artifact(cfg, "tiering_report.json")
     report.sort_values(["mdd_tier", "win_rate"], ascending=[True, False]).to_csv(
         out_csv, index=False
     )
@@ -318,7 +333,7 @@ def _write_consolidated_tiers(
 ) -> None:
     """Persist unified TrueSkill and frequentist tiers."""
 
-    tiers_path = cfg.analysis_dir / "tiers.json"
+    tiers_path = _tiering_artifact(cfg, "tiers.json")
     freq_map = freq_tiers.set_index("strategy")["mdd_tier"].astype(int).to_dict()
     frequentist_payload: dict[str, object] = {"tiers": freq_map, "mdd": mdd}
     if weights_by_k:

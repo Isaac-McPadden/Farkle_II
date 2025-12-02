@@ -71,11 +71,13 @@ def run(cfg: AppConfig) -> None:
     design_kwargs = _build_design_kwargs(cfg)
     _maybe_autotune_tiers(cfg, design_kwargs)
 
-    out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
-    if out.exists() and out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
+    out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
+    legacy_out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
+    existing_out = out if out.exists() else legacy_out
+    if existing_out.exists() and existing_out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
         LOGGER.info(
             "Head-to-head results up-to-date",
-            extra={"stage": "head2head", "path": str(out)},
+            extra={"stage": "head2head", "path": str(existing_out)},
         )
         return
 
@@ -138,8 +140,8 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
     if not target_hours or target_hours <= 0:
         return
 
-    ratings_path = cfg.analysis_dir / "ratings_pooled.parquet"
-    tiers_path = cfg.analysis_dir / "tiers.json"
+    ratings_path = cfg.trueskill_path("ratings_pooled.parquet")
+    tiers_path = cfg.preferred_tiers_path()
     if not ratings_path.exists():
         LOGGER.warning(
             "Tier auto-tune skipped: missing pooled ratings",

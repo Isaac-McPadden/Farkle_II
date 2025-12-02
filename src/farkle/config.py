@@ -225,6 +225,36 @@ class AppConfig:
         """Directory containing derived analysis artifacts."""
         return self.io.results_dir / self.io.analysis_subdir
 
+    # Numbered analysis stage directories (created on access)
+    def _analysis_stage_dir(self, name: str) -> Path:
+        path = self.analysis_dir / name
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def ingest_stage_dir(self) -> Path:
+        return self._analysis_stage_dir("00_ingest")
+
+    @property
+    def combine_stage_dir(self) -> Path:
+        return self._analysis_stage_dir("01_combine")
+
+    @property
+    def metrics_stage_dir(self) -> Path:
+        return self._analysis_stage_dir("02_metrics")
+
+    @property
+    def trueskill_stage_dir(self) -> Path:
+        return self._analysis_stage_dir("03_trueskill")
+
+    @property
+    def head2head_stage_dir(self) -> Path:
+        return self._analysis_stage_dir("04_head2head")
+
+    @property
+    def tiering_stage_dir(self) -> Path:
+        return self._analysis_stage_dir("05_tiering")
+
     @property
     def meta_analysis_dir(self) -> Path:
         """Directory containing per-seed summaries pooled across runs."""
@@ -241,7 +271,11 @@ class AppConfig:
     @property
     def data_dir(self) -> Path:
         """Data directory under the analysis folder."""
-        return self.analysis_dir / "data"
+        preferred = self.combine_stage_dir / "data"
+        legacy = self.analysis_dir / "data"
+        if legacy.exists() and not preferred.exists():
+            return legacy
+        return preferred
 
     def n_dir(self, n: int) -> Path:
         """Convenience accessor for a specific ``<n>_players`` directory."""
@@ -316,6 +350,44 @@ class AppConfig:
         """Filename used for append-only manifests."""
         outputs = self.analysis.outputs or {}
         return str(outputs.get("manifest_name", "manifest.jsonl"))
+
+    def _preferred_stage_path(self, stage_dir: Path, legacy_dir: Path, filename: str) -> Path:
+        """Return *filename* within the stage dir, falling back to legacy when absent."""
+
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        stage_path = stage_dir / filename
+        legacy_path = legacy_dir / filename
+        if stage_path.exists() or not legacy_path.exists():
+            return stage_path
+        return legacy_path
+
+    def trueskill_path(self, filename: str) -> Path:
+        """Resolve a TrueSkill artifact path with legacy fallback."""
+
+        return self._preferred_stage_path(self.trueskill_stage_dir, self.analysis_dir, filename)
+
+    def head2head_path(self, filename: str) -> Path:
+        """Resolve a head-to-head artifact path with legacy fallback."""
+
+        return self._preferred_stage_path(self.head2head_stage_dir, self.analysis_dir, filename)
+
+    def tiering_path(self, filename: str) -> Path:
+        """Resolve a tiering artifact path with legacy fallback."""
+
+        return self._preferred_stage_path(self.tiering_stage_dir, self.analysis_dir, filename)
+
+    def preferred_tiers_path(self) -> Path:
+        """Locate ``tiers.json`` across tiering and TrueSkill stages."""
+
+        candidates = [
+            self.tiering_stage_dir / "tiers.json",
+            self.trueskill_stage_dir / "tiers.json",
+            self.analysis_dir / "tiers.json",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0]
 
     @property
     def curated_parquet(self) -> Path:
