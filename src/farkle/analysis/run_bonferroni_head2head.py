@@ -189,7 +189,8 @@ def run_bonferroni_head2head(
         raise RuntimeError(f"Tier file not found at {tiers_path}")
 
     payload = load_tier_payload(tiers_path)
-    tiers = tier_mapping_from_payload(payload, prefer=str(players))
+    prefer_source = payload.get("active") if isinstance(payload, dict) else None
+    tiers = tier_mapping_from_payload(payload, prefer=str(prefer_source) if prefer_source else "")
     if not tiers:
         raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())

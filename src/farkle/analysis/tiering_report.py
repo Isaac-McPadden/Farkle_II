@@ -6,6 +6,7 @@ outputs for both frequentist and TrueSkill-derived tiers across player counts.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 from dataclasses import dataclass, replace
@@ -48,10 +49,8 @@ def _tiering_artifact(cfg: AppConfig, name: str) -> Path:
     stage_path = stage_dir / name
     legacy_path = cfg.analysis_dir / name
     if legacy_path.exists() and not stage_path.exists():
-        try:
+        with contextlib.suppress(Exception):  # pragma: no cover - best-effort migration
             legacy_path.replace(stage_path)
-        except Exception:  # noqa: BLE001 - best-effort migration
-            pass
     return stage_path if stage_path.exists() or not legacy_path.exists() else legacy_path
 
 
