@@ -73,7 +73,8 @@ analysis:
   head2head_tolerance_pct: 5.0
   head2head_games_per_sec: null
   tiering_seeds: null
-  tiering_z_star: 2.0
+  tiering_z_star: 1.645
+  tiering_min_gap: null
   tiering_weights_by_k: null
 
 ingest:

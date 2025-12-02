@@ -584,7 +584,9 @@ def test_run_trueskill_rebuilds_outdated_pooled(
 
     tier_calls: list[tuple[dict[str, float], dict[str, float]]] = []
 
-    def fake_build_tiers(means: dict[str, float], stdevs: dict[str, float]) -> dict[str, int]:
+    def fake_build_tiers(
+        means: dict[str, float], stdevs: dict[str, float], **_: object
+    ) -> dict[str, int]:
         tier_calls.append((means, stdevs))
         return dict.fromkeys(means, 1)
 

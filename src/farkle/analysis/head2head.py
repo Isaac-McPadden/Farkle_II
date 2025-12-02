@@ -10,7 +10,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +23,7 @@ from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy
 from farkle.utils.random import spawn_seeds
 from farkle.utils.stats import build_tiers, games_for_power
+from farkle.utils.tiers import write_tier_payload
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -180,6 +180,8 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
             return
 
     tolerance_pct = max(0.0, cfg.analysis.head2head_tolerance_pct or 0.0)
+    tiering_z = float(cfg.analysis.tiering_z_star or 1.645)
+    tiering_min_gap = cfg.analysis.tiering_min_gap
     candidate = _search_candidate(
         means=means,
         stdevs=stdevs,
@@ -187,6 +189,8 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
         tolerance_pct=tolerance_pct,
         games_per_sec=games_per_sec,
         design_kwargs=design_kwargs,
+        tiering_z=tiering_z,
+        tiering_min_gap=tiering_min_gap,
     )
     if candidate is None:
         LOGGER.warning(
@@ -195,23 +199,14 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
         )
         return
 
-    if tiers_path.exists():
-        backup = tiers_path.with_name("tiers_trueskill.json")
-        if not backup.exists():
-            shutil.copy2(tiers_path, backup)
-
-    # Write the tuned tiers to the canonical path and a z-tagged sibling
-    with atomic_path(str(tiers_path)) as tmp_path, Path(tmp_path).open("w") as fh:
-        json.dump(candidate.tiers, fh, indent=2, sort_keys=True)
-
-    z_tag = f"{candidate.z:.3f}"
-    tiers_z_path = tiers_path.with_name(f"tiers_z{z_tag}.json")
-    if not tiers_z_path.exists():
-        with atomic_path(str(tiers_z_path)) as tmp_path, Path(tmp_path).open("w") as fh:
-            json.dump(candidate.tiers, fh, indent=2, sort_keys=True)
+    trueskill_payload: dict[str, object] = {"tiers": candidate.tiers, "z": candidate.z}
+    if tiering_min_gap is not None:
+        trueskill_payload["min_gap"] = tiering_min_gap
+    write_tier_payload(tiers_path, trueskill=trueskill_payload, active="trueskill")
 
     meta = {
         "z": candidate.z,
+        "min_gap": tiering_min_gap,
         "target_hours": target_hours,
         "tolerance_pct": tolerance_pct,
         "predicted_hours": candidate.runtime_hours,
@@ -234,7 +229,6 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
             "predicted_hours": round(candidate.runtime_hours, 3),
             "games_per_pair": candidate.games_per_pair,
             "tiers_path": str(tiers_path),
-            "tiers_z_path": str(tiers_z_path),
         },
     )
 
@@ -247,6 +241,8 @@ def _search_candidate(
     tolerance_pct: float,
     games_per_sec: float,
     design_kwargs: dict[str, Any],
+    tiering_z: float,
+    tiering_min_gap: float | None,
 ) -> TierCandidate | None:
     """Search for a z-threshold that meets the runtime budget.
 
@@ -278,7 +274,7 @@ def _search_candidate(
             A populated :class:`TierCandidate` describing tier assignments and
             runtime predictions for the supplied threshold.
         """
-        tiers = build_tiers(means, stdevs, z=z)
+        tiers = build_tiers(means, stdevs, z=z, min_gap=tiering_min_gap)
         top_tier = min(tiers.values()) if tiers else 1
         elite_count = sum(1 for val in tiers.values() if val == top_tier)
         runtime_hours, games_per_pair, total_games, total_pairs = _predict_runtime(
@@ -295,9 +291,13 @@ def _search_candidate(
         )
 
     min_z, max_z = 0.5, 6.0
+    baseline_candidate = evaluate(tiering_z)
     best_candidate = evaluate(max_z)
     low_candidate = evaluate(min_z)
-    candidates = [low_candidate, best_candidate]
+    candidates = [baseline_candidate, low_candidate, best_candidate]
+
+    if target_low <= baseline_candidate.runtime_hours <= target_high:
+        return baseline_candidate
 
     if target_low <= low_candidate.runtime_hours <= target_high:
         return low_candidate

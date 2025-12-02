@@ -25,6 +25,13 @@ def test_build_tiers_multiple_tiers():
     assert tiers["C"] == 2
 
 
+def test_build_tiers_min_gap_merges_nearby():
+    mu = {"A": 10.0, "B": 9.39}
+    sigma = {"A": 0.1, "B": 0.01}
+    tiers = build_tiers(means=mu, stdevs=sigma, z=10, min_gap=0.2)
+    assert tiers == {"A": 1, "B": 1}
+
+
 def test_build_tiers_mismatched_sigma():
     mu = {"A": 100.0}
     sigma = {}

@@ -12,9 +12,7 @@ Outputs
 ``ratings_<N>.parquet`` and ``ratings_pooled.parquet``
     Parquet tables with columns ``{strategy, mu, sigma}``.
 ``tiers.json``
-    Mapping of strategy → tier derived from the pooled ratings.
-``tiers_trueskill.json``
-    Conservative backup tiers derived from the same pooled TrueSkill ratings.
+    Consolidated tier report containing TrueSkill and frequentist tiers.
 """
 from __future__ import annotations
 
@@ -41,6 +39,7 @@ from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.random import seed_everything
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.stats import build_tiers
+from farkle.utils.tiers import write_tier_payload
 from farkle.utils.writer import atomic_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
@@ -737,6 +736,8 @@ def run_trueskill(
     resume_per_n: bool = True,
     checkpoint_every_batches: int = 500,
     env_kwargs: dict | None = None,
+    tiering_z: float | None = None,
+    tiering_min_gap: float | None = None,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -762,8 +763,6 @@ def run_trueskill(
         precision-weighted mean.
     ``tiers.json``
         JSON file with league tiers derived from the pooled ratings.
-    ``tiers_trueskill.json``
-        Backup copy of the conservative TrueSkill tiers (written once).
     """
     if dataroot is None:
         base = Path(root) / "results" if root is not None else DEFAULT_DATAROOT
@@ -894,8 +893,10 @@ def run_trueskill(
     tiers = build_tiers(
         means={k: v.mu for k, v in pooled_stats.items()},
         stdevs={k: v.sigma for k, v in pooled_stats.items()},
+        z=float(tiering_z or 1.645),
+        min_gap=tiering_min_gap,
     )
-    _write_conservative_tiers(root, tiers)
+    _write_conservative_tiers(root, tiers, float(tiering_z or 1.645), tiering_min_gap)
     tiers_path = root / "tiers.json"
     LOGGER.info(
         "TrueSkill run complete",
@@ -946,27 +947,20 @@ def _ensure_strict_mu_ordering(ratings: Mapping[str, RatingStats]) -> None:
             raise RuntimeError("TrueSkill pooling produced tied means; inputs should prevent ties.")
 
 
-def _write_conservative_tiers(root: Path, tiers: Mapping[str, int]) -> None:
-    """Write ``tiers.json`` and (once) ``tiers_trueskill.json`` atomically."""
+def _write_conservative_tiers(
+    root: Path, tiers: Mapping[str, int], z: float, min_gap: float | None
+) -> None:
+    """Write consolidated TrueSkill tiers to ``tiers.json``."""
 
-    tiers_dict = dict(tiers)
+    payload = {
+        "tiers": dict(tiers),
+        "z": float(z),
+    }
+    if min_gap is not None:
+        payload["min_gap"] = float(min_gap)
 
     tiers_path = root / "tiers.json"
-    with atomic_path(str(tiers_path)) as tmp_path, Path(tmp_path).open("w") as fh:
-        json.dump(tiers_dict, fh, indent=2, sort_keys=True)
-
-    backup_path = root / "tiers_trueskill.json"
-    try:
-        fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-    except FileExistsError:
-        LOGGER.debug(
-            "tiers_trueskill.json exists; keeping original backup",
-            extra={"stage": "trueskill", "path": str(backup_path)},
-        )
-    else:
-        os.close(fd)
-        with atomic_path(str(backup_path)) as tmp_path, Path(tmp_path).open("w") as fh:
-            json.dump(tiers_dict, fh, indent=2, sort_keys=True)
+    write_tier_payload(tiers_path, trueskill=payload, active="trueskill")
 
 
 def run_trueskill_all_seeds(cfg: AppConfig) -> None:
@@ -992,6 +986,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
         "tau": cfg.trueskill.tau,
         "draw_probability": cfg.trueskill.draw_probability,
     }
+    tiering_z = float(analysis_cfg.tiering_z_star or 1.645)
+    tiering_min_gap = analysis_cfg.tiering_min_gap
 
     per_seed_results: dict[int, dict[str, RatingStats]] = {}
     per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
@@ -1012,6 +1008,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             dataroot=cfg.results_dir,
             workers=analysis_cfg.n_jobs or None,
             env_kwargs=env_kwargs,
+            tiering_z=tiering_z,
+            tiering_min_gap=tiering_min_gap,
         )
 
         pooled_path = analysis_dir / f"ratings_pooled_seed{seed}.parquet"
@@ -1068,9 +1066,10 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     tiers = build_tiers(
         means={k: v.mu for k, v in ordered_pooled.items()},
         stdevs={k: v.sigma for k, v in ordered_pooled.items()},
-        z=float(analysis_cfg.tiering_z_star or 2.0),
+        z=tiering_z,
+        min_gap=tiering_min_gap,
     )
-    _write_conservative_tiers(analysis_dir, tiers)
+    _write_conservative_tiers(analysis_dir, tiers, tiering_z, tiering_min_gap)
     tiers_path = analysis_dir / "tiers.json"
 
     LOGGER.info(

@@ -360,6 +360,7 @@ def build_tiers(
     means: Dict[str, float],
     stdevs: Dict[str, float],
     z: float = 2.326,
+    min_gap: float | None = None,
 ) -> Dict[str, int]:
     """
     Group strategies into **overlapping confidence tiers**.
@@ -373,6 +374,9 @@ def build_tiers(
     z :
         One-sided *z*-score for the desired confidence level.
         Default **2.326** ≈ 99 % one-sided (α ≈ 0.01).
+    min_gap : float | None
+        Optional minimum separation (in the same units as ``means``) required
+        before starting a new tier. ``None`` disables the gap check.
 
     Returns
     -------
@@ -394,6 +398,9 @@ def build_tiers(
     if set(means) != set(stdevs):  # extra safety check
         raise ValueError("means and stdevs must have identical strategy keys")
 
+    if min_gap is not None and min_gap < 0:
+        raise ValueError("min_gap must be non-negative")
+
     sorted_items = sorted(means.items(), key=lambda kv: kv[1], reverse=True)
     tier_map: Dict[str, int] = {}
     if not sorted_items:  # fast-exit for empty
@@ -406,7 +413,10 @@ def build_tiers(
     for name, _ in sorted_items[1:]:
         lower = means[name] - z * stdevs[name]
         upper = means[name] + z * stdevs[name]
-        if upper < current_lower:  # strict separation
+        separated = upper < current_lower
+        if min_gap is not None:
+            separated = separated and (current_lower - upper) >= float(min_gap)
+        if separated:  # strict separation with optional minimum gap
             current_tier += 1
             current_lower = lower
         else:
