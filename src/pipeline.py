@@ -101,15 +101,28 @@ def _done_path(out: Path) -> Path:
     return out.with_name(out.name + ".done.json")
 
 
+def _first_existing(paths: list[Path]) -> Path:
+    """Return the first existing path from ``paths`` or the first element."""
+
+    for path in paths:
+        if path.exists():
+            return path
+    return paths[0]
+
+
 def analyze_trueskill(exp_dir: Path) -> None:
     """Compute TrueSkill tiers for *exp_dir* simulations."""
 
     exp_dir = Path(exp_dir)
     analysis_dir = exp_dir / "analysis"
-    out = analysis_dir / "tiers.json"
+    ts_dir = analysis_dir / "03_trueskill"
+    ts_dir.mkdir(parents=True, exist_ok=True)
+    out = ts_dir / "tiers.json"
+    legacy_out = analysis_dir / "tiers.json"
     done = _done_path(out)
     inputs = [p for p in exp_dir.iterdir() if p.name != "analysis"]
-    if is_up_to_date(done, inputs, [out]):
+    outputs = [out]
+    if is_up_to_date(done, inputs, outputs):
         print("SKIP trueskill (up to date)")
         return
 
@@ -118,6 +131,8 @@ def analyze_trueskill(exp_dir: Path) -> None:
 
     cfg = AppConfig(io=IOConfig(results_dir=exp_dir))
     _rt.run_trueskill_all_seeds(cfg)
+    if legacy_out.exists() and not out.exists():
+        legacy_out.replace(out)
     write_done(done, inputs, [out], "farkle.analytics.trueskill")
     print("trueskill")
 
@@ -127,9 +142,17 @@ def analyze_h2h(exp_dir: Path) -> None:
 
     exp_dir = Path(exp_dir)
     analysis_dir = exp_dir / "analysis"
-    out = analysis_dir / "bonferroni_pairwise.parquet"
+    h2h_dir = analysis_dir / "04_head2head"
+    h2h_dir.mkdir(parents=True, exist_ok=True)
+    out = h2h_dir / "bonferroni_pairwise.parquet"
     done = _done_path(out)
-    tiers = analysis_dir / "tiers.json"
+    tiers = _first_existing(
+        [
+            analysis_dir / "05_tiering" / "tiers.json",
+            analysis_dir / "03_trueskill" / "tiers.json",
+            analysis_dir / "tiers.json",
+        ]
+    )
     inputs = [tiers]
     if is_up_to_date(done, inputs, [out]):
         print("SKIP h2h (up to date)")
@@ -150,8 +173,15 @@ def analyze_hgb(exp_dir: Path) -> None:
     analysis_dir = exp_dir / "analysis"
     out = analysis_dir / "hgb_importance.json"
     done = _done_path(out)
-    metrics = analysis_dir / "metrics.parquet"
-    ratings = analysis_dir / "ratings_pooled.parquet"
+    metrics = _first_existing(
+        [analysis_dir / "02_metrics" / "metrics.parquet", analysis_dir / "metrics.parquet"]
+    )
+    ratings = _first_existing(
+        [
+            analysis_dir / "03_trueskill" / "ratings_pooled.parquet",
+            analysis_dir / "ratings_pooled.parquet",
+        ]
+    )
     inputs = [metrics, ratings]
     if is_up_to_date(done, inputs, [out]):
         print("SKIP hgb (up to date)")
@@ -170,7 +200,9 @@ def analyze_agreement(exp_dir: Path) -> None:
 
     exp_dir = Path(exp_dir)
     analysis_dir = exp_dir / "analysis"
-    ratings = analysis_dir / "ratings_pooled.parquet"
+    ratings = _first_existing(
+        [analysis_dir / "03_trueskill" / "ratings_pooled.parquet", analysis_dir / "ratings_pooled.parquet"]
+    )
     if not ratings.exists():
         raise FileNotFoundError(
             "agreement analysis requires ratings_pooled.parquet; run trueskill first"
@@ -181,8 +213,18 @@ def analyze_agreement(exp_dir: Path) -> None:
     done = _done_path(outputs[0])
     inputs = [ratings]
     for candidate in (
-        analysis_dir / "frequentist_scores.parquet",
-        analysis_dir / "bonferroni_decisions.parquet",
+        _first_existing(
+            [
+                analysis_dir / "05_tiering" / "frequentist_scores.parquet",
+                analysis_dir / "frequentist_scores.parquet",
+            ]
+        ),
+        _first_existing(
+            [
+                analysis_dir / "04_head2head" / "bonferroni_decisions.parquet",
+                analysis_dir / "bonferroni_decisions.parquet",
+            ]
+        ),
     ):
         if candidate.exists():
             inputs.append(candidate)

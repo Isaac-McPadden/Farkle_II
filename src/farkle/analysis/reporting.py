@@ -83,6 +83,34 @@ def _analysis_dir(cfg: AnalysisConfig | AppConfig) -> Path:
     raise AttributeError("Configuration object does not expose an analysis_dir")
 
 
+def _first_existing(candidates: list[Path]) -> Path:
+    """Return the first existing path or the first candidate when none exist."""
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+def _tier_path(analysis_dir: Path) -> Path:
+    """Resolve ``tiers.json`` within stage-aware directories."""
+
+    candidates = [
+        analysis_dir / "05_tiering" / "tiers.json",
+        analysis_dir / "03_trueskill" / "tiers.json",
+        analysis_dir / "tiers.json",
+    ]
+    return _first_existing(candidates)
+
+
+def _head2head_path(analysis_dir: Path, filename: str) -> Path:
+    """Resolve a head-to-head artifact path with legacy fallback."""
+
+    return _first_existing(
+        [analysis_dir / "04_head2head" / filename, analysis_dir / filename]
+    )
+
+
 def _sim_player_counts(cfg: AnalysisConfig | AppConfig, analysis_dir: Path) -> list[int]:
     """Determine the list of player counts that should be reported."""
 
@@ -270,14 +298,14 @@ def _load_seed_summaries(analysis_dir: Path, players: int) -> pd.DataFrame:
 
 def _load_tiers(analysis_dir: Path, players: int) -> dict[str, int]:
     """Parse tier assignments from JSON, scoped to the desired player count."""
-    path = analysis_dir / "tiers.json"
+    path = _tier_path(analysis_dir)
     payload = load_tier_payload(path)
     return tier_mapping_from_payload(payload, prefer=str(players))
 
 
 def _load_h2h_decisions(analysis_dir: Path, players: int) -> pd.DataFrame:
     """Load pairwise significance decisions for head-to-head comparisons."""
-    path = analysis_dir / "bonferroni_decisions.parquet"
+    path = _head2head_path(analysis_dir, "bonferroni_decisions.parquet")
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_parquet(path)
@@ -296,7 +324,7 @@ def _load_h2h_decisions(analysis_dir: Path, players: int) -> pd.DataFrame:
 
 def _load_h2h_ranking(analysis_dir: Path, players: int) -> pd.DataFrame:
     """Load significant ranking output produced from head-to-head tests."""
-    path = analysis_dir / "h2h_significant_ranking.csv"
+    path = _head2head_path(analysis_dir, "h2h_significant_ranking.csv")
     if not path.exists():
         return pd.DataFrame(columns=["strategy", "rank"])
     df = pd.read_csv(path)
@@ -473,9 +501,9 @@ def plot_h2h_heatmap_for_players(
 
     output = _plot_output_path(cfg, players, f"h2h_heatmap_{players}p.png")
     inputs = [
-        _analysis_dir(cfg) / "bonferroni_decisions.parquet",
-        _analysis_dir(cfg) / "tiers.json",
-        _analysis_dir(cfg) / "h2h_significant_ranking.csv",
+        _head2head_path(_analysis_dir(cfg), "bonferroni_decisions.parquet"),
+        _tier_path(_analysis_dir(cfg)),
+        _head2head_path(_analysis_dir(cfg), "h2h_significant_ranking.csv"),
     ]
     if _output_is_fresh(output, inputs, force=force):
         return output

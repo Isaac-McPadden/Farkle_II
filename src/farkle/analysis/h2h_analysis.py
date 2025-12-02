@@ -201,9 +201,13 @@ def derive_sig_ranking(G: nx.DiGraph) -> list[str]:
 
 def run_post_h2h(cfg: AppConfig) -> None:
     """Execute the full post head-to-head Holm + ranking workflow."""
-    analysis_dir = cfg.analysis_dir
+    analysis_dir = cfg.head2head_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    pairwise_path = analysis_dir / "bonferroni_pairwise.parquet"
+    pairwise_candidates = [
+        analysis_dir / "bonferroni_pairwise.parquet",
+        cfg.analysis_dir / "bonferroni_pairwise.parquet",
+    ]
+    pairwise_path = next((p for p in pairwise_candidates if p.exists()), pairwise_candidates[0])
     if not pairwise_path.exists():
         raise FileNotFoundError(pairwise_path)
 

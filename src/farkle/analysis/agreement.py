@@ -47,7 +47,7 @@ def run(cfg: AppConfig) -> None:
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list}) or [0]
 
     for players in player_counts:
-        payload = _build_payload(analysis_dir, players)
+        payload = _build_payload(cfg, players)
         payload["players"] = players
         out_path = analysis_dir / f"agreement_{players}p.json"
         with atomic_path(str(out_path)) as tmp_path:
@@ -62,11 +62,11 @@ def run(cfg: AppConfig) -> None:
         )
 
 
-def _build_payload(analysis_dir: Path, players: int) -> dict[str, object]:
+def _build_payload(cfg: AppConfig, players: int) -> dict[str, object]:
     """Assemble agreement metrics for the requested player count.
 
     Args:
-        analysis_dir: Directory containing prior analytics outputs.
+        cfg: Application configuration with analytics output paths.
         players: Number of players for which to compute agreement.
 
     Returns:
@@ -78,16 +78,18 @@ def _build_payload(analysis_dir: Path, players: int) -> dict[str, object]:
     """
     methods: dict[str, MethodData] = {}
 
-    ts = _load_trueskill(analysis_dir, players)
+    analysis_dir = cfg.analysis_dir
+
+    ts = _load_trueskill(cfg, players)
     if ts is None:
-        raise FileNotFoundError(analysis_dir / "ratings_pooled.parquet")
+        raise FileNotFoundError(cfg.trueskill_path("ratings_pooled.parquet"))
     methods["trueskill"] = ts
 
-    freq = _load_frequentist(analysis_dir, players)
+    freq = _load_frequentist(cfg, players)
     if freq is not None:
         methods["frequentist"] = freq
 
-    h2h = _load_head2head(analysis_dir)
+    h2h = _load_head2head(cfg)
     if h2h is not None:
         methods["h2h"] = h2h
 
@@ -116,17 +118,18 @@ def _build_payload(analysis_dir: Path, players: int) -> dict[str, object]:
     }
 
 
-def _load_trueskill(analysis_dir: Path, players: int) -> MethodData | None:
+def _load_trueskill(cfg: AppConfig, players: int) -> MethodData | None:
     """Load pooled TrueSkill ratings and optional tiers for a given player count.
 
     Args:
-        analysis_dir: Directory containing rating parquet files.
+        cfg: Application configuration used to locate outputs.
         players: Number of players to filter the ratings to.
 
     Returns:
         Prepared ``MethodData`` or ``None`` when no ratings are available.
     """
-    path = analysis_dir / "ratings_pooled.parquet"
+    analysis_dir = cfg.trueskill_stage_dir
+    path = cfg.trueskill_path("ratings_pooled.parquet")
     if not path.exists():
         return None
 
@@ -139,12 +142,16 @@ def _load_trueskill(analysis_dir: Path, players: int) -> MethodData | None:
 
     series = df.set_index(df["strategy"].astype(str))["mu"].astype(float).sort_index()
 
-    tiers_path = analysis_dir / "tiers.json"
+    tiers_path = cfg.preferred_tiers_path()
     tiers_payload = load_tier_payload(tiers_path)
     tiers = tier_mapping_from_payload(tiers_payload, prefer=str(players)) or None
 
     per_seed: list[pd.Series] = []
-    for seed_path in sorted(analysis_dir.glob("ratings_pooled_seed*.parquet")):
+    seed_candidates = {
+        *cfg.trueskill_stage_dir.glob("ratings_pooled_seed*.parquet"),
+        *cfg.analysis_dir.glob("ratings_pooled_seed*.parquet"),
+    }
+    for seed_path in sorted(seed_candidates):
         seed_df = pd.read_parquet(seed_path)
         seed_df = _filter_by_players(seed_df, players)
         if "strategy" not in seed_df.columns or "mu" not in seed_df.columns:
@@ -156,17 +163,17 @@ def _load_trueskill(analysis_dir: Path, players: int) -> MethodData | None:
     return MethodData(scores=series, tiers=tiers, per_seed_scores=per_seed)
 
 
-def _load_frequentist(analysis_dir: Path, players: int) -> MethodData | None:
+def _load_frequentist(cfg: AppConfig, players: int) -> MethodData | None:
     """Load frequentist scoring outputs and optional tiers.
 
     Args:
-        analysis_dir: Directory containing frequentist parquet outputs.
+        cfg: Application configuration used to locate frequentist outputs.
         players: Number of players to filter the scores to.
 
     Returns:
         Populated ``MethodData`` or ``None`` when the file is absent or empty.
     """
-    path = analysis_dir / "frequentist_scores.parquet"
+    path = cfg.tiering_path("frequentist_scores.parquet")
     if not path.exists():
         return None
 
@@ -188,7 +195,11 @@ def _load_frequentist(analysis_dir: Path, players: int) -> MethodData | None:
             tiers = {str(k): int(v) for k, v in tier_series.items()}
 
     per_seed: list[pd.Series] = []
-    for seed_path in sorted(analysis_dir.glob("frequentist_scores_seed*.parquet")):
+    seed_candidates = {
+        *cfg.tiering_stage_dir.glob("frequentist_scores_seed*.parquet"),
+        *cfg.analysis_dir.glob("frequentist_scores_seed*.parquet"),
+    }
+    for seed_path in sorted(seed_candidates):
         seed_df = pd.read_parquet(seed_path)
         seed_df = _filter_by_players(seed_df, players)
         if "strategy" not in seed_df.columns or score_col not in seed_df.columns:
@@ -200,16 +211,16 @@ def _load_frequentist(analysis_dir: Path, players: int) -> MethodData | None:
     return MethodData(scores=series, tiers=tiers, per_seed_scores=per_seed)
 
 
-def _load_head2head(analysis_dir: Path) -> MethodData | None:
+def _load_head2head(cfg: AppConfig) -> MethodData | None:
     """Translate head-to-head significance results into score/tier data.
 
     Args:
-        analysis_dir: Directory containing head-to-head decision artifacts.
+        cfg: Application configuration containing head-to-head decision paths.
 
     Returns:
         ``MethodData`` when ranking information can be derived, otherwise ``None``.
     """
-    path = analysis_dir / "bonferroni_decisions.parquet"
+    path = cfg.head2head_path("bonferroni_decisions.parquet")
     if not path.exists():
         return None
 

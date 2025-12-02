@@ -96,6 +96,15 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     analysis_dir = app_cfg.analysis_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    for stage_dir in (
+        app_cfg.ingest_stage_dir,
+        app_cfg.combine_stage_dir,
+        app_cfg.metrics_stage_dir,
+        app_cfg.trueskill_stage_dir,
+        app_cfg.head2head_stage_dir,
+        app_cfg.tiering_stage_dir,
+    ):
+        stage_dir.mkdir(parents=True, exist_ok=True)
     resolved = analysis_dir / "config.resolved.yaml"
     # Best-effort: write out the resolved (merged) config we actually used
     resolved_dict = _stringify_paths(dataclasses.asdict(app_cfg))

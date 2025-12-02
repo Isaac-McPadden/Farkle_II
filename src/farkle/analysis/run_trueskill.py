@@ -68,10 +68,13 @@ def _ensure_new_location(dest: Path, legacy: Path) -> Path:
     return dest
 
 
-def _rating_artifact_paths(root: Path, player_count: str, suffix: str) -> dict[str, Path]:
+def _rating_artifact_paths(
+    root: Path, player_count: str, suffix: str, *, legacy_root: Path | None = None
+) -> dict[str, Path]:
     """Return canonical and legacy paths for per-player artifacts."""
 
     per_dir = _per_player_dir(root, player_count)
+    legacy_base = legacy_root or root
     base_name = f"ratings_{player_count}{suffix}"
     return {
         "dir": per_dir,
@@ -79,18 +82,25 @@ def _rating_artifact_paths(root: Path, player_count: str, suffix: str) -> dict[s
         "json": per_dir / f"{base_name}.json",
         "ckpt": per_dir / f"{base_name}.ckpt.json",
         "checkpoint": per_dir / f"{base_name}.checkpoint.parquet",
-        "legacy_parquet": root / f"{base_name}.parquet",
-        "legacy_json": root / f"{base_name}.json",
-        "legacy_ckpt": root / f"{base_name}.ckpt.json",
-        "legacy_checkpoint": root / f"{base_name}.checkpoint.parquet",
+        "legacy_parquet": legacy_base / f"{base_name}.parquet",
+        "legacy_json": legacy_base / f"{base_name}.json",
+        "legacy_ckpt": legacy_base / f"{base_name}.ckpt.json",
+        "legacy_checkpoint": legacy_base / f"{base_name}.checkpoint.parquet",
     }
 
 
-def _iter_rating_parquets(root: Path, suffix: str) -> list[Path]:
+def _iter_rating_parquets(root: Path, suffix: str, legacy_root: Path | None = None) -> list[Path]:
     """Discover per-player rating parquet files with legacy fallback."""
 
-    per_player = sorted((root / "data").glob(f"*p/ratings_*{suffix}.parquet"))
-    legacy = sorted(root.glob(f"ratings_*{suffix}.parquet"))
+    search_roots = [root]
+    if legacy_root is not None and legacy_root != root:
+        search_roots.append(legacy_root)
+
+    per_player: list[Path] = []
+    legacy: list[Path] = []
+    for base in search_roots:
+        per_player.extend((base / "data").glob(f"*p/ratings_*{suffix}.parquet"))
+        legacy.extend(base.glob(f"ratings_*{suffix}.parquet"))
     out: list[Path] = []
     seen: set[str] = set()
     for path in per_player + legacy:
@@ -608,6 +618,7 @@ def _rate_block_worker(
     """
     block = Path(block_dir)
     root = Path(root_dir)
+    legacy_root = root.parent
 
     player_count = block.name.split("_")[0]
     per_player_dir = _per_player_dir(root, player_count)
@@ -627,7 +638,7 @@ def _rate_block_worker(
         n = int(player_count)
 
     # Up-to-date guard
-    paths = _rating_artifact_paths(root, player_count, suffix)
+    paths = _rating_artifact_paths(root, player_count, suffix, legacy_root=legacy_root)
     parquet_path = _ensure_new_location(paths["parquet"], paths["legacy_parquet"])
     ck_path = _ensure_new_location(paths["ckpt"], paths["legacy_ckpt"])
     rk_path = _ensure_new_location(paths["checkpoint"], paths["legacy_checkpoint"])
@@ -769,8 +780,9 @@ def run_trueskill(
     else:
         base = Path(dataroot)
 
-    root = Path(root) if root is not None else base / "analysis"
+    root = Path(root) if root is not None else base / "analysis" / "03_trueskill"
     root.mkdir(parents=True, exist_ok=True)
+    legacy_root = root.parent
     _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
     if workers is None:
@@ -850,8 +862,11 @@ def run_trueskill(
             per_block_games[player_count] = block_games
 
     # Combine per-N ratings into pooled stats
-    pooled_parquet = root / f"ratings_pooled{suffix}.parquet"
-    per_player_parquets = _iter_rating_parquets(root, suffix)
+    pooled_parquet = _ensure_new_location(
+        root / f"ratings_pooled{suffix}.parquet",
+        legacy_root / f"ratings_pooled{suffix}.parquet",
+    )
+    per_player_parquets = _iter_rating_parquets(root, suffix, legacy_root=legacy_root)
     if pooled_parquet.exists():
         newest = max((p.stat().st_mtime for p in per_player_parquets), default=0.0)
         if pooled_parquet.stat().st_mtime >= newest:
@@ -887,7 +902,10 @@ def run_trueskill(
     # Save pooled ratings as Parquet
     _save_ratings_parquet(pooled_parquet, pooled_stats)
     pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled_stats.items()}
-    pooled_json_path = root / f"ratings_pooled{suffix}.json"
+    pooled_json_path = _ensure_new_location(
+        root / f"ratings_pooled{suffix}.json",
+        legacy_root / f"ratings_pooled{suffix}.json",
+    )
     with atomic_path(str(pooled_json_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(pooled_json))
     tiers = build_tiers(
@@ -896,8 +914,9 @@ def run_trueskill(
         z=float(tiering_z or 1.645),
         min_gap=tiering_min_gap,
     )
-    _write_conservative_tiers(root, tiers, float(tiering_z or 1.645), tiering_min_gap)
-    tiers_path = root / "tiers.json"
+    tiers_path = _write_conservative_tiers(
+        root, tiers, float(tiering_z or 1.645), tiering_min_gap, legacy_root=legacy_root
+    )
     LOGGER.info(
         "TrueSkill run complete",
         extra={
@@ -948,8 +967,13 @@ def _ensure_strict_mu_ordering(ratings: Mapping[str, RatingStats]) -> None:
 
 
 def _write_conservative_tiers(
-    root: Path, tiers: Mapping[str, int], z: float, min_gap: float | None
-) -> None:
+    root: Path,
+    tiers: Mapping[str, int],
+    z: float,
+    min_gap: float | None,
+    *,
+    legacy_root: Path | None = None,
+) -> Path:
     """Write consolidated TrueSkill tiers to ``tiers.json``."""
 
     payload = {
@@ -959,8 +983,9 @@ def _write_conservative_tiers(
     if min_gap is not None:
         payload["min_gap"] = float(min_gap)
 
-    tiers_path = root / "tiers.json"
+    tiers_path = _ensure_new_location(root / "tiers.json", (legacy_root or root) / "tiers.json")
     write_tier_payload(tiers_path, trueskill=payload, active="trueskill")
+    return tiers_path
 
 
 def run_trueskill_all_seeds(cfg: AppConfig) -> None:
@@ -978,8 +1003,9 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
         deduped.append(seed)
     seeds = sorted(deduped)
 
-    analysis_dir = cfg.analysis_dir
+    analysis_dir = cfg.trueskill_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    legacy_root = analysis_dir.parent
 
     env_kwargs = {
         "beta": cfg.trueskill.beta,
@@ -1012,13 +1038,16 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             tiering_min_gap=tiering_min_gap,
         )
 
-        pooled_path = analysis_dir / f"ratings_pooled_seed{seed}.parquet"
+        pooled_path = _ensure_new_location(
+            analysis_dir / f"ratings_pooled_seed{seed}.parquet",
+            legacy_root / f"ratings_pooled_seed{seed}.parquet",
+        )
         if not pooled_path.exists():
             raise FileNotFoundError(f"Missing pooled ratings for seed {seed}: {pooled_path}")
         per_seed_results[seed] = _load_ratings_parquet(pooled_path)
 
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}
-        for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}"):
+        for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}", legacy_root=legacy_root):
             stem = parquet.stem
             parts = stem.split("_")
             if len(parts) < 3 or not parts[1].isdigit():
@@ -1050,10 +1079,14 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     ordered_pooled = _sorted_ratings(pooled_stats)
     _ensure_strict_mu_ordering(ordered_pooled)
 
-    pooled_parquet = analysis_dir / "ratings_pooled.parquet"
+    pooled_parquet = _ensure_new_location(
+        analysis_dir / "ratings_pooled.parquet", legacy_root / "ratings_pooled.parquet"
+    )
     _save_ratings_parquet(pooled_parquet, ordered_pooled)
 
-    pooled_json_path = analysis_dir / "ratings_pooled.json"
+    pooled_json_path = _ensure_new_location(
+        analysis_dir / "ratings_pooled.json", legacy_root / "ratings_pooled.json"
+    )
     with atomic_path(str(pooled_json_path)) as tmp_path:
         Path(tmp_path).write_text(
             json.dumps(
@@ -1069,8 +1102,9 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
         z=tiering_z,
         min_gap=tiering_min_gap,
     )
-    _write_conservative_tiers(analysis_dir, tiers, tiering_z, tiering_min_gap)
-    tiers_path = analysis_dir / "tiers.json"
+    tiers_path = _write_conservative_tiers(
+        analysis_dir, tiers, tiering_z, tiering_min_gap, legacy_root=legacy_root
+    )
 
     LOGGER.info(
         "TrueSkill pooled results complete",

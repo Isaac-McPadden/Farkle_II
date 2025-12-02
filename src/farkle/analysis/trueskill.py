@@ -12,7 +12,8 @@ LOGGER = logging.getLogger(__name__)
 
 def run(cfg: AppConfig) -> None:
     """Thin wrapper around the legacy script so the new pipeline stays small."""
-    out = cfg.analysis_dir / "tiers.json"
+    out = cfg.preferred_tiers_path()
+    target = cfg.trueskill_stage_dir / "tiers.json"
     if out.exists() and out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
         LOGGER.info(
             "TrueSkill results up-to-date",
@@ -27,5 +28,5 @@ def run(cfg: AppConfig) -> None:
     run_trueskill.run_trueskill_all_seeds(cfg)
     LOGGER.info(
         "TrueSkill analysis complete",
-        extra={"stage": "trueskill", "path": str(out)},
+        extra={"stage": "trueskill", "path": str(target)},
     )
