@@ -33,6 +33,7 @@ from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
 from farkle.config import AnalysisConfig, AppConfig
+from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -270,54 +271,8 @@ def _load_seed_summaries(analysis_dir: Path, players: int) -> pd.DataFrame:
 def _load_tiers(analysis_dir: Path, players: int) -> dict[str, int]:
     """Parse tier assignments from JSON, scoped to the desired player count."""
     path = analysis_dir / "tiers.json"
-    if not path.exists():
-        return {}
-    try:
-        payload = json.loads(path.read_text())
-    except json.JSONDecodeError:
-        LOGGER.warning(
-            "tiers.json could not be parsed", extra={"stage": "report", "path": str(path)}
-        )
-        return {}
-
-    def _normalize(mapping: Mapping[str, object]) -> dict[str, int]:
-        """Convert mapping values to integer tiers keyed by strategy string."""
-        result: dict[str, int] = {}
-        for key, value in mapping.items():
-            if isinstance(value, (int, float, str)):
-                try:
-                    result[str(key)] = int(value)
-                except Exception:  # noqa: BLE001
-                    continue
-        return result
-
-    # Direct mapping {strategy: tier}
-    if isinstance(payload, dict) and all(isinstance(v, (int, float)) for v in payload.values()):
-        return _normalize(payload)
-
-    key_variants = [str(players), players]
-    for key in key_variants:
-        if isinstance(payload, Mapping) and key in payload and isinstance(payload[key], Mapping):
-            return _normalize(payload[key])
-
-    if isinstance(payload, Mapping):
-        result: dict[str, int] = {}
-        for strategy, data in payload.items():
-            if not isinstance(data, Mapping):
-                continue
-            raw_players = data.get("players") if hasattr(data, "get") else None
-            if raw_players is not None and int(raw_players) != int(players):
-                continue
-            tier_val = data.get("tier") or data.get("rank") or data.get("tier_index")
-            if tier_val is None:
-                continue
-            try:
-                result[strategy] = int(tier_val)
-            except Exception:  # noqa: BLE001
-                continue
-        if result:
-            return dict(sorted(result.items()))
-    return {}
+    payload = load_tier_payload(path)
+    return tier_mapping_from_payload(payload, prefer=str(players))
 
 
 def _load_h2h_decisions(analysis_dir: Path, players: int) -> pd.DataFrame:

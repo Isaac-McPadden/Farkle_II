@@ -98,7 +98,9 @@ def test_run_trueskill_pooling_and_short_circuit(
 
     tier_calls: list[tuple[dict[str, float], dict[str, float]]] = []
 
-    def fake_build_tiers(means: dict[str, float], stdevs: dict[str, float]) -> dict[str, int]:
+    def fake_build_tiers(
+        means: dict[str, float], stdevs: dict[str, float], **_: object
+    ) -> dict[str, int]:
         tier_calls.append((means, stdevs))
         return {name: idx + 1 for idx, name in enumerate(sorted(means))}
 

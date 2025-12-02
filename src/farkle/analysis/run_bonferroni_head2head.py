@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import time
@@ -22,6 +21,7 @@ from farkle.simulation.strategies import parse_strategy
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.random import MAX_UINT32
 from farkle.utils.stats import games_for_power
+from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
 
 DEFAULT_ROOT = Path("results_seed_0")
 
@@ -175,11 +175,11 @@ def run_bonferroni_head2head(
     pairwise_parquet = sub_root / "bonferroni_pairwise.parquet"
     shard_dir = shard_dir or sub_root / "bonferroni_pairwise_shards"
 
-    try:
-        with tiers_path.open() as fh:
-            tiers = json.load(fh)
-    except FileNotFoundError as exc:
-        raise RuntimeError(f"Tier file not found at {tiers_path}") from exc
+    if not tiers_path.exists():
+        raise RuntimeError(f"Tier file not found at {tiers_path}")
+
+    payload = load_tier_payload(tiers_path)
+    tiers = tier_mapping_from_payload(payload, prefer=str(players))
     if not tiers:
         raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())

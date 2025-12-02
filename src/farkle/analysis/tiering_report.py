@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - fallback for older pandas
 from farkle.analysis.isolated_metrics import build_isolated_metrics
 from farkle.config import AppConfig
 from farkle.utils.mdd import tiering_ingredients_from_df
+from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload, write_tier_payload
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ class TieringInputs:
     player_counts: list[int]
     weights_by_k: Mapping[int, float] | None
     z_star: float
+    min_gap: float | None
 
 
 def run(cfg: AppConfig) -> None:
@@ -46,7 +48,9 @@ def run(cfg: AppConfig) -> None:
 
     inputs = _prepare_inputs(cfg)
     tier_file = cfg.analysis_dir / "tiers.json"
-    if not tier_file.exists():
+    tier_payload = load_tier_payload(tier_file)
+    ts_tiers = tier_mapping_from_payload(tier_payload, prefer="trueskill")
+    if not ts_tiers:
         LOGGER.warning(
             "Tiering report skipped: missing tiers.json",
             extra={"stage": "tiering", "path": str(tier_file)},
@@ -75,9 +79,15 @@ def run(cfg: AppConfig) -> None:
 
     winrates, winrates_by_players = _weighted_winrate(df, inputs.weights_by_k)
     frequentist_tiers = _build_frequentist_tiers(winrates, cast(float, tier_data["mdd"]))
-    ts_tiers = json.loads(tier_file.read_text())
     report = _build_report(frequentist_tiers, ts_tiers)
-    _write_outputs(cfg, report, tier_data)
+    _write_outputs(cfg, report, tier_data, inputs)
+    _write_consolidated_tiers(
+        cfg,
+        ts_payload=tier_payload.get("trueskill", {}),
+        freq_tiers=frequentist_tiers,
+        mdd=cast(float, tier_data["mdd"]),
+        weights_by_k=inputs.weights_by_k,
+    )
     _write_frequentist_scores(cfg, frequentist_tiers, winrates, winrates_by_players)
 
 
@@ -93,7 +103,8 @@ def _prepare_inputs(cfg: AppConfig) -> TieringInputs:
         seeds=[int(s) for s in seeds],
         player_counts=player_counts,
         weights_by_k=weights,
-        z_star=float(cfg.analysis.tiering_z_star or 2.0),
+        z_star=float(cfg.analysis.tiering_z_star or 1.645),
+        min_gap=cfg.analysis.tiering_min_gap,
     )
 
 
@@ -259,7 +270,9 @@ def _write_frequentist_scores(
     )
 
 
-def _write_outputs(cfg: AppConfig, report: pd.DataFrame, tier_data: dict) -> None:
+def _write_outputs(
+    cfg: AppConfig, report: pd.DataFrame, tier_data: dict, inputs: TieringInputs
+) -> None:
     """Write tier comparison outputs to CSV and JSON files."""
     out_csv = cfg.analysis_dir / "tiering_report.csv"
     out_json = cfg.analysis_dir / "tiering_report.json"
@@ -277,6 +290,8 @@ def _write_outputs(cfg: AppConfig, report: pd.DataFrame, tier_data: dict) -> Non
         "total_strategies": int(len(report)),
         "disagreements": int((report["delta_tier"] != 0).sum()),
         "overlap_top": int(((report["in_mdd_top"]) & (report["in_ts_top"])).sum()),
+        "trueskill_z_star": inputs.z_star,
+        "trueskill_min_gap": inputs.min_gap,
     }
     with atomic_path(str(out_json)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(summary, indent=2))
@@ -290,4 +305,27 @@ def _write_outputs(cfg: AppConfig, report: pd.DataFrame, tier_data: dict) -> Non
             "disagreements": summary["disagreements"],
             "path": str(out_csv),
         },
+    )
+
+
+def _write_consolidated_tiers(
+    cfg: AppConfig,
+    *,
+    ts_payload: Mapping[str, object] | None,
+    freq_tiers: pd.DataFrame,
+    mdd: float,
+    weights_by_k: Mapping[int, float] | None,
+) -> None:
+    """Persist unified TrueSkill and frequentist tiers."""
+
+    tiers_path = cfg.analysis_dir / "tiers.json"
+    freq_map = freq_tiers.set_index("strategy")["mdd_tier"].astype(int).to_dict()
+    frequentist_payload: dict[str, object] = {"tiers": freq_map, "mdd": mdd}
+    if weights_by_k:
+        frequentist_payload["weights_by_k"] = dict(weights_by_k)
+
+    write_tier_payload(
+        tiers_path,
+        trueskill=ts_payload or None,
+        frequentist=frequentist_payload,
     )

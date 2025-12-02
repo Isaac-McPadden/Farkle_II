@@ -24,6 +24,7 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
 from farkle.analysis.h2h_analysis import build_significant_graph, derive_sig_ranking
 from farkle.config import AppConfig
+from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -139,12 +140,8 @@ def _load_trueskill(analysis_dir: Path, players: int) -> MethodData | None:
     series = df.set_index(df["strategy"].astype(str))["mu"].astype(float).sort_index()
 
     tiers_path = analysis_dir / "tiers.json"
-    tiers = None
-    if tiers_path.exists():
-        raw = json.loads(tiers_path.read_text())
-        if not isinstance(raw, Mapping):
-            raise ValueError("tiers.json must map strategy to tier")
-        tiers = {str(k): int(v) for k, v in raw.items()}
+    tiers_payload = load_tier_payload(tiers_path)
+    tiers = tier_mapping_from_payload(tiers_payload, prefer=str(players)) or None
 
     per_seed: list[pd.Series] = []
     for seed_path in sorted(analysis_dir.glob("ratings_pooled_seed*.parquet")):

@@ -118,7 +118,8 @@ class AnalysisConfig:
     tiering_seeds: list[int] | None = None
     """Explicit seeds to use when running the tiering report."""
 
-    tiering_z_star: float = 2.0
+    tiering_z_star: float = 1.645
+    tiering_min_gap: float | None = None
     tiering_weights_by_k: dict[int, float] | None = None
     # Optional outputs block may be provided in YAML
     # outputs:

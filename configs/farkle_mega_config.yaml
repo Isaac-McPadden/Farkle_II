@@ -81,7 +81,8 @@ analysis:
 
   # Tiering / frequentist controls
   tiering_seeds: null             # list[int]|None: seeds to include in tiering report
-  tiering_z_star: 2.0             # z* threshold for MDD tiers
+  tiering_z_star: 1.645           # z* threshold for MDD tiers
+  tiering_min_gap: null           # float|None: minimum gap required to split tiers
   tiering_weights_by_k: null      # dict[int,float]|None: optional weights for player counts
 
   # Meta-analysis controls (seed-to-seed pooling / comparison)
