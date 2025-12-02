@@ -78,7 +78,6 @@ def _build_payload(cfg: AppConfig, players: int) -> dict[str, object]:
     """
     methods: dict[str, MethodData] = {}
 
-    analysis_dir = cfg.analysis_dir
 
     ts = _load_trueskill(cfg, players)
     if ts is None:
@@ -128,7 +127,6 @@ def _load_trueskill(cfg: AppConfig, players: int) -> MethodData | None:
     Returns:
         Prepared ``MethodData`` or ``None`` when no ratings are available.
     """
-    analysis_dir = cfg.trueskill_stage_dir
     path = cfg.trueskill_path("ratings_pooled.parquet")
     if not path.exists():
         return None
