@@ -21,6 +21,7 @@ import json
 import logging
 import math
 import os
+import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -112,6 +113,22 @@ def _iter_rating_parquets(root: Path, suffix: str, legacy_root: Path | None = No
         out.append(path)
         seen.add(key)
     return out
+
+
+def _player_count_from_stem(stem: str) -> int | None:
+    """Extract the player count from a ratings filename stem.
+
+    Accepts stems such as ``ratings_2_seed21`` or ``ratings_2p_seed21`` to
+    tolerate variations in legacy/materialised filenames.
+    """
+
+    match = re.match(r"ratings_(\d+)(?:p)?(?:_|$)", stem)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
 
 
 def _find_combined_parquet(base: Path | None) -> Path | None:
@@ -1048,11 +1065,9 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}
         for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}", legacy_root=legacy_root):
-            stem = parquet.stem
-            parts = stem.split("_")
-            if len(parts) < 3 or not parts[1].isdigit():
+            players = _player_count_from_stem(parquet.stem)
+            if players is None:
                 continue
-            players = int(parts[1])
             stats = _load_ratings_parquet(parquet)
             ordered_stats = _sorted_ratings(stats)
             dest = analysis_dir / f"trueskill_{players}p_seed{seed}.parquet"

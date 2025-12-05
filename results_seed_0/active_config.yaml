@@ -1,12 +1,18 @@
 analysis:
+  game_stats_margin_thresholds:
+  - 500
+  - 1000
   head2head_force_calibrate: false
   head2head_games_per_sec: null
   head2head_target_hours: 8.0
   head2head_tolerance_pct: 5.0
   log_level: INFO
+  meta_comparison_seed: null
+  meta_max_other_seeds: null
   meta_random_if_I2_gt: 25.0
   n_jobs: 1
   outputs: {}
+  rare_event_target_score: 10000
   results_glob: '*_players'
   run_agreement: false
   run_frequentist: false
@@ -15,9 +21,10 @@ analysis:
   run_post_h2h_analysis: false
   run_report: true
   run_trueskill: true
+  tiering_min_gap: null
   tiering_seeds: null
   tiering_weights_by_k: null
-  tiering_z_star: 2.0
+  tiering_z_star: 1.645
 combine:
   max_players: 12
 head2head:
@@ -36,6 +43,7 @@ ingest:
 io:
   analysis_subdir: analysis
   append_seed: true
+  meta_analysis_dir: null
   results_dir: results_seed_0
 metrics:
   seat_range:
@@ -55,6 +63,8 @@ sim:
   desired_sec_per_chunk: 10
   dice_thresholds: null
   expanded_metrics: false
+  include_stop_at: false
+  include_stop_at_heuristic: false
   n_jobs: null
   n_players_list:
   - 5
