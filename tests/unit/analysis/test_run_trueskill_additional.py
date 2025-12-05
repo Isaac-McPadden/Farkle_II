@@ -548,6 +548,39 @@ def test_run_trueskill_handles_worker_exception(
     assert (analysis_root / "ratings_pooled.parquet").exists()
 
 
+def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
+    data_root = tmp_path / "results_seed_21"
+    block = data_root / "2_players"
+    block.mkdir(parents=True, exist_ok=True)
+    (data_root / "manifest.yaml").write_text("seed: 21\n")
+
+    analysis_root = tmp_path / "analysis" / "03_trueskill"
+    row_data_dir = tmp_path / "analysis" / "01_combine" / "data"
+    per_n_dir = row_data_dir / "2p"
+    per_n_dir.mkdir(parents=True, exist_ok=True)
+
+    df = pd.DataFrame(
+        [
+            {"P1_strategy": "Alpha", "P1_rank": 1, "P2_strategy": "Beta", "P2_rank": 2},
+            {"P1_strategy": "Beta", "P1_rank": 2, "P2_strategy": "Alpha", "P2_rank": 1},
+        ]
+    )
+    curated_name = "custom_rows.parquet"
+    df.to_parquet(per_n_dir / curated_name)
+
+    rt.run_trueskill(
+        root=analysis_root,
+        dataroot=data_root,
+        row_data_dir=row_data_dir,
+        curated_rows_name=curated_name,
+        workers=1,
+        batch_rows=10,
+    )
+
+    ratings_path = analysis_root / "data" / "2p" / "ratings_2.parquet"
+    assert ratings_path.exists()
+
+
 def test_run_trueskill_rebuilds_outdated_pooled(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

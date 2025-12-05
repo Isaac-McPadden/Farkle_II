@@ -628,6 +628,8 @@ def _rate_block_worker(
     resume: bool = True,
     checkpoint_every_batches: int = 500,
     env_kwargs: dict | None = None,
+    row_data_dir: str | None = None,
+    curated_rows_name: str | None = None,
 ) -> tuple[str, int]:
     """
     Process one <N>_players block with optional checkpointing.
@@ -636,6 +638,7 @@ def _rate_block_worker(
     block = Path(block_dir)
     root = Path(root_dir)
     legacy_root = root.parent
+    row_data_path = Path(row_data_dir) if row_data_dir else None
 
     player_count = block.name.split("_")[0]
     per_player_dir = _per_player_dir(root, player_count)
@@ -645,14 +648,30 @@ def _rate_block_worker(
 
     # Locate curated parquet
     row_file = per_player_dir / f"{player_count}p_ingested_rows.parquet"
+    n = int(player_count)
     if not row_file.exists():
-        candidate = next(block.glob("*p_rows.parquet"), None)
-        if candidate is None:
-            return player_count, 0
-        row_file = candidate
-        n = n_players_from_schema(pq.read_schema(row_file))
-    else:
-        n = int(player_count)
+        alt_candidates: list[Path] = []
+        if row_data_path is not None:
+            per_n_dir = row_data_path
+            if per_n_dir.name != f"{player_count}p":
+                per_n_dir = per_n_dir / f"{player_count}p"
+            name_candidates = [f"{player_count}p_ingested_rows.parquet"]
+            if curated_rows_name:
+                name_candidates.insert(0, curated_rows_name)
+            name_candidates.append("game_rows.parquet")
+            seen_names: set[str] = set()
+            for name in name_candidates:
+                if name in seen_names:
+                    continue
+                seen_names.add(name)
+                alt_candidates.append(per_n_dir / name)
+        row_file = next((cand for cand in alt_candidates if cand.exists()), None)
+        if row_file is None:
+            candidate = next(block.glob("*p_rows.parquet"), None)
+            if candidate is None:
+                return player_count, 0
+            row_file = candidate
+            n = n_players_from_schema(pq.read_schema(row_file))
 
     # Up-to-date guard
     paths = _rating_artifact_paths(root, player_count, suffix, legacy_root=legacy_root)
@@ -759,6 +778,8 @@ def run_trueskill(
     output_seed: int = 0,
     root: Path | None = None,
     dataroot: Path | None = None,
+    row_data_dir: Path | None = None,
+    curated_rows_name: str | None = None,
     workers: int | None = None,
     batch_rows: int = 100_000,
     resume_per_n: bool = True,
@@ -781,6 +802,13 @@ def run_trueskill(
         Directory containing tournament result blocks. When ``None`` the
         path defaults to ``<root>/results`` if ``root`` is given, otherwise
         to :data:`DEFAULT_DATAROOT`.
+    row_data_dir: Path | None, optional
+        Directory containing curated per-player parquet inputs. When ``None``
+        the function attempts to use ``<root.parent>/01_combine/data`` if it
+        exists.
+    curated_rows_name: str | None, optional
+        Custom filename for curated per-player inputs. When unset, the loader
+        searches for ``<n>p_ingested_rows.parquet`` and ``game_rows.parquet``.
 
     Side Effects
     ------------
@@ -800,6 +828,11 @@ def run_trueskill(
     root = Path(root) if root is not None else base / "analysis" / "03_trueskill"
     root.mkdir(parents=True, exist_ok=True)
     legacy_root = root.parent
+    row_data_path = Path(row_data_dir) if row_data_dir is not None else None
+    if row_data_path is None:
+        inferred = legacy_root / "01_combine" / "data"
+        if inferred.exists():
+            row_data_path = inferred
     _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
     if workers is None:
@@ -811,6 +844,7 @@ def run_trueskill(
             "stage": "trueskill",
             "root": str(root),
             "dataroot": str(base),
+            "row_data_dir": str(row_data_path) if row_data_path else None,
             "workers": workers,
             "batch_rows": batch_rows,
             "resume": resume_per_n,
@@ -851,6 +885,8 @@ def run_trueskill(
                     resume=resume_per_n,
                     checkpoint_every_batches=checkpoint_every_batches,
                     env_kwargs=env_kwargs,
+                    row_data_dir=str(row_data_path) if row_data_path else None,
+                    curated_rows_name=curated_rows_name,
                 ): b
                 for b in blocks
             }
@@ -875,6 +911,8 @@ def run_trueskill(
                 resume=resume_per_n,
                 checkpoint_every_batches=checkpoint_every_batches,
                 env_kwargs=env_kwargs,
+                row_data_dir=str(row_data_path) if row_data_path else None,
+                curated_rows_name=curated_rows_name,
             )
             per_block_games[player_count] = block_games
 
@@ -1049,6 +1087,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             output_seed=seed,
             root=analysis_dir,
             dataroot=cfg.results_dir,
+             row_data_dir=cfg.data_dir,
+             curated_rows_name=cfg.curated_rows_name,
             workers=analysis_cfg.n_jobs or None,
             env_kwargs=env_kwargs,
             tiering_z=tiering_z,
