@@ -115,6 +115,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     # NDJSON manifest (append-only)
     manifest_path = analysis_dir / app_cfg.manifest_name
     config_sha = hashlib.sha256(resolved_yaml.encode("utf-8")).hexdigest()
+    app_cfg.config_sha = config_sha  # allow downstream caching helpers to compare configs
     append_manifest_line(
         manifest_path,
         {

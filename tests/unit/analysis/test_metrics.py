@@ -6,6 +6,7 @@ from tests.helpers import metrics_samples as sample_data
 from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import metrics
+from farkle.analysis.stage_state import stage_done_path
 
 
 @pytest.fixture
@@ -69,6 +70,17 @@ def test_symmetry_checks_empty_when_no_symmetric_pairs(sample_config):
     df = pd.read_parquet(symmetry_path)
 
     assert df.empty
+
+
+def test_metrics_skip_when_up_to_date(sample_config, monkeypatch):
+    done = stage_done_path(sample_config.metrics_stage_dir, "metrics")
+    assert done.exists()
+
+    def _boom(*_args, **_kwargs):  # noqa: ANN001
+        raise AssertionError("metrics should skip when up-to-date")
+
+    monkeypatch.setattr("farkle.analysis.metrics._ensure_isolated_metrics", _boom)
+    metrics.run(sample_config)
 
 
 def test_win_rate_uncertainty_and_ordering():

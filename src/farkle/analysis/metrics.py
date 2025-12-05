@@ -22,6 +22,7 @@ from farkle.analysis.seat_stats import (
     compute_seat_metrics,
     compute_symmetry_checks,
 )
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
 from farkle.utils.writer import atomic_path
@@ -43,6 +44,32 @@ def run(cfg: AppConfig) -> None:
     out_symmetry_csv = analysis_dir / "symmetry_checks.csv"
     stamp = analysis_dir / "metrics.done.json"
 
+    done = stage_done_path(cfg.metrics_stage_dir, "metrics")
+    player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
+    iso_targets = [cfg.analysis_dir / "data" / f"{n}p" / f"{n}p_isolated_metrics.parquet" for n in player_counts]
+    raw_metric_inputs = [cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet" for n in player_counts]
+    outputs = [
+        out_metrics,
+        out_seats,
+        out_seats_parquet,
+        out_seat_metrics,
+        out_seat_metrics_csv,
+        out_symmetry,
+        out_symmetry_csv,
+        *iso_targets,
+    ]
+    if stage_is_up_to_date(
+        done,
+        inputs=[data_file, *raw_metric_inputs],
+        outputs=outputs,
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        LOGGER.info(
+            "Metrics stage up-to-date",
+            extra={"stage": "metrics", "path": str(done)},
+        )
+        return
+
     if not data_file.exists():
         raise FileNotFoundError(
             f"metrics: missing combined parquet {data_file} – run combine step first"
@@ -59,7 +86,6 @@ def run(cfg: AppConfig) -> None:
 
     check_pre_metrics(data_file, winner_col="winner_seat")
 
-    player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
     iso_paths, raw_inputs = _ensure_isolated_metrics(cfg, player_counts)
     metrics_df = _collect_metrics_frames(iso_paths)
     if metrics_df.empty:
@@ -125,6 +151,12 @@ def run(cfg: AppConfig) -> None:
             "seat_metrics": str(out_seat_metrics),
             "symmetry_checks": str(out_symmetry),
         },
+    )
+    write_stage_done(
+        done,
+        inputs=[data_file, *raw_inputs],
+        outputs=outputs,
+        config_sha=getattr(cfg, "config_sha", None),
     )
 
 

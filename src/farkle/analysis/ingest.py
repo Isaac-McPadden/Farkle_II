@@ -19,6 +19,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, load_app_config
 from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.streaming_loop import run_streaming_shard
@@ -320,6 +321,25 @@ def run(cfg: AppConfig) -> None:
         key=lambda p: (_n_from_block(p.name), p.name),
     )
 
+    done = stage_done_path(cfg.ingest_stage_dir, "ingest")
+    outputs = []
+    manifests = []
+    for block in blocks:
+        n = _n_from_block(block.name)
+        outputs.append(cfg.ingested_rows_raw(n))
+        manifests.append(cfg.manifest_for(n))
+    if stage_is_up_to_date(
+        done,
+        inputs=[cfg.results_dir],
+        outputs=[*outputs, *manifests],
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        LOGGER.info(
+            "Ingest up-to-date",
+            extra={"stage": "ingest", "path": str(done)},
+        )
+        return
+
     total_rows = 0
     if cfg.n_jobs_ingest <= 1:
         for block in blocks:
@@ -337,6 +357,12 @@ def run(cfg: AppConfig) -> None:
             "blocks": len(blocks),
             "rows": total_rows,
         },
+    )
+    write_stage_done(
+        done,
+        inputs=[cfg.results_dir],
+        outputs=[*outputs, *manifests],
+        config_sha=getattr(cfg, "config_sha", None),
     )
 
 

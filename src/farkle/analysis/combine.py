@@ -13,6 +13,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.analysis.checks import check_post_combine
 from farkle.config import AppConfig
 from farkle.utils.schema_helpers import expected_schema_for
@@ -60,6 +61,20 @@ def run(cfg: AppConfig) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
 
+    done = stage_done_path(cfg.combine_stage_dir, "combine")
+    manifest_path = out.with_suffix(".manifest.jsonl")
+    if stage_is_up_to_date(
+        done,
+        inputs=files,
+        outputs=[out, manifest_path],
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        LOGGER.info(
+            "Combine: output up-to-date",
+            extra={"stage": "combine", "path": str(out)},
+        )
+        return
+
     # Up-to-date guard: if output is newer than all inputs, skip
     if out.exists():
         newest = max((p.stat().st_mtime for p in files), default=0.0)
@@ -67,6 +82,12 @@ def run(cfg: AppConfig) -> None:
             LOGGER.info(
                 "Combine: output up-to-date",
                 extra={"stage": "combine", "path": str(out)},
+            )
+            write_stage_done(
+                done,
+                inputs=files,
+                outputs=[out, manifest_path],
+                config_sha=getattr(cfg, "config_sha", None),
             )
             return
 
@@ -105,7 +126,6 @@ def run(cfg: AppConfig) -> None:
         yield first
         yield from batches
 
-    manifest_path = out.with_suffix(".manifest.jsonl")
     run_streaming_shard(
         out_path=str(out),
         manifest_path=str(manifest_path),
@@ -136,3 +156,9 @@ def run(cfg: AppConfig) -> None:
         },
     )
     check_post_combine(files, out)
+    write_stage_done(
+        done,
+        inputs=files,
+        outputs=[out, manifest_path],
+        config_sha=getattr(cfg, "config_sha", None),
+    )

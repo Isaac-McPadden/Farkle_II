@@ -18,6 +18,7 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.schema_helpers import (
     expected_schema_for,
@@ -119,6 +120,22 @@ def run(cfg: AppConfig) -> None:
     """Curate raw parquet files produced by :func:`farkle.ingest.run`."""
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
+    raw_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.raw.parquet"))
+    curated_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.parquet"))
+    manifests = [cfg.manifest_for(int(p.parent.name.removesuffix("p"))) for p in curated_files]
+    done = stage_done_path(cfg.ingest_stage_dir, "curate")
+    if stage_is_up_to_date(
+        done,
+        inputs=raw_files if raw_files else curated_files,
+        outputs=[*curated_files, *manifests],
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        LOGGER.info(
+            "Curate up-to-date",
+            extra={"stage": "curate", "path": str(done)},
+        )
+        return
+
     # Ensure existing curated files always have a manifest
     for curated in sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet")):
         n = int(curated.parent.name.removesuffix("p"))
@@ -130,7 +147,6 @@ def run(cfg: AppConfig) -> None:
     finalized_rows = 0
 
     # New layout: analysis/data/*p/*_ingested_rows.raw.parquet
-    raw_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.raw.parquet"))
     if raw_files:
         for raw_file in raw_files:
             n = int(raw_file.parent.name.removesuffix("p"))
@@ -170,6 +186,14 @@ def run(cfg: AppConfig) -> None:
                 "files": finalized_files,
                 "rows": finalized_rows,
             },
+        )
+        curated_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.parquet"))
+        manifests = [cfg.manifest_for(int(p.parent.name.removesuffix("p"))) for p in curated_files]
+        write_stage_done(
+            done,
+            inputs=raw_files if raw_files else curated_files,
+            outputs=[*curated_files, *manifests],
+            config_sha=getattr(cfg, "config_sha", None),
         )
         return
 
