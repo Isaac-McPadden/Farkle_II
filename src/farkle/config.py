@@ -213,6 +213,8 @@ class AppConfig:
     trueskill: TrueSkillConfig = field(default_factory=TrueSkillConfig)
     head2head: Head2HeadConfig = field(default_factory=Head2HeadConfig)
     hgb: HGBConfig = field(default_factory=HGBConfig)
+    # Computed at runtime; not part of user-provided YAML
+    config_sha: str | None = field(default=None, init=False, repr=False, compare=False)
 
     # —— Paths ——
     @property

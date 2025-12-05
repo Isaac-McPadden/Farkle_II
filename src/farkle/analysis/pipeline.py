@@ -108,6 +108,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     resolved = analysis_dir / "config.resolved.yaml"
     # Best-effort: write out the resolved (merged) config we actually used
     resolved_dict = _stringify_paths(dataclasses.asdict(app_cfg))
+    resolved_dict.pop("config_sha", None)
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     with atomic_path(str(resolved)) as tmp_path:
         Path(tmp_path).write_text(resolved_yaml)
