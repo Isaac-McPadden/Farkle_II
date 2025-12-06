@@ -36,16 +36,16 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from pandas._libs.missing import NAType
 import pyarrow as pa
 import pyarrow.dataset as ds
-
-StatValue = float | int | str | NAType
+from pandas._libs.missing import NAType
 
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.writer import atomic_path
+
+StatValue = float | int | str | NAType
 
 LOGGER = logging.getLogger(__name__)
 
@@ -292,7 +292,7 @@ def _rare_event_flags(
 ) -> pd.DataFrame:
     """Compute per-game rare events and aggregate rates."""
 
-    game_rows: list[pd.Series] = []
+    game_rows: list[dict[str, object]] = []
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -317,7 +317,7 @@ def _rare_event_flags(
         df = tbl.to_pandas()
 
         margins = _compute_margins(df, score_cols)
-        scores = df.loc[:, score_cols].apply(pd.to_numeric, errors="coerce")
+        scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
         multi_target = (scores >= target_score).sum(axis=1) >= 2
 
         event_df = pd.DataFrame(
