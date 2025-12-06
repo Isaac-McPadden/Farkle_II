@@ -24,6 +24,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 
@@ -356,9 +357,13 @@ def _merge_metrics(metrics_frame: pd.DataFrame, variance_frame: pd.DataFrame) ->
     )
 
     merged["win_rate"] = pd.to_numeric(merged["win_rate"], errors="coerce")
-    merged["win_rate_mean"] = merged["win_rate"].combine_first(
-        merged.get("mean_seed_win_rate")
-    )
+    mean_seed_win_rate: pd.Series
+    if "mean_seed_win_rate" in merged:
+        mean_seed_win_rate = merged["mean_seed_win_rate"]
+    else:
+        mean_seed_win_rate = pd.Series(np.nan, index=merged.index, dtype="float64")
+
+    merged["win_rate_mean"] = merged["win_rate"].combine_first(mean_seed_win_rate)
 
     def _signal_to_noise(row: pd.Series) -> float:
         se = row.get("se_win_rate", float("nan"))
