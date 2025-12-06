@@ -347,7 +347,12 @@ def _rare_event_flags(
         melted = melted.dropna(subset=["strategy"])
         melted["observations"] = 1
         melted = melted.drop(columns=["variable"])
-        game_rows.extend(melted.to_dict(orient="records"))
+
+        records: list[dict[str, object]] = [
+            {str(key): value for key, value in record.items()}
+            for record in melted.to_dict(orient="records")
+        ]
+        game_rows.extend(records)
 
     if not game_rows:
         columns = [
@@ -450,7 +455,7 @@ def _compute_margins(df: pd.DataFrame, score_cols: Sequence[str]) -> pd.Series:
     Games with fewer than two valid scores return ``NaN`` margins.
     """
 
-    scores = df.loc[:, score_cols].apply(pd.to_numeric, errors="coerce")
+    scores = df.loc[:, list(score_cols)].apply(pd.to_numeric, errors="coerce")
     valid_counts = scores.notna().sum(axis=1)
     margins = scores.max(axis=1, skipna=True) - scores.min(axis=1, skipna=True)
     margins[valid_counts < 2] = np.nan
