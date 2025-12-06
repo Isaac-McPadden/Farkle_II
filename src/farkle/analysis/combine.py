@@ -13,8 +13,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.analysis.checks import check_post_combine
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.streaming_loop import run_streaming_shard
