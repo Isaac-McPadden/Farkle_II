@@ -36,8 +36,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from pandas._libs.missing import NAType
 import pyarrow as pa
 import pyarrow.dataset as ds
+
+StatValue = float | int | str | NAType
 
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
@@ -370,15 +373,23 @@ def _rare_event_flags(
     strategy_summary["observations"] = (
         game_df.groupby(["strategy", "n_players"], sort=False)[flag_cols[0]].count().values
     )
-    strategy_summary["margin_of_victory"] = pd.NA
+    strategy_summary["margin_of_victory"] = pd.Series(
+        pd.NA, index=strategy_summary.index, dtype="object"
+    )
 
     global_summary = game_df.groupby("n_players", sort=False)[flag_cols].mean().reset_index()
     global_summary.insert(0, "summary_level", "n_players")
-    global_summary.insert(1, "strategy", pd.NA)
+    global_summary.insert(
+        1,
+        "strategy",
+        pd.Series(pd.NA, index=global_summary.index, dtype="object"),
+    )
     global_summary["observations"] = (
         game_df.groupby("n_players", sort=False)[flag_cols[0]].count().values
     )
-    global_summary["margin_of_victory"] = pd.NA
+    global_summary["margin_of_victory"] = pd.Series(
+        pd.NA, index=global_summary.index, dtype="object"
+    )
 
     combined = pd.concat([game_df, strategy_summary, global_summary], ignore_index=True)
     return combined[
@@ -449,13 +460,13 @@ def _compute_margins(df: pd.DataFrame, score_cols: Sequence[str]) -> pd.Series:
 def _summarize_margins(
     values: Iterable[int | float | np.integer | np.floating],
     thresholds: Sequence[int],
-) -> dict[str, float | int]:
+) -> dict[str, StatValue]:
     """Return descriptive statistics for per-game victory margins."""
 
     series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
     prob_keys = [f"prob_margin_le_{thr}" for thr in thresholds]
     if series.empty:
-        base = {
+        base: dict[str, StatValue] = {
             "observations": 0,
             "mean_margin": float("nan"),
             "median_margin": float("nan"),
@@ -464,7 +475,7 @@ def _summarize_margins(
         base.update({key: float("nan") for key in prob_keys})
         return base
 
-    stats: dict[str, float | int] = {
+    stats: dict[str, StatValue] = {
         "observations": int(series.size),
         "mean_margin": float(series.mean()),
         "median_margin": float(series.median()),
@@ -474,7 +485,7 @@ def _summarize_margins(
     return stats
 
 
-def _summarize_rounds(values: Iterable[int | float | np.integer | np.floating]) -> dict[str, float | int]:
+def _summarize_rounds(values: Iterable[int | float | np.integer | np.floating]) -> dict[str, StatValue]:
     """Return descriptive statistics for the provided iterable of round counts."""
 
     series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
