@@ -9,7 +9,7 @@ import argparse
 import dataclasses
 import logging
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence, overload
 
 import yaml  # type: ignore[import-untyped]
 
@@ -201,7 +201,32 @@ def _parse_level(level: str | int) -> int:
     return int(level)
 
 
-def _stringify_paths(obj: object) -> object:
+@overload
+def _stringify_paths(obj: dict[str, Any]) -> dict[str, Any]:
+    ...
+
+
+@overload
+def _stringify_paths(obj: list[Any]) -> list[Any]:
+    ...
+
+
+@overload
+def _stringify_paths(obj: tuple[Any, ...]) -> tuple[Any, ...]:
+    ...
+
+
+@overload
+def _stringify_paths(obj: Path) -> str:
+    ...
+
+
+@overload
+def _stringify_paths(obj: Any) -> Any:
+    ...
+
+
+def _stringify_paths(obj: Any) -> Any:
     """Recursively convert :class:`pathlib.Path` instances to strings."""
     if isinstance(obj, Path):
         return str(obj)
