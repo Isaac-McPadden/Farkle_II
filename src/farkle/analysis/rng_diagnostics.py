@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterable, Sequence
+from itertools import chain
 from pathlib import Path
 from typing import Any
 
@@ -165,15 +166,17 @@ def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataF
     rows: list[pd.Series] = []
 
     grouped_strategy = data.groupby(["strategy", "n_players"], sort=False)
-    rows.extend(
+    strategy_diagnostics = (
         _group_diagnostics(
             group, lags=lags, summary_level="strategy", strategy=strategy, n_players=n_players
         )
         for (strategy, n_players), group in grouped_strategy
     )
+    # Each grouped call yields an iterable of pd.Series diagnostics.
+    rows.extend(chain.from_iterable(strategy_diagnostics))
 
     grouped_matchup = data.groupby(["matchup", "strategy", "n_players"], sort=False)
-    rows.extend(
+    matchup_diagnostics = (
         _group_diagnostics(
             group,
             lags=lags,
@@ -184,8 +187,9 @@ def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataF
         )
         for (matchup, strategy, n_players), group in grouped_matchup
     )
+    rows.extend(chain.from_iterable(matchup_diagnostics))
 
-    flattened = [row for row_list in rows for row in row_list if not row.empty]
+    flattened = [row for row in rows if not row.empty]
     if not flattened:
         return pd.DataFrame()
     diagnostics = pd.DataFrame(flattened)
