@@ -22,6 +22,7 @@ import math
 import re
 from collections.abc import Iterable
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import pyarrow as pa
@@ -203,10 +204,19 @@ def _compute_variance(seed_frame: pd.DataFrame) -> pd.DataFrame:
         if count == 0:
             continue
 
-        variance = float(rates.var(ddof=1)) if count > 1 else 0.0
-        variance = max(variance, 0.0)
-        std = math.sqrt(variance)
-        se = std / math.sqrt(count) if count > 0 else float("nan")
+        variance_scalar = rates.var(ddof=1)
+        # pandas returns a Scalar; after confirming it is not NA we safely cast to float
+        if count > 1:
+            variance = (
+                float(cast(float, variance_scalar))
+                if not pd.isna(variance_scalar)
+                else float("nan")
+            )
+        else:
+            variance = 0.0
+        variance = max(variance, 0.0) if not math.isnan(variance) else variance
+        std = float(math.sqrt(variance)) if variance == variance else float("nan")
+        se = float(std / math.sqrt(count)) if count > 0 and std == std else float("nan")
 
         records.append(
             {
@@ -285,11 +295,17 @@ def _compute_variance_components(
                 )
                 continue
 
-            variance = float(values.var(ddof=1)) if observations > 1 else float("nan")
+            variance_scalar = values.var(ddof=1)
+            # pandas returns a Scalar; after confirming it is not NA we safely cast to float
+            variance = (
+                float(cast(float, variance_scalar))
+                if observations > 1 and not pd.isna(variance_scalar)
+                else float("nan")
+            )
             variance = max(variance, 0.0) if not math.isnan(variance) else variance
-            std_dev = math.sqrt(variance) if variance == variance else float("nan")
+            std_dev = float(math.sqrt(variance)) if variance == variance else float("nan")
             se_mean = (
-                std_dev / math.sqrt(observations)
+                float(std_dev / math.sqrt(observations))
                 if observations > 0 and std_dev == std_dev
                 else float("nan")
             )
