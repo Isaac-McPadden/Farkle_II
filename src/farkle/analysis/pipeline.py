@@ -11,7 +11,7 @@ import dataclasses
 import hashlib
 import logging
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence, overload
 
 import yaml  # type: ignore[import-untyped]
 from tqdm import tqdm
@@ -25,7 +25,32 @@ from farkle.utils.writer import atomic_path
 LOGGER = logging.getLogger(__name__)
 
 
-def _stringify_paths(obj: object) -> object:
+@overload
+def _stringify_paths(obj: dict[str, Any]) -> dict[str, Any]:
+    ...
+
+
+@overload
+def _stringify_paths(obj: list[Any]) -> list[Any]:
+    ...
+
+
+@overload
+def _stringify_paths(obj: tuple[Any, ...]) -> tuple[Any, ...]:
+    ...
+
+
+@overload
+def _stringify_paths(obj: Path) -> str:
+    ...
+
+
+@overload
+def _stringify_paths(obj: Any) -> Any:
+    ...
+
+
+def _stringify_paths(obj: Any) -> Any:
     """Convert Paths nested inside mappings/sequences into plain strings."""
     if isinstance(obj, Path):
         return str(obj)
@@ -107,7 +132,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage_dir.mkdir(parents=True, exist_ok=True)
     resolved = analysis_dir / "config.resolved.yaml"
     # Best-effort: write out the resolved (merged) config we actually used
-    resolved_dict = _stringify_paths(dataclasses.asdict(app_cfg))
+    resolved_dict: dict[str, Any] = _stringify_paths(dataclasses.asdict(app_cfg))
     resolved_dict.pop("config_sha", None)
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     with atomic_path(str(resolved)) as tmp_path:
