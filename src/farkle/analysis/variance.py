@@ -264,19 +264,11 @@ def _compute_variance_components(
 
     records: list[dict[str, float | int | str]] = []
     grouped = seed_frame.groupby(["strategy_id", "players"], sort=True)
+    insufficient_seed_groups = 0
     for (strategy_id, players), group in grouped:
         seed_count = group["seed"].nunique()
         if seed_count < min_seeds:
-            LOGGER.info(
-                "Skipping variance components: insufficient seeds",
-                extra={
-                    "stage": "variance",
-                    "strategy_id": strategy_id,
-                    "players": int(players),
-                    "seeds": int(seed_count),
-                    "min_seeds": int(min_seeds),
-                },
-            )
+            insufficient_seed_groups += 1
             continue
 
         for component, column in COMPONENT_COLUMN_MAP.items():
@@ -330,6 +322,17 @@ def _compute_variance_components(
                     "ci_upper": ci_bounds[1],
                 }
             )
+
+    if insufficient_seed_groups:
+        LOGGER.info(
+            "Skipping variance components for %d strategies: insufficient seeds",
+            insufficient_seed_groups,
+            extra={
+                "stage": "variance",
+                "strategies": insufficient_seed_groups,
+                "min_seeds": int(min_seeds),
+            },
+        )
 
     return pd.DataFrame(records, columns=columns)
 
