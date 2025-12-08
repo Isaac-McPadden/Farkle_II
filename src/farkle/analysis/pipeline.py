@@ -119,17 +119,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         app_cfg.analysis.rare_event_target_score = int(args.rare_event_target)
     rng_lags = tuple(int(lag) for lag in args.rng_lags) if args.rng_lags else None
 
-    analysis_dir = app_cfg.analysis_dir
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    for stage_dir in (
-        app_cfg.ingest_stage_dir,
-        app_cfg.combine_stage_dir,
-        app_cfg.metrics_stage_dir,
-        app_cfg.trueskill_stage_dir,
-        app_cfg.head2head_stage_dir,
-        app_cfg.tiering_stage_dir,
+    for stage in (
+        "00_ingest",
+        "01_combine",
+        "02_metrics",
+        "03_trueskill",
+        "04_head2head",
+        "05_tiering",
     ):
-        stage_dir.mkdir(parents=True, exist_ok=True)
+        app_cfg.stage_subdir(stage)
+    analysis_dir = app_cfg.analysis_dir
     resolved = analysis_dir / "config.resolved.yaml"
     # Best-effort: write out the resolved (merged) config we actually used
     resolved_dict: dict[str, Any] = _stringify_paths(dataclasses.asdict(app_cfg))

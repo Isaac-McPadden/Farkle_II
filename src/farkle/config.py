@@ -228,34 +228,46 @@ class AppConfig:
         return self.io.results_dir / self.io.analysis_subdir
 
     # Numbered analysis stage directories (created on access)
-    def _analysis_stage_dir(self, name: str) -> Path:
-        path = self.analysis_dir / name
-        path.mkdir(parents=True, exist_ok=True)
+    def stage_subdir(self, name: str, *parts: str | Path) -> Path:
+        """Resolve a stage root or nested subdirectory under ``analysis_dir``.
+
+        Directories are created on access to keep downstream callers simple.
+        """
+
+        stage_root = self.analysis_dir / name
+        stage_root.mkdir(parents=True, exist_ok=True)
+        path = stage_root.joinpath(*map(Path, parts)) if parts else stage_root
+        path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    def per_k_subdir(self, stage: str, k: int) -> Path:
+        """Stage helper that returns the ``<k>p`` folder under ``stage``."""
+
+        return self.stage_subdir(stage, f"{k}p")
 
     @property
     def ingest_stage_dir(self) -> Path:
-        return self._analysis_stage_dir("00_ingest")
+        return self.stage_subdir("00_ingest")
 
     @property
     def combine_stage_dir(self) -> Path:
-        return self._analysis_stage_dir("01_combine")
+        return self.stage_subdir("01_combine")
 
     @property
     def metrics_stage_dir(self) -> Path:
-        return self._analysis_stage_dir("02_metrics")
+        return self.stage_subdir("02_metrics")
 
     @property
     def trueskill_stage_dir(self) -> Path:
-        return self._analysis_stage_dir("03_trueskill")
+        return self.stage_subdir("03_trueskill")
 
     @property
     def head2head_stage_dir(self) -> Path:
-        return self._analysis_stage_dir("04_head2head")
+        return self.stage_subdir("04_head2head")
 
     @property
     def tiering_stage_dir(self) -> Path:
-        return self._analysis_stage_dir("05_tiering")
+        return self.stage_subdir("05_tiering")
 
     @property
     def meta_analysis_dir(self) -> Path:
@@ -272,12 +284,9 @@ class AppConfig:
 
     @property
     def data_dir(self) -> Path:
-        """Data directory under the analysis folder."""
-        preferred = self.combine_stage_dir / "data"
-        legacy = self.analysis_dir / "data"
-        if legacy.exists() and not preferred.exists():
-            return legacy
-        return preferred
+        """Root directory for combined/curated data under ``01_combine``."""
+
+        return self.combine_stage_dir
 
     def n_dir(self, n: int) -> Path:
         """Convenience accessor for a specific ``<n>_players`` directory."""
@@ -414,15 +423,15 @@ class AppConfig:
     # Per-N helper paths used by ingest/curate/metrics
     def manifest_for(self, n: int) -> Path:
         """Path to the manifest for a specific player count."""
-        return self.data_dir / f"{n}p" / self.manifest_name
+        return self.per_k_subdir("01_combine", n) / self.manifest_name
 
     def ingested_rows_raw(self, n: int) -> Path:
         """Path to the raw ingested parquet for ``n`` players."""
-        return self.data_dir / f"{n}p" / f"{n}p_ingested_rows.raw.parquet"
+        return self.per_k_subdir("01_combine", n) / f"{n}p_ingested_rows.raw.parquet"
 
     def ingested_rows_curated(self, n: int) -> Path:
         """Path to the curated ingested parquet for ``n`` players."""
-        return self.data_dir / f"{n}p" / self.curated_rows_name
+        return self.per_k_subdir("01_combine", n) / self.curated_rows_name
 
 
 # ─────────────────────────────────────────────────────────────────────────────
