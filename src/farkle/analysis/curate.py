@@ -115,13 +115,46 @@ def _already_curated(out_file: Path, manifest: Path) -> bool:
     return True
 
 
+def _migrate_raw_inputs(cfg: AppConfig) -> None:
+    """Move legacy raw ingest outputs into the ``00_ingest`` stage."""
+
+    legacy_raws = sorted(cfg.combine_stage_dir.glob("*p/*_ingested_rows.raw.parquet"))
+    for raw in legacy_raws:
+        n = int(raw.parent.name.removesuffix("p"))
+        dest = cfg.ingested_rows_raw(n)
+        if dest.exists() or dest == raw:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        LOGGER.info(
+            "Curate: migrating legacy raw parquet",
+            extra={
+                "stage": "curate",
+                "n_players": n,
+                "source": str(raw),
+                "dest": str(dest),
+            },
+        )
+        shutil.move(str(raw), dest)
+
+        legacy_manifest = raw.with_suffix(".manifest.jsonl")
+        new_manifest = cfg.ingest_manifest(n)
+        if legacy_manifest.exists():
+            new_manifest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(legacy_manifest), new_manifest)
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 def run(cfg: AppConfig) -> None:
     """Curate raw parquet files produced by :func:`farkle.ingest.run`."""
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
-    raw_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.raw.parquet"))
-    curated_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.parquet"))
+    _migrate_raw_inputs(cfg)
+
+    raw_files = sorted(cfg.ingest_stage_dir.glob("*p/*_ingested_rows.raw.parquet"))
+    curated_files = sorted(cfg.combine_stage_dir.glob(f"*p/{cfg.curated_rows_name}"))
+    legacy_curated = sorted(cfg.combine_stage_dir.glob("*p/*_ingested_rows.parquet"))
+    if not curated_files and legacy_curated:
+        curated_files = legacy_curated
     manifests = [cfg.manifest_for(int(p.parent.name.removesuffix("p"))) for p in curated_files]
     done = stage_done_path(cfg.ingest_stage_dir, "curate")
     if stage_is_up_to_date(
@@ -137,7 +170,7 @@ def run(cfg: AppConfig) -> None:
         return
 
     # Ensure existing curated files always have a manifest
-    for curated in sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet")):
+    for curated in sorted(cfg.combine_stage_dir.glob(f"*p/{cfg.curated_rows_name}")):
         n = int(curated.parent.name.removesuffix("p"))
         manifest = cfg.manifest_for(n)
         if not manifest.exists():
@@ -157,22 +190,18 @@ def run(cfg: AppConfig) -> None:
             schema = md.schema.to_arrow_schema()
             _write_manifest(manifest, rows=md.num_rows, schema=schema, cfg=cfg)
 
-            canonical = raw_file.parent / f"{n}p_ingested_rows.parquet"
-            raw_file.replace(canonical)
-
-            if dst_file != canonical:
-                if dst_file.exists():
-                    dst_file.unlink()
-                try:
-                    os.link(canonical, dst_file)
-                except OSError:
-                    shutil.copy2(canonical, dst_file)
+            if dst_file.exists():
+                dst_file.unlink()
+            try:
+                os.link(raw_file, dst_file)
+            except OSError:
+                shutil.copy2(raw_file, dst_file)
 
             LOGGER.info(
                 "Curate: parquet finalized",
                 extra={
                     "stage": "curate",
-                    "path": canonical.name,
+                    "path": dst_file.name,
                     "rows": md.num_rows,
                     "row_groups": md.num_row_groups,
                 },
@@ -187,7 +216,7 @@ def run(cfg: AppConfig) -> None:
                 "rows": finalized_rows,
             },
         )
-        curated_files = sorted((cfg.data_dir).glob("*p/*_ingested_rows.parquet"))
+        curated_files = sorted(cfg.combine_stage_dir.glob(f"*p/{cfg.curated_rows_name}"))
         manifests = [cfg.manifest_for(int(p.parent.name.removesuffix("p"))) for p in curated_files]
         write_stage_done(
             done,

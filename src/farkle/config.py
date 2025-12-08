@@ -245,6 +245,21 @@ class AppConfig:
 
         return self.stage_subdir(stage, f"{k}p")
 
+    def ingest_block_dir(self, k: int) -> Path:
+        """Directory holding ingest artifacts for ``k`` players."""
+
+        return self.per_k_subdir("00_ingest", k)
+
+    def combine_block_dir(self, k: int) -> Path:
+        """Directory holding curated artifacts for ``k`` players."""
+
+        return self.per_k_subdir("01_combine", k)
+
+    def combine_pooled_dir(self, k: int) -> Path:
+        """Directory holding pooled artifacts derived from ``k``-player data."""
+
+        return self.stage_subdir("01_combine", f"{k}p", "pooled")
+
     @property
     def ingest_stage_dir(self) -> Path:
         return self.stage_subdir("00_ingest")
@@ -403,12 +418,18 @@ class AppConfig:
     @property
     def curated_parquet(self) -> Path:
         """Location of the combined curated parquet spanning all player counts."""
-        # combined superset parquet after "combine" step
-        preferred = self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
-        legacy = self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
-        if preferred.exists() or not legacy.exists():
-            return preferred
-        return legacy
+        pooled_dir = self.combine_pooled_dir(self.combine_max_players)
+        preferred = pooled_dir / "all_ingested_rows.parquet"
+        legacy_candidates = [
+            self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
+            self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
+        ]
+        for candidate in legacy_candidates:
+            if preferred.exists():
+                return preferred
+            if candidate.exists():
+                return candidate
+        return preferred
 
     @property
     def game_stats_margin_thresholds(self) -> tuple[int, ...]:
@@ -423,15 +444,25 @@ class AppConfig:
     # Per-N helper paths used by ingest/curate/metrics
     def manifest_for(self, n: int) -> Path:
         """Path to the manifest for a specific player count."""
-        return self.per_k_subdir("01_combine", n) / self.manifest_name
+        return self.combine_block_dir(n) / self.manifest_name
 
     def ingested_rows_raw(self, n: int) -> Path:
         """Path to the raw ingested parquet for ``n`` players."""
-        return self.per_k_subdir("01_combine", n) / f"{n}p_ingested_rows.raw.parquet"
+        return self.ingest_block_dir(n) / f"{n}p_ingested_rows.raw.parquet"
+
+    def ingest_manifest(self, n: int) -> Path:
+        """Path to the append-only ingest manifest for ``n`` players."""
+
+        return self.ingested_rows_raw(n).with_suffix(".manifest.jsonl")
 
     def ingested_rows_curated(self, n: int) -> Path:
         """Path to the curated ingested parquet for ``n`` players."""
-        return self.per_k_subdir("01_combine", n) / self.curated_rows_name
+        return self.combine_block_dir(n) / self.curated_rows_name
+
+    def combined_manifest_path(self) -> Path:
+        """Path to the manifest accompanying ``curated_parquet``."""
+
+        return self.curated_parquet.with_suffix(".manifest.jsonl")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

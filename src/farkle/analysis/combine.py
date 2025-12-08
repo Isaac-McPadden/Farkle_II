@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+import shutil
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -41,6 +42,31 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
     return pa.table(cols, names=target.names)
 
 
+def _migrate_combined_output(cfg: AppConfig) -> Path:
+    """Ensure any legacy combined outputs are relocated beside the new pooled path."""
+
+    preferred_dir = cfg.combine_pooled_dir(cfg.combine_max_players)
+    preferred_out = preferred_dir / "all_ingested_rows.parquet"
+    legacy_candidates = [
+        cfg.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
+        cfg.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
+    ]
+    for legacy in legacy_candidates:
+        if preferred_out.exists() or not legacy.exists() or legacy == preferred_out:
+            continue
+        preferred_dir.mkdir(parents=True, exist_ok=True)
+        LOGGER.info(
+            "Combine: migrating legacy pooled parquet",
+            extra={"stage": "combine", "source": str(legacy), "dest": str(preferred_out)},
+        )
+        shutil.move(str(legacy), preferred_out)
+        legacy_manifest = legacy.with_suffix(".manifest.jsonl")
+        new_manifest = preferred_out.with_suffix(".manifest.jsonl")
+        if legacy_manifest.exists():
+            shutil.move(str(legacy_manifest), new_manifest)
+    return preferred_out
+
+
 def run(cfg: AppConfig) -> None:
     """Concatenate all per-N parquets into a 12-seat superset with null padding.
 
@@ -57,12 +83,10 @@ def run(cfg: AppConfig) -> None:
         return
 
     target = expected_schema_for(12)  # superset up to P12_*
-    out_dir = cfg.data_dir / "all_n_players_combined"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / "all_ingested_rows.parquet"
+    out = _migrate_combined_output(cfg)
+    manifest_path = cfg.combined_manifest_path()
 
     done = stage_done_path(cfg.combine_stage_dir, "combine")
-    manifest_path = out.with_suffix(".manifest.jsonl")
     if stage_is_up_to_date(
         done,
         inputs=files,
