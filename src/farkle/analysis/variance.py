@@ -6,17 +6,17 @@ stage along with the per-seed strategy summaries.  For every
 across seeds, the corresponding standard error, and a simple signal-to-noise
 heuristic (distance from a fair coin scaled by the cross-seed standard error).
 
-The outputs are written to ``analysis/variance.parquet`` and a compact summary
-aggregated by ``n_players`` is written to ``analysis/variance_summary.parquet``.
-The module also derives seed-level variance components for win rate, total
-score, and game length and writes them to ``analysis/variance_components.parquet``.
-All outputs share a done-stamp that captures input/output freshness so that the
-module can be skipped when rerun unless ``force`` is requested.
+The outputs are written to ``06_variance/pooled/variance.parquet`` and a compact
+summary aggregated by ``n_players`` is written to
+``06_variance/pooled/variance_summary.parquet``. The module also derives
+seed-level variance components for win rate, total score, and game length and
+writes them to ``06_variance/pooled/variance_components.parquet``. All outputs
+share a done-stamp that captures input/output freshness so that the module can
+be skipped when rerun unless ``force`` is requested.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import math
 import re
@@ -28,9 +28,9 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
-from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -38,7 +38,6 @@ SUMMARY_PATTERN = re.compile(r"strategy_summary_(\d+)p_seed(\d+)\.parquet$")
 VARIANCE_OUTPUT = "variance.parquet"
 SUMMARY_OUTPUT = "variance_summary.parquet"
 COMPONENTS_OUTPUT = "variance_components.parquet"
-STAMP_NAME = "variance.done.json"
 MIN_SEEDS = 2
 
 COMPONENT_COLUMN_MAP = {
@@ -56,27 +55,28 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         force: Recompute outputs even when the done-stamp is up-to-date.
     """
 
-    analysis_dir = cfg.analysis_dir
     metrics_path = cfg.metrics_input_path()
-    variance_path = analysis_dir / VARIANCE_OUTPUT
-    summary_path = analysis_dir / SUMMARY_OUTPUT
-    components_path = analysis_dir / COMPONENTS_OUTPUT
-    stamp_path = analysis_dir / STAMP_NAME
+    variance_path = cfg.variance_output_path(VARIANCE_OUTPUT)
+    summary_path = cfg.variance_output_path(SUMMARY_OUTPUT)
+    components_path = cfg.variance_output_path(COMPONENTS_OUTPUT)
+    stamp_path = stage_done_path(cfg.variance_stage_dir, "variance")
 
     if not metrics_path.exists():
         raise FileNotFoundError(metrics_path)
 
-    seed_summary_paths = _discover_seed_summaries(analysis_dir)
+    seed_summary_paths = _discover_seed_summaries(cfg)
     if not seed_summary_paths:
         LOGGER.info(
             "Variance skipped: no per-seed summaries found",
-            extra={"stage": "variance", "analysis_dir": str(analysis_dir)},
+            extra={"stage": "variance", "analysis_dir": str(cfg.analysis_dir)},
         )
         return
 
     inputs = [metrics_path, *seed_summary_paths]
     outputs = [variance_path, summary_path, components_path]
-    if not force and _is_up_to_date(stamp_path, inputs=inputs, outputs=outputs):
+    if not force and stage_is_up_to_date(
+        stamp_path, inputs=inputs, outputs=outputs, config_sha=cfg.config_sha
+    ):
         LOGGER.info(
             "Variance outputs up-to-date",
             extra={
@@ -93,7 +93,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         "Computing cross-seed variance",
         extra={
             "stage": "variance",
-            "analysis_dir": str(analysis_dir),
+            "analysis_dir": str(cfg.analysis_dir),
             "metrics_path": str(metrics_path),
             "variance_path": str(variance_path),
             "summary_path": str(summary_path),
@@ -133,7 +133,12 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     write_parquet_atomic(
         components_table, components_path, codec=cfg.parquet_codec
     )
-    _write_stamp(stamp_path, inputs=inputs, outputs=outputs)
+    write_stage_done(
+        stamp_path,
+        inputs=inputs,
+        outputs=outputs,
+        config_sha=cfg.config_sha,
+    )
 
     LOGGER.info(
         "Variance outputs written",
@@ -147,8 +152,26 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     )
 
 
-def _discover_seed_summaries(root: Path) -> list[Path]:
-    return sorted(p for p in root.iterdir() if SUMMARY_PATTERN.search(p.name))
+def _discover_seed_summaries(cfg: AppConfig) -> list[Path]:
+    candidates: list[Path] = []
+    stage_root = cfg.seed_summaries_stage_dir
+    if stage_root.exists():
+        candidates.extend(sorted(stage_root.rglob("*.parquet")))
+
+    legacy_root = cfg.analysis_dir
+    if legacy_root.exists():
+        candidates.extend(p for p in legacy_root.iterdir() if SUMMARY_PATTERN.search(p.name))
+
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for path in candidates:
+        if not SUMMARY_PATTERN.search(path.name):
+            continue
+        if path in seen:
+            continue
+        seen.add(path)
+        unique.append(path)
+    return sorted(unique)
 
 
 def _load_metrics(path: Path) -> pd.DataFrame:
@@ -404,43 +427,6 @@ def _summarize_variance(frame: pd.DataFrame) -> pd.DataFrame:
     return summary
 
 
-def _stamp(path: Path) -> dict[str, float | int]:
-    stat = path.stat()
-    return {"mtime": stat.st_mtime, "size": stat.st_size}
-
-
-def _write_stamp(stamp_path: Path, *, inputs: Iterable[Path], outputs: Iterable[Path]) -> None:
-    payload = {
-        "inputs": {str(p): _stamp(p) for p in inputs if p.exists()},
-        "outputs": {str(p): _stamp(p) for p in outputs if p.exists()},
-    }
-    stamp_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(stamp_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(payload, indent=2))
-
-
-def _is_up_to_date(stamp_path: Path, *, inputs: Iterable[Path], outputs: Iterable[Path]) -> bool:
-    if not (stamp_path.exists() and all(p.exists() for p in outputs)):
-        return False
-    try:
-        meta = json.loads(stamp_path.read_text())
-    except Exception:  # noqa: BLE001
-        return False
-
-    in_meta = meta.get("inputs", {})
-    out_meta = meta.get("outputs", {})
-
-    def _matches(paths: Iterable[Path], recorded: dict[str, dict[str, float | int]]) -> bool:
-        for p in paths:
-            data = recorded.get(str(p))
-            if data is None:
-                return False
-            stat = p.stat()
-            if data.get("mtime") != stat.st_mtime or data.get("size") != stat.st_size:
-                return False
-        return True
-
-    return _matches(inputs, in_meta) and _matches(outputs, out_meta)
 
 
 __all__ = ["run"]

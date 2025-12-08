@@ -274,6 +274,65 @@ class AppConfig:
         return path
 
     @property
+    def game_stats_stage_dir(self) -> Path:
+        """Stage directory for game-stat analytics."""
+
+        return self.stage_subdir("03_game_stats")
+
+    @property
+    def game_stats_pooled_dir(self) -> Path:
+        """Pooled outputs for game-stat analytics."""
+
+        return self.stage_subdir("03_game_stats", "pooled")
+
+    @property
+    def rng_stage_dir(self) -> Path:
+        """Stage directory for RNG diagnostics."""
+
+        return self.stage_subdir("04_rng")
+
+    @property
+    def rng_pooled_dir(self) -> Path:
+        """Pooled outputs for RNG diagnostics."""
+
+        return self.stage_subdir("04_rng", "pooled")
+
+    @property
+    def seed_summaries_stage_dir(self) -> Path:
+        """Stage directory for per-seed summaries."""
+
+        return self.stage_subdir("05_seed_summaries")
+
+    def seed_summaries_dir(self, players: int) -> Path:
+        """Directory holding seed summaries for ``players`` count."""
+
+        return self.stage_subdir("05_seed_summaries", f"{players}p")
+
+    @property
+    def variance_stage_dir(self) -> Path:
+        """Stage directory for variance analytics."""
+
+        return self.stage_subdir("06_variance")
+
+    @property
+    def variance_pooled_dir(self) -> Path:
+        """Pooled outputs for variance analytics."""
+
+        return self.stage_subdir("06_variance", "pooled")
+
+    @property
+    def meta_stage_dir(self) -> Path:
+        """Stage directory for meta-analysis outputs."""
+
+        return self.stage_subdir("07_meta")
+
+    @property
+    def meta_pooled_dir(self) -> Path:
+        """Pooled outputs for meta-analysis."""
+
+        return self.stage_subdir("07_meta", "pooled")
+
+    @property
     def ingest_stage_dir(self) -> Path:
         return self.stage_subdir("00_ingest")
 
@@ -385,6 +444,54 @@ class AppConfig:
         path = self.metrics_pooled_dir / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    def game_stats_output_path(self, name: str) -> Path:
+        """Preferred path for pooled game-stat outputs."""
+
+        path = self.game_stats_pooled_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def game_stats_input_path(self, name: str) -> Path:
+        """Resolve a game-stat artifact with a legacy fallback."""
+
+        return self._preferred_stage_path(self.game_stats_pooled_dir, self.analysis_dir, name)
+
+    def rng_output_path(self, name: str) -> Path:
+        """Preferred path for pooled RNG diagnostics."""
+
+        path = self.rng_pooled_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def rng_input_path(self, name: str) -> Path:
+        """Resolve an RNG diagnostic artifact with a legacy fallback."""
+
+        return self._preferred_stage_path(self.rng_pooled_dir, self.analysis_dir, name)
+
+    def variance_output_path(self, name: str) -> Path:
+        """Preferred path for pooled variance analytics."""
+
+        path = self.variance_pooled_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def variance_input_path(self, name: str) -> Path:
+        """Resolve a variance artifact with a legacy fallback."""
+
+        return self._preferred_stage_path(self.variance_pooled_dir, self.analysis_dir, name)
+
+    def meta_output_path(self, name: str) -> Path:
+        """Preferred path for pooled meta-analysis artifacts."""
+
+        path = self.meta_pooled_dir / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def meta_input_path(self, name: str) -> Path:
+        """Resolve a meta-analysis artifact with a legacy fallback."""
+
+        return self._preferred_stage_path(self.meta_pooled_dir, self.analysis_dir, name)
 
     def metrics_input_path(self, name: str | None = None) -> Path:
         """Resolve a pooled metrics artifact with a legacy fallback."""

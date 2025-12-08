@@ -17,6 +17,7 @@ import pandas as pd
 import pandas.testing as pdt
 import pyarrow as pa
 
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.stats import wilson_ci
@@ -49,6 +50,13 @@ MEAN_NAME_OVERRIDES = {
 }
 
 
+def _summary_path(cfg: AppConfig, *, players: int, seed: int) -> Path:
+    filename = SUMMARY_TEMPLATE.format(players=players, seed=seed)
+    stage_dir = cfg.seed_summaries_dir(players)
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    return stage_dir / filename
+
+
 def run(cfg: AppConfig, *, force: bool = False) -> None:
     """Materialize per-seed strategy summaries with confidence intervals."""
 
@@ -62,6 +70,28 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     seeds = sorted(metrics_frame["seed"].unique())
     player_counts = sorted(metrics_frame["players"].unique())
+    done = stage_done_path(cfg.seed_summaries_stage_dir, "seed_summaries")
+
+    expected_outputs: list[Path] = []
+    for seed in seeds:
+        for players in player_counts:
+            subset = metrics_frame[
+                (metrics_frame["seed"] == seed) & (metrics_frame["players"] == players)
+            ]
+            if subset.empty:
+                continue
+            expected_outputs.append(_summary_path(cfg, players=int(players), seed=int(seed)))
+
+    if not force and expected_outputs and stage_is_up_to_date(
+        done, inputs=[metrics_path], outputs=expected_outputs, config_sha=cfg.config_sha
+    ):
+        LOGGER.info(
+            "Seed summaries up-to-date",
+            extra={"stage": "seed_summaries", "stamp": str(done)},
+        )
+        return
+
+    outputs: list[Path] = []
     for seed in seeds:
         for players in player_counts:
             subset = metrics_frame[
@@ -72,7 +102,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             summary = _build_summary(subset, players=int(players), seed=int(seed))
             if summary.empty:
                 continue
-            output_path = cfg.analysis_dir / SUMMARY_TEMPLATE.format(players=players, seed=seed)
+            output_path = _summary_path(cfg, players=int(players), seed=int(seed))
+            outputs.append(output_path)
             if not force and _existing_summary_matches(output_path, summary):
                 LOGGER.info(
                     "Seed summary already up-to-date",
@@ -97,6 +128,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 )
 
             _sync_meta_summary(cfg, summary, output_path)
+
+    if outputs:
+        write_stage_done(done, inputs=[metrics_path], outputs=outputs, config_sha=cfg.config_sha)
 
 
 def _load_metrics_frame(cfg: AppConfig) -> tuple[pd.DataFrame, Path]:
