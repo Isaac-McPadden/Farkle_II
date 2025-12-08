@@ -34,19 +34,20 @@ def run(cfg: AppConfig) -> None:
     """Compute per-strategy metrics and seat-advantage tables."""
 
     analysis_dir = cfg.analysis_dir
+    metrics_dir = cfg.metrics_pooled_dir
     data_file = cfg.curated_parquet
-    out_metrics = analysis_dir / cfg.metrics_name
-    out_seats = analysis_dir / "seat_advantage.csv"
-    out_seats_parquet = analysis_dir / "seat_advantage.parquet"
-    out_seat_metrics = analysis_dir / "seat_metrics.parquet"
-    out_seat_metrics_csv = analysis_dir / "seat_metrics.csv"
-    out_symmetry = analysis_dir / "symmetry_checks.parquet"
-    out_symmetry_csv = analysis_dir / "symmetry_checks.csv"
-    stamp = analysis_dir / "metrics.done.json"
+    out_metrics = cfg.metrics_output_path()
+    out_seats = cfg.metrics_output_path("seat_advantage.csv")
+    out_seats_parquet = cfg.metrics_output_path("seat_advantage.parquet")
+    out_seat_metrics = cfg.metrics_output_path("seat_metrics.parquet")
+    out_seat_metrics_csv = cfg.metrics_output_path("seat_metrics.csv")
+    out_symmetry = cfg.metrics_output_path("symmetry_checks.parquet")
+    out_symmetry_csv = cfg.metrics_output_path("symmetry_checks.csv")
+    stamp = cfg.metrics_output_path("metrics.done.json")
 
     done = stage_done_path(cfg.metrics_stage_dir, "metrics")
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
-    iso_targets = [cfg.analysis_dir / "data" / f"{n}p" / f"{n}p_isolated_metrics.parquet" for n in player_counts]
+    iso_targets = [cfg.metrics_isolated_path(n) for n in player_counts]
     raw_metric_inputs = [cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet" for n in player_counts]
     outputs = [
         out_metrics,
@@ -81,12 +82,23 @@ def run(cfg: AppConfig) -> None:
             "stage": "metrics",
             "data_file": str(data_file),
             "analysis_dir": str(analysis_dir),
+            "metrics_dir": str(metrics_dir),
         },
     )
 
     check_pre_metrics(data_file, winner_col="winner_seat")
 
     iso_paths, raw_inputs = _ensure_isolated_metrics(cfg, player_counts)
+    outputs = [
+        out_metrics,
+        out_seats,
+        out_seats_parquet,
+        out_seat_metrics,
+        out_seat_metrics_csv,
+        out_symmetry,
+        out_symmetry_csv,
+        *iso_paths,
+    ]
     metrics_df = _collect_metrics_frames(iso_paths)
     if metrics_df.empty:
         raise RuntimeError("metrics: no isolated metric files generated")
@@ -177,6 +189,8 @@ def _ensure_isolated_metrics(
     raw_inputs: list[Path] = []
     for n in player_counts:
         raw_path = cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet"
+        preferred = cfg.metrics_isolated_path(n)
+        legacy = cfg.legacy_metrics_isolated_path(n)
         raw_inputs.append(raw_path)
         if not raw_path.exists():
             LOGGER.warning(
@@ -186,6 +200,7 @@ def _ensure_isolated_metrics(
             continue
         try:
             iso_paths.append(build_isolated_metrics(cfg, n))
+            continue
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "Failed to normalize metrics parquet",
@@ -196,6 +211,18 @@ def _ensure_isolated_metrics(
                     "error": str(exc),
                 },
             )
+        if preferred.exists():
+            iso_paths.append(preferred)
+        elif legacy.exists():
+            LOGGER.info(
+                "Using legacy isolated metrics path",
+                extra={
+                    "stage": "metrics",
+                    "player_count": n,
+                    "path": str(legacy),
+                },
+            )
+            iso_paths.append(legacy)
     return iso_paths, raw_inputs
 
 

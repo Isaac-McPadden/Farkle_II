@@ -17,7 +17,13 @@ def sample_config(tmp_path, update_goldens):
 
 
 def test_collect_metrics_frames_preserves_stats(sample_config):
-    iso_paths = sorted((sample_config.analysis_dir / "data").glob("*p/*_isolated_metrics.parquet"))
+    iso_paths = [
+        p
+        for p in (
+            sample_config.metrics_isolated_path(n) for n in sorted(sample_config.sim.n_players_list)
+        )
+        if p.exists()
+    ]
     frame = metrics._collect_metrics_frames(iso_paths)
 
     assert set(frame["n_players"]) == {2, 3}
@@ -50,7 +56,7 @@ def test_compute_seat_advantage_matches_manifest(sample_config):
 
 
 def test_seat_metrics_include_per_seat_stats(sample_config):
-    seat_metrics = sample_config.analysis_dir / "seat_metrics.parquet"
+    seat_metrics = sample_config.metrics_input_path("seat_metrics.parquet")
     df = pd.read_parquet(seat_metrics)
 
     row = df[
@@ -66,7 +72,7 @@ def test_seat_metrics_include_per_seat_stats(sample_config):
 
 
 def test_symmetry_checks_empty_when_no_symmetric_pairs(sample_config):
-    symmetry_path = sample_config.analysis_dir / "symmetry_checks.parquet"
+    symmetry_path = sample_config.metrics_input_path("symmetry_checks.parquet")
     df = pd.read_parquet(symmetry_path)
 
     assert df.empty

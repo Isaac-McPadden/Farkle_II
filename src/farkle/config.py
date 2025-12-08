@@ -260,6 +260,19 @@ class AppConfig:
 
         return self.stage_subdir("01_combine", f"{k}p", "pooled")
 
+    def metrics_per_k_dir(self, k: int) -> Path:
+        """Directory holding metrics artifacts for ``k`` players."""
+        path = self.per_k_subdir("02_metrics", k)
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
+    def metrics_pooled_dir(self) -> Path:
+        """Directory holding pooled metrics artifacts."""
+        path = self.stage_subdir("02_metrics", "pooled")
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     @property
     def ingest_stage_dir(self) -> Path:
         return self.stage_subdir("00_ingest")
@@ -365,6 +378,34 @@ class AppConfig:
         outputs = self.analysis.outputs or {}
         return str(outputs.get("metrics_name", "metrics.parquet"))
 
+    def metrics_output_path(self, name: str | None = None) -> Path:
+        """Preferred path for pooled metrics artifacts under ``02_metrics``."""
+
+        filename = str(self.metrics_name if name is None else name)
+        path = self.metrics_pooled_dir / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def metrics_input_path(self, name: str | None = None) -> Path:
+        """Resolve a pooled metrics artifact with a legacy fallback."""
+
+        filename = str(self.metrics_name if name is None else name)
+        preferred = self.metrics_output_path(filename)
+        legacy = self.analysis_dir / filename
+        if preferred.exists() or not legacy.exists():
+            return preferred
+        return legacy
+
+    def metrics_isolated_path(self, k: int) -> Path:
+        """Preferred isolated metrics parquet for ``k`` players."""
+
+        return self.metrics_per_k_dir(k) / f"{k}p_isolated_metrics.parquet"
+
+    def legacy_metrics_isolated_path(self, k: int) -> Path:
+        """Legacy isolated metrics parquet path under ``analysis/data``."""
+
+        return self.analysis_dir / "data" / f"{k}p" / f"{k}p_isolated_metrics.parquet"
+
     @property
     def curated_rows_name(self) -> str:
         """Filename for curated row-level parquet outputs."""
@@ -420,13 +461,13 @@ class AppConfig:
         """Location of the combined curated parquet spanning all player counts."""
         pooled_dir = self.combine_pooled_dir(self.combine_max_players)
         preferred = pooled_dir / "all_ingested_rows.parquet"
-        legacy_candidates = [
+        candidates = [
+            preferred,
             self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
             self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
+            self.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
         ]
-        for candidate in legacy_candidates:
-            if preferred.exists():
-                return preferred
+        for candidate in candidates:
             if candidate.exists():
                 return candidate
         return preferred
@@ -444,7 +485,11 @@ class AppConfig:
     # Per-N helper paths used by ingest/curate/metrics
     def manifest_for(self, n: int) -> Path:
         """Path to the manifest for a specific player count."""
-        return self.combine_block_dir(n) / self.manifest_name
+        preferred = self.combine_block_dir(n) / self.manifest_name
+        legacy = self.analysis_dir / "data" / f"{n}p" / "manifest.jsonl"
+        if preferred.exists() or not legacy.exists():
+            return preferred
+        return legacy
 
     def ingested_rows_raw(self, n: int) -> Path:
         """Path to the raw ingested parquet for ``n`` players."""

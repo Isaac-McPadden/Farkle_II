@@ -57,7 +57,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     """
 
     analysis_dir = cfg.analysis_dir
-    metrics_path = analysis_dir / cfg.metrics_name
+    metrics_path = cfg.metrics_input_path()
     variance_path = analysis_dir / VARIANCE_OUTPUT
     summary_path = analysis_dir / SUMMARY_OUTPUT
     components_path = analysis_dir / COMPONENTS_OUTPUT

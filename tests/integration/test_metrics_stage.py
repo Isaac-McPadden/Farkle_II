@@ -44,7 +44,7 @@ def test_golden_mismatch_requires_update_flag(tmp_path, update_goldens):
     if update_goldens:
         pytest.skip("Update mode refreshes goldens instead of enforcing mismatches.")
 
-    metrics_path = cfg.analysis_dir / cfg.metrics_name
+    metrics_path = cfg.metrics_output_path()
     df = pd.read_parquet(metrics_path).iloc[:-1]
     df.to_parquet(metrics_path, index=False)
 

@@ -50,11 +50,12 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     if neg_cols:
         raise RuntimeError(f"check_pre_metrics: negative values present in {', '.join(neg_cols)}")
 
-    data_dir = (
-        combined_parquet.parent.parent
-        if combined_parquet.parent.name == "all_n_players_combined"
-        else combined_parquet.parent
-    )
+    if combined_parquet.parent.name == "all_n_players_combined":
+        data_dir = combined_parquet.parent.parent
+    elif combined_parquet.parent.name == "pooled":
+        data_dir = combined_parquet.parent.parent.parent
+    else:
+        data_dir = combined_parquet.parent
     manifest_rows = 0
     seen_manifest = False
     for seat_dir in sorted(p for p in data_dir.glob("*p") if p.is_dir()):
@@ -71,6 +72,12 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
             seen_manifest = True
         except Exception as e:  # noqa: BLE001
             raise RuntimeError(f"check_pre_metrics: failed to parse {manifest_path}: {e}") from e
+    if not seen_manifest:
+        manifest_path = combined_parquet.with_suffix(".manifest.jsonl")
+        if manifest_path.exists():
+            meta = json.loads(manifest_path.read_text())
+            manifest_rows = int(meta.get("row_count", 0))
+            seen_manifest = True
     if not seen_manifest:
         raise RuntimeError(f"check_pre_metrics: no manifest files found under {data_dir}")
 

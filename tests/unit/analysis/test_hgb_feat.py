@@ -16,7 +16,7 @@ def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
     cfg.sim.n_players_list = [2]
     analysis_dir = cfg.analysis_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = analysis_dir / cfg.metrics_name
+    metrics_path = cfg.metrics_output_path()
     ratings_path = analysis_dir / hgb_feat._hgb.RATINGS_NAME
     pd.DataFrame({"strategy": ["Strat(300,2)[SD][FOFS][AND][H-]"], "n_players": [2]}).to_parquet(
         metrics_path, index=False

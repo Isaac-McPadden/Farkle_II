@@ -22,7 +22,7 @@ def _make_cfg(tmp_path) -> AppConfig:
 
 
 def _write_metrics(cfg: AppConfig, frame: pd.DataFrame) -> None:
-    path = cfg.analysis_dir / cfg.metrics_name
+    path = cfg.metrics_output_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     frame.to_parquet(path, index=False)
 

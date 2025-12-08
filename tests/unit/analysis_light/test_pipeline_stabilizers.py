@@ -112,10 +112,10 @@ def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched
     caplog.set_level(logging.INFO, logger="farkle.analysis.metrics")
     metrics.run(cfg)
 
-    metrics_path = cfg_proto.analysis_dir / cfg_proto.metrics_name
-    seat_csv = cfg_proto.analysis_dir / "seat_advantage.csv"
-    seat_parquet = cfg_proto.analysis_dir / "seat_advantage.parquet"
-    stamp_path = cfg_proto.analysis_dir / "metrics.done.json"
+    metrics_path = cfg_proto.metrics_output_path()
+    seat_csv = cfg_proto.metrics_output_path("seat_advantage.csv")
+    seat_parquet = cfg_proto.metrics_output_path("seat_advantage.parquet")
+    stamp_path = cfg_proto.metrics_output_path("metrics.done.json")
 
     assert metrics_path.exists()
     assert seat_csv.exists()
