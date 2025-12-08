@@ -10,7 +10,8 @@ directly, so the parsing layer has been removed.
 Outputs
 -------
 ``ratings_<N>.parquet`` and ``ratings_pooled.parquet``
-    Parquet tables with columns ``{strategy, mu, sigma}``.
+    Parquet tables with columns ``{strategy, mu, sigma}`` written under
+    ``03_trueskill/<Np>/`` and ``03_trueskill/pooled/`` respectively.
 ``tiers.json``
     Consolidated tier report containing TrueSkill and frequentist tiers.
 """
@@ -55,27 +56,37 @@ DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 def _per_player_dir(root: Path, player_count: str) -> Path:
     """Canonical directory for per-player-count artifacts."""
 
-    return root / "data" / f"{player_count}p"
+    return root / f"{player_count}p"
 
 
-def _ensure_new_location(dest: Path, legacy: Path) -> Path:
+def _ensure_new_location(dest: Path, *legacy_paths: Path) -> Path:
     """Return *dest*, migrating a legacy file into place when present."""
 
     if dest.exists():
         return dest
-    if legacy.exists():
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        legacy.replace(dest)
+    for legacy in legacy_paths:
+        if legacy.is_file():
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            legacy.replace(dest)
+            break
     return dest
 
 
 def _rating_artifact_paths(
     root: Path, player_count: str, suffix: str, *, legacy_root: Path | None = None
-) -> dict[str, Path]:
+) -> dict[str, Path | list[Path]]:
     """Return canonical and legacy paths for per-player artifacts."""
 
     per_dir = _per_player_dir(root, player_count)
-    legacy_base = legacy_root or root
+    legacy_candidates = [root / "data" / f"{player_count}p"]
+    if legacy_root is not None and legacy_root != root:
+        legacy_candidates.extend(
+            [
+                legacy_root / "data" / f"{player_count}p",
+                legacy_root / f"{player_count}p",
+                legacy_root,
+            ]
+        )
     base_name = f"ratings_{player_count}{suffix}"
     return {
         "dir": per_dir,
@@ -83,10 +94,12 @@ def _rating_artifact_paths(
         "json": per_dir / f"{base_name}.json",
         "ckpt": per_dir / f"{base_name}.ckpt.json",
         "checkpoint": per_dir / f"{base_name}.checkpoint.parquet",
-        "legacy_parquet": legacy_base / f"{base_name}.parquet",
-        "legacy_json": legacy_base / f"{base_name}.json",
-        "legacy_ckpt": legacy_base / f"{base_name}.ckpt.json",
-        "legacy_checkpoint": legacy_base / f"{base_name}.checkpoint.parquet",
+        "legacy_parquet": [base / f"{base_name}.parquet" for base in legacy_candidates],
+        "legacy_json": [base / f"{base_name}.json" for base in legacy_candidates],
+        "legacy_ckpt": [base / f"{base_name}.ckpt.json" for base in legacy_candidates],
+        "legacy_checkpoint": [
+            base / f"{base_name}.checkpoint.parquet" for base in legacy_candidates
+        ],
     }
 
 
@@ -98,13 +111,13 @@ def _iter_rating_parquets(root: Path, suffix: str, legacy_root: Path | None = No
         search_roots.append(legacy_root)
 
     per_player: list[Path] = []
-    legacy: list[Path] = []
     for base in search_roots:
+        per_player.extend(base.glob(f"*p/ratings_*{suffix}.parquet"))
         per_player.extend((base / "data").glob(f"*p/ratings_*{suffix}.parquet"))
-        legacy.extend(base.glob(f"ratings_*{suffix}.parquet"))
+        per_player.extend(base.glob(f"ratings_*{suffix}.parquet"))
     out: list[Path] = []
     seen: set[str] = set()
-    for path in per_player + legacy:
+    for path in per_player:
         if path.stem.startswith("ratings_pooled"):
             continue
         key = path.resolve().as_posix()
@@ -675,10 +688,10 @@ def _rate_block_worker(
 
     # Up-to-date guard
     paths = _rating_artifact_paths(root, player_count, suffix, legacy_root=legacy_root)
-    parquet_path = _ensure_new_location(paths["parquet"], paths["legacy_parquet"])
-    ck_path = _ensure_new_location(paths["ckpt"], paths["legacy_ckpt"])
-    rk_path = _ensure_new_location(paths["checkpoint"], paths["legacy_checkpoint"])
-    json_path = _ensure_new_location(paths["json"], paths["legacy_json"])
+    parquet_path = _ensure_new_location(paths["parquet"], *cast(list[Path], paths["legacy_parquet"]))
+    ck_path = _ensure_new_location(paths["ckpt"], *cast(list[Path], paths["legacy_ckpt"]))
+    rk_path = _ensure_new_location(paths["checkpoint"], *cast(list[Path], paths["legacy_checkpoint"]))
+    json_path = _ensure_new_location(paths["json"], *cast(list[Path], paths["legacy_json"]))
 
     if parquet_path.exists() and parquet_path.stat().st_mtime >= row_file.stat().st_mtime:
         try:
@@ -765,7 +778,7 @@ def _rate_block_worker(
     # Write per-N ratings as Parquet (strategy, mu, sigma)
     _save_ratings_parquet(parquet_path, ratings_stats)
 
-    json_path = _ensure_new_location(paths["json"], paths["legacy_json"])
+    json_path = _ensure_new_location(paths["json"], *cast(list[Path], paths["legacy_json"]))
     with atomic_path(str(json_path)) as tmp_path:
         Path(tmp_path).write_text(
             json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
@@ -797,7 +810,7 @@ def run_trueskill(
         earlier results.
     root: Path | None, optional
         Directory where rating artifacts are written. Defaults to
-        ``<dataroot>/analysis`` when ``None``.
+        ``<dataroot>/analysis/03_trueskill`` when ``None``.
     dataroot: Path | None, optional
         Directory containing tournament result blocks. When ``None`` the
         path defaults to ``<root>/results`` if ``root`` is given, otherwise
@@ -827,6 +840,8 @@ def run_trueskill(
 
     root = Path(root) if root is not None else base / "analysis" / "03_trueskill"
     root.mkdir(parents=True, exist_ok=True)
+    pooled_dir = root / "pooled"
+    pooled_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = root.parent
     row_data_path = Path(row_data_dir) if row_data_dir is not None else None
     if row_data_path is None:
@@ -918,6 +933,7 @@ def run_trueskill(
 
     # Combine per-N ratings into pooled stats
     pooled_parquet = _ensure_new_location(
+        pooled_dir / f"ratings_pooled{suffix}.parquet",
         root / f"ratings_pooled{suffix}.parquet",
         legacy_root / f"ratings_pooled{suffix}.parquet",
     )
@@ -958,6 +974,7 @@ def run_trueskill(
     _save_ratings_parquet(pooled_parquet, pooled_stats)
     pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled_stats.items()}
     pooled_json_path = _ensure_new_location(
+        pooled_dir / f"ratings_pooled{suffix}.json",
         root / f"ratings_pooled{suffix}.json",
         legacy_root / f"ratings_pooled{suffix}.json",
     )
@@ -1060,6 +1077,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     analysis_dir = cfg.trueskill_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    pooled_dir = analysis_dir / "pooled"
+    pooled_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = analysis_dir.parent
 
     env_kwargs = {
@@ -1096,6 +1115,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
         )
 
         pooled_path = _ensure_new_location(
+            pooled_dir / f"ratings_pooled_seed{seed}.parquet",
             analysis_dir / f"ratings_pooled_seed{seed}.parquet",
             legacy_root / f"ratings_pooled_seed{seed}.parquet",
         )
@@ -1135,12 +1155,16 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     _ensure_strict_mu_ordering(ordered_pooled)
 
     pooled_parquet = _ensure_new_location(
-        analysis_dir / "ratings_pooled.parquet", legacy_root / "ratings_pooled.parquet"
+        pooled_dir / "ratings_pooled.parquet",
+        analysis_dir / "ratings_pooled.parquet",
+        legacy_root / "ratings_pooled.parquet",
     )
     _save_ratings_parquet(pooled_parquet, ordered_pooled)
 
     pooled_json_path = _ensure_new_location(
-        analysis_dir / "ratings_pooled.json", legacy_root / "ratings_pooled.json"
+        pooled_dir / "ratings_pooled.json",
+        analysis_dir / "ratings_pooled.json",
+        legacy_root / "ratings_pooled.json",
     )
     with atomic_path(str(pooled_json_path)) as tmp_path:
         Path(tmp_path).write_text(

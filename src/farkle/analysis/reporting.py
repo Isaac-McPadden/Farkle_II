@@ -103,6 +103,16 @@ def _tier_path(analysis_dir: Path) -> Path:
     return _first_existing(candidates)
 
 
+def _ratings_path(analysis_dir: Path) -> Path:
+    """Resolve pooled TrueSkill ratings with stage-aware fallbacks."""
+
+    candidates = [
+        analysis_dir / "pooled" / "ratings_pooled.parquet",
+        analysis_dir / "ratings_pooled.parquet",
+    ]
+    return _first_existing(candidates)
+
+
 def _head2head_path(analysis_dir: Path, filename: str) -> Path:
     """Resolve a head-to-head artifact path with legacy fallback."""
 
@@ -127,7 +137,7 @@ def _sim_player_counts(cfg: AnalysisConfig | AppConfig, analysis_dir: Path) -> l
         sim_players = getattr(sim_cfg, "n_players_list", None) or []
         players.update(int(p) for p in sim_players)
 
-    ratings_path = analysis_dir / "ratings_pooled.parquet"
+    ratings_path = _ratings_path(analysis_dir)
     if ratings_path.exists():
         try:
             df = pd.read_parquet(ratings_path, columns=["strategy", "mu", "sigma", "players"])
@@ -176,7 +186,7 @@ def _load_ratings(analysis_dir: Path, players: int) -> pd.DataFrame:
         Dataframe with ``strategy``, ``players``, ``mu``, and ``sigma`` columns
         sorted by rating.
     """
-    path = analysis_dir / "ratings_pooled.parquet"
+    path = _ratings_path(analysis_dir)
     if not path.exists():
         raise ReportError(f"Missing ratings parquet: {path}")
 
@@ -433,7 +443,7 @@ def plot_ladder_for_players(
     top = ratings.head(LADDER_TOP_N)
     output = _plot_output_path(cfg, players, f"ladder_{players}p.png")
 
-    if _output_is_fresh(output, [analysis_dir / "ratings_pooled.parquet"], force=force):
+    if _output_is_fresh(output, [_ratings_path(analysis_dir)], force=force):
         return output
 
     fig = plt.figure()
@@ -898,7 +908,7 @@ def generate_report_for_players(
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     inputs = [
-        analysis_dir / "ratings_pooled.parquet",
+        _ratings_path(analysis_dir),
         analysis_dir / f"strategy_summary_{players}p_meta.parquet",
     ]
     if _output_is_fresh(report_path, inputs, force=force):

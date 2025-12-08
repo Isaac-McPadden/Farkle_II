@@ -146,6 +146,7 @@ def _load_trueskill(cfg: AppConfig, players: int) -> MethodData | None:
 
     per_seed: list[pd.Series] = []
     seed_candidates = {
+        *cfg.trueskill_pooled_dir.glob("ratings_pooled_seed*.parquet"),
         *cfg.trueskill_stage_dir.glob("ratings_pooled_seed*.parquet"),
         *cfg.analysis_dir.glob("ratings_pooled_seed*.parquet"),
     }

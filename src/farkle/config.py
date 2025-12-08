@@ -349,8 +349,23 @@ class AppConfig:
         return self.stage_subdir("03_trueskill")
 
     @property
+    def trueskill_pooled_dir(self) -> Path:
+        return self.stage_subdir("03_trueskill", "pooled")
+
+    @property
     def head2head_stage_dir(self) -> Path:
         return self.stage_subdir("04_head2head")
+
+    @property
+    def hgb_stage_dir(self) -> Path:
+        return self.stage_subdir("05_hgb")
+
+    def hgb_per_k_dir(self, k: int) -> Path:
+        return self.per_k_subdir("05_hgb", k)
+
+    @property
+    def hgb_pooled_dir(self) -> Path:
+        return self.stage_subdir("05_hgb", "pooled")
 
     @property
     def tiering_stage_dir(self) -> Path:
@@ -537,8 +552,9 @@ class AppConfig:
 
     def trueskill_path(self, filename: str) -> Path:
         """Resolve a TrueSkill artifact path with legacy fallback."""
-
-        return self._preferred_stage_path(self.trueskill_stage_dir, self.analysis_dir, filename)
+        pooled = filename.startswith("ratings_pooled")
+        stage_dir = self.trueskill_pooled_dir if pooled else self.trueskill_stage_dir
+        return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
 
     def head2head_path(self, filename: str) -> Path:
         """Resolve a head-to-head artifact path with legacy fallback."""
