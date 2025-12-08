@@ -7,7 +7,6 @@
 | src/farkle/analysis/checks.py                     | yes         | no               | yes           |
 | src/farkle/analysis/combine.py                    | no          | no               | yes           |
 | src/farkle/analysis/curate.py                     | no          | no               | yes           |
-| src/farkle/analysis/frequentist_tiering_report.py | no          | yes              | yes           |
 | src/farkle/analysis/h2h_analysis.py               | no          | yes              | yes           |
 | src/farkle/analysis/head2head.py                  | yes         | no               | yes           |
 | src/farkle/analysis/hgb_feat.py                   | yes         | no               | yes           |

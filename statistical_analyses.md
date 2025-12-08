@@ -42,8 +42,6 @@ farkle.analysis.h2h_analysis: Applies Holm–Bonferroni adjustments to head-to-h
 
 farkle.analysis.tiering_report: Combines isolated metrics, weighting across player counts, to compute frequentist win-rate scores and tiers, then compares them to TrueSkill tiers and emits consolidated tiering outputs.
 
-farkle.analysis.frequentist_tiering_report: Deprecated alias that forwards to tiering_report.run, preserved so legacy callers still produce the same frequentist tiering analyses.
-
 farkle.analysis.hgb_feat: Wrapper that coordinates histogram gradient boosting feature-importance runs per player count, checking timestamps and delegating to run_hgb when new statistical feature analyses are needed.
 
 farkle.analysis.run_hgb: Trains histogram gradient boosting models that predict TrueSkill performance from parsed strategy features, exporting permutation-based feature importances and optional diagnostics for interpretability.
