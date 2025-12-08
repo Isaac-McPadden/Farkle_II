@@ -314,7 +314,7 @@ def test_rate_stream_without_keeper_filter(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_rate_block_worker_up_to_date_guard(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "data" / "2p"
+    per_player_dir = root / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -343,7 +343,7 @@ def test_rate_block_worker_metadata_failure(
 ) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "data" / "2p"
+    per_player_dir = root / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -366,7 +366,7 @@ def test_rate_block_worker_metadata_failure(
 def test_rate_block_worker_without_resume_processes(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "data" / "2p"
+    per_player_dir = root / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -388,7 +388,7 @@ def test_rate_block_worker_without_resume_processes(tmp_path: Path) -> None:
 def test_rate_block_worker_resume_with_keepers(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "data" / "2p"
+    per_player_dir = root / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -431,7 +431,7 @@ def test_rate_block_worker_resume_with_keepers(tmp_path: Path) -> None:
 def test_rate_block_worker_resume_missing_checkpoint_ratings_file(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "data" / "2p"
+    per_player_dir = root / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -526,10 +526,12 @@ def test_run_trueskill_handles_worker_exception(
         resume: bool,
         checkpoint_every_batches: int,
         env_kwargs: dict | None,
+        row_data_dir: str | None = None,
+        curated_rows_name: str | None = None,
     ) -> tuple[str, int]:
         player_count = Path(block_dir).name.split("_")[0]
         stats, games = per_block[player_count]
-        per_player_dir = Path(root_dir) / "data" / f"{player_count}p"
+        per_player_dir = Path(root_dir) / f"{player_count}p"
         per_player_dir.mkdir(parents=True, exist_ok=True)
         rt._save_ratings_parquet(
             per_player_dir / f"ratings_{player_count}{suffix}.parquet", stats
@@ -545,7 +547,7 @@ def test_run_trueskill_handles_worker_exception(
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=3)
 
     assert exceptions and exceptions[0]["block"] == "3_players"
-    assert (analysis_root / "ratings_pooled.parquet").exists()
+    assert (analysis_root / "pooled" / "ratings_pooled.parquet").exists()
 
 
 def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
@@ -577,7 +579,7 @@ def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
         batch_rows=10,
     )
 
-    ratings_path = analysis_root / "data" / "2p" / "ratings_2.parquet"
+    ratings_path = analysis_root / "2p" / "ratings_2.parquet"
     assert ratings_path.exists()
 
 
@@ -608,9 +610,11 @@ def test_run_trueskill_rebuilds_outdated_pooled(
         resume: bool,
         checkpoint_every_batches: int,
         env_kwargs: dict | None,
+        row_data_dir: str | None = None,
+        curated_rows_name: str | None = None,
     ) -> tuple[str, int]:
         stats, games = per_block["2"]
-        per_player_dir = Path(root_dir) / "data" / "2p"
+        per_player_dir = Path(root_dir) / "2p"
         per_player_dir.mkdir(parents=True, exist_ok=True)
         rt._save_ratings_parquet(per_player_dir / f"ratings_2{suffix}.parquet", stats)
         return "2", games
@@ -623,7 +627,8 @@ def test_run_trueskill_rebuilds_outdated_pooled(
         tier_calls.append((means, stdevs))
         return dict.fromkeys(means, 1)
 
-    pooled_path = analysis_root / "ratings_pooled.parquet"
+    pooled_path = analysis_root / "pooled" / "ratings_pooled.parquet"
+    pooled_path.parent.mkdir(parents=True, exist_ok=True)
     pooled_path.touch()
     old_time = pooled_path.stat().st_mtime - 200.0
     os.utime(pooled_path, (old_time, old_time))
@@ -637,5 +642,5 @@ def test_run_trueskill_rebuilds_outdated_pooled(
 
     assert tier_calls
     assert pooled_path.stat().st_mtime > old_time
-    assert (analysis_root / "ratings_pooled.json").exists()
+    assert (analysis_root / "pooled" / "ratings_pooled.json").exists()
     assert (analysis_root / "tiers.json").exists()

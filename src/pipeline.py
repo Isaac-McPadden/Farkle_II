@@ -170,16 +170,21 @@ def analyze_hgb(exp_dir: Path) -> None:
     """Run hist gradient boosting feature importance analysis."""
 
     exp_dir = Path(exp_dir)
-    analysis_dir = exp_dir / "analysis"
-    out = analysis_dir / "hgb_importance.json"
+    analysis_dir = exp_dir / "analysis" / "05_hgb"
+    out = analysis_dir / "pooled" / "hgb_importance.json"
     done = _done_path(out)
     metrics = _first_existing(
-        [analysis_dir / "02_metrics" / "metrics.parquet", analysis_dir / "metrics.parquet"]
+        [
+            exp_dir / "analysis" / "02_metrics" / "pooled" / "metrics.parquet",
+            exp_dir / "analysis" / "02_metrics" / "metrics.parquet",
+            exp_dir / "analysis" / "metrics.parquet",
+        ]
     )
     ratings = _first_existing(
         [
-            analysis_dir / "03_trueskill" / "ratings_pooled.parquet",
-            analysis_dir / "ratings_pooled.parquet",
+            exp_dir / "analysis" / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
+            exp_dir / "analysis" / "03_trueskill" / "ratings_pooled.parquet",
+            exp_dir / "analysis" / "ratings_pooled.parquet",
         ]
     )
     inputs = [metrics, ratings]
@@ -190,7 +195,12 @@ def analyze_hgb(exp_dir: Path) -> None:
     analysis_dir.mkdir(parents=True, exist_ok=True)
     from farkle.analysis import run_hgb as _hgb
 
-    _hgb.run_hgb(root=analysis_dir, output_path=out)
+    _hgb.run_hgb(
+        root=analysis_dir,
+        output_path=out,
+        metrics_path=metrics,
+        ratings_path=ratings,
+    )
     write_done(done, inputs, [out], "farkle.analytics.hgb")
     print("hgb")
 
@@ -201,7 +211,11 @@ def analyze_agreement(exp_dir: Path) -> None:
     exp_dir = Path(exp_dir)
     analysis_dir = exp_dir / "analysis"
     ratings = _first_existing(
-        [analysis_dir / "03_trueskill" / "ratings_pooled.parquet", analysis_dir / "ratings_pooled.parquet"]
+        [
+            analysis_dir / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
+            analysis_dir / "03_trueskill" / "ratings_pooled.parquet",
+            analysis_dir / "ratings_pooled.parquet",
+        ]
     )
     if not ratings.exists():
         raise FileNotFoundError(

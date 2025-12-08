@@ -196,6 +196,7 @@ def run_bonferroni_head2head(
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
     ratings_candidates = [
+        analysis_root / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
         analysis_root / "03_trueskill" / "ratings_pooled.parquet",
         analysis_root / "ratings_pooled.parquet",
     ]

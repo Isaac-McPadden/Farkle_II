@@ -3,11 +3,11 @@
 
 This module joins the curated metrics with pooled TrueSkill ratings, derives a
 feature matrix from serialized strategy literals, and fits a
-``HistGradientBoostingRegressor`` for each player-count bucket.  Deterministic
-permutation importances are written to ``feature_importance_<Np>.parquet`` files,
-and grouped cross-validation metrics are logged when per-seed ratings are
-available.  Optional partial dependence plots are emitted for notebook
-exploration.
+``HistGradientBoostingRegressor`` for each player-count bucket. Deterministic
+permutation importances are written to ``feature_importance_<Np>.parquet`` files
+under a stage-specific directory tree, and grouped cross-validation metrics are
+logged when per-seed ratings are available. Optional partial dependence plots
+are emitted alongside the per-player artifacts for offline exploration.
 """
 
 from __future__ import annotations
@@ -40,10 +40,9 @@ class PermutationImportanceResult(Protocol):
 # ---------------------------------------------------------------------------
 # Constants for file and directory locations used in this module
 # ---------------------------------------------------------------------------
-DEFAULT_ROOT = Path("results_seed_0")
+DEFAULT_ROOT = Path("results_seed_0") / "analysis" / "05_hgb"
 METRICS_NAME = "metrics.parquet"
 RATINGS_NAME = "ratings_pooled.parquet"
-FIG_DIR = Path("notebooks/figs")
 MAX_PD_PLOTS = 30
 IMPORTANCE_TEMPLATE = "feature_importance_{players}p.parquet"
 OVERALL_IMPORTANCE_NAME = "feature_importance_overall.parquet"
@@ -269,6 +268,9 @@ def run_hgb(
     seed: int = 0,
     output_path: Path | None = None,
     root: Path = DEFAULT_ROOT,
+    *,
+    metrics_path: Path | None = None,
+    ratings_path: Path | None = None,
 ) -> None:
     """Train the regressor and output feature importance and plots."""
 
@@ -276,7 +278,11 @@ def run_hgb(
     from sklearn.inspection import permutation_importance
 
     root = Path(root)
-    metrics_path = root / METRICS_NAME
+    root.mkdir(parents=True, exist_ok=True)
+    pooled_dir = root / "pooled"
+    pooled_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = Path(metrics_path) if metrics_path is not None else root / METRICS_NAME
+    ratings_path = Path(ratings_path) if ratings_path is not None else root / RATINGS_NAME
 
     LOGGER.info(
         "HGB regression start",
@@ -285,6 +291,7 @@ def run_hgb(
             "root": str(root),
             "seed": seed,
             "metrics_path": str(metrics_path),
+            "ratings_path": str(ratings_path),
         },
     )
 
@@ -306,6 +313,7 @@ def run_hgb(
     data = metrics
 
     feature_frame = _parse_strategy_features(data["strategy"])
+    seed_targets = _load_seed_targets(ratings_path.parent)
     if feature_frame.empty:
         LOGGER.warning(
             "HGB regression skipped: no strategies produced features",
@@ -332,7 +340,9 @@ def run_hgb(
     for players in metrics_players:
         subset = data[data["players"] == players].copy()
         subset["strategy"] = subset["strategy"].astype(str)
-        importance_path = root / IMPORTANCE_TEMPLATE.format(players=players)
+        per_player_dir = root / f"{players}p"
+        per_player_dir.mkdir(parents=True, exist_ok=True)
+        importance_path = per_player_dir / IMPORTANCE_TEMPLATE.format(players=players)
 
         if subset.empty:
             LOGGER.info(
@@ -365,6 +375,14 @@ def run_hgb(
 
         model = HistGradientBoostingRegressor(random_state=seed)
         model.fit(features, target)
+
+        _run_grouped_cv(
+            players=players,
+            subset=subset,
+            feature_cols=feature_cols,
+            seed_targets=seed_targets,
+            random_state=seed,
+        )
 
         perm_raw = permutation_importance(
             model,
@@ -410,7 +428,7 @@ def run_hgb(
             },
         )
 
-        fig_dir = FIG_DIR / f"{players}p"
+        fig_dir = per_player_dir / "plots"
         fig_dir.mkdir(parents=True, exist_ok=True)
         cols = list(feature_cols)
         if len(cols) > MAX_PD_PLOTS:
@@ -439,13 +457,13 @@ def run_hgb(
         grouped = grouped.astype(
             {"importance_mean": "float", "importance_std": "float"}
         )
-        _write_importances(root / OVERALL_IMPORTANCE_NAME, grouped)
+        _write_importances(pooled_dir / OVERALL_IMPORTANCE_NAME, grouped)
         importance_summary["overall"] = grouped.set_index("feature")[
             "importance_mean"
         ].to_dict()
 
     if output_path is None:
-        output_path = root / "hgb_importance.json"
+        output_path = pooled_dir / "hgb_importance.json"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(output_path)) as tmp_path, Path(tmp_path).open("w") as fh:

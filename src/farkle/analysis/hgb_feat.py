@@ -64,13 +64,13 @@ def run(cfg: AppConfig) -> None:
     Args:
         cfg: Application configuration containing analysis directories and names.
     """
-    analysis_dir = cfg.analysis_dir
+    analysis_dir = cfg.hgb_stage_dir
     metrics_path = cfg.metrics_input_path()
-    ratings_path = analysis_dir / _hgb.RATINGS_NAME
-    json_out = analysis_dir / "hgb_importance.json"
+    ratings_path = cfg.trueskill_path(_hgb.RATINGS_NAME)
+    json_out = cfg.hgb_pooled_dir / "hgb_importance.json"
 
     players = _unique_players(metrics_path, cfg.sim.n_players_list)
-    importance_paths = [analysis_dir / _hgb.IMPORTANCE_TEMPLATE.format(players=p) for p in players]
+    importance_paths = [cfg.hgb_per_k_dir(p) / _hgb.IMPORTANCE_TEMPLATE.format(players=p) for p in players]
 
     inputs = [cfg.curated_parquet, metrics_path, ratings_path]
     latest_input = _latest_mtime(inputs)
@@ -90,7 +90,12 @@ def run(cfg: AppConfig) -> None:
             "analysis_dir": str(analysis_dir),
         },
     )
-    _hgb.run_hgb(root=analysis_dir, output_path=json_out)
+    _hgb.run_hgb(
+        root=analysis_dir,
+        output_path=json_out,
+        metrics_path=metrics_path,
+        ratings_path=ratings_path,
+    )
     LOGGER.info(
         "HGB feature importance complete",
         extra={"stage": "hgb", "path": str(json_out)},
