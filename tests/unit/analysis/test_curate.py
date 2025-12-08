@@ -166,7 +166,7 @@ def test_run_new_layout(tmp_path):
         manifest = cfg.manifest_for(n)
         assert curated.exists()
         assert manifest.exists()
-        assert not raw_path.exists()
+        assert raw_path.exists()
         meta = json.loads(manifest.read_text())
         assert meta["row_count"] == 0
         assert meta["schema_hash"] == _schema_hash(n)
@@ -186,7 +186,7 @@ def test_run_with_app_config(tmp_path):
     manifest = cfg.manifest_for(1)
     assert curated.exists()
     assert manifest.exists()
-    assert not raw_path.exists()
+    assert raw_path.exists()
     meta = json.loads(manifest.read_text())
     assert meta["row_count"] == 0
     assert meta["schema_hash"] == _schema_hash(1)
@@ -339,7 +339,7 @@ def test_run_existing_curated_manifest_allows_proceed(tmp_path):
     manifest_new = cfg.manifest_for(1)
     assert curated_new.exists()
     assert manifest_new.exists()
-    assert not raw_path.exists()
+    assert raw_path.exists()
     assert curated_existing.exists()
     assert manifest_existing.exists()
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import logging
 import re
+import shutil
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Iterable
@@ -173,6 +174,33 @@ def _n_from_block(name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _migrate_legacy_raw(n: int, cfg: AppConfig) -> None:
+    """Move legacy ingest outputs into the new ``00_ingest/<k>p`` layout."""
+
+    new_raw = cfg.ingested_rows_raw(n)
+    legacy_raw = cfg.combine_block_dir(n) / f"{n}p_ingested_rows.raw.parquet"
+    if new_raw.exists() or not legacy_raw.exists() or new_raw == legacy_raw:
+        return
+
+    new_raw.parent.mkdir(parents=True, exist_ok=True)
+    LOGGER.info(
+        "Migrating legacy ingest output",
+        extra={
+            "stage": "ingest",
+            "n_players": n,
+            "source": str(legacy_raw),
+            "dest": str(new_raw),
+        },
+    )
+    shutil.move(str(legacy_raw), new_raw)
+
+    legacy_manifest = legacy_raw.with_suffix(".manifest.jsonl")
+    new_manifest = cfg.ingest_manifest(n)
+    if legacy_manifest.exists():
+        new_manifest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy_manifest), new_manifest)
+
+
 def _process_block(block: Path, cfg: AppConfig) -> int:
     """Process a single ``<N>_players`` block."""
     n = _n_from_block(block.name)
@@ -181,6 +209,7 @@ def _process_block(block: Path, cfg: AppConfig) -> int:
         extra={"stage": "ingest", "block": block.name, "path": str(block)},
     )
 
+    _migrate_legacy_raw(n, cfg)
     raw_out = cfg.ingested_rows_raw(n)
     src_mtime = 0.0
     row_files = sorted(block.glob("*p_rows.parquet"))
@@ -271,7 +300,7 @@ def _process_block(block: Path, cfg: AppConfig) -> int:
         yield first
         yield from batches
 
-    manifest_path = raw_out.with_suffix(".manifest.jsonl")
+    manifest_path = cfg.ingest_manifest(n)
     run_streaming_shard(
         out_path=str(raw_out),
         manifest_path=str(manifest_path),
@@ -327,7 +356,7 @@ def run(cfg: AppConfig) -> None:
     for block in blocks:
         n = _n_from_block(block.name)
         outputs.append(cfg.ingested_rows_raw(n))
-        manifests.append(cfg.manifest_for(n))
+        manifests.append(cfg.ingest_manifest(n))
     if stage_is_up_to_date(
         done,
         inputs=[cfg.results_dir],
