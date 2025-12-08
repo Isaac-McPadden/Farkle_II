@@ -5,13 +5,13 @@ Reads curated row-level parquet files (per-``n`` shards and the combined
 superset) and aggregates the ``n_rounds`` column. Outputs both per-strategy
 statistics and a small global summary grouped by ``n_players``.
 
-The module also flags close margins and multi-target games, emitting
-``analysis/rare_events.parquet`` with per-game records plus aggregated
+The module also flags close margins and multi-target games, emitting pooled
+artifacts under ``03_game_stats/pooled`` with per-game records plus aggregated
 frequencies per strategy and player-count cohort.
 
 The module also derives per-game ``margin_of_victory`` from seat-level scores
-and writes ``analysis/margin_stats.parquet`` with per-``(strategy, n_players)``
-summaries. Margin schema:
+and writes ``03_game_stats/pooled/margin_stats.parquet`` with per-``(strategy,
+n_players)`` summaries. Margin schema:
 
 ``summary_level``
     Literal "strategy" for compatibility with ``game_length.parquet``.
@@ -29,7 +29,6 @@ summaries. Margin schema:
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -40,10 +39,10 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 from pandas._libs.missing import NAType
 
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.schema_helpers import n_players_from_schema
-from farkle.utils.writer import atomic_path
 
 StatValue = float | int | str | NAType
 
@@ -58,11 +57,11 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         force: When True, recompute even if the outputs appear up-to-date.
     """
 
-    analysis_dir = cfg.analysis_dir
-    game_length_output = analysis_dir / "game_length.parquet"
-    margin_output = analysis_dir / "margin_stats.parquet"
-    rare_events_output = analysis_dir / "rare_events.parquet"
-    stamp_path = analysis_dir / "game_length.done.json"
+    stage_dir = cfg.game_stats_stage_dir
+    game_length_output = cfg.game_stats_output_path("game_length.parquet")
+    margin_output = cfg.game_stats_output_path("margin_stats.parquet")
+    rare_events_output = cfg.game_stats_output_path("rare_events.parquet")
+    stamp_path = stage_done_path(stage_dir, "game_stats")
 
     per_n_inputs = _discover_per_n_inputs(cfg)
     combined_path = cfg.curated_parquet
@@ -76,7 +75,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         )
 
     outputs = [game_length_output, margin_output, rare_events_output]
-    if not force and _is_up_to_date(stamp_path, inputs=input_paths, outputs=outputs):
+    if not force and stage_is_up_to_date(
+        stamp_path, inputs=input_paths, outputs=outputs, config_sha=cfg.config_sha
+    ):
         LOGGER.info(
             "Game-length stats up-to-date",
             extra={
@@ -92,7 +93,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         "Computing game-length stats",
         extra={
             "stage": "game_stats",
-            "analysis_dir": str(analysis_dir),
+            "analysis_dir": str(cfg.analysis_dir),
             "game_length_output": str(game_length_output),
             "margin_output": str(margin_output),
             "force": force,
@@ -128,7 +129,12 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     rare_events_table = pa.Table.from_pandas(rare_events, preserve_index=False)
     write_parquet_atomic(rare_events_table, rare_events_output, codec=cfg.parquet_codec)
-    _write_stamp(stamp_path, inputs=input_paths, outputs=outputs)
+    write_stage_done(
+        stamp_path,
+        inputs=input_paths,
+        outputs=outputs,
+        config_sha=cfg.config_sha,
+    )
 
     LOGGER.info(
         "Game-length stats written",
@@ -522,42 +528,4 @@ def _summarize_rounds(values: Iterable[int | float | np.integer | np.floating]) 
         "prob_rounds_ge_20": float((series >= 20).mean()),
     }
 
-
-def _stamp(path: Path) -> dict[str, float | int]:
-    stat = path.stat()
-    return {"mtime": stat.st_mtime, "size": stat.st_size}
-
-
-def _write_stamp(stamp_path: Path, *, inputs: Iterable[Path], outputs: Iterable[Path]) -> None:
-    payload = {
-        "inputs": {str(p): _stamp(p) for p in inputs if p.exists()},
-        "outputs": {str(p): _stamp(p) for p in outputs if p.exists()},
-    }
-    stamp_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(stamp_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(payload, indent=2))
-
-
-def _is_up_to_date(stamp_path: Path, *, inputs: Iterable[Path], outputs: Iterable[Path]) -> bool:
-    if not (stamp_path.exists() and all(p.exists() for p in outputs)):
-        return False
-    try:
-        meta = json.loads(stamp_path.read_text())
-    except Exception:  # noqa: BLE001
-        return False
-
-    in_meta = meta.get("inputs", {})
-    out_meta = meta.get("outputs", {})
-
-    def _matches(paths: Iterable[Path], recorded: dict[str, dict[str, float | int]]) -> bool:
-        for p in paths:
-            data = recorded.get(str(p))
-            if data is None:
-                return False
-            stat = p.stat()
-            if data.get("mtime") != stat.st_mtime or data.get("size") != stat.st_size:
-                return False
-        return True
-
-    return _matches(inputs, in_meta) and _matches(outputs, out_meta)
 

@@ -31,6 +31,7 @@ import pandas as pd
 import pandas.testing as pdt
 import pyarrow as pa
 
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.stats import wilson_ci
@@ -316,15 +317,15 @@ def _write_json_atomic(payload: Mapping[str, float | str], path: Path) -> None:
 def _collect_seed_summaries(cfg: AppConfig) -> dict[int, dict[int, Path]]:
     """Collect per-seed summary files keyed by player count and seed."""
 
-    search_dirs = [cfg.meta_analysis_dir]
-    if cfg.analysis_dir != cfg.meta_analysis_dir:
+    search_dirs = [cfg.seed_summaries_stage_dir, cfg.meta_analysis_dir]
+    if cfg.analysis_dir not in search_dirs:
         search_dirs.append(cfg.analysis_dir)
 
     files_by_players: dict[int, dict[int, Path]] = {}
     for base in search_dirs:
         if not base.exists():
             continue
-        for path in sorted(base.glob("strategy_summary_*p_seed*.parquet")):
+        for path in sorted(base.rglob("strategy_summary_*p_seed*.parquet")):
             parsed = _parse_seed_file(path)
             if parsed is None:
                 continue
@@ -380,12 +381,27 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
 
     max_other_seeds = getattr(cfg.analysis, "meta_max_other_seeds", None)
     comparison_seed = getattr(cfg.analysis, "meta_comparison_seed", None)
-    analysis_dir = cfg.analysis_dir
     files_by_players = _collect_seed_summaries(cfg)
 
     if not files_by_players:
         LOGGER.info("Meta pooling skipped: no per-seed summaries found", extra={"stage": "meta"})
         return
+
+    done = stage_done_path(cfg.meta_stage_dir, "meta")
+    inputs = sorted({path for entries in files_by_players.values() for path in entries.values()})
+    eligible_players = [players for players, entries in files_by_players.items() if len(entries) > 1]
+    expected_outputs = [
+        cfg.meta_output_path(META_TEMPLATE.format(players=players))
+        for players in eligible_players
+    ] + [cfg.meta_output_path(META_JSON_TEMPLATE.format(players=players)) for players in eligible_players]
+
+    if not force and inputs and expected_outputs and stage_is_up_to_date(
+        done, inputs=inputs, outputs=expected_outputs, config_sha=cfg.config_sha
+    ):
+        LOGGER.info("Meta outputs up-to-date", extra={"stage": "meta", "stamp": str(done)})
+        return
+
+    outputs: list[Path] = []
 
     for players, entries in sorted(files_by_players.items()):
         selected_entries = _select_seed_entries(
@@ -453,7 +469,8 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
             )
             continue
 
-        parquet_path = analysis_dir / META_TEMPLATE.format(players=players)
+        parquet_path = cfg.meta_output_path(META_TEMPLATE.format(players=players))
+        outputs.append(parquet_path)
         if force or not _parquet_matches(parquet_path, result.pooled):
             table = pa.Table.from_pandas(result.pooled, preserve_index=False)
             write_parquet_atomic(table, parquet_path)
@@ -469,7 +486,8 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
             "tau2": result.tau2,
             "method": result.method,
         }
-        json_path = analysis_dir / META_JSON_TEMPLATE.format(players=players)
+        json_path = cfg.meta_output_path(META_JSON_TEMPLATE.format(players=players))
+        outputs.append(json_path)
         if force or not json_path.exists():
             _write_json_atomic(json_payload, json_path)
         else:
@@ -490,6 +508,9 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
                 "method": result.method,
             },
         )
+
+    if outputs:
+        write_stage_done(done, inputs=inputs, outputs=outputs, config_sha=cfg.config_sha)
 
 
 __all__ = ["MetaResult", "pool_winrates", "run"]

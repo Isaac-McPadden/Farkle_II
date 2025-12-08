@@ -2,8 +2,8 @@
 
 Computes lagged autocorrelation for win indicators and game lengths at both
 strategy and matchup-strategy levels. Outputs are written to
-``analysis/rng_diagnostics.parquet`` with approximate confidence intervals and
-"expected ~0" reminders. When inputs or required columns are missing, the
+``04_rng/pooled/rng_diagnostics.parquet`` with approximate confidence intervals
+and "expected ~0" reminders. When inputs or required columns are missing, the
 module logs a skip instead of raising.
 """
 from __future__ import annotations
@@ -19,6 +19,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 
+from farkle.analysis.stage_state import stage_done_path
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.writer import atomic_path
@@ -38,8 +39,8 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     """
 
     data_file = cfg.curated_parquet
-    out_file = cfg.analysis_dir / "rng_diagnostics.parquet"
-    stamp_path = cfg.analysis_dir / "rng_diagnostics.done.json"
+    out_file = cfg.rng_output_path("rng_diagnostics.parquet")
+    stamp_path = stage_done_path(cfg.rng_stage_dir, "rng_diagnostics")
 
     lags = _normalize_lags(lags)
     if not lags:
@@ -53,7 +54,9 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         )
         return
 
-    if not force and _is_up_to_date(stamp_path, inputs=[data_file], outputs=[out_file], lags=lags):
+    if not force and _is_up_to_date(
+        stamp_path, inputs=[data_file], outputs=[out_file], lags=lags, config_sha=cfg.config_sha
+    ):
         LOGGER.info(
             "rng-diagnostics: up-to-date",
             extra={"stage": "rng_diagnostics", "path": str(out_file), "stamp": str(stamp_path)},
@@ -102,7 +105,13 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
 
     table_out = pa.Table.from_pandas(diagnostics, preserve_index=False)
     write_parquet_atomic(table_out, out_file, codec=cfg.parquet_codec)
-    _write_stamp(stamp_path, inputs=[data_file], outputs=[out_file], lags=lags)
+    _write_stamp(
+        stamp_path,
+        inputs=[data_file],
+        outputs=[out_file],
+        lags=lags,
+        config_sha=cfg.config_sha,
+    )
     LOGGER.info(
         "rng-diagnostics: written",
         extra={"stage": "rng_diagnostics", "rows": len(diagnostics), "path": str(out_file)},
@@ -256,11 +265,13 @@ def _write_stamp(
     inputs: Iterable[Path],
     outputs: Iterable[Path],
     lags: Sequence[int],
+    config_sha: str | None,
 ) -> None:
     payload = {
         "inputs": {str(p): _stamp(p) for p in inputs if p.exists()},
         "outputs": {str(p): _stamp(p) for p in outputs if p.exists()},
         "params": {"lags": list(lags)},
+        "config_sha": config_sha,
     }
     stamp_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(stamp_path)) as tmp_path:
@@ -273,12 +284,17 @@ def _is_up_to_date(
     inputs: Iterable[Path],
     outputs: Iterable[Path],
     lags: Sequence[int],
+    config_sha: str | None,
 ) -> bool:
     if not (stamp_path.exists() and all(p.exists() for p in outputs)):
         return False
     try:
         meta = json.loads(stamp_path.read_text())
     except Exception:  # noqa: BLE001
+        return False
+
+    recorded_sha = meta.get("config_sha")
+    if config_sha is not None and recorded_sha not in (None, config_sha):
         return False
 
     if meta.get("params", {}).get("lags") != list(lags):
