@@ -101,7 +101,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
 def _load_metrics_frame(cfg: AppConfig) -> tuple[pd.DataFrame, Path]:
     """Load the combined metrics parquet and standardize core columns."""
-    metrics_path = cfg.analysis_dir / cfg.metrics_name
+    metrics_path = cfg.metrics_input_path()
     if not metrics_path.exists():
         raise FileNotFoundError(metrics_path)
     df = pd.read_parquet(metrics_path)

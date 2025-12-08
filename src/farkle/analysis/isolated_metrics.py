@@ -343,16 +343,15 @@ def _summarize(
 
 def build_isolated_metrics(cfg: AppConfig, player_count: int, *, force: bool = False) -> Path:
     """
-    Normalize a per-k metrics parquet into ``analysis/data/<kp>/<kp>_isolated_metrics.parquet``.
+    Normalize a per-k metrics parquet into ``02_metrics/<kp>/<kp>_isolated_metrics.parquet``.
     """
 
     src = cfg.results_dir / f"{player_count}_players" / f"{player_count}p_metrics.parquet"
     if not src.exists():
         raise FileNotFoundError(src)
 
-    out_dir = cfg.analysis_dir / "data" / f"{player_count}p"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    dst = out_dir / f"{player_count}p_isolated_metrics.parquet"
+    dst = cfg.metrics_isolated_path(player_count)
+    dst.parent.mkdir(parents=True, exist_ok=True)
     if not force and dst.exists() and dst.stat().st_mtime >= src.stat().st_mtime:
         return dst
 

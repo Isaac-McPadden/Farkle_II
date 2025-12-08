@@ -65,7 +65,7 @@ def run(cfg: AppConfig) -> None:
         cfg: Application configuration containing analysis directories and names.
     """
     analysis_dir = cfg.analysis_dir
-    metrics_path = analysis_dir / cfg.metrics_name
+    metrics_path = cfg.metrics_input_path()
     ratings_path = analysis_dir / _hgb.RATINGS_NAME
     json_out = analysis_dir / "hgb_importance.json"
 
