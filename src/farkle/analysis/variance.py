@@ -107,7 +107,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     if seed_frame.empty:
         LOGGER.info(
             "Variance skipped: seed summaries empty",
-            extra={"stage": "variance", "analysis_dir": str(analysis_dir)},
+            extra={"stage": "variance", "analysis_dir": str(cfg.analysis_dir)},
         )
         return
 
@@ -117,7 +117,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     if detailed.empty:
         LOGGER.info(
             "Variance skipped: no overlapping strategies",
-            extra={"stage": "variance", "analysis_dir": str(analysis_dir)},
+            extra={"stage": "variance", "analysis_dir": str(cfg.analysis_dir)},
         )
         return
 
