@@ -26,7 +26,7 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, Optional, Tuple, Union, cast
+from typing import Iterable, Iterator, Mapping, Optional, Tuple, TypedDict, Union, cast
 
 import numpy as np
 import pyarrow as pa
@@ -53,6 +53,18 @@ LOGGER = logging.getLogger(__name__)
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 
 
+class RatingArtifactPaths(TypedDict):
+    parquet: Path
+    json: Path
+    ckpt: Path
+    checkpoint: Path
+    dir: Path
+    legacy_parquet: list[Path]
+    legacy_json: list[Path]
+    legacy_ckpt: list[Path]
+    legacy_checkpoint: list[Path]
+
+
 def _per_player_dir(root: Path, player_count: str) -> Path:
     """Canonical directory for per-player-count artifacts."""
 
@@ -74,7 +86,7 @@ def _ensure_new_location(dest: Path, *legacy_paths: Path) -> Path:
 
 def _rating_artifact_paths(
     root: Path, player_count: str, suffix: str, *, legacy_root: Path | None = None
-) -> dict[str, Path | list[Path]]:
+) -> RatingArtifactPaths:
     """Return canonical and legacy paths for per-player artifacts."""
 
     per_dir = _per_player_dir(root, player_count)
@@ -688,10 +700,10 @@ def _rate_block_worker(
 
     # Up-to-date guard
     paths = _rating_artifact_paths(root, player_count, suffix, legacy_root=legacy_root)
-    parquet_path = _ensure_new_location(paths["parquet"], *cast(list[Path], paths["legacy_parquet"]))
-    ck_path = _ensure_new_location(paths["ckpt"], *cast(list[Path], paths["legacy_ckpt"]))
-    rk_path = _ensure_new_location(paths["checkpoint"], *cast(list[Path], paths["legacy_checkpoint"]))
-    json_path = _ensure_new_location(paths["json"], *cast(list[Path], paths["legacy_json"]))
+    parquet_path = _ensure_new_location(paths["parquet"], *paths["legacy_parquet"])
+    ck_path = _ensure_new_location(paths["ckpt"], *paths["legacy_ckpt"])
+    rk_path = _ensure_new_location(paths["checkpoint"], *paths["legacy_checkpoint"])
+    json_path = _ensure_new_location(paths["json"], *paths["legacy_json"])
 
     if parquet_path.exists() and parquet_path.stat().st_mtime >= row_file.stat().st_mtime:
         try:
@@ -778,7 +790,7 @@ def _rate_block_worker(
     # Write per-N ratings as Parquet (strategy, mu, sigma)
     _save_ratings_parquet(parquet_path, ratings_stats)
 
-    json_path = _ensure_new_location(paths["json"], *cast(list[Path], paths["legacy_json"]))
+    json_path = _ensure_new_location(paths["json"], *paths["legacy_json"])
     with atomic_path(str(json_path)) as tmp_path:
         Path(tmp_path).write_text(
             json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
