@@ -194,6 +194,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     # Execute with per-step manifest events
     iterator = tqdm(steps, desc="pipeline") if len(steps) > 1 else steps
+    failed_steps: list[str] = []
     for _name, fn in iterator:
         LOGGER.info("Pipeline step", extra={"stage": "pipeline", "step": _name})
         append_manifest_line(manifest_path, {"event": "step_start", "step": _name})
@@ -201,6 +202,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             fn(app_cfg)
             append_manifest_line(manifest_path, {"event": "step_end", "step": _name, "ok": True})
         except Exception as e:  # noqa: BLE001
+            failed_steps.append(_name)
+            LOGGER.exception(
+                "Pipeline step failed", extra={"stage": "pipeline", "step": _name, "error": e}
+            )
             append_manifest_line(
                 manifest_path,
                 {
@@ -210,9 +215,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "error": f"{type(e).__name__}: {e}",
                 },
             )
-            raise
 
-    append_manifest_line(manifest_path, {"event": "run_end", "config_sha": config_sha})
+    run_end_payload: dict[str, Any] = {"event": "run_end", "config_sha": config_sha}
+    if failed_steps:
+        run_end_payload["failed_steps"] = failed_steps
+    append_manifest_line(manifest_path, run_end_payload)
+    if failed_steps:
+        LOGGER.error(
+            "Analysis pipeline completed with failures: %s",
+            failed_steps,
+            extra={"stage": "pipeline", "failed_steps": failed_steps},
+        )
+        return 1
+
     LOGGER.info("Analysis pipeline complete", extra={"stage": "pipeline"})
     return 0
 
