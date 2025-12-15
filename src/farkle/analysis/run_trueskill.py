@@ -1041,13 +1041,40 @@ def _precision_pool(runs: Iterable[Mapping[str, RatingStats]]) -> dict[str, Rati
     return pooled
 
 
-def _ensure_strict_mu_ordering(ratings: Mapping[str, RatingStats]) -> None:
-    """Raise if any strategies share identical means (ties not expected)."""
+def _ensure_strict_mu_ordering(
+    ratings: Mapping[str, RatingStats],
+) -> Mapping[str, RatingStats]:
+    """Log pooled TrueSkill ties and return deterministically ordered ratings."""
 
-    mus = [stats.mu for _, stats in sorted(ratings.items(), key=lambda kv: kv[1].mu, reverse=True)]
-    for prev, curr in zip(mus, mus[1:], strict=False):
-        if math.isclose(prev, curr, rel_tol=0.0, abs_tol=1e-12):
-            raise RuntimeError("TrueSkill pooling produced tied means; inputs should prevent ties.")
+    sorted_by_mu = sorted(ratings.items(), key=lambda kv: kv[1].mu, reverse=True)
+    tie_groups: list[list[str]] = []
+    prev_mu: float | None = None
+    current_group: list[str] = []
+
+    for name, stats in sorted_by_mu:
+        if prev_mu is not None and math.isclose(prev_mu, stats.mu, rel_tol=0.0, abs_tol=1e-12):
+            current_group.append(name)
+        else:
+            if len(current_group) > 1:
+                tie_groups.append(sorted(current_group))
+            current_group = [name]
+            prev_mu = stats.mu
+
+    if len(current_group) > 1:
+        tie_groups.append(sorted(current_group))
+
+    if tie_groups:
+        LOGGER.warning(
+            "Ties detected in pooled TrueSkill means; ordering deterministically",
+            extra={
+                "stage": "trueskill",
+                "tie_groups": tie_groups,
+                "tie_count": sum(len(group) for group in tie_groups),
+            },
+        )
+
+    ordered = sorted(sorted_by_mu, key=lambda kv: (-kv[1].mu, kv[0]))
+    return dict(ordered)
 
 
 def _write_conservative_tiers(
@@ -1163,8 +1190,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     pooled_stats = _precision_pool(per_seed_results.values())
     if not pooled_stats:
         raise RuntimeError("TrueSkill pooling produced no results")
-    ordered_pooled = _sorted_ratings(pooled_stats)
-    _ensure_strict_mu_ordering(ordered_pooled)
+    ordered_pooled = _ensure_strict_mu_ordering(_sorted_ratings(pooled_stats))
 
     pooled_parquet = _ensure_new_location(
         pooled_dir / "ratings_pooled.parquet",
