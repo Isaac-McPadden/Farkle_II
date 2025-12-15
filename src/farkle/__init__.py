@@ -10,7 +10,11 @@ that safely suppresses transient ``PermissionError`` on Windows.
 from __future__ import annotations
 
 import pathlib
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
+    import tomli as tomllib  # type: ignore[no-redef]
 from importlib import import_module
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _v

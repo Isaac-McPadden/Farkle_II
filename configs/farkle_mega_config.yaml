@@ -75,7 +75,7 @@ analysis:
   results_glob: "*_players"       # glob selecting per-N result folders under results_dir
 
   # Head-to-head autotuning controls
-  head2head_target_hours: 8.0     # target runtime window for Bonferroni H2H (<=0 disables)
+  head2head_target_hours: 0     # target runtime window for Bonferroni H2H (<=0 disables)
   head2head_tolerance_pct: 5.0    # acceptable +/- percent around target hours
   head2head_games_per_sec: null   # measured H2H throughput (games per second), or null to calibrate
 

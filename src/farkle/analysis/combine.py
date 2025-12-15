@@ -8,8 +8,8 @@ analysis steps.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 import shutil
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq

@@ -61,20 +61,40 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
         )
 
     ties = base.loc[base["wins_a"] == base["wins_b"], ["a", "b", "wins_a"]]
+    tie_decisions = pd.DataFrame(
+        columns=["a", "b", "pval", "adj_p", "is_sig", "dir"],
+        dtype=object,
+    )    
     if not ties.empty:
-        raise RuntimeError(
-            f"Ties detected in head-to-head results: {ties.to_dict(orient='records')}"
+        LOGGER.warning(
+            "Ties detected in head-to-head results; marking as non-significant",
+            extra={
+                "stage": "post_h2h",
+                "tie_pairs": ties.to_dict(orient="records"),
+                "tie_count": len(ties),
+            },
+        )
+        tie_decisions = pd.DataFrame(
+            {
+                "a": ties["a"].tolist(),
+                "b": ties["b"].tolist(),
+                "pval": [1.0] * len(ties),
+                "adj_p": [1.0] * len(ties),
+                "is_sig": [False] * len(ties),
+                "dir": ["tie"] * len(ties),
+            }
         )
 
+    base = base.loc[base["wins_a"] != base["wins_b"]].copy()
     if base.empty:
-        return pd.DataFrame(
+        return tie_decisions.astype(
             {
-                "a": pd.Series(dtype="string"),
-                "b": pd.Series(dtype="string"),
-                "pval": pd.Series(dtype="float64"),
-                "adj_p": pd.Series(dtype="float64"),
-                "is_sig": pd.Series(dtype="bool"),
-                "dir": pd.Series(dtype="string"),
+                "a": "string",
+                "b": "string",
+                "pval": "float64",
+                "adj_p": "float64",
+                "is_sig": "bool",
+                "dir": "string",
             }
         )
 
@@ -94,6 +114,8 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
         }
     )
 
+    decisions = pd.concat([decisions, tie_decisions], ignore_index=True)
+    decisions = decisions.sort_values(by=["a", "b", "dir", "pval"], kind="mergesort")
     ordered = (
         decisions.reset_index(names="_idx")
         .sort_values(by=["pval", "a", "b", "dir"], kind="mergesort")
@@ -162,6 +184,8 @@ def build_significant_graph(df_adj: pd.DataFrame) -> nx.DiGraph:
         graph.add_node(row.a)
         graph.add_node(row.b)
         if not bool(row.is_sig):
+            continue
+        if row.dir == "tie":
             continue
         if row.dir == "a>b":
             source, target = row.a, row.b

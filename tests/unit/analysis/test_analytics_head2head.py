@@ -6,9 +6,10 @@ import logging
 import os
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
-from farkle.analysis import head2head
+from farkle.analysis import h2h_analysis, head2head
 from farkle.config import AppConfig, IOConfig
 
 
@@ -73,3 +74,35 @@ def test_run_logs_warning_on_failure(
         rec.levelname == "WARNING" and rec.message == "Head-to-head skipped"
         for rec in caplog.records
     )
+
+
+def test_holm_bonferroni_ties_marked_non_sig(caplog: pytest.LogCaptureFixture) -> None:
+    df = pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "wins_a": 10, "wins_b": 5, "games": 15},
+            {"a": "C", "b": "D", "wins_a": 7, "wins_b": 7, "games": 14},
+        ]
+    )
+    with caplog.at_level(logging.WARNING):
+        decisions = h2h_analysis.holm_bonferroni(df_pairs=df, alpha=0.05)
+
+    assert "Ties detected in head-to-head results" in caplog.text
+    tie_rows = decisions[decisions["dir"] == "tie"]
+    assert len(tie_rows) == 1
+    tie_row = tie_rows.iloc[0]
+    assert tie_row["adj_p"] == pytest.approx(1.0)
+    assert bool(tie_row["is_sig"]) is False
+
+
+def test_build_significant_graph_ignores_ties() -> None:
+    df = pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "dir": "a>b", "is_sig": True, "pval": 0.01, "adj_p": 0.01},
+            {"a": "C", "b": "D", "dir": "tie", "is_sig": True, "pval": 1.0, "adj_p": 1.0},
+        ]
+    )
+    graph = h2h_analysis.build_significant_graph(df)
+    assert graph.has_edge("A", "B")
+    assert "C" in graph.nodes
+    assert "D" in graph.nodes
+    assert not graph.has_edge("C", "D")
