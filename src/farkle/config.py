@@ -333,6 +333,12 @@ class AppConfig:
         return self.stage_subdir("07_meta", "pooled")
 
     @property
+    def agreement_stage_dir(self) -> Path:
+        """Stage directory for cross-method agreement analytics."""
+
+        return self.stage_subdir("08_agreement")
+
+    @property
     def ingest_stage_dir(self) -> Path:
         return self.stage_subdir("00_ingest")
 
@@ -549,6 +555,13 @@ class AppConfig:
         if stage_path.exists() or not legacy_path.exists():
             return stage_path
         return legacy_path
+
+    def agreement_output_path(self, players: int) -> Path:
+        """Preferred path for agreement analytics for a given player count."""
+
+        filename = f"agreement_{players}p.json"
+        stage_dir = self.per_k_subdir("08_agreement", players)
+        return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
 
     def trueskill_path(self, filename: str) -> Path:
         """Resolve a TrueSkill artifact path with legacy fallback."""

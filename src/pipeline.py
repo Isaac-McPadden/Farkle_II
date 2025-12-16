@@ -223,7 +223,9 @@ def analyze_agreement(exp_dir: Path) -> None:
         )
 
     players = _detect_player_counts(analysis_dir)
-    outputs = [analysis_dir / f"agreement_{p}p.json" for p in players]
+    cfg = AppConfig(io=IOConfig(results_dir=exp_dir))
+    cfg.sim.n_players_list = players
+    outputs = [cfg.agreement_output_path(p) for p in players]
     done = _done_path(outputs[0])
     inputs = [ratings]
     for candidate in (
@@ -250,8 +252,6 @@ def analyze_agreement(exp_dir: Path) -> None:
     analysis_dir.mkdir(parents=True, exist_ok=True)
     from farkle.analysis import agreement as _agreement
 
-    cfg = AppConfig(io=IOConfig(results_dir=exp_dir))
-    cfg.sim.n_players_list = players
     _agreement.run(cfg)
     write_done(done, inputs, outputs, "farkle.analytics.agreement")
     print("agreement")

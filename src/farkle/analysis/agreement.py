@@ -42,14 +42,14 @@ class MethodData:
 def run(cfg: AppConfig) -> None:
     """Compute rank/tier agreement metrics and write JSON payloads per player count."""
 
-    analysis_dir = cfg.analysis_dir
-    analysis_dir.mkdir(parents=True, exist_ok=True)
+    stage_dir = cfg.agreement_stage_dir
+    stage_dir.mkdir(parents=True, exist_ok=True)
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list}) or [0]
 
     for players in player_counts:
         payload = _build_payload(cfg, players)
         payload["players"] = players
-        out_path = analysis_dir / f"agreement_{players}p.json"
+        out_path = cfg.agreement_output_path(players)
         with atomic_path(str(out_path)) as tmp_path:
             Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
         LOGGER.info(

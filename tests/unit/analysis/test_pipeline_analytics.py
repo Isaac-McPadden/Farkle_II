@@ -43,15 +43,18 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
 
     def fake_h2h(*, root, n_jobs=1):  # noqa: ARG001
         df = pd.DataFrame({"a": ["A"], "b": ["B"], "wins_a": [1], "wins_b": [0], "pvalue": [0.5]})
-        df.to_parquet(analysis / "bonferroni_pairwise.parquet")
+        out = Path(root) / "analysis" / "04_head2head" / "bonferroni_pairwise.parquet"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        df.to_parquet(out)
 
     monkeypatch.setattr(
         "farkle.analysis.run_bonferroni_head2head.run_bonferroni_head2head",
         fake_h2h,
     )
 
-    def fake_hgb(*, root, output_path, seed=0):  # noqa: ARG001
+    def fake_hgb(*, root, output_path, seed=0, metrics_path=None, ratings_path=None):  # noqa: ARG001
         # Write a tiny valid JSON file (the real code expects JSON here)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("{}")
 
     monkeypatch.setattr("farkle.analysis.run_hgb.run_hgb", fake_hgb, raising=True)

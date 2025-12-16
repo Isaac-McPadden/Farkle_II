@@ -131,6 +131,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "05_seed_summaries",
         "06_variance",
         "07_meta",
+        "08_agreement",
     ):
         app_cfg.stage_subdir(stage)
     analysis_dir = app_cfg.analysis_dir
