@@ -115,7 +115,7 @@ def analyze_trueskill(exp_dir: Path) -> None:
 
     exp_dir = Path(exp_dir)
     analysis_dir = exp_dir / "analysis"
-    ts_dir = analysis_dir / "03_trueskill"
+    ts_dir = analysis_dir / "09_trueskill"
     ts_dir.mkdir(parents=True, exist_ok=True)
     out = ts_dir / "tiers.json"
     legacy_out = analysis_dir / "tiers.json"
@@ -142,12 +142,14 @@ def analyze_h2h(exp_dir: Path) -> None:
 
     exp_dir = Path(exp_dir)
     analysis_dir = exp_dir / "analysis"
-    h2h_dir = analysis_dir / "04_head2head"
+    h2h_dir = analysis_dir / "10_head2head"
     h2h_dir.mkdir(parents=True, exist_ok=True)
     out = h2h_dir / "bonferroni_pairwise.parquet"
     done = _done_path(out)
     tiers = _first_existing(
         [
+            analysis_dir / "12_tiering" / "tiers.json",
+            analysis_dir / "09_trueskill" / "tiers.json",
             analysis_dir / "05_tiering" / "tiers.json",
             analysis_dir / "03_trueskill" / "tiers.json",
             analysis_dir / "tiers.json",
@@ -170,11 +172,13 @@ def analyze_hgb(exp_dir: Path) -> None:
     """Run hist gradient boosting feature importance analysis."""
 
     exp_dir = Path(exp_dir)
-    analysis_dir = exp_dir / "analysis" / "05_hgb"
+    analysis_dir = exp_dir / "analysis" / "11_hgb"
     out = analysis_dir / "pooled" / "hgb_importance.json"
     done = _done_path(out)
     metrics = _first_existing(
         [
+            exp_dir / "analysis" / "03_metrics" / "pooled" / "metrics.parquet",
+            exp_dir / "analysis" / "03_metrics" / "metrics.parquet",
             exp_dir / "analysis" / "02_metrics" / "pooled" / "metrics.parquet",
             exp_dir / "analysis" / "02_metrics" / "metrics.parquet",
             exp_dir / "analysis" / "metrics.parquet",
@@ -182,6 +186,8 @@ def analyze_hgb(exp_dir: Path) -> None:
     )
     ratings = _first_existing(
         [
+            exp_dir / "analysis" / "09_trueskill" / "pooled" / "ratings_pooled.parquet",
+            exp_dir / "analysis" / "09_trueskill" / "ratings_pooled.parquet",
             exp_dir / "analysis" / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
             exp_dir / "analysis" / "03_trueskill" / "ratings_pooled.parquet",
             exp_dir / "analysis" / "ratings_pooled.parquet",
@@ -212,6 +218,8 @@ def analyze_agreement(exp_dir: Path) -> None:
     analysis_dir = exp_dir / "analysis"
     ratings = _first_existing(
         [
+            analysis_dir / "09_trueskill" / "pooled" / "ratings_pooled.parquet",
+            analysis_dir / "09_trueskill" / "ratings_pooled.parquet",
             analysis_dir / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
             analysis_dir / "03_trueskill" / "ratings_pooled.parquet",
             analysis_dir / "ratings_pooled.parquet",
@@ -231,12 +239,14 @@ def analyze_agreement(exp_dir: Path) -> None:
     for candidate in (
         _first_existing(
             [
+                analysis_dir / "12_tiering" / "frequentist_scores.parquet",
                 analysis_dir / "05_tiering" / "frequentist_scores.parquet",
                 analysis_dir / "frequentist_scores.parquet",
             ]
         ),
         _first_existing(
             [
+                analysis_dir / "10_head2head" / "bonferroni_decisions.parquet",
                 analysis_dir / "04_head2head" / "bonferroni_decisions.parquet",
                 analysis_dir / "bonferroni_decisions.parquet",
             ]
@@ -259,19 +269,23 @@ def analyze_agreement(exp_dir: Path) -> None:
 
 def _detect_player_counts(analysis_dir: Path) -> list[int]:
     """Infer available player counts from existing metrics outputs."""
-    metrics = analysis_dir / "metrics.parquet"
-    if metrics.exists():
-        pandas_spec = importlib.util.find_spec("pandas")
-        if pandas_spec is not None:
-            import pandas as pd
+    metrics_candidates = [
+        analysis_dir / "03_metrics" / "metrics.parquet",
+        analysis_dir / "metrics.parquet",
+    ]
+    for metrics in metrics_candidates:
+        if metrics.exists():
+            pandas_spec = importlib.util.find_spec("pandas")
+            if pandas_spec is not None:
+                import pandas as pd
 
-            try:
-                df = pd.read_parquet(metrics, columns=["n_players"])
-                values = sorted({int(v) for v in df["n_players"].dropna().unique()})
-                if values:
-                    return values
-            except Exception:  # noqa: BLE001 - fall back to default
-                pass
+                try:
+                    df = pd.read_parquet(metrics, columns=["n_players"])
+                    values = sorted({int(v) for v in df["n_players"].dropna().unique()})
+                    if values:
+                        return values
+                except Exception:  # noqa: BLE001 - fall back to default
+                    pass
     return [5]
 
 

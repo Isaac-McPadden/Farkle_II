@@ -11,7 +11,7 @@ Outputs
 -------
 ``ratings_<N>.parquet`` and ``ratings_pooled.parquet``
     Parquet tables with columns ``{strategy, mu, sigma}`` written under
-    ``03_trueskill/<Np>/`` and ``03_trueskill/pooled/`` respectively.
+    ``09_trueskill/<Np>/`` and ``09_trueskill/pooled/`` respectively.
 ``tiers.json``
     Consolidated tier report containing TrueSkill and frequentist tiers.
 """
@@ -822,15 +822,16 @@ def run_trueskill(
         earlier results.
     root: Path | None, optional
         Directory where rating artifacts are written. Defaults to
-        ``<dataroot>/analysis/03_trueskill`` when ``None``.
+        ``<dataroot>/analysis/09_trueskill`` when ``None``.
     dataroot: Path | None, optional
         Directory containing tournament result blocks. When ``None`` the
         path defaults to ``<root>/results`` if ``root`` is given, otherwise
         to :data:`DEFAULT_DATAROOT`.
     row_data_dir: Path | None, optional
         Directory containing curated per-player parquet inputs. When ``None``
-        the function attempts to use ``<root.parent>/01_combine/data`` if it
-        exists.
+        the function attempts to use ``<root.parent>/02_combine/data`` if it
+        exists, falling back to ``<root.parent>/01_combine/data`` for legacy
+        layouts.
     curated_rows_name: str | None, optional
         Custom filename for curated per-player inputs. When unset, the loader
         searches for ``<n>p_ingested_rows.parquet`` and ``game_rows.parquet``.
@@ -850,16 +851,20 @@ def run_trueskill(
     else:
         base = Path(dataroot)
 
-    root = Path(root) if root is not None else base / "analysis" / "03_trueskill"
+    root = Path(root) if root is not None else base / "analysis" / "09_trueskill"
     root.mkdir(parents=True, exist_ok=True)
     pooled_dir = root / "pooled"
     pooled_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = root.parent
     row_data_path = Path(row_data_dir) if row_data_dir is not None else None
     if row_data_path is None:
-        inferred = legacy_root / "01_combine" / "data"
-        if inferred.exists():
-            row_data_path = inferred
+        for inferred in (
+            legacy_root / "02_combine" / "data",
+            legacy_root / "01_combine" / "data",
+        ):
+            if inferred.exists():
+                row_data_path = inferred
+                break
     _read_manifest_seed(base / "manifest.yaml")
     suffix = f"_seed{output_seed}" if output_seed else ""
     if workers is None:

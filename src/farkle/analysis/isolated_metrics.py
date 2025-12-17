@@ -343,7 +343,7 @@ def _summarize(
 
 def build_isolated_metrics(cfg: AppConfig, player_count: int, *, force: bool = False) -> Path:
     """
-    Normalize a per-k metrics parquet into ``02_metrics/<kp>/<kp>_isolated_metrics.parquet``.
+    Normalize a per-k metrics parquet into ``03_metrics/<kp>/<kp>_isolated_metrics.parquet``.
     """
 
     src = cfg.results_dir / f"{player_count}_players" / f"{player_count}p_metrics.parquet"

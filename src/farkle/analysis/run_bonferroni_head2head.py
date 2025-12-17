@@ -171,9 +171,11 @@ def run_bonferroni_head2head(
         extra={"stage": "head2head", "root": str(root), "seed": seed, "n_jobs": n_jobs},
     )
     analysis_root = Path(root / "analysis")
-    sub_root = analysis_root / "04_head2head"
+    sub_root = analysis_root / "10_head2head"
     sub_root.mkdir(parents=True, exist_ok=True)
     tiers_candidates = [
+        analysis_root / "12_tiering" / "tiers.json",
+        analysis_root / "09_trueskill" / "tiers.json",
         analysis_root / "05_tiering" / "tiers.json",
         analysis_root / "03_trueskill" / "tiers.json",
         analysis_root / "tiers.json",
@@ -196,12 +198,18 @@ def run_bonferroni_head2head(
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
     ratings_candidates = [
+        analysis_root / "09_trueskill" / "pooled" / "ratings_pooled.parquet",
+        analysis_root / "09_trueskill" / "ratings_pooled.parquet",
         analysis_root / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
         analysis_root / "03_trueskill" / "ratings_pooled.parquet",
         analysis_root / "ratings_pooled.parquet",
     ]
     ratings_path = next((p for p in ratings_candidates if p.exists()), ratings_candidates[0])
-    metrics_candidates = [analysis_root / "02_metrics" / "metrics.parquet", analysis_root / "metrics.parquet"]
+    metrics_candidates = [
+        analysis_root / "03_metrics" / "metrics.parquet",
+        analysis_root / "02_metrics" / "metrics.parquet",
+        analysis_root / "metrics.parquet",
+    ]
     metrics_path = next((p for p in metrics_candidates if p.exists()), metrics_candidates[0])
     if len(elites) < 2:
         fallback = _load_top_strategies(
