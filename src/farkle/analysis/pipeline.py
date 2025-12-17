@@ -121,17 +121,19 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     for stage in (
         "00_ingest",
-        "01_combine",
-        "02_metrics",
-        "03_game_stats",
-        "04_rng",
-        "03_trueskill",
-        "04_head2head",
-        "05_tiering",
-        "05_seed_summaries",
-        "06_variance",
-        "07_meta",
-        "08_agreement",
+        "01_curate",
+        "02_combine",
+        "03_metrics",
+        "04_game_stats",
+        "05_rng",
+        "06_seed_summaries",
+        "07_variance",
+        "08_meta",
+        "09_trueskill",
+        "10_head2head",
+        "11_hgb",
+        "12_tiering",
+        "13_agreement",
     ):
         app_cfg.stage_subdir(stage)
     analysis_dir = app_cfg.analysis_dir

@@ -96,6 +96,8 @@ def _tier_path(analysis_dir: Path) -> Path:
     """Resolve ``tiers.json`` within stage-aware directories."""
 
     candidates = [
+        analysis_dir / "12_tiering" / "tiers.json",
+        analysis_dir / "09_trueskill" / "tiers.json",
         analysis_dir / "05_tiering" / "tiers.json",
         analysis_dir / "03_trueskill" / "tiers.json",
         analysis_dir / "tiers.json",
@@ -107,6 +109,10 @@ def _ratings_path(analysis_dir: Path) -> Path:
     """Resolve pooled TrueSkill ratings with stage-aware fallbacks."""
 
     candidates = [
+        analysis_dir / "09_trueskill" / "pooled" / "ratings_pooled.parquet",
+        analysis_dir / "09_trueskill" / "ratings_pooled.parquet",
+        analysis_dir / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
+        analysis_dir / "03_trueskill" / "ratings_pooled.parquet",
         analysis_dir / "pooled" / "ratings_pooled.parquet",
         analysis_dir / "ratings_pooled.parquet",
     ]
@@ -117,7 +123,11 @@ def _head2head_path(analysis_dir: Path, filename: str) -> Path:
     """Resolve a head-to-head artifact path with legacy fallback."""
 
     return _first_existing(
-        [analysis_dir / "04_head2head" / filename, analysis_dir / filename]
+        [
+            analysis_dir / "10_head2head" / filename,
+            analysis_dir / "04_head2head" / filename,
+            analysis_dir / filename,
+        ]
     )
 
 

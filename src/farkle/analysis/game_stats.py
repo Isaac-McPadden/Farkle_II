@@ -6,11 +6,11 @@ superset) and aggregates the ``n_rounds`` column. Outputs both per-strategy
 statistics and a small global summary grouped by ``n_players``.
 
 The module also flags close margins and multi-target games, emitting pooled
-artifacts under ``03_game_stats/pooled`` with per-game records plus aggregated
+artifacts under ``04_game_stats/pooled`` with per-game records plus aggregated
 frequencies per strategy and player-count cohort.
 
 The module also derives per-game ``margin_of_victory`` from seat-level scores
-and writes ``03_game_stats/pooled/margin_stats.parquet`` with per-``(strategy,
+and writes ``04_game_stats/pooled/margin_stats.parquet`` with per-``(strategy,
 n_players)`` summaries. Margin schema:
 
 ``summary_level``
