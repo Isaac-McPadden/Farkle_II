@@ -97,13 +97,19 @@ replays.
 
 Wrapper around the analysis helpers that operate on streaming results. The
 subcommands share the same `AppConfig` and read from its `analysis`, `ingest`,
-`combine`, `metrics`, `trueskill`, `head2head`, and `hgb` sections.
+`combine`, `metrics`, `trueskill`, `head2head`, and `hgb` sections. Stages write
+into numbered directories under `analysis/`:
 
-- `ingest` - convert raw CSV rows into parquet shards.
-- `curate` - post-process ingested shards and refresh manifests.
-- `combine` - merge curated shards into a consolidated parquet file.
-- `metrics` - compute aggregate metrics, including TrueSkill when enabled.
-- `pipeline` - run `ingest`, `curate`, `combine`, and `metrics` sequentially.
+- `00_ingest` - convert raw CSV rows into parquet shards.
+- `01_curate` - track promotion of ingested shards and manifest refreshes.
+- `02_combine` - merge curated shards into a consolidated parquet file.
+- `03_metrics` - compute aggregate metrics, including pooled summaries.
+- `04_game_stats` / `05_rng` - optional enrichments that keep their numeric
+  slots even when skipped.
+- `09_trueskill`, `10_head2head`, `11_hgb`, `12_tiering` - analytics stages that
+  depend on upstream metrics.
+- `pipeline` - run `ingest`, `curate`, `combine`, and `metrics` sequentially
+  before branching into downstream analytics.
 
 ```bash
 farkle --config configs/farkle_mega_config.yaml analyze pipeline
