@@ -101,8 +101,8 @@ subcommands share the same `AppConfig` and read from its `analysis`, `ingest`,
 into numbered directories under `analysis/`:
 
 - `00_ingest` - convert raw CSV rows into parquet shards.
-- `01_curate` - track promotion of ingested shards and manifest refreshes.
-- `02_combine` - merge curated shards into a consolidated parquet file.
+- `01_curate` - finalize ingested shards and write manifests under `analysis/01_curate`.
+- `02_combine` - merge curated shards from `01_curate` into a consolidated parquet file.
 - `03_metrics` - compute aggregate metrics, including pooled summaries.
 - `04_game_stats` / `05_rng` - optional enrichments that keep their numeric
   slots even when skipped.
