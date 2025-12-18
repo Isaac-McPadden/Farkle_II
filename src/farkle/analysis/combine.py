@@ -48,7 +48,7 @@ def _migrate_combined_output(cfg: AppConfig) -> Path:
     preferred_dir = cfg.combine_pooled_dir(cfg.combine_max_players)
     preferred_out = preferred_dir / "all_ingested_rows.parquet"
     legacy_candidates = [
-        cfg.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
+        cfg.combine_stage_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
         cfg.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
     ]
     for legacy in legacy_candidates:

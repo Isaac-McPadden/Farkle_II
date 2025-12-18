@@ -250,10 +250,15 @@ class AppConfig:
 
         return self.per_k_subdir("00_ingest", k)
 
-    def combine_block_dir(self, k: int) -> Path:
+    def curate_block_dir(self, k: int) -> Path:
         """Directory holding curated artifacts for ``k`` players."""
 
-        return self.per_k_subdir("02_combine", k)
+        return self.per_k_subdir("01_curate", k)
+
+    def combine_block_dir(self, k: int) -> Path:
+        """Deprecated alias for :meth:`curate_block_dir`."""
+
+        return self.curate_block_dir(k)
 
     def combine_pooled_dir(self, k: int) -> Path:
         """Directory holding pooled artifacts derived from ``k``-player data."""
@@ -343,6 +348,10 @@ class AppConfig:
         return self.stage_subdir("00_ingest")
 
     @property
+    def curate_stage_dir(self) -> Path:
+        return self.stage_subdir("01_curate")
+
+    @property
     def combine_stage_dir(self) -> Path:
         return self.stage_subdir("02_combine")
 
@@ -392,9 +401,9 @@ class AppConfig:
 
     @property
     def data_dir(self) -> Path:
-        """Root directory for combined/curated data under ``02_combine``."""
+        """Root directory for curated data under ``01_curate``."""
 
-        return self.combine_stage_dir
+        return self.curate_stage_dir
 
     def n_dir(self, n: int) -> Path:
         """Convenience accessor for a specific ``<n>_players`` directory."""
@@ -621,7 +630,7 @@ class AppConfig:
     # Per-N helper paths used by ingest/curate/metrics
     def manifest_for(self, n: int) -> Path:
         """Path to the manifest for a specific player count."""
-        preferred = self.combine_block_dir(n) / self.manifest_name
+        preferred = self.curate_block_dir(n) / self.manifest_name
         legacy = self.analysis_dir / "data" / f"{n}p" / "manifest.jsonl"
         if preferred.exists() or not legacy.exists():
             return preferred
@@ -638,7 +647,7 @@ class AppConfig:
 
     def ingested_rows_curated(self, n: int) -> Path:
         """Path to the curated ingested parquet for ``n`` players."""
-        return self.combine_block_dir(n) / self.curated_rows_name
+        return self.curate_block_dir(n) / self.curated_rows_name
 
     def combined_manifest_path(self) -> Path:
         """Path to the manifest accompanying ``curated_parquet``."""

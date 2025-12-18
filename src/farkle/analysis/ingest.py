@@ -178,7 +178,7 @@ def _migrate_legacy_raw(n: int, cfg: AppConfig) -> None:
     """Move legacy ingest outputs into the new ``00_ingest/<k>p`` layout."""
 
     new_raw = cfg.ingested_rows_raw(n)
-    legacy_raw = cfg.combine_block_dir(n) / f"{n}p_ingested_rows.raw.parquet"
+    legacy_raw = cfg.combine_stage_dir / f"{n}p" / f"{n}p_ingested_rows.raw.parquet"
     if new_raw.exists() or not legacy_raw.exists() or new_raw == legacy_raw:
         return
 
