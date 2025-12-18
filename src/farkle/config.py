@@ -301,42 +301,42 @@ class AppConfig:
     def seed_summaries_stage_dir(self) -> Path:
         """Stage directory for per-seed summaries."""
 
-        return self.stage_subdir("06_seed_summaries")
+        return self.stage_subdir("05_seed_summaries")
 
     def seed_summaries_dir(self, players: int) -> Path:
         """Directory holding seed summaries for ``players`` count."""
 
-        return self.stage_subdir("06_seed_summaries", f"{players}p")
+        return self.stage_subdir("05_seed_summaries", f"{players}p")
 
     @property
     def variance_stage_dir(self) -> Path:
         """Stage directory for variance analytics."""
 
-        return self.stage_subdir("07_variance")
+        return self.stage_subdir("06_variance")
 
     @property
     def variance_pooled_dir(self) -> Path:
         """Pooled outputs for variance analytics."""
 
-        return self.stage_subdir("07_variance", "pooled")
+        return self.stage_subdir("06_variance", "pooled")
 
     @property
     def meta_stage_dir(self) -> Path:
         """Stage directory for meta-analysis outputs."""
 
-        return self.stage_subdir("08_meta")
+        return self.stage_subdir("07_meta")
 
     @property
     def meta_pooled_dir(self) -> Path:
         """Pooled outputs for meta-analysis."""
 
-        return self.stage_subdir("08_meta", "pooled")
+        return self.stage_subdir("07_meta", "pooled")
 
     @property
     def agreement_stage_dir(self) -> Path:
         """Stage directory for cross-method agreement analytics."""
 
-        return self.stage_subdir("13_agreement")
+        return self.stage_subdir("08_agreement")
 
     @property
     def ingest_stage_dir(self) -> Path:
@@ -560,7 +560,7 @@ class AppConfig:
         """Preferred path for agreement analytics for a given player count."""
 
         filename = f"agreement_{players}p.json"
-        stage_dir = self.per_k_subdir("13_agreement", players)
+        stage_dir = self.per_k_subdir("08_agreement", players)
         return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
 
     def trueskill_path(self, filename: str) -> Path:
