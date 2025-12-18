@@ -34,6 +34,42 @@ def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
     return cfg_path, cfg
 
 
+def test_pipeline_creates_stage_dirs_in_new_order(
+    tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path, cfg = _make_config(tmp_results_dir, monkeypatch)
+
+    stages: list[str] = []
+    original = cfg.stage_subdir
+
+    def _record(stage: str, *parts: str | Path):
+        stages.append(stage)
+        return original(stage, *parts)
+
+    monkeypatch.setattr(cfg, "stage_subdir", _record)
+    monkeypatch.setattr("farkle.analysis.ingest.run", lambda _: None, raising=True)
+
+    rc = pipeline.main(["--config", str(cfg_path), "ingest"])
+
+    assert rc == 0
+    assert stages == [
+        "00_ingest",
+        "01_curate",
+        "02_combine",
+        "03_metrics",
+        "04_game_stats",
+        "05_rng",
+        "05_seed_summaries",
+        "06_variance",
+        "07_meta",
+        "08_agreement",
+        "09_trueskill",
+        "10_head2head",
+        "11_hgb",
+        "12_tiering",
+    ]
+
+
 def test_pipeline_writes_resolved_config_and_manifest(
     tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
