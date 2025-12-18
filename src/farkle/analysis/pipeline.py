@@ -73,12 +73,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--compute-game-stats",
         action="store_true",
-        help="Run the game-length/margin statistics step after combine/metrics",
+        help="Run the 04_game_stats stage after metrics",
     )
     parser.add_argument(
         "--rng-diagnostics",
         action="store_true",
-        help="Run RNG diagnostics over curated rows after combine",
+        help="Run the 05_rng diagnostics stage over curated rows",
     )
     parser.add_argument(
         "--margin-thresholds",
@@ -161,6 +161,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
     )
 
+    def _maybe_add_game_stats(
+        plan: list[tuple[str, Callable[[AppConfig], None]]],
+    ) -> None:
+        if args.compute_game_stats:
+            plan.append(("game_stats", lambda cfg: game_stats.run(cfg)))
+
+    def _maybe_add_rng(plan: list[tuple[str, Callable[[AppConfig], None]]]) -> None:
+        if args.rng_diagnostics:
+            plan.append(("rng_diagnostics", lambda cfg: rng_diagnostics.run(cfg, lags=rng_lags)))
+
     # Build the step plan
     if args.command == "all":
         steps: list[tuple[str, Callable[[AppConfig], None]]] = [
@@ -168,8 +178,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("curate", curate.run),
             ("combine", combine.run),
             ("metrics", metrics.run),
-            ("analytics", analysis.run_all),
         ]
+        _maybe_add_game_stats(steps)
+        _maybe_add_rng(steps)
+        steps.append(("analytics", analysis.run_all))
     else:
         name_map: dict[str, Callable[[AppConfig], None]] = {
             "ingest": ingest.run,
@@ -181,23 +193,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command not in name_map:  # pragma: no cover - argparse enforces valid choices
             parser.error(f"Unknown command {args.command}")
         steps = [(args.command, name_map[args.command])]
-
-    def _insert_after(target: str, new: tuple[str, Callable[[AppConfig], None]]) -> None:
-        for idx, (name, _fn) in enumerate(list(steps)):
-            if name == target:
-                steps.insert(idx + 1, new)
-                return
-        steps.append(new)
-
-    if args.compute_game_stats:
-        _insert_after("metrics", ("game_stats", lambda cfg: game_stats.run(cfg)))
-    if args.rng_diagnostics:
-        _insert_after(
-            "combine", ("rng_diagnostics", lambda cfg: rng_diagnostics.run(cfg, lags=rng_lags))
-        )
+        if args.command == "metrics":
+            _maybe_add_game_stats(steps)
+        if args.command in {"combine", "metrics"}:
+            _maybe_add_rng(steps)
     # Execute with per-step manifest events
     iterator = tqdm(steps, desc="pipeline") if len(steps) > 1 else steps
     failed_steps: list[str] = []
+    first_failure: Exception | None = None
     for _name, fn in iterator:
         LOGGER.info("Pipeline step", extra={"stage": "pipeline", "step": _name})
         append_manifest_line(manifest_path, {"event": "step_start", "step": _name})
@@ -206,6 +209,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             append_manifest_line(manifest_path, {"event": "step_end", "step": _name, "ok": True})
         except Exception as e:  # noqa: BLE001
             failed_steps.append(_name)
+            first_failure = first_failure or e
             LOGGER.exception(
                 "Pipeline step failed", extra={"stage": "pipeline", "step": _name, "error": e}
             )
@@ -229,6 +233,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             failed_steps,
             extra={"stage": "pipeline", "failed_steps": failed_steps},
         )
+        if first_failure is not None:
+            raise first_failure
         return 1
 
     LOGGER.info("Analysis pipeline complete", extra={"stage": "pipeline"})

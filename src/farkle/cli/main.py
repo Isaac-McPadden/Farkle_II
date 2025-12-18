@@ -261,14 +261,14 @@ def _run_preprocess(
     curate.run(cfg)
     combine.run(cfg)
     metrics.run(cfg)
-    if compute_rng_diagnostics:
-        from farkle.analysis import rng_diagnostics
-
-        rng_diagnostics.run(cfg, lags=rng_lags)
     if compute_game_stats:
         from farkle.analysis import game_stats
 
         game_stats.run(cfg)
+    if compute_rng_diagnostics:
+        from farkle.analysis import rng_diagnostics
+
+        rng_diagnostics.run(cfg, lags=rng_lags)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
