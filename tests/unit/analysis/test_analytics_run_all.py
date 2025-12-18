@@ -84,6 +84,8 @@ def test_run_all_invokes_expected_modules(
         calls.append("seed_summaries")
 
     monkeypatch.setattr(analysis_mod, "run_seed_summaries", _seed_stub)
+    monkeypatch.setattr(analysis_mod, "run_variance", lambda cfg, **__: calls.append("variance"))
+    monkeypatch.setattr(analysis_mod, "run_meta", lambda cfg, **__: calls.append("meta"))
 
     cfg = AppConfig()
     cfg.analysis.run_trueskill = ts
@@ -96,7 +98,7 @@ def test_run_all_invokes_expected_modules(
     with caplog.at_level(logging.INFO):
         run_all(cfg)
 
-    expected_calls: List[str] = []
+    expected_calls: List[str] = ["seed_summaries", "variance", "meta"]
     if ts:
         expected_calls.append("trueskill")
         assert "Analytics: skipping trueskill" not in caplog.text
@@ -118,7 +120,6 @@ def test_run_all_invokes_expected_modules(
         assert "Analytics: skipping agreement" not in caplog.text
     else:
         assert "Analytics: skipping agreement" in caplog.text
-    expected_calls.append("seed_summaries")
     assert calls == expected_calls
     assert "Analytics: starting all modules" in caplog.text
     assert "Analytics: all modules finished" in caplog.text

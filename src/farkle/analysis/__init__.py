@@ -73,6 +73,9 @@ def _skip_message(step: str, reason: str) -> None:
 def run_all(cfg: AppConfig) -> None:
     """Run every analytics pass in sequence."""
     LOGGER.info("Analytics: starting all modules", extra={"stage": "analysis"})
+    run_seed_summaries(cfg)
+    run_variance(cfg)
+    run_meta(cfg)
     ts_mod = _optional_import("farkle.analysis.trueskill")
     if cfg.analysis.run_trueskill and ts_mod is not None:
         ts_mod.run(cfg)
@@ -161,7 +164,4 @@ def run_all(cfg: AppConfig) -> None:
             },
         )
 
-    run_seed_summaries(cfg)
-    run_variance(cfg)
-    run_meta(cfg)
     LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})
