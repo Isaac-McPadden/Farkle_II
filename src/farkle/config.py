@@ -85,6 +85,7 @@ class AnalysisConfig:
 
     run_trueskill: bool = True
     run_head2head: bool = True
+    run_game_stats: bool = True
     run_hgb: bool = True
     run_frequentist: bool = False
     """Plan step 6: frequentist / MDD-based tiering (tiering_report)."""
