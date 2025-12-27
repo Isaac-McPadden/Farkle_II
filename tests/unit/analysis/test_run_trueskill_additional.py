@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 import pandas as pd
@@ -424,8 +425,47 @@ def test_rate_block_worker_resume_with_keepers(tmp_path: Path) -> None:
     assert result == ("2", 5)
     assert parquet_path.exists()
     assert (per_player_dir / "ratings_2.json").exists()
-    new_ck = json.loads(ck_path.read_text())
-    assert new_ck["games_done"] == 5
+    assert not ck_path.exists()
+    assert not rk_path.exists()
+
+
+def test_rate_block_worker_preserves_checkpoint_on_failure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    root = tmp_path / "analysis"
+    block = tmp_path / "results" / "2_players"
+    per_player_dir = root / "2p"
+    per_player_dir.mkdir(parents=True, exist_ok=True)
+    block.mkdir(parents=True, exist_ok=True)
+
+    row_file = per_player_dir / "2p_ingested_rows.parquet"
+    df = pd.DataFrame(
+        [
+            {"P1_strategy": "A", "P1_rank": 1, "P2_strategy": "B", "P2_rank": 2},
+            {"P1_strategy": "B", "P1_rank": 2, "P2_strategy": "A", "P2_rank": 1},
+        ]
+    )
+    df.to_parquet(row_file)
+
+    ck_path = per_player_dir / "ratings_2.ckpt.json"
+    rk_path = per_player_dir / "ratings_2.checkpoint.parquet"
+
+    original_save = rt._save_ratings_parquet
+
+    def fail_on_final(path: Path, ratings: Mapping[str, rt.RatingStats]) -> None:
+        if Path(path) == per_player_dir / "ratings_2.parquet":
+            raise RuntimeError("boom")
+        original_save(path, ratings)
+
+    monkeypatch.setattr(rt, "_save_ratings_parquet", fail_on_final)
+
+    with pytest.raises(RuntimeError):
+        rt._rate_block_worker(
+            str(block), str(root), "", batch_rows=1, resume=True, checkpoint_every_batches=1
+        )
+
+    assert ck_path.exists()
+    assert rk_path.exists()
 
 
 def test_rate_block_worker_resume_missing_checkpoint_ratings_file(tmp_path: Path) -> None:
