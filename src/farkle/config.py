@@ -330,11 +330,16 @@ class AppConfig:
     def meta_stage_dir(self) -> Path:
         """Stage directory for meta-analysis outputs."""
 
-        return self.stage_subdir("08_meta")
+        return self.stage_subdir("07_meta")
+
+    def meta_per_k_dir(self, players: int) -> Path:
+        """Primary per-player meta-analysis directory."""
+
+        return self.stage_subdir("07_meta", f"{players}p")
 
     @property
     def meta_pooled_dir(self) -> Path:
-        """Pooled outputs for meta-analysis."""
+        """Legacy pooled outputs for meta-analysis."""
 
         return self.stage_subdir("08_meta", "pooled")
 
@@ -512,17 +517,26 @@ class AppConfig:
 
         return self._preferred_stage_path(self.variance_pooled_dir, self.analysis_dir, name)
 
-    def meta_output_path(self, name: str) -> Path:
-        """Preferred path for pooled meta-analysis artifacts."""
+    def meta_output_path(self, players: int, name: str) -> Path:
+        """Preferred path for per-player meta-analysis artifacts."""
 
-        path = self.meta_pooled_dir / name
+        path = self.meta_per_k_dir(players) / name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def meta_input_path(self, name: str) -> Path:
+    def meta_input_path(self, players: int, name: str) -> Path:
         """Resolve a meta-analysis artifact with a legacy fallback."""
 
-        return self._preferred_stage_path(self.meta_pooled_dir, self.analysis_dir, name)
+        preferred = self.meta_per_k_dir(players) / name
+        if preferred.exists():
+            return preferred
+
+        for legacy_dir in (self.meta_pooled_dir, self.analysis_dir):
+            legacy_path = legacy_dir / name
+            if legacy_path.exists():
+                return legacy_path
+
+        return preferred
 
     def metrics_input_path(self, name: str | None = None) -> Path:
         """Resolve a pooled metrics artifact with a legacy fallback."""
