@@ -45,11 +45,13 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
 def _migrate_combined_output(cfg: AppConfig) -> Path:
     """Ensure any legacy combined outputs are relocated beside the new pooled path."""
 
-    preferred_dir = cfg.combine_pooled_dir(cfg.combine_max_players)
+    preferred_dir = cfg.combine_pooled_dir()
     preferred_out = preferred_dir / "all_ingested_rows.parquet"
     legacy_candidates = [
+        cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "pooled" / "all_ingested_rows.parquet",
         cfg.combine_stage_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
         cfg.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
+        cfg.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
     ]
     for legacy in legacy_candidates:
         if preferred_out.exists() or not legacy.exists() or legacy == preferred_out:

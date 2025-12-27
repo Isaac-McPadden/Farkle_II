@@ -12,8 +12,9 @@ from farkle.utils.schema_helpers import expected_schema_for
 
 
 def _combined_path(tmp_path: Path) -> tuple[Path, Path]:
-    data_dir = tmp_path / "data"
-    combined_dir = data_dir / "all_n_players_combined"
+    analysis_dir = tmp_path / "analysis"
+    data_dir = analysis_dir / "01_curate"
+    combined_dir = analysis_dir / "02_combine" / "pooled"
     combined_dir.mkdir(parents=True, exist_ok=True)
     return data_dir, combined_dir / "all_ingested_rows.parquet"
 

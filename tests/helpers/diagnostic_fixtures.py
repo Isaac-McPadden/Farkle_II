@@ -26,7 +26,7 @@ def build_curated_fixture(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
         metrics=MetricsConfig(seat_range=(1, 2)),
     )
 
-    combined_dir = cfg.data_dir / "all_n_players_combined"
+    combined_dir = cfg.combine_pooled_dir()
     combined_dir.mkdir(parents=True, exist_ok=True)
     per_n_dir = cfg.data_dir / "2p"
     per_n_dir.mkdir(parents=True, exist_ok=True)
