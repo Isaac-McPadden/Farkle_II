@@ -59,14 +59,14 @@ def test_pipeline_creates_stage_dirs_in_new_order(
         "03_metrics",
         "04_game_stats",
         "05_rng",
-        "05_seed_summaries",
-        "06_variance",
-        "07_meta",
-        "08_agreement",
+        "06_seed_summaries",
+        "07_variance",
+        "08_meta",
         "09_trueskill",
         "10_head2head",
         "11_hgb",
         "12_tiering",
+        "13_agreement",
     ]
 
 
