@@ -6,11 +6,11 @@ stage along with the per-seed strategy summaries.  For every
 across seeds, the corresponding standard error, and a simple signal-to-noise
 heuristic (distance from a fair coin scaled by the cross-seed standard error).
 
-The outputs are written to ``06_variance/pooled/variance.parquet`` and a compact
+The outputs are written to ``07_variance/pooled/variance.parquet`` and a compact
 summary aggregated by ``n_players`` is written to
-``06_variance/pooled/variance_summary.parquet``. The module also derives
+``07_variance/pooled/variance_summary.parquet``. The module also derives
 seed-level variance components for win rate, total score, and game length and
-writes them to ``06_variance/pooled/variance_components.parquet``. All outputs
+writes them to ``07_variance/pooled/variance_components.parquet``. All outputs
 share a done-stamp that captures input/output freshness so that the module can
 be skipped when rerun unless ``force`` is requested.
 """
