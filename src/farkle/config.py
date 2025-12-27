@@ -261,10 +261,10 @@ class AppConfig:
 
         return self.curate_block_dir(k)
 
-    def combine_pooled_dir(self, k: int) -> Path:
-        """Directory holding pooled artifacts derived from ``k``-player data."""
+    def combine_pooled_dir(self, k: int | None = None) -> Path:
+        """Directory holding pooled combine artifacts (legacy *k* kept for callers)."""
 
-        return self.stage_subdir("02_combine", f"{k}p", "pooled")
+        return self.stage_subdir("02_combine", "pooled")
 
     def metrics_per_k_dir(self, k: int) -> Path:
         """Directory holding metrics artifacts for ``k`` players."""
@@ -605,10 +605,14 @@ class AppConfig:
     @property
     def curated_parquet(self) -> Path:
         """Location of the combined curated parquet spanning all player counts."""
-        pooled_dir = self.combine_pooled_dir(self.combine_max_players)
+        pooled_dir = self.combine_pooled_dir()
         preferred = pooled_dir / "all_ingested_rows.parquet"
         candidates = [
             preferred,
+            self.combine_stage_dir
+            / f"{self.combine_max_players}p"
+            / "pooled"
+            / "all_ingested_rows.parquet",
             self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
             self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
             self.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
@@ -653,7 +657,23 @@ class AppConfig:
     def combined_manifest_path(self) -> Path:
         """Path to the manifest accompanying ``curated_parquet``."""
 
-        return self.curated_parquet.with_suffix(".manifest.jsonl")
+        parquet = self.curated_parquet
+        preferred = parquet.with_suffix(".manifest.jsonl")
+        legacy_candidates = [
+            self.combine_stage_dir
+            / f"{self.combine_max_players}p"
+            / "pooled"
+            / "all_ingested_rows.manifest.jsonl",
+            self.combine_stage_dir / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
+            self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
+            self.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
+        ]
+        for candidate in legacy_candidates:
+            if preferred.exists():
+                break
+            if candidate.exists():
+                return candidate
+        return preferred
 
 
 # ─────────────────────────────────────────────────────────────────────────────

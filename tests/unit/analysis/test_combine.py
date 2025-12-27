@@ -53,7 +53,7 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
 
     # run combine
     combine.run(cfg)
-    out = cfg.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet"
+    out = cfg.combine_pooled_dir() / "all_ingested_rows.parquet"
     pf = pq.ParquetFile(out)
     assert pf.metadata.num_rows == 2
     assert pq.read_schema(out).names == expected_schema_for(12).names
@@ -101,7 +101,7 @@ def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeyp
     input_path = cfg.ingested_rows_curated(1)
     _write_curated(input_path, schema, [{"winner": "P1"}])
 
-    out_dir = cfg.data_dir / "all_n_players_combined"
+    out_dir = cfg.combine_pooled_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
     pq.write_table(pa.Table.from_pylist([{"winner": "P1"}], schema=schema), out)
@@ -130,7 +130,7 @@ def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeyp
     input_path = cfg.ingested_rows_curated(1)
     _write_curated(input_path, schema, [])
 
-    out_dir = cfg.data_dir / "all_n_players_combined"
+    out_dir = cfg.combine_pooled_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
     out.write_text("stale")

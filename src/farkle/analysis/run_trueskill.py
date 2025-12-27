@@ -169,6 +169,7 @@ def _find_combined_parquet(base: Path | None) -> Path | None:
         return None
     base = Path(base)
     candidates = [
+        base / "analysis" / "02_combine" / "pooled" / "all_ingested_rows.parquet",
         base / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
         base / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
         base / "all_ingested_rows.parquet",
