@@ -750,65 +750,78 @@ def _rate_block_worker(
                 interim = _load_ratings_parquet(Path(ck.ratings_path))
                 ratings = {k: env.create_rating(mu=v.mu, sigma=v.sigma) for k, v in interim.items()}
 
-    last_ck = time.time()
-    batches_since_ck = 0
-    schema = pq.read_schema(row_file)
-    columns = list(schema.names)
-    for rg, bi, batch in _stream_batches(
-        row_file,
-        columns,
-        start_row_group=start_rg,
-        start_batch_idx=start_bi,
-        batch_rows=batch_rows,
-    ):
-        for players, ranks in _players_and_ranks_from_batch(batch, n):
-            if keepers:
-                filt = [(p, r) for p, r in zip(players, ranks, strict=True) if p in keepers]
-                if len(filt) < 2:
-                    continue
-                players = [p for p, _ in filt]
-                ranks = [r for _, r in filt]
-                uq = sorted(set(ranks))
-                rmap = {rv: j for j, rv in enumerate(uq)}
-                ranks = [rmap[r] for r in ranks]
+    run_completed = False
+    try:
+        last_ck = time.time()
+        batches_since_ck = 0
+        schema = pq.read_schema(row_file)
+        columns = list(schema.names)
+        for rg, bi, batch in _stream_batches(
+            row_file,
+            columns,
+            start_row_group=start_rg,
+            start_batch_idx=start_bi,
+            batch_rows=batch_rows,
+        ):
+            for players, ranks in _players_and_ranks_from_batch(batch, n):
+                if keepers:
+                    filt = [(p, r) for p, r in zip(players, ranks, strict=True) if p in keepers]
+                    if len(filt) < 2:
+                        continue
+                    players = [p for p, _ in filt]
+                    ranks = [r for _, r in filt]
+                    uq = sorted(set(ranks))
+                    rmap = {rv: j for j, rv in enumerate(uq)}
+                    ranks = [rmap[r] for r in ranks]
 
-            for s in players:
-                if s not in ratings:
-                    ratings[s] = env.create_rating()
-            teams = [[ratings[s]] for s in players]
-            new = env.rate(teams, ranks=ranks)
-            for s, t in zip(players, new, strict=False):
-                ratings[s] = t[0]
-            n_games += 1
+                for s in players:
+                    if s not in ratings:
+                        ratings[s] = env.create_rating()
+                teams = [[ratings[s]] for s in players]
+                new = env.rate(teams, ranks=ranks)
+                for s, t in zip(players, new, strict=False):
+                    ratings[s] = t[0]
+                n_games += 1
 
-        batches_since_ck += 1
-        if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
-            _save_ratings_parquet(rk_path, ratings)
-            _save_block_ckpt(
-                ck_path,
-                _BlockCkpt(
-                    row_file=str(row_file),
-                    row_group=rg,
-                    batch_index=bi + 1,
-                    games_done=n_games,
-                    ratings_path=str(rk_path),
-                ),
+            batches_since_ck += 1
+            if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
+                _save_ratings_parquet(rk_path, ratings)
+                _save_block_ckpt(
+                    ck_path,
+                    _BlockCkpt(
+                        row_file=str(row_file),
+                        row_group=rg,
+                        batch_index=bi + 1,
+                        games_done=n_games,
+                        ratings_path=str(rk_path),
+                    ),
+                )
+                last_ck = time.time()
+                batches_since_ck = 0
+
+        ratings_stats = {k: RatingStats(v.mu, v.sigma) for k, v in ratings.items()}
+        # Atomic writes for per-N outputs
+        # Write per-N ratings as Parquet (strategy, mu, sigma)
+        _save_ratings_parquet(parquet_path, ratings_stats)
+
+        json_path = _ensure_new_location(paths["json"], *paths["legacy_json"])
+        with atomic_path(str(json_path)) as tmp_path:
+            Path(tmp_path).write_text(
+                json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
             )
-            last_ck = time.time()
-            batches_since_ck = 0
 
-    ratings_stats = {k: RatingStats(v.mu, v.sigma) for k, v in ratings.items()}
-    # Atomic writes for per-N outputs
-    # Write per-N ratings as Parquet (strategy, mu, sigma)
-    _save_ratings_parquet(parquet_path, ratings_stats)
-
-    json_path = _ensure_new_location(paths["json"], *paths["legacy_json"])
-    with atomic_path(str(json_path)) as tmp_path:
-        Path(tmp_path).write_text(
-            json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
-        )
-
-    return player_count, n_games
+        run_completed = True
+        return player_count, n_games
+    finally:
+        if run_completed:
+            for ck_file in (ck_path, rk_path):
+                try:
+                    ck_file.unlink(missing_ok=True)
+                except Exception:
+                    LOGGER.warning(
+                        "TrueSkill checkpoint cleanup failed",
+                        extra={"stage": "trueskill", "path": str(ck_file)},
+                    )
 
 
 def run_trueskill(
