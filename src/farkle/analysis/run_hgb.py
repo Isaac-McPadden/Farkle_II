@@ -27,6 +27,8 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from sklearn.ensemble import HistGradientBoostingRegressor
+from sklearn.inspection import permutation_importance
 
 from farkle.simulation.strategies import FavorDiceOrScore, parse_strategy_for_df
 from farkle.utils.artifacts import write_parquet_atomic
@@ -65,6 +67,31 @@ _SEED_PATTERN = re.compile(r"ratings_pooled_seed(?P<seed>\d+)\.parquet$")
 
 LOGGER = logging.getLogger(__name__)
 logger = LOGGER
+
+
+def _select_partial_dependence_features(
+    features: pd.DataFrame, *, tolerance: float = 1e-6
+) -> tuple[list[str], list[str]]:
+    """Return columns eligible for partial dependence plots.
+
+    Columns with constant or near-constant ranges (within ``tolerance``) are
+    skipped to avoid degenerate plots.
+    """
+
+    kept: list[str] = []
+    skipped: list[str] = []
+    for column in features.columns:
+        values = features[column].to_numpy(dtype=np.float32)
+        if values.size == 0:
+            skipped.append(column)
+            continue
+        spread = float(np.nanmax(values) - np.nanmin(values))
+        if np.isnan(spread) or spread <= tolerance:
+            skipped.append(column)
+            continue
+        kept.append(column)
+
+    return kept, skipped
 
 
 def _parse_strategy_features(strategies: pd.Series) -> pd.DataFrame:
@@ -274,9 +301,6 @@ def run_hgb(
 ) -> None:
     """Train the regressor and output feature importance and plots."""
 
-    from sklearn.ensemble import HistGradientBoostingRegressor
-    from sklearn.inspection import permutation_importance
-
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     pooled_dir = root / "pooled"
@@ -431,17 +455,29 @@ def run_hgb(
         fig_dir = per_player_dir / "plots"
         fig_dir.mkdir(parents=True, exist_ok=True)
         cols = list(feature_cols)
-        if len(cols) > MAX_PD_PLOTS:
+        pd_cols, skipped_cols = _select_partial_dependence_features(
+            features[cols]
+        )
+        if skipped_cols:
+            LOGGER.info(
+                "Skipping near-constant features for partial dependence",
+                extra={
+                    "stage": "hgb",
+                    "players": players,
+                    "skipped_features": skipped_cols,
+                },
+            )
+        if len(pd_cols) > MAX_PD_PLOTS:
             LOGGER.warning(
                 "Too many features for partial dependence",
                 extra={
                     "stage": "hgb",
                     "players": players,
-                    "features": len(cols),
+                    "features": len(pd_cols),
                     "max_plots": MAX_PD_PLOTS,
                 },
             )
-        for col in cols[:MAX_PD_PLOTS]:
+        for col in pd_cols[:MAX_PD_PLOTS]:
             plot_partial_dependence(model, features, col, fig_dir)
 
     if collected_frames:
