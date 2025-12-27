@@ -18,6 +18,7 @@ Outputs
 from __future__ import annotations
 
 import concurrent.futures as cf
+import csv
 import json
 import logging
 import math
@@ -26,7 +27,17 @@ import re
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, Mapping, Optional, Tuple, TypedDict, Union, cast
+from typing import (
+    Iterable,
+    Iterator,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TypedDict,
+    Union,
+    cast,
+)
 
 import numpy as np
 import pyarrow as pa
@@ -1083,6 +1094,164 @@ def _ensure_strict_mu_ordering(
     return dict(ordered)
 
 
+def _json_safe_number(value: float | int) -> float | int | None:
+    """Convert NaN/inf values to ``None`` for JSON serialization."""
+
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
+def _rank_correlations_vs_pooled(
+    per_seed_results: Mapping[int, Mapping[str, RatingStats]],
+    pooled: Mapping[str, RatingStats],
+) -> dict[int, float]:
+    """Compute Spearman-style rank correlations against pooled ordering."""
+
+    pooled_order = sorted(pooled.items(), key=lambda kv: (-kv[1].mu, kv[0]))
+    pooled_rank = {name: idx for idx, (name, _) in enumerate(pooled_order, start=1)}
+    correlations: dict[int, float] = {}
+
+    for seed, stats in per_seed_results.items():
+        seed_order = sorted(stats.items(), key=lambda kv: (-kv[1].mu, kv[0]))
+        seed_rank = {name: idx for idx, (name, _) in enumerate(seed_order, start=1)}
+        common = [name for name in pooled_rank if name in seed_rank]
+        if len(common) < 2:
+            correlations[seed] = math.nan
+            continue
+
+        pooled_vec = np.array([pooled_rank[name] for name in common], dtype=float)
+        seed_vec = np.array([seed_rank[name] for name in common], dtype=float)
+        denom = pooled_vec.std(ddof=0) * seed_vec.std(ddof=0)
+        if denom == 0:
+            correlations[seed] = math.nan
+            continue
+        corr = float(np.corrcoef(pooled_vec, seed_vec)[0, 1])
+        correlations[seed] = corr
+
+    return correlations
+
+
+def _write_seed_alignment_summary(
+    dest_dir: Path,
+    seeds: Sequence[int],
+    per_seed_results: Mapping[int, Mapping[str, RatingStats]],
+    pooled: Mapping[str, RatingStats],
+    *,
+    write_csv: bool = False,
+    write_json: bool = False,
+) -> dict[str, Path | None]:
+    """Align per-seed means by strategy and persist summary statistics."""
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    seed_list = [int(s) for s in sorted(seeds)]
+    strategies = sorted({name for stats in per_seed_results.values() for name in stats})
+
+    base_cols = [
+        "strategy",
+        "pooled_mu",
+        "mean_mu",
+        "std_mu",
+        "min_mu",
+        "max_mu",
+        "range_mu",
+        "max_abs_delta",
+        "seeds_present",
+        "seeds_missing",
+    ]
+    table_columns: dict[str, list[float | int | str]] = {col: [] for col in base_cols}
+    for seed in seed_list:
+        table_columns[f"seed_{seed}_mu"] = []
+
+    rows: list[dict[str, float | int | str | None]] = []
+    for strategy in strategies:
+        seed_mus: list[float] = []
+        row: dict[str, float | int | str | None] = {"strategy": strategy}
+        for seed in seed_list:
+            mu_val = per_seed_results.get(seed, {}).get(strategy)
+            mu = float(mu_val.mu) if mu_val is not None else math.nan
+            row[f"seed_{seed}_mu"] = mu
+            seed_mus.append(mu)
+
+        pooled_mu = float(pooled.get(strategy, RatingStats(math.nan, math.nan)).mu)
+        valid_mus = [m for m in seed_mus if math.isfinite(m)]
+        deltas = [m - pooled_mu for m in valid_mus if math.isfinite(pooled_mu)]
+
+        row.update(
+            {
+                "pooled_mu": pooled_mu,
+                "mean_mu": float(np.nanmean(seed_mus)) if seed_mus else math.nan,
+                "std_mu": float(np.nanstd(seed_mus)) if seed_mus else math.nan,
+                "min_mu": min(valid_mus) if valid_mus else math.nan,
+                "max_mu": max(valid_mus) if valid_mus else math.nan,
+                "range_mu": (max(valid_mus) - min(valid_mus)) if len(valid_mus) > 1 else math.nan,
+                "max_abs_delta": max(abs(delta) for delta in deltas) if deltas else math.nan,
+                "seeds_present": len(valid_mus),
+                "seeds_missing": len(seed_list) - len(valid_mus),
+            }
+        )
+
+        for col in table_columns:
+            table_columns[col].append(row.get(col, math.nan))
+        rows.append(row)
+
+    alignment_table = pa.table(table_columns)
+    parquet_path = dest_dir / "seed_mu_alignment.parquet"
+    write_parquet_atomic(alignment_table, parquet_path)
+
+    rank_correlations = _rank_correlations_vs_pooled(per_seed_results, pooled)
+    csv_path: Path | None = None
+    if write_csv:
+        csv_path = dest_dir / "seed_mu_alignment.csv"
+        fieldnames = base_cols + [f"seed_{seed}_mu" for seed in seed_list]
+        with atomic_path(str(csv_path)) as tmp_path:
+            with open(tmp_path, "w", newline="") as csv_file:
+                writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(
+                    {k: ("" if (isinstance(v, float) and math.isnan(v)) else v) for k, v in row.items()}
+                    for row in rows
+                )
+
+    json_path: Path | None = None
+    if write_json:
+        json_path = dest_dir / "seed_mu_alignment.json"
+        json_rows = [
+            {k: _json_safe_number(v) if isinstance(v, (float, int)) else v for k, v in row.items()}
+            for row in rows
+        ]
+        json_corr = {int(seed): _json_safe_number(value) for seed, value in rank_correlations.items()}
+        payload = {
+            "seeds": seed_list,
+            "strategies": strategies,
+            "alignment": json_rows,
+            "rank_correlation_vs_pooled": json_corr,
+        }
+        with atomic_path(str(json_path)) as tmp_path:
+            Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+    corr_values = [v for v in rank_correlations.values() if math.isfinite(v)]
+    LOGGER.info(
+        "TrueSkill seed alignment summary complete",
+        extra={
+            "stage": "trueskill",
+            "strategies": len(strategies),
+            "seeds": seed_list,
+            "alignment_parquet": str(parquet_path),
+            "alignment_csv": str(csv_path) if csv_path else None,
+            "alignment_json": str(json_path) if json_path else None,
+            "rank_corr_min": min(corr_values) if corr_values else None,
+            "rank_corr_max": max(corr_values) if corr_values else None,
+        },
+    )
+
+    return {
+        "parquet": parquet_path,
+        "csv": csv_path,
+        "json": json_path,
+    }
+
+
 def _write_conservative_tiers(
     root: Path,
     tiers: Mapping[str, int],
@@ -1109,6 +1278,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     """Run TrueSkill for each configured seed and pool the results."""
 
     analysis_cfg = cfg.analysis
+    outputs_cfg = analysis_cfg.outputs or {}
     seeds_cfg = analysis_cfg.tiering_seeds or [cfg.sim.seed]
     deduped: list[int] = []
     seen: set[int] = set()
@@ -1218,6 +1388,15 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                 sort_keys=True,
             )
         )
+
+    _write_seed_alignment_summary(
+        pooled_dir,
+        seeds,
+        per_seed_results,
+        ordered_pooled,
+        write_csv=bool(outputs_cfg.get("trueskill_alignment_csv", False)),
+        write_json=bool(outputs_cfg.get("trueskill_alignment_json", False)),
+    )
 
     tiers = build_tiers(
         means={k: v.mu for k, v in ordered_pooled.items()},
