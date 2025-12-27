@@ -95,6 +95,9 @@ class AnalysisConfig:
     run_agreement: bool = False
     """Generate the agreement analysis between model outputs (plan step 8)."""
 
+    agreement_strategies: tuple[str, ...] | None = None
+    """Optional subset of strategies to include when computing agreement metrics."""
+
     run_report: bool = True
     """Emit the final report artifacts (plan step 9)."""
 
