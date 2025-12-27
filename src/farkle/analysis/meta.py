@@ -391,9 +391,9 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
     inputs = sorted({path for entries in files_by_players.values() for path in entries.values()})
     eligible_players = [players for players, entries in files_by_players.items() if len(entries) > 1]
     expected_outputs = [
-        cfg.meta_output_path(META_TEMPLATE.format(players=players))
+        cfg.meta_output_path(players, META_TEMPLATE.format(players=players))
         for players in eligible_players
-    ] + [cfg.meta_output_path(META_JSON_TEMPLATE.format(players=players)) for players in eligible_players]
+    ] + [cfg.meta_output_path(players, META_JSON_TEMPLATE.format(players=players)) for players in eligible_players]
 
     if not force and inputs and expected_outputs and stage_is_up_to_date(
         done, inputs=inputs, outputs=expected_outputs, config_sha=cfg.config_sha
@@ -469,7 +469,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
             )
             continue
 
-        parquet_path = cfg.meta_output_path(META_TEMPLATE.format(players=players))
+        parquet_path = cfg.meta_output_path(players, META_TEMPLATE.format(players=players))
         outputs.append(parquet_path)
         if force or not _parquet_matches(parquet_path, result.pooled):
             table = pa.Table.from_pandas(result.pooled, preserve_index=False)
@@ -486,7 +486,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
             "tau2": result.tau2,
             "method": result.method,
         }
-        json_path = cfg.meta_output_path(META_JSON_TEMPLATE.format(players=players))
+        json_path = cfg.meta_output_path(players, META_JSON_TEMPLATE.format(players=players))
         outputs.append(json_path)
         if force or not json_path.exists():
             _write_json_atomic(json_payload, json_path)

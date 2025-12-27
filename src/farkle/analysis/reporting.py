@@ -83,6 +83,21 @@ def _analysis_dir(cfg: AnalysisConfig | AppConfig) -> Path:
     raise AttributeError("Configuration object does not expose an analysis_dir")
 
 
+def _meta_artifact_path(cfg: AnalysisConfig | AppConfig, players: int, filename: str) -> Path:
+    """Resolve a meta-analysis artifact path with per-player preference."""
+
+    if isinstance(cfg, AppConfig):
+        return cfg.meta_input_path(players, filename)
+
+    analysis_dir = _analysis_dir(cfg)
+    candidates = [
+        analysis_dir / "07_meta" / f"{players}p" / filename,
+        analysis_dir / "08_meta" / "pooled" / filename,
+        analysis_dir / filename,
+    ]
+    return _first_existing(candidates)
+
+
 def _first_existing(candidates: list[Path]) -> Path:
     """Return the first existing path or the first candidate when none exist."""
 
@@ -224,9 +239,10 @@ def _load_ratings(analysis_dir: Path, players: int) -> pd.DataFrame:
     return subset[["strategy", "players", "mu", "sigma"]]
 
 
-def _load_meta_summary(analysis_dir: Path, players: int) -> pd.DataFrame:
+def _load_meta_summary(cfg: AnalysisConfig | AppConfig, players: int) -> pd.DataFrame:
     """Load pooled win-rate meta summary if available for ``players``."""
-    path = analysis_dir / f"strategy_summary_{players}p_meta.parquet"
+
+    path = _meta_artifact_path(cfg, players, f"strategy_summary_{players}p_meta.parquet")
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_parquet(path)
@@ -361,9 +377,10 @@ def _load_h2h_ranking(analysis_dir: Path, players: int) -> pd.DataFrame:
     return df[["strategy", "rank"]]
 
 
-def _load_meta_json(analysis_dir: Path, players: int) -> dict[str, float]:
+def _load_meta_json(cfg: AnalysisConfig | AppConfig, players: int) -> dict[str, float]:
     """Load heterogeneity metrics from the meta-analysis JSON payload."""
-    path = analysis_dir / f"meta_{players}p.json"
+
+    path = _meta_artifact_path(cfg, players, f"meta_{players}p.json")
     if not path.exists():
         return {}
     try:
@@ -399,13 +416,13 @@ def _gather_artifacts(cfg: AnalysisConfig | AppConfig, players: int) -> _ReportA
     """Load all report prerequisites for the specified player count."""
     analysis_dir = _analysis_dir(cfg)
     ratings = _load_ratings(analysis_dir, players)
-    meta_summary = _load_meta_summary(analysis_dir, players)
+    meta_summary = _load_meta_summary(cfg, players)
     feature_importance = _load_feature_importance(analysis_dir, players)
     seed_summaries = _load_seed_summaries(analysis_dir, players)
     tiers = _load_tiers(analysis_dir, players)
     h2h_decisions = _load_h2h_decisions(analysis_dir, players)
     h2h_ranking = _load_h2h_ranking(analysis_dir, players)
-    heterogeneity = _load_meta_json(analysis_dir, players)
+    heterogeneity = _load_meta_json(cfg, players)
     run_metadata = _load_run_metadata(analysis_dir)
     return _ReportArtifacts(
         ratings=ratings,
@@ -649,7 +666,7 @@ def plot_seed_variability_for_players(
         return None
 
     available = seeds_df["strategy_id"].unique().tolist()
-    meta_df = _load_meta_summary(analysis_dir, players)
+    meta_df = _load_meta_summary(cfg, players)
     if not meta_df.empty:
         preferred = [s for s in meta_df["strategy"].tolist() if s in available]
     else:

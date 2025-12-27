@@ -142,6 +142,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "05_rng",
         "06_seed_summaries",
         "07_variance",
+        "07_meta",
         "08_meta",
         "09_trueskill",
         "10_head2head",
