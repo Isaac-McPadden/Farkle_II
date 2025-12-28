@@ -2,7 +2,7 @@ You are assisting with a Monte Carlo simulation for determining the best strateg
 
 Secondary goals are to produce professional software that performs the simulation, writes and pipes the data, and performs rigorous statistical analysis of game outcomes with randomized match groupings.
 
-When operating in VSCode, use the venv located in the root as it has all dependencies installed and uses Python 3.12.
+When operating locally in VSCode, use the venv located in the root as it has all dependencies installed and uses Python 3.12.
 
 ## General Principles
 

@@ -14,6 +14,7 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
+from farkle.utils.manifest import iter_manifest
 from farkle.utils.schema_helpers import expected_schema_for
 
 LOGGER = logging.getLogger(__name__)
@@ -58,6 +59,37 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
         data_dir = combined_parquet.parent
     manifest_rows = 0
     seen_manifest = False
+
+    def _rows_from_manifest(manifest_path: Path) -> int:
+        try:
+            # Try single-JSON first for backward compatibility.
+            meta = json.loads(manifest_path.read_text())
+            value = meta.get("row_count")
+            if value is None:
+                value = meta.get("rows")
+            if value is None:
+                return 0
+            return int(value)
+        except json.JSONDecodeError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"check_pre_metrics: failed to parse {manifest_path}: {e}") from e
+
+        rows = 0
+        try:
+            for record in iter_manifest(manifest_path):
+                if not isinstance(record, dict):
+                    continue
+                value = record.get("row_count")
+                if value is None:
+                    value = record.get("rows")
+                if value is None:
+                    continue
+                rows += int(value)
+        except Exception as e:  # noqa: BLE001
+            raise RuntimeError(f"check_pre_metrics: failed to parse {manifest_path}: {e}") from e
+        return rows
+
     for seat_dir in sorted(p for p in data_dir.glob("*p") if p.is_dir()):
         manifest_candidates = [
             seat_dir / "manifest.jsonl",
@@ -66,17 +98,13 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
         manifest_path = next((m for m in manifest_candidates if m.exists()), None)
         if manifest_path is None:
             continue
-        try:
-            meta = json.loads(manifest_path.read_text())
-            manifest_rows += int(meta.get("row_count", 0))
-            seen_manifest = True
-        except Exception as e:  # noqa: BLE001
-            raise RuntimeError(f"check_pre_metrics: failed to parse {manifest_path}: {e}") from e
+        manifest_rows += _rows_from_manifest(manifest_path)
+        seen_manifest = True
+
     if not seen_manifest:
         manifest_path = combined_parquet.with_suffix(".manifest.jsonl")
         if manifest_path.exists():
-            meta = json.loads(manifest_path.read_text())
-            manifest_rows = int(meta.get("row_count", 0))
+            manifest_rows = _rows_from_manifest(manifest_path)
             seen_manifest = True
     if not seen_manifest:
         raise RuntimeError(f"check_pre_metrics: no manifest files found under {data_dir}")
