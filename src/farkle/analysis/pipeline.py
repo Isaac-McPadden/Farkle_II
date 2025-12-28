@@ -70,10 +70,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--config", type=Path, default=Path("configs/fast_config.yaml"), help="Path to YAML config"
     )
-    parser.add_argument(
-        "--compute-game-stats",
+    game_stats_group = parser.add_mutually_exclusive_group()
+    game_stats_group.add_argument(
+        "--game-stats",
+        dest="run_game_stats",
         action="store_true",
-        help="Run the 04_game_stats stage after metrics",
+        default=None,
+        help="Run the 04_game_stats stage after metrics (default: config)",
+    )
+    game_stats_group.add_argument(
+        "--no-game-stats",
+        dest="run_game_stats",
+        action="store_false",
+        default=None,
+        help="Skip the 04_game_stats stage after metrics",
     )
     parser.add_argument(
         "--rng-diagnostics",
@@ -113,6 +123,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         extra={"stage": "pipeline", "command": args.command, "config": str(args.config)},
     )
     app_cfg = load_app_config(Path(args.config))
+    run_game_stats = (
+        app_cfg.analysis.run_game_stats if args.run_game_stats is None else args.run_game_stats
+    )
+    app_cfg.analysis.run_game_stats = run_game_stats
     if args.margin_thresholds:
         app_cfg.analysis.game_stats_margin_thresholds = tuple(args.margin_thresholds)
     if args.rare_event_target is not None:
@@ -126,14 +140,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         "03_metrics",
         "04_game_stats",
         "05_rng",
-        "05_seed_summaries",
-        "06_variance",
+        "06_seed_summaries",
+        "07_variance",
         "07_meta",
-        "08_agreement",
+        "08_meta",
         "09_trueskill",
         "10_head2head",
         "11_hgb",
         "12_tiering",
+        "13_agreement",
     ):
         app_cfg.stage_subdir(stage)
     analysis_dir = app_cfg.analysis_dir
@@ -164,7 +179,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     def _maybe_add_game_stats(
         plan: list[tuple[str, Callable[[AppConfig], None]]],
     ) -> None:
-        if args.compute_game_stats:
+        if run_game_stats:
             plan.append(("game_stats", lambda cfg: game_stats.run(cfg)))
 
     def _maybe_add_rng(plan: list[tuple[str, Callable[[AppConfig], None]]]) -> None:

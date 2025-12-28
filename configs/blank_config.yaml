@@ -86,6 +86,8 @@ head2head:
     min_games_floor:    # int: minimum games per comparison
     max_games_cap:    # int|None: cap on games per comparison
     use_BY:    # bool|None: optional Benjamini-Yekutieli toggle
+  tie_break_policy:    # str: 'neutral_edge' (default) or 'simulate_game'
+  tie_break_seed:    # int|None: overrides sim.seed for tie-break RNG
 
 hgb:
   max_depth:    # int: maximum tree depth

@@ -66,9 +66,9 @@ Subcommands:
   `05_rng` when enabled.
 - `analytics` - perform statistical analysis computation steps (TrueSkill, Bonferroni head-to-head, HGB modeling, etc.) according to the configuration.
 - `pipeline` - run `preprocess` followed by `analytics` for a full end-to-end pass.
-  The analytics suite follows the renumbered stage layout (`05_seed_summaries`,
-  `06_variance`, `07_meta`, `08_agreement`, `09_trueskill`, `10_head2head`,
-  `11_hgb`, `12_tiering`).
+  The analytics suite follows the renumbered stage layout (`06_seed_summaries`,
+  `07_variance`, `08_meta`, `09_trueskill`, `10_head2head`, `11_hgb`,
+  `12_tiering`, `13_agreement`).
 
 Use `--help` on any subcommand for additional details (for example,
 `farkle analyze metrics --help`).

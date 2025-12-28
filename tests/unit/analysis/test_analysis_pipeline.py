@@ -59,14 +59,14 @@ def test_pipeline_creates_stage_dirs_in_new_order(
         "03_metrics",
         "04_game_stats",
         "05_rng",
-        "05_seed_summaries",
-        "06_variance",
-        "07_meta",
-        "08_agreement",
+        "06_seed_summaries",
+        "07_variance",
+        "08_meta",
         "09_trueskill",
         "10_head2head",
         "11_hgb",
         "12_tiering",
+        "13_agreement",
     ]
 
 
@@ -126,9 +126,18 @@ def test_pipeline_individual_commands_invoke_target(
         assert app_cfg.results_dir == tmp_results_dir
 
     monkeypatch.setattr(target, _record, raising=True)
+    if command == "metrics":
+        monkeypatch.setattr(
+            "farkle.analysis.game_stats.run",
+            lambda app_cfg: called.append("game_stats"),
+            raising=True,
+        )
     rc = pipeline.main(["--config", str(cfg_path), command])
     assert rc == 0
-    assert called == [command]
+    if command == "metrics":
+        assert called == [command, "game_stats"]
+    else:
+        assert called == [command]
 
 
 def test_pipeline_all_runs_all_steps(
@@ -149,11 +158,12 @@ def test_pipeline_all_runs_all_steps(
     monkeypatch.setattr("farkle.analysis.curate.run", _make_stub("curate"), raising=True)
     monkeypatch.setattr("farkle.analysis.combine.run", _make_stub("combine"), raising=True)
     monkeypatch.setattr("farkle.analysis.metrics.run", _make_stub("metrics"), raising=True)
+    monkeypatch.setattr("farkle.analysis.game_stats.run", _make_stub("game_stats"), raising=True)
     monkeypatch.setattr("farkle.analysis.run_all", _make_stub("analytics"), raising=True)
 
     rc = pipeline.main(["--config", str(cfg_path), "all"])
     assert rc == 0
-    assert calls == ["ingest", "curate", "combine", "metrics", "analytics"]
+    assert calls == ["ingest", "curate", "combine", "metrics", "game_stats", "analytics"]
 
 
 @pytest.mark.parametrize(
@@ -198,7 +208,6 @@ def test_pipeline_game_stats_flag(monkeypatch: pytest.MonkeyPatch, tmp_results_d
         [
             "--config",
             str(cfg_path),
-            "--compute-game-stats",
             "--margin-thresholds",
             "700",
             "900",
@@ -210,6 +219,33 @@ def test_pipeline_game_stats_flag(monkeypatch: pytest.MonkeyPatch, tmp_results_d
 
     assert rc == 0
     assert calls == ["metrics", "game_stats"]
+
+
+def test_pipeline_game_stats_opt_out(monkeypatch: pytest.MonkeyPatch, tmp_results_dir: Path) -> None:
+    cfg_path, cfg = _make_config(tmp_results_dir, monkeypatch)
+    cfg.analysis.run_game_stats = True
+
+    calls: list[str] = []
+
+    def _fake_metrics(app_cfg):  # noqa: ANN001
+        calls.append("metrics")
+        assert app_cfg.analysis.run_game_stats is False
+
+    def _fake_game_stats(app_cfg):  # noqa: ANN001
+        calls.append("game_stats")
+
+    monkeypatch.setattr("farkle.analysis.metrics.run", _fake_metrics, raising=True)
+    monkeypatch.setattr("farkle.analysis.game_stats.run", _fake_game_stats, raising=True)
+
+    rc = pipeline.main([
+        "--config",
+        str(cfg_path),
+        "--no-game-stats",
+        "metrics",
+    ])
+
+    assert rc == 0
+    assert calls == ["metrics"]
 
 
 def test_pipeline_rng_diagnostics_flag(monkeypatch: pytest.MonkeyPatch, tmp_results_dir: Path) -> None:

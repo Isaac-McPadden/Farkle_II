@@ -6,11 +6,11 @@ stage along with the per-seed strategy summaries.  For every
 across seeds, the corresponding standard error, and a simple signal-to-noise
 heuristic (distance from a fair coin scaled by the cross-seed standard error).
 
-The outputs are written to ``06_variance/pooled/variance.parquet`` and a compact
+The outputs are written to ``07_variance/pooled/variance.parquet`` and a compact
 summary aggregated by ``n_players`` is written to
-``06_variance/pooled/variance_summary.parquet``. The module also derives
+``07_variance/pooled/variance_summary.parquet``. The module also derives
 seed-level variance components for win rate, total score, and game length and
-writes them to ``06_variance/pooled/variance_components.parquet``. All outputs
+writes them to ``07_variance/pooled/variance_components.parquet``. All outputs
 share a done-stamp that captures input/output freshness so that the module can
 be skipped when rerun unless ``force`` is requested.
 """
@@ -113,6 +113,28 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     variance_frame = _compute_variance(seed_frame)
     components_frame = _compute_variance_components(seed_frame)
+    insufficient = variance_frame[variance_frame["n_seeds"] < MIN_SEEDS]
+    if not insufficient.empty:
+        LOGGER.info(
+            "Variance skipped: insufficient cross-seed data",
+            extra={
+                "stage": "variance",
+                "strategies": int(insufficient["strategy_id"].nunique()),
+                "min_seeds": int(MIN_SEEDS),
+            },
+        )
+        variance_frame = variance_frame[variance_frame["n_seeds"] >= MIN_SEEDS]
+        valid_pairs = (
+            variance_frame[["strategy_id", "players"]]
+            .drop_duplicates()
+            .assign(_keep=True)
+        )
+        if not components_frame.empty:
+            components_frame = components_frame.merge(
+                valid_pairs, on=["strategy_id", "players"], how="inner"
+            ).drop(columns="_keep")
+        if variance_frame.empty:
+            return
     detailed = _merge_metrics(metrics_frame, variance_frame)
     if detailed.empty:
         LOGGER.info(

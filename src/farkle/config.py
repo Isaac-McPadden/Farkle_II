@@ -85,6 +85,7 @@ class AnalysisConfig:
 
     run_trueskill: bool = True
     run_head2head: bool = True
+    run_game_stats: bool = True
     run_hgb: bool = True
     run_frequentist: bool = False
     """Plan step 6: frequentist / MDD-based tiering (tiering_report)."""
@@ -93,6 +94,9 @@ class AnalysisConfig:
 
     run_agreement: bool = False
     """Generate the agreement analysis between model outputs (plan step 8)."""
+
+    agreement_strategies: tuple[str, ...] | None = None
+    """Optional subset of strategies to include when computing agreement metrics."""
 
     run_report: bool = True
     """Emit the final report artifacts (plan step 9)."""
@@ -185,6 +189,11 @@ class Head2HeadConfig:
     fdr_q: float = 0.02
     # If you ever add a nested design block here, it will still parse:
     bonferroni_design: dict[str, Any] = field(default_factory=dict)
+    tie_break_policy: str = "neutral_edge"
+    """Strategy for handling tied win counts in post head-to-head analysis."""
+
+    tie_break_seed: int | None = None
+    """Optional RNG seed for deterministic tie-break simulation (defaults to sim.seed)."""
 
 
 @dataclass
@@ -260,10 +269,10 @@ class AppConfig:
 
         return self.curate_block_dir(k)
 
-    def combine_pooled_dir(self, k: int) -> Path:
-        """Directory holding pooled artifacts derived from ``k``-player data."""
+    def combine_pooled_dir(self, k: int | None = None) -> Path:
+        """Directory holding pooled combine artifacts (legacy *k* kept for callers)."""
 
-        return self.stage_subdir("02_combine", f"{k}p", "pooled")
+        return self.stage_subdir("02_combine", "pooled")
 
     def metrics_per_k_dir(self, k: int) -> Path:
         """Directory holding metrics artifacts for ``k`` players."""
@@ -306,24 +315,24 @@ class AppConfig:
     def seed_summaries_stage_dir(self) -> Path:
         """Stage directory for per-seed summaries."""
 
-        return self.stage_subdir("05_seed_summaries")
+        return self.stage_subdir("06_seed_summaries")
 
     def seed_summaries_dir(self, players: int) -> Path:
         """Directory holding seed summaries for ``players`` count."""
 
-        return self.stage_subdir("05_seed_summaries", f"{players}p")
+        return self.stage_subdir("06_seed_summaries", f"{players}p")
 
     @property
     def variance_stage_dir(self) -> Path:
         """Stage directory for variance analytics."""
 
-        return self.stage_subdir("06_variance")
+        return self.stage_subdir("07_variance")
 
     @property
     def variance_pooled_dir(self) -> Path:
         """Pooled outputs for variance analytics."""
 
-        return self.stage_subdir("06_variance", "pooled")
+        return self.stage_subdir("07_variance", "pooled")
 
     @property
     def meta_stage_dir(self) -> Path:
@@ -331,17 +340,22 @@ class AppConfig:
 
         return self.stage_subdir("07_meta")
 
+    def meta_per_k_dir(self, players: int) -> Path:
+        """Primary per-player meta-analysis directory."""
+
+        return self.stage_subdir("07_meta", f"{players}p")
+
     @property
     def meta_pooled_dir(self) -> Path:
-        """Pooled outputs for meta-analysis."""
+        """Legacy pooled outputs for meta-analysis."""
 
-        return self.stage_subdir("07_meta", "pooled")
+        return self.stage_subdir("08_meta", "pooled")
 
     @property
     def agreement_stage_dir(self) -> Path:
         """Stage directory for cross-method agreement analytics."""
 
-        return self.stage_subdir("08_agreement")
+        return self.stage_subdir("13_agreement")
 
     @property
     def ingest_stage_dir(self) -> Path:
@@ -511,17 +525,26 @@ class AppConfig:
 
         return self._preferred_stage_path(self.variance_pooled_dir, self.analysis_dir, name)
 
-    def meta_output_path(self, name: str) -> Path:
-        """Preferred path for pooled meta-analysis artifacts."""
+    def meta_output_path(self, players: int, name: str) -> Path:
+        """Preferred path for per-player meta-analysis artifacts."""
 
-        path = self.meta_pooled_dir / name
+        path = self.meta_per_k_dir(players) / name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def meta_input_path(self, name: str) -> Path:
+    def meta_input_path(self, players: int, name: str) -> Path:
         """Resolve a meta-analysis artifact with a legacy fallback."""
 
-        return self._preferred_stage_path(self.meta_pooled_dir, self.analysis_dir, name)
+        preferred = self.meta_per_k_dir(players) / name
+        if preferred.exists():
+            return preferred
+
+        for legacy_dir in (self.meta_pooled_dir, self.analysis_dir):
+            legacy_path = legacy_dir / name
+            if legacy_path.exists():
+                return legacy_path
+
+        return preferred
 
     def metrics_input_path(self, name: str | None = None) -> Path:
         """Resolve a pooled metrics artifact with a legacy fallback."""
@@ -569,7 +592,7 @@ class AppConfig:
         """Preferred path for agreement analytics for a given player count."""
 
         filename = f"agreement_{players}p.json"
-        stage_dir = self.per_k_subdir("08_agreement", players)
+        stage_dir = self.per_k_subdir("13_agreement", players)
         return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
 
     def trueskill_path(self, filename: str) -> Path:
@@ -604,10 +627,14 @@ class AppConfig:
     @property
     def curated_parquet(self) -> Path:
         """Location of the combined curated parquet spanning all player counts."""
-        pooled_dir = self.combine_pooled_dir(self.combine_max_players)
+        pooled_dir = self.combine_pooled_dir()
         preferred = pooled_dir / "all_ingested_rows.parquet"
         candidates = [
             preferred,
+            self.combine_stage_dir
+            / f"{self.combine_max_players}p"
+            / "pooled"
+            / "all_ingested_rows.parquet",
             self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
             self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
             self.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
@@ -652,7 +679,23 @@ class AppConfig:
     def combined_manifest_path(self) -> Path:
         """Path to the manifest accompanying ``curated_parquet``."""
 
-        return self.curated_parquet.with_suffix(".manifest.jsonl")
+        parquet = self.curated_parquet
+        preferred = parquet.with_suffix(".manifest.jsonl")
+        legacy_candidates = [
+            self.combine_stage_dir
+            / f"{self.combine_max_players}p"
+            / "pooled"
+            / "all_ingested_rows.manifest.jsonl",
+            self.combine_stage_dir / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
+            self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
+            self.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
+        ]
+        for candidate in legacy_candidates:
+            if preferred.exists():
+                break
+            if candidate.exists():
+                return candidate
+        return preferred
 
 
 # ─────────────────────────────────────────────────────────────────────────────

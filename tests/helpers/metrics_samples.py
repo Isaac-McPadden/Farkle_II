@@ -230,7 +230,7 @@ def _parquet_inputs_exist(root: Path) -> bool:
     """
 
     expected = [
-        root / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
+        root / "analysis" / "02_combine" / "pooled" / "all_ingested_rows.parquet",
         root / "2_players" / "2p_metrics.parquet",
         root / "3_players" / "3p_metrics.parquet",
     ]
@@ -242,8 +242,8 @@ def regenerate_inputs(target_root: Path) -> None:
 
     if target_root.exists():
         shutil.rmtree(target_root)
-    analysis_root = target_root / "analysis" / "data"
-    combined_dir = analysis_root / "all_n_players_combined"
+    analysis_root = target_root / "analysis" / "02_combine"
+    combined_dir = analysis_root / "pooled"
     combined_dir.mkdir(parents=True, exist_ok=True)
     combined_parquet = combined_dir / "all_ingested_rows.parquet"
     combined_csv = combined_dir / "all_ingested_rows.csv"

@@ -21,7 +21,7 @@ def test_read_manifest_seed(tmp_path: Path) -> None:
 
 def test_find_combined_parquet(tmp_path: Path) -> None:
     base = tmp_path / "root1"
-    combined = base / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
+    combined = base / "analysis" / "02_combine" / "pooled" / "all_ingested_rows.parquet"
     combined.parent.mkdir(parents=True, exist_ok=True)
     combined.touch()
     assert rt._find_combined_parquet(base) == combined
@@ -98,11 +98,11 @@ def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
     finally:
         os.chdir(cwd)
 
-    ratings_dir = data_root / "data"
+    ratings_dir = data_root
     ratings_2 = rt._load_ratings_parquet(ratings_dir / "2p" / "ratings_2.parquet")
     ratings3_path = ratings_dir / "3p" / "ratings_3.parquet"
     ratings_3 = rt._load_ratings_parquet(ratings3_path) if ratings3_path.exists() else {}
-    pooled = rt._load_ratings_parquet(data_root / "ratings_pooled.parquet")
+    pooled = rt._load_ratings_parquet(data_root / "pooled" / "ratings_pooled.parquet")
 
     assert set(ratings_2)
     assert ratings_3 == {}
@@ -124,5 +124,5 @@ def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
     finally:
         os.chdir(cwd)
 
-    assert (data_root / "data" / "2p" / "ratings_2_seed3.parquet").exists()
-    assert (data_root / "ratings_pooled_seed3.parquet").exists()
+    assert (data_root / "2p" / "ratings_2_seed3.parquet").exists()
+    assert (data_root / "pooled" / "ratings_pooled_seed3.parquet").exists()

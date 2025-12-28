@@ -47,7 +47,14 @@ def _setup_data(tmp_path: Path) -> Path:
             favor_dice_or_score=FavorDiceOrScore.SCORE,
         ),
     ]
-    metrics = pd.DataFrame({"strategy": strategies, "n_players": [2, 2], "games": [10, 10]})
+    metrics = pd.DataFrame(
+        {
+            "strategy": strategies,
+            "n_players": [2, 2],
+            "games": [10, 10],
+            "win_rate": [0.5, 0.5],
+        }
+    )
     metrics.to_parquet(data_dir / "metrics.parquet", index=False)
     ratings = pd.DataFrame(
         {
@@ -151,6 +158,7 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
             "strategy": strategies,
             "n_players": [2, 2],
             "games": [10, 10],
+            "win_rate": [0.5, 0.6],
             **{f"extra_{i}": [i, i + 1] for i in range(num_cols)},
         }
     )
@@ -172,6 +180,7 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
             np.zeros(X.shape[1])
         ),
     )
+    monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
     plotted: list[str] = []
 
     def fake_plot(model, X, column, out_dir):  # noqa: ARG001
@@ -196,11 +205,95 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
     expected_plots = [
         "score_threshold",
         "dice_threshold",
-        "consider_score",
         "consider_dice",
-        "smart_five",
+        "smart_one",
+        "require_both",
     ][: run_hgb.MAX_PD_PLOTS]
     assert plotted == expected_plots
+
+
+def test_partial_dependence_skips_constant_features(tmp_path, monkeypatch, caplog):
+    caplog.set_level("INFO")
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    strategies = [
+        _strategy_literal(
+            score_threshold=300,
+            dice_threshold=2,
+            smart_five=True,
+            smart_one=True,
+            consider_score=True,
+            consider_dice=True,
+            require_both=True,
+            auto_hot_dice=True,
+            run_up_score=False,
+            favor_dice_or_score=FavorDiceOrScore.SCORE,
+        ),
+        _strategy_literal(
+            score_threshold=450,
+            dice_threshold=1,
+            smart_five=True,
+            smart_one=False,
+            consider_score=True,
+            consider_dice=True,
+            require_both=False,
+            auto_hot_dice=False,
+            run_up_score=True,
+            favor_dice_or_score=FavorDiceOrScore.SCORE,
+        ),
+    ]
+    metrics = pd.DataFrame(
+        {
+            "strategy": strategies,
+            "n_players": [2, 2],
+            "games": [10, 10],
+            "win_rate": [0.5, 0.5],
+        }
+    )
+    metrics.to_parquet(data_dir / "metrics.parquet", index=False)
+    ratings = pd.DataFrame(
+        {
+            "strategy": strategies,
+            "mu": [0.0, 0.0],
+            "sigma": [1.0, 1.0],
+        }
+    )
+    ratings.to_parquet(data_dir / "ratings_pooled.parquet", index=False)
+
+    class DummyModel:
+        def fit(self, _X, _y):
+            return self
+
+    monkeypatch.setattr(
+        run_hgb,
+        "HistGradientBoostingRegressor",
+        lambda random_state=None: DummyModel(),  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        run_hgb,
+        "permutation_importance",
+        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+            np.zeros(X.shape[1])
+        ),
+    )
+    monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
+    plotted: list[str] = []
+
+    def fake_plot(model, X, column, out_dir):  # noqa: ARG001
+        plotted.append(column)
+        p = Path(out_dir) / f"pd_{column}.png"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("dummy")
+        return p
+
+    monkeypatch.setattr(run_hgb, "plot_partial_dependence", fake_plot)
+
+    run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
+
+    assert "consider_score" not in plotted
+    assert "consider_dice" not in plotted
+    skipped_logs = [r for r in caplog.records if "Skipping near-constant features" in r.message]
+    assert skipped_logs, "expected skip log for near-constant features"
 
 
 def test_run_hgb_default_output(tmp_path, monkeypatch):

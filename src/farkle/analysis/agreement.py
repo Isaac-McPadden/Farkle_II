@@ -13,7 +13,7 @@ import logging
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
-from typing import Iterable, Mapping
+from typing import Iterable, Mapping, Sequence
 
 import networkx as nx
 import numpy as np
@@ -91,6 +91,14 @@ def _build_payload(cfg: AppConfig, players: int) -> dict[str, object]:
     h2h = _load_head2head(cfg)
     if h2h is not None:
         methods["h2h"] = h2h
+
+    strategy_filter = getattr(cfg.analysis, "agreement_strategies", None)
+    if strategy_filter:
+        allowed = [str(strategy) for strategy in strategy_filter]
+        methods = {
+            name: _filter_method_to_strategies(data, allowed, name)
+            for name, data in methods.items()
+        }
 
     score_vectors = {name: data.scores for name, data in methods.items()}
     for name, series in score_vectors.items():
@@ -342,6 +350,41 @@ def _rank_correlations(
         kendall[f"{a}_vs_{b}"] = corr_k_value if np.isfinite(corr_k_value) else None
 
     return (spearman or None, kendall or None, coverage)
+
+
+def _filter_method_to_strategies(
+    method: MethodData, strategies: Sequence[str], method_name: str
+) -> MethodData:
+    """Restrict method data to a predefined set of strategies.
+
+    Args:
+        method: Score/tier collections for a single analytical method.
+        strategies: Strategies that should be retained.
+        method_name: Identifier used when logging missing strategies.
+
+    Returns:
+        New ``MethodData`` limited to the requested strategies.
+    """
+
+    allowed = {str(strategy) for strategy in strategies}
+    present = set(method.scores.index.astype(str))
+    missing = sorted(allowed - present)
+    if missing:
+        LOGGER.warning(
+            "Agreement filtering: %s missing %d strategies: %s",
+            method_name,
+            len(missing),
+            ", ".join(missing),
+        )
+
+    scores = method.scores[method.scores.index.isin(allowed)]
+    tiers = None
+    if method.tiers:
+        tiers = {strategy: tier for strategy, tier in method.tiers.items() if strategy in allowed}
+
+    per_seed = [series[series.index.isin(allowed)] for series in method.per_seed_scores]
+
+    return MethodData(scores=scores, tiers=tiers, per_seed_scores=per_seed)
 
 
 def _normalize_tiers(tiers: Mapping[str, int] | None) -> dict[str, int] | None:
