@@ -269,7 +269,7 @@ class AppConfig:
 
         return self.curate_block_dir(k)
 
-    def combine_pooled_dir(self, k: int | None = None) -> Path:
+    def combine_pooled_dir(self, k: int | None = None) -> Path:  # noqa: ARG002
         """Directory holding pooled combine artifacts (legacy *k* kept for callers)."""
 
         return self.stage_subdir("02_combine", "pooled")

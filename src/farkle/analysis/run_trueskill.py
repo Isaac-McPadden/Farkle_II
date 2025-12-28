@@ -1176,10 +1176,10 @@ def _write_seed_alignment_summary(
     for seed in seed_list:
         table_columns[f"seed_{seed}_mu"] = []
 
-    rows: list[dict[str, float | int | str | None]] = []
+    rows: list[dict[str, float | int | str]] = []
     for strategy in strategies:
         seed_mus: list[float] = []
-        row: dict[str, float | int | str | None] = {"strategy": strategy}
+        row: dict[str, float | int | str] = {"strategy": strategy}
         for seed in seed_list:
             mu_val = per_seed_results.get(seed, {}).get(strategy)
             mu = float(mu_val.mu) if mu_val is not None else math.nan
@@ -1217,14 +1217,13 @@ def _write_seed_alignment_summary(
     if write_csv:
         csv_path = dest_dir / "seed_mu_alignment.csv"
         fieldnames = base_cols + [f"seed_{seed}_mu" for seed in seed_list]
-        with atomic_path(str(csv_path)) as tmp_path:
-            with open(tmp_path, "w", newline="") as csv_file:
-                writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-                writer.writeheader()
-                writer.writerows(
-                    {k: ("" if (isinstance(v, float) and math.isnan(v)) else v) for k, v in row.items()}
-                    for row in rows
-                )
+        with atomic_path(str(csv_path)) as tmp_path, open(tmp_path, "w", newline="") as csv_file:
+            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(
+                {k: ("" if (isinstance(v, float) and math.isnan(v)) else v) for k, v in row.items()}
+                for row in rows
+            )
 
     json_path: Path | None = None
     if write_json:

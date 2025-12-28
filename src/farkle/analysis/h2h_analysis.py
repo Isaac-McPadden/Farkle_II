@@ -105,7 +105,7 @@ def holm_bonferroni(
             assert rng is not None  # for mypy
             outcomes: list[str] = []
             tie_break_flags: list[bool] = []
-            for row in ties.itertuples(index=False):
+            for _ in ties.itertuples(index=False):
                 winner_is_a = bool(rng.integers(0, 2) == 0)
                 outcomes.append("a>b" if winner_is_a else "b>a")
                 tie_break_flags.append(True)
@@ -240,7 +240,7 @@ def build_significant_graph(
         row_policy = getattr(row, "tie_policy", tie_policy)
         row_tie_break = bool(getattr(row, "tie_break", False))
         if row.dir == "tie":
-            neutral_pairs.append((row.a, row.b))
+            neutral_pairs.append((str(row.a), str(row.b)))
             continue
         if not bool(row.is_sig) and not row_tie_break:
             continue
