@@ -84,7 +84,7 @@ def test_holm_bonferroni_ties_marked_non_sig(caplog: pytest.LogCaptureFixture) -
         ]
     )
     with caplog.at_level(logging.WARNING):
-        decisions = h2h_analysis.holm_bonferroni(df_pairs=df, alpha=0.05)
+        decisions = h2h_analysis.holm_bonferroni(df_pairs=df, alpha=0.05, tie_policy="neutral_edge")
 
     assert "Ties detected in head-to-head results" in caplog.text
     tie_rows = decisions[decisions["dir"] == "tie"]
@@ -92,6 +92,8 @@ def test_holm_bonferroni_ties_marked_non_sig(caplog: pytest.LogCaptureFixture) -
     tie_row = tie_rows.iloc[0]
     assert tie_row["adj_p"] == pytest.approx(1.0)
     assert bool(tie_row["is_sig"]) is False
+    assert tie_row["tie_policy"] == "neutral_edge"
+    assert bool(tie_row["tie_break"]) is False
 
 
 def test_build_significant_graph_ignores_ties() -> None:
@@ -106,3 +108,28 @@ def test_build_significant_graph_ignores_ties() -> None:
     assert "C" in graph.nodes
     assert "D" in graph.nodes
     assert not graph.has_edge("C", "D")
+    assert ("C", "D") in graph.graph.get("neutral_pairs", [])
+
+
+def test_build_significant_graph_uses_simulated_tie_breaks() -> None:
+    df = pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "dir": "a>b", "is_sig": False, "pval": 1.0, "adj_p": 1.0, "tie_break": True, "tie_policy": "simulate_game"},
+        ]
+    )
+    graph = h2h_analysis.build_significant_graph(df, tie_policy="simulate_game", tie_break_seed=123)
+    assert graph.number_of_edges() == 1
+    edge = next(iter(graph.edges(data=True)))
+    assert edge[2]["tie_break"] is True
+    assert graph.graph.get("tie_break_edges")
+
+
+def test_tie_break_simulation_is_seeded() -> None:
+    df = pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "wins_a": 5, "wins_b": 5, "games": 10},
+        ]
+    )
+    first = h2h_analysis.holm_bonferroni(df, 0.05, tie_policy="simulate_game", tie_break_seed=4)
+    second = h2h_analysis.holm_bonferroni(df, 0.05, tie_policy="simulate_game", tie_break_seed=4)
+    assert first.equals(second)

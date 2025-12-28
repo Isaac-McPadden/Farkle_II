@@ -189,6 +189,11 @@ class Head2HeadConfig:
     fdr_q: float = 0.02
     # If you ever add a nested design block here, it will still parse:
     bonferroni_design: dict[str, Any] = field(default_factory=dict)
+    tie_break_policy: str = "neutral_edge"
+    """Strategy for handling tied win counts in post head-to-head analysis."""
+
+    tie_break_seed: int | None = None
+    """Optional RNG seed for deterministic tie-break simulation (defaults to sim.seed)."""
 
 
 @dataclass
