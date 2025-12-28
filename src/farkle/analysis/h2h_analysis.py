@@ -20,6 +20,7 @@ from scipy.stats import binomtest
 
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
+from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -37,12 +38,24 @@ _DECISION_SCHEMA = pa.schema(
         pa.field("adj_p", pa.float64()),
         pa.field("is_sig", pa.bool_()),
         pa.field("dir", pa.string()),
+        pa.field("tie_break", pa.bool_()),
+        pa.field("tie_policy", pa.string()),
     ]
 )
 
 
-def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
+def holm_bonferroni(
+    df_pairs: pd.DataFrame,
+    alpha: float,
+    *,
+    tie_policy: str = "neutral_edge",
+    tie_break_seed: int | None = None,
+) -> pd.DataFrame:
     """Apply Holm-Bonferroni to pairwise p-values with deterministic ordering."""
+    if tie_policy not in {"neutral_edge", "simulate_game"}:
+        raise ValueError(f"Unknown tie_policy {tie_policy!r}")
+
+    rng = np.random.default_rng(tie_break_seed) if tie_policy == "simulate_game" else None
     required = {"a", "b", "wins_a", "wins_b", "games"}
     missing = required - set(df_pairs.columns)
     if missing:
@@ -62,9 +75,9 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
 
     ties = base.loc[base["wins_a"] == base["wins_b"], ["a", "b", "wins_a"]]
     tie_decisions = pd.DataFrame(
-        columns=["a", "b", "pval", "adj_p", "is_sig", "dir"],
+        columns=["a", "b", "pval", "adj_p", "is_sig", "dir", "tie_break", "tie_policy"],
         dtype=object,
-    )    
+    )
     if not ties.empty:
         LOGGER.warning(
             "Ties detected in head-to-head results; marking as non-significant",
@@ -72,18 +85,43 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
                 "stage": "post_h2h",
                 "tie_pairs": ties.to_dict(orient="records"),
                 "tie_count": len(ties),
+                "tie_policy": tie_policy,
             },
         )
-        tie_decisions = pd.DataFrame(
-            {
-                "a": ties["a"].tolist(),
-                "b": ties["b"].tolist(),
-                "pval": [1.0] * len(ties),
-                "adj_p": [1.0] * len(ties),
-                "is_sig": [False] * len(ties),
-                "dir": ["tie"] * len(ties),
-            }
-        )
+        if tie_policy == "neutral_edge":
+            tie_decisions = pd.DataFrame(
+                {
+                    "a": ties["a"].tolist(),
+                    "b": ties["b"].tolist(),
+                    "pval": [1.0] * len(ties),
+                    "adj_p": [1.0] * len(ties),
+                    "is_sig": [False] * len(ties),
+                    "dir": ["tie"] * len(ties),
+                    "tie_break": [False] * len(ties),
+                    "tie_policy": [tie_policy] * len(ties),
+                }
+            )
+        else:
+            assert rng is not None  # for mypy
+            outcomes: list[str] = []
+            tie_break_flags: list[bool] = []
+            for row in ties.itertuples(index=False):
+                winner_is_a = bool(rng.integers(0, 2) == 0)
+                outcomes.append("a>b" if winner_is_a else "b>a")
+                tie_break_flags.append(True)
+
+            tie_decisions = pd.DataFrame(
+                {
+                    "a": ties["a"].tolist(),
+                    "b": ties["b"].tolist(),
+                    "pval": [1.0] * len(ties),
+                    "adj_p": [1.0] * len(ties),
+                    "is_sig": [False] * len(ties),
+                    "dir": outcomes,
+                    "tie_break": tie_break_flags,
+                    "tie_policy": [tie_policy] * len(ties),
+                }
+            )
 
     base = base.loc[base["wins_a"] != base["wins_b"]].copy()
     if base.empty:
@@ -95,6 +133,8 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
                 "adj_p": "float64",
                 "is_sig": "bool",
                 "dir": "string",
+                "tie_break": "bool",
+                "tie_policy": "string",
             }
         )
 
@@ -113,6 +153,9 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
             "dir": np.where(winner_is_a, "a>b", "b>a"),
         }
     )
+
+    decisions["tie_break"] = False
+    decisions["tie_policy"] = tie_policy
 
     decisions = pd.concat([decisions, tie_decisions], ignore_index=True)
     decisions = decisions.sort_values(by=["a", "b", "dir", "pval"], kind="mergesort")
@@ -134,7 +177,9 @@ def holm_bonferroni(df_pairs: pd.DataFrame, alpha: float) -> pd.DataFrame:
     adj_map = ordered.set_index("_idx")["adj_p"]
     decisions["adj_p"] = decisions.index.to_series().map(adj_map).astype(float)
     decisions["is_sig"] = decisions["adj_p"] <= float(alpha)
-    return decisions[["a", "b", "pval", "adj_p", "is_sig", "dir"]]
+    decisions["tie_break"] = decisions["tie_break"].astype(bool)
+    decisions["tie_policy"] = decisions["tie_policy"].astype(str)
+    return decisions[["a", "b", "pval", "adj_p", "is_sig", "dir", "tie_break", "tie_policy"]]
 
 
 def _aggregate_pairwise(df_pairs: pd.DataFrame) -> pd.DataFrame:
@@ -173,19 +218,31 @@ def _aggregate_pairwise(df_pairs: pd.DataFrame) -> pd.DataFrame:
     return grouped[["a", "b", "wins_a", "wins_b", "games", "P1_win_rate", "P2_win_rate"]]
 
 
-def build_significant_graph(df_adj: pd.DataFrame) -> nx.DiGraph:
+def build_significant_graph(
+    df_adj: pd.DataFrame,
+    *,
+    tie_policy: str = "neutral_edge",
+    tie_break_seed: int | None = None,
+) -> nx.DiGraph:
     """Construct a directed graph from Holm-adjusted significance decisions."""
     expected = {"a", "b", "dir", "is_sig", "pval", "adj_p"}
     if not expected.issubset(df_adj.columns):
         raise ValueError("Adjusted dataframe missing required columns")
 
     graph = nx.DiGraph()
+    graph.graph["tie_policy"] = tie_policy
+    graph.graph["tie_break_seed"] = tie_break_seed
+    neutral_pairs: list[tuple[str, str]] = []
+    tie_break_edges: list[dict[str, object]] = []
     for row in df_adj.itertuples(index=False):
         graph.add_node(row.a)
         graph.add_node(row.b)
-        if not bool(row.is_sig):
-            continue
+        row_policy = getattr(row, "tie_policy", tie_policy)
+        row_tie_break = bool(getattr(row, "tie_break", False))
         if row.dir == "tie":
+            neutral_pairs.append((row.a, row.b))
+            continue
+        if not bool(row.is_sig) and not row_tie_break:
             continue
         if row.dir == "a>b":
             source, target = row.a, row.b
@@ -197,7 +254,17 @@ def build_significant_graph(df_adj: pd.DataFrame) -> nx.DiGraph:
             raise RuntimeError(f"Duplicate edge detected: {source}->{target}")
         pval = float(cast(float, row.pval))
         adj_p = float(cast(float, row.adj_p))
-        graph.add_edge(source, target, pval=pval, adj_p=adj_p)
+        edge_data = {
+            "pval": pval,
+            "adj_p": adj_p,
+            "tie_break": row_tie_break,
+            "tie_policy": row_policy,
+        }
+        graph.add_edge(source, target, **edge_data)
+        if row_tie_break:
+            tie_break_edges.append({"source": source, "target": target, **edge_data})
+    graph.graph["neutral_pairs"] = neutral_pairs
+    graph.graph["tie_break_edges"] = tie_break_edges
     return graph
 
 
@@ -227,6 +294,12 @@ def run_post_h2h(cfg: AppConfig) -> None:
     """Execute the full post head-to-head Holm + ranking workflow."""
     analysis_dir = cfg.head2head_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    tie_policy = getattr(cfg.head2head, "tie_break_policy", "neutral_edge")
+    tie_break_seed = (
+        cfg.head2head.tie_break_seed
+        if getattr(cfg.head2head, "tie_break_seed", None) is not None
+        else int(cfg.sim.seed)
+    )
     pairwise_candidates = [
         analysis_dir / "bonferroni_pairwise.parquet",
         cfg.analysis_dir / "bonferroni_pairwise.parquet",
@@ -240,17 +313,25 @@ def run_post_h2h(cfg: AppConfig) -> None:
     alpha = _resolve_alpha(cfg)
     LOGGER.info(
         "Post H2H: adjusting Holm-Bonferroni",
-        extra={"stage": "post_h2h", "alpha": alpha, "rows": len(df_pairs)},
+        extra={
+            "stage": "post_h2h",
+            "alpha": alpha,
+            "rows": len(df_pairs),
+            "tie_policy": tie_policy,
+            "tie_break_seed": tie_break_seed,
+        },
     )
 
-    df_adj = holm_bonferroni(df_pairs, alpha)
+    df_adj = holm_bonferroni(
+        df_pairs, alpha, tie_policy=tie_policy, tie_break_seed=tie_break_seed
+    )
     decisions = df_adj.merge(df_pairs, on=["a", "b"], how="left")
     decisions = decisions[[field.name for field in _DECISION_SCHEMA]]
     decisions_tbl = pa.Table.from_pandas(decisions, schema=_DECISION_SCHEMA, preserve_index=False)
     decisions_path = analysis_dir / "bonferroni_decisions.parquet"
     write_parquet_atomic(decisions_tbl, decisions_path)
 
-    graph = build_significant_graph(df_adj)
+    graph = build_significant_graph(df_adj, tie_policy=tie_policy, tie_break_seed=tie_break_seed)
     graph_path = analysis_dir / "h2h_significant_graph.json"
     _write_graph_json(graph, graph_path)
 
@@ -277,6 +358,19 @@ def run_post_h2h(cfg: AppConfig) -> None:
             "decisions": decisions_tbl.num_rows,
             "edges": graph.number_of_edges(),
             "ranking_nodes": len(ranking),
+            "tie_policy": tie_policy,
+        },
+    )
+
+    manifest_path = cfg.analysis_dir / cfg.manifest_name
+    append_manifest_line(
+        manifest_path,
+        {
+            "event": "post_h2h",
+            "decisions_path": str(decisions_path),
+            "graph_path": str(graph_path),
+            "tie_policy": tie_policy,
+            "tie_break_seed": tie_break_seed,
         },
     )
 
@@ -306,6 +400,8 @@ def _write_graph_json(graph: nx.DiGraph, path) -> None:
         path: Destination file path for the JSON artifact.
     """
     payload = {
+        "tie_policy": graph.graph.get("tie_policy"),
+        "tie_break_seed": graph.graph.get("tie_break_seed"),
         "nodes": sorted(graph.nodes()),
         "edges": [
             {
@@ -313,11 +409,21 @@ def _write_graph_json(graph: nx.DiGraph, path) -> None:
                 "target": target,
                 "pval": float(data.get("pval", float("nan"))),
                 "adj_p": float(data.get("adj_p", float("nan"))),
+                "tie_break": bool(data.get("tie_break", False)),
+                "tie_policy": data.get("tie_policy"),
             }
             for source, target, data in sorted(
                 graph.edges(data=True), key=lambda item: (item[0], item[1])
             )
         ],
+        "neutral_pairs": [
+            {"a": a, "b": b}
+            for a, b in sorted(graph.graph.get("neutral_pairs", []), key=lambda pair: (pair[0], pair[1]))
+        ],
+        "tie_break_edges": sorted(
+            graph.graph.get("tie_break_edges", []),
+            key=lambda item: (str(item.get("source", "")), str(item.get("target", ""))),
+        ),
     }
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(path)) as tmp_path, open(tmp_path, "w", encoding="utf-8") as handle:
