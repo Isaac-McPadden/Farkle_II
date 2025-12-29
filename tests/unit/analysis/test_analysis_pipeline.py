@@ -61,6 +61,7 @@ def test_pipeline_creates_stage_dirs_in_new_order(
         "05_rng",
         "06_seed_summaries",
         "07_variance",
+        "07_meta",
         "08_meta",
         "09_trueskill",
         "10_head2head",
