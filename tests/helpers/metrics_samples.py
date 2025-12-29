@@ -219,6 +219,13 @@ def _write_version_note() -> None:
     )
 
 
+def _write_manifest(manifest: Path, rows: int) -> None:
+    """Emit a minimal manifest.jsonl with the provided row count."""
+
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text(json.dumps({"row_count": rows}) + "\n")
+
+
 def _parquet_inputs_exist(root: Path) -> bool:
     """Check whether the expected parquet inputs already exist.
 
@@ -242,8 +249,9 @@ def regenerate_inputs(target_root: Path) -> None:
 
     if target_root.exists():
         shutil.rmtree(target_root)
-    analysis_root = target_root / "analysis" / "02_combine"
-    combined_dir = analysis_root / "pooled"
+    analysis_root = target_root / "analysis"
+    combine_root = analysis_root / "02_combine"
+    combined_dir = combine_root / "pooled"
     combined_dir.mkdir(parents=True, exist_ok=True)
     combined_parquet = combined_dir / "all_ingested_rows.parquet"
     combined_csv = combined_dir / "all_ingested_rows.csv"
@@ -251,11 +259,11 @@ def regenerate_inputs(target_root: Path) -> None:
     pq.write_table(combined_table, combined_parquet)
     combined_table.to_pandas().to_csv(combined_csv, index=False)
 
+    _write_manifest(combined_parquet.with_suffix(".manifest.jsonl"), len(_COMBINED_ROWS))
+
     for n, count in _MANIFEST_ROWS.items():
-        manifest_dir = analysis_root / f"{n}p"
-        manifest_dir.mkdir(parents=True, exist_ok=True)
-        manifest = manifest_dir / "manifest.jsonl"
-        manifest.write_text(json.dumps({"row_count": count}))
+        for root in (analysis_root, combine_root):
+            _write_manifest(root / f"{n}p" / "manifest.jsonl", count)
 
     for n in _RAW_METRICS:
         metrics_dir = target_root / f"{n}_players"
@@ -299,6 +307,18 @@ def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
         regenerate_inputs(INPUT_ROOT)
     workspace = tmp_path / "results"
     shutil.copytree(INPUT_ROOT, workspace, dirs_exist_ok=True)
+
+    # Ensure manifests accompany the curated/isolated parquet inputs so pre-metrics
+    # checks can verify row counts in both the copied directories and near the
+    # combined parquet itself.
+    for n, count in _MANIFEST_ROWS.items():
+        for root in (workspace / "analysis", workspace / "analysis" / "02_combine"):
+            _write_manifest(root / f"{n}p" / "manifest.jsonl", count)
+    _write_manifest(
+        workspace / "analysis" / "02_combine" / "pooled" / "all_ingested_rows.manifest.jsonl",
+        len(_COMBINED_ROWS),
+    )
+
     cfg = build_config(workspace)
     return cfg
 
