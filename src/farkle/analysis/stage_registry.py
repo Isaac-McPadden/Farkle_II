@@ -1,0 +1,143 @@
+# src/farkle/analysis/stage_registry.py
+"""Central registry for ordered analysis stages and their metadata."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable, Iterable
+
+from farkle.config import AppConfig
+
+__all__ = [
+    "StageDefinition",
+    "StageLayout",
+    "StagePlacement",
+    "resolve_stage_layout",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class StageDefinition:
+    """Declarative description of a pipeline or analytics stage."""
+
+    key: str
+    group: str
+    folder_stub: str | None = None
+    requires_game_stats: bool = False
+    requires_rng: bool = False
+    enabled_predicate: Callable[[AppConfig], bool] | None = None
+
+    def folder_name(self, index: int) -> str:
+        """Return the zero-padded folder name for this stage."""
+
+        suffix = self.folder_stub or self.key
+        return f"{index:02d}_{suffix}"
+
+    def is_enabled(self, cfg: AppConfig, *, run_game_stats: bool, run_rng: bool) -> bool:
+        """Determine whether this stage should be active for a given config."""
+
+        if self.requires_game_stats and not run_game_stats:
+            return False
+        if self.requires_rng and not run_rng:
+            return False
+        if self.enabled_predicate is not None and not self.enabled_predicate(cfg):
+            return False
+        return True
+
+
+@dataclass(frozen=True, slots=True)
+class StagePlacement:
+    """Resolved placement of a stage within the numbered layout."""
+
+    definition: StageDefinition
+    index: int
+    folder_name: str
+
+
+@dataclass(slots=True)
+class StageLayout:
+    """Mapping from logical stage keys to numbered folder names."""
+
+    placements: list[StagePlacement]
+
+    def folder_for(self, key: str) -> str | None:
+        """Return the numbered folder name for *key* if the stage is active."""
+
+        for placement in self.placements:
+            if placement.definition.key == key:
+                return placement.folder_name
+        return None
+
+    def keys(self) -> list[str]:
+        """Return the ordered list of active stage keys."""
+
+        return [placement.definition.key for placement in self.placements]
+
+
+# Ordered registry describing every possible stage.
+_REGISTRY: tuple[StageDefinition, ...] = (
+    StageDefinition("ingest", group="pipeline"),
+    StageDefinition("curate", group="pipeline"),
+    StageDefinition("combine", group="pipeline"),
+    StageDefinition("metrics", group="pipeline"),
+    StageDefinition("game_stats", group="analytics", requires_game_stats=True),
+    StageDefinition("rng_diagnostics", group="analytics", folder_stub="rng", requires_rng=True),
+    StageDefinition("seed_summaries", group="analytics"),
+    StageDefinition("variance", group="analytics"),
+    StageDefinition("meta", group="analytics"),
+    StageDefinition(
+        "trueskill",
+        group="analytics",
+        enabled_predicate=lambda cfg: cfg.analysis.run_trueskill,
+    ),
+    StageDefinition(
+        "head2head",
+        group="analytics",
+        enabled_predicate=lambda cfg: cfg.analysis.run_head2head,
+    ),
+    StageDefinition(
+        "hgb",
+        group="analytics",
+        enabled_predicate=lambda cfg: cfg.analysis.run_hgb,
+    ),
+    StageDefinition(
+        "tiering",
+        group="analytics",
+        enabled_predicate=lambda cfg: getattr(cfg.analysis, "run_frequentist", False),
+    ),
+    StageDefinition(
+        "agreement",
+        group="analytics",
+        enabled_predicate=lambda cfg: getattr(cfg.analysis, "run_agreement", False),
+    ),
+)
+
+
+def resolve_stage_layout(
+    cfg: AppConfig,
+    *,
+    run_game_stats: bool | None = None,
+    run_rng: bool = False,
+    registry: Iterable[StageDefinition] | None = None,
+) -> StageLayout:
+    """Filter the registry and assign sequential numbered folder names."""
+
+    effective_game_stats = cfg.analysis.run_game_stats if run_game_stats is None else run_game_stats
+    definitions = tuple(registry) if registry is not None else _REGISTRY
+
+    placements: list[StagePlacement] = []
+    for definition in (
+        definition
+        for definition in definitions
+        if definition.is_enabled(cfg, run_game_stats=effective_game_stats, run_rng=run_rng)
+    ):
+        placement_index = len(placements)
+        placements.append(
+            StagePlacement(
+                definition=definition,
+                index=placement_index,
+                folder_name=definition.folder_name(placement_index),
+            )
+        )
+    return StageLayout(placements=placements)
+

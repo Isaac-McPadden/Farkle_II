@@ -91,8 +91,8 @@ def _meta_artifact_path(cfg: AnalysisConfig | AppConfig, players: int, filename:
 
     analysis_dir = _analysis_dir(cfg)
     candidates = [
-        analysis_dir / "07_meta" / f"{players}p" / filename,
-        analysis_dir / "08_meta" / "pooled" / filename,
+        *_stage_candidates(analysis_dir, "meta", filename=Path(f"{players}p") / filename),
+        *_stage_candidates(analysis_dir, "meta", filename=Path("pooled") / filename),
         analysis_dir / filename,
     ]
     return _first_existing(candidates)
@@ -111,10 +111,8 @@ def _tier_path(analysis_dir: Path) -> Path:
     """Resolve ``tiers.json`` within stage-aware directories."""
 
     candidates = [
-        analysis_dir / "12_tiering" / "tiers.json",
-        analysis_dir / "09_trueskill" / "tiers.json",
-        analysis_dir / "05_tiering" / "tiers.json",
-        analysis_dir / "03_trueskill" / "tiers.json",
+        *_stage_candidates(analysis_dir, "tiering", filename=Path("tiers.json")),
+        *_stage_candidates(analysis_dir, "trueskill", filename=Path("tiers.json")),
         analysis_dir / "tiers.json",
     ]
     return _first_existing(candidates)
@@ -124,10 +122,10 @@ def _ratings_path(analysis_dir: Path) -> Path:
     """Resolve pooled TrueSkill ratings with stage-aware fallbacks."""
 
     candidates = [
-        analysis_dir / "09_trueskill" / "pooled" / "ratings_pooled.parquet",
-        analysis_dir / "09_trueskill" / "ratings_pooled.parquet",
-        analysis_dir / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
-        analysis_dir / "03_trueskill" / "ratings_pooled.parquet",
+        *_stage_candidates(
+            analysis_dir, "trueskill", filename=Path("pooled") / "ratings_pooled.parquet"
+        ),
+        *_stage_candidates(analysis_dir, "trueskill", filename=Path("ratings_pooled.parquet")),
         analysis_dir / "pooled" / "ratings_pooled.parquet",
         analysis_dir / "ratings_pooled.parquet",
     ]
@@ -139,11 +137,21 @@ def _head2head_path(analysis_dir: Path, filename: str) -> Path:
 
     return _first_existing(
         [
-            analysis_dir / "10_head2head" / filename,
-            analysis_dir / "04_head2head" / filename,
+            *_stage_candidates(analysis_dir, "head2head", filename=Path(filename)),
             analysis_dir / filename,
         ]
     )
+
+
+def _stage_candidates(analysis_dir: Path, suffix: str, filename: Path | None = None) -> list[Path]:
+    """Return ordered stage-path candidates for a given suffix and optional filename."""
+
+    stage_dirs = sorted(
+        (p for p in analysis_dir.glob(f"*_{suffix}") if p.is_dir()), key=lambda p: p.name
+    )
+    if filename is None:
+        return stage_dirs
+    return [stage_dir / filename for stage_dir in stage_dirs]
 
 
 def _sim_player_counts(cfg: AnalysisConfig | AppConfig, analysis_dir: Path) -> list[int]:

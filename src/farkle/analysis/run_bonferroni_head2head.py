@@ -28,6 +28,17 @@ DEFAULT_ROOT = Path("results_seed_0")
 LOGGER = logging.getLogger(__name__)
 
 
+def _stage_candidates(analysis_root: Path, suffix: str, filename: Path | None = None) -> list[Path]:
+    """Return ordered candidate paths within stage directories matching *suffix*."""
+
+    stage_dirs = sorted(
+        (p for p in analysis_root.glob(f"*_{suffix}") if p.is_dir()), key=lambda p: p.name
+    )
+    if filename is None:
+        return stage_dirs
+    return [stage_dir / filename for stage_dir in stage_dirs]
+
+
 def _load_top_strategies(
     *,
     ratings_path: Path,
@@ -171,13 +182,12 @@ def run_bonferroni_head2head(
         extra={"stage": "head2head", "root": str(root), "seed": seed, "n_jobs": n_jobs},
     )
     analysis_root = Path(root / "analysis")
-    sub_root = analysis_root / "10_head2head"
+    head2head_dirs = _stage_candidates(analysis_root, "head2head")
+    sub_root = head2head_dirs[0] if head2head_dirs else analysis_root / "10_head2head"
     sub_root.mkdir(parents=True, exist_ok=True)
     tiers_candidates = [
-        analysis_root / "12_tiering" / "tiers.json",
-        analysis_root / "09_trueskill" / "tiers.json",
-        analysis_root / "05_tiering" / "tiers.json",
-        analysis_root / "03_trueskill" / "tiers.json",
+        *_stage_candidates(analysis_root, "tiering", Path("tiers.json")),
+        *_stage_candidates(analysis_root, "trueskill", Path("tiers.json")),
         analysis_root / "tiers.json",
     ]
     tiers_path = next((p for p in tiers_candidates if p.exists()), tiers_candidates[0])
@@ -198,16 +208,15 @@ def run_bonferroni_head2head(
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
     ratings_candidates = [
-        analysis_root / "09_trueskill" / "pooled" / "ratings_pooled.parquet",
-        analysis_root / "09_trueskill" / "ratings_pooled.parquet",
-        analysis_root / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
-        analysis_root / "03_trueskill" / "ratings_pooled.parquet",
+        *_stage_candidates(
+            analysis_root, "trueskill", Path("pooled") / "ratings_pooled.parquet"
+        ),
+        *_stage_candidates(analysis_root, "trueskill", Path("ratings_pooled.parquet")),
         analysis_root / "ratings_pooled.parquet",
     ]
     ratings_path = next((p for p in ratings_candidates if p.exists()), ratings_candidates[0])
     metrics_candidates = [
-        analysis_root / "03_metrics" / "metrics.parquet",
-        analysis_root / "02_metrics" / "metrics.parquet",
+        *_stage_candidates(analysis_root, "metrics", Path("metrics.parquet")),
         analysis_root / "metrics.parquet",
     ]
     metrics_path = next((p for p in metrics_candidates if p.exists()), metrics_candidates[0])

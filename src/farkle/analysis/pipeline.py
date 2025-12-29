@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from farkle import analysis
 from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
+from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, load_app_config
 from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import atomic_path
@@ -76,19 +77,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="run_game_stats",
         action="store_true",
         default=None,
-        help="Run the 04_game_stats stage after metrics (default: config)",
+        help="Run the game_stats stage after metrics (default: config)",
     )
     game_stats_group.add_argument(
         "--no-game-stats",
         dest="run_game_stats",
         action="store_false",
         default=None,
-        help="Skip the 04_game_stats stage after metrics",
+        help="Skip the game_stats stage after metrics",
     )
     parser.add_argument(
         "--rng-diagnostics",
         action="store_true",
-        help="Run the 05_rng diagnostics stage over curated rows",
+        help="Run the RNG diagnostics stage over curated rows",
     )
     parser.add_argument(
         "--margin-thresholds",
@@ -133,29 +134,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         app_cfg.analysis.rare_event_target_score = int(args.rare_event_target)
     rng_lags = tuple(int(lag) for lag in args.rng_lags) if args.rng_lags else None
 
-    for stage in (
-        "00_ingest",
-        "01_curate",
-        "02_combine",
-        "03_metrics",
-        "04_game_stats",
-        "05_rng",
-        "06_seed_summaries",
-        "07_variance",
-        "07_meta",
-        "08_meta",
-        "09_trueskill",
-        "10_head2head",
-        "11_hgb",
-        "12_tiering",
-        "13_agreement",
-    ):
-        app_cfg.stage_subdir(stage)
+    layout = resolve_stage_layout(
+        app_cfg, run_game_stats=run_game_stats, run_rng=args.rng_diagnostics
+    )
+    app_cfg.set_stage_layout(layout)
+    for stage_key in layout.keys():
+        app_cfg.stage_subdir(stage_key)
     analysis_dir = app_cfg.analysis_dir
     resolved = analysis_dir / "config.resolved.yaml"
     # Best-effort: write out the resolved (merged) config we actually used
+    stage_layout_snapshot = app_cfg._stage_layout
+    app_cfg._stage_layout = None
     resolved_dict: dict[str, Any] = _stringify_paths(dataclasses.asdict(app_cfg))
+    app_cfg._stage_layout = stage_layout_snapshot
     resolved_dict.pop("config_sha", None)
+    resolved_dict.pop("_stage_layout", None)
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     with atomic_path(str(resolved)) as tmp_path:
         Path(tmp_path).write_text(resolved_yaml)
