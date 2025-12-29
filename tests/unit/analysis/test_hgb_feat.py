@@ -35,8 +35,10 @@ def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
 
 def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, curated = _setup_cfg(tmp_path)
-    json_out = cfg.analysis_dir / "hgb_importance.json"
-    parquet_out = cfg.analysis_dir / hgb_feat._hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    json_out = cfg.hgb_pooled_dir / "hgb_importance.json"
+    parquet_out = cfg.hgb_per_k_dir(2) / hgb_feat._hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    json_out.parent.mkdir(parents=True, exist_ok=True)
+    parquet_out.parent.mkdir(parents=True, exist_ok=True)
     json_out.write_text("{}")
     pd.DataFrame({"feature": [], "importance_mean": [], "importance_std": []}).to_parquet(
         parquet_out, index=False
@@ -54,8 +56,10 @@ def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, curated = _setup_cfg(tmp_path)
-    json_out = cfg.analysis_dir / "hgb_importance.json"
-    parquet_out = cfg.analysis_dir / hgb_feat._hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    json_out = cfg.hgb_pooled_dir / "hgb_importance.json"
+    parquet_out = cfg.hgb_per_k_dir(2) / hgb_feat._hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    json_out.parent.mkdir(parents=True, exist_ok=True)
+    parquet_out.parent.mkdir(parents=True, exist_ok=True)
     json_out.write_text("{}")
     pd.DataFrame({"feature": [], "importance_mean": [], "importance_std": []}).to_parquet(
         parquet_out, index=False
@@ -66,9 +70,11 @@ def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     called = {}
 
-    def fake_run(*, root: Path, output_path: Path, seed: int = 0):
-        assert root == cfg.analysis_dir
+    def fake_run(*, root: Path, output_path: Path, metrics_path: Path, ratings_path: Path, seed: int = 0):
+        assert root == cfg.hgb_stage_dir
         assert output_path == json_out
+        assert metrics_path == cfg.metrics_input_path()
+        assert ratings_path == cfg.trueskill_path(hgb_feat._hgb.RATINGS_NAME)
         called["root"] = root
 
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
