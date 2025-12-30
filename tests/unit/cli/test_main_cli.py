@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
+import yaml
 
 pytest.importorskip("pydantic")
 pytest.importorskip("pyarrow")
@@ -74,3 +76,78 @@ def test_analyze_metrics_dispatches_rng(monkeypatch, preserve_root_logger):
 
     assert ("metrics", None) in calls
     assert ("rng", (1, 2)) in calls
+
+
+def test_stringify_paths_handles_nested_structures():
+    nested = {
+        "path": Path("/tmp/example"),
+        "items": [Path("a"), {"b": Path("c")}, (Path("d"),)],
+    }
+
+    result = cli_main._stringify_paths(nested)
+
+    assert result == {
+        "path": "/tmp/example",
+        "items": ["a", {"b": "c"}, ("d",)],
+    }
+
+
+def test_write_active_config_persists_yaml(tmp_path: Path, monkeypatch):
+    cfg = cli_main.AppConfig()
+    cfg.io.results_dir = tmp_path / "results"
+    cfg.analysis.outputs = {}
+    cfg.sim.row_dir = tmp_path / "rows"
+
+    cli_main._write_active_config(cfg, tmp_path)
+
+    written = tmp_path / "active_config.yaml"
+    assert written.exists()
+    data = yaml.safe_load(written.read_text())
+    assert data["io"]["results_dir"].endswith("results")
+    assert data["sim"]["row_dir"].endswith("rows")
+
+
+def test_main_time_dispatches(monkeypatch, preserve_root_logger):
+    captured: dict[str, object] = {}
+
+    def fake_measure_sim_times(**kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main, "measure_sim_times", fake_measure_sim_times)
+
+    cli_main.main(["time", "--players", "3", "--n-games", "10", "--jobs", "2", "--seed", "9"])
+
+    assert captured == {"n_games": 10, "players": 3, "seed": 9, "jobs": 2}
+
+
+def _write_cfg(tmp_path: Path) -> Path:
+    cfg = {
+        "io": {"results_dir": str(tmp_path / "out"), "append_seed": False},
+        "sim": {"seed": 7, "n_players_list": [2], "num_shuffles": 1, "recompute_num_shuffles": False},
+    }
+    path = tmp_path / "cfg.yml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    return path
+
+
+def test_analyze_variance_dispatch(monkeypatch, tmp_path: Path, preserve_root_logger):
+    called: dict[str, object] = {}
+
+    monkeypatch.setattr(cli_main.analysis_pkg, "run_variance", lambda cfg, *, force=False: called.update(force=force))
+
+    cfg_path = _write_cfg(tmp_path)
+    cli_main.main(["--config", str(cfg_path), "analyze", "variance", "--force"])
+
+    assert called == {"force": True}
+
+
+def test_analyze_pipeline_runs_preprocess(monkeypatch, tmp_path: Path, preserve_root_logger):
+    calls: list[str] = []
+
+    monkeypatch.setattr(cli_main, "_run_preprocess", lambda cfg, **kwargs: calls.append("preprocess"))
+    monkeypatch.setattr(cli_main.analysis_pkg, "run_all", lambda cfg: calls.append("run_all"))
+
+    cfg_path = _write_cfg(tmp_path)
+    cli_main.main(["--config", str(cfg_path), "analyze", "pipeline", "--compute-game-stats"])
+
+    assert calls == ["preprocess", "run_all"]
