@@ -88,10 +88,14 @@ def test_run_trueskill_pooling_and_short_circuit(
         resume: bool,
         checkpoint_every_batches: int,
         env_kwargs: dict | None,
+        row_data_dir: str | None = None,
+        curated_rows_name: str | None = None,
     ) -> tuple[str, int]:
         player_count = Path(block_dir).name.split("_")[0]
         stats, games = per_block[player_count]
-        out_path = Path(root_dir) / f"ratings_{player_count}{suffix}.parquet"
+        per_player = Path(root_dir) / f"{player_count}p"
+        per_player.mkdir(parents=True, exist_ok=True)
+        out_path = per_player / f"ratings_{player_count}{suffix}.parquet"
         if not out_path.exists():
             rt._save_ratings_parquet(out_path, stats)
         return player_count, games
@@ -115,8 +119,8 @@ def test_run_trueskill_pooling_and_short_circuit(
 
     assert created_executors and created_executors[0].max_workers == 2
 
-    pooled_path = analysis_root / "ratings_pooled.parquet"
-    json_path = analysis_root / "ratings_pooled.json"
+    pooled_path = analysis_root / "pooled" / "ratings_pooled.parquet"
+    json_path = analysis_root / "pooled" / "ratings_pooled.json"
     tiers_path = analysis_root / "tiers.json"
     assert pooled_path.exists() and json_path.exists() and tiers_path.exists()
 
@@ -176,11 +180,15 @@ def test_run_trueskill_skips_zero_game_block(
         resume: bool,
         checkpoint_every_batches: int,
         env_kwargs: dict | None,
+        row_data_dir: str | None = None,
+        curated_rows_name: str | None = None,
     ) -> tuple[str, int]:
         player_count = Path(block_dir).name.split("_")[0]
         name, stats, games = per_block[player_count]
+        per_player = Path(root_dir) / f"{player_count}p"
+        per_player.mkdir(parents=True, exist_ok=True)
         rt._save_ratings_parquet(
-            Path(root_dir) / f"ratings_{player_count}{suffix}.parquet", {name: stats}
+            per_player / f"ratings_{player_count}{suffix}.parquet", {name: stats}
         )
         return player_count, games
 
@@ -189,6 +197,6 @@ def test_run_trueskill_skips_zero_game_block(
 
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
 
-    pooled = rt._load_ratings_parquet(analysis_root / "ratings_pooled.parquet")
+    pooled = rt._load_ratings_parquet(analysis_root / "pooled" / "ratings_pooled.parquet")
     assert set(pooled) == {"A"}
     assert pooled["A"].mu == pytest.approx(10.0)

@@ -57,10 +57,12 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
     finally:
         os.chdir(cwd)
 
-    ratings_root = tmp_path / "data" / "data"
+    ratings_root = tmp_path / "data"
     r2 = run_trueskill._load_ratings_parquet(ratings_root / "2p" / "ratings_2.parquet")
     r3 = run_trueskill._load_ratings_parquet(ratings_root / "3p" / "ratings_3.parquet")
-    pooled = run_trueskill._load_ratings_parquet(tmp_path / "data" / "ratings_pooled.parquet")
+    pooled = run_trueskill._load_ratings_parquet(
+        ratings_root / "pooled" / "ratings_pooled.parquet"
+    )
 
     env = run_trueskill.trueskill.TrueSkill()
     g2 = [["A", "B"]] * 3
