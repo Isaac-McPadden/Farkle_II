@@ -165,3 +165,49 @@ def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.Mon
 
     assert pair_jobs
     assert all(job == 2 for job in pair_jobs)
+
+
+def test_load_top_strategies_handles_missing_and_invalid(tmp_path: Path, caplog):
+    ratings = tmp_path / "ratings.parquet"
+    metrics = tmp_path / "metrics.parquet"
+
+    caplog.set_level("INFO")
+    strategies = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
+
+    assert strategies == []
+    assert any("Fallback selection skipped" in rec.message for rec in caplog.records)
+
+    ratings_df = pd.DataFrame({"strategy": ["S1", "S2"], "mu": [1.0, 2.0]})
+    metrics_df = pd.DataFrame({"strategy": ["S2", "S3"], "win_rate": [0.2, 0.8]})
+    ratings_df.to_parquet(ratings)
+    metrics_df.to_parquet(metrics)
+
+    combined = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
+    assert combined == ["S2", "S1", "S3"]
+
+
+def test_tiers_path_prefers_stage_layout_and_warns(tmp_path: Path, caplog):
+    cfg = AppConfig()
+    cfg.io.results_dir = tmp_path
+    cfg._stage_layout = type(
+        "_Layout",
+        (),
+        {"folder_for": lambda self, key: "11_head2head" if key in {"head2head", "tiering"} else None},
+    )()
+    stage_dir = cfg.analysis_dir / "11_head2head"
+    stage_dir.mkdir(parents=True)
+    legacy_tiers = cfg.analysis_dir / "tiers.json"
+    legacy_tiers.write_text("{}")
+    preferred = stage_dir / "tiers.json"
+    preferred.write_text("{}")
+
+    caplog.set_level("WARNING")
+    path = rb._tiers_path(cfg)
+
+    assert path == preferred
+
+
+def test_count_pair_wins_errors_without_winner(monkeypatch):
+    df = pd.DataFrame({"foo": [1, 2, 3]})
+    with pytest.raises(KeyError):
+        rb._count_pair_wins(df, "A", "B")

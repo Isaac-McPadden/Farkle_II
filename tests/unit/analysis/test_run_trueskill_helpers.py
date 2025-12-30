@@ -39,6 +39,43 @@ def test_find_combined_parquet(tmp_path: Path) -> None:
     assert rt._find_combined_parquet(base3) == fallback
 
 
+def test_rating_artifact_paths_and_ensure_new_location(tmp_path: Path) -> None:
+    root = tmp_path / "analysis"
+    legacy_root = tmp_path / "legacy"
+    legacy_root.mkdir(parents=True)
+
+    # create legacy file that should be migrated
+    legacy_file = legacy_root / "data" / "2p" / "ratings_2_seed3.parquet"
+    legacy_file.parent.mkdir(parents=True, exist_ok=True)
+    legacy_file.touch()
+
+    paths = rt._rating_artifact_paths(root, "2", "_seed3", legacy_root=legacy_root)
+    migrated = rt._ensure_new_location(paths["parquet"], *paths["legacy_parquet"])
+
+    assert migrated == paths["parquet"]
+    assert migrated.exists()
+
+
+def test_iter_rating_parquets_deduplicates_and_filters(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "2p").mkdir()
+    (root / "2p" / "ratings_2_seed0.parquet").touch()
+    (root / "ratings_pooled_seed0.parquet").touch()
+    (root / "data" / "2p").mkdir(parents=True)
+    (root / "data" / "2p" / "ratings_2_seed0.parquet").touch()
+
+    results = rt._iter_rating_parquets(root, "_seed0")
+    assert len(results) == 2
+    assert all(path.stem.startswith("ratings_2") for path in results)
+
+
+def test_player_count_from_stem_handles_variants():
+    assert rt._player_count_from_stem("ratings_2_seed1") == 2
+    assert rt._player_count_from_stem("ratings_3p_seed1") == 3
+    assert rt._player_count_from_stem("invalid") is None
+
+
 def test_update_ratings_adds_missing_strategies() -> None:
     env = trueskill.TrueSkill()
     games = [["A", "B"], ["B", "A"], ["C", "A"]]
