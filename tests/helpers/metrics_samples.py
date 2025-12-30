@@ -4,7 +4,9 @@ from __future__ import annotations
 """Helpers for generating and validating metrics-stage sample artifacts."""
 
 import json
+import os
 import shutil
+import stat
 from pathlib import Path
 
 import pyarrow as pa
@@ -207,6 +209,14 @@ _RAW_METRICS = {
 }
 
 
+def _clear_readonly(func, path, exc_info) -> None:
+    """Retry removals after clearing Windows read-only attributes."""
+
+    del exc_info
+    os.chmod(path, stat.S_IWRITE)
+    func(path)
+
+
 def _write_version_note() -> None:
     """Record the generator version used for the golden artifacts.
 
@@ -248,7 +258,7 @@ def regenerate_inputs(target_root: Path) -> None:
     """Rebuild the synthetic metrics inputs in ``target_root``."""
 
     if target_root.exists():
-        shutil.rmtree(target_root)
+        shutil.rmtree(target_root, onerror=_clear_readonly)
     analysis_root = target_root / "analysis"
     combine_root = analysis_root / "02_combine"
     combined_dir = combine_root / "pooled"
