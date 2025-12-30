@@ -307,7 +307,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             cfg.analysis.rare_event_target_score = int(rare_event_target)
         rng_lags_arg = getattr(args, "rng_lags", None)
         if rng_lags_arg:
-            rng_lags = tuple(int(lag) for lag in rng_lags_arg)
+            rng_lags = tuple(sorted({int(lag) for lag in rng_lags_arg}))
         compute_rng_diagnostics = getattr(args, "rng_diagnostics", False)
 
         LOGGER.info(

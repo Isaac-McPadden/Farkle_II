@@ -323,4 +323,4 @@ def test_pipeline_rng_diagnostics_flag(monkeypatch: pytest.MonkeyPatch, tmp_resu
     ])
 
     assert rc == 0
-    assert calls == [("combine", None), ("rng_diagnostics", (3, 1))]
+    assert calls == [("combine", None), ("rng_diagnostics", (1, 3))]
