@@ -176,8 +176,10 @@ def test_rate_single_pass_resumes_from_checkpoint(tmp_path: Path) -> None:
 
 def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
-    data_dir = root / "data" / "2p"
+    data_dir = root / "2p"
     data_dir.mkdir(parents=True, exist_ok=True)
+    legacy_dir = root / "data" / "2p"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
     block_dir = tmp_path / "results" / "2_players"
     block_dir.mkdir(parents=True, exist_ok=True)
     np.save(block_dir / "keepers_2.npy", np.array(["A", "C"]))
@@ -194,11 +196,11 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
     row_file = data_dir / "2p_ingested_rows.parquet"
     pq.write_table(table, row_file, row_group_size=1)
 
-    ratings_ck = data_dir / "ratings_2.checkpoint.parquet"
+    ratings_ck = legacy_dir / "ratings_2.checkpoint.parquet"
     rt._save_ratings_parquet(
         ratings_ck, {"A": trueskill.TrueSkill().create_rating(mu=25.0, sigma=8.0)}
     )
-    ck_path = data_dir / "ratings_2.ckpt.json"
+    ck_path = legacy_dir / "ratings_2.ckpt.json"
     rt._save_block_ckpt(
         ck_path,
         rt._BlockCkpt(
@@ -224,14 +226,8 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
     ratings = rt._load_ratings_parquet(data_dir / "ratings_2.parquet")
     assert set(ratings) == {"A", "C"}
     assert "B" not in ratings
-
-    updated = json.loads(ck_path.read_text())
-    assert updated["row_group"] == 1
-    assert updated["batch_index"] == 1
-    assert updated["games_done"] == games
-
-    interim = rt._load_ratings_parquet(ratings_ck)
-    assert set(interim) == {"A", "C"}
+    assert not (data_dir / "ratings_2.ckpt.json").exists()
+    assert not (data_dir / "ratings_2.checkpoint.parquet").exists()
 
 
 @pytest.mark.parametrize(
