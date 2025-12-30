@@ -1,8 +1,7 @@
 # src/pipeline.py
 """Front door helpers for running the analytics pipeline.
 
-This module used to only re-export :func:`farkle.pipeline.main` for
-backwards compatibility.  It now exposes small convenience functions for
+This module exposes small convenience functions for
 running analytics passes directly on an experiment directory.  Each pass
 creates a ``.done.json`` stamp next to its primary output and skips work
 when inputs are unchanged.

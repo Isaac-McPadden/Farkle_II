@@ -1,4 +1,5 @@
 analysis:
+  agreement_strategies: null
   game_stats_margin_thresholds:
   - 500
   - 1000
@@ -16,6 +17,7 @@ analysis:
   results_glob: '*_players'
   run_agreement: false
   run_frequentist: false
+  run_game_stats: true
   run_head2head: true
   run_hgb: true
   run_post_h2h_analysis: false
@@ -27,11 +29,14 @@ analysis:
   tiering_z_star: 1.645
 combine:
   max_players: 12
+config_sha: null
 head2head:
   bonferroni_design: {}
   fdr_q: 0.02
   games_per_pair: 10000
   n_jobs: 4
+  tie_break_policy: neutral_edge
+  tie_break_seed: null
 hgb:
   max_depth: 6
   n_estimators: 300

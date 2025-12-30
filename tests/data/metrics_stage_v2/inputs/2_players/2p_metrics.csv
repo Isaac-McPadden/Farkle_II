@@ -1,5 +1,0 @@
-strategy,wins,total_games_strat,sum_winning_score,sq_sum_winning_score,sum_n_rounds,sq_sum_n_rounds,sum_winner_hit_max_rounds
-"Strat(200,0)[SD][F-FS][AND][HR]",12,20,2000.0,210000.0,100.0,1100.0,0.0
-"Strat(200,0)[SD][F-FD][AND][HR]",8,20,1400.0,150000.0,80.0,900.0,1.0
-"Strat(200,0)[SD][F-FS][OR][HR]",5,20,900.0,95000.0,70.0,750.0,0.0
-"Strat(200,0)[SD][F-FD][OR][HR]",1,20,200.0,21000.0,40.0,420.0,0.0
