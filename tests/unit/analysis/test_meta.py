@@ -22,6 +22,19 @@ def _make_cfg(tmp_path: Path) -> AppConfig:
     return cfg
 
 
+def test_estimate_rate_and_variance_validates_inputs():
+    rate, var = meta._estimate_rate_and_variance(0, 0, None)
+    assert math.isnan(rate)
+    assert var == math.inf
+
+    with pytest.raises(ValueError):
+        meta._estimate_rate_and_variance(5, 2, None)
+
+    rate, var = meta._estimate_rate_and_variance(10, 10, 1.0)
+    assert 0.0 <= rate <= 1.0
+    assert var >= meta.MIN_VARIANCE
+
+
 def test_pool_winrates_prefers_fixed_effects_when_I2_low() -> None:
     df_seed1 = pd.DataFrame(
         [
@@ -206,3 +219,15 @@ def test_meta_limits_other_seeds_and_respects_override(tmp_path: Path) -> None:
         [frames_by_seed[42], frames_by_seed[7]], use_random_if_I2_gt=90.0
     ).pooled["win_rate"].iloc[0]
     assert pooled_override["win_rate"].iloc[0] == pytest.approx(expected_override)
+
+
+def test_apply_strategy_presence_filters_and_reports_missing():
+    frames = [
+        pd.DataFrame({"strategy_id": ["A", "B"], "seed": [1, 1]}),
+        pd.DataFrame({"strategy_id": ["A", "C"], "seed": [2, 2]}),
+    ]
+
+    filtered, missing = meta._apply_strategy_presence(frames)
+
+    assert all(df["strategy_id"].tolist() == ["A"] for df in filtered)
+    assert missing == {"B": [2], "C": [1]}
