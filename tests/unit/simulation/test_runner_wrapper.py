@@ -132,3 +132,53 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
     config = cast(runner.TournamentConfig, calls["config"])
     expected_total = config.games_per_shuffle * cfg.sim.num_shuffles
     assert total_games == expected_total
+
+
+def test_resolve_row_output_dir_formats_and_prefixes(tmp_path):
+    cfg = AppConfig(
+        io=IOConfig(results_dir=tmp_path / "results", append_seed=False),
+        sim=SimConfig(n_players_list=[2], row_dir=Path("custom")),
+    )
+
+    formatted = runner._resolve_row_output_dir(cfg, 2)
+    assert formatted == tmp_path / "results" / "2_players" / "2p_custom"
+
+    cfg.sim.row_dir = Path("{n}_rows")
+    formatted = runner._resolve_row_output_dir(cfg, 3)
+    assert formatted == tmp_path / "results" / "3_players" / "3_rows"
+
+
+def test_filter_player_counts_reports_invalid(monkeypatch):
+    cfg = AppConfig(
+        io=IOConfig(results_dir=Path("ignored")),
+        sim=SimConfig(n_players_list=[3]),
+    )
+    monkeypatch.setattr(runner, "experiment_size", lambda **_: 4)
+
+    valid, invalid, grid_size, source = runner._filter_player_counts(cfg, [2, 3])
+    assert valid == [2]
+    assert invalid == [3]
+    assert grid_size == 4
+    assert source == "experiment_size"
+
+
+def test_compute_num_shuffles_prefers_overrides(monkeypatch):
+    per_cfg = SimConfig(num_shuffles=7, recompute_num_shuffles=False)
+    cfg = AppConfig(io=IOConfig(results_dir=Path("ignored")), sim=SimConfig(per_n={2: per_cfg}))
+
+    n_shuffles = runner._compute_num_shuffles_from_config(cfg, n_strategies=4, n_players=2)
+    assert n_shuffles == 7
+
+
+def test_compute_num_shuffles_recomputes(monkeypatch):
+    cfg = AppConfig(io=IOConfig(results_dir=Path("ignored")), sim=SimConfig())
+    cfg.sim.recompute_num_shuffles = True
+    cfg.sim.num_shuffles = 1
+
+    # Keep the calculation deterministic
+    monkeypatch.setattr(
+        runner, "games_for_power_from_design", lambda n_strategies, k_players, method, design: 9
+    )
+
+    n_shuffles = runner._compute_num_shuffles_from_config(cfg, n_strategies=6, n_players=2)
+    assert n_shuffles == 9
