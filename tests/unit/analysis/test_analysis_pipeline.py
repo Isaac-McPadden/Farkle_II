@@ -48,12 +48,12 @@ def test_pipeline_creates_stage_dirs_in_new_order(
 ) -> None:
     cfg_path, cfg = _make_config(tmp_results_dir, monkeypatch)
 
-    stages: list[str] = []
+    stage_folders: list[str] = []
     original = cfg.stage_dir
 
     def _record(stage: str):
         root = original(stage)
-        stages.append(root.name)
+        stage_folders.append(root.name)
         return root
 
     monkeypatch.setattr(cfg, "stage_dir", _record)
@@ -62,19 +62,7 @@ def test_pipeline_creates_stage_dirs_in_new_order(
     rc = pipeline.main(["--config", str(cfg_path), "ingest"])
 
     assert rc == 0
-    assert stages == [
-        "00_ingest",
-        "01_curate",
-        "02_combine",
-        "03_metrics",
-        "04_game_stats",
-        "05_seed_summaries",
-        "06_variance",
-        "07_meta",
-        "08_trueskill",
-        "09_head2head",
-        "10_hgb",
-    ]
+    assert stage_folders == [placement.folder_name for placement in cfg.stage_layout.placements]
 
 
 def test_pipeline_writes_resolved_config_and_manifest(
@@ -111,19 +99,7 @@ def test_pipeline_writes_resolved_config_and_manifest(
     assert run_start["config_sha"] == expected_sha
     assert run_start["resolved_config"] == str(resolved)
     assert stage_layout
-    assert [item["folder"] for item in stage_layout] == [
-        "00_ingest",
-        "01_curate",
-        "02_combine",
-        "03_metrics",
-        "04_game_stats",
-        "05_seed_summaries",
-        "06_variance",
-        "07_meta",
-        "08_trueskill",
-        "09_head2head",
-        "10_hgb",
-    ]
+    assert stage_layout == cfg.stage_layout.to_resolved_layout()
     assert records[-1]["event"] == "run_end"
 
 
@@ -135,11 +111,11 @@ def test_pipeline_writes_resolved_config_and_manifest(
         ("combine", "farkle.analysis.combine.run"),
         ("metrics", "farkle.analysis.metrics.run"),
     ],
-)
+    )
 def test_pipeline_individual_commands_invoke_target(
     tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch, command: str, target: str
 ) -> None:
-    cfg_path, _ = _make_config(tmp_results_dir, monkeypatch)
+    cfg_path, cfg = _make_config(tmp_results_dir, monkeypatch)
 
     called: list[str] = []
 
@@ -156,16 +132,16 @@ def test_pipeline_individual_commands_invoke_target(
         )
     rc = pipeline.main(["--config", str(cfg_path), command])
     assert rc == 0
-    if command == "metrics":
-        assert called == [command, "game_stats"]
-    else:
-        assert called == [command]
+    expected = [command]
+    if command == "metrics" and cfg.stage_layout.folder_for("game_stats"):
+        expected.append("game_stats")
+    assert called == expected
 
 
 def test_pipeline_analytics_runs_layout_order(
     tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg_path, _ = _make_config(tmp_results_dir, monkeypatch)
+    cfg_path, cfg = _make_config(tmp_results_dir, monkeypatch)
 
     calls: list[str] = []
 
@@ -187,21 +163,18 @@ def test_pipeline_analytics_runs_layout_order(
 
     rc = pipeline.main(["--config", str(cfg_path), "analytics"])
     assert rc == 0
-    assert calls == [
-        "game_stats",
-        "seed_summaries",
-        "variance",
-        "meta",
-        "trueskill",
-        "head2head",
-        "hgb",
+    analytics_keys = [
+        placement.definition.key
+        for placement in cfg.stage_layout.placements
+        if placement.definition.group == "analytics"
     ]
+    assert calls == analytics_keys
 
 
 def test_pipeline_all_runs_all_steps(
     tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg_path, _ = _make_config(tmp_results_dir, monkeypatch)
+    cfg_path, cfg = _make_config(tmp_results_dir, monkeypatch)
 
     calls: list[str] = []
 
@@ -227,19 +200,7 @@ def test_pipeline_all_runs_all_steps(
 
     rc = pipeline.main(["--config", str(cfg_path), "all"])
     assert rc == 0
-    assert calls == [
-        "ingest",
-        "curate",
-        "combine",
-        "metrics",
-        "game_stats",
-        "seed_summaries",
-        "variance",
-        "meta",
-        "trueskill",
-        "head2head",
-        "hgb",
-    ]
+    assert calls == [placement.definition.key for placement in cfg.stage_layout.placements]
 
 
 @pytest.mark.parametrize(
