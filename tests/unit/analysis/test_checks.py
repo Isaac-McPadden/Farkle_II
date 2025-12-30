@@ -8,14 +8,14 @@ import pyarrow.parquet as pq
 import pytest
 
 from farkle.analysis.checks import check_post_combine, check_pre_metrics
+from farkle.config import AppConfig, IOConfig
 from farkle.utils.schema_helpers import expected_schema_for
 
 
 def _combined_path(tmp_path: Path) -> tuple[Path, Path]:
-    analysis_dir = tmp_path / "analysis"
-    data_dir = analysis_dir / "01_curate"
-    combined_dir = analysis_dir / "02_combine" / "pooled"
-    combined_dir.mkdir(parents=True, exist_ok=True)
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
+    data_dir = cfg.stage_dir("curate")
+    combined_dir = cfg.stage_subdir("combine", "pooled")
     return data_dir, combined_dir / "all_ingested_rows.parquet"
 
 
