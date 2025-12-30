@@ -141,20 +141,13 @@ def analyze_h2h(exp_dir: Path) -> None:
     """Run Bonferroni head-to-head analysis."""
 
     exp_dir = Path(exp_dir)
-    analysis_dir = exp_dir / "analysis"
-    h2h_dir = analysis_dir / "10_head2head"
-    h2h_dir.mkdir(parents=True, exist_ok=True)
-    out = h2h_dir / "bonferroni_pairwise.parquet"
+    cfg = AppConfig()
+    cfg.io.results_dir = exp_dir
+    analysis_dir = cfg.analysis_dir
+    h2h_dir = cfg.head2head_stage_dir
+    out = cfg.head2head_path("bonferroni_pairwise.parquet")
     done = _done_path(out)
-    tiers = _first_existing(
-        [
-            analysis_dir / "12_tiering" / "tiers.json",
-            analysis_dir / "09_trueskill" / "tiers.json",
-            analysis_dir / "05_tiering" / "tiers.json",
-            analysis_dir / "03_trueskill" / "tiers.json",
-            analysis_dir / "tiers.json",
-        ]
-    )
+    tiers = cfg.preferred_tiers_path()
     inputs = [tiers]
     if is_up_to_date(done, inputs, [out]):
         print("SKIP h2h (up to date)")
@@ -163,7 +156,7 @@ def analyze_h2h(exp_dir: Path) -> None:
     analysis_dir.mkdir(parents=True, exist_ok=True)
     from farkle.analysis import run_bonferroni_head2head as _h2h
 
-    _h2h.run_bonferroni_head2head(root=exp_dir, n_jobs=1)
+    _h2h.run_bonferroni_head2head(cfg=cfg, n_jobs=1)
     write_done(done, inputs, [out], "farkle.analytics.head2head")
     print("h2h")
 
@@ -172,27 +165,15 @@ def analyze_hgb(exp_dir: Path) -> None:
     """Run hist gradient boosting feature importance analysis."""
 
     exp_dir = Path(exp_dir)
-    analysis_dir = exp_dir / "analysis" / "11_hgb"
-    out = analysis_dir / "pooled" / "hgb_importance.json"
+    cfg = AppConfig()
+    cfg.io.results_dir = exp_dir
+    analysis_dir = cfg.hgb_stage_dir
+    out = cfg.hgb_pooled_dir / "hgb_importance.json"
     done = _done_path(out)
-    metrics = _first_existing(
-        [
-            exp_dir / "analysis" / "03_metrics" / "pooled" / "metrics.parquet",
-            exp_dir / "analysis" / "03_metrics" / "metrics.parquet",
-            exp_dir / "analysis" / "02_metrics" / "pooled" / "metrics.parquet",
-            exp_dir / "analysis" / "02_metrics" / "metrics.parquet",
-            exp_dir / "analysis" / "metrics.parquet",
-        ]
-    )
-    ratings = _first_existing(
-        [
-            exp_dir / "analysis" / "09_trueskill" / "pooled" / "ratings_pooled.parquet",
-            exp_dir / "analysis" / "09_trueskill" / "ratings_pooled.parquet",
-            exp_dir / "analysis" / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
-            exp_dir / "analysis" / "03_trueskill" / "ratings_pooled.parquet",
-            exp_dir / "analysis" / "ratings_pooled.parquet",
-        ]
-    )
+    metrics = cfg.metrics_input_path("metrics.parquet")
+    ratings = cfg.trueskill_pooled_dir / "ratings_pooled.parquet"
+    if not ratings.exists():
+        ratings = cfg.trueskill_stage_dir / "ratings_pooled.parquet"
     inputs = [metrics, ratings]
     if is_up_to_date(done, inputs, [out]):
         print("SKIP hgb (up to date)")

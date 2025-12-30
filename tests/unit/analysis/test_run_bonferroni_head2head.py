@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 import farkle.analysis.run_bonferroni_head2head as rb
+from farkle.config import AppConfig
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import ThresholdStrategy
 
@@ -36,9 +37,11 @@ def test_run_bonferroni_head2head_missing_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An informative error is raised when tiers.json is absent."""
+    cfg = AppConfig()
+    cfg.io.results_dir = tmp_path
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="Tier file not found"):
-        rb.run_bonferroni_head2head(seed=1, root=tmp_path)
+        rb.run_bonferroni_head2head(seed=1, cfg=cfg)
 
 
 def test_run_bonferroni_head2head_empty_file(
@@ -47,9 +50,11 @@ def test_run_bonferroni_head2head_empty_file(
     analysis_dir = tmp_path / "analysis"
     analysis_dir.mkdir()
     (analysis_dir / "tiers.json").write_text("{}")
+    cfg = AppConfig()
+    cfg.io.results_dir = tmp_path
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="No tiers found"):
-        rb.run_bonferroni_head2head(root=tmp_path)
+        rb.run_bonferroni_head2head(cfg=cfg)
 
 
 def test_count_pair_wins_prefers_strategy_column() -> None:
@@ -105,9 +110,12 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     monkeypatch.setattr(rb, "parse_strategy", lambda name: name)
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_simulate)
 
-    rb.run_bonferroni_head2head(seed=1, root=tmp_path, shard_size=1)
+    cfg = AppConfig()
+    cfg.io.results_dir = tmp_path
 
-    pairwise_path = analysis_dir / "bonferroni_pairwise.parquet"
+    rb.run_bonferroni_head2head(seed=1, cfg=cfg, shard_size=1)
+
+    pairwise_path = cfg.head2head_path("bonferroni_pairwise.parquet")
     assert pairwise_path.exists()
     df = pd.read_parquet(pairwise_path)
     assert set(df["pair_id"]) == {0, 1, 2}
