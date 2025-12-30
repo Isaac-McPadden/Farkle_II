@@ -68,10 +68,31 @@ class StageLayout:
                 return placement.folder_name
         return None
 
+    def require_folder(self, key: str) -> str:
+        """Return the numbered folder name for *key* or raise if inactive."""
+
+        folder = self.folder_for(key)
+        if folder is None:
+            raise KeyError(f"Stage {key!r} is not active in the resolved layout")
+        return folder
+
     def keys(self) -> list[str]:
         """Return the ordered list of active stage keys."""
 
         return [placement.definition.key for placement in self.placements]
+
+    def to_resolved_layout(self) -> list[dict[str, str | int]]:
+        """Return a serialization-friendly view of the resolved layout."""
+
+        return [
+            {
+                "key": placement.definition.key,
+                "folder": placement.folder_name,
+                "group": placement.definition.group,
+                "index": placement.index,
+            }
+            for placement in self.placements
+        ]
 
 
 # Ordered registry describing every possible stage.
