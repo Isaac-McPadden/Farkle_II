@@ -81,11 +81,25 @@ def test_run_hgb_custom_output_path(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
+        monkeypatch.setattr(
+            run_hgb,
+            "permutation_importance",
+            lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+                np.zeros(X.shape[1])
+            ),
+        )
         run_hgb.run_hgb(output_path=out_file, root=data_dir)
     finally:
         os.chdir(cwd)
+        monkeypatch.undo()
     assert out_file.exists()
-    parquet_path = data_dir / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    parquet_path = (
+        data_dir
+        / f"{2}p"
+        / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    )
     assert parquet_path.exists()
     assert not (data_dir / "hgb_importance.json").exists()
 
@@ -98,6 +112,7 @@ def test_run_hgb_importance_length_check(tmp_path, monkeypatch):
         return _perm_result([0.1, 0.2])
 
     monkeypatch.setattr(run_hgb, "permutation_importance", fake_perm_importance)
+    monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
@@ -108,17 +123,17 @@ def test_run_hgb_importance_length_check(tmp_path, monkeypatch):
         os.chdir(cwd)
 
 
-def test_ratings_mu_values_used(tmp_path, monkeypatch):
+def test_win_rate_is_regression_target(tmp_path, monkeypatch):
     data_dir = _setup_data(tmp_path)
-    strategies = pd.read_parquet(data_dir / "metrics.parquet")["strategy"].tolist()
-    ratings = pd.DataFrame(
+    metrics = pd.DataFrame(
         {
-            "strategy": strategies,
-            "mu": [1.0, 2.0],
-            "sigma": [1.0, 1.0],
+            "strategy": pd.read_parquet(data_dir / "metrics.parquet")["strategy"],
+            "n_players": [2, 2],
+            "games": [10, 10],
+            "win_rate": [0.25, 0.75],
         }
     )
-    ratings.to_parquet(data_dir / "ratings_pooled.parquet", index=False)
+    metrics.to_parquet(data_dir / "metrics.parquet", index=False)
 
     captured = {}
 
@@ -144,8 +159,9 @@ def test_ratings_mu_values_used(tmp_path, monkeypatch):
         "plot_partial_dependence",
         lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
     )
+    monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
     run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
-    assert captured["y"] == [1.0, 2.0]
+    assert captured["y"] == [0.25, 0.75]
 
 
 def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
@@ -320,8 +336,13 @@ def test_run_hgb_default_output(tmp_path, monkeypatch):
         "plot_partial_dependence",
         lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
     )
+    monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
 
     run_hgb.run_hgb(root=data_dir)
-    assert (data_dir / "hgb_importance.json").exists()
-    parquet_path = data_dir / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    assert (data_dir / "pooled" / "hgb_importance.json").exists()
+    parquet_path = (
+        data_dir
+        / f"{2}p"
+        / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
+    )
     assert parquet_path.exists()
