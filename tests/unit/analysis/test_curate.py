@@ -6,6 +6,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+import farkle.analysis.curate as curate
 
 from farkle.analysis.curate import (
     _already_curated,
@@ -360,3 +361,28 @@ def test_run_legacy_finalizes_raw_file(tmp_path):
     meta = json.loads(manifest.read_text())
     assert meta["row_count"] == 0
     assert meta["schema_hash"] == _schema_hash(0)
+
+
+def test_migrate_raw_and_curated_outputs(tmp_path):
+    cfg = _make_cfg(tmp_path)
+
+    legacy_raw = cfg.combine_stage_dir / "2p" / "2p_ingested_rows.raw.parquet"
+    legacy_raw.parent.mkdir(parents=True, exist_ok=True)
+    legacy_raw.write_bytes(b"raw")
+    legacy_manifest = legacy_raw.with_suffix(".manifest.jsonl")
+    legacy_manifest.write_text("{}")
+
+    curated_legacy = cfg.combine_stage_dir / "3p" / cfg.curated_rows_name
+    curated_legacy.parent.mkdir(parents=True, exist_ok=True)
+    curated_legacy.write_bytes(b"curated")
+    curated_manifest = curated_legacy.parent / cfg.manifest_name
+    curated_manifest.write_text("{}")
+
+    curate._migrate_raw_inputs(cfg)
+    curate._migrate_curated_outputs(cfg)
+
+    assert cfg.ingested_rows_raw(2).exists()
+    assert cfg.ingest_manifest(2).exists()
+    assert not legacy_raw.exists()
+    assert cfg.ingested_rows_curated(3).exists()
+    assert cfg.manifest_for(3).exists()
