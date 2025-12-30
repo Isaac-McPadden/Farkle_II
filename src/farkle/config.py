@@ -9,11 +9,14 @@ from __future__ import annotations
 import dataclasses
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence, get_args, get_origin, get_type_hints
+from typing import TYPE_CHECKING, Any, Mapping, Sequence, get_args, get_origin, get_type_hints
 
 import yaml  # type: ignore[import-untyped]
 
 from farkle.utils.yaml_helpers import expand_dotted_keys
+
+if TYPE_CHECKING:  # pragma: no cover - used for type checking only
+    from farkle.analysis.stage_registry import StageLayout
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataclasses (schema)
@@ -224,6 +227,9 @@ class AppConfig:
     hgb: HGBConfig = field(default_factory=HGBConfig)
     # Computed at runtime; not part of user-provided YAML
     config_sha: str | None = field(default=None, init=False, repr=False, compare=False)
+    _stage_layout: "StageLayout | None" = field(
+        default=None, init=False, repr=False, compare=False
+    )
 
     # —— Paths ——
     @property
@@ -237,14 +243,35 @@ class AppConfig:
         return self.io.results_dir / self.io.analysis_subdir
 
     # Numbered analysis stage directories (created on access)
-    def stage_subdir(self, name: str, *parts: str | Path) -> Path:
+    @property
+    def stage_layout(self) -> "StageLayout":
+        """Resolved :class:`~farkle.analysis.stage_registry.StageLayout`."""
+
+        if self._stage_layout is None:
+            from farkle.analysis.stage_registry import resolve_stage_layout
+
+            self._stage_layout = resolve_stage_layout(self)
+        return self._stage_layout
+
+    def set_stage_layout(self, layout: "StageLayout") -> None:
+        """Override the resolved stage layout (used by CLI orchestration)."""
+
+        self._stage_layout = layout
+
+    def stage_dir(self, key: str) -> Path:
+        """Return the resolved stage directory for ``key`` and create it."""
+
+        stage_root = self.analysis_dir / self.stage_layout.require_folder(key)
+        stage_root.mkdir(parents=True, exist_ok=True)
+        return stage_root
+
+    def stage_subdir(self, key: str, *parts: str | Path) -> Path:
         """Resolve a stage root or nested subdirectory under ``analysis_dir``.
 
         Directories are created on access to keep downstream callers simple.
         """
 
-        stage_root = self.analysis_dir / name
-        stage_root.mkdir(parents=True, exist_ok=True)
+        stage_root = self.stage_dir(key)
         path = stage_root.joinpath(*map(Path, parts)) if parts else stage_root
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
@@ -257,12 +284,12 @@ class AppConfig:
     def ingest_block_dir(self, k: int) -> Path:
         """Directory holding ingest artifacts for ``k`` players."""
 
-        return self.per_k_subdir("00_ingest", k)
+        return self.per_k_subdir("ingest", k)
 
     def curate_block_dir(self, k: int) -> Path:
         """Directory holding curated artifacts for ``k`` players."""
 
-        return self.per_k_subdir("01_curate", k)
+        return self.per_k_subdir("curate", k)
 
     def combine_block_dir(self, k: int) -> Path:
         """Deprecated alias for :meth:`curate_block_dir`."""
@@ -272,18 +299,18 @@ class AppConfig:
     def combine_pooled_dir(self, k: int | None = None) -> Path:  # noqa: ARG002
         """Directory holding pooled combine artifacts (legacy *k* kept for callers)."""
 
-        return self.stage_subdir("02_combine", "pooled")
+        return self.stage_subdir("combine", "pooled")
 
     def metrics_per_k_dir(self, k: int) -> Path:
         """Directory holding metrics artifacts for ``k`` players."""
-        path = self.per_k_subdir("03_metrics", k)
+        path = self.per_k_subdir("metrics", k)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
     @property
     def metrics_pooled_dir(self) -> Path:
         """Directory holding pooled metrics artifacts."""
-        path = self.stage_subdir("03_metrics", "pooled")
+        path = self.stage_subdir("metrics", "pooled")
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -291,114 +318,114 @@ class AppConfig:
     def game_stats_stage_dir(self) -> Path:
         """Stage directory for game-stat analytics."""
 
-        return self.stage_subdir("04_game_stats")
+        return self.stage_subdir("game_stats")
 
     @property
     def game_stats_pooled_dir(self) -> Path:
         """Pooled outputs for game-stat analytics."""
 
-        return self.stage_subdir("04_game_stats", "pooled")
+        return self.stage_subdir("game_stats", "pooled")
 
     @property
     def rng_stage_dir(self) -> Path:
         """Stage directory for RNG diagnostics."""
 
-        return self.stage_subdir("05_rng")
+        return self.stage_subdir("rng_diagnostics")
 
     @property
     def rng_pooled_dir(self) -> Path:
         """Pooled outputs for RNG diagnostics."""
 
-        return self.stage_subdir("05_rng", "pooled")
+        return self.stage_subdir("rng_diagnostics", "pooled")
 
     @property
     def seed_summaries_stage_dir(self) -> Path:
         """Stage directory for per-seed summaries."""
 
-        return self.stage_subdir("06_seed_summaries")
+        return self.stage_subdir("seed_summaries")
 
     def seed_summaries_dir(self, players: int) -> Path:
         """Directory holding seed summaries for ``players`` count."""
 
-        return self.stage_subdir("06_seed_summaries", f"{players}p")
+        return self.stage_subdir("seed_summaries", f"{players}p")
 
     @property
     def variance_stage_dir(self) -> Path:
         """Stage directory for variance analytics."""
 
-        return self.stage_subdir("07_variance")
+        return self.stage_subdir("variance")
 
     @property
     def variance_pooled_dir(self) -> Path:
         """Pooled outputs for variance analytics."""
 
-        return self.stage_subdir("07_variance", "pooled")
+        return self.stage_subdir("variance", "pooled")
 
     @property
     def meta_stage_dir(self) -> Path:
         """Stage directory for meta-analysis outputs."""
 
-        return self.stage_subdir("07_meta")
+        return self.stage_subdir("meta")
 
     def meta_per_k_dir(self, players: int) -> Path:
         """Primary per-player meta-analysis directory."""
 
-        return self.stage_subdir("07_meta", f"{players}p")
+        return self.stage_subdir("meta", f"{players}p")
 
     @property
     def meta_pooled_dir(self) -> Path:
         """Legacy pooled outputs for meta-analysis."""
 
-        return self.stage_subdir("08_meta", "pooled")
+        return self.stage_subdir("meta", "pooled")
 
     @property
     def agreement_stage_dir(self) -> Path:
         """Stage directory for cross-method agreement analytics."""
 
-        return self.stage_subdir("13_agreement")
+        return self.stage_subdir("agreement")
 
     @property
     def ingest_stage_dir(self) -> Path:
-        return self.stage_subdir("00_ingest")
+        return self.stage_subdir("ingest")
 
     @property
     def curate_stage_dir(self) -> Path:
-        return self.stage_subdir("01_curate")
+        return self.stage_subdir("curate")
 
     @property
     def combine_stage_dir(self) -> Path:
-        return self.stage_subdir("02_combine")
+        return self.stage_subdir("combine")
 
     @property
     def metrics_stage_dir(self) -> Path:
-        return self.stage_subdir("03_metrics")
+        return self.stage_subdir("metrics")
 
     @property
     def trueskill_stage_dir(self) -> Path:
-        return self.stage_subdir("09_trueskill")
+        return self.stage_subdir("trueskill")
 
     @property
     def trueskill_pooled_dir(self) -> Path:
-        return self.stage_subdir("09_trueskill", "pooled")
+        return self.stage_subdir("trueskill", "pooled")
 
     @property
     def head2head_stage_dir(self) -> Path:
-        return self.stage_subdir("10_head2head")
+        return self.stage_subdir("head2head")
 
     @property
     def hgb_stage_dir(self) -> Path:
-        return self.stage_subdir("11_hgb")
+        return self.stage_subdir("hgb")
 
     def hgb_per_k_dir(self, k: int) -> Path:
-        return self.per_k_subdir("11_hgb", k)
+        return self.per_k_subdir("hgb", k)
 
     @property
     def hgb_pooled_dir(self) -> Path:
-        return self.stage_subdir("11_hgb", "pooled")
+        return self.stage_subdir("hgb", "pooled")
 
     @property
     def tiering_stage_dir(self) -> Path:
-        return self.stage_subdir("12_tiering")
+        return self.stage_subdir("tiering")
 
     @property
     def meta_analysis_dir(self) -> Path:
@@ -415,7 +442,7 @@ class AppConfig:
 
     @property
     def data_dir(self) -> Path:
-        """Root directory for curated data under ``01_curate``."""
+        """Root directory for curated data under the curate stage."""
 
         return self.curate_stage_dir
 
@@ -482,7 +509,7 @@ class AppConfig:
         return str(outputs.get("metrics_name", "metrics.parquet"))
 
     def metrics_output_path(self, name: str | None = None) -> Path:
-        """Preferred path for pooled metrics artifacts under ``03_metrics``."""
+        """Preferred path for pooled metrics artifacts under the metrics stage."""
 
         filename = str(self.metrics_name if name is None else name)
         path = self.metrics_pooled_dir / filename
@@ -592,7 +619,7 @@ class AppConfig:
         """Preferred path for agreement analytics for a given player count."""
 
         filename = f"agreement_{players}p.json"
-        stage_dir = self.per_k_subdir("13_agreement", players)
+        stage_dir = self.per_k_subdir("agreement", players)
         return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
 
     def trueskill_path(self, filename: str) -> Path:

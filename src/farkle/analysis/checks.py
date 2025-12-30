@@ -55,8 +55,11 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
         data_dir = combined_parquet.parent.parent
     elif combined_parquet.parent.name == "pooled":
         analysis_root = combined_parquet.parent.parent.parent
-        candidate = analysis_root / "01_curate"
-        data_dir = candidate if candidate.exists() else analysis_root
+        candidate = next(
+            (p for p in analysis_root.iterdir() if p.name.endswith("_curate") and p.is_dir()),
+            None,
+        )
+        data_dir = candidate if candidate is not None else analysis_root
     else:
         data_dir = combined_parquet.parent
     manifest_rows = 0

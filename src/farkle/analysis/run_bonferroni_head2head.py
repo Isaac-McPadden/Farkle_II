@@ -16,6 +16,7 @@ import pandas as pd
 import pyarrow as pa
 from scipy.stats import binomtest
 
+from farkle.config import AppConfig
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy
 from farkle.utils.artifacts import write_parquet_atomic
@@ -23,9 +24,46 @@ from farkle.utils.random import MAX_UINT32
 from farkle.utils.stats import games_for_power
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
 
-DEFAULT_ROOT = Path("results_seed_0")
-
 LOGGER = logging.getLogger(__name__)
+
+
+def _warn_legacy_stage_dirs(cfg: AppConfig, suffix: str) -> None:
+    """Emit a warning when legacy stage directories are present."""
+
+    expected = cfg.stage_layout.folder_for(suffix)
+    if expected is None:
+        return
+
+    expected_dir = cfg.analysis_dir / expected
+    for path in sorted(cfg.analysis_dir.glob(f"*_{suffix}")):
+        if path == expected_dir:
+            continue
+        LOGGER.warning(
+            "Legacy stage directory detected; prefer layout-aware helpers",
+            extra={"stage": suffix, "legacy_path": str(path), "preferred": str(expected_dir)},
+        )
+
+
+def _tiers_path(cfg: AppConfig) -> Path:
+    """Resolve a tiers.json path without requiring optional stages."""
+
+    candidates: list[Path] = []
+    for key in ("tiering", "trueskill"):
+        folder = cfg.stage_layout.folder_for(key)
+        if folder is not None:
+            candidates.append(cfg.analysis_dir / folder / "tiers.json")
+    candidates.append(cfg.analysis_dir / "tiers.json")
+
+    for path in candidates:
+        if path.exists():
+            if path == cfg.analysis_dir / "tiers.json" and candidates and candidates[0] != path:
+                LOGGER.warning(
+                    "Legacy tiers path detected; prefer layout-aware locations",
+                    extra={"stage": "head2head", "legacy_path": str(path), "preferred": str(candidates[0])},
+                )
+            return path
+
+    return candidates[0]
 
 
 def _load_top_strategies(
@@ -125,7 +163,8 @@ def _count_pair_wins(df: pd.DataFrame, strategy_a: str, strategy_b: str) -> tupl
 def run_bonferroni_head2head(
     *,
     seed: int = 0,
-    root: Path = DEFAULT_ROOT,
+    root: Path | None = None,
+    cfg: AppConfig | None = None,
     n_jobs: int = 1,
     design: Dict[str, Any] | None = None,
     completed_pair_ids: Iterable[int] | None = None,
@@ -140,8 +179,12 @@ def run_bonferroni_head2head(
     seed : int, default ``0``
         Base seed for shuffling the schedule and deterministically assigning
         unique seeds to each simulated game.
-    root : Path, default :data:`DEFAULT_ROOT`
-        Directory containing ``tiers.json`` and where results are written.
+    root : Path, optional
+        Base results directory containing ``tiers.json``; overrides ``cfg.io.results_dir``
+        when provided.
+    cfg : AppConfig, optional
+        Application configuration used to resolve stage-aware directories. A fresh
+        default will be created when omitted.
     n_jobs : int, default ``1``
         Number of worker processes; when greater than one, games are simulated in
         parallel and queued in batches so multiple pairs advance concurrently.
@@ -166,23 +209,21 @@ def run_bonferroni_head2head(
     p-value is produced by :func:`scipy.stats.binomtest` using the ``greater``
     alternative.
     """
+    cfg = cfg or AppConfig()
+    if root is not None:
+        cfg.io.results_dir = Path(root)
+    analysis_root = cfg.analysis_dir
+    _warn_legacy_stage_dirs(cfg, "head2head")
+
     LOGGER.info(
         "Bonferroni head-to-head start",
-        extra={"stage": "head2head", "root": str(root), "seed": seed, "n_jobs": n_jobs},
+        extra={"stage": "head2head", "root": str(cfg.results_dir), "seed": seed, "n_jobs": n_jobs},
     )
-    analysis_root = Path(root / "analysis")
-    sub_root = analysis_root / "10_head2head"
-    sub_root.mkdir(parents=True, exist_ok=True)
-    tiers_candidates = [
-        analysis_root / "12_tiering" / "tiers.json",
-        analysis_root / "09_trueskill" / "tiers.json",
-        analysis_root / "05_tiering" / "tiers.json",
-        analysis_root / "03_trueskill" / "tiers.json",
-        analysis_root / "tiers.json",
-    ]
-    tiers_path = next((p for p in tiers_candidates if p.exists()), tiers_candidates[0])
-    pairwise_candidates = [sub_root / "bonferroni_pairwise.parquet", analysis_root / "bonferroni_pairwise.parquet"]
-    pairwise_parquet = next((p for p in pairwise_candidates if p.exists()), pairwise_candidates[0])
+
+    sub_root = cfg.head2head_stage_dir
+    tiers_path = _tiers_path(cfg)
+
+    pairwise_parquet = cfg.head2head_path("bonferroni_pairwise.parquet")
     default_shards = sub_root / "bonferroni_pairwise_shards"
     legacy_shards = analysis_root / "bonferroni_pairwise_shards"
     shard_dir = shard_dir or (default_shards if default_shards.exists() or not legacy_shards.exists() else legacy_shards)
@@ -197,20 +238,16 @@ def run_bonferroni_head2head(
         raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
-    ratings_candidates = [
-        analysis_root / "09_trueskill" / "pooled" / "ratings_pooled.parquet",
-        analysis_root / "09_trueskill" / "ratings_pooled.parquet",
-        analysis_root / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
-        analysis_root / "03_trueskill" / "ratings_pooled.parquet",
-        analysis_root / "ratings_pooled.parquet",
-    ]
-    ratings_path = next((p for p in ratings_candidates if p.exists()), ratings_candidates[0])
-    metrics_candidates = [
-        analysis_root / "03_metrics" / "metrics.parquet",
-        analysis_root / "02_metrics" / "metrics.parquet",
-        analysis_root / "metrics.parquet",
-    ]
-    metrics_path = next((p for p in metrics_candidates if p.exists()), metrics_candidates[0])
+    ratings_path = cfg.trueskill_pooled_dir / "ratings_pooled.parquet"
+    if not ratings_path.exists():
+        fallback = cfg.trueskill_stage_dir / "ratings_pooled.parquet"
+        if fallback.exists():
+            LOGGER.warning(
+                "Using legacy pooled ratings path; prefer stage-aware pooled directory",
+                extra={"stage": "head2head", "legacy_path": str(fallback), "preferred": str(ratings_path)},
+            )
+            ratings_path = fallback
+    metrics_path = cfg.metrics_input_path("metrics.parquet")
     if len(elites) < 2:
         fallback = _load_top_strategies(
             ratings_path=ratings_path,

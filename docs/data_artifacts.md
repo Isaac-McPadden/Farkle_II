@@ -4,6 +4,13 @@ This catalog enumerates every on-disk artifact produced by the simulation and
 analysis pipelines, including who writes it, what it contains, how large it
 usually is, and which downstream steps depend on it.
 
+Stage folder numbers are assigned automatically by
+:class:`farkle.analysis.stage_registry.StageLayout` based on which steps are
+enabled. Instead of hard-coding prefixes like ``analysis/10_head2head``, use the
+layout-aware helpers on :class:`farkle.config.AppConfig` (e.g.
+``cfg.head2head_stage_dir`` or ``cfg.head2head_path("bonferroni_pairwise.parquet")``)
+to discover or create the appropriate directories.
+
 ## Simulation stage outputs
 
 | Artifact pattern | Producer | Schema / key fields | Typical volume | Consumers | Notes |

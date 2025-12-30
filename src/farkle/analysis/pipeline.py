@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from farkle import analysis
 from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
+from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, load_app_config
 from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import atomic_path
@@ -76,19 +77,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="run_game_stats",
         action="store_true",
         default=None,
-        help="Run the 04_game_stats stage after metrics (default: config)",
+        help="Run the game_stats stage after metrics (default: config)",
     )
     game_stats_group.add_argument(
         "--no-game-stats",
         dest="run_game_stats",
         action="store_false",
         default=None,
-        help="Skip the 04_game_stats stage after metrics",
+        help="Skip the game_stats stage after metrics",
     )
     parser.add_argument(
         "--rng-diagnostics",
         action="store_true",
-        help="Run the 05_rng diagnostics stage over curated rows",
+        help="Run the RNG diagnostics stage over curated rows",
     )
     parser.add_argument(
         "--margin-thresholds",
@@ -133,29 +134,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         app_cfg.analysis.rare_event_target_score = int(args.rare_event_target)
     rng_lags = tuple(int(lag) for lag in args.rng_lags) if args.rng_lags else None
 
-    for stage in (
-        "00_ingest",
-        "01_curate",
-        "02_combine",
-        "03_metrics",
-        "04_game_stats",
-        "05_rng",
-        "06_seed_summaries",
-        "07_variance",
-        "07_meta",
-        "08_meta",
-        "09_trueskill",
-        "10_head2head",
-        "11_hgb",
-        "12_tiering",
-        "13_agreement",
-    ):
-        app_cfg.stage_subdir(stage)
+    layout = resolve_stage_layout(
+        app_cfg, run_game_stats=run_game_stats, run_rng=args.rng_diagnostics
+    )
+    app_cfg.set_stage_layout(layout)
+    for placement in layout.placements:
+        app_cfg.stage_dir(placement.definition.key)
     analysis_dir = app_cfg.analysis_dir
     resolved = analysis_dir / "config.resolved.yaml"
     # Best-effort: write out the resolved (merged) config we actually used
+    resolved_layout = layout.to_resolved_layout()
+    stage_layout_snapshot = app_cfg._stage_layout
+    app_cfg._stage_layout = None
     resolved_dict: dict[str, Any] = _stringify_paths(dataclasses.asdict(app_cfg))
+    app_cfg._stage_layout = stage_layout_snapshot
     resolved_dict.pop("config_sha", None)
+    resolved_dict.pop("_stage_layout", None)
+    resolved_dict["stage_layout"] = resolved_layout
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     with atomic_path(str(resolved)) as tmp_path:
         Path(tmp_path).write_text(resolved_yaml)
@@ -176,42 +171,57 @@ def main(argv: Sequence[str] | None = None) -> int:
         },
     )
 
-    def _maybe_add_game_stats(
-        plan: list[tuple[str, Callable[[AppConfig], None]]],
-    ) -> None:
-        if run_game_stats:
-            plan.append(("game_stats", lambda cfg: game_stats.run(cfg)))
+    def _optional_stage(module: str, stage: str) -> Callable[[AppConfig], None]:
+        def _runner(cfg: AppConfig) -> None:
+            mod = analysis._optional_import(module)
+            if mod is None:
+                analysis._skip_message(stage, "unavailable")
+                return
+            mod.run(cfg)
 
-    def _maybe_add_rng(plan: list[tuple[str, Callable[[AppConfig], None]]]) -> None:
-        if args.rng_diagnostics:
-            plan.append(("rng_diagnostics", lambda cfg: rng_diagnostics.run(cfg, lags=rng_lags)))
+        return _runner
 
-    # Build the step plan
-    if args.command == "all":
-        steps: list[tuple[str, Callable[[AppConfig], None]]] = [
-            ("ingest", ingest.run),
-            ("curate", curate.run),
-            ("combine", combine.run),
-            ("metrics", metrics.run),
+    stage_map: dict[str, Callable[[AppConfig], None]] = {
+        "ingest": ingest.run,
+        "curate": curate.run,
+        "combine": combine.run,
+        "metrics": metrics.run,
+        "game_stats": lambda cfg: game_stats.run(cfg),
+        "rng_diagnostics": lambda cfg: rng_diagnostics.run(cfg, lags=rng_lags),
+        "seed_summaries": analysis.run_seed_summaries,
+        "variance": analysis.run_variance,
+        "meta": analysis.run_meta,
+        "trueskill": _optional_stage("farkle.analysis.trueskill", "trueskill"),
+        "head2head": _optional_stage("farkle.analysis.head2head", "head2head"),
+        "hgb": _optional_stage("farkle.analysis.hgb_feat", "hgb"),
+        "tiering": _optional_stage("farkle.analysis.tiering_report", "tiering"),
+        "agreement": _optional_stage("farkle.analysis.agreement", "agreement"),
+    }
+
+    def _plan_steps(allowed_keys: set[str] | None) -> list[tuple[str, Callable[[AppConfig], None]]]:
+        return [
+            (placement.definition.key, stage_map[placement.definition.key])
+            for placement in layout.placements
+            if (allowed_keys is None or placement.definition.key in allowed_keys)
         ]
-        _maybe_add_game_stats(steps)
-        _maybe_add_rng(steps)
-        steps.append(("analytics", analysis.run_all))
-    else:
-        name_map: dict[str, Callable[[AppConfig], None]] = {
-            "ingest": ingest.run,
-            "curate": curate.run,
-            "combine": combine.run,
-            "metrics": metrics.run,
-            "analytics": analysis.run_all,
+
+    if args.command == "all":
+        steps = _plan_steps(None)
+    elif args.command == "analytics":
+        analytics_keys = {
+            placement.definition.key
+            for placement in layout.placements
+            if placement.definition.group == "analytics"
         }
-        if args.command not in name_map:  # pragma: no cover - argparse enforces valid choices
-            parser.error(f"Unknown command {args.command}")
-        steps = [(args.command, name_map[args.command])]
-        if args.command == "metrics":
-            _maybe_add_game_stats(steps)
-        if args.command in {"combine", "metrics"}:
-            _maybe_add_rng(steps)
+        steps = _plan_steps(analytics_keys)
+    elif args.command == "metrics":
+        steps = _plan_steps({"metrics", "game_stats", "rng_diagnostics"})
+    elif args.command == "combine":
+        steps = _plan_steps({"combine", "rng_diagnostics"})
+    elif args.command in stage_map:
+        steps = _plan_steps({args.command})
+    else:  # pragma: no cover - argparse enforces valid choices
+        parser.error(f"Unknown command {args.command}")
     # Execute with per-step manifest events
     iterator = tqdm(steps, desc="pipeline") if len(steps) > 1 else steps
     failed_steps: list[str] = []
