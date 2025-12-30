@@ -303,10 +303,17 @@ def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
         Configuration pointing at the prepared workspace.
     """
 
-    if refresh_inputs or not _parquet_inputs_exist(INPUT_ROOT):
-        regenerate_inputs(INPUT_ROOT)
+    inputs_root = tmp_path / "metrics_inputs"
+    if INPUT_ROOT.exists():
+        shutil.copytree(INPUT_ROOT, inputs_root, dirs_exist_ok=True)
+    else:
+        inputs_root.mkdir(parents=True, exist_ok=True)
+
+    if refresh_inputs or not _parquet_inputs_exist(inputs_root):
+        regenerate_inputs(inputs_root)
+
     workspace = tmp_path / "results"
-    shutil.copytree(INPUT_ROOT, workspace, dirs_exist_ok=True)
+    shutil.copytree(inputs_root, workspace, dirs_exist_ok=True)
 
     cfg = build_config(workspace)
 
