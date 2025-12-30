@@ -134,6 +134,7 @@ if sklearn_spec is None:
     sklearn = types.ModuleType("sklearn")
     ensemble = types.ModuleType("ensemble")
     inspection = types.ModuleType("inspection")
+    metrics = types.ModuleType("metrics")
 
     class _DummyHGB:  # pragma: no cover - simple stub
         """Lightweight Histogram Gradient Boosting stub used in tests."""
@@ -164,8 +165,10 @@ if sklearn_spec is None:
 
     ensemble.HistGradientBoostingRegressor = _DummyHGB  # type: ignore[attr-defined]
     sklearn.ensemble = ensemble  # type: ignore[attr-defined]
+    sklearn.metrics = metrics  # type: ignore[attr-defined]
     sklearn.__spec__ = importlib.machinery.ModuleSpec("sklearn", loader=None)  # type: ignore[attr-defined]
     ensemble.__spec__ = importlib.machinery.ModuleSpec("sklearn.ensemble", loader=None)  # type: ignore[attr-defined]
+    metrics.__spec__ = importlib.machinery.ModuleSpec("sklearn.metrics", loader=None)  # type: ignore[attr-defined]
 
     class _DummyPDP:  # pragma: no cover - simple stub
         """Simple partial dependence display stub with a file-writing figure."""
@@ -223,9 +226,12 @@ if sklearn_spec is None:
     inspection.permutation_importance = _dummy_permutation_importance  # type: ignore[attr-defined]
     sklearn.inspection = inspection  # type: ignore[attr-defined]
     inspection.__spec__ = importlib.machinery.ModuleSpec("sklearn.inspection", loader=None)  # type: ignore[attr-defined]
+    metrics.adjusted_rand_score = lambda *args, **kwargs: 0.0  # type: ignore[attr-defined]
+    metrics.normalized_mutual_info_score = lambda *args, **kwargs: 0.0  # type: ignore[attr-defined]
     sys.modules.setdefault("sklearn", sklearn)
     sys.modules.setdefault("sklearn.ensemble", ensemble)
     sys.modules.setdefault("sklearn.inspection", inspection)
+    sys.modules.setdefault("sklearn.metrics", metrics)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

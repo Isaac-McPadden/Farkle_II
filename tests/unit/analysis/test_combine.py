@@ -148,3 +148,46 @@ def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeyp
     assert not out.exists()
     assert not manifest.exists()
     assert not calls
+
+
+def test_pad_to_schema_adds_missing_columns():
+    target = expected_schema_for(2)
+    table = pa.Table.from_pylist([{"winner": "P1"}], schema=pa.schema([("winner", pa.string())]))
+
+    padded = combine._pad_to_schema(table, target)
+
+    assert padded.schema.names == target.names
+    assert padded.column("P2_strategy").null_count == 1
+
+
+def test_migrate_combined_output_moves_legacy(tmp_results_dir: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
+    legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "pooled"
+    legacy_dir.mkdir(parents=True, exist_ok=True)
+    legacy_file = legacy_dir / "all_ingested_rows.parquet"
+    legacy_file.write_text("legacy")
+
+    migrated = combine._migrate_combined_output(cfg)
+
+    assert migrated == cfg.combine_pooled_dir() / "all_ingested_rows.parquet"
+    assert migrated.exists()
+    assert not legacy_file.exists()
+
+
+def test_combine_respects_stage_cache(tmp_results_dir: Path, monkeypatch, capinfo) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
+    schema = pa.schema([("winner", pa.string())])
+    curated = cfg.ingested_rows_curated(1)
+    _write_curated(curated, schema, [{"winner": "P1"}])
+
+    monkeypatch.setattr(combine, "stage_is_up_to_date", lambda *_, **__: True)
+    called = []
+    monkeypatch.setattr(combine, "check_post_combine", lambda *args, **kwargs: called.append(1))
+
+    combine.run(cfg)
+
+    assert any(
+        rec.message == "Combine: output up-to-date" and getattr(rec, "stage", None) == "combine"
+        for rec in capinfo.records
+    )
+    assert not called
