@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Callable
 
 import pytest
+import yaml
 
 pytestmark = pytest.mark.skipif(
     not hasattr(_dt, "UTC"),
@@ -48,13 +49,14 @@ def test_pipeline_creates_stage_dirs_in_new_order(
     cfg_path, cfg = _make_config(tmp_results_dir, monkeypatch)
 
     stages: list[str] = []
-    original = cfg.stage_subdir
+    original = cfg.stage_dir
 
-    def _record(stage: str, *parts: str | Path):
-        stages.append(stage)
-        return original(stage, *parts)
+    def _record(stage: str):
+        root = original(stage)
+        stages.append(root.name)
+        return root
 
-    monkeypatch.setattr(cfg, "stage_subdir", _record)
+    monkeypatch.setattr(cfg, "stage_dir", _record)
     monkeypatch.setattr("farkle.analysis.ingest.run", lambda _: None, raising=True)
 
     rc = pipeline.main(["--config", str(cfg_path), "ingest"])
@@ -101,11 +103,27 @@ def test_pipeline_writes_resolved_config_and_manifest(
 
     resolved_yaml = resolved.read_text()
     expected_sha = hashlib.sha256(resolved_yaml.encode("utf-8")).hexdigest()
+    resolved_dict = yaml.safe_load(resolved_yaml)
+    stage_layout = resolved_dict.get("stage_layout") if isinstance(resolved_dict, dict) else None
     records = [json.loads(line) for line in manifest.read_text().splitlines() if line.strip()]
     assert records
     run_start = next(rec for rec in records if rec.get("event") == "run_start")
     assert run_start["config_sha"] == expected_sha
     assert run_start["resolved_config"] == str(resolved)
+    assert stage_layout
+    assert [item["folder"] for item in stage_layout] == [
+        "00_ingest",
+        "01_curate",
+        "02_combine",
+        "03_metrics",
+        "04_game_stats",
+        "05_seed_summaries",
+        "06_variance",
+        "07_meta",
+        "08_trueskill",
+        "09_head2head",
+        "10_hgb",
+    ]
     assert records[-1]["event"] == "run_end"
 
 

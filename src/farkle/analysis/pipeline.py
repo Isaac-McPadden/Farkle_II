@@ -139,16 +139,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     app_cfg.set_stage_layout(layout)
     for placement in layout.placements:
-        app_cfg.stage_subdir(placement.folder_name)
+        app_cfg.stage_dir(placement.definition.key)
     analysis_dir = app_cfg.analysis_dir
     resolved = analysis_dir / "config.resolved.yaml"
     # Best-effort: write out the resolved (merged) config we actually used
+    resolved_layout = layout.to_resolved_layout()
     stage_layout_snapshot = app_cfg._stage_layout
     app_cfg._stage_layout = None
     resolved_dict: dict[str, Any] = _stringify_paths(dataclasses.asdict(app_cfg))
     app_cfg._stage_layout = stage_layout_snapshot
     resolved_dict.pop("config_sha", None)
     resolved_dict.pop("_stage_layout", None)
+    resolved_dict["stage_layout"] = resolved_layout
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     with atomic_path(str(resolved)) as tmp_path:
         Path(tmp_path).write_text(resolved_yaml)

@@ -258,18 +258,20 @@ class AppConfig:
 
         self._stage_layout = layout
 
-    def _stage_folder(self, key: str) -> str:
-        resolved = self.stage_layout.folder_for(key)
-        return resolved if resolved is not None else key
+    def stage_dir(self, key: str) -> Path:
+        """Return the resolved stage directory for ``key`` and create it."""
 
-    def stage_subdir(self, name: str, *parts: str | Path) -> Path:
+        stage_root = self.analysis_dir / self.stage_layout.require_folder(key)
+        stage_root.mkdir(parents=True, exist_ok=True)
+        return stage_root
+
+    def stage_subdir(self, key: str, *parts: str | Path) -> Path:
         """Resolve a stage root or nested subdirectory under ``analysis_dir``.
 
         Directories are created on access to keep downstream callers simple.
         """
 
-        stage_root = self.analysis_dir / self._stage_folder(name)
-        stage_root.mkdir(parents=True, exist_ok=True)
+        stage_root = self.stage_dir(key)
         path = stage_root.joinpath(*map(Path, parts)) if parts else stage_root
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
