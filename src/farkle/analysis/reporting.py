@@ -32,6 +32,7 @@ import pandas as pd
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
+from farkle.analysis.stage_registry import StageLayout
 from farkle.config import AnalysisConfig, AppConfig
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
 from farkle.utils.writer import atomic_path
@@ -83,6 +84,13 @@ def _analysis_dir(cfg: AnalysisConfig | AppConfig) -> Path:
     raise AttributeError("Configuration object does not expose an analysis_dir")
 
 
+def _analysis_layout(cfg: AnalysisConfig | AppConfig | None) -> StageLayout | None:
+    """Return a resolved layout when available from an :class:`AppConfig`."""
+
+    layout = getattr(cfg, "stage_layout", None)
+    return cast(StageLayout | None, layout)
+
+
 def _meta_artifact_path(cfg: AnalysisConfig | AppConfig, players: int, filename: str) -> Path:
     """Resolve a meta-analysis artifact path with per-player preference."""
 
@@ -90,6 +98,7 @@ def _meta_artifact_path(cfg: AnalysisConfig | AppConfig, players: int, filename:
         return cfg.meta_input_path(players, filename)
 
     analysis_dir = _analysis_dir(cfg)
+    layout = _analysis_layout(cfg)
     candidates = [
         *_stage_candidates(analysis_dir, "meta", filename=Path(f"{players}p") / filename),
         *_stage_candidates(analysis_dir, "meta", filename=Path("pooled") / filename),
@@ -107,54 +116,90 @@ def _first_existing(candidates: list[Path]) -> Path:
     return candidates[0]
 
 
-def _tier_path(analysis_dir: Path) -> Path:
+def _tier_path(analysis_dir: Path, layout: StageLayout | None = None) -> Path:
     """Resolve ``tiers.json`` within stage-aware directories."""
 
     candidates = [
-        *_stage_candidates(analysis_dir, "tiering", filename=Path("tiers.json")),
-        *_stage_candidates(analysis_dir, "trueskill", filename=Path("tiers.json")),
+        *_stage_candidates(analysis_dir, "tiering", layout=layout, filename=Path("tiers.json")),
+        *_stage_candidates(analysis_dir, "trueskill", layout=layout, filename=Path("tiers.json")),
         analysis_dir / "tiers.json",
     ]
     return _first_existing(candidates)
 
 
-def _ratings_path(analysis_dir: Path) -> Path:
+def _ratings_path(analysis_dir: Path, layout: StageLayout | None = None) -> Path:
     """Resolve pooled TrueSkill ratings with stage-aware fallbacks."""
 
     candidates = [
         *_stage_candidates(
-            analysis_dir, "trueskill", filename=Path("pooled") / "ratings_pooled.parquet"
+            analysis_dir,
+            "trueskill",
+            layout=layout,
+            filename=Path("pooled") / "ratings_pooled.parquet",
         ),
-        *_stage_candidates(analysis_dir, "trueskill", filename=Path("ratings_pooled.parquet")),
+        *_stage_candidates(
+            analysis_dir,
+            "trueskill",
+            layout=layout,
+            filename=Path("ratings_pooled.parquet"),
+        ),
         analysis_dir / "pooled" / "ratings_pooled.parquet",
         analysis_dir / "ratings_pooled.parquet",
     ]
     return _first_existing(candidates)
 
 
-def _head2head_path(analysis_dir: Path, filename: str) -> Path:
+def _head2head_path(
+    analysis_dir: Path, filename: str, layout: StageLayout | None = None
+) -> Path:
     """Resolve a head-to-head artifact path with legacy fallback."""
 
     return _first_existing(
         [
-            *_stage_candidates(analysis_dir, "head2head", filename=Path(filename)),
+            *_stage_candidates(
+                analysis_dir, "head2head", layout=layout, filename=Path(filename)
+            ),
             analysis_dir / filename,
         ]
     )
 
 
-def _stage_candidates(analysis_dir: Path, suffix: str, filename: Path | None = None) -> list[Path]:
+def _stage_candidates(
+    analysis_dir: Path,
+    suffix: str,
+    *,
+    layout: StageLayout | None = None,
+    filename: Path | None = None,
+) -> list[Path]:
     """Return ordered stage-path candidates for a given suffix and optional filename."""
+
+    preferred: list[Path] = []
+    if layout is not None:
+        folder = layout.folder_for(suffix)
+        if folder is not None:
+            preferred_dir = analysis_dir / folder
+            preferred.append(preferred_dir if filename is None else preferred_dir / filename)
 
     stage_dirs = sorted(
         (p for p in analysis_dir.glob(f"*_{suffix}") if p.is_dir()), key=lambda p: p.name
     )
+    for path in stage_dirs:
+        if layout is not None and path.name == layout.folder_for(suffix):
+            continue
+        LOGGER.warning(
+            "Legacy stage directory detected; prefer layout-aware helpers",
+            extra={"stage": suffix, "legacy_path": str(path)},
+        )
+
+    candidates = preferred or stage_dirs
     if filename is None:
-        return stage_dirs
-    return [stage_dir / filename for stage_dir in stage_dirs]
+        return candidates
+    return [stage_dir / filename for stage_dir in candidates]
 
 
-def _sim_player_counts(cfg: AnalysisConfig | AppConfig, analysis_dir: Path) -> list[int]:
+def _sim_player_counts(
+    cfg: AnalysisConfig | AppConfig, analysis_dir: Path, *, layout: StageLayout | None = None
+) -> list[int]:
     """Determine the list of player counts that should be reported."""
 
     players: set[int] = set()
@@ -170,7 +215,7 @@ def _sim_player_counts(cfg: AnalysisConfig | AppConfig, analysis_dir: Path) -> l
         sim_players = getattr(sim_cfg, "n_players_list", None) or []
         players.update(int(p) for p in sim_players)
 
-    ratings_path = _ratings_path(analysis_dir)
+    ratings_path = _ratings_path(analysis_dir, layout=layout)
     if ratings_path.exists():
         try:
             df = pd.read_parquet(ratings_path, columns=["strategy", "mu", "sigma", "players"])
@@ -208,7 +253,9 @@ def _as_float(value: object) -> float:
     return float(cast(SupportsFloat, value))
 
 
-def _load_ratings(analysis_dir: Path, players: int) -> pd.DataFrame:
+def _load_ratings(
+    analysis_dir: Path, players: int, *, layout: StageLayout | None = None
+) -> pd.DataFrame:
     """Load pooled TrueSkill ratings filtered for the requested player count.
 
     Args:
@@ -219,7 +266,7 @@ def _load_ratings(analysis_dir: Path, players: int) -> pd.DataFrame:
         Dataframe with ``strategy``, ``players``, ``mu``, and ``sigma`` columns
         sorted by rating.
     """
-    path = _ratings_path(analysis_dir)
+    path = _ratings_path(analysis_dir, layout=layout)
     if not path.exists():
         raise ReportError(f"Missing ratings parquet: {path}")
 
@@ -340,16 +387,20 @@ def _load_seed_summaries(analysis_dir: Path, players: int) -> pd.DataFrame:
     return combined
 
 
-def _load_tiers(analysis_dir: Path, players: int) -> dict[str, int]:
+def _load_tiers(
+    analysis_dir: Path, players: int, *, layout: StageLayout | None = None
+) -> dict[str, int]:
     """Parse tier assignments from JSON, scoped to the desired player count."""
-    path = _tier_path(analysis_dir)
+    path = _tier_path(analysis_dir, layout=layout)
     payload = load_tier_payload(path)
     return tier_mapping_from_payload(payload, prefer=str(players))
 
 
-def _load_h2h_decisions(analysis_dir: Path, players: int) -> pd.DataFrame:
+def _load_h2h_decisions(
+    analysis_dir: Path, players: int, *, layout: StageLayout | None = None
+) -> pd.DataFrame:
     """Load pairwise significance decisions for head-to-head comparisons."""
-    path = _head2head_path(analysis_dir, "bonferroni_decisions.parquet")
+    path = _head2head_path(analysis_dir, "bonferroni_decisions.parquet", layout=layout)
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_parquet(path)
@@ -366,9 +417,11 @@ def _load_h2h_decisions(analysis_dir: Path, players: int) -> pd.DataFrame:
     return df
 
 
-def _load_h2h_ranking(analysis_dir: Path, players: int) -> pd.DataFrame:
+def _load_h2h_ranking(
+    analysis_dir: Path, players: int, *, layout: StageLayout | None = None
+) -> pd.DataFrame:
     """Load significant ranking output produced from head-to-head tests."""
-    path = _head2head_path(analysis_dir, "h2h_significant_ranking.csv")
+    path = _head2head_path(analysis_dir, "h2h_significant_ranking.csv", layout=layout)
     if not path.exists():
         return pd.DataFrame(columns=["strategy", "rank"])
     df = pd.read_csv(path)
@@ -423,13 +476,14 @@ def _load_run_metadata(analysis_dir: Path) -> dict[str, object]:
 def _gather_artifacts(cfg: AnalysisConfig | AppConfig, players: int) -> _ReportArtifacts:
     """Load all report prerequisites for the specified player count."""
     analysis_dir = _analysis_dir(cfg)
-    ratings = _load_ratings(analysis_dir, players)
+    layout = _analysis_layout(cfg)
+    ratings = _load_ratings(analysis_dir, players, layout=layout)
     meta_summary = _load_meta_summary(cfg, players)
     feature_importance = _load_feature_importance(analysis_dir, players)
     seed_summaries = _load_seed_summaries(analysis_dir, players)
-    tiers = _load_tiers(analysis_dir, players)
-    h2h_decisions = _load_h2h_decisions(analysis_dir, players)
-    h2h_ranking = _load_h2h_ranking(analysis_dir, players)
+    tiers = _load_tiers(analysis_dir, players, layout=layout)
+    h2h_decisions = _load_h2h_decisions(analysis_dir, players, layout=layout)
+    h2h_ranking = _load_h2h_ranking(analysis_dir, players, layout=layout)
     heterogeneity = _load_meta_json(cfg, players)
     run_metadata = _load_run_metadata(analysis_dir)
     return _ReportArtifacts(
@@ -474,11 +528,12 @@ def plot_ladder_for_players(
     """Create a ladder plot of the top strategies by TrueSkill rating."""
 
     analysis_dir = _analysis_dir(cfg)
-    ratings = _load_ratings(analysis_dir, players)
+    layout = _analysis_layout(cfg)
+    ratings = _load_ratings(analysis_dir, players, layout=layout)
     top = ratings.head(LADDER_TOP_N)
     output = _plot_output_path(cfg, players, f"ladder_{players}p.png")
 
-    if _output_is_fresh(output, [_ratings_path(analysis_dir)], force=force):
+    if _output_is_fresh(output, [_ratings_path(analysis_dir, layout=layout)], force=force):
         return output
 
     fig = plt.figure()
@@ -525,7 +580,8 @@ def plot_h2h_heatmap_for_players(
     """Render a heatmap of head-to-head win rates for available strategies."""
 
     analysis_dir = _analysis_dir(cfg)
-    decisions = _load_h2h_decisions(analysis_dir, players)
+    layout = _analysis_layout(cfg)
+    decisions = _load_h2h_decisions(analysis_dir, players, layout=layout)
     if decisions.empty:
         return None
 
@@ -546,21 +602,21 @@ def plot_h2h_heatmap_for_players(
 
     output = _plot_output_path(cfg, players, f"h2h_heatmap_{players}p.png")
     inputs = [
-        _head2head_path(_analysis_dir(cfg), "bonferroni_decisions.parquet"),
-        _tier_path(_analysis_dir(cfg)),
-        _head2head_path(_analysis_dir(cfg), "h2h_significant_ranking.csv"),
+        _head2head_path(_analysis_dir(cfg), "bonferroni_decisions.parquet", layout=layout),
+        _tier_path(_analysis_dir(cfg), layout=layout),
+        _head2head_path(_analysis_dir(cfg), "h2h_significant_ranking.csv", layout=layout),
     ]
     if _output_is_fresh(output, inputs, force=force):
         return output
 
     artifacts = _ReportArtifacts(
-        ratings=_load_ratings(analysis_dir, players),
+        ratings=_load_ratings(analysis_dir, players, layout=layout),
         meta_summary=pd.DataFrame(),
         feature_importance=pd.DataFrame(),
         seed_summaries=pd.DataFrame(),
-        tiers=_load_tiers(analysis_dir, players),
+        tiers=_load_tiers(analysis_dir, players, layout=layout),
         h2h_decisions=decisions,
-        h2h_ranking=_load_h2h_ranking(analysis_dir, players),
+        h2h_ranking=_load_h2h_ranking(analysis_dir, players, layout=layout),
         heterogeneity={},
         run_metadata={},
     )
@@ -678,7 +734,7 @@ def plot_seed_variability_for_players(
     if not meta_df.empty:
         preferred = [s for s in meta_df["strategy"].tolist() if s in available]
     else:
-        preferred = _load_ratings(analysis_dir, players)["strategy"].tolist()
+        preferred = _load_ratings(analysis_dir, players, layout=layout)["strategy"].tolist()
     chosen = preferred[:SEED_TOP_N]
     if not chosen:
         return None
@@ -939,11 +995,12 @@ def generate_report_for_players(
 
     report_body = _build_report_body(players, artifacts, plot_paths)
     analysis_dir = _analysis_dir(cfg)
+    layout = _analysis_layout(cfg)
     report_path = analysis_dir / f"report_{players}p.md"
     report_path.parent.mkdir(parents=True, exist_ok=True)
 
     inputs = [
-        _ratings_path(analysis_dir),
+        _ratings_path(analysis_dir, layout=layout),
         analysis_dir / f"strategy_summary_{players}p_meta.parquet",
     ]
     if _output_is_fresh(report_path, inputs, force=force):
@@ -963,7 +1020,8 @@ def run_report(cfg: AnalysisConfig | AppConfig, *, force: bool = False) -> None:
 
     analysis_dir = _analysis_dir(cfg)
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    players_list = _sim_player_counts(cfg, analysis_dir)
+    layout = _analysis_layout(cfg)
+    players_list = _sim_player_counts(cfg, analysis_dir, layout=layout)
     LOGGER.info(
         "Report generation starting",
         extra={"stage": "report", "players": players_list},

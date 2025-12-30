@@ -91,7 +91,7 @@ def run(cfg: AppConfig) -> None:
     )
     try:
         _h2h.run_bonferroni_head2head(
-            root=cfg.results_dir,
+            cfg=cfg,
             n_jobs=cfg.analysis.n_jobs,
             seed=cfg.sim.seed,
             design=design_kwargs,

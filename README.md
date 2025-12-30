@@ -52,6 +52,11 @@ ingest:
   row_group_size: 64000
 ```
 
+Analysis stage directories are numbered automatically by the resolved
+``StageLayout``. Use the convenience helpers on :class:`farkle.config.AppConfig`
+instead of string concatenation when you need a path (for example
+``cfg.head2head_stage_dir`` or ``cfg.metrics_input_path("metrics.parquet")``).
+
 Configuration overlays supplied with `--config` are loaded in order; inline
 overrides use dotted keys that match the dataclass structure. For example:
 `--set sim.n_jobs=12 --set io.append_seed=false`.
@@ -101,7 +106,7 @@ subcommands share the same `AppConfig` and read from its `analysis`, `ingest`,
 into numbered directories under `analysis/`:
 
 - `00_ingest` - convert raw CSV rows into parquet shards.
-- `01_curate` - finalize ingested shards and write manifests under `analysis/01_curate`.
+- `<idx>_curate` - finalize ingested shards and write manifests under `analysis/<idx>_curate` (index chosen automatically by :class:`~farkle.analysis.stage_registry.StageLayout`). Prefer ``cfg.stage_dir("curate")`` over manually concatenating folder numbers.
 - `02_combine` - merge curated shards from `01_curate` into a consolidated parquet file.
 - `03_metrics` - compute aggregate metrics, including pooled summaries.
 - `04_game_stats` / `05_rng` - optional enrichments that keep their numeric
