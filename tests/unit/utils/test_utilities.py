@@ -10,7 +10,8 @@ if not hasattr(_datetime, "UTC"):
     _datetime.UTC = _datetime.timezone.utc  # type: ignore[attr-defined]
 
 from farkle.cli import main as cli_main
-from farkle.config import AppConfig, load_app_config
+from farkle.config import AppConfig, PowerDesign, load_app_config
+from farkle.simulation import power_helpers
 from farkle.utils.stats import games_for_power
 
 
@@ -143,3 +144,57 @@ def test_load_config_missing_keys(tmp_path):
     assert isinstance(cfg, AppConfig)
     assert cfg.sim.n_players_list == [3]
     assert cfg.sim.expanded_metrics is True
+
+
+def test_unpack_power_design_validation():
+    design = PowerDesign(
+        power=0.9,
+        control=0.05,
+        detectable_lift=0.1,
+        baseline_rate=0.4,
+        tail="ONE-sided",
+        endpoint="Top1",
+        use_BY=True,
+    )
+
+    params = power_helpers._unpack_power_design("bh", design)
+
+    assert params["tail"] == "one_sided"
+    assert params["endpoint"] == "top1"
+    assert params["use_BY"] is True
+
+    with pytest.raises(ValueError):
+        power_helpers._unpack_power_design("bh", {"tail": "invalid"})
+
+    with pytest.raises(TypeError):
+        power_helpers._unpack_power_design("bh", "not a design")
+
+
+def test_games_for_power_from_design_uses_mapping(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_games_for_power(**kwargs):
+        captured.update(kwargs)
+        return 123
+
+    monkeypatch.setattr(power_helpers, "games_for_power", fake_games_for_power)
+
+    design = {
+        "power": 0.8,
+        "control": 0.1,
+        "detectable_lift": 0.05,
+        "baseline_rate": 0.5,
+        "tail": "two-sided",
+        "endpoint": "pairwise",
+    }
+
+    result = power_helpers.games_for_power_from_design(
+        n_strategies=3,
+        k_players=4,
+        method="bonferroni",
+        design=design,
+    )
+
+    assert result == 123
+    assert captured["method"] == "bonferroni"
+    assert captured["tail"] == "two_sided"

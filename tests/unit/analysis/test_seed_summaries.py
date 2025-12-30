@@ -169,3 +169,44 @@ def test_seed_summaries_syncs_to_meta_dir(tmp_path: Path) -> None:
     summary = pd.read_parquet(meta_path)
     assert summary["seed"].unique().tolist() == [18]
     assert summary["players"].unique().tolist() == [2]
+
+
+def test_load_metrics_frame_validates_inputs(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    metrics = pd.DataFrame(
+        [
+            {"strategy": "A", "n_players": 2, "games": 10, "wins": 5},
+            {"strategy": "B", "n_players": 2, "games": 0, "wins": 0},
+        ]
+    )
+    _write_metrics(cfg, metrics)
+
+    frame, metrics_path = seed_summaries._load_metrics_frame(cfg)
+
+    assert metrics_path.exists()
+    assert frame["seed"].unique().tolist() == [18]
+    assert frame["games"].tolist() == [10, 0]
+    assert frame.dtypes["games"].kind in {"i", "u"}
+
+
+def test_load_metrics_frame_raises_on_invalid_inputs(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    _write_metrics(
+        cfg,
+        pd.DataFrame([
+            {"strategy": "A", "n_players": 2, "wins": 1},
+        ]),
+    )
+
+    with pytest.raises(ValueError, match="missing required columns"):
+        seed_summaries._load_metrics_frame(cfg)
+
+    _write_metrics(
+        cfg,
+        pd.DataFrame([
+            {"strategy": "A", "n_players": 2, "wins": 1, "games": -1},
+        ]),
+    )
+
+    with pytest.raises(ValueError, match="negative game counts"):
+        seed_summaries._load_metrics_frame(cfg)
