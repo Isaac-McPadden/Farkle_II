@@ -123,3 +123,22 @@ def test_run_all_invokes_expected_modules(
     assert calls == expected_calls
     assert "Analytics: starting all modules" in caplog.text
     assert "Analytics: all modules finished" in caplog.text
+
+
+def test_optional_import_logs_missing(caplog: pytest.LogCaptureFixture) -> None:
+    import farkle.analysis as analysis_mod
+
+    with caplog.at_level(logging.INFO):
+        result = analysis_mod._optional_import("not_a_real_module")
+
+    assert result is None
+    assert "Analytics module skipped due to missing dependency" in caplog.text
+
+
+def test_skip_message_logs(caplog: pytest.LogCaptureFixture) -> None:
+    import farkle.analysis as analysis_mod
+
+    with caplog.at_level(logging.INFO):
+        analysis_mod._skip_message("demo", "testing")
+
+    assert "Analytics: skipping demo" in caplog.text

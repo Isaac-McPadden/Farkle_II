@@ -150,3 +150,42 @@ def test_check_post_combine_schema_mismatch(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="output schema mismatch"):
         check_post_combine([curated], combined, max_players=1)
+
+
+def test_check_pre_metrics_passes_with_manifest(tmp_path: Path, caplog) -> None:
+    data_dir, combined = _combined_path(tmp_path)
+    schema = pa.schema([("winner", pa.string()), ("n_rounds", pa.int16())])
+    _write_table(combined, schema, [{"winner": "P1", "n_rounds": 3}])
+    _write_manifest(data_dir, 1, {"row_count": 1})
+
+    with caplog.at_level("INFO"):
+        check_pre_metrics(combined)
+
+    assert "check_pre_metrics passed" in caplog.text
+
+
+def test_check_pre_metrics_manifest_fallback(tmp_path: Path, caplog) -> None:
+    _, combined = _combined_path(tmp_path)
+    combined.parent.mkdir(parents=True, exist_ok=True)
+    schema = pa.schema([("winner", pa.string())])
+    _write_table(combined, schema, [{"winner": "P1"}])
+    manifest_path = combined.with_suffix(".manifest.jsonl")
+    manifest_path.write_text(json.dumps({"row_count": 1}))
+
+    with caplog.at_level("INFO"):
+        check_pre_metrics(combined)
+
+    assert "check_pre_metrics passed" in caplog.text
+
+
+def test_check_post_combine_success(tmp_path: Path, caplog) -> None:
+    schema = expected_schema_for(1)
+    curated = tmp_path / "1p" / "curated.parquet"
+    _write_table(curated, schema, [{"winning_score": 100}])
+    combined = tmp_path / "combined.parquet"
+    _write_table(combined, schema, [{"winning_score": 100}])
+
+    with caplog.at_level("INFO"):
+        check_post_combine([curated], combined, max_players=1)
+
+    assert "check_post_combine passed" in caplog.text
