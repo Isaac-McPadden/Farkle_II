@@ -3,15 +3,19 @@ import time
 from pathlib import Path
 
 from farkle.analysis import trueskill
+from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, IOConfig
 
 
 def _setup(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
     cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
+    cfg.analysis.run_frequentist = True
+    cfg.set_stage_layout(resolve_stage_layout(cfg, run_rng=True))
     combined = cfg.curated_parquet
     combined.parent.mkdir(parents=True, exist_ok=True)
     combined.write_text("data")
-    tiers = cfg.analysis_dir / "tiers.json"
+    tiers = cfg.preferred_tiers_path()
+    tiers.parent.mkdir(parents=True, exist_ok=True)
     tiers.write_text("{}")
     return cfg, combined, tiers
 
