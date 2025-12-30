@@ -150,6 +150,13 @@ def test_experiment_size_subset_options():
     assert size == len(strats)
 
 
+def test_experiment_size_with_explicit_pairs_and_errors():
+    with pytest.raises(ValueError):
+        experiment_size(smart_five_and_one_options=[[True, False, True]])
+
+    assert experiment_size(smart_five_and_one_options=[]) == 0
+
+
 def test_simulate_many_games_from_seeds_matches():
     strats = [ThresholdStrategy(score_threshold=100, dice_threshold=0)]
     rng_seed = 42
@@ -176,3 +183,22 @@ def test_simulate_many_games_deterministic_counts():
     )
     counts = df["winner"].value_counts().to_dict()
     assert counts == {"P3": 5, "P1": 3, "P2": 2}
+
+
+def test_generate_strategy_grid_appends_stop_at_metadata():
+    base_strats, base_meta = generate_strategy_grid()
+    with_stop_strats, with_stop_meta = generate_strategy_grid(
+        include_stop_at=True, include_stop_at_heuristic=True
+    )
+
+    assert len(with_stop_strats) > len(base_strats)
+    stop_rows = with_stop_meta.loc[with_stop_meta["strategy_idx"] >= len(base_meta)]
+    assert set(stop_rows["smart_five"].unique()) == {False, True}
+    assert set(stop_rows["smart_one"].unique()) == {False, True}
+
+
+def test_simulate_many_games_from_seeds_parallel():
+    strategies = [ThresholdStrategy(score_threshold=0, dice_threshold=6)] * 2
+    seeds = [1, 2, 3]
+    df_parallel = simulate_many_games_from_seeds(seeds=seeds, strategies=strategies, n_jobs=2)
+    assert len(df_parallel) == len(seeds)
