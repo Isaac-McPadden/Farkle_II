@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime as _dt
 import hashlib
 import json
+import sys
+import types
 from pathlib import Path
 from typing import Callable
 
@@ -34,6 +36,12 @@ def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
     return cfg_path, cfg
 
 
+def _inject_dummy_networkx(monkeypatch: pytest.MonkeyPatch) -> None:
+    dummy = types.ModuleType("networkx")
+    dummy.DiGraph = type("DiGraph", (), {})
+    monkeypatch.setitem(sys.modules, "networkx", dummy)
+
+
 def test_pipeline_creates_stage_dirs_in_new_order(
     tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -58,16 +66,12 @@ def test_pipeline_creates_stage_dirs_in_new_order(
         "02_combine",
         "03_metrics",
         "04_game_stats",
-        "05_rng",
-        "06_seed_summaries",
-        "07_variance",
+        "05_seed_summaries",
+        "06_variance",
         "07_meta",
-        "08_meta",
-        "09_trueskill",
-        "10_head2head",
-        "11_hgb",
-        "12_tiering",
-        "13_agreement",
+        "08_trueskill",
+        "09_head2head",
+        "10_hgb",
     ]
 
 
@@ -112,7 +116,6 @@ def test_pipeline_writes_resolved_config_and_manifest(
         ("curate", "farkle.analysis.curate.run"),
         ("combine", "farkle.analysis.combine.run"),
         ("metrics", "farkle.analysis.metrics.run"),
-        ("analytics", "farkle.analysis.run_all"),
     ],
 )
 def test_pipeline_individual_commands_invoke_target(
@@ -141,6 +144,42 @@ def test_pipeline_individual_commands_invoke_target(
         assert called == [command]
 
 
+def test_pipeline_analytics_runs_layout_order(
+    tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg_path, _ = _make_config(tmp_results_dir, monkeypatch)
+
+    calls: list[str] = []
+
+    def _stub(name: str) -> Callable[[object], None]:
+        def _inner(app_cfg, **_kwargs):  # noqa: ANN001
+            calls.append(name)
+            assert app_cfg.results_dir == tmp_results_dir
+
+        return _inner
+
+    _inject_dummy_networkx(monkeypatch)
+    monkeypatch.setattr("farkle.analysis.game_stats.run", _stub("game_stats"), raising=True)
+    monkeypatch.setattr("farkle.analysis.seed_summaries.run", _stub("seed_summaries"), raising=True)
+    monkeypatch.setattr("farkle.analysis.variance.run", _stub("variance"), raising=True)
+    monkeypatch.setattr("farkle.analysis.meta.run", _stub("meta"), raising=True)
+    monkeypatch.setattr("farkle.analysis.trueskill.run", _stub("trueskill"), raising=True)
+    monkeypatch.setattr("farkle.analysis.head2head.run", _stub("head2head"), raising=True)
+    monkeypatch.setattr("farkle.analysis.hgb_feat.run", _stub("hgb"), raising=True)
+
+    rc = pipeline.main(["--config", str(cfg_path), "analytics"])
+    assert rc == 0
+    assert calls == [
+        "game_stats",
+        "seed_summaries",
+        "variance",
+        "meta",
+        "trueskill",
+        "head2head",
+        "hgb",
+    ]
+
+
 def test_pipeline_all_runs_all_steps(
     tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -149,22 +188,40 @@ def test_pipeline_all_runs_all_steps(
     calls: list[str] = []
 
     def _make_stub(name: str) -> Callable[[object], None]:
-        def _stub(app_cfg):  # noqa: ANN001
+        def _stub(app_cfg, **_kwargs):  # noqa: ANN001
             calls.append(name)
             assert app_cfg.results_dir == tmp_results_dir
 
         return _stub
 
+    _inject_dummy_networkx(monkeypatch)
     monkeypatch.setattr("farkle.analysis.ingest.run", _make_stub("ingest"), raising=True)
     monkeypatch.setattr("farkle.analysis.curate.run", _make_stub("curate"), raising=True)
     monkeypatch.setattr("farkle.analysis.combine.run", _make_stub("combine"), raising=True)
     monkeypatch.setattr("farkle.analysis.metrics.run", _make_stub("metrics"), raising=True)
     monkeypatch.setattr("farkle.analysis.game_stats.run", _make_stub("game_stats"), raising=True)
-    monkeypatch.setattr("farkle.analysis.run_all", _make_stub("analytics"), raising=True)
+    monkeypatch.setattr("farkle.analysis.seed_summaries.run", _make_stub("seed_summaries"), raising=True)
+    monkeypatch.setattr("farkle.analysis.variance.run", _make_stub("variance"), raising=True)
+    monkeypatch.setattr("farkle.analysis.meta.run", _make_stub("meta"), raising=True)
+    monkeypatch.setattr("farkle.analysis.trueskill.run", _make_stub("trueskill"), raising=True)
+    monkeypatch.setattr("farkle.analysis.head2head.run", _make_stub("head2head"), raising=True)
+    monkeypatch.setattr("farkle.analysis.hgb_feat.run", _make_stub("hgb"), raising=True)
 
     rc = pipeline.main(["--config", str(cfg_path), "all"])
     assert rc == 0
-    assert calls == ["ingest", "curate", "combine", "metrics", "game_stats", "analytics"]
+    assert calls == [
+        "ingest",
+        "curate",
+        "combine",
+        "metrics",
+        "game_stats",
+        "seed_summaries",
+        "variance",
+        "meta",
+        "trueskill",
+        "head2head",
+        "hgb",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -172,7 +229,7 @@ def test_pipeline_all_runs_all_steps(
     [
         ("ingest", "farkle.analysis.ingest.run"),
         ("combine", "farkle.analysis.combine.run"),
-        ("analytics", "farkle.analysis.run_all"),
+        ("analytics", "farkle.analysis.game_stats.run"),
     ],
 )
 def test_pipeline_step_failure_propagates(
@@ -184,6 +241,14 @@ def test_pipeline_step_failure_propagates(
         raise RuntimeError("boom")
 
     monkeypatch.setattr(target, _boom, raising=True)
+    if command == "analytics":
+        _inject_dummy_networkx(monkeypatch)
+        monkeypatch.setattr("farkle.analysis.seed_summaries.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.variance.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.meta.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.trueskill.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.head2head.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.hgb_feat.run", lambda cfg: None, raising=True)
 
     with pytest.raises(RuntimeError):
         pipeline.main(["--config", str(cfg_path), command])
