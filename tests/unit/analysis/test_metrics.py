@@ -26,6 +26,15 @@ def test_collect_metrics_frames_preserves_stats(sample_config):
     ]
     frame = metrics._collect_metrics_frames(iso_paths)
 
+    assert list(frame.columns[:7]) == [
+        "strategy",
+        "n_players",
+        "games",
+        "wins",
+        "win_rate",
+        "win_prob",
+        "expected_score",
+    ]
     assert set(frame["n_players"]) == {2, 3}
 
     alpha_two = frame[

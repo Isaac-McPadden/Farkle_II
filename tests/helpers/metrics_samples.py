@@ -308,18 +308,20 @@ def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
     workspace = tmp_path / "results"
     shutil.copytree(INPUT_ROOT, workspace, dirs_exist_ok=True)
 
+    cfg = build_config(workspace)
+
     # Ensure manifests accompany the curated/isolated parquet inputs so pre-metrics
     # checks can verify row counts in both the copied directories and near the
     # combined parquet itself.
     for n, count in _MANIFEST_ROWS.items():
         for root in (workspace / "analysis", workspace / "analysis" / "02_combine"):
             _write_manifest(root / f"{n}p" / "manifest.jsonl", count)
+        _write_manifest(cfg.manifest_for(n), count)
     _write_manifest(
         workspace / "analysis" / "02_combine" / "pooled" / "all_ingested_rows.manifest.jsonl",
         len(_COMBINED_ROWS),
     )
 
-    cfg = build_config(workspace)
     return cfg
 
 
