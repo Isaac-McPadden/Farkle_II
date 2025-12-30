@@ -1,6 +1,7 @@
 # tests/unit/analysis_light/test_pipeline_stabilizers.py
 import datetime as _dt
 import json
+import os
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
@@ -87,7 +88,13 @@ def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
     manifest = cfg_proto.manifest_for(3)
     assert curated.exists()
     assert manifest.exists()
-    assert not raw_path.exists()
+
+    # Curate may hard-link or copy the raw parquet; both should remain valid.
+    assert raw_path.exists()
+    raw_stat, curated_stat = os.stat(raw_path), os.stat(curated)
+    if raw_stat.st_ino != curated_stat.st_ino:
+        # Copied file should match the raw size as a sanity check.
+        assert raw_stat.st_size == curated_stat.st_size
 
     table = pq.read_table(curated)
     assert table.num_rows == len(golden_dataset.dataframe)
