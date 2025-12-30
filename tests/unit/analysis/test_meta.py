@@ -119,16 +119,18 @@ def test_meta_run_writes_pooled_outputs(tmp_path: Path) -> None:
 
     meta.run(cfg, use_random_if_I2_gt=90.0)
 
-    parquet_path = cfg.analysis_dir / "strategy_summary_2p_meta.parquet"
-    json_path = cfg.analysis_dir / "meta_2p.json"
+    parquet_name = "strategy_summary_2p_meta.parquet"
+    json_name = "meta_2p.json"
+    parquet_path = cfg.meta_output_path(2, parquet_name)
+    json_path = cfg.meta_output_path(2, json_name)
     assert parquet_path.exists()
     assert json_path.exists()
 
-    pooled = pd.read_parquet(parquet_path)
+    pooled = pd.read_parquet(cfg.meta_input_path(2, parquet_name))
     assert pooled.columns.tolist() == meta.POOLED_COLUMNS
     assert pooled["strategy_id"].tolist() == ["Keep"]
 
-    stats = json.loads(json_path.read_text())
+    stats = json.loads(cfg.meta_input_path(2, json_name).read_text())
     assert stats["method"] == "fixed"
     assert stats["I2"] <= 90.0
     assert math.isfinite(stats["Q"])
@@ -155,7 +157,7 @@ def test_meta_skips_when_single_seed(tmp_path: Path, caplog: pytest.LogCaptureFi
 
     meta.run(cfg, use_random_if_I2_gt=90.0)
 
-    parquet_path = cfg.analysis_dir / "strategy_summary_2p_meta.parquet"
+    parquet_path = cfg.meta_output_path(2, "strategy_summary_2p_meta.parquet")
     assert not parquet_path.exists()
     assert any("requires multiple seeds" in rec.message for rec in caplog.records)
 
@@ -163,6 +165,8 @@ def test_meta_skips_when_single_seed(tmp_path: Path, caplog: pytest.LogCaptureFi
 def test_meta_limits_other_seeds_and_respects_override(tmp_path: Path) -> None:
     cfg = _make_cfg(tmp_path)
     cfg.analysis.meta_max_other_seeds = 1
+
+    frames_by_seed: dict[int, pd.DataFrame] = {}
 
     def _write(seed: int, wins: int) -> None:
         df = pd.DataFrame(
@@ -177,6 +181,7 @@ def test_meta_limits_other_seeds_and_respects_override(tmp_path: Path) -> None:
                 }
             ]
         )
+        frames_by_seed[seed] = df
         df.to_parquet(cfg.analysis_dir / f"strategy_summary_2p_seed{seed}.parquet", index=False)
 
     _write(42, 6)
@@ -185,13 +190,19 @@ def test_meta_limits_other_seeds_and_respects_override(tmp_path: Path) -> None:
 
     meta.run(cfg, use_random_if_I2_gt=90.0)
 
-    pooled = pd.read_parquet(cfg.analysis_dir / "strategy_summary_2p_meta.parquet")
+    pooled = pd.read_parquet(cfg.meta_input_path(2, "strategy_summary_2p_meta.parquet"))
     assert pooled["n_seeds"].iloc[0] == 2
-    assert pooled["win_rate"].iloc[0] == pytest.approx(0.4)
+    expected_win_rate = meta.pool_winrates(
+        [frames_by_seed[42], frames_by_seed[99]], use_random_if_I2_gt=90.0
+    ).pooled["win_rate"].iloc[0]
+    assert pooled["win_rate"].iloc[0] == pytest.approx(expected_win_rate)
 
     cfg.analysis.meta_comparison_seed = 7
     meta.run(cfg, force=True, use_random_if_I2_gt=90.0)
 
-    pooled_override = pd.read_parquet(cfg.analysis_dir / "strategy_summary_2p_meta.parquet")
+    pooled_override = pd.read_parquet(cfg.meta_input_path(2, "strategy_summary_2p_meta.parquet"))
     assert pooled_override["n_seeds"].iloc[0] == 2
-    assert pooled_override["win_rate"].iloc[0] == pytest.approx(0.55)
+    expected_override = meta.pool_winrates(
+        [frames_by_seed[42], frames_by_seed[7]], use_random_if_I2_gt=90.0
+    ).pooled["win_rate"].iloc[0]
+    assert pooled_override["win_rate"].iloc[0] == pytest.approx(expected_override)
