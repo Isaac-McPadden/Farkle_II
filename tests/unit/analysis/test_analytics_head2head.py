@@ -10,13 +10,16 @@ import pandas as pd
 import pytest
 
 from farkle.analysis import h2h_analysis, head2head
+from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, IOConfig
 
 
 @pytest.fixture
 def _cfg(tmp_path: Path) -> AppConfig:
     cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
-    data_dir = cfg.analysis_dir / "data"
+    cfg.analysis.run_frequentist = True
+    cfg.set_stage_layout(resolve_stage_layout(cfg, run_rng=True))
+    data_dir = cfg.curate_stage_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / cfg.curated_rows_name).touch()
     curated = cfg.curated_parquet
@@ -29,13 +32,13 @@ def test_run_skips_if_up_to_date(
     _cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     cfg = _cfg
-    out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
+    out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
     curated = cfg.curated_parquet
     out.touch()
     os.utime(curated, (1000, 1000))
     os.utime(out, (2000, 2000))
 
-    def boom(*, root: Path, n_jobs: int, **kwargs) -> None:  # noqa: ARG001
+    def boom(cfg: AppConfig, *, root: Path | None = None, n_jobs: int, **kwargs) -> None:  # noqa: ARG001
         raise AssertionError("head2head helper should not run when outputs are fresh")
 
     monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", boom)
@@ -50,7 +53,7 @@ def test_run_logs_warning_on_failure(
     _cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     cfg = _cfg
-    out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
+    out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
     curated = cfg.curated_parquet
     out.touch()
     curated.touch()
@@ -59,7 +62,7 @@ def test_run_logs_warning_on_failure(
 
     called = False
 
-    def boom(*, root: Path, n_jobs: int, **kwargs) -> None:  # noqa: ARG001
+    def boom(cfg: AppConfig, *, root: Path | None = None, n_jobs: int, **kwargs) -> None:  # noqa: ARG001
         nonlocal called
         called = True
         raise RuntimeError("boom")

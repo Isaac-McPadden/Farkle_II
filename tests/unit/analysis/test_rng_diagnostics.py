@@ -4,6 +4,7 @@ import pyarrow.parquet as pq
 from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import rng_diagnostics
+from farkle.analysis.stage_registry import resolve_stage_layout
 
 
 def test_collect_diagnostics_empty_input():
@@ -15,13 +16,14 @@ def test_collect_diagnostics_empty_input():
 
 def test_run_skips_when_missing_columns(tmp_path):
     cfg, _, _ = build_curated_fixture(tmp_path)
+    cfg.set_stage_layout(resolve_stage_layout(cfg, run_rng=True))
     curated = cfg.curated_parquet
     curated.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pydict({"only": [1, 2, 3]}), curated)
 
     rng_diagnostics.run(cfg, lags=(1,))
 
-    assert not (cfg.analysis_dir / "rng_diagnostics.parquet").exists()
+    assert not cfg.rng_output_path("rng_diagnostics.parquet").exists()
 
 
 def test_collect_diagnostics_deterministic_sort(tmp_path):
