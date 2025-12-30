@@ -68,7 +68,9 @@ def test_analyze_metrics_dispatches_rng(monkeypatch, preserve_root_logger):
 
     monkeypatch.setattr("farkle.analysis.rng_diagnostics.run", _fake_rng, raising=True)
 
-    cli_main.main(["analyze", "metrics", "--rng-diagnostics", "--rng-lags", "2", "--rng-lags", "1"])
+    cli_main.main(
+        ["analyze", "metrics", "--rng-diagnostics", "--rng-lags", "2", "1", "2"]
+    )
 
     assert ("metrics", None) in calls
     assert ("rng", (1, 2)) in calls

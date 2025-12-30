@@ -132,7 +132,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         app_cfg.analysis.game_stats_margin_thresholds = tuple(args.margin_thresholds)
     if args.rare_event_target is not None:
         app_cfg.analysis.rare_event_target_score = int(args.rare_event_target)
-    rng_lags = tuple(int(lag) for lag in args.rng_lags) if args.rng_lags else None
+    rng_lags = (
+        tuple(sorted({int(lag) for lag in args.rng_lags})) if args.rng_lags else None
+    )
 
     layout = resolve_stage_layout(
         app_cfg, run_game_stats=run_game_stats, run_rng=args.rng_diagnostics
