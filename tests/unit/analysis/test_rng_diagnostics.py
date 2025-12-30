@@ -40,3 +40,22 @@ def test_collect_diagnostics_deterministic_sort(tmp_path):
 
     assert set(diag["summary_level"].unique()) == {"strategy", "matchup_strategy"}
     assert diag.iloc[0]["lag"] == 1
+
+
+def test_normalize_lags_and_winner_resolution():
+    assert rng_diagnostics._normalize_lags([3, 1, -1, 1]) == (1, 3)
+
+    df = pd.DataFrame(
+        {
+            "winner_seat": ["P2", "P1"],
+            "P1_strategy": ["X", "Y"],
+            "P2_strategy": ["Z", "Z"],
+        }
+    )
+    resolved = rng_diagnostics._winner_strategies(
+        df,
+        winner_col="winner_seat",
+        strat_cols=["P1_strategy", "P2_strategy"],
+    )
+
+    assert resolved.tolist() == ["Z", "Y"]
