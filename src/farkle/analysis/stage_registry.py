@@ -36,13 +36,14 @@ class StageDefinition:
     def is_enabled(self, cfg: AppConfig, *, run_game_stats: bool, run_rng: bool) -> bool:
         """Determine whether this stage should be active for a given config."""
 
-        if self.requires_game_stats and not run_game_stats:
-            return False
-        if self.requires_rng and not run_rng:
-            return False
-        if self.enabled_predicate is not None and not self.enabled_predicate(cfg):
-            return False
-        return True
+        predicate_ok = (
+            self.enabled_predicate(cfg) if self.enabled_predicate is not None else True
+        )
+        return (
+            (not self.requires_game_stats or run_game_stats)
+            and (not self.requires_rng or run_rng)
+            and predicate_ok
+        )
 
 
 @dataclass(frozen=True, slots=True)

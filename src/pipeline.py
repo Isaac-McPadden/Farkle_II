@@ -143,7 +143,6 @@ def analyze_h2h(exp_dir: Path) -> None:
     cfg = AppConfig()
     cfg.io.results_dir = exp_dir
     analysis_dir = cfg.analysis_dir
-    h2h_dir = cfg.head2head_stage_dir
     out = cfg.head2head_path("bonferroni_pairwise.parquet")
     done = _done_path(out)
     tiers = cfg.preferred_tiers_path()

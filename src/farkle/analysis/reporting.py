@@ -100,8 +100,12 @@ def _meta_artifact_path(cfg: AnalysisConfig | AppConfig, players: int, filename:
     analysis_dir = _analysis_dir(cfg)
     layout = _analysis_layout(cfg)
     candidates = [
-        *_stage_candidates(analysis_dir, "meta", filename=Path(f"{players}p") / filename),
-        *_stage_candidates(analysis_dir, "meta", filename=Path("pooled") / filename),
+        *_stage_candidates(
+            analysis_dir, "meta", layout=layout, filename=Path(f"{players}p") / filename
+        ),
+        *_stage_candidates(
+            analysis_dir, "meta", layout=layout, filename=Path("pooled") / filename
+        ),
         analysis_dir / filename,
     ]
     return _first_existing(candidates)
@@ -721,6 +725,7 @@ def plot_seed_variability_for_players(
     """Visualise seed-to-seed variability for the top strategies."""
 
     analysis_dir = _analysis_dir(cfg)
+    layout = _analysis_layout(cfg)
     pattern = list(analysis_dir.glob(f"strategy_summary_{players}p_seed*.parquet"))
     if len(pattern) <= 1:
         return None
