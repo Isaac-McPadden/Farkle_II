@@ -47,6 +47,8 @@ sim:
 analysis:
   run_trueskill: true       # bool: compute TrueSkill ratings
   run_head2head: true       # bool: execute head-to-head analysis
+  run_rng: false            # bool: run RNG diagnostics over curated rows
+  run_game_stats: true      # bool: compute pooled game statistics after metrics
   run_hgb: true             # bool: train histogram gradient boosting model
   run_frequentist: false    # bool: plan step 6 frequentist/MDD tiering + tiering_report
   run_post_h2h_analysis: false  # bool: post head-to-head cleanup (plan step 5)

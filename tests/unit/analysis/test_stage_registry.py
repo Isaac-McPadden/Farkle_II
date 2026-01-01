@@ -39,6 +39,7 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
         io=IOConfig(results_dir=tmp_path),
         analysis=AnalysisConfig(
             run_game_stats=True,
+            run_rng=False,
             run_trueskill=False,
             run_head2head=False,
             run_hgb=True,
@@ -64,3 +65,29 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
     assert all(
         placement.folder_name.startswith(f"{placement.index:02d}_") for placement in layout.placements
     )
+
+
+def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir=tmp_path),
+        analysis=AnalysisConfig(run_rng=True),
+    )
+
+    layout = resolve_stage_layout(cfg)
+
+    expected_keys = [
+        "ingest",
+        "curate",
+        "combine",
+        "metrics",
+        "game_stats",
+        "rng_diagnostics",
+        "seed_summaries",
+        "variance",
+        "meta",
+        "trueskill",
+        "head2head",
+        "hgb",
+    ]
+
+    assert [placement.definition.key for placement in layout.placements] == expected_keys
