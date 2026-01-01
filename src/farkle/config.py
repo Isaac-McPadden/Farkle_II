@@ -88,6 +88,7 @@ class AnalysisConfig:
 
     run_trueskill: bool = True
     run_head2head: bool = True
+    run_rng: bool = False
     run_game_stats: bool = True
     run_hgb: bool = True
     run_frequentist: bool = False
