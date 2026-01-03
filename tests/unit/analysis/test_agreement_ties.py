@@ -4,6 +4,7 @@ import logging
 import networkx as nx
 import pandas as pd
 import pytest
+from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
 from farkle.analysis import agreement
 from farkle.analysis.agreement import MethodData
@@ -58,8 +59,13 @@ def test_normalize_tiers_and_agreements():
 
     assert tiers_a == {"a": 0, "b": 0, "c": 1}
     ari, nmi = agreement._tier_agreements({"a": tiers_a, "b": tiers_b})
-    assert ari == {"a_vs_b": pytest.approx(0.0)}
-    assert nmi == {"a_vs_b": pytest.approx(0.0)}
+    common = sorted(set(tiers_a) & set(tiers_b))
+    labels_a = [tiers_a[s] for s in common]
+    labels_b = [tiers_b[s] for s in common]
+    expected_ari = adjusted_rand_score(labels_a, labels_b)
+    expected_nmi = normalized_mutual_info_score(labels_a, labels_b)
+    assert ari == {"a_vs_b": pytest.approx(expected_ari)}
+    assert nmi == {"a_vs_b": pytest.approx(expected_nmi)}
 
 
 def test_summarize_seed_stability_handles_common_strategies():

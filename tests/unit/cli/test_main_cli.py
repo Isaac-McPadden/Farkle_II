@@ -87,7 +87,7 @@ def test_stringify_paths_handles_nested_structures():
     result = cli_main._stringify_paths(nested)
 
     assert result == {
-        "path": "/tmp/example",
+        "path": str(Path("/tmp/example")),
         "items": ["a", {"b": "c"}, ("d",)],
     }
 

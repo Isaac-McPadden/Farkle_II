@@ -102,7 +102,9 @@ def test_analyze_trueskill_skips_when_up_to_date(tmp_path: Path, capsys: pytest.
     assert "SKIP trueskill" in captured
 
 
-def test_analyze_trueskill_runs_and_moves_legacy(tmp_path: Path) -> None:
+def test_analyze_trueskill_runs_and_moves_legacy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     exp_dir = tmp_path / "exp"
     exp_dir.mkdir()
     (exp_dir / "input.txt").write_text("data")
@@ -112,11 +114,12 @@ def test_analyze_trueskill_runs_and_moves_legacy(tmp_path: Path) -> None:
         legacy.parent.mkdir(parents=True, exist_ok=True)
         legacy.write_text(json.dumps({"legacy": True}))
 
-    sys.modules["farkle.analysis.run_trueskill"] = type(
-        "M", (), {"run_trueskill_all_seeds": staticmethod(fake_run)}
+    monkeypatch.setattr(
+        "farkle.analysis.run_trueskill.run_trueskill_all_seeds",
+        fake_run,
+        raising=True,
     )
     analyze_trueskill(exp_dir)
-    sys.modules.pop("farkle.analysis.run_trueskill", None)
 
     out = exp_dir / "analysis" / "09_trueskill" / "tiers.json"
     done = _done_path(out)
