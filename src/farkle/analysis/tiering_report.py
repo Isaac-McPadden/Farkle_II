@@ -177,7 +177,11 @@ def _weighted_winrate(
             return group["win_rate"].mean()
         return float(np.average(group["win_rate"], weights=weights))
 
-    per_k = df.groupby(["strategy", "n_players"]).apply(_agg).reset_index(name="win_rate")
+    per_k = (
+        df.groupby(["strategy", "n_players"])[["win_rate", "games"]]
+        .apply(_agg, include_groups=False)
+        .reset_index(name="win_rate")
+    )
     if weights_by_k:
         per_k["w"] = per_k["n_players"].map(weights_by_k).fillna(0.0)
         per_k["weighted"] = per_k["win_rate"] * per_k["w"]
