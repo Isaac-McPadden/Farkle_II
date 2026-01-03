@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path
 import json
+import warnings
 
 import pandas as pd
 import pytest
@@ -87,8 +88,12 @@ def test_holm_bonferroni_ties_marked_non_sig(caplog: pytest.LogCaptureFixture) -
             {"a": "C", "b": "D", "wins_a": 7, "wins_b": 7, "games": 14},
         ]
     )
-    with caplog.at_level(logging.WARNING):
-        decisions = h2h_analysis.holm_bonferroni(df_pairs=df, alpha=0.05, tie_policy="neutral_edge")
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        with caplog.at_level(logging.WARNING):
+            decisions = h2h_analysis.holm_bonferroni(
+                df_pairs=df, alpha=0.05, tie_policy="neutral_edge"
+            )
 
     assert "Ties detected in head-to-head results" in caplog.text
     tie_rows = decisions[decisions["dir"] == "tie"]
@@ -126,6 +131,21 @@ def test_build_significant_graph_uses_simulated_tie_breaks() -> None:
     edge = next(iter(graph.edges(data=True)))
     assert edge[2]["tie_break"] is True
     assert graph.graph.get("tie_break_edges")
+
+
+def test_holm_bonferroni_skips_empty_tie_concat() -> None:
+    df = pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "wins_a": 11, "wins_b": 5, "games": 16},
+            {"a": "C", "b": "D", "wins_a": 3, "wins_b": 8, "games": 11},
+        ]
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        decisions = h2h_analysis.holm_bonferroni(df_pairs=df, alpha=0.05)
+
+    assert set(decisions["dir"]) == {"a>b", "b>a"}
+    assert decisions[["a", "b"]].isna().sum().sum() == 0
 
 
 def test_tie_break_simulation_is_seeded() -> None:
