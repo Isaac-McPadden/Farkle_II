@@ -13,7 +13,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Hashable, Mapping, cast
 
-import numpy as np
 import pandas as pd
 
 try:  # pragma: no cover - pandas typing is optional at runtime
@@ -170,25 +169,35 @@ def _weighted_winrate(
 ) -> tuple[pd.Series, pd.DataFrame]:
     """Compute overall and per-k weighted win rates."""
 
-    def _agg(group: pd.DataFrame) -> float:
-        """Weighted average win rate for a strategy/player-count slice."""
-        weights = group["games"].clip(lower=1).astype(float)
-        if weights.sum() == 0:
-            return group["win_rate"].mean()
-        return float(np.average(group["win_rate"], weights=weights))
+    # weights = games clipped to >= 1
+    w = df["games"].clip(lower=1).astype(float)
+
+    tmp = df.assign(
+        w=w,
+        win_x_w=df["win_rate"] * w,
+    )
 
     per_k = (
-        df.groupby(["strategy", "n_players"])[["win_rate", "games"]]
-        .apply(_agg, include_groups=False)
-        .reset_index(name="win_rate")
+        tmp.groupby(["strategy", "n_players"], as_index=False)
+           .agg(
+               win_x_w=("win_x_w", "sum"),
+               w=("w", "sum"),
+           )
+           .assign(win_rate=lambda x: x["win_x_w"] / x["w"])
+           .drop(columns=["win_x_w", "w"])
     )
+
     if weights_by_k:
-        per_k["w"] = per_k["n_players"].map(weights_by_k).fillna(0.0)
-        per_k["weighted"] = per_k["win_rate"] * per_k["w"]
+        per_k = per_k.assign(
+            w_k=per_k["n_players"].map(weights_by_k).fillna(0.0),
+            weighted=lambda x: x["win_rate"] * x["w_k"],
+        )
         collapsed = per_k.groupby("strategy")["weighted"].sum()
     else:
         collapsed = per_k.groupby("strategy")["win_rate"].mean()
+
     return collapsed.sort_values(ascending=False), per_k
+
 
 
 def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
