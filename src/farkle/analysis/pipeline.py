@@ -86,10 +86,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Skip the game_stats stage after metrics",
     )
-    parser.add_argument(
+    rng_group = parser.add_mutually_exclusive_group()
+    rng_group.add_argument(
         "--rng-diagnostics",
+        dest="rng_diagnostics",
         action="store_true",
+        default=None,
         help="Run the RNG diagnostics stage over curated rows",
+    )
+    rng_group.add_argument(
+        "--no-rng-diagnostics",
+        dest="rng_diagnostics",
+        action="store_false",
+        default=None,
+        help="Skip the RNG diagnostics stage",
     )
     parser.add_argument(
         "--margin-thresholds",
@@ -136,8 +146,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         tuple(sorted({int(lag) for lag in args.rng_lags})) if args.rng_lags else None
     )
 
+    run_rng_diagnostics = (
+        app_cfg.analysis.run_rng
+        if args.rng_diagnostics is None
+        else args.rng_diagnostics
+    )
+    app_cfg.analysis.run_rng = run_rng_diagnostics
+
     layout = resolve_stage_layout(
-        app_cfg, run_game_stats=run_game_stats, run_rng=args.rng_diagnostics
+        app_cfg, run_game_stats=run_game_stats, run_rng=run_rng_diagnostics
     )
     app_cfg.set_stage_layout(layout)
     for placement in layout.placements:

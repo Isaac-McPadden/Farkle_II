@@ -157,7 +157,8 @@ def holm_bonferroni(
     decisions["tie_break"] = False
     decisions["tie_policy"] = tie_policy
 
-    decisions = pd.concat([decisions, tie_decisions], ignore_index=True)
+    if not tie_decisions.dropna(how="all").empty:
+        decisions = pd.concat([decisions, tie_decisions], ignore_index=True)
     decisions = decisions.sort_values(by=["a", "b", "dir", "pval"], kind="mergesort")
     ordered = (
         decisions.reset_index(names="_idx")

@@ -139,19 +139,22 @@ def resolve_stage_layout(
     cfg: AppConfig,
     *,
     run_game_stats: bool | None = None,
-    run_rng: bool = False,
+    run_rng: bool | None = None,
     registry: Iterable[StageDefinition] | None = None,
 ) -> StageLayout:
     """Filter the registry and assign sequential numbered folder names."""
 
     effective_game_stats = cfg.analysis.run_game_stats if run_game_stats is None else run_game_stats
+    effective_run_rng = cfg.analysis.run_rng if run_rng is None else run_rng
     definitions = tuple(registry) if registry is not None else _REGISTRY
 
     placements: list[StagePlacement] = []
     for definition in (
         definition
         for definition in definitions
-        if definition.is_enabled(cfg, run_game_stats=effective_game_stats, run_rng=run_rng)
+        if definition.is_enabled(
+            cfg, run_game_stats=effective_game_stats, run_rng=effective_run_rng
+        )
     ):
         placement_index = len(placements)
         placements.append(
