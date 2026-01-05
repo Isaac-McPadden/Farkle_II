@@ -16,7 +16,7 @@ def _setup(tmp_path: Path) -> tuple[Path, AppConfig]:
     cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
     cfg.analysis.run_frequentist = True
     cfg.analysis.run_agreement = True
-    cfg.set_stage_layout(resolve_stage_layout(cfg, run_rng=True))
+    cfg.set_stage_layout(resolve_stage_layout(cfg))
     exp = cfg.results_dir
     # minimal inputs
     (exp / "sim.txt").write_text("data")  # simulation placeholder
@@ -45,10 +45,10 @@ def _setup(tmp_path: Path) -> tuple[Path, AppConfig]:
 def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
     original_resolve = stage_registry.resolve_stage_layout
 
-    def _patched_layout(app_cfg, *, run_game_stats=None, run_rng=False, registry=None):
+    def _patched_layout(app_cfg, *, registry=None):
         app_cfg.analysis.run_frequentist = True
         app_cfg.analysis.run_agreement = True
-        return original_resolve(app_cfg, run_game_stats=True, run_rng=True, registry=registry)
+        return original_resolve(app_cfg, registry=registry)
 
     monkeypatch.setattr(stage_registry, "resolve_stage_layout", _patched_layout)
 
@@ -57,7 +57,7 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
     def fake_agreement(exp_dir: Path) -> None:
         app_cfg = AppConfig(io=IOConfig(results_dir=exp_dir, append_seed=False))
         app_cfg.analysis.run_agreement = True
-        app_cfg.set_stage_layout(stage_registry.resolve_stage_layout(app_cfg, run_rng=True))
+        app_cfg.set_stage_layout(stage_registry.resolve_stage_layout(app_cfg))
         outputs = [app_cfg.agreement_output_path(p) for p in app_cfg.sim.n_players_list]
         done = _done_path(outputs[0])
         inputs = [app_cfg.trueskill_path("ratings_pooled.parquet")]

@@ -86,6 +86,8 @@ class SimConfig:
 class AnalysisConfig:
     """Analysis-stage parameters controlling downstream analytics."""
 
+    disable_game_stats: bool = False
+    disable_rng_diagnostics: bool = False
     disable_trueskill: bool = False
     disable_head2head: bool = False
     disable_hgb: bool = False
@@ -796,6 +798,14 @@ def load_app_config(*overlays: Path) -> AppConfig:
         if "run_tiering_report" in analysis_section:
             alias_val = analysis_section.pop("run_tiering_report")
             analysis_section.setdefault("run_frequentist", alias_val)
+        if "run_game_stats" in analysis_section:
+            analysis_section.setdefault(
+                "disable_game_stats", not bool(analysis_section["run_game_stats"])
+            )
+        if "run_rng" in analysis_section:
+            analysis_section.setdefault(
+                "disable_rng_diagnostics", not bool(analysis_section["run_rng"])
+            )
 
     def build(cls, section: Mapping[str, Any]) -> Any:
         """Instantiate a dataclass ``cls`` from a mapping of attributes."""

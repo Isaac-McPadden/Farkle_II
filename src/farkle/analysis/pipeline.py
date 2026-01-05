@@ -71,6 +71,55 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument(
         "--config", type=Path, default=Path("configs/fast_config.yaml"), help="Path to YAML config"
     )
+    parser.add_argument(
+        "--disable-trueskill",
+        dest="disable_trueskill",
+        action="store_true",
+        default=None,
+        help="Disable the trueskill analytics stage",
+    )
+    parser.add_argument(
+        "--disable-head2head",
+        dest="disable_head2head",
+        action="store_true",
+        default=None,
+        help="Disable the head-to-head analytics stage",
+    )
+    parser.add_argument(
+        "--disable-hgb",
+        dest="disable_hgb",
+        action="store_true",
+        default=None,
+        help="Disable the histogram-based gradient boosting analytics stage",
+    )
+    parser.add_argument(
+        "--disable-tiering",
+        dest="disable_tiering",
+        action="store_true",
+        default=None,
+        help="Disable the tiering analytics stage",
+    )
+    parser.add_argument(
+        "--disable-agreement",
+        dest="disable_agreement",
+        action="store_true",
+        default=None,
+        help="Disable the agreement analytics stage",
+    )
+    parser.add_argument(
+        "--disable-game-stats",
+        dest="disable_game_stats",
+        action="store_true",
+        default=None,
+        help="Disable the game-stats analytics stage",
+    )
+    parser.add_argument(
+        "--disable-rng-diagnostics",
+        dest="disable_rng_diagnostics",
+        action="store_true",
+        default=None,
+        help="Disable the RNG diagnostics analytics stage",
+    )
     game_stats_group = parser.add_mutually_exclusive_group()
     game_stats_group.add_argument(
         "--game-stats",
@@ -138,6 +187,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         app_cfg.analysis.run_game_stats if args.run_game_stats is None else args.run_game_stats
     )
     app_cfg.analysis.run_game_stats = run_game_stats
+    if args.run_game_stats is not None:
+        app_cfg.analysis.disable_game_stats = not args.run_game_stats
     if args.margin_thresholds:
         app_cfg.analysis.game_stats_margin_thresholds = tuple(args.margin_thresholds)
     if args.rare_event_target is not None:
@@ -152,10 +203,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         else args.rng_diagnostics
     )
     app_cfg.analysis.run_rng = run_rng_diagnostics
+    if args.rng_diagnostics is not None:
+        app_cfg.analysis.disable_rng_diagnostics = not args.rng_diagnostics
 
-    layout = resolve_stage_layout(
-        app_cfg, run_game_stats=run_game_stats, run_rng=run_rng_diagnostics
-    )
+    for flag, attr in (
+        (args.disable_trueskill, "disable_trueskill"),
+        (args.disable_head2head, "disable_head2head"),
+        (args.disable_hgb, "disable_hgb"),
+        (args.disable_tiering, "disable_tiering"),
+        (args.disable_agreement, "disable_agreement"),
+        (args.disable_game_stats, "disable_game_stats"),
+        (args.disable_rng_diagnostics, "disable_rng_diagnostics"),
+    ):
+        if flag:
+            setattr(app_cfg.analysis, attr, True)
+
+    layout = resolve_stage_layout(app_cfg)
     app_cfg.set_stage_layout(layout)
     for placement in layout.placements:
         app_cfg.stage_dir(placement.definition.key)
