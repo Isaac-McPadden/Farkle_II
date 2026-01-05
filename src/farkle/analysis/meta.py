@@ -31,6 +31,7 @@ import pandas as pd
 import pandas.testing as pdt
 import pyarrow as pa
 
+from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
@@ -375,6 +376,9 @@ def _select_seed_entries(
 def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | None = None) -> None:
     """Materialize per-player meta summaries."""
 
+    stage_log = stage_logger("meta", logger=LOGGER)
+    stage_log.start()
+
     threshold = use_random_if_I2_gt
     if threshold is None:
         threshold = getattr(cfg.analysis, "meta_random_if_I2_gt", 25.0)
@@ -384,7 +388,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
     files_by_players = _collect_seed_summaries(cfg)
 
     if not files_by_players:
-        LOGGER.info("Meta pooling skipped: no per-seed summaries found", extra={"stage": "meta"})
+        stage_log.missing_input("no per-seed summaries found")
         return
 
     done = stage_done_path(cfg.meta_stage_dir, "meta")

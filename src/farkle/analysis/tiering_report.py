@@ -20,6 +20,7 @@ try:  # pragma: no cover - pandas typing is optional at runtime
 except ImportError:  # pragma: no cover - fallback for older pandas
     Scalar = Hashable  # type: ignore[assignment]
 
+from farkle.analysis import stage_logger
 from farkle.analysis.isolated_metrics import build_isolated_metrics
 from farkle.config import AppConfig
 from farkle.utils.mdd import tiering_ingredients_from_df
@@ -55,8 +56,11 @@ def _tiering_artifact(cfg: AppConfig, name: str) -> Path:
 
 def run(cfg: AppConfig) -> None:
     """Generate a tier comparison report when frequentist analysis is enabled."""
+    stage_log = stage_logger("tiering", logger=LOGGER)
+    stage_log.start()
+
     if not getattr(cfg.analysis, "run_frequentist", False):
-        LOGGER.info("Tiering report disabled", extra={"stage": "tiering"})
+        stage_log.missing_input("run_frequentist disabled")
         return
 
     inputs = _prepare_inputs(cfg)
@@ -64,18 +68,12 @@ def run(cfg: AppConfig) -> None:
     tier_payload = load_tier_payload(tier_file)
     ts_tiers = tier_mapping_from_payload(tier_payload, prefer="trueskill")
     if not ts_tiers:
-        LOGGER.warning(
-            "Tiering report skipped: missing tiers.json",
-            extra={"stage": "tiering", "path": str(tier_file)},
-        )
+        stage_log.missing_input("missing tiers.json", path=str(tier_file))
         return
 
     df = _load_isolated_metrics(cfg, inputs)
     if df.empty:
-        LOGGER.warning(
-            "Tiering report skipped: no isolated metrics discovered",
-            extra={"stage": "tiering"},
-        )
+        stage_log.missing_input("no isolated metrics available")
         return
 
     tier_data = tiering_ingredients_from_df(

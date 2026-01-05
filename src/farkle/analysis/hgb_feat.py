@@ -14,6 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.analysis import run_hgb as _hgb
+from farkle.analysis import stage_logger
 from farkle.config import AppConfig
 
 LOGGER = logging.getLogger(__name__)
@@ -64,9 +65,19 @@ def run(cfg: AppConfig) -> None:
     Args:
         cfg: Application configuration containing analysis directories and names.
     """
+    stage_log = stage_logger("hgb", logger=LOGGER)
+    stage_log.start()
+
     analysis_dir = cfg.hgb_stage_dir
     metrics_path = cfg.metrics_input_path()
     ratings_path = cfg.trueskill_path(_hgb.RATINGS_NAME)
+
+    if not metrics_path.exists():
+        stage_log.missing_input("metrics parquet missing", path=str(metrics_path))
+        return
+    if not ratings_path.exists():
+        stage_log.missing_input("TrueSkill ratings missing", path=str(ratings_path))
+        return
     json_out = cfg.hgb_pooled_dir / "hgb_importance.json"
 
     players = _unique_players(metrics_path, cfg.sim.n_players_list)

@@ -17,6 +17,7 @@ import pandas as pd
 import pandas.testing as pdt
 import pyarrow as pa
 
+from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
@@ -60,12 +61,17 @@ def _summary_path(cfg: AppConfig, *, players: int, seed: int) -> Path:
 def run(cfg: AppConfig, *, force: bool = False) -> None:
     """Materialize per-seed strategy summaries with confidence intervals."""
 
+    stage_log = stage_logger("seed_summaries", logger=LOGGER)
+    stage_log.start()
+
+    metrics_path = cfg.metrics_input_path()
+    if not metrics_path.exists():
+        stage_log.missing_input("metrics parquet missing", path=str(metrics_path))
+        return
+
     metrics_frame, metrics_path = _load_metrics_frame(cfg)
     if metrics_frame.empty:
-        LOGGER.warning(
-            "Seed summaries skipped: metrics parquet is empty",
-            extra={"stage": "seed_summaries", "metrics_path": str(metrics_path)},
-        )
+        stage_log.missing_input("metrics parquet empty", metrics_path=str(metrics_path))
         return
 
     seeds = sorted(metrics_frame["seed"].unique())

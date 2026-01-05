@@ -22,6 +22,7 @@ from networkx import DiGraph as nx_digraph
 from scipy.stats import kendalltau, spearmanr
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
+from farkle.analysis import StageLogger, stage_logger
 from farkle.analysis.h2h_analysis import build_significant_graph, derive_sig_ranking
 from farkle.config import AppConfig
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
@@ -42,12 +43,18 @@ class MethodData:
 def run(cfg: AppConfig) -> None:
     """Compute rank/tier agreement metrics and write JSON payloads per player count."""
 
+    stage_log = stage_logger("agreement", logger=LOGGER)
+    stage_log.start()
+
     stage_dir = cfg.agreement_stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list}) or [0]
 
+    wrote_payload = False
     for players in player_counts:
-        payload = _build_payload(cfg, players)
+        payload = _build_payload(cfg, players, stage_log)
+        if payload is None:
+            continue
         payload["players"] = players
         out_path = cfg.agreement_output_path(players)
         with atomic_path(str(out_path)) as tmp_path:
@@ -60,9 +67,15 @@ def run(cfg: AppConfig) -> None:
                 "path": str(out_path),
             },
         )
+        wrote_payload = True
+
+    if not wrote_payload:
+        stage_log.missing_input("no agreement payloads generated")
 
 
-def _build_payload(cfg: AppConfig, players: int) -> dict[str, object]:
+def _build_payload(
+    cfg: AppConfig, players: int, stage_log: StageLogger
+) -> dict[str, object] | None:
     """Assemble agreement metrics for the requested player count.
 
     Args:
@@ -79,18 +92,35 @@ def _build_payload(cfg: AppConfig, players: int) -> dict[str, object]:
     methods: dict[str, MethodData] = {}
 
 
-    ts = _load_trueskill(cfg, players)
+    try:
+        ts = _load_trueskill(cfg, players)
+    except (FileNotFoundError, ValueError) as exc:
+        stage_log.missing_input(str(exc), players=players)
+        return None
     if ts is None:
-        raise FileNotFoundError(cfg.trueskill_path("ratings_pooled.parquet"))
+        stage_log.missing_input(
+            "missing TrueSkill ratings",
+            players=players,
+            path=str(cfg.trueskill_path("ratings_pooled.parquet")),
+        )
+        return None
     methods["trueskill"] = ts
 
-    freq = _load_frequentist(cfg, players)
-    if freq is not None:
-        methods["frequentist"] = freq
+    try:
+        freq = _load_frequentist(cfg, players)
+    except ValueError as exc:
+        stage_log.missing_input(str(exc), players=players)
+    else:
+        if freq is not None:
+            methods["frequentist"] = freq
 
-    h2h = _load_head2head(cfg)
-    if h2h is not None:
-        methods["h2h"] = h2h
+    try:
+        h2h = _load_head2head(cfg)
+    except ValueError as exc:
+        stage_log.missing_input(str(exc), players=players)
+    else:
+        if h2h is not None:
+            methods["h2h"] = h2h
 
     strategy_filter = getattr(cfg.analysis, "agreement_strategies", None)
     if strategy_filter:

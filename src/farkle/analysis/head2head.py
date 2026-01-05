@@ -18,6 +18,7 @@ from typing import Any, Dict
 import pandas as pd
 
 from farkle.analysis import run_bonferroni_head2head as _h2h
+from farkle.analysis import stage_logger
 from farkle.config import AppConfig
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy
@@ -66,6 +67,13 @@ def run(cfg: AppConfig) -> None:
     Args:
         cfg: Application configuration with analysis and file path settings.
     """
+    stage_log = stage_logger("head2head", logger=LOGGER)
+    stage_log.start()
+
+    if not cfg.curated_parquet.exists():
+        stage_log.missing_input("curated parquet missing", path=str(cfg.curated_parquet))
+        return
+
     # Always try to auto-tune tiers first so the human-facing tier file
     # reflects the Bonferroni H2H budget even if results are already present.
     design_kwargs = _build_design_kwargs(cfg)
@@ -101,6 +109,7 @@ def run(cfg: AppConfig) -> None:
             "Head-to-head skipped",
             extra={"stage": "head2head", "error": str(e)},
         )
+        return
 
 
 def _build_design_kwargs(cfg: AppConfig) -> dict[str, Any]:

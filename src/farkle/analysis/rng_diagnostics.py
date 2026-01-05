@@ -19,6 +19,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 
+from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
@@ -38,20 +39,20 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         force: Recompute even when the done-stamp matches inputs/outputs.
     """
 
+    stage_log = stage_logger("rng_diagnostics", logger=LOGGER)
+    stage_log.start()
+
     data_file = cfg.curated_parquet
     out_file = cfg.rng_output_path("rng_diagnostics.parquet")
     stamp_path = stage_done_path(cfg.rng_stage_dir, "rng_diagnostics")
 
     lags = _normalize_lags(lags)
     if not lags:
-        LOGGER.info("rng-diagnostics: no valid lags provided; skipping")
+        stage_log.missing_input("no valid lags provided")
         return
 
     if not data_file.exists():
-        LOGGER.info(
-            "rng-diagnostics: missing curated parquet; skipping",
-            extra={"stage": "rng_diagnostics", "path": str(data_file)},
-        )
+        stage_log.missing_input("missing curated parquet", path=str(data_file))
         return
 
     if not force and _is_up_to_date(
@@ -70,13 +71,10 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
 
     required = {"game_seed", "n_rounds"}
     if not required.issubset(schema_names) or not strat_cols or winner_col is None:
-        LOGGER.info(
-            "rng-diagnostics: curated parquet missing required columns; skipping",
-            extra={
-                "stage": "rng_diagnostics",
-                "path": str(data_file),
-                "required_cols": sorted(required | {"winner_strategy", "winner_seat"}),
-            },
+        stage_log.missing_input(
+            "curated parquet missing required columns",
+            path=str(data_file),
+            required_cols=sorted(required | {"winner_strategy", "winner_seat"}),
         )
         return
 
@@ -89,18 +87,12 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
 
     melted = _melt_strategies(df, strat_cols)
     if melted.empty:
-        LOGGER.info(
-            "rng-diagnostics: no per-strategy rows after melting; skipping",
-            extra={"stage": "rng_diagnostics", "path": str(data_file)},
-        )
+        stage_log.missing_input("no per-strategy rows after melting", path=str(data_file))
         return
 
     diagnostics = _collect_diagnostics(melted, lags=lags)
     if diagnostics.empty:
-        LOGGER.info(
-            "rng-diagnostics: no diagnostics computed; skipping",
-            extra={"stage": "rng_diagnostics", "path": str(data_file)},
-        )
+        stage_log.missing_input("no diagnostics computed", path=str(data_file))
         return
 
     table_out = pa.Table.from_pandas(diagnostics, preserve_index=False)

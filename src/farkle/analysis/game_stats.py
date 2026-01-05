@@ -39,6 +39,7 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 from pandas._libs.missing import NAType
 
+from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
@@ -57,6 +58,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         force: When True, recompute even if the outputs appear up-to-date.
     """
 
+    stage_log = stage_logger("game_stats", logger=LOGGER)
+    stage_log.start()
+
     stage_dir = cfg.game_stats_stage_dir
     game_length_output = cfg.game_stats_output_path("game_length.parquet")
     margin_output = cfg.game_stats_output_path("margin_stats.parquet")
@@ -70,9 +74,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         input_paths.append(combined_path)
 
     if not input_paths:
-        raise FileNotFoundError(
-            "game-stats: no curated parquet files found under analysis/data"
-        )
+        stage_log.missing_input("no curated parquet files found", analysis_dir=str(cfg.analysis_dir))
+        return
 
     outputs = [game_length_output, margin_output, rare_events_output]
     if not force and stage_is_up_to_date(
@@ -105,7 +108,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     combined = pd.concat([strategy_stats, global_stats], ignore_index=True)
     if combined.empty:
-        raise RuntimeError("game-stats: no rows available to summarize")
+        stage_log.missing_input("no rows available to summarize")
+        return
 
     table = pa.Table.from_pandas(combined, preserve_index=False)
     write_parquet_atomic(table, game_length_output, codec=cfg.parquet_codec)
@@ -114,7 +118,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         per_n_inputs, thresholds=cfg.game_stats_margin_thresholds
     )
     if margin_stats.empty:
-        raise RuntimeError("game-stats: no margins available to summarize")
+        stage_log.missing_input("no margins available to summarize")
+        return
 
     margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
     write_parquet_atomic(margin_table, margin_output, codec=cfg.parquet_codec)

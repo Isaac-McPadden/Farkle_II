@@ -255,9 +255,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     def _optional_stage(module: str, stage: str) -> Callable[[AppConfig], None]:
         def _runner(cfg: AppConfig) -> None:
-            mod = analysis._optional_import(module)
+            stage_log = analysis.stage_logger(stage, logger=LOGGER)
+            mod = analysis._optional_import(module, stage_log=stage_log)
             if mod is None:
-                analysis._skip_message(stage, "unavailable")
                 return
             mod.run(cfg)
 
