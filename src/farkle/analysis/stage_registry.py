@@ -25,7 +25,7 @@ class StageDefinition:
     folder_stub: str | None = None
     requires_game_stats: bool = False
     requires_rng: bool = False
-    enabled_predicate: Callable[[AppConfig], bool] | None = None
+    disabled_predicate: Callable[[AppConfig], bool] | None = None
 
     def folder_name(self, index: int) -> str:
         """Return the zero-padded folder name for this stage."""
@@ -36,13 +36,15 @@ class StageDefinition:
     def is_enabled(self, cfg: AppConfig, *, run_game_stats: bool, run_rng: bool) -> bool:
         """Determine whether this stage should be active for a given config."""
 
-        predicate_ok = (
-            self.enabled_predicate(cfg) if self.enabled_predicate is not None else True
+        predicate_disabled = (
+            self.disabled_predicate(cfg)
+            if self.disabled_predicate is not None
+            else False
         )
         return (
             (not self.requires_game_stats or run_game_stats)
             and (not self.requires_rng or run_rng)
-            and predicate_ok
+            and not predicate_disabled
         )
 
 
@@ -110,27 +112,27 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "trueskill",
         group="analytics",
-        enabled_predicate=lambda cfg: cfg.analysis.run_trueskill,
+        disabled_predicate=lambda cfg: cfg.analysis.disable_trueskill,
     ),
     StageDefinition(
         "head2head",
         group="analytics",
-        enabled_predicate=lambda cfg: cfg.analysis.run_head2head,
+        disabled_predicate=lambda cfg: cfg.analysis.disable_head2head,
     ),
     StageDefinition(
         "hgb",
         group="analytics",
-        enabled_predicate=lambda cfg: cfg.analysis.run_hgb,
+        disabled_predicate=lambda cfg: cfg.analysis.disable_hgb,
     ),
     StageDefinition(
         "tiering",
         group="analytics",
-        enabled_predicate=lambda cfg: getattr(cfg.analysis, "run_frequentist", False),
+        disabled_predicate=lambda cfg: cfg.analysis.disable_tiering,
     ),
     StageDefinition(
         "agreement",
         group="analytics",
-        enabled_predicate=lambda cfg: getattr(cfg.analysis, "run_agreement", False),
+        disabled_predicate=lambda cfg: cfg.analysis.disable_agreement,
     ),
 )
 

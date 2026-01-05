@@ -86,6 +86,12 @@ class SimConfig:
 class AnalysisConfig:
     """Analysis-stage parameters controlling downstream analytics."""
 
+    disable_trueskill: bool = False
+    disable_head2head: bool = False
+    disable_hgb: bool = False
+    disable_tiering: bool = False
+    disable_agreement: bool = False
+
     run_trueskill: bool = True
     run_head2head: bool = True
     run_rng: bool = False

@@ -25,6 +25,8 @@ def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
         "trueskill",
         "head2head",
         "hgb",
+        "tiering",
+        "agreement",
     ]
 
     assert [placement.definition.key for placement in layout.placements] == expected_keys
@@ -40,9 +42,11 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
         analysis=AnalysisConfig(
             run_game_stats=True,
             run_rng=False,
-            run_trueskill=False,
-            run_head2head=False,
             run_hgb=True,
+            disable_trueskill=True,
+            disable_head2head=True,
+            disable_tiering=True,
+            disable_agreement=True,
         ),
     )
 
@@ -88,6 +92,8 @@ def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
         "trueskill",
         "head2head",
         "hgb",
+        "tiering",
+        "agreement",
     ]
 
     assert [placement.definition.key for placement in layout.placements] == expected_keys
