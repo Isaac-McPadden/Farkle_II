@@ -20,7 +20,7 @@ from farkle.config import AppConfig, IOConfig
 def _cfg(tmp_path: Path) -> AppConfig:
     cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
     cfg.analysis.run_frequentist = True
-    cfg.set_stage_layout(resolve_stage_layout(cfg, run_rng=True))
+    cfg.set_stage_layout(resolve_stage_layout(cfg))
     data_dir = cfg.curate_stage_dir / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     (data_dir / cfg.curated_rows_name).touch()

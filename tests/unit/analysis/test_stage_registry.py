@@ -19,6 +19,7 @@ def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
         "combine",
         "metrics",
         "game_stats",
+        "rng_diagnostics",
         "seed_summaries",
         "variance",
         "meta",
@@ -40,9 +41,8 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
     cfg = AppConfig(
         io=IOConfig(results_dir=tmp_path),
         analysis=AnalysisConfig(
-            run_game_stats=True,
-            run_rng=False,
-            run_hgb=True,
+            disable_game_stats=True,
+            disable_rng_diagnostics=False,
             disable_trueskill=True,
             disable_head2head=True,
             disable_tiering=True,
@@ -50,7 +50,7 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
         ),
     )
 
-    layout = resolve_stage_layout(cfg, run_game_stats=False, run_rng=True)
+    layout = resolve_stage_layout(cfg)
 
     expected_keys = [
         "ingest",
@@ -72,10 +72,9 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
 
 
 def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
-    cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path),
-        analysis=AnalysisConfig(run_rng=True),
-    )
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
+
+    cfg.analysis.disable_rng_diagnostics = True
 
     layout = resolve_stage_layout(cfg)
 
@@ -85,7 +84,6 @@ def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
         "combine",
         "metrics",
         "game_stats",
-        "rng_diagnostics",
         "seed_summaries",
         "variance",
         "meta",

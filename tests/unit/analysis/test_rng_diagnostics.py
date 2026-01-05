@@ -16,7 +16,7 @@ def test_collect_diagnostics_empty_input():
 
 def test_run_skips_when_missing_columns(tmp_path):
     cfg, _, _ = build_curated_fixture(tmp_path)
-    cfg.set_stage_layout(resolve_stage_layout(cfg, run_rng=True))
+    cfg.set_stage_layout(resolve_stage_layout(cfg))
     curated = cfg.curated_parquet
     curated.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pydict({"only": [1, 2, 3]}), curated)

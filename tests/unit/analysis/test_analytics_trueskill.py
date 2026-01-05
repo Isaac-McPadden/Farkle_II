@@ -10,7 +10,7 @@ from farkle.config import AppConfig, IOConfig
 def _setup(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
     cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
     cfg.analysis.run_frequentist = True
-    cfg.set_stage_layout(resolve_stage_layout(cfg, run_rng=True))
+    cfg.set_stage_layout(resolve_stage_layout(cfg))
     combined = cfg.curated_parquet
     combined.parent.mkdir(parents=True, exist_ok=True)
     combined.write_text("data")
