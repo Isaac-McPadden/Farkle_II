@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+from dataclasses import dataclass
 from types import ModuleType
 
 from farkle.config import AppConfig
@@ -12,11 +13,54 @@ from farkle.config import AppConfig
 LOGGER = logging.getLogger(__name__)
 
 
-def _optional_import(module: str) -> ModuleType | None:
+@dataclass
+class StageLogger:
+    """Standardized logging helper for analytics stages."""
+
+    stage: str
+    logger: logging.Logger = LOGGER
+
+    def start(self, **extra: object) -> None:
+        """Log that a stage started running."""
+
+        self.logger.info(
+            "Analytics stage start",
+            extra={"stage": self.stage, **extra},
+        )
+
+    def missing_dependency(self, dependency: str, *, error: str | None = None) -> None:
+        """Log that a dependency is missing for a stage."""
+
+        payload = {"stage": self.stage, "missing_module": dependency}
+        if error:
+            payload["missing"] = error
+        self.logger.info(
+            "Analytics module skipped due to missing dependency",
+            extra=payload,
+        )
+
+    def missing_input(self, reason: str, **extra: object) -> None:
+        """Log that a stage skipped due to missing or invalid inputs."""
+
+        self.logger.info(
+            "Analytics: skipping %s",
+            self.stage,
+            extra={"stage": self.stage, "reason": reason, **extra},
+        )
+
+
+def stage_logger(stage: str, *, logger: logging.Logger | None = None) -> StageLogger:
+    """Construct a :class:`StageLogger` for the given stage name."""
+
+    return StageLogger(stage=stage, logger=logger or LOGGER)
+
+
+def _optional_import(module: str, *, stage_log: StageLogger | None = None) -> ModuleType | None:
     """Attempt to import an analytics module while tolerating missing deps.
 
     Args:
         module: Fully qualified module path to import.
+        stage_log: Helper used to report missing dependencies.
 
     Returns:
         Imported module object, or ``None`` when the dependency is absent.
@@ -24,14 +68,7 @@ def _optional_import(module: str) -> ModuleType | None:
     try:
         return importlib.import_module(module)
     except ModuleNotFoundError as exc:  # pragma: no cover - exercised in tests
-        LOGGER.info(
-            "Analytics module skipped due to missing dependency",
-            extra={
-                "stage": "analysis",
-                "missing_module": module,
-                "missing": str(exc),
-            },
-        )
+        (stage_log or stage_logger("analysis")).missing_dependency(module, error=str(exc))
         return None
 
 

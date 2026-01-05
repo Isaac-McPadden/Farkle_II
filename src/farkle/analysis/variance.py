@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
+from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
@@ -55,6 +56,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         force: Recompute outputs even when the done-stamp is up-to-date.
     """
 
+    stage_log = stage_logger("variance", logger=LOGGER)
+    stage_log.start()
+
     metrics_path = cfg.metrics_input_path()
     variance_path = cfg.variance_output_path(VARIANCE_OUTPUT)
     summary_path = cfg.variance_output_path(SUMMARY_OUTPUT)
@@ -62,14 +66,12 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     stamp_path = stage_done_path(cfg.variance_stage_dir, "variance")
 
     if not metrics_path.exists():
-        raise FileNotFoundError(metrics_path)
+        stage_log.missing_input("metrics parquet missing", path=str(metrics_path))
+        return
 
     seed_summary_paths = _discover_seed_summaries(cfg)
     if not seed_summary_paths:
-        LOGGER.info(
-            "Variance skipped: no per-seed summaries found",
-            extra={"stage": "variance", "analysis_dir": str(cfg.analysis_dir)},
-        )
+        stage_log.missing_input("no per-seed summaries found", analysis_dir=str(cfg.analysis_dir))
         return
 
     inputs = [metrics_path, *seed_summary_paths]
@@ -105,10 +107,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     metrics_frame = _load_metrics(metrics_path)
     seed_frame = _load_seed_summaries(seed_summary_paths)
     if seed_frame.empty:
-        LOGGER.info(
-            "Variance skipped: seed summaries empty",
-            extra={"stage": "variance", "analysis_dir": str(cfg.analysis_dir)},
-        )
+        stage_log.missing_input("seed summaries empty", analysis_dir=str(cfg.analysis_dir))
         return
 
     variance_frame = _compute_variance(seed_frame)
