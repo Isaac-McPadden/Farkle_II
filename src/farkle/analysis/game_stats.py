@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
+from typing import TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -45,7 +46,7 @@ from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.schema_helpers import n_players_from_schema
 
-StatValue = float | int | str | NAType
+StatValue: TypeAlias = float | int | str | NAType
 
 LOGGER = logging.getLogger(__name__)
 
@@ -532,5 +533,4 @@ def _summarize_rounds(values: Iterable[int | float | np.integer | np.floating]) 
         "prob_rounds_le_10": float((series <= 10).mean()),
         "prob_rounds_ge_20": float((series >= 20).mean()),
     }
-
 

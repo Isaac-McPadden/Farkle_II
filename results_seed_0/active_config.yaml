@@ -23,6 +23,7 @@ analysis:
   run_hgb: true
   run_post_h2h_analysis: false
   run_report: true
+  run_rng: false
   run_trueskill: true
   tiering_min_gap: null
   tiering_seeds: null
