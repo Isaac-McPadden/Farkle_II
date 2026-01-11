@@ -11,7 +11,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
-from pipeline import (
+from farkle.orchestration.pipeline import (
     _done_path,
     _first_existing,
     _detect_player_counts,

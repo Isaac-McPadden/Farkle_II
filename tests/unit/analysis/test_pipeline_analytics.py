@@ -9,7 +9,7 @@ import pandas as pd
 import farkle.analysis.stage_registry as stage_registry
 from farkle.config import AppConfig, IOConfig
 from farkle.analysis.stage_registry import resolve_stage_layout
-from pipeline import analyze_all, _done_path, is_up_to_date, write_done
+from farkle.orchestration.pipeline import analyze_all, _done_path, is_up_to_date, write_done
 
 
 def _setup(tmp_path: Path) -> tuple[Path, AppConfig]:
@@ -69,7 +69,7 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
         write_done(done, inputs, outputs, "farkle.analytics.agreement")
         print("agreement")
 
-    monkeypatch.setattr("pipeline.analyze_agreement", fake_agreement)
+    monkeypatch.setattr("farkle.orchestration.pipeline.analyze_agreement", fake_agreement)
 
     # stub tools to create outputs
     def fake_ts(app_cfg):  # noqa: ANN001

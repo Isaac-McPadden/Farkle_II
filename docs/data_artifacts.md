@@ -61,7 +61,7 @@ to discover or create the appropriate directories.
 | --- | --- | --- | --- |
 | `analysis/config.resolved.yaml` | `farkle.analysis.pipeline.main` writes the fully resolved configuration | Provenance for analysis runs【F:src/farkle/analysis/pipeline.py†L44-L49】 | Keep YAML for readability. |
 | `analysis/manifest.json` | Same | Stores config SHA and run metadata for pipeline orchestration【F:src/farkle/analysis/pipeline.py†L50-L59】 | Append-only JSON manifest. |
-| `<artifact>.done.json` (e.g. `tiers.json.done.json`, `bonferroni_pairwise.parquet.done.json`, `hgb_importance.json.done.json`) | `pipeline.write_done` stamps after each analytics step | Records input fingerprints and tool name to skip stale recomputation【F:src/pipeline.py†L60-L157】 | Control metadata; not part of delivered datasets. |
+| `<artifact>.done.json` (e.g. `tiers.json.done.json`, `bonferroni_pairwise.parquet.done.json`, `hgb_importance.json.done.json`) | `farkle.orchestration.pipeline.write_done` stamps after each analytics step | Records input fingerprints and tool name to skip stale recomputation【F:src/farkle/orchestration/pipeline.py†L60-L157】 | Control metadata; not part of delivered datasets. |
 
 Optional stages (e.g., `04_game_stats` or `05_rng`) keep their numbered
 subdirectories reserved even when you skip them so downstream analytics can rely
