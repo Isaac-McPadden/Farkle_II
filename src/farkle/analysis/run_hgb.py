@@ -30,7 +30,12 @@ import pyarrow.parquet as pq
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
 
-from farkle.simulation.strategies import FavorDiceOrScore, parse_strategy_for_df
+from farkle.simulation.strategies import (
+    FavorDiceOrScore,
+    normalize_strategy_ids,
+    parse_strategy_for_df,
+    strategy_attributes_from_series,
+)
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.writer import atomic_path
 
@@ -94,43 +99,55 @@ def _select_partial_dependence_features(
     return kept, skipped
 
 
-def _parse_strategy_features(strategies: pd.Series) -> pd.DataFrame:
-    """Return a feature matrix indexed by strategy literal."""
+def _parse_strategy_features(
+    strategies: pd.Series, *, manifest: pd.DataFrame | None = None
+) -> pd.DataFrame:
+    """Return a feature matrix indexed by strategy identifier."""
 
-    unique = pd.Index(pd.unique(strategies.dropna().astype(str)))
-    rows: list[dict[str, float | str]] = []
-    skipped: list[str] = []
-    for strategy in unique:
-        try:
-            parsed = parse_strategy_for_df(strategy)
-        except ValueError:
-            skipped.append(strategy)
-            continue
-        row: dict[str, float | str] = {"strategy": strategy}
-        row["score_threshold"] = float(parsed.get("score_threshold", np.nan))
-        row["dice_threshold"] = float(parsed.get("dice_threshold", np.nan))
-        row["consider_score"] = 1.0 if parsed.get("consider_score") else 0.0
-        row["consider_dice"] = 1.0 if parsed.get("consider_dice") else 0.0
-        row["smart_five"] = 1.0 if parsed.get("smart_five") else 0.0
-        row["smart_one"] = 1.0 if parsed.get("smart_one") else 0.0
-        favor = parsed.get("favor_dice_or_score")
-        row["favor_score"] = 1.0 if favor == FavorDiceOrScore.SCORE else 0.0
-        row["require_both"] = 1.0 if parsed.get("require_both") else 0.0
-        row["auto_hot_dice"] = 1.0 if parsed.get("auto_hot_dice") else 0.0
-        row["run_up_score"] = 1.0 if parsed.get("run_up_score") else 0.0
-        rows.append(row)
-
-    if skipped:
-        LOGGER.warning(
-            "Skipping unparseable strategies",
-            extra={"stage": "hgb", "count": len(skipped)},
-        )
-
-    if not rows:
+    unique = pd.Series(pd.unique(strategies.dropna()))
+    if unique.empty:
         columns = ["strategy"] + [name for name, _dtype in FEATURE_SPECS]
         return pd.DataFrame(columns=columns).set_index("strategy")
 
-    features = pd.DataFrame(rows).set_index("strategy")
+    def _safe_parse(value: str) -> dict:
+        try:
+            return parse_strategy_for_df(value)
+        except ValueError:
+            return {}
+
+    attrs = strategy_attributes_from_series(unique, manifest=manifest, parse_legacy=_safe_parse)
+    if attrs.empty:
+        columns = ["strategy"] + [name for name, _dtype in FEATURE_SPECS]
+        return pd.DataFrame(columns=columns).set_index("strategy")
+
+    skipped = int(attrs.isna().all(axis=1).sum())
+    if skipped:
+        LOGGER.warning(
+            "Skipping unparseable strategies",
+            extra={"stage": "hgb", "count": skipped},
+        )
+
+    favor_raw = attrs["favor_dice_or_score"]
+    favor_score = favor_raw.apply(
+        lambda v: v == FavorDiceOrScore.SCORE or v == FavorDiceOrScore.SCORE.value
+    )
+
+    features = pd.DataFrame(
+        {
+            "strategy": unique,
+            "score_threshold": pd.to_numeric(attrs["score_threshold"], errors="coerce"),
+            "dice_threshold": pd.to_numeric(attrs["dice_threshold"], errors="coerce"),
+            "consider_score": pd.to_numeric(attrs["consider_score"], errors="coerce").fillna(0.0),
+            "consider_dice": pd.to_numeric(attrs["consider_dice"], errors="coerce").fillna(0.0),
+            "smart_five": pd.to_numeric(attrs["smart_five"], errors="coerce").fillna(0.0),
+            "smart_one": pd.to_numeric(attrs["smart_one"], errors="coerce").fillna(0.0),
+            "favor_score": favor_score.astype(float),
+            "require_both": pd.to_numeric(attrs["require_both"], errors="coerce").fillna(0.0),
+            "auto_hot_dice": pd.to_numeric(attrs["auto_hot_dice"], errors="coerce").fillna(0.0),
+            "run_up_score": pd.to_numeric(attrs["run_up_score"], errors="coerce").fillna(0.0),
+        }
+    ).set_index("strategy")
+
     for name, dtype in FEATURE_SPECS:
         if name not in features.columns:
             features[name] = 0.0
@@ -149,7 +166,8 @@ def _load_seed_targets(root: Path) -> pd.DataFrame:
         seed_val = int(match.group("seed"))
         table = pq.read_table(path, columns=["strategy", "mu"])
         frame = table.to_pandas()
-        frame["strategy"] = frame["strategy"].astype(str)
+        normalized = normalize_strategy_ids(frame["strategy"])
+        frame["strategy"] = normalized.where(normalized.notna(), frame["strategy"])
         frame["seed"] = seed_val
         frames.append(frame)
     if not frames:
@@ -298,6 +316,7 @@ def run_hgb(
     *,
     metrics_path: Path | None = None,
     ratings_path: Path | None = None,
+    manifest_path: Path | None = None,
 ) -> None:
     """Train the regressor and output feature importance and plots."""
 
@@ -307,6 +326,9 @@ def run_hgb(
     pooled_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = Path(metrics_path) if metrics_path is not None else root / METRICS_NAME
     ratings_path = Path(ratings_path) if ratings_path is not None else root / RATINGS_NAME
+    manifest = None
+    if manifest_path is not None and Path(manifest_path).exists():
+        manifest = pd.read_parquet(manifest_path)
 
     LOGGER.info(
         "HGB regression start",
@@ -321,7 +343,9 @@ def run_hgb(
 
     metrics = pd.read_parquet(metrics_path)
     metrics = metrics.copy()
-    metrics["strategy"] = metrics["strategy"].astype(str)
+    if "strategy" in metrics.columns:
+        normalized = normalize_strategy_ids(metrics["strategy"])
+        metrics["strategy"] = normalized.where(normalized.notna(), metrics["strategy"])
     raw_players: set[int] = set()
     if "n_players" in metrics.columns:
         raw_players.update(int(p) for p in metrics["n_players"].dropna().astype(int).unique())
@@ -336,7 +360,7 @@ def run_hgb(
 
     data = metrics
 
-    feature_frame = _parse_strategy_features(data["strategy"])
+    feature_frame = _parse_strategy_features(data["strategy"], manifest=manifest)
     seed_targets = _load_seed_targets(ratings_path.parent)
     if feature_frame.empty:
         LOGGER.warning(
@@ -363,7 +387,8 @@ def run_hgb(
 
     for players in metrics_players:
         subset = data[data["players"] == players].copy()
-        subset["strategy"] = subset["strategy"].astype(str)
+        normalized = normalize_strategy_ids(subset["strategy"])
+        subset["strategy"] = normalized.where(normalized.notna(), subset["strategy"])
         per_player_dir = root / f"{players}p"
         per_player_dir.mkdir(parents=True, exist_ok=True)
         importance_path = per_player_dir / IMPORTANCE_TEMPLATE.format(players=players)

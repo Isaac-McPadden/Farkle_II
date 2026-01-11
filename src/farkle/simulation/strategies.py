@@ -12,9 +12,9 @@ import random
 import re
 from dataclasses import dataclass
 from enum import Enum
-from functools import partial
+from functools import lru_cache, partial
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable, Mapping, Sequence, Tuple
 
 import numba as nb
 import pandas as pd
@@ -28,6 +28,20 @@ __all__: list[str] = [
     "build_stop_at_strategy",
     "STOP_AT_REGISTRY",
     "ThresholdStrategy",
+    "StrategyEncoder",
+    "StrategyGridOptions",
+    "STRATEGY_TUPLE_FIELDS",
+    "DEFAULT_STRATEGY_GRID",
+    "STRATEGY_MANIFEST_NAME",
+    "build_strategy_manifest",
+    "build_strategy_encoder",
+    "decode_strategy_id",
+    "encode_strategy",
+    "iter_strategy_combos",
+    "normalize_strategy_ids",
+    "parse_strategy_identifier",
+    "strategy_attributes_from_series",
+    "strategy_tuple",
     "random_threshold_strategy",
 ]
 
@@ -44,6 +58,34 @@ class FavorDiceOrScore(Enum):
 
 STOP_AT_THRESHOLDS: tuple[int, ...] = (350, 400, 450, 500)
 """Named stop-at thresholds available via the strategy registry."""
+
+STRATEGY_TUPLE_FIELDS: tuple[str, ...] = (
+    "score_threshold",
+    "dice_threshold",
+    "smart_five",
+    "smart_one",
+    "consider_score",
+    "consider_dice",
+    "require_both",
+    "auto_hot_dice",
+    "run_up_score",
+    "favor_dice_or_score",
+)
+
+STRATEGY_MANIFEST_NAME = "strategy_manifest.parquet"
+
+DEFAULT_STRATEGY_GRID: dict[str, tuple[object, ...]] = {
+    "score_thresholds": tuple(range(200, 1400, 50)),
+    "dice_thresholds": tuple(range(0, 5)),
+    "smart_five_opts": (True, False),
+    "smart_one_opts": (True, False),
+    "consider_score_opts": (True, False),
+    "consider_dice_opts": (True, False),
+    "auto_hot_dice_opts": (False, True),
+    "run_up_score_opts": (True, False),
+}
+
+StrategyTuple = Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]
 
 
 _STRAT_RE = re.compile(
@@ -144,6 +186,7 @@ class ThresholdStrategy:
     auto_hot_dice: bool = False
     run_up_score: bool = False
     favor_dice_or_score: FavorDiceOrScore = FavorDiceOrScore.SCORE
+    strategy_id: int | None = None
 
     def __post_init__(self):
         # 1) smart_one may never be True if smart_five is False
@@ -263,6 +306,75 @@ class StopAtStrategy(ThresholdStrategy):
 # ---------------------------------------------------------------------------
 
 
+def _coerce_options(options: Sequence[Any] | None, fallback: Iterable[Any]) -> tuple[Any, ...]:
+    """Return an immutable tuple using ``fallback`` when ``options`` is None."""
+    return tuple(fallback) if options is None else tuple(options)
+
+
+def _favor_options(sf: bool, cs: bool, cd: bool) -> tuple[FavorDiceOrScore, ...]:
+    """Return valid FavorDiceOrScore choices for the given flag combination."""
+    if cs and cd:
+        return (FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE) if sf else (FavorDiceOrScore.SCORE,)
+    if cs:
+        return (FavorDiceOrScore.SCORE,)
+    if cd:
+        return (FavorDiceOrScore.DICE,)
+    return (FavorDiceOrScore.SCORE,)
+
+
+def iter_strategy_combos(
+    *,
+    score_thresholds: Sequence[int],
+    dice_thresholds: Sequence[int],
+    smart_five_opts: Sequence[bool],
+    smart_one_opts: Sequence[bool],
+    consider_score_opts: Sequence[bool],
+    consider_dice_opts: Sequence[bool],
+    auto_hot_dice_opts: Sequence[bool],
+    run_up_score_opts: Sequence[bool],
+    inactive_score_threshold: int,
+    inactive_dice_threshold: int,
+    allowed_smart_pairs: set[tuple[bool, bool]] | None = None,
+) -> Iterable[StrategyTuple]:
+    """Iterate over strategy parameter tuples that respect flag constraints."""
+    for sf in smart_five_opts:
+        smart_one_candidates = [
+            so
+            for so in smart_one_opts
+            if (sf or not so) and (allowed_smart_pairs is None or (sf, so) in allowed_smart_pairs)
+        ]
+        if not smart_one_candidates:
+            continue
+
+        for so in smart_one_candidates:
+            for cs in consider_score_opts:
+                score_values = score_thresholds if cs else [inactive_score_threshold]
+
+                for cd in consider_dice_opts:
+                    dice_values = dice_thresholds if cd else [inactive_dice_threshold]
+                    rb_values = [True, False] if (cs and cd) else [False]
+                    favor_choices = _favor_options(sf, cs, cd)
+
+                    for st in score_values:
+                        for dt in dice_values:
+                            for hd in auto_hot_dice_opts:
+                                for rs in run_up_score_opts:
+                                    for rb in rb_values:
+                                        for ps in favor_choices:
+                                            yield (
+                                                int(st),
+                                                int(dt),
+                                                bool(sf),
+                                                bool(so),
+                                                bool(cs),
+                                                bool(cd),
+                                                bool(rb),
+                                                bool(hd),
+                                                bool(rs),
+                                                ps,
+                                            )
+
+
 def _sample_favor_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrScore:
     """
     Return the *only* legal value(s) for `favor_dice_or_score`
@@ -363,6 +475,291 @@ STOP_AT_REGISTRY: dict[str, Callable[..., StopAtStrategy]] = {
         for threshold in STOP_AT_THRESHOLDS
     },
 }
+
+
+def strategy_tuple(strategy: ThresholdStrategy) -> StrategyTuple:
+    """Return the canonical tuple representation for a ThresholdStrategy."""
+    return tuple(
+        getattr(strategy, field) for field in STRATEGY_TUPLE_FIELDS
+    )  # type: ignore[return-value]
+
+
+@dataclass(frozen=True)
+class StrategyGridOptions:
+    """Normalized option grid inputs for strategy encoders and manifests."""
+
+    score_thresholds: tuple[int, ...]
+    dice_thresholds: tuple[int, ...]
+    smart_five_opts: tuple[bool, ...]
+    smart_one_opts: tuple[bool, ...]
+    consider_score_opts: tuple[bool, ...]
+    consider_dice_opts: tuple[bool, ...]
+    auto_hot_dice_opts: tuple[bool, ...]
+    run_up_score_opts: tuple[bool, ...]
+    include_stop_at: bool = False
+    include_stop_at_heuristic: bool = False
+
+    @property
+    def inactive_score_threshold(self) -> int:
+        return min(self.score_thresholds) - 1
+
+    @property
+    def inactive_dice_threshold(self) -> int:
+        return min(self.dice_thresholds) - 1
+
+    @classmethod
+    def from_inputs(
+        cls,
+        *,
+        score_thresholds: Sequence[int] | None = None,
+        dice_thresholds: Sequence[int] | None = None,
+        smart_five_opts: Sequence[bool] | None = None,
+        smart_one_opts: Sequence[bool] | None = None,
+        consider_score_opts: Sequence[bool] = (True, False),
+        consider_dice_opts: Sequence[bool] = (True, False),
+        auto_hot_dice_opts: Sequence[bool] = (False, True),
+        run_up_score_opts: Sequence[bool] = (True, False),
+        include_stop_at: bool = False,
+        include_stop_at_heuristic: bool = False,
+    ) -> "StrategyGridOptions":
+        return cls(
+            score_thresholds=_coerce_options(
+                score_thresholds, DEFAULT_STRATEGY_GRID["score_thresholds"]
+            ),
+            dice_thresholds=_coerce_options(
+                dice_thresholds, DEFAULT_STRATEGY_GRID["dice_thresholds"]
+            ),
+            smart_five_opts=_coerce_options(
+                smart_five_opts, DEFAULT_STRATEGY_GRID["smart_five_opts"]
+            ),
+            smart_one_opts=_coerce_options(
+                smart_one_opts, DEFAULT_STRATEGY_GRID["smart_one_opts"]
+            ),
+            consider_score_opts=_coerce_options(
+                consider_score_opts, DEFAULT_STRATEGY_GRID["consider_score_opts"]
+            ),
+            consider_dice_opts=_coerce_options(
+                consider_dice_opts, DEFAULT_STRATEGY_GRID["consider_dice_opts"]
+            ),
+            auto_hot_dice_opts=_coerce_options(
+                auto_hot_dice_opts, DEFAULT_STRATEGY_GRID["auto_hot_dice_opts"]
+            ),
+            run_up_score_opts=_coerce_options(
+                run_up_score_opts, DEFAULT_STRATEGY_GRID["run_up_score_opts"]
+            ),
+            include_stop_at=include_stop_at,
+            include_stop_at_heuristic=include_stop_at_heuristic,
+        )
+
+
+@dataclass(frozen=True)
+class StrategyEncoder:
+    """Deterministic encoder/decoder for strategy tuples."""
+
+    options: StrategyGridOptions
+    tuples: tuple[StrategyTuple, ...]
+    tuple_to_id: Mapping[StrategyTuple, int]
+
+    def encode_tuple(self, combo: StrategyTuple) -> int:
+        """Return the integer identifier for a strategy tuple."""
+        return int(self.tuple_to_id[combo])
+
+    def decode_id(self, strategy_id: int) -> dict[str, Any]:
+        """Return the attribute dict for ``strategy_id``."""
+        combo = self.tuples[int(strategy_id)]
+        return dict(zip(STRATEGY_TUPLE_FIELDS, combo, strict=True))
+
+    def encode_strategy(self, strategy: ThresholdStrategy) -> int:
+        """Return the integer identifier for a ThresholdStrategy."""
+        return self.encode_tuple(strategy_tuple(strategy))
+
+
+def _iter_encoder_combos(options: StrategyGridOptions) -> Iterable[StrategyTuple]:
+    """Yield strategy tuples in deterministic order for encoding."""
+    yield from iter_strategy_combos(
+        score_thresholds=options.score_thresholds,
+        dice_thresholds=options.dice_thresholds,
+        smart_five_opts=options.smart_five_opts,
+        smart_one_opts=options.smart_one_opts,
+        consider_score_opts=options.consider_score_opts,
+        consider_dice_opts=options.consider_dice_opts,
+        auto_hot_dice_opts=options.auto_hot_dice_opts,
+        run_up_score_opts=options.run_up_score_opts,
+        inactive_score_threshold=options.inactive_score_threshold,
+        inactive_dice_threshold=options.inactive_dice_threshold,
+    )
+
+    if options.include_stop_at:
+        for threshold in STOP_AT_THRESHOLDS:
+            strat = build_stop_at_strategy(
+                threshold, inactive_dice_threshold=options.inactive_dice_threshold
+            )
+            yield strategy_tuple(strat)
+
+    if options.include_stop_at_heuristic:
+        for threshold in STOP_AT_THRESHOLDS:
+            strat = build_stop_at_strategy(
+                threshold,
+                heuristic=True,
+                inactive_dice_threshold=options.inactive_dice_threshold,
+            )
+            yield strategy_tuple(strat)
+
+
+def build_strategy_encoder(
+    *,
+    score_thresholds: Sequence[int] | None = None,
+    dice_thresholds: Sequence[int] | None = None,
+    smart_five_opts: Sequence[bool] | None = None,
+    smart_one_opts: Sequence[bool] | None = None,
+    consider_score_opts: Sequence[bool] = (True, False),
+    consider_dice_opts: Sequence[bool] = (True, False),
+    auto_hot_dice_opts: Sequence[bool] = (False, True),
+    run_up_score_opts: Sequence[bool] = (True, False),
+    include_stop_at: bool = False,
+    include_stop_at_heuristic: bool = False,
+) -> StrategyEncoder:
+    """Build a deterministic encoder for the provided strategy grid options."""
+    options = StrategyGridOptions.from_inputs(
+        score_thresholds=score_thresholds,
+        dice_thresholds=dice_thresholds,
+        smart_five_opts=smart_five_opts,
+        smart_one_opts=smart_one_opts,
+        consider_score_opts=consider_score_opts,
+        consider_dice_opts=consider_dice_opts,
+        auto_hot_dice_opts=auto_hot_dice_opts,
+        run_up_score_opts=run_up_score_opts,
+        include_stop_at=include_stop_at,
+        include_stop_at_heuristic=include_stop_at_heuristic,
+    )
+    return _build_strategy_encoder_cached(options)
+
+
+@lru_cache(maxsize=None)
+def _build_strategy_encoder_cached(options: StrategyGridOptions) -> StrategyEncoder:
+    """Cached builder keyed by a frozen StrategyGridOptions."""
+
+    tuples: list[StrategyTuple] = []
+    tuple_to_id: dict[StrategyTuple, int] = {}
+    for combo in _iter_encoder_combos(options):
+        if combo not in tuple_to_id:
+            tuple_to_id[combo] = len(tuples)
+            tuples.append(combo)
+    return StrategyEncoder(options=options, tuples=tuple(tuples), tuple_to_id=tuple_to_id)
+
+
+def encode_strategy(strategy: ThresholdStrategy, encoder: StrategyEncoder) -> int:
+    """Return the deterministic ID for ``strategy`` using ``encoder``."""
+    return encoder.encode_strategy(strategy)
+
+
+def decode_strategy_id(strategy_id: int, encoder: StrategyEncoder) -> dict[str, Any]:
+    """Return strategy attribute mapping for ``strategy_id`` using ``encoder``."""
+    return encoder.decode_id(strategy_id)
+
+
+def build_strategy_manifest(strategies: Sequence[ThresholdStrategy]) -> pd.DataFrame:
+    """Return a manifest DataFrame mapping strategy IDs to attributes."""
+    rows: dict[int, dict[str, Any]] = {}
+    for strat in strategies:
+        if strat.strategy_id is None:
+            continue
+        sid = int(strat.strategy_id)
+        if sid in rows:
+            continue
+        attrs = dict(zip(STRATEGY_TUPLE_FIELDS, strategy_tuple(strat), strict=True))
+        attrs["strategy_id"] = sid
+        attrs["strategy_str"] = str(strat)
+        if isinstance(attrs["favor_dice_or_score"], FavorDiceOrScore):
+            attrs["favor_dice_or_score"] = attrs["favor_dice_or_score"].value
+        rows[sid] = attrs
+
+    manifest = pd.DataFrame(rows.values())
+    if not manifest.empty:
+        manifest = manifest.sort_values("strategy_id", kind="mergesort").reset_index(drop=True)
+    return manifest
+
+
+def normalize_strategy_ids(series: pd.Series) -> pd.Series:
+    """Coerce a series of strategy identifiers into nullable integers."""
+    return pd.to_numeric(series, errors="coerce").astype("Int64")
+
+
+def parse_strategy_identifier(
+    value: Any,
+    *,
+    encoder: StrategyEncoder | None = None,
+    manifest: pd.DataFrame | None = None,
+    parse_legacy: Callable[[str], dict] | None = None,
+) -> ThresholdStrategy:
+    """Return a ThresholdStrategy from an identifier (id or legacy string)."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        strategy_id = int(value)
+    elif isinstance(value, str) and value.isdigit():
+        strategy_id = int(value)
+    else:
+        strategy_id = None
+
+    if strategy_id is not None:
+        attrs: dict[str, Any] | None = None
+        if encoder is not None:
+            attrs = encoder.decode_id(strategy_id)
+        elif manifest is not None and not manifest.empty:
+            match = manifest.loc[manifest["strategy_id"] == strategy_id]
+            if not match.empty:
+                attrs = match.iloc[0].to_dict()
+        if attrs is None:
+            raise KeyError(f"strategy_id {strategy_id} missing from manifest/encoder")
+        attrs = {k: v for k, v in attrs.items() if k in STRATEGY_TUPLE_FIELDS}
+        if "favor_dice_or_score" in attrs and not isinstance(
+            attrs["favor_dice_or_score"], FavorDiceOrScore
+        ):
+            attrs["favor_dice_or_score"] = (
+                FavorDiceOrScore.SCORE
+                if attrs["favor_dice_or_score"] == FavorDiceOrScore.SCORE.value
+                else FavorDiceOrScore.DICE
+            )
+        return ThresholdStrategy(**attrs, strategy_id=strategy_id)
+
+    if isinstance(value, str) and value in STOP_AT_REGISTRY:
+        return STOP_AT_REGISTRY[value]()
+
+    if parse_legacy is None:
+        raise ValueError(f"Cannot parse legacy strategy identifier: {value!r}")
+    strategy = ThresholdStrategy(**parse_legacy(str(value)))
+    return strategy
+
+
+def strategy_attributes_from_series(
+    strategies: pd.Series,
+    *,
+    manifest: pd.DataFrame | None = None,
+    parse_legacy: Callable[[str], dict] | None = None,
+) -> pd.DataFrame:
+    """Return a DataFrame of strategy attributes for a mixed identifier series."""
+    if parse_legacy is None:
+        parse_legacy = parse_strategy_for_df
+    id_series = normalize_strategy_ids(strategies)
+    attrs_frames: list[pd.DataFrame] = []
+    if manifest is not None and not manifest.empty and id_series.notna().any():
+        manifest_indexed = manifest.set_index("strategy_id")
+        ids = id_series.dropna().astype(int)
+        mapped = manifest_indexed.reindex(ids.values)
+        mapped = mapped.reset_index(drop=True)
+        mapped.index = ids.index
+        attrs_frames.append(mapped[list(STRATEGY_TUPLE_FIELDS)])
+
+    missing_mask = id_series.isna() & strategies.notna()
+    if parse_legacy is not None and missing_mask.any():
+        legacy_attrs = strategies[missing_mask].apply(parse_legacy).apply(pd.Series)
+        legacy_attrs = legacy_attrs.reindex(columns=STRATEGY_TUPLE_FIELDS)
+        attrs_frames.append(legacy_attrs)
+
+    if not attrs_frames:
+        return pd.DataFrame(columns=STRATEGY_TUPLE_FIELDS)
+
+    combined = pd.concat(attrs_frames).sort_index()
+    return combined.reindex(columns=STRATEGY_TUPLE_FIELDS)
 
 
 def _parse_strategy_flags(s: str) -> dict[str, Any]:
@@ -474,6 +871,7 @@ def load_farkle_results(
     pkl_path: str | Path,
     *,
     parse_strategy: Callable[[str], dict] = parse_strategy_for_df,
+    manifest: pd.DataFrame | None = None,
     ordered: bool = True,
 ) -> pd.DataFrame:
     """
@@ -522,11 +920,14 @@ def load_farkle_results(
     )
 
     # ------------------------------------------------------------------
-    # 3) Explode strategy strings into individual columns
+    # 3) Explode strategy identifiers into individual columns
     # ------------------------------------------------------------------
-    flags_df = (
-        base_df["strategy"].apply(parse_strategy).apply(pd.Series)  # str → dict  # dict → DataFrame
-    )
+    if manifest is not None and not manifest.empty:
+        flags_df = strategy_attributes_from_series(
+            base_df["strategy"], manifest=manifest, parse_legacy=parse_strategy
+        )
+    else:
+        flags_df = base_df["strategy"].apply(parse_strategy).apply(pd.Series)
 
     full_df = pd.concat([base_df, flags_df], axis=1)
 

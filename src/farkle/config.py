@@ -467,6 +467,10 @@ class AppConfig:
         """Path to the metrics parquet for ``n`` players."""
         return self.n_dir(n) / f"{n}p_metrics.parquet"
 
+    def strategy_manifest_path(self, n: int) -> Path:
+        """Path to the strategy manifest parquet for ``n`` players."""
+        return self.n_dir(n) / "strategy_manifest.parquet"
+
     # —— Ingest/streaming knobs ——
     @property
     def row_group_size(self) -> int:

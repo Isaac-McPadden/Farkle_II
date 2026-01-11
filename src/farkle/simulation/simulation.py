@@ -13,16 +13,20 @@ from __future__ import annotations
 
 import multiprocessing as mp
 from dataclasses import asdict
-from typing import Any, Iterable, List, Mapping, Sequence, Tuple, TypeVar
+from typing import Any, Iterable, List, Mapping, Sequence, Tuple
 
 import pandas as pd
 
 from farkle.game.engine import FarkleGame, FarklePlayer
 from farkle.simulation.strategies import (
     STOP_AT_THRESHOLDS,
-    FavorDiceOrScore,
+    StrategyGridOptions,
     ThresholdStrategy,
     build_stop_at_strategy,
+    build_strategy_encoder,
+    encode_strategy,
+    iter_strategy_combos,
+    strategy_tuple,
 )
 from farkle.utils.random import MAX_UINT32, make_rng, spawn_seeds
 
@@ -34,110 +38,6 @@ __all__: list[str] = [
     "simulate_many_games_from_seeds",
     "aggregate_metrics",
 ]
-
-_T = TypeVar("_T")
-
-
-def _coerce_options(options: Sequence[_T] | None, fallback: Iterable[_T]) -> list[_T]:
-    """Return a mutable list using ``fallback`` when ``options`` is None."""
-    return list(fallback) if options is None else list(options)
-
-
-def _favor_options(sf: bool, cs: bool, cd: bool) -> tuple[FavorDiceOrScore, ...]:
-    """Return valid FavorDiceOrScore choices for the given flag combination."""
-    if cs and cd:
-        return (FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE) if sf else (FavorDiceOrScore.SCORE,)
-    if cs:
-        return (FavorDiceOrScore.SCORE,)
-    if cd:
-        return (FavorDiceOrScore.DICE,)
-    return (FavorDiceOrScore.SCORE,)
-
-
-def _iter_strategy_combos(
-    *,
-    score_thresholds: Sequence[int],
-    dice_thresholds: Sequence[int],
-    smart_five_opts: Sequence[bool],
-    smart_one_opts: Sequence[bool],
-    consider_score_opts: Sequence[bool],
-    consider_dice_opts: Sequence[bool],
-    auto_hot_dice_opts: Sequence[bool],
-    run_up_score_opts: Sequence[bool],
-    inactive_score_threshold: int,
-    inactive_dice_threshold: int,
-    allowed_smart_pairs: set[tuple[bool, bool]] | None = None,
-) -> Iterable[Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]]:
-    """Iterate over strategy parameter tuples that respect flag constraints.
-
-    Parameters
-    ----------
-    score_thresholds : Sequence[int]
-        Candidate turn-score limits used when ``consider_score`` is enabled.
-    dice_thresholds : Sequence[int]
-        Candidate dice-count limits used when ``consider_dice`` is enabled.
-    smart_five_opts : Sequence[bool]
-        Allowed values for the smart-five heuristic flag.
-    smart_one_opts : Sequence[bool]
-        Allowed values for the smart-one heuristic flag.
-    consider_score_opts : Sequence[bool]
-        Boolean options indicating whether score thresholds participate.
-    consider_dice_opts : Sequence[bool]
-        Boolean options indicating whether dice thresholds participate.
-    auto_hot_dice_opts : Sequence[bool]
-        Allowed values for the auto-hot-dice behavior flag.
-    run_up_score_opts : Sequence[bool]
-        Allowed values for the run-up-score behavior flag.
-    inactive_score_threshold : int
-        Placeholder score threshold inserted when ``consider_score`` is ``False``.
-    inactive_dice_threshold : int
-        Placeholder dice threshold inserted when ``consider_dice`` is ``False``.
-    allowed_smart_pairs : set[tuple[bool, bool]] | None, optional
-        Restricted set of ``(smart_five, smart_one)`` combinations. ``None`` allows
-        all pairs consistent with the smart-one dependency.
-
-    Yields
-    ------
-    tuple
-        Ten-element tuples containing the score threshold, dice threshold, heuristic
-        booleans, gating flags, and resulting ``FavorDiceOrScore`` preference.
-    """
-    for sf in smart_five_opts:
-        smart_one_candidates = [
-            so
-            for so in smart_one_opts
-            if (sf or not so) and (allowed_smart_pairs is None or (sf, so) in allowed_smart_pairs)
-        ]
-        if not smart_one_candidates:
-            continue
-
-        for so in smart_one_candidates:
-            for cs in consider_score_opts:
-                score_values = score_thresholds if cs else [inactive_score_threshold]
-
-                for cd in consider_dice_opts:
-                    dice_values = dice_thresholds if cd else [inactive_dice_threshold]
-                    rb_values = [True, False] if (cs and cd) else [False]
-                    favor_choices = _favor_options(sf, cs, cd)
-
-                    for st in score_values:
-                        for dt in dice_values:
-                            for hd in auto_hot_dice_opts:
-                                for rs in run_up_score_opts:
-                                    for rb in rb_values:
-                                        for ps in favor_choices:
-                                            yield (
-                                                st,
-                                                dt,
-                                                sf,
-                                                so,
-                                                cs,
-                                                cd,
-                                                rb,
-                                                hd,
-                                                rs,
-                                                ps,
-                                            )
 
 
 # ---------------------------------------------------------------------------
@@ -181,35 +81,49 @@ def generate_strategy_grid(
         to indicate that it is inactive.
     """
 
-    score_thresholds = _coerce_options(score_thresholds, range(200, 1400, 50))
-    dice_thresholds = _coerce_options(dice_thresholds, range(0, 5))
-    smart_five_opts = _coerce_options(smart_five_opts, (True, False))
-    smart_one_opts = _coerce_options(smart_one_opts, (True, False))
-    consider_score_opts = _coerce_options(consider_score_opts, (True, False))
-    consider_dice_opts = _coerce_options(consider_dice_opts, (True, False))
-    auto_hot_dice_opts = _coerce_options(auto_hot_dice_opts, (False, True))
-    run_up_score_opts = _coerce_options(run_up_score_opts, (True, False))
+    options = StrategyGridOptions.from_inputs(
+        score_thresholds=score_thresholds,
+        dice_thresholds=dice_thresholds,
+        smart_five_opts=smart_five_opts,
+        smart_one_opts=smart_one_opts,
+        consider_score_opts=consider_score_opts,
+        consider_dice_opts=consider_dice_opts,
+        auto_hot_dice_opts=auto_hot_dice_opts,
+        run_up_score_opts=run_up_score_opts,
+        include_stop_at=include_stop_at,
+        include_stop_at_heuristic=include_stop_at_heuristic,
+    )
 
-    if not score_thresholds:
+    if not options.score_thresholds:
         raise ValueError("score_thresholds must contain at least one value")
-    if not dice_thresholds:
+    if not options.dice_thresholds:
         raise ValueError("dice_thresholds must contain at least one value")
 
-    inactive_score_threshold = min(score_thresholds) - 1
-    inactive_dice_threshold = min(dice_thresholds) - 1
+    encoder = build_strategy_encoder(
+        score_thresholds=options.score_thresholds,
+        dice_thresholds=options.dice_thresholds,
+        smart_five_opts=options.smart_five_opts,
+        smart_one_opts=options.smart_one_opts,
+        consider_score_opts=options.consider_score_opts,
+        consider_dice_opts=options.consider_dice_opts,
+        auto_hot_dice_opts=options.auto_hot_dice_opts,
+        run_up_score_opts=options.run_up_score_opts,
+        include_stop_at=options.include_stop_at,
+        include_stop_at_heuristic=options.include_stop_at_heuristic,
+    )
 
     combos = list(
-        _iter_strategy_combos(
-            score_thresholds=score_thresholds,
-            dice_thresholds=dice_thresholds,
-            smart_five_opts=smart_five_opts,
-            smart_one_opts=smart_one_opts,
-            consider_score_opts=consider_score_opts,
-            consider_dice_opts=consider_dice_opts,
-            auto_hot_dice_opts=auto_hot_dice_opts,
-            run_up_score_opts=run_up_score_opts,
-            inactive_score_threshold=inactive_score_threshold,
-            inactive_dice_threshold=inactive_dice_threshold,
+        iter_strategy_combos(
+            score_thresholds=options.score_thresholds,
+            dice_thresholds=options.dice_thresholds,
+            smart_five_opts=options.smart_five_opts,
+            smart_one_opts=options.smart_one_opts,
+            consider_score_opts=options.consider_score_opts,
+            consider_dice_opts=options.consider_dice_opts,
+            auto_hot_dice_opts=options.auto_hot_dice_opts,
+            run_up_score_opts=options.run_up_score_opts,
+            inactive_score_threshold=options.inactive_score_threshold,
+            inactive_dice_threshold=options.inactive_dice_threshold,
         )
     )
 
@@ -226,6 +140,9 @@ def generate_strategy_grid(
             auto_hot_dice=hd,
             run_up_score=rs,
             favor_dice_or_score=ps,
+            strategy_id=encoder.encode_tuple(
+                (st, dt, sf, so, cs, cd, rb, hd, rs, ps)
+            ),
         )
         for st, dt, sf, so, cs, cd, rb, hd, rs, ps in combos
     ]
@@ -245,76 +162,56 @@ def generate_strategy_grid(
             "favor_dice_or_score",
         ],
     )
+    meta["strategy_id"] = [encoder.encode_tuple(combo) for combo in combos]
 
     stop_at_rows: list[list[object]] = []
+    stop_at_ids: list[int] = []
     if include_stop_at:
-        strategies.extend(
-            build_stop_at_strategy(threshold, inactive_dice_threshold=inactive_dice_threshold)
+        stop_at_strats = [
+            build_stop_at_strategy(
+                threshold, inactive_dice_threshold=options.inactive_dice_threshold
+            )
             for threshold in STOP_AT_THRESHOLDS
-        )
-        stop_at_rows.extend(
-            [
-                threshold,
-                inactive_dice_threshold,
-                False,
-                False,
-                True,
-                False,
-                False,
-                False,
-                False,
-                FavorDiceOrScore.SCORE,
-            ]
-            for threshold in STOP_AT_THRESHOLDS
-        )
+        ]
+        for strat in stop_at_strats:
+            strat.strategy_id = encode_strategy(strat, encoder)
+            strategies.append(strat)
+            stop_at_rows.append(list(strategy_tuple(strat)))
+            stop_at_ids.append(strat.strategy_id)
 
     if include_stop_at_heuristic:
-        strategies.extend(
+        stop_at_strats = [
             build_stop_at_strategy(
                 threshold,
                 heuristic=True,
-                inactive_dice_threshold=inactive_dice_threshold,
+                inactive_dice_threshold=options.inactive_dice_threshold,
             )
             for threshold in STOP_AT_THRESHOLDS
-        )
-        stop_at_rows.extend(
-            [
-                threshold,
-                inactive_dice_threshold,
-                True,
-                True,
-                True,
-                False,
-                False,
-                True,
-                False,
-                FavorDiceOrScore.SCORE,
-            ]
-            for threshold in STOP_AT_THRESHOLDS
-        )
+        ]
+        for strat in stop_at_strats:
+            strat.strategy_id = encode_strategy(strat, encoder)
+            strategies.append(strat)
+            stop_at_rows.append(list(strategy_tuple(strat)))
+            stop_at_ids.append(strat.strategy_id)
 
     if stop_at_rows:
-        meta = pd.concat(
-            [
-                meta,
-                pd.DataFrame(
-                    stop_at_rows,
-                    columns=[
-                        "score_threshold",
-                        "dice_threshold",
-                        "smart_five",
-                        "smart_one",
-                        "consider_score",
-                        "consider_dice",
-                        "require_both",
-                        "auto_hot_dice",
-                        "run_up_score",
-                        "favor_dice_or_score",
-                    ],
-                ),
+        stop_at_frame = pd.DataFrame(
+            stop_at_rows,
+            columns=[
+                "score_threshold",
+                "dice_threshold",
+                "smart_five",
+                "smart_one",
+                "consider_score",
+                "consider_dice",
+                "require_both",
+                "auto_hot_dice",
+                "run_up_score",
+                "favor_dice_or_score",
             ],
-            ignore_index=True,
         )
+        stop_at_frame["strategy_id"] = stop_at_ids
+        meta = pd.concat([meta, stop_at_frame], ignore_index=True)
     meta["strategy_idx"] = meta.index
     return strategies, meta
 
@@ -359,24 +256,32 @@ def experiment_size(
     int
         Total number of unique strategy configurations that would be generated.
     """
-    score_thresholds_list = _coerce_options(score_thresholds, range(200, 1400, 50))
-    dice_thresholds_list = _coerce_options(dice_thresholds, range(0, 5))
-    consider_score_opts_list = _coerce_options(consider_score_opts, (True, False))
-    consider_dice_opts_list = _coerce_options(consider_dice_opts, (True, False))
-    auto_hot_dice_opts_list = _coerce_options(auto_hot_dice_opts, (False, True))
-    run_up_score_opts_list = _coerce_options(run_up_score_opts, (True, False))
+    options = StrategyGridOptions.from_inputs(
+        score_thresholds=score_thresholds,
+        dice_thresholds=dice_thresholds,
+        consider_score_opts=consider_score_opts,
+        consider_dice_opts=consider_dice_opts,
+        auto_hot_dice_opts=auto_hot_dice_opts,
+        run_up_score_opts=run_up_score_opts,
+    )
+    score_thresholds_list = options.score_thresholds
+    dice_thresholds_list = options.dice_thresholds
+    consider_score_opts_list = options.consider_score_opts
+    consider_dice_opts_list = options.consider_dice_opts
+    auto_hot_dice_opts_list = options.auto_hot_dice_opts
+    run_up_score_opts_list = options.run_up_score_opts
 
     if not score_thresholds_list:
         raise ValueError("score_thresholds must contain at least one value")
     if not dice_thresholds_list:
         raise ValueError("dice_thresholds must contain at least one value")
 
-    inactive_score_threshold = min(score_thresholds_list) - 1
-    inactive_dice_threshold = min(dice_thresholds_list) - 1
+    inactive_score_threshold = options.inactive_score_threshold
+    inactive_dice_threshold = options.inactive_dice_threshold
 
     if smart_five_and_one_options is None:
-        smart_five_opts_list = _coerce_options(None, (True, False))
-        smart_one_opts_list = _coerce_options(None, (True, False))
+        smart_five_opts_list = options.smart_five_opts
+        smart_one_opts_list = options.smart_one_opts
         allowed_pairs: set[tuple[bool, bool]] | None = None
     else:
         normalized_pairs: list[tuple[bool, bool]] = []
@@ -392,7 +297,7 @@ def experiment_size(
         if not smart_five_opts_list or not smart_one_opts_list:
             return 0
 
-    combo_iter = _iter_strategy_combos(
+    combo_iter = iter_strategy_combos(
         score_thresholds=score_thresholds_list,
         dice_thresholds=dice_thresholds_list,
         smart_five_opts=smart_five_opts_list,

@@ -373,7 +373,7 @@ class PlayerStats:
     highest_turn
         Highest single-turn score.
     strategy
-        String representation of the strategy used.
+        Integer strategy identifier when available, otherwise a string representation.
     rank
         Finishing position (1 for the winner).
     loss_margin
@@ -392,7 +392,7 @@ class PlayerStats:
     farkles: int
     rolls: int
     highest_turn: int
-    strategy: str
+    strategy: int | str
     rank: int  # 1 = winner
     loss_margin: int  # 0 for winner, > 0 otherwise
     smart_five_uses: int = 0
@@ -475,12 +475,13 @@ class FarkleGame:
 
         players_block: Dict[str, PlayerStats] = {}
         for player in sorted_players:
+            strategy_id = getattr(player.strategy, "strategy_id", None)
             players_block[player.name] = PlayerStats(
                 score=player.score,
                 farkles=player.n_farkles,
                 rolls=player.n_rolls,
                 highest_turn=player.highest_turn,
-                strategy=str(player.strategy),
+                strategy=strategy_id if strategy_id is not None else str(player.strategy),
                 rank=ranks[player.name],
                 loss_margin=winner.score - player.score,
                 smart_five_uses=player.smart_five_uses,

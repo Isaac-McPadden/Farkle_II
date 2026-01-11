@@ -135,9 +135,9 @@ def _init_worker(
 
 
 def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
-    Counter[str],
-    Dict[str, Dict[str, float]],
-    Dict[str, Dict[str, float]],
+    Counter[int | str],
+    Dict[str, Dict[int | str, float]],
+    Dict[str, Dict[int | str, float]],
     List[Dict[str, Any]],
 ]:
     """Play all games for one shuffle and aggregate the results."""
@@ -148,9 +148,9 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
     perm = rng.permutation(len(state.strats))  # type: ignore
     game_seeds = urandom.spawn_seeds(state.cfg.games_per_shuffle, seed=seed)  # type: ignore
 
-    wins: Counter[str] = Counter()
-    sums: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
-    sq_sums: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
+    wins: Counter[int | str] = Counter()
+    sums: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
+    sq_sums: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
     rows: List[Dict[str, Any]] = []
 
     offset = 0
@@ -173,14 +173,14 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
     return wins, sums, sq_sums, rows
 
 
-def _play_shuffle(seed: int) -> Counter[str]:
+def _play_shuffle(seed: int) -> Counter[int | str]:
     """Compatibility wrapper returning only win counts for one shuffle."""
 
     wins, _, _, _ = _play_one_shuffle(seed, collect_rows=False)
     return wins
 
 
-def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[str]:
+def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[int | str]:
     """Play a batch of shuffles and tally wins.
 
     Parameters
@@ -194,7 +194,7 @@ def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[str]:
         Mapping of strategy strings to win counts for the batch.
     """
 
-    total: Counter[str] = Counter()
+    total: Counter[int | str] = Counter()
     batch_size = len(shuffle_seed_batch)
     if LOGGER.isEnabledFor(logging.DEBUG):
         LOGGER.debug(
@@ -230,9 +230,9 @@ def _run_chunk_metrics(
     row_dir: Path | None = None,
     manifest_path: Path | None = None,
 ) -> Tuple[
-    Counter[str],
-    Dict[str, Dict[str, float]],
-    Dict[str, Dict[str, float]],
+    Counter[int | str],
+    Dict[str, Dict[int | str, float]],
+    Dict[str, Dict[int | str, float]],
 ]:
     """Play shuffles and accumulate metrics.
 
@@ -254,9 +254,9 @@ def _run_chunk_metrics(
         respective values over the batch.
     """
 
-    wins_total: Counter[str] = Counter()
-    sums_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
-    sq_total: Dict[str, Dict[str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
+    wins_total: Counter[int | str] = Counter()
+    sums_total: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
+    sq_total: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
 
     batch_size = len(shuffle_seed_batch)
     if LOGGER.isEnabledFor(logging.DEBUG):
@@ -331,9 +331,9 @@ def _measure_throughput(
 
 def _save_checkpoint(
     path: Path,
-    wins: Counter[str],
-    sums: Mapping[str, Mapping[str, float]] | None,
-    sq_sums: Mapping[str, Mapping[str, float]] | None,
+    wins: Counter[int | str],
+    sums: Mapping[str, Mapping[int | str, float]] | None,
+    sq_sums: Mapping[str, Mapping[int | str, float]] | None,
 ) -> None:
     """Pickle the current aggregates to path."""
 
@@ -443,10 +443,10 @@ def run_tournament(
         for i in range(0, cfg.num_shuffles, shuffles_per_chunk)
     ]
 
-    win_totals: Counter[str] = Counter()
+    win_totals: Counter[int | str] = Counter()
     games_completed = 0
-    metric_sums: Dict[str, Dict[str, float]] | None
-    metric_sq_sums: Dict[str, Dict[str, float]] | None
+    metric_sums: Dict[str, Dict[int | str, float]] | None
+    metric_sq_sums: Dict[str, Dict[int | str, float]] | None
     if metric_chunk_directory is None:
         metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
         metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -511,7 +511,11 @@ def run_tournament(
         ):
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(
-                    Tuple[Counter[str], Dict[str, Dict[str, float]], Dict[str, Dict[str, float]]],
+                    Tuple[
+                        Counter[int | str],
+                        Dict[str, Dict[int | str, float]],
+                        Dict[str, Dict[int | str, float]],
+                    ],
                     result,
                 )
                 win_totals.update(wins)
@@ -569,7 +573,7 @@ def run_tournament(
                     },
                 )
             else:
-                chunk_wins = cast(Counter[str], result)
+                chunk_wins = cast(Counter[int | str], result)
                 win_totals.update(chunk_wins)
                 chunk_games = int(sum(chunk_wins.values()))
                 games_completed += chunk_games
@@ -653,7 +657,7 @@ def run_tournament(
             schema=pa.schema(
                 [
                     ("metric", pa.string()),
-                    ("strategy", pa.string()),
+                    ("strategy", pa.int32()),
                     ("sum", pa.float64()),
                     ("square_sum", pa.float64()),
                 ]
