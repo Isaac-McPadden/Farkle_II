@@ -25,7 +25,11 @@ from farkle.config import AppConfig
 from farkle.simulation.power_helpers import games_for_power_from_design
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
 from farkle.simulation.simulation import experiment_size, generate_strategy_grid
-from farkle.simulation.strategies import ThresholdStrategy
+from farkle.simulation.strategies import (
+    STRATEGY_MANIFEST_NAME,
+    ThresholdStrategy,
+    build_strategy_manifest,
+)
 from farkle.utils.artifacts import write_parquet_atomic
 
 # ---------------------------------------------------------------------------
@@ -333,6 +337,26 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     n_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = n_dir / f"{n}p_checkpoint.pkl"
     row_dir = _resolve_row_output_dir(cfg, n)
+    manifest = build_strategy_manifest(strategies)
+    if not manifest.empty:
+        manifest_path = n_dir / STRATEGY_MANIFEST_NAME
+        write_parquet_atomic(pa.Table.from_pandas(manifest, preserve_index=False), manifest_path)
+        if row_dir is not None and row_dir != n_dir:
+            row_dir.mkdir(parents=True, exist_ok=True)
+            row_manifest_path = row_dir / STRATEGY_MANIFEST_NAME
+            write_parquet_atomic(
+                pa.Table.from_pandas(manifest, preserve_index=False), row_manifest_path
+            )
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            sample = manifest[["strategy_id", "strategy_str"]].head(5).to_dict("records")
+            LOGGER.debug(
+                "Strategy manifest written",
+                extra={
+                    "stage": "simulation",
+                    "path": str(manifest_path),
+                    "sample": sample,
+                },
+            )
 
     # --- Tournament run ---
     tourn_cfg = TournamentConfig(
@@ -360,12 +384,14 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     if isinstance(raw_counts, Counter):
         win_totals = Counter(raw_counts)
     elif isinstance(raw_counts, Mapping):
-        win_totals = Counter({str(k): int(v) for k, v in raw_counts.items()})
+        win_totals = Counter(
+            {int(k) if str(k).isdigit() else k: int(v) for k, v in raw_counts.items()}
+        )
     else:
         raise TypeError(f"Unexpected win_totals payload type: {type(raw_counts)}")
 
-    metric_sums: dict[str, dict[str, float]] = payload.get("metric_sums", {})
-    metric_sq_sums: dict[str, dict[str, float]] = payload.get(
+    metric_sums: dict[str, dict[int | str, float]] = payload.get("metric_sums", {})
+    metric_sq_sums: dict[str, dict[int | str, float]] = payload.get(
         "metric_square_sums",
         payload.get("metric_sq_sums", {}),
     )
@@ -378,14 +404,14 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
             continue
         total_games_strat = max(n_shuffles, 1)
         row: dict[str, float | str] = {
-            "strategy": str(strat),
+            "strategy": strat,
             "wins": float(wins),
             "win_rate": wins / total_games_strat,
         }
         if metric_sums:
             for label in METRIC_LABELS:
                 s = metric_sums.get(label, {})
-                sum_val = s.get(str(strat), s.get(strat, 0.0))
+                sum_val = s.get(strat, s.get(str(strat), 0.0))
                 row[f"mean_{label}"] = (sum_val / wins) if wins > 0 else 0.0
         summary_rows.append(row)
 
@@ -402,7 +428,7 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
                 continue
             total_games_strat = max(n_shuffles, 1)
             base: dict[str, float | str] = {
-                "strategy": str(strat),
+                "strategy": strat,
                 "wins": wins,
                 "total_games_strat": total_games_strat,
                 "win_rate": wins / total_games_strat,
@@ -410,8 +436,8 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
             for label in METRIC_LABELS:
                 sums_for_label = metric_sums.get(label, {})
                 sq_for_label = metric_sq_sums.get(label, {})
-                sum_val = sums_for_label.get(str(strat), sums_for_label.get(strat, 0.0))
-                sq_val = sq_for_label.get(str(strat), sq_for_label.get(strat, 0.0))
+                sum_val = sums_for_label.get(strat, sums_for_label.get(str(strat), 0.0))
+                sq_val = sq_for_label.get(strat, sq_for_label.get(str(strat), 0.0))
                 base[f"sum_{label}"] = float(sum_val)
                 base[f"sq_sum_{label}"] = float(sq_val)
                 mean_val = (sum_val / wins) if wins > 0 else 0.0
@@ -423,7 +449,7 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
                     var = 0.0
                 base[f"var_{label}"] = float(var)
             ws = metric_sums.get("winning_score", {}).get(
-                str(strat), metric_sums.get("winning_score", {}).get(strat, 0.0)
+                strat, metric_sums.get("winning_score", {}).get(str(strat), 0.0)
             )
             base["expected_score"] = (ws / total_games_strat) if total_games_strat > 0 else 0.0
             metrics_rows.append(base)

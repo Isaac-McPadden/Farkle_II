@@ -18,7 +18,11 @@ from scipy.stats import binomtest
 
 from farkle.config import AppConfig
 from farkle.simulation.simulation import simulate_many_games_from_seeds
-from farkle.simulation.strategies import parse_strategy
+from farkle.simulation.strategies import (
+    normalize_strategy_ids,
+    parse_strategy_for_df,
+    parse_strategy_identifier,
+)
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.random import MAX_UINT32
 from farkle.utils.stats import games_for_power
@@ -72,14 +76,14 @@ def _load_top_strategies(
     metrics_path: Path,
     ratings_limit: int = 100,
     metrics_limit: int = 100,
-) -> list[str]:
+) -> list[int | str]:
     """Collect fallback strategies from pooled ratings and metrics tables.
 
     Strategies are sorted by their respective performance indicators and trimmed to
     the provided limits before being combined into a de-duplicated list.
     """
 
-    def _sorted_from_parquet(path: Path, sort_col: str, limit: int, label: str) -> list[str]:
+    def _sorted_from_parquet(path: Path, sort_col: str, limit: int, label: str) -> list[int | str]:
         if not path.exists():
             LOGGER.warning(
                 "Fallback selection skipped: missing %s parquet",
@@ -106,15 +110,15 @@ def _load_top_strategies(
             )
             return []
 
-        return (
-            df.sort_values(sort_col, ascending=False)["strategy"].head(limit).dropna().tolist()
-        )
+        normalized = normalize_strategy_ids(df["strategy"])
+        df["strategy"] = normalized.where(normalized.notna(), df["strategy"])
+        return df.sort_values(sort_col, ascending=False)["strategy"].head(limit).dropna().tolist()
 
     top_by_rating = _sorted_from_parquet(ratings_path, "mu", ratings_limit, "ratings")
     top_by_win_rate = _sorted_from_parquet(metrics_path, "win_rate", metrics_limit, "metrics")
 
-    combined: list[str] = []
-    seen: set[str] = set()
+    combined: list[int | str] = []
+    seen: set[int | str] = set()
     for source in (top_by_rating, top_by_win_rate):
         for strategy in source:
             if strategy not in seen:
@@ -133,10 +137,14 @@ def _load_top_strategies(
     return combined
 
 
-def _count_pair_wins(df: pd.DataFrame, strategy_a: str, strategy_b: str) -> tuple[int, int]:
+def _count_pair_wins(
+    df: pd.DataFrame, strategy_a: int | str, strategy_b: int | str
+) -> tuple[int, int]:
     """Count how many times each strategy won within a simulated batch."""
     if "winner_strategy" in df.columns:
-        winners = df["winner_strategy"].astype(str)
+        winners = df["winner_strategy"]
+        normalized = normalize_strategy_ids(winners)
+        winners = normalized.where(normalized.notna(), winners)
         counts = winners.value_counts()
         return int(counts.get(strategy_a, 0)), int(counts.get(strategy_b, 0))
 
@@ -214,6 +222,11 @@ def run_bonferroni_head2head(
         cfg.io.results_dir = Path(root)
     analysis_root = cfg.analysis_dir
     _warn_legacy_stage_dirs(cfg, "head2head")
+    manifest = None
+    if cfg.sim.n_players_list:
+        manifest_path = cfg.strategy_manifest_path(cfg.sim.n_players_list[0])
+        if manifest_path.exists():
+            manifest = pd.read_parquet(manifest_path)
 
     LOGGER.info(
         "Bonferroni head-to-head start",
@@ -238,6 +251,7 @@ def run_bonferroni_head2head(
         raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())
     elites = [s for s, t in tiers.items() if t == top_val]
+    elites = [int(s) if str(s).isdigit() else s for s in elites]
     ratings_path = cfg.trueskill_pooled_dir / "ratings_pooled.parquet"
     if not ratings_path.exists():
         fallback = cfg.trueskill_stage_dir / "ratings_pooled.parquet"
@@ -345,7 +359,7 @@ def run_bonferroni_head2head(
     rng = np.random.default_rng(seed)
     records: list[dict[str, Any]] = []
     pending_shard_records: list[dict[str, Any]] = []
-    strategies_cache: Dict[str, Any] = {}
+    strategies_cache: Dict[int | str, Any] = {}
     shard_dir.mkdir(parents=True, exist_ok=True)
     shard_schema = pa.schema(
         [
@@ -457,7 +471,7 @@ def run_bonferroni_head2head(
         else:
             next_progress = max(next_progress, fast_phase_end) + slow_interval
 
-    scheduled_pairs: list[tuple[int, str, str, list[int]]] = []
+    scheduled_pairs: list[tuple[int, int | str, int | str, list[int]]] = []
     processed_pairs = len(completed_pairs)
     for pair_id, (a, b) in enumerate(combinations(sorted_elites, 2)):
         if pair_id in completed_pairs:
@@ -485,7 +499,12 @@ def run_bonferroni_head2head(
         shard_count = flush_shard(pending_shard_records, shard_count)
     else:
         strategy_names = {name for _, a, b, _ in scheduled_pairs for name in (a, b)}
-        strategies_cache = {name: parse_strategy(name) for name in strategy_names}
+        strategies_cache = {
+            name: parse_strategy_identifier(
+                name, manifest=manifest, parse_legacy=parse_strategy_for_df
+            )
+            for name in strategy_names
+        }
 
         effective_jobs = n_jobs if n_jobs > 0 else 1
         if effective_jobs <= 1:
@@ -495,7 +514,7 @@ def run_bonferroni_head2head(
             worker_count = min(len(scheduled_pairs), max(1, effective_jobs // 2))
             pair_jobs = max(1, effective_jobs // worker_count)
 
-        def simulate_pair(job: tuple[int, str, str, list[int]]) -> dict[str, Any]:
+        def simulate_pair(job: tuple[int, int | str, int | str, list[int]]) -> dict[str, Any]:
             pair_id, a, b, seeds = job
             df = simulate_many_games_from_seeds(
                 seeds=seeds,

@@ -21,7 +21,7 @@ from farkle.analysis import run_bonferroni_head2head as _h2h
 from farkle.analysis import stage_logger
 from farkle.config import AppConfig
 from farkle.simulation.simulation import simulate_many_games_from_seeds
-from farkle.simulation.strategies import parse_strategy
+from farkle.simulation.strategies import parse_strategy_for_df, parse_strategy_identifier
 from farkle.utils.random import spawn_seeds
 from farkle.utils.stats import build_tiers, games_for_power
 from farkle.utils.tiers import write_tier_payload
@@ -137,6 +137,16 @@ def _build_design_kwargs(cfg: AppConfig) -> dict[str, Any]:
     return filtered
 
 
+def _load_strategy_manifest(cfg: AppConfig) -> pd.DataFrame | None:
+    """Load the strategy manifest for the current run if present."""
+    if not cfg.sim.n_players_list:
+        return None
+    manifest_path = cfg.strategy_manifest_path(cfg.sim.n_players_list[0])
+    if not manifest_path.exists():
+        return None
+    return pd.read_parquet(manifest_path)
+
+
 def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None:
     """Calibrate tier thresholds to hit a target runtime budget when possible.
 
@@ -172,8 +182,12 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
     # Auto-calibrate throughput if not provided
     if not games_per_sec or games_per_sec <= 0:
         try:
+            manifest = _load_strategy_manifest(cfg)
             games_per_sec = _calibrate_h2h_games_per_sec(
-                df, seed=cfg.sim.seed, n_jobs=cfg.analysis.n_jobs
+                df,
+                seed=cfg.sim.seed,
+                n_jobs=cfg.analysis.n_jobs,
+                manifest=manifest,
             )
             LOGGER.info(
                 "Measured head-to-head throughput",
@@ -378,6 +392,7 @@ def _calibrate_h2h_games_per_sec(
     seed: int,
     n_jobs: int | None,
     sample_games: int = 2000,
+    manifest: pd.DataFrame | None = None,
 ) -> float:
     """Measure head-to-head throughput using a small sample of games.
 
@@ -397,7 +412,14 @@ def _calibrate_h2h_games_per_sec(
         raise ValueError("Need at least two strategies to calibrate throughput")
 
     top2 = ratings_df.sort_values("mu", ascending=False)["strategy"].head(2).tolist()
-    strats = [parse_strategy(top2[0]), parse_strategy(top2[1])]
+    strats = [
+        parse_strategy_identifier(
+            top2[0], manifest=manifest, parse_legacy=parse_strategy_for_df
+        ),
+        parse_strategy_identifier(
+            top2[1], manifest=manifest, parse_legacy=parse_strategy_for_df
+        ),
+    ]
     seeds = spawn_seeds(sample_games, seed=seed)
     t0 = time.perf_counter()
     simulate_many_games_from_seeds(seeds=seeds, strategies=strats, n_jobs=n_jobs or 1)
