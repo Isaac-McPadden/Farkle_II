@@ -44,6 +44,7 @@ from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.writer import ParquetShardWriter
 from farkle.utils.schema_helpers import n_players_from_schema
 
 StatValue: TypeAlias = float | int | str | NAType
@@ -125,16 +126,15 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
     write_parquet_atomic(margin_table, margin_output, codec=cfg.parquet_codec)
 
-    rare_events = _rare_event_flags(
+    rare_event_rows = _rare_event_flags(
         per_n_inputs,
         thresholds=cfg.game_stats_margin_thresholds,
         target_score=cfg.rare_event_target_score,
+        output_path=rare_events_output,
+        codec=cfg.parquet_codec,
     )
-    if rare_events.empty:
+    if rare_event_rows == 0:
         raise RuntimeError("game-stats: no rare events available to summarize")
-
-    rare_events_table = pa.Table.from_pandas(rare_events, preserve_index=False)
-    write_parquet_atomic(rare_events_table, rare_events_output, codec=cfg.parquet_codec)
     write_stage_done(
         stamp_path,
         inputs=input_paths,
@@ -372,154 +372,166 @@ class _MarginAccumulator:
         )
         return stats
 
+
 def _rare_event_flags(
     per_n_inputs: Sequence[tuple[int, Path]],
     *,
     thresholds: Sequence[int],
     target_score: int,
-) -> pd.DataFrame:
+    output_path: Path,
+    codec: str,
+) -> int:
     """Compute per-game rare events and aggregate rates."""
 
-    game_rows: list[dict[str, object]] = []
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
+    column_order = [
+        "summary_level",
+        "strategy",
+        "n_players",
+        "margin_of_victory",
+        "multi_reached_target",
+        "observations",
+        *[f"margin_le_{thr}" for thr in thresholds],
+    ]
+    schema = pa.schema(
+        [
+            ("summary_level", pa.string()),
+            ("strategy", pa.string()),
+            ("n_players", pa.int64()),
+            ("margin_of_victory", pa.float64()),
+            ("multi_reached_target", pa.float64()),
+            ("observations", pa.int64()),
+            *[(f"margin_le_{thr}", pa.float64()) for thr in thresholds],
+        ]
+    )
     strategy_sums: dict[tuple[str, int], dict[str, int]] = {}
     global_sums: dict[int, dict[str, int]] = {}
-    for n_players, path in per_n_inputs:
-        ds_in = ds.dataset(path)
-        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
-        score_cols = [name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")]
+    rows_written = 0
+    writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
+    try:
+        for n_players, path in per_n_inputs:
+            ds_in = ds.dataset(path)
+            strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+            score_cols = [
+                name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+            ]
 
-        if not strategy_cols:
-            LOGGER.warning(
-                "Per-N parquet missing strategy columns; skipping rare events",
-                extra={"stage": "game_stats", "path": str(path)},
-            )
-            continue
-
-        if not score_cols:
-            LOGGER.warning(
-                "Per-N parquet missing seat score columns; skipping rare events",
-                extra={"stage": "game_stats", "path": str(path)},
-            )
-            continue
-
-        columns = [*strategy_cols, *score_cols]
-        scanner = ds_in.scanner(columns=columns, batch_size=65_536)
-        for batch in scanner.to_batches():
-            df = batch.to_pandas()
-            if df.empty:
+            if not strategy_cols:
+                LOGGER.warning(
+                    "Per-N parquet missing strategy columns; skipping rare events",
+                    extra={"stage": "game_stats", "path": str(path)},
+                )
                 continue
-            margins = _compute_margins(df, score_cols)
-            scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
-            multi_target = (scores >= target_score).sum(axis=1) >= 2
 
-            event_df = pd.DataFrame(
-                {
-                    "margin_of_victory": margins,
-                    "multi_reached_target": multi_target,
-                }
-            )
+            if not score_cols:
+                LOGGER.warning(
+                    "Per-N parquet missing seat score columns; skipping rare events",
+                    extra={"stage": "game_stats", "path": str(path)},
+                )
+                continue
 
-            for thr in thresholds:
-                event_df[f"margin_le_{thr}"] = event_df["margin_of_victory"] <= thr
-
-            for col in strategy_cols:
-                strategies = df[col]
-                if strategies.isna().all():
+            columns = [*strategy_cols, *score_cols]
+            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+            for batch in scanner.to_batches():
+                df = batch.to_pandas()
+                if df.empty:
                     continue
-                for strategy in strategies.dropna().unique():
-                    mask = strategies == strategy
-                    if not mask.any():
+                margins = _compute_margins(df, score_cols)
+                scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
+                multi_target = (scores >= target_score).sum(axis=1) >= 2
+                flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
+                for thr in thresholds:
+                    flag_series[f"margin_le_{thr}"] = margins <= thr
+
+                for col in strategy_cols:
+                    strategies = df[col]
+                    if strategies.isna().all():
                         continue
-                    matched_events = event_df.loc[mask].copy()
-                    matched_events.insert(0, "summary_level", "game")
-                    matched_events.insert(1, "strategy", strategy)
-                    matched_events.insert(2, "n_players", n_players)
-                    matched_events["observations"] = 1
+                    for strategy in strategies.dropna().unique():
+                        mask = strategies == strategy
+                        if not mask.any():
+                            continue
 
-                    records: list[dict[str, object]] = [
-                        {str(key): value for key, value in record.items()}
-                        for record in matched_events.to_dict(orient="records")
-                    ]
-                    game_rows.extend(records)
+                        count = int(mask.sum())
+                        per_game_data: dict[str, object] = {
+                            "summary_level": np.full(count, "game", dtype=object),
+                            "strategy": np.full(count, strategy, dtype=object),
+                            "n_players": np.full(count, n_players, dtype=np.int64),
+                            "margin_of_victory": margins[mask].to_numpy(dtype=float),
+                            "multi_reached_target": flag_series["multi_reached_target"][
+                                mask
+                            ].to_numpy(dtype=float),
+                            "observations": np.ones(count, dtype=np.int64),
+                        }
+                        for thr in thresholds:
+                            per_game_data[f"margin_le_{thr}"] = flag_series[
+                                f"margin_le_{thr}"
+                            ][mask].to_numpy(dtype=float)
 
-                    count = int(mask.sum())
-                    strategy_key = (strategy, n_players)
-                    strategy_entry = strategy_sums.setdefault(
-                        strategy_key,
-                        {"observations": 0, **{flag: 0 for flag in flags}},
-                    )
-                    strategy_entry["observations"] += count
-                    for flag in flags:
-                        strategy_entry[flag] += int(matched_events[flag].sum())
+                        writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
+                        rows_written += count
 
-                    global_entry = global_sums.setdefault(
-                        n_players, {"observations": 0, **{flag: 0 for flag in flags}}
-                    )
-                    global_entry["observations"] += count
-                    for flag in flags:
-                        global_entry[flag] += int(matched_events[flag].sum())
+                        strategy_key = (strategy, n_players)
+                        strategy_entry = strategy_sums.setdefault(
+                            strategy_key,
+                            {"observations": 0, **{flag: 0 for flag in flags}},
+                        )
+                        strategy_entry["observations"] += count
+                        for flag in flags:
+                            strategy_entry[flag] += int(flag_series[flag][mask].sum())
 
-    if not game_rows:
-        columns = [
-            "summary_level",
-            "strategy",
-            "n_players",
-            "margin_of_victory",
-            "multi_reached_target",
-            "observations",
-            *[f"margin_le_{thr}" for thr in thresholds],
-        ]
-        return pd.DataFrame(columns=columns)
+                        global_entry = global_sums.setdefault(
+                            n_players, {"observations": 0, **{flag: 0 for flag in flags}}
+                        )
+                        global_entry["observations"] += count
+                        for flag in flags:
+                            global_entry[flag] += int(flag_series[flag][mask].sum())
 
-    game_df = pd.DataFrame(game_rows)
+        if rows_written == 0:
+            return 0
 
-    strategy_rows: list[dict[str, object]] = []
-    for (strategy, players), sums in strategy_sums.items():
-        observations = sums["observations"]
-        summary_row: dict[str, object] = {
-            "summary_level": "strategy",
-            "strategy": strategy,
-            "n_players": players,
-            "margin_of_victory": pd.NA,
-            "observations": observations,
-        }
-        for flag in flags:
-            summary_row[flag] = (
-                float(sums[flag]) / observations if observations else float("nan")
-            )
-        strategy_rows.append(summary_row)
-    strategy_summary = pd.DataFrame(strategy_rows)
+        strategy_rows: list[dict[str, object]] = []
+        for (strategy, players), sums in strategy_sums.items():
+            observations = sums["observations"]
+            summary_row: dict[str, object] = {
+                "summary_level": "strategy",
+                "strategy": strategy,
+                "n_players": players,
+                "margin_of_victory": pd.NA,
+                "observations": observations,
+            }
+            for flag in flags:
+                summary_row[flag] = (
+                    float(sums[flag]) / observations if observations else float("nan")
+                )
+            strategy_rows.append(summary_row)
+        strategy_summary = pd.DataFrame(strategy_rows, columns=column_order)
 
-    global_rows: list[dict[str, object]] = []
-    for players, sums in global_sums.items():
-        observations = sums["observations"]
-        summary_row = {
-            "summary_level": "n_players",
-            "strategy": pd.NA,
-            "n_players": players,
-            "margin_of_victory": pd.NA,
-            "observations": observations,
-        }
-        for flag in flags:
-            summary_row[flag] = (
-                float(sums[flag]) / observations if observations else float("nan")
-            )
-        global_rows.append(summary_row)
-    global_summary = pd.DataFrame(global_rows)
+        global_rows: list[dict[str, object]] = []
+        for players, sums in global_sums.items():
+            observations = sums["observations"]
+            summary_row = {
+                "summary_level": "n_players",
+                "strategy": pd.NA,
+                "n_players": players,
+                "margin_of_victory": pd.NA,
+                "observations": observations,
+            }
+            for flag in flags:
+                summary_row[flag] = (
+                    float(sums[flag]) / observations if observations else float("nan")
+                )
+            global_rows.append(summary_row)
+        global_summary = pd.DataFrame(global_rows, columns=column_order)
 
-    combined = pd.concat([game_df, strategy_summary, global_summary], ignore_index=True)
-    return combined[
-        [
-            "summary_level",
-            "strategy",
-            "n_players",
-            "margin_of_victory",
-            "multi_reached_target",
-            "observations",
-            *[f"margin_le_{thr}" for thr in thresholds],
-        ]
-    ]
+        summary_df = pd.concat([strategy_summary, global_summary], ignore_index=True)
+        if not summary_df.empty:
+            summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
+            writer.write_batch(summary_table)
+            rows_written += summary_table.num_rows
+        return rows_written
+    finally:
+        writer.close(success=rows_written > 0)
 
 
 def _global_stats(combined_path: Path) -> pd.DataFrame:
