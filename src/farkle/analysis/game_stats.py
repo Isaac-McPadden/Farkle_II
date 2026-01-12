@@ -188,14 +188,14 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
             )
             continue
 
-        columns = ["n_rounds", *strategy_cols]
-        scanner = ds_in.scanner(columns=columns, batch_size=65_536)
-        for batch in scanner.to_batches():
-            df = batch.to_pandas()
-            if df.empty:
-                continue
-            rounds = pd.to_numeric(df["n_rounds"], errors="coerce")
-            for col in strategy_cols:
+        for col in strategy_cols:
+            columns = ["n_rounds", col]
+            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+            for batch in scanner.to_batches():
+                df = batch.to_pandas()
+                if df.empty:
+                    continue
+                rounds = pd.to_numeric(df["n_rounds"], errors="coerce")
                 strategies = df[col]
                 if strategies.isna().all():
                     continue
