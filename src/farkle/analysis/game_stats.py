@@ -38,14 +38,15 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
+from numpy.typing import DTypeLike
 from pandas._libs.missing import NAType
 
 from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
-from farkle.utils.writer import ParquetShardWriter
 from farkle.utils.schema_helpers import n_players_from_schema
+from farkle.utils.writer import ParquetShardWriter
 
 StatValue: TypeAlias = float | int | str | NAType
 
@@ -679,14 +680,14 @@ def _collect_rare_event_counts(
                 strategy_key = (str(strategy), n_players)
                 strategy_entry = strategy_sums.setdefault(
                     strategy_key,
-                    {"observations": 0, **{flag: 0 for flag in flags}},
+                    {"observations": 0, **dict.fromkeys(flags, 0)},
                 )
                 strategy_entry["observations"] += count
                 for flag in flags:
                     strategy_entry[flag] += int(group[flag].sum())
 
                 global_entry = global_sums.setdefault(
-                    n_players, {"observations": 0, **{flag: 0 for flag in flags}}
+                    n_players, {"observations": 0, **dict.fromkeys(flags, 0)}
                 )
                 global_entry["observations"] += count
                 for flag in flags:
@@ -701,13 +702,13 @@ def _collect_rare_event_counts(
     return strategy_sums, global_sums, rows_available, max_flag_count, max_observations
 
 
-def _select_int_dtype(max_value: int) -> tuple[np.dtype, pa.DataType]:
+def _select_int_dtype(max_value: int) -> tuple[DTypeLike, pa.DataType]:
     """Pick an integer dtype with overflow protection."""
     if max_value <= np.iinfo(np.uint8).max:
-        return np.uint8, pa.uint8()
+        return np.dtype(np.uint8), pa.uint8()
     if max_value <= np.iinfo(np.int32).max:
-        return np.int32, pa.int32()
-    return np.int64, pa.int64()
+        return np.dtype(np.int32), pa.int32()
+    return np.dtype(np.int64), pa.int64()
 
 
 def _downcast_integer_stats(df: pd.DataFrame, *, columns: Sequence[str]) -> pd.DataFrame:
