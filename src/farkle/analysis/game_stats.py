@@ -249,7 +249,7 @@ def _per_strategy_margin_stats(
     """Compute victory-margin statistics grouped by strategy and player count."""
 
     rows: list[pd.Series] = []
-    margins_by_strategy: dict[tuple[str, int], list[float]] = {}
+    accumulators: dict[tuple[str, int], _MarginAccumulator] = {}
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -269,28 +269,32 @@ def _per_strategy_margin_stats(
             )
             continue
 
-        columns = [*score_cols, *strategy_cols]
-        scanner = ds_in.scanner(columns=columns, batch_size=65_536)
-        for batch in scanner.to_batches():
-            df = batch.to_pandas()
-            if df.empty:
-                continue
-            margins = _compute_margins(df, score_cols)
-            for col in strategy_cols:
+        for col in strategy_cols:
+            columns = [*score_cols, col]
+            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+            for batch in scanner.to_batches():
+                df = batch.to_pandas()
+                if df.empty:
+                    continue
+                margins = _compute_margins(df, score_cols)
                 strategies = df[col]
                 if strategies.isna().all():
                     continue
-                for strategy in strategies.dropna().unique():
-                    mask = strategies == strategy
-                    matched_margins = margins[mask].dropna()
+                grouped = margins.groupby(strategies)
+                for strategy, grouped_margins in grouped:
+                    if pd.isna(strategy):
+                        continue
+                    matched_margins = grouped_margins.dropna()
                     if matched_margins.empty:
                         continue
-                    margins_by_strategy.setdefault((strategy, n_players), []).extend(
-                        matched_margins.tolist()
+                    key = (strategy, n_players)
+                    accumulator = accumulators.setdefault(
+                        key, _MarginAccumulator(thresholds=thresholds)
                     )
+                    accumulator.update(matched_margins)
 
-    for (strategy, players), margins in margins_by_strategy.items():
-        stats = _summarize_margins(margins, thresholds)
+    for (strategy, players), accumulator in accumulators.items():
+        stats = accumulator.to_stats()
         stats.update(
             {
                 "summary_level": "strategy",
@@ -315,6 +319,58 @@ def _per_strategy_margin_stats(
 
     return pd.DataFrame(rows)
 
+
+class _MarginAccumulator:
+    """Accumulate margin statistics incrementally."""
+
+    def __init__(self, *, thresholds: Sequence[int]) -> None:
+        self._thresholds = list(thresholds)
+        self._values: list[float] = []
+        self._count = 0
+        self._sum = 0.0
+        self._sum_sq = 0.0
+        self._threshold_counts = {thr: 0 for thr in self._thresholds}
+
+    def update(self, margins: pd.Series) -> None:
+        values = pd.to_numeric(margins, errors="coerce").dropna().to_numpy(dtype=float)
+        if values.size == 0:
+            return
+        self._values.extend(values.tolist())
+        self._count += int(values.size)
+        self._sum += float(values.sum())
+        self._sum_sq += float(np.square(values).sum())
+        for thr in self._thresholds:
+            self._threshold_counts[thr] += int((values <= thr).sum())
+
+    def to_stats(self) -> dict[str, StatValue]:
+        prob_keys = [f"prob_margin_le_{thr}" for thr in self._thresholds]
+        if self._count == 0:
+            base: dict[str, StatValue] = {
+                "observations": 0,
+                "mean_margin": float("nan"),
+                "median_margin": float("nan"),
+                "std_margin": float("nan"),
+            }
+            base.update({key: float("nan") for key in prob_keys})
+            return base
+
+        mean = self._sum / self._count
+        variance = self._sum_sq / self._count - mean**2
+        std = float(np.sqrt(max(variance, 0.0)))
+        median = float(np.median(np.array(self._values, dtype=float)))
+        stats: dict[str, StatValue] = {
+            "observations": self._count,
+            "mean_margin": float(mean),
+            "median_margin": median,
+            "std_margin": std,
+        }
+        stats.update(
+            {
+                key: float(self._threshold_counts[thr] / self._count)
+                for key, thr in zip(prob_keys, self._thresholds, strict=True)
+            }
+        )
+        return stats
 
 def _rare_event_flags(
     per_n_inputs: Sequence[tuple[int, Path]],
