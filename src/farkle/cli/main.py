@@ -61,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Write full per-game rows to this directory.  If None, rows will not be recorded",
     )
+    run_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recompute even when existing run artifacts are available",
+    )
 
     # time (benchmark simulation throughput)
     time_parser = sub.add_parser("time", help="Benchmark simulation throughput")
@@ -330,6 +335,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         if args.row_dir is not None:
             cfg.sim.row_dir = args.row_dir
         _write_active_config(cfg, cfg.io.results_dir)
+        resume_run = not args.force
         LOGGER.info(
             "Dispatching run command",
             extra={
@@ -340,12 +346,14 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "expanded_metrics": cfg.sim.expanded_metrics,
                 "results_dir": str(cfg.io.results_dir),
                 "row_dir": str(cfg.sim.row_dir) if cfg.sim.row_dir is not None else None,
+                "force": args.force,
+                "resume": resume_run,
             },
         )
         if len(cfg.sim.n_players_list) > 1:
-            runner.run_multi(cfg)
+            runner.run_multi(cfg, force=args.force)
         else:
-            runner.run_single_n(cfg, cfg.sim.n_players_list[0])
+            runner.run_single_n(cfg, cfg.sim.n_players_list[0], force=args.force)
         LOGGER.info("Run command completed", extra={"stage": "cli", "command": "run"})
     elif args.command == "time":
         LOGGER.info(
