@@ -36,6 +36,9 @@ def run(cfg: AppConfig) -> None:
     analysis_dir = cfg.analysis_dir
     metrics_dir = cfg.metrics_pooled_dir
     data_file = cfg.curated_parquet
+    symmetry_input = cfg.ingested_rows_curated(2)
+    if not symmetry_input.exists():
+        symmetry_input = data_file
     out_metrics = cfg.metrics_output_path()
     out_seats = cfg.metrics_output_path("seat_advantage.csv")
     out_seats_parquet = cfg.metrics_output_path("seat_advantage.parquet")
@@ -59,9 +62,12 @@ def run(cfg: AppConfig) -> None:
         out_symmetry_csv,
         *iso_targets,
     ]
+    stage_inputs = [data_file, *raw_metric_inputs]
+    if symmetry_input != data_file and symmetry_input.exists():
+        stage_inputs.append(symmetry_input)
     if stage_is_up_to_date(
         done,
-        inputs=[data_file, *raw_metric_inputs],
+        inputs=stage_inputs,
         outputs=outputs,
         config_sha=getattr(cfg, "config_sha", None),
     ):
@@ -119,7 +125,7 @@ def run(cfg: AppConfig) -> None:
     write_parquet_atomic(seat_metrics_table, out_seat_metrics)
     write_csv_atomic(seat_metrics_df, out_seat_metrics_csv)
 
-    symmetry_df = compute_symmetry_checks(data_file, seat_cfg)
+    symmetry_df = compute_symmetry_checks(symmetry_input, seat_cfg)
     symmetry_table = pa.Table.from_pandas(symmetry_df, preserve_index=False)
     write_parquet_atomic(symmetry_table, out_symmetry)
     write_csv_atomic(symmetry_df, out_symmetry_csv)
@@ -138,7 +144,7 @@ def run(cfg: AppConfig) -> None:
 
     _write_stamp(
         stamp,
-        inputs=[data_file, *raw_inputs],
+        inputs=stage_inputs,
         outputs=[
             out_metrics,
             out_seats,
@@ -166,7 +172,7 @@ def run(cfg: AppConfig) -> None:
     )
     write_stage_done(
         done,
-        inputs=[data_file, *raw_inputs],
+        inputs=stage_inputs,
         outputs=outputs,
         config_sha=getattr(cfg, "config_sha", None),
     )
