@@ -11,6 +11,7 @@ import logging
 from pathlib import Path
 from typing import Iterable, Sequence
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 
@@ -110,6 +111,7 @@ def run(cfg: AppConfig) -> None:
         raise RuntimeError("metrics: no isolated metric files generated")
 
     metrics_df = _add_win_rate_uncertainty(metrics_df)
+    metrics_df = _downcast_metric_counters(metrics_df)
 
     metrics_table = pa.Table.from_pandas(metrics_df, preserve_index=False)
     write_parquet_atomic(metrics_table, out_metrics)
@@ -302,6 +304,31 @@ def _add_win_rate_uncertainty(df: pd.DataFrame) -> pd.DataFrame:
     ]
     remaining = [c for c in out.columns if c not in desired_order]
     return out[desired_order + remaining]
+
+
+def _downcast_metric_counters(df: pd.DataFrame) -> pd.DataFrame:
+    """Downcast integer counters when safe to reduce parquet size."""
+    if df.empty:
+        return df
+    out = df.copy()
+    int_cols = {"games", "wins", "n_players", "seed"}
+    int32_min = np.iinfo(np.int32).min
+    int32_max = np.iinfo(np.int32).max
+
+    for col in out.columns:
+        if col in int_cols or col.endswith("_count") or col.startswith("n_"):
+            if col not in out.columns:
+                continue
+            series = pd.to_numeric(out[col], errors="coerce")
+            non_null = series.dropna()
+            if non_null.empty:
+                continue
+            if not np.all(np.isclose(non_null, np.floor(non_null))):
+                continue
+            if non_null.min() < int32_min or non_null.max() > int32_max:
+                continue
+            out[col] = pd.to_numeric(series, downcast="integer")
+    return out
 
 
 def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:

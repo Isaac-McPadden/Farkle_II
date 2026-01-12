@@ -239,13 +239,26 @@ def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
     normalized = df.copy()
     normalized["strategy_id"] = normalized["strategy_id"].astype(str)
     for col in ("players", "seed", "games", "wins"):
-        normalized[col] = normalized[col].astype(np.int64)
+        normalized[col] = _cast_int32_if_safe(normalized[col])
     for col in ("win_rate", "ci_lo", "ci_hi"):
         normalized[col] = normalized[col].astype(float)
     extra_cols = [c for c in normalized.columns if c not in BASE_COLUMNS]
     for col in extra_cols:
         normalized[col] = normalized[col].astype(float)
     return normalized
+
+
+def _cast_int32_if_safe(series: pd.Series) -> pd.Series:
+    """Cast series to int32 when values fit, otherwise keep int64."""
+    values = pd.to_numeric(series, errors="coerce")
+    non_null = values.dropna()
+    if non_null.empty:
+        return values.astype(np.int64)
+    int32_min = np.iinfo(np.int32).min
+    int32_max = np.iinfo(np.int32).max
+    if non_null.min() < int32_min or non_null.max() > int32_max:
+        return values.astype(np.int64)
+    return values.astype(np.int32)
 
 
 def _existing_summary_matches(path: Path, new_df: pd.DataFrame) -> bool:

@@ -112,6 +112,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     if combined.empty:
         stage_log.missing_input("no rows available to summarize")
         return
+    combined = _downcast_integer_stats(combined, columns=("n_players", "observations"))
 
     table = pa.Table.from_pandas(combined, preserve_index=False)
     write_parquet_atomic(table, game_length_output, codec=cfg.parquet_codec)
@@ -122,6 +123,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     if margin_stats.empty:
         stage_log.missing_input("no margins available to summarize")
         return
+    margin_stats = _downcast_integer_stats(margin_stats, columns=("n_players", "observations"))
 
     margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
     write_parquet_atomic(margin_table, margin_output, codec=cfg.parquet_codec)
@@ -389,7 +391,7 @@ def _rare_event_flags(
     output_path: Path,
     codec: str,
 ) -> int:
-    """Compute per-game rare events and aggregate rates."""
+    """Compute per-game rare events and aggregate counts."""
 
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
     column_order = [
@@ -401,19 +403,32 @@ def _rare_event_flags(
         "observations",
         *[f"margin_le_{thr}" for thr in thresholds],
     ]
+    (
+        strategy_sums,
+        global_sums,
+        rows_available,
+        max_flag_count,
+        max_observations,
+    ) = _collect_rare_event_counts(per_n_inputs, thresholds=thresholds, target_score=target_score)
+
+    if rows_available == 0:
+        return 0
+
+    flag_dtype, flag_arrow = _select_int_dtype(max_flag_count)
+    obs_dtype, obs_arrow = _select_int_dtype(max_observations)
+    player_dtype = np.int32
     schema = pa.schema(
         [
             ("summary_level", pa.string()),
             ("strategy", pa.string()),
-            ("n_players", pa.int64()),
+            ("n_players", pa.int32()),
             ("margin_of_victory", pa.float64()),
-            ("multi_reached_target", pa.float64()),
-            ("observations", pa.int64()),
-            *[(f"margin_le_{thr}", pa.float64()) for thr in thresholds],
+            ("multi_reached_target", flag_arrow),
+            ("observations", obs_arrow),
+            *[(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
         ]
     )
-    strategy_sums: dict[tuple[str, int], dict[str, int]] = {}
-    global_sums: dict[int, dict[str, int]] = {}
+
     rows_written = 0
     writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
     try:
@@ -477,39 +492,20 @@ def _rare_event_flags(
                     per_game_data: dict[str, object] = {
                         "summary_level": np.full(count, "game", dtype=object),
                         "strategy": np.full(count, strategy, dtype=object),
-                        "n_players": np.full(count, n_players, dtype=np.int64),
+                        "n_players": np.full(count, n_players, dtype=player_dtype),
                         "margin_of_victory": group["margin_of_victory"].to_numpy(dtype=float),
                         "multi_reached_target": group["multi_reached_target"].to_numpy(
-                            dtype=float
+                            dtype=flag_dtype
                         ),
-                        "observations": np.ones(count, dtype=np.int64),
+                        "observations": np.ones(count, dtype=obs_dtype),
                     }
                     for thr in thresholds:
                         per_game_data[f"margin_le_{thr}"] = group[
                             f"margin_le_{thr}"
-                        ].to_numpy(dtype=float)
+                        ].to_numpy(dtype=flag_dtype)
 
                     writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
                     rows_written += count
-
-                    strategy_key = (str(strategy), n_players)
-                    strategy_entry = strategy_sums.setdefault(
-                        strategy_key,
-                        {"observations": 0, **{flag: 0 for flag in flags}},
-                    )
-                    strategy_entry["observations"] += count
-                    for flag in flags:
-                        strategy_entry[flag] += int(group[flag].sum())
-
-                    global_entry = global_sums.setdefault(
-                        n_players, {"observations": 0, **{flag: 0 for flag in flags}}
-                    )
-                    global_entry["observations"] += count
-                    for flag in flags:
-                        global_entry[flag] += int(group[flag].sum())
-
-        if rows_written == 0:
-            return 0
 
         strategy_rows: list[dict[str, object]] = []
         for (strategy, players), sums in strategy_sums.items():
@@ -522,9 +518,7 @@ def _rare_event_flags(
                 "observations": observations,
             }
             for flag in flags:
-                summary_row[flag] = (
-                    float(sums[flag]) / observations if observations else float("nan")
-                )
+                summary_row[flag] = sums[flag]
             strategy_rows.append(summary_row)
         strategy_summary = pd.DataFrame(strategy_rows, columns=column_order)
 
@@ -539,20 +533,131 @@ def _rare_event_flags(
                 "observations": observations,
             }
             for flag in flags:
-                summary_row[flag] = (
-                    float(sums[flag]) / observations if observations else float("nan")
-                )
+                summary_row[flag] = sums[flag]
             global_rows.append(summary_row)
         global_summary = pd.DataFrame(global_rows, columns=column_order)
 
         summary_df = pd.concat([strategy_summary, global_summary], ignore_index=True)
         if not summary_df.empty:
+            summary_df = _downcast_integer_stats(
+                summary_df, columns=("n_players", "observations", *flags)
+            )
             summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
             writer.write_batch(summary_table)
             rows_written += summary_table.num_rows
         return rows_written
     finally:
         writer.close(success=rows_written > 0)
+
+
+def _collect_rare_event_counts(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    thresholds: Sequence[int],
+    target_score: int,
+) -> tuple[dict[tuple[str, int], dict[str, int]], dict[int, dict[str, int]], int, int, int]:
+    """Gather rare-event counts for downstream downcasting decisions."""
+    flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
+    strategy_sums: dict[tuple[str, int], dict[str, int]] = {}
+    global_sums: dict[int, dict[str, int]] = {}
+    rows_available = 0
+    for n_players, path in per_n_inputs:
+        ds_in = ds.dataset(path)
+        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+        score_cols = [
+            name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+        ]
+
+        if not strategy_cols or not score_cols:
+            continue
+
+        columns = [*strategy_cols, *score_cols]
+        scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+        for batch in scanner.to_batches():
+            df = batch.to_pandas(categories=strategy_cols)
+            if df.empty:
+                continue
+            margins = _compute_margins(df, score_cols)
+            scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
+            multi_target = (scores >= target_score).sum(axis=1) >= 2
+            flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
+            for thr in thresholds:
+                flag_series[f"margin_le_{thr}"] = margins <= thr
+            base = df[strategy_cols].copy()
+            base["multi_reached_target"] = flag_series["multi_reached_target"]
+            for thr in thresholds:
+                base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"]
+            base["n_players"] = n_players
+            melted = base.melt(
+                id_vars=["multi_reached_target", "n_players", *[f"margin_le_{thr}" for thr in thresholds]],
+                value_vars=strategy_cols,
+                var_name="seat",
+                value_name="strategy",
+            )
+            melted = melted.dropna(subset=["strategy"])
+            if melted.empty:
+                continue
+            melted["strategy"] = melted["strategy"].astype("category")
+            grouped = melted.groupby("strategy", observed=True, sort=False)
+            for strategy, group in grouped:
+                count = int(group.shape[0])
+                rows_available += count
+                strategy_key = (str(strategy), n_players)
+                strategy_entry = strategy_sums.setdefault(
+                    strategy_key,
+                    {"observations": 0, **{flag: 0 for flag in flags}},
+                )
+                strategy_entry["observations"] += count
+                for flag in flags:
+                    strategy_entry[flag] += int(group[flag].sum())
+
+                global_entry = global_sums.setdefault(
+                    n_players, {"observations": 0, **{flag: 0 for flag in flags}}
+                )
+                global_entry["observations"] += count
+                for flag in flags:
+                    global_entry[flag] += int(group[flag].sum())
+
+    max_flag_count = 0
+    max_observations = 0
+    for sums in list(strategy_sums.values()) + list(global_sums.values()):
+        max_observations = max(max_observations, sums.get("observations", 0))
+        for flag in flags:
+            max_flag_count = max(max_flag_count, sums.get(flag, 0))
+    return strategy_sums, global_sums, rows_available, max_flag_count, max_observations
+
+
+def _select_int_dtype(max_value: int) -> tuple[np.dtype, pa.DataType]:
+    """Pick an integer dtype with overflow protection."""
+    if max_value <= np.iinfo(np.uint8).max:
+        return np.uint8, pa.uint8()
+    if max_value <= np.iinfo(np.int32).max:
+        return np.int32, pa.int32()
+    return np.int64, pa.int64()
+
+
+def _downcast_integer_stats(df: pd.DataFrame, *, columns: Sequence[str]) -> pd.DataFrame:
+    """Downcast integer columns for stats outputs when safe."""
+    if df.empty:
+        return df
+    out = df.copy()
+    int32_max = np.iinfo(np.int32).max
+    for col in columns:
+        if col not in out.columns:
+            continue
+        values = pd.to_numeric(out[col], errors="coerce")
+        non_null = values.dropna()
+        if non_null.empty:
+            continue
+        if not np.all(np.isclose(non_null, np.floor(non_null))):
+            continue
+        if non_null.min() >= 0 and non_null.max() <= np.iinfo(np.uint8).max:
+            out[col] = values.astype(np.uint8)
+        elif non_null.min() >= np.iinfo(np.int32).min and non_null.max() <= int32_max:
+            out[col] = values.astype(np.int32)
+        else:
+            out[col] = values.astype(np.int64)
+    return out
 
 
 def _global_stats(combined_path: Path) -> pd.DataFrame:
