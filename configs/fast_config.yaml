@@ -90,6 +90,7 @@ trueskill:
   beta: 4.166667                  # 25/6
   tau: 0.1
   draw_probability: 0.0
+  pooled_weights_by_k: null
 
 head_to_head:
   n_jobs: 4

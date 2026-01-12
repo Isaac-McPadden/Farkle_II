@@ -835,6 +835,7 @@ def run_trueskill(
     resume_per_n: bool = True,
     checkpoint_every_batches: int = 500,
     env_kwargs: dict | None = None,
+    pooled_weights_by_k: Mapping[int, float] | None = None,
     tiering_z: float | None = None,
     tiering_min_gap: float | None = None,
 ) -> None:
@@ -866,8 +867,8 @@ def run_trueskill(
     ``ratings_<n>[ _seedX ].parquet``
         Pickle files containing per-block ratings for each strategy.
     ``ratings_pooled[ _seedX ].parquet``
-        A pickle with ratings pooled across all blocks using a games-per-block
-        precision-weighted mean.
+        A pickle with ratings pooled across all blocks using a precision-weighted
+        mean (optionally scaled by per-player-count weights).
     ``tiers.json``
         JSON file with league tiers derived from the pooled ratings.
     """
@@ -912,6 +913,7 @@ def run_trueskill(
 
     pooled: dict[str, tuple[float, float]] = {}
     per_block_games: dict[str, int] = {}
+    pooled_weights_by_k = dict(pooled_weights_by_k or {})
 
     blocks = sorted(base.glob("*_players"))
     # Pick a sensible default, then cap to CPUs and number of blocks
@@ -993,19 +995,23 @@ def run_trueskill(
         stem = parquet.stem[len("ratings_") :]
         if suffix:
             stem = stem[: -len(suffix)]
-        games = per_block_games.get(stem, 0)
+        player_count = _player_count_from_stem(parquet.stem)
+        if player_count is None:
+            continue
+        games = per_block_games.get(str(player_count), 0)
         if games <= 0:
             continue
+        weight = pooled_weights_by_k.get(player_count, 1.0)
         with parquet.open("rb"):
             ratings = _load_ratings_parquet(parquet)
         for k, v in ratings.items():
             tau = 1.0 / (v.sigma**2) if v.sigma > 0 else 0.0
             s_mu, s_tau = pooled.get(k, (0.0, 0.0))
-            s_mu += tau * v.mu * games
-            s_tau += tau * games
+            s_mu += weight * tau * v.mu
+            s_tau += weight * tau
             pooled[k] = (s_mu, s_tau)
 
-    # Precision-weighted pooling → (sum tau*mu, sum tau) → (mu, sigma)
+    # Precision-weighted pooling → (sum weight*tau*mu, sum weight*tau) → (mu, sigma)
     pooled_stats = {
         k: RatingStats(mu=(s_mu / s_tau), sigma=(s_tau**-0.5))
         for k, (s_mu, s_tau) in pooled.items()
@@ -1333,10 +1339,11 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             output_seed=seed,
             root=analysis_dir,
             dataroot=cfg.results_dir,
-             row_data_dir=cfg.data_dir,
-             curated_rows_name=cfg.curated_rows_name,
+            row_data_dir=cfg.data_dir,
+            curated_rows_name=cfg.curated_rows_name,
             workers=analysis_cfg.n_jobs or None,
             env_kwargs=env_kwargs,
+            pooled_weights_by_k=cfg.trueskill.pooled_weights_by_k,
             tiering_z=tiering_z,
             tiering_min_gap=tiering_min_gap,
         )
