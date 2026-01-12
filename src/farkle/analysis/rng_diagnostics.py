@@ -79,7 +79,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         return
 
     columns = ["game_seed", "n_rounds", winner_col, *strat_cols]
-    df = dataset.to_table(columns=columns).to_pandas()
+    df = dataset.to_table(columns=columns).to_pandas(categories=strat_cols)
     df = df.sort_values("game_seed")
     df["matchup"] = df[strat_cols].apply(_matchup_label, axis=1)
     df["n_players"] = df[strat_cols].notna().sum(axis=1).astype(int)
@@ -158,6 +158,7 @@ def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFram
         value_name="strategy",
     )
     melted = melted.dropna(subset=["strategy"])
+    melted["strategy"] = melted["strategy"].astype("category")
     melted["seat"] = melted["seat"].str.removesuffix("_strategy")
     melted["win_indicator"] = (melted["strategy"] == melted["winner_strategy"]).astype(int)
     return melted
@@ -166,7 +167,7 @@ def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFram
 def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataFrame:
     rows: list[pd.Series] = []
 
-    grouped_strategy = data.groupby(["strategy", "n_players"], sort=False)
+    grouped_strategy = data.groupby(["strategy", "n_players"], observed=True, sort=False)
     strategy_diagnostics = (
         _group_diagnostics(
             group, lags=lags, summary_level="strategy", strategy=strategy, n_players=n_players
@@ -176,7 +177,9 @@ def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataF
     # Each grouped call yields an iterable of pd.Series diagnostics.
     rows.extend(chain.from_iterable(strategy_diagnostics))
 
-    grouped_matchup = data.groupby(["matchup", "strategy", "n_players"], sort=False)
+    grouped_matchup = data.groupby(
+        ["matchup", "strategy", "n_players"], observed=True, sort=False
+    )
     matchup_diagnostics = (
         _group_diagnostics(
             group,

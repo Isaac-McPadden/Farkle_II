@@ -104,8 +104,8 @@ def compute_seat_metrics(combined: Path, seat_config: SeatMetricConfig) -> pd.Da
             records = records.dropna(subset=["strategy"])
             if records.empty:
                 continue
-
-            grouped = records.groupby(["strategy", "n_players"], sort=False).agg(
+            records["strategy"] = records["strategy"].astype("category")
+            grouped = records.groupby(["strategy", "n_players"], observed=True, sort=False).agg(
                 games=("strategy", "size"),
                 wins=("is_win", "sum"),
                 score_sum=("score", "sum"),
@@ -241,8 +241,10 @@ def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -
         table = ds_in.to_table(columns=column_list, filter=filter_expr)
     else:
         table = ds_in.to_table(columns=column_list)
-    df = table.to_pandas()
+    df = table.to_pandas(categories=["P1_strategy", "P2_strategy"])
 
+    df["P1_strategy"] = df["P1_strategy"].astype("category")
+    df["P2_strategy"] = df["P2_strategy"].astype("category")
     if "n_players" in df.columns:
         df["n_players"] = pd.to_numeric(df["n_players"], errors="coerce").fillna(2).astype(int)
     elif "seat_ranks" in df.columns:
@@ -271,7 +273,7 @@ def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -
             ]
         )
 
-    grouped = symmetric.groupby(["P1_strategy", "n_players"], sort=False)
+    grouped = symmetric.groupby(["P1_strategy", "n_players"], observed=True, sort=False)
     rows: list[pd.Series] = []
     tol = seat_config.symmetry_tolerance
 
