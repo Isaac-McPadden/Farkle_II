@@ -44,22 +44,34 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
 
         if path.suffix == ".csv":
             df = pd.read_csv(path, dtype_backend="pyarrow")
+            wanted = list(wanted)
+            present = [c for c in wanted if c in df.columns]
+            if LOGGER.isEnabledFor(logging.DEBUG) and len(present) < len(wanted):
+                missing = sorted(set(wanted) - set(present))
+                LOGGER.debug(
+                    "Shard missing requested columns",
+                    extra={
+                        "stage": "ingest",
+                        "path": path.name,
+                        "missing": missing,
+                    },
+                )
+            return df[present]
         else:
-            df = pd.read_parquet(path)
-
-        wanted = list(wanted)
-        present = [c for c in wanted if c in df.columns]
-        if LOGGER.isEnabledFor(logging.DEBUG) and len(present) < len(wanted):
-            missing = sorted(set(wanted) - set(present))
-            LOGGER.debug(
-                "Shard missing requested columns",
-                extra={
-                    "stage": "ingest",
-                    "path": path.name,
-                    "missing": missing,
-                },
-            )
-        return df[present]
+            pf = pq.ParquetFile(path)
+            wanted = list(wanted)
+            present = [c for c in wanted if c in pf.schema_arrow.names]
+            if LOGGER.isEnabledFor(logging.DEBUG) and len(present) < len(wanted):
+                missing = sorted(set(wanted) - set(present))
+                LOGGER.debug(
+                    "Shard missing requested columns",
+                    extra={
+                        "stage": "ingest",
+                        "path": path.name,
+                        "missing": missing,
+                    },
+                )
+            return pf.read(columns=present).to_pandas()
 
     # Newer runs emit a single `<Np_rows>.parquet` file directly under the
     # block directory. Prefer that if present. Sorting ensures deterministic
