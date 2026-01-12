@@ -64,6 +64,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     summary_path = cfg.variance_output_path(SUMMARY_OUTPUT)
     components_path = cfg.variance_output_path(COMPONENTS_OUTPUT)
     stamp_path = stage_done_path(cfg.variance_stage_dir, "variance")
+    detail_stamp = stage_done_path(cfg.variance_stage_dir, "variance.detail")
+    summary_stamp = stage_done_path(cfg.variance_stage_dir, "variance.summary")
+    components_stamp = stage_done_path(cfg.variance_stage_dir, "variance.components")
 
     if not metrics_path.exists():
         stage_log.missing_input("metrics parquet missing", path=str(metrics_path))
@@ -76,9 +79,17 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     inputs = [metrics_path, *seed_summary_paths]
     outputs = [variance_path, summary_path, components_path]
-    if not force and stage_is_up_to_date(
-        stamp_path, inputs=inputs, outputs=outputs, config_sha=cfg.config_sha
-    ):
+    detail_up_to_date = not force and stage_is_up_to_date(
+        detail_stamp, inputs=inputs, outputs=[variance_path], config_sha=cfg.config_sha
+    )
+    summary_up_to_date = not force and stage_is_up_to_date(
+        summary_stamp, inputs=inputs, outputs=[summary_path], config_sha=cfg.config_sha
+    )
+    components_up_to_date = not force and stage_is_up_to_date(
+        components_stamp, inputs=inputs, outputs=[components_path], config_sha=cfg.config_sha
+    )
+
+    if detail_up_to_date and summary_up_to_date and components_up_to_date:
         LOGGER.info(
             "Variance outputs up-to-date",
             extra={
@@ -90,6 +101,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             },
         )
         return
+
+    needs_metrics = not detail_up_to_date or not summary_up_to_date
 
     LOGGER.info(
         "Computing cross-seed variance",
@@ -104,7 +117,6 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         },
     )
 
-    metrics_frame = _load_metrics(metrics_path)
     seed_frame = _load_seed_summaries(seed_summary_paths)
     if seed_frame.empty:
         stage_log.missing_input("seed summaries empty", analysis_dir=str(cfg.analysis_dir))
@@ -134,26 +146,62 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             ).drop(columns="_keep")
         if variance_frame.empty:
             return
-    detailed = _merge_metrics(metrics_frame, variance_frame)
-    if detailed.empty:
-        LOGGER.info(
-            "Variance skipped: no overlapping strategies",
-            extra={"stage": "variance", "analysis_dir": str(cfg.analysis_dir)},
+
+    detailed: pd.DataFrame | None = None
+    summary: pd.DataFrame | None = None
+    if not detail_up_to_date or not summary_up_to_date:
+        metrics_frame = _load_metrics(metrics_path) if needs_metrics else pd.DataFrame()
+        detailed = _merge_metrics(metrics_frame, variance_frame)
+        if detailed.empty:
+            LOGGER.info(
+                "Variance skipped: no overlapping strategies",
+                extra={"stage": "variance", "analysis_dir": str(cfg.analysis_dir)},
+            )
+            return
+        if not summary_up_to_date:
+            summary = _summarize_variance(detailed)
+
+    if not detail_up_to_date:
+        if detailed is None:
+            metrics_frame = _load_metrics(metrics_path)
+            detailed = _merge_metrics(metrics_frame, variance_frame)
+        if detailed.empty:
+            return
+        variance_table = pa.Table.from_pandas(detailed, preserve_index=False)
+        write_parquet_atomic(variance_table, variance_path, codec=cfg.parquet_codec)
+        write_stage_done(
+            detail_stamp,
+            inputs=inputs,
+            outputs=[variance_path],
+            config_sha=cfg.config_sha,
         )
-        return
 
-    summary = _summarize_variance(detailed)
+    if not summary_up_to_date:
+        if summary is None:
+            if detailed is None:
+                metrics_frame = _load_metrics(metrics_path)
+                detailed = _merge_metrics(metrics_frame, variance_frame)
+            if detailed.empty:
+                return
+            summary = _summarize_variance(detailed)
+        summary_table = pa.Table.from_pandas(summary, preserve_index=False)
+        write_parquet_atomic(summary_table, summary_path, codec=cfg.parquet_codec)
+        write_stage_done(
+            summary_stamp,
+            inputs=inputs,
+            outputs=[summary_path],
+            config_sha=cfg.config_sha,
+        )
 
-    variance_table = pa.Table.from_pandas(detailed, preserve_index=False)
-    summary_table = pa.Table.from_pandas(summary, preserve_index=False)
-    components_table = pa.Table.from_pandas(
-        components_frame, preserve_index=False
-    )
-    write_parquet_atomic(variance_table, variance_path, codec=cfg.parquet_codec)
-    write_parquet_atomic(summary_table, summary_path, codec=cfg.parquet_codec)
-    write_parquet_atomic(
-        components_table, components_path, codec=cfg.parquet_codec
-    )
+    if not components_up_to_date:
+        components_table = pa.Table.from_pandas(components_frame, preserve_index=False)
+        write_parquet_atomic(components_table, components_path, codec=cfg.parquet_codec)
+        write_stage_done(
+            components_stamp,
+            inputs=inputs,
+            outputs=[components_path],
+            config_sha=cfg.config_sha,
+        )
     write_stage_done(
         stamp_path,
         inputs=inputs,

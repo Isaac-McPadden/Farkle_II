@@ -25,9 +25,10 @@ def test_games_for_power_monotonic():
 def test_cli_run(tmp_path, monkeypatch, capsys):
     called: dict[str, object] = {}
 
-    def fake_run_single_n(cfg: AppConfig, n: int) -> None:
+    def fake_run_single_n(cfg: AppConfig, n: int, *, force: bool = False) -> None:
         called["cfg"] = cfg
         called["n"] = n
+        called["force"] = force
 
     monkeypatch.setattr(cli_main.runner, "run_single_n", fake_run_single_n)
 
@@ -100,9 +101,10 @@ def test_cli_missing_keys(tmp_path, monkeypatch):
     cfg.write_text(yaml.safe_dump({}))
     called: dict[str, object] = {}
 
-    def fake_run_single_n(cfg_obj: AppConfig, n: int) -> None:
+    def fake_run_single_n(cfg_obj: AppConfig, n: int, *, force: bool = False) -> None:
         called["cfg"] = cfg_obj
         called["n"] = n
+        called["force"] = force
 
     monkeypatch.setattr(cli_main.runner, "run_single_n", fake_run_single_n)
 

@@ -44,6 +44,7 @@ from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.writer import ParquetShardWriter
 from farkle.utils.schema_helpers import n_players_from_schema
 
 StatValue: TypeAlias = float | int | str | NAType
@@ -67,6 +68,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     margin_output = cfg.game_stats_output_path("margin_stats.parquet")
     rare_events_output = cfg.game_stats_output_path("rare_events.parquet")
     stamp_path = stage_done_path(stage_dir, "game_stats")
+    game_length_stamp = stage_done_path(stage_dir, "game_stats.game_length")
+    margin_stamp = stage_done_path(stage_dir, "game_stats.margin")
+    rare_events_stamp = stage_done_path(stage_dir, "game_stats.rare_events")
 
     per_n_inputs = _discover_per_n_inputs(cfg)
     combined_path = cfg.curated_parquet
@@ -79,9 +83,26 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         return
 
     outputs = [game_length_output, margin_output, rare_events_output]
-    if not force and stage_is_up_to_date(
-        stamp_path, inputs=input_paths, outputs=outputs, config_sha=cfg.config_sha
-    ):
+    game_length_up_to_date = not force and stage_is_up_to_date(
+        game_length_stamp,
+        inputs=input_paths,
+        outputs=[game_length_output],
+        config_sha=cfg.config_sha,
+    )
+    margin_up_to_date = not force and stage_is_up_to_date(
+        margin_stamp,
+        inputs=input_paths,
+        outputs=[margin_output],
+        config_sha=cfg.config_sha,
+    )
+    rare_events_up_to_date = not force and stage_is_up_to_date(
+        rare_events_stamp,
+        inputs=input_paths,
+        outputs=[rare_events_output],
+        config_sha=cfg.config_sha,
+    )
+
+    if game_length_up_to_date and margin_up_to_date and rare_events_up_to_date:
         LOGGER.info(
             "Game-length stats up-to-date",
             extra={
@@ -104,37 +125,61 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         },
     )
 
-    strategy_stats = _per_strategy_stats(per_n_inputs)
-    global_stats = _global_stats(combined_path) if combined_path.exists() else pd.DataFrame()
+    combined_rows: int | None = None
+    if not game_length_up_to_date:
+        strategy_stats = _per_strategy_stats(per_n_inputs)
+        global_stats = _global_stats(combined_path) if combined_path.exists() else pd.DataFrame()
 
-    combined = pd.concat([strategy_stats, global_stats], ignore_index=True)
-    if combined.empty:
-        stage_log.missing_input("no rows available to summarize")
-        return
+        combined = pd.concat([strategy_stats, global_stats], ignore_index=True)
+        if combined.empty:
+            stage_log.missing_input("no rows available to summarize")
+            return
+        combined = _downcast_integer_stats(combined, columns=("n_players", "observations"))
 
-    table = pa.Table.from_pandas(combined, preserve_index=False)
-    write_parquet_atomic(table, game_length_output, codec=cfg.parquet_codec)
+        table = pa.Table.from_pandas(combined, preserve_index=False)
+        write_parquet_atomic(table, game_length_output, codec=cfg.parquet_codec)
+        combined_rows = len(combined)
+        write_stage_done(
+            game_length_stamp,
+            inputs=input_paths,
+            outputs=[game_length_output],
+            config_sha=cfg.config_sha,
+        )
 
-    margin_stats = _per_strategy_margin_stats(
-        per_n_inputs, thresholds=cfg.game_stats_margin_thresholds
-    )
-    if margin_stats.empty:
-        stage_log.missing_input("no margins available to summarize")
-        return
+    if not margin_up_to_date:
+        margin_stats = _per_strategy_margin_stats(
+            per_n_inputs, thresholds=cfg.game_stats_margin_thresholds
+        )
+        if margin_stats.empty:
+            stage_log.missing_input("no margins available to summarize")
+            return
+        margin_stats = _downcast_integer_stats(margin_stats, columns=("n_players", "observations"))
 
-    margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
-    write_parquet_atomic(margin_table, margin_output, codec=cfg.parquet_codec)
+        margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
+        write_parquet_atomic(margin_table, margin_output, codec=cfg.parquet_codec)
+        write_stage_done(
+            margin_stamp,
+            inputs=input_paths,
+            outputs=[margin_output],
+            config_sha=cfg.config_sha,
+        )
 
-    rare_events = _rare_event_flags(
-        per_n_inputs,
-        thresholds=cfg.game_stats_margin_thresholds,
-        target_score=cfg.rare_event_target_score,
-    )
-    if rare_events.empty:
-        raise RuntimeError("game-stats: no rare events available to summarize")
-
-    rare_events_table = pa.Table.from_pandas(rare_events, preserve_index=False)
-    write_parquet_atomic(rare_events_table, rare_events_output, codec=cfg.parquet_codec)
+    if not rare_events_up_to_date:
+        rare_event_rows = _rare_event_flags(
+            per_n_inputs,
+            thresholds=cfg.game_stats_margin_thresholds,
+            target_score=cfg.rare_event_target_score,
+            output_path=rare_events_output,
+            codec=cfg.parquet_codec,
+        )
+        if rare_event_rows == 0:
+            raise RuntimeError("game-stats: no rare events available to summarize")
+        write_stage_done(
+            rare_events_stamp,
+            inputs=input_paths,
+            outputs=[rare_events_output],
+            config_sha=cfg.config_sha,
+        )
     write_stage_done(
         stamp_path,
         inputs=input_paths,
@@ -146,7 +191,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         "Game-length stats written",
         extra={
             "stage": "game_stats",
-            "rows": len(combined),
+            "rows": combined_rows,
             "game_length_output": str(game_length_output),
             "margin_output": str(margin_output),
         },
@@ -176,7 +221,7 @@ def _discover_per_n_inputs(cfg: AppConfig) -> list[tuple[int, Path]]:
 def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFrame:
     """Compute statistics grouped by strategy and player count."""
 
-    rows: list[pd.Series] = []
+    long_frames: list[pd.DataFrame] = []
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -187,26 +232,22 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
             )
             continue
 
-        columns = ["n_rounds", *strategy_cols]
-        tbl = ds_in.to_table(columns=columns)
-        df = tbl.to_pandas()
-        melted = df.melt(id_vars=["n_rounds"], value_vars=strategy_cols, value_name="strategy")
-        melted = melted.dropna(subset=["strategy"])
-        melted["n_players"] = n_players
+        for col in strategy_cols:
+            columns = ["n_rounds", col]
+            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+            for batch in scanner.to_batches():
+                df = batch.to_pandas(categories=[col])
+                if df.empty:
+                    continue
+                melted = df.melt(id_vars=["n_rounds"], value_vars=[col], value_name="strategy")
+                melted = melted.dropna(subset=["strategy"])
+                if melted.empty:
+                    continue
+                melted["strategy"] = melted["strategy"].astype("category")
+                melted["n_players"] = n_players
+                long_frames.append(melted[["strategy", "n_players", "n_rounds"]])
 
-        grouped = melted.groupby(["strategy", "n_players"], sort=False)["n_rounds"]
-        for (strategy, players), rounds in grouped:
-            stats = _summarize_rounds(rounds)
-            stats.update(
-                {
-                    "summary_level": "strategy",
-                    "strategy": strategy,
-                    "n_players": players,
-                }
-            )
-            rows.append(pd.Series(stats))
-
-    if not rows:
+    if not long_frames:
         return pd.DataFrame(
             columns=[
                 "summary_level",
@@ -225,7 +266,82 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
             ]
         )
 
-    return pd.DataFrame(rows)
+    long_df = pd.concat(long_frames, ignore_index=True)
+    long_df["n_rounds"] = pd.to_numeric(long_df["n_rounds"], errors="coerce")
+    long_df = long_df.dropna(subset=["n_rounds", "strategy"])
+    if long_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "summary_level",
+                "strategy",
+                "n_players",
+                "observations",
+                "mean_rounds",
+                "median_rounds",
+                "std_rounds",
+                "p10_rounds",
+                "p50_rounds",
+                "p90_rounds",
+                "prob_rounds_le_5",
+                "prob_rounds_le_10",
+                "prob_rounds_ge_20",
+            ]
+        )
+
+    group_keys = ["strategy", "n_players"]
+    grouped = long_df.groupby(group_keys, observed=True, sort=False)["n_rounds"]
+    stats = grouped.agg(
+        observations="count",
+        mean_rounds="mean",
+        median_rounds="median",
+        std_rounds=lambda s: s.std(ddof=0),
+        p10_rounds=lambda s: s.quantile(0.1),
+        p50_rounds=lambda s: s.quantile(0.5),
+        p90_rounds=lambda s: s.quantile(0.9),
+    )
+    prob_rounds_le_5 = (
+        long_df["n_rounds"]
+        .le(5)
+        .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
+        .mean()
+        .rename("prob_rounds_le_5")
+    )
+    prob_rounds_le_10 = (
+        long_df["n_rounds"]
+        .le(10)
+        .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
+        .mean()
+        .rename("prob_rounds_le_10")
+    )
+    prob_rounds_ge_20 = (
+        long_df["n_rounds"]
+        .ge(20)
+        .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
+        .mean()
+        .rename("prob_rounds_ge_20")
+    )
+
+    stats = stats.join([prob_rounds_le_5, prob_rounds_le_10, prob_rounds_ge_20])
+    stats = stats.reset_index()
+    stats.insert(0, "summary_level", "strategy")
+
+    return stats[
+        [
+            "summary_level",
+            "strategy",
+            "n_players",
+            "observations",
+            "mean_rounds",
+            "median_rounds",
+            "std_rounds",
+            "p10_rounds",
+            "p50_rounds",
+            "p90_rounds",
+            "prob_rounds_le_5",
+            "prob_rounds_le_10",
+            "prob_rounds_ge_20",
+        ]
+    ]
 
 
 def _per_strategy_margin_stats(
@@ -235,7 +351,7 @@ def _per_strategy_margin_stats(
 ) -> pd.DataFrame:
     """Compute victory-margin statistics grouped by strategy and player count."""
 
-    rows: list[pd.Series] = []
+    long_frames: list[pd.DataFrame] = []
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -255,32 +371,28 @@ def _per_strategy_margin_stats(
             )
             continue
 
-        columns = [*score_cols, *strategy_cols]
-        tbl = ds_in.to_table(columns=columns)
-        df = tbl.to_pandas()
-        df["margin_of_victory"] = _compute_margins(df, score_cols)
+        for col in strategy_cols:
+            columns = [*score_cols, col]
+            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+            for batch in scanner.to_batches():
+                df = batch.to_pandas(categories=[col])
+                if df.empty:
+                    continue
+                margins = _compute_margins(df, score_cols)
+                df = df.assign(margin_of_victory=margins)
+                melted = df.melt(
+                    id_vars=["margin_of_victory"],
+                    value_vars=[col],
+                    value_name="strategy",
+                )
+                melted = melted.dropna(subset=["strategy"])
+                if melted.empty:
+                    continue
+                melted["strategy"] = melted["strategy"].astype("category")
+                melted["n_players"] = n_players
+                long_frames.append(melted[["strategy", "n_players", "margin_of_victory"]])
 
-        melted = df.melt(
-            id_vars=["margin_of_victory"],
-            value_vars=strategy_cols,
-            value_name="strategy",
-        )
-        melted = melted.dropna(subset=["strategy", "margin_of_victory"])
-        melted["n_players"] = n_players
-
-        grouped = melted.groupby(["strategy", "n_players"], sort=False)["margin_of_victory"]
-        for (strategy, players), margins in grouped:
-            stats = _summarize_margins(margins, thresholds)
-            stats.update(
-                {
-                    "summary_level": "strategy",
-                    "strategy": strategy,
-                    "n_players": players,
-                }
-            )
-            rows.append(pd.Series(stats))
-
-    if not rows:
+    if not long_frames:
         columns = [
             "summary_level",
             "strategy",
@@ -293,7 +405,56 @@ def _per_strategy_margin_stats(
         ]
         return pd.DataFrame(columns=columns)
 
-    return pd.DataFrame(rows)
+    long_df = pd.concat(long_frames, ignore_index=True)
+    long_df["margin_of_victory"] = pd.to_numeric(long_df["margin_of_victory"], errors="coerce")
+    long_df = long_df.dropna(subset=["margin_of_victory", "strategy"])
+    if long_df.empty:
+        columns = [
+            "summary_level",
+            "strategy",
+            "n_players",
+            "observations",
+            "mean_margin",
+            "median_margin",
+            "std_margin",
+            *[f"prob_margin_le_{thr}" for thr in thresholds],
+        ]
+        return pd.DataFrame(columns=columns)
+
+    group_keys = ["strategy", "n_players"]
+    grouped = long_df.groupby(group_keys, observed=True, sort=False)["margin_of_victory"]
+    stats = grouped.agg(
+        observations="count",
+        mean_margin="mean",
+        median_margin="median",
+        std_margin=lambda s: s.std(ddof=0),
+    )
+    prob_frames = []
+    for thr in thresholds:
+        prob = (
+            long_df["margin_of_victory"]
+            .le(thr)
+            .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
+            .mean()
+            .rename(f"prob_margin_le_{thr}")
+        )
+        prob_frames.append(prob)
+
+    stats = stats.join(prob_frames)
+    stats = stats.reset_index()
+    stats.insert(0, "summary_level", "strategy")
+
+    ordered_cols = [
+        "summary_level",
+        "strategy",
+        "n_players",
+        "observations",
+        "mean_margin",
+        "median_margin",
+        "std_margin",
+        *[f"prob_margin_le_{thr}" for thr in thresholds],
+    ]
+    return stats[ordered_cols]
 
 
 def _rare_event_flags(
@@ -301,125 +462,276 @@ def _rare_event_flags(
     *,
     thresholds: Sequence[int],
     target_score: int,
-) -> pd.DataFrame:
-    """Compute per-game rare events and aggregate rates."""
+    output_path: Path,
+    codec: str,
+) -> int:
+    """Compute per-game rare events and aggregate counts."""
 
-    game_rows: list[dict[str, object]] = []
+    flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
+    column_order = [
+        "summary_level",
+        "strategy",
+        "n_players",
+        "margin_of_victory",
+        "multi_reached_target",
+        "observations",
+        *[f"margin_le_{thr}" for thr in thresholds],
+    ]
+    (
+        strategy_sums,
+        global_sums,
+        rows_available,
+        max_flag_count,
+        max_observations,
+    ) = _collect_rare_event_counts(per_n_inputs, thresholds=thresholds, target_score=target_score)
+
+    if rows_available == 0:
+        return 0
+
+    flag_dtype, flag_arrow = _select_int_dtype(max_flag_count)
+    obs_dtype, obs_arrow = _select_int_dtype(max_observations)
+    player_dtype = np.int32
+    schema = pa.schema(
+        [
+            ("summary_level", pa.string()),
+            ("strategy", pa.string()),
+            ("n_players", pa.int32()),
+            ("margin_of_victory", pa.float64()),
+            ("multi_reached_target", flag_arrow),
+            ("observations", obs_arrow),
+            *[(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
+        ]
+    )
+
+    rows_written = 0
+    writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
+    try:
+        for n_players, path in per_n_inputs:
+            ds_in = ds.dataset(path)
+            strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+            score_cols = [
+                name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+            ]
+
+            if not strategy_cols:
+                LOGGER.warning(
+                    "Per-N parquet missing strategy columns; skipping rare events",
+                    extra={"stage": "game_stats", "path": str(path)},
+                )
+                continue
+
+            if not score_cols:
+                LOGGER.warning(
+                    "Per-N parquet missing seat score columns; skipping rare events",
+                    extra={"stage": "game_stats", "path": str(path)},
+                )
+                continue
+
+            columns = [*strategy_cols, *score_cols]
+            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+            for batch in scanner.to_batches():
+                df = batch.to_pandas(categories=strategy_cols)
+                if df.empty:
+                    continue
+                margins = _compute_margins(df, score_cols)
+                scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
+                multi_target = (scores >= target_score).sum(axis=1) >= 2
+                flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
+                for thr in thresholds:
+                    flag_series[f"margin_le_{thr}"] = margins <= thr
+                base = df[strategy_cols].copy()
+                base["margin_of_victory"] = margins
+                base["multi_reached_target"] = flag_series["multi_reached_target"]
+                for thr in thresholds:
+                    base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"]
+                base["n_players"] = n_players
+                melted = base.melt(
+                    id_vars=[
+                        "margin_of_victory",
+                        "multi_reached_target",
+                        "n_players",
+                        *[f"margin_le_{thr}" for thr in thresholds],
+                    ],
+                    value_vars=strategy_cols,
+                    var_name="seat",
+                    value_name="strategy",
+                )
+                melted = melted.dropna(subset=["strategy"])
+                if melted.empty:
+                    continue
+                melted["strategy"] = melted["strategy"].astype("category")
+                grouped = melted.groupby("strategy", observed=True, sort=False)
+                for strategy, group in grouped:
+                    count = int(group.shape[0])
+                    per_game_data: dict[str, object] = {
+                        "summary_level": np.full(count, "game", dtype=object),
+                        "strategy": np.full(count, strategy, dtype=object),
+                        "n_players": np.full(count, n_players, dtype=player_dtype),
+                        "margin_of_victory": group["margin_of_victory"].to_numpy(dtype=float),
+                        "multi_reached_target": group["multi_reached_target"].to_numpy(
+                            dtype=flag_dtype
+                        ),
+                        "observations": np.ones(count, dtype=obs_dtype),
+                    }
+                    for thr in thresholds:
+                        per_game_data[f"margin_le_{thr}"] = group[
+                            f"margin_le_{thr}"
+                        ].to_numpy(dtype=flag_dtype)
+
+                    writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
+                    rows_written += count
+
+        strategy_rows: list[dict[str, object]] = []
+        for (strategy, players), sums in strategy_sums.items():
+            observations = sums["observations"]
+            summary_row: dict[str, object] = {
+                "summary_level": "strategy",
+                "strategy": strategy,
+                "n_players": players,
+                "margin_of_victory": pd.NA,
+                "observations": observations,
+            }
+            for flag in flags:
+                summary_row[flag] = sums[flag]
+            strategy_rows.append(summary_row)
+        strategy_summary = pd.DataFrame(strategy_rows, columns=column_order)
+
+        global_rows: list[dict[str, object]] = []
+        for players, sums in global_sums.items():
+            observations = sums["observations"]
+            summary_row = {
+                "summary_level": "n_players",
+                "strategy": pd.NA,
+                "n_players": players,
+                "margin_of_victory": pd.NA,
+                "observations": observations,
+            }
+            for flag in flags:
+                summary_row[flag] = sums[flag]
+            global_rows.append(summary_row)
+        global_summary = pd.DataFrame(global_rows, columns=column_order)
+
+        summary_df = pd.concat([strategy_summary, global_summary], ignore_index=True)
+        if not summary_df.empty:
+            summary_df = _downcast_integer_stats(
+                summary_df, columns=("n_players", "observations", *flags)
+            )
+            summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
+            writer.write_batch(summary_table)
+            rows_written += summary_table.num_rows
+        return rows_written
+    finally:
+        writer.close(success=rows_written > 0)
+
+
+def _collect_rare_event_counts(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    thresholds: Sequence[int],
+    target_score: int,
+) -> tuple[dict[tuple[str, int], dict[str, int]], dict[int, dict[str, int]], int, int, int]:
+    """Gather rare-event counts for downstream downcasting decisions."""
+    flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
+    strategy_sums: dict[tuple[str, int], dict[str, int]] = {}
+    global_sums: dict[int, dict[str, int]] = {}
+    rows_available = 0
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
-        score_cols = [name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")]
+        score_cols = [
+            name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+        ]
 
-        if not strategy_cols:
-            LOGGER.warning(
-                "Per-N parquet missing strategy columns; skipping rare events",
-                extra={"stage": "game_stats", "path": str(path)},
-            )
+        if not strategy_cols or not score_cols:
             continue
 
-        if not score_cols:
-            LOGGER.warning(
-                "Per-N parquet missing seat score columns; skipping rare events",
-                extra={"stage": "game_stats", "path": str(path)},
+        columns = [*strategy_cols, *score_cols]
+        scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+        for batch in scanner.to_batches():
+            df = batch.to_pandas(categories=strategy_cols)
+            if df.empty:
+                continue
+            margins = _compute_margins(df, score_cols)
+            scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
+            multi_target = (scores >= target_score).sum(axis=1) >= 2
+            flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
+            for thr in thresholds:
+                flag_series[f"margin_le_{thr}"] = margins <= thr
+            base = df[strategy_cols].copy()
+            base["multi_reached_target"] = flag_series["multi_reached_target"]
+            for thr in thresholds:
+                base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"]
+            base["n_players"] = n_players
+            melted = base.melt(
+                id_vars=["multi_reached_target", "n_players", *[f"margin_le_{thr}" for thr in thresholds]],
+                value_vars=strategy_cols,
+                var_name="seat",
+                value_name="strategy",
             )
+            melted = melted.dropna(subset=["strategy"])
+            if melted.empty:
+                continue
+            melted["strategy"] = melted["strategy"].astype("category")
+            grouped = melted.groupby("strategy", observed=True, sort=False)
+            for strategy, group in grouped:
+                count = int(group.shape[0])
+                rows_available += count
+                strategy_key = (str(strategy), n_players)
+                strategy_entry = strategy_sums.setdefault(
+                    strategy_key,
+                    {"observations": 0, **{flag: 0 for flag in flags}},
+                )
+                strategy_entry["observations"] += count
+                for flag in flags:
+                    strategy_entry[flag] += int(group[flag].sum())
+
+                global_entry = global_sums.setdefault(
+                    n_players, {"observations": 0, **{flag: 0 for flag in flags}}
+                )
+                global_entry["observations"] += count
+                for flag in flags:
+                    global_entry[flag] += int(group[flag].sum())
+
+    max_flag_count = 0
+    max_observations = 0
+    for sums in list(strategy_sums.values()) + list(global_sums.values()):
+        max_observations = max(max_observations, sums.get("observations", 0))
+        for flag in flags:
+            max_flag_count = max(max_flag_count, sums.get(flag, 0))
+    return strategy_sums, global_sums, rows_available, max_flag_count, max_observations
+
+
+def _select_int_dtype(max_value: int) -> tuple[np.dtype, pa.DataType]:
+    """Pick an integer dtype with overflow protection."""
+    if max_value <= np.iinfo(np.uint8).max:
+        return np.uint8, pa.uint8()
+    if max_value <= np.iinfo(np.int32).max:
+        return np.int32, pa.int32()
+    return np.int64, pa.int64()
+
+
+def _downcast_integer_stats(df: pd.DataFrame, *, columns: Sequence[str]) -> pd.DataFrame:
+    """Downcast integer columns for stats outputs when safe."""
+    if df.empty:
+        return df
+    out = df.copy()
+    int32_max = np.iinfo(np.int32).max
+    for col in columns:
+        if col not in out.columns:
             continue
-
-        columns = ["n_rounds", *strategy_cols, *score_cols]
-        tbl = ds_in.to_table(columns=columns)
-        df = tbl.to_pandas()
-
-        margins = _compute_margins(df, score_cols)
-        scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
-        multi_target = (scores >= target_score).sum(axis=1) >= 2
-
-        event_df = pd.DataFrame(
-            {
-                "summary_level": "game",
-                "n_players": n_players,
-                "margin_of_victory": margins,
-                "multi_reached_target": multi_target,
-            }
-        )
-
-        for thr in thresholds:
-            event_df[f"margin_le_{thr}"] = event_df["margin_of_victory"] <= thr
-
-        melted = event_df.join(df[strategy_cols])
-        melted = melted.melt(
-            id_vars=[
-                "summary_level",
-                "n_players",
-                "margin_of_victory",
-                "multi_reached_target",
-                *[f"margin_le_{thr}" for thr in thresholds],
-            ],
-            value_vars=strategy_cols,
-            value_name="strategy",
-        )
-        melted = melted.dropna(subset=["strategy"])
-        melted["observations"] = 1
-        melted = melted.drop(columns=["variable"])
-
-        records: list[dict[str, object]] = [
-            {str(key): value for key, value in record.items()}
-            for record in melted.to_dict(orient="records")
-        ]
-        game_rows.extend(records)
-
-    if not game_rows:
-        columns = [
-            "summary_level",
-            "strategy",
-            "n_players",
-            "margin_of_victory",
-            "multi_reached_target",
-            "observations",
-            *[f"margin_le_{thr}" for thr in thresholds],
-        ]
-        return pd.DataFrame(columns=columns)
-
-    game_df = pd.DataFrame(game_rows)
-    flag_cols = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
-
-    strategy_summary = (
-        game_df.groupby(["strategy", "n_players"], sort=False)[flag_cols]
-        .mean()
-        .reset_index()
-    )
-    strategy_summary.insert(0, "summary_level", "strategy")
-    strategy_summary["observations"] = (
-        game_df.groupby(["strategy", "n_players"], sort=False)[flag_cols[0]].count().values
-    )
-    strategy_summary["margin_of_victory"] = pd.Series(
-        pd.NA, index=strategy_summary.index, dtype="object"
-    )
-
-    global_summary = game_df.groupby("n_players", sort=False)[flag_cols].mean().reset_index()
-    global_summary.insert(0, "summary_level", "n_players")
-    global_summary.insert(
-        1,
-        "strategy",
-        pd.Series(pd.NA, index=global_summary.index, dtype="object"),
-    )
-    global_summary["observations"] = (
-        game_df.groupby("n_players", sort=False)[flag_cols[0]].count().values
-    )
-    global_summary["margin_of_victory"] = pd.Series(
-        pd.NA, index=global_summary.index, dtype="object"
-    )
-
-    combined = pd.concat([game_df, strategy_summary, global_summary], ignore_index=True)
-    return combined[
-        [
-            "summary_level",
-            "strategy",
-            "n_players",
-            "margin_of_victory",
-            "multi_reached_target",
-            "observations",
-            *[f"margin_le_{thr}" for thr in thresholds],
-        ]
-    ]
+        values = pd.to_numeric(out[col], errors="coerce")
+        non_null = values.dropna()
+        if non_null.empty:
+            continue
+        if not np.all(np.isclose(non_null, np.floor(non_null))):
+            continue
+        if non_null.min() >= 0 and non_null.max() <= np.iinfo(np.uint8).max:
+            out[col] = values.astype(np.uint8)
+        elif non_null.min() >= np.iinfo(np.int32).min and non_null.max() <= int32_max:
+            out[col] = values.astype(np.int32)
+        else:
+            out[col] = values.astype(np.int64)
+    return out
 
 
 def _global_stats(combined_path: Path) -> pd.DataFrame:
@@ -533,4 +845,3 @@ def _summarize_rounds(values: Iterable[int | float | np.integer | np.floating]) 
         "prob_rounds_le_10": float((series <= 10).mean()),
         "prob_rounds_ge_20": float((series >= 20).mean()),
     }
-

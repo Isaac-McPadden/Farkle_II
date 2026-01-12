@@ -274,7 +274,7 @@ def test_run_tournament_checkpoint_cadence(monkeypatch: pytest.MonkeyPatch, tmp_
 
     calls: list[tuple[Path, Counter[str], object, object]] = []
 
-    def fake_save_checkpoint(path: Path, wins, sums, sqs):  # noqa: ANN001
+    def fake_save_checkpoint(path: Path, wins, sums, sqs, **kwargs):  # noqa: ANN001
         calls.append((Path(path), wins.copy(), sums, sqs))
 
     monkeypatch.setattr(rt, "_save_checkpoint", fake_save_checkpoint, raising=True)
@@ -370,7 +370,7 @@ def test_run_tournament_no_metrics_wins_only_checkpoint(
 
     calls: list[tuple[Path, Counter[str], object, object]] = []
 
-    def fake_save_checkpoint(path: Path, wins, sums, sqs):  # noqa: ANN001
+    def fake_save_checkpoint(path: Path, wins, sums, sqs, **kwargs):  # noqa: ANN001
         calls.append((Path(path), wins.copy(), sums, sqs))
 
     monkeypatch.setattr(rt, "_save_checkpoint", fake_save_checkpoint, raising=True)

@@ -173,42 +173,29 @@ def _build_summary(frame: pd.DataFrame, *, players: int, seed: int) -> pd.DataFr
     if subset.empty:
         return pd.DataFrame(columns=BASE_COLUMNS)
 
-    records: list[dict[str, float | int]] = []
-    strategies = sorted(subset["strategy_id"].unique())
     mean_columns = [c for c in subset.columns if c.startswith("mean_")]
-    for strategy_id in strategies:
-        chunk = subset[subset["strategy_id"] == strategy_id]
-        games = int(chunk["games"].sum())
-        wins = int(chunk["wins"].sum())
+    totals = (
+        subset.groupby("strategy_id", sort=True)
+        .agg({"games": "sum", "wins": "sum"})
+        .reset_index()
+    )
+    if mean_columns:
+        weighted = _weighted_means_by_strategy(subset, mean_columns).reset_index()
+        summary = totals.merge(weighted, on="strategy_id", how="left")
+    else:
+        summary = totals
+    summary["players"] = players
+    summary["seed"] = seed
 
-        if games <= 0:
-            win_rate = 0.0
-            ci_lo, ci_hi = 0.0, 1.0
-        else:
-            win_rate = wins / games
-            ci_lo, ci_hi = wilson_ci(wins, games)
-
-        row: dict[str, float | int] = {
-            "strategy_id": strategy_id,
-            "players": players,
-            "seed": seed,
-            "games": games,
-            "wins": wins,
-            "win_rate": win_rate,
-            "ci_lo": ci_lo,
-            "ci_hi": ci_hi,
-        }
-
-        for mean_col in mean_columns:
-            if mean_col not in chunk.columns:
-                continue
-            value = _weighted_mean(chunk, mean_col)
-            out_col = _mean_output_name(mean_col)
-            row[out_col] = value
-
-        records.append(row)
-
-    summary = pd.DataFrame(records)
+    games = summary["games"].to_numpy()
+    wins = summary["wins"].to_numpy()
+    summary["win_rate"] = np.where(games > 0, wins / games, 0.0)
+    ci_bounds = [
+        wilson_ci(int(wins_i), int(games_i)) if games_i > 0 else (0.0, 1.0)
+        for wins_i, games_i in zip(wins, games)
+    ]
+    summary["ci_lo"] = [bounds[0] for bounds in ci_bounds]
+    summary["ci_hi"] = [bounds[1] for bounds in ci_bounds]
     if summary.empty:
         return summary
     summary = _normalize_summary(summary)
@@ -224,14 +211,24 @@ def _mean_output_name(column: str) -> str:
     return f"{label}_mean"
 
 
-def _weighted_mean(frame: pd.DataFrame, column: str) -> float:
-    """Compute a weighted mean using ``games`` as the weight column."""
-    weights = frame["games"].astype(float)
-    values = frame[column].astype(float)
-    mask = (weights > 0) & values.notna()
-    if not mask.any():
-        return float("nan")
-    return float(np.average(values[mask], weights=weights[mask]))
+def _weighted_means_by_strategy(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    """Compute weighted mean columns grouped by ``strategy_id``."""
+    def weighted_means(group: pd.DataFrame) -> pd.Series:
+        weights = group["games"].astype(float)
+        valid_weights = weights > 0
+        results: dict[str, float] = {}
+        for column in columns:
+            values = group[column].astype(float)
+            mask = valid_weights & values.notna()
+            if mask.any():
+                results[_mean_output_name(column)] = float(
+                    np.average(values[mask], weights=weights[mask])
+                )
+            else:
+                results[_mean_output_name(column)] = float("nan")
+        return pd.Series(results)
+
+    return frame.groupby("strategy_id", sort=True).apply(weighted_means)
 
 
 def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
@@ -239,13 +236,26 @@ def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
     normalized = df.copy()
     normalized["strategy_id"] = normalized["strategy_id"].astype(str)
     for col in ("players", "seed", "games", "wins"):
-        normalized[col] = normalized[col].astype(np.int64)
+        normalized[col] = _cast_int32_if_safe(normalized[col])
     for col in ("win_rate", "ci_lo", "ci_hi"):
         normalized[col] = normalized[col].astype(float)
     extra_cols = [c for c in normalized.columns if c not in BASE_COLUMNS]
     for col in extra_cols:
         normalized[col] = normalized[col].astype(float)
     return normalized
+
+
+def _cast_int32_if_safe(series: pd.Series) -> pd.Series:
+    """Cast series to int32 when values fit, otherwise keep int64."""
+    values = pd.to_numeric(series, errors="coerce")
+    non_null = values.dropna()
+    if non_null.empty:
+        return values.astype(np.int64)
+    int32_min = np.iinfo(np.int32).min
+    int32_max = np.iinfo(np.int32).max
+    if non_null.min() < int32_min or non_null.max() > int32_max:
+        return values.astype(np.int64)
+    return values.astype(np.int32)
 
 
 def _existing_summary_matches(path: Path, new_df: pd.DataFrame) -> bool:
