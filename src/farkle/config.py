@@ -61,6 +61,7 @@ class SimConfig:
     seed: int = 0
     expanded_metrics: bool = False
     row_dir: Path | None = None
+    metric_chunk_dir: Path | None = None
     per_n: dict[int, "SimConfig"] = field(default_factory=dict)
     power_method: str = "bh"
     recompute_num_shuffles: bool = True
