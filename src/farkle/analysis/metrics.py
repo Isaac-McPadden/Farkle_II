@@ -50,9 +50,32 @@ def run(cfg: AppConfig) -> None:
     stamp = cfg.metrics_output_path("metrics.done.json")
 
     done = stage_done_path(cfg.metrics_stage_dir, "metrics")
+    done_isolated = stage_done_path(cfg.metrics_stage_dir, "metrics_isolated")
+    done_core = stage_done_path(cfg.metrics_stage_dir, "metrics_core")
+    done_seat_advantage = stage_done_path(cfg.metrics_stage_dir, "metrics_seat_advantage")
+    done_seat_metrics = stage_done_path(cfg.metrics_stage_dir, "metrics_seat_metrics")
+    done_symmetry = stage_done_path(cfg.metrics_stage_dir, "metrics_symmetry")
+    stamp_isolated = cfg.metrics_output_path("metrics.isolated.stamp.json")
+    stamp_core = cfg.metrics_output_path("metrics.core.stamp.json")
+    stamp_seat_advantage = cfg.metrics_output_path("metrics.seat_advantage.stamp.json")
+    stamp_seat_metrics = cfg.metrics_output_path("metrics.seat_metrics.stamp.json")
+    stamp_symmetry = cfg.metrics_output_path("metrics.symmetry.stamp.json")
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
-    iso_targets = [cfg.metrics_isolated_path(n) for n in player_counts]
     raw_metric_inputs = [cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet" for n in player_counts]
+    available_raw_inputs = [path for path in raw_metric_inputs if path.exists()]
+    iso_targets = []
+    for n in player_counts:
+        raw_path = cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet"
+        if not raw_path.exists():
+            continue
+        preferred = cfg.metrics_isolated_path(n)
+        legacy = cfg.legacy_metrics_isolated_path(n)
+        if preferred.exists():
+            iso_targets.append(preferred)
+        elif legacy.exists():
+            iso_targets.append(legacy)
+        else:
+            iso_targets.append(preferred)
     outputs = [
         out_metrics,
         out_seats,
@@ -95,7 +118,28 @@ def run(cfg: AppConfig) -> None:
 
     check_pre_metrics(data_file, winner_col="winner_seat")
 
-    iso_paths, raw_inputs = _ensure_isolated_metrics(cfg, player_counts)
+    if stage_is_up_to_date(
+        done_isolated,
+        inputs=[data_file, *available_raw_inputs],
+        outputs=iso_targets,
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        iso_paths = [path for path in iso_targets if path.exists()]
+        raw_inputs = raw_metric_inputs
+    else:
+        iso_paths, raw_inputs = _ensure_isolated_metrics(cfg, player_counts)
+        _write_stamp(
+            stamp_isolated,
+            inputs=[data_file, *available_raw_inputs],
+            outputs=iso_paths,
+        )
+        write_stage_done(
+            done_isolated,
+            inputs=[data_file, *available_raw_inputs],
+            outputs=iso_paths,
+            config_sha=getattr(cfg, "config_sha", None),
+        )
+
     outputs = [
         out_metrics,
         out_seats,
@@ -106,31 +150,104 @@ def run(cfg: AppConfig) -> None:
         out_symmetry_csv,
         *iso_paths,
     ]
-    metrics_df = _collect_metrics_frames(iso_paths)
-    if metrics_df.empty:
-        raise RuntimeError("metrics: no isolated metric files generated")
 
-    metrics_df = _add_win_rate_uncertainty(metrics_df)
-    metrics_df = _downcast_metric_counters(metrics_df)
+    if stage_is_up_to_date(
+        done_core,
+        inputs=iso_paths,
+        outputs=[out_metrics],
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        metrics_df = pd.read_parquet(out_metrics)
+    else:
+        metrics_df = _collect_metrics_frames(iso_paths)
+        if metrics_df.empty:
+            raise RuntimeError("metrics: no isolated metric files generated")
 
-    metrics_table = pa.Table.from_pandas(metrics_df, preserve_index=False)
-    write_parquet_atomic(metrics_table, out_metrics)
+        metrics_df = _add_win_rate_uncertainty(metrics_df)
+        metrics_df = _downcast_metric_counters(metrics_df)
+
+        metrics_table = pa.Table.from_pandas(metrics_df, preserve_index=False)
+        write_parquet_atomic(metrics_table, out_metrics)
+        _write_stamp(stamp_core, inputs=iso_paths, outputs=[out_metrics])
+        write_stage_done(
+            done_core,
+            inputs=iso_paths,
+            outputs=[out_metrics],
+            config_sha=getattr(cfg, "config_sha", None),
+        )
 
     seat_cfg = SeatMetricConfig(seat_range=cfg.metrics_seat_range)
-    seat_df = compute_seat_advantage(cfg, data_file, seat_cfg)
-    write_csv_atomic(seat_df, out_seats)
-    seat_table = pa.Table.from_pandas(seat_df, preserve_index=False)
-    write_parquet_atomic(seat_table, out_seats_parquet)
+    if stage_is_up_to_date(
+        done_seat_advantage,
+        inputs=[data_file],
+        outputs=[out_seats, out_seats_parquet],
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        seat_df = pd.read_csv(out_seats)
+    else:
+        seat_df = compute_seat_advantage(cfg, data_file, seat_cfg)
+        write_csv_atomic(seat_df, out_seats)
+        seat_table = pa.Table.from_pandas(seat_df, preserve_index=False)
+        write_parquet_atomic(seat_table, out_seats_parquet)
+        _write_stamp(
+            stamp_seat_advantage,
+            inputs=[data_file],
+            outputs=[out_seats, out_seats_parquet],
+        )
+        write_stage_done(
+            done_seat_advantage,
+            inputs=[data_file],
+            outputs=[out_seats, out_seats_parquet],
+            config_sha=getattr(cfg, "config_sha", None),
+        )
 
-    seat_metrics_df = compute_seat_metrics(data_file, seat_cfg)
-    seat_metrics_table = pa.Table.from_pandas(seat_metrics_df, preserve_index=False)
-    write_parquet_atomic(seat_metrics_table, out_seat_metrics)
-    write_csv_atomic(seat_metrics_df, out_seat_metrics_csv)
+    if stage_is_up_to_date(
+        done_seat_metrics,
+        inputs=[data_file],
+        outputs=[out_seat_metrics, out_seat_metrics_csv],
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        seat_metrics_df = pd.read_parquet(out_seat_metrics)
+    else:
+        seat_metrics_df = compute_seat_metrics(data_file, seat_cfg)
+        seat_metrics_table = pa.Table.from_pandas(seat_metrics_df, preserve_index=False)
+        write_parquet_atomic(seat_metrics_table, out_seat_metrics)
+        write_csv_atomic(seat_metrics_df, out_seat_metrics_csv)
+        _write_stamp(
+            stamp_seat_metrics,
+            inputs=[data_file],
+            outputs=[out_seat_metrics, out_seat_metrics_csv],
+        )
+        write_stage_done(
+            done_seat_metrics,
+            inputs=[data_file],
+            outputs=[out_seat_metrics, out_seat_metrics_csv],
+            config_sha=getattr(cfg, "config_sha", None),
+        )
 
-    symmetry_df = compute_symmetry_checks(symmetry_input, seat_cfg)
-    symmetry_table = pa.Table.from_pandas(symmetry_df, preserve_index=False)
-    write_parquet_atomic(symmetry_table, out_symmetry)
-    write_csv_atomic(symmetry_df, out_symmetry_csv)
+    if stage_is_up_to_date(
+        done_symmetry,
+        inputs=[symmetry_input],
+        outputs=[out_symmetry, out_symmetry_csv],
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        symmetry_df = pd.read_parquet(out_symmetry)
+    else:
+        symmetry_df = compute_symmetry_checks(symmetry_input, seat_cfg)
+        symmetry_table = pa.Table.from_pandas(symmetry_df, preserve_index=False)
+        write_parquet_atomic(symmetry_table, out_symmetry)
+        write_csv_atomic(symmetry_df, out_symmetry_csv)
+        _write_stamp(
+            stamp_symmetry,
+            inputs=[symmetry_input],
+            outputs=[out_symmetry, out_symmetry_csv],
+        )
+        write_stage_done(
+            done_symmetry,
+            inputs=[symmetry_input],
+            outputs=[out_symmetry, out_symmetry_csv],
+            config_sha=getattr(cfg, "config_sha", None),
+        )
 
     if not metrics_df.empty:
         leader = metrics_df.sort_values(["wins", "win_rate"], ascending=False).iloc[0]
