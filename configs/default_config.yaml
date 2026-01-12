@@ -84,6 +84,7 @@ trueskill:
   beta: 25.0                # float: performance variability parameter
   tau: 0.1                  # float: dynamics factor between runs
   draw_probability: 0.0     # float: draw probability
+  pooled_weights_by_k:      # dict[int, float]|None: optional weights per player count for pooling
 
 head2head:
   n_jobs: 4                 # int: parallel workers for head-to-head stage

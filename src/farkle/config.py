@@ -191,6 +191,8 @@ class TrueSkillConfig:
     beta: float = 25.0
     tau: float = 0.1
     draw_probability: float = 0.0
+    pooled_weights_by_k: dict[int, float] | None = None
+    """Optional per-player-count weights for pooling TrueSkill ratings."""
 
 
 @dataclass
