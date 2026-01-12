@@ -310,7 +310,13 @@ def run_tournament(cfg: AppConfig) -> int:
     return int(sum(totals.values()))
 
 
-def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | None = None) -> int:
+def run_single_n(
+    cfg: AppConfig,
+    n: int,
+    strategies: list[ThresholdStrategy] | None = None,
+    *,
+    force: bool = False,
+) -> int:
     """Run a Farkle tournament for a single tournament with player count *n*."""
     # --- Grid & tests ---
     strategies, grid_size, _used_custom = _resolve_strategies(cfg, strategies)
@@ -336,6 +342,17 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = n_dir / f"{n}p_checkpoint.pkl"
+    resume = ckpt_path.exists() and not force
+    LOGGER.info(
+        "Preparing tournament outputs",
+        extra={
+            "stage": "simulation",
+            "n_players": n,
+            "checkpoint_path": str(ckpt_path),
+            "force": force,
+            "resume": resume,
+        },
+    )
     row_dir = _resolve_row_output_dir(cfg, n)
     manifest = build_strategy_manifest(strategies)
     if not manifest.empty:
@@ -366,17 +383,27 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
         ckpt_every_sec=cfg.sim.ckpt_every_sec,
         n_strategies=grid_size,
     )
-    tournament_mod.run_tournament(
-        n_players=n,
-        global_seed=cfg.sim.seed,
-        n_jobs=cfg.sim.n_jobs,
-        checkpoint_path=ckpt_path,
-        collect_metrics=cfg.sim.expanded_metrics,
-        row_output_directory=row_dir,
-        num_shuffles=n_shuffles,
-        config=tourn_cfg,
-        strategies=strategies,
-    )
+    if not resume:
+        tournament_mod.run_tournament(
+            n_players=n,
+            global_seed=cfg.sim.seed,
+            n_jobs=cfg.sim.n_jobs,
+            checkpoint_path=ckpt_path,
+            collect_metrics=cfg.sim.expanded_metrics,
+            row_output_directory=row_dir,
+            num_shuffles=n_shuffles,
+            config=tourn_cfg,
+            strategies=strategies,
+        )
+    else:
+        LOGGER.info(
+            "Checkpoint exists; skipping tournament run",
+            extra={
+                "stage": "simulation",
+                "n_players": n,
+                "checkpoint_path": str(ckpt_path),
+            },
+        )
 
     # --- Final checkpoint post-processing ---
     payload = pickle.loads(ckpt_path.read_bytes())
@@ -461,7 +488,12 @@ def run_single_n(cfg: AppConfig, n: int, strategies: list[ThresholdStrategy] | N
     return total_games
 
 
-def run_multi(cfg: AppConfig, player_counts: Sequence[int] | None = None) -> dict[int, int]:
+def run_multi(
+    cfg: AppConfig,
+    player_counts: Sequence[int] | None = None,
+    *,
+    force: bool = False,
+) -> dict[int, int]:
     """Run tournaments for multiple player counts."""
     results: dict[int, int] = {}
     player_counts = (
@@ -500,7 +532,7 @@ def run_multi(cfg: AppConfig, player_counts: Sequence[int] | None = None) -> dic
         return results
 
     for n in valid_counts:
-        games = run_single_n(cfg, n, strategies=strategies)
+        games = run_single_n(cfg, n, strategies=strategies, force=force)
         results[n] = games
     return results
 
