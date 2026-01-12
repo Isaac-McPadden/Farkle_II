@@ -41,23 +41,8 @@ def compute_seat_metrics(combined: Path, seat_config: SeatMetricConfig) -> pd.Da
     n_players_fallback = n_players_from_schema(schema)
 
     seats = list(range(seat_config.seat_range[0], seat_config.seat_range[1] + 1))
-    seat_columns = []
-    for seat in seats:
-        strat = f"P{seat}_strategy"
-        if strat not in schema.names:
-            continue
-        seat_columns.extend(
-            [
-                strat,
-                f"P{seat}_score",
-                f"P{seat}_farkles",
-                f"P{seat}_rounds",
-            ]
-        )
-
     base_columns = [col for col in ["winner_seat", "seat_ranks", "n_rounds"] if col in schema.names]
-    all_columns = base_columns + [c for c in seat_columns if c in schema.names]
-    if not all_columns:
+    if not any(f"P{seat}_strategy" in schema.names for seat in seats):
         return pd.DataFrame(
             columns=[
                 "strategy",
@@ -73,21 +58,34 @@ def compute_seat_metrics(combined: Path, seat_config: SeatMetricConfig) -> pd.Da
         )
 
     batch_size = 100_000
-    aggregates: dict[tuple[str, int, int], dict[str, float]] = {}
-    scanner = ds_in.scanner(columns=all_columns, batch_size=batch_size)
-    for batch in scanner.to_batches():
-        df = batch.to_pandas()
-        if "seat_ranks" in df.columns:
-            df["n_players"] = df["seat_ranks"].apply(
-                lambda ranks: len(ranks) if isinstance(ranks, (list, tuple, np.ndarray)) else n_players_fallback
-            )
-        else:
-            df["n_players"] = n_players_fallback
+    rows: list[dict[str, float | int | str]] = []
+    for seat in seats:
+        strat_col = f"P{seat}_strategy"
+        if strat_col not in schema.names:
+            continue
 
-        for seat in seats:
-            strat_col = f"P{seat}_strategy"
-            if strat_col not in df.columns:
-                continue
+        seat_columns = [
+            strat_col,
+            f"P{seat}_score",
+            f"P{seat}_farkles",
+            f"P{seat}_rounds",
+        ]
+        columns = base_columns + [col for col in seat_columns if col in schema.names]
+        if not columns:
+            continue
+
+        aggregates: dict[tuple[str, int], dict[str, float]] = {}
+        scanner = ds_in.scanner(columns=columns, batch_size=batch_size)
+        for batch in scanner.to_batches():
+            df = batch.to_pandas()
+            if "seat_ranks" in df.columns:
+                df["n_players"] = df["seat_ranks"].apply(
+                    lambda ranks: len(ranks)
+                    if isinstance(ranks, (list, tuple, np.ndarray))
+                    else n_players_fallback
+                )
+            else:
+                df["n_players"] = n_players_fallback
 
             rounds_source = df.get(f"P{seat}_rounds")
             if rounds_source is None:
@@ -118,7 +116,7 @@ def compute_seat_metrics(combined: Path, seat_config: SeatMetricConfig) -> pd.Da
                 rounds_count=("rounds", "count"),
             )
             for (strategy, players), stats in grouped.iterrows():
-                key = (str(strategy), int(seat), int(players))
+                key = (str(strategy), int(players))
                 entry = aggregates.setdefault(
                     key,
                     {
@@ -141,27 +139,26 @@ def compute_seat_metrics(combined: Path, seat_config: SeatMetricConfig) -> pd.Da
                 entry["rounds_sum"] += float(stats["rounds_sum"])
                 entry["rounds_count"] += int(stats["rounds_count"])
 
-    rows: list[dict[str, float | int | str]] = []
-    for (strategy, seat, players), stats in aggregates.items():
-        games = int(stats["games"])
-        wins = int(stats["wins"])
-        win_rate = (wins / games) if games else 0.0
-        score_count = int(stats["score_count"])
-        farkles_count = int(stats["farkles_count"])
-        rounds_count = int(stats["rounds_count"])
-        rows.append(
-            {
-                "strategy": strategy,
-                "seat": seat,
-                "n_players": players,
-                "games": games,
-                "wins": wins,
-                "win_rate": win_rate,
-                "mean_score": (stats["score_sum"] / score_count) if score_count else float("nan"),
-                "mean_farkles": (stats["farkles_sum"] / farkles_count) if farkles_count else float("nan"),
-                "mean_rounds": (stats["rounds_sum"] / rounds_count) if rounds_count else float("nan"),
-            }
-        )
+        for (strategy, players), stats in aggregates.items():
+            games = int(stats["games"])
+            wins = int(stats["wins"])
+            win_rate = (wins / games) if games else 0.0
+            score_count = int(stats["score_count"])
+            farkles_count = int(stats["farkles_count"])
+            rounds_count = int(stats["rounds_count"])
+            rows.append(
+                {
+                    "strategy": strategy,
+                    "seat": seat,
+                    "n_players": players,
+                    "games": games,
+                    "wins": wins,
+                    "win_rate": win_rate,
+                    "mean_score": (stats["score_sum"] / score_count) if score_count else float("nan"),
+                    "mean_farkles": (stats["farkles_sum"] / farkles_count) if farkles_count else float("nan"),
+                    "mean_rounds": (stats["rounds_sum"] / rounds_count) if rounds_count else float("nan"),
+                }
+            )
 
     return pd.DataFrame(rows)
 
