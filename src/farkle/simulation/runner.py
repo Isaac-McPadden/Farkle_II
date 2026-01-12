@@ -342,7 +342,8 @@ def run_single_n(
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = n_dir / f"{n}p_checkpoint.pkl"
-    resume = ckpt_path.exists() and not force
+    resume = not force
+    checkpoint_exists = ckpt_path.exists()
     LOGGER.info(
         "Preparing tournament outputs",
         extra={
@@ -351,6 +352,7 @@ def run_single_n(
             "checkpoint_path": str(ckpt_path),
             "force": force,
             "resume": resume,
+            "checkpoint_exists": checkpoint_exists,
         },
     )
     row_dir = _resolve_row_output_dir(cfg, n)
@@ -383,27 +385,18 @@ def run_single_n(
         ckpt_every_sec=cfg.sim.ckpt_every_sec,
         n_strategies=grid_size,
     )
-    if not resume:
-        tournament_mod.run_tournament(
-            n_players=n,
-            global_seed=cfg.sim.seed,
-            n_jobs=cfg.sim.n_jobs,
-            checkpoint_path=ckpt_path,
-            collect_metrics=cfg.sim.expanded_metrics,
-            row_output_directory=row_dir,
-            num_shuffles=n_shuffles,
-            config=tourn_cfg,
-            strategies=strategies,
-        )
-    else:
-        LOGGER.info(
-            "Checkpoint exists; skipping tournament run",
-            extra={
-                "stage": "simulation",
-                "n_players": n,
-                "checkpoint_path": str(ckpt_path),
-            },
-        )
+    tournament_mod.run_tournament(
+        n_players=n,
+        global_seed=cfg.sim.seed,
+        n_jobs=cfg.sim.n_jobs,
+        checkpoint_path=ckpt_path,
+        collect_metrics=cfg.sim.expanded_metrics,
+        row_output_directory=row_dir,
+        num_shuffles=n_shuffles,
+        config=tourn_cfg,
+        strategies=strategies,
+        resume=resume,
+    )
 
     # --- Final checkpoint post-processing ---
     payload = pickle.loads(ckpt_path.read_bytes())
