@@ -178,8 +178,7 @@ def _discover_per_n_inputs(cfg: AppConfig) -> list[tuple[int, Path]]:
 def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFrame:
     """Compute statistics grouped by strategy and player count."""
 
-    rows: list[pd.Series] = []
-    rounds_by_strategy: dict[tuple[str, int], list[float]] = {}
+    long_frames: list[pd.DataFrame] = []
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -202,27 +201,10 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
                 if melted.empty:
                     continue
                 melted["strategy"] = melted["strategy"].astype("category")
-                grouped = melted.groupby("strategy", observed=True, sort=False)
-                for strategy, group in grouped:
-                    rounds = pd.to_numeric(group["n_rounds"], errors="coerce").dropna()
-                    if rounds.empty:
-                        continue
-                    rounds_by_strategy.setdefault((str(strategy), n_players), []).extend(
-                        rounds.tolist()
-                    )
+                melted["n_players"] = n_players
+                long_frames.append(melted[["strategy", "n_players", "n_rounds"]])
 
-    for (strategy, players), rounds in rounds_by_strategy.items():
-        stats = _summarize_rounds(rounds)
-        stats.update(
-            {
-                "summary_level": "strategy",
-                "strategy": strategy,
-                "n_players": players,
-            }
-        )
-        rows.append(pd.Series(stats))
-
-    if not rows:
+    if not long_frames:
         return pd.DataFrame(
             columns=[
                 "summary_level",
@@ -241,7 +223,82 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
             ]
         )
 
-    return pd.DataFrame(rows)
+    long_df = pd.concat(long_frames, ignore_index=True)
+    long_df["n_rounds"] = pd.to_numeric(long_df["n_rounds"], errors="coerce")
+    long_df = long_df.dropna(subset=["n_rounds", "strategy"])
+    if long_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "summary_level",
+                "strategy",
+                "n_players",
+                "observations",
+                "mean_rounds",
+                "median_rounds",
+                "std_rounds",
+                "p10_rounds",
+                "p50_rounds",
+                "p90_rounds",
+                "prob_rounds_le_5",
+                "prob_rounds_le_10",
+                "prob_rounds_ge_20",
+            ]
+        )
+
+    group_keys = ["strategy", "n_players"]
+    grouped = long_df.groupby(group_keys, observed=True, sort=False)["n_rounds"]
+    stats = grouped.agg(
+        observations="count",
+        mean_rounds="mean",
+        median_rounds="median",
+        std_rounds=lambda s: s.std(ddof=0),
+        p10_rounds=lambda s: s.quantile(0.1),
+        p50_rounds=lambda s: s.quantile(0.5),
+        p90_rounds=lambda s: s.quantile(0.9),
+    )
+    prob_rounds_le_5 = (
+        long_df["n_rounds"]
+        .le(5)
+        .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
+        .mean()
+        .rename("prob_rounds_le_5")
+    )
+    prob_rounds_le_10 = (
+        long_df["n_rounds"]
+        .le(10)
+        .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
+        .mean()
+        .rename("prob_rounds_le_10")
+    )
+    prob_rounds_ge_20 = (
+        long_df["n_rounds"]
+        .ge(20)
+        .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
+        .mean()
+        .rename("prob_rounds_ge_20")
+    )
+
+    stats = stats.join([prob_rounds_le_5, prob_rounds_le_10, prob_rounds_ge_20])
+    stats = stats.reset_index()
+    stats.insert(0, "summary_level", "strategy")
+
+    return stats[
+        [
+            "summary_level",
+            "strategy",
+            "n_players",
+            "observations",
+            "mean_rounds",
+            "median_rounds",
+            "std_rounds",
+            "p10_rounds",
+            "p50_rounds",
+            "p90_rounds",
+            "prob_rounds_le_5",
+            "prob_rounds_le_10",
+            "prob_rounds_ge_20",
+        ]
+    ]
 
 
 def _per_strategy_margin_stats(
@@ -251,8 +308,7 @@ def _per_strategy_margin_stats(
 ) -> pd.DataFrame:
     """Compute victory-margin statistics grouped by strategy and player count."""
 
-    rows: list[pd.Series] = []
-    accumulators: dict[tuple[str, int], _MarginAccumulator] = {}
+    long_frames: list[pd.DataFrame] = []
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -290,31 +346,10 @@ def _per_strategy_margin_stats(
                 if melted.empty:
                     continue
                 melted["strategy"] = melted["strategy"].astype("category")
-                grouped = melted.groupby("strategy", observed=True, sort=False)
-                for strategy, group in grouped:
-                    matched_margins = pd.to_numeric(
-                        group["margin_of_victory"], errors="coerce"
-                    ).dropna()
-                    if matched_margins.empty:
-                        continue
-                    key = (str(strategy), n_players)
-                    accumulator = accumulators.setdefault(
-                        key, _MarginAccumulator(thresholds=thresholds)
-                    )
-                    accumulator.update(matched_margins)
+                melted["n_players"] = n_players
+                long_frames.append(melted[["strategy", "n_players", "margin_of_victory"]])
 
-    for (strategy, players), accumulator in accumulators.items():
-        stats = accumulator.to_stats()
-        stats.update(
-            {
-                "summary_level": "strategy",
-                "strategy": strategy,
-                "n_players": players,
-            }
-        )
-        rows.append(pd.Series(stats))
-
-    if not rows:
+    if not long_frames:
         columns = [
             "summary_level",
             "strategy",
@@ -327,60 +362,56 @@ def _per_strategy_margin_stats(
         ]
         return pd.DataFrame(columns=columns)
 
-    return pd.DataFrame(rows)
+    long_df = pd.concat(long_frames, ignore_index=True)
+    long_df["margin_of_victory"] = pd.to_numeric(long_df["margin_of_victory"], errors="coerce")
+    long_df = long_df.dropna(subset=["margin_of_victory", "strategy"])
+    if long_df.empty:
+        columns = [
+            "summary_level",
+            "strategy",
+            "n_players",
+            "observations",
+            "mean_margin",
+            "median_margin",
+            "std_margin",
+            *[f"prob_margin_le_{thr}" for thr in thresholds],
+        ]
+        return pd.DataFrame(columns=columns)
 
-
-class _MarginAccumulator:
-    """Accumulate margin statistics incrementally."""
-
-    def __init__(self, *, thresholds: Sequence[int]) -> None:
-        self._thresholds = list(thresholds)
-        self._values: list[float] = []
-        self._count = 0
-        self._sum = 0.0
-        self._sum_sq = 0.0
-        self._threshold_counts = {thr: 0 for thr in self._thresholds}
-
-    def update(self, margins: pd.Series) -> None:
-        values = pd.to_numeric(margins, errors="coerce").dropna().to_numpy(dtype=float)
-        if values.size == 0:
-            return
-        self._values.extend(values.tolist())
-        self._count += int(values.size)
-        self._sum += float(values.sum())
-        self._sum_sq += float(np.square(values).sum())
-        for thr in self._thresholds:
-            self._threshold_counts[thr] += int((values <= thr).sum())
-
-    def to_stats(self) -> dict[str, StatValue]:
-        prob_keys = [f"prob_margin_le_{thr}" for thr in self._thresholds]
-        if self._count == 0:
-            base: dict[str, StatValue] = {
-                "observations": 0,
-                "mean_margin": float("nan"),
-                "median_margin": float("nan"),
-                "std_margin": float("nan"),
-            }
-            base.update({key: float("nan") for key in prob_keys})
-            return base
-
-        mean = self._sum / self._count
-        variance = self._sum_sq / self._count - mean**2
-        std = float(np.sqrt(max(variance, 0.0)))
-        median = float(np.median(np.array(self._values, dtype=float)))
-        stats: dict[str, StatValue] = {
-            "observations": self._count,
-            "mean_margin": float(mean),
-            "median_margin": median,
-            "std_margin": std,
-        }
-        stats.update(
-            {
-                key: float(self._threshold_counts[thr] / self._count)
-                for key, thr in zip(prob_keys, self._thresholds, strict=True)
-            }
+    group_keys = ["strategy", "n_players"]
+    grouped = long_df.groupby(group_keys, observed=True, sort=False)["margin_of_victory"]
+    stats = grouped.agg(
+        observations="count",
+        mean_margin="mean",
+        median_margin="median",
+        std_margin=lambda s: s.std(ddof=0),
+    )
+    prob_frames = []
+    for thr in thresholds:
+        prob = (
+            long_df["margin_of_victory"]
+            .le(thr)
+            .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
+            .mean()
+            .rename(f"prob_margin_le_{thr}")
         )
-        return stats
+        prob_frames.append(prob)
+
+    stats = stats.join(prob_frames)
+    stats = stats.reset_index()
+    stats.insert(0, "summary_level", "strategy")
+
+    ordered_cols = [
+        "summary_level",
+        "strategy",
+        "n_players",
+        "observations",
+        "mean_margin",
+        "median_margin",
+        "std_margin",
+        *[f"prob_margin_le_{thr}" for thr in thresholds],
+    ]
+    return stats[ordered_cols]
 
 
 def _rare_event_flags(
