@@ -72,56 +72,96 @@ def compute_seat_metrics(combined: Path, seat_config: SeatMetricConfig) -> pd.Da
             ]
         )
 
-    df = ds_in.to_table(columns=all_columns).to_pandas()
-    if "seat_ranks" in df.columns:
-        df["n_players"] = df["seat_ranks"].apply(
-            lambda ranks: len(ranks) if isinstance(ranks, (list, tuple, np.ndarray)) else n_players_fallback
-        )
-    else:
-        df["n_players"] = n_players_fallback
-
-    rows: list[pd.Series] = []
-    for seat in seats:
-        strat_col = f"P{seat}_strategy"
-        if strat_col not in df.columns:
-            continue
-
-        rounds_source = df.get(f"P{seat}_rounds")
-        if rounds_source is None:
-            rounds_source = df.get("n_rounds")
-
-        records = pd.DataFrame({
-            "strategy": df[strat_col],
-            "n_players": df["n_players"],
-            "is_win": df.get("winner_seat") == f"P{seat}",
-            "score": pd.to_numeric(df.get(f"P{seat}_score"), errors="coerce"),
-            "farkles": pd.to_numeric(df.get(f"P{seat}_farkles"), errors="coerce"),
-            "rounds": pd.to_numeric(rounds_source, errors="coerce"),
-        })
-        records = records.dropna(subset=["strategy"])
-        if records.empty:
-            continue
-
-        grouped = records.groupby(["strategy", "n_players"], sort=False)
-        for (strategy, players), block in grouped:
-            games = int(block.shape[0])
-            wins = int(block["is_win"].sum())
-            win_rate = (wins / games) if games else 0.0
-            rows.append(
-                pd.Series(
-                    {
-                        "strategy": strategy,
-                        "seat": int(seat),
-                        "n_players": int(players),
-                        "games": games,
-                        "wins": wins,
-                        "win_rate": win_rate,
-                        "mean_score": float(block["score"].mean()),
-                        "mean_farkles": float(block["farkles"].mean()),
-                        "mean_rounds": float(block["rounds"].mean()),
-                    }
-                )
+    batch_size = 100_000
+    aggregates: dict[tuple[str, int, int], dict[str, float]] = {}
+    scanner = ds_in.scanner(columns=all_columns, batch_size=batch_size)
+    for batch in scanner.to_batches():
+        df = batch.to_pandas()
+        if "seat_ranks" in df.columns:
+            df["n_players"] = df["seat_ranks"].apply(
+                lambda ranks: len(ranks) if isinstance(ranks, (list, tuple, np.ndarray)) else n_players_fallback
             )
+        else:
+            df["n_players"] = n_players_fallback
+
+        for seat in seats:
+            strat_col = f"P{seat}_strategy"
+            if strat_col not in df.columns:
+                continue
+
+            rounds_source = df.get(f"P{seat}_rounds")
+            if rounds_source is None:
+                rounds_source = df.get("n_rounds")
+
+            records = pd.DataFrame(
+                {
+                    "strategy": df[strat_col],
+                    "n_players": df["n_players"],
+                    "is_win": df.get("winner_seat") == f"P{seat}",
+                    "score": pd.to_numeric(df.get(f"P{seat}_score"), errors="coerce"),
+                    "farkles": pd.to_numeric(df.get(f"P{seat}_farkles"), errors="coerce"),
+                    "rounds": pd.to_numeric(rounds_source, errors="coerce"),
+                }
+            )
+            records = records.dropna(subset=["strategy"])
+            if records.empty:
+                continue
+
+            grouped = records.groupby(["strategy", "n_players"], sort=False).agg(
+                games=("strategy", "size"),
+                wins=("is_win", "sum"),
+                score_sum=("score", "sum"),
+                score_count=("score", "count"),
+                farkles_sum=("farkles", "sum"),
+                farkles_count=("farkles", "count"),
+                rounds_sum=("rounds", "sum"),
+                rounds_count=("rounds", "count"),
+            )
+            for (strategy, players), stats in grouped.iterrows():
+                key = (str(strategy), int(seat), int(players))
+                entry = aggregates.setdefault(
+                    key,
+                    {
+                        "games": 0,
+                        "wins": 0,
+                        "score_sum": 0.0,
+                        "score_count": 0,
+                        "farkles_sum": 0.0,
+                        "farkles_count": 0,
+                        "rounds_sum": 0.0,
+                        "rounds_count": 0,
+                    },
+                )
+                entry["games"] += int(stats["games"])
+                entry["wins"] += int(stats["wins"])
+                entry["score_sum"] += float(stats["score_sum"])
+                entry["score_count"] += int(stats["score_count"])
+                entry["farkles_sum"] += float(stats["farkles_sum"])
+                entry["farkles_count"] += int(stats["farkles_count"])
+                entry["rounds_sum"] += float(stats["rounds_sum"])
+                entry["rounds_count"] += int(stats["rounds_count"])
+
+    rows: list[dict[str, float | int | str]] = []
+    for (strategy, seat, players), stats in aggregates.items():
+        games = int(stats["games"])
+        wins = int(stats["wins"])
+        win_rate = (wins / games) if games else 0.0
+        score_count = int(stats["score_count"])
+        farkles_count = int(stats["farkles_count"])
+        rounds_count = int(stats["rounds_count"])
+        rows.append(
+            {
+                "strategy": strategy,
+                "seat": seat,
+                "n_players": players,
+                "games": games,
+                "wins": wins,
+                "win_rate": win_rate,
+                "mean_score": (stats["score_sum"] / score_count) if score_count else float("nan"),
+                "mean_farkles": (stats["farkles_sum"] / farkles_count) if farkles_count else float("nan"),
+                "mean_rounds": (stats["rounds_sum"] / rounds_count) if rounds_count else float("nan"),
+            }
+        )
 
     return pd.DataFrame(rows)
 
