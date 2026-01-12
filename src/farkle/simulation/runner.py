@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import logging
 import pickle
+import hashlib
+import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Mapping, Sequence
 
 import pyarrow as pa
+import pandas as pd
 
 import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig
@@ -31,6 +34,8 @@ from farkle.simulation.strategies import (
     build_strategy_manifest,
 )
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.manifest import iter_manifest
+from farkle.utils import random as urandom
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -231,7 +236,23 @@ def _compute_num_shuffles_from_config(
 
 def _resolve_row_output_dir(cfg: AppConfig, n_players: int) -> Path | None:
     """Return the per-N row output directory or ``None`` if rows are disabled."""
-    raw_value = cfg.sim.row_dir
+    return _resolve_per_n_output_dir(cfg, cfg.sim.row_dir, n_players)
+
+
+def _resolve_metric_chunk_dir(cfg: AppConfig, n_players: int) -> Path | None:
+    """Return the per-N metrics chunk directory or ``None`` if disabled."""
+    return _resolve_per_n_output_dir(
+        cfg,
+        getattr(cfg.sim, "metric_chunk_dir", None),
+        n_players,
+    )
+
+
+def _resolve_per_n_output_dir(
+    cfg: AppConfig,
+    raw_value: Path | None,
+    n_players: int,
+) -> Path | None:
     if not raw_value:
         return None
 
@@ -248,17 +269,210 @@ def _resolve_row_output_dir(cfg: AppConfig, n_players: int) -> Path | None:
     except KeyError:
         formatted_str = raw_str
 
-    row_path = Path(formatted_str)
+    out_path = Path(formatted_str)
     if not used_placeholders:
-        tail = row_path.name
+        tail = out_path.name
         prefix = f"{n_players}p"
         if tail and not tail.startswith(prefix):
-            row_path = row_path.parent / f"{prefix}_{tail}"
-    if row_path.is_absolute():
-        return row_path
+            out_path = out_path.parent / f"{prefix}_{tail}"
+    if out_path.is_absolute():
+        return out_path
 
     n_dir = cfg.io.results_dir / f"{n_players}_players"
-    return n_dir / row_path
+    return n_dir / out_path
+
+
+def _strategy_manifest_digest(manifest: pd.DataFrame) -> str:
+    payload = manifest.to_csv(index=False).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str) -> None:
+    if not path.exists():
+        return
+
+    existing = pd.read_parquet(path)
+    if set(existing.columns) != set(manifest.columns):
+        raise ValueError(
+            f"{label} manifest schema mismatch at {path}; re-run with --force to regenerate."
+        )
+    existing = existing[manifest.columns]
+    if not existing.equals(manifest):
+        raise ValueError(
+            f"{label} manifest mismatch at {path}; re-run with --force to regenerate."
+        )
+
+
+def _remove_paths(paths: Sequence[Path]) -> None:
+    for path in paths:
+        if not path.exists():
+            continue
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
+def _purge_simulation_outputs(
+    *,
+    n_dir: Path,
+    n_players: int,
+    ckpt_path: Path,
+    row_dir: Path | None,
+    metric_chunk_dir: Path | None,
+) -> None:
+    ckpt_parquet = n_dir / f"{n_players}p_checkpoint.parquet"
+    metrics_parquet = n_dir / f"{n_players}p_metrics.parquet"
+    strategy_manifest = n_dir / STRATEGY_MANIFEST_NAME
+    _remove_paths([ckpt_path, ckpt_parquet, metrics_parquet, strategy_manifest])
+
+    if row_dir is not None and row_dir.exists():
+        if row_dir == n_dir:
+            _remove_paths(list(row_dir.glob("rows_*.parquet")))
+            _remove_paths([row_dir / "manifest.jsonl", row_dir / STRATEGY_MANIFEST_NAME])
+        else:
+            _remove_paths([row_dir])
+
+    if metric_chunk_dir is not None and metric_chunk_dir.exists():
+        if metric_chunk_dir == n_dir:
+            _remove_paths(list(metric_chunk_dir.glob("metrics_*.parquet")))
+            _remove_paths([metric_chunk_dir / "metrics_manifest.jsonl"])
+        else:
+            _remove_paths([metric_chunk_dir])
+
+
+def _has_existing_outputs(
+    *,
+    n_dir: Path,
+    n_players: int,
+    ckpt_path: Path,
+    row_dir: Path | None,
+    metric_chunk_dir: Path | None,
+) -> bool:
+    candidates = [
+        ckpt_path,
+        n_dir / f"{n_players}p_checkpoint.parquet",
+        n_dir / f"{n_players}p_metrics.parquet",
+        n_dir / STRATEGY_MANIFEST_NAME,
+    ]
+    if any(path.exists() for path in candidates):
+        return True
+    if row_dir is not None and row_dir.exists():
+        if (row_dir / "manifest.jsonl").exists():
+            return True
+        if next(row_dir.glob("rows_*.parquet"), None) is not None:
+            return True
+        if (row_dir / STRATEGY_MANIFEST_NAME).exists():
+            return True
+    if metric_chunk_dir is not None and metric_chunk_dir.exists():
+        if (metric_chunk_dir / "metrics_manifest.jsonl").exists():
+            return True
+        if next(metric_chunk_dir.glob("metrics_*.parquet"), None) is not None:
+            return True
+    return False
+
+
+def _validate_resume_outputs(
+    *,
+    cfg: AppConfig,
+    n_players: int,
+    n_shuffles: int,
+    strategies_manifest: pd.DataFrame,
+    ckpt_path: Path,
+    row_dir: Path | None,
+    metric_chunk_dir: Path | None,
+) -> None:
+    expected_meta = {
+        "n_players": n_players,
+        "num_shuffles": n_shuffles,
+        "global_seed": cfg.sim.seed,
+        "n_strategies": len(strategies_manifest),
+        "strategy_manifest_sha": _strategy_manifest_digest(strategies_manifest),
+    }
+    manifest_paths = [ckpt_path.parent / STRATEGY_MANIFEST_NAME]
+    if row_dir is not None:
+        manifest_paths.append(row_dir / STRATEGY_MANIFEST_NAME)
+    for manifest_path in manifest_paths:
+        _validate_manifest_matches(strategies_manifest, manifest_path, label="Strategy")
+
+    if ckpt_path.exists():
+        payload = pickle.loads(ckpt_path.read_bytes())
+        meta = payload.get("meta")
+        if not isinstance(meta, Mapping):
+            raise ValueError(
+                f"Checkpoint metadata missing at {ckpt_path}; rerun with --force."
+            )
+        for key, expected in expected_meta.items():
+            if meta.get(key) != expected:
+                raise ValueError(
+                    f"Checkpoint metadata mismatch for {key} at {ckpt_path}; rerun with --force."
+                )
+    elif row_dir is None or not (row_dir / "manifest.jsonl").exists():
+        if metric_chunk_dir is None or not (metric_chunk_dir / "metrics_manifest.jsonl").exists():
+            raise ValueError(
+                "Existing outputs found without a checkpoint manifest; rerun with --force."
+            )
+
+    expected_seeds = None
+    if row_dir is not None:
+        manifest_path = row_dir / "manifest.jsonl"
+        if manifest_path.exists():
+            expected_seeds = set(int(s) for s in urandom.spawn_seeds(n_shuffles, seed=cfg.sim.seed))
+            seen: set[int] = set()
+            duplicates = 0
+            unexpected = 0
+            wrong_n = 0
+            for record in iter_manifest(manifest_path):
+                seed_val = record.get("shuffle_seed")
+                if seed_val is not None:
+                    try:
+                        seed_int = int(seed_val)
+                    except (TypeError, ValueError):
+                        continue
+                    if seed_int in seen:
+                        duplicates += 1
+                    seen.add(seed_int)
+                    if expected_seeds is not None and seed_int not in expected_seeds:
+                        unexpected += 1
+                n_val = record.get("n_players")
+                if n_val is not None and int(n_val) != n_players:
+                    wrong_n += 1
+            if duplicates:
+                raise ValueError(
+                    f"Duplicate shuffle entries detected in {manifest_path}; rerun with --force."
+                )
+            if unexpected or wrong_n:
+                raise ValueError(
+                    f"Row manifest mismatch at {manifest_path}; rerun with --force."
+                )
+
+    if metric_chunk_dir is not None:
+        metrics_manifest = metric_chunk_dir / "metrics_manifest.jsonl"
+        if metrics_manifest.exists():
+            wrong_n = 0
+            seen_chunks: set[int] = set()
+            duplicates = 0
+            for record in iter_manifest(metrics_manifest):
+                n_val = record.get("n_players")
+                if n_val is not None and int(n_val) != n_players:
+                    wrong_n += 1
+                chunk_val = record.get("chunk_index")
+                if chunk_val is not None:
+                    try:
+                        chunk_int = int(chunk_val)
+                    except (TypeError, ValueError):
+                        continue
+                    if chunk_int in seen_chunks:
+                        duplicates += 1
+                    seen_chunks.add(chunk_int)
+            if duplicates:
+                raise ValueError(
+                    f"Duplicate chunk entries detected in {metrics_manifest}; rerun with --force."
+                )
+            if wrong_n:
+                raise ValueError(
+                    f"Metrics manifest mismatch at {metrics_manifest}; rerun with --force."
+                )
 
 
 def run_tournament(cfg: AppConfig) -> int:
@@ -356,16 +570,45 @@ def run_single_n(
         },
     )
     row_dir = _resolve_row_output_dir(cfg, n)
+    metric_chunk_dir = _resolve_metric_chunk_dir(cfg, n)
     manifest = build_strategy_manifest(strategies)
+    if force:
+        _purge_simulation_outputs(
+            n_dir=n_dir,
+            n_players=n,
+            ckpt_path=ckpt_path,
+            row_dir=row_dir,
+            metric_chunk_dir=metric_chunk_dir,
+        )
+    elif resume and _has_existing_outputs(
+        n_dir=n_dir,
+        n_players=n,
+        ckpt_path=ckpt_path,
+        row_dir=row_dir,
+        metric_chunk_dir=metric_chunk_dir,
+    ):
+        _validate_resume_outputs(
+            cfg=cfg,
+            n_players=n,
+            n_shuffles=n_shuffles,
+            strategies_manifest=manifest,
+            ckpt_path=ckpt_path,
+            row_dir=row_dir,
+            metric_chunk_dir=metric_chunk_dir,
+        )
     if not manifest.empty:
         manifest_path = n_dir / STRATEGY_MANIFEST_NAME
-        write_parquet_atomic(pa.Table.from_pandas(manifest, preserve_index=False), manifest_path)
+        if not manifest_path.exists():
+            write_parquet_atomic(
+                pa.Table.from_pandas(manifest, preserve_index=False), manifest_path
+            )
         if row_dir is not None and row_dir != n_dir:
             row_dir.mkdir(parents=True, exist_ok=True)
             row_manifest_path = row_dir / STRATEGY_MANIFEST_NAME
-            write_parquet_atomic(
-                pa.Table.from_pandas(manifest, preserve_index=False), row_manifest_path
-            )
+            if not row_manifest_path.exists():
+                write_parquet_atomic(
+                    pa.Table.from_pandas(manifest, preserve_index=False), row_manifest_path
+                )
         if LOGGER.isEnabledFor(logging.DEBUG):
             sample = manifest[["strategy_id", "strategy_str"]].head(5).to_dict("records")
             LOGGER.debug(
@@ -392,10 +635,12 @@ def run_single_n(
         checkpoint_path=ckpt_path,
         collect_metrics=cfg.sim.expanded_metrics,
         row_output_directory=row_dir,
+        metric_chunk_directory=metric_chunk_dir,
         num_shuffles=n_shuffles,
         config=tourn_cfg,
         strategies=strategies,
         resume=resume,
+        checkpoint_metadata={"strategy_manifest_sha": _strategy_manifest_digest(manifest)},
     )
 
     # --- Final checkpoint post-processing ---

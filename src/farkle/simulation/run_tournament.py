@@ -344,6 +344,8 @@ def _save_checkpoint(
     wins: Counter[int | str],
     sums: Mapping[str, Mapping[int | str, float]] | None,
     sq_sums: Mapping[str, Mapping[int | str, float]] | None,
+    *,
+    meta: Mapping[str, Any] | None = None,
 ) -> None:
     """Pickle the current aggregates to path."""
 
@@ -351,6 +353,8 @@ def _save_checkpoint(
     if sums is not None and sq_sums is not None:
         payload["metric_sums"] = sums
         payload["metric_square_sums"] = sq_sums
+    if meta:
+        payload["meta"] = dict(meta)
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(path)) as tmp_path:
         Path(tmp_path).write_bytes(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
@@ -409,6 +413,7 @@ def run_tournament(
     num_shuffles: int = NUM_SHUFFLES,
     strategies: Sequence[ThresholdStrategy] | None = None,
     resume: bool = True,
+    checkpoint_metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
@@ -443,6 +448,8 @@ def run_tournament(
     resume : bool, default True
         When ``True`` (default), resume from existing checkpoints and manifests
         to avoid recomputing completed work.
+    checkpoint_metadata : Mapping[str, Any] | None, default None
+        Optional metadata to store alongside checkpoints for resume validation.
 
     Notes
     -----
@@ -470,6 +477,15 @@ def run_tournament(
     cfg.n_strategies = len(strategies)
     if cfg.n_strategies % cfg.n_players != 0:
         raise ValueError(f"n_players must divide {cfg.n_strategies:,}")
+
+    checkpoint_meta = {
+        "n_players": cfg.n_players,
+        "num_shuffles": cfg.num_shuffles,
+        "global_seed": global_seed,
+        "n_strategies": cfg.n_strategies,
+    }
+    if checkpoint_metadata:
+        checkpoint_meta.update(checkpoint_metadata)
 
     games_per_sec = _measure_throughput(strategies[: cfg.n_players])
     shuffles_per_chunk = max(
@@ -711,6 +727,7 @@ def run_tournament(
                     win_totals,
                     (metric_sums if (collect_metrics or collect_rows) else None),
                     (metric_sq_sums if (collect_metrics or collect_rows) else None),
+                    meta=checkpoint_meta,
                 )
                 LOGGER.info(
                     "Checkpoint written after %d games",
@@ -750,6 +767,7 @@ def run_tournament(
         win_totals,
         metric_sums if (collect_metrics or collect_rows) else None,
         metric_sq_sums if (collect_metrics or collect_rows) else None,
+        meta=checkpoint_meta,
     )
     if (collect_metrics or collect_rows) and metric_sums is not None and metric_sq_sums is not None:
         metrics_rows = []
