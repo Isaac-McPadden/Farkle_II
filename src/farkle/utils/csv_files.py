@@ -30,7 +30,10 @@ def _writer_worker(queue: mp.Queue, out_csv: str, header: Sequence[str]) -> None
     worker.
     """
 
+    # checks if file does not yet exist or is empty
     first = not Path(out_csv).exists() or Path(out_csv).stat().st_size == 0
+    
+    # if first, possibly create file and regardless, write header
     with open(out_csv, "a", newline="", encoding="utf-8") as file_handle:
         writer = csv.DictWriter(file_handle, fieldnames=header)
         if first:

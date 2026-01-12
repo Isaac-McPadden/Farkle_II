@@ -21,7 +21,7 @@ Typical usage (after a shard is atomically moved into place):
             "players": players,
             "block": block_id,
             "pid": os.getpid(),
-            # optional: anything else useful to you
+            # optional: anything else useful
         },
     )
 """
