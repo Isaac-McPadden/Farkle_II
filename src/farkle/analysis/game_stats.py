@@ -68,6 +68,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     margin_output = cfg.game_stats_output_path("margin_stats.parquet")
     rare_events_output = cfg.game_stats_output_path("rare_events.parquet")
     stamp_path = stage_done_path(stage_dir, "game_stats")
+    game_length_stamp = stage_done_path(stage_dir, "game_stats.game_length")
+    margin_stamp = stage_done_path(stage_dir, "game_stats.margin")
+    rare_events_stamp = stage_done_path(stage_dir, "game_stats.rare_events")
 
     per_n_inputs = _discover_per_n_inputs(cfg)
     combined_path = cfg.curated_parquet
@@ -80,9 +83,26 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         return
 
     outputs = [game_length_output, margin_output, rare_events_output]
-    if not force and stage_is_up_to_date(
-        stamp_path, inputs=input_paths, outputs=outputs, config_sha=cfg.config_sha
-    ):
+    game_length_up_to_date = not force and stage_is_up_to_date(
+        game_length_stamp,
+        inputs=input_paths,
+        outputs=[game_length_output],
+        config_sha=cfg.config_sha,
+    )
+    margin_up_to_date = not force and stage_is_up_to_date(
+        margin_stamp,
+        inputs=input_paths,
+        outputs=[margin_output],
+        config_sha=cfg.config_sha,
+    )
+    rare_events_up_to_date = not force and stage_is_up_to_date(
+        rare_events_stamp,
+        inputs=input_paths,
+        outputs=[rare_events_output],
+        config_sha=cfg.config_sha,
+    )
+
+    if game_length_up_to_date and margin_up_to_date and rare_events_up_to_date:
         LOGGER.info(
             "Game-length stats up-to-date",
             extra={
@@ -105,38 +125,61 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         },
     )
 
-    strategy_stats = _per_strategy_stats(per_n_inputs)
-    global_stats = _global_stats(combined_path) if combined_path.exists() else pd.DataFrame()
+    combined_rows: int | None = None
+    if not game_length_up_to_date:
+        strategy_stats = _per_strategy_stats(per_n_inputs)
+        global_stats = _global_stats(combined_path) if combined_path.exists() else pd.DataFrame()
 
-    combined = pd.concat([strategy_stats, global_stats], ignore_index=True)
-    if combined.empty:
-        stage_log.missing_input("no rows available to summarize")
-        return
-    combined = _downcast_integer_stats(combined, columns=("n_players", "observations"))
+        combined = pd.concat([strategy_stats, global_stats], ignore_index=True)
+        if combined.empty:
+            stage_log.missing_input("no rows available to summarize")
+            return
+        combined = _downcast_integer_stats(combined, columns=("n_players", "observations"))
 
-    table = pa.Table.from_pandas(combined, preserve_index=False)
-    write_parquet_atomic(table, game_length_output, codec=cfg.parquet_codec)
+        table = pa.Table.from_pandas(combined, preserve_index=False)
+        write_parquet_atomic(table, game_length_output, codec=cfg.parquet_codec)
+        combined_rows = len(combined)
+        write_stage_done(
+            game_length_stamp,
+            inputs=input_paths,
+            outputs=[game_length_output],
+            config_sha=cfg.config_sha,
+        )
 
-    margin_stats = _per_strategy_margin_stats(
-        per_n_inputs, thresholds=cfg.game_stats_margin_thresholds
-    )
-    if margin_stats.empty:
-        stage_log.missing_input("no margins available to summarize")
-        return
-    margin_stats = _downcast_integer_stats(margin_stats, columns=("n_players", "observations"))
+    if not margin_up_to_date:
+        margin_stats = _per_strategy_margin_stats(
+            per_n_inputs, thresholds=cfg.game_stats_margin_thresholds
+        )
+        if margin_stats.empty:
+            stage_log.missing_input("no margins available to summarize")
+            return
+        margin_stats = _downcast_integer_stats(margin_stats, columns=("n_players", "observations"))
 
-    margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
-    write_parquet_atomic(margin_table, margin_output, codec=cfg.parquet_codec)
+        margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
+        write_parquet_atomic(margin_table, margin_output, codec=cfg.parquet_codec)
+        write_stage_done(
+            margin_stamp,
+            inputs=input_paths,
+            outputs=[margin_output],
+            config_sha=cfg.config_sha,
+        )
 
-    rare_event_rows = _rare_event_flags(
-        per_n_inputs,
-        thresholds=cfg.game_stats_margin_thresholds,
-        target_score=cfg.rare_event_target_score,
-        output_path=rare_events_output,
-        codec=cfg.parquet_codec,
-    )
-    if rare_event_rows == 0:
-        raise RuntimeError("game-stats: no rare events available to summarize")
+    if not rare_events_up_to_date:
+        rare_event_rows = _rare_event_flags(
+            per_n_inputs,
+            thresholds=cfg.game_stats_margin_thresholds,
+            target_score=cfg.rare_event_target_score,
+            output_path=rare_events_output,
+            codec=cfg.parquet_codec,
+        )
+        if rare_event_rows == 0:
+            raise RuntimeError("game-stats: no rare events available to summarize")
+        write_stage_done(
+            rare_events_stamp,
+            inputs=input_paths,
+            outputs=[rare_events_output],
+            config_sha=cfg.config_sha,
+        )
     write_stage_done(
         stamp_path,
         inputs=input_paths,
@@ -148,7 +191,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         "Game-length stats written",
         extra={
             "stage": "game_stats",
-            "rows": len(combined),
+            "rows": combined_rows,
             "game_length_output": str(game_length_output),
             "margin_output": str(margin_output),
         },
