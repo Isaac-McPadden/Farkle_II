@@ -169,10 +169,10 @@ def compute_seat_advantage(cfg: AppConfig, combined: Path, seat_config: SeatMetr
     return df
 
 
-def compute_symmetry_checks(combined: Path, seat_config: SeatMetricConfig) -> pd.DataFrame:
+def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -> pd.DataFrame:
     """Compare P1 vs P2 stats for symmetric two-player matchups."""
 
-    ds_in = ds.dataset(combined)
+    ds_in = ds.dataset(curated_rows)
     required = {"P1_strategy", "P2_strategy", "P1_farkles", "P2_farkles", "P1_rounds", "P2_rounds"}
     if not required.issubset(ds_in.schema.names):
         LOGGER.warning(
@@ -195,11 +195,20 @@ def compute_symmetry_checks(combined: Path, seat_config: SeatMetricConfig) -> pd
             ]
         )
 
-    columns = list(required | {"seat_ranks"})
-    table = ds_in.to_table(columns=[c for c in columns if c in ds_in.schema.names])
+    columns = list(required | {"seat_ranks", "n_players"})
+    column_list = [c for c in columns if c in ds_in.schema.names]
+    filter_expr = None
+    if "n_players" in ds_in.schema.names:
+        filter_expr = ds.field("n_players") == 2
+    if filter_expr is not None:
+        table = ds_in.to_table(columns=column_list, filter=filter_expr)
+    else:
+        table = ds_in.to_table(columns=column_list)
     df = table.to_pandas()
 
-    if "seat_ranks" in df.columns:
+    if "n_players" in df.columns:
+        df["n_players"] = pd.to_numeric(df["n_players"], errors="coerce").fillna(2).astype(int)
+    elif "seat_ranks" in df.columns:
         df["n_players"] = df["seat_ranks"].apply(
             lambda ranks: len(ranks) if isinstance(ranks, (list, tuple, np.ndarray)) else 2
         )
