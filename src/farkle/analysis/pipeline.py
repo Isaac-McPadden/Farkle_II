@@ -263,6 +263,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return _runner
 
+    def _head2head_with_post(cfg: AppConfig) -> None:
+        stage_log = analysis.stage_logger("head2head", logger=LOGGER)
+        head2head_mod = analysis._optional_import("farkle.analysis.head2head", stage_log=stage_log)
+        if head2head_mod is not None:
+            head2head_mod.run(cfg)
+
+        if not cfg.analysis.run_post_h2h_analysis:
+            return
+
+        post_log = analysis.stage_logger("post_h2h", logger=LOGGER)
+        post_mod = analysis._optional_import("farkle.analysis.h2h_analysis", stage_log=post_log)
+        if post_mod is None:
+            return
+        post_mod.run_post_h2h(cfg)
+
     stage_map: dict[str, Callable[[AppConfig], None]] = {
         "ingest": ingest.run,
         "curate": curate.run,
@@ -274,7 +289,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "variance": analysis.run_variance,
         "meta": analysis.run_meta,
         "trueskill": _optional_stage("farkle.analysis.trueskill", "trueskill"),
-        "head2head": _optional_stage("farkle.analysis.head2head", "head2head"),
+        "head2head": _head2head_with_post,
         "hgb": _optional_stage("farkle.analysis.hgb_feat", "hgb"),
         "tiering": _optional_stage("farkle.analysis.tiering_report", "tiering"),
         "agreement": _optional_stage("farkle.analysis.agreement", "agreement"),
