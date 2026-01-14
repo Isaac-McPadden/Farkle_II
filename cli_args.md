@@ -19,6 +19,10 @@ farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
   and the flag may be supplied multiple times.
 - `--log-level LEVEL` - set the root logging level before dispatching the
   command. Accepts standard names (`INFO`, `DEBUG`, `WARNING`) or numeric levels.
+- `--seed-a INT` / `--seed-b INT` - override the two-seed tuple used by
+  `cfg.sim.seed_pair` when running dual-seed orchestration (provide both flags).
+- `--seed-pair A B` - override `cfg.sim.seed_pair` with two integer seeds in a
+  single flag (mutually exclusive with `--seed-a`/`--seed-b`).
 
 ## Subcommands
 

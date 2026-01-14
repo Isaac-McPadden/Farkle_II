@@ -46,6 +46,23 @@ def build_parser() -> argparse.ArgumentParser:
         default="INFO",
         help="Root logging level",
     )
+    parser.add_argument(
+        "--seed-a",
+        type=int,
+        help="Override the first seed for dual-seed orchestration",
+    )
+    parser.add_argument(
+        "--seed-b",
+        type=int,
+        help="Override the second seed for dual-seed orchestration",
+    )
+    parser.add_argument(
+        "--seed-pair",
+        type=int,
+        nargs=2,
+        metavar=("A", "B"),
+        help="Override the dual-seed tuple (A B)",
+    )
 
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -244,6 +261,20 @@ def _stringify_paths(obj: Any) -> Any:
     return obj
 
 
+def _resolve_seed_pair(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> tuple[int, int] | None:
+    if args.seed_pair and (args.seed_a is not None or args.seed_b is not None):
+        parser.error("Use --seed-pair or --seed-a/--seed-b, not both.")
+    if (args.seed_a is None) ^ (args.seed_b is None):
+        parser.error("--seed-a and --seed-b must be provided together.")
+    if args.seed_pair:
+        return (int(args.seed_pair[0]), int(args.seed_pair[1]))
+    if args.seed_a is not None and args.seed_b is not None:
+        return (int(args.seed_a), int(args.seed_b))
+    return None
+
+
 def _write_active_config(cfg: AppConfig, dest_dir: Path) -> None:
     """Persist the resolved configuration alongside simulation results."""
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -280,6 +311,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for the ``farkle`` CLI dispatcher."""
     parser = build_parser()
     args, _ = parser.parse_known_args(argv)
+    seed_pair_override = _resolve_seed_pair(args, parser)
 
     setup_info_logging()
     root_logger = logging.getLogger()
@@ -303,6 +335,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         overlays: list[Path] = [args.config] if args.config is not None else []
         cfg = load_app_config(*overlays) if overlays else AppConfig()
         cfg = apply_dot_overrides(cfg, list(args.overrides or []))
+        if seed_pair_override is not None:
+            cfg.sim.seed_pair = seed_pair_override
 
         margin_thresholds = getattr(args, "margin_thresholds", None)
         if margin_thresholds:
