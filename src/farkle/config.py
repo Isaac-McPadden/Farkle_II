@@ -219,6 +219,8 @@ class Head2HeadConfig:
     n_jobs: int = 4
     games_per_pair: int = 10_000
     fdr_q: float = 0.02
+    bonferroni_total_games_safeguard: int | None = 100_000_000
+    """Skip Bonferroni H2H when estimated total games exceed this (<=0 disables)."""
     # If you ever add a nested design block here, it will still parse:
     bonferroni_design: dict[str, Any] = field(default_factory=dict)
     tie_break_policy: str = "neutral_edge"

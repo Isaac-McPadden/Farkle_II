@@ -73,6 +73,7 @@ head2head:
   n_jobs: 4                 # int: parallel workers for head-to-head stage
   games_per_pair: 10000     # int: baseline games scheduled per pair
   fdr_q: 0.02               # float: FDR control threshold for BH
+  bonferroni_total_games_safeguard: 100000000 # int: skip Bonferroni H2H when estimated total games exceed this
   bonferroni_design: {}     # dict[str, Any]: optional Bonferroni scheduling overrides
 
 hgb:

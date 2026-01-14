@@ -319,6 +319,21 @@ def run_bonferroni_head2head(
         full_pairwise=True,
         **design_kwargs,
     )
+    safeguard = cfg.head2head.bonferroni_total_games_safeguard
+    if safeguard is not None and safeguard > 0:
+        estimated_total_games = len(elites) * games_per_strategy / 2
+        if estimated_total_games > safeguard:
+            LOGGER.warning(
+                "Bonferroni head-to-head skipped: safeguard exceeded "
+                f"({len(elites)} * {games_per_strategy} / 2 = {estimated_total_games:.0f} > {safeguard})",
+                extra={
+                    "stage": "head2head",
+                    "elite_count": len(elites),
+                    "games_per_strategy": games_per_strategy,
+                    "safeguard": safeguard,
+                },
+            )
+            return
     opponents = max(0, len(elites) - 1)
     games_per_pair = (
         0
