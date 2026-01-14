@@ -72,6 +72,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--config", type=Path, default=Path("configs/fast_config.yaml"), help="Path to YAML config"
     )
     parser.add_argument(
+        "--seed-a",
+        type=int,
+        help="Override the first seed for dual-seed orchestration",
+    )
+    parser.add_argument(
+        "--seed-b",
+        type=int,
+        help="Override the second seed for dual-seed orchestration",
+    )
+    parser.add_argument(
+        "--seed-pair",
+        type=int,
+        nargs=2,
+        metavar=("A", "B"),
+        help="Override the dual-seed tuple (A B)",
+    )
+    parser.add_argument(
         "--disable-trueskill",
         dest="disable_trueskill",
         action="store_true",
@@ -178,11 +195,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     except TypeError:
         args = parser.parse_args(argv)
 
+    if args.seed_pair and (args.seed_a is not None or args.seed_b is not None):
+        parser.error("Use --seed-pair or --seed-a/--seed-b, not both.")
+    if (args.seed_a is None) ^ (args.seed_b is None):
+        parser.error("--seed-a and --seed-b must be provided together.")
+    seed_pair_override = None
+    if args.seed_pair:
+        seed_pair_override = (int(args.seed_pair[0]), int(args.seed_pair[1]))
+    elif args.seed_a is not None and args.seed_b is not None:
+        seed_pair_override = (int(args.seed_a), int(args.seed_b))
+
     LOGGER.info(
         "Analysis pipeline start",
         extra={"stage": "pipeline", "command": args.command, "config": str(args.config)},
     )
     app_cfg = load_app_config(Path(args.config))
+    if seed_pair_override is not None:
+        app_cfg.sim.seed_pair = seed_pair_override
     run_game_stats = (
         app_cfg.analysis.run_game_stats if args.run_game_stats is None else args.run_game_stats
     )
