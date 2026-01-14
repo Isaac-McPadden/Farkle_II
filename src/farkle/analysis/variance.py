@@ -227,6 +227,10 @@ def _discover_seed_summaries(cfg: AppConfig) -> list[Path]:
     if stage_root.exists():
         candidates.extend(sorted(stage_root.rglob("*.parquet")))
 
+    meta_root = cfg.meta_analysis_dir
+    if meta_root.exists():
+        candidates.extend(sorted(meta_root.rglob("*.parquet")))
+
     legacy_root = cfg.analysis_dir
     if legacy_root.exists():
         candidates.extend(p for p in legacy_root.iterdir() if SUMMARY_PATTERN.search(p.name))

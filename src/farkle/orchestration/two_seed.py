@@ -3,74 +3,21 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import logging
 from pathlib import Path
-from typing import Any, Sequence
-
-import yaml  # type: ignore[import-untyped]
+from typing import Sequence
 
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
+from farkle.orchestration.seed_utils import (
+    base_results_dir,
+    prepare_seed_config,
+    seed_has_completion_markers,
+    write_active_config,
+)
 from farkle.simulation import runner
 from farkle.utils.logging import setup_info_logging
-from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _base_results_dir(cfg: AppConfig) -> Path:
-    if not cfg.io.append_seed:
-        return cfg.io.results_dir
-    suffix = f"_seed_{cfg.sim.seed}"
-    path_str = str(cfg.io.results_dir)
-    if path_str.endswith(suffix):
-        return Path(path_str[: -len(suffix)])
-    return cfg.io.results_dir
-
-
-def _resolve_results_dir(base: Path, seed: int, *, append_seed: bool) -> Path:
-    if not append_seed:
-        return base
-    return Path(f"{base}_seed_{seed}")
-
-
-def _seed_has_completion_markers(cfg: AppConfig) -> bool:
-    for n in cfg.sim.n_players_list:
-        n_dir = cfg.n_dir(n)
-        row_dir = runner._resolve_row_output_dir(cfg, n)
-        metric_chunk_dir = runner._resolve_metric_chunk_dir(cfg, n)
-        ckpt_path = cfg.checkpoint_path(n)
-        if not runner._has_existing_outputs(
-            n_dir=n_dir,
-            n_players=n,
-            ckpt_path=ckpt_path,
-            row_dir=row_dir,
-            metric_chunk_dir=metric_chunk_dir,
-        ):
-            return False
-    return True
-
-
-def _stringify_paths(obj: Any) -> Any:
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, dict):
-        return {k: _stringify_paths(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_stringify_paths(v) for v in obj]
-    if isinstance(obj, tuple):
-        return tuple(_stringify_paths(v) for v in obj)
-    return obj
-
-
-def _write_active_config(cfg: AppConfig) -> None:
-    dest_dir = cfg.io.results_dir
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    resolved_dict = _stringify_paths(dataclasses.asdict(cfg))
-    resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
-    target = dest_dir / "active_config.yaml"
-    with atomic_path(str(target)) as tmp_path:
-        Path(tmp_path).write_text(resolved_yaml, encoding="utf-8")
 
 
 def _resolve_seed_pair(
@@ -87,26 +34,15 @@ def _resolve_seed_pair(
     return None
 
 
-def _prepare_seed_config(
-    base_cfg: AppConfig, *, seed: int, base_results_dir: Path
-) -> AppConfig:
-    io_cfg = dataclasses.replace(
-        base_cfg.io,
-        results_dir=_resolve_results_dir(base_results_dir, seed, append_seed=base_cfg.io.append_seed),
-    )
-    sim_cfg = dataclasses.replace(base_cfg.sim, seed=seed)
-    return dataclasses.replace(base_cfg, io=io_cfg, sim=sim_cfg)
-
-
 def run_seeds(
     cfg: AppConfig,
     *,
     seed_pair: tuple[int, int],
     force: bool = False,
 ) -> None:
-    base_results_dir = _base_results_dir(cfg)
+    base_dir = base_results_dir(cfg)
     for seed in seed_pair:
-        seed_cfg = _prepare_seed_config(cfg, seed=seed, base_results_dir=base_results_dir)
+        seed_cfg = prepare_seed_config(cfg, seed=seed, base_results_dir=base_dir)
         LOGGER.info(
             "Preparing seed run",
             extra={
@@ -116,7 +52,7 @@ def run_seeds(
                 "append_seed": seed_cfg.io.append_seed,
             },
         )
-        if not force and _seed_has_completion_markers(seed_cfg):
+        if not force and seed_has_completion_markers(seed_cfg):
             LOGGER.info(
                 "Skipping seed run (completion markers found)",
                 extra={
@@ -126,7 +62,7 @@ def run_seeds(
                 },
             )
             continue
-        _write_active_config(seed_cfg)
+        write_active_config(seed_cfg)
         runner.run_tournament(seed_cfg)
 
 
