@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from . import pipeline, two_seed
+from . import pipeline, two_seed, two_seed_pipeline
 from .pipeline import (
     analyze_agreement,
     analyze_all,
@@ -18,6 +18,7 @@ from .pipeline import (
 __all__ = [
     "pipeline",
     "two_seed",
+    "two_seed_pipeline",
     "main",
     "analyze_all",
     "analyze_trueskill",
