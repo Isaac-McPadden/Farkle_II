@@ -167,6 +167,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         default=None,
         help="Skip the RNG diagnostics stage",
     )
+    interseed_group = parser.add_mutually_exclusive_group()
+    interseed_group.add_argument(
+        "--interseed",
+        dest="run_interseed",
+        action="store_true",
+        default=None,
+        help="Include cross-seed analytics stages (default: config)",
+    )
+    interseed_group.add_argument(
+        "--per-seed-only",
+        dest="run_interseed",
+        action="store_false",
+        default=None,
+        help="Skip cross-seed analytics stages like variance, meta, and pooled TrueSkill",
+    )
     parser.add_argument(
         "--margin-thresholds",
         type=int,
@@ -234,6 +249,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     app_cfg.analysis.run_rng = run_rng_diagnostics
     if args.rng_diagnostics is not None:
         app_cfg.analysis.disable_rng_diagnostics = not args.rng_diagnostics
+    if args.run_interseed is not None:
+        app_cfg.analysis.run_interseed = args.run_interseed
 
     for flag, attr in (
         (args.disable_trueskill, "disable_trueskill"),

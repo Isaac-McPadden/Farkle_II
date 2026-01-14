@@ -101,6 +101,9 @@ class SimConfig:
 class AnalysisConfig:
     """Analysis-stage parameters controlling downstream analytics."""
 
+    run_interseed: bool = True
+    """Include cross-seed analysis stages such as variance, meta, and pooled outputs."""
+
     disable_game_stats: bool = False
     disable_rng_diagnostics: bool = False
     disable_trueskill: bool = False
