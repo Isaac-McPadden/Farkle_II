@@ -10,7 +10,8 @@ io:
 sim:
   n_players_list:    # list[int]: table sizes to simulate
   num_shuffles:    # int: default shuffle count per table size
-  seed:    # int: RNG seed for deterministic runs
+  seed:    # int: primary RNG seed + results_dir suffix when append_seed=true
+  seed_pair:    # tuple[int,int]|None: two-seed orchestration pair; seed still drives suffixing
   expanded_metrics:    # bool: write expanded metrics parquet
   row_dir:    # Path|str|None: relative folder for row dumps; blank skips write
   per_n:    # dict[int, SimConfig]: per-table overrides mirroring sim options
