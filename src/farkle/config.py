@@ -54,11 +54,19 @@ class PowerDesign:
 
 @dataclass
 class SimConfig:
-    """Simulation parameters."""
+    """Simulation parameters.
+
+    ``seed`` remains the primary seed for single-seed workflows and for naming
+    when ``io.append_seed`` is enabled. ``seed_pair`` is reserved for two-seed
+    orchestration; when both are set, ``seed`` governs single-seed behavior and
+    ``seed_pair`` governs the dual-seed run.
+    """
 
     n_players_list: list[int] = field(default_factory=lambda: [5])
     num_shuffles: int = 100
     seed: int = 0
+    seed_pair: tuple[int, int] | None = None
+    """Optional two-seed tuple for dual-seed orchestration (validated on load)."""
     expanded_metrics: bool = False
     row_dir: Path | None = None
     metric_chunk_dir: Path | None = None
@@ -81,6 +89,12 @@ class SimConfig:
     run_up_score_opts: Sequence[bool] = (True, False)
     include_stop_at: bool = False
     include_stop_at_heuristic: bool = False
+
+    def require_seed_pair(self) -> tuple[int, int]:
+        """Return ``seed_pair`` or raise if two-seed orchestration is requested."""
+        if self.seed_pair is None:
+            raise ValueError("sim.seed_pair must be set for two-seed orchestration")
+        return self.seed_pair
 
 
 @dataclass
@@ -769,6 +783,21 @@ def _annotation_contains(annotation: Any, target: type) -> bool:
     return any(_annotation_contains(arg, target) for arg in get_args(annotation))
 
 
+def _normalize_seed_pair(sim: SimConfig, *, seed_provided: bool) -> None:
+    """Normalize and validate ``seed_pair`` for a :class:`SimConfig` instance."""
+    if sim.seed_pair is None:
+        return
+    if isinstance(sim.seed_pair, (list, tuple)):
+        seed_pair = tuple(int(s) for s in sim.seed_pair)
+    else:
+        raise TypeError("sim.seed_pair must be a tuple/list of two integers")
+    if len(seed_pair) != 2:
+        raise ValueError(f"sim.seed_pair must contain exactly two seeds, got {seed_pair!r}")
+    sim.seed_pair = seed_pair
+    if not seed_provided:
+        sim.seed = seed_pair[0]
+
+
 def load_app_config(*overlays: Path) -> AppConfig:
     """Deterministically merge one or more YAML overlays into an :class:`AppConfig`.
 
@@ -790,8 +819,11 @@ def load_app_config(*overlays: Path) -> AppConfig:
         io_section = data["io"]
         if "analysis_dir" in io_section and "analysis_subdir" not in io_section:
             io_section["analysis_subdir"] = io_section.pop("analysis_dir")
+    seed_provided = False
+    per_n_seed_provided: dict[int, bool] = {}
     if "sim" in data:
         sim_section = data["sim"]
+        seed_provided = "seed" in sim_section
         if "n_players" in sim_section and "n_players_list" not in sim_section:
             sim_section["n_players_list"] = [sim_section.pop("n_players")]
         if (
@@ -800,6 +832,14 @@ def load_app_config(*overlays: Path) -> AppConfig:
             and sim_section.pop("collect_metrics")
         ):
             sim_section["expanded_metrics"] = True
+        per_n_section = sim_section.get("per_n")
+        if isinstance(per_n_section, Mapping):
+            for key, val in per_n_section.items():
+                if isinstance(val, Mapping) and "seed" in val:
+                    try:
+                        per_n_seed_provided[int(key)] = True
+                    except (TypeError, ValueError):
+                        continue
     if "analysis" in data:
         analysis_section = data["analysis"]
         if "run_tiering_report" in analysis_section:
@@ -860,6 +900,10 @@ def load_app_config(*overlays: Path) -> AppConfig:
         head2head=build(Head2HeadConfig, data.get("head2head", {})),
         hgb=build(HGBConfig, data.get("hgb", {})),
     )
+    _normalize_seed_pair(cfg.sim, seed_provided=seed_provided)
+    if cfg.sim.per_n:
+        for key, sim_cfg in cfg.sim.per_n.items():
+            _normalize_seed_pair(sim_cfg, seed_provided=per_n_seed_provided.get(int(key), False))
     if cfg.io.append_seed:
         # Append the seed number to the results_dir name
         base = str(cfg.io.results_dir)
