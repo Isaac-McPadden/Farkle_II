@@ -78,6 +78,7 @@ head2head:
   n_jobs:    # int: parallel workers for head-to-head stage
   games_per_pair:    # int: baseline games scheduled per pair
   fdr_q:    # float: FDR control threshold for BH
+  bonferroni_total_games_safeguard:    # int|None: skip Bonferroni H2H when estimated total games exceed this
   bonferroni_design:
     power:    # float: target statistical power
     control:    # float: family-wise error rate (alpha)
