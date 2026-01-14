@@ -93,6 +93,13 @@ def run_variance(cfg: AppConfig, *, force: bool = False) -> None:
     variance.run(cfg, force=force)
 
 
+def run_interseed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
+    """Wrapper around :mod:`farkle.analysis.interseed_analysis`."""
+    from farkle.analysis import interseed_analysis
+
+    interseed_analysis.run(cfg, force=force)
+
+
 def _skip_message(step: str, reason: str) -> None:
     """Log a standardized skip message for optional analysis stages.
 

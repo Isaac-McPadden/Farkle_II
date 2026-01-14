@@ -146,6 +146,11 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             cfg.analysis.disable_agreement or not cfg.analysis.run_interseed
         ),
     ),
+    StageDefinition(
+        "interseed",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
+    ),
 )
 
 
