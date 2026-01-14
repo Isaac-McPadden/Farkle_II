@@ -47,6 +47,7 @@ sim:
 
 analysis:
   run_trueskill: true       # bool: compute TrueSkill ratings
+  run_interseed: true       # bool: include cross-seed analytics stages (variance/meta/pooled)
   run_head2head: true       # bool: execute head-to-head analysis
   run_rng: false            # bool: run RNG diagnostics over curated rows
   run_game_stats: true      # bool: compute pooled game statistics after metrics

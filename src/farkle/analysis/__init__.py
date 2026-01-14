@@ -111,21 +111,28 @@ def run_all(cfg: AppConfig) -> None:
     """Run every analytics pass in sequence."""
     LOGGER.info("Analytics: starting all modules", extra={"stage": "analysis"})
     run_seed_summaries(cfg)
-    run_variance(cfg)
-    run_meta(cfg)
-    ts_mod = _optional_import("farkle.analysis.trueskill")
-    if cfg.analysis.run_trueskill and ts_mod is not None:
-        ts_mod.run(cfg)
+    if cfg.analysis.run_interseed:
+        run_variance(cfg)
+        run_meta(cfg)
+        ts_mod = _optional_import("farkle.analysis.trueskill")
+        if cfg.analysis.run_trueskill and ts_mod is not None:
+            ts_mod.run(cfg)
+        else:
+            LOGGER.info(
+                "Analytics: skipping trueskill",
+                extra={
+                    "stage": "analysis",
+                    "reason": (
+                        "run_trueskill=False"
+                        if not cfg.analysis.run_trueskill
+                        else "unavailable"
+                    ),
+                },
+            )
     else:
-        LOGGER.info(
-            "Analytics: skipping trueskill",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_trueskill=False" if not cfg.analysis.run_trueskill else "unavailable"
-                ),
-            },
-        )
+        _skip_message("variance", "run_interseed=False")
+        _skip_message("meta", "run_interseed=False")
+        _skip_message("trueskill", "run_interseed=False")
 
     h2h_mod = _optional_import("farkle.analysis.head2head")
     if cfg.analysis.run_head2head and h2h_mod is not None:
@@ -186,19 +193,22 @@ def run_all(cfg: AppConfig) -> None:
         )
 
     agreement_mod = _optional_import("farkle.analysis.agreement")
-    if getattr(cfg.analysis, "run_agreement", False) and agreement_mod is not None:
-        agreement_mod.run(cfg)
+    if cfg.analysis.run_interseed:
+        if getattr(cfg.analysis, "run_agreement", False) and agreement_mod is not None:
+            agreement_mod.run(cfg)
+        else:
+            LOGGER.info(
+                "Analytics: skipping agreement",
+                extra={
+                    "stage": "analysis",
+                    "reason": (
+                        "run_agreement=False"
+                        if not getattr(cfg.analysis, "run_agreement", False)
+                        else "unavailable"
+                    ),
+                },
+            )
     else:
-        LOGGER.info(
-            "Analytics: skipping agreement",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_agreement=False"
-                    if not getattr(cfg.analysis, "run_agreement", False)
-                    else "unavailable"
-                ),
-            },
-        )
+        _skip_message("agreement", "run_interseed=False")
 
     LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})

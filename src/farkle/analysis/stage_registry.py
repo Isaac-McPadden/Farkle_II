@@ -107,12 +107,22 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         disabled_predicate=lambda cfg: cfg.analysis.disable_rng_diagnostics,
     ),
     StageDefinition("seed_summaries", group="analytics"),
-    StageDefinition("variance", group="analytics"),
-    StageDefinition("meta", group="analytics"),
+    StageDefinition(
+        "variance",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
+    ),
+    StageDefinition(
+        "meta",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
+    ),
     StageDefinition(
         "trueskill",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_trueskill,
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_trueskill or not cfg.analysis.run_interseed
+        ),
     ),
     StageDefinition(
         "head2head",
@@ -132,7 +142,9 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "agreement",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_agreement,
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_agreement or not cfg.analysis.run_interseed
+        ),
     ),
 )
 
@@ -156,4 +168,3 @@ def resolve_stage_layout(
             )
         )
     return StageLayout(placements=placements)
-
