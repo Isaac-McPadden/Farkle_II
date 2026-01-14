@@ -414,6 +414,12 @@ class AppConfig:
         return self.stage_subdir("agreement")
 
     @property
+    def interseed_stage_dir(self) -> Path:
+        """Stage directory for cross-seed orchestration outputs."""
+
+        return self.stage_subdir("interseed")
+
+    @property
     def ingest_stage_dir(self) -> Path:
         return self.stage_subdir("ingest")
 
