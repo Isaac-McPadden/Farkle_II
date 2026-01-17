@@ -515,6 +515,7 @@ def run_tournament(
     payload: dict[str, Any] | None = None
     if resume and ckpt_path.exists():
         payload = pickle.loads(ckpt_path.read_bytes())
+        assert payload is not None
         raw_counts = payload.get("win_totals", payload)
         win_totals = _coerce_counter(raw_counts)
         games_completed = int(sum(win_totals.values()))
