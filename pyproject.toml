@@ -80,3 +80,11 @@ exclude_lines = [
 
 [tool.pyright]
 reportMissingTypeStubs = "none"
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
+files = ["src/farkle"]
+
+[[tool.mypy.overrides]]
+module = ["trueskill"]
+ignore_missing_imports = true
