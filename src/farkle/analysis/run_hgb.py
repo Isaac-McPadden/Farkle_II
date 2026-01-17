@@ -519,9 +519,10 @@ def run_hgb(
             {"importance_mean": "float", "importance_std": "float"}
         )
         _write_importances(pooled_dir / OVERALL_IMPORTANCE_NAME, grouped)
-        importance_summary["overall"] = grouped.set_index("feature")[
-            "importance_mean"
-        ].to_dict()
+        overall_series = grouped.set_index("feature")["importance_mean"]
+        importance_summary["overall"] = {
+            str(k): float(v) for k, v in overall_series.items()
+        }
 
     if output_path is None:
         output_path = pooled_dir / "hgb_importance.json"
