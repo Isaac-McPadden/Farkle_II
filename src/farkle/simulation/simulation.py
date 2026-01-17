@@ -292,8 +292,8 @@ def experiment_size(
                 )
             normalized_pairs.append((bool(opts[0]), bool(opts[1])))
         allowed_pairs = set(normalized_pairs)
-        smart_five_opts_list = list(dict.fromkeys(sf for sf, _ in normalized_pairs))
-        smart_one_opts_list = list(dict.fromkeys(so for _, so in normalized_pairs))
+        smart_five_opts_list = tuple(dict.fromkeys(sf for sf, _ in normalized_pairs))
+        smart_one_opts_list = tuple(dict.fromkeys(so for _, so in normalized_pairs))
         if not smart_five_opts_list or not smart_one_opts_list:
             return 0
 
