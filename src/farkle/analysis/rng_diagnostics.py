@@ -13,7 +13,7 @@ import logging
 from collections.abc import Iterable, Sequence
 from itertools import chain
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pyarrow as pa
@@ -170,9 +170,15 @@ def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataF
     grouped_strategy = data.groupby(["strategy", "n_players"], observed=True, sort=False)
     strategy_diagnostics = (
         _group_diagnostics(
-            group, lags=lags, summary_level="strategy", strategy=strategy, n_players=n_players
+            group,
+            lags=lags,
+            summary_level="strategy",
+            strategy=strategy_str,
+            n_players=n_players_int,
         )
         for (strategy, n_players), group in grouped_strategy
+        for strategy_str in (str(strategy),)
+        for n_players_int in (int(cast(int, n_players)),)
     )
     # Each grouped call yields an iterable of pd.Series diagnostics.
     rows.extend(chain.from_iterable(strategy_diagnostics))
@@ -185,11 +191,14 @@ def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataF
             group,
             lags=lags,
             summary_level="matchup_strategy",
-            strategy=strategy,
-            matchup=matchup,
-            n_players=n_players,
+            strategy=strategy_str,
+            matchup=matchup_str,
+            n_players=n_players_int,
         )
         for (matchup, strategy, n_players), group in grouped_matchup
+        for strategy_str in (str(strategy),)
+        for n_players_int in (int(cast(int, n_players)),)
+        for matchup_str in ((str(matchup) if pd.notna(matchup) else None),)
     )
     rows.extend(chain.from_iterable(matchup_diagnostics))
 
