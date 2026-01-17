@@ -209,11 +209,12 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         config_sha=cfg.config_sha,
     )
 
+    rows = len(detailed) if detailed is not None else 0
     LOGGER.info(
         "Variance outputs written",
         extra={
             "stage": "variance",
-            "rows": len(detailed),
+            "rows": rows,
             "variance_path": str(variance_path),
             "summary_path": str(summary_path),
             "components_path": str(components_path),
@@ -296,6 +297,8 @@ def _compute_variance(seed_frame: pd.DataFrame) -> pd.DataFrame:
     records: list[dict[str, float | int | str]] = []
     grouped = seed_frame.groupby(["strategy_id", "players"], sort=True)
     for (strategy_id, players), group in grouped:
+        strategy_id_str = str(strategy_id)
+        players_int = int(cast(int, players))
         rates = pd.to_numeric(group["win_rate"], errors="coerce").dropna()
         count = int(rates.size)
         if count == 0:
@@ -317,8 +320,8 @@ def _compute_variance(seed_frame: pd.DataFrame) -> pd.DataFrame:
 
         records.append(
             {
-                "strategy_id": strategy_id,
-                "players": int(players),
+                "strategy_id": strategy_id_str,
+                "players": players_int,
                 "n_seeds": count,
                 "mean_seed_win_rate": float(rates.mean()),
                 "variance_win_rate": variance,
@@ -362,6 +365,8 @@ def _compute_variance_components(
     grouped = seed_frame.groupby(["strategy_id", "players"], sort=True)
     insufficient_seed_groups = 0
     for (strategy_id, players), group in grouped:
+        strategy_id_str = str(strategy_id)
+        players_int = int(cast(int, players))
         seed_count = group["seed"].nunique()
         if seed_count < min_seeds:
             insufficient_seed_groups += 1
@@ -375,8 +380,8 @@ def _compute_variance_components(
                     "Skipping component metric: insufficient observations",
                     extra={
                         "stage": "variance",
-                        "strategy_id": strategy_id,
-                        "players": int(players),
+                        "strategy_id": strategy_id_str,
+                        "players": players_int,
                         "component": component,
                         "observations": observations,
                         "min_seeds": int(min_seeds),
@@ -406,8 +411,8 @@ def _compute_variance_components(
 
             records.append(
                 {
-                    "strategy_id": strategy_id,
-                    "players": int(players),
+                    "strategy_id": strategy_id_str,
+                    "players": players_int,
                     "component": component,
                     "n_seeds": observations,
                     "mean": float(values.mean()),
@@ -494,7 +499,10 @@ def _summarize_variance(frame: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=["n_players", "mean_variance", "median_variance"])
 
     grouped = frame.dropna(subset=["variance_win_rate"]).groupby("players")
-    summary = grouped["variance_win_rate"].agg(mean_variance="mean", median_variance="median")
+    summary = grouped.agg(
+        mean_variance=("variance_win_rate", "mean"),
+        median_variance=("variance_win_rate", "median"),
+    )
     summary = summary.reset_index().rename(columns={"players": "n_players"})
     summary["n_players"] = summary["n_players"].astype(int)
     return summary
