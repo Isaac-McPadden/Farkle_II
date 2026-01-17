@@ -667,7 +667,9 @@ def build_strategy_manifest(strategies: Sequence[ThresholdStrategy]) -> pd.DataF
         sid = int(strat.strategy_id)
         if sid in rows:
             continue
-        attrs = dict(zip(STRATEGY_TUPLE_FIELDS, strategy_tuple(strat), strict=True))
+        attrs: dict[str, Any] = dict(
+            zip(STRATEGY_TUPLE_FIELDS, strategy_tuple(strat), strict=True)
+        )
         attrs["strategy_id"] = sid
         attrs["strategy_str"] = str(strat)
         if isinstance(attrs["favor_dice_or_score"], FavorDiceOrScore):
@@ -707,7 +709,7 @@ def parse_strategy_identifier(
         elif manifest is not None and not manifest.empty:
             match = manifest.loc[manifest["strategy_id"] == strategy_id]
             if not match.empty:
-                attrs = match.iloc[0].to_dict()
+                attrs = {str(k): v for k, v in match.iloc[0].to_dict().items()}
         if attrs is None:
             raise KeyError(f"strategy_id {strategy_id} missing from manifest/encoder")
         attrs = {k: v for k, v in attrs.items() if k in STRATEGY_TUPLE_FIELDS}
