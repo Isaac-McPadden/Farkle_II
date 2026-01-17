@@ -197,7 +197,7 @@ def compute_mdd_for_tiers(
         raise ValueError("weights_by_k produced no entries")
 
     # Ensure binom_by_k has an Int64Index so .loc[int(k)] is safe
-    if not np.issubdtype(binom_by_k.index.dtype, np.integer):  # pyright: ignore[reportArgumentType]
+    if not pd.api.types.is_integer_dtype(binom_by_k.index):
         binom_by_k = pd.Series(
             binom_by_k.values,
             index=pd.Index(
