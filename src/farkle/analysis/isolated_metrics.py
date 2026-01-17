@@ -296,7 +296,7 @@ def _summarize(
     if not frame.empty:
         expected_per_k = strat_counts.max(axis=0)
         for seed in seeds:
-            seed_counts = cast(pd.Series, strat_counts.loc[seed])
+            seed_counts = cast(pd.Series, strat_counts.loc[seed]).astype(int)
             for k, expected in expected_per_k.items():
                 if expected <= 0:
                     continue
