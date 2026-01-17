@@ -78,6 +78,8 @@ exclude_lines = [
     "pragma: no cover",
 ]
 
+[tool.pyright]
+reportMissingTypeStubs = "none"
 [tool.mypy]
 python_version = "3.12"
 ignore_missing_imports = true
