@@ -230,7 +230,7 @@ def build_significant_graph(
     if not expected.issubset(df_adj.columns):
         raise ValueError("Adjusted dataframe missing required columns")
 
-    graph = nx.DiGraph()
+    graph: nx.DiGraph = nx.DiGraph()
     graph.graph["tie_policy"] = tie_policy
     graph.graph["tie_break_seed"] = tie_break_seed
     neutral_pairs: list[tuple[str, str]] = []
