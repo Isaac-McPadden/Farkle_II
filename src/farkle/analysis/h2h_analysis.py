@@ -138,7 +138,7 @@ def holm_bonferroni(
             }
         )
 
-    winner_is_a = base["wins_a"] > base["wins_b"]
+    winner_is_a: pd.Series = base["wins_a"] > base["wins_b"]
     winner_wins = np.where(winner_is_a, base["wins_a"], base["wins_b"]).astype(int)
     total_games = base["games"].astype(int)
     pvals = [
