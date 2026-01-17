@@ -372,10 +372,8 @@ def _rank_correlations(
 
         a_vals = series_a.loc[common].to_numpy()
         b_vals = series_b.loc[common].to_numpy()
-        corr_s = list(spearmanr(a_vals, b_vals))[0]
-        corr_k = list(kendalltau(a_vals, b_vals))[0]
-        corr_s_value = float(corr_s)
-        corr_k_value = float(corr_k)
+        corr_s_value = float(spearmanr(a_vals, b_vals).statistic)
+        corr_k_value = float(kendalltau(a_vals, b_vals).statistic)
         spearman[f"{a}_vs_{b}"] = corr_s_value if np.isfinite(corr_s_value) else None
         kendall[f"{a}_vs_{b}"] = corr_k_value if np.isfinite(corr_k_value) else None
 
