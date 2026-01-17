@@ -76,14 +76,14 @@ def _load_top_strategies(
     metrics_path: Path,
     ratings_limit: int = 100,
     metrics_limit: int = 100,
-) -> list[int | str]:
+) -> list[str]:
     """Collect fallback strategies from pooled ratings and metrics tables.
 
     Strategies are sorted by their respective performance indicators and trimmed to
     the provided limits before being combined into a de-duplicated list.
     """
 
-    def _sorted_from_parquet(path: Path, sort_col: str, limit: int, label: str) -> list[int | str]:
+    def _sorted_from_parquet(path: Path, sort_col: str, limit: int, label: str) -> list[str]:
         if not path.exists():
             LOGGER.warning(
                 "Fallback selection skipped: missing %s parquet",
@@ -112,13 +112,19 @@ def _load_top_strategies(
 
         normalized = normalize_strategy_ids(df["strategy"])
         df["strategy"] = normalized.where(normalized.notna(), df["strategy"])
-        return df.sort_values(sort_col, ascending=False)["strategy"].head(limit).dropna().tolist()
+        return [
+            str(value)
+            for value in df.sort_values(sort_col, ascending=False)["strategy"]
+            .head(limit)
+            .dropna()
+            .tolist()
+        ]
 
     top_by_rating = _sorted_from_parquet(ratings_path, "mu", ratings_limit, "ratings")
     top_by_win_rate = _sorted_from_parquet(metrics_path, "win_rate", metrics_limit, "metrics")
 
-    combined: list[int | str] = []
-    seen: set[int | str] = set()
+    combined: list[str] = []
+    seen: set[str] = set()
     for source in (top_by_rating, top_by_win_rate):
         for strategy in source:
             if strategy not in seen:
@@ -250,8 +256,7 @@ def run_bonferroni_head2head(
     if not tiers:
         raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())
-    elites = [s for s, t in tiers.items() if t == top_val]
-    elites = [int(s) if str(s).isdigit() else s for s in elites]
+    elites = [str(s) for s, t in tiers.items() if t == top_val]
     ratings_path = cfg.trueskill_pooled_dir / "ratings_pooled.parquet"
     if not ratings_path.exists():
         fallback = cfg.trueskill_stage_dir / "ratings_pooled.parquet"
@@ -263,14 +268,14 @@ def run_bonferroni_head2head(
             ratings_path = fallback
     metrics_path = cfg.metrics_input_path("metrics.parquet")
     if len(elites) < 2:
-        fallback = _load_top_strategies(
+        fallback_strategies = _load_top_strategies(
             ratings_path=ratings_path,
             metrics_path=metrics_path,
         )
-        if fallback:
-            combined = []
-            seen = set()
-            for name in (*elites, *fallback):
+        if fallback_strategies:
+            combined: list[str] = []
+            seen: set[str] = set()
+            for name in (*elites, *fallback_strategies):
                 if name not in seen:
                     combined.append(name)
                     seen.add(name)
