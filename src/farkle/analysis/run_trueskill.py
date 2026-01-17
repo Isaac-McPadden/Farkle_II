@@ -702,13 +702,15 @@ def _rate_block_worker(
                     continue
                 seen_names.add(name)
                 alt_candidates.append(per_n_dir / name)
-        row_file = next((cand for cand in alt_candidates if cand.exists()), None)
-        if row_file is None:
+        row_file_candidate = next((cand for cand in alt_candidates if cand.exists()), None)
+        if row_file_candidate is None:
             candidate = next(block.glob("*p_rows.parquet"), None)
             if candidate is None:
                 return player_count, 0
             row_file = candidate
             n = n_players_from_schema(pq.read_schema(row_file))
+        else:
+            row_file = row_file_candidate
 
     # Up-to-date guard
     paths = _rating_artifact_paths(root, player_count, suffix, legacy_root=legacy_root)
@@ -995,13 +997,13 @@ def run_trueskill(
         stem = parquet.stem[len("ratings_") :]
         if suffix:
             stem = stem[: -len(suffix)]
-        player_count = _player_count_from_stem(parquet.stem)
-        if player_count is None:
+        player_count_value = _player_count_from_stem(parquet.stem)
+        if player_count_value is None:
             continue
-        games = per_block_games.get(str(player_count), 0)
+        games = per_block_games.get(str(player_count_value), 0)
         if games <= 0:
             continue
-        weight = pooled_weights_by_k.get(player_count, 1.0)
+        weight = pooled_weights_by_k.get(player_count_value, 1.0)
         with parquet.open("rb"):
             ratings = _load_ratings_parquet(parquet)
         for k, v in ratings.items():
