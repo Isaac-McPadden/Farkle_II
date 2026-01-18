@@ -1,6 +1,7 @@
 import os
 import threading
 from pathlib import Path
+from typing import Iterator
 
 import pytest
 
@@ -109,7 +110,7 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
 
     manifest_calls = []
 
-    def fake_append(path, record):
+    def fake_append(path, record) -> None:
         manifest_calls.append((path, record))
 
     monkeypatch.setattr(streaming_loop, "append_manifest_line", fake_append)
@@ -188,7 +189,7 @@ def test_run_streaming_shard_manifest_path_without_dir(tmp_path, monkeypatch):
 
     manifest_calls = []
 
-    def fake_append(path, record):
+    def fake_append(path, record) -> None:
         manifest_calls.append((path, record))
 
     monkeypatch.setattr(streaming_loop, "append_manifest_line", fake_append)
@@ -196,7 +197,7 @@ def test_run_streaming_shard_manifest_path_without_dir(tmp_path, monkeypatch):
     relpath_calls = []
     real_relpath = os.path.relpath
 
-    def fake_relpath(path, start=os.curdir):
+    def fake_relpath(path, start=os.curdir) -> str:
         relpath_calls.append((path, start))
         if len(relpath_calls) <= 2:
             raise ValueError("boom")
@@ -233,14 +234,14 @@ def test_writer_thread_forwards_manifest(monkeypatch):
     queue = list(tables) + [None]
     pop_calls = []
 
-    def fake_pop():
+    def fake_pop() -> pa.Table | None:
         value = queue.pop(0)
         pop_calls.append(value)
         return value
 
     captured = {}
 
-    def fake_run_streaming_shard(**kwargs):
+    def fake_run_streaming_shard(**kwargs) -> None:
         batches = list(kwargs.pop("batch_iter"))
         captured.update(kwargs)
         captured["batches"] = batches
@@ -278,10 +279,10 @@ def test_producer_thread_pushes_all_tables():
 
     pushed = []
 
-    def fake_push(tbl):
+    def fake_push(tbl) -> None:
         pushed.append(tbl)
 
-    def mk_batches():
+    def mk_batches() -> Iterator[pa.Table]:
         return iter(tables)
 
     streaming_loop.producer_thread(fake_push, mk_batches)
@@ -301,7 +302,7 @@ def test_bounded_queue_blocks_and_closes():
     started = threading.Event()
     finished = threading.Event()
 
-    def push_second():
+    def push_second() -> None:
         started.set()
         queue.push(second)
         finished.set()
