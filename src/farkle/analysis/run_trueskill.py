@@ -569,6 +569,10 @@ def _update_ratings(
     return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
 
 
+def _strategy_column_names(n: int) -> list[str]:
+    return [f"P{i}_strategy" for i in range(1, n + 1)]
+
+
 def _iter_players_and_ranks(
     row_file: Path, n: int, batch_size: int = 100_000
 ) -> Iterator[tuple[list[str], list[int]]]:
@@ -582,13 +586,13 @@ def _iter_players_and_ranks(
 
     if has_seat_ranks:
         seat_rank_col_name = "seat_ranks"
-        strat_col_names: list[str] = [f"P{i}_strategy" for i in range(1, n + 1)]
-        cols: list[str] = [seat_rank_col_name, *strat_col_names]
-        for batch in dataset.to_batches(columns=cols, batch_size=batch_size):
+        strategy_column_names = _strategy_column_names(n)
+        columns: list[str] = [seat_rank_col_name, *strategy_column_names]
+        for batch in dataset.to_batches(columns=columns, batch_size=batch_size):
             ranks_col: pa.ChunkedArray = batch.column(seat_rank_col_name)
             ranks_list = ranks_col.to_pylist()  # list[list[str]] or None
             strat_cols: list[pa.ChunkedArray] = [
-                batch.column(name) for name in strat_col_names
+                batch.column(name) for name in strategy_column_names
             ]
             for r, order in enumerate(ranks_list):
                 if not order:
@@ -604,18 +608,18 @@ def _iter_players_and_ranks(
 
     # seat_ranks not present → derive from P#_rank or fall back to winner + tied losers
     rank_col_names: list[str] = [f"P{i}_rank" for i in range(1, n + 1)]
-    strat_col_names: list[str] = [f"P{i}_strategy" for i in range(1, n + 1)]
+    strategy_column_names = _strategy_column_names(n)
     winner_col_name: str = (
         "winner_seat" if schema.get_field_index("winner_seat") != -1 else "winner"
     )
-    cols: list[str] = [winner_col_name, *rank_col_names, *strat_col_names]
-    for batch in dataset.to_batches(columns=cols, batch_size=batch_size):
+    columns: list[str] = [winner_col_name, *rank_col_names, *strategy_column_names]
+    for batch in dataset.to_batches(columns=columns, batch_size=batch_size):
         winner_seats = batch.column(winner_col_name).to_pylist()
         rank_cols: list[pa.ChunkedArray] = [
             batch.column(name) for name in rank_col_names
         ]
         strat_cols: list[pa.ChunkedArray] = [
-            batch.column(name) for name in strat_col_names
+            batch.column(name) for name in strategy_column_names
         ]
         ranks = [[col[i].as_py() for col in rank_cols] for i in range(len(batch))]
         strats = [[col[i].as_py() for col in strat_cols] for i in range(len(batch))]
