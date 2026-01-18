@@ -1,6 +1,7 @@
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -199,7 +200,7 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
     monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
     plotted: list[str] = []
 
-    def fake_plot(model, X, column, out_dir):  # noqa: ARG001
+    def fake_plot(model: Any, X: Any, column: str, out_dir: Path | str) -> Path:
         plotted.append(column)
         p = Path(out_dir) / f"pd_{column}.png"
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -210,7 +211,7 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
 
     warnings: list[tuple[str, dict]] = []
 
-    def _record_warning(message, *args, **kwargs):  # noqa: ANN001, ARG002
+    def _record_warning(message: str, *_args: object, **kwargs: object) -> None:
         warnings.append((message, kwargs))
 
     monkeypatch.setattr(run_hgb.LOGGER, "warning", _record_warning)
@@ -295,7 +296,7 @@ def test_partial_dependence_skips_constant_features(tmp_path, monkeypatch, caplo
     monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
     plotted: list[str] = []
 
-    def fake_plot(model, X, column, out_dir):  # noqa: ARG001
+    def fake_plot(model: Any, X: Any, column: str, out_dir: Path | str) -> Path:
         plotted.append(column)
         p = Path(out_dir) / f"pd_{column}.png"
         p.parent.mkdir(parents=True, exist_ok=True)
