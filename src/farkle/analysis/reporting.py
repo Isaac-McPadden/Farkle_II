@@ -257,6 +257,16 @@ def _as_float(value: object) -> float:
     return float(cast(SupportsFloat, value))
 
 
+def _extract_scalar(value: object, *, label: str) -> object:
+    """Return a scalar from pandas containers, validating singleton expectations."""
+
+    if isinstance(value, pd.Series):
+        if value.size != 1:
+            raise ReportError(f"Expected {label} to be a scalar, got {value.size} entries")
+        return value.iloc[0]
+    return value
+
+
 def _load_ratings(
     analysis_dir: Path, players: int, *, layout: StageLayout | None = None
 ) -> pd.DataFrame:
@@ -650,9 +660,11 @@ def plot_h2h_heatmap_for_players(
             and row.a in matrix.columns
         ):
             try:
-                wins_b = _as_float(row.wins_b)
-                games = _as_float(row.games)
-                matrix.at[row.b, row.a] = float(wins_b) / float(games)
+                wins_b_value = _extract_scalar(row.wins_b, label="wins_b")
+                games_value = _extract_scalar(row.games, label="games")
+                wins_b = float(_as_float(wins_b_value))
+                games = float(_as_float(games_value))
+                matrix.at[row.b, row.a] = wins_b / games
             except ZeroDivisionError:
                 matrix.at[row.b, row.a] = _as_float(np.nan)
         elif hasattr(row, "win_rate") and row.b in matrix.index and row.a in matrix.columns:
