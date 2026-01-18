@@ -41,7 +41,7 @@ class ParquetShardWriter:
     row_group_size: int = 200_000
 
     _writer: Optional[pq.ParquetWriter] = None
-    _tmp_path: Optional[str] = None
+    _tmp_path: str = ""
     _rows_written: int = 0
 
     def __post_init__(self) -> None:
@@ -62,6 +62,7 @@ class ParquetShardWriter:
     def _ensure_writer(self, tbl: pa.Table) -> None:
         """Create the underlying writer lazily based on the first batch."""
         if self._writer is None:
+            assert self._tmp_path, "Temporary path must be set before writing."
             schema = self.schema or tbl.schema
             self._writer = pq.ParquetWriter(
                 self._tmp_path,
@@ -94,7 +95,7 @@ class ParquetShardWriter:
         else:
             with suppress(FileNotFoundError):
                 os.remove(self._tmp_path)
-        self._tmp_path = None
+        self._tmp_path = ""
         self._writer = None
 
     def __exit__(self, exc_type, exc, tb):
