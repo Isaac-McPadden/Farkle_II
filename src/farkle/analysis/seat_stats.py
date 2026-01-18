@@ -314,7 +314,11 @@ def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -
     tol = seat_config.symmetry_tolerance
 
     for (strategy, players), block in grouped:
-        players_int = int(pd.to_numeric(players, errors="raise"))
+        if isinstance(players, (int, np.integer)):
+            players_int = int(players)
+        else:
+            players_series = pd.to_numeric(pd.Series([players]), errors="raise")
+            players_int = int(players_series.iloc[0])
         p1_farkles = pd.to_numeric(block["P1_farkles"], errors="coerce")
         p2_farkles = pd.to_numeric(block["P2_farkles"], errors="coerce")
         p1_rounds = pd.to_numeric(block["P1_rounds"], errors="coerce")

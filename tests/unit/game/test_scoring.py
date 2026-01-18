@@ -264,7 +264,7 @@ def test_apply_discards(raw_score, raw_used, discard5, discard1, dice_len, expec
 @settings(suppress_health_check=[HealthCheck.too_slow], deadline=None, max_examples=50)
 @given(st.lists(st.integers(min_value=1, max_value=6), min_size=1, max_size=6))
 def test_default_score_invariants(roll):
-    score, used, reroll = default_score(  # type: ignore default score update is backwards compatible
+    score, used, reroll = default_score(  # type: ignore[misc]  # default score update is backwards compatible
         dice_roll=roll,
         turn_score_pre=0,
         smart_five=False,
@@ -286,7 +286,7 @@ _HOT_ROLL_STRAT = st.sampled_from(_HOT_DICE_ROLLS)
 
 @given(roll=_HOT_ROLL_STRAT)
 def test_hot_dice_discard_never_trims_six(roll):
-    _score, used, reroll = default_score(roll, turn_score_pre=0)  # type: ignore default score update is backwards compatible
+    _score, used, reroll = default_score(roll, turn_score_pre=0)  # type: ignore[misc]  # default score update is backwards compatible
     assert used == 6 and reroll == 0
 
 

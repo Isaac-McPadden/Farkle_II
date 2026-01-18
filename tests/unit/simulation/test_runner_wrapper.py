@@ -32,7 +32,7 @@ def _patch_tournament(
 
     def fake_run_tournament(**kwargs: object) -> None:  # noqa: ANN001 - mirrors target
         calls.update(kwargs)
-        ckpt_path: Path = kwargs["checkpoint_path"]  # type: ignore[index]
+        ckpt_path = cast(Path, kwargs["checkpoint_path"])
         ckpt_path.parent.mkdir(parents=True, exist_ok=True)
         ckpt_path.write_bytes(pickle.dumps(payload))
         if after_checkpoint is not None:

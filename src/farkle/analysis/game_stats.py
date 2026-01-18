@@ -45,10 +45,11 @@ from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, wr
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.schema_helpers import n_players_from_schema
+from farkle.utils.types import Compression
 from farkle.utils.writer import ParquetShardWriter
 
 StatValue: TypeAlias = float | int | str | NAType
-ArrowColumnData: TypeAlias = np.ndarray | list[Any]
+ArrowColumnData: TypeAlias = np.ndarray | list[Any] | pa.Array | pa.ChunkedArray
 
 LOGGER = logging.getLogger(__name__)
 
@@ -464,7 +465,7 @@ def _rare_event_flags(
     thresholds: Sequence[int],
     target_score: int,
     output_path: Path,
-    codec: str,
+    codec: Compression,
 ) -> int:
     """Compute per-game rare events and aggregate counts."""
 
@@ -492,17 +493,16 @@ def _rare_event_flags(
     flag_dtype, flag_arrow = _select_int_dtype(max_flag_count)
     obs_dtype, obs_arrow = _select_int_dtype(max_observations)
     player_dtype = np.int32
-    schema = pa.schema(
-        [
-            ("summary_level", pa.string()),
-            ("strategy", pa.string()),
-            ("n_players", pa.int32()),
-            ("margin_of_victory", pa.float64()),
-            ("multi_reached_target", flag_arrow),
-            ("observations", obs_arrow),
-            *[(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
-        ]
-    )
+    fields: list[pa.Field] = [
+        pa.field("summary_level", pa.string()),
+        pa.field("strategy", pa.string()),
+        pa.field("n_players", pa.int32()),
+        pa.field("margin_of_victory", pa.float64()),
+        pa.field("multi_reached_target", flag_arrow),
+        pa.field("observations", obs_arrow),
+        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
+    ]
+    schema = pa.schema(fields)
 
     rows_written = 0
     writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
@@ -565,19 +565,19 @@ def _rare_event_flags(
                 for strategy, group in grouped:
                     count = int(group.shape[0])
                     per_game_data: dict[str, ArrowColumnData] = {
-                        "summary_level": np.full(count, "game", dtype=object),
-                        "strategy": np.full(count, strategy, dtype=object),
+                        "summary_level": np.full(count, "game", dtype=str),
+                        "strategy": np.full(count, strategy, dtype=str),
                         "n_players": np.full(count, n_players, dtype=player_dtype),
                         "margin_of_victory": group["margin_of_victory"].to_numpy(dtype=float),
                         "multi_reached_target": group["multi_reached_target"].to_numpy(
-                            dtype=flag_dtype.type
+                            dtype=flag_dtype
                         ),
-                        "observations": np.ones(count, dtype=obs_dtype.type),
+                        "observations": np.ones(count, dtype=obs_dtype),
                     }
                     for thr in thresholds:
                         per_game_data[f"margin_le_{thr}"] = group[
                             f"margin_le_{thr}"
-                        ].to_numpy(dtype=flag_dtype.type)
+                        ].to_numpy(dtype=flag_dtype)
 
                     writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
                     rows_written += count
@@ -764,12 +764,20 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
             player_value = pd.to_numeric(player_value, errors="coerce")
         if pd.isna(player_value):
             continue
+        if isinstance(player_value, (np.floating, float)):
+            if not np.isfinite(player_value) or not float(player_value).is_integer():
+                continue
+            player_value = int(player_value)
+        elif isinstance(player_value, (np.integer, int)):
+            player_value = int(player_value)
+        else:
+            continue
         stats = _summarize_rounds(rounds)
         stats.update(
             {
                 "summary_level": "n_players",
                 "strategy": pd.NA,
-                "n_players": int(cast(int, player_value)),
+                "n_players": player_value,
             }
         )
         rows.append(pd.Series(stats))
