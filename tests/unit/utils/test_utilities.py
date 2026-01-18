@@ -16,14 +16,14 @@ from farkle.simulation import power_helpers
 from farkle.utils.stats import games_for_power
 
 
-def test_games_for_power_monotonic():
+def test_games_for_power_monotonic() -> None:
     n_small_delta = games_for_power(n_strategies=2, detectable_lift=0.05)
     n_large_delta = games_for_power(n_strategies=2, detectable_lift=0.10)
     # Larger effect size ??' fewer games required
     assert n_large_delta < n_small_delta
 
 
-def test_cli_run(tmp_path, monkeypatch, capsys):
+def test_cli_run(tmp_path, monkeypatch, capsys) -> None:
     called: dict[str, object] = {}
 
     def fake_run_single_n(cfg: AppConfig, n: int, *, force: bool = False) -> None:
@@ -68,7 +68,7 @@ def test_cli_run(tmp_path, monkeypatch, capsys):
         ("bonferroni", False, "pairwise"),
     ],
 )
-def test_games_for_power_branches(method, full_pairwise, endpoint):
+def test_games_for_power_branches(method, full_pairwise, endpoint) -> None:
     n = games_for_power(
         n_strategies=3,
         method=method,
@@ -78,26 +78,26 @@ def test_games_for_power_branches(method, full_pairwise, endpoint):
     assert n > 0
 
 
-def test_games_for_power_pairwise_requires_more_games():
+def test_games_for_power_pairwise_requires_more_games() -> None:
     baseline = games_for_power(n_strategies=3, endpoint="pairwise", full_pairwise=False)
     expanded = games_for_power(n_strategies=3, endpoint="pairwise", full_pairwise=True)
     assert expanded >= baseline
 
 
-def test_cli_missing_file():
+def test_cli_missing_file() -> None:
     bad = "nope.yml"
     with pytest.raises(FileNotFoundError):
         cli_main.main(["--config", bad, "run"])
 
 
-def test_cli_bad_yaml(tmp_path):
+def test_cli_bad_yaml(tmp_path) -> None:
     cfg = tmp_path / "bad.yml"
     cfg.write_text("{:")  # invalid YAML
     with pytest.raises(yaml.YAMLError):
         cli_main.main(["--config", str(cfg), "run"])
 
 
-def test_cli_missing_keys(tmp_path, monkeypatch):
+def test_cli_missing_keys(tmp_path, monkeypatch) -> None:
     cfg = tmp_path / "missing.yml"
     cfg.write_text(yaml.safe_dump({}))
     called: dict[str, object] = {}
@@ -118,20 +118,20 @@ def test_cli_missing_keys(tmp_path, monkeypatch):
     assert str(cfg_obj.io.results_dir).endswith("results_seed_0")
 
 
-def test_load_config_missing_file(tmp_path):
+def test_load_config_missing_file(tmp_path) -> None:
     cfg_path = tmp_path / "missing.yml"
     with pytest.raises(FileNotFoundError):
         load_app_config(cfg_path)
 
 
-def test_load_config_bad_yaml(tmp_path):
+def test_load_config_bad_yaml(tmp_path) -> None:
     cfg_path = tmp_path / "bad.yml"
     cfg_path.write_text("strategy_grid: [")
     with pytest.raises(yaml.YAMLError):
         load_app_config(cfg_path)
 
 
-def test_load_config_missing_keys(tmp_path):
+def test_load_config_missing_keys(tmp_path) -> None:
     cfg_path = tmp_path / "cfg.yml"
     cfg_path.write_text(
         yaml.safe_dump(
@@ -149,7 +149,7 @@ def test_load_config_missing_keys(tmp_path):
     assert cfg.sim.expanded_metrics is True
 
 
-def test_unpack_power_design_validation():
+def test_unpack_power_design_validation() -> None:
     design = PowerDesign(
         power=0.9,
         control=0.05,
@@ -173,10 +173,10 @@ def test_unpack_power_design_validation():
         power_helpers._unpack_power_design("bh", "not a design")
 
 
-def test_games_for_power_from_design_uses_mapping(monkeypatch):
+def test_games_for_power_from_design_uses_mapping(monkeypatch) -> None:
     captured: dict[str, object] = {}
 
-    def fake_games_for_power(**kwargs):
+    def fake_games_for_power(**kwargs) -> int:
         captured.update(kwargs)
         return 123
 
