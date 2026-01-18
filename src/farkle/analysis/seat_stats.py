@@ -314,6 +314,7 @@ def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -
     tol = seat_config.symmetry_tolerance
 
     for (strategy, players), block in grouped:
+        players_int = int(pd.to_numeric(players, errors="raise"))
         p1_farkles = pd.to_numeric(block["P1_farkles"], errors="coerce")
         p2_farkles = pd.to_numeric(block["P2_farkles"], errors="coerce")
         p1_rounds = pd.to_numeric(block["P1_rounds"], errors="coerce")
@@ -321,7 +322,7 @@ def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -
 
         row = {
             "strategy": strategy,
-            "n_players": int(players),
+            "n_players": players_int,
             "observations": int(block.shape[0]),
             "mean_p1_farkles": float(p1_farkles.mean()),
             "mean_p2_farkles": float(p2_farkles.mean()),
