@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 import numpy as np
 import pandas as pd
@@ -759,12 +759,17 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
 
     rows: list[pd.Series] = []
     for players, rounds in grouped:
+        player_value = players
+        if not isinstance(player_value, (int, np.integer)):
+            player_value = pd.to_numeric(player_value, errors="coerce")
+        if pd.isna(player_value):
+            continue
         stats = _summarize_rounds(rounds)
         stats.update(
             {
                 "summary_level": "n_players",
                 "strategy": pd.NA,
-                "n_players": int(players),
+                "n_players": int(cast(int, player_value)),
             }
         )
         rows.append(pd.Series(stats))
