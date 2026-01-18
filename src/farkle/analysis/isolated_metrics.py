@@ -300,7 +300,10 @@ def _summarize(
             for k, expected in expected_per_k.items():
                 if expected <= 0:
                     continue
-                actual = int(seed_counts.at[k])
+                value = seed_counts.at[k]
+                if pd.isna(value):
+                    continue
+                actual = int(cast(int, value))
                 if actual != expected:
                     warnings.append(
                         f"Strategy count mismatch for seed {seed}, k={k}: {actual} != {expected}"
