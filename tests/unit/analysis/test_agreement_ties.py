@@ -59,6 +59,8 @@ def test_normalize_tiers_and_agreements():
     tiers_a = agreement._normalize_tiers({"a": 2, "b": 2, "c": 5})
     tiers_b = agreement._normalize_tiers({"a": 10, "b": 20, "c": 20})
 
+    assert tiers_a is not None
+    assert tiers_b is not None
     assert tiers_a == {"a": 0, "b": 0, "c": 1}
     ari, nmi = agreement._tier_agreements({"a": tiers_a, "b": tiers_b})
     assert ari is not None
