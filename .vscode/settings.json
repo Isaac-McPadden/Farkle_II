@@ -45,5 +45,7 @@
   // Mypy extension
   "mypy-type-checker.importStrategy": "fromEnvironment",
   "mypy-type-checker.cwd": "${workspaceFolder}",
-  "mypy-type-checker.args": ["--config-file", "mypy.ini"]
+  "mypy-type-checker.args": ["--config-file", "pyproject.toml"],
+  "mypy-type-checker.reportingScope": "workspace",
+  "mypy-type-checker.ignorePatterns": ["tests/**"],
 }

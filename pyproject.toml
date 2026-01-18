@@ -80,10 +80,21 @@ exclude_lines = [
 
 [tool.pyright]
 reportMissingTypeStubs = "none"
+
 [tool.mypy]
 python_version = "3.12"
+mypy_path = "src"
+explicit_package_bases = true
+namespace_packages = true
+show_error_codes = true
+
 ignore_missing_imports = true
-files = ["src/farkle"]
+
+# Only check production code
+files = ["src"]
+
+# Optional: keep this anyway as a safety net (Windows-safe separators)
+exclude = '(^|[\\/])tests([\\/]|$)'
 
 [[tool.mypy.overrides]]
 module = ["trueskill"]
