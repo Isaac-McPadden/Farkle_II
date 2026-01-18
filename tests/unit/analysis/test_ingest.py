@@ -1,7 +1,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import pandas as pd
 import pytest
@@ -152,7 +152,7 @@ def test_process_block_skips_when_output_newer(tmp_results_dir, monkeypatch):
 
     calls: list[tuple[tuple, dict]] = []
 
-    def fake_run_streaming_shard(*args, **kwargs):
+    def fake_run_streaming_shard(*args, **kwargs) -> None:
         calls.append((args, kwargs))
 
     monkeypatch.setattr("farkle.analysis.ingest.run_streaming_shard", fake_run_streaming_shard)
@@ -174,13 +174,13 @@ def test_process_block_zero_rows_cleans_outputs(tmp_results_dir, monkeypatch):
     manifest = raw_out.with_suffix(".manifest.jsonl")
     manifest.write_text("old")
 
-    def fake_iter_shards(block_path, cols):
+    def fake_iter_shards(block_path, cols) -> Iterator[tuple[pd.DataFrame, Path]]:
         empty = pd.DataFrame(columns=cols)
         yield empty, block_path / "empty.parquet"
 
     calls: list[tuple[tuple, dict]] = []
 
-    def fake_run_streaming_shard(*args, **kwargs):
+    def fake_run_streaming_shard(*args, **kwargs) -> None:
         calls.append((args, kwargs))
 
     monkeypatch.setattr("farkle.analysis.ingest._iter_shards", fake_iter_shards)
@@ -217,7 +217,7 @@ def test_process_block_handles_legacy_shards(tmp_results_dir, monkeypatch):
 
     batches: list[pd.DataFrame] = []
 
-    def fake_run_streaming_shard(*, batch_iter, **kwargs):
+    def fake_run_streaming_shard(*, batch_iter, **kwargs) -> None:
         batches.extend(table.to_pandas() for table in batch_iter)
 
     monkeypatch.setattr("farkle.analysis.ingest.run_streaming_shard", fake_run_streaming_shard)
@@ -237,7 +237,9 @@ def test_process_block_zero_rows_without_outputs(tmp_results_dir, monkeypatch):
     block = cfg.results_dir / "5_players"
     block.mkdir(parents=True)
 
-    def fake_iter_shards(block_path, cols):  # noqa: ARG001
+    def fake_iter_shards(
+        block_path, cols
+    ) -> Iterator[tuple[pd.DataFrame, Path]]:  # noqa: ARG001
         yield from ()
 
     monkeypatch.setattr("farkle.analysis.ingest._iter_shards", fake_iter_shards)
@@ -268,14 +270,14 @@ def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatc
 
     calls = []
 
-    def fake_run_streaming_shard(**kwargs):
+    def fake_run_streaming_shard(**kwargs) -> None:
         # Exhaust the iterator to mirror real behavior and update totals
         list(kwargs.get("batch_iter", ()))
         calls.append(kwargs)
 
     monkeypatch.setattr("farkle.analysis.ingest.run_streaming_shard", fake_run_streaming_shard)
 
-    def fake_iter_shards(block, cols):  # noqa: ARG001
+    def fake_iter_shards(block, cols) -> Iterator[tuple[pd.DataFrame, Path]]:  # noqa: ARG001
         if block.name.startswith("block1"):
             df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"]})
             yield df, block / "good.parquet"
@@ -303,7 +305,7 @@ def test_run_process_pool_path(tmp_results_dir, monkeypatch):
 
     calls: list[str] = []
 
-    def fake_process_block(block, passed_cfg):
+    def fake_process_block(block, passed_cfg) -> int:
         assert passed_cfg is cfg
         calls.append(block.name)
         return {"1_players": 1, "2_players": 3}[block.name]
