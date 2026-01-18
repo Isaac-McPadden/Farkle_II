@@ -45,6 +45,7 @@ from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, wr
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.schema_helpers import n_players_from_schema
+from farkle.utils.types import Compression
 from farkle.utils.writer import ParquetShardWriter
 
 StatValue: TypeAlias = float | int | str | NAType
@@ -464,7 +465,7 @@ def _rare_event_flags(
     thresholds: Sequence[int],
     target_score: int,
     output_path: Path,
-    codec: str,
+    codec: Compression,
 ) -> int:
     """Compute per-game rare events and aggregate counts."""
 
