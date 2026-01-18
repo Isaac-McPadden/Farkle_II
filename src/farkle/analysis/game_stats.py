@@ -492,17 +492,16 @@ def _rare_event_flags(
     flag_dtype, flag_arrow = _select_int_dtype(max_flag_count)
     obs_dtype, obs_arrow = _select_int_dtype(max_observations)
     player_dtype = np.int32
-    schema = pa.schema(
-        [
-            ("summary_level", pa.string()),
-            ("strategy", pa.string()),
-            ("n_players", pa.int32()),
-            ("margin_of_victory", pa.float64()),
-            ("multi_reached_target", flag_arrow),
-            ("observations", obs_arrow),
-            *[(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
-        ]
-    )
+    fields: list[pa.Field] = [
+        pa.field("summary_level", pa.string()),
+        pa.field("strategy", pa.string()),
+        pa.field("n_players", pa.int32()),
+        pa.field("margin_of_victory", pa.float64()),
+        pa.field("multi_reached_target", flag_arrow),
+        pa.field("observations", obs_arrow),
+        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
+    ]
+    schema = pa.schema(fields)
 
     rows_written = 0
     writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
