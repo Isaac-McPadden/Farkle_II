@@ -764,12 +764,20 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
             player_value = pd.to_numeric(player_value, errors="coerce")
         if pd.isna(player_value):
             continue
+        if isinstance(player_value, (np.floating, float)):
+            if not np.isfinite(player_value) or not float(player_value).is_integer():
+                continue
+            player_value = int(player_value)
+        elif isinstance(player_value, (np.integer, int)):
+            player_value = int(player_value)
+        else:
+            continue
         stats = _summarize_rounds(rounds)
         stats.update(
             {
                 "summary_level": "n_players",
                 "strategy": pd.NA,
-                "n_players": int(cast(int, player_value)),
+                "n_players": player_value,
             }
         )
         rows.append(pd.Series(stats))
