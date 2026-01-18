@@ -570,14 +570,14 @@ def _rare_event_flags(
                         "n_players": np.full(count, n_players, dtype=player_dtype),
                         "margin_of_victory": group["margin_of_victory"].to_numpy(dtype=float),
                         "multi_reached_target": group["multi_reached_target"].to_numpy(
-                            dtype=flag_dtype.type
+                            dtype=flag_dtype
                         ),
-                        "observations": np.ones(count, dtype=obs_dtype.type),
+                        "observations": np.ones(count, dtype=obs_dtype),
                     }
                     for thr in thresholds:
                         per_game_data[f"margin_le_{thr}"] = group[
                             f"margin_le_{thr}"
-                        ].to_numpy(dtype=flag_dtype.type)
+                        ].to_numpy(dtype=flag_dtype)
 
                     writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
                     rows_written += count
