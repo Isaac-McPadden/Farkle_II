@@ -170,7 +170,7 @@ def test_unpack_power_design_validation():
         power_helpers._unpack_power_design("bh", {"tail": "invalid"})
 
     with pytest.raises(TypeError):
-        power_helpers._unpack_power_design("bh", "not a design")
+        power_helpers._unpack_power_design("bh", "not a design")  # type: ignore[arg-type]
 
 
 def test_games_for_power_from_design_uses_mapping(monkeypatch):
