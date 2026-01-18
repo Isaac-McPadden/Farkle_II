@@ -1,5 +1,5 @@
 import itertools
-from typing import cast
+from typing import Protocol, cast
 
 import numpy as np
 import pytest
@@ -9,16 +9,29 @@ from farkle.game.scoring import default_score
 from farkle.simulation.strategies import ThresholdStrategy
 
 
-def fixed_rng(seq):
+class RngProtocol(Protocol):
+    """Local protocol for the RNG features exercised in tests."""
+
+    def integers(
+        self,
+        low: int,
+        high: int | None = None,
+        size: int | tuple[int, ...] | None = None,
+        dtype=np.int64,
+        endpoint: bool = False,
+    ) -> np.ndarray: ...
+
+
+def fixed_rng(seq) -> np.random.Generator:
     """Return a numpy Generator that cycles through *seq* forever."""
     arr = np.array(seq)
 
-    class _G:
+    class _G(RngProtocol):
         def integers(self, low, high, size):  # noqa: ARG002
             idxs = np.arange(size) % len(arr)
             return arr[idxs]
 
-    return _G()
+    return cast(np.random.Generator, _G())
 
 
 def test_take_turn_success(monkeypatch):
@@ -59,7 +72,7 @@ def test_game_play_deterministic():
     assert gm.game.n_rounds == 1
 
 
-class _SeqGen:
+class _SeqGen(RngProtocol):
     """
     A deterministic RNG that cycles through *seq* forever.
 
@@ -91,7 +104,7 @@ class _SeqGen:
 
 def fixed_rng_2(seq):
     """Return a numpy.random.Generator that cycles through *seq*."""
-    return _SeqGen(seq)
+    return cast(np.random.Generator, _SeqGen(seq))
 
 
 def test_auto_hot_dice_forces_roll():
@@ -117,7 +130,7 @@ def test_auto_hot_dice_forces_roll():
     )  # records correct roll count: declines auto_hot_dice, rolls once and banks
 
 
-class SeqGen2:
+class SeqGen2(RngProtocol):
     """Deterministic RNG that cycles through *seq* forever."""
 
     def __init__(self, seq):
@@ -135,15 +148,16 @@ class SeqGen2:
 
 def test_final_round_override():
     # ---------- Player 1 triggers the final round ----------
-    p1_rng = SeqGen2([1, 1, 1, 2, 3, 4])  # 300 pts
+    p1_rng = cast(np.random.Generator, SeqGen2([1, 1, 1, 2, 3, 4]))  # 300 pts
     strat1 = ThresholdStrategy(score_threshold=0, dice_threshold=6)
     p1 = FarklePlayer("P1", strat1, rng=cast(np.random.Generator, p1_rng))
     p1.score = 9_900  # so first turn pushes ≥10 000
     p1.has_scored = True
 
     # ---------- Player 2 would normally STOP after 1 roll ----------
-    p2_rng = SeqGen2(
-        [1, 1, 2, 3, 4, 6, 2, 2, 3, 4]
+    p2_rng = cast(
+        np.random.Generator,
+        SeqGen2([1, 1, 2, 3, 4, 6, 2, 2, 3, 4]),
     )  # rolls: 200 pts (would bank) then 0 pts → bust
     strat2 = ThresholdStrategy(
         score_threshold=150, dice_threshold=6, consider_score=True, consider_dice=False
@@ -164,7 +178,7 @@ def test_final_round_override():
 
 def test_turn_roll_fuse():
     # RNG that always returns hot dice: 1,1,1,2,2,2 …
-    class HotGen:
+    class HotGen(RngProtocol):
         def integers(self, *a, size=None, **k):  # noqa: ARG002, D401
             return np.array([1, 1, 1, 2, 2, 2][: size or 1])
 
@@ -186,7 +200,7 @@ class AlwaysRoll(ThresholdStrategy):
 
 def test_final_round_stop_when_ahead_run_up_false():
     seq = [1, 1, 1, 1, 1, 1, 2, 3, 4, 6, 2, 3]
-    rng = SeqGen2(seq)
+    rng = cast(np.random.Generator, SeqGen2(seq))
 
     strat = ThresholdStrategy(
         score_threshold=0,

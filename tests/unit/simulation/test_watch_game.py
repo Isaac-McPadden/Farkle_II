@@ -4,7 +4,7 @@ import sys
 import types
 from contextlib import contextmanager
 from types import MethodType
-from typing import cast
+from typing import Protocol, cast
 
 import numpy as np
 import pytest
@@ -38,6 +38,20 @@ sys.modules.setdefault("scipy.stats", stats_stub)
 wg = pytest.importorskip("farkle.simulation.watch_game")
 
 
+class _GeneratorProto(Protocol):
+    def integers(
+        self,
+        low: int,
+        high: int | None = None,
+        size: int | tuple[int, ...] | None = None,
+        **kwargs,
+    ) -> np.ndarray: ...
+
+
+def _as_generator(rng: _GeneratorProto) -> np.random.Generator:
+    return cast(np.random.Generator, rng)
+
+
 def test_default_score_patch_handles_discards(monkeypatch):  # noqa: ARG001
     orig_s = scoring.default_score
     orig_e = engine.default_score
@@ -66,7 +80,7 @@ def test_patched_score_used_in_turn(monkeypatch):  # noqa: ARG001
     player = wg.FarklePlayer(
         "P",
         wg.ThresholdStrategy(score_threshold=0, dice_threshold=6),
-        rng=cast(np.random.Generator, FixedGen()),
+        rng=_as_generator(FixedGen()),
     )
     wg.FarkleGame([player])  # minimal instantiation
     player.take_turn(target_score=1000)
@@ -94,7 +108,7 @@ def test_patched_score_traces_take_turn(caplog):  # noqa: D103
         p = engine.FarklePlayer(
             "T",
             wg.ThresholdStrategy(score_threshold=0, dice_threshold=6),
-            rng=cast(np.random.Generator, StubGen()),
+            rng=_as_generator(StubGen()),
         )
         p.take_turn(target_score=10_000)
         assert any("score([" in rec.message for rec in caplog.records)
@@ -174,7 +188,7 @@ def test_traceplayer_roll_logs(caplog):
     p = wg.TracePlayer(
         "X",
         wg.ThresholdStrategy(score_threshold=0, dice_threshold=6),
-        rng=cast(np.random.Generator, FixedRng()),
+        rng=_as_generator(FixedRng()),
     )
 
     caplog.set_level(logging.INFO, logger=wg.LOGGER.name)
