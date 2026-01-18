@@ -105,11 +105,12 @@ def _identity_jit(*jit_args, **jit_kwargs):
 
 numba_spec = importlib.util.find_spec("numba")
 if numba_spec is None:
-    numba = types.SimpleNamespace(jit=_identity_jit, njit=_identity_jit)  # type: ignore[assignment]
-    sys.modules["numba"] = numba  # type: ignore[assignment]
+    numba = types.ModuleType("numba")
+    numba.jit = _identity_jit  # type: ignore[attr-defined]
+    numba.njit = _identity_jit  # type: ignore[attr-defined]
+    sys.modules["numba"] = numba
 else:
-    import numba  # type: ignore[import-not-found]
-
+    numba = importlib.import_module("numba")
     numba.jit = _identity_jit  # type: ignore[assignment]
     numba.njit = _identity_jit  # type: ignore[assignment]
 
@@ -297,8 +298,6 @@ def _seed_random_generators(monkeypatch: pytest.MonkeyPatch) -> Generator[None, 
 
 def pytest_configure():
     """Disable Numba JIT during unit tests to preserve coverage reporting."""
-
-    import numba  # type: ignore[import-not-found]
 
     numba.jit = _identity_jit  # type: ignore[assignment]
     numba.njit = _identity_jit  # keep both symbols  # type: ignore[assignment]
