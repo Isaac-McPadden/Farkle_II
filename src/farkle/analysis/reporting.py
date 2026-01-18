@@ -641,7 +641,8 @@ def plot_h2h_heatmap_for_players(
 
     for row in decisions.itertuples(index=False):
         if row.a in matrix.index and row.b in matrix.columns:
-            matrix.loc[row.a, row.b] = getattr(row, "win_rate", np.nan)
+            win_rate = getattr(row, "win_rate", np.nan)
+            matrix.loc[row.a, row.b] = _as_float(win_rate)
         if (
             hasattr(row, "wins_b")
             and hasattr(row, "games")
@@ -651,9 +652,9 @@ def plot_h2h_heatmap_for_players(
             try:
                 wins_b = _as_float(row.wins_b)
                 games = _as_float(row.games)
-                matrix.at[row.b, row.a] = wins_b / games
+                matrix.at[row.b, row.a] = float(wins_b) / float(games)
             except ZeroDivisionError:
-                matrix.at[row.b, row.a] = np.nan
+                matrix.at[row.b, row.a] = _as_float(np.nan)
         elif hasattr(row, "win_rate") and row.b in matrix.index and row.a in matrix.columns:
             matrix.at[row.b, row.a] = 1.0 - _as_float(row.win_rate)
 
