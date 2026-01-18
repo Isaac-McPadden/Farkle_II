@@ -32,7 +32,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import TypeAlias
+from typing import Any, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -48,6 +48,7 @@ from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.writer import ParquetShardWriter
 
 StatValue: TypeAlias = float | int | str | NAType
+ArrowColumnData: TypeAlias = np.ndarray | list[Any]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -563,7 +564,7 @@ def _rare_event_flags(
                 grouped = melted.groupby("strategy", observed=True, sort=False)
                 for strategy, group in grouped:
                     count = int(group.shape[0])
-                    per_game_data: dict[str, object] = {
+                    per_game_data: dict[str, ArrowColumnData] = {
                         "summary_level": np.full(count, "game", dtype=object),
                         "strategy": np.full(count, strategy, dtype=object),
                         "n_players": np.full(count, n_players, dtype=player_dtype),
