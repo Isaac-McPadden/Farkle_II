@@ -17,6 +17,7 @@ import pyarrow.parquet as pq
 
 from .types import Compression, normalize_compression
 
+
 @contextmanager
 def atomic_path(final_path: str):
     """Write to a temp file in the same directory, then atomic replace."""

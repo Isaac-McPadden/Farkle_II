@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -12,9 +11,9 @@ import pandas as pd
 import pytest
 
 from farkle.orchestration.pipeline import (
+    _detect_player_counts,
     _done_path,
     _first_existing,
-    _detect_player_counts,
     analyze_trueskill,
     fingerprint,
     is_up_to_date,

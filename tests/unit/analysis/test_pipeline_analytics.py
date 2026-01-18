@@ -7,9 +7,9 @@ from pathlib import Path
 import pandas as pd
 
 import farkle.analysis.stage_registry as stage_registry
-from farkle.config import AppConfig, IOConfig
 from farkle.analysis.stage_registry import resolve_stage_layout
-from farkle.orchestration.pipeline import analyze_all, _done_path, is_up_to_date, write_done
+from farkle.config import AppConfig, IOConfig
+from farkle.orchestration.pipeline import _done_path, analyze_all, is_up_to_date, write_done
 
 
 def _setup(tmp_path: Path) -> tuple[Path, AppConfig]:

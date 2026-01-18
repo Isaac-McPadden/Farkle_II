@@ -192,7 +192,7 @@ def _build_summary(frame: pd.DataFrame, *, players: int, seed: int) -> pd.DataFr
     summary["win_rate"] = np.where(games > 0, wins / games, 0.0)
     ci_bounds = [
         wilson_ci(int(wins_i), int(games_i)) if games_i > 0 else (0.0, 1.0)
-        for wins_i, games_i in zip(wins, games)
+        for wins_i, games_i in zip(wins, games, strict=False)
     ]
     summary["ci_lo"] = [bounds[0] for bounds in ci_bounds]
     summary["ci_hi"] = [bounds[1] for bounds in ci_bounds]

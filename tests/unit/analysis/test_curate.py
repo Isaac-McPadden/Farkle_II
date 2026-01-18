@@ -6,8 +6,8 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-import farkle.analysis.curate as curate
 
+import farkle.analysis.curate as curate
 from farkle.analysis.curate import (
     _already_curated,
     _schema_hash,

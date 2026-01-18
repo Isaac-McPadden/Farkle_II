@@ -12,16 +12,16 @@ public API.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import pickle
-import hashlib
 import shutil
 from collections import Counter
 from pathlib import Path
 from typing import Mapping, Sequence
 
-import pyarrow as pa
 import pandas as pd
+import pyarrow as pa
 
 import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig
@@ -33,9 +33,9 @@ from farkle.simulation.strategies import (
     ThresholdStrategy,
     build_strategy_manifest,
 )
+from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.manifest import iter_manifest
-from farkle.utils import random as urandom
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -417,7 +417,7 @@ def _validate_resume_outputs(
     if row_dir is not None:
         manifest_path = row_dir / "manifest.jsonl"
         if manifest_path.exists():
-            expected_seeds = set(int(s) for s in urandom.spawn_seeds(n_shuffles, seed=cfg.sim.seed))
+            expected_seeds = {int(s) for s in urandom.spawn_seeds(n_shuffles, seed=cfg.sim.seed)}
             seen: set[int] = set()
             duplicates = 0
             unexpected = 0

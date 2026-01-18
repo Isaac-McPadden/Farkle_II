@@ -90,7 +90,6 @@ def test_run_generates_all_outputs(tmp_path: Path):
 
     game_stats.run(cfg, force=True)
 
-    out_dir = cfg.game_stats_stage_dir
     game_length = cfg.game_stats_output_path("game_length.parquet")
     margin_path = cfg.game_stats_output_path("margin_stats.parquet")
     rare_events_path = cfg.game_stats_output_path("rare_events.parquet")

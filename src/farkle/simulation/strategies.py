@@ -695,9 +695,7 @@ def parse_strategy_identifier(
     parse_legacy: Callable[[str], dict] | None = None,
 ) -> ThresholdStrategy:
     """Return a ThresholdStrategy from an identifier (id or legacy string)."""
-    if isinstance(value, int) and not isinstance(value, bool):
-        strategy_id = int(value)
-    elif isinstance(value, str) and value.isdigit():
+    if isinstance(value, int) and not isinstance(value, bool) or isinstance(value, str) and value.isdigit():
         strategy_id = int(value)
     else:
         strategy_id = None
