@@ -58,10 +58,7 @@ def test_patched_score_used_in_turn(monkeypatch):  # noqa: ARG001
 
     monkeypatch.setattr(wg.LOGGER, "info", lambda msg, *a, **k: calls.append(msg))  # noqa: ARG005
 
-    class FixedGen(np.random.Generator):
-        def __init__(self) -> None:
-            super().__init__(np.random.PCG64())
-
+    class FixedGen:
         def integers(self, *a, size=None, **k):  # noqa: ARG002, D401
             return np.array([1, 1, 1, 2, 2, 2][: size or 1])
 
@@ -87,10 +84,7 @@ def test_patched_score_traces_take_turn(caplog):  # noqa: D103
     try:
         caplog.set_level(logging.INFO, logger=wg.LOGGER.name)
 
-        class StubGen(np.random.Generator):
-            def __init__(self):
-                super().__init__(np.random.PCG64())
-
+        class StubGen:
             def integers(self, low, high=None, size=None, **kwargs):  # noqa: ARG002
                 if size is None:
                     size = 6
@@ -172,10 +166,7 @@ def test_patch_scoring_logs_and_restores(caplog):
 def test_traceplayer_roll_logs(caplog):
     """``TracePlayer`` should log every roll produced."""
 
-    class FixedRng(np.random.Generator):
-        def __init__(self):
-            super().__init__(np.random.PCG64())
-
+    class FixedRng:
         def integers(self, low, high=None, size=None, **kwargs):  # noqa: ARG002
             return np.array([3, 3, 3][: size or 1])
 
