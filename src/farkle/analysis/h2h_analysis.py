@@ -68,7 +68,8 @@ def holm_bonferroni(
 
     played = base["wins_a"] + base["wins_b"]
     mismatched = base.loc[played != base["games"], ["a", "b", "games", "wins_a", "wins_b"]]
-    if not mismatched.empty:
+    mismatched_empty = mismatched.empty
+    if not mismatched_empty:
         raise RuntimeError(
             f"Detected wins != games for pairs: {mismatched.to_dict(orient='records')}"
         )
@@ -78,7 +79,8 @@ def holm_bonferroni(
         columns=["a", "b", "pval", "adj_p", "is_sig", "dir", "tie_break", "tie_policy"],
         dtype=object,
     )
-    if not ties.empty:
+    ties_empty = ties.empty
+    if not ties_empty:
         LOGGER.warning(
             "Ties detected in head-to-head results; marking as non-significant",
             extra={
@@ -124,7 +126,8 @@ def holm_bonferroni(
             )
 
     base = base.loc[base["wins_a"] != base["wins_b"]].copy()
-    if base.empty:
+    base_empty = base.empty
+    if base_empty:
         return tie_decisions.astype(
             {
                 "a": "string",
@@ -157,7 +160,8 @@ def holm_bonferroni(
     decisions["tie_break"] = False
     decisions["tie_policy"] = tie_policy
 
-    if not tie_decisions.dropna(how="all").empty:
+    tie_decisions_empty = tie_decisions.dropna(how="all").empty
+    if not tie_decisions_empty:
         decisions = pd.concat([decisions, tie_decisions], ignore_index=True)
     decisions = decisions.sort_values(by=["a", "b", "dir", "pval"], kind="mergesort")
     ordered = (
