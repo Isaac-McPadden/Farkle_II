@@ -198,7 +198,7 @@ def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataF
         for (matchup, strategy, n_players), group in grouped_matchup
         for strategy_str in (str(strategy),)
         for n_players_int in (int(cast(int, n_players)),)
-        for matchup_str in ((str(matchup) if pd.notna(matchup) else None),)
+        for matchup_str in ((None if matchup is None else str(matchup)),)
     )
     rows.extend(chain.from_iterable(matchup_diagnostics))
 
