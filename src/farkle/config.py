@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Mapping, Sequence, get_args, get_origin, 
 
 import yaml  # type: ignore[import-untyped]
 
+from farkle.utils.types import Compression, normalize_compression
 from farkle.utils.yaml_helpers import expand_dotted_keys
 
 if TYPE_CHECKING:  # pragma: no cover - used for type checking only
@@ -182,7 +183,7 @@ class IngestConfig:
     """Ingestion tuning for streaming parquet writes."""
 
     row_group_size: int = 64_000
-    parquet_codec: str = "snappy"
+    parquet_codec: Compression = "snappy"
     batch_rows: int = 100_000
     n_jobs: int = 1
 
@@ -506,9 +507,9 @@ class AppConfig:
         return self.ingest.row_group_size
 
     @property
-    def parquet_codec(self) -> str:
+    def parquet_codec(self) -> Compression:
         """Compression codec used for ingest parquet outputs."""
-        return self.ingest.parquet_codec
+        return normalize_compression(self.ingest.parquet_codec)
 
     @property
     def n_jobs_ingest(self) -> int:

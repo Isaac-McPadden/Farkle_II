@@ -13,15 +13,18 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from .types import Compression, normalize_compression
 from .writer import atomic_path
 
 
-def write_parquet_atomic(table: pa.Table, path: Union[Path, str], *, codec: str = "snappy") -> None:
+def write_parquet_atomic(
+    table: pa.Table, path: Union[Path, str], *, codec: Compression = "snappy"
+) -> None:
     """Write *table* to *path* atomically using Parquet compression."""
     final_path = Path(path)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(final_path)) as tmp_path:
-        pq.write_table(table, tmp_path, compression=codec)
+        pq.write_table(table, tmp_path, compression=normalize_compression(codec))
 
 
 def write_csv_atomic(df: pd.DataFrame, path: Union[Path, str]) -> None:

@@ -9,6 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 
 import farkle.analysis.run_trueskill as rt
+from farkle.utils.types import Compression, normalize_compression
 
 
 def test_run_trueskill_pooling_and_short_circuit(
@@ -39,10 +40,12 @@ def test_run_trueskill_pooling_and_short_circuit(
         ),
     }
 
-    def immediate_write(table: pa.Table, path: Path | str, *, codec: str = "snappy") -> None:
+    def immediate_write(
+        table: pa.Table, path: Path | str, *, codec: Compression = "snappy"
+    ) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(table, path, compression=codec)
+        pq.write_table(table, path, compression=normalize_compression(codec))
 
     created_executors: list["_FakeExecutor"] = []
 
@@ -166,10 +169,12 @@ def test_run_trueskill_skips_zero_game_block(
         "3": ("B", rt.RatingStats(50.0, 5.0), 0),
     }
 
-    def immediate_write(table: pa.Table, path: Path | str, *, codec: str = "snappy") -> None:
+    def immediate_write(
+        table: pa.Table, path: Path | str, *, codec: Compression = "snappy"
+    ) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(table, path, compression=codec)
+        pq.write_table(table, path, compression=normalize_compression(codec))
 
     def fake_rate_block_worker(
         block_dir: str,
