@@ -457,6 +457,9 @@ def _tier_agreements(
             nmi[f"{a}_vs_{b}"] = None
             continue
 
+        assert tiers_a is not None
+        assert tiers_b is not None
+
         common = sorted(set(tiers_a) & set(tiers_b))
         if len(common) < 2:
             ari[f"{a}_vs_{b}"] = None

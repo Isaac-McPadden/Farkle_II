@@ -151,7 +151,7 @@ def test_global_stats_warns_when_seat_ranks_missing(caplog: pytest.LogCaptureFix
         schema = type("Schema", (), {"names": ["n_rounds"]})()
 
         @staticmethod
-        def to_table(columns=None):  # noqa: ARG002
+        def to_table(_columns=None):
             return pa.Table.from_pandas(pd.DataFrame({"n_rounds": [1, 2, 3]}))
 
     monkeypatch.setattr(game_stats.ds, "dataset", lambda path: DummyDataset())

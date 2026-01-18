@@ -110,7 +110,7 @@ class FarklePlayer:
             player scored with all dice), and ``farkled`` signals that no points
             were scored.
         """
-        pts, used, reroll, d5, d1 = default_score(  # type: ignore[misc]
+        pts, used, reroll, d5, d1 = default_score(
             dice_roll=roll,
             turn_score_pre=turn_score,
             smart_five=self.strategy.smart_five,
@@ -122,7 +122,7 @@ class FarklePlayer:
             require_both=self.strategy.require_both,
             favor_dice_or_score=self.strategy.favor_dice_or_score,
             return_discards=True,
-        )
+        )  # type: ignore[misc]
 
         if pts == 0:
             self.n_farkles += 1

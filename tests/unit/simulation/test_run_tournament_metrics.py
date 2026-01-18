@@ -16,7 +16,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from statistics import NormalDist
 from types import ModuleType
-from typing import Any
+from typing import Any, Iterator
 
 import pytest
 
@@ -40,11 +40,11 @@ sys.modules.setdefault(
 # Stats helpers depend on SciPy ?+? provide a minimal stub
 
 
-def _ppf(q, loc=0.0, scale=1.0):  # noqa: ANN001
+def _ppf(q, loc=0.0, scale=1.0) -> float:  # noqa: ANN001
     return NormalDist(mu=loc, sigma=scale).inv_cdf(q)
 
 
-def _isf(q, loc=0.0, scale=1.0):  # noqa: ANN001
+def _isf(q, loc=0.0, scale=1.0) -> float:  # noqa: ANN001
     return NormalDist(mu=loc, sigma=scale).inv_cdf(1 - q)
 
 
@@ -107,7 +107,9 @@ def _mini_strategies(count: int = 6) -> list[ThresholdStrategy]:
 
 
 def _install_serial_process_map(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_process_map(func, iterable, *, initializer=None, initargs=(), **kwargs):
+    def fake_process_map(
+        func, iterable, *, initializer=None, initargs=(), **kwargs
+    ) -> Iterator[Any]:
         if initializer is not None:
             initializer(*initargs)
         for item in iterable:
@@ -163,7 +165,7 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
 
     recorded: dict[str, Any] = {}
 
-    def fake_run_streaming_shard(**kwargs):
+    def fake_run_streaming_shard(**kwargs) -> None:
         batches = list(kwargs["batch_iter"])
         recorded.update(
             {

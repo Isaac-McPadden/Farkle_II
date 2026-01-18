@@ -2,7 +2,7 @@ import json
 import math
 import os
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Callable, Dict, Tuple
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -66,7 +66,9 @@ def test_run_trueskill_pooling_and_short_circuit(
     class _FakeExecutor:
         def __init__(self, max_workers: int):
             self.max_workers = max_workers
-            self.submissions = []
+            self.submissions: list[
+                tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
+            ] = []
             created_executors.append(self)
 
         def submit(self, fn, *args, **kwargs):

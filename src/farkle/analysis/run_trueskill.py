@@ -335,16 +335,27 @@ def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[lis
     """
     cols = set(batch.column_names)
 
-    def col(name: str):
+    def col(name: str) -> pa.ChunkedArray | None:
         """Return column from the batch when present, otherwise ``None``."""
-        return batch[name] if name in cols else None
+        return batch.column(name) if name in cols else None
 
     sr_col = col("seat_ranks")
     ranks_list = sr_col.to_pylist() if sr_col is not None else None
-    w_col = col("winner_seat") or col("winner")
-    winner_col = w_col.to_pylist() if w_col is not None else None
-    strat_cols = [col(f"P{i}_strategy") for i in range(1, n + 1)]
-    rank_cols = [col(f"P{i}_rank") for i in range(1, n + 1)]
+    winner_col_name: str | None
+    if "winner_seat" in cols:
+        winner_col_name = "winner_seat"
+    elif "winner" in cols:
+        winner_col_name = "winner"
+    else:
+        winner_col_name = None
+    winner_col = (
+        batch.column(winner_col_name) if winner_col_name is not None else None
+    )
+    winner_list = winner_col.to_pylist() if winner_col is not None else None
+    strat_col_names: list[str] = [f"P{i}_strategy" for i in range(1, n + 1)]
+    rank_col_names: list[str] = [f"P{i}_rank" for i in range(1, n + 1)]
+    strat_cols: list[pa.ChunkedArray | None] = [col(name) for name in strat_col_names]
+    rank_cols: list[pa.ChunkedArray | None] = [col(name) for name in rank_col_names]
     n_rows = batch.num_rows
     for r in range(n_rows):
         seats = [sc[r].as_py() if sc is not None else None for sc in strat_cols]
@@ -378,10 +389,10 @@ def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[lis
             yield cast(list[str], players), list(range(len(players)))
             continue
         # 3) fallback
-        if winner_col is None or not winner_col[r]:
+        if winner_list is None or not winner_list[r]:
             continue
         try:
-            w_idx = int(str(winner_col[r])[1:]) - 1
+            w_idx = int(str(winner_list[r])[1:]) - 1
         except Exception:
             continue
         winner = seats[w_idx]
@@ -570,29 +581,44 @@ def _iter_players_and_ranks(
     has_seat_ranks = schema.get_field_index("seat_ranks") != -1
 
     if has_seat_ranks:
-        cols = ["seat_ranks"] + [f"P{i}_strategy" for i in range(1, n + 1)]
+        seat_rank_col_name = "seat_ranks"
+        strat_col_names: list[str] = [f"P{i}_strategy" for i in range(1, n + 1)]
+        cols: list[str] = [seat_rank_col_name, *strat_col_names]
         for batch in dataset.to_batches(columns=cols, batch_size=batch_size):
-            ranks_col = batch["seat_ranks"].to_pylist()  # list[list[str]] or None
-            strat_cols = [batch[f"P{i}_strategy"] for i in range(1, n + 1)]
-            for r, order in enumerate(ranks_col):
+            ranks_col: pa.ChunkedArray = batch.column(seat_rank_col_name)
+            ranks_list = ranks_col.to_pylist()  # list[list[str]] or None
+            strat_cols: list[pa.ChunkedArray] = [
+                batch.column(name) for name in strat_col_names
+            ]
+            for r, order in enumerate(ranks_list):
                 if not order:
                     continue
                 # strict placement: teams already ordered; ranks are 0..K-1
-                players = [strat_cols[int(seat[1:]) - 1][r].as_py() for seat in order]
+                players = [
+                    strat_cols[int(str(seat)[1:]) - 1][r].as_py() for seat in order
+                ]
                 if any(p is None for p in players):
                     continue
                 yield players, list(range(len(players)))
         return
 
     # seat_ranks not present → derive from P#_rank or fall back to winner + tied losers
-    rank_cols = [f"P{i}_rank" for i in range(1, n + 1)]
-    strat_cols = [f"P{i}_strategy" for i in range(1, n + 1)]
-    winner_col_name = "winner_seat" if schema.get_field_index("winner_seat") != -1 else "winner"
-    cols = [winner_col_name] + rank_cols + strat_cols
+    rank_col_names: list[str] = [f"P{i}_rank" for i in range(1, n + 1)]
+    strat_col_names: list[str] = [f"P{i}_strategy" for i in range(1, n + 1)]
+    winner_col_name: str = (
+        "winner_seat" if schema.get_field_index("winner_seat") != -1 else "winner"
+    )
+    cols: list[str] = [winner_col_name, *rank_col_names, *strat_col_names]
     for batch in dataset.to_batches(columns=cols, batch_size=batch_size):
-        winner_seats = batch[winner_col_name].to_pylist()
-        ranks = [[batch[c][i].as_py() for c in rank_cols] for i in range(len(batch))]
-        strats = [[batch[c][i].as_py() for c in strat_cols] for i in range(len(batch))]
+        winner_seats = batch.column(winner_col_name).to_pylist()
+        rank_cols: list[pa.ChunkedArray] = [
+            batch.column(name) for name in rank_col_names
+        ]
+        strat_cols: list[pa.ChunkedArray] = [
+            batch.column(name) for name in strat_col_names
+        ]
+        ranks = [[col[i].as_py() for col in rank_cols] for i in range(len(batch))]
+        strats = [[col[i].as_py() for col in strat_cols] for i in range(len(batch))]
 
         for winner_seat, seat_ranks, seat_strats in zip(winner_seats, ranks, strats, strict=True):
             # try to build placements from P#_rank if we have ≥2 ranks

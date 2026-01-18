@@ -381,20 +381,19 @@ def run_bonferroni_head2head(
     pending_shard_records: list[dict[str, Any]] = []
     strategies_cache: Dict[int | str, Any] = {}
     shard_dir.mkdir(parents=True, exist_ok=True)
-    shard_schema = pa.schema(
-        [
-            pa.field("players", pa.int64()),
-            pa.field("seed", pa.int64()),
-            pa.field("pair_id", pa.int64()),
-            pa.field("a", pa.string()),
-            pa.field("b", pa.string()),
-            pa.field("games", pa.int64()),
-            pa.field("wins_a", pa.int64()),
-            pa.field("wins_b", pa.int64()),
-            pa.field("win_rate_a", pa.float64()),
-            pa.field("pval_one_sided", pa.float64()),
-        ]
-    )
+    shard_fields: list[pa.Field] = [
+        pa.field("players", pa.int64()),
+        pa.field("seed", pa.int64()),
+        pa.field("pair_id", pa.int64()),
+        pa.field("a", pa.string()),
+        pa.field("b", pa.string()),
+        pa.field("games", pa.int64()),
+        pa.field("wins_a", pa.int64()),
+        pa.field("wins_b", pa.int64()),
+        pa.field("win_rate_a", pa.float64()),
+        pa.field("pval_one_sided", pa.float64()),
+    ]
+    shard_schema = pa.schema(shard_fields)
 
     def _read_pair_ids_from_parquet(path: Path) -> set[int]:
         if not path.exists():
