@@ -1,4 +1,4 @@
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import pandas as pd
 import pyarrow as pa
@@ -8,6 +8,9 @@ from tests.helpers.diagnostic_fixtures import build_curated_fixture
 from farkle.analysis import rng_diagnostics
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.utils.types import Compression
+
+if TYPE_CHECKING:
+    from pyarrow.parquet import CompressionType
 
 
 def test_collect_diagnostics_empty_input():
