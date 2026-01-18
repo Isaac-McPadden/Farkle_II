@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 import farkle.analysis.run_bonferroni_head2head as rb
+from farkle.analysis.stage_registry import StageDefinition, StageLayout, StagePlacement
 from farkle.config import AppConfig
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import ThresholdStrategy
@@ -189,11 +190,22 @@ def test_load_top_strategies_handles_missing_and_invalid(tmp_path: Path, caplog)
 def test_tiers_path_prefers_stage_layout_and_warns(tmp_path: Path, caplog):
     cfg = AppConfig()
     cfg.io.results_dir = tmp_path
-    cfg._stage_layout = type(
-        "_Layout",
-        (),
-        {"folder_for": lambda self, key: "11_head2head" if key in {"head2head", "tiering"} else None},
-    )()
+    cfg.set_stage_layout(
+        StageLayout(
+            placements=[
+                StagePlacement(
+                    definition=StageDefinition(key="head2head", group="analytics"),
+                    index=0,
+                    folder_name="11_head2head",
+                ),
+                StagePlacement(
+                    definition=StageDefinition(key="tiering", group="analytics"),
+                    index=1,
+                    folder_name="11_head2head",
+                ),
+            ]
+        )
+    )
     stage_dir = cfg.analysis_dir / "11_head2head"
     stage_dir.mkdir(parents=True)
     legacy_tiers = cfg.analysis_dir / "tiers.json"
