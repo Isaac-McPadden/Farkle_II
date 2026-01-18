@@ -1,4 +1,5 @@
 import itertools
+from typing import cast
 
 import numpy as np
 import pytest
@@ -43,8 +44,8 @@ def test_game_play_deterministic():
     rng1 = fixed_rng([1, 1, 1, 1, 1, 1])
     rng2 = fixed_rng([1, 1, 1, 1, 1, 1])
     players = [
-        FarklePlayer("P1", stop_after_one(), rng=rng1),
-        FarklePlayer("P2", stop_after_one(), rng=rng2),
+        FarklePlayer("P1", stop_after_one(), rng=cast(np.random.Generator, rng1)),
+        FarklePlayer("P2", stop_after_one(), rng=cast(np.random.Generator, rng2)),
     ]
     gm = FarkleGame(players, target_score=1500).play()
     winner = max(gm.players, key=lambda n: gm.players[n].score)
@@ -100,8 +101,8 @@ def test_auto_hot_dice_forces_roll():
     strat_hot = ThresholdStrategy(score_threshold=0, dice_threshold=6, auto_hot_dice=True)
     strat_cold = ThresholdStrategy(score_threshold=0, dice_threshold=6, auto_hot_dice=False)
 
-    p_hot = FarklePlayer("H", strat_hot, rng=rng)
-    p_cold = FarklePlayer("C", strat_cold, rng=rng)
+    p_hot = FarklePlayer("H", strat_hot, rng=cast(np.random.Generator, rng))
+    p_cold = FarklePlayer("C", strat_cold, rng=cast(np.random.Generator, rng))
 
     # target_score argument comes from take_turn signature
     p_hot.take_turn(target_score=10_000)
@@ -136,7 +137,7 @@ def test_final_round_override():
     # ---------- Player 1 triggers the final round ----------
     p1_rng = SeqGen2([1, 1, 1, 2, 3, 4])  # 300 pts
     strat1 = ThresholdStrategy(score_threshold=0, dice_threshold=6)
-    p1 = FarklePlayer("P1", strat1, rng=p1_rng)
+    p1 = FarklePlayer("P1", strat1, rng=cast(np.random.Generator, p1_rng))
     p1.score = 9_900  # so first turn pushes ≥10 000
     p1.has_scored = True
 
@@ -147,7 +148,7 @@ def test_final_round_override():
     strat2 = ThresholdStrategy(
         score_threshold=150, dice_threshold=6, consider_score=True, consider_dice=False
     )
-    p2 = FarklePlayer("P2", strat2, rng=p2_rng)
+    p2 = FarklePlayer("P2", strat2, rng=cast(np.random.Generator, p2_rng))
     p2.score = 8_500
     p2.has_scored = True
 
@@ -167,7 +168,11 @@ def test_turn_roll_fuse():
         def integers(self, *a, size=None, **k):  # noqa: ARG002, D401
             return np.array([1, 1, 1, 2, 2, 2][: size or 1])
 
-    p = FarklePlayer("X", ThresholdStrategy(auto_hot_dice=True), rng=HotGen())
+    p = FarklePlayer(
+        "X",
+        ThresholdStrategy(auto_hot_dice=True),
+        rng=cast(np.random.Generator, HotGen()),
+    )
     with pytest.raises(RuntimeError):
         p.take_turn(target_score=10_000)
 
@@ -189,7 +194,7 @@ def test_final_round_stop_when_ahead_run_up_false():
         consider_score=False,
         consider_dice=False,
     )
-    p = FarklePlayer("P", strat, rng=rng)
+    p = FarklePlayer("P", strat, rng=cast(np.random.Generator, rng))
     p.score = 9_000
     p.has_scored = True
 

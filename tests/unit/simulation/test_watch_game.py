@@ -4,6 +4,7 @@ import sys
 import types
 from contextlib import contextmanager
 from types import MethodType
+from typing import cast
 
 import numpy as np
 import pytest
@@ -65,7 +66,7 @@ def test_patched_score_used_in_turn(monkeypatch):  # noqa: ARG001
     player = wg.FarklePlayer(
         "P",
         wg.ThresholdStrategy(score_threshold=0, dice_threshold=6),
-        rng=FixedGen(),
+        rng=cast(np.random.Generator, FixedGen()),
     )
     wg.FarkleGame([player])  # minimal instantiation
     player.take_turn(target_score=1000)
@@ -93,7 +94,7 @@ def test_patched_score_traces_take_turn(caplog):  # noqa: D103
         p = engine.FarklePlayer(
             "T",
             wg.ThresholdStrategy(score_threshold=0, dice_threshold=6),
-            rng=StubGen(),
+            rng=cast(np.random.Generator, StubGen()),
         )
         p.take_turn(target_score=10_000)
         assert any("score([" in rec.message for rec in caplog.records)
@@ -173,7 +174,7 @@ def test_traceplayer_roll_logs(caplog):
     p = wg.TracePlayer(
         "X",
         wg.ThresholdStrategy(score_threshold=0, dice_threshold=6),
-        rng=FixedRng(),
+        rng=cast(np.random.Generator, FixedRng()),
     )
 
     caplog.set_level(logging.INFO, logger=wg.LOGGER.name)
