@@ -32,13 +32,12 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import TypeAlias, cast
+from typing import Any, TypeAlias, cast
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
-from numpy.typing import DTypeLike
 from pandas._libs.missing import NAType
 
 from farkle.analysis import stage_logger
@@ -49,6 +48,7 @@ from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.writer import ParquetShardWriter
 
 StatValue: TypeAlias = float | int | str | NAType
+ArrowColumnData: TypeAlias = np.ndarray | list[Any]
 
 LOGGER = logging.getLogger(__name__)
 
@@ -564,20 +564,20 @@ def _rare_event_flags(
                 grouped = melted.groupby("strategy", observed=True, sort=False)
                 for strategy, group in grouped:
                     count = int(group.shape[0])
-                    per_game_data: dict[str, object] = {
+                    per_game_data: dict[str, ArrowColumnData] = {
                         "summary_level": np.full(count, "game", dtype=object),
                         "strategy": np.full(count, strategy, dtype=object),
                         "n_players": np.full(count, n_players, dtype=player_dtype),
                         "margin_of_victory": group["margin_of_victory"].to_numpy(dtype=float),
                         "multi_reached_target": group["multi_reached_target"].to_numpy(
-                            dtype=flag_dtype
+                            dtype=flag_dtype.type
                         ),
-                        "observations": np.ones(count, dtype=obs_dtype),
+                        "observations": np.ones(count, dtype=obs_dtype.type),
                     }
                     for thr in thresholds:
                         per_game_data[f"margin_le_{thr}"] = group[
                             f"margin_le_{thr}"
-                        ].to_numpy(dtype=flag_dtype)
+                        ].to_numpy(dtype=flag_dtype.type)
 
                     writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
                     rows_written += count
@@ -702,7 +702,7 @@ def _collect_rare_event_counts(
     return strategy_sums, global_sums, rows_available, max_flag_count, max_observations
 
 
-def _select_int_dtype(max_value: int) -> tuple[DTypeLike, pa.DataType]:
+def _select_int_dtype(max_value: int) -> tuple[np.dtype[np.integer], pa.DataType]:
     """Pick an integer dtype with overflow protection."""
     if max_value <= np.iinfo(np.uint8).max:
         return np.dtype(np.uint8), pa.uint8()

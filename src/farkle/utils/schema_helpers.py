@@ -12,12 +12,12 @@ from typing import Final
 import pyarrow as pa
 
 # ---------- static pieces -------------------------------------------------
-_BASE_FIELDS: Final[list[tuple[str, pa.DataType]]] = [
-    ("winner_seat", pa.string()),  # P{n} label of the winner
-    ("winner_strategy", pa.string()),  # strategy string of the winner
-    ("seat_ranks", pa.list_(pa.string())),  # ["P7","P1","P3",...]
-    ("winning_score", pa.int32()),
-    ("n_rounds", pa.int16()),
+_BASE_FIELDS: Final[list[pa.Field]] = [
+    pa.field("winner_seat", pa.string()),  # P{n} label of the winner
+    pa.field("winner_strategy", pa.string()),  # strategy string of the winner
+    pa.field("seat_ranks", pa.list_(pa.string())),  # ["P7","P1","P3",...]
+    pa.field("winning_score", pa.int32()),
+    pa.field("n_rounds", pa.int16()),
 ]
 
 _SEAT_TEMPLATE: Final[dict[str, pa.DataType]] = {
