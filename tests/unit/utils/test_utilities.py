@@ -1,4 +1,5 @@
 import datetime as _datetime
+from typing import cast
 
 import pytest
 import yaml
@@ -46,8 +47,8 @@ def test_cli_run(tmp_path, monkeypatch, capsys):
 
     cli_main.main(["--config", str(cfg_path), "run"])
 
-    assert called["n"] == 2
-    cfg_obj = called["cfg"]
+    assert cast(int, called["n"]) == 2
+    cfg_obj = cast(AppConfig, called["cfg"])
     assert isinstance(cfg_obj, AppConfig)
     assert cfg_obj.sim.seed == 42
     assert cfg_obj.sim.num_shuffles == 1
@@ -110,8 +111,8 @@ def test_cli_missing_keys(tmp_path, monkeypatch):
 
     cli_main.main(["--config", str(cfg), "run"])
 
-    assert called["n"] == 5
-    cfg_obj = called["cfg"]
+    assert cast(int, called["n"]) == 5
+    cfg_obj = cast(AppConfig, called["cfg"])
     assert isinstance(cfg_obj, AppConfig)
     assert cfg_obj.sim.n_players_list == [5]
     assert str(cfg_obj.io.results_dir).endswith("results_seed_0")
@@ -198,5 +199,5 @@ def test_games_for_power_from_design_uses_mapping(monkeypatch):
     )
 
     assert result == 123
-    assert captured["method"] == "bonferroni"
-    assert captured["tail"] == "two_sided"
+    assert cast(str, captured["method"]) == "bonferroni"
+    assert cast(str, captured["tail"]) == "two_sided"

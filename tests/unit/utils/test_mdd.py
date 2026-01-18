@@ -1,3 +1,5 @@
+from typing import cast
+
 import pandas as pd
 import pytest
 
@@ -36,7 +38,8 @@ def test_prepare_cell_means_and_tau2_seed():
 
     cell = prepare_cell_means(df)
     assert set(cell.columns) == {"strategy", "k", "seed", "winrate", "games"}
-    assert cell.loc[(cell.strategy == "A") & (cell.k == 2), "games"].iloc[0] == 4.0
+    games = cast(float, cell.loc[(cell.strategy == "A") & (cell.k == 2), "games"].iloc[0])
+    assert games == 4.0
 
     comps = estimate_tau2_seed(cell, robust=False)
     assert comps.tau2_seed >= 0
@@ -87,4 +90,5 @@ def test_tiering_ingredients_from_df_round_trip():
 
     result = tiering_ingredients_from_df(df, weights_by_k={2: 1.0}, z_star=1.0)
     assert set(result.keys()) == {"cell", "components", "tau2_sxk", "mdd"}
-    assert result["mdd"] > 0
+    mdd = cast(float, result["mdd"])
+    assert mdd > 0
