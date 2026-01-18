@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, Iterable
 import pyarrow as pa
 
 from .manifest import append_manifest_line
+from .types import Compression
 from .writer import ParquetShardWriter
 
 
@@ -23,7 +24,7 @@ def run_streaming_shard(
     schema: pa.Schema,
     batch_iter: Iterable[pa.Table],
     row_group_size: int = 200_000,
-    compression: str = "snappy",
+    compression: Compression = "snappy",
     manifest_extra: Dict[str, Any] | None = None,
 ):
     """Stream batches to parquet and append a manifest entry on success."""
@@ -71,7 +72,7 @@ def writer_thread(
     manifest_path: str,
     schema: pa.Schema,
     row_group_size: int,
-    compression: str,
+    compression: Compression,
     manifest_extra: Dict[str, Any] | None,
 ):
     """Consume tables from ``pop`` and write them via :func:`run_streaming_shard`."""

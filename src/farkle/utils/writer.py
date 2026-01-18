@@ -15,6 +15,7 @@ from typing import Iterable, Optional
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from .types import Compression, normalize_compression
 
 @contextmanager
 def atomic_path(final_path: str):
@@ -36,7 +37,7 @@ class ParquetShardWriter:
 
     out_path: str
     schema: pa.Schema | None = None
-    compression: str = "snappy"
+    compression: Compression = "snappy"
     row_group_size: int = 200_000
 
     _writer: Optional[pq.ParquetWriter] = None
@@ -44,6 +45,7 @@ class ParquetShardWriter:
     _rows_written: int = 0
 
     def __post_init__(self) -> None:
+        self.compression = normalize_compression(self.compression)
         dir_ = os.path.dirname(os.path.abspath(self.out_path)) or "."
         fd, tmp = tempfile.mkstemp(prefix="._tmp_", dir=dir_)
         os.close(fd)

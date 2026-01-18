@@ -13,6 +13,7 @@ import pytest
 import trueskill
 
 import farkle.analysis.run_trueskill as rt
+from farkle.utils.types import Compression, normalize_compression
 
 
 def test_find_combined_parquet_none_cases(tmp_path: Path) -> None:
@@ -518,10 +519,12 @@ def test_run_trueskill_handles_worker_exception(
         "3": ({"C": rt.RatingStats(15.0, 2.0)}, 6),
     }
 
-    def immediate_write(table: pa.Table, path: Path | str, *, codec: str = "snappy") -> None:
+    def immediate_write(
+        table: pa.Table, path: Path | str, *, codec: Compression = "snappy"
+    ) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(table, path, compression=codec)
+        pq.write_table(table, path, compression=normalize_compression(codec))
 
     class _Future:
         def __init__(self, fn, args, kwargs, fail: bool):
@@ -636,10 +639,12 @@ def test_run_trueskill_rebuilds_outdated_pooled(
 
     per_block = {"2": ({"A": rt.RatingStats(12.0, 1.5)}, 10)}
 
-    def immediate_write(table: pa.Table, path: Path | str, *, codec: str = "snappy") -> None:
+    def immediate_write(
+        table: pa.Table, path: Path | str, *, codec: Compression = "snappy"
+    ) -> None:
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(table, path, compression=codec)
+        pq.write_table(table, path, compression=normalize_compression(codec))
 
     def fake_rate_block_worker(
         block_dir: str,
