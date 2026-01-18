@@ -74,13 +74,26 @@ def silence_logging(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _fake_play_one_shuffle(seed: int, *, collect_rows: bool = False):
+def _fake_play_one_shuffle(
+    seed: int, *, collect_rows: bool = False
+) -> tuple[
+    Counter[int | str],
+    dict[str, dict[int | str, float]],
+    dict[str, dict[int | str, float]],
+    list[dict[str, object]],
+]:
     """Return simple deterministic aggregates based on the seed."""
     winner = f"S{seed}"
-    wins = Counter({winner: 1})
-    sums = {label: defaultdict(float, {winner: float(seed)}) for label in rt.METRIC_LABELS}
-    sq = {label: defaultdict(float, {winner: float(seed * seed)}) for label in rt.METRIC_LABELS}
-    rows = [{"game_seed": seed, "winner_strategy": winner}] if collect_rows else []
+    wins: Counter[int | str] = Counter({winner: 1})
+    sums: dict[str, dict[int | str, float]] = {
+        label: defaultdict(float, {winner: float(seed)}) for label in rt.METRIC_LABELS
+    }
+    sq: dict[str, dict[int | str, float]] = {
+        label: defaultdict(float, {winner: float(seed * seed)}) for label in rt.METRIC_LABELS
+    }
+    rows: list[dict[str, object]] = (
+        [{"game_seed": seed, "winner_strategy": winner}] if collect_rows else []
+    )
     return wins, sums, sq, rows
 
 
@@ -187,9 +200,13 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
 
 
 def test_save_checkpoint_round_trip(tmp_path):
-    wins = Counter({"A": 2})
-    sums = {label: defaultdict(float, {"A": 1.0}) for label in rt.METRIC_LABELS}
-    sqs = {label: defaultdict(float, {"A": 2.0}) for label in rt.METRIC_LABELS}
+    wins: Counter[int | str] = Counter({"A": 2})
+    sums: dict[str, dict[int | str, float]] = {
+        label: defaultdict(float, {"A": 1.0}) for label in rt.METRIC_LABELS
+    }
+    sqs: dict[str, dict[int | str, float]] = {
+        label: defaultdict(float, {"A": 2.0}) for label in rt.METRIC_LABELS
+    }
 
     ckpt = tmp_path / "ckpt.pkl"
     rt._save_checkpoint(ckpt, wins, sums, sqs)
@@ -204,7 +221,7 @@ def test_save_checkpoint_round_trip(tmp_path):
 def test_save_checkpoint_wins_only(tmp_path):
     """_save_checkpoint should omit metric keys when sums/sqs are None."""
 
-    wins = Counter({"X": 7})
+    wins: Counter[int | str] = Counter({"X": 7})
     ckpt = tmp_path / "ckpt.pkl"
 
     rt._save_checkpoint(ckpt, wins, None, None)
@@ -360,7 +377,7 @@ def test_run_tournament_no_metrics_wins_only_checkpoint(
 ):
     _setup_serial_run(monkeypatch)
 
-    def fake_play_shuffle(seed: int) -> Counter[str]:
+    def fake_play_shuffle(seed: int) -> Counter[int | str]:
         return Counter({f"S{seed}": 1})
 
     monkeypatch.setattr(rt, "_play_shuffle", fake_play_shuffle, raising=True)
