@@ -37,7 +37,7 @@ def _write_manifest(data_dir: Path, n_players: int, payload: dict[str, object] |
 
 def test_check_pre_metrics_missing_winner_column(tmp_path: Path) -> None:
     data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema([("n_rounds", pa.int16())])
+    schema = pa.schema([pa.field("n_rounds", pa.int16())])
     _write_table(combined, schema, [{"n_rounds": 1}])
     _write_manifest(data_dir, 1, {"row_count": 1})
 
@@ -49,9 +49,9 @@ def test_check_pre_metrics_negative_integer_column(tmp_path: Path) -> None:
     data_dir, combined = _combined_path(tmp_path)
     schema = pa.schema(
         [
-            ("winner", pa.string()),
-            ("n_rounds", pa.int16()),
-            ("bad_counts", pa.int32()),
+            pa.field("winner", pa.string()),
+            pa.field("n_rounds", pa.int16()),
+            pa.field("bad_counts", pa.int32()),
         ]
     )
     _write_table(
@@ -69,9 +69,9 @@ def test_check_pre_metrics_unreadable_manifest(tmp_path: Path) -> None:
     data_dir, combined = _combined_path(tmp_path)
     schema = pa.schema(
         [
-            ("winner", pa.string()),
-            ("n_rounds", pa.int16()),
-            ("good_counts", pa.int32()),
+            pa.field("winner", pa.string()),
+            pa.field("n_rounds", pa.int16()),
+            pa.field("good_counts", pa.int32()),
         ]
     )
     _write_table(
@@ -89,9 +89,9 @@ def test_check_pre_metrics_manifest_row_mismatch(tmp_path: Path) -> None:
     data_dir, combined = _combined_path(tmp_path)
     schema = pa.schema(
         [
-            ("winner", pa.string()),
-            ("n_rounds", pa.int16()),
-            ("good_counts", pa.int32()),
+            pa.field("winner", pa.string()),
+            pa.field("n_rounds", pa.int16()),
+            pa.field("good_counts", pa.int32()),
         ]
     )
     _write_table(
