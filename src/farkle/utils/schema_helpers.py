@@ -45,7 +45,8 @@ def expected_schema_for(n_players: int) -> pa.Schema:
     for i in range(1, n_players + 1):
         for suffix, dtype in _SEAT_TEMPLATE.items():
             seat_fields.append(pa.field(f"P{i}_{suffix}", dtype))
-    return pa.schema(_BASE_FIELDS + seat_fields)
+    base_fields: list[pa.Field] = list(_BASE_FIELDS)
+    return pa.schema(base_fields + seat_fields)
 
 
 _PNUM_RE = re.compile(r"^P(\d+)_")  # Regex for P<X>_
