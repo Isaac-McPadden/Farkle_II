@@ -108,8 +108,8 @@ def holm_bonferroni(
             outcomes: list[str] = []
             tie_break_flags: list[bool] = []
             for _ in ties.itertuples(index=False):
-                winner_is_a = bool(rng.integers(0, 2) == 0)
-                outcomes.append("a>b" if winner_is_a else "b>a")
+                tie_winner_is_a = bool(rng.integers(0, 2) == 0)
+                outcomes.append("a>b" if tie_winner_is_a else "b>a")
                 tie_break_flags.append(True)
 
             tie_decisions = pd.DataFrame(
