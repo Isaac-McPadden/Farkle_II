@@ -66,7 +66,7 @@ def producer_thread(
 
 
 def writer_thread(
-    pop: Callable[[], pa.Table],
+    pop: Callable[[], pa.Table | None],
     *,
     out_path: str,
     manifest_path: str,
@@ -100,13 +100,13 @@ class BoundedQueue:
     """Thin wrapper around :class:`queue.Queue` with explicit push/pop methods."""
 
     def __init__(self, maxsize: int):
-        self.q: queue.Queue[int | None] = queue.Queue(maxsize=maxsize)
+        self.q: queue.Queue[pa.Table | None] = queue.Queue(maxsize=maxsize)
 
-    def push(self, tbl: pa.Table):
+    def push(self, tbl: pa.Table) -> None:
         """Enqueue a table, blocking if the queue is full."""
         self.q.put(tbl)
 
-    def pop(self):
+    def pop(self) -> pa.Table | None:
         """Dequeue a table, blocking until available."""
         return self.q.get()
 
