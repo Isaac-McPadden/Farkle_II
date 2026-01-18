@@ -157,6 +157,9 @@ black --check .
 mypy
 ```
 
+Typing notes: mypy is configured to check `src/farkle` only, so tests (including untyped test
+helpers) are intentionally exempt from strict typing requirements.
+
 ## License
 
 This project is licensed under the Apache 2.0 License.
