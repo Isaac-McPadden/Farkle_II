@@ -11,13 +11,15 @@ import json
 import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Hashable, Mapping, TypeAlias, cast
+from typing import TYPE_CHECKING, Hashable, Mapping, TypeAlias, cast
 
 import pandas as pd
 
-try:  # pragma: no cover - pandas typing is optional at runtime
-    from pandas._typing import Scalar
-except ImportError:  # pragma: no cover - fallback for older pandas
+if TYPE_CHECKING:  # pragma: no cover - pandas typing is optional at runtime
+    from pandas._typing import Scalar as PandasScalar
+
+    Scalar: TypeAlias = PandasScalar
+else:  # pragma: no cover - fallback for older pandas
     Scalar: TypeAlias = Hashable
 
 from farkle.analysis import stage_logger
