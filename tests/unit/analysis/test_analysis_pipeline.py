@@ -39,7 +39,7 @@ def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
 
 def _inject_dummy_networkx(monkeypatch: pytest.MonkeyPatch) -> None:
     dummy = types.ModuleType("networkx")
-    dummy.DiGraph = type("DiGraph", (), {})
+    monkeypatch.setattr(dummy, "DiGraph", type("DiGraph", (), {}), raising=False)
     monkeypatch.setitem(sys.modules, "networkx", dummy)
 
 

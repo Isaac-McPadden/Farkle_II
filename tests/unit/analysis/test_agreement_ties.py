@@ -28,6 +28,8 @@ def test_rank_correlations_and_coverage():
 
     spearman, kendall, coverage = agreement._rank_correlations(scores)
 
+    assert spearman is not None
+    assert kendall is not None
     assert coverage == {
         "a_vs_b": {"common": 1, "only_a": 1, "only_b": 1},
         "a_vs_c": {"common": 2, "only_a": 0, "only_c": 0},
@@ -59,6 +61,8 @@ def test_normalize_tiers_and_agreements():
 
     assert tiers_a == {"a": 0, "b": 0, "c": 1}
     ari, nmi = agreement._tier_agreements({"a": tiers_a, "b": tiers_b})
+    assert ari is not None
+    assert nmi is not None
     common = sorted(set(tiers_a) & set(tiers_b))
     labels_a = [tiers_a[s] for s in common]
     labels_b = [tiers_b[s] for s in common]
@@ -134,4 +138,3 @@ def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
     assert trueskill.tiers == {"a": 1, "b": 2}
     assert frequentist.tiers == {"a": 1, "b": 2}
     assert frequentist.per_seed_scores == []
-

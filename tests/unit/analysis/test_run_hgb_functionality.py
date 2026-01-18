@@ -79,9 +79,9 @@ def test_run_hgb_custom_output_path(tmp_path):
     data_dir = _setup_data(tmp_path)
     out_file = data_dir / "custom.json"
     cwd = os.getcwd()
+    monkeypatch = pytest.MonkeyPatch()
     os.chdir(tmp_path)
     try:
-        monkeypatch = pytest.MonkeyPatch()
         monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
         monkeypatch.setattr(
             run_hgb,

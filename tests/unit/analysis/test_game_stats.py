@@ -13,9 +13,17 @@ def test_rare_event_flags_cover_game_and_strategy_levels(tmp_path):
     cfg, _, per_n = build_curated_fixture(tmp_path)
     thresholds = (10, 60)
 
-    flags = game_stats._rare_event_flags([(2, per_n)], thresholds=thresholds, target_score=100)
+    output_path = tmp_path / "rare_events.parquet"
+    rows = game_stats._rare_event_flags(
+        [(2, per_n)],
+        thresholds=thresholds,
+        target_score=100,
+        output_path=output_path,
+        codec=cfg.parquet_codec,
+    )
 
-    assert not flags.empty
+    assert rows > 0
+    flags = pd.read_parquet(output_path)
     # Three game-level rows plus strategy-level and n-player summaries
     assert {"game", "strategy", "n_players"} <= set(flags["summary_level"].unique())
 
@@ -110,8 +118,11 @@ def test_run_generates_all_outputs(tmp_path: Path):
 def test_run_requires_inputs(tmp_path: Path):
     cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
 
-    with pytest.raises(FileNotFoundError):
-        game_stats.run(cfg)
+    game_stats.run(cfg)
+
+    assert not cfg.game_stats_output_path("game_length.parquet").exists()
+    assert not cfg.game_stats_output_path("margin_stats.parquet").exists()
+    assert not cfg.game_stats_output_path("rare_events.parquet").exists()
 
 
 def test_compute_margins_and_aggregation(tmp_path: Path):
@@ -123,8 +134,16 @@ def test_compute_margins_and_aggregation(tmp_path: Path):
     assert not margins.empty
     assert margins.loc[0, "prob_margin_le_100"] == pytest.approx(1 / 3)
 
-    rare = game_stats._rare_event_flags(per_n_inputs, thresholds=(100,), target_score=150)
-    assert not rare.empty
+    rare_path = tmp_path / "rare_events.parquet"
+    rare_rows = game_stats._rare_event_flags(
+        per_n_inputs,
+        thresholds=(100,),
+        target_score=150,
+        output_path=rare_path,
+        codec=cfg.parquet_codec,
+    )
+    assert rare_rows > 0
+    rare = pd.read_parquet(rare_path)
     assert set(rare["summary_level"].unique()) >= {"game", "strategy"}
 
 

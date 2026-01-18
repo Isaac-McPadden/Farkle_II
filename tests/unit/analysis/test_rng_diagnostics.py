@@ -1,3 +1,5 @@
+from typing import cast
+
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -19,7 +21,11 @@ def test_run_skips_when_missing_columns(tmp_path):
     cfg.set_stage_layout(resolve_stage_layout(cfg))
     curated = cfg.curated_parquet
     curated.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pydict({"only": [1, 2, 3]}), curated)
+    pq.write_table(
+        pa.Table.from_pydict({"only": [1, 2, 3]}),
+        curated,
+        compression=cast("CompressionType", cfg.parquet_codec),
+    )
 
     rng_diagnostics.run(cfg, lags=(1,))
 
