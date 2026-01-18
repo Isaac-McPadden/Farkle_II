@@ -48,7 +48,7 @@ from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.writer import ParquetShardWriter
 
 StatValue: TypeAlias = float | int | str | NAType
-ArrowColumnData: TypeAlias = np.ndarray | list[Any]
+ArrowColumnData: TypeAlias = np.ndarray | list[Any] | pa.Array | pa.ChunkedArray
 
 LOGGER = logging.getLogger(__name__)
 
@@ -565,8 +565,8 @@ def _rare_event_flags(
                 for strategy, group in grouped:
                     count = int(group.shape[0])
                     per_game_data: dict[str, ArrowColumnData] = {
-                        "summary_level": np.full(count, "game", dtype=object),
-                        "strategy": np.full(count, strategy, dtype=object),
+                        "summary_level": np.full(count, "game", dtype=str),
+                        "strategy": np.full(count, strategy, dtype=str),
                         "n_players": np.full(count, n_players, dtype=player_dtype),
                         "margin_of_victory": group["margin_of_victory"].to_numpy(dtype=float),
                         "multi_reached_target": group["multi_reached_target"].to_numpy(
