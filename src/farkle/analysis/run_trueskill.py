@@ -367,8 +367,11 @@ def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[lis
                     yield cast(list[str], players), rr
                     continue
         # 2) seat_ranks (strict order, no ties)
-        if ranks_list is not None and ranks_list[r]:
+        if ranks_list is not None:
             order = ranks_list[r]
+            if not order:
+                continue
+            order = cast(Iterable[str], order)
             players = [seats[int(s[1:]) - 1] for s in order]
             if any(p is None for p in players):  # skip incomplete rows
                 continue
