@@ -785,16 +785,15 @@ def run_tournament(
                     }
                 )
 
+        fields: list[pa.Field] = [
+            pa.field("metric", pa.string()),
+            pa.field("strategy", pa.int32()),
+            pa.field("sum", pa.float64()),
+            pa.field("square_sum", pa.float64()),
+        ]
         metrics_table = pa.Table.from_pylist(
             metrics_rows,
-            schema=pa.schema(
-                [
-                    pa.field("metric", pa.string()),
-                    pa.field("strategy", pa.int32()),
-                    pa.field("sum", pa.float64()),
-                    pa.field("square_sum", pa.float64()),
-                ]
-            ),
+            schema=pa.schema(fields),
         )
         metrics_path = ckpt_path.with_name(f"{cfg.n_players}p_metrics.parquet")
         write_parquet_atomic(metrics_table, metrics_path)
