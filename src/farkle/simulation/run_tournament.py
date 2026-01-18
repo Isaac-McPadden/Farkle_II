@@ -789,10 +789,10 @@ def run_tournament(
             metrics_rows,
             schema=pa.schema(
                 [
-                    ("metric", pa.string()),
-                    ("strategy", pa.int32()),
-                    ("sum", pa.float64()),
-                    ("square_sum", pa.float64()),
+                    pa.field("metric", pa.string()),
+                    pa.field("strategy", pa.int32()),
+                    pa.field("sum", pa.float64()),
+                    pa.field("square_sum", pa.float64()),
                 ]
             ),
         )
