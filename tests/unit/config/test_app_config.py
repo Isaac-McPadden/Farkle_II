@@ -26,7 +26,6 @@ def test_load_app_config_merges_overlays(write_yaml) -> None:
         {
             "io": {
                 "results_dir": "results",
-                "append_seed": False,
             },
             "analysis": {"log_level": "INFO"},
             "ingest": {"n_jobs": 2},
@@ -43,7 +42,6 @@ def test_load_app_config_merges_overlays(write_yaml) -> None:
 
     cfg = load_app_config(base, overlay)
 
-    assert cfg.io.append_seed is False
     assert cfg.analysis.outputs["metrics_name"] == "metrics.parquet"
     assert cfg.ingest.batch_rows == 200_000
     # ensure base values remain when not overridden
@@ -97,7 +95,7 @@ def test_load_app_config_normalizes_legacy_keys(write_yaml) -> None:
     legacy = write_yaml(
         "legacy.yaml",
         {
-            "io": {"analysis_dir": "analysis", "append_seed": False},
+            "io": {"analysis_dir": "analysis"},
             "sim": {"n_players": 5, "collect_metrics": True},
         },
     )
@@ -109,7 +107,7 @@ def test_load_app_config_normalizes_legacy_keys(write_yaml) -> None:
     assert cfg.sim.expanded_metrics is True
 
 
-def test_load_app_config_appends_seed(write_yaml) -> None:
+def test_load_app_config_keeps_results_dir(write_yaml) -> None:
     config = write_yaml(
         "seeded.yaml",
         {
@@ -120,8 +118,8 @@ def test_load_app_config_appends_seed(write_yaml) -> None:
 
     cfg = load_app_config(config)
 
-    assert cfg.results_dir == Path("base_seed_7")
-    assert cfg.analysis_dir == Path("base_seed_7") / cfg.io.analysis_subdir
+    assert cfg.results_dir == Path("base")
+    assert cfg.analysis_dir == Path("base") / cfg.io.analysis_subdir
 
 
 def test_load_app_config_rejects_non_mapping(tmp_path: Path) -> None:
@@ -141,14 +139,12 @@ def test_apply_dot_overrides_coerces_values() -> None:
             "io.results_dir=/tmp/output",
             "sim.seed=9",
             "trueskill.beta=32.5",
-            "io.append_seed=false",
         ],
     )
 
     assert cfg.io.results_dir == Path("/tmp/output")
     assert cfg.sim.seed == 9
     assert cfg.trueskill.beta == pytest.approx(32.5)
-    assert cfg.io.append_seed is False
 
 
 @pytest.mark.parametrize(

@@ -352,7 +352,7 @@ def sim_artifacts(tmp_path: Path) -> dict[str, Path]:
     """
 
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path, append_seed=False),
+        io=IOConfig(results_dir=tmp_path),
         sim=SimConfig(n_players_list=[2], expanded_metrics=True),
     )
     n_players = cfg.sim.n_players_list[0]

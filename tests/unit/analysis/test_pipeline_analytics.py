@@ -13,7 +13,7 @@ from farkle.orchestration.pipeline import _done_path, analyze_all, is_up_to_date
 
 
 def _setup(tmp_path: Path) -> tuple[Path, AppConfig]:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
     cfg.analysis.run_frequentist = True
     cfg.analysis.run_agreement = True
     cfg.set_stage_layout(resolve_stage_layout(cfg))
@@ -55,7 +55,7 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
     exp, cfg = _setup(tmp_path)
 
     def fake_agreement(exp_dir: Path) -> None:
-        app_cfg = AppConfig(io=IOConfig(results_dir=exp_dir, append_seed=False))
+        app_cfg = AppConfig(io=IOConfig(results_dir=exp_dir))
         app_cfg.analysis.run_agreement = True
         app_cfg.set_stage_layout(stage_registry.resolve_stage_layout(app_cfg))
         outputs = [app_cfg.agreement_output_path(p) for p in app_cfg.sim.n_players_list]

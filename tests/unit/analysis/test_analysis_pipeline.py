@@ -23,7 +23,7 @@ from farkle.config import AppConfig, IOConfig
 
 
 def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, AppConfig]:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir, append_seed=False))
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir))
     cfg_path = tmp_results_dir / "configs/fast_config.yaml"
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text("io:\n  results_dir: dummy\n")

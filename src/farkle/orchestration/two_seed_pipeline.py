@@ -70,7 +70,6 @@ def run_pipeline(
         {
             "event": "run_start",
             "seed_pair": list(seed_pair),
-            "append_seed": cfg.io.append_seed,
             "results_dir": str(base_dir),
             "meta_analysis_dir": str(meta_dir),
         },

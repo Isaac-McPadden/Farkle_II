@@ -4,14 +4,13 @@
 
 io:
   results_dir: "results"    # Path|str: base results directory
-  append_seed: true         # bool: append sim.seed suffix to results_dir
   analysis_subdir: "analysis"    # str: analysis outputs subdirectory under results_dir
   meta_analysis_dir: null   # Path|str|None: optional shared directory for per-seed summaries
 
 sim:
   n_players_list: [5]       # list[int]: table sizes to simulate
   num_shuffles: 100         # int: default shuffle count per table size
-  seed: 0                   # int: primary RNG seed + results_dir suffix when append_seed=true
+  seed: 0                   # int: primary RNG seed (results_dir uses seed suffix)
   seed_pair: [0, 1]          # tuple[int,int]|None: two-seed orchestration pair; seed still drives suffixing
   expanded_metrics: false   # bool: write expanded metrics parquet
   row_dir: null             # Path|str|None: relative folder for row dumps; null skips write

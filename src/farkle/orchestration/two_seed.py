@@ -49,7 +49,6 @@ def run_seeds(
                 "stage": "orchestration",
                 "seed": seed,
                 "results_dir": str(seed_cfg.io.results_dir),
-                "append_seed": seed_cfg.io.append_seed,
             },
         )
         if not force and seed_has_completion_markers(seed_cfg):

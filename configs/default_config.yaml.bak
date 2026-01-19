@@ -4,7 +4,6 @@
 
 io:
   results_dir: "results"    # Path|str: base results directory
-  append_seed: true         # bool: append sim.seed suffix to results_dir
   analysis_subdir: "analysis"    # str: analysis outputs subdirectory under results_dir
 
 sim:

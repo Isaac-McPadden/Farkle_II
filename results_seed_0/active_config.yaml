@@ -49,7 +49,6 @@ ingest:
   row_group_size: 64000
 io:
   analysis_subdir: analysis
-  append_seed: true
   meta_analysis_dir: null
   results_dir: results_seed_0
 metrics:

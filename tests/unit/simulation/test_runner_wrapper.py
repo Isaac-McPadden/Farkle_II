@@ -48,7 +48,7 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, sim_artifacts):
     calls = _patch_tournament(monkeypatch, payload)
 
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path / "out", append_seed=False),
+        io=IOConfig(results_dir=tmp_path / "out"),
         sim=SimConfig(
             n_players_list=[2],
             seed=11,
@@ -96,7 +96,7 @@ def test_runner_rejects_malformed_checkpoints(tmp_path, monkeypatch, payload, ex
     _patch_tournament(monkeypatch, payload)
 
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path / "out", append_seed=False),
+        io=IOConfig(results_dir=tmp_path / "out"),
         sim=SimConfig(n_players_list=[2], recompute_num_shuffles=False, num_shuffles=1),
     )
 
@@ -113,7 +113,7 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
     tournament = runner.TournamentConfig(n_players=3)
     assert tournament.games_per_shuffle > 0
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path / "out", append_seed=False),
+        io=IOConfig(results_dir=tmp_path / "out"),
         sim=SimConfig(
             n_players_list=[3],
             num_shuffles=2,
@@ -136,7 +136,7 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
 
 def test_resolve_row_output_dir_formats_and_prefixes(tmp_path):
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path / "results", append_seed=False),
+        io=IOConfig(results_dir=tmp_path / "results"),
         sim=SimConfig(n_players_list=[2], row_dir=Path("custom")),
     )
 

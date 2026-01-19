@@ -13,7 +13,7 @@ from farkle.config import AppConfig, IngestConfig, IOConfig
 def _make_cfg(
     tmp_results_dir: Path, *, ingest_overrides: dict[str, Any] | None = None
 ) -> AppConfig:
-    io_cfg = IOConfig(results_dir=tmp_results_dir, analysis_subdir="analysis", append_seed=False)
+    io_cfg = IOConfig(results_dir=tmp_results_dir, analysis_subdir="analysis")
     ingest_cfg = IngestConfig(**(ingest_overrides or {}))
     return AppConfig(io=io_cfg, ingest=ingest_cfg)
 

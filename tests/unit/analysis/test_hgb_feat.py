@@ -12,7 +12,7 @@ from farkle.config import AppConfig, IOConfig
 
 
 def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
     cfg.sim.n_players_list = [2]
     analysis_dir = cfg.analysis_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
