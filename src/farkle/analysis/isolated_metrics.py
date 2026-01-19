@@ -137,13 +137,26 @@ def locator_from_config(
     data_root: Path | str | None = None,
     player_counts: Sequence[int] | None = None,
     override_roots: Mapping[int, str | Path] | None = None,
-    results_template: str = "results_seed_{seed}",
+    results_template: str | None = None,
     subdir_template: str = "{n}_players",
     metrics_template: str = "{n}p_metrics.parquet",
 ) -> MetricsLocator:
     """Convenience factory that defaults to values from :class:`AppConfig`."""
 
-    base_dir = Path(data_root) if data_root is not None else cfg.io.results_dir.parent
+    if data_root is not None:
+        base_dir = Path(data_root)
+    else:
+        results_base = cfg.results_root.parent
+        if cfg.io.results_dir_prefix is not None:
+            prefix = Path(cfg.io.results_dir_prefix)
+            if not prefix.is_absolute():
+                prefix = Path("data") / prefix
+            results_base = prefix.parent
+            if results_template is None:
+                results_template = f"{prefix.name}_seed_{{seed}}"
+        base_dir = results_base
+    if results_template is None:
+        results_template = "results_seed_{seed}"
     players = player_counts or cfg.sim.n_players_list
     return MetricsLocator(
         data_root=base_dir,
@@ -349,7 +362,7 @@ def build_isolated_metrics(cfg: AppConfig, player_count: int, *, force: bool = F
     Normalize a per-k metrics parquet into ``03_metrics/<kp>/<kp>_isolated_metrics.parquet``.
     """
 
-    src = cfg.results_dir / f"{player_count}_players" / f"{player_count}p_metrics.parquet"
+    src = cfg.results_root / f"{player_count}_players" / f"{player_count}p_metrics.parquet"
     if not src.exists():
         raise FileNotFoundError(src)
 

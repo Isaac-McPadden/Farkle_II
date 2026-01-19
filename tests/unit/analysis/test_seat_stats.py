@@ -77,7 +77,7 @@ def test_compute_symmetry_checks_missing_columns_returns_empty(tmp_path: Path, c
 
 def test_compute_seat_advantage_builds_deltas(tmp_path: Path) -> None:
     cfg = AppConfig()
-    cfg.io.results_dir = tmp_path
+    cfg.io.results_dir_prefix = tmp_path
     combined = tmp_path / "combined.parquet"
     _write_parquet(
         combined,

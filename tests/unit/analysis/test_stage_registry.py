@@ -9,7 +9,7 @@ from farkle.config import AnalysisConfig, AppConfig, IOConfig
 
 
 def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
 
     layout = resolve_stage_layout(cfg)
 
@@ -39,7 +39,7 @@ def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
 
 def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path),
+        io=IOConfig(results_dir_prefix=tmp_path),
         analysis=AnalysisConfig(
             disable_game_stats=True,
             disable_rng_diagnostics=False,
@@ -72,7 +72,7 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
 
 
 def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
 
     cfg.analysis.disable_rng_diagnostics = True
 

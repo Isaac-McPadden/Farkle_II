@@ -48,7 +48,7 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, sim_artifacts):
     calls = _patch_tournament(monkeypatch, payload)
 
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path / "out"),
+        io=IOConfig(results_dir_prefix=tmp_path / "out"),
         sim=SimConfig(
             n_players_list=[2],
             seed=11,
@@ -61,22 +61,23 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, sim_artifacts):
 
     total_games = runner.run_tournament(cfg)
 
+    root = cfg.results_root
     assert calls["collect_metrics"] is True
-    assert calls["row_output_directory"] == tmp_path / "out" / "2_players" / "2p_rows"
+    assert calls["row_output_directory"] == root / "2_players" / "2p_rows"
     check_absolute = calls["row_output_directory"]
     assert isinstance(check_absolute, (str, os.PathLike))
     assert Path(check_absolute).is_absolute()
-    assert calls["checkpoint_path"] == tmp_path / "out" / "2_players" / "2p_checkpoint.pkl"
+    assert calls["checkpoint_path"] == root / "2_players" / "2p_checkpoint.pkl"
     config = cast(runner.TournamentConfig, calls["config"])
     expected_games = config.games_per_shuffle
     assert total_games == expected_games
 
-    summary_path = tmp_path / "out" / "2_players" / "2p_checkpoint.parquet"
+    summary_path = root / "2_players" / "2p_checkpoint.parquet"
     assert summary_path.exists()
     summary_df = pd.read_parquet(summary_path)
     assert "alpha" in summary_df["strategy"].tolist()
 
-    metrics_path = tmp_path / "out" / "2_players" / "2p_metrics.parquet"
+    metrics_path = root / "2_players" / "2p_metrics.parquet"
     assert metrics_path.exists()
     try:
         metrics_df = pd.read_parquet(metrics_path)
@@ -96,7 +97,7 @@ def test_runner_rejects_malformed_checkpoints(tmp_path, monkeypatch, payload, ex
     _patch_tournament(monkeypatch, payload)
 
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path / "out"),
+        io=IOConfig(results_dir_prefix=tmp_path / "out"),
         sim=SimConfig(n_players_list=[2], recompute_num_shuffles=False, num_shuffles=1),
     )
 
@@ -113,7 +114,7 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
     tournament = runner.TournamentConfig(n_players=3)
     assert tournament.games_per_shuffle > 0
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path / "out"),
+        io=IOConfig(results_dir_prefix=tmp_path / "out"),
         sim=SimConfig(
             n_players_list=[3],
             num_shuffles=2,
@@ -123,7 +124,7 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
 
     total_games = runner.run_tournament(cfg)
 
-    summary_path = tmp_path / "out" / "3_players" / "3p_checkpoint.parquet"
+    summary_path = cfg.results_root / "3_players" / "3p_checkpoint.parquet"
     assert summary_path.exists()
     summary_df = pd.read_parquet(summary_path)
     counters = dict(zip(summary_df["strategy"], summary_df["wins"], strict=False))
@@ -136,21 +137,21 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
 
 def test_resolve_row_output_dir_formats_and_prefixes(tmp_path):
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path / "results"),
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(n_players_list=[2], row_dir=Path("custom")),
     )
 
     formatted = runner._resolve_row_output_dir(cfg, 2)
-    assert formatted == tmp_path / "results" / "2_players" / "2p_custom"
+    assert formatted == cfg.results_root / "2_players" / "2p_custom"
 
     cfg.sim.row_dir = Path("{n}_rows")
     formatted = runner._resolve_row_output_dir(cfg, 3)
-    assert formatted == tmp_path / "results" / "3_players" / "3_rows"
+    assert formatted == cfg.results_root / "3_players" / "3_rows"
 
 
 def test_filter_player_counts_reports_invalid(monkeypatch):
     cfg = AppConfig(
-        io=IOConfig(results_dir=Path("ignored")),
+        io=IOConfig(results_dir_prefix=Path("ignored")),
         sim=SimConfig(n_players_list=[3]),
     )
     monkeypatch.setattr(runner, "experiment_size", lambda **_: 4)
@@ -164,14 +165,14 @@ def test_filter_player_counts_reports_invalid(monkeypatch):
 
 def test_compute_num_shuffles_prefers_overrides(monkeypatch):
     per_cfg = SimConfig(num_shuffles=7, recompute_num_shuffles=False)
-    cfg = AppConfig(io=IOConfig(results_dir=Path("ignored")), sim=SimConfig(per_n={2: per_cfg}))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=Path("ignored")), sim=SimConfig(per_n={2: per_cfg}))
 
     n_shuffles = runner._compute_num_shuffles_from_config(cfg, n_strategies=4, n_players=2)
     assert n_shuffles == 7
 
 
 def test_compute_num_shuffles_recomputes(monkeypatch):
-    cfg = AppConfig(io=IOConfig(results_dir=Path("ignored")), sim=SimConfig())
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=Path("ignored")), sim=SimConfig())
     cfg.sim.recompute_num_shuffles = True
     cfg.sim.num_shuffles = 1
 

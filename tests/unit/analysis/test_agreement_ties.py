@@ -103,7 +103,7 @@ def test_tiers_from_graph_orders_components():
 
 def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
     cfg = agreement.AppConfig()
-    cfg.io.results_dir = tmp_path
+    cfg.io.results_dir_prefix = tmp_path / "results"
     players = 2
 
     cfg.trueskill_path = lambda filename: tmp_path / filename

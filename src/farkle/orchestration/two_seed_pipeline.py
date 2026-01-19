@@ -92,7 +92,7 @@ def run_pipeline(
             {
                 "event": "seed_start",
                 "seed": seed,
-                "results_dir": str(seed_cfg.io.results_dir),
+                "results_dir": str(seed_cfg.results_root),
             },
         )
 
@@ -104,7 +104,7 @@ def run_pipeline(
                 extra={
                     "stage": "orchestration",
                     "seed": seed,
-                    "results_dir": str(seed_cfg.io.results_dir),
+                    "results_dir": str(seed_cfg.results_root),
                 },
             )
             append_manifest_line(
@@ -112,7 +112,7 @@ def run_pipeline(
                 {
                     "event": "seed_simulation_skipped",
                     "seed": seed,
-                    "results_dir": str(seed_cfg.io.results_dir),
+                    "results_dir": str(seed_cfg.results_root),
                 },
             )
         else:
@@ -121,7 +121,7 @@ def run_pipeline(
                 extra={
                     "stage": "orchestration",
                     "seed": seed,
-                    "results_dir": str(seed_cfg.io.results_dir),
+                    "results_dir": str(seed_cfg.results_root),
                 },
             )
             runner.run_tournament(seed_cfg)
@@ -130,7 +130,7 @@ def run_pipeline(
                 {
                     "event": "seed_simulation_complete",
                     "seed": seed,
-                    "results_dir": str(seed_cfg.io.results_dir),
+                    "results_dir": str(seed_cfg.results_root),
                 },
             )
 
@@ -139,7 +139,7 @@ def run_pipeline(
             extra={
                 "stage": "orchestration",
                 "seed": seed,
-                "results_dir": str(seed_cfg.io.results_dir),
+                "results_dir": str(seed_cfg.results_root),
             },
         )
         _run_per_seed_analysis(seed_cfg)
@@ -148,7 +148,7 @@ def run_pipeline(
             {
                 "event": "seed_analysis_complete",
                 "seed": seed,
-                "results_dir": str(seed_cfg.io.results_dir),
+                "results_dir": str(seed_cfg.results_root),
             },
         )
 
@@ -169,7 +169,7 @@ def run_pipeline(
         extra={
             "stage": "orchestration",
             "seed": interseed_seed,
-            "results_dir": str(interseed_cfg.io.results_dir),
+            "results_dir": str(interseed_cfg.results_root),
         },
     )
     append_manifest_line(
@@ -177,7 +177,7 @@ def run_pipeline(
         {
             "event": "interseed_start",
             "seed": interseed_seed,
-            "results_dir": str(interseed_cfg.io.results_dir),
+            "results_dir": str(interseed_cfg.results_root),
         },
     )
     analysis.run_interseed_analysis(interseed_cfg, force=force)
@@ -186,7 +186,7 @@ def run_pipeline(
         {
             "event": "interseed_complete",
             "seed": interseed_seed,
-            "results_dir": str(interseed_cfg.io.results_dir),
+            "results_dir": str(interseed_cfg.results_root),
         },
     )
 

@@ -48,7 +48,7 @@ def run_seeds(
             extra={
                 "stage": "orchestration",
                 "seed": seed,
-                "results_dir": str(seed_cfg.io.results_dir),
+                "results_dir": str(seed_cfg.results_root),
             },
         )
         if not force and seed_has_completion_markers(seed_cfg):
@@ -57,7 +57,7 @@ def run_seeds(
                 extra={
                     "stage": "orchestration",
                     "seed": seed,
-                    "results_dir": str(seed_cfg.io.results_dir),
+                    "results_dir": str(seed_cfg.results_root),
                 },
             )
             continue

@@ -77,9 +77,20 @@ def _analysis_dir(cfg: AnalysisConfig | AppConfig) -> Path:
         return Path(str(analysis_dir))
 
     io_cfg = getattr(cfg, "io", None)
-    results_dir = getattr(io_cfg, "results_dir", None) if io_cfg is not None else None
-    if results_dir is not None:
-        return Path(str(results_dir)) / "analysis"
+    results_root = getattr(cfg, "results_root", None)
+    if results_root is not None:
+        return Path(str(results_root)) / "analysis"
+    if io_cfg is not None:
+        prefix = getattr(io_cfg, "results_dir_prefix", None)
+        if prefix is not None:
+            base = Path(prefix)
+            if not base.is_absolute():
+                base = Path("data") / base
+            seed = getattr(getattr(cfg, "sim", None), "seed", 0)
+            suffix = f"_seed_{seed}"
+            if not base.name.endswith(suffix):
+                base = base.parent / f"{base.name}{suffix}"
+            return base / "analysis"
 
     raise AttributeError("Configuration object does not expose an analysis_dir")
 

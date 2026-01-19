@@ -14,10 +14,10 @@ from farkle.config import AppConfig
 
 def _make_cfg(tmp_path: Path) -> AppConfig:
     cfg = AppConfig()
-    cfg.io.results_dir = tmp_path / "results_meta"
-    cfg.io.results_dir.mkdir(parents=True, exist_ok=True)
-    cfg.analysis.outputs = {}
     cfg.sim.seed = 42
+    cfg.io.results_dir_prefix = tmp_path / "results_meta"
+    cfg.results_root.mkdir(parents=True, exist_ok=True)
+    cfg.analysis.outputs = {}
     cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
     return cfg
 

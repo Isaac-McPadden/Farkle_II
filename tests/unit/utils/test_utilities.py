@@ -34,7 +34,7 @@ def test_cli_run(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli_main.runner, "run_single_n", fake_run_single_n)
 
     cfg = {
-        "io": {"results_dir": str(tmp_path / "out")},
+        "io": {"results_dir_prefix": str(tmp_path / "out")},
         "sim": {
             "seed": 42,
             "n_players_list": [2],
@@ -53,7 +53,7 @@ def test_cli_run(tmp_path, monkeypatch, capsys) -> None:
     assert cfg_obj.sim.seed == 42
     assert cfg_obj.sim.num_shuffles == 1
     assert cfg_obj.sim.n_players_list == [2]
-    assert cfg_obj.io.results_dir == tmp_path / "out"
+    assert cfg_obj.io.results_dir_prefix == tmp_path / "out"
 
     stderr = capsys.readouterr().err
     assert "CLI arguments parsed" in stderr
@@ -115,7 +115,7 @@ def test_cli_missing_keys(tmp_path, monkeypatch) -> None:
     cfg_obj = cast(AppConfig, called["cfg"])
     assert isinstance(cfg_obj, AppConfig)
     assert cfg_obj.sim.n_players_list == [5]
-    assert str(cfg_obj.io.results_dir).endswith("results_seed_0")
+    assert str(cfg_obj.results_root).endswith("results_seed_0")
 
 
 def test_load_config_missing_file(tmp_path) -> None:

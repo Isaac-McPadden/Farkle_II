@@ -2,8 +2,8 @@
 # Drives BOTH simulation and analysis.
 
 io:
-  results_dir: "data/results"     # where per-N run folders are created
-  analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
+  results_dir_prefix: "results"     # prefix under data/ for per-N run folders
+  analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
   meta_analysis_dir: "data/meta_analysis"         # optional shared dir for per-seed/meta summaries
 
 sim:
@@ -12,7 +12,7 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 21                        # primary RNG seed (results_dir uses seed suffix)
+  seed: 21                        # primary RNG seed (results_root uses seed suffix)
   seed_pair: [21, 22]             # two-seed orchestration pair; seed still drives suffixing
   n_jobs: 16                      # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {N}p_metrics.parquet with sums & sq_sums
@@ -74,7 +74,7 @@ analysis:
   log_level: "INFO"               # logger level during analysis
 
   # How to discover per-N results
-  results_glob: "*_players"       # glob selecting per-N result folders under results_dir
+  results_glob: "*_players"       # glob selecting per-N result folders under results_root
 
   # Head-to-head autotuning controls
   head2head_target_hours: 0     # target runtime window for Bonferroni H2H (<=0 disables)

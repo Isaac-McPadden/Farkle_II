@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Sequence
 
 from farkle.config import AppConfig, IOConfig
+from farkle.orchestration.seed_utils import split_seeded_results_dir
 from farkle.utils.writer import atomic_path
 
 __all__ = [
@@ -109,6 +110,17 @@ def _first_existing(paths: list[Path]) -> Path:
     return paths[0]
 
 
+def _config_for_results_dir(exp_dir: Path) -> AppConfig:
+    exp_dir = Path(exp_dir)
+    base_dir, seed = split_seeded_results_dir(exp_dir)
+    if not base_dir.is_absolute() and base_dir.parts and base_dir.parts[0] == "data":
+        base_dir = Path(*base_dir.parts[1:])
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=base_dir))
+    if seed is not None:
+        cfg.sim.seed = seed
+    return cfg
+
+
 def analyze_trueskill(exp_dir: Path) -> None:
     """Compute TrueSkill tiers for *exp_dir* simulations."""
 
@@ -128,7 +140,7 @@ def analyze_trueskill(exp_dir: Path) -> None:
     analysis_dir.mkdir(parents=True, exist_ok=True)
     from farkle.analysis import run_trueskill as _rt
 
-    cfg = AppConfig(io=IOConfig(results_dir=exp_dir))
+    cfg = _config_for_results_dir(exp_dir)
     _rt.run_trueskill_all_seeds(cfg)
     if legacy_out.exists() and not out.exists():
         legacy_out.replace(out)
@@ -140,8 +152,7 @@ def analyze_h2h(exp_dir: Path) -> None:
     """Run Bonferroni head-to-head analysis."""
 
     exp_dir = Path(exp_dir)
-    cfg = AppConfig()
-    cfg.io.results_dir = exp_dir
+    cfg = _config_for_results_dir(exp_dir)
     analysis_dir = cfg.analysis_dir
     out = cfg.head2head_path("bonferroni_pairwise.parquet")
     done = _done_path(out)
@@ -163,8 +174,7 @@ def analyze_hgb(exp_dir: Path) -> None:
     """Run hist gradient boosting feature importance analysis."""
 
     exp_dir = Path(exp_dir)
-    cfg = AppConfig()
-    cfg.io.results_dir = exp_dir
+    cfg = _config_for_results_dir(exp_dir)
     analysis_dir = cfg.hgb_stage_dir
     out = cfg.hgb_pooled_dir / "hgb_importance.json"
     done = _done_path(out)
@@ -210,7 +220,7 @@ def analyze_agreement(exp_dir: Path) -> None:
         )
 
     players = _detect_player_counts(analysis_dir)
-    cfg = AppConfig(io=IOConfig(results_dir=exp_dir))
+    cfg = _config_for_results_dir(exp_dir)
     cfg.sim.n_players_list = players
     outputs = [cfg.agreement_output_path(p) for p in players]
     done = _done_path(outputs[0])

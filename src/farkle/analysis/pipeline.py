@@ -294,7 +294,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "command": args.command,
             "config_sha": config_sha,
             "resolved_config": str(resolved),
-            "results_dir": str(app_cfg.results_dir),
+            "results_dir": str(app_cfg.results_root),
             "analysis_dir": str(analysis_dir),
         },
     )

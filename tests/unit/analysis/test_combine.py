@@ -16,7 +16,7 @@ def _write_curated(path: Path, schema: pa.Schema, rows: list[dict]) -> None:
 
 
 def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
     # create per-N curated files
     p1 = cfg.ingested_rows_curated(1)
     schema1 = expected_schema_for(1)
@@ -69,7 +69,7 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
 
 
 def test_combine_logs_when_no_inputs(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
     calls: list[tuple[list[Path], Path, int]] = []
 
     monkeypatch.setattr(
@@ -88,7 +88,7 @@ def test_combine_logs_when_no_inputs(tmp_results_dir: Path, capinfo, monkeypatch
 
 
 def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
     calls: list[tuple[list[Path], Path, int]] = []
 
     monkeypatch.setattr(
@@ -117,7 +117,7 @@ def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeyp
 
 
 def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
     calls: list[tuple[list[Path], Path, int]] = []
 
     monkeypatch.setattr(
@@ -161,7 +161,7 @@ def test_pad_to_schema_adds_missing_columns():
 
 
 def test_migrate_combined_output_moves_legacy(tmp_results_dir: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
     legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "pooled"
     legacy_dir.mkdir(parents=True, exist_ok=True)
     legacy_file = legacy_dir / "all_ingested_rows.parquet"
@@ -175,7 +175,7 @@ def test_migrate_combined_output_moves_legacy(tmp_results_dir: Path) -> None:
 
 
 def test_combine_respects_stage_cache(tmp_results_dir: Path, monkeypatch, capinfo) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
     schema = pa.schema([("winner", pa.string())])
     curated = cfg.ingested_rows_curated(1)
     _write_curated(curated, schema, [{"winner": "P1"}])

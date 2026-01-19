@@ -32,7 +32,7 @@ All CLI workflows consume a single YAML document that maps to
 ```yaml
 # configs/fast_config.yaml
 io:
-  results_dir: data/results/fast
+  results_dir_prefix: results/fast
 
 sim:
   n_players_list: [5]
@@ -40,7 +40,7 @@ sim:
   seed: 42
   n_jobs: 6
   expanded_metrics: false
-  row_dir: data/results/fast/rows
+  row_dir: data/results/fast_seed_42/rows
 
 analysis:
   results_glob: "*_players"
@@ -50,6 +50,9 @@ ingest:
   n_jobs: 4
   row_group_size: 64000
 ```
+
+`io.results_dir_prefix` is combined with `sim.seed` to form the results root
+directory: `data/<results_dir_prefix>_seed_<seed>` for single-seed runs.
 
 Analysis stage directories are numbered automatically by the resolved
 ``StageLayout``. Use the convenience helpers on :class:`farkle.config.AppConfig`
@@ -83,7 +86,7 @@ runner sweeps each player count sequentially.
 farkle --config configs/fast_config.yaml \
   --set sim.seed=123 \
   --set sim.num_shuffles=200 \
-  run --metrics --row-dir data/results_fast/rows
+  run --metrics --row-dir data/results/fast_seed_123/rows
 ```
 
 ### `time`

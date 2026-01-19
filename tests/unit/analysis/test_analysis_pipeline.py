@@ -23,10 +23,10 @@ from farkle.config import AppConfig, IOConfig
 
 
 def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, AppConfig]:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_results_dir))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
     cfg_path = tmp_results_dir / "configs/fast_config.yaml"
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
-    cfg_path.write_text("io:\n  results_dir: dummy\n")
+    cfg_path.write_text("io:\n  results_dir_prefix: dummy\n")
 
     def _load_app_config(path: Path) -> AppConfig:
         assert path == cfg_path
@@ -75,7 +75,7 @@ def test_pipeline_writes_resolved_config_and_manifest(
     def _fake_ingest(app_cfg):  # noqa: ANN001
         nonlocal called
         called = True
-        assert app_cfg.results_dir == tmp_results_dir
+        assert app_cfg.results_root == cfg.results_root
 
     monkeypatch.setattr("farkle.analysis.ingest.run", _fake_ingest, raising=True)
 
@@ -121,7 +121,7 @@ def test_pipeline_individual_commands_invoke_target(
 
     def _record(app_cfg):  # noqa: ANN001
         called.append(command)
-        assert app_cfg.results_dir == tmp_results_dir
+        assert app_cfg.results_root == cfg.results_root
 
     monkeypatch.setattr(target, _record, raising=True)
     if command == "metrics":
@@ -148,7 +148,7 @@ def test_pipeline_analytics_runs_layout_order(
     def _stub(name: str) -> Callable[[object], None]:
         def _inner(app_cfg, **_kwargs):  # noqa: ANN001
             calls.append(name)
-            assert app_cfg.results_dir == tmp_results_dir
+            assert app_cfg.results_root == cfg.results_root
 
         return _inner
 
@@ -181,7 +181,7 @@ def test_pipeline_all_runs_all_steps(
     def _make_stub(name: str) -> Callable[[object], None]:
         def _stub(app_cfg, **_kwargs):  # noqa: ANN001
             calls.append(name)
-            assert app_cfg.results_dir == tmp_results_dir
+            assert app_cfg.results_root == cfg.results_root
 
         return _stub
 

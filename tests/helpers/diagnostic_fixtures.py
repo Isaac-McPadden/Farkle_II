@@ -21,7 +21,7 @@ def build_curated_fixture(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
     """
 
     cfg = AppConfig(
-        io=IOConfig(results_dir=tmp_path),
+        io=IOConfig(results_dir_prefix=tmp_path),
         sim=SimConfig(n_players_list=[2]),
         metrics=MetricsConfig(seat_range=(1, 2)),
     )

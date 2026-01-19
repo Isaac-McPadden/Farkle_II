@@ -12,9 +12,9 @@ from farkle.utils.stats import wilson_ci
 
 def _make_cfg(tmp_path) -> AppConfig:
     cfg = AppConfig()
-    cfg.io.results_dir = tmp_path / "results_seed_18"
-    cfg.io.results_dir.mkdir(parents=True, exist_ok=True)
     cfg.sim.seed = 18
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    cfg.results_root.mkdir(parents=True, exist_ok=True)
     cfg.analysis.outputs = {}
     analysis_dir = cfg.analysis_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)

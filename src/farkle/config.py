@@ -7,6 +7,7 @@ includes utilities for loading and validating YAML-based application configs.
 from __future__ import annotations
 
 import dataclasses
+import re
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Mapping, Sequence, get_args, get_origin, get_type_hints
@@ -28,7 +29,7 @@ if TYPE_CHECKING:  # pragma: no cover - used for type checking only
 class IOConfig:
     """File-system locations for the application."""
 
-    results_dir: Path = Path("results")
+    results_dir_prefix: Path = Path("results")
     analysis_subdir: str = "analysis"
     meta_analysis_dir: Path | None = None
 
@@ -263,14 +264,25 @@ class AppConfig:
 
     # —— Paths ——
     @property
-    def results_dir(self) -> Path:
+    def results_root(self) -> Path:
         """Root directory where simulation outputs are written."""
-        return self.io.results_dir
+        base = Path(self.io.results_dir_prefix)
+        if not base.is_absolute():
+            base = Path("data") / base
+        seed_suffix = f"_seed_{self.sim.seed}"
+        if base.name.endswith(seed_suffix):
+            return base
+        return base.parent / f"{base.name}{seed_suffix}"
+
+    @property
+    def results_dir(self) -> Path:
+        """Deprecated alias for :meth:`results_root`."""
+        return self.results_root
 
     @property
     def analysis_dir(self) -> Path:
         """Directory containing derived analysis artifacts."""
-        return self.io.results_dir / self.io.analysis_subdir
+        return self.results_root / self.io.analysis_subdir
 
     # Numbered analysis stage directories (created on access)
     @property
@@ -473,8 +485,8 @@ class AppConfig:
         meta_path = Path(configured)
         if meta_path.is_absolute():
             return meta_path
-        # Anchor relative paths to the parent of the seed-suffixed results_dir
-        return self.io.results_dir.parent / meta_path
+        # Anchor relative paths to the parent of the seed-suffixed results_root
+        return self.results_root.parent / meta_path
 
     @property
     def data_dir(self) -> Path:
@@ -484,7 +496,7 @@ class AppConfig:
 
     def n_dir(self, n: int) -> Path:
         """Convenience accessor for a specific ``<n>_players`` directory."""
-        return self.results_dir / f"{n}_players"
+        return self.results_root / f"{n}_players"
 
     def checkpoint_path(self, n: int) -> Path:
         """Path to a head-to-head checkpoint for ``n`` players."""
@@ -793,6 +805,17 @@ def _annotation_contains(annotation: Any, target: type) -> bool:
     return any(_annotation_contains(arg, target) for arg in get_args(annotation))
 
 
+def _normalize_results_dir_prefix(value: str | Path) -> Path:
+    """Normalize results_dir_prefix values from legacy results_dir inputs."""
+    path = Path(value)
+    match = re.match(r"^(?P<base>.+)_seed_\d+$", path.name)
+    if match:
+        path = path.with_name(match.group("base"))
+    if not path.is_absolute() and path.parts and path.parts[0] == "data" and len(path.parts) > 1:
+        path = Path(*path.parts[1:])
+    return path
+
+
 def _normalize_seed_pair(sim: SimConfig, *, seed_provided: bool) -> None:
     """Normalize and validate ``seed_pair`` for a :class:`SimConfig` instance."""
     if sim.seed_pair is None:
@@ -829,6 +852,10 @@ def load_app_config(*overlays: Path) -> AppConfig:
         io_section = data["io"]
         if "analysis_dir" in io_section and "analysis_subdir" not in io_section:
             io_section["analysis_subdir"] = io_section.pop("analysis_dir")
+        if "results_dir" in io_section and "results_dir_prefix" not in io_section:
+            io_section["results_dir_prefix"] = _normalize_results_dir_prefix(
+                io_section.pop("results_dir")
+            )
     seed_provided = False
     per_n_seed_provided: dict[int, bool] = {}
     if "sim" in data:
@@ -954,6 +981,8 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         if "." not in key:
             raise ValueError(f"Invalid override {pair!r}")
         section_name, option = key.split(".", 1)
+        if section_name == "io" and option == "results_dir":
+            option = "results_dir_prefix"
         section = getattr(cfg, section_name)
         if not hasattr(section, option):
             raise AttributeError(f"Unknown option {option!r} in section {section_name!r}")
@@ -961,6 +990,9 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         type_hints = get_type_hints(type(section))
         annotation = type_hints.get(option)
         new_value = _coerce(raw, current, annotation)
+        if section_name == "io" and option == "results_dir_prefix":
+            if isinstance(new_value, (str, Path)):
+                new_value = _normalize_results_dir_prefix(new_value)
         setattr(section, option, new_value)
     return cfg
 

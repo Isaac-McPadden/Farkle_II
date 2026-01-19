@@ -94,7 +94,7 @@ def test_stringify_paths_handles_nested_structures():
 
 def test_write_active_config_persists_yaml(tmp_path: Path, monkeypatch):
     cfg = cli_main.AppConfig()
-    cfg.io.results_dir = tmp_path / "results"
+    cfg.io.results_dir_prefix = tmp_path / "results"
     cfg.analysis.outputs = {}
     cfg.sim.row_dir = tmp_path / "rows"
 
@@ -103,7 +103,7 @@ def test_write_active_config_persists_yaml(tmp_path: Path, monkeypatch):
     written = tmp_path / "active_config.yaml"
     assert written.exists()
     data = yaml.safe_load(written.read_text())
-    assert data["io"]["results_dir"].endswith("results")
+    assert data["io"]["results_dir_prefix"].endswith("results")
     assert data["sim"]["row_dir"].endswith("rows")
 
 
@@ -122,7 +122,7 @@ def test_main_time_dispatches(monkeypatch, preserve_root_logger):
 
 def _write_cfg(tmp_path: Path) -> Path:
     cfg = {
-        "io": {"results_dir": str(tmp_path / "out")},
+        "io": {"results_dir_prefix": str(tmp_path / "out")},
         "sim": {"seed": 7, "n_players_list": [2], "num_shuffles": 1, "recompute_num_shuffles": False},
     }
     path = tmp_path / "cfg.yml"
