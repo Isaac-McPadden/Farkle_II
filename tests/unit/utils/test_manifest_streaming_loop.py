@@ -1,7 +1,7 @@
 import os
 import threading
 from pathlib import Path
-from typing import Iterator
+from typing import TYPE_CHECKING, Iterator
 
 import pytest
 
@@ -13,6 +13,9 @@ from farkle.utils.manifest import (
     append_manifest_many,
     iter_manifest,
 )
+
+if TYPE_CHECKING:
+    from pyarrow import Table
 
 
 def test_append_manifest_helpers(tmp_path):
@@ -234,7 +237,7 @@ def test_writer_thread_forwards_manifest(monkeypatch):
     queue = list(tables) + [None]
     pop_calls = []
 
-    def fake_pop() -> pa.Table | None:
+    def fake_pop() -> "Table | None":
         value = queue.pop(0)
         pop_calls.append(value)
         return value
@@ -282,7 +285,7 @@ def test_producer_thread_pushes_all_tables():
     def fake_push(tbl) -> None:
         pushed.append(tbl)
 
-    def mk_batches() -> Iterator[pa.Table]:
+    def mk_batches() -> Iterator["Table"]:
         return iter(tables)
 
     streaming_loop.producer_thread(fake_push, mk_batches)
