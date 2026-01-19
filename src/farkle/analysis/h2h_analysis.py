@@ -25,23 +25,22 @@ from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
-_DECISION_SCHEMA = pa.schema(
-    [
-        pa.field("a", pa.string()),
-        pa.field("b", pa.string()),
-        pa.field("wins_a", pa.int64()),
-        pa.field("wins_b", pa.int64()),
-        pa.field("games", pa.int64()),
-        pa.field("P1_win_rate", pa.float64()),
-        pa.field("P2_win_rate", pa.float64()),
-        pa.field("pval", pa.float64()),
-        pa.field("adj_p", pa.float64()),
-        pa.field("is_sig", pa.bool_()),
-        pa.field("dir", pa.string()),
-        pa.field("tie_break", pa.bool_()),
-        pa.field("tie_policy", pa.string()),
-    ]
-)
+_DECISION_FIELDS: list[pa.Field] = [
+    pa.field("a", pa.string()),
+    pa.field("b", pa.string()),
+    pa.field("wins_a", pa.int64()),
+    pa.field("wins_b", pa.int64()),
+    pa.field("games", pa.int64()),
+    pa.field("P1_win_rate", pa.float64()),
+    pa.field("P2_win_rate", pa.float64()),
+    pa.field("pval", pa.float64()),
+    pa.field("adj_p", pa.float64()),
+    pa.field("is_sig", pa.bool_()),
+    pa.field("dir", pa.string()),
+    pa.field("tie_break", pa.bool_()),
+    pa.field("tie_policy", pa.string()),
+]
+_DECISION_SCHEMA = pa.schema(_DECISION_FIELDS)
 
 
 def holm_bonferroni(
