@@ -8,8 +8,9 @@ High-level flow:
 - ``FarklePlayer.take_turn`` manages the intra-turn cycle of rolling, scoring,
   and consulting its strategy object.
 
-The module keeps no global state; each ``FarklePlayer`` owns a dedicated
-:class:`numpy.random.Generator` seeded by the outer simulation layer.
+The module keeps no global state; each ``FarklePlayer`` owns a dedicated RNG
+compatible with :class:`numpy.random.Generator` seeded by the outer simulation
+layer.
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ import numpy as np
 
 from farkle.game.scoring import DiceRoll, default_score
 from farkle.simulation.strategies import ThresholdStrategy
-from farkle.utils.random import make_rng
+from farkle.utils.random import RngProtocol, make_rng
 
 __all__ = [
     "FarklePlayer",
@@ -49,7 +50,7 @@ class FarklePlayer:
     strategy: ThresholdStrategy
     score: int = 0
     has_scored: bool = False  # entered game (≥500) flag
-    rng: np.random.Generator = field(default_factory=make_rng, repr=False)
+    rng: RngProtocol = field(default_factory=make_rng, repr=False)
 
     # counters
     n_farkles: int = 0
