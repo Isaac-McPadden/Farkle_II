@@ -485,6 +485,8 @@ class AppConfig:
         meta_path = Path(configured)
         if meta_path.is_absolute():
             return meta_path
+        if meta_path.parts and meta_path.parts[0] == "data":
+            return meta_path
         # Anchor relative paths to the parent of the seed-suffixed results_root
         return self.results_root.parent / meta_path
 

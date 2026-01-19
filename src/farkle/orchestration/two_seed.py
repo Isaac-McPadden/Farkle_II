@@ -9,8 +9,8 @@ from typing import Sequence
 
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
 from farkle.orchestration.seed_utils import (
-    base_results_dir,
     prepare_seed_config,
+    seed_pair_seed_root,
     seed_has_completion_markers,
     write_active_config,
 )
@@ -40,9 +40,12 @@ def run_seeds(
     seed_pair: tuple[int, int],
     force: bool = False,
 ) -> None:
-    base_dir = base_results_dir(cfg)
     for seed in seed_pair:
-        seed_cfg = prepare_seed_config(cfg, seed=seed, base_results_dir=base_dir)
+        seed_cfg = prepare_seed_config(
+            cfg,
+            seed=seed,
+            base_results_dir=seed_pair_seed_root(cfg, seed_pair, seed),
+        )
         LOGGER.info(
             "Preparing seed run",
             extra={

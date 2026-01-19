@@ -12,8 +12,10 @@ from farkle import analysis
 from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
 from farkle.orchestration.seed_utils import (
-    base_results_dir,
     prepare_seed_config,
+    seed_pair_meta_root,
+    seed_pair_root,
+    seed_pair_seed_root,
     seed_has_completion_markers,
     write_active_config,
 )
@@ -38,8 +40,11 @@ def _resolve_seed_pair(
     return None
 
 
-def _shared_meta_dir(cfg: AppConfig, base_dir: Path) -> Path:
-    return base_dir / cfg.io.analysis_subdir / "seed_summaries_meta"
+def _shared_meta_dir(cfg: AppConfig, pair_root: Path, seed_pair: tuple[int, int]) -> Path:
+    configured_meta = seed_pair_meta_root(cfg, seed_pair)
+    if configured_meta is not None:
+        return configured_meta
+    return pair_root / cfg.io.analysis_subdir / "seed_summaries_meta"
 
 
 def _run_per_seed_analysis(cfg: AppConfig) -> None:
@@ -60,17 +65,17 @@ def run_pipeline(
     seed_pair: tuple[int, int],
     force: bool = False,
 ) -> None:
-    base_dir = base_results_dir(cfg)
-    meta_dir = _shared_meta_dir(cfg, base_dir)
+    pair_root = seed_pair_root(cfg, seed_pair)
+    meta_dir = _shared_meta_dir(cfg, pair_root, seed_pair)
     meta_dir.mkdir(parents=True, exist_ok=True)
-    manifest_path = base_dir / "two_seed_pipeline_manifest.jsonl"
+    manifest_path = pair_root / "two_seed_pipeline_manifest.jsonl"
 
     append_manifest_line(
         manifest_path,
         {
             "event": "run_start",
             "seed_pair": list(seed_pair),
-            "results_dir": str(base_dir),
+            "results_dir": str(pair_root),
             "meta_analysis_dir": str(meta_dir),
         },
     )
@@ -79,7 +84,7 @@ def run_pipeline(
         seed_cfg = prepare_seed_config(
             cfg,
             seed=seed,
-            base_results_dir=base_dir,
+            base_results_dir=seed_pair_seed_root(cfg, seed_pair, seed),
             meta_analysis_dir=meta_dir,
         )
         seed_cfg = dataclasses.replace(
@@ -156,7 +161,7 @@ def run_pipeline(
     interseed_cfg = prepare_seed_config(
         cfg,
         seed=interseed_seed,
-        base_results_dir=base_dir,
+        base_results_dir=seed_pair_seed_root(cfg, seed_pair, interseed_seed),
         meta_analysis_dir=meta_dir,
     )
     interseed_cfg = dataclasses.replace(
