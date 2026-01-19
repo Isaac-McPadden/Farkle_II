@@ -10,7 +10,7 @@ import os
 import tempfile
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-from typing import Iterable, Optional
+from typing import Iterable, Iterator, Optional
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -19,7 +19,7 @@ from .types import Compression, normalize_compression
 
 
 @contextmanager
-def atomic_path(final_path: str):
+def atomic_path(final_path: str) -> Iterator[str]:
     """Write to a temp file in the same directory, then atomic replace."""
     dir_ = os.path.dirname(os.path.abspath(final_path)) or "."
     fd, tmp = tempfile.mkstemp(prefix="._tmp_", dir=dir_)
