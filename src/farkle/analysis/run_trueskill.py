@@ -588,9 +588,9 @@ def _iter_players_and_ranks(
         seat_rank_col_name = "seat_ranks"
 
         strategy_column_names = _strategy_column_names(n)
-        columns: list[str] = [seat_rank_col_name, *strategy_column_names]
+        seat_rank_columns: list[str] = [seat_rank_col_name, *strategy_column_names]
 
-        for batch in dataset.to_batches(columns=columns, batch_size=batch_size):
+        for batch in dataset.to_batches(columns=seat_rank_columns, batch_size=batch_size):
             ranks_col: pa.Array = batch.column(seat_rank_col_name)
             ranks_list = ranks_col.to_pylist()  # list[list[str]] or None
 
@@ -615,16 +615,24 @@ def _iter_players_and_ranks(
     winner_col_name: str = (
         "winner_seat" if schema.get_field_index("winner_seat") != -1 else "winner"
     )
-    columns: list[str] = [winner_col_name, *rank_col_names, *strategy_column_names]
+    fallback_columns: list[str] = [
+        winner_col_name,
+        *rank_col_names,
+        *strategy_column_names,
+    ]
     
-    for batch in dataset.to_batches(columns=columns, batch_size=batch_size):
+    for batch in dataset.to_batches(columns=fallback_columns, batch_size=batch_size):
         winner_seats = batch.column(winner_col_name).to_pylist()
 
         rank_cols: list[pa.Array] = [batch.column(name) for name in rank_col_names]
-        strat_cols: list[pa.Array] = [batch.column(name) for name in strategy_column_names]
+        fallback_strat_cols: list[pa.Array] = [
+            batch.column(name) for name in strategy_column_names
+        ]
 
         ranks = [[col[i].as_py() for col in rank_cols] for i in range(len(batch))]
-        strats = [[col[i].as_py() for col in strat_cols] for i in range(len(batch))]
+        strats = [
+            [col[i].as_py() for col in fallback_strat_cols] for i in range(len(batch))
+        ]
 
         for winner_seat, seat_ranks, seat_strats in zip(winner_seats, ranks, strats, strict=True):
             # try to build placements from P#_rank if we have ≥2 ranks
