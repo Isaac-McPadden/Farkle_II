@@ -120,6 +120,22 @@ into numbered directories under `analysis/`:
 farkle --config configs/farkle_mega_config.yaml analyze pipeline
 ```
 
+### `farkle-two-seed-pipeline`
+
+Run simulations and per-seed analysis for both entries in `sim.seed_pair`, then
+run the interseed comparisons. This entry point is separate from the unified
+`farkle` CLI.
+
+```bash
+farkle-two-seed-pipeline --config configs/fast_config.yaml
+```
+
+If you prefer module execution:
+
+```bash
+python -m farkle.orchestration.two_seed_pipeline --config configs/fast_config.yaml
+```
+
 ## Direct Engine Usage
 
 The engine remains importable for bespoke experiments:

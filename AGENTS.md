@@ -29,3 +29,6 @@ When operating locally in VSCode, use the venv located in the root as it has all
 
 - **Limit RAM Usage:**
   Always prefer streaming small amounts of data when processing.  Do not put a whole data set in memory, run calculations, then write it all out at the end unless the data set and calculations are tiny (if you need a heuristic, less than 5 seconds of processing time).  Streaming reads and writing atomically have helper functions in src/farkle/utils/ to assist with this in addition to their usefulness in resumability.
+
+## Style
+  This project uses Ruff, Pylance/Pyright, Mypy (just in src\\**), and occasional formatting corrections with Black
