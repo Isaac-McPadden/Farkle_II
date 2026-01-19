@@ -169,6 +169,31 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
         elif "winner_seat" in df.columns:
             df["seat_ranks"] = df["winner_seat"].apply(lambda s: [s])
 
+    df = _normalize_strategy_columns(df)
+    return df
+
+
+def _normalize_strategy_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Ensure all strategy columns are normalized to string dtype."""
+    df = df.copy()
+    strategy_cols = [
+        c for c in df.columns if c == "winner_strategy" or _SEAT_RE.match(c)
+    ]
+    for col in strategy_cols:
+        series = df[col]
+        non_string_mask = series.notna() & ~series.apply(lambda v: isinstance(v, str))
+        if non_string_mask.any():
+            sample = series[non_string_mask].iloc[0]
+            LOGGER.debug(
+                "Non-string strategy value detected",
+                extra={
+                    "stage": "ingest",
+                    "column": col,
+                    "sample_type": type(sample).__name__,
+                },
+            )
+        normalized = series.map(lambda v: str(v) if pd.notna(v) else pd.NA)
+        df[col] = normalized.astype("string")
     return df
 
 
