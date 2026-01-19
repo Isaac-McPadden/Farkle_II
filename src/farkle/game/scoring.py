@@ -10,7 +10,7 @@ Numba JIT functions.
 from __future__ import annotations
 
 import functools
-from typing import Callable, NamedTuple, Sequence, Tuple, Union, cast
+from typing import Callable, Literal, NamedTuple, Sequence, Tuple, Union, cast, overload
 
 # Numba is only used in the low-level helpers;
 # no caller needs to install it explicitly.
@@ -581,6 +581,42 @@ def apply_discards(
 # --------------------------------------------------------------------------- #
 # 7.  High-level public API
 # --------------------------------------------------------------------------- #
+@overload
+def default_score(
+    dice_roll: DiceRoll,
+    *,
+    turn_score_pre: int,
+    smart_five: bool = ...,
+    smart_one: bool = ...,
+    consider_score: bool = ...,
+    consider_dice: bool = ...,
+    require_both: bool = ...,
+    score_threshold: int = ...,
+    dice_threshold: int = ...,
+    favor_dice_or_score: Union[FavorDiceOrScore, bool] = ...,
+    return_discards: Literal[False] = ...,
+) -> Tuple[int, int, int]:
+    ...
+
+
+@overload
+def default_score(
+    dice_roll: DiceRoll,
+    *,
+    turn_score_pre: int,
+    smart_five: bool = ...,
+    smart_one: bool = ...,
+    consider_score: bool = ...,
+    consider_dice: bool = ...,
+    require_both: bool = ...,
+    score_threshold: int = ...,
+    dice_threshold: int = ...,
+    favor_dice_or_score: Union[FavorDiceOrScore, bool] = ...,
+    return_discards: Literal[True],
+) -> Tuple[int, int, int, int, int]:
+    ...
+
+
 def default_score(
     dice_roll: DiceRoll,
     *,

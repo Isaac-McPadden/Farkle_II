@@ -122,7 +122,7 @@ class FarklePlayer:
             require_both=self.strategy.require_both,
             favor_dice_or_score=self.strategy.favor_dice_or_score,
             return_discards=True,
-        )  # type: ignore[misc]
+        )
 
         if pts == 0:
             self.n_farkles += 1
