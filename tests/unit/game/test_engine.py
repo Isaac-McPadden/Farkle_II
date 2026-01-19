@@ -101,7 +101,6 @@ class _SeqGen(RngProtocol):
         self,
         low: int,  # noqa: ARG002
         high: int | None = None,  # noqa: ARG002
-        *,
         size: int | tuple[int, ...] | None = None,
         dtype=np.int64,
         endpoint: bool = False,  # noqa: ARG002
@@ -154,7 +153,6 @@ class SeqGen2(RngProtocol):
         self,
         low: int,  # noqa: ARG002
         high: int | None = None,  # noqa: ARG002
-        *,
         size: int | tuple[int, ...] | None = None,
         dtype=np.int64,
         endpoint: bool = False,  # noqa: ARG002
