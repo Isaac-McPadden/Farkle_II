@@ -117,16 +117,22 @@ into numbered directories under `analysis/`:
   depend on upstream metrics.
 - `pipeline` - run `ingest`, `curate`, `combine`, and `metrics` sequentially
   before branching into downstream analytics.
+- `two-seed-pipeline` - run the two-seed simulation + analysis orchestration
+  using `sim.seed_pair`.
 
 ```bash
 farkle --config configs/farkle_mega_config.yaml analyze pipeline
 ```
 
+```bash
+farkle --config configs/fast_config.yaml analyze two-seed-pipeline --seed-pair 42 43
+```
+
 ### `farkle-two-seed-pipeline`
 
 Run simulations and per-seed analysis for both entries in `sim.seed_pair`, then
-run the interseed comparisons. This entry point is separate from the unified
-`farkle` CLI.
+run the interseed comparisons. This legacy entry point is equivalent to the
+unified `farkle analyze two-seed-pipeline` command.
 
 ```bash
 farkle-two-seed-pipeline --config configs/fast_config.yaml

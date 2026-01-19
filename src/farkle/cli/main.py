@@ -16,6 +16,7 @@ import yaml  # type: ignore[import-untyped]
 from farkle import analysis as analysis_pkg
 from farkle.analysis import combine, curate, ingest, metrics
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
+from farkle.orchestration import two_seed_pipeline
 from farkle.simulation import runner
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
@@ -207,6 +208,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target score for multi-player reach flags (default: 10000)",
     )
     analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
+    two_seed_parser = analyze_sub.add_parser(
+        "two-seed-pipeline",
+        help="Run the two-seed simulation and analysis orchestration pipeline",
+    )
+    two_seed_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recompute even when completion markers exist",
+    )
 
     return parser
 
@@ -445,6 +455,13 @@ def main(argv: Sequence[str] | None = None) -> None:
             analysis_pkg.run_all(cfg)
         elif args.an_cmd == "variance":
             analysis_pkg.run_variance(cfg, force=getattr(args, "force", False))
+        elif args.an_cmd == "two-seed-pipeline":
+            seed_pair = cfg.sim.require_seed_pair()
+            two_seed_pipeline.run_pipeline(
+                cfg,
+                seed_pair=seed_pair,
+                force=getattr(args, "force", False),
+            )
         elif args.an_cmd == "pipeline":
             _run_preprocess(
                 cfg,
