@@ -18,7 +18,7 @@ from farkle.config import AppConfig, IOConfig
 
 @pytest.fixture
 def _cfg(tmp_path: Path) -> AppConfig:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
     cfg.analysis.run_frequentist = True
     cfg.set_stage_layout(resolve_stage_layout(cfg))
     data_dir = cfg.curate_stage_dir / "data"

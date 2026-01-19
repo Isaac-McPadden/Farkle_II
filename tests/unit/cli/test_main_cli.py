@@ -122,7 +122,7 @@ def test_main_time_dispatches(monkeypatch, preserve_root_logger):
 
 def _write_cfg(tmp_path: Path) -> Path:
     cfg = {
-        "io": {"results_dir": str(tmp_path / "out"), "append_seed": False},
+        "io": {"results_dir": str(tmp_path / "out")},
         "sim": {"seed": 7, "n_players_list": [2], "num_shuffles": 1, "recompute_num_shuffles": False},
     }
     path = tmp_path / "cfg.yml"

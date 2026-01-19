@@ -29,8 +29,6 @@ class IOConfig:
     """File-system locations for the application."""
 
     results_dir: Path = Path("results")
-    # Keep this as a plain string in YAML to avoid Path(dict) mistakes.
-    append_seed: bool = True
     analysis_subdir: str = "analysis"
     meta_analysis_dir: Path | None = None
 
@@ -58,7 +56,7 @@ class SimConfig:
     """Simulation parameters.
 
     ``seed`` remains the primary seed for single-seed workflows and for naming
-    when ``io.append_seed`` is enabled. ``seed_pair`` is reserved for two-seed
+    seed-suffixed results directories. ``seed_pair`` is reserved for two-seed
     orchestration; when both are set, ``seed`` governs single-seed behavior and
     ``seed_pair`` governs the dual-seed run.
     """
@@ -916,10 +914,6 @@ def load_app_config(*overlays: Path) -> AppConfig:
     if cfg.sim.per_n:
         for key, sim_cfg in cfg.sim.per_n.items():
             _normalize_seed_pair(sim_cfg, seed_provided=per_n_seed_provided.get(int(key), False))
-    if cfg.io.append_seed:
-        # Append the seed number to the results_dir name
-        base = str(cfg.io.results_dir)
-        cfg.io.results_dir = Path(f"{base}_seed_{cfg.sim.seed}")
     return cfg
 
 

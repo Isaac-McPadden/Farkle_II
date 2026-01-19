@@ -85,7 +85,7 @@ def _build_parquet(tmp_path: Path, cfg):
 
 
 def test_run_generates_all_outputs(tmp_path: Path):
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
     per_n_path, combined_path = _build_parquet(tmp_path, cfg)
 
     game_stats.run(cfg, force=True)
@@ -115,7 +115,7 @@ def test_run_generates_all_outputs(tmp_path: Path):
 
 
 def test_run_requires_inputs(tmp_path: Path):
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
 
     game_stats.run(cfg)
 
@@ -125,7 +125,7 @@ def test_run_requires_inputs(tmp_path: Path):
 
 
 def test_compute_margins_and_aggregation(tmp_path: Path):
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_path, append_seed=False))
+    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
     per_n_path, _ = _build_parquet(tmp_path, cfg)
 
     per_n_inputs = [(2, per_n_path)]

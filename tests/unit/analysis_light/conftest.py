@@ -134,7 +134,7 @@ def analysis_config(tmp_results_dir: Path) -> Callable[..., AppConfig]:
         sim_cfg = cast(SimConfig | None, overrides.pop("sim", None))
         if sim_cfg is None:
             sim_cfg = SimConfig(n_players_list=[3], expanded_metrics=True)
-        io_cfg = IOConfig(results_dir=tmp_results_dir, append_seed=False)
+        io_cfg = IOConfig(results_dir=tmp_results_dir)
         return AppConfig(io=io_cfg, sim=sim_cfg, **overrides)
 
     return _factory

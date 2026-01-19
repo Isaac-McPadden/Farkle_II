@@ -34,7 +34,7 @@ def test_cli_run(tmp_path, monkeypatch, capsys) -> None:
     monkeypatch.setattr(cli_main.runner, "run_single_n", fake_run_single_n)
 
     cfg = {
-        "io": {"results_dir": str(tmp_path / "out"), "append_seed": False},
+        "io": {"results_dir": str(tmp_path / "out")},
         "sim": {
             "seed": 42,
             "n_players_list": [2],

@@ -15,8 +15,6 @@ from farkle.utils.writer import atomic_path
 
 def base_results_dir(cfg: AppConfig) -> Path:
     """Return the non-seed-suffixed results directory."""
-    if not cfg.io.append_seed:
-        return cfg.io.results_dir
     suffix = f"_seed_{cfg.sim.seed}"
     path_str = str(cfg.io.results_dir)
     if path_str.endswith(suffix):
@@ -24,10 +22,8 @@ def base_results_dir(cfg: AppConfig) -> Path:
     return cfg.io.results_dir
 
 
-def resolve_results_dir(base: Path, seed: int, *, append_seed: bool) -> Path:
-    """Resolve the results dir for a given seed based on append_seed."""
-    if not append_seed:
-        return base
+def resolve_results_dir(base: Path, seed: int) -> Path:
+    """Resolve the results dir for a given seed."""
     return Path(f"{base}_seed_{seed}")
 
 
@@ -82,11 +78,7 @@ def prepare_seed_config(
     """Return a config updated for a specific seed and results directory."""
     io_cfg = dataclasses.replace(
         base_cfg.io,
-        results_dir=resolve_results_dir(
-            base_results_dir,
-            seed,
-            append_seed=base_cfg.io.append_seed,
-        ),
+        results_dir=resolve_results_dir(base_results_dir, seed),
         meta_analysis_dir=(
             meta_analysis_dir if meta_analysis_dir is not None else base_cfg.io.meta_analysis_dir
         ),

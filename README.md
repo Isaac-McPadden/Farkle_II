@@ -33,7 +33,6 @@ All CLI workflows consume a single YAML document that maps to
 # configs/fast_config.yaml
 io:
   results_dir: data/results/fast
-  append_seed: true  # append "_seed_<sim.seed>" to results_dir automatically
 
 sim:
   n_players_list: [5]
@@ -59,7 +58,7 @@ instead of string concatenation when you need a path (for example
 
 Configuration overlays supplied with `--config` are loaded in order; inline
 overrides use dotted keys that match the dataclass structure. For example:
-`--set sim.n_jobs=12 --set io.append_seed=false`.
+`--set sim.n_jobs=12 --set sim.seed=123`.
 
 ## CLI Commands
 

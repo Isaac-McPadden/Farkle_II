@@ -3,7 +3,6 @@
 
 io:
   results_dir: "data/results"   # where per-N run folders are created
-  append_seed: true
   analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
 
 sim:

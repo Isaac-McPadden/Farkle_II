@@ -297,9 +297,7 @@ def build_config(results_root: Path) -> AppConfig:
         Application configuration tailored for the sample metrics stage.
     """
 
-    return AppConfig(
-        io=IOConfig(results_dir=results_root, append_seed=False), sim=SimConfig(**_SIM_KWARGS)
-    )
+    return AppConfig(io=IOConfig(results_dir=results_root), sim=SimConfig(**_SIM_KWARGS))
 
 
 def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:

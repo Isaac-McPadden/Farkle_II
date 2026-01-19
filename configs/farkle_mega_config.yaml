@@ -3,7 +3,6 @@
 
 io:
   results_dir: "data/results"     # where per-N run folders are created
-  append_seed: true               # append sim.seed suffix to results_dir
   analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
   meta_analysis_dir: "data/meta_analysis"         # optional shared dir for per-seed/meta summaries
 
@@ -13,7 +12,7 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 21                        # primary RNG seed + results_dir suffix when append_seed=true
+  seed: 21                        # primary RNG seed (results_dir uses seed suffix)
   seed_pair: [21, 22]             # two-seed orchestration pair; seed still drives suffixing
   n_jobs: 16                      # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {N}p_metrics.parquet with sums & sq_sums

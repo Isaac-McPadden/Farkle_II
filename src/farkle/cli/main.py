@@ -358,7 +358,6 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "analysis_dir": str(cfg.analysis_dir),
                 "n_players_list": list(cfg.sim.n_players_list),
                 "expanded_metrics": cfg.sim.expanded_metrics,
-                "append_seed": cfg.io.append_seed,
             },
         )
 
