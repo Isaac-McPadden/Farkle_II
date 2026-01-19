@@ -1,5 +1,6 @@
 import json
 import logging
+from typing import Any
 
 import networkx as nx
 import pandas as pd
@@ -80,7 +81,7 @@ def test_summarize_seed_stability_handles_common_strategies():
         pd.Series([1.5, 2.5], index=["s1", "s2"]),
     ]
 
-    summary = agreement._summarize_seed_stability(per_seed)
+    summary: dict[str, Any] | None = agreement._summarize_seed_stability(per_seed)
 
     assert summary is not None
     assert summary["seeds"] == 2
