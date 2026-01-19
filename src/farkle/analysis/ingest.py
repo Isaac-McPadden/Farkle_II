@@ -143,7 +143,7 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
         key=lambda c: int(_SEAT_RE.match(c).group(1)),  # type: ignore
     )
 
-    # winner_strategy as plain strings (add if missing)
+    # winner_strategy derived from seat strategy identifiers (add if missing)
     if "winner_strategy" not in df.columns and seat_cols:
         seat_idx = (
             df["winner_seat"].str.extract(r"P(?P<num>\d+)", expand=True)["num"].astype("Int64")
@@ -169,32 +169,81 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
         elif "winner_seat" in df.columns:
             df["seat_ranks"] = df["winner_seat"].apply(lambda s: [s])
 
-    df = _normalize_strategy_columns(df)
     return df
 
 
-def _normalize_strategy_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Ensure all strategy columns are normalized to string dtype."""
+def _coerce_strategy_ids(
+    df: pd.DataFrame,
+    strategy_lookup: dict[str, int] | None,
+) -> pd.DataFrame:
+    """Ensure all strategy columns are normalized to integer IDs."""
     df = df.copy()
     strategy_cols = [
         c for c in df.columns if c == "winner_strategy" or _SEAT_RE.match(c)
     ]
     for col in strategy_cols:
         series = df[col]
-        non_string_mask = series.notna() & ~series.apply(lambda v: isinstance(v, str))
-        if non_string_mask.any():
-            sample = series[non_string_mask].iloc[0]
+        numeric = pd.to_numeric(series, errors="coerce")
+        fractional_mask = numeric.notna() & (numeric % 1 != 0)
+        if fractional_mask.any():
+            sample = series[fractional_mask].iloc[0]
             LOGGER.debug(
-                "Non-string strategy value detected",
+                "Non-integer strategy value detected",
                 extra={
                     "stage": "ingest",
                     "column": col,
                     "sample_type": type(sample).__name__,
                 },
             )
-        normalized = series.map(lambda v: str(v) if pd.notna(v) else pd.NA)
-        df[col] = normalized.astype("string")
+            raise RuntimeError("Non-integer strategy value detected in ingest")
+        id_series = numeric.astype("Int64")
+        missing_mask = id_series.isna() & series.notna()
+        if missing_mask.any():
+            if strategy_lookup is None:
+                sample = series[missing_mask].iloc[0]
+                LOGGER.error(
+                    "Strategy manifest required to map legacy identifiers",
+                    extra={
+                        "stage": "ingest",
+                        "column": col,
+                        "sample": str(sample),
+                    },
+                )
+                raise RuntimeError("Missing strategy manifest for legacy strategies")
+            mapped = series[missing_mask].astype(str).map(strategy_lookup)
+            id_series.loc[missing_mask] = mapped
+        unresolved = id_series.isna() & series.notna()
+        if unresolved.any():
+            sample = series[unresolved].iloc[0]
+            LOGGER.error(
+                "Unmapped strategy identifiers detected",
+                extra={
+                    "stage": "ingest",
+                    "column": col,
+                    "sample": str(sample),
+                },
+            )
+            raise RuntimeError("Unmapped strategy identifiers detected")
+        df[col] = id_series.astype("Int64")
     return df
+
+
+def _validate_strategy_dtypes(df: pd.DataFrame) -> None:
+    """Validate that strategy columns conform to integer identifier dtype."""
+    strategy_cols = [
+        c for c in df.columns if c == "winner_strategy" or _SEAT_RE.match(c)
+    ]
+    for col in strategy_cols:
+        if not pd.api.types.is_integer_dtype(df[col].dtype):
+            LOGGER.error(
+                "Strategy column has unexpected dtype",
+                extra={
+                    "stage": "ingest",
+                    "column": col,
+                    "dtype": str(df[col].dtype),
+                },
+            )
+            raise RuntimeError("Strategy column dtype mismatch")
 
 
 def _n_from_block(name: str) -> int:
@@ -266,6 +315,27 @@ def _process_block(block: Path, cfg: AppConfig) -> int:
         return 0
 
     canon = expected_schema_for(n)
+    manifest_path = cfg.strategy_manifest_path(n)
+    strategy_lookup: dict[str, int] | None = None
+    if manifest_path.exists():
+        manifest = pd.read_parquet(manifest_path, columns=["strategy_id", "strategy_str"])
+        if not {"strategy_id", "strategy_str"}.issubset(manifest.columns):
+            LOGGER.error(
+                "Strategy manifest missing required columns",
+                extra={
+                    "stage": "ingest",
+                    "path": str(manifest_path),
+                    "columns": list(manifest.columns),
+                },
+            )
+            raise RuntimeError("Strategy manifest missing required columns")
+        strategy_lookup = dict(
+            zip(
+                manifest["strategy_str"].astype(str),
+                manifest["strategy_id"].astype(int),
+                strict=False,
+            )
+        )
     seat_cols = [c for c in canon.names if c.startswith("P")]
     wanted = ("winner", "n_rounds", "winning_score", *seat_cols)
 
@@ -296,6 +366,8 @@ def _process_block(block: Path, cfg: AppConfig) -> int:
             )
 
             shard_df = _fix_winner(shard_df)
+            shard_df = _coerce_strategy_ids(shard_df, strategy_lookup)
+            _validate_strategy_dtypes(shard_df)
             canon_names = canon.names
             extras = sorted(
                 c for c in shard_df.columns if c not in canon_names and not c.startswith("P")
