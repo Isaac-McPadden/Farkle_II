@@ -324,19 +324,21 @@ def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -
         p1_rounds = pd.to_numeric(block["P1_rounds"], errors="coerce")
         p2_rounds = pd.to_numeric(block["P2_rounds"], errors="coerce")
 
+        farkle_diff = float(p1_farkles.mean() - p2_farkles.mean())
+        rounds_diff = float(p1_rounds.mean() - p2_rounds.mean())
         row = {
             "strategy": strategy,
             "n_players": players_int,
             "observations": int(block.shape[0]),
             "mean_p1_farkles": float(p1_farkles.mean()),
             "mean_p2_farkles": float(p2_farkles.mean()),
-            "farkle_diff": float(p1_farkles.mean() - p2_farkles.mean()),
+            "farkle_diff": farkle_diff,
             "mean_p1_rounds": float(p1_rounds.mean()),
             "mean_p2_rounds": float(p2_rounds.mean()),
-            "rounds_diff": float(p1_rounds.mean() - p2_rounds.mean()),
+            "rounds_diff": rounds_diff,
         }
-        row["farkle_flagged"] = abs(row["farkle_diff"]) > tol
-        row["rounds_flagged"] = abs(row["rounds_diff"]) > tol
+        row["farkle_flagged"] = abs(farkle_diff) > tol
+        row["rounds_flagged"] = abs(rounds_diff) > tol
         rows.append(pd.Series(row))
 
     return pd.DataFrame(rows)
