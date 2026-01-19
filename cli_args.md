@@ -69,6 +69,9 @@ Subcommands:
 - `preprocess` - run `ingest`, `curate`, `combine`, and `metrics` sequentially.
   Optional stages are ordered by their directory prefixes: `04_game_stats` then
   `05_rng` when enabled.
+- `two-seed-pipeline` - run the two-seed simulation + analysis orchestrator for
+  `cfg.sim.seed_pair`. This is equivalent to the legacy `farkle-two-seed-pipeline`
+  console script and module entry point.
 - `analytics` - perform statistical analysis computation steps (TrueSkill, Bonferroni head-to-head, HGB modeling, etc.) according to the configuration.
 - `pipeline` - run `preprocess` followed by `analytics` for a full end-to-end pass.
   The analytics suite follows the renumbered stage layout (`06_seed_summaries`,
@@ -87,6 +90,12 @@ thousand games (<100k as a safety margin).
 
 ```bash
 farkle --config configs/presets/handcheck_pipeline.yaml analyze pipeline
+```
+
+To run the dual-seed orchestration:
+
+```bash
+farkle --config configs/fast_config.yaml analyze two-seed-pipeline --seed-pair 42 43
 ```
 
 The pipeline writes fresh artifacts to `data/results_dummy/analysis_handcheck`.
