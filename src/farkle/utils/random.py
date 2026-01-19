@@ -6,12 +6,26 @@ from __future__ import annotations
 import contextlib
 import importlib
 import random
+from typing import Protocol
 
 import numpy as np
 
 # Max unsigned 32-bit integer for random seed generation.  Using this value
 # keeps seeds compatible with languages like C/C++ that expect ``uint32``.
 MAX_UINT32 = 2**32 - 1
+
+
+class RngProtocol(Protocol):
+    """Protocol for RNGs that behave like ``numpy.random.Generator``."""
+
+    def integers(
+        self,
+        low: int,
+        high: int | None = None,
+        size: int | tuple[int, ...] | None = None,
+        dtype=np.int64,
+        endpoint: bool = False,
+    ) -> np.ndarray: ...
 
 
 def make_rng(seed: int | None = None) -> np.random.Generator:
@@ -62,4 +76,4 @@ def seed_everything(seed: int) -> None:
         pass
 
 
-__all__ = ["MAX_UINT32", "make_rng", "seed_everything", "spawn_seeds"]
+__all__ = ["MAX_UINT32", "RngProtocol", "make_rng", "seed_everything", "spawn_seeds"]
