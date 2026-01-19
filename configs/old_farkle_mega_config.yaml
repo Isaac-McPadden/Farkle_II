@@ -2,8 +2,8 @@
 # Drives BOTH simulation and analysis.
 
 io:
-  results_dir: "data/results"   # where per-N run folders are created
-  analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
+  results_dir_prefix: "results"   # prefix under data/ for per-N run folders
+  analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
 
 sim:
   # Table sizes to run (single-N works by giving a 1-item list)

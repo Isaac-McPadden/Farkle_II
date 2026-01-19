@@ -1383,7 +1383,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
         run_trueskill(
             output_seed=seed,
             root=analysis_dir,
-            dataroot=cfg.results_dir,
+            dataroot=cfg.results_root,
             row_data_dir=cfg.data_dir,
             curated_rows_name=cfg.curated_rows_name,
             workers=analysis_cfg.n_jobs or None,

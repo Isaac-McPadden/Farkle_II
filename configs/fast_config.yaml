@@ -2,8 +2,8 @@
 # Drives BOTH simulation and analysis.
 
 io:
-  results_dir: "data/results"   # where per-N run folders are created
-  analysis_subdir: "analysis"     # analysis outputs live under results_dir/analysis
+  results_dir_prefix: "results"   # prefix under data/ for per-N run folders
+  analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
 
 sim:
   # Table sizes to run (single-N works by giving a 1-item list)
@@ -11,11 +11,11 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 1177                         # primary RNG seed (results_dir uses seed suffix)
+  seed: 1177                         # primary RNG seed (results_root uses seed suffix)
   seed_pair: [1177, 1188]             # two-seed orchestration pair; seed still drives suffixing
   n_jobs: 12                    # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
-  row_dir: "rows"                   # rows => per-N rows under {results}/{N}_players/rows/
+  row_dir: "rows"                   # rows => per-N rows under {results_root}/{N}_players/rows/
                                     # If row_dir == null, row writing skipped
   desired_sec_per_chunk: 10
   ckpt_every_sec: 30

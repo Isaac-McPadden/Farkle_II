@@ -13,7 +13,7 @@ from farkle.config import AppConfig, IngestConfig, IOConfig
 def _make_cfg(
     tmp_results_dir: Path, *, ingest_overrides: dict[str, Any] | None = None
 ) -> AppConfig:
-    io_cfg = IOConfig(results_dir=tmp_results_dir, analysis_subdir="analysis")
+    io_cfg = IOConfig(results_dir_prefix=tmp_results_dir, analysis_subdir="analysis")
     ingest_cfg = IngestConfig(**(ingest_overrides or {}))
     return AppConfig(io=io_cfg, ingest=ingest_cfg)
 
@@ -134,7 +134,7 @@ def test_fix_winner_preserves_existing_fields():
 
 def test_process_block_skips_when_output_newer(tmp_results_dir, monkeypatch):
     cfg = _make_cfg(tmp_results_dir)
-    block = cfg.results_dir / "3_players"
+    block = cfg.results_root / "3_players"
     block.mkdir(parents=True)
 
     shard = block / "3p_rows.parquet"
@@ -165,7 +165,7 @@ def test_process_block_skips_when_output_newer(tmp_results_dir, monkeypatch):
 
 def test_process_block_zero_rows_cleans_outputs(tmp_results_dir, monkeypatch):
     cfg = _make_cfg(tmp_results_dir)
-    block = cfg.results_dir / "4_players"
+    block = cfg.results_root / "4_players"
     block.mkdir(parents=True)
 
     raw_out = cfg.ingested_rows_raw(4)
@@ -196,7 +196,7 @@ def test_process_block_zero_rows_cleans_outputs(tmp_results_dir, monkeypatch):
 
 def test_process_block_handles_legacy_shards(tmp_results_dir, monkeypatch):
     cfg = _make_cfg(tmp_results_dir)
-    block = cfg.results_dir / "3_players"
+    block = cfg.results_root / "3_players"
     row_dir = block / "3p_rows"
     row_dir.mkdir(parents=True)
     df = pd.DataFrame(
@@ -234,7 +234,7 @@ def test_process_block_handles_legacy_shards(tmp_results_dir, monkeypatch):
 
 def test_process_block_zero_rows_without_outputs(tmp_results_dir, monkeypatch):
     cfg = _make_cfg(tmp_results_dir)
-    block = cfg.results_dir / "5_players"
+    block = cfg.results_root / "5_players"
     block.mkdir(parents=True)
 
     def fake_iter_shards(
@@ -263,9 +263,9 @@ def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatc
     cfg = _make_cfg(tmp_results_dir)
 
     # create two block dirs so run() discovers them
-    block1 = cfg.results_dir / "block1_players"
+    block1 = cfg.results_root / "block1_players"
     block1.mkdir(parents=True)
-    block2 = cfg.results_dir / "block2_players"
+    block2 = cfg.results_root / "block2_players"
     block2.mkdir()
 
     calls = []
@@ -298,8 +298,8 @@ def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatc
 def test_run_process_pool_path(tmp_results_dir, monkeypatch):
     cfg = _make_cfg(tmp_results_dir, ingest_overrides={"n_jobs": 2})
 
-    block1 = cfg.results_dir / "1_players"
-    block2 = cfg.results_dir / "2_players"
+    block1 = cfg.results_root / "1_players"
+    block2 = cfg.results_root / "2_players"
     block1.mkdir(parents=True)
     block2.mkdir()
 
@@ -344,7 +344,7 @@ def test_run_process_pool_path(tmp_results_dir, monkeypatch):
 
 def test_run_emits_logging(tmp_results_dir, caplog):
     cfg = _make_cfg(tmp_results_dir)
-    block = cfg.results_dir / "2_players"
+    block = cfg.results_root / "2_players"
     block.mkdir(parents=True)
     df = pd.DataFrame(
         {"winner": ["P1"], "P1_strategy": ["A"], "n_rounds": [1], "winning_score": [100]}

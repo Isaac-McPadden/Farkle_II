@@ -350,7 +350,7 @@ def run(cfg: AppConfig) -> None:
         "Ingest started",
         extra={
             "stage": "ingest",
-            "root": str(cfg.results_dir),
+            "root": str(cfg.results_root),
             "data_dir": str(cfg.data_dir),
             "n_jobs": cfg.n_jobs_ingest,
         },
@@ -358,7 +358,7 @@ def run(cfg: AppConfig) -> None:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
     blocks = sorted(
-        (p for p in cfg.results_dir.iterdir() if p.is_dir() and p.name.endswith("_players")),
+        (p for p in cfg.results_root.iterdir() if p.is_dir() and p.name.endswith("_players")),
         key=lambda p: (_n_from_block(p.name), p.name),
     )
 
@@ -371,7 +371,7 @@ def run(cfg: AppConfig) -> None:
         manifests.append(cfg.ingest_manifest(n))
     if stage_is_up_to_date(
         done,
-        inputs=[cfg.results_dir],
+        inputs=[cfg.results_root],
         outputs=[*outputs, *manifests],
         config_sha=getattr(cfg, "config_sha", None),
     ):
@@ -401,7 +401,7 @@ def run(cfg: AppConfig) -> None:
     )
     write_stage_done(
         done,
-        inputs=[cfg.results_dir],
+        inputs=[cfg.results_root],
         outputs=[*outputs, *manifests],
         config_sha=getattr(cfg, "config_sha", None),
     )

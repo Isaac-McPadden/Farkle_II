@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,16 +16,26 @@ from farkle.utils.writer import atomic_path
 
 def base_results_dir(cfg: AppConfig) -> Path:
     """Return the non-seed-suffixed results directory."""
-    suffix = f"_seed_{cfg.sim.seed}"
-    path_str = str(cfg.io.results_dir)
-    if path_str.endswith(suffix):
-        return Path(path_str[: -len(suffix)])
-    return cfg.io.results_dir
+    prefix = Path(cfg.io.results_dir_prefix)
+    if not prefix.is_absolute():
+        prefix = Path("data") / prefix
+    match = re.match(r"^(?P<base>.+)_seed_\d+$", prefix.name)
+    if match:
+        prefix = prefix.with_name(match.group("base"))
+    return prefix
 
 
 def resolve_results_dir(base: Path, seed: int) -> Path:
     """Resolve the results dir for a given seed."""
     return Path(f"{base}_seed_{seed}")
+
+
+def split_seeded_results_dir(path: Path) -> tuple[Path, int | None]:
+    """Split a seeded results directory into base path and seed (if present)."""
+    match = re.match(r"^(?P<base>.+)_seed_(?P<seed>\d+)$", path.name)
+    if match:
+        return path.with_name(match.group("base")), int(match.group("seed"))
+    return path, None
 
 
 def seed_has_completion_markers(cfg: AppConfig) -> bool:
@@ -59,7 +70,7 @@ def _stringify_paths(obj: Any) -> Any:
 
 def write_active_config(cfg: AppConfig, dest_dir: Path | None = None) -> None:
     """Persist the resolved configuration alongside results."""
-    target_dir = dest_dir or cfg.io.results_dir
+    target_dir = dest_dir or cfg.results_root
     target_dir.mkdir(parents=True, exist_ok=True)
     resolved_dict = _stringify_paths(dataclasses.asdict(cfg))
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
@@ -76,9 +87,12 @@ def prepare_seed_config(
     meta_analysis_dir: Path | None = None,
 ) -> AppConfig:
     """Return a config updated for a specific seed and results directory."""
+    base_dir = Path(base_results_dir)
+    if not base_dir.is_absolute() and base_dir.parts and base_dir.parts[0] == "data":
+        base_dir = Path(*base_dir.parts[1:])
     io_cfg = dataclasses.replace(
         base_cfg.io,
-        results_dir=resolve_results_dir(base_results_dir, seed),
+        results_dir_prefix=base_dir,
         meta_analysis_dir=(
             meta_analysis_dir if meta_analysis_dir is not None else base_cfg.io.meta_analysis_dir
         ),
@@ -92,5 +106,6 @@ __all__ = [
     "prepare_seed_config",
     "resolve_results_dir",
     "seed_has_completion_markers",
+    "split_seeded_results_dir",
     "write_active_config",
 ]

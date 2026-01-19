@@ -39,7 +39,7 @@ def test_run_bonferroni_head2head_missing_file(
 ) -> None:
     """An informative error is raised when tiers.json is absent."""
     cfg = AppConfig()
-    cfg.io.results_dir = tmp_path
+    cfg.io.results_dir_prefix = tmp_path / "results"
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="Tier file not found"):
         rb.run_bonferroni_head2head(seed=1, cfg=cfg)
@@ -48,11 +48,11 @@ def test_run_bonferroni_head2head_missing_file(
 def test_run_bonferroni_head2head_empty_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    analysis_dir = tmp_path / "analysis"
-    analysis_dir.mkdir()
-    (analysis_dir / "tiers.json").write_text("{}")
     cfg = AppConfig()
-    cfg.io.results_dir = tmp_path
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    analysis_dir = cfg.analysis_dir
+    analysis_dir.mkdir(parents=True, exist_ok=True)
+    (analysis_dir / "tiers.json").write_text("{}")
     monkeypatch.chdir(tmp_path)
     with pytest.raises(RuntimeError, match="No tiers found"):
         rb.run_bonferroni_head2head(cfg=cfg)
@@ -73,8 +73,10 @@ def test_count_pair_wins_falls_back_to_seat_column() -> None:
 def test_run_bonferroni_head2head_resumes_and_shards(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    analysis_dir = tmp_path / "analysis"
-    analysis_dir.mkdir()
+    cfg = AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    analysis_dir = cfg.analysis_dir
+    analysis_dir.mkdir(parents=True, exist_ok=True)
     (analysis_dir / "tiers.json").write_text(json.dumps({"S1": 0, "S2": 0, "S3": 0}))
 
     existing = pd.DataFrame(
@@ -111,9 +113,6 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     monkeypatch.setattr(rb, "parse_strategy", lambda name: name)
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_simulate)
 
-    cfg = AppConfig()
-    cfg.io.results_dir = tmp_path
-
     rb.run_bonferroni_head2head(seed=1, cfg=cfg, shard_size=1)
 
     pairwise_path = cfg.head2head_path("bonferroni_pairwise.parquet")
@@ -130,8 +129,10 @@ def test_run_bonferroni_head2head_resumes_and_shards(
 def test_run_bonferroni_head2head_progress_schedule_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    analysis_dir = tmp_path / "analysis"
-    analysis_dir.mkdir()
+    cfg = AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    analysis_dir = cfg.analysis_dir
+    analysis_dir.mkdir(parents=True, exist_ok=True)
     (analysis_dir / "tiers.json").write_text(json.dumps({"A": 0, "B": 0}))
 
     monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: 1)  # noqa: ANN001
@@ -143,12 +144,14 @@ def test_run_bonferroni_head2head_progress_schedule_validation(
     )
 
     with pytest.raises(ValueError, match="progress_schedule must have three values"):
-        rb.run_bonferroni_head2head(root=tmp_path, progress_schedule=[1, 2])
+        rb.run_bonferroni_head2head(root=cfg.results_root, progress_schedule=[1, 2])
 
 
 def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    analysis_dir = tmp_path / "analysis"
-    analysis_dir.mkdir()
+    cfg = AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    analysis_dir = cfg.analysis_dir
+    analysis_dir.mkdir(parents=True, exist_ok=True)
     (analysis_dir / "tiers.json").write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
     monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: 1)  # noqa: ANN001
@@ -162,7 +165,7 @@ def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.Mon
 
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_simulate)
 
-    rb.run_bonferroni_head2head(root=tmp_path, n_jobs=4)
+    rb.run_bonferroni_head2head(root=cfg.results_root, n_jobs=4)
 
     assert pair_jobs
     assert all(job == 2 for job in pair_jobs)
@@ -189,7 +192,7 @@ def test_load_top_strategies_handles_missing_and_invalid(tmp_path: Path, caplog)
 
 def test_tiers_path_prefers_stage_layout_and_warns(tmp_path: Path, caplog):
     cfg = AppConfig()
-    cfg.io.results_dir = tmp_path
+    cfg.io.results_dir_prefix = tmp_path / "results"
     cfg.set_stage_layout(
         StageLayout(
             placements=[

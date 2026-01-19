@@ -25,6 +25,7 @@ else:  # pragma: no cover - fallback for older pandas
 from farkle.analysis import stage_logger
 from farkle.analysis.isolated_metrics import build_isolated_metrics
 from farkle.config import AppConfig
+from farkle.orchestration.seed_utils import base_results_dir, prepare_seed_config, resolve_results_dir
 from farkle.utils.mdd import tiering_ingredients_from_df
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload, write_tier_payload
 from farkle.utils.writer import atomic_path
@@ -123,12 +124,8 @@ def _prepare_inputs(cfg: AppConfig) -> TieringInputs:
 
 def _results_dir_for_seed(cfg: AppConfig, seed: int) -> Path:
     """Resolve the results directory for a given seed, validating existence."""
-    current = cfg.io.results_dir
-    name = current.name
-    if str(seed) in name:
-        return current
-    parent = current.parent
-    candidate = parent / f"results_seed_{seed}"
+    base_dir = base_results_dir(cfg)
+    candidate = resolve_results_dir(base_dir, seed)
     if candidate.exists():
         return candidate
     raise FileNotFoundError(candidate)
@@ -146,7 +143,8 @@ def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFram
                 extra={"stage": "tiering", "seed": seed, "error": str(exc)},
             )
             continue
-        seed_cfg = replace(cfg, io=replace(cfg.io, results_dir=root))
+        base_dir = root.parent / root.name.rsplit("_seed_", 1)[0]
+        seed_cfg = prepare_seed_config(cfg, seed=seed, base_results_dir=base_dir)
         for k in inputs.player_counts:
             try:
                 path = build_isolated_metrics(seed_cfg, k)

@@ -25,7 +25,7 @@ def test_load_app_config_merges_overlays(write_yaml) -> None:
         "base.yaml",
         {
             "io": {
-                "results_dir": "results",
+                "results_dir_prefix": "results",
             },
             "analysis": {"log_level": "INFO"},
             "ingest": {"n_jobs": 2},
@@ -46,7 +46,7 @@ def test_load_app_config_merges_overlays(write_yaml) -> None:
     assert cfg.ingest.batch_rows == 200_000
     # ensure base values remain when not overridden
     assert cfg.ingest.n_jobs == 2
-    assert cfg.analysis_dir == Path("results") / "custom"
+    assert cfg.analysis_dir == Path("data") / "results_seed_0" / "custom"
 
 
 def test_load_app_config_applies_analysis_controls(write_yaml) -> None:
@@ -111,15 +111,15 @@ def test_load_app_config_keeps_results_dir(write_yaml) -> None:
     config = write_yaml(
         "seeded.yaml",
         {
-            "io": {"results_dir": "base"},
+            "io": {"results_dir_prefix": "base"},
             "sim": {"seed": 7},
         },
     )
 
     cfg = load_app_config(config)
 
-    assert cfg.results_dir == Path("base")
-    assert cfg.analysis_dir == Path("base") / cfg.io.analysis_subdir
+    assert cfg.results_root == Path("data") / "base_seed_7"
+    assert cfg.analysis_dir == Path("data") / "base_seed_7" / cfg.io.analysis_subdir
 
 
 def test_load_app_config_rejects_non_mapping(tmp_path: Path) -> None:
@@ -136,13 +136,13 @@ def test_apply_dot_overrides_coerces_values() -> None:
     apply_dot_overrides(
         cfg,
         [
-            "io.results_dir=/tmp/output",
+            "io.results_dir_prefix=/tmp/output",
             "sim.seed=9",
             "trueskill.beta=32.5",
         ],
     )
 
-    assert cfg.io.results_dir == Path("/tmp/output")
+    assert cfg.io.results_dir_prefix == Path("/tmp/output")
     assert cfg.sim.seed == 9
     assert cfg.trueskill.beta == pytest.approx(32.5)
 

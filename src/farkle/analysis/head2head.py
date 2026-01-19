@@ -93,7 +93,7 @@ def run(cfg: AppConfig) -> None:
         "Head-to-head analysis running",
         extra={
             "stage": "head2head",
-            "results_dir": str(cfg.results_dir),
+            "results_dir": str(cfg.results_root),
             "n_jobs": cfg.analysis.n_jobs,
         },
     )

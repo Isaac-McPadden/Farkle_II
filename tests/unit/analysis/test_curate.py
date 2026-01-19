@@ -21,7 +21,7 @@ from farkle.utils.schema_helpers import expected_schema_for
 
 
 def _make_cfg(tmp_path: Path) -> AppConfig:
-    return AppConfig(io=IOConfig(results_dir=tmp_path))
+    return AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
 
 
 def _empty_table(schema: pa.Schema) -> pa.Table:

@@ -61,11 +61,13 @@ def run(cfg: AppConfig) -> None:
     stamp_seat_metrics = cfg.metrics_output_path("metrics.seat_metrics.stamp.json")
     stamp_symmetry = cfg.metrics_output_path("metrics.symmetry.stamp.json")
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
-    raw_metric_inputs = [cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet" for n in player_counts]
+    raw_metric_inputs = [
+        cfg.results_root / f"{n}_players" / f"{n}p_metrics.parquet" for n in player_counts
+    ]
     available_raw_inputs = [path for path in raw_metric_inputs if path.exists()]
     iso_targets = []
     for n in player_counts:
-        raw_path = cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet"
+        raw_path = cfg.results_root / f"{n}_players" / f"{n}p_metrics.parquet"
         if not raw_path.exists():
             continue
         preferred = cfg.metrics_isolated_path(n)
@@ -313,7 +315,7 @@ def _ensure_isolated_metrics(
     iso_paths: list[Path] = []
     raw_inputs: list[Path] = []
     for n in player_counts:
-        raw_path = cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet"
+        raw_path = cfg.results_root / f"{n}_players" / f"{n}p_metrics.parquet"
         preferred = cfg.metrics_isolated_path(n)
         legacy = cfg.legacy_metrics_isolated_path(n)
         raw_inputs.append(raw_path)

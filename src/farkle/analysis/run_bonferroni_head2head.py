@@ -17,6 +17,7 @@ import pyarrow as pa
 from scipy.stats import binomtest
 
 from farkle.config import AppConfig
+from farkle.orchestration.seed_utils import split_seeded_results_dir
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import (
     normalize_strategy_ids,
@@ -194,8 +195,8 @@ def run_bonferroni_head2head(
         Base seed for shuffling the schedule and deterministically assigning
         unique seeds to each simulated game.
     root : Path, optional
-        Base results directory containing ``tiers.json``; overrides ``cfg.io.results_dir``
-        when provided.
+        Base results directory containing ``tiers.json``; overrides
+        ``cfg.io.results_dir_prefix`` when provided.
     cfg : AppConfig, optional
         Application configuration used to resolve stage-aware directories. A fresh
         default will be created when omitted.
@@ -225,7 +226,12 @@ def run_bonferroni_head2head(
     """
     cfg = cfg or AppConfig()
     if root is not None:
-        cfg.io.results_dir = Path(root)
+        base_dir, seed_override = split_seeded_results_dir(Path(root))
+        if not base_dir.is_absolute() and base_dir.parts and base_dir.parts[0] == "data":
+            base_dir = Path(*base_dir.parts[1:])
+        cfg.io.results_dir_prefix = base_dir
+        if seed_override is not None:
+            cfg.sim.seed = seed_override
     analysis_root = cfg.analysis_dir
     _warn_legacy_stage_dirs(cfg, "head2head")
     manifest = None
@@ -236,7 +242,12 @@ def run_bonferroni_head2head(
 
     LOGGER.info(
         "Bonferroni head-to-head start",
-        extra={"stage": "head2head", "root": str(cfg.results_dir), "seed": seed, "n_jobs": n_jobs},
+        extra={
+            "stage": "head2head",
+            "root": str(cfg.results_root),
+            "seed": seed,
+            "n_jobs": n_jobs,
+        },
     )
 
     sub_root = cfg.head2head_stage_dir

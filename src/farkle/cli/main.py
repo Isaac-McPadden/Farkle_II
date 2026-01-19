@@ -354,7 +354,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             extra={
                 "stage": "cli",
                 "command": args.command,
-                "results_dir": str(cfg.io.results_dir),
+                "results_dir": str(cfg.results_root),
                 "analysis_dir": str(cfg.analysis_dir),
                 "n_players_list": list(cfg.sim.n_players_list),
                 "expanded_metrics": cfg.sim.expanded_metrics,
@@ -367,7 +367,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             cfg.sim.expanded_metrics = True
         if args.row_dir is not None:
             cfg.sim.row_dir = args.row_dir
-        _write_active_config(cfg, cfg.io.results_dir)
+        _write_active_config(cfg, cfg.results_root)
         resume_run = not args.force
         LOGGER.info(
             "Dispatching run command",
@@ -377,7 +377,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "seed": cfg.sim.seed,
                 "n_players_list": cfg.sim.n_players_list,
                 "expanded_metrics": cfg.sim.expanded_metrics,
-                "results_dir": str(cfg.io.results_dir),
+                "results_dir": str(cfg.results_root),
                 "row_dir": str(cfg.sim.row_dir) if cfg.sim.row_dir is not None else None,
                 "force": args.force,
                 "resume": resume_run,
@@ -417,7 +417,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "stage": "cli",
                 "command": f"analyze:{args.an_cmd}",
                 "config_path": str(args.config) if args.config else None,
-                "results_dir": str(cfg.io.results_dir),
+                "results_dir": str(cfg.results_root),
                 "analysis_dir": str(cfg.analysis_dir),
             },
         )

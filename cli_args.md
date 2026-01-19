@@ -34,6 +34,7 @@ Options:
   metrics are collected and persisted.
 - `--row-dir PATH` - store per-game rows under the provided directory by
   setting `cfg.sim.row_dir` before execution.
+  Results are written to `data/<results_dir_prefix>_seed_<seed>` for single-seed runs.
 
 Example:
 
@@ -41,7 +42,7 @@ Example:
 farkle --config configs/fast_config.yaml \
   --set sim.seed=123 \
   --set sim.num_shuffles=200 \
-  run --metrics --row-dir results/rows_fast
+  run --metrics --row-dir data/results/fast_seed_123/rows
 ```
 
 ### `time`

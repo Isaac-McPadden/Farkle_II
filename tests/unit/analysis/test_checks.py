@@ -13,7 +13,7 @@ from farkle.utils.schema_helpers import expected_schema_for
 
 
 def _combined_path(tmp_path: Path) -> tuple[Path, Path]:
-    cfg = AppConfig(io=IOConfig(results_dir=tmp_path))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
     data_dir = cfg.stage_dir("curate")
     combined_dir = cfg.stage_subdir("combine", "pooled")
     return data_dir, combined_dir / "all_ingested_rows.parquet"

@@ -278,7 +278,7 @@ def _resolve_per_n_output_dir(
     if out_path.is_absolute():
         return out_path
 
-    n_dir = cfg.io.results_dir / f"{n_players}_players"
+    n_dir = cfg.results_root / f"{n_players}_players"
     return n_dir / out_path
 
 
@@ -552,7 +552,7 @@ def run_single_n(
     )
 
     # --- Output paths ---
-    results_dir = cfg.io.results_dir
+    results_dir = cfg.results_root
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = n_dir / f"{n}p_checkpoint.pkl"

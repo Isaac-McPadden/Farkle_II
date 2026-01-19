@@ -297,7 +297,7 @@ def build_config(results_root: Path) -> AppConfig:
         Application configuration tailored for the sample metrics stage.
     """
 
-    return AppConfig(io=IOConfig(results_dir=results_root), sim=SimConfig(**_SIM_KWARGS))
+    return AppConfig(io=IOConfig(results_dir_prefix=results_root), sim=SimConfig(**_SIM_KWARGS))
 
 
 def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
@@ -320,7 +320,7 @@ def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
     if refresh_inputs or not _parquet_inputs_exist(inputs_root):
         regenerate_inputs(inputs_root)
 
-    workspace = tmp_path / "results"
+    workspace = tmp_path / "results_seed_0"
     shutil.copytree(inputs_root, workspace, dirs_exist_ok=True)
 
     cfg = build_config(workspace)
@@ -397,7 +397,10 @@ def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
         stamp,
         expected_inputs=[
             cfg.curated_parquet,
-            *[cfg.results_dir / f"{n}_players" / f"{n}p_metrics.parquet" for n in _MANIFEST_ROWS],
+            *[
+                cfg.results_root / f"{n}_players" / f"{n}p_metrics.parquet"
+                for n in _MANIFEST_ROWS
+            ],
         ],
         expected_outputs=[
             metrics_path,

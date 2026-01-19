@@ -12,7 +12,7 @@ import pytest
 
 
 class _CfgProto(Protocol):
-    results_dir: Path
+    results_root: Path
     analysis_dir: Path
     metrics_name: str
     parquet_codec: str
@@ -39,7 +39,7 @@ else:  # pragma: no cover - tests skipped when UTC unavailable
 def test_ingest_golden_dataset(analysis_config, caplog, golden_dataset):
     cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
-    golden_dataset.copy_into(cfg_proto.results_dir)
+    golden_dataset.copy_into(cfg_proto.results_root)
 
     caplog.set_level(logging.INFO, logger="farkle.analysis.ingest")
     ingest.run(cfg)
@@ -76,7 +76,7 @@ def test_ingest_golden_dataset(analysis_config, caplog, golden_dataset):
 def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
     cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
-    golden_dataset.copy_into(cfg_proto.results_dir)
+    golden_dataset.copy_into(cfg_proto.results_root)
     raw_path = cfg_proto.ingested_rows_raw(3)
     ingest.run(cfg)
     assert raw_path.exists()
@@ -111,8 +111,8 @@ def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
 def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched_strategy_grid):
     cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
-    golden_dataset.copy_into(cfg_proto.results_dir)
-    golden_dataset.write_metrics(cfg_proto.results_dir)
+    golden_dataset.copy_into(cfg_proto.results_root)
+    golden_dataset.write_metrics(cfg_proto.results_root)
     ingest.run(cfg)
     curate.run(cfg)
     combine.run(cfg)

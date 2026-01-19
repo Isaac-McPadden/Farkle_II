@@ -3,8 +3,8 @@
 # This config pins the library defaults for reference use only.
 
 io:
-  results_dir: "results"    # Path|str: base results directory
-  analysis_subdir: "analysis"    # str: analysis outputs subdirectory under results_dir
+  results_dir_prefix: "results"    # Path|str: prefix under data/ for per-N run folders
+  analysis_subdir: "analysis"    # str: analysis outputs subdirectory under results_root
 
 sim:
   n_players_list: [5]       # list[int]: table sizes to simulate
