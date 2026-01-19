@@ -32,12 +32,9 @@
   "python.testing.cwd": "${workspaceFolder}",
   "python.testing.pytestArgs": ["tests"],
 
-  // (Optional) help IntelliSense find your src package
-  "python.analysis.extraPaths": ["${workspaceFolder}\\src"],
 
     // Make Pylance analyze the whole repo (not just open files)
   "python.analysis.diagnosticMode": "workspace",
-  "python.analysis.typeCheckingMode": "basic",
 
   // Ruff extension
   "ruff.enable": true,

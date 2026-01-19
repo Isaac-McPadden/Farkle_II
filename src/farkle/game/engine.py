@@ -19,8 +19,6 @@ import warnings
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Sequence
 
-import numpy as np
-
 from farkle.game.scoring import DiceRoll, default_score
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.random import RngProtocol, make_rng

@@ -80,6 +80,8 @@ exclude_lines = [
 
 [tool.pyright]
 reportMissingTypeStubs = "none"
+extraPaths = ["src"]
+typeCheckingMode = "basic"
 
 [tool.mypy]
 python_version = "3.12"

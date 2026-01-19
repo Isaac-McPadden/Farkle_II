@@ -133,7 +133,7 @@ def _init_worker_small(  # pragma: no cover
 
     _rt = _imp.import_module("farkle.simulation.run_tournament")
     _rt.TournamentConfig.games_per_shuffle = property(lambda self: 2)  # type: ignore  # noqa: ARG005
-    setattr(_rt, "_STATE", _rt.WorkerState(list(strategies), cfg))  # type: ignore[arg-type]
+    _rt._STATE = _rt.WorkerState(list(strategies), cfg)  # type: ignore[arg-type]
 
 
 ###############################################################################
