@@ -662,9 +662,10 @@ def plot_h2h_heatmap_for_players(
             try:
                 wins_b_value = _extract_scalar(row.wins_b, label="wins_b")
                 games_value = _extract_scalar(row.games, label="games")
-                wins_b = float(_as_float(wins_b_value))
-                games = float(_as_float(games_value))
-                matrix.at[row.b, row.a] = wins_b / games
+                wins_b_count = float(_as_float(wins_b_value))
+                games_count = float(_as_float(games_value))
+                win_rate_b = wins_b_count / games_count
+                matrix.at[row.b, row.a] = win_rate_b
             except ZeroDivisionError:
                 matrix.at[row.b, row.a] = _as_float(np.nan)
         elif hasattr(row, "win_rate") and row.b in matrix.index and row.a in matrix.columns:
