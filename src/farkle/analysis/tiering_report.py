@@ -9,7 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Hashable, Mapping, TypeAlias, cast
 
@@ -25,7 +25,11 @@ else:  # pragma: no cover - fallback for older pandas
 from farkle.analysis import stage_logger
 from farkle.analysis.isolated_metrics import build_isolated_metrics
 from farkle.config import AppConfig
-from farkle.orchestration.seed_utils import base_results_dir, prepare_seed_config, resolve_results_dir
+from farkle.orchestration.seed_utils import (
+    base_results_dir,
+    prepare_seed_config,
+    resolve_results_dir,
+)
 from farkle.utils.mdd import tiering_ingredients_from_df
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload, write_tier_payload
 from farkle.utils.writer import atomic_path

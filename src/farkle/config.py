@@ -992,8 +992,7 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         type_hints = get_type_hints(type(section))
         annotation = type_hints.get(option)
         new_value = _coerce(raw, current, annotation)
-        if section_name == "io" and option == "results_dir_prefix":
-            if isinstance(new_value, (str, Path)):
+        if section_name == "io" and option == "results_dir_prefix"and isinstance(new_value, (str, Path)):
                 new_value = _normalize_results_dir_prefix(new_value)
         setattr(section, option, new_value)
     return cfg

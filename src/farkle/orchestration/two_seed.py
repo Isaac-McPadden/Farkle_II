@@ -10,8 +10,8 @@ from typing import Sequence
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
-    seed_pair_seed_root,
     seed_has_completion_markers,
+    seed_pair_seed_root,
     write_active_config,
 )
 from farkle.simulation import runner

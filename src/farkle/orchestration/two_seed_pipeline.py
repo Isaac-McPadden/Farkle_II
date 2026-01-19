@@ -13,10 +13,10 @@ from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_di
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
+    seed_has_completion_markers,
     seed_pair_meta_root,
     seed_pair_root,
     seed_pair_seed_root,
-    seed_has_completion_markers,
     write_active_config,
 )
 from farkle.simulation import runner
