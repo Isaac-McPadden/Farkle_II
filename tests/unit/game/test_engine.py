@@ -16,6 +16,7 @@ class RngProtocol(Protocol):
         self,
         low: int,
         high: int | None = None,
+        *,
         size: int | tuple[int, ...] | None = None,
         dtype=np.int64,
         endpoint: bool = False,
@@ -27,9 +28,20 @@ def fixed_rng(seq) -> np.random.Generator:
     arr = np.array(seq)
 
     class _G(RngProtocol):
-        def integers(self, low, high, size):  # noqa: ARG002
-            idxs = np.arange(size) % len(arr)
-            return arr[idxs]
+        def integers(
+            self,
+            low: int,  # noqa: ARG002
+            high: int | None = None,  # noqa: ARG002
+            *,
+            size: int | tuple[int, ...] | None = None,
+            dtype=np.int64,
+            endpoint: bool = False,  # noqa: ARG002
+        ) -> np.ndarray:
+            if size is None:
+                size = 1
+            n = int(np.prod(size))
+            idxs = np.arange(n) % len(arr)
+            return arr[idxs].astype(dtype, copy=False).reshape(size)
 
     return cast(np.random.Generator, _G())
 
@@ -89,8 +101,9 @@ class _SeqGen(RngProtocol):
         self,
         low: int,  # noqa: ARG002
         high: int | None = None,  # noqa: ARG002
+        *,
         size: int | tuple[int, ...] | None = None,
-        dtype=int,
+        dtype=np.int64,
         endpoint: bool = False,  # noqa: ARG002
     ):
         # The engine always passes (1, 7, size=6) style args,
@@ -137,13 +150,21 @@ class SeqGen2(RngProtocol):
         self._seq = list(seq)
         self._i = 0
 
-    def integers(self, low, high=None, size=None, **kwargs):  # noqa: ARG002
+    def integers(
+        self,
+        low: int,  # noqa: ARG002
+        high: int | None = None,  # noqa: ARG002
+        *,
+        size: int | tuple[int, ...] | None = None,
+        dtype=np.int64,
+        endpoint: bool = False,  # noqa: ARG002
+    ) -> np.ndarray:
         if size is None:
             size = 1
         n = int(np.prod(size))
         out = [self._seq[(self._i + k) % len(self._seq)] for k in range(n)]
         self._i = (self._i + n) % len(self._seq)
-        return np.array(out).reshape(size)
+        return np.array(out, dtype=dtype).reshape(size)
 
 
 def test_final_round_override():
