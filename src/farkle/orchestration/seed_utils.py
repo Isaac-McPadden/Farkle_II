@@ -30,6 +30,30 @@ def resolve_results_dir(base: Path, seed: int) -> Path:
     return Path(f"{base}_seed_{seed}")
 
 
+def seed_pair_root(cfg: AppConfig, seed_pair: tuple[int, int]) -> Path:
+    """Resolve the root directory for a seed pair run."""
+    base_dir = base_results_dir(cfg)
+    seed_a, seed_b = seed_pair
+    return base_dir.with_name(f"{base_dir.name}_seed_pair_{seed_a}_{seed_b}")
+
+
+def seed_pair_seed_root(cfg: AppConfig, seed_pair: tuple[int, int], seed: int) -> Path:
+    """Resolve the per-seed results root under a seed-pair directory."""
+    pair_root = seed_pair_root(cfg, seed_pair)
+    base_name = base_results_dir(cfg).name
+    return pair_root / f"{base_name}_seed_{seed}"
+
+
+def seed_pair_meta_root(cfg: AppConfig, seed_pair: tuple[int, int]) -> Path | None:
+    """Resolve the shared meta-analysis root for a seed pair."""
+    if cfg.io.meta_analysis_dir is None:
+        return None
+    meta_path = Path(cfg.io.meta_analysis_dir)
+    meta_name = meta_path.name if meta_path.is_absolute() else str(meta_path)
+    seed_a, seed_b = seed_pair
+    return seed_pair_root(cfg, seed_pair) / f"{meta_name}_{seed_a}_{seed_b}"
+
+
 def split_seeded_results_dir(path: Path) -> tuple[Path, int | None]:
     """Split a seeded results directory into base path and seed (if present)."""
     match = re.match(r"^(?P<base>.+)_seed_(?P<seed>\d+)$", path.name)
@@ -105,6 +129,9 @@ __all__ = [
     "base_results_dir",
     "prepare_seed_config",
     "resolve_results_dir",
+    "seed_pair_meta_root",
+    "seed_pair_root",
+    "seed_pair_seed_root",
     "seed_has_completion_markers",
     "split_seeded_results_dir",
     "write_active_config",
