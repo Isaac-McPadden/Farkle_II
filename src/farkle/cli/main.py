@@ -210,9 +210,23 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
     two_seed_parser = analyze_sub.add_parser(
         "two-seed-pipeline",
-        help="Run the two-seed simulation and analysis orchestration pipeline",
+        help=(
+            "Deprecated: use the top-level `two-seed-pipeline` command for the "
+            "two-seed simulation and analysis orchestration pipeline"
+        ),
     )
     two_seed_parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Recompute even when completion markers exist",
+    )
+
+    # two-seed-pipeline (top-level)
+    two_seed_top = sub.add_parser(
+        "two-seed-pipeline",
+        help="Run the two-seed simulation and analysis orchestration pipeline",
+    )
+    two_seed_top.add_argument(
         "--force",
         action="store_true",
         help="Recompute even when completion markers exist",
@@ -341,7 +355,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     cfg: AppConfig | None = None
     rng_lags: tuple[int, ...] | None = None
     compute_rng_diagnostics = False
-    if args.command in {"run", "analyze"}:
+    if args.command in {"run", "analyze", "two-seed-pipeline"}:
         overlays: list[Path] = [args.config] if args.config is not None else []
         cfg = load_app_config(*overlays) if overlays else AppConfig()
         cfg = apply_dot_overrides(cfg, list(args.overrides or []))
@@ -456,6 +470,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif args.an_cmd == "variance":
             analysis_pkg.run_variance(cfg, force=getattr(args, "force", False))
         elif args.an_cmd == "two-seed-pipeline":
+            LOGGER.warning(
+                "Analyze subcommand `two-seed-pipeline` is deprecated; "
+                "use `farkle two-seed-pipeline` instead.",
+                extra={"stage": "cli", "command": "analyze:two-seed-pipeline"},
+            )
             seed_pair = cfg.sim.require_seed_pair()
             two_seed_pipeline.run_pipeline(
                 cfg,
@@ -477,6 +496,28 @@ def main(argv: Sequence[str] | None = None) -> None:
         LOGGER.info(
             "Analysis command completed",
             extra={"stage": "cli", "command": f"analyze:{args.an_cmd}"},
+        )
+    elif args.command == "two-seed-pipeline":
+        assert cfg is not None  # for type checkers
+        LOGGER.info(
+            "Dispatching two-seed pipeline command",
+            extra={
+                "stage": "cli",
+                "command": "two-seed-pipeline",
+                "config_path": str(args.config) if args.config else None,
+                "results_dir": str(cfg.results_root),
+                "analysis_dir": str(cfg.analysis_dir),
+            },
+        )
+        seed_pair = cfg.sim.require_seed_pair()
+        two_seed_pipeline.run_pipeline(
+            cfg,
+            seed_pair=seed_pair,
+            force=getattr(args, "force", False),
+        )
+        LOGGER.info(
+            "Two-seed pipeline command completed",
+            extra={"stage": "cli", "command": "two-seed-pipeline"},
         )
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")

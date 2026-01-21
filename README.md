@@ -10,7 +10,8 @@ artifacts, and statistical helpers for sizing experiments.
 - Threshold strategy framework for roll-or-bank heuristics
   (`src/farkle/simulation/strategies.py`).
 - Streaming parquet writers and append-only manifests that survive restarts.
-- Unified `farkle` CLI with `run`, `time`, `watch`, and `analyze` subcommands.
+- Unified `farkle` CLI with `run`, `time`, `watch`, `analyze`, and
+  `two-seed-pipeline` commands.
 - Config-driven analysis pipeline with metrics, TrueSkill, and head-to-head
   reporting.
 
@@ -70,7 +71,8 @@ farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
 ```
 
 **Global options**
-- `--config PATH` - load an `AppConfig` from YAML. Used by `run` and `analyze`.
+- `--config PATH` - load an `AppConfig` from YAML. Used by `run`, `analyze`, and
+  `two-seed-pipeline`.
 - `--set SECTION.OPTION=VALUE` - override a single field in the loaded config
   (coerced to the field type when possible). May be supplied multiple times.
 - `--log-level LEVEL` - set the root logging level before executing the command.
@@ -117,22 +119,32 @@ into numbered directories under `analysis/`:
   depend on upstream metrics.
 - `pipeline` - run `ingest`, `curate`, `combine`, and `metrics` sequentially
   before branching into downstream analytics.
-- `two-seed-pipeline` - run the two-seed simulation + analysis orchestration
-  using `sim.seed_pair`.
+- `two-seed-pipeline` - deprecated alias for the top-level `two-seed-pipeline`
+  command, which runs the two-seed simulation + analysis orchestration using
+  `sim.seed_pair`.
 
 ```bash
 farkle --config configs/farkle_mega_config.yaml analyze pipeline
 ```
 
 ```bash
-farkle --config configs/fast_config.yaml analyze two-seed-pipeline --seed-pair 42 43
+farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
+```
+
+### `two-seed-pipeline`
+
+Run simulations and per-seed analysis for both entries in `sim.seed_pair`, then
+run the interseed comparisons.
+
+```bash
+farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
 ```
 
 ### `farkle-two-seed-pipeline`
 
 Run simulations and per-seed analysis for both entries in `sim.seed_pair`, then
 run the interseed comparisons. This legacy entry point is equivalent to the
-unified `farkle analyze two-seed-pipeline` command.
+unified `farkle two-seed-pipeline` command.
 
 ```bash
 farkle-two-seed-pipeline --config configs/fast_config.yaml
