@@ -364,6 +364,8 @@ def _compute_variance_components(
     records: list[dict[str, float | int | str]] = []
     grouped = seed_frame.groupby(["strategy_id", "players"], sort=True)
     insufficient_seed_groups = 0
+    skipped_component_total = 0
+    skipped_component_counts = {component: 0 for component in COMPONENT_COLUMN_MAP}
     for (strategy_id, players), group in grouped:
         strategy_id_str = str(strategy_id)
         players_int = int(cast(int, players))
@@ -376,17 +378,8 @@ def _compute_variance_components(
             values = pd.to_numeric(group[column], errors="coerce").dropna()
             observations = int(values.size)
             if observations < min_seeds:
-                LOGGER.info(
-                    "Skipping component metric: insufficient observations",
-                    extra={
-                        "stage": "variance",
-                        "strategy_id": strategy_id_str,
-                        "players": players_int,
-                        "component": component,
-                        "observations": observations,
-                        "min_seeds": int(min_seeds),
-                    },
-                )
+                skipped_component_total += 1
+                skipped_component_counts[component] += 1
                 continue
 
             variance_scalar = values.var(ddof=1)
@@ -424,13 +417,14 @@ def _compute_variance_components(
                 }
             )
 
-    if insufficient_seed_groups:
+    if insufficient_seed_groups or skipped_component_total:
         LOGGER.info(
-            "Skipping variance components for %d strategies: insufficient seeds",
-            insufficient_seed_groups,
+            "Skipping variance components due to insufficient seeds",
             extra={
                 "stage": "variance",
                 "strategies": insufficient_seed_groups,
+                "skipped_component_total": skipped_component_total,
+                "skipped_component_counts": skipped_component_counts,
                 "min_seeds": int(min_seeds),
             },
         )
