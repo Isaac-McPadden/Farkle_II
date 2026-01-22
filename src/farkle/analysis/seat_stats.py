@@ -248,9 +248,15 @@ def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -
     ds_in = ds.dataset(curated_rows)
     required = {"P1_strategy", "P2_strategy", "P1_farkles", "P2_farkles", "P1_rounds", "P2_rounds"}
     if not required.issubset(ds_in.schema.names):
+        available_columns = sorted(ds_in.schema.names)
+        sample_limit = 10
         LOGGER.warning(
             "Skipping symmetry diagnostics; required columns missing",
-            extra={"missing_columns": sorted(required - set(ds_in.schema.names))},
+            extra={
+                "missing_columns": sorted(required - set(ds_in.schema.names)),
+                "curated_path": str(curated_rows),
+                "available_columns_sample": available_columns[:sample_limit],
+            },
         )
         return pd.DataFrame(
             columns=[
