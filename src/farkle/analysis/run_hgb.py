@@ -32,7 +32,7 @@ from sklearn.inspection import permutation_importance
 
 from farkle.simulation.strategies import (
     FavorDiceOrScore,
-    normalize_strategy_ids,
+    coerce_strategy_ids,
     parse_strategy_for_df,
     strategy_attributes_from_series,
 )
@@ -166,8 +166,7 @@ def _load_seed_targets(root: Path) -> pd.DataFrame:
         seed_val = int(match.group("seed"))
         table = pq.read_table(path, columns=["strategy", "mu"])
         frame = table.to_pandas()
-        normalized = normalize_strategy_ids(frame["strategy"])
-        frame["strategy"] = normalized.where(normalized.notna(), frame["strategy"])
+        frame["strategy"] = coerce_strategy_ids(frame["strategy"])
         frame["seed"] = seed_val
         frames.append(frame)
     if not frames:
@@ -344,8 +343,7 @@ def run_hgb(
     metrics = pd.read_parquet(metrics_path)
     metrics = metrics.copy()
     if "strategy" in metrics.columns:
-        normalized = normalize_strategy_ids(metrics["strategy"])
-        metrics["strategy"] = normalized.where(normalized.notna(), metrics["strategy"])
+        metrics["strategy"] = coerce_strategy_ids(metrics["strategy"])
     raw_players: set[int] = set()
     if "n_players" in metrics.columns:
         raw_players.update(int(p) for p in metrics["n_players"].dropna().astype(int).unique())
@@ -387,8 +385,7 @@ def run_hgb(
 
     for players in metrics_players:
         subset = data[data["players"] == players].copy()
-        normalized = normalize_strategy_ids(subset["strategy"])
-        subset["strategy"] = normalized.where(normalized.notna(), subset["strategy"])
+        subset["strategy"] = coerce_strategy_ids(subset["strategy"])
         per_player_dir = root / f"{players}p"
         per_player_dir.mkdir(parents=True, exist_ok=True)
         importance_path = per_player_dir / IMPORTANCE_TEMPLATE.format(players=players)

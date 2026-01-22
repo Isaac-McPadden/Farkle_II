@@ -87,10 +87,6 @@ def run_pipeline(
             base_results_dir=seed_pair_seed_root(cfg, seed_pair, seed),
             meta_analysis_dir=meta_dir,
         )
-        seed_cfg = dataclasses.replace(
-            seed_cfg,
-            analysis=dataclasses.replace(seed_cfg.analysis, run_interseed=False),
-        )
 
         append_manifest_line(
             manifest_path,

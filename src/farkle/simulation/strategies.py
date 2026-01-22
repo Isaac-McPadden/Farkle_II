@@ -38,6 +38,7 @@ __all__: list[str] = [
     "decode_strategy_id",
     "encode_strategy",
     "iter_strategy_combos",
+    "coerce_strategy_ids",
     "normalize_strategy_ids",
     "parse_strategy_identifier",
     "strategy_attributes_from_series",
@@ -685,6 +686,12 @@ def build_strategy_manifest(strategies: Sequence[ThresholdStrategy]) -> pd.DataF
 def normalize_strategy_ids(series: pd.Series) -> pd.Series:
     """Coerce a series of strategy identifiers into nullable integers."""
     return pd.to_numeric(series, errors="coerce").astype("Int64")
+
+
+def coerce_strategy_ids(series: pd.Series) -> pd.Series:
+    """Return strategy identifiers with numeric IDs coerced but legacy strings preserved."""
+    normalized = normalize_strategy_ids(series)
+    return normalized.astype(object).where(normalized.notna(), series)
 
 
 def parse_strategy_identifier(

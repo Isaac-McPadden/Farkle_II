@@ -244,12 +244,13 @@ def _ratings_to_table(
         else:
             # fallback: scalar mu with default sigma (not expected here)
             mu, sigma = float(v), 0.0  # type: ignore[arg-type]
-        strategies.append(k)
+        strategies.append(_normalize_strategy_id(k))
         mus.append(mu)
         sigmas.append(sigma)
+    strategy_values = [str(s) for s in strategies]
     return pa.table(
         {
-            "strategy": pa.array(strategies, type=pa.string()),
+            "strategy": pa.array(strategy_values, type=pa.string()),
             "mu": pa.array(mus, type=pa.float64()),
             "sigma": pa.array(sigmas, type=pa.float64()),
         }
@@ -327,6 +328,13 @@ def _stream_batches(
             yield rg, bi, pa.Table.from_batches([batch])
 
 
+def _normalize_strategy_id(value: object) -> str:
+    """Return a stable string identifier for strategy values."""
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    return str(value)
+
+
 def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[list[str], list[int]]]:
     """Robust per-row extraction (tie-friendly precedence):
     1) Derive placements from P#_rank (preserves ties)
@@ -359,6 +367,7 @@ def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[lis
     n_rows = batch.num_rows
     for r in range(n_rows):
         seats = [sc[r].as_py() if sc is not None else None for sc in strat_cols]
+        seats = [_normalize_strategy_id(s) if s is not None else None for s in seats]
         # 1) prefer numeric ranks (preserves ties)
         if any(rc is not None for rc in rank_cols):
             pairs = [(i, rc[r].as_py()) for i, rc in enumerate(rank_cols) if rc is not None]
@@ -606,7 +615,7 @@ def _iter_players_and_ranks(
                 ]
                 if any(p is None for p in players):
                     continue
-                yield players, list(range(len(players)))
+                yield [_normalize_strategy_id(p) for p in players], list(range(len(players)))
         return
 
     # seat_ranks not present → derive from P#_rank or fall back to winner + tied losers
@@ -648,7 +657,7 @@ def _iter_players_and_ranks(
                     p = seat_strats[i]
                     if p is None:
                         continue
-                    players.append(p)
+                    players.append(_normalize_strategy_id(p))
                     pranks.append(remap[rv])
                 if len(players) >= 2:
                     yield players, pranks
@@ -664,9 +673,13 @@ def _iter_players_and_ranks(
             winner = seat_strats[w_idx]
             if winner is None:
                 continue
-            losers = [s for j, s in enumerate(seat_strats) if j != w_idx and s is not None]
+            losers = [
+                _normalize_strategy_id(s)
+                for j, s in enumerate(seat_strats)
+                if j != w_idx and s is not None
+            ]
             if losers:
-                yield [winner] + losers, [0] + [1] * len(losers)
+                yield [_normalize_strategy_id(winner)] + losers, [0] + [1] * len(losers)
 
 
 def _rate_stream(
@@ -674,6 +687,8 @@ def _rate_stream(
 ) -> tuple[dict[str, RatingStats], int]:
     """Stream TrueSkill updates from parquet without materialising all games.
     Supports ties and multiple sources of placement (seat_ranks or P#_rank)."""
+    if keepers:
+        keepers = [_normalize_strategy_id(k) for k in keepers]
     ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
     n_games = 0
     for players, ranks in _iter_players_and_ranks(row_file, n, batch_size):
@@ -725,6 +740,7 @@ def _rate_block_worker(
     per_player_dir.mkdir(parents=True, exist_ok=True)
     keep_path = block / f"keepers_{player_count}.npy"
     keepers = np.load(keep_path).tolist() if keep_path.exists() else []
+    keepers = [_normalize_strategy_id(k) for k in keepers]
 
     # Locate curated parquet
     row_file = per_player_dir / f"{player_count}p_ingested_rows.parquet"

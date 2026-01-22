@@ -20,7 +20,7 @@ from farkle.config import AppConfig
 from farkle.orchestration.seed_utils import split_seeded_results_dir
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import (
-    normalize_strategy_ids,
+    coerce_strategy_ids,
     parse_strategy_for_df,
     parse_strategy_identifier,
 )
@@ -111,8 +111,7 @@ def _load_top_strategies(
             )
             return []
 
-        normalized = normalize_strategy_ids(df["strategy"])
-        df["strategy"] = normalized.where(normalized.notna(), df["strategy"])
+        df["strategy"] = coerce_strategy_ids(df["strategy"])
         return [
             str(value)
             for value in df.sort_values(sort_col, ascending=False)["strategy"]
@@ -150,8 +149,7 @@ def _count_pair_wins(
     """Count how many times each strategy won within a simulated batch."""
     if "winner_strategy" in df.columns:
         winners = df["winner_strategy"]
-        normalized = normalize_strategy_ids(winners)
-        winners = normalized.where(normalized.notna(), winners)
+        winners = coerce_strategy_ids(winners)
         counts = winners.value_counts()
         return int(counts.get(strategy_a, 0)), int(counts.get(strategy_b, 0))
 

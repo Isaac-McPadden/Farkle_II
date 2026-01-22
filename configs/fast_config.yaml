@@ -62,9 +62,9 @@ analysis:
   run_trueskill: true
   run_head2head: true
   run_hgb: true
-  run_frequentist: false
-  run_post_h2h_analysis: false
-  run_agreement: false
+  run_frequentist: true
+  run_post_h2h_analysis: true
+  run_agreement: true
   run_report: true
   n_jobs: 1
   log_level: "INFO"
