@@ -11,8 +11,8 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 1177                         # primary RNG seed (results_root uses seed suffix)
-  seed_pair: [1177, 1188]             # two-seed orchestration pair; seed still drives suffixing
+  seed: 2277                         # primary RNG seed (results_root uses seed suffix)
+  seed_pair: [2277, 2288]             # two-seed orchestration pair; seed still drives suffixing
   n_jobs: 12                    # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
   row_dir: "rows"                   # rows => per-N rows under {results_root}/{N}_players/rows/
@@ -99,8 +99,8 @@ head_to_head:
 
   # Bonferroni design for H2H only
   bonferroni_design:
-    power: 0.8
-    control: 0.1                 # alpha (Bonferroni - FWER)
+    power: 0.6
+    control: 0.25                 # alpha (Bonferroni - FWER)
     detectable_lift: 0.03
     baseline_rate: 0.50
     full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
