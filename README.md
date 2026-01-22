@@ -134,7 +134,9 @@ farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
 ### `two-seed-pipeline`
 
 Run simulations and per-seed analysis for both entries in `sim.seed_pair`, then
-run the interseed comparisons.
+run the interseed comparisons. Interseed artifacts (variance/meta/TrueSkill/agreement
+outputs plus `interseed_summary.json`) are written under the seed-pair results
+directory in `interseed_analysis/`.
 
 ```bash
 farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43

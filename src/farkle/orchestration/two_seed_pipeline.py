@@ -164,8 +164,10 @@ def run_pipeline(
         base_results_dir=seed_pair_seed_root(cfg, seed_pair, interseed_seed),
         meta_analysis_dir=meta_dir,
     )
+    interseed_io = dataclasses.replace(interseed_cfg.io, analysis_subdir="interseed_analysis")
     interseed_cfg = dataclasses.replace(
         interseed_cfg,
+        io=interseed_io,
         analysis=dataclasses.replace(interseed_cfg.analysis, run_interseed=True),
     )
 
