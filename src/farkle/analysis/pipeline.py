@@ -309,20 +309,30 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         return _runner
 
-    def _head2head_with_post(cfg: AppConfig) -> None:
+    def _head2head_only(cfg: AppConfig) -> None:
         stage_log = analysis.stage_logger("head2head", logger=LOGGER)
         head2head_mod = analysis._optional_import("farkle.analysis.head2head", stage_log=stage_log)
         if head2head_mod is not None:
             head2head_mod.run(cfg)
 
+    def _post_h2h_only(cfg: AppConfig) -> None:
         if not cfg.analysis.run_post_h2h_analysis:
             return
-
         post_log = analysis.stage_logger("post_h2h", logger=LOGGER)
         post_mod = analysis._optional_import("farkle.analysis.h2h_analysis", stage_log=post_log)
-        if post_mod is None:
+        if post_mod is not None:
+            post_mod.run_post_h2h(cfg)
+
+    def _interseed_summary(cfg: AppConfig) -> None:
+        if not cfg.analysis.run_interseed:
             return
-        post_mod.run_post_h2h(cfg)
+        stage_log = analysis.stage_logger("interseed", logger=LOGGER)
+        interseed_mod = analysis._optional_import(
+            "farkle.analysis.interseed_analysis", stage_log=stage_log
+        )
+        if interseed_mod is None:
+            return
+        interseed_mod.run(cfg, run_stages=False)
 
     stage_map: dict[str, Callable[[AppConfig], None]] = {
         "ingest": ingest.run,
@@ -335,10 +345,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         "variance": analysis.run_variance,
         "meta": analysis.run_meta,
         "trueskill": _optional_stage("farkle.analysis.trueskill", "trueskill"),
-        "head2head": _head2head_with_post,
+        "head2head": _head2head_only,
+        "post_h2h": _post_h2h_only,
         "hgb": _optional_stage("farkle.analysis.hgb_feat", "hgb"),
         "tiering": _optional_stage("farkle.analysis.tiering_report", "tiering"),
         "agreement": _optional_stage("farkle.analysis.agreement", "agreement"),
+        "interseed": _interseed_summary,
     }
 
     def _plan_steps(allowed_keys: set[str] | None) -> list[tuple[str, Callable[[AppConfig], None]]]:
