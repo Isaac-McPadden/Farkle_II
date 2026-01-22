@@ -18,8 +18,8 @@ LOGGER = logging.getLogger(__name__)
 SUMMARY_NAME = "interseed_summary.json"
 
 
-def run(cfg: AppConfig, *, force: bool = False) -> None:
-    """Execute variance, meta, pooled TrueSkill, and agreement analytics."""
+def run(cfg: AppConfig, *, force: bool = False, run_stages: bool = True) -> None:
+    """Execute or summarize variance/meta/TrueSkill/agreement interseed analytics."""
 
     stage_log = stage_logger("interseed", logger=LOGGER)
     stage_log.start()
@@ -38,7 +38,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     trueskill_enabled = cfg.analysis.run_trueskill and not cfg.analysis.disable_trueskill
     agreement_enabled = cfg.analysis.run_agreement and not cfg.analysis.disable_agreement
 
-    if variance_enabled:
+    if variance_enabled and run_stages:
         from farkle.analysis import variance
 
         variance.run(cfg, force=force)
@@ -47,7 +47,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         "outputs": _existing_paths(_variance_outputs(cfg)),
     }
 
-    if meta_enabled:
+    if meta_enabled and run_stages:
         from farkle.analysis import meta
 
         meta.run(cfg, force=force)
@@ -56,7 +56,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         "outputs": _existing_paths(_meta_outputs(cfg)),
     }
 
-    if trueskill_enabled:
+    if trueskill_enabled and run_stages:
         from farkle.analysis import trueskill
 
         trueskill.run(cfg)
@@ -65,7 +65,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         "outputs": _existing_paths(_trueskill_outputs(cfg)),
     }
 
-    if agreement_enabled:
+    if agreement_enabled and run_stages:
         from farkle.analysis import agreement
 
         agreement.run(cfg)

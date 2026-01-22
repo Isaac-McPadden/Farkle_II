@@ -257,7 +257,7 @@ def _load_head2head(cfg: AppConfig) -> MethodData | None:
     Returns:
         ``MethodData`` when ranking information can be derived, otherwise ``None``.
     """
-    path = cfg.head2head_path("bonferroni_decisions.parquet")
+    path = cfg.post_h2h_path("bonferroni_decisions.parquet")
     if not path.exists():
         return None
 

@@ -108,6 +108,26 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     ),
     StageDefinition("seed_summaries", group="analytics"),
     StageDefinition(
+        "tiering",
+        group="analytics",
+        disabled_predicate=lambda cfg: cfg.analysis.disable_tiering,
+    ),
+    StageDefinition(
+        "head2head",
+        group="analytics",
+        disabled_predicate=lambda cfg: cfg.analysis.disable_head2head,
+    ),
+    StageDefinition(
+        "post_h2h",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_post_h2h_analysis,
+    ),
+    StageDefinition(
+        "hgb",
+        group="analytics",
+        disabled_predicate=lambda cfg: cfg.analysis.disable_hgb,
+    ),
+    StageDefinition(
         "variance",
         group="analytics",
         disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
@@ -123,21 +143,6 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         disabled_predicate=lambda cfg: (
             cfg.analysis.disable_trueskill or not cfg.analysis.run_interseed
         ),
-    ),
-    StageDefinition(
-        "head2head",
-        group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_head2head,
-    ),
-    StageDefinition(
-        "hgb",
-        group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_hgb,
-    ),
-    StageDefinition(
-        "tiering",
-        group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_tiering,
     ),
     StageDefinition(
         "agreement",

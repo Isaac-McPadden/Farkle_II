@@ -72,7 +72,33 @@ def test_compute_symmetry_checks_missing_columns_returns_empty(tmp_path: Path, c
     df = seat_stats.compute_symmetry_checks(source, cfg)
 
     assert df.empty
-    assert any("required columns missing" in rec.message for rec in caplog.records)
+    matching = [rec for rec in caplog.records if "required columns missing" in rec.message]
+    assert matching
+    record = matching[0]
+    assert str(source) == record.__dict__["curated_path"]
+    assert "available_columns_sample" in record.__dict__
+
+
+def test_compute_symmetry_checks_no_warning_when_columns_present(tmp_path: Path, caplog) -> None:
+    source = tmp_path / "combined.parquet"
+    _write_parquet(
+        source,
+        {
+            "P1_strategy": ["Aggro"],
+            "P2_strategy": ["Aggro"],
+            "P1_farkles": [1],
+            "P2_farkles": [1],
+            "P1_rounds": [10],
+            "P2_rounds": [10],
+            "n_players": [2],
+        },
+    )
+
+    cfg = seat_stats.SeatMetricConfig(seat_range=(1, 2))
+    df = seat_stats.compute_symmetry_checks(source, cfg)
+
+    assert not df.empty
+    assert not any("required columns missing" in rec.message for rec in caplog.records)
 
 
 def test_compute_seat_advantage_builds_deltas(tmp_path: Path) -> None:

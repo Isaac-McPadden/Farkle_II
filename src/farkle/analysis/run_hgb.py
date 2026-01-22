@@ -210,30 +210,68 @@ def _run_grouped_cv(
     random_state: int,
 ) -> None:
     """Run grouped cross-validation when per-seed ratings are available."""
+    feature_limit = 12
+    feature_cols_log = feature_cols[:feature_limit]
+    if len(feature_cols) > feature_limit:
+        feature_cols_log = [
+            *feature_cols_log,
+            f"...(+{len(feature_cols) - feature_limit} more)",
+        ]
 
     from sklearn.ensemble import HistGradientBoostingRegressor
     from sklearn.model_selection import GroupKFold
     if seed_targets.empty:
         LOGGER.info(
             "Grouped CV skipped: no per-seed ratings",
-            extra={"stage": "hgb", "players": players},
+            extra={
+                "stage": "hgb",
+                "players": players,
+                "feature_cols": feature_cols_log,
+                "seed_target_rows": len(seed_targets),
+                "overlap_rows": 0,
+                "overlap_strategies": 0,
+            },
         )
         return
 
     cv_frame = seed_targets.merge(subset[["strategy", *feature_cols]], on="strategy", how="inner")
     cv_frame.dropna(subset=["mu", "seed"], inplace=True)
+    overlap_rows = len(cv_frame)
+    overlap_strategies = cv_frame["strategy"].nunique()
     if cv_frame.empty:
         LOGGER.info(
             "Grouped CV skipped: insufficient overlap",
-            extra={"stage": "hgb", "players": players},
+            extra={
+                "stage": "hgb",
+                "players": players,
+                "feature_cols": feature_cols_log,
+                "seed_target_rows": len(seed_targets),
+                "seed_target_strategies": seed_targets["strategy"].nunique(),
+                "overlap_rows": overlap_rows,
+                "overlap_strategies": overlap_strategies,
+            },
         )
         return
 
     seeds = pd.Index(cv_frame["seed"].unique())
+    seed_limit = 10
+    seeds_log = seeds.tolist()
+    if len(seeds_log) > seed_limit:
+        seeds_log = [*seeds_log[:seed_limit], f"...(+{len(seeds_log) - seed_limit} more)"]
     if len(seeds) < 2:
         LOGGER.info(
             "Grouped CV skipped: <2 unique seeds",
-            extra={"stage": "hgb", "players": players, "seeds": seeds.tolist()},
+            extra={
+                "stage": "hgb",
+                "players": players,
+                "feature_cols": feature_cols_log,
+                "seed_target_rows": len(seed_targets),
+                "seed_target_strategies": seed_targets["strategy"].nunique(),
+                "overlap_rows": overlap_rows,
+                "overlap_strategies": overlap_strategies,
+                "seed_count": len(seeds),
+                "seeds_sample": seeds_log,
+            },
         )
         return
 
@@ -241,7 +279,17 @@ def _run_grouped_cv(
     if n_splits < 2:
         LOGGER.info(
             "Grouped CV skipped: insufficient splits",
-            extra={"stage": "hgb", "players": players, "seeds": seeds.tolist()},
+            extra={
+                "stage": "hgb",
+                "players": players,
+                "feature_cols": feature_cols_log,
+                "seed_target_rows": len(seed_targets),
+                "seed_target_strategies": seed_targets["strategy"].nunique(),
+                "overlap_rows": overlap_rows,
+                "overlap_strategies": overlap_strategies,
+                "seed_count": len(seeds),
+                "seeds_sample": seeds_log,
+            },
         )
         return
 
@@ -264,7 +312,17 @@ def _run_grouped_cv(
     if not r2_scores:
         LOGGER.info(
             "Grouped CV skipped: empty folds",
-            extra={"stage": "hgb", "players": players},
+            extra={
+                "stage": "hgb",
+                "players": players,
+                "feature_cols": feature_cols_log,
+                "seed_target_rows": len(seed_targets),
+                "seed_target_strategies": seed_targets["strategy"].nunique(),
+                "overlap_rows": overlap_rows,
+                "overlap_strategies": overlap_strategies,
+                "seed_count": len(seeds),
+                "seeds_sample": seeds_log,
+            },
         )
         return
 
