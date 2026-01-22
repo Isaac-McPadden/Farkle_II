@@ -189,7 +189,9 @@ def _build_summary(frame: pd.DataFrame, *, players: int, seed: int) -> pd.DataFr
 
     games = summary["games"].to_numpy()
     wins = summary["wins"].to_numpy()
-    summary["win_rate"] = np.where(games > 0, wins / games, 0.0)
+    summary["win_rate"] = np.divide(
+        wins, games, out=np.zeros_like(wins, dtype=float), where=games > 0
+    )
     ci_bounds = [
         wilson_ci(int(wins_i), int(games_i)) if games_i > 0 else (0.0, 1.0)
         for wins_i, games_i in zip(wins, games, strict=False)
@@ -228,7 +230,7 @@ def _weighted_means_by_strategy(frame: pd.DataFrame, columns: list[str]) -> pd.D
                 results[_mean_output_name(column)] = float("nan")
         return pd.Series(results)
 
-    return frame.groupby("strategy_id", sort=True).apply(weighted_means)
+    return frame.groupby("strategy_id", sort=True).apply(weighted_means, include_groups=False)
 
 
 def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
