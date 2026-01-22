@@ -264,7 +264,7 @@ def _load_metrics(path: Path) -> pd.DataFrame:
     if missing:
         raise ValueError(f"metrics parquet missing required columns: {sorted(missing)}")
 
-    out = df[list(required)]
+    out = df.loc[:, list(required)].copy()
     out["strategy_id"] = out["strategy_id"].astype(str)
     out["players"] = out["players"].astype(int)
     out["win_rate"] = pd.to_numeric(out["win_rate"], errors="coerce")
