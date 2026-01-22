@@ -310,7 +310,11 @@ def run_post_h2h(cfg: AppConfig) -> None:
     ]
     pairwise_path = next((p for p in pairwise_candidates if p.exists()), pairwise_candidates[0])
     if not pairwise_path.exists():
-        raise FileNotFoundError(pairwise_path)
+        LOGGER.warning(
+            "Post H2H skipped: missing bonferroni pairwise parquet",
+            extra={"stage": "post_h2h", "path": str(pairwise_path)},
+        )
+        return
 
     df_pairs = pd.read_parquet(pairwise_path, columns=["a", "b", "wins_a", "wins_b", "games"])
     df_pairs = _aggregate_pairwise(df_pairs)
