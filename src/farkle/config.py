@@ -461,6 +461,10 @@ class AppConfig:
         return self.stage_subdir("head2head")
 
     @property
+    def post_h2h_stage_dir(self) -> Path:
+        return self.stage_subdir("post_h2h")
+
+    @property
     def hgb_stage_dir(self) -> Path:
         return self.stage_subdir("hgb")
 
@@ -686,6 +690,19 @@ class AppConfig:
         """Resolve a head-to-head artifact path with legacy fallback."""
 
         return self._preferred_stage_path(self.head2head_stage_dir, self.analysis_dir, filename)
+
+    def post_h2h_path(self, filename: str) -> Path:
+        """Resolve a post head-to-head artifact path with legacy fallback."""
+
+        candidates = [
+            self.post_h2h_stage_dir / filename,
+            self.head2head_stage_dir / filename,
+            self.analysis_dir / filename,
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0]
 
     def tiering_path(self, filename: str) -> Path:
         """Resolve a tiering artifact path with legacy fallback."""

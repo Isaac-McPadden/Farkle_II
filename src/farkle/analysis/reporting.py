@@ -179,6 +179,24 @@ def _head2head_path(
     )
 
 
+def _post_h2h_path(
+    analysis_dir: Path, filename: str, layout: StageLayout | None = None
+) -> Path:
+    """Resolve a post head-to-head artifact path with legacy fallback."""
+
+    return _first_existing(
+        [
+            *_stage_candidates(
+                analysis_dir, "post_h2h", layout=layout, filename=Path(filename)
+            ),
+            *_stage_candidates(
+                analysis_dir, "head2head", layout=layout, filename=Path(filename)
+            ),
+            analysis_dir / filename,
+        ]
+    )
+
+
 def _stage_candidates(
     analysis_dir: Path,
     suffix: str,
@@ -425,7 +443,7 @@ def _load_h2h_decisions(
     analysis_dir: Path, players: int, *, layout: StageLayout | None = None
 ) -> pd.DataFrame:
     """Load pairwise significance decisions for head-to-head comparisons."""
-    path = _head2head_path(analysis_dir, "bonferroni_decisions.parquet", layout=layout)
+    path = _post_h2h_path(analysis_dir, "bonferroni_decisions.parquet", layout=layout)
     if not path.exists():
         return pd.DataFrame()
     df = pd.read_parquet(path)
@@ -446,7 +464,7 @@ def _load_h2h_ranking(
     analysis_dir: Path, players: int, *, layout: StageLayout | None = None
 ) -> pd.DataFrame:
     """Load significant ranking output produced from head-to-head tests."""
-    path = _head2head_path(analysis_dir, "h2h_significant_ranking.csv", layout=layout)
+    path = _post_h2h_path(analysis_dir, "h2h_significant_ranking.csv", layout=layout)
     if not path.exists():
         return pd.DataFrame(columns=["strategy", "rank"])
     df = pd.read_csv(path)
@@ -627,9 +645,9 @@ def plot_h2h_heatmap_for_players(
 
     output = _plot_output_path(cfg, players, f"h2h_heatmap_{players}p.png")
     inputs = [
-        _head2head_path(_analysis_dir(cfg), "bonferroni_decisions.parquet", layout=layout),
+        _post_h2h_path(_analysis_dir(cfg), "bonferroni_decisions.parquet", layout=layout),
         _tier_path(_analysis_dir(cfg), layout=layout),
-        _head2head_path(_analysis_dir(cfg), "h2h_significant_ranking.csv", layout=layout),
+        _post_h2h_path(_analysis_dir(cfg), "h2h_significant_ranking.csv", layout=layout),
     ]
     if _output_is_fresh(output, inputs, force=force):
         return output

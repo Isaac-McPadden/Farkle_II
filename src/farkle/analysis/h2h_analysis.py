@@ -296,7 +296,7 @@ def derive_sig_ranking(G: nx.DiGraph) -> list[str]:
 
 def run_post_h2h(cfg: AppConfig) -> None:
     """Execute the full post head-to-head Holm + ranking workflow."""
-    analysis_dir = cfg.head2head_stage_dir
+    analysis_dir = cfg.post_h2h_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
     tie_policy = getattr(cfg.head2head, "tie_break_policy", "neutral_edge")
     tie_break_seed = (
@@ -305,7 +305,7 @@ def run_post_h2h(cfg: AppConfig) -> None:
         else int(cfg.sim.seed)
     )
     pairwise_candidates = [
-        analysis_dir / "bonferroni_pairwise.parquet",
+        cfg.head2head_stage_dir / "bonferroni_pairwise.parquet",
         cfg.analysis_dir / "bonferroni_pairwise.parquet",
     ]
     pairwise_path = next((p for p in pairwise_candidates if p.exists()), pairwise_candidates[0])

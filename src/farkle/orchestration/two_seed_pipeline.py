@@ -56,7 +56,7 @@ def _run_per_seed_analysis(cfg: AppConfig) -> None:
         game_stats.run(cfg)
     if cfg.analysis.run_rng and not cfg.analysis.disable_rng_diagnostics:
         rng_diagnostics.run(cfg, lags=None)
-    analysis.run_all(cfg)
+    analysis.run_single_seed_analysis(cfg)
 
 
 def run_pipeline(
