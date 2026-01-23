@@ -32,6 +32,7 @@ class IOConfig:
     results_dir_prefix: Path = Path("results")
     analysis_subdir: str = "analysis"
     meta_analysis_dir: Path | None = None
+    interseed_input_dir: Path | None = None
 
 
 @dataclass
@@ -495,6 +496,41 @@ class AppConfig:
         return self.results_root.parent / meta_path
 
     @property
+    def interseed_input_dir(self) -> Path | None:
+        """Optional analysis root used to resolve interseed input artifacts."""
+
+        configured = self.io.interseed_input_dir
+        if configured is None:
+            return None
+        path = Path(configured)
+        if path.is_absolute():
+            return path
+        if path.parts and path.parts[0] == "data":
+            return path
+        return self.results_root / path
+
+    def _interseed_input_candidate(self, stage_dir: Path, filename: str) -> Path | None:
+        """Return a staged input path rooted at ``interseed_input_dir`` when set."""
+
+        input_root = self.interseed_input_dir
+        if input_root is None:
+            return None
+        try:
+            rel = stage_dir.relative_to(self.analysis_dir)
+        except ValueError:
+            return input_root / filename
+        return input_root / rel / filename
+
+    def _input_stage_path(self, key: str, *parts: str | Path) -> Path | None:
+        """Return a stage path rooted at ``interseed_input_dir`` without creating it."""
+
+        input_root = self.interseed_input_dir
+        if input_root is None:
+            return None
+        stage_folder = self.stage_layout.require_folder(key)
+        return input_root / stage_folder / Path(*parts)
+
+    @property
     def data_dir(self) -> Path:
         """Root directory for curated data under the curate stage."""
 
@@ -636,10 +672,17 @@ class AppConfig:
 
         filename = str(self.metrics_name if name is None else name)
         preferred = self.metrics_output_path(filename)
-        legacy = self.analysis_dir / filename
-        if preferred.exists() or not legacy.exists():
+        if preferred.exists():
             return preferred
-        return legacy
+        interseed_root = self._input_stage_path("metrics", "pooled")
+        if interseed_root is not None:
+            interseed_path = interseed_root / filename
+            if interseed_path.exists():
+                return interseed_path
+        legacy = self.analysis_dir / filename
+        if legacy.exists():
+            return legacy
+        return preferred
 
     def metrics_isolated_path(self, k: int) -> Path:
         """Preferred isolated metrics parquet for ``k`` players."""
@@ -669,9 +712,14 @@ class AppConfig:
         stage_dir.mkdir(parents=True, exist_ok=True)
         stage_path = stage_dir / filename
         legacy_path = legacy_dir / filename
-        if stage_path.exists() or not legacy_path.exists():
+        if stage_path.exists():
             return stage_path
-        return legacy_path
+        interseed_input_path = self._interseed_input_candidate(stage_dir, filename)
+        if interseed_input_path is not None and interseed_input_path.exists():
+            return interseed_input_path
+        if legacy_path.exists():
+            return legacy_path
+        return stage_path
 
     def agreement_output_path(self, players: int) -> Path:
         """Preferred path for agreement analytics for a given player count."""
@@ -727,16 +775,39 @@ class AppConfig:
         """Location of the combined curated parquet spanning all player counts."""
         pooled_dir = self.combine_pooled_dir()
         preferred = pooled_dir / "all_ingested_rows.parquet"
-        candidates = [
-            preferred,
-            self.combine_stage_dir
-            / f"{self.combine_max_players}p"
-            / "pooled"
-            / "all_ingested_rows.parquet",
-            self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
-            self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
-            self.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
-        ]
+        candidates = [preferred]
+        interseed_combine = self._input_stage_path(
+            "combine", f"{self.combine_max_players}p", "pooled"
+        )
+        interseed_curate = self._input_stage_path("curate")
+        if interseed_combine is not None:
+            candidates.append(interseed_combine / "all_ingested_rows.parquet")
+        if interseed_curate is not None:
+            candidates.append(
+                interseed_curate / "all_n_players_combined" / "all_ingested_rows.parquet"
+            )
+        interseed_root = self.interseed_input_dir
+        if interseed_root is not None:
+            candidates.append(
+                interseed_root / "all_n_players_combined" / "all_ingested_rows.parquet"
+            )
+            candidates.append(
+                interseed_root / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
+            )
+        candidates.extend(
+            [
+                self.combine_stage_dir
+                / f"{self.combine_max_players}p"
+                / "pooled"
+                / "all_ingested_rows.parquet",
+                self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
+                self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
+                self.analysis_dir
+                / "data"
+                / "all_n_players_combined"
+                / "all_ingested_rows.parquet",
+            ]
+        )
         for candidate in candidates:
             if candidate.exists():
                 return candidate
