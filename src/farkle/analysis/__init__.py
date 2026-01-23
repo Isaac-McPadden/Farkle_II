@@ -191,6 +191,24 @@ def run_single_seed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
             },
         )
 
+    ts_mod = _optional_import("farkle.analysis.trueskill")
+    if cfg.analysis.run_trueskill and not cfg.analysis.disable_trueskill and ts_mod is not None:
+        ts_mod.run(cfg)
+    else:
+        LOGGER.info(
+            "Analytics: skipping trueskill",
+            extra={
+                "stage": "analysis",
+                "reason": (
+                    "run_trueskill=False"
+                    if not cfg.analysis.run_trueskill
+                    else "disabled"
+                    if cfg.analysis.disable_trueskill
+                    else "unavailable"
+                ),
+            },
+        )
+
     h2h_mod = _optional_import("farkle.analysis.head2head")
     if cfg.analysis.run_head2head and not cfg.analysis.disable_head2head and h2h_mod is not None:
         h2h_mod.run(cfg)
