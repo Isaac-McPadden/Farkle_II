@@ -65,6 +65,7 @@ analysis:
   run_frequentist: true
   run_post_h2h_analysis: true
   run_agreement: true
+  run_rng: true
   run_report: true
   n_jobs: 1
   log_level: "INFO"
