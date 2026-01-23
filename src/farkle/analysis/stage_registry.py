@@ -141,7 +141,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         "trueskill",
         group="analytics",
         disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_trueskill or not cfg.analysis.run_interseed
+            cfg.analysis.disable_trueskill or not cfg.analysis.run_trueskill
         ),
     ),
     StageDefinition(
