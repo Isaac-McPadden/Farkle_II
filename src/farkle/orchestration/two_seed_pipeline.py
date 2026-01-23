@@ -44,7 +44,7 @@ def _shared_meta_dir(cfg: AppConfig, pair_root: Path, seed_pair: tuple[int, int]
     configured_meta = seed_pair_meta_root(cfg, seed_pair)
     if configured_meta is not None:
         return configured_meta
-    return pair_root / cfg.io.analysis_subdir / "seed_summaries_meta"
+    return pair_root / "interseed_analysis" / "seed_summaries_meta"
 
 
 def _run_per_seed_analysis(cfg: AppConfig) -> None:
@@ -160,7 +160,7 @@ def run_pipeline(
         base_results_dir=seed_pair_seed_root(cfg, seed_pair, interseed_seed),
         meta_analysis_dir=meta_dir,
     )
-    interseed_io = dataclasses.replace(interseed_cfg.io, analysis_subdir="interseed_analysis")
+    interseed_io = dataclasses.replace(interseed_cfg.io, analysis_subdir="../interseed_analysis")
     interseed_cfg = dataclasses.replace(
         interseed_cfg,
         io=interseed_io,
