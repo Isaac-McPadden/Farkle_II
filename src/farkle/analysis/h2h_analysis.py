@@ -272,13 +272,8 @@ def build_significant_graph(
     return graph
 
 
-def derive_sig_ranking(G: nx.DiGraph) -> list[str]:
-    """Derive a deterministic ranking by topological order of significant edges."""
-    if G.number_of_nodes() == 0:
-        return []
-    if not nx.is_directed_acyclic_graph(G):
-        raise RuntimeError("Significant graph contains cycles; ranking undefined")
-
+def _topological_order(G: nx.DiGraph) -> list[str]:
+    """Return a deterministic topological ordering for an acyclic graph."""
     indegree = {node: G.in_degree(node) for node in G.nodes}
     available: list[str] = sorted(node for node, deg in indegree.items() if deg == 0)
     ranking: list[str] = []
@@ -292,6 +287,59 @@ def derive_sig_ranking(G: nx.DiGraph) -> list[str]:
     if len(ranking) != G.number_of_nodes():
         raise RuntimeError("Ranking incomplete; graph may contain unreachable nodes")
     return ranking
+
+
+def _insert_sorted(items: list[int], item: int, *, key_fn) -> None:
+    """Insert item into list in sorted order using a key function."""
+    keys = [key_fn(existing) for existing in items]
+    position = bisect.bisect_left(keys, key_fn(item))
+    items.insert(position, item)
+
+
+def _derive_sig_tiers(G: nx.DiGraph) -> tuple[list[list[str]], nx.DiGraph, list[int]]:
+    """Derive tiered rankings from SCCs and return the condensation graph."""
+    if G.number_of_nodes() == 0:
+        return [], nx.DiGraph(), []
+
+    sccs = list(nx.strongly_connected_components(G))
+    sccs_sorted = sorted(sccs, key=lambda members: tuple(sorted(members)))
+    condensation = nx.condensation(G, sccs_sorted)
+
+    if nx.is_directed_acyclic_graph(G):
+        topo_nodes = _topological_order(G)
+        tiers = [[node] for node in topo_nodes]
+        tier_nodes = [cast(int, condensation.graph["mapping"][node]) for node in topo_nodes]
+        return tiers, condensation, tier_nodes
+
+    indegree = {node: condensation.in_degree(node) for node in condensation.nodes}
+    available: list[int] = sorted(
+        (node for node, deg in indegree.items() if deg == 0),
+        key=lambda node: tuple(sorted(condensation.nodes[node]["members"])),
+    )
+    tier_nodes: list[int] = []
+    while available:
+        node = available.pop(0)
+        tier_nodes.append(node)
+        for successor in sorted(condensation.successors(node)):
+            indegree[successor] -= 1
+            if indegree[successor] == 0:
+                _insert_sorted(
+                    available,
+                    successor,
+                    key_fn=lambda node_id: tuple(sorted(condensation.nodes[node_id]["members"])),
+                )
+
+    tiers = [
+        sorted(map(str, condensation.nodes[node]["members"]))
+        for node in tier_nodes
+    ]
+    return tiers, condensation, tier_nodes
+
+
+def derive_sig_ranking(G: nx.DiGraph) -> list[list[str]]:
+    """Derive a tiered ranking using SCC detection and condensation graphs."""
+    tiers, _, _ = _derive_sig_tiers(G)
+    return tiers
 
 
 def run_post_h2h(cfg: AppConfig) -> None:
@@ -343,21 +391,40 @@ def run_post_h2h(cfg: AppConfig) -> None:
     graph_path = analysis_dir / "h2h_significant_graph.json"
     _write_graph_json(graph, graph_path)
 
-    ranking = derive_sig_ranking(graph)
-    ranking_records = [
+    tiers, condensation, tier_nodes = _derive_sig_tiers(graph)
+    tier_records = [
         {
-            "rank": idx,
-            "strategy": node,
-            "in_degree": graph.in_degree(node),
-            "out_degree": graph.out_degree(node),
+            "tier_id": idx,
+            "size": len(tier),
+            "members": json.dumps(tier),
+            "in_degree": condensation.in_degree(tier_node),
+            "out_degree": condensation.out_degree(tier_node),
         }
-        for idx, node in enumerate(ranking, start=1)
+        for idx, (tier, tier_node) in enumerate(zip(tiers, tier_nodes, strict=False), start=1)
     ]
-    ranking_df = pd.DataFrame(
-        ranking_records, columns=["rank", "strategy", "in_degree", "out_degree"]
+    tiers_df = pd.DataFrame(
+        tier_records, columns=["tier_id", "size", "members", "in_degree", "out_degree"]
     )
-    ranking_path = analysis_dir / "h2h_significant_ranking.csv"
-    write_csv_atomic(ranking_df, ranking_path)
+    tiers_path = analysis_dir / "h2h_significant_tiers.csv"
+    write_csv_atomic(tiers_df, tiers_path)
+
+    ranking: list[str] = []
+    if nx.is_directed_acyclic_graph(graph):
+        ranking = _topological_order(graph)
+        ranking_records = [
+            {
+                "rank": idx,
+                "strategy": node,
+                "in_degree": graph.in_degree(node),
+                "out_degree": graph.out_degree(node),
+            }
+            for idx, node in enumerate(ranking, start=1)
+        ]
+        ranking_df = pd.DataFrame(
+            ranking_records, columns=["rank", "strategy", "in_degree", "out_degree"]
+        )
+        ranking_path = analysis_dir / "h2h_significant_ranking.csv"
+        write_csv_atomic(ranking_df, ranking_path)
 
     LOGGER.info(
         "Post H2H completed",
@@ -366,6 +433,7 @@ def run_post_h2h(cfg: AppConfig) -> None:
             "decisions": decisions_tbl.num_rows,
             "edges": graph.number_of_edges(),
             "ranking_nodes": len(ranking),
+            "tiers": len(tiers),
             "tie_policy": tie_policy,
         },
     )
@@ -377,6 +445,7 @@ def run_post_h2h(cfg: AppConfig) -> None:
             "event": "post_h2h",
             "decisions_path": str(decisions_path),
             "graph_path": str(graph_path),
+            "tiers_path": str(tiers_path),
             "tie_policy": tie_policy,
             "tie_break_seed": tie_break_seed,
         },

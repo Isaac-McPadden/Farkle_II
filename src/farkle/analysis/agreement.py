@@ -268,15 +268,17 @@ def _load_head2head(cfg: AppConfig) -> MethodData | None:
     if graph.number_of_nodes() == 0:
         return None
 
-    ranking = derive_sig_ranking(graph)
-    if not ranking:
+    tiers = derive_sig_ranking(graph)
+    if not tiers:
         return None
 
-    size = len(ranking)
-    scores = pd.Series(
-        {strategy: float(size - idx) for idx, strategy in enumerate(ranking)},
-        dtype=float,
-    ).sort_index()
+    tier_count = len(tiers)
+    score_map: dict[str, float] = {}
+    for tier_idx, strategies in enumerate(tiers, start=1):
+        score_value = float(tier_count - tier_idx + 1)
+        for strategy in strategies:
+            score_map[str(strategy)] = score_value
+    scores = pd.Series(score_map, dtype=float).sort_index()
 
     tiers = _tiers_from_graph(graph)
 
