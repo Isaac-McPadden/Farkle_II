@@ -365,7 +365,7 @@ def _compute_variance_components(
     grouped = seed_frame.groupby(["strategy_id", "players"], sort=True)
     insufficient_seed_groups = 0
     skipped_component_total = 0
-    skipped_component_counts = {component: 0 for component in COMPONENT_COLUMN_MAP}
+    skipped_component_counts = dict.fromkeys(COMPONENT_COLUMN_MAP, 0)
     for (strategy_id, players), group in grouped:
         strategy_id_str = str(strategy_id)
         players_int = int(cast(int, players))
