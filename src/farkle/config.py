@@ -237,6 +237,9 @@ class Head2HeadConfig:
     tie_break_seed: int | None = None
     """Optional RNG seed for deterministic tie-break simulation (defaults to sim.seed)."""
 
+    use_tier_elites: bool = False
+    """Use tiers.json elite selection instead of the default union of top ratings/metrics."""
+
 
 @dataclass
 class HGBConfig:
