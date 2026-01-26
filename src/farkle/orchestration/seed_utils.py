@@ -75,6 +75,7 @@ def seed_has_completion_markers(cfg: AppConfig) -> bool:
             ckpt_path=ckpt_path,
             row_dir=row_dir,
             metric_chunk_dir=metric_chunk_dir,
+            strategy_manifest_path=cfg.strategy_manifest_root_path(),
         ):
             return False
     return True
