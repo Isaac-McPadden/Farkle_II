@@ -73,7 +73,7 @@ def run(cfg: AppConfig) -> None:
     inputs = _prepare_inputs(cfg)
     tier_file = cfg.preferred_tiers_path()
     tier_payload = load_tier_payload(tier_file)
-    ts_tiers = tier_mapping_from_payload(tier_payload, prefer="trueskill")
+    ts_tiers = _coerce_tier_keys(tier_mapping_from_payload(tier_payload, prefer="trueskill"))
     if not ts_tiers:
         stage_log.missing_input("missing tiers.json", path=str(tier_file))
         return
@@ -82,6 +82,7 @@ def run(cfg: AppConfig) -> None:
     if df.empty:
         stage_log.missing_input("no isolated metrics available")
         return
+    df["strategy"] = _coerce_strategy_ids(df["strategy"])
 
     tier_data = tiering_ingredients_from_df(
         df,
@@ -166,6 +167,24 @@ def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFram
     return pd.concat(frames, ignore_index=True, sort=False)
 
 
+def _coerce_strategy_ids(values: pd.Series) -> pd.Series:
+    """Ensure strategy identifiers are numeric and prefer integer dtype."""
+    numeric = pd.to_numeric(values, errors="raise")
+    if pd.api.types.is_float_dtype(numeric):
+        non_null = numeric.dropna()
+        if not non_null.empty and (non_null % 1 == 0).all():
+            return numeric.astype("int64")
+    return numeric
+
+
+def _coerce_tier_keys(tiers: Mapping[Hashable, int]) -> dict[int, int]:
+    """Coerce tier mapping keys to numeric strategy IDs."""
+    if not tiers:
+        return {}
+    numeric_keys = _coerce_strategy_ids(pd.Series(list(tiers.keys())))
+    return {int(key): int(value) for key, value in zip(numeric_keys.tolist(), tiers.values())}
+
+
 def _weighted_winrate(
     df: pd.DataFrame, weights_by_k: Mapping[int, float] | None
 ) -> tuple[pd.Series, pd.DataFrame]:
@@ -223,7 +242,7 @@ def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
     )
 
 
-def _build_report(freq_df: pd.DataFrame, ts_tiers: Mapping[str, int]) -> pd.DataFrame:
+def _build_report(freq_df: pd.DataFrame, ts_tiers: Mapping[Hashable, int]) -> pd.DataFrame:
     """Join frequentist and TrueSkill tiers, adding disagreement markers."""
     ts_series = pd.Series(ts_tiers, name="trueskill_tier")
     freq_df = freq_df.set_index("strategy")
@@ -252,7 +271,6 @@ def _write_frequentist_scores(
     tier_map = frequentist_tiers.set_index("strategy")["mdd_tier"]
     base = winrates_by_players.copy()
     base["players"] = base["n_players"].astype(int)
-    base["strategy"] = base["strategy"].astype(str)
     base["strategy_id"] = base["strategy"]
     base["tier"] = base["strategy"].map(tier_map).astype(int)
     base["mdd_tier"] = base["tier"]
@@ -274,8 +292,8 @@ def _write_frequentist_scores(
 
     aggregated = pd.DataFrame(
         {
-            "strategy": winrates.index.astype(str),
-            "strategy_id": winrates.index.astype(str),
+            "strategy": winrates.index,
+            "strategy_id": winrates.index,
             "players": 0,
             "n_players": 0,
             "win_rate": winrates.values,
