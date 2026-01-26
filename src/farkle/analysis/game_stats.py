@@ -30,6 +30,7 @@ n_players)`` summaries. Margin schema:
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -171,6 +172,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             per_n_inputs,
             thresholds=cfg.game_stats_margin_thresholds,
             target_score=cfg.rare_event_target_score,
+            margin_quantile=cfg.analysis.rare_event_margin_quantile,
+            target_rate=cfg.analysis.rare_event_target_rate,
             output_path=rare_events_output,
             codec=cfg.parquet_codec,
         )
@@ -464,12 +467,21 @@ def _rare_event_flags(
     *,
     thresholds: Sequence[int],
     target_score: int,
+    margin_quantile: float | None,
+    target_rate: float | None,
     output_path: Path,
     codec: Compression,
 ) -> int:
     """Compute per-game rare events and aggregate counts."""
 
-    flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
+    resolved_thresholds, resolved_target_score = _resolve_rare_event_thresholds(
+        per_n_inputs,
+        thresholds=thresholds,
+        target_score=target_score,
+        margin_quantile=margin_quantile,
+        target_rate=target_rate,
+    )
+    flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in resolved_thresholds]]
     column_order = [
         "summary_level",
         "strategy",
@@ -477,7 +489,7 @@ def _rare_event_flags(
         "margin_of_victory",
         "multi_reached_target",
         "observations",
-        *[f"margin_le_{thr}" for thr in thresholds],
+        *[f"margin_le_{thr}" for thr in resolved_thresholds],
     ]
     (
         strategy_sums,
@@ -485,7 +497,11 @@ def _rare_event_flags(
         rows_available,
         max_flag_count,
         max_observations,
-    ) = _collect_rare_event_counts(per_n_inputs, thresholds=thresholds, target_score=target_score)
+    ) = _collect_rare_event_counts(
+        per_n_inputs,
+        thresholds=resolved_thresholds,
+        target_score=resolved_target_score,
+    )
 
     if rows_available == 0:
         return 0
@@ -500,7 +516,7 @@ def _rare_event_flags(
         pa.field("margin_of_victory", pa.float64()),
         pa.field("multi_reached_target", flag_arrow),
         pa.field("observations", obs_arrow),
-        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
+        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in resolved_thresholds],
     ]
     schema = pa.schema(fields)
 
@@ -536,19 +552,19 @@ def _rare_event_flags(
                     continue
                 margins = _compute_margins(df, score_cols)
                 scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
-                multi_target = (scores >= target_score).sum(axis=1) >= 2
+                multi_target = (scores >= resolved_target_score).sum(axis=1) >= 2
                 flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
-                for thr in thresholds:
+                for thr in resolved_thresholds:
                     flag_series[f"margin_le_{thr}"] = margins <= thr
                 any_flag = flag_series["multi_reached_target"].copy()
-                for thr in thresholds:
+                for thr in resolved_thresholds:
                     any_flag |= flag_series[f"margin_le_{thr}"]
                 base = df.loc[any_flag, strategy_cols].copy()
                 if base.empty:
                     continue
                 base["margin_of_victory"] = margins[any_flag]
                 base["multi_reached_target"] = flag_series["multi_reached_target"][any_flag]
-                for thr in thresholds:
+                for thr in resolved_thresholds:
                     base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"][any_flag]
                 base["n_players"] = n_players
                 melted = base.melt(
@@ -556,7 +572,7 @@ def _rare_event_flags(
                         "margin_of_victory",
                         "multi_reached_target",
                         "n_players",
-                        *[f"margin_le_{thr}" for thr in thresholds],
+                        *[f"margin_le_{thr}" for thr in resolved_thresholds],
                     ],
                     value_vars=strategy_cols,
                     var_name="seat",
@@ -579,7 +595,7 @@ def _rare_event_flags(
                         ),
                         "observations": np.ones(count, dtype=obs_dtype),
                     }
-                    for thr in thresholds:
+                    for thr in resolved_thresholds:
                         per_game_data[f"margin_le_{thr}"] = group[
                             f"margin_le_{thr}"
                         ].to_numpy(dtype=flag_dtype)
@@ -705,6 +721,135 @@ def _collect_rare_event_counts(
         for flag in flags:
             max_flag_count = max(max_flag_count, sums.get(flag, 0))
     return strategy_sums, global_sums, rows_available, max_flag_count, max_observations
+
+
+def _resolve_rare_event_thresholds(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    thresholds: Sequence[int],
+    target_score: int,
+    margin_quantile: float | None,
+    target_rate: float | None,
+) -> tuple[tuple[int, ...], int]:
+    """Resolve rare-event thresholds, optionally based on streaming quantiles."""
+    resolved_thresholds = tuple(int(thr) for thr in thresholds)
+    resolved_target_score = int(target_score)
+    needs_margin = margin_quantile is not None
+    needs_target = target_rate is not None
+    if not needs_margin and not needs_target:
+        return resolved_thresholds, resolved_target_score
+
+    if margin_quantile is not None and not 0.0 < margin_quantile < 1.0:
+        raise ValueError("rare_event_margin_quantile must be between 0 and 1")
+    if target_rate is not None and not 0.0 < target_rate < 1.0:
+        raise ValueError("rare_event_target_rate must be between 0 and 1")
+
+    margin_counts, target_counts = _collect_rare_event_histograms(
+        per_n_inputs,
+        need_margins=needs_margin,
+        need_targets=needs_target,
+    )
+    if margin_quantile is not None:
+        quantile_threshold = _quantile_from_counts(margin_counts, margin_quantile)
+        if quantile_threshold is not None:
+            resolved_thresholds = (quantile_threshold,)
+    if target_rate is not None:
+        quantile = 1.0 - target_rate
+        target_threshold = _quantile_from_counts(target_counts, quantile)
+        if target_threshold is not None:
+            resolved_target_score = target_threshold
+    return resolved_thresholds, resolved_target_score
+
+
+def _collect_rare_event_histograms(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    need_margins: bool,
+    need_targets: bool,
+) -> tuple[dict[int, int], dict[int, int]]:
+    margin_counts: dict[int, int] = {}
+    target_counts: dict[int, int] = {}
+    if not need_margins and not need_targets:
+        return margin_counts, target_counts
+
+    for _, path in per_n_inputs:
+        ds_in = ds.dataset(path)
+        score_cols = [
+            name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+        ]
+        if not score_cols:
+            continue
+        scanner = ds_in.scanner(columns=score_cols, batch_size=65_536)
+        for batch in scanner.to_batches():
+            df = batch.to_pandas()
+            if df.empty:
+                continue
+            scores = df[score_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+            if need_margins:
+                margins = _compute_margins_from_array(scores)
+                _update_int_histogram(margin_counts, margins)
+            if need_targets:
+                second_scores = _second_highest(scores)
+                _update_int_histogram(target_counts, second_scores)
+    return margin_counts, target_counts
+
+
+def _compute_margins_from_array(scores: np.ndarray) -> np.ndarray:
+    """Compute victory margins from a numeric score array."""
+    if scores.size == 0:
+        return scores
+    valid_counts = np.isfinite(scores).sum(axis=1)
+    with np.errstate(all="ignore"):
+        margins = np.nanmax(scores, axis=1) - np.nanmin(scores, axis=1)
+    margins[valid_counts < 2] = np.nan
+    return margins
+
+
+def _second_highest(scores: np.ndarray) -> np.ndarray:
+    """Return the second-highest score per row, or NaN when fewer than two scores."""
+    if scores.size == 0:
+        return scores
+    valid_mask = np.isfinite(scores)
+    if scores.shape[1] < 2:
+        return np.full(scores.shape[0], np.nan, dtype=float)
+    safe_scores = np.where(valid_mask, scores, -np.inf)
+    second = np.partition(safe_scores, -2, axis=1)[:, -2]
+    valid_counts = valid_mask.sum(axis=1)
+    second[valid_counts < 2] = np.nan
+    return second.astype(float)
+
+
+def _update_int_histogram(counts: dict[int, int], values: np.ndarray) -> None:
+    """Update integer histogram counts from numeric values."""
+    if values.size == 0:
+        return
+    clean = values[np.isfinite(values)]
+    if clean.size == 0:
+        return
+    ints = np.rint(clean).astype(int)
+    unique, freq = np.unique(ints, return_counts=True)
+    for value, count in zip(unique, freq, strict=True):
+        counts[int(value)] = counts.get(int(value), 0) + int(count)
+
+
+def _quantile_from_counts(counts: dict[int, int], quantile: float) -> int | None:
+    """Return the smallest value whose CDF exceeds the quantile."""
+    if not counts:
+        return None
+    total = sum(counts.values())
+    if total <= 0:
+        return None
+    if quantile <= 0.0:
+        return int(min(counts))
+    if quantile >= 1.0:
+        return int(max(counts))
+    cutoff = int(math.ceil(total * quantile))
+    running = 0
+    for value in sorted(counts):
+        running += counts[value]
+        if running >= cutoff:
+            return int(value)
+    return int(max(counts))
 
 
 def _select_int_dtype(max_value: int) -> tuple[np.dtype[np.integer], pa.DataType]:
