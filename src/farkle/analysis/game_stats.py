@@ -540,11 +540,16 @@ def _rare_event_flags(
                 flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
                 for thr in thresholds:
                     flag_series[f"margin_le_{thr}"] = margins <= thr
-                base = df[strategy_cols].copy()
-                base["margin_of_victory"] = margins
-                base["multi_reached_target"] = flag_series["multi_reached_target"]
+                any_flag = flag_series["multi_reached_target"].copy()
                 for thr in thresholds:
-                    base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"]
+                    any_flag |= flag_series[f"margin_le_{thr}"]
+                base = df.loc[any_flag, strategy_cols].copy()
+                if base.empty:
+                    continue
+                base["margin_of_victory"] = margins[any_flag]
+                base["multi_reached_target"] = flag_series["multi_reached_target"][any_flag]
+                for thr in thresholds:
+                    base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"][any_flag]
                 base["n_players"] = n_players
                 melted = base.melt(
                     id_vars=[
