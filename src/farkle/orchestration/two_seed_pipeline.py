@@ -172,6 +172,7 @@ def run_pipeline(
         base_results_dir=seed_pair_seed_root(cfg, seed_pair, interseed_seed),
         meta_analysis_dir=meta_dir,
     )
+    interseed_input_layout = interseed_cfg.stage_layout
     interseed_input_dir = (
         seed_pair_seed_root(cfg, seed_pair, interseed_seed) / cfg.io.analysis_subdir
     )
@@ -179,6 +180,7 @@ def run_pipeline(
         interseed_cfg.io,
         analysis_subdir="../interseed_analysis",
         interseed_input_dir=interseed_input_dir,
+        interseed_input_layout=interseed_input_layout,
     )
     interseed_cfg = dataclasses.replace(
         interseed_cfg,
