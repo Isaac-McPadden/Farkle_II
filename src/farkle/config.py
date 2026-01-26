@@ -549,8 +549,12 @@ class AppConfig:
         return self.n_dir(n) / f"{n}p_metrics.parquet"
 
     def strategy_manifest_path(self, n: int) -> Path:
-        """Path to the strategy manifest parquet for ``n`` players."""
-        return self.n_dir(n) / "strategy_manifest.parquet"
+        """Path to the strategy manifest parquet for the current results root."""
+        return self.strategy_manifest_root_path()
+
+    def strategy_manifest_root_path(self) -> Path:
+        """Root-level strategy manifest parquet path."""
+        return self.results_root / "strategy_manifest.parquet"
 
     # —— Ingest/streaming knobs ——
     @property

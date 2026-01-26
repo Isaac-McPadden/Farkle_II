@@ -141,7 +141,7 @@ def _load_strategy_manifest(cfg: AppConfig) -> pd.DataFrame | None:
     """Load the strategy manifest for the current run if present."""
     if not cfg.sim.n_players_list:
         return None
-    manifest_path = cfg.strategy_manifest_path(cfg.sim.n_players_list[0])
+    manifest_path = cfg.strategy_manifest_root_path()
     if not manifest_path.exists():
         return None
     return pd.read_parquet(manifest_path)

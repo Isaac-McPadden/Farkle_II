@@ -320,16 +320,16 @@ def _purge_simulation_outputs(
     ckpt_path: Path,
     row_dir: Path | None,
     metric_chunk_dir: Path | None,
+    strategy_manifest_path: Path,
 ) -> None:
     ckpt_parquet = n_dir / f"{n_players}p_checkpoint.parquet"
     metrics_parquet = n_dir / f"{n_players}p_metrics.parquet"
-    strategy_manifest = n_dir / STRATEGY_MANIFEST_NAME
-    _remove_paths([ckpt_path, ckpt_parquet, metrics_parquet, strategy_manifest])
+    _remove_paths([ckpt_path, ckpt_parquet, metrics_parquet, strategy_manifest_path])
 
     if row_dir is not None and row_dir.exists():
         if row_dir == n_dir:
             _remove_paths(list(row_dir.glob("rows_*.parquet")))
-            _remove_paths([row_dir / "manifest.jsonl", row_dir / STRATEGY_MANIFEST_NAME])
+            _remove_paths([row_dir / "manifest.jsonl"])
         else:
             _remove_paths([row_dir])
 
@@ -348,14 +348,17 @@ def _has_existing_outputs(
     ckpt_path: Path,
     row_dir: Path | None,
     metric_chunk_dir: Path | None,
+    strategy_manifest_path: Path,
 ) -> bool:
     candidates = [
         ckpt_path,
         n_dir / f"{n_players}p_checkpoint.parquet",
         n_dir / f"{n_players}p_metrics.parquet",
-        n_dir / STRATEGY_MANIFEST_NAME,
+        strategy_manifest_path,
     ]
     if any(path.exists() for path in candidates):
+        return True
+    if (n_dir / STRATEGY_MANIFEST_NAME).exists():
         return True
     if row_dir is not None and row_dir.exists():
         if (row_dir / "manifest.jsonl").exists():
@@ -389,11 +392,28 @@ def _validate_resume_outputs(
         "n_strategies": len(strategies_manifest),
         "strategy_manifest_sha": _strategy_manifest_digest(strategies_manifest),
     }
-    manifest_paths = [ckpt_path.parent / STRATEGY_MANIFEST_NAME]
+    root_manifest_path = cfg.strategy_manifest_root_path()
+    legacy_manifest_paths = [ckpt_path.parent / STRATEGY_MANIFEST_NAME]
     if row_dir is not None:
-        manifest_paths.append(row_dir / STRATEGY_MANIFEST_NAME)
-    for manifest_path in manifest_paths:
-        _validate_manifest_matches(strategies_manifest, manifest_path, label="Strategy")
+        legacy_manifest_paths.append(row_dir / STRATEGY_MANIFEST_NAME)
+    if root_manifest_path.exists():
+        _validate_manifest_matches(
+            strategies_manifest, root_manifest_path, label="Strategy"
+        )
+    else:
+        legacy_match = None
+        for legacy_path in legacy_manifest_paths:
+            if legacy_path.exists():
+                _validate_manifest_matches(
+                    strategies_manifest, legacy_path, label="Strategy"
+                )
+                legacy_match = legacy_path
+                break
+        if legacy_match is not None:
+            write_parquet_atomic(
+                pa.Table.from_pandas(strategies_manifest, preserve_index=False),
+                root_manifest_path,
+            )
 
     if ckpt_path.exists():
         payload = pickle.loads(ckpt_path.read_bytes())
@@ -579,6 +599,7 @@ def run_single_n(
             ckpt_path=ckpt_path,
             row_dir=row_dir,
             metric_chunk_dir=metric_chunk_dir,
+            strategy_manifest_path=cfg.strategy_manifest_root_path(),
         )
     elif resume and _has_existing_outputs(
         n_dir=n_dir,
@@ -586,6 +607,7 @@ def run_single_n(
         ckpt_path=ckpt_path,
         row_dir=row_dir,
         metric_chunk_dir=metric_chunk_dir,
+        strategy_manifest_path=cfg.strategy_manifest_root_path(),
     ):
         _validate_resume_outputs(
             cfg=cfg,
@@ -597,18 +619,13 @@ def run_single_n(
             metric_chunk_dir=metric_chunk_dir,
         )
     if not manifest.empty:
-        manifest_path = n_dir / STRATEGY_MANIFEST_NAME
+        manifest_path = cfg.strategy_manifest_root_path()
         if not manifest_path.exists():
             write_parquet_atomic(
                 pa.Table.from_pandas(manifest, preserve_index=False), manifest_path
             )
         if row_dir is not None and row_dir != n_dir:
             row_dir.mkdir(parents=True, exist_ok=True)
-            row_manifest_path = row_dir / STRATEGY_MANIFEST_NAME
-            if not row_manifest_path.exists():
-                write_parquet_atomic(
-                    pa.Table.from_pandas(manifest, preserve_index=False), row_manifest_path
-                )
         if LOGGER.isEnabledFor(logging.DEBUG):
             sample = manifest[["strategy_id", "strategy_str"]].head(5).to_dict("records")
             LOGGER.debug(
