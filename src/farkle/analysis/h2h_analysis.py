@@ -426,6 +426,22 @@ def run_post_h2h(cfg: AppConfig) -> None:
         ranking_path = analysis_dir / "h2h_significant_ranking.csv"
         write_csv_atomic(ranking_df, ranking_path)
 
+    tier_order: list[str] = ranking[:] if ranking else [node for tier in tiers for node in tier]
+    union_candidates = _load_union_candidates(cfg)
+    if not union_candidates:
+        LOGGER.warning(
+            "Missing union candidate list for post H2H; using full ranking order",
+            extra={"stage": "post_h2h"},
+        )
+        union_candidates = tier_order
+    candidate_set = {str(name) for name in union_candidates}
+    ordered_candidates = [name for name in tier_order if name in candidate_set]
+    s_tiers = _assign_s_tiers(ordered_candidates)
+    s_tiers_path = analysis_dir / "h2h_s_tiers.json"
+    with atomic_path(str(s_tiers_path)) as tmp_path:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump(s_tiers, handle, indent=2, sort_keys=True)
+
     LOGGER.info(
         "Post H2H completed",
         extra={
@@ -446,10 +462,47 @@ def run_post_h2h(cfg: AppConfig) -> None:
             "decisions_path": str(decisions_path),
             "graph_path": str(graph_path),
             "tiers_path": str(tiers_path),
+            "s_tiers_path": str(s_tiers_path),
             "tie_policy": tie_policy,
             "tie_break_seed": tie_break_seed,
         },
     )
+
+
+def _assign_s_tiers(ordered: list[str]) -> dict[str, str]:
+    """Assign S+/S/S- labels to an ordered strategy list."""
+    tiers: dict[str, str] = {}
+    for idx, strategy in enumerate(ordered):
+        if idx < 10:
+            label = "S+"
+        elif idx < 30:
+            label = "S"
+        else:
+            label = "S-"
+        tiers[str(strategy)] = label
+    return tiers
+
+
+def _load_union_candidates(cfg: AppConfig) -> list[str]:
+    """Load the union candidate list used for head-to-head scheduling."""
+    candidates = [
+        cfg.head2head_stage_dir / "h2h_union_candidates.json",
+        cfg.analysis_dir / "h2h_union_candidates.json",
+    ]
+    for path in candidates:
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and "candidates" in payload:
+            raw = payload.get("candidates")
+        else:
+            raw = payload
+        if isinstance(raw, list):
+            return [str(item) for item in raw]
+    return []
 
 
 def _resolve_alpha(cfg: AppConfig) -> float:
