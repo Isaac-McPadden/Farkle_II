@@ -69,7 +69,7 @@ analysis:
   run_report: true
   n_jobs: 1
   log_level: "INFO"
-  head2head_target_hours: 8.0
+  head2head_target_hours: 1.0
   head2head_tolerance_pct: 5.0
   head2head_games_per_sec: null
   tiering_seeds: null
