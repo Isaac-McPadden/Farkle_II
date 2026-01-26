@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import queue
+import time
 from typing import Any, Callable, Dict, Iterable
 
 import pyarrow as pa
@@ -37,6 +38,8 @@ def run_streaming_shard(
     ) as w:
         w.write_batches(batch_iter)
     rows = getattr(w, "rows_written", None)
+    if not _output_ready(out_path, manifest_path, manifest_extra):
+        return
     # On success, append a manifest line
     manifest_dir = os.path.dirname(manifest_path)
     manifest_dir = os.path.abspath(manifest_dir) if manifest_dir else os.path.abspath(os.curdir)
@@ -73,6 +76,44 @@ def run_streaming_shard(
             **(manifest_extra or {}),
         },
     )
+
+
+def _output_ready(
+    out_path: str, manifest_path: str, manifest_extra: Dict[str, Any] | None
+) -> bool:
+    """Return True when the output path exists and is non-empty."""
+    if os.path.exists(out_path):
+        return _check_output_size(out_path, manifest_path, manifest_extra)
+
+    time.sleep(0.05)
+    if os.path.exists(out_path):
+        return _check_output_size(out_path, manifest_path, manifest_extra)
+
+    LOGGER.error(
+        "Missing output file after shard write (out_path=%s, manifest_path=%s, manifest_extra=%s).",
+        out_path,
+        manifest_path,
+        manifest_extra,
+    )
+    return False
+
+
+def _check_output_size(
+    out_path: str, manifest_path: str, manifest_extra: Dict[str, Any] | None
+) -> bool:
+    try:
+        out_size = os.path.getsize(out_path)
+    except OSError:
+        out_size = 0
+    if out_size <= 0:
+        LOGGER.error(
+            "Empty output file after shard write (out_path=%s, manifest_path=%s, manifest_extra=%s).",
+            out_path,
+            manifest_path,
+            manifest_extra,
+        )
+        return False
+    return True
 
 
 def producer_thread(
