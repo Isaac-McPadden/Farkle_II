@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import math
 import time
@@ -28,6 +29,7 @@ from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.random import MAX_UINT32
 from farkle.utils.stats import games_for_power
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
+from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -290,6 +292,18 @@ def run_bonferroni_head2head(
         ratings_path=ratings_path,
         metrics_path=metrics_path,
     )
+    union_candidates_path = cfg.head2head_stage_dir / "h2h_union_candidates.json"
+    union_candidates_payload = {
+        "candidates": union_strategies,
+        "ratings_count": union_info["ratings_count"],
+        "metrics_count": union_info["metrics_count"],
+        "combined_count": union_info["combined_count"],
+        "ratings_path": union_info["ratings_path"],
+        "metrics_path": union_info["metrics_path"],
+    }
+    union_candidates_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(union_candidates_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(union_candidates_payload, indent=2, sort_keys=True))
     use_tier_elites = bool(getattr(cfg.head2head, "use_tier_elites", False))
 
     if use_tier_elites:

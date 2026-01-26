@@ -62,6 +62,7 @@ class _ReportArtifacts:
     tiers: dict[str, int]
     h2h_decisions: pd.DataFrame
     h2h_ranking: pd.DataFrame
+    h2h_s_tiers: dict[str, str]
     heterogeneity: dict[str, float]
     run_metadata: dict[str, object]
 
@@ -483,6 +484,27 @@ def _load_h2h_ranking(
     return df[["strategy", "rank"]]
 
 
+def _load_h2h_s_tiers(
+    analysis_dir: Path, *, layout: StageLayout | None = None
+) -> dict[str, str]:
+    """Load head-to-head S-tier buckets from post-H2H artifacts."""
+    path = _post_h2h_path(analysis_dir, "h2h_s_tiers.json", layout=layout)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    result: dict[str, str] = {}
+    for key, value in payload.items():
+        if not isinstance(value, str):
+            continue
+        result[str(key)] = value
+    return result
+
+
 def _load_meta_json(cfg: AnalysisConfig | AppConfig, players: int) -> dict[str, float]:
     """Load heterogeneity metrics from the meta-analysis JSON payload."""
 
@@ -529,6 +551,7 @@ def _gather_artifacts(cfg: AnalysisConfig | AppConfig, players: int) -> _ReportA
     tiers = _load_tiers(analysis_dir, players, layout=layout)
     h2h_decisions = _load_h2h_decisions(analysis_dir, players, layout=layout)
     h2h_ranking = _load_h2h_ranking(analysis_dir, players, layout=layout)
+    h2h_s_tiers = _load_h2h_s_tiers(analysis_dir, layout=layout)
     heterogeneity = _load_meta_json(cfg, players)
     run_metadata = _load_run_metadata(analysis_dir)
     return _ReportArtifacts(
@@ -539,6 +562,7 @@ def _gather_artifacts(cfg: AnalysisConfig | AppConfig, players: int) -> _ReportA
         tiers=tiers,
         h2h_decisions=h2h_decisions,
         h2h_ranking=h2h_ranking,
+        h2h_s_tiers=h2h_s_tiers,
         heterogeneity=heterogeneity,
         run_metadata=run_metadata,
     )
@@ -662,6 +686,7 @@ def plot_h2h_heatmap_for_players(
         tiers=_load_tiers(analysis_dir, players, layout=layout),
         h2h_decisions=decisions,
         h2h_ranking=_load_h2h_ranking(analysis_dir, players, layout=layout),
+        h2h_s_tiers=_load_h2h_s_tiers(analysis_dir, layout=layout),
         heterogeneity={},
         run_metadata={},
     )
@@ -935,6 +960,23 @@ def _tiers_section(tiers: Mapping[str, Sequence[str]]) -> str:
     return "\n".join(lines)
 
 
+def _s_tiers_section(s_tiers: Mapping[str, str]) -> list[str]:
+    """Render the S+/S/S- breakdown for head-to-head candidates."""
+    if not s_tiers:
+        return []
+    buckets = {"S+": [], "S": [], "S-": []}
+    for strategy, label in s_tiers.items():
+        if label in buckets:
+            buckets[label].append(strategy)
+    lines = ["### Head-to-head S-tier breakdown"]
+    for label in ("S+", "S", "S-"):
+        strategies = sorted(buckets[label])
+        if not strategies:
+            continue
+        lines.append(f"- {label}: {', '.join(strategies)}")
+    return lines
+
+
 def _build_report_body(
     players: int, artifacts: _ReportArtifacts, plot_paths: dict[str, Path | None]
 ) -> str:
@@ -945,6 +987,7 @@ def _build_report_body(
     seed_df = artifacts.seed_summaries
     heterogeneity = artifacts.heterogeneity
     run_meta = artifacts.run_metadata
+    s_tiers = artifacts.h2h_s_tiers
     tier_ranking = _ranked_strategies_for_tiers(artifacts)
     tier_buckets = _tier_buckets_from_ranked(tier_ranking)
 
@@ -1045,6 +1088,9 @@ def _build_report_body(
         "## Tiers and rankings",
         _tiers_section(tier_buckets),
     ]
+    s_tier_lines = _s_tiers_section(s_tiers)
+    if s_tier_lines:
+        report_lines.extend(["", *s_tier_lines])
     if hetero_lines:
         report_lines.extend(["", "### Meta-analysis metrics", *hetero_lines])
     return "\n".join(report_lines).rstrip() + "\n"
@@ -1083,6 +1129,9 @@ def generate_report_for_players(
     )
     if h2h_ranking_path.exists():
         inputs.append(h2h_ranking_path)
+    h2h_s_tiers_path = _post_h2h_path(analysis_dir, "h2h_s_tiers.json", layout=layout)
+    if h2h_s_tiers_path.exists():
+        inputs.append(h2h_s_tiers_path)
     if _output_is_fresh(report_path, inputs, force=force):
         return report_path
 
