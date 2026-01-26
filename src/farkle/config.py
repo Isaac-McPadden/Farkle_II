@@ -166,6 +166,8 @@ class AnalysisConfig:
     """Victory-margin thresholds used by game stats and rare-event summaries."""
     rare_event_target_score: int = 10_000
     """Score threshold used to flag games where multiple players crossed the target."""
+    rare_event_write_details: bool = False
+    """Write per-game rare-event rows to a separate details parquet."""
     rare_event_margin_quantile: float | None = None
     """Optional quantile for margin-of-victory rare-event thresholds."""
     rare_event_target_rate: float | None = None
