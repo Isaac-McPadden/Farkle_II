@@ -19,7 +19,7 @@ import logging
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Mapping, MutableMapping, SupportsFloat, cast
+from typing import Iterable, Mapping, Sequence, SupportsFloat, cast
 
 import matplotlib
 
@@ -43,6 +43,8 @@ LADDER_TOP_N = 25
 FEATURE_TOP_N = 20
 SEED_TOP_N = 10
 PLOT_DPI = 150
+TIER_LABELS = ("S", "A", "B", "C", "D", "F")
+TIER_BUCKET_SIZES = (100, 200, 400, 800, 1600)
 
 
 class ReportError(RuntimeError):
@@ -891,18 +893,45 @@ def _seed_stability_summary(seed_df: pd.DataFrame) -> str:
     return f"Results appear {level} across {seeds} seeds (median σ≈{median_std:.3f})."
 
 
-def _tiers_section(tiers: Mapping[str, int]) -> str:
+def _tier_buckets_from_ranked(ranked: Sequence[str]) -> dict[str, list[str]]:
+    """Bucket ordered strategies into fixed-size tier labels."""
+    if not ranked:
+        return {}
+    seen: set[str] = set()
+    unique_ranked: list[str] = []
+    for strategy in ranked:
+        if strategy in seen:
+            continue
+        seen.add(strategy)
+        unique_ranked.append(strategy)
+    buckets: dict[str, list[str]] = {}
+    start = 0
+    for label, size in zip(TIER_LABELS[:-1], TIER_BUCKET_SIZES, strict=False):
+        end = min(len(unique_ranked), start + size)
+        buckets[label] = unique_ranked[start:end]
+        start = end
+    buckets[TIER_LABELS[-1]] = unique_ranked[start:]
+    return {label: members for label, members in buckets.items() if members}
+
+
+def _ranked_strategies_for_tiers(artifacts: _ReportArtifacts) -> list[str]:
+    """Select the ranking source used for tier list rendering."""
+    if not artifacts.h2h_ranking.empty:
+        return artifacts.h2h_ranking["strategy"].tolist()
+    return artifacts.ratings["strategy"].tolist()
+
+
+def _tiers_section(tiers: Mapping[str, Sequence[str]]) -> str:
     """Render tier membership as Markdown bullet lines."""
     if not tiers:
         return "No tier information available."
-    tiers_by_rank: MutableMapping[int, list[str]] = {}
-    for strategy, tier in tiers.items():
-        tiers_by_rank.setdefault(int(tier), []).append(strategy)
     lines = []
-    for tier, strategies in sorted(tiers_by_rank.items()):
-        strategies = sorted(strategies)
+    for label in TIER_LABELS:
+        strategies = tiers.get(label, [])
+        if not strategies:
+            continue
         joined = ", ".join(strategies)
-        lines.append(f"- Tier {tier}: {joined}")
+        lines.append(f"- {label}: {joined}")
     return "\n".join(lines)
 
 
@@ -914,9 +943,10 @@ def _build_report_body(
     meta_summary = artifacts.meta_summary
     features = artifacts.feature_importance
     seed_df = artifacts.seed_summaries
-    tiers = artifacts.tiers
     heterogeneity = artifacts.heterogeneity
     run_meta = artifacts.run_metadata
+    tier_ranking = _ranked_strategies_for_tiers(artifacts)
+    tier_buckets = _tier_buckets_from_ranked(tier_ranking)
 
     n_strategies = len(ratings)
     n_seeds = (
@@ -925,10 +955,7 @@ def _build_report_body(
         else seed_df["seed"].nunique()
     )
     n_seeds = int(n_seeds) if n_seeds else max(1, seed_df["seed"].nunique())
-    top_tier = 0
-    if tiers:
-        min_tier = min(tiers.values())
-        top_tier = sum(1 for value in tiers.values() if value == min_tier)
+    top_tier = len(tier_buckets.get("S", [])) if tier_buckets else 0
 
     meta_line = [
         f"- config_hash: {run_meta.get('config_hash', 'unknown')}",
@@ -1016,7 +1043,7 @@ def _build_report_body(
         stability_line,
         "",
         "## Tiers and rankings",
-        _tiers_section(tiers),
+        _tiers_section(tier_buckets),
     ]
     if hetero_lines:
         report_lines.extend(["", "### Meta-analysis metrics", *hetero_lines])
@@ -1051,6 +1078,11 @@ def generate_report_for_players(
         _ratings_path(analysis_dir, layout=layout),
         analysis_dir / f"strategy_summary_{players}p_meta.parquet",
     ]
+    h2h_ranking_path = _post_h2h_path(
+        analysis_dir, "h2h_significant_ranking.csv", layout=layout
+    )
+    if h2h_ranking_path.exists():
+        inputs.append(h2h_ranking_path)
     if _output_is_fresh(report_path, inputs, force=force):
         return report_path
 
