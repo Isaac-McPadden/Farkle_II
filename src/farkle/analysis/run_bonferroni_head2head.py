@@ -77,11 +77,12 @@ def _load_top_strategies(
     metrics_path: Path,
     ratings_limit: int = 100,
     metrics_limit: int = 100,
-) -> list[str]:
-    """Collect fallback strategies from pooled ratings and metrics tables.
+) -> tuple[list[str], dict[str, Any]]:
+    """Collect top strategies from pooled ratings and metrics tables.
 
     Strategies are sorted by their respective performance indicators and trimmed to
-    the provided limits before being combined into a de-duplicated list.
+    the provided limits before being combined into a de-duplicated list. Ordering is
+    stable: ratings-first followed by metrics entries not already present.
     """
 
     def _sorted_from_parquet(path: Path, sort_col: str, limit: int, label: str) -> list[str]:
@@ -132,15 +133,24 @@ def _load_top_strategies(
                 seen.add(strategy)
 
     LOGGER.info(
-        "Fallback strategy selection prepared",
+        "Top-strategy union prepared",
         extra={
             "stage": "head2head",
             "ratings_count": len(top_by_rating),
             "metrics_count": len(top_by_win_rate),
             "combined_count": len(combined),
+            "ratings_path": str(ratings_path),
+            "metrics_path": str(metrics_path),
         },
     )
-    return combined
+    info = {
+        "ratings_count": len(top_by_rating),
+        "metrics_count": len(top_by_win_rate),
+        "combined_count": len(combined),
+        "ratings_path": str(ratings_path),
+        "metrics_path": str(metrics_path),
+    }
+    return combined, info
 
 
 def _count_pair_wins(
@@ -265,7 +275,7 @@ def run_bonferroni_head2head(
     if not tiers:
         raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())
-    elites = [str(s) for s, t in tiers.items() if t == top_val]
+    tier_elites = [str(s) for s, t in tiers.items() if t == top_val]
     ratings_path = cfg.trueskill_pooled_dir / "ratings_pooled.parquet"
     if not ratings_path.exists():
         fallback = cfg.trueskill_stage_dir / "ratings_pooled.parquet"
@@ -276,36 +286,54 @@ def run_bonferroni_head2head(
             )
             ratings_path = fallback
     metrics_path = cfg.metrics_input_path("metrics.parquet")
-    if len(elites) < 2:
-        fallback_strategies = _load_top_strategies(
-            ratings_path=ratings_path,
-            metrics_path=metrics_path,
+    union_strategies, union_info = _load_top_strategies(
+        ratings_path=ratings_path,
+        metrics_path=metrics_path,
+    )
+    use_tier_elites = bool(getattr(cfg.head2head, "use_tier_elites", False))
+
+    if use_tier_elites:
+        elites = list(tier_elites)
+        fallback_strategies = union_strategies
+        selection_source = "tiers"
+    else:
+        elites = list(union_strategies)
+        fallback_strategies = tier_elites
+        selection_source = "union"
+
+    if len(elites) < 2 and fallback_strategies:
+        combined: list[str] = []
+        seen: set[str] = set()
+        for name in (*elites, *fallback_strategies):
+            if name not in seen:
+                combined.append(name)
+                seen.add(name)
+        elites = combined
+        selection_source = f"{selection_source}+fallback"
+        LOGGER.info(
+            "Elite selection expanded with fallback strategies",
+            extra={
+                "stage": "head2head",
+                "elite_count": len(elites),
+                "tiers_path": str(tiers_path),
+                "ratings_path": union_info["ratings_path"],
+                "metrics_path": union_info["metrics_path"],
+            },
         )
-        if fallback_strategies:
-            combined: list[str] = []
-            seen: set[str] = set()
-            for name in (*elites, *fallback_strategies):
-                if name not in seen:
-                    combined.append(name)
-                    seen.add(name)
-            elites = combined
-            LOGGER.info(
-                "Elite tier too small; using fallback strategy union",
-                extra={
-                    "stage": "head2head",
-                    "elite_count": len(elites),
-                    "tiers_path": str(tiers_path),
-                    "ratings_path": str(ratings_path),
-                    "metrics_path": str(metrics_path),
-                },
-            )
     LOGGER.info(
         "Loaded elite strategies",
         extra={
             "stage": "head2head",
-            "path": str(tiers_path),
+            "selection_source": selection_source,
+            "tiers_path": str(tiers_path),
+            "tier_elite_count": len(tier_elites),
             "strategies": len(tiers),
             "elite_count": len(elites),
+            "ratings_count": union_info["ratings_count"],
+            "metrics_count": union_info["metrics_count"],
+            "union_count": union_info["combined_count"],
+            "ratings_path": union_info["ratings_path"],
+            "metrics_path": union_info["metrics_path"],
         },
     )
     design_kwargs = dict(design or {})
