@@ -77,7 +77,7 @@ on stable slot names in manifests and notebooks.
 | --- | --- |
 | Large tabular outputs (raw games, per-strategy metrics, ratings) | Parquet with snappy compression for columnar analytics【F:src/farkle/analysis/combine.py†L30-L124】【F:src/farkle/analysis/metrics.py†L247-L256】 |
 | Small tabular or human-facing summaries | CSV, optionally mirrored to Parquet for programmatic parity (e.g., seat advantage)【F:src/farkle/analysis/metrics.py†L236-L245】 |
-| Append-only logs / indexes | NDJSON manifests written via `farkle.utils.manifest` (already used for shards and streaming writers)【F:src/farkle/simulation/run_tournament.py†L283-L305】【F:src/farkle/analysis/ingest.py†L247-L269】【F:src/farkle/utils/manifest.py†L1-L111】 |
+| Append-only logs / indexes | NDJSON manifests written via `farkle.utils.manifest` (already used for shards and streaming writers). Consumers should resolve each manifest entry by joining the manifest directory with the stored `path` (e.g., `os.path.join(manifest_dir, entry["path"])`) so that relative entries remain stable across runs【F:src/farkle/simulation/run_tournament.py†L283-L305】【F:src/farkle/analysis/ingest.py†L247-L269】【F:src/farkle/utils/manifest.py†L1-L111】 |
 | Checkpoints for resumability | Pickle or JSON depending on payload (retain `_checkpoint.pkl`, `ratings_*.ckpt.json`, etc.) but treat them as transient, not the published dataset【F:src/farkle/simulation/run_tournament.py†L331-L345】【F:src/farkle/analysis/run_trueskill.py†L575-L650】 |
 
 ## Recent updates

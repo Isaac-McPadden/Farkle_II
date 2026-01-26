@@ -6,6 +6,7 @@ while recording manifest metadata.
 """
 from __future__ import annotations
 
+import logging
 import os
 import queue
 from typing import Any, Callable, Dict, Iterable
@@ -15,6 +16,8 @@ import pyarrow as pa
 from .manifest import append_manifest_line
 from .types import Compression
 from .writer import ParquetShardWriter
+
+LOGGER = logging.getLogger(__name__)
 
 
 def run_streaming_shard(
@@ -39,12 +42,28 @@ def run_streaming_shard(
     manifest_dir = os.path.abspath(manifest_dir) if manifest_dir else os.path.abspath(os.curdir)
 
     try:
-        rel_path = os.path.relpath(out_path)
+        rel_path = os.path.relpath(out_path, start=manifest_dir)
     except ValueError:
-        try:
-            rel_path = os.path.relpath(out_path, start=manifest_dir)
-        except ValueError:
+        rel_path = os.path.abspath(out_path)
+
+    rel_norm = os.path.normpath(rel_path)
+    rel_is_outside = os.path.isabs(rel_path) or rel_norm == os.pardir or rel_norm.startswith(
+        os.pardir + os.sep
+    )
+    resolved_path = rel_path if os.path.isabs(rel_path) else os.path.join(manifest_dir, rel_path)
+    resolved_exists = os.path.exists(resolved_path)
+    if rel_is_outside or not resolved_exists:
+        LOGGER.error(
+            "Manifest path %s is invalid relative to %s (exists=%s).",
+            rel_path,
+            manifest_dir,
+            resolved_exists,
+        )
+        if os.path.exists(out_path):
             rel_path = os.path.abspath(out_path)
+        else:
+            LOGGER.error("Skipping manifest append because output path %s is missing.", out_path)
+            return
 
     append_manifest_line(
         manifest_path,
