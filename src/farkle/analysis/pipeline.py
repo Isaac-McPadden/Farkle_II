@@ -194,6 +194,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Override the target score used to flag rare-event summaries",
     )
     parser.add_argument(
+        "--rare-event-margin-quantile",
+        type=float,
+        help="Quantile for deriving the rare-event margin threshold",
+    )
+    parser.add_argument(
+        "--rare-event-target-rate",
+        type=float,
+        help="Target rate for multi-target rare-event thresholds",
+    )
+    parser.add_argument(
         "--rng-lags",
         dest="rng_lags",
         type=int,
@@ -237,6 +247,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         app_cfg.analysis.game_stats_margin_thresholds = tuple(args.margin_thresholds)
     if args.rare_event_target is not None:
         app_cfg.analysis.rare_event_target_score = int(args.rare_event_target)
+    if args.rare_event_margin_quantile is not None:
+        app_cfg.analysis.rare_event_margin_quantile = float(args.rare_event_margin_quantile)
+    if args.rare_event_target_rate is not None:
+        app_cfg.analysis.rare_event_target_rate = float(args.rare_event_target_rate)
     rng_lags = (
         tuple(sorted({int(lag) for lag in args.rng_lags})) if args.rng_lags else None
     )

@@ -136,6 +136,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Target score for multi-player reach flags (default: 10000)",
     )
+    metrics_parser.add_argument(
+        "--rare-event-margin-quantile",
+        type=float,
+        help="Quantile to derive the rare-event margin threshold (e.g., 0.001)",
+    )
+    metrics_parser.add_argument(
+        "--rare-event-target-rate",
+        type=float,
+        help="Target rate for multi-target rare events (e.g., 1e-4)",
+    )
 
     variance_parser = analyze_sub.add_parser(
         "variance", help="Compute cross-seed win-rate variance"
@@ -176,6 +186,16 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Target score for multi-player reach flags (default: 10000)",
     )
+    preprocess_parser.add_argument(
+        "--rare-event-margin-quantile",
+        type=float,
+        help="Quantile to derive the rare-event margin threshold (e.g., 0.001)",
+    )
+    preprocess_parser.add_argument(
+        "--rare-event-target-rate",
+        type=float,
+        help="Target rate for multi-target rare events (e.g., 1e-4)",
+    )
 
     pipeline_parser = analyze_sub.add_parser(
         "pipeline", help="Run ingest->curate->combine->metrics->analytics pipeline"
@@ -206,6 +226,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--rare-event-target",
         type=int,
         help="Target score for multi-player reach flags (default: 10000)",
+    )
+    pipeline_parser.add_argument(
+        "--rare-event-margin-quantile",
+        type=float,
+        help="Quantile to derive the rare-event margin threshold (e.g., 0.001)",
+    )
+    pipeline_parser.add_argument(
+        "--rare-event-target-rate",
+        type=float,
+        help="Target rate for multi-target rare events (e.g., 1e-4)",
     )
     analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
     two_seed_parser = analyze_sub.add_parser(
@@ -368,6 +398,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         rare_event_target = getattr(args, "rare_event_target", None)
         if rare_event_target is not None:
             cfg.analysis.rare_event_target_score = int(rare_event_target)
+        rare_event_margin_quantile = getattr(args, "rare_event_margin_quantile", None)
+        if rare_event_margin_quantile is not None:
+            cfg.analysis.rare_event_margin_quantile = float(rare_event_margin_quantile)
+        rare_event_target_rate = getattr(args, "rare_event_target_rate", None)
+        if rare_event_target_rate is not None:
+            cfg.analysis.rare_event_target_rate = float(rare_event_target_rate)
         rng_lags_arg = getattr(args, "rng_lags", None)
         if rng_lags_arg:
             rng_lags = tuple(sorted({int(lag) for lag in rng_lags_arg}))
