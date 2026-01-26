@@ -16,8 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from farkle.config import AppConfig, IOConfig
-from farkle.orchestration.seed_utils import split_seeded_results_dir
+from farkle.config import AppConfig, IOConfig, load_app_config
+from farkle.orchestration.seed_utils import prepare_seed_config, split_seeded_results_dir
 from farkle.utils.writer import atomic_path
 
 __all__ = [
@@ -113,12 +113,14 @@ def _first_existing(paths: list[Path]) -> Path:
 def _config_for_results_dir(exp_dir: Path) -> AppConfig:
     exp_dir = Path(exp_dir)
     base_dir, seed = split_seeded_results_dir(exp_dir)
-    if not base_dir.is_absolute() and base_dir.parts and base_dir.parts[0] == "data":
-        base_dir = Path(*base_dir.parts[1:])
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=base_dir))
-    if seed is not None:
-        cfg.sim.seed = seed
-    return cfg
+    active_config = exp_dir / "active_config.yaml"
+    if active_config.exists():
+        cfg = load_app_config(active_config)
+    else:
+        cfg = AppConfig(io=IOConfig(results_dir_prefix=base_dir))
+    if seed is None:
+        seed = cfg.sim.seed
+    return prepare_seed_config(cfg, seed=seed, base_results_dir=base_dir)
 
 
 def analyze_trueskill(exp_dir: Path) -> None:

@@ -87,6 +87,7 @@ def run_pipeline(
             base_results_dir=seed_pair_seed_root(cfg, seed_pair, seed),
             meta_analysis_dir=meta_dir,
         )
+        active_config_path = seed_cfg.results_root / "active_config.yaml"
 
         append_manifest_line(
             manifest_path,
@@ -94,10 +95,20 @@ def run_pipeline(
                 "event": "seed_start",
                 "seed": seed,
                 "results_dir": str(seed_cfg.results_root),
+                "active_config": str(active_config_path),
             },
         )
 
         write_active_config(seed_cfg)
+        LOGGER.info(
+            "Using resolved config",
+            extra={
+                "stage": "orchestration",
+                "seed": seed,
+                "results_dir": str(seed_cfg.results_root),
+                "active_config": str(active_config_path),
+            },
+        )
 
         if not force and seed_has_completion_markers(seed_cfg):
             LOGGER.info(
@@ -188,6 +199,7 @@ def run_pipeline(
             "event": "interseed_start",
             "seed": interseed_seed,
             "results_dir": str(interseed_cfg.results_root),
+            "active_config": str(interseed_cfg.results_root / "active_config.yaml"),
         },
     )
     analysis.run_interseed_analysis(interseed_cfg, force=force)
