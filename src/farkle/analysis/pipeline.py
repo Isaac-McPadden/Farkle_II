@@ -255,6 +255,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         tuple(sorted({int(lag) for lag in args.rng_lags})) if args.rng_lags else None
     )
 
+    if args.run_interseed is not None:
+        app_cfg.analysis.run_interseed = args.run_interseed
     run_rng_diagnostics = (
         app_cfg.analysis.run_rng
         if args.rng_diagnostics is None
@@ -263,8 +265,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     app_cfg.analysis.run_rng = run_rng_diagnostics
     if args.rng_diagnostics is not None:
         app_cfg.analysis.disable_rng_diagnostics = not args.rng_diagnostics
-    if args.run_interseed is not None:
-        app_cfg.analysis.run_interseed = args.run_interseed
+    if not app_cfg.analysis.run_interseed:
+        app_cfg.analysis.run_rng = False
+        app_cfg.analysis.disable_rng_diagnostics = True
 
     for flag, attr in (
         (args.disable_trueskill, "disable_trueskill"),
