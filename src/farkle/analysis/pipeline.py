@@ -158,14 +158,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="rng_diagnostics",
         action="store_true",
         default=None,
-        help="Run the RNG diagnostics stage over curated rows",
+        help="Run the RNG diagnostics stage over curated rows (interseed only)",
     )
     rng_group.add_argument(
         "--no-rng-diagnostics",
         dest="rng_diagnostics",
         action="store_false",
         default=None,
-        help="Skip the RNG diagnostics stage",
+        help="Skip the RNG diagnostics stage (interseed only)",
     )
     interseed_group = parser.add_mutually_exclusive_group()
     interseed_group.add_argument(
@@ -387,9 +387,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         steps = _plan_steps(analytics_keys)
     elif args.command == "metrics":
-        steps = _plan_steps({"metrics", "game_stats", "rng_diagnostics"})
+        metrics_keys = {"metrics", "game_stats"}
+        if app_cfg.analysis.run_interseed:
+            metrics_keys.add("rng_diagnostics")
+        steps = _plan_steps(metrics_keys)
     elif args.command == "combine":
-        steps = _plan_steps({"combine", "rng_diagnostics"})
+        combine_keys = {"combine"}
+        if app_cfg.analysis.run_interseed:
+            combine_keys.add("rng_diagnostics")
+        steps = _plan_steps(combine_keys)
     elif args.command in stage_map:
         steps = _plan_steps({args.command})
     else:  # pragma: no cover - argparse enforces valid choices
