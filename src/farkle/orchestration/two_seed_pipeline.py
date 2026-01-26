@@ -10,6 +10,7 @@ from typing import Sequence
 
 from farkle import analysis
 from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
+from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
@@ -184,6 +185,7 @@ def run_pipeline(
         io=interseed_io,
         analysis=dataclasses.replace(interseed_cfg.analysis, run_interseed=True),
     )
+    interseed_cfg.set_stage_layout(resolve_interseed_stage_layout(interseed_cfg))
 
     LOGGER.info(
         "Running interseed analysis",

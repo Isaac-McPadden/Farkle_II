@@ -12,6 +12,7 @@ __all__ = [
     "StageDefinition",
     "StageLayout",
     "StagePlacement",
+    "resolve_interseed_stage_layout",
     "resolve_stage_layout",
 ]
 
@@ -171,6 +172,42 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     ),
 )
 
+_INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
+    StageDefinition(
+        "variance",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
+    ),
+    StageDefinition(
+        "meta",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
+    ),
+    StageDefinition(
+        "trueskill",
+        group="analytics",
+        disabled_predicate=lambda cfg: (
+            not cfg.analysis.run_interseed
+            or cfg.analysis.disable_trueskill
+            or not cfg.analysis.run_trueskill
+        ),
+    ),
+    StageDefinition(
+        "agreement",
+        group="analytics",
+        disabled_predicate=lambda cfg: (
+            not cfg.analysis.run_interseed
+            or cfg.analysis.disable_agreement
+            or not cfg.analysis.run_agreement
+        ),
+    ),
+    StageDefinition(
+        "interseed",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
+    ),
+)
+
 
 def resolve_stage_layout(
     cfg: AppConfig,
@@ -191,3 +228,9 @@ def resolve_stage_layout(
             )
         )
     return StageLayout(placements=placements)
+
+
+def resolve_interseed_stage_layout(cfg: AppConfig) -> StageLayout:
+    """Resolve a stage layout containing only interseed-relevant stages."""
+
+    return resolve_stage_layout(cfg, registry=_INTERSEED_REGISTRY)
