@@ -236,7 +236,11 @@ def _weighted_means_by_strategy(frame: pd.DataFrame, columns: list[str]) -> pd.D
                 results[_mean_output_name(column)] = float("nan")
         return pd.Series(results)
 
-    return frame.groupby("strategy_id", sort=True).apply(weighted_means)
+    working_frame = frame[["strategy_id", "games", *columns]]
+    return working_frame.groupby("strategy_id", sort=True).apply(
+        weighted_means,
+        include_groups=False,
+    )
 
 
 def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
