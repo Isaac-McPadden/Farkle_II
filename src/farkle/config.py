@@ -1044,7 +1044,14 @@ def load_app_config(*overlays: Path) -> AppConfig:
     def build(cls, section: Mapping[str, Any]) -> Any:
         """Instantiate a dataclass ``cls`` from a mapping of attributes."""
         obj = cls()
-        type_hints = get_type_hints(cls)
+        typing_ns = globals().copy()
+        if "StageLayout" not in typing_ns:
+            try:
+                from farkle.analysis.stage_registry import StageLayout
+            except ImportError:
+                StageLayout = None  # type: ignore[assignment]
+            typing_ns["StageLayout"] = StageLayout
+        type_hints = get_type_hints(cls, globalns=typing_ns)
         for f in dataclasses.fields(cls):
             if f.name not in section:
                 continue
