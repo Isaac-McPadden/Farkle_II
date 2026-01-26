@@ -98,24 +98,32 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "game_stats",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_game_stats,
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_game_stats or not cfg.analysis.run_game_stats
+        ),
     ),
     StageDefinition(
         "rng_diagnostics",
         group="analytics",
         folder_stub="rng",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_rng_diagnostics,
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_rng_diagnostics or not cfg.analysis.run_rng
+        ),
     ),
     StageDefinition("seed_summaries", group="analytics"),
     StageDefinition(
         "tiering",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_tiering,
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_tiering or not cfg.analysis.run_frequentist
+        ),
     ),
     StageDefinition(
         "head2head",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_head2head,
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_head2head or not cfg.analysis.run_head2head
+        ),
     ),
     StageDefinition(
         "post_h2h",
@@ -125,7 +133,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "hgb",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_hgb,
+        disabled_predicate=lambda cfg: cfg.analysis.disable_hgb or not cfg.analysis.run_hgb,
     ),
     StageDefinition(
         "variance",
@@ -148,7 +156,9 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         "agreement",
         group="analytics",
         disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_agreement or not cfg.analysis.run_interseed
+            cfg.analysis.disable_agreement
+            or not cfg.analysis.run_agreement
+            or not cfg.analysis.run_interseed
         ),
     ),
     StageDefinition(

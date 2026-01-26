@@ -115,15 +115,15 @@ class AnalysisConfig:
 
     run_trueskill: bool = True
     run_head2head: bool = True
-    run_rng: bool = False
+    run_rng: bool = True
     run_game_stats: bool = True
     run_hgb: bool = True
-    run_frequentist: bool = False
+    run_frequentist: bool = True
     """Plan step 6: frequentist / MDD-based tiering (tiering_report)."""
-    run_post_h2h_analysis: bool = False
+    run_post_h2h_analysis: bool = True
     """Execute the post head-to-head clean-up pass (plan step 5)."""
 
-    run_agreement: bool = False
+    run_agreement: bool = True
     """Generate the agreement analysis between model outputs (plan step 8)."""
 
     agreement_strategies: tuple[str, ...] | None = None
@@ -983,6 +983,14 @@ def load_app_config(*overlays: Path) -> AppConfig:
         if "run_rng" in analysis_section:
             analysis_section.setdefault(
                 "disable_rng_diagnostics", not bool(analysis_section["run_rng"])
+            )
+        if "run_frequentist" in analysis_section:
+            analysis_section.setdefault(
+                "disable_tiering", not bool(analysis_section["run_frequentist"])
+            )
+        if "run_agreement" in analysis_section:
+            analysis_section.setdefault(
+                "disable_agreement", not bool(analysis_section["run_agreement"])
             )
 
     def build(cls, section: Mapping[str, Any]) -> Any:
