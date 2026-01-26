@@ -33,6 +33,7 @@ class IOConfig:
     analysis_subdir: str = "analysis"
     meta_analysis_dir: Path | None = None
     interseed_input_dir: Path | None = None
+    interseed_input_layout: "StageLayout | Mapping[str, str] | None" = None
 
 
 @dataclass
@@ -525,7 +526,13 @@ class AppConfig:
             rel = stage_dir.relative_to(self.analysis_dir)
         except ValueError:
             return input_root / filename
-        return input_root / rel / filename
+        if not rel.parts:
+            return input_root / filename
+        stage_key = self._stage_key_for_folder(rel.parts[0])
+        input_folder = self._interseed_input_folder(stage_key) if stage_key else None
+        if input_folder is None:
+            return input_root / rel / filename
+        return input_root / Path(input_folder, *rel.parts[1:]) / filename
 
     def _input_stage_path(self, key: str, *parts: str | Path) -> Path | None:
         """Return a stage path rooted at ``interseed_input_dir`` without creating it."""
@@ -533,8 +540,35 @@ class AppConfig:
         input_root = self.interseed_input_dir
         if input_root is None:
             return None
-        stage_folder = self.stage_layout.require_folder(key)
+        stage_folder = self._interseed_input_folder(key)
+        if stage_folder is None:
+            stage_folder = self.stage_layout.require_folder(key)
         return input_root / stage_folder / Path(*parts)
+
+    def _interseed_input_folder(self, key: str | None) -> str | None:
+        """Return the input-layout folder name for a stage key, when configured."""
+
+        if key is None:
+            return None
+        layout = self.io.interseed_input_layout
+        if layout is None:
+            return None
+        if isinstance(layout, Mapping):
+            folder = layout.get(key)
+            return str(folder) if folder is not None else None
+        from farkle.analysis.stage_registry import StageLayout
+
+        if isinstance(layout, StageLayout):
+            return layout.folder_for(key)
+        return None
+
+    def _stage_key_for_folder(self, folder: str) -> str | None:
+        """Return the stage key for a numbered folder in the current layout."""
+
+        for placement in self.stage_layout.placements:
+            if placement.folder_name == folder:
+                return placement.definition.key
+        return None
 
     @property
     def data_dir(self) -> Path:
@@ -669,6 +703,11 @@ class AppConfig:
         preferred = self.meta_per_k_dir(players) / name
         if preferred.exists():
             return preferred
+        interseed_root = self._input_stage_path("meta", f"{players}p")
+        if interseed_root is not None:
+            interseed_path = interseed_root / name
+            if interseed_path.exists():
+                return interseed_path
 
         for legacy_dir in (self.meta_pooled_dir, self.analysis_dir):
             legacy_path = legacy_dir / name
