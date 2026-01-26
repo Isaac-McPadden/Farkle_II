@@ -20,6 +20,7 @@ import pyarrow as pa
 from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
+from farkle.simulation.strategies import coerce_strategy_ids
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.stats import wilson_ci
 
@@ -156,7 +157,12 @@ def _load_metrics_frame(cfg: AppConfig) -> tuple[pd.DataFrame, Path]:
         raise ValueError("metrics parquet contains null seed values")
 
     df.rename(columns={"strategy": "strategy_id", "n_players": "players"}, inplace=True)
-    df["strategy_id"] = df["strategy_id"].astype(str)
+    strategy_ids = coerce_strategy_ids(df["strategy_id"])
+    numeric_ids = pd.to_numeric(strategy_ids, errors="coerce")
+    if numeric_ids.isna().any():
+        sample = strategy_ids[numeric_ids.isna()].iloc[0]
+        raise ValueError(f"metrics parquet contains non-numeric strategy_id: {sample!r}")
+    df["strategy_id"] = numeric_ids.astype("Int64")
     df["players"] = df["players"].astype(int)
     df["seed"] = df["seed"].astype(int)
     df["games"] = df["games"].fillna(0).astype(int)
@@ -236,8 +242,7 @@ def _weighted_means_by_strategy(frame: pd.DataFrame, columns: list[str]) -> pd.D
 def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Enforce deterministic types and ordering for summary comparison."""
     normalized = df.copy()
-    normalized["strategy_id"] = normalized["strategy_id"].astype(str)
-    for col in ("players", "seed", "games", "wins"):
+    for col in ("strategy_id", "players", "seed", "games", "wins"):
         normalized[col] = _cast_int32_if_safe(normalized[col])
     for col in ("win_rate", "ci_lo", "ci_hi"):
         normalized[col] = normalized[col].astype(float)
