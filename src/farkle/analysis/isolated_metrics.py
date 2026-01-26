@@ -503,7 +503,7 @@ def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: i
     return df[desired_order + remaining]
 
 
-_STRATEGY_CACHE: dict[int, list[str]] = {}
+_STRATEGY_CACHE: dict[int, list[int]] = {}
 
 
 def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
@@ -519,7 +519,7 @@ def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
     """
     cache_key = id(cfg)
     if cache_key not in _STRATEGY_CACHE:
-        strategies, _ = generate_strategy_grid(
+        _, meta = generate_strategy_grid(
             score_thresholds=cfg.sim.score_thresholds,
             dice_thresholds=cfg.sim.dice_thresholds,
             smart_five_opts=cfg.sim.smart_five_opts,
@@ -529,8 +529,10 @@ def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
             auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
             run_up_score_opts=cfg.sim.run_up_score_opts,
         )
-        _STRATEGY_CACHE[cache_key] = [str(s) for s in strategies]
-    strategy_index = pd.Index(_STRATEGY_CACHE[cache_key], name="strategy")
+        _STRATEGY_CACHE[cache_key] = (
+            meta["strategy_id"].astype("int64").to_list()
+        )
+    strategy_index = pd.Index(_STRATEGY_CACHE[cache_key], name="strategy", dtype="int64")
     return df.reindex(strategy_index)
 
 

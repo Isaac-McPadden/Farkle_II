@@ -82,7 +82,7 @@ def run(cfg: AppConfig) -> None:
 
     players = _unique_players(metrics_path, cfg.sim.n_players_list)
     importance_paths = [cfg.hgb_per_k_dir(p) / _hgb.IMPORTANCE_TEMPLATE.format(players=p) for p in players]
-    manifest_path = cfg.strategy_manifest_path(players[0]) if players else None
+    manifest_path = cfg.strategy_manifest_root_path() if players else None
 
     inputs = [cfg.curated_parquet, metrics_path, ratings_path]
     latest_input = _latest_mtime(inputs)

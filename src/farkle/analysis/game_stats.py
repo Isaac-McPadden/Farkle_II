@@ -30,6 +30,7 @@ n_players)`` summaries. Margin schema:
 from __future__ import annotations
 
 import logging
+import math
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import Any, TypeAlias
@@ -69,10 +70,12 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     game_length_output = cfg.game_stats_output_path("game_length.parquet")
     margin_output = cfg.game_stats_output_path("margin_stats.parquet")
     rare_events_output = cfg.game_stats_output_path("rare_events.parquet")
+    rare_events_details_output = cfg.game_stats_output_path("rare_events_details.parquet")
     stamp_path = stage_done_path(stage_dir, "game_stats")
     game_length_stamp = stage_done_path(stage_dir, "game_stats.game_length")
     margin_stamp = stage_done_path(stage_dir, "game_stats.margin")
-    rare_events_stamp = stage_done_path(stage_dir, "game_stats.rare_events")
+    rare_events_summary_stamp = stage_done_path(stage_dir, "game_stats.rare_events_summary")
+    rare_events_details_stamp = stage_done_path(stage_dir, "game_stats.rare_events_details")
 
     per_n_inputs = _discover_per_n_inputs(cfg)
     combined_path = cfg.curated_parquet
@@ -84,7 +87,10 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         stage_log.missing_input("no curated parquet files found", analysis_dir=str(cfg.analysis_dir))
         return
 
+    write_details = cfg.analysis.rare_event_write_details
     outputs = [game_length_output, margin_output, rare_events_output]
+    if write_details:
+        outputs.append(rare_events_details_output)
     game_length_up_to_date = not force and stage_is_up_to_date(
         game_length_stamp,
         inputs=input_paths,
@@ -97,14 +103,27 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         outputs=[margin_output],
         config_sha=cfg.config_sha,
     )
-    rare_events_up_to_date = not force and stage_is_up_to_date(
-        rare_events_stamp,
+    rare_events_summary_up_to_date = not force and stage_is_up_to_date(
+        rare_events_summary_stamp,
         inputs=input_paths,
         outputs=[rare_events_output],
         config_sha=cfg.config_sha,
     )
+    rare_events_details_up_to_date = True
+    if write_details:
+        rare_events_details_up_to_date = not force and stage_is_up_to_date(
+            rare_events_details_stamp,
+            inputs=input_paths,
+            outputs=[rare_events_details_output],
+            config_sha=cfg.config_sha,
+        )
 
-    if game_length_up_to_date and margin_up_to_date and rare_events_up_to_date:
+    if (
+        game_length_up_to_date
+        and margin_up_to_date
+        and rare_events_summary_up_to_date
+        and rare_events_details_up_to_date
+    ):
         LOGGER.info(
             "Game-length stats up-to-date",
             extra={
@@ -166,22 +185,48 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             config_sha=cfg.config_sha,
         )
 
-    if not rare_events_up_to_date:
-        rare_event_rows = _rare_event_flags(
+    if not (rare_events_summary_up_to_date and rare_events_details_up_to_date):
+        resolved_thresholds, resolved_target_score = _resolve_rare_event_thresholds(
             per_n_inputs,
             thresholds=cfg.game_stats_margin_thresholds,
             target_score=cfg.rare_event_target_score,
-            output_path=rare_events_output,
-            codec=cfg.parquet_codec,
+            margin_quantile=cfg.analysis.rare_event_margin_quantile,
+            target_rate=cfg.analysis.rare_event_target_rate,
         )
-        if rare_event_rows == 0:
-            raise RuntimeError("game-stats: no rare events available to summarize")
-        write_stage_done(
-            rare_events_stamp,
-            inputs=input_paths,
-            outputs=[rare_events_output],
-            config_sha=cfg.config_sha,
-        )
+
+        if not rare_events_summary_up_to_date:
+            rare_event_rows = _rare_event_summary(
+                per_n_inputs,
+                thresholds=resolved_thresholds,
+                target_score=resolved_target_score,
+                output_path=rare_events_output,
+                codec=cfg.parquet_codec,
+            )
+            if rare_event_rows == 0:
+                raise RuntimeError("game-stats: no rare events available to summarize")
+            write_stage_done(
+                rare_events_summary_stamp,
+                inputs=input_paths,
+                outputs=[rare_events_output],
+                config_sha=cfg.config_sha,
+            )
+
+        if write_details and not rare_events_details_up_to_date:
+            rare_event_rows = _rare_event_details(
+                per_n_inputs,
+                thresholds=resolved_thresholds,
+                target_score=resolved_target_score,
+                output_path=rare_events_details_output,
+                codec=cfg.parquet_codec,
+            )
+            if rare_event_rows == 0:
+                raise RuntimeError("game-stats: no rare events available to detail")
+            write_stage_done(
+                rare_events_details_stamp,
+                inputs=input_paths,
+                outputs=[rare_events_details_output],
+                config_sha=cfg.config_sha,
+            )
     write_stage_done(
         stamp_path,
         inputs=input_paths,
@@ -459,7 +504,7 @@ def _per_strategy_margin_stats(
     return stats[ordered_cols]
 
 
-def _rare_event_flags(
+def _rare_event_summary(
     per_n_inputs: Sequence[tuple[int, Path]],
     *,
     thresholds: Sequence[int],
@@ -467,7 +512,7 @@ def _rare_event_flags(
     output_path: Path,
     codec: Compression,
 ) -> int:
-    """Compute per-game rare events and aggregate counts."""
+    """Compute aggregated rare-event counts."""
 
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
     column_order = [
@@ -485,13 +530,76 @@ def _rare_event_flags(
         rows_available,
         max_flag_count,
         max_observations,
-    ) = _collect_rare_event_counts(per_n_inputs, thresholds=thresholds, target_score=target_score)
+    ) = _collect_rare_event_counts(
+        per_n_inputs,
+        thresholds=thresholds,
+        target_score=target_score,
+    )
 
     if rows_available == 0:
         return 0
 
     flag_dtype, flag_arrow = _select_int_dtype(max_flag_count)
     obs_dtype, obs_arrow = _select_int_dtype(max_observations)
+    fields: list[pa.Field] = [
+        pa.field("summary_level", pa.string()),
+        pa.field("strategy", pa.string()),
+        pa.field("n_players", pa.int32()),
+        pa.field("margin_of_victory", pa.float64()),
+        pa.field("multi_reached_target", flag_arrow),
+        pa.field("observations", obs_arrow),
+        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
+    ]
+    schema = pa.schema(fields)
+    strategy_rows: list[dict[str, object]] = []
+    for (strategy, players), sums in strategy_sums.items():
+        observations = sums["observations"]
+        summary_row: dict[str, object] = {
+            "summary_level": "strategy",
+            "strategy": strategy,
+            "n_players": players,
+            "margin_of_victory": pd.NA,
+            "observations": observations,
+        }
+        for flag in flags:
+            summary_row[flag] = sums[flag]
+        strategy_rows.append(summary_row)
+    strategy_summary = pd.DataFrame(strategy_rows, columns=column_order)
+
+    global_rows: list[dict[str, object]] = []
+    for players, sums in global_sums.items():
+        observations = sums["observations"]
+        summary_row = {
+            "summary_level": "n_players",
+            "strategy": pd.NA,
+            "n_players": players,
+            "margin_of_victory": pd.NA,
+            "observations": observations,
+        }
+        for flag in flags:
+            summary_row[flag] = sums[flag]
+        global_rows.append(summary_row)
+    global_summary = pd.DataFrame(global_rows, columns=column_order)
+
+    summary_df = pd.concat([strategy_summary, global_summary], ignore_index=True)
+    summary_df = _downcast_integer_stats(summary_df, columns=("n_players", "observations", *flags))
+    summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
+    write_parquet_atomic(summary_table, output_path, codec=codec)
+    return summary_table.num_rows
+
+
+def _rare_event_details(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    thresholds: Sequence[int],
+    target_score: int,
+    output_path: Path,
+    codec: Compression,
+) -> int:
+    """Write per-game rare-event rows to a separate parquet."""
+
+    flag_dtype, flag_arrow = _select_int_dtype(1)
+    obs_dtype, obs_arrow = _select_int_dtype(1)
     player_dtype = np.int32
     fields: list[pa.Field] = [
         pa.field("summary_level", pa.string()),
@@ -540,11 +648,16 @@ def _rare_event_flags(
                 flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
                 for thr in thresholds:
                     flag_series[f"margin_le_{thr}"] = margins <= thr
-                base = df[strategy_cols].copy()
-                base["margin_of_victory"] = margins
-                base["multi_reached_target"] = flag_series["multi_reached_target"]
+                any_flag = flag_series["multi_reached_target"].copy()
                 for thr in thresholds:
-                    base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"]
+                    any_flag |= flag_series[f"margin_le_{thr}"]
+                base = df.loc[any_flag, strategy_cols].copy()
+                if base.empty:
+                    continue
+                base["margin_of_victory"] = margins[any_flag]
+                base["multi_reached_target"] = flag_series["multi_reached_target"][any_flag]
+                for thr in thresholds:
+                    base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"][any_flag]
                 base["n_players"] = n_players
                 melted = base.melt(
                     id_vars=[
@@ -581,45 +694,6 @@ def _rare_event_flags(
 
                     writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
                     rows_written += count
-
-        strategy_rows: list[dict[str, object]] = []
-        for (strategy, players), sums in strategy_sums.items():
-            observations = sums["observations"]
-            summary_row: dict[str, object] = {
-                "summary_level": "strategy",
-                "strategy": strategy,
-                "n_players": players,
-                "margin_of_victory": pd.NA,
-                "observations": observations,
-            }
-            for flag in flags:
-                summary_row[flag] = sums[flag]
-            strategy_rows.append(summary_row)
-        strategy_summary = pd.DataFrame(strategy_rows, columns=column_order)
-
-        global_rows: list[dict[str, object]] = []
-        for players, sums in global_sums.items():
-            observations = sums["observations"]
-            summary_row = {
-                "summary_level": "n_players",
-                "strategy": pd.NA,
-                "n_players": players,
-                "margin_of_victory": pd.NA,
-                "observations": observations,
-            }
-            for flag in flags:
-                summary_row[flag] = sums[flag]
-            global_rows.append(summary_row)
-        global_summary = pd.DataFrame(global_rows, columns=column_order)
-
-        summary_df = pd.concat([strategy_summary, global_summary], ignore_index=True)
-        if not summary_df.empty:
-            summary_df = _downcast_integer_stats(
-                summary_df, columns=("n_players", "observations", *flags)
-            )
-            summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
-            writer.write_batch(summary_table)
-            rows_written += summary_table.num_rows
         return rows_written
     finally:
         writer.close(success=rows_written > 0)
@@ -700,6 +774,135 @@ def _collect_rare_event_counts(
         for flag in flags:
             max_flag_count = max(max_flag_count, sums.get(flag, 0))
     return strategy_sums, global_sums, rows_available, max_flag_count, max_observations
+
+
+def _resolve_rare_event_thresholds(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    thresholds: Sequence[int],
+    target_score: int,
+    margin_quantile: float | None,
+    target_rate: float | None,
+) -> tuple[tuple[int, ...], int]:
+    """Resolve rare-event thresholds, optionally based on streaming quantiles."""
+    resolved_thresholds = tuple(int(thr) for thr in thresholds)
+    resolved_target_score = int(target_score)
+    needs_margin = margin_quantile is not None
+    needs_target = target_rate is not None
+    if not needs_margin and not needs_target:
+        return resolved_thresholds, resolved_target_score
+
+    if margin_quantile is not None and not 0.0 < margin_quantile < 1.0:
+        raise ValueError("rare_event_margin_quantile must be between 0 and 1")
+    if target_rate is not None and not 0.0 < target_rate < 1.0:
+        raise ValueError("rare_event_target_rate must be between 0 and 1")
+
+    margin_counts, target_counts = _collect_rare_event_histograms(
+        per_n_inputs,
+        need_margins=needs_margin,
+        need_targets=needs_target,
+    )
+    if margin_quantile is not None:
+        quantile_threshold = _quantile_from_counts(margin_counts, margin_quantile)
+        if quantile_threshold is not None:
+            resolved_thresholds = (quantile_threshold,)
+    if target_rate is not None:
+        quantile = 1.0 - target_rate
+        target_threshold = _quantile_from_counts(target_counts, quantile)
+        if target_threshold is not None:
+            resolved_target_score = target_threshold
+    return resolved_thresholds, resolved_target_score
+
+
+def _collect_rare_event_histograms(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    need_margins: bool,
+    need_targets: bool,
+) -> tuple[dict[int, int], dict[int, int]]:
+    margin_counts: dict[int, int] = {}
+    target_counts: dict[int, int] = {}
+    if not need_margins and not need_targets:
+        return margin_counts, target_counts
+
+    for _, path in per_n_inputs:
+        ds_in = ds.dataset(path)
+        score_cols = [
+            name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+        ]
+        if not score_cols:
+            continue
+        scanner = ds_in.scanner(columns=score_cols, batch_size=65_536)
+        for batch in scanner.to_batches():
+            df = batch.to_pandas()
+            if df.empty:
+                continue
+            scores = df[score_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
+            if need_margins:
+                margins = _compute_margins_from_array(scores)
+                _update_int_histogram(margin_counts, margins)
+            if need_targets:
+                second_scores = _second_highest(scores)
+                _update_int_histogram(target_counts, second_scores)
+    return margin_counts, target_counts
+
+
+def _compute_margins_from_array(scores: np.ndarray) -> np.ndarray:
+    """Compute victory margins from a numeric score array."""
+    if scores.size == 0:
+        return scores
+    valid_counts = np.isfinite(scores).sum(axis=1)
+    with np.errstate(all="ignore"):
+        margins = np.nanmax(scores, axis=1) - np.nanmin(scores, axis=1)
+    margins[valid_counts < 2] = np.nan
+    return margins
+
+
+def _second_highest(scores: np.ndarray) -> np.ndarray:
+    """Return the second-highest score per row, or NaN when fewer than two scores."""
+    if scores.size == 0:
+        return scores
+    valid_mask = np.isfinite(scores)
+    if scores.shape[1] < 2:
+        return np.full(scores.shape[0], np.nan, dtype=float)
+    safe_scores = np.where(valid_mask, scores, -np.inf)
+    second = np.partition(safe_scores, -2, axis=1)[:, -2]
+    valid_counts = valid_mask.sum(axis=1)
+    second[valid_counts < 2] = np.nan
+    return second.astype(float)
+
+
+def _update_int_histogram(counts: dict[int, int], values: np.ndarray) -> None:
+    """Update integer histogram counts from numeric values."""
+    if values.size == 0:
+        return
+    clean = values[np.isfinite(values)]
+    if clean.size == 0:
+        return
+    ints = np.rint(clean).astype(int)
+    unique, freq = np.unique(ints, return_counts=True)
+    for value, count in zip(unique, freq, strict=True):
+        counts[int(value)] = counts.get(int(value), 0) + int(count)
+
+
+def _quantile_from_counts(counts: dict[int, int], quantile: float) -> int | None:
+    """Return the smallest value whose CDF exceeds the quantile."""
+    if not counts:
+        return None
+    total = sum(counts.values())
+    if total <= 0:
+        return None
+    if quantile <= 0.0:
+        return int(min(counts))
+    if quantile >= 1.0:
+        return int(max(counts))
+    cutoff = int(math.ceil(total * quantile))
+    running = 0
+    for value in sorted(counts):
+        running += counts[value]
+        if running >= cutoff:
+            return int(value)
+    return int(max(counts))
 
 
 def _select_int_dtype(max_value: int) -> tuple[np.dtype[np.integer], pa.DataType]:

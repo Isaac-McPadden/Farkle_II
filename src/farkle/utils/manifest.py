@@ -34,6 +34,11 @@ import time
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
+
 __all__ = ["append_manifest_line", "append_manifest_many", "iter_manifest"]
 
 
@@ -61,6 +66,34 @@ def _open_append_fd(path: os.PathLike[str] | str) -> int:
     return os.open(os.fspath(path), flags, 0o644)
 
 
+def _lock_fd(fd: int) -> None:
+    """Acquire an exclusive lock for *fd* (blocks until available)."""
+    if os.name == "nt":
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+
+
+def _unlock_fd(fd: int) -> None:
+    """Release an exclusive lock for *fd*."""
+    if os.name == "nt":
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write all bytes to *fd*, handling partial writes."""
+    view = memoryview(data)
+    total = 0
+    length = len(view)
+    while total < length:
+        written = os.write(fd, view[total:])
+        total += written
+
+
 def append_manifest_line(
     manifest_path: os.PathLike[str] | str,
     record: Mapping[str, Any],
@@ -86,8 +119,12 @@ def append_manifest_line(
     data = _json_line(record, add_timestamp=add_timestamp)
     fd = _open_append_fd(manifest_path)
     try:
-        # Single system call; atomic append on POSIX and Windows.
-        os.write(fd, data)
+        _lock_fd(fd)
+        try:
+            _write_all(fd, data)
+            os.fsync(fd)
+        finally:
+            _unlock_fd(fd)
     finally:
         os.close(fd)
 
@@ -108,7 +145,12 @@ def append_manifest_many(
         return
     fd = _open_append_fd(manifest_path)
     try:
-        os.write(fd, blob)
+        _lock_fd(fd)
+        try:
+            _write_all(fd, blob)
+            os.fsync(fd)
+        finally:
+            _unlock_fd(fd)
     finally:
         os.close(fd)
 

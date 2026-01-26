@@ -158,14 +158,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="rng_diagnostics",
         action="store_true",
         default=None,
-        help="Run the RNG diagnostics stage over curated rows",
+        help="Run the RNG diagnostics stage over curated rows (interseed only)",
     )
     rng_group.add_argument(
         "--no-rng-diagnostics",
         dest="rng_diagnostics",
         action="store_false",
         default=None,
-        help="Skip the RNG diagnostics stage",
+        help="Skip the RNG diagnostics stage (interseed only)",
     )
     interseed_group = parser.add_mutually_exclusive_group()
     interseed_group.add_argument(
@@ -192,6 +192,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         "--rare-event-target",
         type=int,
         help="Override the target score used to flag rare-event summaries",
+    )
+    parser.add_argument(
+        "--rare-event-margin-quantile",
+        type=float,
+        help="Quantile for deriving the rare-event margin threshold",
+    )
+    parser.add_argument(
+        "--rare-event-target-rate",
+        type=float,
+        help="Target rate for multi-target rare-event thresholds",
     )
     parser.add_argument(
         "--rng-lags",
@@ -237,10 +247,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         app_cfg.analysis.game_stats_margin_thresholds = tuple(args.margin_thresholds)
     if args.rare_event_target is not None:
         app_cfg.analysis.rare_event_target_score = int(args.rare_event_target)
+    if args.rare_event_margin_quantile is not None:
+        app_cfg.analysis.rare_event_margin_quantile = float(args.rare_event_margin_quantile)
+    if args.rare_event_target_rate is not None:
+        app_cfg.analysis.rare_event_target_rate = float(args.rare_event_target_rate)
     rng_lags = (
         tuple(sorted({int(lag) for lag in args.rng_lags})) if args.rng_lags else None
     )
 
+    if args.run_interseed is not None:
+        app_cfg.analysis.run_interseed = args.run_interseed
     run_rng_diagnostics = (
         app_cfg.analysis.run_rng
         if args.rng_diagnostics is None
@@ -249,8 +265,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     app_cfg.analysis.run_rng = run_rng_diagnostics
     if args.rng_diagnostics is not None:
         app_cfg.analysis.disable_rng_diagnostics = not args.rng_diagnostics
-    if args.run_interseed is not None:
-        app_cfg.analysis.run_interseed = args.run_interseed
+    if not app_cfg.analysis.run_interseed:
+        app_cfg.analysis.run_rng = False
+        app_cfg.analysis.disable_rng_diagnostics = True
 
     for flag, attr in (
         (args.disable_trueskill, "disable_trueskill"),
@@ -370,9 +387,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
         steps = _plan_steps(analytics_keys)
     elif args.command == "metrics":
-        steps = _plan_steps({"metrics", "game_stats", "rng_diagnostics"})
+        metrics_keys = {"metrics", "game_stats"}
+        if app_cfg.analysis.run_interseed:
+            metrics_keys.add("rng_diagnostics")
+        steps = _plan_steps(metrics_keys)
     elif args.command == "combine":
-        steps = _plan_steps({"combine", "rng_diagnostics"})
+        combine_keys = {"combine"}
+        if app_cfg.analysis.run_interseed:
+            combine_keys.add("rng_diagnostics")
+        steps = _plan_steps(combine_keys)
     elif args.command in stage_map:
         steps = _plan_steps({args.command})
     else:  # pragma: no cover - argparse enforces valid choices

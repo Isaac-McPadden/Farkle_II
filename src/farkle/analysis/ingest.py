@@ -315,7 +315,7 @@ def _process_block(block: Path, cfg: AppConfig) -> int:
         return 0
 
     canon = expected_schema_for(n)
-    manifest_path = cfg.strategy_manifest_path(n)
+    manifest_path = cfg.strategy_manifest_root_path()
     strategy_lookup: dict[str, int] | None = None
     if manifest_path.exists():
         manifest = pd.read_parquet(manifest_path, columns=["strategy_id", "strategy_str"])

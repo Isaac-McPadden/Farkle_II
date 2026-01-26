@@ -234,7 +234,7 @@ def run_bonferroni_head2head(
     _warn_legacy_stage_dirs(cfg, "head2head")
     manifest = None
     if cfg.sim.n_players_list:
-        manifest_path = cfg.strategy_manifest_path(cfg.sim.n_players_list[0])
+        manifest_path = cfg.strategy_manifest_root_path()
         if manifest_path.exists():
             manifest = pd.read_parquet(manifest_path)
 

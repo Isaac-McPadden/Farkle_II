@@ -16,8 +16,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
-from farkle.config import AppConfig, IOConfig
-from farkle.orchestration.seed_utils import split_seeded_results_dir
+from farkle.config import AppConfig, IOConfig, load_app_config
+from farkle.orchestration.seed_utils import prepare_seed_config, split_seeded_results_dir
 from farkle.utils.writer import atomic_path
 
 __all__ = [
@@ -113,23 +113,26 @@ def _first_existing(paths: list[Path]) -> Path:
 def _config_for_results_dir(exp_dir: Path) -> AppConfig:
     exp_dir = Path(exp_dir)
     base_dir, seed = split_seeded_results_dir(exp_dir)
-    if not base_dir.is_absolute() and base_dir.parts and base_dir.parts[0] == "data":
-        base_dir = Path(*base_dir.parts[1:])
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=base_dir))
-    if seed is not None:
-        cfg.sim.seed = seed
-    return cfg
+    active_config = exp_dir / "active_config.yaml"
+    if active_config.exists():
+        cfg = load_app_config(active_config)
+    else:
+        cfg = AppConfig(io=IOConfig(results_dir_prefix=base_dir))
+    if seed is None:
+        seed = cfg.sim.seed
+    return prepare_seed_config(cfg, seed=seed, base_results_dir=base_dir)
 
 
 def analyze_trueskill(exp_dir: Path) -> None:
     """Compute TrueSkill tiers for *exp_dir* simulations."""
 
     exp_dir = Path(exp_dir)
-    analysis_dir = exp_dir / "analysis"
-    ts_dir = analysis_dir / "09_trueskill"
+    cfg = _config_for_results_dir(exp_dir)
+    analysis_dir = cfg.analysis_dir
+    ts_dir = cfg.trueskill_stage_dir
     ts_dir.mkdir(parents=True, exist_ok=True)
     out = ts_dir / "tiers.json"
-    legacy_out = analysis_dir / "tiers.json"
+    legacy_out = cfg.analysis_dir / "tiers.json"
     done = _done_path(out)
     inputs = [p for p in exp_dir.iterdir() if p.name != "analysis"]
     outputs = [out]
@@ -140,7 +143,6 @@ def analyze_trueskill(exp_dir: Path) -> None:
     analysis_dir.mkdir(parents=True, exist_ok=True)
     from farkle.analysis import run_trueskill as _rt
 
-    cfg = _config_for_results_dir(exp_dir)
     _rt.run_trueskill_all_seeds(cfg)
     if legacy_out.exists() and not out.exists():
         legacy_out.replace(out)
@@ -204,14 +206,15 @@ def analyze_agreement(exp_dir: Path) -> None:
     """Compute cross-method agreement metrics."""
 
     exp_dir = Path(exp_dir)
-    analysis_dir = exp_dir / "analysis"
+    cfg = _config_for_results_dir(exp_dir)
+    analysis_dir = cfg.analysis_dir
     ratings = _first_existing(
         [
-            analysis_dir / "09_trueskill" / "pooled" / "ratings_pooled.parquet",
-            analysis_dir / "09_trueskill" / "ratings_pooled.parquet",
-            analysis_dir / "03_trueskill" / "pooled" / "ratings_pooled.parquet",
-            analysis_dir / "03_trueskill" / "ratings_pooled.parquet",
+            cfg.trueskill_pooled_dir / "ratings_pooled.parquet",
+            cfg.trueskill_stage_dir / "ratings_pooled.parquet",
             analysis_dir / "ratings_pooled.parquet",
+            *analysis_dir.glob("*_trueskill/pooled/ratings_pooled.parquet"),
+            *analysis_dir.glob("*_trueskill/ratings_pooled.parquet"),
         ]
     )
     if not ratings.exists():
@@ -220,7 +223,6 @@ def analyze_agreement(exp_dir: Path) -> None:
         )
 
     players = _detect_player_counts(analysis_dir)
-    cfg = _config_for_results_dir(exp_dir)
     cfg.sim.n_players_list = players
     outputs = [cfg.agreement_output_path(p) for p in players]
     done = _done_path(outputs[0])
@@ -228,16 +230,17 @@ def analyze_agreement(exp_dir: Path) -> None:
     for candidate in (
         _first_existing(
             [
-                analysis_dir / "12_tiering" / "frequentist_scores.parquet",
-                analysis_dir / "05_tiering" / "frequentist_scores.parquet",
+                cfg.tiering_stage_dir / "frequentist_scores.parquet",
                 analysis_dir / "frequentist_scores.parquet",
+                *analysis_dir.glob("*_tiering/frequentist_scores.parquet"),
             ]
         ),
         _first_existing(
             [
-                analysis_dir / "10_head2head" / "bonferroni_decisions.parquet",
-                analysis_dir / "04_head2head" / "bonferroni_decisions.parquet",
+                cfg.post_h2h_stage_dir / "bonferroni_decisions.parquet",
+                cfg.head2head_stage_dir / "bonferroni_decisions.parquet",
                 analysis_dir / "bonferroni_decisions.parquet",
+                *analysis_dir.glob("*_head2head/bonferroni_decisions.parquet"),
             ]
         ),
     ):
@@ -259,7 +262,8 @@ def analyze_agreement(exp_dir: Path) -> None:
 def _detect_player_counts(analysis_dir: Path) -> list[int]:
     """Infer available player counts from existing metrics outputs."""
     metrics_candidates = [
-        analysis_dir / "03_metrics" / "metrics.parquet",
+        *analysis_dir.glob("*_metrics/pooled/metrics.parquet"),
+        *analysis_dir.glob("*_metrics/metrics.parquet"),
         analysis_dir / "metrics.parquet",
     ]
     for metrics in metrics_candidates:

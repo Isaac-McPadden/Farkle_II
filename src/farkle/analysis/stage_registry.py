@@ -12,6 +12,7 @@ __all__ = [
     "StageDefinition",
     "StageLayout",
     "StagePlacement",
+    "resolve_interseed_stage_layout",
     "resolve_stage_layout",
 ]
 
@@ -98,24 +99,42 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "game_stats",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_game_stats,
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_game_stats or not cfg.analysis.run_game_stats
+        ),
     ),
+    StageDefinition("seed_summaries", group="analytics"),
     StageDefinition(
         "rng_diagnostics",
         group="analytics",
         folder_stub="rng",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_rng_diagnostics,
+        disabled_predicate=lambda cfg: (
+            not cfg.analysis.run_interseed
+            or cfg.sim.seed_pair is None
+            or cfg.analysis.disable_rng_diagnostics
+            or not cfg.analysis.run_rng
+        ),
     ),
-    StageDefinition("seed_summaries", group="analytics"),
     StageDefinition(
         "tiering",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_tiering,
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_tiering or not cfg.analysis.run_frequentist
+        ),
+    ),
+    StageDefinition(
+        "trueskill",
+        group="analytics",
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_trueskill or not cfg.analysis.run_trueskill
+        ),
     ),
     StageDefinition(
         "head2head",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_head2head,
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_head2head or not cfg.analysis.run_head2head
+        ),
     ),
     StageDefinition(
         "post_h2h",
@@ -125,8 +144,35 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "hgb",
         group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_hgb,
+        disabled_predicate=lambda cfg: cfg.analysis.disable_hgb or not cfg.analysis.run_hgb,
     ),
+    StageDefinition(
+        "variance",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
+    ),
+    StageDefinition(
+        "meta",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
+    ),
+    StageDefinition(
+        "agreement",
+        group="analytics",
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_agreement
+            or not cfg.analysis.run_agreement
+            or not cfg.analysis.run_interseed
+        ),
+    ),
+    StageDefinition(
+        "interseed",
+        group="analytics",
+        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
+    ),
+)
+
+_INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "variance",
         group="analytics",
@@ -141,14 +187,18 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         "trueskill",
         group="analytics",
         disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_trueskill or not cfg.analysis.run_trueskill
+            not cfg.analysis.run_interseed
+            or cfg.analysis.disable_trueskill
+            or not cfg.analysis.run_trueskill
         ),
     ),
     StageDefinition(
         "agreement",
         group="analytics",
         disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_agreement or not cfg.analysis.run_interseed
+            not cfg.analysis.run_interseed
+            or cfg.analysis.disable_agreement
+            or not cfg.analysis.run_agreement
         ),
     ),
     StageDefinition(
@@ -178,3 +228,9 @@ def resolve_stage_layout(
             )
         )
     return StageLayout(placements=placements)
+
+
+def resolve_interseed_stage_layout(cfg: AppConfig) -> StageLayout:
+    """Resolve a stage layout containing only interseed-relevant stages."""
+
+    return resolve_stage_layout(cfg, registry=_INTERSEED_REGISTRY)
