@@ -102,20 +102,29 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             cfg.analysis.disable_game_stats or not cfg.analysis.run_game_stats
         ),
     ),
+    StageDefinition("seed_summaries", group="analytics"),
     StageDefinition(
         "rng_diagnostics",
         group="analytics",
         folder_stub="rng",
         disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_rng_diagnostics or not cfg.analysis.run_rng
+            cfg.analysis.disable_rng_diagnostics
+            or not cfg.analysis.run_rng
+            or cfg.sim.seed_pair is None
         ),
     ),
-    StageDefinition("seed_summaries", group="analytics"),
     StageDefinition(
         "tiering",
         group="analytics",
         disabled_predicate=lambda cfg: (
             cfg.analysis.disable_tiering or not cfg.analysis.run_frequentist
+        ),
+    ),
+    StageDefinition(
+        "trueskill",
+        group="analytics",
+        disabled_predicate=lambda cfg: (
+            cfg.analysis.disable_trueskill or not cfg.analysis.run_trueskill
         ),
     ),
     StageDefinition(
@@ -144,13 +153,6 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         "meta",
         group="analytics",
         disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
-    ),
-    StageDefinition(
-        "trueskill",
-        group="analytics",
-        disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_trueskill or not cfg.analysis.run_trueskill
-        ),
     ),
     StageDefinition(
         "agreement",
