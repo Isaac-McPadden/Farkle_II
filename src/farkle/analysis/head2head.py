@@ -78,6 +78,7 @@ def run(cfg: AppConfig) -> None:
     # reflects the Bonferroni H2H budget even if results are already present.
     design_kwargs = _build_design_kwargs(cfg)
     _maybe_autotune_tiers(cfg, design_kwargs)
+    h2h_jobs = _resolve_h2h_jobs(cfg)
 
     out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
     legacy_out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
@@ -94,13 +95,13 @@ def run(cfg: AppConfig) -> None:
         extra={
             "stage": "head2head",
             "results_dir": str(cfg.results_root),
-            "n_jobs": cfg.analysis.n_jobs,
+            "n_jobs": h2h_jobs,
         },
     )
     try:
         _h2h.run_bonferroni_head2head(
             cfg=cfg,
-            n_jobs=cfg.analysis.n_jobs,
+            n_jobs=h2h_jobs,
             seed=cfg.sim.seed,
             design=design_kwargs,
         )
@@ -147,6 +148,17 @@ def _load_strategy_manifest(cfg: AppConfig) -> pd.DataFrame | None:
     return pd.read_parquet(manifest_path)
 
 
+def _resolve_h2h_jobs(cfg: AppConfig) -> int:
+    """Resolve the effective worker count for head-to-head simulation."""
+    if cfg.head2head.n_jobs and cfg.head2head.n_jobs > 0:
+        return int(cfg.head2head.n_jobs)
+    if cfg.analysis.n_jobs and cfg.analysis.n_jobs > 0:
+        return int(cfg.analysis.n_jobs)
+    if cfg.sim.n_jobs and cfg.sim.n_jobs > 0:
+        return int(cfg.sim.n_jobs)
+    return 1
+
+
 def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None:
     """Calibrate tier thresholds to hit a target runtime budget when possible.
 
@@ -156,6 +168,7 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
     """
     target_hours = cfg.analysis.head2head_target_hours
     games_per_sec = cfg.analysis.head2head_games_per_sec
+    h2h_jobs = _resolve_h2h_jobs(cfg)
     if not target_hours or target_hours <= 0:
         return
 
@@ -186,7 +199,7 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
             games_per_sec = _calibrate_h2h_games_per_sec(
                 df,
                 seed=cfg.sim.seed,
-                n_jobs=cfg.analysis.n_jobs,
+                n_jobs=h2h_jobs,
                 manifest=manifest,
             )
             LOGGER.info(
@@ -194,7 +207,7 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
                 extra={
                     "stage": "head2head",
                     "games_per_sec": round(games_per_sec, 2),
-                    "n_jobs": cfg.analysis.n_jobs,
+                    "n_jobs": h2h_jobs,
                 },
             )
         except Exception as exc:  # noqa: BLE001
@@ -204,6 +217,15 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
             )
             return
 
+    LOGGER.info(
+        "Head-to-head throughput prepared",
+        extra={
+            "stage": "head2head",
+            "games_per_sec": round(float(games_per_sec), 2),
+            "n_jobs": h2h_jobs,
+            "source": "calibrated" if cfg.analysis.head2head_games_per_sec in (None, 0) else "config",
+        },
+    )
     tolerance_pct = max(0.0, cfg.analysis.head2head_tolerance_pct or 0.0)
     tiering_z = float(cfg.analysis.tiering_z_star or 1.645)
     tiering_min_gap = cfg.analysis.tiering_min_gap
