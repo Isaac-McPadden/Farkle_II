@@ -183,11 +183,13 @@ def _load_trueskill(cfg: AppConfig, players: int) -> MethodData | None:
     tiers = tier_mapping_from_payload(tiers_payload, prefer=str(players)) or None
 
     per_seed: list[pd.Series] = []
-    seed_candidates = {
-        *cfg.trueskill_pooled_dir.glob("ratings_pooled_seed*.parquet"),
-        *cfg.trueskill_stage_dir.glob("ratings_pooled_seed*.parquet"),
-        *cfg.analysis_dir.glob("ratings_pooled_seed*.parquet"),
-    }
+    seed_candidates = {*cfg.analysis_dir.glob("ratings_pooled_seed*.parquet")}
+    trueskill_pooled_dir = cfg.stage_dir_if_active("trueskill", "pooled")
+    if trueskill_pooled_dir is not None:
+        seed_candidates.update(trueskill_pooled_dir.glob("ratings_pooled_seed*.parquet"))
+    trueskill_stage_dir = cfg.stage_dir_if_active("trueskill")
+    if trueskill_stage_dir is not None:
+        seed_candidates.update(trueskill_stage_dir.glob("ratings_pooled_seed*.parquet"))
     for seed_path in sorted(seed_candidates):
         seed_df = pd.read_parquet(seed_path)
         seed_df = _filter_by_players(seed_df, players)
@@ -232,10 +234,10 @@ def _load_frequentist(cfg: AppConfig, players: int) -> MethodData | None:
             tiers = {str(k): int(v) for k, v in tier_series.items()}
 
     per_seed: list[pd.Series] = []
-    seed_candidates = {
-        *cfg.tiering_stage_dir.glob("frequentist_scores_seed*.parquet"),
-        *cfg.analysis_dir.glob("frequentist_scores_seed*.parquet"),
-    }
+    seed_candidates = {*cfg.analysis_dir.glob("frequentist_scores_seed*.parquet")}
+    tiering_dir = cfg.stage_dir_if_active("tiering")
+    if tiering_dir is not None:
+        seed_candidates.update(tiering_dir.glob("frequentist_scores_seed*.parquet"))
     for seed_path in sorted(seed_candidates):
         seed_df = pd.read_parquet(seed_path)
         seed_df = _filter_by_players(seed_df, players)

@@ -10,7 +10,16 @@ import dataclasses
 import re
 from dataclasses import dataclass, field, is_dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Mapping, Sequence, get_args, get_origin, get_type_hints
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Iterable,
+    Mapping,
+    Sequence,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 import yaml  # type: ignore[import-untyped]
 
@@ -318,6 +327,11 @@ class AppConfig:
         stage_root.mkdir(parents=True, exist_ok=True)
         return stage_root
 
+    def stage_dir_if_active(self, key: str, *parts: str | Path) -> Path | None:
+        """Return the resolved stage directory for ``key`` when active."""
+
+        return self._stage_dir_if_active(key, *parts)
+
     def stage_subdir(self, key: str, *parts: str | Path) -> Path:
         """Resolve a stage root or nested subdirectory under ``analysis_dir``.
 
@@ -545,7 +559,9 @@ class AppConfig:
             return None
         stage_folder = self._interseed_input_folder(key)
         if stage_folder is None:
-            stage_folder = self.stage_layout.require_folder(key)
+            stage_folder = self.stage_layout.folder_for(key)
+            if stage_folder is None:
+                return None
         return input_root / stage_folder / Path(*parts)
 
     def _interseed_input_folder(self, key: str | None) -> str | None:
@@ -572,6 +588,28 @@ class AppConfig:
             if placement.folder_name == folder:
                 return placement.definition.key
         return None
+
+    def _stage_dir_if_active(self, key: str, *parts: str | Path) -> Path | None:
+        """Return the stage directory for ``key`` only when it is active."""
+
+        folder = self.stage_layout.folder_for(key)
+        if folder is None:
+            return None
+        path = self.analysis_dir / folder
+        if parts:
+            path = path.joinpath(*map(Path, parts))
+        return path
+
+    def _interseed_stage_dir(self, key: str, *parts: str | Path) -> Path | None:
+        """Return the stage directory rooted at the interseed input layout."""
+
+        input_root = self.interseed_input_dir
+        if input_root is None:
+            return None
+        folder = self._interseed_input_folder(key)
+        if folder is None:
+            return None
+        return input_root / folder / Path(*parts)
 
     @property
     def data_dir(self) -> Path:
@@ -667,7 +705,14 @@ class AppConfig:
     def game_stats_input_path(self, name: str) -> Path:
         """Resolve a game-stat artifact with a legacy fallback."""
 
-        return self._preferred_stage_path(self.game_stats_pooled_dir, self.analysis_dir, name)
+        stage_dir = self._stage_dir_if_active("game_stats", "pooled")
+        return self._preferred_stage_path(
+            stage_dir,
+            self.analysis_dir,
+            name,
+            stage_key="game_stats",
+            stage_parts=("pooled",),
+        )
 
     def rng_output_path(self, name: str) -> Path:
         """Preferred path for pooled RNG diagnostics."""
@@ -679,7 +724,14 @@ class AppConfig:
     def rng_input_path(self, name: str) -> Path:
         """Resolve an RNG diagnostic artifact with a legacy fallback."""
 
-        return self._preferred_stage_path(self.rng_pooled_dir, self.analysis_dir, name)
+        stage_dir = self._stage_dir_if_active("rng_diagnostics", "pooled")
+        return self._preferred_stage_path(
+            stage_dir,
+            self.analysis_dir,
+            name,
+            stage_key="rng_diagnostics",
+            stage_parts=("pooled",),
+        )
 
     def variance_output_path(self, name: str) -> Path:
         """Preferred path for pooled variance analytics."""
@@ -691,7 +743,14 @@ class AppConfig:
     def variance_input_path(self, name: str) -> Path:
         """Resolve a variance artifact with a legacy fallback."""
 
-        return self._preferred_stage_path(self.variance_pooled_dir, self.analysis_dir, name)
+        stage_dir = self._stage_dir_if_active("variance", "pooled")
+        return self._preferred_stage_path(
+            stage_dir,
+            self.analysis_dir,
+            name,
+            stage_key="variance",
+            stage_parts=("pooled",),
+        )
 
     def meta_output_path(self, players: int, name: str) -> Path:
         """Preferred path for per-player meta-analysis artifacts."""
@@ -723,18 +782,24 @@ class AppConfig:
         """Resolve a pooled metrics artifact with a legacy fallback."""
 
         filename = str(self.metrics_name if name is None else name)
-        preferred = self.metrics_output_path(filename)
-        if preferred.exists():
-            return preferred
+        interseed_path: Path | None = None
         interseed_root = self._input_stage_path("metrics", "pooled")
         if interseed_root is not None:
             interseed_path = interseed_root / filename
             if interseed_path.exists():
                 return interseed_path
+
+        stage_path: Path | None = None
+        stage_dir = self._stage_dir_if_active("metrics", "pooled")
+        if stage_dir is not None:
+            stage_path = stage_dir / filename
+            if stage_path.exists():
+                return stage_path
+
         legacy = self.analysis_dir / filename
         if legacy.exists():
             return legacy
-        return preferred
+        return interseed_path or stage_path or legacy
 
     def metrics_isolated_path(self, k: int) -> Path:
         """Preferred isolated metrics parquet for ``k`` players."""
@@ -758,20 +823,40 @@ class AppConfig:
         outputs = self.analysis.outputs or {}
         return str(outputs.get("manifest_name", "manifest.jsonl"))
 
-    def _preferred_stage_path(self, stage_dir: Path, legacy_dir: Path, filename: str) -> Path:
+    def _preferred_stage_path(
+        self,
+        stage_dir: Path | None,
+        legacy_dir: Path,
+        filename: str,
+        *,
+        stage_key: str | None = None,
+        stage_parts: Iterable[str | Path] = (),
+    ) -> Path:
         """Return *filename* within the stage dir, falling back to legacy when absent."""
 
-        stage_dir.mkdir(parents=True, exist_ok=True)
-        stage_path = stage_dir / filename
         legacy_path = legacy_dir / filename
-        if stage_path.exists():
+        if stage_dir is not None:
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            stage_path = stage_dir / filename
+            if stage_path.exists():
+                return stage_path
+            interseed_input_path = self._interseed_input_candidate(stage_dir, filename)
+            if interseed_input_path is not None and interseed_input_path.exists():
+                return interseed_input_path
+            if legacy_path.exists():
+                return legacy_path
             return stage_path
-        interseed_input_path = self._interseed_input_candidate(stage_dir, filename)
-        if interseed_input_path is not None and interseed_input_path.exists():
-            return interseed_input_path
+
+        interseed_path: Path | None = None
+        if stage_key is not None:
+            interseed_dir = self._interseed_stage_dir(stage_key, *stage_parts)
+            if interseed_dir is not None:
+                interseed_path = interseed_dir / filename
+                if interseed_path.exists():
+                    return interseed_path
         if legacy_path.exists():
             return legacy_path
-        return stage_path
+        return interseed_path or legacy_path
 
     def agreement_output_path(self, players: int) -> Path:
         """Preferred path for agreement analytics for a given player count."""
@@ -783,22 +868,38 @@ class AppConfig:
     def trueskill_path(self, filename: str) -> Path:
         """Resolve a TrueSkill artifact path with legacy fallback."""
         pooled = filename.startswith("ratings_pooled")
-        stage_dir = self.trueskill_pooled_dir if pooled else self.trueskill_stage_dir
-        return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
+        parts = ("pooled",) if pooled else ()
+        stage_dir = self._stage_dir_if_active("trueskill", *parts)
+        return self._preferred_stage_path(
+            stage_dir,
+            self.analysis_dir,
+            filename,
+            stage_key="trueskill",
+            stage_parts=parts,
+        )
 
     def head2head_path(self, filename: str) -> Path:
         """Resolve a head-to-head artifact path with legacy fallback."""
 
-        return self._preferred_stage_path(self.head2head_stage_dir, self.analysis_dir, filename)
+        stage_dir = self._stage_dir_if_active("head2head")
+        return self._preferred_stage_path(
+            stage_dir,
+            self.analysis_dir,
+            filename,
+            stage_key="head2head",
+        )
 
     def post_h2h_path(self, filename: str) -> Path:
         """Resolve a post head-to-head artifact path with legacy fallback."""
 
-        candidates = [
-            self.post_h2h_stage_dir / filename,
-            self.head2head_stage_dir / filename,
-            self.analysis_dir / filename,
-        ]
+        candidates: list[Path] = []
+        post_h2h_dir = self._stage_dir_if_active("post_h2h")
+        if post_h2h_dir is not None:
+            candidates.append(post_h2h_dir / filename)
+        head2head_dir = self._stage_dir_if_active("head2head")
+        if head2head_dir is not None:
+            candidates.append(head2head_dir / filename)
+        candidates.append(self.analysis_dir / filename)
         for candidate in candidates:
             if candidate.exists():
                 return candidate
@@ -807,16 +908,31 @@ class AppConfig:
     def tiering_path(self, filename: str) -> Path:
         """Resolve a tiering artifact path with legacy fallback."""
 
-        return self._preferred_stage_path(self.tiering_stage_dir, self.analysis_dir, filename)
+        stage_dir = self._stage_dir_if_active("tiering")
+        return self._preferred_stage_path(
+            stage_dir,
+            self.analysis_dir,
+            filename,
+            stage_key="tiering",
+        )
 
     def preferred_tiers_path(self) -> Path:
         """Locate ``tiers.json`` across tiering and TrueSkill stages."""
 
-        candidates = [
-            self.tiering_stage_dir / "tiers.json",
-            self.trueskill_stage_dir / "tiers.json",
-            self.analysis_dir / "tiers.json",
-        ]
+        candidates: list[Path] = []
+        tiering_dir = self._stage_dir_if_active("tiering")
+        if tiering_dir is not None:
+            candidates.append(tiering_dir / "tiers.json")
+        trueskill_dir = self._stage_dir_if_active("trueskill")
+        if trueskill_dir is not None:
+            candidates.append(trueskill_dir / "tiers.json")
+        interseed_tiering = self._interseed_stage_dir("tiering")
+        if interseed_tiering is not None:
+            candidates.append(interseed_tiering / "tiers.json")
+        interseed_trueskill = self._interseed_stage_dir("trueskill")
+        if interseed_trueskill is not None:
+            candidates.append(interseed_trueskill / "tiers.json")
+        candidates.append(self.analysis_dir / "tiers.json")
         for candidate in candidates:
             if candidate.exists():
                 return candidate
