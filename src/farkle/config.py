@@ -872,6 +872,42 @@ class AppConfig:
             return legacy_path
         return interseed_path or legacy_path
 
+    def _resolve_stage_artifact_path(
+        self,
+        stage_key: str,
+        filename: str,
+        *parts: str | Path,
+        legacy_paths: Iterable[Path] = (),
+    ) -> Path:
+        """Resolve a stage artifact without creating directories."""
+
+        candidates: list[Path] = []
+        stage_dir = self._stage_dir_if_active(stage_key, *parts)
+        if stage_dir is not None:
+            candidates.append(stage_dir / filename)
+
+        input_dir = self._input_stage_path(stage_key, *parts)
+        if input_dir is not None:
+            candidates.append(input_dir / filename)
+
+        interseed_dir = self._interseed_stage_dir(stage_key, *parts)
+        if interseed_dir is not None:
+            interseed_candidate = interseed_dir / filename
+            if interseed_candidate not in candidates:
+                candidates.append(interseed_candidate)
+
+        for legacy_path in legacy_paths:
+            if legacy_path not in candidates:
+                candidates.append(legacy_path)
+
+        if not candidates:
+            candidates.append(self.analysis_dir / filename)
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0]
+
     def agreement_output_path(self, players: int) -> Path:
         """Preferred path for agreement analytics for a given player count."""
 
@@ -933,69 +969,46 @@ class AppConfig:
     def preferred_tiers_path(self) -> Path:
         """Locate ``tiers.json`` across tiering and TrueSkill stages."""
 
-        candidates: list[Path] = []
-        tiering_dir = self._stage_dir_if_active("tiering")
-        if tiering_dir is not None:
-            candidates.append(tiering_dir / "tiers.json")
-        trueskill_dir = self._stage_dir_if_active("trueskill")
-        if trueskill_dir is not None:
-            candidates.append(trueskill_dir / "tiers.json")
-        interseed_tiering = self._interseed_stage_dir("tiering")
-        if interseed_tiering is not None:
-            candidates.append(interseed_tiering / "tiers.json")
-        interseed_trueskill = self._interseed_stage_dir("trueskill")
-        if interseed_trueskill is not None:
-            candidates.append(interseed_trueskill / "tiers.json")
-        candidates.append(self.analysis_dir / "tiers.json")
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return candidates[0]
+        analysis_path = self.analysis_dir / "tiers.json"
+
+        tiering_path = self._resolve_stage_artifact_path("tiering", "tiers.json")
+        if tiering_path.exists() and tiering_path != analysis_path:
+            return tiering_path
+
+        trueskill_path = self._resolve_stage_artifact_path("trueskill", "tiers.json")
+        if trueskill_path.exists():
+            return trueskill_path
+
+        if analysis_path.exists():
+            return analysis_path
+        return tiering_path
 
     @property
     def curated_parquet(self) -> Path:
         """Location of the combined curated parquet spanning all player counts."""
-        pooled_dir = self.resolve_input_stage_dir("combine", "pooled")
-        if pooled_dir is None:
-            pooled_dir = self.analysis_dir / "combine" / "pooled"
-        preferred = pooled_dir / "all_ingested_rows.parquet"
-        candidates = [preferred]
-        interseed_combine = self.resolve_input_stage_dir(
-            "combine", f"{self.combine_max_players}p", "pooled"
-        )
-        interseed_curate = self.resolve_input_stage_dir("curate")
-        if interseed_combine is not None:
-            candidates.append(interseed_combine / "all_ingested_rows.parquet")
-        if interseed_curate is not None:
-            candidates.append(
-                interseed_curate / "all_n_players_combined" / "all_ingested_rows.parquet"
-            )
+        filename = "all_ingested_rows.parquet"
+        combine_dir = self.resolve_input_stage_dir("combine") or self.analysis_dir / "combine"
+        legacy_paths: list[Path] = [
+            combine_dir / f"{self.combine_max_players}p" / "pooled" / filename,
+            combine_dir / "all_n_players_combined" / filename,
+            self.data_dir / "all_n_players_combined" / filename,
+            self.analysis_dir / "all_n_players_combined" / filename,
+            self.analysis_dir / "data" / "all_n_players_combined" / filename,
+        ]
         interseed_root = self.interseed_input_dir
         if interseed_root is not None:
-            candidates.append(
-                interseed_root / "all_n_players_combined" / "all_ingested_rows.parquet"
+            legacy_paths.extend(
+                [
+                    interseed_root / "all_n_players_combined" / filename,
+                    interseed_root / "data" / "all_n_players_combined" / filename,
+                ]
             )
-            candidates.append(
-                interseed_root / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
-            )
-        candidates.extend(
-            [
-                (self.resolve_input_stage_dir("combine") or self.analysis_dir / "combine")
-                / f"{self.combine_max_players}p"
-                / "pooled"
-                / "all_ingested_rows.parquet",
-                self.data_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
-                self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
-                self.analysis_dir
-                / "data"
-                / "all_n_players_combined"
-                / "all_ingested_rows.parquet",
-            ]
+        return self._resolve_stage_artifact_path(
+            "combine",
+            filename,
+            "pooled",
+            legacy_paths=legacy_paths,
         )
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return preferred
 
     @property
     def game_stats_margin_thresholds(self) -> tuple[int, ...]:
@@ -1032,21 +1045,28 @@ class AppConfig:
     def combined_manifest_path(self) -> Path:
         """Path to the manifest accompanying ``curated_parquet``."""
 
-        parquet = self.curated_parquet
-        preferred = parquet.with_suffix(".manifest.jsonl")
+        filename = "all_ingested_rows.manifest.jsonl"
         combine_dir = self.resolve_input_stage_dir("combine") or self.analysis_dir / "combine"
-        legacy_candidates = [
-            combine_dir / f"{self.combine_max_players}p" / "pooled" / "all_ingested_rows.manifest.jsonl",
-            combine_dir / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
-            self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
-            self.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
+        legacy_paths: list[Path] = [
+            combine_dir / f"{self.combine_max_players}p" / "pooled" / filename,
+            combine_dir / "all_n_players_combined" / filename,
+            self.analysis_dir / "all_n_players_combined" / filename,
+            self.analysis_dir / "data" / "all_n_players_combined" / filename,
         ]
-        for candidate in legacy_candidates:
-            if preferred.exists():
-                break
-            if candidate.exists():
-                return candidate
-        return preferred
+        interseed_root = self.interseed_input_dir
+        if interseed_root is not None:
+            legacy_paths.extend(
+                [
+                    interseed_root / "all_n_players_combined" / filename,
+                    interseed_root / "data" / "all_n_players_combined" / filename,
+                ]
+            )
+        return self._resolve_stage_artifact_path(
+            "combine",
+            filename,
+            "pooled",
+            legacy_paths=legacy_paths,
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
