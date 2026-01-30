@@ -25,8 +25,8 @@ sim:
     tail:    # str: 'one_sided' or 'two_sided'
     full_pairwise:    # bool: compare all pairs vs top-1
     endpoint:    # str: 'pairwise' or 'top1'
-    min_games_floor:    # int: minimum scheduled games
-    max_games_cap:    # int|None: optional cap on games
+    min_games_floor:    # int: minimum games per strategy (num_shuffles); no adjustment to hit total-games caps
+    max_games_cap:    # int|None: cap per strategy; totals derive from n_strategies/k without rebalancing
     use_BY:    # bool: enable Benjamini-Yekutieli correction for BH
     bh_target_rank:    # int|None: target BH order statistic i*
     bh_target_frac:    # float|None: target discovery fraction for BH
@@ -86,8 +86,8 @@ head2head:
     baseline_rate:    # float: assumed baseline win rate
     full_pairwise:    # bool: compare all pairs vs top-1
     tail:    # str: 'one_sided' or 'two_sided'
-    min_games_floor:    # int: minimum games per comparison
-    max_games_cap:    # int|None: cap on games per comparison
+    min_games_floor:    # int: minimum games per strategy before deriving games-per-pair (ceil applied)
+    max_games_cap:    # int|None: cap per strategy; games-per-pair totals may round up if not divisible
     use_BY:    # bool|None: optional Benjamini-Yekutieli toggle
   tie_break_policy:    # str: 'neutral_edge' (default) or 'simulate_game'
   tie_break_seed:    # int|None: overrides sim.seed for tie-break RNG
