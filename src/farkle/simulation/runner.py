@@ -14,8 +14,10 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import pickle
 import shutil
+import stat
 from collections import Counter
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -303,14 +305,26 @@ def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str
         )
 
 
+def _handle_remove_error(func: object, path: str, exc: BaseException) -> None:
+    try:
+        os.chmod(path, stat.S_IWRITE)
+    except OSError:
+        raise exc
+    func(path)
+
+
 def _remove_paths(paths: Sequence[Path]) -> None:
     for path in paths:
         if not path.exists():
             continue
         if path.is_dir():
-            shutil.rmtree(path)
+            shutil.rmtree(path, onerror=_handle_remove_error)
         else:
-            path.unlink()
+            try:
+                path.unlink()
+            except PermissionError:
+                os.chmod(path, stat.S_IWRITE)
+                path.unlink()
 
 
 def _purge_simulation_outputs(
@@ -495,7 +509,7 @@ def _validate_resume_outputs(
                 )
 
 
-def run_tournament(cfg: AppConfig) -> int:
+def run_tournament(cfg: AppConfig, *, force: bool = False) -> int:
     """Top-level dispatcher that runs single-N or multi-N based on the config.
 
     - If ``sim.n_players_list`` has one element, runs that N and returns total games (int).
@@ -527,7 +541,7 @@ def run_tournament(cfg: AppConfig) -> int:
                 "expanded_metrics": cfg.sim.expanded_metrics,
             },
         )
-        return run_single_n(cfg, n)
+        return run_single_n(cfg, n, force=force)
 
     LOGGER.info(
         "Running multi-N tournaments",
@@ -540,7 +554,7 @@ def run_tournament(cfg: AppConfig) -> int:
             "expanded_metrics": cfg.sim.expanded_metrics,
         },
     )
-    totals = run_multi(cfg, player_counts=n_vals)
+    totals = run_multi(cfg, player_counts=n_vals, force=force)
     return int(sum(totals.values()))
 
 

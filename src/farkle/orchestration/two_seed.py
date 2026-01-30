@@ -65,7 +65,7 @@ def run_seeds(
             )
             continue
         write_active_config(seed_cfg)
-        runner.run_tournament(seed_cfg)
+        runner.run_tournament(seed_cfg, force=force)
 
 
 def build_parser() -> argparse.ArgumentParser:

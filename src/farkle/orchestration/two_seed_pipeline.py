@@ -137,7 +137,7 @@ def run_pipeline(
                     "results_dir": str(seed_cfg.results_root),
                 },
             )
-            runner.run_tournament(seed_cfg)
+            runner.run_tournament(seed_cfg, force=force)
             append_manifest_line(
                 manifest_path,
                 {
