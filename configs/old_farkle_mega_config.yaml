@@ -11,7 +11,8 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 20                         # RNG seed used by the tournament core
+  seed: 20                         # legacy RNG seed used by the tournament core
+  seed_list: [20]                  # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 16                    # null = auto; otherwise an int
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
   row_dir: "rows"                   # rows => per-N rows under {results}/{N}_players/rows/

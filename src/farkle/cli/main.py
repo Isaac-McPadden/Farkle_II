@@ -15,7 +15,12 @@ import yaml  # type: ignore[import-untyped]
 
 from farkle import analysis as analysis_pkg
 from farkle.analysis import combine, curate, ingest, metrics
-from farkle.config import AppConfig, apply_dot_overrides, load_app_config
+from farkle.config import (
+    AppConfig,
+    apply_dot_overrides,
+    expected_seed_list_length,
+    load_app_config,
+)
 from farkle.orchestration import two_seed_pipeline
 from farkle.simulation import runner
 from farkle.simulation.time_farkle import measure_sim_times
@@ -366,6 +371,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     args, _ = parser.parse_known_args(argv)
     seed_pair_override = _resolve_seed_pair(args, parser)
+    expected_seed_len = expected_seed_list_length(
+        args.command, subcommand=getattr(args, "an_cmd", None)
+    )
 
     setup_info_logging()
     root_logger = logging.getLogger()
@@ -387,10 +395,17 @@ def main(argv: Sequence[str] | None = None) -> None:
     compute_rng_diagnostics = False
     if args.command in {"run", "analyze", "two-seed-pipeline"}:
         overlays: list[Path] = [args.config] if args.config is not None else []
-        cfg = load_app_config(*overlays) if overlays else AppConfig()
+        cfg = (
+            load_app_config(*overlays, seed_list_len=expected_seed_len)
+            if overlays
+            else AppConfig()
+        )
         cfg = apply_dot_overrides(cfg, list(args.overrides or []))
         if seed_pair_override is not None:
+            cfg.sim.seed_list = list(seed_pair_override)
             cfg.sim.seed_pair = seed_pair_override
+        if expected_seed_len is not None:
+            cfg.sim.populate_seed_list(expected_seed_len)
 
         margin_thresholds = getattr(args, "margin_thresholds", None)
         if margin_thresholds:
@@ -511,7 +526,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "use `farkle two-seed-pipeline` instead.",
                 extra={"stage": "cli", "command": "analyze:two-seed-pipeline"},
             )
-            seed_pair = cfg.sim.require_seed_pair()
+            seed_pair = (cfg.sim.seed_list[0], cfg.sim.seed_list[1])
             two_seed_pipeline.run_pipeline(
                 cfg,
                 seed_pair=seed_pair,
@@ -545,7 +560,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "analysis_dir": str(cfg.analysis_dir),
             },
         )
-        seed_pair = cfg.sim.require_seed_pair()
+        seed_pair = (cfg.sim.seed_list[0], cfg.sim.seed_list[1])
         two_seed_pipeline.run_pipeline(
             cfg,
             seed_pair=seed_pair,
