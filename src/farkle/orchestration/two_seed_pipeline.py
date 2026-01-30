@@ -262,12 +262,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parser.parse_args(argv)
     setup_info_logging()
 
-    cfg = load_app_config(Path(args.config))
+    cfg = load_app_config(Path(args.config), seed_list_len=2)
     cfg = apply_dot_overrides(cfg, list(args.overrides or []))
 
     seed_pair = _resolve_seed_pair(args, parser)
-    if seed_pair is None:
-        seed_pair = cfg.sim.require_seed_pair()
+    if seed_pair is not None:
+        cfg.sim.seed_list = list(seed_pair)
+        cfg.sim.seed_pair = seed_pair
+    resolved_seeds = cfg.sim.populate_seed_list(2)
+    seed_pair = (resolved_seeds[0], resolved_seeds[1])
 
     run_pipeline(cfg, seed_pair=seed_pair, force=args.force)
     return 0

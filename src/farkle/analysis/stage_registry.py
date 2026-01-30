@@ -110,7 +110,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         folder_stub="rng",
         disabled_predicate=lambda cfg: (
             not cfg.analysis.run_interseed
-            or cfg.sim.seed_pair is None
+            or cfg.sim.interseed_seed_list() is None
             or cfg.analysis.disable_rng_diagnostics
             or not cfg.analysis.run_rng
         ),

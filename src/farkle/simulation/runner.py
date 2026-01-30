@@ -362,13 +362,11 @@ def _has_existing_outputs(
     ckpt_path: Path,
     row_dir: Path | None,
     metric_chunk_dir: Path | None,
-    strategy_manifest_path: Path,
 ) -> bool:
     candidates = [
         ckpt_path,
         n_dir / f"{n_players}p_checkpoint.parquet",
         n_dir / f"{n_players}p_metrics.parquet",
-        strategy_manifest_path,
     ]
     if any(path.exists() for path in candidates):
         return True
@@ -429,6 +427,12 @@ def _validate_resume_outputs(
                 root_manifest_path,
             )
 
+    has_row_manifest = row_dir is not None and (row_dir / "manifest.jsonl").exists()
+    has_metrics_manifest = (
+        metric_chunk_dir is not None and (metric_chunk_dir / "metrics_manifest.jsonl").exists()
+    )
+    has_legacy_manifest = any(path.exists() for path in legacy_manifest_paths)
+
     if ckpt_path.exists():
         payload = pickle.loads(ckpt_path.read_bytes())
         meta = payload.get("meta")
@@ -441,8 +445,10 @@ def _validate_resume_outputs(
                 raise ValueError(
                     f"Checkpoint metadata mismatch for {key} at {ckpt_path}; rerun with --force."
                 )
-    elif row_dir is None or not (row_dir / "manifest.jsonl").exists():
-        if metric_chunk_dir is None or not (metric_chunk_dir / "metrics_manifest.jsonl").exists():
+    elif not has_row_manifest:
+        if not has_metrics_manifest:
+            if root_manifest_path.exists() and not has_legacy_manifest:
+                return
             raise ValueError(
                 "Existing outputs found without a checkpoint manifest; rerun with --force."
             )
@@ -621,7 +627,6 @@ def run_single_n(
         ckpt_path=ckpt_path,
         row_dir=row_dir,
         metric_chunk_dir=metric_chunk_dir,
-        strategy_manifest_path=cfg.strategy_manifest_root_path(),
     ):
         _validate_resume_outputs(
             cfg=cfg,

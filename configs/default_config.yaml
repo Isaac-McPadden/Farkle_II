@@ -10,8 +10,8 @@ io:
 sim:
   n_players_list: [5]       # list[int]: table sizes to simulate
   num_shuffles: 100         # int: default shuffle count per table size
-  seed: 0                   # int: primary RNG seed (results_root uses seed suffix)
-  seed_pair: [0, 1]          # tuple[int,int]|None: two-seed orchestration pair; seed still drives suffixing
+  seed: 0                   # int: legacy primary RNG seed (results_root uses seed suffix)
+  seed_list: [0]            # list[int]|None: explicit seeds (len 1 single-seed, len 2 two-seed)
   expanded_metrics: false   # bool: write expanded metrics parquet
   row_dir: null             # Path|str|None: relative folder for row dumps; null skips write
   per_n: {}                 # dict[int, SimConfig]: per-table overrides mirroring sim options
@@ -25,8 +25,8 @@ sim:
     tail: "two_sided"       # str: 'one_sided' or 'two_sided'
     full_pairwise: true     # bool: compare all pairs vs top-1
     endpoint: "pairwise"    # str: 'pairwise' or 'top1'
-    min_games_floor: 2000   # int: minimum scheduled games
-    max_games_cap: null     # int|None: optional cap on games
+    min_games_floor: 2000   # int: minimum games per strategy (num_shuffles); no adjustment to hit total-games caps
+    max_games_cap: null     # int|None: cap per strategy; totals derive from n_strategies/k without rebalancing
     use_BY: false           # bool: enable Benjamini-Yekutieli correction for BH
     bh_target_rank: null    # int|None: target BH order statistic i*
     bh_target_frac: 0.03    # float|None: target discovery fraction for BH

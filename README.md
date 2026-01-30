@@ -38,7 +38,7 @@ io:
 sim:
   n_players_list: [5]
   num_shuffles: 300
-  seed: 42
+  seed_list: [42]
   n_jobs: 6
   expanded_metrics: false
   row_dir: data/results/fast_seed_42/rows
@@ -53,7 +53,9 @@ ingest:
 ```
 
 `io.results_dir_prefix` is combined with `sim.seed` to form the results root
-directory: `data/<results_dir_prefix>_seed_<seed>` for single-seed runs.
+directory: `data/<results_dir_prefix>_seed_<seed>` for single-seed runs. When
+`sim.seed_list` is set, `sim.seed` is derived from the first entry for
+deterministic naming.
 
 Analysis stage directories are numbered automatically by the resolved
 ``StageLayout``. Use the convenience helpers on :class:`farkle.config.AppConfig`
@@ -62,7 +64,9 @@ instead of string concatenation when you need a path (for example
 
 Configuration overlays supplied with `--config` are loaded in order; inline
 overrides use dotted keys that match the dataclass structure. For example:
-`--set sim.n_jobs=12 --set sim.seed=123`.
+`--set sim.n_jobs=12 --set sim.seed=123`. The canonical multi-command seed
+setting lives in `sim.seed_list` (length 1 for single-seed, length 2 for
+two-seed orchestration); `sim.seed` remains as a legacy single-seed override.
 
 ## CLI Commands
 
@@ -121,7 +125,7 @@ into numbered directories under `analysis/`:
   before branching into downstream analytics.
 - `two-seed-pipeline` - deprecated alias for the top-level `two-seed-pipeline`
   command, which runs the two-seed simulation + analysis orchestration using
-  `sim.seed_pair`.
+  `sim.seed_list` with two seeds.
 
 ```bash
 farkle --config configs/farkle_mega_config.yaml analyze pipeline
@@ -133,7 +137,7 @@ farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
 
 ### `two-seed-pipeline`
 
-Run simulations and per-seed analysis for both entries in `sim.seed_pair`, then
+Run simulations and per-seed analysis for both entries in `sim.seed_list`, then
 run the interseed comparisons. Interseed artifacts (variance/meta/TrueSkill/agreement
 outputs plus `interseed_summary.json`) are written under the seed-pair results
 directory in `interseed_analysis/`.
@@ -144,7 +148,7 @@ farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
 
 ### `farkle-two-seed-pipeline`
 
-Run simulations and per-seed analysis for both entries in `sim.seed_pair`, then
+Run simulations and per-seed analysis for both entries in `sim.seed_list`, then
 run the interseed comparisons. This legacy entry point is equivalent to the
 unified `farkle two-seed-pipeline` command.
 
