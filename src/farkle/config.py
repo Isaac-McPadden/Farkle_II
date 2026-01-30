@@ -564,6 +564,20 @@ class AppConfig:
                 return None
         return input_root / stage_folder / Path(*parts)
 
+    def resolve_input_stage_dir(self, key: str, *parts: str | Path) -> Path | None:
+        """Resolve an input-stage directory without requiring the active output layout."""
+
+        interseed_path = self._input_stage_path(key, *parts)
+        if interseed_path is not None:
+            return interseed_path
+        folder = self.stage_layout.folder_for(key)
+        if folder is None:
+            return None
+        path = self.analysis_dir / folder
+        if parts:
+            path = path.joinpath(*map(Path, parts))
+        return path
+
     def _interseed_input_folder(self, key: str | None) -> str | None:
         """Return the input-layout folder name for a stage key, when configured."""
 
@@ -941,13 +955,15 @@ class AppConfig:
     @property
     def curated_parquet(self) -> Path:
         """Location of the combined curated parquet spanning all player counts."""
-        pooled_dir = self.combine_pooled_dir()
+        pooled_dir = self.resolve_input_stage_dir("combine", "pooled")
+        if pooled_dir is None:
+            pooled_dir = self.analysis_dir / "combine" / "pooled"
         preferred = pooled_dir / "all_ingested_rows.parquet"
         candidates = [preferred]
-        interseed_combine = self._input_stage_path(
+        interseed_combine = self.resolve_input_stage_dir(
             "combine", f"{self.combine_max_players}p", "pooled"
         )
-        interseed_curate = self._input_stage_path("curate")
+        interseed_curate = self.resolve_input_stage_dir("curate")
         if interseed_combine is not None:
             candidates.append(interseed_combine / "all_ingested_rows.parquet")
         if interseed_curate is not None:
@@ -964,7 +980,7 @@ class AppConfig:
             )
         candidates.extend(
             [
-                self.combine_stage_dir
+                (self.resolve_input_stage_dir("combine") or self.analysis_dir / "combine")
                 / f"{self.combine_max_players}p"
                 / "pooled"
                 / "all_ingested_rows.parquet",
@@ -1018,12 +1034,10 @@ class AppConfig:
 
         parquet = self.curated_parquet
         preferred = parquet.with_suffix(".manifest.jsonl")
+        combine_dir = self.resolve_input_stage_dir("combine") or self.analysis_dir / "combine"
         legacy_candidates = [
-            self.combine_stage_dir
-            / f"{self.combine_max_players}p"
-            / "pooled"
-            / "all_ingested_rows.manifest.jsonl",
-            self.combine_stage_dir / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
+            combine_dir / f"{self.combine_max_players}p" / "pooled" / "all_ingested_rows.manifest.jsonl",
+            combine_dir / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
             self.analysis_dir / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
             self.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.manifest.jsonl",
         ]
