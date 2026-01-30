@@ -236,6 +236,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     app_cfg = load_app_config(Path(args.config))
     if seed_pair_override is not None:
+        app_cfg.sim.seed_list = list(seed_pair_override)
         app_cfg.sim.seed_pair = seed_pair_override
     run_game_stats = (
         app_cfg.analysis.run_game_stats if args.run_game_stats is None else args.run_game_stats

@@ -9,6 +9,7 @@ from __future__ import annotations
 import dataclasses
 import re
 from dataclasses import dataclass, field, is_dataclass
+import logging
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -29,9 +30,26 @@ from farkle.utils.yaml_helpers import expand_dotted_keys
 if TYPE_CHECKING:  # pragma: no cover - used for type checking only
     from farkle.analysis.stage_registry import StageLayout
 
+
+LOGGER = logging.getLogger(__name__)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataclasses (schema)
 # ─────────────────────────────────────────────────────────────────────────────
+
+SEED_LIST_LENGTHS_BY_COMMAND: dict[str, int] = {
+    "run": 1,
+    "analyze": 1,
+    "two-seed": 2,
+    "two-seed-pipeline": 2,
+}
+
+
+def expected_seed_list_length(command: str, *, subcommand: str | None = None) -> int | None:
+    """Return the expected seed-list length for a CLI command."""
+    if command == "analyze" and subcommand == "two-seed-pipeline":
+        return 2
+    return SEED_LIST_LENGTHS_BY_COMMAND.get(command)
 
 
 @dataclass
@@ -67,17 +85,20 @@ class PowerDesign:
 class SimConfig:
     """Simulation parameters.
 
-    ``seed`` remains the primary seed for single-seed workflows and for naming
-    seed-suffixed results directories. ``seed_pair`` is reserved for two-seed
-    orchestration; when both are set, ``seed`` governs single-seed behavior and
-    ``seed_pair`` governs the dual-seed run.
+    ``seed_list`` is the canonical seed container. Single-seed commands (run,
+    analyze, pipeline) require exactly one seed; two-seed orchestration requires
+    exactly two seeds. ``seed`` remains the legacy primary seed for single-seed
+    workflows and for naming seed-suffixed results directories. ``seed_pair`` is
+    retained for compatibility with two-seed orchestration configs.
     """
 
     n_players_list: list[int] = field(default_factory=lambda: [5])
     num_shuffles: int = 100
     seed: int = 0
+    seed_list: list[int] | None = None
+    """Explicit seed list (len 1 for single-seed, len 2 for two-seed)."""
     seed_pair: tuple[int, int] | None = None
-    """Optional two-seed tuple for dual-seed orchestration (validated on load)."""
+    """Legacy two-seed tuple for dual-seed orchestration (validated on load)."""
     expanded_metrics: bool = False
     row_dir: Path | None = None
     metric_chunk_dir: Path | None = None
@@ -101,8 +122,61 @@ class SimConfig:
     include_stop_at: bool = False
     include_stop_at_heuristic: bool = False
 
+    def interseed_seed_list(self) -> list[int] | None:
+        """Return the two seeds used for interseed analysis, if configured."""
+        if self.seed_list is not None:
+            return list(self.seed_list) if len(self.seed_list) == 2 else None
+        if self.seed_pair is not None:
+            return list(self.seed_pair)
+        return None
+
+    def resolve_seed_list(self, expected_len: int) -> list[int]:
+        """Resolve a seed list of ``expected_len`` from available seed settings."""
+        if expected_len < 1:
+            raise ValueError("expected_len must be >= 1")
+        if self.seed_list is not None:
+            if len(self.seed_list) != expected_len:
+                raise ValueError(
+                    f"sim.seed_list must contain exactly {expected_len} seeds, "
+                    f"got {self.seed_list!r}"
+                )
+            return list(self.seed_list)
+        if expected_len == 1:
+            return [self.seed]
+        if expected_len == 2:
+            if self.seed_pair is None:
+                raise ValueError(
+                    "sim.seed_list or sim.seed_pair must be set for two-seed orchestration"
+                )
+            return list(self.seed_pair)
+        raise ValueError(f"Unsupported expected seed length {expected_len}")
+
+    def populate_seed_list(self, expected_len: int) -> list[int]:
+        """Populate ``seed_list`` based on current config and return it."""
+        if self.seed_list is not None and self.seed_pair is not None:
+            if list(self.seed_pair) != list(self.seed_list):
+                raise ValueError(
+                    "sim.seed_list and sim.seed_pair must match when both are set"
+                )
+        seeds = self.resolve_seed_list(expected_len)
+        self.seed_list = list(seeds)
+        if expected_len == 1:
+            self.seed = seeds[0]
+        elif expected_len == 2:
+            if self.seed_pair is None:
+                self.seed_pair = (seeds[0], seeds[1])
+            if self.seed != seeds[0]:
+                self.seed = seeds[0]
+        return seeds
+
     def require_seed_pair(self) -> tuple[int, int]:
         """Return ``seed_pair`` or raise if two-seed orchestration is requested."""
+        if self.seed_list is not None:
+            if len(self.seed_list) != 2:
+                raise ValueError(
+                    f"sim.seed_list must contain exactly two seeds, got {self.seed_list!r}"
+                )
+            return (self.seed_list[0], self.seed_list[1])
         if self.seed_pair is None:
             raise ValueError("sim.seed_pair must be set for two-seed orchestration")
         return self.seed_pair
@@ -1108,6 +1182,19 @@ def _normalize_results_dir_prefix(value: str | Path) -> Path:
     return path
 
 
+def _normalize_seed_list(sim: SimConfig) -> None:
+    """Normalize and validate ``seed_list`` for a :class:`SimConfig` instance."""
+    if sim.seed_list is None:
+        return
+    if isinstance(sim.seed_list, (list, tuple)):
+        seed_list = [int(s) for s in sim.seed_list]
+    else:
+        raise TypeError("sim.seed_list must be a list/tuple of integers")
+    if not seed_list:
+        raise ValueError("sim.seed_list must contain at least one seed")
+    sim.seed_list = seed_list
+
+
 def _normalize_seed_pair(sim: SimConfig, *, seed_provided: bool) -> None:
     """Normalize and validate ``seed_pair`` for a :class:`SimConfig` instance."""
     if sim.seed_pair is None:
@@ -1119,11 +1206,64 @@ def _normalize_seed_pair(sim: SimConfig, *, seed_provided: bool) -> None:
     if len(seed_pair) != 2:
         raise ValueError(f"sim.seed_pair must contain exactly two seeds, got {seed_pair!r}")
     sim.seed_pair = seed_pair
+    if seed_provided and sim.seed != seed_pair[0]:
+        raise ValueError(
+            "sim.seed must match seed_pair[0] when both are set "
+            f"(seed={sim.seed}, seed_pair={seed_pair})"
+        )
     if not seed_provided:
         sim.seed = seed_pair[0]
 
 
-def load_app_config(*overlays: Path) -> AppConfig:
+def _validate_seed_sources(
+    sim: SimConfig,
+    *,
+    seed_provided: bool,
+    seed_list_provided: bool,
+    seed_pair_provided: bool,
+    expected_seed_len: int | None,
+    context: str,
+) -> None:
+    """Validate seed configuration for the provided context."""
+    if sim.seed_list is not None:
+        if expected_seed_len is not None and len(sim.seed_list) != expected_seed_len:
+            raise ValueError(
+                f"{context}: sim.seed_list must contain exactly {expected_seed_len} seeds, "
+                f"got {sim.seed_list!r}"
+            )
+        if seed_list_provided and (seed_provided or seed_pair_provided):
+            LOGGER.warning(
+                "%s: sim.seed_list overrides legacy sim.seed/seed_pair settings",
+                context,
+                extra={
+                    "stage": "config",
+                    "seed_list": list(sim.seed_list),
+                    "seed": sim.seed,
+                    "seed_pair": list(sim.seed_pair) if sim.seed_pair is not None else None,
+                },
+            )
+        if sim.seed != sim.seed_list[0] and seed_provided:
+            LOGGER.warning(
+                "%s: sim.seed overwritten by sim.seed_list[0] for deterministic naming",
+                context,
+                extra={
+                    "stage": "config",
+                    "seed_list": list(sim.seed_list),
+                    "seed": sim.seed,
+                },
+            )
+        if sim.seed != sim.seed_list[0]:
+            sim.seed = sim.seed_list[0]
+        if sim.seed_pair is not None and list(sim.seed_pair) != list(sim.seed_list):
+            raise ValueError(
+                f"{context}: sim.seed_list and sim.seed_pair must match when both are set "
+                f"(seed_list={sim.seed_list!r}, seed_pair={sim.seed_pair!r})"
+            )
+        if sim.seed_pair is None and len(sim.seed_list) == 2:
+            sim.seed_pair = (sim.seed_list[0], sim.seed_list[1])
+
+
+def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppConfig:
     """Deterministically merge one or more YAML overlays into an :class:`AppConfig`.
 
     Files are read in the order provided, dotted keys are expanded, and later overlays
@@ -1149,10 +1289,16 @@ def load_app_config(*overlays: Path) -> AppConfig:
                 io_section.pop("results_dir")
             )
     seed_provided = False
+    seed_list_provided = False
+    seed_pair_provided = False
     per_n_seed_provided: dict[int, bool] = {}
+    per_n_seed_list_provided: dict[int, bool] = {}
+    per_n_seed_pair_provided: dict[int, bool] = {}
     if "sim" in data:
         sim_section = data["sim"]
         seed_provided = "seed" in sim_section
+        seed_list_provided = "seed_list" in sim_section
+        seed_pair_provided = "seed_pair" in sim_section
         if "n_players" in sim_section and "n_players_list" not in sim_section:
             sim_section["n_players_list"] = [sim_section.pop("n_players")]
         if (
@@ -1164,11 +1310,17 @@ def load_app_config(*overlays: Path) -> AppConfig:
         per_n_section = sim_section.get("per_n")
         if isinstance(per_n_section, Mapping):
             for key, val in per_n_section.items():
-                if isinstance(val, Mapping) and "seed" in val:
+                if isinstance(val, Mapping):
                     try:
-                        per_n_seed_provided[int(key)] = True
+                        per_n_key = int(key)
                     except (TypeError, ValueError):
                         continue
+                    if "seed" in val:
+                        per_n_seed_provided[per_n_key] = True
+                    if "seed_list" in val:
+                        per_n_seed_list_provided[per_n_key] = True
+                    if "seed_pair" in val:
+                        per_n_seed_pair_provided[per_n_key] = True
     if "analysis" in data:
         analysis_section = data["analysis"]
         if "run_tiering_report" in analysis_section:
@@ -1244,10 +1396,29 @@ def load_app_config(*overlays: Path) -> AppConfig:
         head2head=build(Head2HeadConfig, data.get("head2head", {})),
         hgb=build(HGBConfig, data.get("hgb", {})),
     )
+    _normalize_seed_list(cfg.sim)
     _normalize_seed_pair(cfg.sim, seed_provided=seed_provided)
+    _validate_seed_sources(
+        cfg.sim,
+        seed_provided=seed_provided,
+        seed_list_provided=seed_list_provided,
+        seed_pair_provided=seed_pair_provided,
+        expected_seed_len=seed_list_len,
+        context="load_app_config",
+    )
     if cfg.sim.per_n:
         for key, sim_cfg in cfg.sim.per_n.items():
-            _normalize_seed_pair(sim_cfg, seed_provided=per_n_seed_provided.get(int(key), False))
+            key_int = int(key)
+            _normalize_seed_list(sim_cfg)
+            _normalize_seed_pair(sim_cfg, seed_provided=per_n_seed_provided.get(key_int, False))
+            _validate_seed_sources(
+                sim_cfg,
+                seed_provided=per_n_seed_provided.get(key_int, False),
+                seed_list_provided=per_n_seed_list_provided.get(key_int, False),
+                seed_pair_provided=per_n_seed_pair_provided.get(key_int, False),
+                expected_seed_len=None,
+                context=f"load_app_config(sim.per_n[{key_int}])",
+            )
     return cfg
 
 
@@ -1297,8 +1468,12 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         type_hints = get_type_hints(type(section))
         annotation = type_hints.get(option)
         new_value = _coerce(raw, current, annotation)
-        if section_name == "io" and option == "results_dir_prefix"and isinstance(new_value, (str, Path)):
-                new_value = _normalize_results_dir_prefix(new_value)
+        if (
+            section_name == "io"
+            and option == "results_dir_prefix"
+            and isinstance(new_value, (str, Path))
+        ):
+            new_value = _normalize_results_dir_prefix(new_value)
         setattr(section, option, new_value)
     return cfg
 
@@ -1315,6 +1490,7 @@ __all__ = [
     "HGBConfig",
     "PowerDesign",
     "AppConfig",
+    "expected_seed_list_length",
     "load_app_config",
     "apply_dot_overrides",
 ]

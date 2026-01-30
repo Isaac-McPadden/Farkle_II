@@ -19,9 +19,9 @@ farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
   and the flag may be supplied multiple times.
 - `--log-level LEVEL` - set the root logging level before dispatching the
   command. Accepts standard names (`INFO`, `DEBUG`, `WARNING`) or numeric levels.
-- `--seed-a INT` / `--seed-b INT` - override the two-seed tuple used by
-  `cfg.sim.seed_pair` when running dual-seed orchestration (provide both flags).
-- `--seed-pair A B` - override `cfg.sim.seed_pair` with two integer seeds in a
+- `--seed-a INT` / `--seed-b INT` - override the two-seed list used by
+  `cfg.sim.seed_list` when running dual-seed orchestration (provide both flags).
+- `--seed-pair A B` - override `cfg.sim.seed_list` with two integer seeds in a
   single flag (mutually exclusive with `--seed-a`/`--seed-b`).
 
 ## Subcommands
@@ -35,6 +35,7 @@ Options:
 - `--row-dir PATH` - store per-game rows under the provided directory by
   setting `cfg.sim.row_dir` before execution.
   Results are written to `data/<results_dir_prefix>_seed_<seed>` for single-seed runs.
+  When `sim.seed_list` is set, the first entry determines `sim.seed`.
 
 Example:
 
@@ -71,7 +72,7 @@ Subcommands:
   `05_rng` when enabled.
 - `two-seed-pipeline` - deprecated alias for the top-level `two-seed-pipeline`
   command. Runs the two-seed simulation + analysis orchestrator for
-  `cfg.sim.seed_pair`. This is equivalent to the legacy
+  `cfg.sim.seed_list` (two seeds required). This is equivalent to the legacy
   `farkle-two-seed-pipeline` console script and module entry point.
 - `analytics` - perform statistical analysis computation steps (TrueSkill, Bonferroni head-to-head, HGB modeling, etc.) according to the configuration.
 - `pipeline` - run `preprocess` followed by `analytics` for a full end-to-end pass.
@@ -83,7 +84,7 @@ Use `--help` on any subcommand for additional details (for example,
 `farkle analyze metrics --help`).
 
 ### `two-seed-pipeline`
-Run the two-seed simulation + analysis orchestrator for `cfg.sim.seed_pair`.
+Run the two-seed simulation + analysis orchestrator for `cfg.sim.seed_list`.
 
 Example:
 
