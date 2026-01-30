@@ -52,8 +52,8 @@ sim:
     baseline_rate: null           # None -> 1/n_players
     full_pairwise: false          # num_hypotheses is n*(n-1)/2 if true else n-1
     tail: "two_sided"             # "one_sided" | "two_sided"
-    min_games_floor: 2000
-    max_games_cap: null
+    min_games_floor: 2000          # per-strategy games (num_shuffles); no adjustment to hit total-games caps
+    max_games_cap: null            # per-strategy cap; totals derive from n_strategies/k without rebalancing
     use_BY: false                 # if true and using BH, use q/H_m (more conservative)
     bh_target_rank: null          # Only use one of bh_target_rank and bh_target_frac /
     bh_target_frac: 0.03          # and set the other to null
@@ -107,8 +107,8 @@ head2head:
     baseline_rate: 0.50
     full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
     tail: "two_sided"
-    min_games_floor: 2000
-    max_games_cap: null
+    min_games_floor: 2000         # per-strategy games before deriving games-per-pair (ceil applied)
+    max_games_cap: null           # per-strategy cap; games-per-pair totals may round up if not divisible
     use_BY: null                  # unused, here for the PowerDesign class
 
 hgb:
