@@ -224,8 +224,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
 def _discover_seed_summaries(cfg: AppConfig) -> list[Path]:
     candidates: list[Path] = []
-    stage_root = cfg.seed_summaries_stage_dir
-    if stage_root.exists():
+    stage_root = cfg.stage_dir_if_active("seed_summaries")
+    if stage_root is not None and stage_root.exists():
         candidates.extend(sorted(stage_root.rglob("*.parquet")))
 
     meta_root = cfg.meta_analysis_dir

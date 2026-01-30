@@ -318,7 +318,11 @@ def _write_json_atomic(payload: Mapping[str, float | str], path: Path) -> None:
 def _collect_seed_summaries(cfg: AppConfig) -> dict[int, dict[int, Path]]:
     """Collect per-seed summary files keyed by player count and seed."""
 
-    search_dirs = [cfg.seed_summaries_stage_dir, cfg.meta_analysis_dir]
+    search_dirs: list[Path] = []
+    stage_dir = cfg.stage_dir_if_active("seed_summaries")
+    if stage_dir is not None:
+        search_dirs.append(stage_dir)
+    search_dirs.append(cfg.meta_analysis_dir)
     if cfg.analysis_dir not in search_dirs:
         search_dirs.append(cfg.analysis_dir)
 
