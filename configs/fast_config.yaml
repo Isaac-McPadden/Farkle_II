@@ -93,7 +93,7 @@ trueskill:
   draw_probability: 0.0
   pooled_weights_by_k: null
 
-head_to_head:
+head2head:
   n_jobs: 4
   games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
   bonferroni_total_games_safeguard: 100000000 # skip Bonferroni H2H when estimated total games exceed this
