@@ -394,12 +394,34 @@ class AppConfig:
 
         self._stage_layout = layout
 
-    def stage_dir(self, key: str) -> Path:
+    def resolve_stage_dir(
+        self,
+        key: str,
+        *,
+        allow_missing: bool = False,
+        required_by: str | None = "analysis pipeline",
+        create: bool = True,
+    ) -> Path:
+        """Return the resolved stage directory for ``key`` with optional fallback."""
+
+        folder = self.stage_layout.folder_for(key)
+        if folder is None:
+            if not allow_missing:
+                requirement = f" required by {required_by}" if required_by else ""
+                raise KeyError(
+                    f"Stage {key!r} is not active in the resolved layout{requirement}."
+                )
+            stage_root = self.analysis_dir / key
+        else:
+            stage_root = self.analysis_dir / folder
+        if create:
+            stage_root.mkdir(parents=True, exist_ok=True)
+        return stage_root
+
+    def stage_dir(self, key: str, *, required_by: str | None = "analysis pipeline") -> Path:
         """Return the resolved stage directory for ``key`` and create it."""
 
-        stage_root = self.analysis_dir / self.stage_layout.require_folder(key)
-        stage_root.mkdir(parents=True, exist_ok=True)
-        return stage_root
+        return self.resolve_stage_dir(key, allow_missing=False, required_by=required_by)
 
     def stage_dir_if_active(self, key: str, *parts: str | Path) -> Path | None:
         """Return the resolved stage directory for ``key`` when active."""
@@ -537,7 +559,7 @@ class AppConfig:
 
     @property
     def curate_stage_dir(self) -> Path:
-        return self.stage_subdir("curate")
+        return self.resolve_stage_dir("curate", allow_missing=True)
 
     @property
     def combine_stage_dir(self) -> Path:
@@ -703,7 +725,7 @@ class AppConfig:
     def data_dir(self) -> Path:
         """Root directory for curated data under the curate stage."""
 
-        return self.curate_stage_dir
+        return self.resolve_stage_dir("curate", allow_missing=True)
 
     def n_dir(self, n: int) -> Path:
         """Convenience accessor for a specific ``<n>_players`` directory."""
@@ -1465,7 +1487,14 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         if not hasattr(section, option):
             raise AttributeError(f"Unknown option {option!r} in section {section_name!r}")
         current = getattr(section, option)
-        type_hints = get_type_hints(type(section))
+        typing_ns = globals().copy()
+        if "StageLayout" not in typing_ns:
+            try:
+                from farkle.analysis.stage_registry import StageLayout
+            except ImportError:
+                StageLayout = None  # type: ignore[assignment]
+            typing_ns["StageLayout"] = StageLayout
+        type_hints = get_type_hints(type(section), globalns=typing_ns)
         annotation = type_hints.get(option)
         new_value = _coerce(raw, current, annotation)
         if (

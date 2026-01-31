@@ -7,7 +7,8 @@ from pathlib import Path
 import pytest
 import yaml
 
-from farkle.config import AppConfig, apply_dot_overrides, load_app_config
+from farkle.analysis.stage_registry import StageDefinition, StageLayout, StagePlacement
+from farkle.config import AppConfig, IOConfig, apply_dot_overrides, load_app_config
 
 
 @pytest.fixture
@@ -163,3 +164,34 @@ def test_apply_dot_overrides_unknown_option() -> None:
 
     with pytest.raises(AttributeError):
         apply_dot_overrides(cfg, ["sim.unknown=1"])
+
+
+def test_curated_parquet_falls_back_without_curate_stage(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg.set_stage_layout(
+        StageLayout(
+            placements=[
+                StagePlacement(
+                    definition=StageDefinition(key="combine", group="pipeline"),
+                    index=0,
+                    folder_name="00_combine",
+                )
+            ]
+        )
+    )
+
+    curated = cfg.curated_parquet
+
+    assert curated.name == "all_ingested_rows.parquet"
+    assert cfg.data_dir == cfg.analysis_dir / "curate"
+
+
+def test_curate_stage_dir_prefers_layout_folder(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    layout = cfg.stage_layout
+
+    cfg.set_stage_layout(layout)
+
+    folder = layout.folder_for("curate")
+    assert folder is not None
+    assert cfg.curate_stage_dir == cfg.analysis_dir / folder
