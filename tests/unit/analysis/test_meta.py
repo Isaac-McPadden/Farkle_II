@@ -10,6 +10,7 @@ import pytest
 
 from farkle.analysis import meta
 from farkle.config import AppConfig
+from farkle.simulation.simulation import generate_strategy_grid
 
 
 def _make_cfg(tmp_path: Path) -> AppConfig:
@@ -231,3 +232,27 @@ def test_apply_strategy_presence_filters_and_reports_missing():
 
     assert all(df["strategy_id"].tolist() == ["A"] for df in filtered)
     assert missing == {"B": [2], "C": [1]}
+
+
+def test_meta_strategy_intersection_non_empty_for_shared_grid() -> None:
+    _, meta_frame = generate_strategy_grid(
+        score_thresholds=[200],
+        dice_thresholds=[0],
+        smart_five_opts=[False],
+        smart_one_opts=[False],
+        consider_score_opts=[True],
+        consider_dice_opts=[True],
+        auto_hot_dice_opts=[False],
+        run_up_score_opts=[False],
+    )
+    strategy_ids = meta_frame["strategy_id"].tolist()
+    frames = [
+        pd.DataFrame({"strategy_id": strategy_ids, "seed": [1] * len(strategy_ids)}),
+        pd.DataFrame({"strategy_id": strategy_ids, "seed": [2] * len(strategy_ids)}),
+    ]
+
+    filtered, missing = meta._apply_strategy_presence(frames)
+
+    assert missing == {}
+    assert filtered
+    assert filtered[0]["strategy_id"].tolist()

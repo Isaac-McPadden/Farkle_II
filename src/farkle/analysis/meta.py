@@ -123,7 +123,14 @@ def _ensure_strategy_sets(seed_dfs: list[pd.DataFrame]) -> None:
 def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.0) -> MetaResult:
     """Pool per-seed win rates into per-strategy meta estimates."""
 
-    cleaned = [df.copy() for df in seed_dfs if df is not None and not df.empty]
+    cleaned: list[pd.DataFrame] = []
+    for df in seed_dfs:
+        if df is None or df.empty:
+            continue
+        normalized = df.copy()
+        if "strategy_id" in normalized:
+            normalized["strategy_id"] = normalized["strategy_id"].astype(str)
+        cleaned.append(normalized)
     if not cleaned:
         empty = pd.DataFrame(columns=POOLED_COLUMNS)
         return MetaResult(empty, Q=0.0, I2=0.0, tau2=0.0, method="fixed")
@@ -268,7 +275,13 @@ def _apply_strategy_presence(
         ]
         missing[strategy] = missing_seeds
 
-    filtered = [df[df["strategy_id"].isin(common)].copy() for df in frames]
+    filtered: list[pd.DataFrame] = []
+    for df in frames:
+        ids = df["strategy_id"].astype(str)
+        mask = ids.isin(common)
+        filtered_df = df.copy()
+        filtered_df["strategy_id"] = ids
+        filtered.append(filtered_df[mask].copy())
     return filtered, missing
 
 
@@ -452,6 +465,26 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
             frames.append(df)
         if not frames:
             continue
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            seed_sets: list[dict[str, object]] = []
+            for df in frames:
+                seed = int(df["seed"].iloc[0]) if "seed" in df.columns else None
+                ids = sorted(df["strategy_id"].astype(str).unique().tolist())
+                seed_sets.append(
+                    {
+                        "seed": seed,
+                        "count": len(ids),
+                        "sample": ids[:5],
+                    }
+                )
+            LOGGER.debug(
+                "Meta pooling strategy sets",
+                extra={
+                    "stage": "meta",
+                    "players": players,
+                    "sets": seed_sets,
+                },
+            )
         frames, missing = _apply_strategy_presence(frames)
         if not frames or frames[0].empty:
             LOGGER.info(
@@ -459,6 +492,17 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
                 extra={"stage": "meta", "players": players},
             )
             continue
+        if LOGGER.isEnabledFor(logging.DEBUG):
+            common_ids = sorted(frames[0]["strategy_id"].astype(str).unique().tolist())
+            LOGGER.debug(
+                "Meta pooling common strategies",
+                extra={
+                    "stage": "meta",
+                    "players": players,
+                    "count": len(common_ids),
+                    "sample": common_ids[:5],
+                },
+            )
         if missing:
             LOGGER.info(
                 "Strategy presence pruning",

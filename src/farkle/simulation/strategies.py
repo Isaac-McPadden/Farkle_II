@@ -307,9 +307,25 @@ class StopAtStrategy(ThresholdStrategy):
 # ---------------------------------------------------------------------------
 
 
-def _coerce_options(options: Sequence[Any] | None, fallback: Iterable[Any]) -> tuple[Any, ...]:
-    """Return an immutable tuple using ``fallback`` when ``options`` is None."""
-    return tuple(fallback) if options is None else tuple(options)
+def _coerce_options(
+    options: Sequence[Any] | None,
+    fallback: Iterable[Any],
+    *,
+    normalize: bool = False,
+) -> tuple[Any, ...]:
+    """Return an immutable tuple using ``fallback`` when ``options`` is None.
+
+    When ``normalize`` is True, attempt to sort the provided options so that
+    strategy identifiers remain deterministic even if configuration ordering
+    changes across runs.
+    """
+    values = tuple(fallback) if options is None else tuple(options)
+    if normalize and options is not None:
+        try:
+            return tuple(sorted(values))
+        except TypeError:
+            return values
+    return values
 
 
 def _favor_options(sf: bool, cs: bool, cd: bool) -> tuple[FavorDiceOrScore, ...]:
@@ -525,28 +541,46 @@ class StrategyGridOptions:
     ) -> "StrategyGridOptions":
         return cls(
             score_thresholds=_coerce_options(
-                score_thresholds, DEFAULT_STRATEGY_GRID["score_thresholds"]
+                score_thresholds,
+                DEFAULT_STRATEGY_GRID["score_thresholds"],
+                normalize=score_thresholds is not None and not isinstance(score_thresholds, tuple),
             ),
             dice_thresholds=_coerce_options(
-                dice_thresholds, DEFAULT_STRATEGY_GRID["dice_thresholds"]
+                dice_thresholds,
+                DEFAULT_STRATEGY_GRID["dice_thresholds"],
+                normalize=dice_thresholds is not None and not isinstance(dice_thresholds, tuple),
             ),
             smart_five_opts=_coerce_options(
-                smart_five_opts, DEFAULT_STRATEGY_GRID["smart_five_opts"]
+                smart_five_opts,
+                DEFAULT_STRATEGY_GRID["smart_five_opts"],
+                normalize=smart_five_opts is not None and not isinstance(smart_five_opts, tuple),
             ),
             smart_one_opts=_coerce_options(
-                smart_one_opts, DEFAULT_STRATEGY_GRID["smart_one_opts"]
+                smart_one_opts,
+                DEFAULT_STRATEGY_GRID["smart_one_opts"],
+                normalize=smart_one_opts is not None and not isinstance(smart_one_opts, tuple),
             ),
             consider_score_opts=_coerce_options(
-                consider_score_opts, DEFAULT_STRATEGY_GRID["consider_score_opts"]
+                consider_score_opts,
+                DEFAULT_STRATEGY_GRID["consider_score_opts"],
+                normalize=consider_score_opts is not None
+                and not isinstance(consider_score_opts, tuple),
             ),
             consider_dice_opts=_coerce_options(
-                consider_dice_opts, DEFAULT_STRATEGY_GRID["consider_dice_opts"]
+                consider_dice_opts,
+                DEFAULT_STRATEGY_GRID["consider_dice_opts"],
+                normalize=consider_dice_opts is not None and not isinstance(consider_dice_opts, tuple),
             ),
             auto_hot_dice_opts=_coerce_options(
-                auto_hot_dice_opts, DEFAULT_STRATEGY_GRID["auto_hot_dice_opts"]
+                auto_hot_dice_opts,
+                DEFAULT_STRATEGY_GRID["auto_hot_dice_opts"],
+                normalize=auto_hot_dice_opts is not None
+                and not isinstance(auto_hot_dice_opts, tuple),
             ),
             run_up_score_opts=_coerce_options(
-                run_up_score_opts, DEFAULT_STRATEGY_GRID["run_up_score_opts"]
+                run_up_score_opts,
+                DEFAULT_STRATEGY_GRID["run_up_score_opts"],
+                normalize=run_up_score_opts is not None and not isinstance(run_up_score_opts, tuple),
             ),
             include_stop_at=include_stop_at,
             include_stop_at_heuristic=include_stop_at_heuristic,
