@@ -6,6 +6,7 @@ import pytest
 
 import farkle.analysis.run_bonferroni_head2head as rb
 from farkle.analysis.stage_registry import StageDefinition, StageLayout, StagePlacement
+from farkle.analysis.stage_state import read_stage_done, stage_done_path
 from farkle.config import AppConfig
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import ThresholdStrategy
@@ -169,6 +170,30 @@ def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.Mon
 
     assert pair_jobs
     assert all(job == 2 for job in pair_jobs)
+
+
+def test_run_bonferroni_head2head_safeguard_skips(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    cfg.head2head.bonferroni_total_games_safeguard = 1
+    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
+    tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
+
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: 10)  # noqa: ANN001
+
+    rb.run_bonferroni_head2head(cfg=cfg)
+
+    pairwise_path = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
+    assert pairwise_path.exists()
+    df = pd.read_parquet(pairwise_path)
+    assert df.empty
+
+    done = read_stage_done(stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"))
+    assert done["status"] == "skipped"
+    assert "safeguard" in str(done["reason"])
 
 
 def test_load_top_strategies_handles_missing_and_invalid(tmp_path: Path, caplog):

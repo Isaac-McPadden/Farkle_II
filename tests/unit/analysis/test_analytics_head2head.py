@@ -13,6 +13,7 @@ import pytest
 
 from farkle.analysis import h2h_analysis, head2head
 from farkle.analysis.stage_registry import resolve_stage_layout
+from farkle.analysis.stage_state import read_stage_done, stage_done_path, write_stage_done
 from farkle.config import AppConfig, IOConfig
 
 
@@ -235,6 +236,51 @@ def test_run_post_h2h_writes_outputs(_cfg: AppConfig, tmp_path: Path) -> None:
 
     manifest = cfg.analysis_dir / cfg.manifest_name
     assert manifest.exists()
+
+
+def test_run_post_h2h_skipped_is_deterministic(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    cfg.sim.seed = 101
+    upstream_done = stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head")
+    write_stage_done(
+        upstream_done,
+        inputs=[],
+        outputs=[],
+        config_sha=cfg.config_sha,
+        status="skipped",
+        reason="safeguard exceeded",
+    )
+
+    h2h_analysis.run_post_h2h(cfg)
+
+    post_done = read_stage_done(stage_done_path(cfg.post_h2h_stage_dir, "post_h2h"))
+    assert post_done["status"] == "skipped"
+    assert post_done["reason"] == "safeguard exceeded"
+
+    graph_path = cfg.post_h2h_stage_dir / "h2h_significant_graph.json"
+    first_graph = json.loads(graph_path.read_text())
+    assert first_graph["tie_break_seed"] == 101
+
+    decisions_path = cfg.post_h2h_stage_dir / "bonferroni_decisions.parquet"
+    assert pd.read_parquet(decisions_path).empty
+
+    first_outputs = {
+        "graph": graph_path.read_text(),
+        "tiers": (cfg.post_h2h_stage_dir / "h2h_significant_tiers.csv").read_text(),
+        "ranking": (cfg.post_h2h_stage_dir / "h2h_significant_ranking.csv").read_text(),
+        "s_tiers": (cfg.post_h2h_stage_dir / "h2h_s_tiers.json").read_text(),
+    }
+
+    h2h_analysis.run_post_h2h(cfg)
+
+    second_outputs = {
+        "graph": graph_path.read_text(),
+        "tiers": (cfg.post_h2h_stage_dir / "h2h_significant_tiers.csv").read_text(),
+        "ranking": (cfg.post_h2h_stage_dir / "h2h_significant_ranking.csv").read_text(),
+        "s_tiers": (cfg.post_h2h_stage_dir / "h2h_s_tiers.json").read_text(),
+    }
+
+    assert first_outputs == second_outputs
 
 
 def test_build_design_kwargs_normalizes_tail(_cfg: AppConfig) -> None:
