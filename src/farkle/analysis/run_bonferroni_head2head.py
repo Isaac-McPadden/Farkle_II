@@ -17,6 +17,7 @@ import pandas as pd
 import pyarrow as pa
 from scipy.stats import binomtest
 
+from farkle.analysis.stage_state import stage_done_path, write_stage_done
 from farkle.config import AppConfig
 from farkle.orchestration.seed_utils import split_seeded_results_dir
 from farkle.simulation.simulation import simulate_many_games_from_seeds
@@ -183,6 +184,23 @@ def _count_pair_wins(
     wins_a = int(seat_counts.get(1, 0))
     wins_b = int(seat_counts.get(2, 0))
     return wins_a, wins_b
+
+
+def _pairwise_schema() -> pa.Schema:
+    return pa.schema(
+        [
+            pa.field("players", pa.int64()),
+            pa.field("seed", pa.int64()),
+            pa.field("pair_id", pa.int64()),
+            pa.field("a", pa.string()),
+            pa.field("b", pa.string()),
+            pa.field("games", pa.int64()),
+            pa.field("wins_a", pa.int64()),
+            pa.field("wins_b", pa.int64()),
+            pa.field("win_rate_a", pa.float64()),
+            pa.field("pval_one_sided", pa.float64()),
+        ]
+    )
 
 
 def run_bonferroni_head2head(
@@ -379,15 +397,40 @@ def run_bonferroni_head2head(
     if safeguard is not None and safeguard > 0:
         estimated_total_games = len(elites) * games_per_strategy / 2
         if estimated_total_games > safeguard:
+            reason = (
+                "estimated_total_games exceeds bonferroni_total_games_safeguard "
+                f"({len(elites)} * {games_per_strategy} / 2 = {estimated_total_games:.0f} > {safeguard})"
+            )
             LOGGER.warning(
-                "Bonferroni head-to-head skipped: safeguard exceeded "
-                f"({len(elites)} * {games_per_strategy} / 2 = {estimated_total_games:.0f} > {safeguard})",
+                "Bonferroni head-to-head skipped: safeguard exceeded",
                 extra={
                     "stage": "head2head",
                     "elite_count": len(elites),
                     "games_per_strategy": games_per_strategy,
                     "safeguard": safeguard,
+                    "reason": reason,
                 },
+            )
+            inputs: list[Path] = [tiers_path]
+            if ratings_path.exists():
+                inputs.append(ratings_path)
+            if metrics_path.exists():
+                inputs.append(metrics_path)
+            outputs = [pairwise_parquet, union_candidates_path]
+            if not pairwise_parquet.exists():
+                empty_table = pa.Table.from_pylist([], schema=_pairwise_schema())
+                write_parquet_atomic(empty_table, pairwise_parquet)
+                LOGGER.info(
+                    "Bonferroni head-to-head: wrote empty pairwise parquet",
+                    extra={"stage": "head2head", "path": str(pairwise_parquet)},
+                )
+            write_stage_done(
+                stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
+                inputs=inputs,
+                outputs=outputs,
+                config_sha=cfg.config_sha,
+                status="skipped",
+                reason=reason,
             )
             return
     opponents = max(0, len(elites) - 1)
@@ -432,19 +475,7 @@ def run_bonferroni_head2head(
     pending_shard_records: list[dict[str, Any]] = []
     strategies_cache: Dict[int | str, Any] = {}
     shard_dir.mkdir(parents=True, exist_ok=True)
-    shard_fields: list[pa.Field] = [
-        pa.field("players", pa.int64()),
-        pa.field("seed", pa.int64()),
-        pa.field("pair_id", pa.int64()),
-        pa.field("a", pa.string()),
-        pa.field("b", pa.string()),
-        pa.field("games", pa.int64()),
-        pa.field("wins_a", pa.int64()),
-        pa.field("wins_b", pa.int64()),
-        pa.field("win_rate_a", pa.float64()),
-        pa.field("pval_one_sided", pa.float64()),
-    ]
-    shard_schema = pa.schema(shard_fields)
+    shard_schema = _pairwise_schema()
 
     def _read_pair_ids_from_parquet(path: Path) -> set[int]:
         if not path.exists():
