@@ -14,13 +14,12 @@ from pathlib import Path
 from typing import Any, Callable, Sequence, overload
 
 import yaml  # type: ignore[import-untyped]
-from tqdm import tqdm
 
 from farkle import analysis
 from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, load_app_config
-from farkle.utils.manifest import append_manifest_line
+from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -305,17 +304,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     manifest_path = analysis_dir / app_cfg.manifest_name
     config_sha = hashlib.sha256(resolved_yaml.encode("utf-8")).hexdigest()
     app_cfg.config_sha = config_sha  # allow downstream caching helpers to compare configs
-    append_manifest_line(
-        manifest_path,
-        {
-            "event": "run_start",
-            "command": args.command,
-            "config_sha": config_sha,
-            "resolved_config": str(resolved),
-            "results_dir": str(app_cfg.results_root),
-            "analysis_dir": str(analysis_dir),
-        },
-    )
 
     def _optional_stage(module: str, stage: str) -> Callable[[AppConfig], None]:
         def _runner(cfg: AppConfig) -> None:
@@ -401,47 +389,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         steps = _plan_steps({args.command})
     else:  # pragma: no cover - argparse enforces valid choices
         parser.error(f"Unknown command {args.command}")
-    # Execute with per-step manifest events
-    iterator = tqdm(steps, desc="pipeline") if len(steps) > 1 else steps
-    failed_steps: list[str] = []
-    first_failure: Exception | None = None
-    for _name, fn in iterator:
-        LOGGER.info("Pipeline step", extra={"stage": "pipeline", "step": _name})
-        append_manifest_line(manifest_path, {"event": "step_start", "step": _name})
-        try:
-            fn(app_cfg)
-            append_manifest_line(manifest_path, {"event": "step_end", "step": _name, "ok": True})
-        except Exception as e:  # noqa: BLE001
-            failed_steps.append(_name)
-            first_failure = first_failure or e
-            LOGGER.exception(
-                "Pipeline step failed", extra={"stage": "pipeline", "step": _name, "error": e}
-            )
-            append_manifest_line(
-                manifest_path,
-                {
-                    "event": "step_end",
-                    "step": _name,
-                    "ok": False,
-                    "error": f"{type(e).__name__}: {e}",
-                },
-            )
-
-    run_end_payload: dict[str, Any] = {"event": "run_end", "config_sha": config_sha}
-    if failed_steps:
-        run_end_payload["failed_steps"] = failed_steps
-    append_manifest_line(manifest_path, run_end_payload)
-    if failed_steps:
-        LOGGER.error(
-            "Analysis pipeline completed with failures: %s",
-            failed_steps,
-            extra={"stage": "pipeline", "failed_steps": failed_steps},
-        )
-        if first_failure is not None:
-            raise first_failure
-        return 1
-
-    LOGGER.info("Analysis pipeline complete", extra={"stage": "pipeline"})
+    plan = [StagePlanItem(name=step_name, action=fn) for step_name, fn in steps]
+    context = StageRunContext(
+        config=app_cfg,
+        manifest_path=manifest_path,
+        run_label="pipeline",
+        run_metadata={
+            "command": args.command,
+            "config_sha": config_sha,
+            "resolved_config": str(resolved),
+            "results_dir": str(app_cfg.results_root),
+            "analysis_dir": str(analysis_dir),
+        },
+        run_end_metadata={"config_sha": config_sha},
+        stage_start_event="step_start",
+        stage_end_event="step_end",
+        continue_on_error=True,
+        use_progress=len(plan) > 1,
+        progress_desc="pipeline",
+        logger=LOGGER,
+    )
+    StageRunner.run(plan, context, raise_on_failure=True)
     return 0
 
 

@@ -6,9 +6,12 @@ from __future__ import annotations
 import importlib
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 from farkle.config import AppConfig
+from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 
 LOGGER = logging.getLogger(__name__)
 
@@ -93,7 +96,12 @@ def run_variance(cfg: AppConfig, *, force: bool = False) -> None:
     variance.run(cfg, force=force)
 
 
-def run_interseed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
+def run_interseed_analysis(
+    cfg: AppConfig,
+    *,
+    force: bool = False,
+    manifest_path: Path | None = None,
+) -> None:
     """Run interseed analytics in order (variance → meta → trueskill → agreement → summary)."""
     if not cfg.analysis.run_interseed:
         _skip_message("variance", "run_interseed=False")
@@ -103,12 +111,17 @@ def run_interseed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
         _skip_message("interseed", "run_interseed=False")
         return
 
-    run_variance(cfg, force=force)
-    run_meta(cfg, force=force)
-    ts_mod = _optional_import("farkle.analysis.trueskill")
-    if cfg.analysis.run_trueskill and not cfg.analysis.disable_trueskill and ts_mod is not None:
-        ts_mod.run(cfg)
-    else:
+    def _variance(cfg: AppConfig) -> None:
+        run_variance(cfg, force=force)
+
+    def _meta(cfg: AppConfig) -> None:
+        run_meta(cfg, force=force)
+
+    def _trueskill(cfg: AppConfig) -> None:
+        ts_mod = _optional_import("farkle.analysis.trueskill")
+        if cfg.analysis.run_trueskill and not cfg.analysis.disable_trueskill and ts_mod is not None:
+            ts_mod.run(cfg)
+            return
         LOGGER.info(
             "Analytics: skipping trueskill",
             extra={
@@ -123,10 +136,15 @@ def run_interseed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
             },
         )
 
-    agreement_mod = _optional_import("farkle.analysis.agreement")
-    if cfg.analysis.run_agreement and not cfg.analysis.disable_agreement and agreement_mod is not None:
-        agreement_mod.run(cfg)
-    else:
+    def _agreement(cfg: AppConfig) -> None:
+        agreement_mod = _optional_import("farkle.analysis.agreement")
+        if (
+            cfg.analysis.run_agreement
+            and not cfg.analysis.disable_agreement
+            and agreement_mod is not None
+        ):
+            agreement_mod.run(cfg)
+            return
         LOGGER.info(
             "Analytics: skipping agreement",
             extra={
@@ -141,14 +159,34 @@ def run_interseed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
             },
         )
 
-    interseed_mod = _optional_import("farkle.analysis.interseed_analysis")
-    if interseed_mod is not None:
-        interseed_mod.run(cfg, force=force, run_stages=False)
-    else:
+    def _interseed_summary(cfg: AppConfig) -> None:
+        interseed_mod = _optional_import("farkle.analysis.interseed_analysis")
+        if interseed_mod is not None:
+            interseed_mod.run(cfg, force=force, run_stages=False)
+            return
         LOGGER.info(
             "Analytics: skipping interseed summary",
             extra={"stage": "analysis", "reason": "unavailable"},
         )
+
+    plan = [
+        StagePlanItem("variance", _variance),
+        StagePlanItem("meta", _meta),
+        StagePlanItem("trueskill", _trueskill),
+        StagePlanItem("agreement", _agreement),
+        StagePlanItem("interseed", _interseed_summary),
+    ]
+    manifest_path = manifest_path or (cfg.analysis_dir / cfg.manifest_name)
+    context = StageRunContext(
+        config=cfg,
+        manifest_path=manifest_path,
+        run_label="interseed_analysis",
+        run_metadata=_run_manifest_metadata(cfg),
+        run_end_metadata=_run_manifest_metadata(cfg),
+        continue_on_error=False,
+        logger=LOGGER,
+    )
+    StageRunner.run(plan, context, raise_on_failure=True)
 
 
 def _skip_message(step: str, reason: str) -> None:
@@ -165,18 +203,36 @@ def _skip_message(step: str, reason: str) -> None:
     )
 
 
-def run_single_seed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
-    """Run per-seed analytics in order (seed summaries → tiering → head2head → post_h2h → hgb)."""
-    run_seed_summaries(cfg, force=force)
+def _run_manifest_metadata(cfg: AppConfig) -> dict[str, Any]:
+    payload = {
+        "results_dir": str(cfg.results_root),
+        "analysis_dir": str(cfg.analysis_dir),
+    }
+    config_sha = getattr(cfg, "config_sha", None)
+    if config_sha:
+        payload["config_sha"] = config_sha
+    return payload
 
-    freq_mod = _optional_import("farkle.analysis.tiering_report")
-    if (
-        getattr(cfg.analysis, "run_frequentist", False)
-        and not cfg.analysis.disable_tiering
-        and freq_mod is not None
-    ):
-        freq_mod.run(cfg)
-    else:
+
+def run_single_seed_analysis(
+    cfg: AppConfig,
+    *,
+    force: bool = False,
+    manifest_path: Path | None = None,
+) -> None:
+    """Run per-seed analytics in order (seed summaries → tiering → head2head → post_h2h → hgb)."""
+    def _seed_summaries(cfg: AppConfig) -> None:
+        run_seed_summaries(cfg, force=force)
+
+    def _tiering(cfg: AppConfig) -> None:
+        freq_mod = _optional_import("farkle.analysis.tiering_report")
+        if (
+            getattr(cfg.analysis, "run_frequentist", False)
+            and not cfg.analysis.disable_tiering
+            and freq_mod is not None
+        ):
+            freq_mod.run(cfg)
+            return
         LOGGER.info(
             "Analytics: skipping tiering report",
             extra={
@@ -191,10 +247,11 @@ def run_single_seed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
             },
         )
 
-    ts_mod = _optional_import("farkle.analysis.trueskill")
-    if cfg.analysis.run_trueskill and not cfg.analysis.disable_trueskill and ts_mod is not None:
-        ts_mod.run(cfg)
-    else:
+    def _trueskill(cfg: AppConfig) -> None:
+        ts_mod = _optional_import("farkle.analysis.trueskill")
+        if cfg.analysis.run_trueskill and not cfg.analysis.disable_trueskill and ts_mod is not None:
+            ts_mod.run(cfg)
+            return
         LOGGER.info(
             "Analytics: skipping trueskill",
             extra={
@@ -209,10 +266,15 @@ def run_single_seed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
             },
         )
 
-    h2h_mod = _optional_import("farkle.analysis.head2head")
-    if cfg.analysis.run_head2head and not cfg.analysis.disable_head2head and h2h_mod is not None:
-        h2h_mod.run(cfg)
-    else:
+    def _head2head(cfg: AppConfig) -> None:
+        h2h_mod = _optional_import("farkle.analysis.head2head")
+        if (
+            cfg.analysis.run_head2head
+            and not cfg.analysis.disable_head2head
+            and h2h_mod is not None
+        ):
+            h2h_mod.run(cfg)
+            return
         LOGGER.info(
             "Analytics: skipping head-to-head",
             extra={
@@ -227,10 +289,11 @@ def run_single_seed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
             },
         )
 
-    post_h2h_mod = _optional_import("farkle.analysis.h2h_analysis")
-    if cfg.analysis.run_post_h2h_analysis and post_h2h_mod is not None:
-        post_h2h_mod.run_post_h2h(cfg)
-    else:
+    def _post_h2h(cfg: AppConfig) -> None:
+        post_h2h_mod = _optional_import("farkle.analysis.h2h_analysis")
+        if cfg.analysis.run_post_h2h_analysis and post_h2h_mod is not None:
+            post_h2h_mod.run_post_h2h(cfg)
+            return
         LOGGER.info(
             "Analytics: skipping post head-to-head analysis",
             extra={
@@ -243,10 +306,11 @@ def run_single_seed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
             },
         )
 
-    hgb_mod = _optional_import("farkle.analysis.hgb_feat")
-    if cfg.analysis.run_hgb and not cfg.analysis.disable_hgb and hgb_mod is not None:
-        hgb_mod.run(cfg)
-    else:
+    def _hgb(cfg: AppConfig) -> None:
+        hgb_mod = _optional_import("farkle.analysis.hgb_feat")
+        if cfg.analysis.run_hgb and not cfg.analysis.disable_hgb and hgb_mod is not None:
+            hgb_mod.run(cfg)
+            return
         LOGGER.info(
             "Analytics: skipping hist gradient boosting",
             extra={
@@ -260,6 +324,26 @@ def run_single_seed_analysis(cfg: AppConfig, *, force: bool = False) -> None:
                 ),
             },
         )
+
+    plan = [
+        StagePlanItem("seed_summaries", _seed_summaries),
+        StagePlanItem("tiering", _tiering),
+        StagePlanItem("trueskill", _trueskill),
+        StagePlanItem("head2head", _head2head),
+        StagePlanItem("post_h2h", _post_h2h),
+        StagePlanItem("hgb", _hgb),
+    ]
+    manifest_path = manifest_path or (cfg.analysis_dir / cfg.manifest_name)
+    context = StageRunContext(
+        config=cfg,
+        manifest_path=manifest_path,
+        run_label="single_seed_analysis",
+        run_metadata=_run_manifest_metadata(cfg),
+        run_end_metadata=_run_manifest_metadata(cfg),
+        continue_on_error=False,
+        logger=LOGGER,
+    )
+    StageRunner.run(plan, context, raise_on_failure=True)
 
 
 def run_all(cfg: AppConfig) -> None:
