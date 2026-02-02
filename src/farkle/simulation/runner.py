@@ -39,6 +39,7 @@ from farkle.simulation.strategies import (
 )
 from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.writer import atomic_path
 from farkle.utils.manifest import iter_manifest
 
 # ---------------------------------------------------------------------------
