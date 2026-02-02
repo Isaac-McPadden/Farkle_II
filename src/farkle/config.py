@@ -10,6 +10,7 @@ import dataclasses
 import re
 from dataclasses import dataclass, field, is_dataclass
 import logging
+import difflib
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -1285,6 +1286,66 @@ def _normalize_seed_pair(sim: SimConfig, *, seed_provided: bool) -> None:
         sim.seed = seed_pair[0]
 
 
+def _format_unknown_keys(unknown: Iterable[str], candidates: Iterable[str]) -> list[str]:
+    """Return formatted unknown keys with optional suggestions."""
+    suggestions: list[str] = []
+    candidate_list = list(candidates)
+    for key in sorted(unknown):
+        suggestion = difflib.get_close_matches(key, candidate_list, n=1)
+        if suggestion:
+            suggestions.append(f"{key!r} (did you mean {suggestion[0]!r}?)")
+        else:
+            suggestions.append(repr(key))
+    return suggestions
+
+
+def _validate_config_keys(data: Mapping[str, Any]) -> None:
+    """Validate that config sections and keys match dataclass schemas."""
+    top_level_sections = {
+        "io": IOConfig,
+        "sim": SimConfig,
+        "analysis": AnalysisConfig,
+        "ingest": IngestConfig,
+        "combine": CombineConfig,
+        "metrics": MetricsConfig,
+        "trueskill": TrueSkillConfig,
+        "head2head": Head2HeadConfig,
+        "hgb": HGBConfig,
+    }
+    unknown_sections = set(data) - set(top_level_sections)
+    if unknown_sections:
+        formatted = ", ".join(_format_unknown_keys(unknown_sections, top_level_sections))
+        raise ValueError(f"Unknown top-level config section(s): {formatted}")
+
+    for section_name, section_cls in top_level_sections.items():
+        if section_name not in data:
+            continue
+        section = data[section_name]
+        if not isinstance(section, Mapping):
+            raise TypeError(f"Config section {section_name!r} must be a mapping")
+        allowed_keys = {field.name for field in dataclasses.fields(section_cls)}
+        unknown_keys = set(section) - allowed_keys
+        if unknown_keys:
+            formatted = ", ".join(_format_unknown_keys(unknown_keys, allowed_keys))
+            raise ValueError(
+                f"Unknown key(s) in config section {section_name!r}: {formatted}"
+            )
+        if section_name == "sim" and "per_n" in section:
+            per_n_section = section.get("per_n")
+            if not isinstance(per_n_section, Mapping):
+                raise TypeError("sim.per_n must be a mapping of per-player overrides")
+            for key, val in per_n_section.items():
+                if not isinstance(val, Mapping):
+                    continue
+                per_n_unknown = set(val) - allowed_keys
+                if per_n_unknown:
+                    formatted = ", ".join(_format_unknown_keys(per_n_unknown, allowed_keys))
+                    raise ValueError(
+                        "Unknown key(s) in config section "
+                        f"sim.per_n[{key!r}]: {formatted}"
+                    )
+
+
 def _validate_seed_sources(
     sim: SimConfig,
     *,
@@ -1408,6 +1469,8 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                 "Deprecated analysis flags no longer disable stages; flags ignored",
                 extra={"stage": "config", "flags": deprecated},
             )
+
+    _validate_config_keys(data)
 
     def build(cls, section: Mapping[str, Any]) -> Any:
         """Instantiate a dataclass ``cls`` from a mapping of attributes."""
