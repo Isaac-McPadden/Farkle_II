@@ -94,7 +94,7 @@ trueskill:
   pooled_weights_by_k: null
 
 head2head:
-  n_jobs: 4
+  n_jobs: 8
   games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
   bonferroni_total_games_safeguard: 100000000 # skip Bonferroni H2H when estimated total games exceed this
 
@@ -107,7 +107,7 @@ head2head:
     full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
     tail: "two_sided"
     min_games_floor: 2000         # per-strategy games before deriving games-per-pair (ceil applied)
-    max_games_cap: null           # per-strategy cap; games-per-pair totals may round up if not divisible
+    max_games_cap: 2200           # per-strategy cap; games-per-pair totals may round up if not divisible
     use_BY: null                  # unused, here for the PowerDesign class
 
 hgb:
