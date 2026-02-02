@@ -10,6 +10,7 @@ from __future__ import annotations
 import bisect
 import json
 import logging
+from pathlib import Path
 from typing import cast
 
 import networkx as nx
@@ -19,6 +20,7 @@ import pyarrow as pa
 from scipy.stats import binomtest
 
 from farkle.config import AppConfig
+from farkle.analysis.stage_state import read_stage_done, stage_done_path, write_stage_done
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
 from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import atomic_path
@@ -346,21 +348,61 @@ def run_post_h2h(cfg: AppConfig) -> None:
     """Execute the full post head-to-head Holm + ranking workflow."""
     analysis_dir = cfg.post_h2h_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
+    done_path = stage_done_path(analysis_dir, "post_h2h")
     tie_policy = getattr(cfg.head2head, "tie_break_policy", "neutral_edge")
     tie_break_seed = (
         cfg.head2head.tie_break_seed
         if getattr(cfg.head2head, "tie_break_seed", None) is not None
         else int(cfg.sim.seed)
     )
+    upstream_done_path = stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head")
+    upstream_meta = read_stage_done(upstream_done_path)
+    upstream_status = str(upstream_meta.get("status", "missing"))
+    if upstream_status == "skipped":
+        reason = str(upstream_meta.get("reason") or "upstream bonferroni head-to-head skipped")
+        outputs = _write_empty_post_h2h_outputs(
+            analysis_dir, tie_policy=tie_policy, tie_break_seed=tie_break_seed
+        )
+        write_stage_done(
+            done_path,
+            inputs=[upstream_done_path],
+            outputs=outputs,
+            config_sha=cfg.config_sha,
+            status="skipped",
+            reason=reason,
+        )
+        LOGGER.info(
+            "Post H2H skipped: upstream head-to-head skipped",
+            extra={"stage": "post_h2h", "reason": reason},
+        )
+        return
     pairwise_candidates = [
         cfg.head2head_stage_dir / "bonferroni_pairwise.parquet",
         cfg.analysis_dir / "bonferroni_pairwise.parquet",
     ]
+    upstream_outputs = [
+        Path(path)
+        for path in upstream_meta.get("outputs", [])
+        if Path(path).name == "bonferroni_pairwise.parquet"
+    ]
+    pairwise_candidates = upstream_outputs + pairwise_candidates
     pairwise_path = next((p for p in pairwise_candidates if p.exists()), pairwise_candidates[0])
     if not pairwise_path.exists():
+        reason = "missing bonferroni pairwise parquet"
+        outputs = _write_empty_post_h2h_outputs(
+            analysis_dir, tie_policy=tie_policy, tie_break_seed=tie_break_seed
+        )
+        write_stage_done(
+            done_path,
+            inputs=[upstream_done_path],
+            outputs=outputs,
+            config_sha=cfg.config_sha,
+            status="skipped",
+            reason=reason,
+        )
         LOGGER.warning(
             "Post H2H skipped: missing bonferroni pairwise parquet",
-            extra={"stage": "post_h2h", "path": str(pairwise_path)},
+            extra={"stage": "post_h2h", "path": str(pairwise_path), "reason": reason},
         )
         return
 
@@ -409,6 +451,7 @@ def run_post_h2h(cfg: AppConfig) -> None:
     write_csv_atomic(tiers_df, tiers_path)
 
     ranking: list[str] = []
+    ranking_written = False
     if nx.is_directed_acyclic_graph(graph):
         ranking = _topological_order(graph)
         ranking_records = [
@@ -425,6 +468,7 @@ def run_post_h2h(cfg: AppConfig) -> None:
         )
         ranking_path = analysis_dir / "h2h_significant_ranking.csv"
         write_csv_atomic(ranking_df, ranking_path)
+        ranking_written = True
 
     tier_order: list[str] = ranking[:] if ranking else [node for tier in tiers for node in tier]
     union_candidates = _load_union_candidates(cfg)
@@ -467,6 +511,63 @@ def run_post_h2h(cfg: AppConfig) -> None:
             "tie_break_seed": tie_break_seed,
         },
     )
+    outputs = [decisions_path, graph_path, tiers_path, s_tiers_path]
+    if ranking_written:
+        outputs.append(analysis_dir / "h2h_significant_ranking.csv")
+    inputs = [pairwise_path]
+    union_candidates_paths = [
+        cfg.head2head_stage_dir / "h2h_union_candidates.json",
+        cfg.analysis_dir / "h2h_union_candidates.json",
+    ]
+    for union_path in union_candidates_paths:
+        if union_path.exists():
+            inputs.append(union_path)
+    write_stage_done(
+        done_path,
+        inputs=inputs,
+        outputs=outputs,
+        config_sha=cfg.config_sha,
+    )
+
+
+def _write_empty_post_h2h_outputs(
+    analysis_dir: Path,
+    *,
+    tie_policy: str,
+    tie_break_seed: int | None,
+) -> list[Path]:
+    decisions_path = analysis_dir / "bonferroni_decisions.parquet"
+    empty_table = pa.Table.from_pylist([], schema=_DECISION_SCHEMA)
+    write_parquet_atomic(empty_table, decisions_path)
+
+    graph = nx.DiGraph()
+    graph.graph["tie_policy"] = tie_policy
+    graph.graph["tie_break_seed"] = tie_break_seed
+    graph.graph["neutral_pairs"] = []
+    graph.graph["tie_break_edges"] = []
+    graph_path = analysis_dir / "h2h_significant_graph.json"
+    _write_graph_json(graph, graph_path)
+
+    tiers_path = analysis_dir / "h2h_significant_tiers.csv"
+    empty_tiers = pd.DataFrame(
+        [],
+        columns=["tier_id", "size", "members", "in_degree", "out_degree"],
+    )
+    write_csv_atomic(empty_tiers, tiers_path)
+
+    ranking_path = analysis_dir / "h2h_significant_ranking.csv"
+    empty_ranking = pd.DataFrame(
+        [],
+        columns=["rank", "strategy", "in_degree", "out_degree"],
+    )
+    write_csv_atomic(empty_ranking, ranking_path)
+
+    s_tiers_path = analysis_dir / "h2h_s_tiers.json"
+    with atomic_path(str(s_tiers_path)) as tmp_path:
+        with open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump({}, handle, indent=2, sort_keys=True)
+
+    return [decisions_path, graph_path, tiers_path, ranking_path, s_tiers_path]
 
 
 def _assign_s_tiers(ordered: list[str]) -> dict[str, str]:
