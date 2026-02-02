@@ -33,6 +33,27 @@ if TYPE_CHECKING:  # pragma: no cover - used for type checking only
 
 LOGGER = logging.getLogger(__name__)
 
+# Deprecated analysis-stage flags that no longer disable stages.
+DEPRECATED_ANALYSIS_FLAGS = {
+    "run_interseed",
+    "disable_game_stats",
+    "disable_rng_diagnostics",
+    "disable_trueskill",
+    "disable_head2head",
+    "disable_hgb",
+    "disable_tiering",
+    "disable_agreement",
+    "run_trueskill",
+    "run_head2head",
+    "run_rng",
+    "run_game_stats",
+    "run_hgb",
+    "run_frequentist",
+    "run_post_h2h_analysis",
+    "run_agreement",
+    "run_report",
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataclasses (schema)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -184,11 +205,17 @@ class SimConfig:
 
 @dataclass
 class AnalysisConfig:
-    """Analysis-stage parameters controlling downstream analytics."""
+    """Analysis-stage parameters controlling downstream analytics.
+
+    Deprecated ``run_*`` and ``disable_*`` toggles are retained for legacy configs
+    but no longer disable stages. Stages now run (or skip) based on inputs and
+    preconditions instead of manual toggles.
+    """
 
     run_interseed: bool = True
-    """Include cross-seed analysis stages such as variance, meta, and pooled outputs."""
+    """Deprecated: interseed stages are scheduled based on available inputs."""
 
+    # Deprecated disable_* flags ignored in favor of precondition checks.
     disable_game_stats: bool = False
     disable_rng_diagnostics: bool = False
     disable_trueskill: bool = False
@@ -197,6 +224,7 @@ class AnalysisConfig:
     disable_tiering: bool = False
     disable_agreement: bool = False
 
+    # Deprecated run_* toggles retained for legacy configs (ignored).
     run_trueskill: bool = True
     run_head2head: bool = True
     run_rng: bool = True
@@ -435,6 +463,18 @@ class AppConfig:
         """Return the resolved stage directory for ``key`` when active."""
 
         return self._stage_dir_if_active(key, *parts)
+
+    def interseed_ready(self) -> tuple[bool, str]:
+        """Return whether interseed inputs are configured and an optional reason."""
+
+        if self.sim.interseed_seed_list() is not None:
+            return True, ""
+        if self.interseed_input_dir is not None:
+            return True, ""
+        return (
+            False,
+            "interseed inputs missing (requires sim.seed_list with two seeds or io.interseed_input_dir)",
+        )
 
     def stage_subdir(self, key: str, *parts: str | Path) -> Path:
         """Resolve a stage root or nested subdirectory under ``analysis_dir``.
@@ -1353,24 +1393,20 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                         per_n_seed_pair_provided[per_n_key] = True
     if "analysis" in data:
         analysis_section = data["analysis"]
+        legacy_alias = "run_tiering_report" in analysis_section
         if "run_tiering_report" in analysis_section:
             alias_val = analysis_section.pop("run_tiering_report")
             analysis_section.setdefault("run_frequentist", alias_val)
-        if "run_game_stats" in analysis_section:
-            analysis_section.setdefault(
-                "disable_game_stats", not bool(analysis_section["run_game_stats"])
-            )
-        if "run_rng" in analysis_section:
-            analysis_section.setdefault(
-                "disable_rng_diagnostics", not bool(analysis_section["run_rng"])
-            )
-        if "run_frequentist" in analysis_section:
-            analysis_section.setdefault(
-                "disable_tiering", not bool(analysis_section["run_frequentist"])
-            )
-        if "run_agreement" in analysis_section:
-            analysis_section.setdefault(
-                "disable_agreement", not bool(analysis_section["run_agreement"])
+        deprecated = sorted(
+            key for key in analysis_section if key in DEPRECATED_ANALYSIS_FLAGS
+        )
+        if legacy_alias:
+            deprecated.append("run_tiering_report")
+            deprecated = sorted(set(deprecated))
+        if deprecated:
+            LOGGER.warning(
+                "Deprecated analysis flags no longer disable stages; flags ignored",
+                extra={"stage": "config", "flags": deprecated},
             )
 
     def build(cls, section: Mapping[str, Any]) -> Any:
@@ -1495,6 +1531,11 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         if not hasattr(section, option):
             raise AttributeError(f"Unknown option {option!r} in section {section_name!r}")
         current = getattr(section, option)
+        if section_name == "analysis" and option in DEPRECATED_ANALYSIS_FLAGS:
+            LOGGER.warning(
+                "Deprecated analysis flag override provided; stages ignore it",
+                extra={"stage": "config", "flag": option},
+            )
         typing_ns = globals().copy()
         if "StageLayout" not in typing_ns:
             try:

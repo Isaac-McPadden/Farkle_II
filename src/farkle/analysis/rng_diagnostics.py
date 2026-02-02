@@ -42,6 +42,11 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     stage_log = stage_logger("rng_diagnostics", logger=LOGGER)
     stage_log.start()
 
+    interseed_ready, interseed_reason = cfg.interseed_ready()
+    if not interseed_ready:
+        stage_log.missing_input(interseed_reason)
+        return
+
     data_file = cfg.curated_parquet
     out_file = cfg.rng_output_path("rng_diagnostics.parquet")
     stamp_path = stage_done_path(cfg.rng_stage_dir, "rng_diagnostics")

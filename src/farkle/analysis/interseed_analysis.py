@@ -24,19 +24,17 @@ def run(cfg: AppConfig, *, force: bool = False, run_stages: bool = True) -> None
     stage_log = stage_logger("interseed", logger=LOGGER)
     stage_log.start()
 
-    if not cfg.analysis.run_interseed:
-        LOGGER.info(
-            "Interseed analysis skipped",
-            extra={"stage": "interseed", "reason": "run_interseed=False"},
-        )
+    interseed_ready, interseed_reason = cfg.interseed_ready()
+    if not interseed_ready:
+        stage_log.missing_input(interseed_reason)
         return
 
     statuses: dict[str, dict[str, Any]] = {}
 
     variance_enabled = True
     meta_enabled = True
-    trueskill_enabled = cfg.analysis.run_trueskill and not cfg.analysis.disable_trueskill
-    agreement_enabled = cfg.analysis.run_agreement and not cfg.analysis.disable_agreement
+    trueskill_enabled = True
+    agreement_enabled = True
 
     if variance_enabled and run_stages:
         from farkle.analysis import variance
@@ -93,6 +91,7 @@ def run(cfg: AppConfig, *, force: bool = False, run_stages: bool = True) -> None
     payload = {
         "config_sha": cfg.config_sha,
         "run_interseed": cfg.analysis.run_interseed,
+        "interseed_ready": interseed_ready,
         "stages": statuses,
     }
     with atomic_path(str(summary_path)) as tmp_path:
