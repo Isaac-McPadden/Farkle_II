@@ -10,6 +10,7 @@ from typing import Sequence
 
 from farkle import analysis
 from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
+from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
 from farkle.orchestration.seed_utils import (
@@ -48,16 +49,46 @@ def _shared_meta_dir(cfg: AppConfig, pair_root: Path, seed_pair: tuple[int, int]
     return pair_root / "interseed_analysis" / "seed_summaries_meta"
 
 
-def _run_per_seed_analysis(cfg: AppConfig) -> None:
-    ingest.run(cfg)
-    curate.run(cfg)
-    combine.run(cfg)
-    metrics.run(cfg)
+def _run_per_seed_analysis(
+    cfg: AppConfig,
+    *,
+    manifest_path: Path,
+    seed: int,
+) -> None:
+    plan: list[StagePlanItem] = [
+        StagePlanItem("ingest", ingest.run),
+        StagePlanItem("curate", curate.run),
+        StagePlanItem("combine", combine.run),
+        StagePlanItem("metrics", metrics.run),
+    ]
     if cfg.analysis.run_game_stats and not cfg.analysis.disable_game_stats:
-        game_stats.run(cfg)
+        plan.append(StagePlanItem("game_stats", game_stats.run))
     if cfg.analysis.run_rng and not cfg.analysis.disable_rng_diagnostics:
-        rng_diagnostics.run(cfg, lags=None)
-    analysis.run_single_seed_analysis(cfg)
+        plan.append(
+            StagePlanItem(
+                "rng_diagnostics",
+                lambda cfg: rng_diagnostics.run(cfg, lags=None),
+            )
+        )
+    plan.append(
+        StagePlanItem(
+            "single_seed_analysis",
+            lambda cfg: analysis.run_single_seed_analysis(cfg, manifest_path=manifest_path),
+        )
+    )
+    context = StageRunContext(
+        config=cfg,
+        manifest_path=manifest_path,
+        run_label=f"per_seed_pipeline_{seed}",
+        run_metadata={
+            "seed": seed,
+            "results_dir": str(cfg.results_root),
+            "analysis_dir": str(cfg.analysis_dir),
+        },
+        continue_on_error=False,
+        logger=LOGGER,
+    )
+    StageRunner.run(plan, context, raise_on_failure=True)
 
 
 def run_pipeline(
@@ -155,7 +186,7 @@ def run_pipeline(
                 "results_dir": str(seed_cfg.results_root),
             },
         )
-        _run_per_seed_analysis(seed_cfg)
+        _run_per_seed_analysis(seed_cfg, manifest_path=manifest_path, seed=seed)
         append_manifest_line(
             manifest_path,
             {
@@ -206,7 +237,11 @@ def run_pipeline(
             "active_config": str(interseed_cfg.results_root / "active_config.yaml"),
         },
     )
-    analysis.run_interseed_analysis(interseed_cfg, force=force)
+    analysis.run_interseed_analysis(
+        interseed_cfg,
+        force=force,
+        manifest_path=manifest_path,
+    )
     append_manifest_line(
         manifest_path,
         {
