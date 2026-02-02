@@ -6,6 +6,8 @@ io:
   results_dir_prefix: "results"    # Path|str: prefix under data/ for per-N run folders
   analysis_subdir: "analysis"    # str: analysis outputs subdirectory under results_root
   meta_analysis_dir: null   # Path|str|None: optional shared directory for per-seed summaries
+  interseed_input_dir: null   # Path|str|None: optional upstream interseed analysis root
+  interseed_input_layout: null   # dict[str,str]|None: stage layout when using interseed_input_dir
 
 sim:
   n_players_list: [5]       # list[int]: table sizes to simulate
@@ -45,16 +47,6 @@ sim:
   include_stop_at_heuristic: false     # bool: append heuristic stop-at variants
 
 analysis:
-  run_trueskill: true       # bool: compute TrueSkill ratings
-  run_interseed: true       # bool: include cross-seed analytics stages (variance/meta/pooled)
-  run_head2head: true       # bool: execute head-to-head analysis
-  run_rng: false            # bool: run RNG diagnostics over curated rows
-  run_game_stats: true      # bool: compute pooled game statistics after metrics
-  run_hgb: true             # bool: train histogram gradient boosting model
-  run_frequentist: false    # bool: plan step 6 frequentist/MDD tiering + tiering_report
-  run_post_h2h_analysis: false  # bool: post head-to-head cleanup (plan step 5)
-  run_agreement: false      # bool: agreement heuristics (plan step 8)
-  run_report: true          # bool: report writer / publishing (plan step 9)
   n_jobs: 1                 # int: parallel workers for analysis
   log_level: "INFO"         # str: logger level during analysis
   results_glob: "*_players" # str: glob selecting per-N result folders

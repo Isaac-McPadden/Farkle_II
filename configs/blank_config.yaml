@@ -5,6 +5,9 @@
 io:
   results_dir_prefix:    # Path|str: prefix under data/ for per-N run folders
   analysis_subdir:    # str: analysis outputs subdirectory under results_root
+  meta_analysis_dir:    # Path|str|None: optional shared directory for per-seed summaries
+  interseed_input_dir:    # Path|str|None: optional upstream interseed analysis root
+  interseed_input_layout:    # dict[str,str]|None: stage layout when using interseed_input_dir
 
 sim:
   n_players_list:    # list[int]: table sizes to simulate
@@ -45,9 +48,6 @@ sim:
   include_stop_at_heuristic:    # bool: append heuristic stop-at variants
 
 analysis:
-  run_trueskill:    # bool: compute TrueSkill ratings
-  run_head2head:    # bool: execute head-to-head analysis
-  run_hgb:    # bool: train histogram gradient boosting model
   n_jobs:    # int: parallel workers for analysis
   log_level:    # str: logger level during analysis
   results_glob:    # str: glob selecting per-N result folders
