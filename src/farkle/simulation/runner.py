@@ -13,11 +13,13 @@ public API.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import pickle
 import shutil
 import stat
+from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -250,6 +252,41 @@ def _resolve_metric_chunk_dir(cfg: AppConfig, n_players: int) -> Path | None:
     )
 
 
+def simulation_done_path(cfg: AppConfig, n_players: int) -> Path:
+    """Return the completion marker path for a per-N simulation run."""
+    n_dir = cfg.results_root / f"{n_players}_players"
+    return n_dir / "simulation.done.json"
+
+
+def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
+    """Return ``True`` when the per-N simulation completion marker exists."""
+    return simulation_done_path(cfg, n_players).exists()
+
+
+def write_simulation_done(
+    cfg: AppConfig,
+    n_players: int,
+    *,
+    num_shuffles: int,
+    n_strategies: int,
+    outputs: Sequence[Path],
+) -> Path:
+    """Write a completion marker for a per-N simulation run."""
+    done_path = simulation_done_path(cfg, n_players)
+    payload = {
+        "n_players": n_players,
+        "seed": cfg.sim.seed,
+        "num_shuffles": num_shuffles,
+        "n_strategies": n_strategies,
+        "outputs": [str(p) for p in outputs],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    done_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(done_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
+    return done_path
+
+
 def _resolve_per_n_output_dir(
     cfg: AppConfig,
     raw_value: Path | None,
@@ -336,9 +373,10 @@ def _purge_simulation_outputs(
     metric_chunk_dir: Path | None,
     strategy_manifest_path: Path,
 ) -> None:
+    done_path = n_dir / "simulation.done.json"
     ckpt_parquet = n_dir / f"{n_players}p_checkpoint.parquet"
     metrics_parquet = n_dir / f"{n_players}p_metrics.parquet"
-    _remove_paths([ckpt_path, ckpt_parquet, metrics_parquet, strategy_manifest_path])
+    _remove_paths([ckpt_path, ckpt_parquet, metrics_parquet, strategy_manifest_path, done_path])
 
     if row_dir is not None and row_dir.exists():
         if row_dir == n_dir:
@@ -759,6 +797,28 @@ def run_single_n(
             metrics_file = n_dir / f"{n}p_metrics.parquet"
             write_parquet_atomic(pa.Table.from_pylist(metrics_rows), metrics_file)
 
+    outputs: list[Path] = [ckpt_path]
+    ckpt_parquet = n_dir / f"{n}p_checkpoint.parquet"
+    if ckpt_parquet.exists():
+        outputs.append(ckpt_parquet)
+    metrics_file = n_dir / f"{n}p_metrics.parquet"
+    if metrics_file.exists():
+        outputs.append(metrics_file)
+    manifest_path = cfg.strategy_manifest_root_path()
+    if manifest_path.exists():
+        outputs.append(manifest_path)
+    if row_dir is not None and row_dir.exists():
+        outputs.append(row_dir)
+    if metric_chunk_dir is not None and metric_chunk_dir.exists():
+        outputs.append(metric_chunk_dir)
+    write_simulation_done(
+        cfg,
+        n,
+        num_shuffles=n_shuffles,
+        n_strategies=grid_size,
+        outputs=outputs,
+    )
+
     return total_games
 
 
@@ -811,4 +871,11 @@ def run_multi(
     return results
 
 
-__all__ = ["run_tournament", "run_single_n", "run_multi"]
+__all__ = [
+    "run_tournament",
+    "run_single_n",
+    "run_multi",
+    "simulation_done_path",
+    "simulation_is_complete",
+    "write_simulation_done",
+]

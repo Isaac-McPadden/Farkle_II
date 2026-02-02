@@ -65,18 +65,7 @@ def split_seeded_results_dir(path: Path) -> tuple[Path, int | None]:
 def seed_has_completion_markers(cfg: AppConfig) -> bool:
     """Return True when all simulation outputs are present for this seed."""
     for n in cfg.sim.n_players_list:
-        n_dir = cfg.n_dir(n)
-        row_dir = runner._resolve_row_output_dir(cfg, n)
-        metric_chunk_dir = runner._resolve_metric_chunk_dir(cfg, n)
-        ckpt_path = cfg.checkpoint_path(n)
-        if not runner._has_existing_outputs(
-            n_dir=n_dir,
-            n_players=n,
-            ckpt_path=ckpt_path,
-            row_dir=row_dir,
-            metric_chunk_dir=metric_chunk_dir,
-            strategy_manifest_path=cfg.strategy_manifest_root_path(),
-        ):
+        if not runner.simulation_is_complete(cfg, n):
             return False
     return True
 
