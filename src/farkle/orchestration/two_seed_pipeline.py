@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import logging
 from pathlib import Path
 from typing import Sequence
@@ -11,8 +10,8 @@ from typing import Sequence
 from farkle import analysis
 from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
-from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
+from farkle.orchestration.run_contexts import InterseedRunContext, SeedRunContext
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
     seed_has_completion_markers,
@@ -110,6 +109,7 @@ def run_pipeline(
         },
     )
 
+    seed_contexts: dict[int, SeedRunContext] = {}
     for seed in seed_pair:
         seed_cfg = prepare_seed_config(
             cfg,
@@ -117,7 +117,9 @@ def run_pipeline(
             base_results_dir=seed_pair_seed_root(cfg, seed_pair, seed),
             meta_analysis_dir=meta_dir,
         )
-        active_config_path = seed_cfg.results_root / "active_config.yaml"
+        seed_context = SeedRunContext.from_config(seed_cfg)
+        seed_contexts[seed] = seed_context
+        active_config_path = seed_context.active_config_path
 
         append_manifest_line(
             manifest_path,
@@ -154,7 +156,7 @@ def run_pipeline(
                 {
                     "event": "seed_simulation_skipped",
                     "seed": seed,
-                    "results_dir": str(seed_cfg.results_root),
+                    "results_dir": str(seed_context.results_root),
                 },
             )
         else:
@@ -172,7 +174,7 @@ def run_pipeline(
                 {
                     "event": "seed_simulation_complete",
                     "seed": seed,
-                    "results_dir": str(seed_cfg.results_root),
+                    "results_dir": str(seed_context.results_root),
                 },
             )
 
@@ -190,33 +192,18 @@ def run_pipeline(
             {
                 "event": "seed_analysis_complete",
                 "seed": seed,
-                "results_dir": str(seed_cfg.results_root),
+                "results_dir": str(seed_context.results_root),
             },
         )
 
     interseed_seed = seed_pair[0]
-    interseed_cfg = prepare_seed_config(
-        cfg,
-        seed=interseed_seed,
-        base_results_dir=seed_pair_seed_root(cfg, seed_pair, interseed_seed),
-        meta_analysis_dir=meta_dir,
+    interseed_seed_context = seed_contexts[interseed_seed]
+    interseed_context = InterseedRunContext.from_seed_context(
+        interseed_seed_context,
+        seed_pair=seed_pair,
+        analysis_root=pair_root / "interseed_analysis",
     )
-    interseed_input_layout = interseed_cfg.stage_layout
-    interseed_input_dir = (
-        seed_pair_seed_root(cfg, seed_pair, interseed_seed) / cfg.io.analysis_subdir
-    )
-    interseed_io = dataclasses.replace(
-        interseed_cfg.io,
-        analysis_subdir="../interseed_analysis",
-        interseed_input_dir=interseed_input_dir,
-        interseed_input_layout=interseed_input_layout,
-    )
-    interseed_cfg = dataclasses.replace(
-        interseed_cfg,
-        io=interseed_io,
-        analysis=dataclasses.replace(interseed_cfg.analysis),
-    )
-    interseed_cfg.set_stage_layout(resolve_interseed_stage_layout(interseed_cfg))
+    interseed_cfg = interseed_context.config
 
     LOGGER.info(
         "Running interseed analysis",
