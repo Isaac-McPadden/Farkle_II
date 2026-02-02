@@ -237,12 +237,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if seed_pair_override is not None:
         app_cfg.sim.seed_list = list(seed_pair_override)
         app_cfg.sim.seed_pair = seed_pair_override
-    run_game_stats = (
-        app_cfg.analysis.run_game_stats if args.run_game_stats is None else args.run_game_stats
-    )
-    app_cfg.analysis.run_game_stats = run_game_stats
-    if args.run_game_stats is not None:
-        app_cfg.analysis.disable_game_stats = not args.run_game_stats
     if args.margin_thresholds:
         app_cfg.analysis.game_stats_margin_thresholds = tuple(args.margin_thresholds)
     if args.rare_event_target is not None:
@@ -255,31 +249,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         tuple(sorted({int(lag) for lag in args.rng_lags})) if args.rng_lags else None
     )
 
-    if args.run_interseed is not None:
-        app_cfg.analysis.run_interseed = args.run_interseed
-    run_rng_diagnostics = (
-        app_cfg.analysis.run_rng
-        if args.rng_diagnostics is None
-        else args.rng_diagnostics
-    )
-    app_cfg.analysis.run_rng = run_rng_diagnostics
-    if args.rng_diagnostics is not None:
-        app_cfg.analysis.disable_rng_diagnostics = not args.rng_diagnostics
-    if not app_cfg.analysis.run_interseed:
-        app_cfg.analysis.run_rng = False
-        app_cfg.analysis.disable_rng_diagnostics = True
-
-    for flag, attr in (
-        (args.disable_trueskill, "disable_trueskill"),
-        (args.disable_head2head, "disable_head2head"),
-        (args.disable_hgb, "disable_hgb"),
-        (args.disable_tiering, "disable_tiering"),
-        (args.disable_agreement, "disable_agreement"),
-        (args.disable_game_stats, "disable_game_stats"),
-        (args.disable_rng_diagnostics, "disable_rng_diagnostics"),
-    ):
-        if flag:
-            setattr(app_cfg.analysis, attr, True)
+    deprecated_cli_flags = {
+        "run_game_stats": args.run_game_stats is not None,
+        "rng_diagnostics": args.rng_diagnostics is not None,
+        "run_interseed": args.run_interseed is not None,
+        "disable_trueskill": bool(args.disable_trueskill),
+        "disable_head2head": bool(args.disable_head2head),
+        "disable_hgb": bool(args.disable_hgb),
+        "disable_tiering": bool(args.disable_tiering),
+        "disable_agreement": bool(args.disable_agreement),
+        "disable_game_stats": bool(args.disable_game_stats),
+        "disable_rng_diagnostics": bool(args.disable_rng_diagnostics),
+    }
+    for flag, enabled in deprecated_cli_flags.items():
+        if enabled:
+            LOGGER.warning(
+                "Deprecated CLI flag ignored; stages now run based on inputs",
+                extra={"stage": "pipeline", "flag": flag},
+            )
 
     layout = resolve_stage_layout(app_cfg)
     app_cfg.set_stage_layout(layout)
@@ -322,16 +309,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             head2head_mod.run(cfg)
 
     def _post_h2h_only(cfg: AppConfig) -> None:
-        if not cfg.analysis.run_post_h2h_analysis:
-            return
         post_log = analysis.stage_logger("post_h2h", logger=LOGGER)
         post_mod = analysis._optional_import("farkle.analysis.h2h_analysis", stage_log=post_log)
         if post_mod is not None:
             post_mod.run_post_h2h(cfg)
 
     def _interseed_summary(cfg: AppConfig) -> None:
-        if not cfg.analysis.run_interseed:
-            return
         stage_log = analysis.stage_logger("interseed", logger=LOGGER)
         interseed_mod = analysis._optional_import(
             "farkle.analysis.interseed_analysis", stage_log=stage_log
@@ -377,13 +360,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         steps = _plan_steps(analytics_keys)
     elif args.command == "metrics":
         metrics_keys = {"metrics", "game_stats"}
-        if app_cfg.analysis.run_interseed:
-            metrics_keys.add("rng_diagnostics")
+        metrics_keys.add("rng_diagnostics")
         steps = _plan_steps(metrics_keys)
     elif args.command == "combine":
         combine_keys = {"combine"}
-        if app_cfg.analysis.run_interseed:
-            combine_keys.add("rng_diagnostics")
+        combine_keys.add("rng_diagnostics")
         steps = _plan_steps(combine_keys)
     elif args.command in stage_map:
         steps = _plan_steps({args.command})

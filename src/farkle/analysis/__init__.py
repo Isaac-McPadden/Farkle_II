@@ -8,7 +8,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Callable
 
 from farkle.config import AppConfig
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
@@ -34,7 +34,7 @@ class StageLogger:
     def missing_dependency(self, dependency: str, *, error: str | None = None) -> None:
         """Log that a dependency is missing for a stage."""
 
-        payload = {"stage": self.stage, "missing_module": dependency}
+        payload = {"stage": self.stage, "missing_module": dependency, "status": "SKIPPED"}
         if error:
             payload["missing"] = error
         self.logger.info(
@@ -48,7 +48,7 @@ class StageLogger:
         self.logger.info(
             "Analytics: skipping %s",
             self.stage,
-            extra={"stage": self.stage, "reason": reason, **extra},
+            extra={"stage": self.stage, "reason": reason, "status": "SKIPPED", **extra},
         )
 
 
@@ -103,13 +103,15 @@ def run_interseed_analysis(
     manifest_path: Path | None = None,
 ) -> None:
     """Run interseed analytics in order (variance → meta → trueskill → agreement → summary)."""
-    if not cfg.analysis.run_interseed:
-        _skip_message("variance", "run_interseed=False")
-        _skip_message("meta", "run_interseed=False")
-        _skip_message("trueskill", "run_interseed=False")
-        _skip_message("agreement", "run_interseed=False")
-        _skip_message("interseed", "run_interseed=False")
-        return
+    def _require_interseed_inputs(stage: str, runner: Callable[[AppConfig], None]) -> Callable[[AppConfig], None]:
+        def _wrapped(inner_cfg: AppConfig) -> None:
+            ready, reason = inner_cfg.interseed_ready()
+            if not ready:
+                stage_logger(stage, logger=LOGGER).missing_input(reason)
+                return
+            runner(inner_cfg)
+
+        return _wrapped
 
     def _variance(cfg: AppConfig) -> None:
         run_variance(cfg, force=force)
@@ -118,63 +120,35 @@ def run_interseed_analysis(
         run_meta(cfg, force=force)
 
     def _trueskill(cfg: AppConfig) -> None:
-        ts_mod = _optional_import("farkle.analysis.trueskill")
-        if cfg.analysis.run_trueskill and not cfg.analysis.disable_trueskill and ts_mod is not None:
-            ts_mod.run(cfg)
+        stage_log = stage_logger("trueskill", logger=LOGGER)
+        ts_mod = _optional_import("farkle.analysis.trueskill", stage_log=stage_log)
+        if ts_mod is None:
             return
-        LOGGER.info(
-            "Analytics: skipping trueskill",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_trueskill=False"
-                    if not cfg.analysis.run_trueskill
-                    else "disabled"
-                    if cfg.analysis.disable_trueskill
-                    else "unavailable"
-                ),
-            },
-        )
+        ts_mod.run(cfg)
 
     def _agreement(cfg: AppConfig) -> None:
-        agreement_mod = _optional_import("farkle.analysis.agreement")
-        if (
-            cfg.analysis.run_agreement
-            and not cfg.analysis.disable_agreement
-            and agreement_mod is not None
-        ):
-            agreement_mod.run(cfg)
+        stage_log = stage_logger("agreement", logger=LOGGER)
+        agreement_mod = _optional_import("farkle.analysis.agreement", stage_log=stage_log)
+        if agreement_mod is None:
             return
-        LOGGER.info(
-            "Analytics: skipping agreement",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_agreement=False"
-                    if not cfg.analysis.run_agreement
-                    else "disabled"
-                    if cfg.analysis.disable_agreement
-                    else "unavailable"
-                ),
-            },
-        )
+        agreement_mod.run(cfg)
 
     def _interseed_summary(cfg: AppConfig) -> None:
-        interseed_mod = _optional_import("farkle.analysis.interseed_analysis")
+        stage_log = stage_logger("interseed", logger=LOGGER)
+        interseed_mod = _optional_import(
+            "farkle.analysis.interseed_analysis",
+            stage_log=stage_log,
+        )
         if interseed_mod is not None:
             interseed_mod.run(cfg, force=force, run_stages=False)
             return
-        LOGGER.info(
-            "Analytics: skipping interseed summary",
-            extra={"stage": "analysis", "reason": "unavailable"},
-        )
 
     plan = [
-        StagePlanItem("variance", _variance),
-        StagePlanItem("meta", _meta),
-        StagePlanItem("trueskill", _trueskill),
-        StagePlanItem("agreement", _agreement),
-        StagePlanItem("interseed", _interseed_summary),
+        StagePlanItem("variance", _require_interseed_inputs("variance", _variance)),
+        StagePlanItem("meta", _require_interseed_inputs("meta", _meta)),
+        StagePlanItem("trueskill", _require_interseed_inputs("trueskill", _trueskill)),
+        StagePlanItem("agreement", _require_interseed_inputs("agreement", _agreement)),
+        StagePlanItem("interseed", _require_interseed_inputs("interseed", _interseed_summary)),
     ]
     manifest_path = manifest_path or (cfg.analysis_dir / cfg.manifest_name)
     context = StageRunContext(
@@ -187,20 +161,6 @@ def run_interseed_analysis(
         logger=LOGGER,
     )
     StageRunner.run(plan, context, raise_on_failure=True)
-
-
-def _skip_message(step: str, reason: str) -> None:
-    """Log a standardized skip message for optional analysis stages.
-
-    Args:
-        step: Name of the analytics step being skipped.
-        reason: Human-readable explanation for the skip condition.
-    """
-    LOGGER.info(
-        "Analytics: skipping %s",
-        step,
-        extra={"stage": "analysis", "step": step, "reason": reason},
-    )
 
 
 def _run_manifest_metadata(cfg: AppConfig) -> dict[str, Any]:
@@ -225,105 +185,39 @@ def run_single_seed_analysis(
         run_seed_summaries(cfg, force=force)
 
     def _tiering(cfg: AppConfig) -> None:
-        freq_mod = _optional_import("farkle.analysis.tiering_report")
-        if (
-            getattr(cfg.analysis, "run_frequentist", False)
-            and not cfg.analysis.disable_tiering
-            and freq_mod is not None
-        ):
-            freq_mod.run(cfg)
+        stage_log = stage_logger("tiering", logger=LOGGER)
+        freq_mod = _optional_import("farkle.analysis.tiering_report", stage_log=stage_log)
+        if freq_mod is None:
             return
-        LOGGER.info(
-            "Analytics: skipping tiering report",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_frequentist=False"
-                    if not getattr(cfg.analysis, "run_frequentist", False)
-                    else "disabled"
-                    if cfg.analysis.disable_tiering
-                    else "unavailable"
-                ),
-            },
-        )
+        freq_mod.run(cfg)
 
     def _trueskill(cfg: AppConfig) -> None:
-        ts_mod = _optional_import("farkle.analysis.trueskill")
-        if cfg.analysis.run_trueskill and not cfg.analysis.disable_trueskill and ts_mod is not None:
-            ts_mod.run(cfg)
+        stage_log = stage_logger("trueskill", logger=LOGGER)
+        ts_mod = _optional_import("farkle.analysis.trueskill", stage_log=stage_log)
+        if ts_mod is None:
             return
-        LOGGER.info(
-            "Analytics: skipping trueskill",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_trueskill=False"
-                    if not cfg.analysis.run_trueskill
-                    else "disabled"
-                    if cfg.analysis.disable_trueskill
-                    else "unavailable"
-                ),
-            },
-        )
+        ts_mod.run(cfg)
 
     def _head2head(cfg: AppConfig) -> None:
-        h2h_mod = _optional_import("farkle.analysis.head2head")
-        if (
-            cfg.analysis.run_head2head
-            and not cfg.analysis.disable_head2head
-            and h2h_mod is not None
-        ):
-            h2h_mod.run(cfg)
+        stage_log = stage_logger("head2head", logger=LOGGER)
+        h2h_mod = _optional_import("farkle.analysis.head2head", stage_log=stage_log)
+        if h2h_mod is None:
             return
-        LOGGER.info(
-            "Analytics: skipping head-to-head",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_head2head=False"
-                    if not cfg.analysis.run_head2head
-                    else "disabled"
-                    if cfg.analysis.disable_head2head
-                    else "unavailable"
-                ),
-            },
-        )
+        h2h_mod.run(cfg)
 
     def _post_h2h(cfg: AppConfig) -> None:
-        post_h2h_mod = _optional_import("farkle.analysis.h2h_analysis")
-        if cfg.analysis.run_post_h2h_analysis and post_h2h_mod is not None:
-            post_h2h_mod.run_post_h2h(cfg)
+        stage_log = stage_logger("post_h2h", logger=LOGGER)
+        post_h2h_mod = _optional_import("farkle.analysis.h2h_analysis", stage_log=stage_log)
+        if post_h2h_mod is None:
             return
-        LOGGER.info(
-            "Analytics: skipping post head-to-head analysis",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_post_h2h_analysis=False"
-                    if not cfg.analysis.run_post_h2h_analysis
-                    else "unavailable"
-                ),
-            },
-        )
+        post_h2h_mod.run_post_h2h(cfg)
 
     def _hgb(cfg: AppConfig) -> None:
-        hgb_mod = _optional_import("farkle.analysis.hgb_feat")
-        if cfg.analysis.run_hgb and not cfg.analysis.disable_hgb and hgb_mod is not None:
-            hgb_mod.run(cfg)
+        stage_log = stage_logger("hgb", logger=LOGGER)
+        hgb_mod = _optional_import("farkle.analysis.hgb_feat", stage_log=stage_log)
+        if hgb_mod is None:
             return
-        LOGGER.info(
-            "Analytics: skipping hist gradient boosting",
-            extra={
-                "stage": "analysis",
-                "reason": (
-                    "run_hgb=False"
-                    if not cfg.analysis.run_hgb
-                    else "disabled"
-                    if cfg.analysis.disable_hgb
-                    else "unavailable"
-                ),
-            },
-        )
+        hgb_mod.run(cfg)
 
     plan = [
         StagePlanItem("seed_summaries", _seed_summaries),

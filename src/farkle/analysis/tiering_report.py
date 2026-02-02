@@ -66,10 +66,6 @@ def run(cfg: AppConfig) -> None:
     stage_log = stage_logger("tiering", logger=LOGGER)
     stage_log.start()
 
-    if not getattr(cfg.analysis, "run_frequentist", False):
-        stage_log.missing_input("run_frequentist disabled")
-        return
-
     inputs = _prepare_inputs(cfg)
     tier_file = cfg.preferred_tiers_path()
     tier_payload = load_tier_payload(tier_file)

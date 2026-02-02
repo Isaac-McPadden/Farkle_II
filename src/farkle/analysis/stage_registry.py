@@ -96,116 +96,30 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition("curate", group="pipeline"),
     StageDefinition("combine", group="pipeline"),
     StageDefinition("metrics", group="pipeline"),
-    StageDefinition(
-        "game_stats",
-        group="analytics",
-        disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_game_stats or not cfg.analysis.run_game_stats
-        ),
-    ),
+    StageDefinition("game_stats", group="analytics"),
     StageDefinition("seed_summaries", group="analytics"),
     StageDefinition(
         "rng_diagnostics",
         group="analytics",
         folder_stub="rng",
-        disabled_predicate=lambda cfg: (
-            not cfg.analysis.run_interseed
-            or cfg.sim.interseed_seed_list() is None
-            or cfg.analysis.disable_rng_diagnostics
-            or not cfg.analysis.run_rng
-        ),
     ),
-    StageDefinition(
-        "tiering",
-        group="analytics",
-        disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_tiering or not cfg.analysis.run_frequentist
-        ),
-    ),
-    StageDefinition(
-        "trueskill",
-        group="analytics",
-        disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_trueskill or not cfg.analysis.run_trueskill
-        ),
-    ),
-    StageDefinition(
-        "head2head",
-        group="analytics",
-        disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_head2head or not cfg.analysis.run_head2head
-        ),
-    ),
-    StageDefinition(
-        "post_h2h",
-        group="analytics",
-        disabled_predicate=lambda cfg: not cfg.analysis.run_post_h2h_analysis,
-    ),
-    StageDefinition(
-        "hgb",
-        group="analytics",
-        disabled_predicate=lambda cfg: cfg.analysis.disable_hgb or not cfg.analysis.run_hgb,
-    ),
-    StageDefinition(
-        "variance",
-        group="analytics",
-        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
-    ),
-    StageDefinition(
-        "meta",
-        group="analytics",
-        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
-    ),
-    StageDefinition(
-        "agreement",
-        group="analytics",
-        disabled_predicate=lambda cfg: (
-            cfg.analysis.disable_agreement
-            or not cfg.analysis.run_agreement
-            or not cfg.analysis.run_interseed
-        ),
-    ),
-    StageDefinition(
-        "interseed",
-        group="analytics",
-        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
-    ),
+    StageDefinition("tiering", group="analytics"),
+    StageDefinition("trueskill", group="analytics"),
+    StageDefinition("head2head", group="analytics"),
+    StageDefinition("post_h2h", group="analytics"),
+    StageDefinition("hgb", group="analytics"),
+    StageDefinition("variance", group="analytics"),
+    StageDefinition("meta", group="analytics"),
+    StageDefinition("agreement", group="analytics"),
+    StageDefinition("interseed", group="analytics"),
 )
 
 _INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
-    StageDefinition(
-        "variance",
-        group="analytics",
-        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
-    ),
-    StageDefinition(
-        "meta",
-        group="analytics",
-        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
-    ),
-    StageDefinition(
-        "trueskill",
-        group="analytics",
-        disabled_predicate=lambda cfg: (
-            not cfg.analysis.run_interseed
-            or cfg.analysis.disable_trueskill
-            or not cfg.analysis.run_trueskill
-        ),
-    ),
-    StageDefinition(
-        "agreement",
-        group="analytics",
-        disabled_predicate=lambda cfg: (
-            not cfg.analysis.run_interseed
-            or cfg.analysis.disable_agreement
-            or not cfg.analysis.run_agreement
-        ),
-    ),
-    StageDefinition(
-        "interseed",
-        group="analytics",
-        disabled_predicate=lambda cfg: not cfg.analysis.run_interseed,
-    ),
+    StageDefinition("variance", group="analytics"),
+    StageDefinition("meta", group="analytics"),
+    StageDefinition("trueskill", group="analytics"),
+    StageDefinition("agreement", group="analytics"),
+    StageDefinition("interseed", group="analytics"),
 )
 
 

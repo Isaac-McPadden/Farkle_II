@@ -61,15 +61,13 @@ def _run_per_seed_analysis(
         StagePlanItem("combine", combine.run),
         StagePlanItem("metrics", metrics.run),
     ]
-    if cfg.analysis.run_game_stats and not cfg.analysis.disable_game_stats:
-        plan.append(StagePlanItem("game_stats", game_stats.run))
-    if cfg.analysis.run_rng and not cfg.analysis.disable_rng_diagnostics:
-        plan.append(
-            StagePlanItem(
-                "rng_diagnostics",
-                lambda cfg: rng_diagnostics.run(cfg, lags=None),
-            )
+    plan.append(StagePlanItem("game_stats", game_stats.run))
+    plan.append(
+        StagePlanItem(
+            "rng_diagnostics",
+            lambda cfg: rng_diagnostics.run(cfg, lags=None),
         )
+    )
     plan.append(
         StagePlanItem(
             "single_seed_analysis",
@@ -216,7 +214,7 @@ def run_pipeline(
     interseed_cfg = dataclasses.replace(
         interseed_cfg,
         io=interseed_io,
-        analysis=dataclasses.replace(interseed_cfg.analysis, run_interseed=True),
+        analysis=dataclasses.replace(interseed_cfg.analysis),
     )
     interseed_cfg.set_stage_layout(resolve_interseed_stage_layout(interseed_cfg))
 
