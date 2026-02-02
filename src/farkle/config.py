@@ -421,7 +421,15 @@ class AppConfig:
     def stage_dir(self, key: str, *, required_by: str | None = "analysis pipeline") -> Path:
         """Return the resolved stage directory for ``key`` and create it."""
 
-        return self.resolve_stage_dir(key, allow_missing=False, required_by=required_by)
+        folder = self.stage_layout.folder_for(key)
+        if folder is None:
+            requirement = f" required by {required_by}" if required_by else ""
+            raise KeyError(
+                f"Stage {key!r} is not registered in the resolved layout{requirement}."
+            )
+        stage_root = self.analysis_dir / folder
+        stage_root.mkdir(parents=True, exist_ok=True)
+        return stage_root
 
     def stage_dir_if_active(self, key: str, *parts: str | Path) -> Path | None:
         """Return the resolved stage directory for ``key`` when active."""

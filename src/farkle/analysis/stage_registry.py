@@ -213,12 +213,13 @@ def resolve_stage_layout(
     cfg: AppConfig,
     registry: Iterable[StageDefinition] | None = None,
 ) -> StageLayout:
-    """Filter the registry and assign sequential numbered folder names."""
+    """Assign sequential numbered folder names to the supplied registry."""
 
+    _ = cfg
     definitions = tuple(registry) if registry is not None else _REGISTRY
 
     placements: list[StagePlacement] = []
-    for definition in (definition for definition in definitions if definition.is_enabled(cfg)):
+    for definition in definitions:
         placement_index = len(placements)
         placements.append(
             StagePlacement(
