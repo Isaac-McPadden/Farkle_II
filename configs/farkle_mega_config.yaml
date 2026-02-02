@@ -5,6 +5,8 @@ io:
   results_dir_prefix: "results"     # prefix under data/ for per-N run folders
   analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
   meta_analysis_dir: "data/meta_analysis"         # optional shared dir for per-seed/meta summaries
+  interseed_input_dir: null        # optional upstream interseed analysis root
+  interseed_input_layout: null     # stage layout when using interseed_input_dir
 
 sim:
   # Table sizes to run (single-N works by giving a 1-item list)
@@ -59,17 +61,6 @@ sim:
     endpoint: "top1"              # "pairwise" or "top1"
 
 analysis:
-  # Which analytics modules to run
-  run_trueskill: true             # compute TrueSkill ratings
-  run_head2head: true             # execute head-to-head analysis
-  run_rng: true                   # enable RNG diagnostics stage
-  run_game_stats: true            # compute pooled game statistics after metrics
-  run_hgb: true                   # train histogram gradient boosting model
-  run_frequentist: true           # frequentist/MDD tiering + tiering_report
-  run_post_h2h_analysis: true     # Holm-Bonferroni post-H2H cleanup
-  run_agreement: true             # agreement heuristics (manual run until wired into run_all)
-  run_report: true                # report writer / publishing (manual until wired)
-
   n_jobs: 12                      # parallel workers for analysis
   log_level: "INFO"               # logger level during analysis
 

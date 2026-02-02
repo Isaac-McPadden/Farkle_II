@@ -4,6 +4,9 @@
 io:
   results_dir_prefix: "results"   # prefix under data/ for per-N run folders
   analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
+  meta_analysis_dir: null         # optional shared dir for per-seed summaries
+  interseed_input_dir: null       # optional upstream interseed analysis root
+  interseed_input_layout: null    # stage layout when using interseed_input_dir
 
 sim:
   # Table sizes to run (single-N works by giving a 1-item list)
@@ -60,13 +63,6 @@ sim:
     endpoint: "top1"
 
 analysis:
-  run_trueskill: true
-  run_head2head: true
-  run_hgb: true
-  run_frequentist: false
-  run_post_h2h_analysis: false
-  run_agreement: false
-  run_report: true
   n_jobs: 12
   log_level: "INFO"
   head2head_target_hours: 8.0
