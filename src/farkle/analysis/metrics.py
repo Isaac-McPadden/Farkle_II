@@ -61,6 +61,8 @@ def run(cfg: AppConfig) -> None:
     stamp_seat_metrics = cfg.metrics_output_path("metrics.seat_metrics.stamp.json")
     stamp_symmetry = cfg.metrics_output_path("metrics.symmetry.stamp.json")
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
+    include_symmetry = 2 in player_counts
+    symmetry_outputs = [out_symmetry, out_symmetry_csv] if include_symmetry else []
     raw_metric_inputs = [
         cfg.results_root / f"{n}_players" / f"{n}p_metrics.parquet" for n in player_counts
     ]
@@ -84,12 +86,11 @@ def run(cfg: AppConfig) -> None:
         out_seats_parquet,
         out_seat_metrics,
         out_seat_metrics_csv,
-        out_symmetry,
-        out_symmetry_csv,
+        *symmetry_outputs,
         *iso_targets,
     ]
     stage_inputs = [data_file, *raw_metric_inputs]
-    if symmetry_input != data_file and symmetry_input.exists():
+    if include_symmetry and symmetry_input != data_file and symmetry_input.exists():
         stage_inputs.append(symmetry_input)
     if stage_is_up_to_date(
         done,
@@ -148,8 +149,7 @@ def run(cfg: AppConfig) -> None:
         out_seats_parquet,
         out_seat_metrics,
         out_seat_metrics_csv,
-        out_symmetry,
-        out_symmetry_csv,
+        *symmetry_outputs,
         *iso_paths,
     ]
 
@@ -227,10 +227,22 @@ def run(cfg: AppConfig) -> None:
             config_sha=getattr(cfg, "config_sha", None),
         )
 
-    if stage_is_up_to_date(
+    if not include_symmetry:
+        LOGGER.info(
+            "Symmetry checks skipped: n_players_list does not include 2",
+            extra={"stage": "metrics", "player_counts": player_counts},
+        )
+        _write_stamp(stamp_symmetry, inputs=[], outputs=[])
+        write_stage_done(
+            done_symmetry,
+            inputs=[],
+            outputs=[],
+            config_sha=getattr(cfg, "config_sha", None),
+        )
+    elif stage_is_up_to_date(
         done_symmetry,
         inputs=[symmetry_input],
-        outputs=[out_symmetry, out_symmetry_csv],
+        outputs=symmetry_outputs,
         config_sha=getattr(cfg, "config_sha", None),
     ):
         symmetry_df = pd.read_parquet(out_symmetry)
@@ -242,12 +254,12 @@ def run(cfg: AppConfig) -> None:
         _write_stamp(
             stamp_symmetry,
             inputs=[symmetry_input],
-            outputs=[out_symmetry, out_symmetry_csv],
+            outputs=symmetry_outputs,
         )
         write_stage_done(
             done_symmetry,
             inputs=[symmetry_input],
-            outputs=[out_symmetry, out_symmetry_csv],
+            outputs=symmetry_outputs,
             config_sha=getattr(cfg, "config_sha", None),
         )
 
@@ -272,24 +284,24 @@ def run(cfg: AppConfig) -> None:
             out_seats_parquet,
             out_seat_metrics,
             out_seat_metrics_csv,
-            out_symmetry,
-            out_symmetry_csv,
+            *symmetry_outputs,
             *iso_paths,
         ],
     )
-
+    complete_extra = {
+        "stage": "metrics",
+        "rows": len(metrics_df),
+        "seat_rows": len(seat_df),
+        "metrics_path": str(out_metrics),
+        "seat_path": str(out_seats),
+        "seat_parquet": str(out_seats_parquet),
+        "seat_metrics": str(out_seat_metrics),
+    }
+    if symmetry_outputs and out_symmetry.exists():
+        complete_extra["symmetry_checks"] = str(out_symmetry)
     LOGGER.info(
         "Metrics stage complete",
-        extra={
-            "stage": "metrics",
-            "rows": len(metrics_df),
-            "seat_rows": len(seat_df),
-            "metrics_path": str(out_metrics),
-            "seat_path": str(out_seats),
-            "seat_parquet": str(out_seats_parquet),
-            "seat_metrics": str(out_seat_metrics),
-            "symmetry_checks": str(out_symmetry),
-        },
+        extra=complete_extra,
     )
     write_stage_done(
         done,

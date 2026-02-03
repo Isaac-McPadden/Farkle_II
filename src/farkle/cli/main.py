@@ -348,8 +348,6 @@ def _run_preprocess(
     cfg: AppConfig,
     *,
     compute_game_stats: bool = False,
-    compute_rng_diagnostics: bool = False,
-    rng_lags: tuple[int, ...] | None = None,
 ) -> None:
     """Run ingest, curate, combine, metrics, and optional diagnostics."""
     ingest.run(cfg)
@@ -360,10 +358,6 @@ def _run_preprocess(
         from farkle.analysis import game_stats
 
         game_stats.run(cfg)
-    if compute_rng_diagnostics:
-        from farkle.analysis import rng_diagnostics
-
-        rng_diagnostics.run(cfg, lags=rng_lags)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
@@ -505,19 +499,17 @@ def main(argv: Sequence[str] | None = None) -> None:
             combine.run(cfg)
         elif args.an_cmd == "metrics":
             metrics.run(cfg)
-            if compute_rng_diagnostics:
-                from farkle.analysis import rng_diagnostics
-
-                rng_diagnostics.run(cfg, lags=rng_lags)
         elif args.an_cmd == "preprocess":
             _run_preprocess(
                 cfg,
                 compute_game_stats=compute_game_stats,
-                compute_rng_diagnostics=compute_rng_diagnostics,
-                rng_lags=rng_lags,
             )
         elif args.an_cmd == "analytics":
-            analysis_pkg.run_all(cfg)
+            analysis_pkg.run_all(
+                cfg,
+                run_rng_diagnostics=compute_rng_diagnostics,
+                rng_lags=rng_lags,
+            )
         elif args.an_cmd == "variance":
             analysis_pkg.run_variance(cfg, force=getattr(args, "force", False))
         elif args.an_cmd == "two-seed-pipeline":
@@ -536,10 +528,12 @@ def main(argv: Sequence[str] | None = None) -> None:
             _run_preprocess(
                 cfg,
                 compute_game_stats=compute_game_stats,
-                compute_rng_diagnostics=compute_rng_diagnostics,
+            )
+            analysis_pkg.run_all(
+                cfg,
+                run_rng_diagnostics=compute_rng_diagnostics,
                 rng_lags=rng_lags,
             )
-            analysis_pkg.run_all(cfg)
         if args.an_cmd == "metrics" and compute_game_stats:
             from farkle.analysis import game_stats
 

@@ -8,10 +8,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from farkle.config import AppConfig
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
+from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 
 LOGGER = logging.getLogger(__name__)
 
@@ -101,9 +102,16 @@ def run_interseed_analysis(
     *,
     force: bool = False,
     manifest_path: Path | None = None,
+    rng_lags: Sequence[int] | None = None,
+    run_rng_diagnostics: bool = False,
 ) -> None:
-    """Run interseed analytics in order (variance → meta → trueskill → agreement → summary)."""
-    def _require_interseed_inputs(stage: str, runner: Callable[[AppConfig], None]) -> Callable[[AppConfig], None]:
+    """Run interseed analytics in order (rng → variance → meta → trueskill → agreement → summary)."""
+    previous_layout = cfg._stage_layout
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+
+    def _require_interseed_inputs(
+        stage: str, runner: Callable[[AppConfig], None]
+    ) -> Callable[[AppConfig], None]:
         def _wrapped(inner_cfg: AppConfig) -> None:
             ready, reason = inner_cfg.interseed_ready()
             if not ready:
@@ -112,6 +120,16 @@ def run_interseed_analysis(
             runner(inner_cfg)
 
         return _wrapped
+
+    def _rng_diagnostics(cfg: AppConfig) -> None:
+        if not run_rng_diagnostics:
+            stage_logger("rng_diagnostics", logger=LOGGER).missing_input(
+                "disabled by CLI flag"
+            )
+            return
+        from farkle.analysis import rng_diagnostics
+
+        rng_diagnostics.run(cfg, lags=rng_lags, force=force)
 
     def _variance(cfg: AppConfig) -> None:
         run_variance(cfg, force=force)
@@ -144,11 +162,18 @@ def run_interseed_analysis(
             return
 
     plan = [
+        StagePlanItem(
+            "rng_diagnostics",
+            _require_interseed_inputs("rng_diagnostics", _rng_diagnostics),
+        ),
         StagePlanItem("variance", _require_interseed_inputs("variance", _variance)),
         StagePlanItem("meta", _require_interseed_inputs("meta", _meta)),
         StagePlanItem("trueskill", _require_interseed_inputs("trueskill", _trueskill)),
         StagePlanItem("agreement", _require_interseed_inputs("agreement", _agreement)),
-        StagePlanItem("interseed", _require_interseed_inputs("interseed", _interseed_summary)),
+        StagePlanItem(
+            "interseed",
+            _require_interseed_inputs("interseed", _interseed_summary),
+        ),
     ]
     manifest_path = manifest_path or (cfg.analysis_dir / cfg.manifest_name)
     context = StageRunContext(
@@ -160,7 +185,10 @@ def run_interseed_analysis(
         continue_on_error=False,
         logger=LOGGER,
     )
-    StageRunner.run(plan, context, raise_on_failure=True)
+    try:
+        StageRunner.run(plan, context, raise_on_failure=True)
+    finally:
+        cfg._stage_layout = previous_layout
 
 
 def _run_manifest_metadata(cfg: AppConfig) -> dict[str, Any]:
@@ -180,16 +208,9 @@ def run_single_seed_analysis(
     force: bool = False,
     manifest_path: Path | None = None,
 ) -> None:
-    """Run per-seed analytics in order (seed summaries → tiering → head2head → post_h2h → hgb)."""
+    """Run per-seed analytics in order (seed summaries → trueskill → tiering → head2head → post_h2h → hgb)."""
     def _seed_summaries(cfg: AppConfig) -> None:
         run_seed_summaries(cfg, force=force)
-
-    def _tiering(cfg: AppConfig) -> None:
-        stage_log = stage_logger("tiering", logger=LOGGER)
-        freq_mod = _optional_import("farkle.analysis.tiering_report", stage_log=stage_log)
-        if freq_mod is None:
-            return
-        freq_mod.run(cfg)
 
     def _trueskill(cfg: AppConfig) -> None:
         stage_log = stage_logger("trueskill", logger=LOGGER)
@@ -197,6 +218,13 @@ def run_single_seed_analysis(
         if ts_mod is None:
             return
         ts_mod.run(cfg)
+
+    def _tiering(cfg: AppConfig) -> None:
+        stage_log = stage_logger("tiering", logger=LOGGER)
+        freq_mod = _optional_import("farkle.analysis.tiering_report", stage_log=stage_log)
+        if freq_mod is None:
+            return
+        freq_mod.run(cfg)
 
     def _head2head(cfg: AppConfig) -> None:
         stage_log = stage_logger("head2head", logger=LOGGER)
@@ -221,8 +249,8 @@ def run_single_seed_analysis(
 
     plan = [
         StagePlanItem("seed_summaries", _seed_summaries),
-        StagePlanItem("tiering", _tiering),
         StagePlanItem("trueskill", _trueskill),
+        StagePlanItem("tiering", _tiering),
         StagePlanItem("head2head", _head2head),
         StagePlanItem("post_h2h", _post_h2h),
         StagePlanItem("hgb", _hgb),
@@ -240,9 +268,18 @@ def run_single_seed_analysis(
     StageRunner.run(plan, context, raise_on_failure=True)
 
 
-def run_all(cfg: AppConfig) -> None:
+def run_all(
+    cfg: AppConfig,
+    *,
+    run_rng_diagnostics: bool = False,
+    rng_lags: Sequence[int] | None = None,
+) -> None:
     """Run single-seed analytics first, then interseed analytics if enabled."""
     LOGGER.info("Analytics: starting all modules", extra={"stage": "analysis"})
     run_single_seed_analysis(cfg)
-    run_interseed_analysis(cfg)
+    run_interseed_analysis(
+        cfg,
+        run_rng_diagnostics=run_rng_diagnostics,
+        rng_lags=rng_lags,
+    )
     LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})

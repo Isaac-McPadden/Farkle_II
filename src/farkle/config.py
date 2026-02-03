@@ -441,10 +441,12 @@ class AppConfig:
                     f"Stage {key!r} is not active in the resolved layout{requirement}."
                 )
             stage_root = self.analysis_dir / key
+            if create and not allow_missing:
+                stage_root.mkdir(parents=True, exist_ok=True)
         else:
             stage_root = self.analysis_dir / folder
-        if create:
-            stage_root.mkdir(parents=True, exist_ok=True)
+            if create:
+                stage_root.mkdir(parents=True, exist_ok=True)
         return stage_root
 
     def stage_dir(self, key: str, *, required_by: str | None = "analysis pipeline") -> Path:
