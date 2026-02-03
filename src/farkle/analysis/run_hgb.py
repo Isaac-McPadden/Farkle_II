@@ -47,7 +47,7 @@ class PermutationImportanceResult(Protocol):
 # ---------------------------------------------------------------------------
 # Constants for file and directory locations used in this module
 # ---------------------------------------------------------------------------
-DEFAULT_ROOT = Path("results_seed_0") / "analysis" / "11_hgb"
+DEFAULT_ROOT = Path("results_seed_0") / "analysis" / "10_hgb"
 METRICS_NAME = "metrics.parquet"
 RATINGS_NAME = "ratings_pooled.parquet"
 MAX_PD_PLOTS = 30

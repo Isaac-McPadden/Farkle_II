@@ -98,11 +98,6 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition("metrics", group="pipeline"),
     StageDefinition("game_stats", group="analytics"),
     StageDefinition("seed_summaries", group="analytics"),
-    StageDefinition(
-        "rng_diagnostics",
-        group="analytics",
-        folder_stub="rng",
-    ),
     StageDefinition("trueskill", group="analytics"),
     StageDefinition("tiering", group="analytics"),
     StageDefinition("head2head", group="analytics"),
@@ -115,6 +110,11 @@ _REGISTRY: tuple[StageDefinition, ...] = (
 )
 
 _INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
+    StageDefinition(
+        "rng_diagnostics",
+        group="analytics",
+        folder_stub="rng",
+    ),
     StageDefinition("variance", group="analytics"),
     StageDefinition("meta", group="analytics"),
     StageDefinition("trueskill", group="analytics"),

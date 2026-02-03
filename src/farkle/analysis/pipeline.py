@@ -16,8 +16,8 @@ from typing import Any, Callable, Sequence, overload
 import yaml  # type: ignore[import-untyped]
 
 from farkle import analysis
-from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
-from farkle.analysis.stage_registry import resolve_stage_layout
+from farkle.analysis import combine, curate, game_stats, ingest, metrics
+from farkle.analysis.stage_registry import resolve_interseed_stage_layout, resolve_stage_layout
 from farkle.config import AppConfig, load_app_config
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.utils.writer import atomic_path
@@ -251,7 +251,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     deprecated_cli_flags = {
         "run_game_stats": args.run_game_stats is not None,
-        "rng_diagnostics": args.rng_diagnostics is not None,
         "run_interseed": args.run_interseed is not None,
         "disable_trueskill": bool(args.disable_trueskill),
         "disable_head2head": bool(args.disable_head2head),
@@ -323,13 +322,37 @@ def main(argv: Sequence[str] | None = None) -> int:
             return
         interseed_mod.run(cfg, run_stages=False)
 
+        if not args.rng_diagnostics:
+            return
+
+        def _run_rng(interseed_cfg: AppConfig) -> None:
+            rng_log = analysis.stage_logger("rng_diagnostics", logger=LOGGER)
+            rng_mod = analysis._optional_import(
+                "farkle.analysis.rng_diagnostics",
+                stage_log=rng_log,
+            )
+            if rng_mod is None:
+                return
+            rng_mod.run(interseed_cfg, lags=rng_lags)
+
+        _with_interseed_layout(cfg, _run_rng)
+
+    def _with_interseed_layout(
+        cfg: AppConfig, runner: Callable[[AppConfig], None]
+    ) -> None:
+        previous_layout = cfg._stage_layout
+        cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+        try:
+            runner(cfg)
+        finally:
+            cfg._stage_layout = previous_layout
+
     stage_map: dict[str, Callable[[AppConfig], None]] = {
         "ingest": ingest.run,
         "curate": curate.run,
         "combine": combine.run,
         "metrics": metrics.run,
         "game_stats": lambda cfg: game_stats.run(cfg),
-        "rng_diagnostics": lambda cfg: rng_diagnostics.run(cfg, lags=rng_lags),
         "seed_summaries": analysis.run_seed_summaries,
         "variance": analysis.run_variance,
         "meta": analysis.run_meta,
@@ -360,11 +383,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         steps = _plan_steps(analytics_keys)
     elif args.command == "metrics":
         metrics_keys = {"metrics", "game_stats"}
-        metrics_keys.add("rng_diagnostics")
         steps = _plan_steps(metrics_keys)
     elif args.command == "combine":
         combine_keys = {"combine"}
-        combine_keys.add("rng_diagnostics")
         steps = _plan_steps(combine_keys)
     elif args.command in stage_map:
         steps = _plan_steps({args.command})
