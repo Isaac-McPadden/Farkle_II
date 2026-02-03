@@ -180,16 +180,9 @@ def run_single_seed_analysis(
     force: bool = False,
     manifest_path: Path | None = None,
 ) -> None:
-    """Run per-seed analytics in order (seed summaries → tiering → head2head → post_h2h → hgb)."""
+    """Run per-seed analytics in order (seed summaries → trueskill → tiering → head2head → post_h2h → hgb)."""
     def _seed_summaries(cfg: AppConfig) -> None:
         run_seed_summaries(cfg, force=force)
-
-    def _tiering(cfg: AppConfig) -> None:
-        stage_log = stage_logger("tiering", logger=LOGGER)
-        freq_mod = _optional_import("farkle.analysis.tiering_report", stage_log=stage_log)
-        if freq_mod is None:
-            return
-        freq_mod.run(cfg)
 
     def _trueskill(cfg: AppConfig) -> None:
         stage_log = stage_logger("trueskill", logger=LOGGER)
@@ -197,6 +190,13 @@ def run_single_seed_analysis(
         if ts_mod is None:
             return
         ts_mod.run(cfg)
+
+    def _tiering(cfg: AppConfig) -> None:
+        stage_log = stage_logger("tiering", logger=LOGGER)
+        freq_mod = _optional_import("farkle.analysis.tiering_report", stage_log=stage_log)
+        if freq_mod is None:
+            return
+        freq_mod.run(cfg)
 
     def _head2head(cfg: AppConfig) -> None:
         stage_log = stage_logger("head2head", logger=LOGGER)
@@ -221,8 +221,8 @@ def run_single_seed_analysis(
 
     plan = [
         StagePlanItem("seed_summaries", _seed_summaries),
-        StagePlanItem("tiering", _tiering),
         StagePlanItem("trueskill", _trueskill),
+        StagePlanItem("tiering", _tiering),
         StagePlanItem("head2head", _head2head),
         StagePlanItem("post_h2h", _post_h2h),
         StagePlanItem("hgb", _hgb),
