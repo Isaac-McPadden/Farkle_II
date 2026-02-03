@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Sequence
 
 from farkle import analysis
-from farkle.analysis import combine, curate, game_stats, ingest, metrics, rng_diagnostics
+from farkle.analysis import combine, curate, game_stats, ingest, metrics
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.config import AppConfig, apply_dot_overrides, load_app_config
 from farkle.orchestration.run_contexts import InterseedRunContext, SeedRunContext
@@ -61,12 +61,6 @@ def _run_per_seed_analysis(
         StagePlanItem("metrics", metrics.run),
     ]
     plan.append(StagePlanItem("game_stats", game_stats.run))
-    plan.append(
-        StagePlanItem(
-            "rng_diagnostics",
-            lambda cfg: rng_diagnostics.run(cfg, lags=None),
-        )
-    )
     plan.append(
         StagePlanItem(
             "single_seed_analysis",
@@ -226,6 +220,7 @@ def run_pipeline(
         interseed_cfg,
         force=force,
         manifest_path=manifest_path,
+        run_rng_diagnostics=True,
     )
     append_manifest_line(
         manifest_path,

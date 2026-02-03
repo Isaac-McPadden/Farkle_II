@@ -10,6 +10,7 @@ from typing import Any
 
 from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
+from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 from farkle.config import AppConfig
 from farkle.utils.writer import atomic_path
 
@@ -19,95 +20,111 @@ SUMMARY_NAME = "interseed_summary.json"
 
 
 def run(cfg: AppConfig, *, force: bool = False, run_stages: bool = True) -> None:
-    """Execute or summarize variance/meta/TrueSkill/agreement interseed analytics."""
+    """Execute or summarize rng/variance/meta/TrueSkill/agreement interseed analytics."""
+
+    previous_layout = cfg._stage_layout
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
 
     stage_log = stage_logger("interseed", logger=LOGGER)
     stage_log.start()
 
-    interseed_ready, interseed_reason = cfg.interseed_ready()
-    if not interseed_ready:
-        stage_log.missing_input(interseed_reason)
-        return
+    try:
+        interseed_ready, interseed_reason = cfg.interseed_ready()
+        if not interseed_ready:
+            stage_log.missing_input(interseed_reason)
+            return
 
-    statuses: dict[str, dict[str, Any]] = {}
+        statuses: dict[str, dict[str, Any]] = {}
 
-    variance_enabled = True
-    meta_enabled = True
-    trueskill_enabled = True
-    agreement_enabled = True
+        rng_enabled = True
+        variance_enabled = True
+        meta_enabled = True
+        trueskill_enabled = True
+        agreement_enabled = True
 
-    if variance_enabled and run_stages:
-        from farkle.analysis import variance
+        if rng_enabled and run_stages:
+            from farkle.analysis import rng_diagnostics
 
-        variance.run(cfg, force=force)
-    statuses["variance"] = {
-        "enabled": variance_enabled,
-        "outputs": _existing_paths(_variance_outputs(cfg)),
-    }
+            rng_diagnostics.run(cfg, force=force)
+        statuses["rng_diagnostics"] = {
+            "enabled": rng_enabled,
+            "outputs": _existing_paths(_rng_outputs(cfg)),
+        }
 
-    if meta_enabled and run_stages:
-        from farkle.analysis import meta
+        if variance_enabled and run_stages:
+            from farkle.analysis import variance
 
-        meta.run(cfg, force=force)
-    statuses["meta"] = {
-        "enabled": meta_enabled,
-        "outputs": _existing_paths(_meta_outputs(cfg)),
-    }
+            variance.run(cfg, force=force)
+        statuses["variance"] = {
+            "enabled": variance_enabled,
+            "outputs": _existing_paths(_variance_outputs(cfg)),
+        }
 
-    if trueskill_enabled and run_stages:
-        from farkle.analysis import trueskill
+        if meta_enabled and run_stages:
+            from farkle.analysis import meta
 
-        trueskill.run(cfg)
-    statuses["trueskill"] = {
-        "enabled": trueskill_enabled,
-        "outputs": _existing_paths(_trueskill_outputs(cfg)),
-    }
+            meta.run(cfg, force=force)
+        statuses["meta"] = {
+            "enabled": meta_enabled,
+            "outputs": _existing_paths(_meta_outputs(cfg)),
+        }
 
-    if agreement_enabled and run_stages:
-        from farkle.analysis import agreement
+        if trueskill_enabled and run_stages:
+            from farkle.analysis import trueskill
 
-        agreement.run(cfg)
-    statuses["agreement"] = {
-        "enabled": agreement_enabled,
-        "outputs": _existing_paths(_agreement_outputs(cfg)),
-    }
+            trueskill.run(cfg)
+        statuses["trueskill"] = {
+            "enabled": trueskill_enabled,
+            "outputs": _existing_paths(_trueskill_outputs(cfg)),
+        }
 
-    summary_path = cfg.interseed_stage_dir / SUMMARY_NAME
-    done_path = stage_done_path(cfg.interseed_stage_dir, "interseed")
-    inputs = sorted({Path(path) for path in _flatten_output_paths(statuses)})
+        if agreement_enabled and run_stages:
+            from farkle.analysis import agreement
 
-    if not force and stage_is_up_to_date(
-        done_path,
-        inputs=inputs,
-        outputs=[summary_path],
-        config_sha=cfg.config_sha,
-    ):
+            agreement.run(cfg)
+        statuses["agreement"] = {
+            "enabled": agreement_enabled,
+            "outputs": _existing_paths(_agreement_outputs(cfg)),
+        }
+
+        summary_path = cfg.interseed_stage_dir / SUMMARY_NAME
+        done_path = stage_done_path(cfg.interseed_stage_dir, "interseed")
+        inputs = sorted({Path(path) for path in _flatten_output_paths(statuses)})
+
+        if not force and stage_is_up_to_date(
+            done_path,
+            inputs=inputs,
+            outputs=[summary_path],
+            config_sha=cfg.config_sha,
+        ):
+            LOGGER.info(
+                "Interseed summary up-to-date",
+                extra={"stage": "interseed", "path": str(summary_path)},
+            )
+            return
+
+        payload = {
+            "config_sha": cfg.config_sha,
+            "run_interseed": cfg.analysis.run_interseed,
+            "interseed_ready": interseed_ready,
+            "stages": statuses,
+        }
+        with atomic_path(str(summary_path)) as tmp_path:
+            Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+        write_stage_done(
+            done_path,
+            inputs=inputs,
+            outputs=[summary_path],
+            config_sha=cfg.config_sha,
+        )
+
         LOGGER.info(
-            "Interseed summary up-to-date",
+            "Interseed summary written",
             extra={"stage": "interseed", "path": str(summary_path)},
         )
-        return
-
-    payload = {
-        "config_sha": cfg.config_sha,
-        "run_interseed": cfg.analysis.run_interseed,
-        "interseed_ready": interseed_ready,
-        "stages": statuses,
-    }
-    with atomic_path(str(summary_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
-
-    write_stage_done(
-        done_path,
-        inputs=inputs,
-        outputs=[summary_path],
-        config_sha=cfg.config_sha,
-    )
-
-    LOGGER.info(
-        "Interseed summary written",
-        extra={"stage": "interseed", "path": str(summary_path)},
-    )
+    finally:
+        cfg._stage_layout = previous_layout
 
 
 def _existing_paths(paths: list[Path]) -> list[str]:
@@ -151,3 +168,7 @@ def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
 def _agreement_outputs(cfg: AppConfig) -> list[Path]:
     players_list = sorted({int(n) for n in cfg.sim.n_players_list}) or [0]
     return [cfg.agreement_output_path(players) for players in players_list]
+
+
+def _rng_outputs(cfg: AppConfig) -> list[Path]:
+    return [cfg.rng_output_path("rng_diagnostics.parquet")]
