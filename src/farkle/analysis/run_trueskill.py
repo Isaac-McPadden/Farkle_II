@@ -953,7 +953,7 @@ def run_trueskill(
                 row_data_path = inferred
                 break
     _read_manifest_seed(base / "manifest.yaml")
-    suffix = f"_seed{output_seed}" if output_seed else ""
+    suffix = f"_seed{output_seed}" if output_seed is not None else ""
     if workers is None:
         workers = max(1, (os.cpu_count() or 1) - 1)
 
