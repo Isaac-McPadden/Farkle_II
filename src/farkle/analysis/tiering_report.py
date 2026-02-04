@@ -267,7 +267,6 @@ def _write_frequentist_scores(
     tier_map = frequentist_tiers.set_index("strategy")["mdd_tier"]
     base = winrates_by_players.copy()
     base["players"] = base["n_players"].astype(int)
-    base["strategy_id"] = base["strategy"]
     base["tier"] = base["strategy"].map(tier_map).astype(int)
     base["mdd_tier"] = base["tier"]
     base = base[
@@ -275,9 +274,7 @@ def _write_frequentist_scores(
             c
             for c in [
                 "strategy",
-                "strategy_id",
                 "players",
-                "n_players",
                 "win_rate",
                 "tier",
                 "mdd_tier",
@@ -289,9 +286,7 @@ def _write_frequentist_scores(
     aggregated = pd.DataFrame(
         {
             "strategy": winrates.index,
-            "strategy_id": winrates.index,
             "players": 0,
-            "n_players": 0,
             "win_rate": winrates.values,
             "tier": tier_map.loc[winrates.index].astype(int).values,
             "mdd_tier": tier_map.loc[winrates.index].astype(int).values,

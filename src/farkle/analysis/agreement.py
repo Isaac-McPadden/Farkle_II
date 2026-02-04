@@ -297,10 +297,11 @@ def _filter_by_players(df: pd.DataFrame, players: int) -> pd.DataFrame:
     Returns:
         Filtered DataFrame containing only rows that match ``players``.
     """
-    for column in ("players", "n_players"):
-        if column in df.columns:
-            mask = df[column].astype(int) == int(players)
-            df = df.loc[mask]
+    if "players" not in df.columns and "n_players" in df.columns:
+        df = df.rename(columns={"n_players": "players"})
+    if "players" in df.columns:
+        mask = df["players"].astype(int) == int(players)
+        df = df.loc[mask]
     return df
 
 
