@@ -166,8 +166,7 @@ def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
 
 
 def _agreement_outputs(cfg: AppConfig) -> list[Path]:
-    players_list = sorted({int(n) for n in cfg.sim.n_players_list}) or [0]
-    return [cfg.agreement_output_path(players) for players in players_list]
+    return [cfg.agreement_output_path(players) for players in cfg.agreement_players()]
 
 
 def _rng_outputs(cfg: AppConfig) -> list[Path]:

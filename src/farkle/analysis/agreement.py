@@ -48,7 +48,7 @@ def run(cfg: AppConfig) -> None:
 
     stage_dir = cfg.agreement_stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
-    player_counts = sorted({int(n) for n in cfg.sim.n_players_list}) or [0]
+    player_counts = cfg.agreement_players()
 
     wrote_payload = False
     for players in player_counts:
@@ -74,13 +74,13 @@ def run(cfg: AppConfig) -> None:
 
 
 def _build_payload(
-    cfg: AppConfig, players: int, stage_log: StageLogger
+    cfg: AppConfig, players: int | str, stage_log: StageLogger
 ) -> dict[str, object] | None:
     """Assemble agreement metrics for the requested player count.
 
     Args:
         cfg: Application configuration with analytics output paths.
-        players: Number of players for which to compute agreement.
+        players: Number of players for which to compute agreement, or pooled sentinel.
 
     Returns:
         Dictionary of correlation, stability, and coverage metrics keyed by method.
@@ -90,7 +90,6 @@ def _build_payload(
         account for them; ties are only logged for visibility.
     """
     methods: dict[str, MethodData] = {}
-
 
     try:
         ts = _load_trueskill(cfg, players)
@@ -155,12 +154,12 @@ def _build_payload(
     }
 
 
-def _load_trueskill(cfg: AppConfig, players: int) -> MethodData | None:
+def _load_trueskill(cfg: AppConfig, players: int | str) -> MethodData | None:
     """Load pooled TrueSkill ratings and optional tiers for a given player count.
 
     Args:
         cfg: Application configuration used to locate outputs.
-        players: Number of players to filter the ratings to.
+        players: Number of players to filter the ratings to, or pooled sentinel.
 
     Returns:
         Prepared ``MethodData`` or ``None`` when no ratings are available.
@@ -202,12 +201,12 @@ def _load_trueskill(cfg: AppConfig, players: int) -> MethodData | None:
     return MethodData(scores=series, tiers=tiers, per_seed_scores=per_seed)
 
 
-def _load_frequentist(cfg: AppConfig, players: int) -> MethodData | None:
+def _load_frequentist(cfg: AppConfig, players: int | str) -> MethodData | None:
     """Load frequentist scoring outputs and optional tiers.
 
     Args:
         cfg: Application configuration used to locate frequentist outputs.
-        players: Number of players to filter the scores to.
+        players: Number of players to filter the scores to, or pooled sentinel.
 
     Returns:
         Populated ``MethodData`` or ``None`` when the file is absent or empty.
@@ -287,16 +286,18 @@ def _load_head2head(cfg: AppConfig) -> MethodData | None:
     return MethodData(scores=scores, tiers=tiers or None, per_seed_scores=[])
 
 
-def _filter_by_players(df: pd.DataFrame, players: int) -> pd.DataFrame:
+def _filter_by_players(df: pd.DataFrame, players: int | str) -> pd.DataFrame:
     """Restrict a DataFrame to rows matching the requested player count.
 
     Args:
         df: Source DataFrame containing a players column.
-        players: Expected number of players.
+        players: Expected number of players, or pooled sentinel.
 
     Returns:
         Filtered DataFrame containing only rows that match ``players``.
     """
+    if AppConfig.is_pooled_players(players):
+        return df
     if "players" not in df.columns and "n_players" in df.columns:
         df = df.rename(columns={"n_players": "players"})
     if "players" in df.columns:
