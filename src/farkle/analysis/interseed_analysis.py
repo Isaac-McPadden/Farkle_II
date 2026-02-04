@@ -19,7 +19,13 @@ LOGGER = logging.getLogger(__name__)
 SUMMARY_NAME = "interseed_summary.json"
 
 
-def run(cfg: AppConfig, *, force: bool = False, run_stages: bool = True) -> None:
+def run(
+    cfg: AppConfig,
+    *,
+    force: bool = False,
+    run_stages: bool = True,
+    run_rng_diagnostics: bool | None = None,
+) -> None:
     """Execute or summarize rng/variance/meta/TrueSkill/agreement interseed analytics."""
 
     previous_layout = cfg._stage_layout
@@ -36,7 +42,11 @@ def run(cfg: AppConfig, *, force: bool = False, run_stages: bool = True) -> None
 
         statuses: dict[str, dict[str, Any]] = {}
 
-        rng_enabled = True
+        rng_enabled = (
+            run_rng_diagnostics
+            if run_rng_diagnostics is not None
+            else not cfg.analysis.disable_rng_diagnostics
+        )
         variance_enabled = True
         meta_enabled = True
         trueskill_enabled = True
@@ -48,7 +58,7 @@ def run(cfg: AppConfig, *, force: bool = False, run_stages: bool = True) -> None
             rng_diagnostics.run(cfg, force=force)
         statuses["rng_diagnostics"] = {
             "enabled": rng_enabled,
-            "outputs": _existing_paths(_rng_outputs(cfg)),
+            "outputs": _existing_paths(_rng_outputs(cfg)) if rng_enabled else [],
         }
 
         if variance_enabled and run_stages:

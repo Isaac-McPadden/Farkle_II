@@ -245,6 +245,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         app_cfg.analysis.rare_event_margin_quantile = float(args.rare_event_margin_quantile)
     if args.rare_event_target_rate is not None:
         app_cfg.analysis.rare_event_target_rate = float(args.rare_event_target_rate)
+    if args.disable_rng_diagnostics:
+        app_cfg.analysis.disable_rng_diagnostics = True
     rng_lags = (
         tuple(sorted({int(lag) for lag in args.rng_lags})) if args.rng_lags else None
     )
@@ -258,7 +260,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         "disable_tiering": bool(args.disable_tiering),
         "disable_agreement": bool(args.disable_agreement),
         "disable_game_stats": bool(args.disable_game_stats),
-        "disable_rng_diagnostics": bool(args.disable_rng_diagnostics),
     }
     for flag, enabled in deprecated_cli_flags.items():
         if enabled:
@@ -320,9 +321,18 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         if interseed_mod is None:
             return
-        interseed_mod.run(cfg, run_stages=False)
+        run_rng_diagnostics = (
+            args.rng_diagnostics
+            if args.rng_diagnostics is not None
+            else not cfg.analysis.disable_rng_diagnostics
+        )
+        interseed_mod.run(
+            cfg,
+            run_stages=False,
+            run_rng_diagnostics=run_rng_diagnostics,
+        )
 
-        if not args.rng_diagnostics:
+        if not run_rng_diagnostics:
             return
 
         def _run_rng(interseed_cfg: AppConfig) -> None:

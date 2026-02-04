@@ -103,11 +103,16 @@ def run_interseed_analysis(
     force: bool = False,
     manifest_path: Path | None = None,
     rng_lags: Sequence[int] | None = None,
-    run_rng_diagnostics: bool = False,
+    run_rng_diagnostics: bool | None = None,
 ) -> None:
     """Run interseed analytics in order (rng → variance → meta → trueskill → agreement → summary)."""
     previous_layout = cfg._stage_layout
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+    resolved_rng_diagnostics = (
+        run_rng_diagnostics
+        if run_rng_diagnostics is not None
+        else not cfg.analysis.disable_rng_diagnostics
+    )
 
     def _require_interseed_inputs(
         stage: str, runner: Callable[[AppConfig], None]
@@ -122,10 +127,13 @@ def run_interseed_analysis(
         return _wrapped
 
     def _rng_diagnostics(cfg: AppConfig) -> None:
-        if not run_rng_diagnostics:
-            stage_logger("rng_diagnostics", logger=LOGGER).missing_input(
+        if not resolved_rng_diagnostics:
+            reason = (
                 "disabled by CLI flag"
+                if run_rng_diagnostics is False
+                else "disabled by config"
             )
+            stage_logger("rng_diagnostics", logger=LOGGER).missing_input(reason)
             return
         from farkle.analysis import rng_diagnostics
 
@@ -158,7 +166,12 @@ def run_interseed_analysis(
             stage_log=stage_log,
         )
         if interseed_mod is not None:
-            interseed_mod.run(cfg, force=force, run_stages=False)
+            interseed_mod.run(
+                cfg,
+                force=force,
+                run_stages=False,
+                run_rng_diagnostics=run_rng_diagnostics,
+            )
             return
 
     plan = [
@@ -271,7 +284,7 @@ def run_single_seed_analysis(
 def run_all(
     cfg: AppConfig,
     *,
-    run_rng_diagnostics: bool = False,
+    run_rng_diagnostics: bool | None = None,
     rng_lags: Sequence[int] | None = None,
 ) -> None:
     """Run single-seed analytics first, then interseed analytics if enabled."""
