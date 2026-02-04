@@ -386,7 +386,7 @@ def main(argv: Sequence[str] | None = None) -> None:
 
     cfg: AppConfig | None = None
     rng_lags: tuple[int, ...] | None = None
-    compute_rng_diagnostics = False
+    compute_rng_diagnostics: bool | None = None
     if args.command in {"run", "analyze", "two-seed-pipeline"}:
         overlays: list[Path] = [args.config] if args.config is not None else []
         cfg = (
@@ -416,7 +416,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         rng_lags_arg = getattr(args, "rng_lags", None)
         if rng_lags_arg:
             rng_lags = tuple(sorted({int(lag) for lag in rng_lags_arg}))
-        compute_rng_diagnostics = getattr(args, "rng_diagnostics", False)
+        compute_rng_diagnostics = getattr(args, "rng_diagnostics", None)
 
         LOGGER.info(
             "Configuration prepared",

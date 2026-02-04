@@ -220,7 +220,6 @@ def run_pipeline(
         interseed_cfg,
         force=force,
         manifest_path=manifest_path,
-        run_rng_diagnostics=True,
     )
     append_manifest_line(
         manifest_path,

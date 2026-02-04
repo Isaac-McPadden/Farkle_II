@@ -38,7 +38,6 @@ LOGGER = logging.getLogger(__name__)
 DEPRECATED_ANALYSIS_FLAGS = {
     "run_interseed",
     "disable_game_stats",
-    "disable_rng_diagnostics",
     "disable_trueskill",
     "disable_head2head",
     "disable_hgb",
@@ -208,9 +207,9 @@ class SimConfig:
 class AnalysisConfig:
     """Analysis-stage parameters controlling downstream analytics.
 
-    Deprecated ``run_*`` and ``disable_*`` toggles are retained for legacy configs
-    but no longer disable stages. Stages now run (or skip) based on inputs and
-    preconditions instead of manual toggles.
+    Deprecated ``run_*`` and ``disable_*`` toggles are retained for legacy configs,
+    but no longer disable stages (except ``disable_rng_diagnostics``). Stages now
+    run (or skip) based on inputs and preconditions instead of manual toggles.
     """
 
     run_interseed: bool = True
@@ -218,12 +217,14 @@ class AnalysisConfig:
 
     # Deprecated disable_* flags ignored in favor of precondition checks.
     disable_game_stats: bool = False
-    disable_rng_diagnostics: bool = False
     disable_trueskill: bool = False
     disable_head2head: bool = False
     disable_hgb: bool = False
     disable_tiering: bool = False
     disable_agreement: bool = False
+
+    disable_rng_diagnostics: bool = False
+    """Disable RNG diagnostics even when interseed analytics run by default."""
 
     # Deprecated run_* toggles retained for legacy configs (ignored).
     run_trueskill: bool = True
