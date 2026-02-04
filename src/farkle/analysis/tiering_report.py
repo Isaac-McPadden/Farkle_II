@@ -322,7 +322,7 @@ def _write_outputs(
     summary = {
         "mdd": tier_data["mdd"],
         "tau2_seed": components.tau2_seed,
-        "tau2_sxk": tier_data.get("tau2_sxk", 0.0),
+        "tau2_sxk": tier_data["tau2_sxk"],
         "R": components.R,
         "K": components.K,
         "total_strategies": int(len(report)),

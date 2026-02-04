@@ -255,14 +255,12 @@ def tiering_ingredients_from_df(
 
     comps = estimate_tau2_seed(cell, robust=True)
 
-    tau2_sxk = 0.0
-    if weights_by_k is not None:
-        tau2_sxk = estimate_tau2_sxk(
-            cell,
-            comps.tau2_seed,
-            weights_by_k=weights_by_k,
-            robust=True,
-        )
+    tau2_sxk = estimate_tau2_sxk(
+        cell,
+        comps.tau2_seed,
+        weights_by_k=weights_by_k,
+        robust=True,
+    )
 
     # Ensure binom_by_k exists
     if comps.binom_by_k is None:
