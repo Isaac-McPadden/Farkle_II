@@ -1055,11 +1055,57 @@ class AppConfig:
                 return candidate
         return candidates[0]
 
-    def agreement_output_path(self, players: int) -> Path:
+    @staticmethod
+    def is_pooled_players(players: int | str) -> bool:
+        """Return True when ``players`` refers to a pooled (unfiltered) run."""
+
+        if isinstance(players, str):
+            return players.strip().lower() == "pooled"
+        try:
+            return int(players) == 0
+        except (TypeError, ValueError):
+            return False
+
+    def agreement_players(self) -> list[int | str]:
+        """Return normalized player keys for agreement analysis outputs."""
+
+        pooled = False
+        players: list[int] = []
+        if not self.sim.n_players_list:
+            pooled = True
+        for entry in self.sim.n_players_list:
+            if isinstance(entry, str) and entry.strip().lower() == "pooled":
+                pooled = True
+                continue
+            try:
+                value = int(entry)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"invalid n_players_list entry: {entry!r}") from exc
+            if value == 0:
+                pooled = True
+                continue
+            players.append(value)
+
+        normalized = sorted({int(value) for value in players})
+        if pooled:
+            normalized.append("pooled")
+        return normalized
+
+    def agreement_output_path_pooled(self) -> Path:
+        """Preferred path for pooled agreement analytics."""
+
+        filename = "agreement_pooled.json"
+        stage_dir = self.stage_subdir("agreement", "pooled")
+        return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
+
+    def agreement_output_path(self, players: int | str) -> Path:
         """Preferred path for agreement analytics for a given player count."""
 
-        filename = f"agreement_{players}p.json"
-        stage_dir = self.per_k_subdir("agreement", players)
+        if self.is_pooled_players(players):
+            return self.agreement_output_path_pooled()
+        players_int = int(players)
+        filename = f"agreement_{players_int}p.json"
+        stage_dir = self.per_k_subdir("agreement", players_int)
         return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
 
     def trueskill_path(self, filename: str) -> Path:
