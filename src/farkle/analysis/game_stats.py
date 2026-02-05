@@ -59,6 +59,37 @@ ArrowColumnData: TypeAlias = np.ndarray | list[Any] | pa.Array | pa.ChunkedArray
 LOGGER = logging.getLogger(__name__)
 
 
+def _strategy_arrow_type(per_n_inputs: Sequence[tuple[int, Path]]) -> pa.DataType:
+    for _, path in per_n_inputs:
+        ds_in = ds.dataset(path)
+        for name in ds_in.schema.names:
+            if name.endswith("_strategy"):
+                dtype = ds_in.schema.field(name).type
+                if pa.types.is_integer(dtype):
+                    return dtype
+    return pa.int64()
+
+
+def _strategy_numpy_dtype(strategy_type: pa.DataType) -> np.dtype:
+    if pa.types.is_int8(strategy_type):
+        return np.int8
+    if pa.types.is_int16(strategy_type):
+        return np.int16
+    if pa.types.is_int32(strategy_type):
+        return np.int32
+    if pa.types.is_int64(strategy_type):
+        return np.int64
+    if pa.types.is_uint8(strategy_type):
+        return np.uint8
+    if pa.types.is_uint16(strategy_type):
+        return np.uint16
+    if pa.types.is_uint32(strategy_type):
+        return np.uint32
+    if pa.types.is_uint64(strategy_type):
+        return np.uint64
+    return np.int64
+
+
 def run(cfg: AppConfig, *, force: bool = False) -> None:
     """Compute game statistics and write them to parquet outputs.
 
@@ -999,11 +1030,12 @@ def _rare_event_summary(
     if rows_available == 0:
         return 0
 
+    strategy_arrow = _strategy_arrow_type(per_n_inputs)
     flag_arrow = pa.float64()
     obs_dtype, obs_arrow = _select_int_dtype(max_observations)
     fields: list[pa.Field] = [
         pa.field("summary_level", pa.string()),
-        pa.field("strategy", pa.string()),
+        pa.field("strategy", strategy_arrow),
         pa.field("n_players", pa.int32()),
         pa.field("margin_runner_up", pa.float64()),
         pa.field("score_spread", pa.float64()),
@@ -1045,6 +1077,7 @@ def _rare_event_summary(
     global_summary = pd.DataFrame(global_rows, columns=column_order)
 
     summary_df = pd.concat([strategy_summary, global_summary], ignore_index=True)
+    summary_df["strategy"] = pd.array(summary_df["strategy"], dtype="Int64")
     summary_df = _downcast_integer_stats(summary_df, columns=("n_players", "observations", *flags))
     summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
     write_parquet_atomic(summary_table, output_path, codec=codec)
@@ -1076,13 +1109,15 @@ def _rare_event_flags(
     if rows_available == 0:
         return 0
 
+    strategy_arrow = _strategy_arrow_type(per_n_inputs)
+    strategy_dtype = _strategy_numpy_dtype(strategy_arrow)
     flag_dtype = np.float64
     flag_arrow = pa.float64()
     obs_dtype, obs_arrow = _select_int_dtype(max_observations)
     player_dtype = np.int32
     fields: list[pa.Field] = [
         pa.field("summary_level", pa.string()),
-        pa.field("strategy", pa.string()),
+        pa.field("strategy", strategy_arrow),
         pa.field("n_players", pa.int32()),
         pa.field("margin_runner_up", pa.float64()),
         pa.field("score_spread", pa.float64()),
@@ -1159,9 +1194,10 @@ def _rare_event_flags(
                 grouped = melted.groupby("strategy", observed=True, sort=False)
                 for strategy, group in grouped:
                     count = int(group.shape[0])
+                    strategy_value = int(strategy)
                     per_game_data: dict[str, ArrowColumnData] = {
                         "summary_level": np.full(count, "game", dtype=object),
-                        "strategy": np.full(count, strategy, dtype=object),
+                        "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
                         "n_players": np.full(count, n_players, dtype=player_dtype),
                         "margin_runner_up": group["margin_runner_up"].to_numpy(dtype=float),
                         "score_spread": group["score_spread"].to_numpy(dtype=float),
@@ -1220,6 +1256,7 @@ def _rare_event_flags(
                 *[f"margin_le_{thr}" for thr in thresholds],
             ],
         )
+        summary_df["strategy"] = pd.array(summary_df["strategy"], dtype="Int64")
         summary_df = _downcast_integer_stats(summary_df, columns=("n_players", "observations"))
         summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
         writer.write_batch(summary_table)
@@ -1239,12 +1276,14 @@ def _rare_event_details(
 ) -> int:
     """Write per-game rare-event rows to a separate parquet."""
 
+    strategy_arrow = _strategy_arrow_type(per_n_inputs)
+    strategy_dtype = _strategy_numpy_dtype(strategy_arrow)
     flag_dtype, flag_arrow = _select_int_dtype(1)
     obs_dtype, obs_arrow = _select_int_dtype(1)
     player_dtype = np.int32
     fields: list[pa.Field] = [
         pa.field("summary_level", pa.string()),
-        pa.field("strategy", pa.string()),
+        pa.field("strategy", strategy_arrow),
         pa.field("n_players", pa.int32()),
         pa.field("margin_runner_up", pa.float64()),
         pa.field("score_spread", pa.float64()),
@@ -1321,9 +1360,10 @@ def _rare_event_details(
                 grouped = melted.groupby("strategy", observed=True, sort=False)
                 for strategy, group in grouped:
                     count = int(group.shape[0])
+                    strategy_value = int(strategy)
                     per_game_data: dict[str, ArrowColumnData] = {
                         "summary_level": np.full(count, "game", dtype=object),
-                        "strategy": np.full(count, strategy, dtype=object),
+                        "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
                         "n_players": np.full(count, n_players, dtype=player_dtype),
                         "margin_runner_up": group["margin_runner_up"].to_numpy(dtype=float),
                         "score_spread": group["score_spread"].to_numpy(dtype=float),
@@ -1349,10 +1389,10 @@ def _collect_rare_event_counts(
     *,
     thresholds: Sequence[int],
     target_score: int,
-) -> tuple[dict[tuple[str, int], dict[str, int]], dict[int, dict[str, int]], int, int, int]:
+) -> tuple[dict[tuple[int, int], dict[str, int]], dict[int, dict[str, int]], int, int, int]:
     """Gather rare-event counts for downstream downcasting decisions."""
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
-    strategy_sums: dict[tuple[str, int], dict[str, int]] = {}
+    strategy_sums: dict[tuple[int, int], dict[str, int]] = {}
     global_sums: dict[int, dict[str, int]] = {}
     rows_available = 0
     for n_players, path in per_n_inputs:
@@ -1396,7 +1436,7 @@ def _collect_rare_event_counts(
             for strategy, group in grouped:
                 count = int(group.shape[0])
                 rows_available += count
-                strategy_key = (str(strategy), n_players)
+                strategy_key = (int(strategy), n_players)
                 strategy_entry = strategy_sums.setdefault(
                     strategy_key,
                     {"observations": 0, **dict.fromkeys(flags, 0)},

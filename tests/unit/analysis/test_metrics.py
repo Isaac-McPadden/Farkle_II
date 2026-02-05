@@ -140,14 +140,14 @@ def test_seat_metrics_and_advantage_from_synthetic_fixture(tmp_path):
 
     seat_metrics = metrics.compute_seat_metrics(combined, seat_cfg)
     aggro_seat1 = seat_metrics[
-        (seat_metrics["strategy"] == "Aggro") & (seat_metrics["seat"] == 1)
+        (seat_metrics["strategy"] == 1) & (seat_metrics["seat"] == 1)
     ].iloc[0]
     assert aggro_seat1["games"] == 3
     assert aggro_seat1["wins"] == 2
     assert aggro_seat1["mean_rounds"] == pytest.approx((6 + 9 + 12) / 3)
 
     control_seat2 = seat_metrics[
-        (seat_metrics["strategy"] == "Control") & (seat_metrics["seat"] == 2)
+        (seat_metrics["strategy"] == 2) & (seat_metrics["seat"] == 2)
     ].iloc[0]
     assert control_seat2["wins"] == 1
     assert control_seat2["mean_score"] == pytest.approx((105 + 40 + 200) / 3)
