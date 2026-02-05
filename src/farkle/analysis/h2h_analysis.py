@@ -11,12 +11,13 @@ import bisect
 import json
 import logging
 from pathlib import Path
-from typing import cast
+from typing import Mapping, cast
 
 import networkx as nx
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 from scipy.stats import binomtest
 
 from farkle.config import AppConfig
@@ -358,10 +359,21 @@ def run_post_h2h(cfg: AppConfig) -> None:
     upstream_done_path = stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head")
     upstream_meta = read_stage_done(upstream_done_path)
     upstream_status = str(upstream_meta.get("status", "missing"))
+    union_candidates, union_meta, union_path = _load_union_candidates(cfg)
     if upstream_status == "skipped":
         reason = str(upstream_meta.get("reason") or "upstream bonferroni head-to-head skipped")
+        s_tier_meta = _build_s_tier_metadata(
+            cfg,
+            pairwise_path=None,
+            union_meta=union_meta,
+            union_path=union_path,
+            fallback_used=not bool(union_candidates),
+        )
         outputs = _write_empty_post_h2h_outputs(
-            analysis_dir, tie_policy=tie_policy, tie_break_seed=tie_break_seed
+            analysis_dir,
+            tie_policy=tie_policy,
+            tie_break_seed=tie_break_seed,
+            s_tier_metadata=s_tier_meta,
         )
         write_stage_done(
             done_path,
@@ -389,8 +401,18 @@ def run_post_h2h(cfg: AppConfig) -> None:
     pairwise_path = next((p for p in pairwise_candidates if p.exists()), pairwise_candidates[0])
     if not pairwise_path.exists():
         reason = "missing bonferroni pairwise parquet"
+        s_tier_meta = _build_s_tier_metadata(
+            cfg,
+            pairwise_path=pairwise_path,
+            union_meta=union_meta,
+            union_path=union_path,
+            fallback_used=not bool(union_candidates),
+        )
         outputs = _write_empty_post_h2h_outputs(
-            analysis_dir, tie_policy=tie_policy, tie_break_seed=tie_break_seed
+            analysis_dir,
+            tie_policy=tie_policy,
+            tie_break_seed=tie_break_seed,
+            s_tier_metadata=s_tier_meta,
         )
         write_stage_done(
             done_path,
@@ -471,20 +493,29 @@ def run_post_h2h(cfg: AppConfig) -> None:
         ranking_written = True
 
     tier_order: list[str] = ranking[:] if ranking else [node for tier in tiers for node in tier]
-    union_candidates = _load_union_candidates(cfg)
+    fallback_used = False
     if not union_candidates:
         LOGGER.warning(
             "Missing union candidate list for post H2H; using full ranking order",
             extra={"stage": "post_h2h"},
         )
         union_candidates = tier_order
+        fallback_used = True
     candidate_set = {str(name) for name in union_candidates}
     ordered_candidates = [name for name in tier_order if name in candidate_set]
     s_tiers = _assign_s_tiers(ordered_candidates)
+    s_tier_meta = _build_s_tier_metadata(
+        cfg,
+        pairwise_path=pairwise_path,
+        union_meta=union_meta,
+        union_path=union_path,
+        fallback_used=fallback_used,
+    )
+    s_tiers_payload = {"_meta": s_tier_meta, **s_tiers}
     s_tiers_path = analysis_dir / "h2h_s_tiers.json"
     with atomic_path(str(s_tiers_path)) as tmp_path:
         with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(s_tiers, handle, indent=2, sort_keys=True)
+            json.dump(s_tiers_payload, handle, indent=2, sort_keys=True)
 
     LOGGER.info(
         "Post H2H completed",
@@ -535,6 +566,7 @@ def _write_empty_post_h2h_outputs(
     *,
     tie_policy: str,
     tie_break_seed: int | None,
+    s_tier_metadata: dict[str, object] | None = None,
 ) -> list[Path]:
     decisions_path = analysis_dir / "bonferroni_decisions.parquet"
     empty_table = pa.Table.from_pylist([], schema=_DECISION_SCHEMA)
@@ -563,9 +595,12 @@ def _write_empty_post_h2h_outputs(
     write_csv_atomic(empty_ranking, ranking_path)
 
     s_tiers_path = analysis_dir / "h2h_s_tiers.json"
+    s_tiers_payload: dict[str, object] = {}
+    if s_tier_metadata is not None:
+        s_tiers_payload["_meta"] = s_tier_metadata
     with atomic_path(str(s_tiers_path)) as tmp_path:
         with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump({}, handle, indent=2, sort_keys=True)
+            json.dump(s_tiers_payload, handle, indent=2, sort_keys=True)
 
     return [decisions_path, graph_path, tiers_path, ranking_path, s_tiers_path]
 
@@ -584,7 +619,9 @@ def _assign_s_tiers(ordered: list[str]) -> dict[str, str]:
     return tiers
 
 
-def _load_union_candidates(cfg: AppConfig) -> list[str]:
+def _load_union_candidates(
+    cfg: AppConfig,
+) -> tuple[list[str], dict[str, object] | None, Path | None]:
     """Load the union candidate list used for head-to-head scheduling."""
     candidates = [
         cfg.head2head_stage_dir / "h2h_union_candidates.json",
@@ -597,13 +634,95 @@ def _load_union_candidates(cfg: AppConfig) -> list[str]:
             payload = json.loads(path.read_text())
         except json.JSONDecodeError:
             continue
+        meta: dict[str, object] | None = None
         if isinstance(payload, dict) and "candidates" in payload:
             raw = payload.get("candidates")
+            meta = {key: value for key, value in payload.items() if key != "candidates"}
         else:
             raw = payload
         if isinstance(raw, list):
-            return [str(item) for item in raw]
-    return []
+            return [str(item) for item in raw], meta, path
+    return [], None, None
+
+
+def _infer_h2h_input_metadata(pairwise_path: Path | None) -> dict[str, object]:
+    """Infer whether head-to-head inputs are k-stratified or pooled."""
+    metadata: dict[str, object] = {
+        "pairwise_path": str(pairwise_path) if pairwise_path is not None else None,
+        "pooling_mode": "unknown",
+        "k_values": [],
+        "pooled_implied_k": None,
+    }
+    if pairwise_path is None or not pairwise_path.exists():
+        return metadata
+    try:
+        schema = pq.read_schema(pairwise_path)
+    except Exception:  # noqa: BLE001
+        return metadata
+    if "players" not in schema.names:
+        metadata["pooling_mode"] = "pooled"
+        metadata["pooled_implied_k"] = 2
+        return metadata
+    try:
+        players_df = pd.read_parquet(pairwise_path, columns=["players"])
+    except Exception:  # noqa: BLE001
+        metadata["pooling_mode"] = "k_stratified"
+        return metadata
+    if players_df.empty or "players" not in players_df.columns:
+        metadata["pooling_mode"] = "k_stratified"
+        return metadata
+    k_values = sorted(
+        {int(value) for value in players_df["players"].dropna().astype(int).tolist()}
+    )
+    metadata["pooling_mode"] = "k_stratified"
+    metadata["k_values"] = k_values
+    return metadata
+
+
+def _build_candidate_selection_metadata(
+    *,
+    cfg: AppConfig,
+    union_meta: Mapping[str, object] | None,
+    union_path: Path | None,
+    fallback_used: bool,
+) -> dict[str, object]:
+    """Assemble metadata describing how candidate sets were selected."""
+    selection_method = "ranking_fallback" if fallback_used else "union_top_ratings_metrics"
+    metadata: dict[str, object] = {
+        "method": selection_method,
+        "source_path": str(union_path) if union_path is not None else None,
+        "fallback_used": fallback_used,
+        "weights": {
+            "ratings_pooling_weights_by_k": dict(cfg.trueskill.pooled_weights_by_k or {}),
+            "metrics_weighting": None,
+        },
+    }
+    if union_meta is None:
+        return metadata
+    for key in ("ratings_count", "metrics_count", "combined_count", "ratings_path", "metrics_path"):
+        if key in union_meta:
+            metadata[key] = union_meta[key]
+    return metadata
+
+
+def _build_s_tier_metadata(
+    cfg: AppConfig,
+    *,
+    pairwise_path: Path | None,
+    union_meta: Mapping[str, object] | None,
+    union_path: Path | None,
+    fallback_used: bool,
+) -> dict[str, object]:
+    """Build the metadata payload for h2h_s_tiers.json."""
+    return {
+        "h2h_inputs": _infer_h2h_input_metadata(pairwise_path),
+        "candidate_selection": _build_candidate_selection_metadata(
+            cfg=cfg,
+            union_meta=union_meta,
+            union_path=union_path,
+            fallback_used=fallback_used,
+        ),
+    }
 
 
 def _resolve_alpha(cfg: AppConfig) -> float:
