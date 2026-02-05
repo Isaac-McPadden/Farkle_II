@@ -106,6 +106,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition("hgb", group="analytics"),
     StageDefinition("variance", group="analytics"),
     StageDefinition("meta", group="analytics"),
+    StageDefinition("h2h_tier_trends", group="analytics"),
     StageDefinition("agreement", group="analytics"),
     StageDefinition("interseed", group="analytics"),
 )
