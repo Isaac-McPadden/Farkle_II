@@ -16,7 +16,7 @@ from typing import Any, Callable, Sequence, overload
 import yaml  # type: ignore[import-untyped]
 
 from farkle import analysis
-from farkle.analysis import combine, curate, game_stats, ingest, metrics
+from farkle.analysis import combine, coverage_by_k, curate, game_stats, ingest, metrics
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout, resolve_stage_layout
 from farkle.config import AppConfig, load_app_config
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
@@ -362,6 +362,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "curate": curate.run,
         "combine": combine.run,
         "metrics": metrics.run,
+        "coverage_by_k": lambda cfg: coverage_by_k.run(cfg),
         "game_stats": lambda cfg: game_stats.run(cfg),
         "seed_summaries": analysis.run_seed_summaries,
         "variance": analysis.run_variance,

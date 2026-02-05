@@ -96,6 +96,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition("curate", group="pipeline"),
     StageDefinition("combine", group="pipeline"),
     StageDefinition("metrics", group="pipeline"),
+    StageDefinition("coverage_by_k", group="analytics"),
     StageDefinition("game_stats", group="analytics"),
     StageDefinition("seed_summaries", group="analytics"),
     StageDefinition("trueskill", group="analytics"),
