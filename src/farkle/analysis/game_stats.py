@@ -9,9 +9,9 @@ The module also flags close margins and multi-target games, emitting pooled
 artifacts under ``04_game_stats/pooled`` with per-game records plus aggregated
 frequencies per strategy and player-count cohort.
 
-The module also derives per-game ``margin_of_victory`` from seat-level scores
-and writes ``04_game_stats/pooled/margin_stats.parquet`` with per-``(strategy,
-n_players)`` summaries. Margin schema:
+The module also derives per-game ``margin_runner_up`` and ``score_spread`` from
+seat-level scores and writes ``04_game_stats/pooled/margin_stats.parquet`` with
+per-``(strategy, n_players)`` summaries. Margin schema:
 
 ``summary_level``
     Literal "strategy" for compatibility with ``game_length.parquet``.
@@ -21,10 +21,14 @@ n_players)`` summaries. Margin schema:
     Player count inferred from the shard path.
 ``observations``
     Number of games with at least two valid seat scores.
-``mean_margin`` / ``median_margin`` / ``std_margin``
-    Descriptive statistics over ``margin_of_victory``.
-``prob_margin_le_500`` / ``prob_margin_le_1000``
-    Close-game shares for the given thresholds.
+``mean_margin_runner_up`` / ``median_margin_runner_up`` / ``std_margin_runner_up``
+    Descriptive statistics over ``margin_runner_up``.
+``prob_margin_runner_up_le_500`` / ``prob_margin_runner_up_le_1000``
+    Close-game shares for the given thresholds on ``margin_runner_up``.
+``mean_score_spread`` / ``median_score_spread`` / ``std_score_spread``
+    Descriptive statistics over ``score_spread``.
+``prob_score_spread_le_500`` / ``prob_score_spread_le_1000``
+    Close-game shares for the given thresholds on ``score_spread``.
 """
 
 from __future__ import annotations
@@ -195,7 +199,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         )
 
         if not rare_events_summary_up_to_date:
-            rare_event_rows = _rare_event_summary(
+            rare_event_rows = _rare_event_flags(
                 per_n_inputs,
                 thresholds=resolved_thresholds,
                 target_score=resolved_target_score,
@@ -425,10 +429,13 @@ def _per_strategy_margin_stats(
                 df = batch.to_pandas(categories=[col])
                 if df.empty:
                     continue
-                margins = _compute_margins(df, score_cols)
-                df = df.assign(margin_of_victory=margins)
+                margin_cols = _compute_margin_columns(df, score_cols)
+                df = df.assign(
+                    margin_runner_up=margin_cols["margin_runner_up"],
+                    score_spread=margin_cols["score_spread"],
+                )
                 melted = df.melt(
-                    id_vars=["margin_of_victory"],
+                    id_vars=["margin_runner_up", "score_spread"],
                     value_vars=[col],
                     value_name="strategy",
                 )
@@ -437,7 +444,9 @@ def _per_strategy_margin_stats(
                     continue
                 melted["strategy"] = melted["strategy"].astype("category")
                 melted["n_players"] = n_players
-                long_frames.append(melted[["strategy", "n_players", "margin_of_victory"]])
+                long_frames.append(
+                    melted[["strategy", "n_players", "margin_runner_up", "score_spread"]]
+                )
 
     if not long_frames:
         columns = [
@@ -445,49 +454,70 @@ def _per_strategy_margin_stats(
             "strategy",
             "n_players",
             "observations",
-            "mean_margin",
-            "median_margin",
-            "std_margin",
-            *[f"prob_margin_le_{thr}" for thr in thresholds],
+            "mean_margin_runner_up",
+            "median_margin_runner_up",
+            "std_margin_runner_up",
+            *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
+            "mean_score_spread",
+            "median_score_spread",
+            "std_score_spread",
+            *[f"prob_score_spread_le_{thr}" for thr in thresholds],
         ]
         return pd.DataFrame(columns=columns)
 
     long_df = pd.concat(long_frames, ignore_index=True)
-    long_df["margin_of_victory"] = pd.to_numeric(long_df["margin_of_victory"], errors="coerce")
-    long_df = long_df.dropna(subset=["margin_of_victory", "strategy"])
+    long_df["margin_runner_up"] = pd.to_numeric(long_df["margin_runner_up"], errors="coerce")
+    long_df["score_spread"] = pd.to_numeric(long_df["score_spread"], errors="coerce")
+    long_df = long_df.dropna(subset=["margin_runner_up", "strategy"])
     if long_df.empty:
         columns = [
             "summary_level",
             "strategy",
             "n_players",
             "observations",
-            "mean_margin",
-            "median_margin",
-            "std_margin",
-            *[f"prob_margin_le_{thr}" for thr in thresholds],
+            "mean_margin_runner_up",
+            "median_margin_runner_up",
+            "std_margin_runner_up",
+            *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
+            "mean_score_spread",
+            "median_score_spread",
+            "std_score_spread",
+            *[f"prob_score_spread_le_{thr}" for thr in thresholds],
         ]
         return pd.DataFrame(columns=columns)
 
     group_keys = ["strategy", "n_players"]
-    grouped = long_df.groupby(group_keys, observed=True, sort=False)["margin_of_victory"]
-    stats = grouped.agg(
+    grouped = long_df.groupby(group_keys, observed=True, sort=False)
+    runner_stats = grouped["margin_runner_up"].agg(
         observations="count",
-        mean_margin="mean",
-        median_margin="median",
-        std_margin=lambda s: s.std(ddof=0),
+        mean_margin_runner_up="mean",
+        median_margin_runner_up="median",
+        std_margin_runner_up=lambda s: s.std(ddof=0),
+    )
+    spread_stats = grouped["score_spread"].agg(
+        mean_score_spread="mean",
+        median_score_spread="median",
+        std_score_spread=lambda s: s.std(ddof=0),
     )
     prob_frames = []
     for thr in thresholds:
-        prob = (
-            long_df["margin_of_victory"]
+        runner_prob = (
+            long_df["margin_runner_up"]
             .le(thr)
             .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
             .mean()
-            .rename(f"prob_margin_le_{thr}")
+            .rename(f"prob_margin_runner_up_le_{thr}")
         )
-        prob_frames.append(prob)
+        spread_prob = (
+            long_df["score_spread"]
+            .le(thr)
+            .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
+            .mean()
+            .rename(f"prob_score_spread_le_{thr}")
+        )
+        prob_frames.extend([runner_prob, spread_prob])
 
-    stats = stats.join(prob_frames)
+    stats = runner_stats.join([spread_stats, *prob_frames])
     stats = stats.reset_index()
     stats.insert(0, "summary_level", "strategy")
 
@@ -496,10 +526,14 @@ def _per_strategy_margin_stats(
         "strategy",
         "n_players",
         "observations",
-        "mean_margin",
-        "median_margin",
-        "std_margin",
-        *[f"prob_margin_le_{thr}" for thr in thresholds],
+        "mean_margin_runner_up",
+        "median_margin_runner_up",
+        "std_margin_runner_up",
+        *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
+        "mean_score_spread",
+        "median_score_spread",
+        "std_score_spread",
+        *[f"prob_score_spread_le_{thr}" for thr in thresholds],
     ]
     return stats[ordered_cols]
 
@@ -519,7 +553,8 @@ def _rare_event_summary(
         "summary_level",
         "strategy",
         "n_players",
-        "margin_of_victory",
+        "margin_runner_up",
+        "score_spread",
         "multi_reached_target",
         "observations",
         *[f"margin_le_{thr}" for thr in thresholds],
@@ -528,7 +563,7 @@ def _rare_event_summary(
         strategy_sums,
         global_sums,
         rows_available,
-        max_flag_count,
+        _max_flag_count,
         max_observations,
     ) = _collect_rare_event_counts(
         per_n_inputs,
@@ -539,13 +574,14 @@ def _rare_event_summary(
     if rows_available == 0:
         return 0
 
-    flag_dtype, flag_arrow = _select_int_dtype(max_flag_count)
+    flag_arrow = pa.float64()
     obs_dtype, obs_arrow = _select_int_dtype(max_observations)
     fields: list[pa.Field] = [
         pa.field("summary_level", pa.string()),
         pa.field("strategy", pa.string()),
         pa.field("n_players", pa.int32()),
-        pa.field("margin_of_victory", pa.float64()),
+        pa.field("margin_runner_up", pa.float64()),
+        pa.field("score_spread", pa.float64()),
         pa.field("multi_reached_target", flag_arrow),
         pa.field("observations", obs_arrow),
         *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
@@ -558,7 +594,8 @@ def _rare_event_summary(
             "summary_level": "strategy",
             "strategy": strategy,
             "n_players": players,
-            "margin_of_victory": pd.NA,
+            "margin_runner_up": pd.NA,
+            "score_spread": pd.NA,
             "observations": observations,
         }
         for flag in flags:
@@ -573,7 +610,8 @@ def _rare_event_summary(
             "summary_level": "n_players",
             "strategy": pd.NA,
             "n_players": players,
-            "margin_of_victory": pd.NA,
+            "margin_runner_up": pd.NA,
+            "score_spread": pd.NA,
             "observations": observations,
         }
         for flag in flags:
@@ -588,7 +626,7 @@ def _rare_event_summary(
     return summary_table.num_rows
 
 
-def _rare_event_details(
+def _rare_event_flags(
     per_n_inputs: Sequence[tuple[int, Path]],
     *,
     thresholds: Sequence[int],
@@ -596,16 +634,33 @@ def _rare_event_details(
     output_path: Path,
     codec: Compression,
 ) -> int:
-    """Write per-game rare-event rows to a separate parquet."""
+    """Write combined per-game and summary rare-event rows to parquet."""
 
-    flag_dtype, flag_arrow = _select_int_dtype(1)
-    obs_dtype, obs_arrow = _select_int_dtype(1)
+    flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
+    (
+        strategy_sums,
+        global_sums,
+        rows_available,
+        _max_flag_count,
+        max_observations,
+    ) = _collect_rare_event_counts(
+        per_n_inputs,
+        thresholds=thresholds,
+        target_score=target_score,
+    )
+    if rows_available == 0:
+        return 0
+
+    flag_dtype = np.float64
+    flag_arrow = pa.float64()
+    obs_dtype, obs_arrow = _select_int_dtype(max_observations)
     player_dtype = np.int32
     fields: list[pa.Field] = [
         pa.field("summary_level", pa.string()),
         pa.field("strategy", pa.string()),
         pa.field("n_players", pa.int32()),
-        pa.field("margin_of_victory", pa.float64()),
+        pa.field("margin_runner_up", pa.float64()),
+        pa.field("score_spread", pa.float64()),
         pa.field("multi_reached_target", flag_arrow),
         pa.field("observations", obs_arrow),
         *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
@@ -642,26 +697,28 @@ def _rare_event_details(
                 df = batch.to_pandas(categories=strategy_cols)
                 if df.empty:
                     continue
-                margins = _compute_margins(df, score_cols)
+                margin_cols = _compute_margin_columns(df, score_cols)
                 scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
                 multi_target = (scores >= target_score).sum(axis=1) >= 2
                 flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
                 for thr in thresholds:
-                    flag_series[f"margin_le_{thr}"] = margins <= thr
+                    flag_series[f"margin_le_{thr}"] = margin_cols["margin_runner_up"] <= thr
                 any_flag = flag_series["multi_reached_target"].copy()
                 for thr in thresholds:
                     any_flag |= flag_series[f"margin_le_{thr}"]
                 base = df.loc[any_flag, strategy_cols].copy()
                 if base.empty:
                     continue
-                base["margin_of_victory"] = margins[any_flag]
+                base["margin_runner_up"] = margin_cols["margin_runner_up"][any_flag]
+                base["score_spread"] = margin_cols["score_spread"][any_flag]
                 base["multi_reached_target"] = flag_series["multi_reached_target"][any_flag]
                 for thr in thresholds:
                     base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"][any_flag]
                 base["n_players"] = n_players
                 melted = base.melt(
                     id_vars=[
-                        "margin_of_victory",
+                        "margin_runner_up",
+                        "score_spread",
                         "multi_reached_target",
                         "n_players",
                         *[f"margin_le_{thr}" for thr in thresholds],
@@ -678,10 +735,173 @@ def _rare_event_details(
                 for strategy, group in grouped:
                     count = int(group.shape[0])
                     per_game_data: dict[str, ArrowColumnData] = {
-                        "summary_level": np.full(count, "game", dtype=str),
-                        "strategy": np.full(count, strategy, dtype=str),
+                        "summary_level": np.full(count, "game", dtype=object),
+                        "strategy": np.full(count, strategy, dtype=object),
                         "n_players": np.full(count, n_players, dtype=player_dtype),
-                        "margin_of_victory": group["margin_of_victory"].to_numpy(dtype=float),
+                        "margin_runner_up": group["margin_runner_up"].to_numpy(dtype=float),
+                        "score_spread": group["score_spread"].to_numpy(dtype=float),
+                        "multi_reached_target": group["multi_reached_target"].to_numpy(
+                            dtype=flag_dtype
+                        ),
+                        "observations": np.ones(count, dtype=obs_dtype),
+                    }
+                    for thr in thresholds:
+                        per_game_data[f"margin_le_{thr}"] = group[
+                            f"margin_le_{thr}"
+                        ].to_numpy(dtype=flag_dtype)
+
+                    writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
+                    rows_written += count
+
+        summary_rows: list[dict[str, object]] = []
+        for (strategy, players), sums in strategy_sums.items():
+            observations = sums["observations"]
+            summary_row: dict[str, object] = {
+                "summary_level": "strategy",
+                "strategy": strategy,
+                "n_players": players,
+                "margin_runner_up": pd.NA,
+                "score_spread": pd.NA,
+                "observations": observations,
+            }
+            for flag in flags:
+                summary_row[flag] = sums[flag] / observations if observations else float("nan")
+            summary_rows.append(summary_row)
+
+        for players, sums in global_sums.items():
+            observations = sums["observations"]
+            summary_row = {
+                "summary_level": "n_players",
+                "strategy": pd.NA,
+                "n_players": players,
+                "margin_runner_up": pd.NA,
+                "score_spread": pd.NA,
+                "observations": observations,
+            }
+            for flag in flags:
+                summary_row[flag] = sums[flag] / observations if observations else float("nan")
+            summary_rows.append(summary_row)
+
+        summary_df = pd.DataFrame(
+            summary_rows,
+            columns=[
+                "summary_level",
+                "strategy",
+                "n_players",
+                "margin_runner_up",
+                "score_spread",
+                "multi_reached_target",
+                "observations",
+                *[f"margin_le_{thr}" for thr in thresholds],
+            ],
+        )
+        summary_df = _downcast_integer_stats(summary_df, columns=("n_players", "observations"))
+        summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
+        writer.write_batch(summary_table)
+        rows_written += summary_table.num_rows
+        return rows_written
+    finally:
+        writer.close(success=rows_written > 0)
+
+
+def _rare_event_details(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    thresholds: Sequence[int],
+    target_score: int,
+    output_path: Path,
+    codec: Compression,
+) -> int:
+    """Write per-game rare-event rows to a separate parquet."""
+
+    flag_dtype, flag_arrow = _select_int_dtype(1)
+    obs_dtype, obs_arrow = _select_int_dtype(1)
+    player_dtype = np.int32
+    fields: list[pa.Field] = [
+        pa.field("summary_level", pa.string()),
+        pa.field("strategy", pa.string()),
+        pa.field("n_players", pa.int32()),
+        pa.field("margin_runner_up", pa.float64()),
+        pa.field("score_spread", pa.float64()),
+        pa.field("multi_reached_target", flag_arrow),
+        pa.field("observations", obs_arrow),
+        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
+    ]
+    schema = pa.schema(fields)
+
+    rows_written = 0
+    writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
+    try:
+        for n_players, path in per_n_inputs:
+            ds_in = ds.dataset(path)
+            strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+            score_cols = [
+                name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+            ]
+
+            if not strategy_cols:
+                LOGGER.warning(
+                    "Per-N parquet missing strategy columns; skipping rare events",
+                    extra={"stage": "game_stats", "path": str(path)},
+                )
+                continue
+
+            if not score_cols:
+                LOGGER.warning(
+                    "Per-N parquet missing seat score columns; skipping rare events",
+                    extra={"stage": "game_stats", "path": str(path)},
+                )
+                continue
+
+            columns = [*strategy_cols, *score_cols]
+            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+            for batch in scanner.to_batches():
+                df = batch.to_pandas(categories=strategy_cols)
+                if df.empty:
+                    continue
+                margin_cols = _compute_margin_columns(df, score_cols)
+                scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
+                multi_target = (scores >= target_score).sum(axis=1) >= 2
+                flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
+                for thr in thresholds:
+                    flag_series[f"margin_le_{thr}"] = margin_cols["margin_runner_up"] <= thr
+                any_flag = flag_series["multi_reached_target"].copy()
+                for thr in thresholds:
+                    any_flag |= flag_series[f"margin_le_{thr}"]
+                base = df.loc[any_flag, strategy_cols].copy()
+                if base.empty:
+                    continue
+                base["margin_runner_up"] = margin_cols["margin_runner_up"][any_flag]
+                base["score_spread"] = margin_cols["score_spread"][any_flag]
+                base["multi_reached_target"] = flag_series["multi_reached_target"][any_flag]
+                for thr in thresholds:
+                    base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"][any_flag]
+                base["n_players"] = n_players
+                melted = base.melt(
+                    id_vars=[
+                        "margin_runner_up",
+                        "score_spread",
+                        "multi_reached_target",
+                        "n_players",
+                        *[f"margin_le_{thr}" for thr in thresholds],
+                    ],
+                    value_vars=strategy_cols,
+                    var_name="seat",
+                    value_name="strategy",
+                )
+                melted = melted.dropna(subset=["strategy"])
+                if melted.empty:
+                    continue
+                melted["strategy"] = melted["strategy"].astype("category")
+                grouped = melted.groupby("strategy", observed=True, sort=False)
+                for strategy, group in grouped:
+                    count = int(group.shape[0])
+                    per_game_data: dict[str, ArrowColumnData] = {
+                        "summary_level": np.full(count, "game", dtype=object),
+                        "strategy": np.full(count, strategy, dtype=object),
+                        "n_players": np.full(count, n_players, dtype=player_dtype),
+                        "margin_runner_up": group["margin_runner_up"].to_numpy(dtype=float),
+                        "score_spread": group["score_spread"].to_numpy(dtype=float),
                         "multi_reached_target": group["multi_reached_target"].to_numpy(
                             dtype=flag_dtype
                         ),
@@ -726,12 +946,12 @@ def _collect_rare_event_counts(
             df = batch.to_pandas(categories=strategy_cols)
             if df.empty:
                 continue
-            margins = _compute_margins(df, score_cols)
+            margin_cols = _compute_margin_columns(df, score_cols)
             scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
             multi_target = (scores >= target_score).sum(axis=1) >= 2
             flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
             for thr in thresholds:
-                flag_series[f"margin_le_{thr}"] = margins <= thr
+                flag_series[f"margin_le_{thr}"] = margin_cols["margin_runner_up"] <= thr
             base = df[strategy_cols].copy()
             base["multi_reached_target"] = flag_series["multi_reached_target"]
             for thr in thresholds:
@@ -839,23 +1059,29 @@ def _collect_rare_event_histograms(
                 continue
             scores = df[score_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
             if need_margins:
-                margins = _compute_margins_from_array(scores)
-                _update_int_histogram(margin_counts, margins)
+                margin_runner_up, _score_spread = _compute_margin_arrays(scores)
+                _update_int_histogram(margin_counts, margin_runner_up)
             if need_targets:
                 second_scores = _second_highest(scores)
                 _update_int_histogram(target_counts, second_scores)
     return margin_counts, target_counts
 
 
-def _compute_margins_from_array(scores: np.ndarray) -> np.ndarray:
-    """Compute victory margins from a numeric score array."""
+def _compute_margin_arrays(scores: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute margin-of-victory and spread arrays from a numeric score array."""
     if scores.size == 0:
-        return scores
-    valid_counts = np.isfinite(scores).sum(axis=1)
+        return scores, scores
+    valid_mask = np.isfinite(scores)
+    valid_counts = valid_mask.sum(axis=1)
     with np.errstate(all="ignore"):
-        margins = np.nanmax(scores, axis=1) - np.nanmin(scores, axis=1)
-    margins[valid_counts < 2] = np.nan
-    return margins
+        max_scores = np.nanmax(scores, axis=1)
+        min_scores = np.nanmin(scores, axis=1)
+    score_spread = max_scores - min_scores
+    second_scores = _second_highest(scores)
+    margin_runner_up = max_scores - second_scores
+    score_spread[valid_counts < 2] = np.nan
+    margin_runner_up[valid_counts < 2] = np.nan
+    return margin_runner_up.astype(float), score_spread.astype(float)
 
 
 def _second_highest(scores: np.ndarray) -> np.ndarray:
@@ -945,7 +1171,7 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
     schema = ds_in.schema
     n_players = n_players_from_schema(schema)
     columns = ["n_rounds", "seat_ranks"]
-    tbl = ds_in.to_table(columns=columns)
+    tbl = ds_in.to_table(columns)
     df = tbl.to_pandas()
 
     if "seat_ranks" not in df.columns:
@@ -988,44 +1214,48 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _compute_margins(df: pd.DataFrame, score_cols: Sequence[str]) -> pd.Series:
-    """Derive per-game margin of victory from seat scores.
+def _compute_margin_columns(df: pd.DataFrame, score_cols: Sequence[str]) -> pd.DataFrame:
+    """Derive per-game margin columns from seat scores.
 
-    For two-player games, this is ``|P1_score - P2_score|``. For more than two
-    players, this is ``max(score) - min(score)`` based on available seat scores.
-    Games with fewer than two valid scores return ``NaN`` margins.
+    ``margin_runner_up`` is ``max(score) - second_max(score)`` (the runner-up
+    gap) and ``score_spread`` is ``max(score) - min(score)``. Games with fewer
+    than two valid scores return ``NaN`` for both values.
     """
 
     scores = df.loc[:, list(score_cols)].apply(pd.to_numeric, errors="coerce")
-    valid_counts = scores.notna().sum(axis=1)
-    margins = scores.max(axis=1, skipna=True) - scores.min(axis=1, skipna=True)
-    margins[valid_counts < 2] = np.nan
-    return margins.astype(float)
+    margin_runner_up, score_spread = _compute_margin_arrays(scores.to_numpy(dtype=float))
+    return pd.DataFrame(
+        {
+            "margin_runner_up": margin_runner_up,
+            "score_spread": score_spread,
+        },
+        index=df.index,
+    )
 
 
 def _summarize_margins(
     values: Iterable[int | float | np.integer | np.floating],
     thresholds: Sequence[int],
 ) -> dict[str, StatValue]:
-    """Return descriptive statistics for per-game victory margins."""
+    """Return descriptive statistics for per-game runner-up margins."""
 
     series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
-    prob_keys = [f"prob_margin_le_{thr}" for thr in thresholds]
+    prob_keys = [f"prob_margin_runner_up_le_{thr}" for thr in thresholds]
     if series.empty:
         base: dict[str, StatValue] = {
             "observations": 0,
-            "mean_margin": float("nan"),
-            "median_margin": float("nan"),
-            "std_margin": float("nan"),
+            "mean_margin_runner_up": float("nan"),
+            "median_margin_runner_up": float("nan"),
+            "std_margin_runner_up": float("nan"),
         }
         base.update({key: float("nan") for key in prob_keys})
         return base
 
     stats: dict[str, StatValue] = {
         "observations": int(series.size),
-        "mean_margin": float(series.mean()),
-        "median_margin": float(series.median()),
-        "std_margin": float(series.std(ddof=0)),
+        "mean_margin_runner_up": float(series.mean()),
+        "median_margin_runner_up": float(series.median()),
+        "std_margin_runner_up": float(series.std(ddof=0)),
     }
     stats.update({key: float((series <= thr).mean()) for key, thr in zip(prob_keys, thresholds, strict=True)})
     return stats
