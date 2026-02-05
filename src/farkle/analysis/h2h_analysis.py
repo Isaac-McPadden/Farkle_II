@@ -143,11 +143,11 @@ def holm_bonferroni(
         )
 
     winner_is_a: pd.Series = base["wins_a"] > base["wins_b"]
-    winner_wins = np.where(winner_is_a, base["wins_a"], base["wins_b"]).astype(int)
+    wins_a = base["wins_a"].astype(int)
     total_games = base["games"].astype(int)
     pvals = [
-        float(binomtest(wins, games, alternative="greater").pvalue)
-        for wins, games in zip(winner_wins.tolist(), total_games.tolist(), strict=False)
+        float(binomtest(wins, games, alternative="two-sided").pvalue)
+        for wins, games in zip(wins_a.tolist(), total_games.tolist(), strict=False)
     ]
     decisions = pd.DataFrame(
         {
