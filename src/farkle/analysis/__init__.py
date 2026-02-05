@@ -142,6 +142,16 @@ def run_interseed_analysis(
     def _variance(cfg: AppConfig) -> None:
         run_variance(cfg, force=force)
 
+    def _interseed_game_stats(cfg: AppConfig) -> None:
+        stage_log = stage_logger("interseed_game_stats", logger=LOGGER)
+        stats_mod = _optional_import(
+            "farkle.analysis.game_stats_interseed",
+            stage_log=stage_log,
+        )
+        if stats_mod is None:
+            return
+        stats_mod.run(cfg, force=force)
+
     def _meta(cfg: AppConfig) -> None:
         run_meta(cfg, force=force)
 
@@ -180,6 +190,10 @@ def run_interseed_analysis(
             _require_interseed_inputs("rng_diagnostics", _rng_diagnostics),
         ),
         StagePlanItem("variance", _require_interseed_inputs("variance", _variance)),
+        StagePlanItem(
+            "interseed_game_stats",
+            _require_interseed_inputs("interseed_game_stats", _interseed_game_stats),
+        ),
         StagePlanItem("meta", _require_interseed_inputs("meta", _meta)),
         StagePlanItem("trueskill", _require_interseed_inputs("trueskill", _trueskill)),
         StagePlanItem("agreement", _require_interseed_inputs("agreement", _agreement)),
