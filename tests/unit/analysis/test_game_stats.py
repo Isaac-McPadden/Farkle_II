@@ -105,7 +105,10 @@ def test_run_generates_all_outputs(tmp_path: Path):
 
     margin_df = pd.read_parquet(margin_path)
     assert set(margin_df["summary_level"].unique()) == {"strategy"}
-    assert all(col in margin_df.columns for col in ("mean_margin", "median_margin"))
+    assert all(
+        col in margin_df.columns
+        for col in ("mean_margin_runner_up", "median_margin_runner_up", "mean_score_spread")
+    )
 
     rare_df = pd.read_parquet(rare_events_path)
     assert {"game", "strategy", "n_players"} <= set(rare_df["summary_level"].unique())
@@ -131,7 +134,8 @@ def test_compute_margins_and_aggregation(tmp_path: Path):
     per_n_inputs = [(2, per_n_path)]
     margins = game_stats._per_strategy_margin_stats(per_n_inputs, thresholds=(100,))
     assert not margins.empty
-    assert margins.loc[0, "prob_margin_le_100"] == pytest.approx(1 / 3)
+    assert margins.loc[0, "prob_margin_runner_up_le_100"] == pytest.approx(1 / 3)
+    assert margins.loc[0, "prob_score_spread_le_100"] == pytest.approx(1 / 3)
 
     rare_path = tmp_path / "rare_events.parquet"
     rare_rows = game_stats._rare_event_flags(
