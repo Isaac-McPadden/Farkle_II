@@ -83,6 +83,13 @@ def run_seed_summaries(cfg: AppConfig, *, force: bool = False) -> None:
     seed_summaries.run(cfg, force=force)
 
 
+def run_coverage_by_k(cfg: AppConfig, *, force: bool = False) -> None:
+    """Wrapper around :mod:`farkle.analysis.coverage_by_k`."""
+    from farkle.analysis import coverage_by_k
+
+    coverage_by_k.run(cfg, force=force)
+
+
 def run_meta(cfg: AppConfig, *, force: bool = False) -> None:
     """Wrapper around :mod:`farkle.analysis.meta`."""
     from farkle.analysis import meta
@@ -276,6 +283,7 @@ def run_single_seed_analysis(
 
     plan = [
         StagePlanItem("seed_summaries", _seed_summaries),
+        StagePlanItem("coverage_by_k", lambda cfg: run_coverage_by_k(cfg, force=force)),
         StagePlanItem("trueskill", _trueskill),
         StagePlanItem("tiering", _tiering),
         StagePlanItem("head2head", _head2head),
