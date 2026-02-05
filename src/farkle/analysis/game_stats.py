@@ -16,7 +16,7 @@ per-``(strategy, n_players)`` summaries. Margin schema:
 ``summary_level``
     Literal "strategy" for compatibility with ``game_length.parquet``.
 ``strategy``
-    Strategy string taken from ``P#_strategy`` columns.
+    Strategy ID taken from ``P#_strategy`` columns.
 ``n_players``
     Player count inferred from the shard path.
 ``observations``
@@ -88,6 +88,35 @@ def _strategy_numpy_dtype(strategy_type: pa.DataType) -> np.dtype:
     if pa.types.is_uint64(strategy_type):
         return np.uint64
     return np.int64
+
+
+def _strategy_pandas_dtype(strategy_type: pa.DataType) -> str:
+    if pa.types.is_uint8(strategy_type):
+        return "UInt8"
+    if pa.types.is_uint16(strategy_type):
+        return "UInt16"
+    if pa.types.is_uint32(strategy_type):
+        return "UInt32"
+    if pa.types.is_uint64(strategy_type):
+        return "UInt64"
+    if pa.types.is_int8(strategy_type):
+        return "Int8"
+    if pa.types.is_int16(strategy_type):
+        return "Int16"
+    if pa.types.is_int32(strategy_type):
+        return "Int32"
+    return "Int64"
+
+
+def _coerce_strategy_dtype(df: pd.DataFrame, strategy_type: pa.DataType) -> pd.DataFrame:
+    if df.empty or "strategy" not in df.columns:
+        return df
+    out = df.copy()
+    out["strategy"] = pd.array(
+        pd.to_numeric(out["strategy"], errors="coerce"),
+        dtype=_strategy_pandas_dtype(strategy_type),
+    )
+    return out
 
 
 def run(cfg: AppConfig, *, force: bool = False) -> None:
@@ -215,6 +244,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         if combined.empty:
             stage_log.missing_input("no rows available to summarize")
             return
+        combined = _coerce_strategy_dtype(combined, _strategy_arrow_type(per_n_inputs))
         combined = _downcast_integer_stats(combined, columns=("n_players", "observations"))
 
         table = pa.Table.from_pandas(combined, preserve_index=False)
@@ -234,6 +264,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         if margin_stats.empty:
             stage_log.missing_input("no margins available to summarize")
             return
+        margin_stats = _coerce_strategy_dtype(margin_stats, _strategy_arrow_type(per_n_inputs))
         margin_stats = _downcast_integer_stats(margin_stats, columns=("n_players", "observations"))
 
         margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
@@ -268,6 +299,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             if pooled_game_length.empty:
                 stage_log.missing_input("no pooled game-length rows available")
                 return
+            pooled_game_length = _coerce_strategy_dtype(
+                pooled_game_length, _strategy_arrow_type(per_n_inputs)
+            )
             pooled_game_length = _downcast_integer_stats(
                 pooled_game_length, columns=("observations",)
             )
@@ -290,6 +324,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             if pooled_margin.empty:
                 stage_log.missing_input("no pooled margin rows available")
                 return
+            pooled_margin = _coerce_strategy_dtype(pooled_margin, _strategy_arrow_type(per_n_inputs))
             pooled_margin = _downcast_integer_stats(pooled_margin, columns=("observations",))
             pooled_margin_table = pa.Table.from_pandas(pooled_margin, preserve_index=False)
             write_parquet_atomic(pooled_margin_table, pooled_margin_output, codec=cfg.parquet_codec)
@@ -673,7 +708,7 @@ def _pooled_strategy_stats(
         pooled_rows.append(
             {
                 "summary_level": "pooled",
-                "strategy": str(strategy),
+                "strategy": strategy,
                 "observations": int(group.shape[0]),
                 "mean_rounds": _weighted_mean(values, weights),
                 "median_rounds": _weighted_quantile(values, weights, 0.5),
@@ -817,7 +852,7 @@ def _pooled_margin_stats(
 
         pooled_row: dict[str, StatValue] = {
             "summary_level": "pooled",
-            "strategy": str(strategy),
+            "strategy": strategy,
             "observations": int(group.shape[0]),
             "mean_margin_runner_up": _weighted_mean(runner_vals, weights),
             "median_margin_runner_up": _weighted_quantile(runner_vals, weights, 0.5),
