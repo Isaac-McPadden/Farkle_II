@@ -367,6 +367,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "seed_summaries": analysis.run_seed_summaries,
         "variance": analysis.run_variance,
         "meta": analysis.run_meta,
+        "h2h_tier_trends": analysis.run_h2h_tier_trends,
         "trueskill": _optional_stage("farkle.analysis.trueskill", "trueskill"),
         "head2head": _head2head_only,
         "post_h2h": _post_h2h_only,

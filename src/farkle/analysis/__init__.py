@@ -104,6 +104,13 @@ def run_variance(cfg: AppConfig, *, force: bool = False) -> None:
     variance.run(cfg, force=force)
 
 
+def run_h2h_tier_trends(cfg: AppConfig, *, force: bool = False) -> None:
+    """Wrapper around :mod:`farkle.analysis.h2h_tier_trends`."""
+    from farkle.analysis import h2h_tier_trends
+
+    h2h_tier_trends.run(cfg, force=force)
+
+
 def run_interseed_analysis(
     cfg: AppConfig,
     *,
@@ -317,4 +324,5 @@ def run_all(
         run_rng_diagnostics=run_rng_diagnostics,
         rng_lags=rng_lags,
     )
+    run_h2h_tier_trends(cfg)
     LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})
