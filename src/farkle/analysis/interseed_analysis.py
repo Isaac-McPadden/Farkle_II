@@ -5,13 +5,22 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
+from itertools import combinations
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable, Mapping
+
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+from scipy.stats import kendalltau, spearmanr
 
 from farkle.analysis import stage_logger
+from farkle.analysis.game_stats_interseed import SeedInputs, _seed_analysis_dirs
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 from farkle.config import AppConfig
+from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -52,6 +61,7 @@ def run(
         meta_enabled = True
         trueskill_enabled = True
         agreement_enabled = True
+        s_tier_stability_enabled = True
 
         if rng_enabled and run_stages:
             from farkle.analysis import rng_diagnostics
@@ -105,6 +115,13 @@ def run(
         statuses["agreement"] = {
             "enabled": agreement_enabled,
             "outputs": _existing_paths(_agreement_outputs(cfg)),
+        }
+
+        if s_tier_stability_enabled and run_stages:
+            _run_s_tier_stability(cfg, force=force)
+        statuses["s_tier_stability"] = {
+            "enabled": s_tier_stability_enabled,
+            "outputs": _existing_paths(_s_tier_stability_outputs(cfg)),
         }
 
         summary_path = cfg.interseed_stage_dir / SUMMARY_NAME
@@ -198,3 +215,386 @@ def _agreement_outputs(cfg: AppConfig) -> list[Path]:
 
 def _rng_outputs(cfg: AppConfig) -> list[Path]:
     return [cfg.rng_output_path("rng_diagnostics.parquet")]
+
+
+def _s_tier_stability_outputs(cfg: AppConfig) -> list[Path]:
+    output_dir = cfg.interseed_stage_dir
+    return [output_dir / "s_tier_stability.json", output_dir / "s_tier_stability.parquet"]
+
+
+@dataclass(frozen=True)
+class SeedTierData:
+    seed: int
+    analysis_dir: Path
+    s_tiers: dict[str, str]
+    s_tiers_source: str
+    s_tiers_path: Path | None
+    ranking: dict[str, int] | None
+    ranking_path: Path | None
+    input_paths: list[Path]
+
+
+def _run_s_tier_stability(cfg: AppConfig, *, force: bool = False) -> None:
+    stage_log = stage_logger("s_tier_stability", logger=LOGGER)
+    stage_log.start()
+
+    seeds = _seed_analysis_dirs(cfg)
+    if not seeds:
+        stage_log.missing_input("no seed analysis directories resolved")
+        return
+
+    seed_data: list[SeedTierData] = []
+    for seed_entry in seeds:
+        data = _load_seed_tier_data(cfg, seed_entry)
+        if data is None:
+            continue
+        seed_data.append(data)
+
+    if len(seed_data) < 2:
+        stage_log.missing_input("fewer than two seeds with S-tier data")
+        return
+
+    output_dir = cfg.interseed_stage_dir
+    output_dir.mkdir(parents=True, exist_ok=True)
+    json_output = output_dir / "s_tier_stability.json"
+    parquet_output = output_dir / "s_tier_stability.parquet"
+    done_path = stage_done_path(output_dir, "interseed.s_tier_stability")
+
+    input_paths: list[Path] = []
+    for data in seed_data:
+        input_paths.extend(data.input_paths)
+    inputs = sorted({path for path in input_paths if path.exists()})
+    outputs = [json_output, parquet_output]
+
+    if inputs and not force and stage_is_up_to_date(
+        done_path,
+        inputs=inputs,
+        outputs=outputs,
+        config_sha=cfg.config_sha,
+    ):
+        LOGGER.info(
+            "S-tier stability outputs up-to-date",
+            extra={"stage": "s_tier_stability", "path": str(done_path)},
+        )
+        return
+
+    tier_rows: list[dict[str, object]] = []
+    pairs_payload: list[dict[str, object]] = []
+    tier_labels = _order_tier_labels(
+        {label for data in seed_data for label in data.s_tiers.values()}
+    )
+
+    seed_lookup = {data.seed: data for data in seed_data}
+    for seed_a, seed_b in combinations(sorted(seed_lookup), 2):
+        data_a = seed_lookup[seed_a]
+        data_b = seed_lookup[seed_b]
+
+        tier_sets_a = _tiers_to_sets(data_a.s_tiers)
+        tier_sets_b = _tiers_to_sets(data_b.s_tiers)
+        jaccard_by_tier = {
+            label: _jaccard_index(tier_sets_a.get(label, set()), tier_sets_b.get(label, set()))
+            for label in tier_labels
+        }
+
+        rank_corr = _rank_correlations(data_a.ranking, data_b.ranking)
+
+        flip_rows, flip_summary = _tier_flips(data_a, data_b)
+        tier_rows.extend(flip_rows)
+
+        pairs_payload.append(
+            {
+                "seed_a": seed_a,
+                "seed_b": seed_b,
+                "tier_labels": tier_labels,
+                "jaccard_by_tier": jaccard_by_tier,
+                "rank_correlations": rank_corr,
+                "tier_flips": flip_summary,
+            }
+        )
+
+    payload = {
+        "config_sha": cfg.config_sha,
+        "seeds": sorted(seed_lookup),
+        "tier_labels": tier_labels,
+        "seed_summaries": {
+            str(data.seed): {
+                "s_tiers_source": data.s_tiers_source,
+                "s_tiers_path": str(data.s_tiers_path) if data.s_tiers_path else None,
+                "ranking_path": str(data.ranking_path) if data.ranking_path else None,
+                "tier_counts": _tier_counts(data.s_tiers),
+                "strategy_count": len(data.s_tiers),
+            }
+            for data in seed_data
+        },
+        "pairs": pairs_payload,
+    }
+
+    with atomic_path(str(json_output)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
+
+    tier_frame = pd.DataFrame(tier_rows)
+    if tier_frame.empty:
+        table = pa.Table.from_pylist([], schema=_tier_flip_schema())
+    else:
+        table = pa.Table.from_pandas(tier_frame, preserve_index=False)
+    write_parquet_atomic(table, parquet_output, codec=cfg.parquet_codec)
+
+    write_stage_done(
+        done_path,
+        inputs=inputs,
+        outputs=outputs,
+        config_sha=cfg.config_sha,
+    )
+
+
+def _load_seed_tier_data(cfg: AppConfig, seed_input: SeedInputs) -> SeedTierData | None:
+    analysis_dir = seed_input.analysis_dir
+    s_tiers_path = _resolve_h2h_path(cfg, analysis_dir, "h2h_s_tiers.json")
+    ranking_path = _resolve_h2h_path(cfg, analysis_dir, "h2h_significant_ranking.csv")
+
+    input_paths: list[Path] = []
+
+    s_tiers: dict[str, str] = {}
+    s_tiers_source = "missing"
+    if s_tiers_path is not None and s_tiers_path.exists():
+        s_tiers = _load_s_tiers(s_tiers_path)
+        if s_tiers:
+            s_tiers_source = "h2h_s_tiers.json"
+            input_paths.append(s_tiers_path)
+
+    ranking: dict[str, int] | None = None
+    ranking_order: list[str] = []
+    if ranking_path is not None and ranking_path.exists():
+        ranking_order, ranking = _load_ranking(ranking_path)
+        if ranking:
+            input_paths.append(ranking_path)
+
+    if not s_tiers and ranking_order:
+        union_candidates, union_path = _load_union_candidates(cfg, analysis_dir)
+        if union_candidates:
+            ranking_order = [name for name in ranking_order if name in union_candidates]
+            if union_path is not None:
+                input_paths.append(union_path)
+        s_tiers = _assign_s_tiers(ranking_order)
+        if s_tiers:
+            s_tiers_source = "ranking"
+
+    if not s_tiers:
+        return None
+
+    return SeedTierData(
+        seed=seed_input.seed,
+        analysis_dir=analysis_dir,
+        s_tiers=s_tiers,
+        s_tiers_source=s_tiers_source,
+        s_tiers_path=s_tiers_path if s_tiers_source == "h2h_s_tiers.json" else None,
+        ranking=ranking,
+        ranking_path=ranking_path if ranking else None,
+        input_paths=input_paths,
+    )
+
+
+def _resolve_h2h_path(cfg: AppConfig, analysis_dir: Path, filename: str) -> Path | None:
+    candidates: list[Path] = []
+    for stage in ("post_h2h", "head2head"):
+        folder = cfg._interseed_input_folder(stage)
+        if folder is not None:
+            candidates.append(analysis_dir / folder / filename)
+        candidates.extend(sorted(analysis_dir.glob(f"*_{stage}"))[:1])
+    candidates.append(analysis_dir / filename)
+    for candidate in candidates:
+        if candidate.is_dir():
+            candidate = candidate / filename
+        if candidate.exists():
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _load_s_tiers(path: Path) -> dict[str, str]:
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, Mapping):
+        return {}
+    return {str(key): str(value) for key, value in payload.items() if isinstance(value, str)}
+
+
+def _load_ranking(path: Path) -> tuple[list[str], dict[str, int]]:
+    df = pd.read_csv(path)
+    if "strategy" not in df.columns:
+        return [], {}
+    df = df.copy()
+    df["strategy"] = df["strategy"].astype(str)
+    if "rank" in df.columns:
+        df["rank"] = pd.to_numeric(df["rank"], errors="coerce")
+        df = df.dropna(subset=["rank"]).sort_values(["rank", "strategy"], kind="mergesort")
+        order = df["strategy"].tolist()
+    else:
+        order = df["strategy"].tolist()
+    ranking = {strategy: idx for idx, strategy in enumerate(order, start=1)}
+    return order, ranking
+
+
+def _load_union_candidates(
+    cfg: AppConfig, analysis_dir: Path
+) -> tuple[set[str], Path | None]:
+    candidates: list[Path] = []
+    folder = cfg._interseed_input_folder("head2head")
+    if folder is not None:
+        candidates.append(analysis_dir / folder / "h2h_union_candidates.json")
+    candidates.extend(sorted(analysis_dir.glob("*_head2head"))[:1])
+    candidates.append(analysis_dir / "h2h_union_candidates.json")
+    for candidate in candidates:
+        path = candidate
+        if path.is_dir():
+            path = path / "h2h_union_candidates.json"
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(path.read_text())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict) and "candidates" in payload:
+            raw = payload.get("candidates")
+        else:
+            raw = payload
+        if isinstance(raw, list):
+            return {str(item) for item in raw}, path
+    return set(), None
+
+
+def _assign_s_tiers(ordered: list[str]) -> dict[str, str]:
+    tiers: dict[str, str] = {}
+    for idx, strategy in enumerate(ordered):
+        if idx < 10:
+            label = "S+"
+        elif idx < 30:
+            label = "S"
+        else:
+            label = "S-"
+        tiers[str(strategy)] = label
+    return tiers
+
+
+def _order_tier_labels(labels: Iterable[str]) -> list[str]:
+    preferred = ["S+", "S", "S-"]
+    label_set = {label for label in labels if label}
+    ordered = [label for label in preferred if label in label_set]
+    ordered.extend(sorted(label_set - set(preferred)))
+    return ordered
+
+
+def _tiers_to_sets(tiers: dict[str, str]) -> dict[str, set[str]]:
+    grouped: dict[str, set[str]] = {}
+    for strategy, label in tiers.items():
+        grouped.setdefault(label, set()).add(strategy)
+    return grouped
+
+
+def _jaccard_index(set_a: set[str], set_b: set[str]) -> float | None:
+    union = set_a | set_b
+    if not union:
+        return None
+    return len(set_a & set_b) / len(union)
+
+
+def _rank_correlations(
+    ranks_a: dict[str, int] | None, ranks_b: dict[str, int] | None
+) -> dict[str, object]:
+    if not ranks_a or not ranks_b:
+        return {
+            "n_common": 0,
+            "n_ranked_a": len(ranks_a or {}),
+            "n_ranked_b": len(ranks_b or {}),
+            "spearman": None,
+            "kendall": None,
+        }
+    common = sorted(set(ranks_a) & set(ranks_b))
+    n_common = len(common)
+    if n_common < 2:
+        return {
+            "n_common": n_common,
+            "n_ranked_a": len(ranks_a),
+            "n_ranked_b": len(ranks_b),
+            "spearman": None,
+            "kendall": None,
+        }
+    vec_a = np.array([ranks_a[name] for name in common], dtype=float)
+    vec_b = np.array([ranks_b[name] for name in common], dtype=float)
+    spearman = spearmanr(vec_a, vec_b)
+    kendall = kendalltau(vec_a, vec_b)
+    spearman_payload = (
+        None
+        if np.isnan(spearman.statistic)
+        else {"rho": float(spearman.statistic), "pvalue": float(spearman.pvalue)}
+    )
+    kendall_payload = (
+        None
+        if np.isnan(kendall.statistic)
+        else {"tau": float(kendall.statistic), "pvalue": float(kendall.pvalue)}
+    )
+    return {
+        "n_common": n_common,
+        "n_ranked_a": len(ranks_a),
+        "n_ranked_b": len(ranks_b),
+        "spearman": spearman_payload,
+        "kendall": kendall_payload,
+    }
+
+
+def _tier_flips(
+    data_a: SeedTierData, data_b: SeedTierData
+) -> tuple[list[dict[str, object]], dict[str, object]]:
+    strategies = sorted(set(data_a.s_tiers) | set(data_b.s_tiers))
+    rows: list[dict[str, object]] = []
+    n_shared = 0
+    n_flipped = 0
+    for strategy in strategies:
+        tier_a = data_a.s_tiers.get(strategy)
+        tier_b = data_b.s_tiers.get(strategy)
+        both_present = tier_a is not None and tier_b is not None
+        flipped = bool(both_present and tier_a != tier_b)
+        if both_present:
+            n_shared += 1
+            if flipped:
+                n_flipped += 1
+        rows.append(
+            {
+                "seed_a": data_a.seed,
+                "seed_b": data_b.seed,
+                "strategy_id": strategy,
+                "tier_a": tier_a,
+                "tier_b": tier_b,
+                "present_in_both": both_present,
+                "flipped": flipped if both_present else None,
+            }
+        )
+    flip_rate = (n_flipped / n_shared) if n_shared else None
+    summary = {
+        "n_shared": n_shared,
+        "n_flipped": n_flipped,
+        "flip_rate": flip_rate,
+    }
+    return rows, summary
+
+
+def _tier_counts(tiers: dict[str, str]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for label in tiers.values():
+        counts[label] = counts.get(label, 0) + 1
+    return counts
+
+
+def _tier_flip_schema() -> pa.Schema:
+    return pa.schema(
+        [
+            ("seed_a", pa.int64()),
+            ("seed_b", pa.int64()),
+            ("strategy_id", pa.string()),
+            ("tier_a", pa.string()),
+            ("tier_b", pa.string()),
+            ("present_in_both", pa.bool_()),
+            ("flipped", pa.bool_()),
+        ]
+    )
