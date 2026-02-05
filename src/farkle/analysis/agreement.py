@@ -90,9 +90,11 @@ def _build_payload(
         account for them; ties are only logged for visibility.
     """
     methods: dict[str, MethodData] = {}
+    pooled_scope = AppConfig.is_pooled_players(players)
+    comparison_scope = "pooled" if pooled_scope else "per_k"
 
     try:
-        ts = _load_trueskill(cfg, players)
+        ts = _load_trueskill(cfg, players, pooled_scope=pooled_scope)
     except (FileNotFoundError, ValueError) as exc:
         stage_log.missing_input(str(exc), players=players)
         return None
@@ -100,7 +102,11 @@ def _build_payload(
         stage_log.missing_input(
             "missing TrueSkill ratings",
             players=players,
-            path=str(cfg.trueskill_path("ratings_pooled.parquet")),
+            path=(
+                str(cfg.trueskill_path("ratings_pooled.parquet"))
+                if pooled_scope
+                else f"{players}p ratings parquet"
+            ),
         )
         return None
     methods["trueskill"] = ts
@@ -113,13 +119,14 @@ def _build_payload(
         if freq is not None:
             methods["frequentist"] = freq
 
-    try:
-        h2h = _load_head2head(cfg)
-    except ValueError as exc:
-        stage_log.missing_input(str(exc), players=players)
-    else:
-        if h2h is not None:
-            methods["h2h"] = h2h
+    if pooled_scope:
+        try:
+            h2h = _load_head2head(cfg)
+        except ValueError as exc:
+            stage_log.missing_input(str(exc), players=players)
+        else:
+            if h2h is not None:
+                methods["h2h"] = h2h
 
     strategy_filter = getattr(cfg.analysis, "agreement_strategies", None)
     if strategy_filter:
@@ -144,6 +151,12 @@ def _build_payload(
 
     return {
         "methods": sorted(methods),
+        "comparison_scope": {
+            "mode": comparison_scope,
+            "trueskill": "pooled" if pooled_scope else f"{players}p",
+            "frequentist": "pooled" if pooled_scope else f"{players}p",
+            "h2h": "pooled" if pooled_scope and "h2h" in methods else None,
+        },
         "strategy_counts": {name: int(len(data.scores)) for name, data in methods.items()},
         "coverage": coverage or None,
         "spearman": spearman,
@@ -154,8 +167,10 @@ def _build_payload(
     }
 
 
-def _load_trueskill(cfg: AppConfig, players: int | str) -> MethodData | None:
-    """Load pooled TrueSkill ratings and optional tiers for a given player count.
+def _load_trueskill(
+    cfg: AppConfig, players: int | str, *, pooled_scope: bool
+) -> MethodData | None:
+    """Load TrueSkill ratings and optional tiers for a given player count.
 
     Args:
         cfg: Application configuration used to locate outputs.
@@ -164,8 +179,12 @@ def _load_trueskill(cfg: AppConfig, players: int | str) -> MethodData | None:
     Returns:
         Prepared ``MethodData`` or ``None`` when no ratings are available.
     """
-    path = cfg.trueskill_path("ratings_pooled.parquet")
-    if not path.exists():
+    path = (
+        cfg.trueskill_path("ratings_pooled.parquet")
+        if pooled_scope
+        else _resolve_trueskill_per_k_path(cfg, players)
+    )
+    if path is None or not path.exists():
         return None
 
     df = pd.read_parquet(path)
@@ -182,13 +201,7 @@ def _load_trueskill(cfg: AppConfig, players: int | str) -> MethodData | None:
     tiers = tier_mapping_from_payload(tiers_payload, prefer=str(players)) or None
 
     per_seed: list[pd.Series] = []
-    seed_candidates = {*cfg.analysis_dir.glob("ratings_pooled_seed*.parquet")}
-    trueskill_pooled_dir = cfg.stage_dir_if_active("trueskill", "pooled")
-    if trueskill_pooled_dir is not None:
-        seed_candidates.update(trueskill_pooled_dir.glob("ratings_pooled_seed*.parquet"))
-    trueskill_stage_dir = cfg.stage_dir_if_active("trueskill")
-    if trueskill_stage_dir is not None:
-        seed_candidates.update(trueskill_stage_dir.glob("ratings_pooled_seed*.parquet"))
+    seed_candidates = _resolve_trueskill_seed_paths(cfg, players, pooled_scope=pooled_scope)
     for seed_path in sorted(seed_candidates):
         seed_df = pd.read_parquet(seed_path)
         seed_df = _filter_by_players(seed_df, players)
@@ -199,6 +212,58 @@ def _load_trueskill(cfg: AppConfig, players: int | str) -> MethodData | None:
         )
 
     return MethodData(scores=series, tiers=tiers, per_seed_scores=per_seed)
+
+
+def _resolve_trueskill_per_k_path(cfg: AppConfig, players: int | str) -> Path | None:
+    """Locate per-player TrueSkill ratings parquet for a given player count."""
+    if AppConfig.is_pooled_players(players):
+        return None
+    players_int = int(players)
+    stage_dir = cfg.stage_dir_if_active("trueskill")
+    roots = [root for root in (stage_dir, cfg.analysis_dir) if root is not None]
+    candidates: list[Path] = []
+    for root in roots:
+        candidates.extend(
+            [
+                root / f"{players_int}p" / f"ratings_{players_int}.parquet",
+                root / f"ratings_{players_int}.parquet",
+                root / "data" / f"{players_int}p" / f"ratings_{players_int}.parquet",
+            ]
+        )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0] if candidates else None
+
+
+def _resolve_trueskill_seed_paths(
+    cfg: AppConfig, players: int | str, *, pooled_scope: bool
+) -> list[Path]:
+    """Collect candidate TrueSkill seed parquet paths for a scope."""
+    seed_candidates: set[Path] = set()
+    if pooled_scope:
+        seed_candidates.update(cfg.analysis_dir.glob("ratings_pooled_seed*.parquet"))
+        trueskill_pooled_dir = cfg.stage_dir_if_active("trueskill", "pooled")
+        if trueskill_pooled_dir is not None:
+            seed_candidates.update(trueskill_pooled_dir.glob("ratings_pooled_seed*.parquet"))
+        trueskill_stage_dir = cfg.stage_dir_if_active("trueskill")
+        if trueskill_stage_dir is not None:
+            seed_candidates.update(trueskill_stage_dir.glob("ratings_pooled_seed*.parquet"))
+        return sorted(seed_candidates)
+
+    if AppConfig.is_pooled_players(players):
+        return []
+    players_int = int(players)
+    stage_dir = cfg.stage_dir_if_active("trueskill")
+    roots = [root for root in (stage_dir, cfg.analysis_dir) if root is not None]
+    for root in roots:
+        seed_candidates.update(root.glob(f"{players_int}p/ratings_{players_int}_seed*.parquet"))
+        seed_candidates.update(root.glob(f"ratings_{players_int}_seed*.parquet"))
+        seed_candidates.update(root.glob(f"trueskill_{players_int}p_seed*.parquet"))
+        seed_candidates.update(
+            root.glob(f"data/{players_int}p/ratings_{players_int}_seed*.parquet")
+        )
+    return sorted(seed_candidates)
 
 
 def _load_frequentist(cfg: AppConfig, players: int | str) -> MethodData | None:
