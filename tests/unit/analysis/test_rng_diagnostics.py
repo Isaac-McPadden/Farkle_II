@@ -37,7 +37,7 @@ def test_collect_diagnostics_deterministic_sort(tmp_path):
     cfg, combined, _ = build_curated_fixture(tmp_path)
     table = pq.read_table(combined)
     df = table.to_pandas()
-    df["matchup"] = df[["P1_strategy", "P2_strategy"]].agg(" vs ".join, axis=1)
+    df["matchup"] = df[["P1_strategy", "P2_strategy"]].astype(str).agg(" vs ".join, axis=1)
     df["n_players"] = 2
     df["strategy"] = df["P1_strategy"]
     df["win_indicator"] = (df["winner_strategy"] == df["P1_strategy"]).astype(int)

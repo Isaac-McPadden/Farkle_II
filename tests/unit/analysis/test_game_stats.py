@@ -27,7 +27,7 @@ def test_rare_event_flags_cover_game_and_strategy_levels(tmp_path):
     # Three game-level rows plus strategy-level and n-player summaries
     assert {"game", "strategy", "n_players"} <= set(flags["summary_level"].unique())
 
-    aggro = flags[(flags["strategy"] == "Aggro") & (flags["summary_level"] == "strategy")].iloc[0]
+    aggro = flags[(flags["strategy"] == 1) & (flags["summary_level"] == "strategy")].iloc[0]
     assert aggro["observations"] == 5
     assert aggro["multi_reached_target"] == pytest.approx(0.6)
     assert aggro[f"margin_le_{thresholds[1]}"] == pytest.approx(1.0)
@@ -49,24 +49,24 @@ def _build_parquet(tmp_path: Path, cfg):
             {
                 "seat_ranks": ["P1", "P2"],
                 "n_rounds": 4,
-                "P1_strategy": "Aggro",
-                "P2_strategy": "Control",
+                "P1_strategy": 1,
+                "P2_strategy": 2,
                 "P1_score": 120,
                 "P2_score": 110,
             },
             {
                 "seat_ranks": ["P2", "P1"],
                 "n_rounds": 8,
-                "P1_strategy": "Aggro",
-                "P2_strategy": "Control",
+                "P1_strategy": 1,
+                "P2_strategy": 2,
                 "P1_score": 50,
                 "P2_score": 200,
             },
             {
                 "seat_ranks": ["P1", "P2"],
                 "n_rounds": 12,
-                "P1_strategy": "Aggro",
-                "P2_strategy": "Control",
+                "P1_strategy": 1,
+                "P2_strategy": 2,
                 "P1_score": 300,
                 "P2_score": 100,
             },
