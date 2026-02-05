@@ -278,6 +278,10 @@ class AnalysisConfig:
     outputs: dict[str, Any] = field(default_factory=dict)
     game_stats_margin_thresholds: tuple[int, ...] = (500, 1000)
     """Victory-margin thresholds used by game stats and rare-event summaries."""
+    pooling_weights: str = "game-count"
+    """Weighting scheme for pooled game stats across player counts."""
+    pooling_weights_by_k: dict[int, float] | None = None
+    """Optional per-player-count weights for pooled game-stat summaries."""
     rare_event_target_score: int = 10_000
     """Score threshold used to flag games where multiple players crossed the target."""
     rare_event_write_details: bool = False

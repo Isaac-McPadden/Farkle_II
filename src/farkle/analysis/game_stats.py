@@ -73,11 +73,15 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     stage_dir = cfg.game_stats_stage_dir
     game_length_output = cfg.game_stats_output_path("game_length.parquet")
     margin_output = cfg.game_stats_output_path("margin_stats.parquet")
+    pooled_game_length_output = cfg.game_stats_output_path("game_length_pooled.parquet")
+    pooled_margin_output = cfg.game_stats_output_path("margin_pooled.parquet")
     rare_events_output = cfg.game_stats_output_path("rare_events.parquet")
     rare_events_details_output = cfg.game_stats_output_path("rare_events_details.parquet")
     stamp_path = stage_done_path(stage_dir, "game_stats")
     game_length_stamp = stage_done_path(stage_dir, "game_stats.game_length")
     margin_stamp = stage_done_path(stage_dir, "game_stats.margin")
+    pooled_game_length_stamp = stage_done_path(stage_dir, "game_stats.game_length_pooled")
+    pooled_margin_stamp = stage_done_path(stage_dir, "game_stats.margin_pooled")
     rare_events_summary_stamp = stage_done_path(stage_dir, "game_stats.rare_events_summary")
     rare_events_details_stamp = stage_done_path(stage_dir, "game_stats.rare_events_details")
 
@@ -95,6 +99,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     outputs = [game_length_output, margin_output, rare_events_output]
     if write_details:
         outputs.append(rare_events_details_output)
+    pooled_possible = bool(per_n_inputs)
+    if pooled_possible:
+        outputs.extend([pooled_game_length_output, pooled_margin_output])
     game_length_up_to_date = not force and stage_is_up_to_date(
         game_length_stamp,
         inputs=input_paths,
@@ -121,10 +128,28 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             outputs=[rare_events_details_output],
             config_sha=cfg.config_sha,
         )
+    pooled_game_length_up_to_date = True
+    pooled_margin_up_to_date = True
+    if pooled_possible:
+        pooled_inputs = [p for _, p in per_n_inputs]
+        pooled_game_length_up_to_date = not force and stage_is_up_to_date(
+            pooled_game_length_stamp,
+            inputs=pooled_inputs,
+            outputs=[pooled_game_length_output],
+            config_sha=cfg.config_sha,
+        )
+        pooled_margin_up_to_date = not force and stage_is_up_to_date(
+            pooled_margin_stamp,
+            inputs=pooled_inputs,
+            outputs=[pooled_margin_output],
+            config_sha=cfg.config_sha,
+        )
 
     if (
         game_length_up_to_date
         and margin_up_to_date
+        and pooled_game_length_up_to_date
+        and pooled_margin_up_to_date
         and rare_events_summary_up_to_date
         and rare_events_details_up_to_date
     ):
@@ -188,6 +213,61 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             outputs=[margin_output],
             config_sha=cfg.config_sha,
         )
+
+    if pooled_possible and not (pooled_game_length_up_to_date and pooled_margin_up_to_date):
+        pooling_scheme = _normalize_pooling_scheme(cfg.analysis.pooling_weights)
+        weights_by_k = dict(cfg.analysis.pooling_weights_by_k or {})
+        if pooling_scheme == "config" and not weights_by_k:
+            raise ValueError("analysis.pooling_weights_by_k must be set for config pooling")
+        LOGGER.info(
+            "Computing pooled game stats",
+            extra={
+                "stage": "game_stats",
+                "pooling_scheme": pooling_scheme,
+                "weights_by_k": weights_by_k or None,
+            },
+        )
+
+        if not pooled_game_length_up_to_date:
+            pooled_game_length = _pooled_strategy_stats(
+                per_n_inputs,
+                pooling_scheme=pooling_scheme,
+                weights_by_k=weights_by_k,
+            )
+            if pooled_game_length.empty:
+                stage_log.missing_input("no pooled game-length rows available")
+                return
+            pooled_game_length = _downcast_integer_stats(
+                pooled_game_length, columns=("observations",)
+            )
+            pooled_table = pa.Table.from_pandas(pooled_game_length, preserve_index=False)
+            write_parquet_atomic(pooled_table, pooled_game_length_output, codec=cfg.parquet_codec)
+            write_stage_done(
+                pooled_game_length_stamp,
+                inputs=[p for _, p in per_n_inputs],
+                outputs=[pooled_game_length_output],
+                config_sha=cfg.config_sha,
+            )
+
+        if not pooled_margin_up_to_date:
+            pooled_margin = _pooled_margin_stats(
+                per_n_inputs,
+                thresholds=cfg.game_stats_margin_thresholds,
+                pooling_scheme=pooling_scheme,
+                weights_by_k=weights_by_k,
+            )
+            if pooled_margin.empty:
+                stage_log.missing_input("no pooled margin rows available")
+                return
+            pooled_margin = _downcast_integer_stats(pooled_margin, columns=("observations",))
+            pooled_margin_table = pa.Table.from_pandas(pooled_margin, preserve_index=False)
+            write_parquet_atomic(pooled_margin_table, pooled_margin_output, codec=cfg.parquet_codec)
+            write_stage_done(
+                pooled_margin_stamp,
+                inputs=[p for _, p in per_n_inputs],
+                outputs=[pooled_margin_output],
+                config_sha=cfg.config_sha,
+            )
 
     if not (rare_events_summary_up_to_date and rare_events_details_up_to_date):
         resolved_thresholds, resolved_target_score = _resolve_rare_event_thresholds(
@@ -393,6 +473,351 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
             "prob_rounds_ge_20",
         ]
     ]
+
+
+def _normalize_pooling_scheme(pooling_scheme: str) -> str:
+    """Normalize pooling scheme names for pooled game stats."""
+
+    normalized = pooling_scheme.strip().lower().replace("_", "-")
+    if normalized in {"game-count", "gamecount", "count"}:
+        return "game-count"
+    if normalized in {"equal-k", "equalk", "equal"}:
+        return "equal-k"
+    if normalized in {"config", "config-provided", "custom"}:
+        return "config"
+    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+
+
+def _pooling_weights_for_rows(
+    n_players: pd.Series,
+    *,
+    pooling_scheme: str,
+    weights_by_k: dict[int, float],
+) -> pd.Series:
+    """Return per-row weights based on pooling scheme and player count."""
+
+    counts = n_players.value_counts().to_dict()
+    if pooling_scheme == "game-count":
+        return pd.Series(1.0, index=n_players.index)
+
+    if pooling_scheme == "equal-k":
+        return n_players.map(lambda k: 1.0 / counts.get(k, 1))
+
+    if pooling_scheme == "config":
+        missing = sorted({int(k) for k in counts} - set(weights_by_k))
+        if missing:
+            LOGGER.warning(
+                "Missing pooling weights for player counts; treating as zero",
+                extra={"stage": "game_stats", "missing": missing},
+            )
+        return n_players.map(lambda k: float(weights_by_k.get(int(k), 0.0)) / counts.get(k, 1))
+
+    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+
+
+def _weighted_quantile(values: np.ndarray, weights: np.ndarray, quantile: float) -> float:
+    """Compute a weighted quantile from value and weight arrays."""
+
+    if values.size == 0:
+        return float("nan")
+    if quantile <= 0.0:
+        return float(np.nanmin(values))
+    if quantile >= 1.0:
+        return float(np.nanmax(values))
+    sorter = np.argsort(values)
+    values_sorted = values[sorter]
+    weights_sorted = weights[sorter]
+    cumulative = np.cumsum(weights_sorted)
+    total = cumulative[-1]
+    if total <= 0:
+        return float("nan")
+    cutoff = quantile * total
+    idx = int(np.searchsorted(cumulative, cutoff, side="left"))
+    idx = min(max(idx, 0), values_sorted.size - 1)
+    return float(values_sorted[idx])
+
+
+def _weighted_mean(values: np.ndarray, weights: np.ndarray) -> float:
+    total = weights.sum()
+    if total <= 0:
+        return float("nan")
+    return float(np.average(values, weights=weights))
+
+
+def _weighted_std(values: np.ndarray, weights: np.ndarray) -> float:
+    total = weights.sum()
+    if total <= 0:
+        return float("nan")
+    mean = np.average(values, weights=weights)
+    variance = np.average((values - mean) ** 2, weights=weights)
+    return float(math.sqrt(variance))
+
+
+def _pooled_strategy_stats(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    pooling_scheme: str,
+    weights_by_k: dict[int, float],
+) -> pd.DataFrame:
+    """Compute pooled game-length statistics across player counts."""
+
+    long_frames: list[pd.DataFrame] = []
+    for n_players, path in per_n_inputs:
+        ds_in = ds.dataset(path)
+        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+        if not strategy_cols:
+            LOGGER.warning(
+                "Per-N parquet missing strategy columns",
+                extra={"stage": "game_stats", "path": str(path)},
+            )
+            continue
+
+        for col in strategy_cols:
+            columns = ["n_rounds", col]
+            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+            for batch in scanner.to_batches():
+                df = batch.to_pandas(categories=[col])
+                if df.empty:
+                    continue
+                melted = df.melt(id_vars=["n_rounds"], value_vars=[col], value_name="strategy")
+                melted = melted.dropna(subset=["strategy"])
+                if melted.empty:
+                    continue
+                melted["strategy"] = melted["strategy"].astype("category")
+                melted["n_players"] = n_players
+                long_frames.append(melted[["strategy", "n_players", "n_rounds"]])
+
+    if not long_frames:
+        return pd.DataFrame(
+            columns=[
+                "summary_level",
+                "strategy",
+                "observations",
+                "mean_rounds",
+                "median_rounds",
+                "std_rounds",
+                "p10_rounds",
+                "p50_rounds",
+                "p90_rounds",
+                "prob_rounds_le_5",
+                "prob_rounds_le_10",
+                "prob_rounds_ge_20",
+            ]
+        )
+
+    long_df = pd.concat(long_frames, ignore_index=True)
+    long_df["n_rounds"] = pd.to_numeric(long_df["n_rounds"], errors="coerce")
+    long_df = long_df.dropna(subset=["n_rounds", "strategy", "n_players"])
+    if long_df.empty:
+        return pd.DataFrame(
+            columns=[
+                "summary_level",
+                "strategy",
+                "observations",
+                "mean_rounds",
+                "median_rounds",
+                "std_rounds",
+                "p10_rounds",
+                "p50_rounds",
+                "p90_rounds",
+                "prob_rounds_le_5",
+                "prob_rounds_le_10",
+                "prob_rounds_ge_20",
+            ]
+        )
+
+    long_df["weight"] = _pooling_weights_for_rows(
+        long_df["n_players"],
+        pooling_scheme=pooling_scheme,
+        weights_by_k=weights_by_k,
+    )
+    grouped = long_df.groupby("strategy", observed=True, sort=False)
+    pooled_rows: list[dict[str, StatValue]] = []
+    for strategy, group in grouped:
+        values = group["n_rounds"].to_numpy(dtype=float)
+        weights = group["weight"].to_numpy(dtype=float)
+        weight_total = weights.sum()
+        if not math.isfinite(weight_total) or weight_total <= 0:
+            continue
+        pooled_rows.append(
+            {
+                "summary_level": "pooled",
+                "strategy": str(strategy),
+                "observations": int(group.shape[0]),
+                "mean_rounds": _weighted_mean(values, weights),
+                "median_rounds": _weighted_quantile(values, weights, 0.5),
+                "std_rounds": _weighted_std(values, weights),
+                "p10_rounds": _weighted_quantile(values, weights, 0.1),
+                "p50_rounds": _weighted_quantile(values, weights, 0.5),
+                "p90_rounds": _weighted_quantile(values, weights, 0.9),
+                "prob_rounds_le_5": _weighted_mean(values <= 5, weights),
+                "prob_rounds_le_10": _weighted_mean(values <= 10, weights),
+                "prob_rounds_ge_20": _weighted_mean(values >= 20, weights),
+            }
+        )
+
+    pooled_df = pd.DataFrame(
+        pooled_rows,
+        columns=[
+            "summary_level",
+            "strategy",
+            "observations",
+            "mean_rounds",
+            "median_rounds",
+            "std_rounds",
+            "p10_rounds",
+            "p50_rounds",
+            "p90_rounds",
+            "prob_rounds_le_5",
+            "prob_rounds_le_10",
+            "prob_rounds_ge_20",
+        ],
+    )
+    return pooled_df
+
+
+def _pooled_margin_stats(
+    per_n_inputs: Sequence[tuple[int, Path]],
+    *,
+    thresholds: Sequence[int],
+    pooling_scheme: str,
+    weights_by_k: dict[int, float],
+) -> pd.DataFrame:
+    """Compute pooled victory-margin statistics across player counts."""
+
+    long_frames: list[pd.DataFrame] = []
+    for n_players, path in per_n_inputs:
+        ds_in = ds.dataset(path)
+        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+        score_cols = [
+            name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+        ]
+
+        if not strategy_cols:
+            LOGGER.warning(
+                "Per-N parquet missing strategy columns",
+                extra={"stage": "game_stats", "path": str(path)},
+            )
+            continue
+
+        if not score_cols:
+            LOGGER.warning(
+                "Per-N parquet missing seat score columns; skipping margins",
+                extra={"stage": "game_stats", "path": str(path)},
+            )
+            continue
+
+        for col in strategy_cols:
+            columns = [*score_cols, col]
+            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+            for batch in scanner.to_batches():
+                df = batch.to_pandas(categories=[col])
+                if df.empty:
+                    continue
+                margin_cols = _compute_margin_columns(df, score_cols)
+                df = df.assign(
+                    margin_runner_up=margin_cols["margin_runner_up"],
+                    score_spread=margin_cols["score_spread"],
+                )
+                melted = df.melt(
+                    id_vars=["margin_runner_up", "score_spread"],
+                    value_vars=[col],
+                    value_name="strategy",
+                )
+                melted = melted.dropna(subset=["strategy"])
+                if melted.empty:
+                    continue
+                melted["strategy"] = melted["strategy"].astype("category")
+                melted["n_players"] = n_players
+                long_frames.append(
+                    melted[["strategy", "n_players", "margin_runner_up", "score_spread"]]
+                )
+
+    if not long_frames:
+        columns = [
+            "summary_level",
+            "strategy",
+            "observations",
+            "mean_margin_runner_up",
+            "median_margin_runner_up",
+            "std_margin_runner_up",
+            *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
+            "mean_score_spread",
+            "median_score_spread",
+            "std_score_spread",
+            *[f"prob_score_spread_le_{thr}" for thr in thresholds],
+        ]
+        return pd.DataFrame(columns=columns)
+
+    long_df = pd.concat(long_frames, ignore_index=True)
+    long_df["margin_runner_up"] = pd.to_numeric(long_df["margin_runner_up"], errors="coerce")
+    long_df["score_spread"] = pd.to_numeric(long_df["score_spread"], errors="coerce")
+    long_df = long_df.dropna(subset=["margin_runner_up", "strategy", "n_players"])
+    if long_df.empty:
+        columns = [
+            "summary_level",
+            "strategy",
+            "observations",
+            "mean_margin_runner_up",
+            "median_margin_runner_up",
+            "std_margin_runner_up",
+            *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
+            "mean_score_spread",
+            "median_score_spread",
+            "std_score_spread",
+            *[f"prob_score_spread_le_{thr}" for thr in thresholds],
+        ]
+        return pd.DataFrame(columns=columns)
+
+    long_df["weight"] = _pooling_weights_for_rows(
+        long_df["n_players"],
+        pooling_scheme=pooling_scheme,
+        weights_by_k=weights_by_k,
+    )
+    grouped = long_df.groupby("strategy", observed=True, sort=False)
+    pooled_rows: list[dict[str, StatValue]] = []
+    for strategy, group in grouped:
+        runner_vals = group["margin_runner_up"].to_numpy(dtype=float)
+        spread_vals = group["score_spread"].to_numpy(dtype=float)
+        weights = group["weight"].to_numpy(dtype=float)
+        weight_total = weights.sum()
+        if not math.isfinite(weight_total) or weight_total <= 0:
+            continue
+
+        pooled_row: dict[str, StatValue] = {
+            "summary_level": "pooled",
+            "strategy": str(strategy),
+            "observations": int(group.shape[0]),
+            "mean_margin_runner_up": _weighted_mean(runner_vals, weights),
+            "median_margin_runner_up": _weighted_quantile(runner_vals, weights, 0.5),
+            "std_margin_runner_up": _weighted_std(runner_vals, weights),
+            "mean_score_spread": _weighted_mean(spread_vals, weights),
+            "median_score_spread": _weighted_quantile(spread_vals, weights, 0.5),
+            "std_score_spread": _weighted_std(spread_vals, weights),
+        }
+        for thr in thresholds:
+            pooled_row[f"prob_margin_runner_up_le_{thr}"] = _weighted_mean(
+                runner_vals <= thr, weights
+            )
+            pooled_row[f"prob_score_spread_le_{thr}"] = _weighted_mean(
+                spread_vals <= thr, weights
+            )
+        pooled_rows.append(pooled_row)
+
+    ordered_cols = [
+        "summary_level",
+        "strategy",
+        "observations",
+        "mean_margin_runner_up",
+        "median_margin_runner_up",
+        "std_margin_runner_up",
+        *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
+        "mean_score_spread",
+        "median_score_spread",
+        "std_score_spread",
+        *[f"prob_score_spread_le_{thr}" for thr in thresholds],
+    ]
+    return pd.DataFrame(pooled_rows, columns=ordered_cols)
 
 
 def _per_strategy_margin_stats(
