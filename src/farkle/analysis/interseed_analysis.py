@@ -48,6 +48,7 @@ def run(
             else not cfg.analysis.disable_rng_diagnostics
         )
         variance_enabled = True
+        game_stats_enabled = True
         meta_enabled = True
         trueskill_enabled = True
         agreement_enabled = True
@@ -68,6 +69,15 @@ def run(
         statuses["variance"] = {
             "enabled": variance_enabled,
             "outputs": _existing_paths(_variance_outputs(cfg)),
+        }
+
+        if game_stats_enabled and run_stages:
+            from farkle.analysis import game_stats_interseed
+
+            game_stats_interseed.run(cfg, force=force)
+        statuses["game_stats_interseed"] = {
+            "enabled": game_stats_enabled,
+            "outputs": _existing_paths(_game_stats_outputs(cfg)),
         }
 
         if meta_enabled and run_stages:
@@ -162,6 +172,13 @@ def _meta_outputs(cfg: AppConfig) -> list[Path]:
         outputs.append(cfg.meta_output_path(players, f"strategy_summary_{players}p_meta.parquet"))
         outputs.append(cfg.meta_output_path(players, f"meta_{players}p.json"))
     return outputs
+
+
+def _game_stats_outputs(cfg: AppConfig) -> list[Path]:
+    return [
+        cfg.interseed_stage_dir / "game_length_interseed.parquet",
+        cfg.interseed_stage_dir / "margin_interseed.parquet",
+    ]
 
 
 def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
