@@ -20,6 +20,10 @@ Interseed-only toggles (ignored when `--per-seed-only` is set or `analysis.run_i
 - `--rng-diagnostics` – run `farkle.analysis.rng_diagnostics` after `combine`, writing `rng_diagnostics.parquet` with a `rng_diagnostics.done.json` freshness stamp.
 - `--rng-lags <int>` (repeatable) – provide one or more lag values for RNG autocorrelation diagnostics (defaults to `1`).
 
+## Interseed game stats intervals
+
+`game_length_interseed.parquet` and `margin_interseed.parquet` include per-metric seed mean, seed standard deviation, and 95% seed-level intervals. For small seed counts (`n_seeds < 30`), the bounds use a Student t critical value with `df = n_seeds - 1`; otherwise they fall back to the normal approximation for consistency with large-sample expectations.
+
 To shrink `rare_events.parquet`, favor smaller quantiles/rates (for example `--rare-event-margin-quantile 1e-3` or `--rare-event-target-rate 1e-4`) so fewer games are flagged in the rare-event output.
 
 All pipeline outputs are written atomically with skip-if-fresh stamps so repeat runs are quick when inputs have not changed.
