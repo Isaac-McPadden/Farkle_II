@@ -229,6 +229,31 @@ def run_pipeline(
             "results_dir": str(interseed_cfg.results_root),
         },
     )
+    LOGGER.info(
+        "Running head-to-head tier trends",
+        extra={
+            "stage": "orchestration",
+            "seed": interseed_seed,
+            "results_dir": str(interseed_cfg.results_root),
+        },
+    )
+    append_manifest_line(
+        manifest_path,
+        {
+            "event": "h2h_tier_trends_start",
+            "seed": interseed_seed,
+            "results_dir": str(interseed_cfg.results_root),
+        },
+    )
+    analysis.run_h2h_tier_trends(interseed_cfg, force=force)
+    append_manifest_line(
+        manifest_path,
+        {
+            "event": "h2h_tier_trends_complete",
+            "seed": interseed_seed,
+            "results_dir": str(interseed_cfg.results_root),
+        },
+    )
 
     append_manifest_line(manifest_path, {"event": "run_end"})
 
