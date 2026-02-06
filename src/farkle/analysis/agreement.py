@@ -361,10 +361,15 @@ def _filter_by_players(df: pd.DataFrame, players: int | str) -> pd.DataFrame:
     Returns:
         Filtered DataFrame containing only rows that match ``players``.
     """
-    if AppConfig.is_pooled_players(players):
-        return df
     if "players" not in df.columns and "n_players" in df.columns:
         df = df.rename(columns={"n_players": "players"})
+    if AppConfig.is_pooled_players(players):
+        if "players" not in df.columns:
+            return df
+        mask = df["players"].astype(int) == 0
+        if not mask.any():
+            raise ValueError("pooled agreement requested, but no players == 0 rows found")
+        return df.loc[mask]
     if "players" in df.columns:
         mask = df["players"].astype(int) == int(players)
         df = df.loc[mask]
