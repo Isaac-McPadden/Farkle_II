@@ -78,8 +78,10 @@ class StageRunner:
             iterator = tqdm(plan, desc=context.progress_desc)
         for item in iterator:
             context.logger.info(
-                "Stage start",
-                extra={"stage": context.run_label, "step": item.name},
+                "Stage start: %s/%s",
+                context.run_label,
+                item.name,
+                extra={"run": context.run_label, "step": item.name},
             )
             append_manifest_line(
                 manifest_path,
@@ -105,9 +107,11 @@ class StageRunner:
                 failed_steps.append(item.name)
                 first_failure = first_failure or exc
                 context.logger.exception(
-                    "Stage failed",
+                    "Stage failed: %s/%s",
+                    context.run_label,
+                    item.name,
                     extra={
-                        "stage": context.run_label,
+                        "run": context.run_label,
                         "step": item.name,
                         "error": exc,
                     },
@@ -139,11 +143,13 @@ class StageRunner:
             context.logger.error(
                 "Stage run completed with failures: %s",
                 failed_steps,
-                extra={"stage": context.run_label, "failed_steps": failed_steps},
+                extra={"run": context.run_label, "failed_steps": failed_steps},
             )
             if raise_on_failure and first_failure is not None:
                 raise first_failure
         else:
-            context.logger.info("Stage run complete", extra={"stage": context.run_label})
+            context.logger.info(
+                "Stage run complete", extra={"run": context.run_label}
+            )
 
         return StageRunResult(failed_steps=failed_steps, first_failure=first_failure)
