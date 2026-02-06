@@ -10,6 +10,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+from scipy.stats import norm, t
 
 from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
@@ -24,7 +25,8 @@ GAME_LENGTH_INPUTS = ("game_length_stats.parquet", "game_length.parquet")
 MARGIN_INPUTS = ("margin_of_victory_stats.parquet", "margin_stats.parquet")
 GAME_LENGTH_OUTPUT = "game_length_interseed.parquet"
 MARGIN_OUTPUT = "margin_interseed.parquet"
-Z_975 = 1.96
+NORMAL_975 = norm.ppf(0.975)
+T_CRIT_N_SEEDS = 30
 
 
 @dataclass(frozen=True)
@@ -231,14 +233,15 @@ def _aggregate_seed_stats(frame: pd.DataFrame) -> pd.DataFrame:
     n_seeds = grouped["seed"].nunique().rename("n_seeds")
     means = grouped[numeric_cols].mean()
     stds = grouped[numeric_cols].std(ddof=0)
+    critical = _critical_values(n_seeds)
 
     result = means.copy()
     result.columns = [f"{col}_seed_mean" for col in means.columns]
     for col in numeric_cols:
         result[f"{col}_seed_std"] = stds[col]
         se = stds[col] / np.sqrt(n_seeds)
-        ci_lo = means[col] - Z_975 * se
-        ci_hi = means[col] + Z_975 * se
+        ci_lo = means[col] - critical * se
+        ci_hi = means[col] + critical * se
         result[f"{col}_seed_ci_lo"] = ci_lo.where(n_seeds > 1)
         result[f"{col}_seed_ci_hi"] = ci_hi.where(n_seeds > 1)
 
@@ -248,6 +251,16 @@ def _aggregate_seed_stats(frame: pd.DataFrame) -> pd.DataFrame:
         col for col in result.columns if col not in set(group_keys) | {"n_seeds"}
     ]
     return result[ordered_cols]
+
+
+def _critical_values(n_seeds: pd.Series) -> pd.Series:
+    """Return two-sided 95% critical values, using t for small samples."""
+    df = (n_seeds - 1).astype(float)
+    crit = pd.Series(NORMAL_975, index=n_seeds.index, dtype=float)
+    use_t = (n_seeds < T_CRIT_N_SEEDS) & (n_seeds > 1)
+    if use_t.any():
+        crit.loc[use_t] = t.ppf(0.975, df.loc[use_t])
+    return crit
 
 
 __all__ = ["run"]
