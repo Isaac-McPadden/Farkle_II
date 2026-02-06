@@ -1,5 +1,18 @@
 # src/farkle/analysis/coverage_by_k.py
-"""Summarize strategy coverage by player count (k) from metrics outputs."""
+"""Summarize strategy coverage by player count (k) from metrics outputs.
+
+Outputs per ``seed``/``k`` include:
+
+* ``games``: total strategy participations from metrics (sum of per-strategy game
+  counts).
+* ``estimated_games``: estimated table-level games for the seed/k, computed as
+  ``games / k`` to normalize participations by player count.
+* ``strategies``: number of distinct strategies observed.
+* ``expected_strategies`` and missing/padded columns to flag gaps in the strategy
+  grid.
+* per-k rollups (``games_per_k``, ``estimated_games_per_k``,
+  ``strategies_per_k``, ``seeds_present``) for quick coverage checks.
+"""
 from __future__ import annotations
 
 import logging
@@ -125,6 +138,7 @@ def _build_coverage(
     )
     counts = grid.merge(counts, on=["seed", "k"], how="left")
     counts["games"] = counts["games"].fillna(0).astype(int)
+    counts["estimated_games"] = (counts["games"] / counts["k"]).astype(float)
     counts["strategies"] = counts["strategies"].fillna(0).astype(int)
     if "missing_before_pad" not in counts.columns:
         counts["missing_before_pad"] = pd.NA
@@ -146,6 +160,7 @@ def _build_coverage(
     strategies_by_k = counts.groupby("k", sort=False)["strategies"].max()
     seeds_by_k = counts.groupby("k", sort=False)["seed"].nunique()
     counts["games_per_k"] = counts["k"].map(games_by_k)
+    counts["estimated_games_per_k"] = counts["games_per_k"] / counts["k"]
     counts["strategies_per_k"] = counts["k"].map(strategies_by_k)
     counts["seeds_present"] = counts["k"].map(seeds_by_k)
 
@@ -153,7 +168,9 @@ def _build_coverage(
         "k",
         "seed",
         "games",
+        "estimated_games",
         "games_per_k",
+        "estimated_games_per_k",
         "strategies",
         "strategies_per_k",
         "expected_strategies",
