@@ -126,12 +126,20 @@ def _build_coverage(
     counts = grid.merge(counts, on=["seed", "k"], how="left")
     counts["games"] = counts["games"].fillna(0).astype(int)
     counts["strategies"] = counts["strategies"].fillna(0).astype(int)
+    if "missing_before_pad" not in counts.columns:
+        counts["missing_before_pad"] = pd.NA
+    counts["missing_before_pad"] = counts["missing_before_pad"].astype("Int64")
 
     expected_by_k = _expected_strategies_by_k(cfg, k_grid, coverage_inputs)
     counts["expected_strategies"] = counts["k"].map(expected_by_k).astype("Int64")
-    counts["missing_strategies"] = (
+    inferred_missing = (
         counts["expected_strategies"].fillna(counts["strategies"]) - counts["strategies"]
     ).clip(lower=0)
+    missing_before_pad = counts["missing_before_pad"]
+    if missing_before_pad.notna().any():
+        counts["missing_strategies"] = missing_before_pad.fillna(inferred_missing)
+    else:
+        counts["missing_strategies"] = inferred_missing
     counts["padded_strategies"] = counts["missing_strategies"]
 
     games_by_k = counts.groupby("k", sort=False)["games"].sum()
@@ -149,6 +157,7 @@ def _build_coverage(
         "strategies",
         "strategies_per_k",
         "expected_strategies",
+        "missing_before_pad",
         "missing_strategies",
         "padded_strategies",
         "seeds_present",
@@ -165,6 +174,7 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
     strategy_col = "strategy" if "strategy" in schema_names else "strategy_id"
     games_col = "games" if "games" in schema_names else "total_games_strat"
     seed_col = "seed" if "seed" in schema_names else None
+    missing_col = "missing_before_pad" if "missing_before_pad" in schema_names else None
 
     required = {players_col, strategy_col, games_col}
     if not required.issubset(schema_names):
@@ -174,6 +184,8 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
     columns = [players_col, strategy_col, games_col]
     if seed_col:
         columns.append(seed_col)
+    if missing_col:
+        columns.append(missing_col)
 
     counts: dict[tuple[int, int], dict[str, object]] = {}
     scanner = dataset.scanner(columns=columns, use_threads=True)
@@ -189,6 +201,8 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
             df["seed"] = default_seed
         else:
             df["seed"] = pd.to_numeric(df[seed_col], errors="coerce").fillna(default_seed)
+        if missing_col is not None:
+            df["missing_before_pad"] = pd.to_numeric(df[missing_col], errors="coerce")
 
         df = df.dropna(subset=["k", "strategy", "seed"])
         if df.empty:
@@ -199,11 +213,21 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
         df["games"] = df["games"].astype(int)
 
         for (seed, k), group in df.groupby(["seed", "k"], sort=False):
-            entry = counts.setdefault((seed, k), {"games": 0, "strategies": set()})
+            entry = counts.setdefault(
+                (seed, k),
+                {"games": 0, "strategies": set(), "missing_before_pad": None},
+            )
             entry["games"] = int(entry["games"]) + int(group["games"].sum())
             strategies = entry["strategies"]
             if isinstance(strategies, set):
                 strategies.update(group["strategy"].unique().tolist())
+            if missing_col is not None:
+                missing_values = group["missing_before_pad"].dropna()
+                if not missing_values.empty:
+                    observed = int(missing_values.max())
+                    current = entry.get("missing_before_pad")
+                    if current is None or observed > int(current):
+                        entry["missing_before_pad"] = observed
 
     rows = []
     for (seed, k), payload in sorted(counts.items()):
@@ -214,9 +238,13 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
                 "k": k,
                 "games": int(payload.get("games", 0)),
                 "strategies": len(strategies) if isinstance(strategies, set) else 0,
+                "missing_before_pad": payload.get("missing_before_pad"),
             }
         )
-    return pd.DataFrame(rows, columns=["seed", "k", "games", "strategies"])
+    return pd.DataFrame(
+        rows,
+        columns=["seed", "k", "games", "strategies", "missing_before_pad"],
+    )
 
 
 def _expected_strategies_by_k(

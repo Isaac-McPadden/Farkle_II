@@ -443,7 +443,11 @@ def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: i
         df["expected_score"] = (df["sum_winning_score"] / safe_games).fillna(0.0)
 
     df = df.set_index("strategy")
-    df = _pad_strategies(cfg, df)
+    strategy_index = _strategy_index(cfg)
+    present_count = int(df.index.nunique())
+    missing_before_pad = max(0, len(strategy_index) - present_count)
+    df = df.reindex(strategy_index)
+    df["missing_before_pad"] = int(missing_before_pad)
 
     games_mode = int(_games_mode(df["games"]))
     missing_mask = df["wins"].isna()
@@ -506,17 +510,8 @@ def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: i
 _STRATEGY_CACHE: dict[int, list[int]] = {}
 
 
-def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
-    """Align metric rows to the full strategy grid defined in the config.
-
-    Args:
-        cfg: Application configuration containing simulation strategy options.
-        df: Metrics dataframe indexed by strategy.
-
-    Returns:
-        Dataframe reindexed to include all possible strategies, introducing
-        ``NaN`` rows where metrics are missing.
-    """
+def _strategy_index(cfg: AppConfig) -> pd.Index:
+    """Return the strategy index for the given config, caching the result."""
     cache_key = id(cfg)
     if cache_key not in _STRATEGY_CACHE:
         _, meta = generate_strategy_grid(
@@ -529,11 +524,22 @@ def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
             auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
             run_up_score_opts=cfg.sim.run_up_score_opts,
         )
-        _STRATEGY_CACHE[cache_key] = (
-            meta["strategy_id"].astype("int64").to_list()
-        )
-    strategy_index = pd.Index(_STRATEGY_CACHE[cache_key], name="strategy", dtype="int64")
-    return df.reindex(strategy_index)
+        _STRATEGY_CACHE[cache_key] = meta["strategy_id"].astype("int64").to_list()
+    return pd.Index(_STRATEGY_CACHE[cache_key], name="strategy", dtype="int64")
+
+
+def _pad_strategies(cfg: AppConfig, df: pd.DataFrame) -> pd.DataFrame:
+    """Align metric rows to the full strategy grid defined in the config.
+
+    Args:
+        cfg: Application configuration containing simulation strategy options.
+        df: Metrics dataframe indexed by strategy.
+
+    Returns:
+        Dataframe reindexed to include all possible strategies, introducing
+        ``NaN`` rows where metrics are missing.
+    """
+    return df.reindex(_strategy_index(cfg))
 
 
 def _games_mode(series: pd.Series) -> float:
