@@ -149,7 +149,7 @@ def _seed_analysis_dirs(cfg: AppConfig) -> list[SeedInputs]:
     base_root, _ = split_seeded_results_dir(base_results_dir)
     resolved_seeds = list(seeds) if seeds else []
     if not resolved_seeds and base_root.parent.exists():
-        prefix = f\"{base_root.name}_seed_\"
+        prefix = f"{base_root.name}_seed_"
         for entry in base_root.parent.iterdir():
             if not entry.is_dir() or not entry.name.startswith(prefix):
                 continue
