@@ -110,10 +110,24 @@ def _build_coverage(
     cfg: AppConfig, metrics_path: Path, coverage_inputs: Iterable[Path]
 ) -> pd.DataFrame:
     counts = _stream_metrics_counts(metrics_path, default_seed=int(cfg.sim.seed))
-    if counts.empty:
-        return counts
+    k_grid = _player_counts_from_config(cfg)
+    if not k_grid:
+        k_grid = sorted(counts["k"].unique().tolist())
 
-    expected_by_k = _expected_strategies_by_k(cfg, counts["k"].unique().tolist(), coverage_inputs)
+    if counts.empty:
+        seed_grid = cfg.sim.seed_list or [cfg.sim.seed]
+    else:
+        seed_grid = sorted(counts["seed"].unique().tolist())
+    seed_grid = [int(seed) for seed in seed_grid]
+
+    grid = pd.MultiIndex.from_product([seed_grid, k_grid], names=["seed", "k"]).to_frame(
+        index=False
+    )
+    counts = grid.merge(counts, on=["seed", "k"], how="left")
+    counts["games"] = counts["games"].fillna(0).astype(int)
+    counts["strategies"] = counts["strategies"].fillna(0).astype(int)
+
+    expected_by_k = _expected_strategies_by_k(cfg, k_grid, coverage_inputs)
     counts["expected_strategies"] = counts["k"].map(expected_by_k).astype("Int64")
     counts["missing_strategies"] = (
         counts["expected_strategies"].fillna(counts["strategies"]) - counts["strategies"]
