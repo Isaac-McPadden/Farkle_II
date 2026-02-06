@@ -185,7 +185,7 @@ def test_resolve_alpha_prefers_bonferroni_design(_cfg: AppConfig) -> None:
     assert h2h_analysis._resolve_alpha(cfg) == pytest.approx(0.1)
 
 
-def test_build_significant_graph_errors_on_cycles() -> None:
+def test_build_significant_graph_allows_cycles_in_tiers() -> None:
     df = pd.DataFrame(
         [
             {"a": "A", "b": "B", "dir": "a>b", "is_sig": True, "pval": 0.01, "adj_p": 0.01},
@@ -193,8 +193,8 @@ def test_build_significant_graph_errors_on_cycles() -> None:
         ]
     )
     graph = h2h_analysis.build_significant_graph(df)
-    with pytest.raises(RuntimeError):
-        h2h_analysis.derive_sig_ranking(graph)
+    tiers = h2h_analysis.derive_sig_ranking(graph)
+    assert tiers == [["A", "B"]]
 
 
 def test_write_graph_json_emits_payload(tmp_path: Path) -> None:
