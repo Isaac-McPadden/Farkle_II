@@ -14,7 +14,6 @@ from scipy.stats import norm, t
 
 from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
-from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig
 from farkle.orchestration.seed_utils import resolve_results_dir, split_seeded_results_dir
 from farkle.utils.artifacts import write_parquet_atomic
@@ -184,7 +183,16 @@ def _seed_input_paths(
 ) -> list[tuple[int, Path]]:
     stage_folder = cfg._interseed_input_folder("game_stats")
     if stage_folder is None:
-        stage_folder = resolve_stage_layout(cfg).require_folder("game_stats")
+        stage_folder = cfg.stage_layout.folder_for("game_stats")
+    if stage_folder is None:
+        LOGGER.warning(
+            "Missing game stats input folder; interseed input layout has no game_stats mapping",
+            extra={
+                "stage": "interseed_game_stats",
+                "stage_key": "game_stats",
+            },
+        )
+        return []
     input_paths: list[tuple[int, Path]] = []
     for entry in seeds:
         stage_root = entry.analysis_dir / stage_folder / "pooled"
