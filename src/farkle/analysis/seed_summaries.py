@@ -38,6 +38,7 @@ BASE_COLUMNS = [
     "ci_hi",
 ]
 SUMMARY_TEMPLATE = "strategy_summary_{players}p_seed{seed}.parquet"
+SEED_LONG_TEMPLATE = "seed_{seed}_summary_long.parquet"
 MEAN_NAME_OVERRIDES = {
     "n_rounds": "turns",
     "farkles": "farkles",
@@ -56,6 +57,13 @@ def _summary_path(cfg: AppConfig, *, players: int, seed: int) -> Path:
     filename = SUMMARY_TEMPLATE.format(players=players, seed=seed)
     stage_dir = cfg.seed_summaries_dir(players)
     stage_dir.mkdir(parents=True, exist_ok=True)
+    return stage_dir / filename
+
+
+def _seed_long_summary_path(cfg: AppConfig, *, seed: int) -> Path:
+    stage_dir = cfg.meta_analysis_dir
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    filename = SEED_LONG_TEMPLATE.format(seed=seed)
     return stage_dir / filename
 
 
@@ -81,13 +89,17 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     expected_outputs: list[Path] = []
     for seed in seeds:
+        seed_has_data = False
         for players in player_counts:
             subset = metrics_frame[
                 (metrics_frame["seed"] == seed) & (metrics_frame["players"] == players)
             ]
             if subset.empty:
                 continue
+            seed_has_data = True
             expected_outputs.append(_summary_path(cfg, players=int(players), seed=int(seed)))
+        if seed_has_data:
+            expected_outputs.append(_seed_long_summary_path(cfg, seed=int(seed)))
 
     if not force and expected_outputs and stage_is_up_to_date(
         done, inputs=[metrics_path], outputs=expected_outputs, config_sha=cfg.config_sha
@@ -100,6 +112,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     outputs: list[Path] = []
     for seed in seeds:
+        seed_frames: list[pd.DataFrame] = []
         for players in player_counts:
             subset = metrics_frame[
                 (metrics_frame["seed"] == seed) & (metrics_frame["players"] == players)
@@ -109,6 +122,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             summary = _build_summary(subset, players=int(players), seed=int(seed))
             if summary.empty:
                 continue
+            seed_frames.append(summary)
             output_path = _summary_path(cfg, players=int(players), seed=int(seed))
             outputs.append(output_path)
             if not force and _existing_summary_matches(output_path, summary):
@@ -135,6 +149,30 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 )
 
             _sync_meta_summary(cfg, summary, output_path)
+        if seed_frames:
+            seed_summary = _stack_seed_summaries(seed_frames, seed=int(seed))
+            seed_output_path = _seed_long_summary_path(cfg, seed=int(seed))
+            outputs.append(seed_output_path)
+            if not force and _existing_summary_matches(seed_output_path, seed_summary):
+                LOGGER.info(
+                    "Seed long summary already up-to-date",
+                    extra={
+                        "stage": "seed_summaries",
+                        "seed": seed,
+                        "path": str(seed_output_path),
+                    },
+                )
+            else:
+                _write_summary(seed_summary, seed_output_path)
+                LOGGER.info(
+                    "Seed long summary written",
+                    extra={
+                        "stage": "seed_summaries",
+                        "seed": seed,
+                        "rows": len(seed_summary),
+                        "path": str(seed_output_path),
+                    },
+                )
 
     if outputs:
         write_stage_done(done, inputs=[metrics_path], outputs=outputs, config_sha=cfg.config_sha)
@@ -210,6 +248,18 @@ def _build_summary(frame: pd.DataFrame, *, players: int, seed: int) -> pd.DataFr
     extra_cols = [c for c in summary.columns if c not in BASE_COLUMNS]
     ordered = BASE_COLUMNS + sorted(extra_cols)
     return summary[ordered]
+
+
+def _stack_seed_summaries(frames: list[pd.DataFrame], *, seed: int) -> pd.DataFrame:
+    """Stack per-player summaries for a seed into a long-form table."""
+    if not frames:
+        return pd.DataFrame(columns=BASE_COLUMNS)
+    combined = pd.concat(frames, ignore_index=True, sort=False)
+    combined["seed"] = int(seed)
+    combined["players"] = combined["players"].astype(int)
+    combined["seed"] = combined["seed"].astype(int)
+    combined = combined.sort_values(["players", "strategy_id"], kind="mergesort")
+    return combined.reset_index(drop=True)
 
 
 def _mean_output_name(column: str) -> str:
