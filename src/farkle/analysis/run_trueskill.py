@@ -1371,7 +1371,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     analysis_dir = cfg.trueskill_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    pooled_dir = analysis_dir / "pooled"
+    pooled_dir = cfg.trueskill_pooled_dir
     pooled_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = analysis_dir.parent
 
@@ -1385,6 +1385,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     per_seed_results: dict[int, dict[str, RatingStats]] = {}
     per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
+    long_tables: list[pa.Table] = []
 
     for seed in seeds:
         seed_everything(seed)
@@ -1428,6 +1429,17 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             dest = analysis_dir / f"trueskill_{players}p_seed{seed}.parquet"
             _save_ratings_parquet(dest, ordered_stats)
             seed_outputs[f"{players}p"] = ordered_stats  # keyed for logging/debug
+            long_tables.append(
+                pa.table(
+                    {
+                        "strategy": list(ordered_stats.keys()),
+                        "players": [players] * len(ordered_stats),
+                        "mu": [rating.mu for rating in ordered_stats.values()],
+                        "sigma": [rating.sigma for rating in ordered_stats.values()],
+                        "seed": [seed] * len(ordered_stats),
+                    }
+                )
+            )
 
         if not seed_outputs:
             raise RuntimeError(f"No per-player outputs generated for seed {seed}")
@@ -1442,6 +1454,10 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                 "per_players": sorted(seed_outputs.keys()),
             },
         )
+
+    if long_tables:
+        long_table = pa.concat_tables(long_tables, promote_options="default")
+        write_parquet_atomic(long_table, pooled_dir / "ratings_long.parquet")
 
     pooled_stats = _precision_pool(per_seed_results.values())
     if not pooled_stats:
