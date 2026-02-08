@@ -41,6 +41,7 @@ def run(cfg: AppConfig) -> None:
     if not symmetry_input.exists():
         symmetry_input = data_file
     out_metrics = cfg.metrics_output_path()
+    out_metrics_weighted = cfg.metrics_output_path("metrics_weighted.parquet")
     out_seats = cfg.metrics_output_path("seat_advantage.csv")
     out_seats_parquet = cfg.metrics_output_path("seat_advantage.parquet")
     out_seat_metrics = cfg.metrics_output_path("seat_metrics.parquet")
@@ -52,11 +53,13 @@ def run(cfg: AppConfig) -> None:
     done = stage_done_path(cfg.metrics_stage_dir, "metrics")
     done_isolated = stage_done_path(cfg.metrics_stage_dir, "metrics_isolated")
     done_core = stage_done_path(cfg.metrics_stage_dir, "metrics_core")
+    done_weighted = stage_done_path(cfg.metrics_stage_dir, "metrics_weighted")
     done_seat_advantage = stage_done_path(cfg.metrics_stage_dir, "metrics_seat_advantage")
     done_seat_metrics = stage_done_path(cfg.metrics_stage_dir, "metrics_seat_metrics")
     done_symmetry = stage_done_path(cfg.metrics_stage_dir, "metrics_symmetry")
     stamp_isolated = cfg.metrics_output_path("metrics.isolated.stamp.json")
     stamp_core = cfg.metrics_output_path("metrics.core.stamp.json")
+    stamp_weighted = cfg.metrics_output_path("metrics.weighted.stamp.json")
     stamp_seat_advantage = cfg.metrics_output_path("metrics.seat_advantage.stamp.json")
     stamp_seat_metrics = cfg.metrics_output_path("metrics.seat_metrics.stamp.json")
     stamp_symmetry = cfg.metrics_output_path("metrics.symmetry.stamp.json")
@@ -82,6 +85,7 @@ def run(cfg: AppConfig) -> None:
             iso_targets.append(preferred)
     outputs = [
         out_metrics,
+        out_metrics_weighted,
         out_seats,
         out_seats_parquet,
         out_seat_metrics,
@@ -145,6 +149,7 @@ def run(cfg: AppConfig) -> None:
 
     outputs = [
         out_metrics,
+        out_metrics_weighted,
         out_seats,
         out_seats_parquet,
         out_seat_metrics,
@@ -175,6 +180,29 @@ def run(cfg: AppConfig) -> None:
             done_core,
             inputs=iso_paths,
             outputs=[out_metrics],
+            config_sha=getattr(cfg, "config_sha", None),
+        )
+
+    if stage_is_up_to_date(
+        done_weighted,
+        inputs=[out_metrics],
+        outputs=[out_metrics_weighted],
+        config_sha=getattr(cfg, "config_sha", None),
+    ):
+        weighted_df = pd.read_parquet(out_metrics_weighted)
+    else:
+        weighted_df = _compute_weighted_metrics(metrics_df, cfg)
+        weighted_table = pa.Table.from_pandas(weighted_df, preserve_index=False)
+        write_parquet_atomic(weighted_table, out_metrics_weighted)
+        _write_stamp(
+            stamp_weighted,
+            inputs=[out_metrics],
+            outputs=[out_metrics_weighted],
+        )
+        write_stage_done(
+            done_weighted,
+            inputs=[out_metrics],
+            outputs=[out_metrics_weighted],
             config_sha=getattr(cfg, "config_sha", None),
         )
 
@@ -280,6 +308,7 @@ def run(cfg: AppConfig) -> None:
         inputs=stage_inputs,
         outputs=[
             out_metrics,
+            out_metrics_weighted,
             out_seats,
             out_seats_parquet,
             out_seat_metrics,
@@ -293,6 +322,7 @@ def run(cfg: AppConfig) -> None:
         "rows": len(metrics_df),
         "seat_rows": len(seat_df),
         "metrics_path": str(out_metrics),
+        "weighted_metrics_path": str(out_metrics_weighted),
         "seat_path": str(out_seats),
         "seat_parquet": str(out_seats_parquet),
         "seat_metrics": str(out_seat_metrics),
@@ -460,6 +490,149 @@ def _downcast_metric_counters(df: pd.DataFrame) -> pd.DataFrame:
                 continue
             out[col] = pd.to_numeric(series, downcast="integer")
     return out
+
+
+def _normalize_pooling_scheme(pooling_scheme: str) -> str:
+    """Normalize pooling scheme names for pooled metrics."""
+
+    normalized = pooling_scheme.strip().lower().replace("_", "-")
+    if normalized in {"game-count", "gamecount", "count"}:
+        return "game-count"
+    if normalized in {"equal-k", "equalk", "equal"}:
+        return "equal-k"
+    if normalized in {"config", "config-provided", "custom"}:
+        return "config"
+    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+
+
+def _pooling_weights_for_metrics(
+    df: pd.DataFrame,
+    *,
+    pooling_scheme: str,
+    weights_by_k: dict[int, float],
+) -> pd.Series:
+    """Return per-row weights for pooled metric aggregation."""
+
+    games = pd.to_numeric(df["games"], errors="coerce").fillna(0.0)
+    n_players = pd.to_numeric(df["n_players"], errors="coerce")
+    totals = games.groupby(n_players).sum()
+    totals_map = {int(k): float(v) for k, v in totals.items() if pd.notna(k)}
+
+    if pooling_scheme == "game-count":
+        return games.astype(float)
+
+    if pooling_scheme == "equal-k":
+        def _equal_factor(k: float | int | None) -> float:
+            if k is None or pd.isna(k):
+                return 0.0
+            total = totals_map.get(int(k), 0.0)
+            return 1.0 / total if total > 0 else 0.0
+
+        factors = n_players.map(_equal_factor)
+        return games * factors
+
+    if pooling_scheme == "config":
+        missing = sorted(set(totals_map) - set(weights_by_k))
+        if missing:
+            LOGGER.warning(
+                "Missing pooling weights for player counts; treating as zero",
+                extra={"stage": "metrics", "missing": missing},
+            )
+        def _config_factor(k: float | int | None) -> float:
+            if k is None or pd.isna(k):
+                return 0.0
+            total = totals_map.get(int(k), 0.0)
+            if total <= 0:
+                return 0.0
+            return float(weights_by_k.get(int(k), 0.0)) / total
+
+        factors = n_players.map(_config_factor)
+        return games * factors
+
+    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+
+
+def _pooled_value_columns(df: pd.DataFrame) -> list[str]:
+    exclude = {
+        "strategy",
+        "n_players",
+        "games",
+        "wins",
+        "false_wins_handled",
+        "missing_before_pad",
+        "seed",
+    }
+    columns: list[str] = []
+    for col in df.columns:
+        if col in exclude or col.endswith("_count"):
+            continue
+        if not pd.api.types.is_numeric_dtype(df[col]):
+            continue
+        columns.append(col)
+    return columns
+
+
+def _weighted_mean(values: pd.Series, weights: np.ndarray) -> float:
+    numeric = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+    mask = np.isfinite(numeric) & np.isfinite(weights)
+    if not mask.any():
+        return float("nan")
+    subset_weights = weights[mask]
+    total = subset_weights.sum()
+    if total <= 0:
+        return float("nan")
+    return float(np.average(numeric[mask], weights=subset_weights))
+
+
+def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: AppConfig) -> pd.DataFrame:
+    """Compute pooled weighted metrics across player counts."""
+
+    columns = [
+        "strategy",
+        "games",
+        "wins",
+        "win_rate",
+        "win_prob",
+        "expected_score",
+        "pooling_scheme",
+        "pooling_weights",
+    ]
+    if metrics_df.empty:
+        return pd.DataFrame(columns=columns)
+
+    pooling_scheme = _normalize_pooling_scheme(cfg.analysis.pooling_weights)
+    weights_by_k = dict(cfg.analysis.pooling_weights_by_k or {})
+    if pooling_scheme == "config" and not weights_by_k:
+        raise ValueError("analysis.pooling_weights_by_k must be set for config pooling")
+
+    weights = _pooling_weights_for_metrics(
+        metrics_df,
+        pooling_scheme=pooling_scheme,
+        weights_by_k=weights_by_k,
+    )
+    value_cols = _pooled_value_columns(metrics_df)
+
+    pooled_rows: list[dict[str, float | int | str]] = []
+    for strategy, group in metrics_df.groupby("strategy", sort=False):
+        group_weights = weights.loc[group.index].to_numpy(dtype=float)
+        if not np.isfinite(group_weights).any() or group_weights.sum() <= 0:
+            continue
+        row: dict[str, float | int | str] = {
+            "strategy": strategy,
+            "games": int(pd.to_numeric(group["games"], errors="coerce").fillna(0.0).sum()),
+            "wins": int(pd.to_numeric(group["wins"], errors="coerce").fillna(0.0).sum()),
+        }
+        for col in value_cols:
+            row[col] = _weighted_mean(group[col], group_weights)
+        pooled_rows.append(row)
+
+    pooled_df = pd.DataFrame(pooled_rows)
+    pooling_weights = json.dumps(weights_by_k, sort_keys=True) if weights_by_k else "{}"
+    pooled_df["pooling_scheme"] = pooling_scheme
+    pooled_df["pooling_weights"] = pooling_weights
+    ordered = [c for c in columns if c in pooled_df.columns]
+    remainder = [c for c in pooled_df.columns if c not in ordered]
+    return pooled_df[ordered + remainder]
 
 
 def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
