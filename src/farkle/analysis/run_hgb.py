@@ -53,6 +53,7 @@ RATINGS_NAME = "ratings_pooled.parquet"
 MAX_PD_PLOTS = 30
 IMPORTANCE_TEMPLATE = "feature_importance_{players}p.parquet"
 OVERALL_IMPORTANCE_NAME = "feature_importance_overall.parquet"
+LONG_IMPORTANCE_NAME = "feature_importance_long.parquet"
 
 FEATURE_SPECS: list[tuple[str, str]] = [
     ("score_threshold", "float32"),
@@ -518,6 +519,7 @@ def run_hgb(
                 "importance_mean": importances_mean,
                 "importance_std": importances_std,
                 "players": players,
+                "seed": seed,
             }
         )
 
@@ -562,6 +564,7 @@ def run_hgb(
 
     if collected_frames:
         overall_frame = pd.concat(collected_frames, ignore_index=True)
+        _write_importances(pooled_dir / LONG_IMPORTANCE_NAME, overall_frame)
         grouped = (
             overall_frame.groupby("feature", as_index=False)
             .agg(
