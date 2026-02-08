@@ -51,6 +51,7 @@ def run(cfg: AppConfig) -> None:
     player_counts = cfg.agreement_players()
 
     wrote_payload = False
+    summary_rows: list[dict[str, object]] = []
     for players in player_counts:
         payload = _build_payload(cfg, players, stage_log)
         if payload is None:
@@ -67,10 +68,25 @@ def run(cfg: AppConfig) -> None:
                 "path": str(out_path),
             },
         )
+        summary_rows.append(_flatten_payload(payload))
         wrote_payload = True
 
     if not wrote_payload:
         stage_log.missing_input("no agreement payloads generated")
+        return
+
+    summary_path = stage_dir / "agreement_summary.parquet"
+    summary_df = pd.DataFrame(summary_rows)
+    with atomic_path(str(summary_path)) as tmp_path:
+        summary_df.to_parquet(tmp_path, index=False)
+    LOGGER.info(
+        "Agreement summary table written",
+        extra={
+            "stage": "agreement",
+            "path": str(summary_path),
+            "rows": len(summary_df),
+        },
+    )
 
 
 def _build_payload(
@@ -616,3 +632,23 @@ def _tiers_from_graph(graph: nx_digraph) -> dict[str, int]:
         for member in sorted(members):
             tiers[str(member)] = tier_idx
     return tiers
+
+
+def _flatten_payload(payload: Mapping[str, object]) -> dict[str, object]:
+    """Flatten nested payload metrics into a single-level dict."""
+    flat: dict[str, object] = {}
+    for key, value in payload.items():
+        _flatten_value(flat, str(key), value)
+    return flat
+
+
+def _flatten_value(flat: dict[str, object], prefix: str, value: object) -> None:
+    """Recursively flatten dict values into ``flat`` using ``prefix`` names."""
+    if isinstance(value, Mapping):
+        for subkey, subvalue in value.items():
+            _flatten_value(flat, f"{prefix}_{subkey}", subvalue)
+        return
+    if isinstance(value, list):
+        flat[prefix] = json.dumps(value, sort_keys=True)
+        return
+    flat[prefix] = value
