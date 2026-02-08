@@ -9,6 +9,7 @@ performed for missing combinations.
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
@@ -39,6 +40,7 @@ BASE_COLUMNS = [
 ]
 SUMMARY_TEMPLATE = "strategy_summary_{players}p_seed{seed}.parquet"
 SEED_LONG_TEMPLATE = "seed_{seed}_summary_long.parquet"
+SEED_WEIGHTED_TEMPLATE = "seed_{seed}_summary_weighted.parquet"
 MEAN_NAME_OVERRIDES = {
     "n_rounds": "turns",
     "farkles": "farkles",
@@ -64,6 +66,13 @@ def _seed_long_summary_path(cfg: AppConfig, *, seed: int) -> Path:
     stage_dir = cfg.meta_analysis_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
     filename = SEED_LONG_TEMPLATE.format(seed=seed)
+    return stage_dir / filename
+
+
+def _seed_weighted_summary_path(cfg: AppConfig, *, seed: int) -> Path:
+    stage_dir = cfg.meta_analysis_dir
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    filename = SEED_WEIGHTED_TEMPLATE.format(seed=seed)
     return stage_dir / filename
 
 
@@ -100,6 +109,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             expected_outputs.append(_summary_path(cfg, players=int(players), seed=int(seed)))
         if seed_has_data:
             expected_outputs.append(_seed_long_summary_path(cfg, seed=int(seed)))
+            expected_outputs.append(_seed_weighted_summary_path(cfg, seed=int(seed)))
 
     if not force and expected_outputs and stage_is_up_to_date(
         done, inputs=[metrics_path], outputs=expected_outputs, config_sha=cfg.config_sha
@@ -173,6 +183,30 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                         "path": str(seed_output_path),
                     },
                 )
+            pooled_summary = _build_pooled_seed_summary(cfg, seed_summary, seed=int(seed))
+            pooled_output_path = _seed_weighted_summary_path(cfg, seed=int(seed))
+            outputs.append(pooled_output_path)
+            if not pooled_summary.empty:
+                if not force and _existing_summary_matches(pooled_output_path, pooled_summary):
+                    LOGGER.info(
+                        "Seed pooled summary already up-to-date",
+                        extra={
+                            "stage": "seed_summaries",
+                            "seed": seed,
+                            "path": str(pooled_output_path),
+                        },
+                    )
+                else:
+                    _write_summary(pooled_summary, pooled_output_path)
+                    LOGGER.info(
+                        "Seed pooled summary written",
+                        extra={
+                            "stage": "seed_summaries",
+                            "seed": seed,
+                            "rows": len(pooled_summary),
+                            "path": str(pooled_output_path),
+                        },
+                    )
 
     if outputs:
         write_stage_done(done, inputs=[metrics_path], outputs=outputs, config_sha=cfg.config_sha)
@@ -262,6 +296,178 @@ def _stack_seed_summaries(frames: list[pd.DataFrame], *, seed: int) -> pd.DataFr
     return combined.reset_index(drop=True)
 
 
+def _normalize_pooling_scheme(pooling_scheme: str) -> str:
+    """Normalize pooling scheme names for pooled seed summaries."""
+    normalized = pooling_scheme.strip().lower().replace("_", "-")
+    if normalized in {"game-count", "gamecount", "count"}:
+        return "game-count"
+    if normalized in {"equal-k", "equalk", "equal"}:
+        return "equal-k"
+    if normalized in {"config", "config-provided", "custom"}:
+        return "config"
+    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+
+
+def _pooling_weights_for_seed_summary(
+    df: pd.DataFrame,
+    *,
+    pooling_scheme: str,
+    weights_by_k: dict[int, float],
+) -> pd.Series:
+    """Return per-row weights for pooled seed summaries."""
+    games = pd.to_numeric(df["games"], errors="coerce").fillna(0.0)
+    players = pd.to_numeric(df["players"], errors="coerce")
+    totals = games.groupby(players).sum()
+    totals_map = {int(k): float(v) for k, v in totals.items() if pd.notna(k)}
+
+    if pooling_scheme == "game-count":
+        return games.astype(float)
+
+    if pooling_scheme == "equal-k":
+        def _equal_factor(k: float | int | None) -> float:
+            if k is None or pd.isna(k):
+                return 0.0
+            total = totals_map.get(int(k), 0.0)
+            return 1.0 / total if total > 0 else 0.0
+
+        factors = players.map(_equal_factor)
+        return games * factors
+
+    if pooling_scheme == "config":
+        missing = sorted(set(totals_map) - set(weights_by_k))
+        if missing:
+            LOGGER.warning(
+                "Missing pooling weights for player counts; treating as zero",
+                extra={"stage": "seed_summaries", "missing": missing},
+            )
+
+        def _config_factor(k: float | int | None) -> float:
+            if k is None or pd.isna(k):
+                return 0.0
+            total = totals_map.get(int(k), 0.0)
+            if total <= 0:
+                return 0.0
+            return float(weights_by_k.get(int(k), 0.0)) / total
+
+        factors = players.map(_config_factor)
+        return games * factors
+
+    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+
+
+def _weighted_means_with_weights(
+    frame: pd.DataFrame,
+    columns: list[str],
+    weights: pd.Series,
+) -> pd.DataFrame:
+    """Compute weighted mean columns grouped by ``strategy_id``."""
+    def weighted_means(group: pd.DataFrame) -> pd.Series:
+        group_weights = weights.loc[group.index].astype(float)
+        valid_weights = group_weights > 0
+        results: dict[str, float] = {}
+        for column in columns:
+            values = group[column].astype(float)
+            mask = valid_weights & values.notna()
+            if mask.any():
+                results[column] = float(np.average(values[mask], weights=group_weights[mask]))
+            else:
+                results[column] = float("nan")
+        results["pooling_weight_sum"] = float(group_weights[valid_weights].sum())
+        return pd.Series(results)
+
+    working_frame = frame[["strategy_id", *columns]]
+    return working_frame.groupby("strategy_id", sort=True).apply(
+        weighted_means,
+        include_groups=False,
+    )
+
+
+def _build_pooled_seed_summary(
+    cfg: AppConfig,
+    frame: pd.DataFrame,
+    *,
+    seed: int,
+) -> pd.DataFrame:
+    """Aggregate per-player summaries into pooled rows for a seed."""
+    if frame.empty:
+        return pd.DataFrame(
+            columns=[
+                "strategy_id",
+                "seed",
+                "games",
+                "wins",
+                "win_rate",
+                "ci_lo",
+                "ci_hi",
+                "pooling_scheme",
+                "pooling_weights",
+                "pooling_weight_sum",
+            ]
+        )
+    pooling_scheme = _normalize_pooling_scheme(cfg.analysis.pooling_weights)
+    weights_by_k = dict(cfg.analysis.pooling_weights_by_k or {})
+    if pooling_scheme == "config" and not weights_by_k:
+        raise ValueError("analysis.pooling_weights_by_k must be set for config pooling")
+
+    mean_columns = [c for c in frame.columns if c.endswith("_mean")]
+    totals = (
+        frame.groupby("strategy_id", sort=True)
+        .agg({"games": "sum", "wins": "sum"})
+        .reset_index()
+    )
+    weights = _pooling_weights_for_seed_summary(
+        frame,
+        pooling_scheme=pooling_scheme,
+        weights_by_k=weights_by_k,
+    )
+    weight_sums = (
+        weights.groupby(frame["strategy_id"])
+        .sum()
+        .rename("pooling_weight_sum")
+        .reset_index()
+    )
+    if mean_columns:
+        weighted = _weighted_means_with_weights(frame, mean_columns, weights).reset_index()
+        summary = totals.merge(weighted, on="strategy_id", how="left")
+    else:
+        summary = totals
+    if "pooling_weight_sum" not in summary.columns:
+        summary = summary.merge(weight_sums, on="strategy_id", how="left")
+
+    summary["seed"] = seed
+    summary["pooling_scheme"] = pooling_scheme
+    summary["pooling_weights"] = (
+        "{}" if not weights_by_k else json.dumps(weights_by_k, sort_keys=True)
+    )
+
+    games = summary["games"].to_numpy()
+    wins = summary["wins"].to_numpy()
+    summary["win_rate"] = np.divide(
+        wins, games, out=np.zeros_like(wins, dtype=float), where=games > 0
+    )
+    ci_bounds = [
+        wilson_ci(int(wins_i), int(games_i)) if games_i > 0 else (0.0, 1.0)
+        for wins_i, games_i in zip(wins, games, strict=False)
+    ]
+    summary["ci_lo"] = [bounds[0] for bounds in ci_bounds]
+    summary["ci_hi"] = [bounds[1] for bounds in ci_bounds]
+    summary = _normalize_summary(summary)
+    ordered = [
+        "strategy_id",
+        "seed",
+        "games",
+        "wins",
+        "win_rate",
+        "ci_lo",
+        "ci_hi",
+        "pooling_scheme",
+        "pooling_weights",
+        "pooling_weight_sum",
+    ]
+    extra_cols = [c for c in summary.columns if c not in ordered]
+    return summary[ordered + sorted(extra_cols)]
+
+
 def _mean_output_name(column: str) -> str:
     """Convert a ``mean_<metric>`` column into a user-facing label."""
     base = column.removeprefix("mean_")
@@ -297,12 +503,15 @@ def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
     """Enforce deterministic types and ordering for summary comparison."""
     normalized = df.copy()
     for col in ("strategy_id", "players", "seed", "games", "wins"):
-        normalized[col] = _cast_int32_if_safe(normalized[col])
+        if col in normalized.columns:
+            normalized[col] = _cast_int32_if_safe(normalized[col])
     for col in ("win_rate", "ci_lo", "ci_hi"):
-        normalized[col] = normalized[col].astype(float)
+        if col in normalized.columns:
+            normalized[col] = normalized[col].astype(float)
     extra_cols = [c for c in normalized.columns if c not in BASE_COLUMNS]
     for col in extra_cols:
-        normalized[col] = normalized[col].astype(float)
+        if pd.api.types.is_numeric_dtype(normalized[col]):
+            normalized[col] = normalized[col].astype(float)
     return normalized
 
 
