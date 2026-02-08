@@ -103,7 +103,13 @@ def run(cfg: AppConfig) -> None:
         mdd=cast(float, tier_data["mdd"]),
         weights_by_k=inputs.weights_by_k,
     )
-    _write_frequentist_scores(cfg, frequentist_tiers, winrates, winrates_by_players)
+    _write_frequentist_scores(
+        cfg,
+        frequentist_tiers,
+        winrates,
+        winrates_by_players,
+        weights_by_k=inputs.weights_by_k,
+    )
 
 
 def _prepare_inputs(cfg: AppConfig) -> TieringInputs:
@@ -196,12 +202,13 @@ def _weighted_winrate(
 
     per_k = (
         tmp.groupby(["strategy", "n_players"], as_index=False)
-           .agg(
-               win_x_w=("win_x_w", "sum"),
-               w=("w", "sum"),
-           )
-           .assign(win_rate=lambda x: x["win_x_w"] / x["w"])
-           .drop(columns=["win_x_w", "w"])
+        .agg(
+            win_x_w=("win_x_w", "sum"),
+            w=("w", "sum"),
+        )
+        .assign(win_rate=lambda x: x["win_x_w"] / x["w"])
+        .rename(columns={"w": "games"})
+        .drop(columns=["win_x_w"])
     )
 
     if weights_by_k:
@@ -259,6 +266,8 @@ def _write_frequentist_scores(
     frequentist_tiers: pd.DataFrame,
     winrates: pd.Series,
     winrates_by_players: pd.DataFrame,
+    *,
+    weights_by_k: Mapping[int, float] | None,
 ) -> None:
     """Persist per-strategy tier assignments and win rates."""
     if winrates.empty:
@@ -297,6 +306,29 @@ def _write_frequentist_scores(
     scores_path = _tiering_artifact(cfg, "frequentist_scores.parquet")
     with atomic_path(str(scores_path)) as tmp_path:
         scores.to_parquet(tmp_path, index=False)
+
+    pooled_provenance_path = _tiering_artifact(cfg, "tiering_pooled_provenance.json")
+    if weights_by_k:
+        weight_source = "config:tiering_weights_by_k"
+        normalized_weights = {int(k): float(v) for k, v in weights_by_k.items()}
+    else:
+        weight_source = "uniform_by_k"
+        normalized_weights = {
+            int(k): float(1.0 / len(winrates_by_players["n_players"].unique()))
+            for k in sorted(winrates_by_players["n_players"].unique())
+        }
+
+    effective_games = (
+        winrates_by_players.groupby("n_players")["games"].sum().sort_index().to_dict()
+    )
+    provenance = {
+        "pooling_rule": "weighted_mean_by_k",
+        "weight_source": weight_source,
+        "normalized_weights_by_k": normalized_weights,
+        "effective_sample_sizes_games_by_k": {int(k): float(v) for k, v in effective_games.items()},
+    }
+    with atomic_path(str(pooled_provenance_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(provenance, indent=2))
 
     LOGGER.info(
         "Frequentist scores written",
