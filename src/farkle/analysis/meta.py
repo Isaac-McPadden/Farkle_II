@@ -297,7 +297,10 @@ def _normalize_meta_frame(df: pd.DataFrame) -> pd.DataFrame:
             normalized[col] = normalized[col].astype(float)
     if "n_seeds" in normalized:
         normalized["n_seeds"] = normalized["n_seeds"].astype(int)
-    normalized.sort_values("strategy_id", inplace=True, kind="mergesort")
+    sort_cols = ["strategy_id"]
+    if "players" in normalized:
+        sort_cols = ["players", "strategy_id"]
+    normalized.sort_values(sort_cols, inplace=True, kind="mergesort")
     normalized.reset_index(drop=True, inplace=True)
     return normalized
 
@@ -415,6 +418,8 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
         cfg.meta_output_path(players, META_TEMPLATE.format(players=players))
         for players in eligible_players
     ] + [cfg.meta_output_path(players, META_JSON_TEMPLATE.format(players=players)) for players in eligible_players]
+    if eligible_players:
+        expected_outputs.append(cfg.meta_pooled_dir / "meta_long.parquet")
 
     if not force and inputs and expected_outputs and stage_is_up_to_date(
         done, inputs=inputs, outputs=expected_outputs, config_sha=cfg.config_sha
@@ -423,6 +428,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
         return
 
     outputs: list[Path] = []
+    pooled_frames: list[pd.DataFrame] = []
 
     for players, entries in sorted(files_by_players.items()):
         selected_entries = _select_seed_entries(
@@ -520,6 +526,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
                 extra={"stage": "meta", "players": players},
             )
             continue
+        pooled_frames.append(result.pooled.copy())
 
         parquet_path = cfg.meta_output_path(players, META_TEMPLATE.format(players=players))
         outputs.append(parquet_path)
@@ -560,6 +567,20 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
                 "method": result.method,
             },
         )
+
+    if pooled_frames:
+        meta_long = pd.concat(pooled_frames, ignore_index=True)
+        meta_long = _normalize_meta_frame(meta_long)
+        meta_long_path = cfg.meta_pooled_dir / "meta_long.parquet"
+        outputs.append(meta_long_path)
+        if force or not _parquet_matches(meta_long_path, meta_long):
+            table = pa.Table.from_pandas(meta_long, preserve_index=False)
+            write_parquet_atomic(table, meta_long_path)
+        else:
+            LOGGER.info(
+                "Meta long parquet already up-to-date",
+                extra={"stage": "meta", "path": str(meta_long_path)},
+            )
 
     if outputs:
         write_stage_done(done, inputs=inputs, outputs=outputs, config_sha=cfg.config_sha)
