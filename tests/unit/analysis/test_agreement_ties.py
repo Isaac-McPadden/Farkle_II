@@ -140,3 +140,46 @@ def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
     assert trueskill.tiers == {"a": 1, "b": 2}
     assert frequentist.tiers == {"a": 1, "b": 2}
     assert frequentist.per_seed_scores == []
+
+
+def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, monkeypatch):
+    cfg = agreement.AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    cfg.sim.n_players_list = ["pooled"]
+    cfg.sim.seed_list = [11, 22]
+
+    pooled_path = cfg.trueskill_path("ratings_pooled.parquet")
+    pooled_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "strategy": ["a", "b"],
+            "mu": [5.0, 4.0],
+            "sigma": [1.0, 1.0],
+        }
+    ).to_parquet(pooled_path)
+
+    tiers_path = cfg.preferred_tiers_path()
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
+    tiers_path.write_text(json.dumps({"pooled": {"tiers": {"a": 1, "b": 2}}}))
+
+    freq_path = cfg.tiering_path("frequentist_scores.parquet")
+    freq_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "strategy": ["a", "b"],
+            "win_rate": [0.7, 0.3],
+        }
+    ).to_parquet(freq_path)
+
+    monkeypatch.setattr(agreement, "_load_head2head", lambda _cfg: None)
+
+    agreement.run(cfg)
+
+    per_scope_path = cfg.agreement_output_path("pooled")
+    assert per_scope_path.exists()
+    summary_path = cfg.agreement_stage_dir / "agreement_summary.parquet"
+    assert summary_path.exists()
+
+    summary_df = pd.read_parquet(summary_path)
+    assert len(summary_df) == 1
+    assert summary_df.iloc[0]["players"] == "pooled"

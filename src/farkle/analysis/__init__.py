@@ -177,6 +177,14 @@ def run_interseed_analysis(
         ts_mod.run(cfg)
 
     def _agreement(cfg: AppConfig) -> None:
+        ratings_pooled_path = cfg.trueskill_path("ratings_pooled.parquet")
+        if not ratings_pooled_path.exists() or ratings_pooled_path.stat().st_size <= 0:
+            stage_logger("agreement", logger=LOGGER).missing_input(
+                "missing required TrueSkill pooled ratings input",
+                dependency="trueskill.ratings_pooled.parquet",
+                path=str(ratings_pooled_path),
+            )
+            return
         stage_log = stage_logger("agreement", logger=LOGGER)
         agreement_mod = _optional_import("farkle.analysis.agreement", stage_log=stage_log)
         if agreement_mod is None:

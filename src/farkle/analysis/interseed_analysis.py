@@ -210,7 +210,9 @@ def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
 
 
 def _agreement_outputs(cfg: AppConfig) -> list[Path]:
-    return [cfg.agreement_output_path(players) for players in cfg.agreement_players()]
+    outputs = [cfg.agreement_output_path(players) for players in cfg.agreement_players()]
+    outputs.append(cfg.agreement_stage_dir / "agreement_summary.parquet")
+    return outputs
 
 
 def _rng_outputs(cfg: AppConfig) -> list[Path]:

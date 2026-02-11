@@ -3,10 +3,13 @@ from __future__ import annotations
 import io
 from contextlib import redirect_stdout
 from pathlib import Path
+import types
 
 import pandas as pd
+import pytest
 
 import farkle.analysis.stage_registry as stage_registry
+import farkle.analysis as analysis_mod
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, IOConfig
 from farkle.orchestration.pipeline import _done_path, analyze_all, is_up_to_date, write_done
@@ -111,3 +114,38 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
         "SKIP hgb (up to date)",
         "SKIP agreement (up to date)",
     ]
+
+
+def test_interseed_agreement_logs_missing_trueskill_dependency(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg.sim.seed_list = [101, 202]
+
+    ran_modules: list[str] = []
+
+    def fake_optional_import(module: str, *, stage_log=None):  # noqa: ANN001
+        if module == "farkle.analysis.agreement":
+            def _run(_cfg):  # noqa: ANN001
+                ran_modules.append("agreement")
+
+            return types.SimpleNamespace(run=_run)
+        return types.SimpleNamespace(run=lambda _cfg, **_: None)
+
+    monkeypatch.setattr(analysis_mod, "_optional_import", fake_optional_import)
+    monkeypatch.setattr(analysis_mod, "run_variance", lambda _cfg, **_: None)
+    monkeypatch.setattr(analysis_mod, "run_meta", lambda _cfg, **_: None)
+
+    with caplog.at_level("INFO"):
+        analysis_mod.run_interseed_analysis(cfg)
+
+    assert ran_modules == []
+    matching = [
+        record
+        for record in caplog.records
+        if getattr(record, "stage", None) == "agreement"
+        and getattr(record, "reason", None) == "missing required TrueSkill pooled ratings input"
+    ]
+    assert matching
