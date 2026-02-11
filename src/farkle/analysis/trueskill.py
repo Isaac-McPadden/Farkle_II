@@ -15,13 +15,22 @@ def run(cfg: AppConfig) -> None:
     stage_log = stage_logger("trueskill", logger=LOGGER)
     stage_log.start()
 
-    if not cfg.curated_parquet.exists():
-        stage_log.missing_input("curated parquet missing", path=str(cfg.curated_parquet))
+    curated_parquet = cfg.curated_parquet
+    if not curated_parquet.exists():
+        candidates = [str(path) for path in cfg.curated_parquet_candidates()]
+        payload = {
+            "path": str(curated_parquet),
+            "candidate_paths": candidates,
+        }
+        interseed_root = cfg.interseed_input_dir
+        if interseed_root is not None:
+            payload["interseed_input_root"] = str(interseed_root)
+        stage_log.missing_input("curated parquet missing", **payload)
         return
 
     out = cfg.preferred_tiers_path()
     target = cfg.trueskill_stage_dir / "tiers.json"
-    if out.exists() and out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
+    if out.exists() and out.stat().st_mtime >= curated_parquet.stat().st_mtime:
         LOGGER.info(
             "TrueSkill results up-to-date",
             extra={"stage": "trueskill", "path": str(out)},

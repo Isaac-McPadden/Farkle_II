@@ -186,6 +186,26 @@ def test_curated_parquet_falls_back_without_curate_stage(tmp_path: Path) -> None
     assert cfg.data_dir == cfg.analysis_dir / "curate"
 
 
+def test_curated_parquet_prefers_interseed_combine_input(tmp_path: Path) -> None:
+    upstream_root = tmp_path / "upstream"
+    combine_folder = "02_combine"
+    upstream_curated = upstream_root / combine_folder / "pooled" / "all_ingested_rows.parquet"
+    upstream_curated.parent.mkdir(parents=True, exist_ok=True)
+    upstream_curated.write_text("rows")
+
+    cfg = AppConfig(
+        io=IOConfig(
+            results_dir_prefix=tmp_path / "pair_results",
+            interseed_input_dir=upstream_root,
+            interseed_input_layout={"combine": combine_folder},
+        )
+    )
+
+    curated = cfg.curated_parquet
+
+    assert curated == upstream_curated
+    assert cfg.curated_parquet_candidates()[0] == upstream_curated
+
 def test_curate_stage_dir_prefers_layout_folder(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
     layout = cfg.stage_layout
