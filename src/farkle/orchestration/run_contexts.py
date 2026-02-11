@@ -119,11 +119,21 @@ class InterseedRunContext:
         seed_pair: tuple[int, int],
         analysis_root: Path,
     ) -> "InterseedRunContext":
+        input_layout = seed_context.config.stage_layout
+        combine_folder = input_layout.folder_for("combine")
+        if combine_folder is None:
+            raise KeyError("Seed-stage layout must include 'combine' for interseed inputs")
+        input_layout_override: dict[str, str] = {
+            placement.definition.key: placement.folder_name
+            for placement in input_layout.placements
+        }
+        input_layout_override["combine"] = combine_folder
+
         run_cfg = RunContextConfig.from_base(
             seed_context.config,
             analysis_root=analysis_root,
             interseed_input_dir=seed_context.analysis_root,
-            interseed_input_layout=seed_context.config.stage_layout,
+            interseed_input_layout=input_layout_override,
             stage_layout=resolve_interseed_stage_layout(seed_context.config),
         )
         return cls(
