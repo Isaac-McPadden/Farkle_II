@@ -63,17 +63,25 @@ def _summary_path(cfg: AppConfig, *, players: int, seed: int) -> Path:
 
 
 def _seed_long_summary_path(cfg: AppConfig, *, seed: int) -> Path:
-    stage_dir = cfg.meta_analysis_dir
+    stage_dir = cfg.seed_summaries_stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
     filename = SEED_LONG_TEMPLATE.format(seed=seed)
     return stage_dir / filename
 
 
 def _seed_weighted_summary_path(cfg: AppConfig, *, seed: int) -> Path:
-    stage_dir = cfg.meta_analysis_dir
+    stage_dir = cfg.seed_summaries_stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
     filename = SEED_WEIGHTED_TEMPLATE.format(seed=seed)
     return stage_dir / filename
+
+
+def _meta_mirror_path(cfg: AppConfig, analysis_path: Path) -> Path | None:
+    """Return the mirrored meta path when shared-meta output is configured."""
+
+    if cfg.io.meta_analysis_dir is None:
+        return None
+    return cfg.meta_analysis_dir / analysis_path.name
 
 
 def run(cfg: AppConfig, *, force: bool = False) -> None:
@@ -111,8 +119,19 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             expected_outputs.append(_seed_long_summary_path(cfg, seed=int(seed)))
             expected_outputs.append(_seed_weighted_summary_path(cfg, seed=int(seed)))
 
+    expected_mirrors: list[Path] = []
+    for output_path in expected_outputs:
+        mirror_path = _meta_mirror_path(cfg, output_path)
+        if mirror_path is not None:
+            expected_mirrors.append(mirror_path)
+
     if not force and expected_outputs and stage_is_up_to_date(
         done, inputs=[metrics_path], outputs=expected_outputs, config_sha=cfg.config_sha
+    ) and stage_is_up_to_date(
+        done,
+        inputs=[metrics_path],
+        outputs=expected_mirrors,
+        config_sha=cfg.config_sha,
     ):
         LOGGER.info(
             "Seed summaries up-to-date",
@@ -121,6 +140,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         return
 
     outputs: list[Path] = []
+    mirrored_outputs: list[Path] = []
     for seed in seeds:
         seed_frames: list[pd.DataFrame] = []
         for players in player_counts:
@@ -158,7 +178,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                     },
                 )
 
-            _sync_meta_summary(cfg, summary, output_path)
+            mirrored_path = _sync_meta_summary(cfg, summary, output_path)
+            if mirrored_path is not None:
+                mirrored_outputs.append(mirrored_path)
         if seed_frames:
             seed_summary = _stack_seed_summaries(seed_frames, seed=int(seed))
             seed_output_path = _seed_long_summary_path(cfg, seed=int(seed))
@@ -183,6 +205,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                         "path": str(seed_output_path),
                     },
                 )
+            mirrored_path = _sync_meta_summary(cfg, seed_summary, seed_output_path)
+            if mirrored_path is not None:
+                mirrored_outputs.append(mirrored_path)
             pooled_summary = _build_pooled_seed_summary(cfg, seed_summary, seed=int(seed))
             pooled_output_path = _seed_weighted_summary_path(cfg, seed=int(seed))
             outputs.append(pooled_output_path)
@@ -207,9 +232,18 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                             "path": str(pooled_output_path),
                         },
                     )
+                mirrored_path = _sync_meta_summary(cfg, pooled_summary, pooled_output_path)
+                if mirrored_path is not None:
+                    mirrored_outputs.append(mirrored_path)
 
-    if outputs:
-        write_stage_done(done, inputs=[metrics_path], outputs=outputs, config_sha=cfg.config_sha)
+    all_outputs = outputs + mirrored_outputs
+    if all_outputs:
+        write_stage_done(
+            done,
+            inputs=[metrics_path],
+            outputs=all_outputs,
+            config_sha=cfg.config_sha,
+        )
 
 
 def _load_metrics_frame(cfg: AppConfig) -> tuple[pd.DataFrame, Path]:
@@ -554,26 +588,30 @@ def _write_summary(df: pd.DataFrame, path: Path) -> None:
     write_parquet_atomic(table, path)
 
 
-def _sync_meta_summary(cfg: AppConfig, summary: pd.DataFrame, analysis_path: Path) -> None:
+def _sync_meta_summary(cfg: AppConfig, summary: pd.DataFrame, analysis_path: Path) -> Path | None:
     """Copy the latest summary into the shared meta directory when configured."""
 
-    meta_dir = cfg.meta_analysis_dir
-    meta_path = meta_dir / analysis_path.name
-    if meta_path == analysis_path:
-        return
+    meta_path = _meta_mirror_path(cfg, analysis_path)
+    if meta_path is None or meta_path == analysis_path:
+        return None
     if _existing_summary_matches(meta_path, summary):
-        return
+        return meta_path
 
     _write_summary(summary, meta_path)
     LOGGER.info(
         "Seed summary synced to meta directory",
         extra={
             "stage": "seed_summaries",
-            "players": summary["players"].iloc[0] if not summary.empty else None,
+            "players": (
+                summary["players"].iloc[0]
+                if (not summary.empty and "players" in summary.columns)
+                else None
+            ),
             "seed": summary["seed"].iloc[0] if not summary.empty else None,
             "path": str(meta_path),
         },
     )
+    return meta_path
 
 
 __all__ = ["run"]
