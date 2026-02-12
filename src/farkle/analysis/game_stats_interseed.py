@@ -135,7 +135,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 def _seed_analysis_dirs(cfg: AppConfig) -> list[SeedInputs]:
     seeds = cfg.sim.interseed_seed_list()
     analysis_subdir = cfg.io.analysis_subdir
-    analysis_dirs: list[SeedInputs] = []
+    inputs_list: list[SeedInputs] = []
 
     base_results_dir = cfg.results_root
     if cfg.interseed_input_dir is not None:
@@ -143,7 +143,8 @@ def _seed_analysis_dirs(cfg: AppConfig) -> list[SeedInputs]:
         if input_dir.name == analysis_subdir:
             base_results_dir = input_dir.parent
         else:
-            analysis_dirs.append(SeedInputs(seed=int(cfg.sim.seed), analysis_dir=input_dir))
+            seed_inputs = SeedInputs(seed=int(cfg.sim.seed), analysis_dir=input_dir)
+            inputs_list.append(seed_inputs)
 
     base_root, _ = split_seeded_results_dir(base_results_dir)
     resolved_seeds = list(seeds) if seeds else []
@@ -159,19 +160,25 @@ def _seed_analysis_dirs(cfg: AppConfig) -> list[SeedInputs]:
     if resolved_seeds:
         for seed in sorted(set(resolved_seeds)):
             results_dir = resolve_results_dir(base_root, seed)
-            analysis_dir = results_dir / analysis_subdir
-            analysis_dirs.append(SeedInputs(seed=seed, analysis_dir=analysis_dir))
-    elif not analysis_dirs:
-        analysis_dirs.append(SeedInputs(seed=int(cfg.sim.seed), analysis_dir=base_results_dir / analysis_subdir))
+            seed_inputs = SeedInputs(seed=seed, analysis_dir=results_dir / analysis_subdir)
+            analysis_dir: Path = seed_inputs.analysis_dir
+            inputs_list.append(seed_inputs)
+    elif not inputs_list:
+        seed_inputs = SeedInputs(
+            seed=int(cfg.sim.seed),
+            analysis_dir=base_results_dir / analysis_subdir,
+        )
+        inputs_list.append(seed_inputs)
 
     unique: list[SeedInputs] = []
     seen: set[Path] = set()
-    for entry in analysis_dirs:
-        if entry.analysis_dir in seen:
+    for seed_inputs in inputs_list:
+        analysis_dir = seed_inputs.analysis_dir
+        if analysis_dir in seen:
             continue
-        seen.add(entry.analysis_dir)
-        if entry.analysis_dir.exists():
-            unique.append(entry)
+        seen.add(analysis_dir)
+        if analysis_dir.exists():
+            unique.append(seed_inputs)
     return unique
 
 
