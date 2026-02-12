@@ -28,6 +28,7 @@ from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.simulation.simulation import generate_strategy_grid
+from farkle.utils.analysis_shared import to_int
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
 
 LOGGER = logging.getLogger(__name__)
@@ -229,9 +230,11 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
         df["seed"] = df["seed"].astype(int)
         df["games"] = df["games"].astype(int)
 
-        for (seed, k), group in df.groupby(["seed", "k"], sort=False):
+        for key, group in df.groupby(["seed", "k"], sort=False):
+            seed, k = key
+            norm_key: tuple[int, int] = (to_int(seed), to_int(k))
             entry = counts.setdefault(
-                (seed, k),
+                norm_key,
                 {"games": 0, "strategies": set(), "missing_before_pad": None},
             )
             entry["games"] = int(entry["games"]) + int(group["games"].sum())
@@ -308,10 +311,7 @@ def _map_isolated_paths(
         if path is None:
             continue
         resolved = path.resolve()
-        if resolved in lookup:
-            mapping[int(k)] = lookup[resolved]
-        else:
-            mapping[int(k)] = path
+        mapping[int(k)] = lookup.get(resolved, path)
     return mapping
 
 

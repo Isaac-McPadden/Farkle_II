@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Mapping, MutableMapping
 
-from farkle.utils.analysis_shared import TierMap, tiers_to_map, to_int
+from farkle.utils.analysis_shared import TierMap, tiers_to_map, try_to_int
 from farkle.utils.writer import atomic_path
 
 
@@ -15,7 +15,7 @@ def _normalize_mapping(mapping: Mapping[str, object]) -> TierMap:
 
     normalized: TierMap = {}
     for strategy, tier in mapping.items():
-        tier_int = to_int(tier)
+        tier_int = try_to_int(tier)
         if tier_int is None:
             continue
         normalized[str(strategy)] = tier_int
