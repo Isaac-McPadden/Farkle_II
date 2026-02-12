@@ -2,13 +2,15 @@ import json
 import logging
 from typing import Any
 
-import networkx as nx
 import pandas as pd
 import pytest
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
 from farkle.analysis import agreement
 from farkle.analysis.agreement import MethodData
+from farkle.analysis.h2h_analysis import build_significant_graph, derive_sig_ranking
+from farkle.utils.analysis_shared import tiers_to_map
+from farkle.utils.tiers import tier_mapping_from_payload
 
 
 def test_assert_no_ties_warns_on_duplicates(caplog):
@@ -57,12 +59,10 @@ def test_filter_method_to_strategies(caplog):
 
 
 def test_normalize_tiers_and_agreements():
-    tiers_a = agreement._normalize_tiers({"a": 2, "b": 2, "c": 5})
-    tiers_b = agreement._normalize_tiers({"a": 10, "b": 20, "c": 20})
+    tiers_a = tier_mapping_from_payload({"a": 2, "b": 2, "c": 5})
+    tiers_b = tier_mapping_from_payload({"a": 10, "b": 20, "c": 20})
 
-    assert tiers_a is not None
-    assert tiers_b is not None
-    assert tiers_a == {"a": 0, "b": 0, "c": 1}
+    assert tiers_a == {"a": 2, "b": 2, "c": 5}
     ari, nmi = agreement._tier_agreements({"a": tiers_a, "b": tiers_b})
     assert ari is not None
     assert nmi is not None
@@ -89,16 +89,19 @@ def test_summarize_seed_stability_handles_common_strategies():
     assert summary["max_stddev"] == summary["top_strategies"][0]["stddev"]
 
 
-def test_tiers_from_graph_orders_components():
-    graph = nx.DiGraph()
-    graph.add_edge("a", "b")
-    graph.add_edge("b", "c")
+def test_significant_graph_ranking_to_tier_map_integration():
+    decisions = pd.DataFrame(
+        [
+            {"a": "a", "b": "b", "dir": "a>b", "is_sig": True, "pval": 0.01, "adj_p": 0.01},
+            {"a": "b", "b": "c", "dir": "a>b", "is_sig": True, "pval": 0.01, "adj_p": 0.01},
+        ]
+    )
 
-    tiers = agreement._tiers_from_graph(graph)
+    graph = build_significant_graph(decisions)
+    tier_lists = derive_sig_ranking(graph)
+    tiers = tiers_to_map(tier_lists)
 
-    assert tiers["a"] == 1
-    assert tiers["b"] == 2
-    assert tiers["c"] == 3
+    assert tiers == {"a": 1, "b": 2, "c": 3}
 
 
 def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
