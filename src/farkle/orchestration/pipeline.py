@@ -222,12 +222,11 @@ def analyze_agreement(exp_dir: Path) -> None:
             "agreement analysis requires ratings_pooled.parquet; run trueskill first"
         )
 
-    include_pooled = any(cfg.is_pooled_players(p) for p in cfg.sim.n_players_list)
     players = _detect_player_counts(analysis_dir)
-    if include_pooled:
-        players = [*players, 0]
     cfg.sim.n_players_list = players
     outputs = [cfg.agreement_output_path(p) for p in cfg.agreement_players()]
+    if cfg.agreement_include_pooled():
+        outputs.append(cfg.agreement_output_path_pooled())
     done = _done_path(outputs[0])
     inputs = [ratings]
     for candidate in (

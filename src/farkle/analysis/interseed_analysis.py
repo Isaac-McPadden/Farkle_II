@@ -17,8 +17,8 @@ from scipy.stats import kendalltau, spearmanr
 
 from farkle.analysis import stage_logger
 from farkle.analysis.game_stats_interseed import SeedInputs, _seed_analysis_dirs
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.writer import atomic_path
@@ -211,6 +211,8 @@ def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
 
 def _agreement_outputs(cfg: AppConfig) -> list[Path]:
     outputs = [cfg.agreement_output_path(players) for players in cfg.agreement_players()]
+    if cfg.agreement_include_pooled():
+        outputs.append(cfg.agreement_output_path_pooled())
     outputs.append(cfg.agreement_stage_dir / "agreement_summary.parquet")
     return outputs
 
