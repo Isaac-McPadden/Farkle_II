@@ -71,24 +71,24 @@ def _strategy_arrow_type(per_n_inputs: Sequence[tuple[int, Path]]) -> pa.DataTyp
     return pa.int64()
 
 
-def _strategy_numpy_dtype(strategy_type: pa.DataType) -> np.dtype:
+def _strategy_numpy_dtype(strategy_type: pa.DataType) -> np.dtype[Any]:
     if pa.types.is_int8(strategy_type):
-        return np.int8
+        return np.dtype("int8")
     if pa.types.is_int16(strategy_type):
-        return np.int16
+        return np.dtype("int16")
     if pa.types.is_int32(strategy_type):
-        return np.int32
+        return np.dtype("int32")
     if pa.types.is_int64(strategy_type):
-        return np.int64
+        return np.dtype("int64")
     if pa.types.is_uint8(strategy_type):
-        return np.uint8
+        return np.dtype("uint8")
     if pa.types.is_uint16(strategy_type):
-        return np.uint16
+        return np.dtype("uint16")
     if pa.types.is_uint32(strategy_type):
-        return np.uint32
+        return np.dtype("uint32")
     if pa.types.is_uint64(strategy_type):
-        return np.uint64
-    return np.int64
+        return np.dtype("uint64")
+    return np.dtype("int64")
 
 
 def _strategy_pandas_dtype(strategy_type: pa.DataType) -> str:
