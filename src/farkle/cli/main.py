@@ -431,7 +431,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
 
     if args.command == "run":
-        assert cfg is not None  # for type checkers
+        if cfg is None:  # pragma: no cover - guarded by command gate above
+            parser.error("Run command requires a loaded configuration")
         if args.metrics:
             cfg.sim.expanded_metrics = True
         if args.row_dir is not None:
@@ -479,7 +480,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         )
         watch_game(seed=args.seed)
     elif args.command == "analyze":
-        assert cfg is not None  # for type checkers
+        if cfg is None:  # pragma: no cover - guarded by command gate above
+            parser.error("Analyze command requires a loaded configuration")
         LOGGER.info(
             "Dispatching analysis command",
             extra={
@@ -518,7 +520,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "use `farkle two-seed-pipeline` instead.",
                 extra={"stage": "cli", "command": "analyze:two-seed-pipeline"},
             )
-            seed_pair = (cfg.sim.seed_list[0], cfg.sim.seed_list[1])
+            seed_pair = cfg.sim.require_seed_pair()
             two_seed_pipeline.run_pipeline(
                 cfg,
                 seed_pair=seed_pair,
@@ -543,7 +545,8 @@ def main(argv: Sequence[str] | None = None) -> None:
             extra={"stage": "cli", "command": f"analyze:{args.an_cmd}"},
         )
     elif args.command == "two-seed-pipeline":
-        assert cfg is not None  # for type checkers
+        if cfg is None:  # pragma: no cover - guarded by command gate above
+            parser.error("Two-seed pipeline command requires a loaded configuration")
         LOGGER.info(
             "Dispatching two-seed pipeline command",
             extra={
@@ -554,7 +557,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "analysis_dir": str(cfg.analysis_dir),
             },
         )
-        seed_pair = (cfg.sim.seed_list[0], cfg.sim.seed_list[1])
+        seed_pair = cfg.sim.require_seed_pair()
         two_seed_pipeline.run_pipeline(
             cfg,
             seed_pair=seed_pair,
