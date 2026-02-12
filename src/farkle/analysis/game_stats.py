@@ -37,7 +37,7 @@ import logging
 import math
 from collections.abc import Iterable, Sequence
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 import numpy as np
 import pandas as pd
@@ -158,8 +158,11 @@ def _coerce_strategy_dtype(df: pd.DataFrame, strategy_type: pa.DataType) -> pd.D
     if df.empty or "strategy" not in df.columns:
         return df
     out = df.copy()
-    strategy_values = pd.to_numeric(out["strategy"], errors="coerce")
-    out["strategy"] = pd.array(strategy_values, dtype=_strategy_pandas_dtype(strategy_type))
+    strategy_values = cast(pd.Series, pd.to_numeric(out["strategy"], errors="coerce"))
+    out["strategy"] = pd.array(
+        strategy_values.to_numpy(copy=False),
+        dtype=_strategy_pandas_dtype(strategy_type),
+    )
     return out
 
 
