@@ -17,6 +17,7 @@ from typing import (
     Any,
     Iterable,
     Mapping,
+    MutableMapping,
     Sequence,
     get_args,
     get_origin,
@@ -1554,8 +1555,10 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                         per_n_seed_pair_provided[per_n_key] = True
     if pooled_requested:
         analysis_section = data.setdefault("analysis", {})
-        if isinstance(analysis_section, Mapping):
-            analysis_section.setdefault("agreement_include_pooled", True)
+        if not isinstance(analysis_section, MutableMapping):
+            analysis_section = {}
+            data["analysis"] = analysis_section
+        analysis_section.setdefault("agreement_include_pooled", True)
 
     if "analysis" in data:
         analysis_section = data["analysis"]
@@ -1582,11 +1585,14 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         obj = cls()
         typing_ns = globals().copy()
         if "StageLayout" not in typing_ns:
+            stage_layout_cls: type[Any] | None
             try:
-                from farkle.analysis.stage_registry import StageLayout as stage_layout_type
+                from farkle.analysis.stage_registry import StageLayout as imported_stage_layout_cls
             except ImportError:
-                stage_layout_type = None
-            typing_ns["StageLayout"] = stage_layout_type
+                stage_layout_cls = None
+            else:
+                stage_layout_cls = imported_stage_layout_cls
+            typing_ns["StageLayout"] = stage_layout_cls
         type_hints = get_type_hints(cls, globalns=typing_ns)
         for f in dataclasses.fields(cls):
             if f.name not in section:
@@ -1706,11 +1712,14 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
             )
         typing_ns = globals().copy()
         if "StageLayout" not in typing_ns:
+            stage_layout_cls: type[Any] | None
             try:
-                from farkle.analysis.stage_registry import StageLayout as stage_layout_type
+                from farkle.analysis.stage_registry import StageLayout as imported_stage_layout_cls
             except ImportError:
-                stage_layout_type = None
-            typing_ns["StageLayout"] = stage_layout_type
+                stage_layout_cls = None
+            else:
+                stage_layout_cls = imported_stage_layout_cls
+            typing_ns["StageLayout"] = stage_layout_cls
         type_hints = get_type_hints(type(section), globalns=typing_ns)
         annotation = type_hints.get(option)
         new_value = _coerce(raw, current, annotation)
