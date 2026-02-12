@@ -48,6 +48,7 @@ from pandas._libs.missing import NAType
 from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
+from farkle.utils.analysis_shared import to_int
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.types import Compression
@@ -1468,12 +1469,12 @@ def _collect_rare_event_counts(
                 continue
             melted["strategy"] = melted["strategy"].astype("category")
             grouped = melted.groupby("strategy", observed=True, sort=False)
-            for strategy, group in grouped:
+            for key, group in grouped:
                 count = int(group.shape[0])
                 rows_available += count
-                strategy_key = (int(strategy), n_players)
+                norm_key: tuple[int, int] = (to_int(key), to_int(n_players))
                 strategy_entry = strategy_sums.setdefault(
-                    strategy_key,
+                    norm_key,
                     {"observations": 0, **dict.fromkeys(flags, 0)},
                 )
                 strategy_entry["observations"] += count

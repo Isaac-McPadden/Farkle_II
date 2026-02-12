@@ -15,7 +15,7 @@ import pandas as pd
 TierMap: TypeAlias = dict[str, int]
 
 
-def to_int(value: Any) -> int | None:
+def try_to_int(value: Any) -> int | None:
     """Best-effort integer conversion for boundary data.
 
     Returns ``None`` when conversion is not possible.
@@ -50,6 +50,15 @@ def to_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def to_int(value: Any) -> int:
+    """Convert a boundary scalar to ``int`` or raise ``ValueError``."""
+
+    converted = try_to_int(value)
+    if converted is None:
+        raise ValueError(f"cannot convert value to int: {value!r}")
+    return converted
 
 
 def to_stat_value(x: Any) -> int | float | str | None:
@@ -94,4 +103,4 @@ def tiers_to_map(tier_lists: list[list[str]]) -> TierMap:
     return tiers
 
 
-__all__ = ["TierMap", "tiers_to_map", "to_int", "to_stat_value"]
+__all__ = ["TierMap", "tiers_to_map", "to_int", "to_stat_value", "try_to_int"]
