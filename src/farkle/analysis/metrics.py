@@ -514,17 +514,19 @@ def _pooling_weights_for_metrics(
     """Return per-row weights for pooled metric aggregation."""
 
     games = pd.to_numeric(df["games"], errors="coerce").fillna(0.0)
-    n_players = pd.to_numeric(df["n_players"], errors="coerce")
+    n_players = df["n_players"].astype(np.int16)
     totals = games.groupby(n_players).sum()
-    totals_map = {int(k): float(v) for k, v in totals.items() if pd.notna(k)}
+    totals_map: dict[int, float] = {}
+    for k, v in totals.items():
+        assert isinstance(k, (int, np.integer))
+        k_int = int(k)
+        totals_map[k_int] = float(v)
 
     if pooling_scheme == "game-count":
         return games.astype(float)
 
     if pooling_scheme == "equal-k":
-        def _equal_factor(k: float | int | None) -> float:
-            if k is None or pd.isna(k):
-                return 0.0
+        def _equal_factor(k: int | np.integer) -> float:
             total = totals_map.get(int(k), 0.0)
             return 1.0 / total if total > 0 else 0.0
 
@@ -538,9 +540,7 @@ def _pooling_weights_for_metrics(
                 "Missing pooling weights for player counts; treating as zero",
                 extra={"stage": "metrics", "missing": missing},
             )
-        def _config_factor(k: float | int | None) -> float:
-            if k is None or pd.isna(k):
-                return 0.0
+        def _config_factor(k: int | np.integer) -> float:
             total = totals_map.get(int(k), 0.0)
             if total <= 0:
                 return 0.0
