@@ -145,7 +145,8 @@ def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
 def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, monkeypatch):
     cfg = agreement.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    cfg.sim.n_players_list = ["pooled"]
+    cfg.sim.n_players_list = []
+    cfg.analysis.agreement_include_pooled = True
     cfg.sim.seed_list = [11, 22]
 
     pooled_path = cfg.trueskill_path("ratings_pooled.parquet")
@@ -175,7 +176,7 @@ def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, 
 
     agreement.run(cfg)
 
-    per_scope_path = cfg.agreement_output_path("pooled")
+    per_scope_path = cfg.agreement_output_path_pooled()
     assert per_scope_path.exists()
     summary_path = cfg.agreement_stage_dir / "agreement_summary.parquet"
     assert summary_path.exists()
