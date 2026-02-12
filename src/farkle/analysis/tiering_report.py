@@ -11,7 +11,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Hashable, Mapping, TypeAlias, cast
+from typing import TYPE_CHECKING, Any, Hashable, Mapping, TypeAlias, cast
 
 import pandas as pd
 
@@ -178,7 +178,17 @@ def _coerce_strategy_ids(values: pd.Series) -> pd.Series:
     return numeric
 
 
-def _coerce_tier_keys(tiers: Mapping[str, int]) -> dict[int, int]:
+def _normalize_mapping_key(key: object) -> int | str:
+    """Normalize mapping keys by preserving ids and coercing numeric strings."""
+    if isinstance(key, int):
+        return key
+    if isinstance(key, str):
+        normalized_int = try_to_int(key)
+        return normalized_int if normalized_int is not None else key
+    return str(key)
+
+
+def _coerce_tier_keys(tiers: Mapping[Any, int]) -> dict[int, int]:
     """Coerce tier mapping keys to numeric strategy IDs."""
     if not tiers:
         return {}
@@ -186,8 +196,9 @@ def _coerce_tier_keys(tiers: Mapping[str, int]) -> dict[int, int]:
     # Coerce once at the boundary so downstream joins can stay vectorized.
     normalized: dict[int, int] = {}
     for key, value in tiers.items():
-        strategy_id = try_to_int(key)
-        if strategy_id is not None:
+        normalized_key = _normalize_mapping_key(key)
+        if isinstance(normalized_key, int):
+            strategy_id = normalized_key
             normalized[strategy_id] = value
     return normalized
 
@@ -315,7 +326,11 @@ def _write_frequentist_scores(
     pooled_provenance_path = _tiering_artifact(cfg, "tiering_pooled_provenance.json")
     if weights_by_k:
         weight_source = "config:tiering_weights_by_k"
-        normalized_weights = {int(k): float(v) for k, v in weights_by_k.items()}
+        normalized_weights: dict[int, float] = {}
+        for key, value in weights_by_k.items():
+            normalized_key = _normalize_mapping_key(key)
+            if isinstance(normalized_key, int):
+                normalized_weights[normalized_key] = float(value)
     else:
         weight_source = "uniform_by_k"
         normalized_weights = {
@@ -326,11 +341,17 @@ def _write_frequentist_scores(
     effective_games = (
         winrates_by_players.groupby("n_players")["games"].sum().sort_index().to_dict()
     )
+    normalized_effective_games: dict[int, float] = {}
+    for key, value in effective_games.items():
+        normalized_key = _normalize_mapping_key(key)
+        if isinstance(normalized_key, int):
+            normalized_effective_games[normalized_key] = float(value)
+
     provenance = {
         "pooling_rule": "weighted_mean_by_k",
         "weight_source": weight_source,
         "normalized_weights_by_k": normalized_weights,
-        "effective_sample_sizes_games_by_k": {int(k): float(v) for k, v in effective_games.items()},
+        "effective_sample_sizes_games_by_k": normalized_effective_games,
     }
     with atomic_path(str(pooled_provenance_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(provenance, indent=2))
