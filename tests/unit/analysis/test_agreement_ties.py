@@ -145,7 +145,7 @@ def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
 def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, monkeypatch):
     cfg = agreement.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    cfg.sim.n_players_list = []
+    cfg.sim.n_players_list = [2]
     cfg.analysis.agreement_include_pooled = True
     cfg.sim.seed_list = [11, 22]
 
