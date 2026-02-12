@@ -168,7 +168,7 @@ def _existing_paths(paths: list[Path]) -> list[str]:
     return [str(path) for path in paths if path.exists()]
 
 
-def _flatten_output_paths(statuses: dict[str, dict[str, Any]]) -> list[str]:
+def _flatten_output_paths(statuses: Mapping[str, Mapping[str, Any]]) -> list[str]:
     outputs: list[str] = []
     for details in statuses.values():
         outputs.extend(details.get("outputs", []))
@@ -416,12 +416,20 @@ def _resolve_h2h_path(cfg: AppConfig, analysis_dir: Path, filename: str) -> Path
 
 def _load_s_tiers(path: Path) -> dict[str, str]:
     try:
-        payload = json.loads(path.read_text())
+        payload_any: Any = json.loads(path.read_text())
     except json.JSONDecodeError:
         return {}
-    if not isinstance(payload, Mapping):
+    if not isinstance(payload_any, Mapping):
         return {}
-    return {str(key): str(value) for key, value in payload.items() if isinstance(value, str)}
+
+    validated: dict[str, str] = {}
+    for key, value in payload_any.items():
+        if key == "_meta":
+            continue
+        if not isinstance(value, str):
+            continue
+        validated[str(key)] = value
+    return validated
 
 
 def _load_ranking(path: Path) -> tuple[list[str], dict[str, int]]:
@@ -456,15 +464,17 @@ def _load_union_candidates(
         if not path.exists():
             continue
         try:
-            payload = json.loads(path.read_text())
+            payload_any: Any = json.loads(path.read_text())
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict) and "candidates" in payload:
-            raw = payload.get("candidates")
+        raw_candidates: Any
+        if isinstance(payload_any, dict) and "candidates" in payload_any:
+            raw_candidates = payload_any.get("candidates")
         else:
-            raw = payload
-        if isinstance(raw, list):
-            return {str(item) for item in raw}, path
+            raw_candidates = payload_any
+        if isinstance(raw_candidates, list):
+            validated_candidates = {str(item) for item in raw_candidates}
+            return validated_candidates, path
     return set(), None
 
 
@@ -504,7 +514,7 @@ def _jaccard_index(set_a: set[str], set_b: set[str]) -> float | None:
 
 
 def _rank_correlations(
-    ranks_a: dict[str, int] | None, ranks_b: dict[str, int] | None
+    ranks_a: Mapping[str, int] | None, ranks_b: Mapping[str, int] | None
 ) -> dict[str, object]:
     if not ranks_a or not ranks_b:
         return {
@@ -575,7 +585,7 @@ def _tier_flips(
             }
         )
     flip_rate = (n_flipped / n_shared) if n_shared else None
-    summary = {
+    summary: dict[str, object] = {
         "n_shared": n_shared,
         "n_flipped": n_flipped,
         "flip_rate": flip_rate,
@@ -583,7 +593,7 @@ def _tier_flips(
     return rows, summary
 
 
-def _tier_counts(tiers: dict[str, str]) -> dict[str, int]:
+def _tier_counts(tiers: Mapping[str, str]) -> dict[str, int]:
     counts: dict[str, int] = {}
     for label in tiers.values():
         counts[label] = counts.get(label, 0) + 1
@@ -591,14 +601,13 @@ def _tier_counts(tiers: dict[str, str]) -> dict[str, int]:
 
 
 def _tier_flip_schema() -> pa.Schema:
-    return pa.schema(
-        [
-            ("seed_a", pa.int64()),
-            ("seed_b", pa.int64()),
-            ("strategy_id", pa.string()),
-            ("tier_a", pa.string()),
-            ("tier_b", pa.string()),
-            ("present_in_both", pa.bool_()),
-            ("flipped", pa.bool_()),
-        ]
-    )
+    schema_fields: list[tuple[str, pa.DataType]] = [
+        ("seed_a", pa.int64()),
+        ("seed_b", pa.int64()),
+        ("strategy_id", pa.string()),
+        ("tier_a", pa.string()),
+        ("tier_b", pa.string()),
+        ("present_in_both", pa.bool_()),
+        ("flipped", pa.bool_()),
+    ]
+    return pa.schema(schema_fields)

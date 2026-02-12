@@ -224,9 +224,36 @@ def _load_ckpt(path: Path) -> Optional[_TSCheckpoint]:
     if not path.exists():
         return None
     try:
-        return _TSCheckpoint(**json.loads(path.read_text()))
+        payload_any: object = json.loads(path.read_text())
     except Exception:
         return None
+    if not isinstance(payload_any, dict):
+        return None
+
+    required_keys = {
+        "source": str,
+        "row_group": int,
+        "batch_index": int,
+        "games_done": int,
+        "ratings_path": str,
+    }
+    for key, expected_type in required_keys.items():
+        value = payload_any.get(key)
+        if not isinstance(value, expected_type):
+            return None
+
+    version_value = payload_any.get("version", 1)
+    if not isinstance(version_value, int):
+        return None
+
+    return _TSCheckpoint(
+        source=payload_any["source"],
+        row_group=payload_any["row_group"],
+        batch_index=payload_any["batch_index"],
+        games_done=payload_any["games_done"],
+        ratings_path=payload_any["ratings_path"],
+        version=version_value,
+    )
 
 
 def _ratings_to_table(
@@ -300,9 +327,36 @@ def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
     if not path.exists():
         return None
     try:
-        return _BlockCkpt(**json.loads(path.read_text()))
+        payload_any: object = json.loads(path.read_text())
     except Exception:
         return None
+    if not isinstance(payload_any, dict):
+        return None
+
+    required_keys = {
+        "row_file": str,
+        "row_group": int,
+        "batch_index": int,
+        "games_done": int,
+        "ratings_path": str,
+    }
+    for key, expected_type in required_keys.items():
+        value = payload_any.get(key)
+        if not isinstance(value, expected_type):
+            return None
+
+    version_value = payload_any.get("version", 1)
+    if not isinstance(version_value, int):
+        return None
+
+    return _BlockCkpt(
+        row_file=payload_any["row_file"],
+        row_group=payload_any["row_group"],
+        batch_index=payload_any["batch_index"],
+        games_done=payload_any["games_done"],
+        ratings_path=payload_any["ratings_path"],
+        version=version_value,
+    )
 
 
 # ---------- Single-pass streaming ----------
@@ -486,7 +540,7 @@ def _rate_single_pass(
     return stats, games
 
 
-def _coerce_ratings(obj: dict[str, object]) -> dict[str, RatingStats]:
+def _coerce_ratings(obj: Mapping[str, object]) -> dict[str, RatingStats]:
     """Accept {strategy: RatingStats | {'mu':..,'sigma':..} | (mu,sigma)}."""
     out: dict[str, RatingStats] = {}
     for k, v in obj.items():
@@ -722,7 +776,7 @@ def _rate_block_worker(
     *,
     resume: bool = True,
     checkpoint_every_batches: int = 500,
-    env_kwargs: dict | None = None,
+    env_kwargs: Mapping[str, object] | None = None,
     row_data_dir: str | None = None,
     curated_rows_name: str | None = None,
 ) -> tuple[str, int]:
@@ -895,7 +949,7 @@ def run_trueskill(
     batch_rows: int = 100_000,
     resume_per_n: bool = True,
     checkpoint_every_batches: int = 500,
-    env_kwargs: dict | None = None,
+    env_kwargs: Mapping[str, object] | None = None,
     pooled_weights_by_k: Mapping[int, float] | None = None,
     tiering_z: float | None = None,
     tiering_min_gap: float | None = None,
@@ -1384,7 +1438,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     tiering_min_gap = analysis_cfg.tiering_min_gap
 
     per_seed_results: dict[int, dict[str, RatingStats]] = {}
-    per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
+    per_seed_outputs: dict[int, dict[str, Mapping[str, RatingStats]]] = {}
     long_tables: list[pa.Table] = []
 
     for seed in seeds:
@@ -1462,17 +1516,17 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     if per_seed_outputs:
         per_player_runs: dict[int, list[Mapping[str, RatingStats]]] = {}
         for seed_outputs in per_seed_outputs.values():
-            for key, stats in seed_outputs.items():
+            for key, player_stats in seed_outputs.items():
                 try:
                     players = int(str(key).removesuffix("p"))
                 except ValueError:
                     continue
-                per_player_runs.setdefault(players, []).append(stats)
+                per_player_runs.setdefault(players, []).append(player_stats)
 
         for players in sorted(per_player_runs):
             runs = per_player_runs[players]
-            pooled_stats = _precision_pool(runs)
-            if not pooled_stats:
+            per_player_pooled_stats = _precision_pool(runs)
+            if not per_player_pooled_stats:
                 continue
             dest_dir = analysis_dir / f"{players}p"
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1491,7 +1545,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                     },
                 )
                 continue
-            _save_ratings_parquet(dest, _sorted_ratings(pooled_stats))
+            _save_ratings_parquet(dest, _sorted_ratings(per_player_pooled_stats))
             LOGGER.info(
                 "TrueSkill per-player pooled outputs written",
                 extra={
@@ -1502,10 +1556,10 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                 },
             )
 
-    pooled_stats: Mapping[str, RatingStats] = _precision_pool(per_seed_results.values())
-    if not pooled_stats:
+    pooled_seed_stats: Mapping[str, RatingStats] = _precision_pool(per_seed_results.values())
+    if not pooled_seed_stats:
         raise RuntimeError("TrueSkill pooling produced no results")
-    ordered_pooled = _ensure_strict_mu_ordering(_sorted_ratings(pooled_stats))
+    ordered_pooled = _ensure_strict_mu_ordering(_sorted_ratings(pooled_seed_stats))
 
     pooled_parquet = _ensure_new_location(
         pooled_dir / "ratings_pooled.parquet",

@@ -7,7 +7,7 @@ import json
 import logging
 import math
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, cast
 
 import numpy as np
 import pandas as pd
@@ -126,12 +126,20 @@ def _resolve_s_tiers_path(cfg: AppConfig) -> Path | None:
 
 def _load_s_tiers(path: Path) -> dict[str, str]:
     try:
-        payload = json.loads(path.read_text())
+        payload_any: Any = json.loads(path.read_text())
     except json.JSONDecodeError:
         return {}
-    if not isinstance(payload, dict):
+    if not isinstance(payload_any, dict):
         return {}
-    return {str(strategy): str(label) for strategy, label in payload.items() if isinstance(label, str)}
+
+    validated: dict[str, str] = {}
+    for strategy, label in payload_any.items():
+        if strategy == "_meta":
+            continue
+        if not isinstance(label, str):
+            continue
+        validated[str(strategy)] = label
+    return cast(dict[str, str], validated)
 
 
 def _collect_meta_paths(cfg: AppConfig) -> list[Path]:
@@ -208,10 +216,7 @@ def _pooled_across_k(frame: pd.DataFrame) -> pd.DataFrame:
 
         Q = float((weights * ((win_rates - pooled_rate) ** 2)).sum())
         df = max(len(win_rates) - 1, 0)
-        if Q > 0.0 and df > 0:
-            I2 = max(0.0, (Q - df) / Q) * 100.0
-        else:
-            I2 = 0.0
+        I2 = max(0.0, (Q - df) / Q) * 100.0 if Q > 0.0 and df > 0 else 0.0
 
         rows.append(
             {
