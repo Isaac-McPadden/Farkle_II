@@ -405,25 +405,40 @@ def _weighted_means_with_weights(
     weights: pd.Series,
 ) -> pd.DataFrame:
     """Compute weighted mean columns grouped by ``strategy_id``."""
-    def weighted_means(group: pd.DataFrame) -> pd.Series:
-        group_weights = weights.loc[group.index].astype(float)
-        valid_weights = group_weights > 0
-        results: dict[str, float] = {}
-        for column in columns:
-            values = group[column].astype(float)
-            mask = valid_weights & values.notna()
-            if mask.any():
-                results[column] = float(np.average(values[mask], weights=group_weights[mask]))
-            else:
-                results[column] = float("nan")
-        results["pooling_weight_sum"] = float(group_weights[valid_weights].sum())
-        return pd.Series(results)
+    working_frame = frame.loc[:, ["strategy_id", *columns]]
+    weight_values = weights.astype(float)
+    positive_weights = weight_values > 0
+    weighted_terms: dict[str, pd.Series] = {
+        "pooling_weight_sum": weight_values.where(positive_weights, 0.0)
+    }
+    aggregation: dict[str, tuple[str, str]] = {
+        "pooling_weight_sum": ("pooling_weight_sum", "sum")
+    }
+    for column in columns:
+        values = working_frame[column].astype(float)
+        valid = positive_weights & values.notna()
+        denominator_col = f"{column}__den"
+        numerator_col = f"{column}__num"
+        weighted_terms[denominator_col] = weight_values.where(valid, 0.0)
+        weighted_terms[numerator_col] = values.where(valid, 0.0) * weight_values.where(valid, 0.0)
+        aggregation[denominator_col] = (denominator_col, "sum")
+        aggregation[numerator_col] = (numerator_col, "sum")
 
-    working_frame = frame[["strategy_id", *columns]]
-    return working_frame.groupby("strategy_id", sort=True).apply(
-        weighted_means,
-        include_groups=False,
+    grouped = (
+        working_frame.assign(**weighted_terms)
+        .groupby("strategy_id", sort=True)
+        .agg(**aggregation)
     )
+    for column in columns:
+        denominator = grouped.pop(f"{column}__den")
+        numerator = grouped.pop(f"{column}__num")
+        grouped[column] = np.divide(
+            numerator,
+            denominator,
+            out=np.full_like(numerator.to_numpy(dtype=float), np.nan, dtype=float),
+            where=denominator.to_numpy(dtype=float) > 0,
+        )
+    return grouped
 
 
 def _build_pooled_seed_summary(
@@ -521,26 +536,40 @@ def _mean_output_name(column: str) -> str:
 
 def _weighted_means_by_strategy(frame: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
     """Compute weighted mean columns grouped by ``strategy_id``."""
-    def weighted_means(group: pd.DataFrame) -> pd.Series:
-        weights = group["games"].astype(float)
-        valid_weights = weights > 0
-        results: dict[str, float] = {}
-        for column in columns:
-            values = group[column].astype(float)
-            mask = valid_weights & values.notna()
-            if mask.any():
-                results[_mean_output_name(column)] = float(
-                    np.average(values[mask], weights=weights[mask])
-                )
-            else:
-                results[_mean_output_name(column)] = float("nan")
-        return pd.Series(results)
+    working_frame = frame.loc[:, ["strategy_id", "games", *columns]]
+    weight_values = working_frame["games"].astype(float)
+    positive_weights = weight_values > 0
+    weighted_terms: dict[str, pd.Series] = {}
+    aggregation: dict[str, tuple[str, str]] = {}
+    for column in columns:
+        values = working_frame[column].astype(float)
+        valid = positive_weights & values.notna()
+        denominator_col = f"{column}__den"
+        numerator_col = f"{column}__num"
+        weighted_terms[denominator_col] = weight_values.where(valid, 0.0)
+        weighted_terms[numerator_col] = values.where(valid, 0.0) * weight_values.where(valid, 0.0)
+        aggregation[denominator_col] = (denominator_col, "sum")
+        aggregation[numerator_col] = (numerator_col, "sum")
 
-    working_frame = frame[["strategy_id", "games", *columns]]
-    return working_frame.groupby("strategy_id", sort=True).apply(
-        weighted_means,
-        include_groups=False,
+    grouped = (
+        working_frame.assign(**weighted_terms)
+        .groupby("strategy_id", sort=True)
+        .agg(**aggregation)
     )
+    renamed_columns: dict[str, pd.Series] = {}
+    for column in columns:
+        denominator = grouped.pop(f"{column}__den")
+        numerator = grouped.pop(f"{column}__num")
+        renamed_columns[_mean_output_name(column)] = pd.Series(
+            np.divide(
+                numerator,
+                denominator,
+                out=np.full_like(numerator.to_numpy(dtype=float), np.nan, dtype=float),
+                where=denominator.to_numpy(dtype=float) > 0,
+            ),
+            index=grouped.index,
+        )
+    return grouped.assign(**renamed_columns)
 
 
 def _normalize_summary(df: pd.DataFrame) -> pd.DataFrame:
