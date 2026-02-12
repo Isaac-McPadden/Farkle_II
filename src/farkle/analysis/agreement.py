@@ -380,9 +380,9 @@ def _load_head2head(cfg: AppConfig) -> MethodData | None:
 
     # Boundary conversion: legacy rankings are list[list[str]] and are
     # normalized once here into canonical strategy→tier mapping.
-    tiers = tiers_to_map(tier_lists)
+    tier_map: TierMap = tiers_to_map(tier_lists)
 
-    return MethodData(scores=scores, tiers=tiers or None, per_seed_scores=[])
+    return MethodData(scores=scores, tiers=tier_map or None, per_seed_scores=[])
 
 
 def _filter_by_players(df: pd.DataFrame, players: int | str) -> pd.DataFrame:
