@@ -350,18 +350,27 @@ def _pooling_weights_for_seed_summary(
 ) -> pd.Series:
     """Return per-row weights for pooled seed summaries."""
     games = pd.to_numeric(df["games"], errors="coerce").fillna(0.0)
-    players = pd.to_numeric(df["players"], errors="coerce")
+    players_numeric = pd.to_numeric(df["players"], errors="raise")
+    if not np.all(players_numeric.to_numpy(dtype=float) % 1 == 0):
+        raise TypeError("players column must contain integer-like values")
+    players = players_numeric.astype(np.int64)
     totals = games.groupby(players).sum()
-    totals_map = {int(k): float(v) for k, v in totals.items() if pd.notna(k)}
+    totals_map: dict[int, float] = {}
+    for k, v in totals.items():
+        if not isinstance(k, (int, np.integer)):
+            raise TypeError(f"Expected integer-like player count key, got {type(k).__name__}")
+        k_int = int(k)
+        totals_map[k_int] = float(v)
 
     if pooling_scheme == "game-count":
         return games.astype(float)
 
     if pooling_scheme == "equal-k":
-        def _equal_factor(k: float | int | None) -> float:
-            if k is None or pd.isna(k):
-                return 0.0
-            total = totals_map.get(int(k), 0.0)
+        def _equal_factor(k: object) -> float:
+            if not isinstance(k, (int, np.integer)):
+                raise TypeError(f"Expected integer-like player count key, got {type(k).__name__}")
+            k_int = int(k)
+            total = totals_map.get(k_int, 0.0)
             return 1.0 / total if total > 0 else 0.0
 
         factors = players.map(_equal_factor)
@@ -375,13 +384,14 @@ def _pooling_weights_for_seed_summary(
                 extra={"stage": "seed_summaries", "missing": missing},
             )
 
-        def _config_factor(k: float | int | None) -> float:
-            if k is None or pd.isna(k):
-                return 0.0
-            total = totals_map.get(int(k), 0.0)
+        def _config_factor(k: object) -> float:
+            if not isinstance(k, (int, np.integer)):
+                raise TypeError(f"Expected integer-like player count key, got {type(k).__name__}")
+            k_int = int(k)
+            total = totals_map.get(k_int, 0.0)
             if total <= 0:
                 return 0.0
-            return float(weights_by_k.get(int(k), 0.0)) / total
+            return float(weights_by_k.get(k_int, 0.0)) / total
 
         factors = players.map(_config_factor)
         return games * factors
