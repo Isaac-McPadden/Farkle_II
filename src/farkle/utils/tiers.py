@@ -6,20 +6,16 @@ import json
 from pathlib import Path
 from typing import Mapping, MutableMapping
 
+from farkle.utils.analysis_shared import TierMap, tiers_to_map
 from farkle.utils.writer import atomic_path
 
 
-def _normalize(mapping: Mapping[str, object]) -> dict[str, int]:
+def _normalize(mapping: Mapping[str, object]) -> TierMap:
     """Convert arbitrary tier values to ``{strategy: tier}`` integers."""
 
-    tiers: dict[str, int] = {}
-    for key, value in mapping.items():
-        if isinstance(value, (int, float, str)):
-            try:
-                tiers[str(key)] = int(value)
-            except Exception:  # noqa: BLE001 - best-effort parsing
-                continue
-    return tiers
+    # Boundary conversion belongs in one vectorized helper so analysis code can
+    # avoid ad-hoc per-row coercion in hot paths.
+    return tiers_to_map(mapping)
 
 
 def _extract_section(payload: Mapping[str, object], label: str) -> dict[str, int]:

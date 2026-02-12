@@ -34,6 +34,7 @@ from matplotlib.figure import Figure
 
 from farkle.analysis.stage_registry import StageLayout
 from farkle.config import AnalysisConfig, AppConfig
+from farkle.utils.analysis_shared import to_stat_value
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
 from farkle.utils.writer import atomic_path
 
@@ -284,9 +285,12 @@ def _output_is_fresh(output: Path, inputs: Iterable[Path], *, force: bool) -> bo
 
 
 def _as_float(value: object) -> float:
-    """Convert pandas scalars and numpy numbers to builtin ``float`` for typing."""
+    """Convert pandas/numpy scalars to builtin ``float`` for numeric paths."""
 
-    return float(cast(SupportsFloat, value))
+    # Normalize at the boundary so plotting and matrix paths avoid repeated
+    # scalar-type checks inside per-row loops.
+    normalized = to_stat_value(value)
+    return float(cast(SupportsFloat, normalized))
 
 
 def _extract_scalar(value: object, *, label: str) -> object:

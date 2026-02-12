@@ -25,6 +25,7 @@ from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 from farkle.analysis import StageLogger, stage_logger
 from farkle.analysis.h2h_analysis import build_significant_graph, derive_sig_ranking
 from farkle.config import AppConfig
+from farkle.utils.analysis_shared import TierMap, tiers_to_map
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
 from farkle.utils.writer import atomic_path
 
@@ -524,7 +525,7 @@ def _filter_method_to_strategies(
     return MethodData(scores=scores, tiers=tiers, per_seed_scores=per_seed)
 
 
-def _normalize_tiers(tiers: Mapping[str, int] | None) -> dict[str, int] | None:
+def _normalize_tiers(tiers: Mapping[str, int] | None) -> TierMap | None:
     """Normalize arbitrary tier labels into zero-based consecutive integers.
 
     Args:
@@ -535,9 +536,12 @@ def _normalize_tiers(tiers: Mapping[str, int] | None) -> dict[str, int] | None:
     """
     if not tiers:
         return None
-    normalized: dict[str, int] = {}
+    boundary_map = tiers_to_map(tiers)
+    normalized: TierMap = {}
     label_map: dict[str, int] = {}
-    for strategy, tier in tiers.items():
+    # Convert once at the boundary, then keep downstream loops focused on
+    # compact relabeling rather than repeated scalar coercion.
+    for strategy, tier in boundary_map.items():
         key = str(tier)
         label_map.setdefault(key, len(label_map))
         normalized[str(strategy)] = label_map[key]
