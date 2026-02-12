@@ -319,10 +319,10 @@ def _derive_sig_tiers(G: nx.DiGraph) -> tuple[list[list[str]], nx.DiGraph, list[
         (node for node, deg in indegree.items() if deg == 0),
         key=lambda node: tuple(sorted(condensation.nodes[node]["members"])),
     )
-    tier_nodes: list[int] = []
+    scc_tier_nodes: list[int] = []
     while available:
         node = available.pop(0)
-        tier_nodes.append(node)
+        scc_tier_nodes.append(node)
         for successor in sorted(condensation.successors(node)):
             indegree[successor] -= 1
             if indegree[successor] == 0:
@@ -334,9 +334,9 @@ def _derive_sig_tiers(G: nx.DiGraph) -> tuple[list[list[str]], nx.DiGraph, list[
 
     tiers = [
         sorted(map(str, condensation.nodes[node]["members"]))
-        for node in tier_nodes
+        for node in scc_tier_nodes
     ]
-    return tiers, condensation, tier_nodes
+    return tiers, condensation, scc_tier_nodes
 
 
 def derive_sig_ranking(G: nx.DiGraph) -> list[list[str]]:
@@ -392,14 +392,16 @@ def run_post_h2h(cfg: AppConfig) -> None:
         cfg.head2head_stage_dir / "bonferroni_pairwise.parquet",
         cfg.analysis_dir / "bonferroni_pairwise.parquet",
     ]
-    upstream_outputs_raw = upstream_meta.get("outputs", [])
-    upstream_outputs_iterable = (
-        upstream_outputs_raw if isinstance(upstream_outputs_raw, list) else []
+    raw_outputs = upstream_meta.get("outputs")
+    output_paths: list[str] = (
+        raw_outputs
+        if isinstance(raw_outputs, list) and all(isinstance(path, str) for path in raw_outputs)
+        else []
     )
     upstream_outputs = [
         Path(path)
-        for path in upstream_outputs_iterable
-        if isinstance(path, str) and Path(path).name == "bonferroni_pairwise.parquet"
+        for path in output_paths
+        if Path(path).name == "bonferroni_pairwise.parquet"
     ]
     pairwise_candidates = upstream_outputs + pairwise_candidates
     pairwise_path = next((p for p in pairwise_candidates if p.exists()), pairwise_candidates[0])
@@ -575,7 +577,7 @@ def _write_empty_post_h2h_outputs(
     empty_table = pa.Table.from_pylist([], schema=_DECISION_SCHEMA)
     write_parquet_atomic(empty_table, decisions_path)
 
-    graph = nx.DiGraph()
+    graph: nx.DiGraph = nx.DiGraph()
     graph.graph["tie_policy"] = tie_policy
     graph.graph["tie_break_seed"] = tie_break_seed
     graph.graph["neutral_pairs"] = []
