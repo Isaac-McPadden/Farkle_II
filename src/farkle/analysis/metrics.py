@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import TYPE_CHECKING, Hashable, Iterable, Sequence, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -27,6 +27,13 @@ from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, wr
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
 from farkle.utils.writer import atomic_path
+
+if TYPE_CHECKING:  # pragma: no cover - pandas typing is optional at runtime
+    from pandas._typing import Scalar as PandasScalar
+
+    Scalar: TypeAlias = PandasScalar
+else:  # pragma: no cover - fallback for older pandas
+    Scalar: TypeAlias = Hashable
 
 LOGGER = logging.getLogger(__name__)
 
@@ -612,12 +619,12 @@ def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: AppConfig) -> pd.Da
     )
     value_cols = _pooled_value_columns(metrics_df)
 
-    pooled_rows: list[dict[str, float | int | str]] = []
+    pooled_rows: list[dict[str, Scalar]] = []
     for strategy, group in metrics_df.groupby("strategy", sort=False):
         group_weights = weights.loc[group.index].to_numpy(dtype=float)
         if not np.isfinite(group_weights).any() or group_weights.sum() <= 0:
             continue
-        row: dict[str, float | int | str] = {
+        row: dict[str, Scalar] = {
             "strategy": strategy,
             "games": int(pd.to_numeric(group["games"], errors="coerce").fillna(0.0).sum()),
             "wins": int(pd.to_numeric(group["wins"], errors="coerce").fillna(0.0).sum()),
