@@ -30,6 +30,7 @@ from farkle.orchestration.seed_utils import (
     prepare_seed_config,
     resolve_results_dir,
 )
+from farkle.utils.analysis_shared import tiers_to_map, to_int
 from farkle.utils.mdd import tiering_ingredients_from_df
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload, write_tier_payload
 from farkle.utils.writer import atomic_path
@@ -182,10 +183,12 @@ def _coerce_tier_keys(tiers: Mapping[int | str, int]) -> dict[int, int]:
     if not tiers:
         return {}
 
+    # Use shared boundary coercion so downstream joins can stay vectorized.
     normalized: dict[int, int] = {}
-    for key, value in tiers.items():
-        if isinstance(key, (int, str)):
-            normalized[int(key)] = int(value)
+    for key, value in tiers_to_map(tiers).items():
+        strategy_id = to_int(key)
+        if strategy_id is not None:
+            normalized[strategy_id] = value
     return normalized
 
 
