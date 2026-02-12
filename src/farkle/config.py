@@ -1583,10 +1583,10 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         typing_ns = globals().copy()
         if "StageLayout" not in typing_ns:
             try:
-                from farkle.analysis.stage_registry import StageLayout
+                from farkle.analysis.stage_registry import StageLayout as stage_layout_type
             except ImportError:
-                StageLayout = None  # type: ignore[assignment]
-            typing_ns["StageLayout"] = StageLayout
+                stage_layout_type = None
+            typing_ns["StageLayout"] = stage_layout_type
         type_hints = get_type_hints(cls, globalns=typing_ns)
         for f in dataclasses.fields(cls):
             if f.name not in section:
@@ -1707,10 +1707,10 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         typing_ns = globals().copy()
         if "StageLayout" not in typing_ns:
             try:
-                from farkle.analysis.stage_registry import StageLayout
+                from farkle.analysis.stage_registry import StageLayout as stage_layout_type
             except ImportError:
-                StageLayout = None  # type: ignore[assignment]
-            typing_ns["StageLayout"] = StageLayout
+                stage_layout_type = None
+            typing_ns["StageLayout"] = stage_layout_type
         type_hints = get_type_hints(type(section), globalns=typing_ns)
         annotation = type_hints.get(option)
         new_value = _coerce(raw, current, annotation)
