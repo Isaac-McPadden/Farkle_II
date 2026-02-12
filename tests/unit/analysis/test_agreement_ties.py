@@ -133,7 +133,7 @@ def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
         }
     ).to_parquet(freq_path)
 
-    trueskill = agreement._load_trueskill(cfg, players)
+    trueskill = agreement._load_trueskill(cfg, players, pooled_scope=False)
     frequentist = agreement._load_frequentist(cfg, players)
 
     assert trueskill is not None and frequentist is not None
