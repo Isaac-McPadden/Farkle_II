@@ -135,10 +135,10 @@ def test_optional_import_logs_missing(caplog: pytest.LogCaptureFixture) -> None:
     assert "Analytics module skipped due to missing dependency" in caplog.text
 
 
-def test_skip_message_logs(caplog: pytest.LogCaptureFixture) -> None:
+def test_stage_logger_missing_input_logs(caplog: pytest.LogCaptureFixture) -> None:
     import farkle.analysis as analysis_mod
 
     with caplog.at_level(logging.INFO):
-        analysis_mod._skip_message("demo", "testing")
+        analysis_mod.stage_logger("demo").missing_input("testing")
 
     assert "Analytics: skipping demo" in caplog.text
