@@ -11,7 +11,7 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Hashable, Mapping, TypeAlias, cast
+from typing import TYPE_CHECKING, Hashable, Mapping, TypeAlias, TypeVar, cast
 
 import pandas as pd
 
@@ -35,6 +35,7 @@ from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload, wri
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
+K = TypeVar("K", bound=Hashable)
 
 
 @dataclass
@@ -179,7 +180,7 @@ def _coerce_strategy_ids(values: pd.Series) -> pd.Series:
     return numeric
 
 
-def _coerce_tier_keys(tiers: Mapping[Hashable, int]) -> dict[int, int]:
+def _coerce_tier_keys(tiers: Mapping[K, int]) -> dict[int, int]:
     """Coerce tier mapping keys to numeric strategy IDs."""
     if not tiers:
         return {}
@@ -245,7 +246,7 @@ def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
     )
 
 
-def _build_report(freq_df: pd.DataFrame, ts_tiers: Mapping[Hashable, int]) -> pd.DataFrame:
+def _build_report(freq_df: pd.DataFrame, ts_tiers: Mapping[K, int]) -> pd.DataFrame:
     """Join frequentist and TrueSkill tiers, adding disagreement markers."""
     ts_series = pd.Series(ts_tiers, name="trueskill_tier")
     freq_df = freq_df.set_index("strategy")
