@@ -30,7 +30,7 @@ from farkle.orchestration.seed_utils import (
     prepare_seed_config,
     resolve_results_dir,
 )
-from farkle.utils.analysis_shared import tiers_to_map, to_int
+from farkle.utils.analysis_shared import to_int
 from farkle.utils.mdd import tiering_ingredients_from_df
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload, write_tier_payload
 from farkle.utils.writer import atomic_path
@@ -178,14 +178,14 @@ def _coerce_strategy_ids(values: pd.Series) -> pd.Series:
     return numeric
 
 
-def _coerce_tier_keys(tiers: Mapping[int | str, int]) -> dict[int, int]:
+def _coerce_tier_keys(tiers: Mapping[str, int]) -> dict[int, int]:
     """Coerce tier mapping keys to numeric strategy IDs."""
     if not tiers:
         return {}
 
-    # Use shared boundary coercion so downstream joins can stay vectorized.
+    # Coerce once at the boundary so downstream joins can stay vectorized.
     normalized: dict[int, int] = {}
-    for key, value in tiers_to_map(tiers).items():
+    for key, value in tiers.items():
         strategy_id = to_int(key)
         if strategy_id is not None:
             normalized[strategy_id] = value

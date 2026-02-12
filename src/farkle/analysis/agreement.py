@@ -15,10 +15,8 @@ from itertools import combinations
 from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
-import networkx as nx
 import numpy as np
 import pandas as pd
-from networkx import DiGraph as nx_digraph
 from scipy.stats import kendalltau, spearmanr
 from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
 
@@ -37,7 +35,7 @@ class MethodData:
     """Container for agreement inputs tied to one analytical method."""
 
     scores: pd.Series
-    tiers: dict[str, int] | None
+    tiers: TierMap | None
     per_seed_scores: list[pd.Series]
 
 
@@ -176,7 +174,7 @@ def _build_payload(
 
     spearman, kendall, coverage = _rank_correlations(score_vectors)
 
-    tier_maps = {name: _normalize_tiers(data.tiers) for name, data in methods.items() if data.tiers}
+    tier_maps = {name: data.tiers for name, data in methods.items() if data.tiers}
     ari, nmi = _tier_agreements(tier_maps)
 
     stability = {
@@ -368,19 +366,21 @@ def _load_head2head(cfg: AppConfig) -> MethodData | None:
     if graph.number_of_nodes() == 0:
         return None
 
-    tiers = derive_sig_ranking(graph)
-    if not tiers:
+    tier_lists = derive_sig_ranking(graph)
+    if not tier_lists:
         return None
 
-    tier_count = len(tiers)
+    tier_count = len(tier_lists)
     score_map: dict[str, float] = {}
-    for tier_idx, strategies in enumerate(tiers, start=1):
+    for tier_idx, strategies in enumerate(tier_lists, start=1):
         score_value = float(tier_count - tier_idx + 1)
         for strategy in strategies:
             score_map[str(strategy)] = score_value
     scores = pd.Series(score_map, dtype=float).sort_index()
 
-    tiers = _tiers_from_graph(graph)
+    # Boundary conversion: legacy rankings are list[list[str]] and are
+    # normalized once here into canonical strategy→tier mapping.
+    tiers = tiers_to_map(tier_lists)
 
     return MethodData(scores=scores, tiers=tiers or None, per_seed_scores=[])
 
@@ -525,31 +525,9 @@ def _filter_method_to_strategies(
     return MethodData(scores=scores, tiers=tiers, per_seed_scores=per_seed)
 
 
-def _normalize_tiers(tiers: Mapping[str, int] | None) -> TierMap | None:
-    """Normalize arbitrary tier labels into zero-based consecutive integers.
-
-    Args:
-        tiers: Mapping of strategy to tier label.
-
-    Returns:
-        Normalized tier mapping or ``None`` when no tiers are provided.
-    """
-    if not tiers:
-        return None
-    boundary_map = tiers_to_map(tiers)
-    normalized: TierMap = {}
-    label_map: dict[str, int] = {}
-    # Convert once at the boundary, then keep downstream loops focused on
-    # compact relabeling rather than repeated scalar coercion.
-    for strategy, tier in boundary_map.items():
-        key = str(tier)
-        label_map.setdefault(key, len(label_map))
-        normalized[str(strategy)] = label_map[key]
-    return normalized
-
 
 def _tier_agreements(
-    tier_maps: Mapping[str, dict[str, int] | None],
+    tier_maps: Mapping[str, TierMap | None],
 ) -> tuple[dict | None, dict | None]:
     """Calculate clustering agreement metrics for overlapping tier maps.
 
@@ -633,26 +611,6 @@ def _summarize_seed_stability(per_seed: list[pd.Series]) -> dict[str, object] | 
     }
     return summary
 
-
-def _tiers_from_graph(graph: nx_digraph) -> dict[str, int]:
-    """Derive tier labels from a condensed graph of significant results.
-
-    Args:
-        graph: Directed graph representing significant pairwise outcomes.
-
-    Returns:
-        Mapping of strategy identifiers to tier index, defaulting to empty when unavailable.
-    """
-    if graph.number_of_nodes() == 0:
-        return {}
-    condensed = nx.condensation(graph)
-    order = list(nx.topological_sort(condensed))
-    tiers: dict[str, int] = {}
-    for tier_idx, comp in enumerate(order, start=1):
-        members = condensed.nodes[comp].get("members", frozenset())
-        for member in sorted(members):
-            tiers[str(member)] = tier_idx
-    return tiers
 
 
 def _flatten_payload(payload: Mapping[str, object]) -> dict[str, object]:

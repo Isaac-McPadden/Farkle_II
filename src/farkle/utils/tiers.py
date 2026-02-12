@@ -6,16 +6,40 @@ import json
 from pathlib import Path
 from typing import Mapping, MutableMapping
 
-from farkle.utils.analysis_shared import TierMap, tiers_to_map
+from farkle.utils.analysis_shared import TierMap, tiers_to_map, to_int
 from farkle.utils.writer import atomic_path
 
 
-def _normalize(mapping: Mapping[str, object]) -> TierMap:
-    """Convert arbitrary tier values to ``{strategy: tier}`` integers."""
+def _normalize_mapping(mapping: Mapping[str, object]) -> TierMap:
+    """Convert strategy→tier payloads into canonical ``TierMap``."""
 
-    # Boundary conversion belongs in one vectorized helper so analysis code can
-    # avoid ad-hoc per-row coercion in hot paths.
-    return tiers_to_map(mapping)
+    normalized: TierMap = {}
+    for strategy, tier in mapping.items():
+        tier_int = to_int(tier)
+        if tier_int is None:
+            continue
+        normalized[str(strategy)] = tier_int
+    return normalized
+
+
+def _normalize_tiers_payload(raw_tiers: object) -> TierMap:
+    """Normalize legacy/current tier payload shapes into a ``TierMap``.
+
+    Accepted legacy shape: ``list[list[str]]``.
+    Canonical emitted shape: ``{strategy: tier_int}``.
+    """
+
+    if isinstance(raw_tiers, list):
+        tier_lists: list[list[str]] = []
+        for group in raw_tiers:
+            if isinstance(group, list):
+                tier_lists.append([str(strategy) for strategy in group])
+        return tiers_to_map(tier_lists)
+
+    if isinstance(raw_tiers, Mapping):
+        return _normalize_mapping(raw_tiers)
+
+    return {}
 
 
 def _extract_section(payload: Mapping[str, object], label: str) -> dict[str, int]:
@@ -24,10 +48,9 @@ def _extract_section(payload: Mapping[str, object], label: str) -> dict[str, int
     section = payload.get(label)
     if isinstance(section, Mapping):
         tiers = section.get("tiers") if hasattr(section, "get") else None
-        if isinstance(tiers, Mapping):
-            normalized = _normalize(tiers)
-            if normalized:
-                return normalized
+        normalized = _normalize_tiers_payload(tiers)
+        if normalized:
+            return normalized
     return {}
 
 
@@ -43,9 +66,9 @@ def load_tier_payload(path: Path) -> dict:
 def tier_mapping_from_payload(payload: Mapping[str, object], prefer: str = "trueskill") -> dict[str, int]:
     """Extract the preferred tier mapping from a consolidated payload.
 
-    The helper handles historical payloads where the root object is already a
-    ``{strategy: tier}`` mapping as well as the new consolidated structure with
-    named sections like ``{"trueskill": {"tiers": {...}}}``.
+    The helper handles historical payloads where tiers were ``list[list[str]]``
+    or where the root object is already a ``{strategy: tier}`` mapping, and it
+    emits the canonical ``TierMap`` for downstream analysis.
     """
 
     preferred = _extract_section(payload, prefer) if prefer else {}
@@ -56,14 +79,13 @@ def tier_mapping_from_payload(payload: Mapping[str, object], prefer: str = "true
     for value in payload.values():
         if isinstance(value, Mapping):
             tiers = value.get("tiers") if hasattr(value, "get") else None
-            if isinstance(tiers, Mapping):
-                normalized = _normalize(tiers)
-                if normalized:
-                    return normalized
+            normalized = _normalize_tiers_payload(tiers)
+            if normalized:
+                return normalized
 
     # Legacy: payload is already a mapping of strategy → tier
-    if isinstance(payload, Mapping) and all(isinstance(v, (int, float, str)) for v in payload.values()):
-        return _normalize(payload)
+    if isinstance(payload, Mapping):
+        return _normalize_mapping(payload)
 
     return {}
 

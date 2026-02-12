@@ -7,7 +7,7 @@ analysis stages can stay vectorized and avoid per-row Python loops.
 from __future__ import annotations
 
 import math
-from typing import Any, Mapping, TypeAlias
+from typing import Any, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -77,33 +77,21 @@ def to_stat_value(x: Any) -> int | float | str | None:
     return str(x)
 
 
-def tiers_to_map(tiers: Mapping[Any, Any] | pd.Series[Any] | None) -> TierMap:
-    """Normalize arbitrary tiers into ``{strategy: tier_int}``.
+def tiers_to_map(tier_lists: list[list[str]]) -> TierMap:
+    """Convert ordered tier groups into ``{strategy: tier_rank}``.
 
-    Notes:
-        This function intentionally uses vectorized Pandas conversion at the
-        module boundary so downstream analysis avoids per-row Python loops.
+    Tier rank is deterministic and based on outer-list position (1-indexed).
+    Duplicate strategies across tier groups are rejected.
     """
 
-    if tiers is None:
-        return {}
-    series = tiers if isinstance(tiers, pd.Series) else pd.Series(dict(tiers), dtype="object")
-    if series.empty:
-        return {}
-
-    numeric = pd.to_numeric(series, errors="coerce")
-    valid = numeric.notna()
-    if not valid.any():
-        return {}
-
-    normalized = pd.DataFrame(
-        {
-            "strategy": series.index.astype(str),
-            "tier": numeric.astype("int64"),
-        }
-    )
-    normalized = normalized.loc[valid.to_numpy()].reset_index(drop=True)
-    return dict(zip(normalized["strategy"], normalized["tier"], strict=False))
+    tiers: TierMap = {}
+    for tier_rank, members in enumerate(tier_lists, start=1):
+        for strategy in members:
+            strategy_key = str(strategy)
+            if strategy_key in tiers:
+                raise ValueError(f"duplicate strategy in tier lists: {strategy_key}")
+            tiers[strategy_key] = tier_rank
+    return tiers
 
 
 __all__ = ["TierMap", "tiers_to_map", "to_int", "to_stat_value"]
