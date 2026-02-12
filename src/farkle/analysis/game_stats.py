@@ -56,6 +56,7 @@ from farkle.utils.types import Compression
 from farkle.utils.writer import ParquetShardWriter
 
 StatValue: TypeAlias = float | int | str | NAType
+NormalizedScalar: TypeAlias = Scalar | None
 ArrowColumnData: TypeAlias = np.ndarray | list[Any] | pa.Array | pa.ChunkedArray
 StrategyPandasDtype: TypeAlias = (
     pd.UInt8Dtype
@@ -120,7 +121,7 @@ def _strategy_pandas_dtype(strategy_type: pa.DataType) -> StrategyPandasDtype:
     return pd.Int64Dtype()
 
 
-def _to_python_scalar(value: Scalar) -> Scalar:
+def _to_python_scalar(value: Scalar) -> NormalizedScalar:
     if isinstance(value, np.generic):
         return value.item()
     return value
@@ -128,6 +129,8 @@ def _to_python_scalar(value: Scalar) -> Scalar:
 
 def _strategy_key_to_int(value: Scalar, *, field: str = "strategy") -> int:
     normalized = _to_python_scalar(value)
+    if normalized is None:
+        raise ValueError(f"invalid {field} scalar for int conversion: {value!r}")
     try:
         return to_int(normalized)
     except ValueError as err:
@@ -136,7 +139,7 @@ def _strategy_key_to_int(value: Scalar, *, field: str = "strategy") -> int:
 
 def _strategy_stat_value(value: Scalar) -> StatValue:
     normalized = _to_python_scalar(value)
-    if normalized is pd.NA:
+    if normalized is None or normalized is pd.NA:
         return pd.NA
     if isinstance(normalized, bytes):
         return normalized.decode("utf-8", errors="replace")
