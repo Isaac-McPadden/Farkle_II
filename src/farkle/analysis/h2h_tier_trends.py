@@ -234,7 +234,8 @@ def _pooled_across_k(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _clean_variances(variances: Iterable[float]) -> np.ndarray:
-    series = pd.Series(variances, dtype="float64")
+    vals = list(variances)
+    series = pd.Series(vals, dtype="float64")
     series = series.fillna(MIN_VARIANCE)
     series = series.clip(lower=MIN_VARIANCE)
     return series.to_numpy()
