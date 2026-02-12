@@ -338,9 +338,15 @@ def _write_frequentist_scores(
             for k in sorted(winrates_by_players["n_players"].unique())
         }
 
-    effective_games = (
+    effective_games_raw = (
         winrates_by_players.groupby("n_players")["games"].sum().sort_index().to_dict()
     )
+    effective_games: dict[int, float] = {}
+    for key, value in effective_games_raw.items():
+        normalized_key = _normalize_mapping_key(key)
+        if isinstance(normalized_key, int):
+            effective_games[normalized_key] = float(value)
+
     normalized_effective_games: dict[int, float] = {}
     for key, value in effective_games.items():
         normalized_key = _normalize_mapping_key(key)
