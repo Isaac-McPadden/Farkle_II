@@ -101,7 +101,7 @@ def _player_counts_from_config(cfg: AppConfig) -> list[int]:
     counts = []
     for entry in cfg.sim.n_players_list:
         try:
-            counts.append(int(entry))
+            counts.append(to_int(entry))
         except (TypeError, ValueError):
             continue
     return sorted({k for k in counts if k > 0})
@@ -123,7 +123,7 @@ def _optional_csv_path(cfg: AppConfig, stage_dir: Path) -> Path | None:
 def _build_coverage(
     cfg: AppConfig, metrics_path: Path, coverage_inputs: Iterable[Path]
 ) -> pd.DataFrame:
-    counts = _stream_metrics_counts(metrics_path, default_seed=int(cfg.sim.seed))
+    counts = _stream_metrics_counts(metrics_path, default_seed=to_int(cfg.sim.seed))
     k_grid = _player_counts_from_config(cfg)
     if not k_grid:
         k_grid = sorted(counts["k"].unique().tolist())
@@ -132,7 +132,7 @@ def _build_coverage(
         seed_grid = cfg.sim.seed_list or [cfg.sim.seed]
     else:
         seed_grid = sorted(counts["seed"].unique().tolist())
-    seed_grid = [int(seed) for seed in seed_grid]
+    seed_grid = [to_int(seed) for seed in seed_grid]
 
     grid = pd.MultiIndex.from_product([seed_grid, k_grid], names=["seed", "k"]).to_frame(
         index=False
@@ -237,16 +237,16 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
                 norm_key,
                 {"games": 0, "strategies": set(), "missing_before_pad": None},
             )
-            entry["games"] = int(entry["games"]) + int(group["games"].sum())
+            entry["games"] = to_int(entry["games"]) + to_int(group["games"].sum())
             strategies = entry["strategies"]
             if isinstance(strategies, set):
                 strategies.update(group["strategy"].unique().tolist())
             if missing_col is not None:
                 missing_values = group["missing_before_pad"].dropna()
                 if not missing_values.empty:
-                    observed = int(missing_values.max())
+                    observed = to_int(missing_values.max())
                     current = entry.get("missing_before_pad")
-                    if current is None or observed > int(current):
+                    if current is None or observed > to_int(current):
                         entry["missing_before_pad"] = observed
 
     rows = []
@@ -256,7 +256,7 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
             {
                 "seed": seed,
                 "k": k,
-                "games": int(payload.get("games", 0)),
+                "games": to_int(payload.get("games", 0)),
                 "strategies": len(strategies) if isinstance(strategies, set) else 0,
                 "missing_before_pad": payload.get("missing_before_pad"),
             }
@@ -275,15 +275,15 @@ def _expected_strategies_by_k(
     fallback_count: int | None = None
 
     for k in player_counts:
-        path = iso_paths.get(int(k))
+        path = iso_paths.get(to_int(k))
         if path is not None and path.exists():
             try:
-                expected[k] = int(pq.ParquetFile(path).metadata.num_rows)
+                expected[k] = to_int(pq.ParquetFile(path).metadata.num_rows)
                 continue
             except (OSError, RuntimeError):
                 LOGGER.warning(
                     "Coverage: failed to read isolated metrics metadata",
-                    extra={"stage": "coverage_by_k", "path": str(path), "k": int(k)},
+                    extra={"stage": "coverage_by_k", "path": str(path), "k": to_int(k)},
                 )
         if fallback_count is None:
             _, meta = generate_strategy_grid(
@@ -296,7 +296,7 @@ def _expected_strategies_by_k(
                 auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
                 run_up_score_opts=cfg.sim.run_up_score_opts,
             )
-            fallback_count = int(meta["strategy_id"].shape[0])
+            fallback_count = to_int(meta["strategy_id"].shape[0])
         expected[k] = fallback_count
     return expected
 
@@ -307,11 +307,11 @@ def _map_isolated_paths(
     lookup = {path.resolve(): path for path in inputs}
     mapping: dict[int, Path] = {}
     for k in player_counts:
-        path = _resolve_isolated_metrics_path(cfg, int(k))
+        path = _resolve_isolated_metrics_path(cfg, to_int(k))
         if path is None:
             continue
         resolved = path.resolve()
-        mapping[int(k)] = lookup.get(resolved, path)
+        mapping[to_int(k)] = lookup.get(resolved, path)
     return mapping
 
 
@@ -331,18 +331,18 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
     if coverage.empty:
         return
     for k, group in coverage.groupby("k", sort=True):
-        strategy_min = int(group["strategies"].min())
-        strategy_max = int(group["strategies"].max())
-        games_min = int(group["games"].min())
-        games_max = int(group["games"].max())
-        missing = int(group["missing_strategies"].sum())
+        strategy_min = to_int(group["strategies"].min())
+        strategy_max = to_int(group["strategies"].max())
+        games_min = to_int(group["games"].min())
+        games_max = to_int(group["games"].max())
+        missing = to_int(group["missing_strategies"].sum())
 
         if strategy_min != strategy_max:
             LOGGER.warning(
                 "Coverage: strategy counts differ across seeds",
                 extra={
                     "stage": "coverage_by_k",
-                    "player_count": int(k),
+                    "player_count": to_int(k),
                     "min_strategies": strategy_min,
                     "max_strategies": strategy_max,
                     "seeds": sorted(group["seed"].unique().tolist()),
@@ -354,7 +354,7 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
                 "Coverage: game counts differ across seeds",
                 extra={
                     "stage": "coverage_by_k",
-                    "player_count": int(k),
+                    "player_count": to_int(k),
                     "min_games": games_min,
                     "max_games": games_max,
                     "seeds": sorted(group["seed"].unique().tolist()),
@@ -366,7 +366,7 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
                 "Coverage: missing strategies detected",
                 extra={
                     "stage": "coverage_by_k",
-                    "player_count": int(k),
+                    "player_count": to_int(k),
                     "missing_strategies": missing,
                     "seeds": sorted(group["seed"].unique().tolist()),
                 },

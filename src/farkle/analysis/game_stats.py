@@ -571,13 +571,13 @@ def _pooling_weights_for_rows(
         return n_players.map(lambda k: 1.0 / counts.get(k, 1))
 
     if pooling_scheme == "config":
-        missing = sorted({int(k) for k in counts} - set(weights_by_k))
+        missing = sorted({to_int(k) for k in counts} - set(weights_by_k))
         if missing:
             LOGGER.warning(
                 "Missing pooling weights for player counts; treating as zero",
                 extra={"stage": "game_stats", "missing": missing},
             )
-        return n_players.map(lambda k: float(weights_by_k.get(int(k), 0.0)) / counts.get(k, 1))
+        return n_players.map(lambda k: float(weights_by_k.get(to_int(k), 0.0)) / counts.get(k, 1))
 
     raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
 
@@ -1230,7 +1230,7 @@ def _rare_event_flags(
                 grouped = melted.groupby("strategy", observed=True, sort=False)
                 for strategy, group in grouped:
                     count = int(group.shape[0])
-                    strategy_value = int(strategy)
+                    strategy_value = to_int(strategy)
                     per_game_data: dict[str, ArrowColumnData] = {
                         "summary_level": np.full(count, "game", dtype=object),
                         "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
@@ -1396,7 +1396,7 @@ def _rare_event_details(
                 grouped = melted.groupby("strategy", observed=True, sort=False)
                 for strategy, group in grouped:
                     count = int(group.shape[0])
-                    strategy_value = int(strategy)
+                    strategy_value = to_int(strategy)
                     per_game_data: dict[str, ArrowColumnData] = {
                         "summary_level": np.full(count, "game", dtype=object),
                         "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
@@ -1506,8 +1506,8 @@ def _resolve_rare_event_thresholds(
     target_rate: float | None,
 ) -> tuple[tuple[int, ...], int]:
     """Resolve rare-event thresholds, optionally based on streaming quantiles."""
-    resolved_thresholds = tuple(int(thr) for thr in thresholds)
-    resolved_target_score = int(target_score)
+    resolved_thresholds = tuple(to_int(thr) for thr in thresholds)
+    resolved_target_score = to_int(target_score)
     needs_margin = margin_quantile is not None
     needs_target = target_rate is not None
     if not needs_margin and not needs_target:
@@ -1697,9 +1697,9 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
         if isinstance(player_value, (np.floating, float)):
             if not np.isfinite(player_value) or not float(player_value).is_integer():
                 continue
-            player_value = int(player_value)
+            player_value = to_int(player_value)
         elif isinstance(player_value, (np.integer, int)):
-            player_value = int(player_value)
+            player_value = to_int(player_value)
         else:
             continue
         stats = _summarize_rounds(rounds)

@@ -53,12 +53,22 @@ def try_to_int(value: Any) -> int | None:
 
 
 def to_int(value: Any) -> int:
-    """Convert a boundary scalar to ``int`` or raise ``ValueError``."""
+    """Convert scalar groupby/config values to ``int`` for boundary coercion only."""
 
-    converted = try_to_int(value)
-    if converted is None:
-        raise ValueError(f"cannot convert value to int: {value!r}")
-    return converted
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, (float, np.floating)):
+        numeric = float(value)
+        if math.isfinite(numeric) and numeric.is_integer():
+            return int(numeric)
+        raise ValueError(
+            f"cannot convert non-integral float to int: type={type(value).__name__}, value={value!r}"
+        )
+    raise ValueError(f"cannot convert value to int: type={type(value).__name__}, value={value!r}")
 
 
 def to_stat_value(x: Any) -> int | float | str | None:
