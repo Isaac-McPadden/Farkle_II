@@ -11,7 +11,7 @@ import bisect
 import json
 import logging
 from pathlib import Path
-from typing import Mapping, cast
+from typing import Any, Mapping, cast
 
 import networkx as nx
 import numpy as np
@@ -20,8 +20,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from scipy.stats import binomtest
 
-from farkle.config import AppConfig
 from farkle.analysis.stage_state import read_stage_done, stage_done_path, write_stage_done
+from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
 from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import atomic_path
@@ -311,8 +311,8 @@ def _derive_sig_tiers(G: nx.DiGraph) -> tuple[list[list[str]], nx.DiGraph, list[
     if nx.is_directed_acyclic_graph(G):
         topo_nodes = _topological_order(G)
         tiers = [[node] for node in topo_nodes]
-        tier_nodes = [cast(int, condensation.graph["mapping"][node]) for node in topo_nodes]
-        return tiers, condensation, tier_nodes
+        dag_tier_nodes = [cast(int, condensation.graph["mapping"][node]) for node in topo_nodes]
+        return tiers, condensation, dag_tier_nodes
 
     indegree = {node: condensation.in_degree(node) for node in condensation.nodes}
     available: list[int] = sorted(
@@ -392,10 +392,14 @@ def run_post_h2h(cfg: AppConfig) -> None:
         cfg.head2head_stage_dir / "bonferroni_pairwise.parquet",
         cfg.analysis_dir / "bonferroni_pairwise.parquet",
     ]
+    upstream_outputs_raw = upstream_meta.get("outputs", [])
+    upstream_outputs_iterable = (
+        upstream_outputs_raw if isinstance(upstream_outputs_raw, list) else []
+    )
     upstream_outputs = [
         Path(path)
-        for path in upstream_meta.get("outputs", [])
-        if Path(path).name == "bonferroni_pairwise.parquet"
+        for path in upstream_outputs_iterable
+        if isinstance(path, str) and Path(path).name == "bonferroni_pairwise.parquet"
     ]
     pairwise_candidates = upstream_outputs + pairwise_candidates
     pairwise_path = next((p for p in pairwise_candidates if p.exists()), pairwise_candidates[0])
@@ -513,9 +517,8 @@ def run_post_h2h(cfg: AppConfig) -> None:
     )
     s_tiers_payload = {"_meta": s_tier_meta, **s_tiers}
     s_tiers_path = analysis_dir / "h2h_s_tiers.json"
-    with atomic_path(str(s_tiers_path)) as tmp_path:
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(s_tiers_payload, handle, indent=2, sort_keys=True)
+    with atomic_path(str(s_tiers_path)) as tmp_path, open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(s_tiers_payload, handle, indent=2, sort_keys=True)
 
     LOGGER.info(
         "Post H2H completed",
@@ -598,9 +601,8 @@ def _write_empty_post_h2h_outputs(
     s_tiers_payload: dict[str, object] = {}
     if s_tier_metadata is not None:
         s_tiers_payload["_meta"] = s_tier_metadata
-    with atomic_path(str(s_tiers_path)) as tmp_path:
-        with open(tmp_path, "w", encoding="utf-8") as handle:
-            json.dump(s_tiers_payload, handle, indent=2, sort_keys=True)
+    with atomic_path(str(s_tiers_path)) as tmp_path, open(tmp_path, "w", encoding="utf-8") as handle:
+        json.dump(s_tiers_payload, handle, indent=2, sort_keys=True)
 
     return [decisions_path, graph_path, tiers_path, ranking_path, s_tiers_path]
 
@@ -631,17 +633,19 @@ def _load_union_candidates(
         if not path.exists():
             continue
         try:
-            payload = json.loads(path.read_text())
+            payload_any: Any = json.loads(path.read_text())
         except json.JSONDecodeError:
             continue
         meta: dict[str, object] | None = None
-        if isinstance(payload, dict) and "candidates" in payload:
-            raw = payload.get("candidates")
-            meta = {key: value for key, value in payload.items() if key != "candidates"}
+        raw_candidates: Any
+        if isinstance(payload_any, dict) and "candidates" in payload_any:
+            raw_candidates = payload_any.get("candidates")
+            meta = {key: value for key, value in payload_any.items() if key != "candidates"}
         else:
-            raw = payload
-        if isinstance(raw, list):
-            return [str(item) for item in raw], meta, path
+            raw_candidates = payload_any
+        if isinstance(raw_candidates, list):
+            validated_candidates = [str(item) for item in raw_candidates]
+            return validated_candidates, meta, path
     return [], None, None
 
 
