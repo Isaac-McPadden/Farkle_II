@@ -57,6 +57,16 @@ from farkle.utils.writer import ParquetShardWriter
 
 StatValue: TypeAlias = float | int | str | NAType
 ArrowColumnData: TypeAlias = np.ndarray | list[Any] | pa.Array | pa.ChunkedArray
+StrategyPandasDtype: TypeAlias = (
+    pd.UInt8Dtype
+    | pd.UInt16Dtype
+    | pd.UInt32Dtype
+    | pd.UInt64Dtype
+    | pd.Int8Dtype
+    | pd.Int16Dtype
+    | pd.Int32Dtype
+    | pd.Int64Dtype
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -92,7 +102,7 @@ def _strategy_numpy_dtype(strategy_type: pa.DataType) -> np.dtype[Any]:
     return np.dtype("int64")
 
 
-def _strategy_pandas_dtype(strategy_type: pa.DataType) -> pd.IntegerDtype:
+def _strategy_pandas_dtype(strategy_type: pa.DataType) -> StrategyPandasDtype:
     if pa.types.is_uint8(strategy_type):
         return pd.UInt8Dtype()
     if pa.types.is_uint16(strategy_type):
