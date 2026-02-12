@@ -18,7 +18,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypeAlias, TypedDict
 
 import pandas as pd
 import pyarrow as pa
@@ -37,6 +37,24 @@ LOGGER = logging.getLogger(__name__)
 OUTPUT_PARQUET = "coverage_by_k.parquet"
 OUTPUT_CSV = "coverage_by_k.csv"
 
+if TYPE_CHECKING:
+    from pandas._typing import Scalar as _PandasScalar
+
+    _CoverageScalar: TypeAlias = _PandasScalar | pa.Scalar | None
+else:
+    _CoverageScalar: TypeAlias = object
+
+_PANDAS_SCALAR_RUNTIME_TYPES = (
+    str,
+    bytes,
+    bool,
+    int,
+    float,
+    complex,
+    pd.Timestamp,
+    pd.Timedelta,
+)
+
 
 class _CountsPayload(TypedDict):
     games: int
@@ -44,11 +62,25 @@ class _CountsPayload(TypedDict):
     missing_before_pad: int | None
 
 
-def _pandas_scalar_to_int(value: object) -> int | None:
-    if value is None or pd.isna(value):
+def _pandas_scalar_to_int(value: _CoverageScalar) -> int | None:
+    normalized = value
+    arrow_to_python = getattr(value, "as_py", None)
+    if callable(arrow_to_python):
+        normalized = arrow_to_python()
+
+    if normalized is None:
         return None
+    if not isinstance(normalized, _PANDAS_SCALAR_RUNTIME_TYPES):
+        return None
+
+    is_na = pd.isna(normalized)
+    if not isinstance(is_na, bool):
+        return None
+    if is_na:
+        return None
+
     try:
-        return to_int(value)
+        return to_int(normalized)
     except (TypeError, ValueError):
         return None
 
