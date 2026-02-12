@@ -5,16 +5,22 @@ from pathlib import Path
 
 from farkle.utils.tiers import (
     _extract_section,
-    _normalize,
+    _normalize_mapping,
+    _normalize_tiers_payload,
     load_tier_payload,
     tier_mapping_from_payload,
     write_tier_payload,
 )
 
 
-def test_normalize_best_effort_parsing() -> None:
+def test_normalize_mapping_best_effort_parsing() -> None:
     payload = {"A": "1", "B": 2.3, "C": "bad", "D": object()}
-    assert _normalize(payload) == {"A": 1, "B": 2}
+    assert _normalize_mapping(payload) == {"A": 1, "B": 2}
+
+
+def test_normalize_tiers_payload_handles_legacy_lists() -> None:
+    payload = [["A", "B"], ["C"]]
+    assert _normalize_tiers_payload(payload) == {"A": 1, "B": 1, "C": 2}
 
 
 def test_extract_section_handles_missing_and_present() -> None:
