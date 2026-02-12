@@ -44,6 +44,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 from pandas._libs.missing import NAType
+from pandas._typing import Scalar
 
 from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
@@ -91,22 +92,53 @@ def _strategy_numpy_dtype(strategy_type: pa.DataType) -> np.dtype[Any]:
     return np.dtype("int64")
 
 
-def _strategy_pandas_dtype(strategy_type: pa.DataType) -> str:
+def _strategy_pandas_dtype(strategy_type: pa.DataType) -> pd.IntegerDtype:
     if pa.types.is_uint8(strategy_type):
-        return "UInt8"
+        return pd.UInt8Dtype()
     if pa.types.is_uint16(strategy_type):
-        return "UInt16"
+        return pd.UInt16Dtype()
     if pa.types.is_uint32(strategy_type):
-        return "UInt32"
+        return pd.UInt32Dtype()
     if pa.types.is_uint64(strategy_type):
-        return "UInt64"
+        return pd.UInt64Dtype()
     if pa.types.is_int8(strategy_type):
-        return "Int8"
+        return pd.Int8Dtype()
     if pa.types.is_int16(strategy_type):
-        return "Int16"
+        return pd.Int16Dtype()
     if pa.types.is_int32(strategy_type):
-        return "Int32"
-    return "Int64"
+        return pd.Int32Dtype()
+    return pd.Int64Dtype()
+
+
+def _to_python_scalar(value: Scalar) -> Scalar:
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _strategy_key_to_int(value: Scalar, *, field: str = "strategy") -> int:
+    normalized = _to_python_scalar(value)
+    try:
+        return to_int(normalized)
+    except ValueError as err:
+        raise ValueError(f"invalid {field} scalar for int conversion: {value!r}") from err
+
+
+def _strategy_stat_value(value: Scalar) -> StatValue:
+    normalized = _to_python_scalar(value)
+    if normalized is pd.NA:
+        return pd.NA
+    if isinstance(normalized, bytes):
+        return normalized.decode("utf-8", errors="replace")
+    if isinstance(normalized, str):
+        return normalized
+    if isinstance(normalized, bool):
+        return int(normalized)
+    if isinstance(normalized, int):
+        return normalized
+    if isinstance(normalized, float):
+        return float(normalized)
+    return str(normalized)
 
 
 def _coerce_strategy_dtype(df: pd.DataFrame, strategy_type: pa.DataType) -> pd.DataFrame:
@@ -114,7 +146,7 @@ def _coerce_strategy_dtype(df: pd.DataFrame, strategy_type: pa.DataType) -> pd.D
         return df
     out = df.copy()
     strategy_values = pd.to_numeric(out["strategy"], errors="coerce")
-    out["strategy"] = strategy_values.astype(_strategy_pandas_dtype(strategy_type)).array
+    out["strategy"] = pd.array(strategy_values, dtype=_strategy_pandas_dtype(strategy_type))
     return out
 
 
@@ -151,7 +183,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         input_paths.append(combined_path)
 
     if not input_paths:
-        stage_log.missing_input("no curated parquet files found", analysis_dir=str(cfg.analysis_dir))
+        stage_log.missing_input(
+            "no curated parquet files found", analysis_dir=str(cfg.analysis_dir)
+        )
         return
 
     write_details = cfg.analysis.rare_event_write_details
@@ -323,7 +357,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             if pooled_margin.empty:
                 stage_log.missing_input("no pooled margin rows available")
                 return
-            pooled_margin = _coerce_strategy_dtype(pooled_margin, _strategy_arrow_type(per_n_inputs))
+            pooled_margin = _coerce_strategy_dtype(
+                pooled_margin, _strategy_arrow_type(per_n_inputs)
+            )
             pooled_margin = _downcast_integer_stats(pooled_margin, columns=("observations",))
             pooled_margin_table = pa.Table.from_pandas(pooled_margin, preserve_index=False)
             write_parquet_atomic(pooled_margin_table, pooled_margin_output, codec=cfg.parquet_codec)
@@ -597,7 +633,7 @@ def _weighted_quantile(values: np.ndarray, weights: np.ndarray, quantile: float)
     if total <= 0:
         return float("nan")
     cutoff = quantile * total
-    idx = int(np.searchsorted(cumulative, cutoff, side="left"))
+    idx = _strategy_key_to_int(np.searchsorted(cumulative, cutoff, side="left"), field="index")
     idx = min(max(idx, 0), values_sorted.size - 1)
     return float(values_sorted[idx])
 
@@ -707,8 +743,8 @@ def _pooled_strategy_stats(
         pooled_rows.append(
             {
                 "summary_level": "pooled",
-                "strategy": strategy,
-                "observations": int(group.shape[0]),
+                "strategy": _strategy_stat_value(strategy),
+                "observations": _strategy_key_to_int(group.shape[0], field="observations"),
                 "mean_rounds": _weighted_mean(values, weights),
                 "median_rounds": _weighted_quantile(values, weights, 0.5),
                 "std_rounds": _weighted_std(values, weights),
@@ -851,8 +887,8 @@ def _pooled_margin_stats(
 
         pooled_row: dict[str, StatValue] = {
             "summary_level": "pooled",
-            "strategy": strategy,
-            "observations": int(group.shape[0]),
+            "strategy": _strategy_stat_value(strategy),
+            "observations": _strategy_key_to_int(group.shape[0], field="observations"),
             "mean_margin_runner_up": _weighted_mean(runner_vals, weights),
             "median_margin_runner_up": _weighted_quantile(runner_vals, weights, 0.5),
             "std_margin_runner_up": _weighted_std(runner_vals, weights),
@@ -864,9 +900,7 @@ def _pooled_margin_stats(
             pooled_row[f"prob_margin_runner_up_le_{thr}"] = _weighted_mean(
                 runner_vals <= thr, weights
             )
-            pooled_row[f"prob_score_spread_le_{thr}"] = _weighted_mean(
-                spread_vals <= thr, weights
-            )
+            pooled_row[f"prob_score_spread_le_{thr}"] = _weighted_mean(spread_vals <= thr, weights)
         pooled_rows.append(pooled_row)
 
     ordered_cols = [
@@ -896,7 +930,9 @@ def _per_strategy_margin_stats(
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
-        score_cols = [name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")]
+        score_cols = [
+            name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+        ]
 
         if not strategy_cols:
             LOGGER.warning(
@@ -1083,7 +1119,7 @@ def _rare_event_summary(
         observations = sums["observations"]
         summary_row: dict[str, object] = {
             "summary_level": "strategy",
-            "strategy": strategy,
+            "strategy": _strategy_stat_value(strategy),
             "n_players": players,
             "margin_runner_up": pd.NA,
             "score_spread": pd.NA,
@@ -1168,7 +1204,9 @@ def _rare_event_flags(
             ds_in = ds.dataset(path)
             strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
             score_cols = [
-                name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+                name
+                for name in ds_in.schema.names
+                if name.startswith("P") and name.endswith("_score")
             ]
 
             if not strategy_cols:
@@ -1227,8 +1265,8 @@ def _rare_event_flags(
                 melted["strategy"] = melted["strategy"].astype("category")
                 grouped = melted.groupby("strategy", observed=True, sort=False)
                 for strategy, group in grouped:
-                    count = int(group.shape[0])
-                    strategy_value = to_int(strategy)
+                    count = _strategy_key_to_int(group.shape[0], field="observations")
+                    strategy_value = _strategy_key_to_int(strategy)
                     per_game_data: dict[str, ArrowColumnData] = {
                         "summary_level": np.full(count, "game", dtype=object),
                         "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
@@ -1241,9 +1279,9 @@ def _rare_event_flags(
                         "observations": np.ones(count, dtype=obs_dtype),
                     }
                     for thr in thresholds:
-                        per_game_data[f"margin_le_{thr}"] = group[
-                            f"margin_le_{thr}"
-                        ].to_numpy(dtype=flag_dtype)
+                        per_game_data[f"margin_le_{thr}"] = group[f"margin_le_{thr}"].to_numpy(
+                            dtype=flag_dtype
+                        )
 
                     writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
                     rows_written += count
@@ -1253,7 +1291,7 @@ def _rare_event_flags(
             observations = sums["observations"]
             summary_row: dict[str, object] = {
                 "summary_level": "strategy",
-                "strategy": strategy,
+                "strategy": _strategy_stat_value(strategy),
                 "n_players": players,
                 "margin_runner_up": pd.NA,
                 "score_spread": pd.NA,
@@ -1334,7 +1372,9 @@ def _rare_event_details(
             ds_in = ds.dataset(path)
             strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
             score_cols = [
-                name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+                name
+                for name in ds_in.schema.names
+                if name.startswith("P") and name.endswith("_score")
             ]
 
             if not strategy_cols:
@@ -1393,8 +1433,8 @@ def _rare_event_details(
                 melted["strategy"] = melted["strategy"].astype("category")
                 grouped = melted.groupby("strategy", observed=True, sort=False)
                 for strategy, group in grouped:
-                    count = int(group.shape[0])
-                    strategy_value = to_int(strategy)
+                    count = _strategy_key_to_int(group.shape[0], field="observations")
+                    strategy_value = _strategy_key_to_int(strategy)
                     per_game_data: dict[str, ArrowColumnData] = {
                         "summary_level": np.full(count, "game", dtype=object),
                         "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
@@ -1407,9 +1447,9 @@ def _rare_event_details(
                         "observations": np.ones(count, dtype=obs_dtype),
                     }
                     for thr in thresholds:
-                        per_game_data[f"margin_le_{thr}"] = group[
-                            f"margin_le_{thr}"
-                        ].to_numpy(dtype=flag_dtype)
+                        per_game_data[f"margin_le_{thr}"] = group[f"margin_le_{thr}"].to_numpy(
+                            dtype=flag_dtype
+                        )
 
                     writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
                     rows_written += count
@@ -1457,7 +1497,11 @@ def _collect_rare_event_counts(
                 base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"]
             base["n_players"] = n_players
             melted = base.melt(
-                id_vars=["multi_reached_target", "n_players", *[f"margin_le_{thr}" for thr in thresholds]],
+                id_vars=[
+                    "multi_reached_target",
+                    "n_players",
+                    *[f"margin_le_{thr}" for thr in thresholds],
+                ],
                 value_vars=strategy_cols,
                 var_name="seat",
                 value_name="strategy",
@@ -1468,23 +1512,26 @@ def _collect_rare_event_counts(
             melted["strategy"] = melted["strategy"].astype("category")
             grouped = melted.groupby("strategy", observed=True, sort=False)
             for key, group in grouped:
-                count = int(group.shape[0])
+                count = _strategy_key_to_int(group.shape[0], field="observations")
                 rows_available += count
-                norm_key: tuple[int, int] = (to_int(key), to_int(n_players))
+                norm_key: tuple[int, int] = (
+                    _strategy_key_to_int(key),
+                    _strategy_key_to_int(n_players, field="n_players"),
+                )
                 strategy_entry = strategy_sums.setdefault(
                     norm_key,
                     {"observations": 0, **dict.fromkeys(flags, 0)},
                 )
                 strategy_entry["observations"] += count
                 for flag in flags:
-                    strategy_entry[flag] += int(group[flag].sum())
+                    strategy_entry[flag] += _strategy_key_to_int(group[flag].sum(), field=flag)
 
                 global_entry = global_sums.setdefault(
                     n_players, {"observations": 0, **dict.fromkeys(flags, 0)}
                 )
                 global_entry["observations"] += count
                 for flag in flags:
-                    global_entry[flag] += int(group[flag].sum())
+                    global_entry[flag] += _strategy_key_to_int(group[flag].sum(), field=flag)
 
     max_flag_count = 0
     max_observations = 0
@@ -1751,16 +1798,20 @@ def _summarize_margins(
         return base
 
     stats: dict[str, StatValue] = {
-        "observations": int(series.size),
+        "observations": _strategy_key_to_int(series.size, field="observations"),
         "mean_margin_runner_up": float(series.mean()),
         "median_margin_runner_up": float(series.median()),
         "std_margin_runner_up": float(series.std(ddof=0)),
     }
-    stats.update({key: float((series <= thr).mean()) for key, thr in zip(prob_keys, thresholds, strict=True)})
+    stats.update(
+        {key: float((series <= thr).mean()) for key, thr in zip(prob_keys, thresholds, strict=True)}
+    )
     return stats
 
 
-def _summarize_rounds(values: Iterable[int | float | np.integer | np.floating]) -> dict[str, StatValue]:
+def _summarize_rounds(
+    values: Iterable[int | float | np.integer | np.floating],
+) -> dict[str, StatValue]:
     """Return descriptive statistics for the provided iterable of round counts."""
 
     series = pd.to_numeric(pd.Series(values), errors="coerce").dropna()
@@ -1778,7 +1829,7 @@ def _summarize_rounds(values: Iterable[int | float | np.integer | np.floating]) 
             "prob_rounds_ge_20": float("nan"),
         }
 
-    count = int(series.size)
+    count = _strategy_key_to_int(series.size, field="observations")
     return {
         "observations": count,
         "mean_rounds": float(series.mean()),
