@@ -113,10 +113,8 @@ def _coerce_strategy_dtype(df: pd.DataFrame, strategy_type: pa.DataType) -> pd.D
     if df.empty or "strategy" not in df.columns:
         return df
     out = df.copy()
-    out["strategy"] = pd.array(
-        pd.to_numeric(out["strategy"], errors="coerce"),
-        dtype=_strategy_pandas_dtype(strategy_type),
-    )
+    strategy_values = pd.to_numeric(out["strategy"], errors="coerce")
+    out["strategy"] = strategy_values.astype(_strategy_pandas_dtype(strategy_type)).array
     return out
 
 
@@ -1113,7 +1111,7 @@ def _rare_event_summary(
     global_summary = pd.DataFrame(global_rows, columns=column_order)
 
     summary_df = pd.concat([strategy_summary, global_summary], ignore_index=True)
-    summary_df["strategy"] = pd.array(summary_df["strategy"], dtype="Int64")
+    summary_df["strategy"] = summary_df["strategy"].astype("Int64").array
     summary_df = _downcast_integer_stats(summary_df, columns=("n_players", "observations", *flags))
     summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
     write_parquet_atomic(summary_table, output_path, codec=codec)
@@ -1292,7 +1290,7 @@ def _rare_event_flags(
                 *[f"margin_le_{thr}" for thr in thresholds],
             ],
         )
-        summary_df["strategy"] = pd.array(summary_df["strategy"], dtype="Int64")
+        summary_df["strategy"] = summary_df["strategy"].astype("Int64").array
         summary_df = _downcast_integer_stats(summary_df, columns=("n_players", "observations"))
         summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
         writer.write_batch(summary_table)
