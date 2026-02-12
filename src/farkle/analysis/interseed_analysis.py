@@ -559,7 +559,7 @@ def _rank_correlations(
 
 def _tier_flips(
     data_a: SeedTierData, data_b: SeedTierData
-) -> tuple[list[dict[str, object]], dict[str, object]]:
+) -> tuple[list[dict[str, object]], dict[str, int | float | None]]:
     strategies = sorted(set(data_a.s_tiers) | set(data_b.s_tiers))
     rows: list[dict[str, object]] = []
     n_shared = 0
@@ -585,7 +585,7 @@ def _tier_flips(
             }
         )
     flip_rate = (n_flipped / n_shared) if n_shared else None
-    summary: dict[str, object] = {
+    summary: dict[str, int | float | None] = {
         "n_shared": n_shared,
         "n_flipped": n_flipped,
         "flip_rate": flip_rate,
