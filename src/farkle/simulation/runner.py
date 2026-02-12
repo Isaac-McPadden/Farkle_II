@@ -19,10 +19,12 @@ import os
 import pickle
 import shutil
 import stat
-from datetime import datetime, timezone
 from collections import Counter
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Sequence
+from types import TracebackType
+from typing import Mapping, Sequence, TypeAlias
 
 import pandas as pd
 import pyarrow as pa
@@ -39,14 +41,18 @@ from farkle.simulation.strategies import (
 )
 from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
-from farkle.utils.writer import atomic_path
 from farkle.utils.manifest import iter_manifest
+from farkle.utils.writer import atomic_path
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 LOGGER = logging.getLogger(__name__)
+
+
+RemovePathCallable: TypeAlias = Callable[[str], object]
+RemoveErrorInfo: TypeAlias = tuple[type[BaseException], BaseException, TracebackType | None]
 
 
 def _resolve_strategies(
@@ -343,11 +349,11 @@ def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str
         )
 
 
-def _handle_remove_error(func: object, path: str, exc: BaseException) -> None:
+def _handle_remove_error(func: RemovePathCallable, path: str, exc: RemoveErrorInfo) -> None:
     try:
         os.chmod(path, stat.S_IWRITE)
-    except OSError:
-        raise exc
+    except OSError as chmod_err:
+        raise exc[1] from chmod_err
     func(path)
 
 
