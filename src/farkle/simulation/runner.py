@@ -19,10 +19,12 @@ import os
 import pickle
 import shutil
 import stat
-from datetime import datetime, timezone
 from collections import Counter
+from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Mapping, Sequence
+from types import TracebackType
+from typing import Any, Mapping, Sequence, TypeAlias
 
 import pandas as pd
 import pyarrow as pa
@@ -39,14 +41,18 @@ from farkle.simulation.strategies import (
 )
 from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
-from farkle.utils.writer import atomic_path
 from farkle.utils.manifest import iter_manifest
+from farkle.utils.writer import atomic_path
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 LOGGER = logging.getLogger(__name__)
+
+
+RemovePathCallable: TypeAlias = Callable[..., Any]
+RemoveErrorInfo: TypeAlias = tuple[type[BaseException], BaseException, TracebackType]
 
 
 def _resolve_strategies(
@@ -343,11 +349,14 @@ def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str
         )
 
 
-def _handle_remove_error(func: object, path: str, exc: BaseException) -> None:
+def _handle_remove_error(func: RemovePathCallable, path: str, exc_info: RemoveErrorInfo) -> None:
+    LOGGER.debug("Retrying removal after chmod for path=%s", path)
     try:
         os.chmod(path, stat.S_IWRITE)
-    except OSError:
-        raise exc
+    except OSError as chmod_err:
+        LOGGER.exception("Failed to chmod path during removal retry: %s", path)
+        raise exc_info[1] from chmod_err
+    LOGGER.debug("Calling original remove function for path=%s", path)
     func(path)
 
 

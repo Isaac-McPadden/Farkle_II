@@ -1502,7 +1502,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                 },
             )
 
-    pooled_stats = _precision_pool(per_seed_results.values())
+    pooled_stats: Mapping[str, RatingStats] = _precision_pool(per_seed_results.values())
     if not pooled_stats:
         raise RuntimeError("TrueSkill pooling produced no results")
     ordered_pooled = _ensure_strict_mu_ordering(_sorted_ratings(pooled_stats))

@@ -964,7 +964,7 @@ def _s_tiers_section(s_tiers: Mapping[str, str]) -> list[str]:
     """Render the S+/S/S- breakdown for head-to-head candidates."""
     if not s_tiers:
         return []
-    buckets = {"S+": [], "S": [], "S-": []}
+    buckets: dict[str, list[str]] = {"S+": [], "S": [], "S-": []}
     for strategy, label in s_tiers.items():
         if label in buckets:
             buckets[label].append(strategy)

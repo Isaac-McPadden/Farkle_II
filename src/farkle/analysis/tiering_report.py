@@ -35,8 +35,6 @@ from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload, wri
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
-
-
 @dataclass
 class TieringInputs:
     """Configuration bundle for generating frequentist tier reports."""
@@ -179,12 +177,16 @@ def _coerce_strategy_ids(values: pd.Series) -> pd.Series:
     return numeric
 
 
-def _coerce_tier_keys(tiers: Mapping[Hashable, int]) -> dict[int, int]:
+def _coerce_tier_keys(tiers: Mapping[int | str, int]) -> dict[int, int]:
     """Coerce tier mapping keys to numeric strategy IDs."""
     if not tiers:
         return {}
-    numeric_keys = _coerce_strategy_ids(pd.Series(list(tiers.keys())))
-    return {int(key): int(value) for key, value in zip(numeric_keys.tolist(), tiers.values())}
+
+    normalized: dict[int, int] = {}
+    for key, value in tiers.items():
+        if isinstance(key, (int, str)):
+            normalized[int(key)] = int(value)
+    return normalized
 
 
 def _weighted_winrate(
@@ -245,7 +247,7 @@ def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
     )
 
 
-def _build_report(freq_df: pd.DataFrame, ts_tiers: Mapping[Hashable, int]) -> pd.DataFrame:
+def _build_report(freq_df: pd.DataFrame, ts_tiers: Mapping[int, int]) -> pd.DataFrame:
     """Join frequentist and TrueSkill tiers, adding disagreement markers."""
     ts_series = pd.Series(ts_tiers, name="trueskill_tier")
     freq_df = freq_df.set_index("strategy")

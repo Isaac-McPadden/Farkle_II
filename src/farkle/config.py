@@ -7,10 +7,10 @@ includes utilities for loading and validating YAML-based application configs.
 from __future__ import annotations
 
 import dataclasses
+import difflib
+import logging
 import re
 from dataclasses import dataclass, field, is_dataclass
-import logging
-import difflib
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -242,6 +242,9 @@ class AnalysisConfig:
 
     agreement_strategies: tuple[str, ...] | None = None
     """Optional subset of strategies to include when computing agreement metrics."""
+
+    agreement_include_pooled: bool = False
+    """Whether agreement analysis should emit a pooled (all-k) comparison payload."""
 
     run_report: bool = True
     """Emit the final report artifacts (plan step 9)."""
@@ -1079,30 +1082,28 @@ class AppConfig:
         except (TypeError, ValueError):
             return False
 
-    def agreement_players(self) -> list[int | str]:
-        """Return normalized player keys for agreement analysis outputs."""
+    def agreement_players(self) -> list[int]:
+        """Return normalized numeric player counts for agreement analysis outputs."""
 
-        pooled = False
-        players: list[int] = []
-        if not self.sim.n_players_list:
-            pooled = True
+        normalized: set[int] = set()
         for entry in self.sim.n_players_list:
-            if isinstance(entry, str) and entry.strip().lower() == "pooled":
-                pooled = True
-                continue
+            if isinstance(entry, bool):
+                raise ValueError(f"invalid n_players_list entry: {entry!r}")
             try:
                 value = int(entry)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"invalid n_players_list entry: {entry!r}") from exc
-            if value == 0:
-                pooled = True
-                continue
-            players.append(value)
+            if value <= 0:
+                raise ValueError(
+                    f"n_players_list must contain positive player counts, got {entry!r}"
+                )
+            normalized.add(value)
+        return sorted(normalized)
 
-        normalized = sorted({int(value) for value in players})
-        if pooled:
-            normalized.append("pooled")
-        return normalized
+    def agreement_include_pooled(self) -> bool:
+        """Return whether pooled agreement output should be generated."""
+
+        return bool(self.analysis.agreement_include_pooled)
 
     def agreement_output_path_pooled(self) -> Path:
         """Preferred path for pooled agreement analytics."""
@@ -1502,6 +1503,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
     per_n_seed_provided: dict[int, bool] = {}
     per_n_seed_list_provided: dict[int, bool] = {}
     per_n_seed_pair_provided: dict[int, bool] = {}
+    pooled_requested = False
     if "sim" in data:
         sim_section = data["sim"]
         seed_provided = "seed" in sim_section
@@ -1509,6 +1511,27 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         seed_pair_provided = "seed_pair" in sim_section
         if "n_players" in sim_section and "n_players_list" not in sim_section:
             sim_section["n_players_list"] = [sim_section.pop("n_players")]
+        pooled_requested = False
+        raw_players = sim_section.get("n_players_list")
+        if isinstance(raw_players, list):
+            numeric_players: list[int] = []
+            for entry in raw_players:
+                is_pooled_entry = False
+                if isinstance(entry, str):
+                    is_pooled_entry = entry.strip().lower() == "pooled"
+                else:
+                    try:
+                        is_pooled_entry = int(entry) == 0
+                    except (TypeError, ValueError):
+                        is_pooled_entry = False
+                if is_pooled_entry:
+                    pooled_requested = True
+                    continue
+                try:
+                    numeric_players.append(int(entry))
+                except (TypeError, ValueError) as exc:
+                    raise ValueError(f"invalid n_players_list entry: {entry!r}") from exc
+            sim_section["n_players_list"] = numeric_players
         if (
             "collect_metrics" in sim_section
             and "expanded_metrics" not in sim_section
@@ -1529,6 +1552,11 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                         per_n_seed_list_provided[per_n_key] = True
                     if "seed_pair" in val:
                         per_n_seed_pair_provided[per_n_key] = True
+    if pooled_requested:
+        analysis_section = data.setdefault("analysis", {})
+        if isinstance(analysis_section, Mapping):
+            analysis_section.setdefault("agreement_include_pooled", True)
+
     if "analysis" in data:
         analysis_section = data["analysis"]
         legacy_alias = "run_tiering_report" in analysis_section
@@ -1555,10 +1583,10 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         typing_ns = globals().copy()
         if "StageLayout" not in typing_ns:
             try:
-                from farkle.analysis.stage_registry import StageLayout
+                from farkle.analysis.stage_registry import StageLayout as stage_layout_type
             except ImportError:
-                StageLayout = None  # type: ignore[assignment]
-            typing_ns["StageLayout"] = StageLayout
+                stage_layout_type = None
+            typing_ns["StageLayout"] = stage_layout_type
         type_hints = get_type_hints(cls, globalns=typing_ns)
         for f in dataclasses.fields(cls):
             if f.name not in section:
@@ -1679,10 +1707,10 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         typing_ns = globals().copy()
         if "StageLayout" not in typing_ns:
             try:
-                from farkle.analysis.stage_registry import StageLayout
+                from farkle.analysis.stage_registry import StageLayout as stage_layout_type
             except ImportError:
-                StageLayout = None  # type: ignore[assignment]
-            typing_ns["StageLayout"] = StageLayout
+                stage_layout_type = None
+            typing_ns["StageLayout"] = stage_layout_type
         type_hints = get_type_hints(type(section), globalns=typing_ns)
         annotation = type_hints.get(option)
         new_value = _coerce(raw, current, annotation)

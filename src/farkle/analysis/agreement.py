@@ -53,7 +53,7 @@ def run(cfg: AppConfig) -> None:
     wrote_payload = False
     summary_rows: list[dict[str, object]] = []
     for players in player_counts:
-        payload = _build_payload(cfg, players, stage_log)
+        payload = _build_payload(cfg, players=players, pooled_scope=False, stage_log=stage_log)
         if payload is None:
             continue
         payload["players"] = players
@@ -70,6 +70,24 @@ def run(cfg: AppConfig) -> None:
         )
         summary_rows.append(_flatten_payload(payload))
         wrote_payload = True
+
+    if cfg.agreement_include_pooled():
+        payload = _build_payload(cfg, players=0, pooled_scope=True, stage_log=stage_log)
+        if payload is not None:
+            payload["players"] = "pooled"
+            out_path = cfg.agreement_output_path_pooled()
+            with atomic_path(str(out_path)) as tmp_path:
+                Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
+            LOGGER.info(
+                "Agreement metrics written",
+                extra={
+                    "stage": "agreement",
+                    "players": "pooled",
+                    "path": str(out_path),
+                },
+            )
+            summary_rows.append(_flatten_payload(payload))
+            wrote_payload = True
 
     if not wrote_payload:
         stage_log.missing_input("no agreement payloads generated")
@@ -90,13 +108,13 @@ def run(cfg: AppConfig) -> None:
 
 
 def _build_payload(
-    cfg: AppConfig, players: int | str, stage_log: StageLogger
+    cfg: AppConfig, players: int, pooled_scope: bool, stage_log: StageLogger
 ) -> dict[str, object] | None:
     """Assemble agreement metrics for the requested player count.
 
     Args:
         cfg: Application configuration with analytics output paths.
-        players: Number of players for which to compute agreement, or pooled sentinel.
+        players: Number of players for which to compute agreement (0 when pooled).
 
     Returns:
         Dictionary of correlation, stability, and coverage metrics keyed by method.
@@ -106,7 +124,6 @@ def _build_payload(
         account for them; ties are only logged for visibility.
     """
     methods: dict[str, MethodData] = {}
-    pooled_scope = AppConfig.is_pooled_players(players)
     comparison_scope = "pooled" if pooled_scope else "per_k"
 
     try:
@@ -184,7 +201,7 @@ def _build_payload(
 
 
 def _load_trueskill(
-    cfg: AppConfig, players: int | str, *, pooled_scope: bool
+    cfg: AppConfig, players: int | str, *, pooled_scope: bool = False
 ) -> MethodData | None:
     """Load TrueSkill ratings and optional tiers for a given player count.
 
