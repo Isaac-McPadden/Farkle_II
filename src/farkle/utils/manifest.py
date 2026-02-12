@@ -33,18 +33,13 @@ import os
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterable, Iterator, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 if os.name == "nt":
     import msvcrt
 
-if TYPE_CHECKING:
-    import fcntl as _fcntl_t
-
 if os.name != "nt":
     import fcntl
-
-    _FCNTL: _fcntl_t = fcntl
 
 
 _WINDOWS_LOCK_OFFSET = 0
@@ -85,7 +80,7 @@ if os.name == "nt":
         os.lseek(fd, _WINDOWS_LOCK_OFFSET, os.SEEK_SET)
         while True:
             try:
-                msvcrt.locking(fd, msvcrt.LK_NBLCK, _WINDOWS_LOCK_BYTES)
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, _WINDOWS_LOCK_BYTES)  # type: ignore[attr-defined]
                 return
             except OSError:
                 time.sleep(_WINDOWS_LOCK_RETRY_S)
@@ -95,18 +90,18 @@ if os.name == "nt":
         """Release an exclusive lock for *fd*."""
         os.lseek(fd, _WINDOWS_LOCK_OFFSET, os.SEEK_SET)
         with suppress(OSError):
-            msvcrt.locking(fd, msvcrt.LK_UNLCK, _WINDOWS_LOCK_BYTES)
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, _WINDOWS_LOCK_BYTES)  # type: ignore[attr-defined]
 
 else:
 
     def _lock_fd(fd: int) -> None:
         """Acquire an exclusive lock for *fd* (blocks until available)."""
-        _FCNTL.flock(fd, _FCNTL.LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_EX)
 
 
     def _unlock_fd(fd: int) -> None:
         """Release an exclusive lock for *fd*."""
-        _FCNTL.flock(fd, _FCNTL.LOCK_UN)
+        fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def _write_all(fd: int, data: bytes) -> None:
