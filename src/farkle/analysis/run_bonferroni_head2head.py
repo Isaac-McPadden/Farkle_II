@@ -187,20 +187,19 @@ def _count_pair_wins(
 
 
 def _pairwise_schema() -> pa.Schema:
-    return pa.schema(
-        [
-            pa.field("players", pa.int64()),
-            pa.field("seed", pa.int64()),
-            pa.field("pair_id", pa.int64()),
-            pa.field("a", pa.string()),
-            pa.field("b", pa.string()),
-            pa.field("games", pa.int64()),
-            pa.field("wins_a", pa.int64()),
-            pa.field("wins_b", pa.int64()),
-            pa.field("win_rate_a", pa.float64()),
-            pa.field("pval_one_sided", pa.float64()),
-        ]
-    )
+    fields: list[pa.Field] = [
+        pa.field("players", pa.int64()),
+        pa.field("seed", pa.int64()),
+        pa.field("pair_id", pa.int64()),
+        pa.field("a", pa.string()),
+        pa.field("b", pa.string()),
+        pa.field("games", pa.int64()),
+        pa.field("wins_a", pa.int64()),
+        pa.field("wins_b", pa.int64()),
+        pa.field("win_rate_a", pa.float64()),
+        pa.field("pval_one_sided", pa.float64()),
+    ]
+    return pa.schema(fields)
 
 
 def run_bonferroni_head2head(
