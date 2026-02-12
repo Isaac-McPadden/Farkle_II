@@ -76,6 +76,43 @@ class RatingArtifactPaths(TypedDict):
     legacy_checkpoint: list[Path]
 
 
+class TrueSkillInitKwargs(TypedDict, total=False):
+    """Typed TrueSkill constructor kwargs."""
+
+    mu: float
+    sigma: float
+    beta: float
+    tau: float
+    draw_probability: float
+
+
+_TRUE_SKILL_INIT_KEYS: tuple[str, ...] = (
+    "mu",
+    "sigma",
+    "beta",
+    "tau",
+    "draw_probability",
+)
+
+
+def _coerce_trueskill_env_kwargs(env_kwargs: Mapping[str, object] | None) -> dict[str, float]:
+    """Validate and coerce config-driven TrueSkill kwargs to floats."""
+
+    if env_kwargs is None:
+        return {}
+
+    coerced: dict[str, float] = {}
+    for key in _TRUE_SKILL_INIT_KEYS:
+        value = env_kwargs.get(key)
+        if value is None:
+            continue
+        if isinstance(value, (int, float, str)):
+            coerced[key] = float(value)
+            continue
+        raise TypeError(f"TrueSkill config value '{key}' must be float-compatible, got {type(value)!r}")
+    return coerced
+
+
 def _per_player_dir(root: Path, player_count: str) -> Path:
     """Canonical directory for per-player-count artifacts."""
 
@@ -776,7 +813,7 @@ def _rate_block_worker(
     *,
     resume: bool = True,
     checkpoint_every_batches: int = 500,
-    env_kwargs: Mapping[str, object] | None = None,
+    env_kwargs: Mapping[str, float] | TrueSkillInitKwargs | None = None,
     row_data_dir: str | None = None,
     curated_rows_name: str | None = None,
 ) -> tuple[str, int]:
@@ -849,7 +886,7 @@ def _rate_block_worker(
         )
         return player_count, n_rows
 
-    env = trueskill.TrueSkill(**(env_kwargs or {}))
+    env = trueskill.TrueSkill(**_coerce_trueskill_env_kwargs(env_kwargs))
 
     start_rg = 0
     start_bi = 0
@@ -949,7 +986,7 @@ def run_trueskill(
     batch_rows: int = 100_000,
     resume_per_n: bool = True,
     checkpoint_every_batches: int = 500,
-    env_kwargs: Mapping[str, object] | None = None,
+    env_kwargs: Mapping[str, float] | TrueSkillInitKwargs | None = None,
     pooled_weights_by_k: Mapping[int, float] | None = None,
     tiering_z: float | None = None,
     tiering_min_gap: float | None = None,
@@ -1029,6 +1066,7 @@ def run_trueskill(
     pooled: dict[str, tuple[float, float]] = {}
     per_block_games: dict[str, int] = {}
     pooled_weights_by_k = dict(pooled_weights_by_k or {})
+    env_kwargs_float = _coerce_trueskill_env_kwargs(env_kwargs)
 
     blocks = sorted(base.glob("*_players"))
     # Pick a sensible default, then cap to CPUs and number of blocks
@@ -1058,7 +1096,7 @@ def run_trueskill(
                     batch_rows,
                     resume=resume_per_n,
                     checkpoint_every_batches=checkpoint_every_batches,
-                    env_kwargs=env_kwargs,
+                    env_kwargs=env_kwargs_float,
                     row_data_dir=str(row_data_path) if row_data_path else None,
                     curated_rows_name=curated_rows_name,
                 ): b
@@ -1084,7 +1122,7 @@ def run_trueskill(
                 batch_rows,
                 resume=resume_per_n,
                 checkpoint_every_batches=checkpoint_every_batches,
-                env_kwargs=env_kwargs,
+                env_kwargs=env_kwargs_float,
                 row_data_dir=str(row_data_path) if row_data_path else None,
                 curated_rows_name=curated_rows_name,
             )
@@ -1127,15 +1165,15 @@ def run_trueskill(
             pooled[k] = (s_mu, s_tau)
 
     # Precision-weighted pooling → (sum weight*tau*mu, sum weight*tau) → (mu, sigma)
-    pooled_stats = {
+    pooled_rating_stats = {
         k: RatingStats(mu=(s_mu / s_tau), sigma=(s_tau**-0.5))
         for k, (s_mu, s_tau) in pooled.items()
         if s_tau > 0
     }
     # Atomic writes for pooled outputs
     # Save pooled ratings as Parquet
-    _save_ratings_parquet(pooled_parquet, pooled_stats)
-    pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled_stats.items()}
+    _save_ratings_parquet(pooled_parquet, pooled_rating_stats)
+    pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled_rating_stats.items()}
     pooled_json_path = _ensure_new_location(
         pooled_dir / f"ratings_pooled{suffix}.json",
         root / f"ratings_pooled{suffix}.json",
@@ -1144,8 +1182,8 @@ def run_trueskill(
     with atomic_path(str(pooled_json_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(pooled_json))
     tiers = build_tiers(
-        means={k: v.mu for k, v in pooled_stats.items()},
-        stdevs={k: v.sigma for k, v in pooled_stats.items()},
+        means={k: v.mu for k, v in pooled_rating_stats.items()},
+        stdevs={k: v.sigma for k, v in pooled_rating_stats.items()},
         z=float(tiering_z or 1.645),
         min_gap=tiering_min_gap,
     )
@@ -1429,16 +1467,18 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     pooled_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = analysis_dir.parent
 
-    env_kwargs = {
-        "beta": cfg.trueskill.beta,
-        "tau": cfg.trueskill.tau,
-        "draw_probability": cfg.trueskill.draw_probability,
-    }
+    env_kwargs: dict[str, float] = _coerce_trueskill_env_kwargs(
+        {
+            "beta": cfg.trueskill.beta,
+            "tau": cfg.trueskill.tau,
+            "draw_probability": cfg.trueskill.draw_probability,
+        }
+    )
     tiering_z = float(analysis_cfg.tiering_z_star or 1.645)
     tiering_min_gap = analysis_cfg.tiering_min_gap
 
-    per_seed_results: dict[int, dict[str, RatingStats]] = {}
-    per_seed_outputs: dict[int, dict[str, Mapping[str, RatingStats]]] = {}
+    per_seed_results: dict[int, Mapping[str, RatingStats]] = {}
+    per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
     long_tables: list[pa.Table] = []
 
     for seed in seeds:
@@ -1515,8 +1555,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     if per_seed_outputs:
         per_player_runs: dict[int, list[Mapping[str, RatingStats]]] = {}
-        for seed_outputs in per_seed_outputs.values():
-            for key, player_stats in seed_outputs.items():
+        for seed_player_outputs in per_seed_outputs.values():
+            for key, player_stats in seed_player_outputs.items():
                 try:
                     players = int(str(key).removesuffix("p"))
                 except ValueError:
