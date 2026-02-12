@@ -24,7 +24,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
-from typing import Mapping, Sequence, TypeAlias
+from typing import Any, Mapping, Sequence, TypeAlias
 
 import pandas as pd
 import pyarrow as pa
@@ -51,8 +51,8 @@ from farkle.utils.writer import atomic_path
 LOGGER = logging.getLogger(__name__)
 
 
-RemovePathCallable: TypeAlias = Callable[[str], object]
-RemoveErrorInfo: TypeAlias = tuple[type[BaseException], BaseException, TracebackType | None]
+RemovePathCallable: TypeAlias = Callable[..., Any]
+RemoveErrorInfo: TypeAlias = tuple[type[BaseException], BaseException, TracebackType]
 
 
 def _resolve_strategies(
@@ -349,11 +349,14 @@ def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str
         )
 
 
-def _handle_remove_error(func: RemovePathCallable, path: str, exc: RemoveErrorInfo) -> None:
+def _handle_remove_error(func: RemovePathCallable, path: str, exc_info: RemoveErrorInfo) -> None:
+    LOGGER.debug("Retrying removal after chmod for path=%s", path)
     try:
         os.chmod(path, stat.S_IWRITE)
     except OSError as chmod_err:
-        raise exc[1] from chmod_err
+        LOGGER.exception("Failed to chmod path during removal retry: %s", path)
+        raise exc_info[1] from chmod_err
+    LOGGER.debug("Calling original remove function for path=%s", path)
     func(path)
 
 
