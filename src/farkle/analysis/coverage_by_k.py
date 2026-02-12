@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from pathlib import Path
+from typing import TypedDict
 
 import pandas as pd
 import pyarrow as pa
@@ -35,6 +36,21 @@ LOGGER = logging.getLogger(__name__)
 
 OUTPUT_PARQUET = "coverage_by_k.parquet"
 OUTPUT_CSV = "coverage_by_k.csv"
+
+
+class _CountsPayload(TypedDict):
+    games: int
+    strategies: set[int]
+    missing_before_pad: int | None
+
+
+def _pandas_scalar_to_int(value: object) -> int | None:
+    if value is None or pd.isna(value):
+        return None
+    try:
+        return to_int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def run(cfg: AppConfig, *, force: bool = False) -> None:
@@ -205,7 +221,7 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
     if missing_col:
         columns.append(missing_col)
 
-    counts: dict[tuple[int, int], dict[str, object]] = {}
+    counts: dict[tuple[int, int], _CountsPayload] = {}
     scanner = dataset.scanner(columns=columns, use_threads=True)
     for batch in scanner.to_batches():
         if batch.num_rows == 0:
@@ -232,33 +248,36 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
 
         for key, group in df.groupby(["seed", "k"], sort=False):
             seed, k = key
-            norm_key: tuple[int, int] = (to_int(seed), to_int(k))
+            seed_i = to_int(seed)
+            k_i = to_int(k)
+            norm_key: tuple[int, int] = (seed_i, k_i)
             entry = counts.setdefault(
                 norm_key,
                 {"games": 0, "strategies": set(), "missing_before_pad": None},
             )
-            entry["games"] = to_int(entry["games"]) + to_int(group["games"].sum())
-            strategies = entry["strategies"]
-            if isinstance(strategies, set):
-                strategies.update(group["strategy"].unique().tolist())
+            games_sum = _pandas_scalar_to_int(group["games"].sum())
+            if games_sum is not None:
+                entry["games"] += games_sum
+            entry["strategies"].update(group["strategy"].unique().tolist())
             if missing_col is not None:
                 missing_values = group["missing_before_pad"].dropna()
                 if not missing_values.empty:
-                    observed = to_int(missing_values.max())
-                    current = entry.get("missing_before_pad")
-                    if current is None or observed > to_int(current):
+                    observed = _pandas_scalar_to_int(missing_values.max())
+                    if observed is None:
+                        continue
+                    current = entry["missing_before_pad"]
+                    if current is None or observed > current:
                         entry["missing_before_pad"] = observed
 
     rows = []
     for (seed, k), payload in sorted(counts.items()):
-        strategies = payload.get("strategies", set())
         rows.append(
             {
                 "seed": seed,
                 "k": k,
-                "games": to_int(payload.get("games", 0)),
-                "strategies": len(strategies) if isinstance(strategies, set) else 0,
-                "missing_before_pad": payload.get("missing_before_pad"),
+                "games": payload["games"],
+                "strategies": len(payload["strategies"]),
+                "missing_before_pad": payload["missing_before_pad"],
             }
         )
     return pd.DataFrame(
@@ -331,6 +350,7 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
     if coverage.empty:
         return
     for k, group in coverage.groupby("k", sort=True):
+        k_i = to_int(k)
         strategy_min = to_int(group["strategies"].min())
         strategy_max = to_int(group["strategies"].max())
         games_min = to_int(group["games"].min())
@@ -342,7 +362,7 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
                 "Coverage: strategy counts differ across seeds",
                 extra={
                     "stage": "coverage_by_k",
-                    "player_count": to_int(k),
+                    "player_count": k_i,
                     "min_strategies": strategy_min,
                     "max_strategies": strategy_max,
                     "seeds": sorted(group["seed"].unique().tolist()),
@@ -354,7 +374,7 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
                 "Coverage: game counts differ across seeds",
                 extra={
                     "stage": "coverage_by_k",
-                    "player_count": to_int(k),
+                    "player_count": k_i,
                     "min_games": games_min,
                     "max_games": games_max,
                     "seeds": sorted(group["seed"].unique().tolist()),
@@ -366,7 +386,7 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
                 "Coverage: missing strategies detected",
                 extra={
                     "stage": "coverage_by_k",
-                    "player_count": to_int(k),
+                    "player_count": k_i,
                     "missing_strategies": missing,
                     "seeds": sorted(group["seed"].unique().tolist()),
                 },
