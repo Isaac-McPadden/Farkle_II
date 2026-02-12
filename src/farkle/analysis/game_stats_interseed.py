@@ -143,8 +143,11 @@ def _seed_analysis_dirs(cfg: AppConfig) -> list[SeedInputs]:
         if input_dir.name == analysis_subdir:
             base_results_dir = input_dir.parent
         else:
-            seed_inputs = SeedInputs(seed=int(cfg.sim.seed), analysis_dir=input_dir)
-            inputs_list.append(seed_inputs)
+            seed_input: SeedInputs = SeedInputs(
+                seed=int(cfg.sim.seed),
+                analysis_dir=input_dir,
+            )
+            inputs_list.append(seed_input)
 
     base_root, _ = split_seeded_results_dir(base_results_dir)
     resolved_seeds = list(seeds) if seeds else []
@@ -160,25 +163,28 @@ def _seed_analysis_dirs(cfg: AppConfig) -> list[SeedInputs]:
     if resolved_seeds:
         for seed in sorted(set(resolved_seeds)):
             results_dir = resolve_results_dir(base_root, seed)
-            seed_inputs = SeedInputs(seed=seed, analysis_dir=results_dir / analysis_subdir)
-            analysis_dir: Path = seed_inputs.analysis_dir
-            inputs_list.append(seed_inputs)
+            seed_input = SeedInputs(
+                seed=seed,
+                analysis_dir=results_dir / analysis_subdir,
+            )
+            analysis_dir_path: Path = seed_input.analysis_dir
+            inputs_list.append(seed_input)
     elif not inputs_list:
-        seed_inputs = SeedInputs(
+        seed_input = SeedInputs(
             seed=int(cfg.sim.seed),
             analysis_dir=base_results_dir / analysis_subdir,
         )
-        inputs_list.append(seed_inputs)
+        inputs_list.append(seed_input)
 
     unique: list[SeedInputs] = []
     seen: set[Path] = set()
-    for seed_inputs in inputs_list:
-        analysis_dir = seed_inputs.analysis_dir
-        if analysis_dir in seen:
+    for seed_input in inputs_list:
+        analysis_dir_path = seed_input.analysis_dir
+        if analysis_dir_path in seen:
             continue
-        seen.add(analysis_dir)
-        if analysis_dir.exists():
-            unique.append(seed_inputs)
+        seen.add(analysis_dir_path)
+        if analysis_dir_path.exists():
+            unique.append(seed_input)
     return unique
 
 
