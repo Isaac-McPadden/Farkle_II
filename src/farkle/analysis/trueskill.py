@@ -29,6 +29,9 @@ def run(cfg: AppConfig) -> None:
         return
 
     out = cfg.preferred_tiers_path()
+    if cfg.interseed_input_dir is not None:
+        # Avoid short-circuiting interseed runs based on upstream seed artifacts.
+        out = cfg.trueskill_stage_dir / "tiers.json"
     target = cfg.trueskill_stage_dir / "tiers.json"
     if out.exists() and out.stat().st_mtime >= curated_parquet.stat().st_mtime:
         LOGGER.info(

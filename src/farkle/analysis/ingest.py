@@ -337,7 +337,7 @@ def _process_block(block: Path, cfg: AppConfig) -> int:
             )
         )
     seat_cols = [c for c in canon.names if c.startswith("P")]
-    wanted = ("winner", "n_rounds", "winning_score", *seat_cols)
+    wanted = ("winner", "game_seed", "n_rounds", "winning_score", *seat_cols)
 
     total = 0
 

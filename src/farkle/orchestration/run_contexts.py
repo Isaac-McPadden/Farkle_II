@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from farkle.analysis.stage_registry import StageLayout, resolve_interseed_stage_layout
@@ -136,6 +136,11 @@ class InterseedRunContext:
             interseed_input_layout=input_layout_override,
             stage_layout=resolve_interseed_stage_layout(seed_context.config),
         )
+        if run_cfg.analysis.tiering_seeds is None:
+            run_cfg.analysis = replace(
+                run_cfg.analysis,
+                tiering_seeds=[int(seed) for seed in seed_pair],
+            )
         return cls(
             seed_pair=seed_pair,
             seed=seed_context.seed,

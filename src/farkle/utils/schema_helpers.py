@@ -15,6 +15,7 @@ import pyarrow as pa
 _BASE_FIELDS: Final[list[pa.Field]] = [
     pa.field("winner_seat", pa.string()),  # P{n} label of the winner
     pa.field("winner_strategy", pa.int32()),  # strategy id of the winner
+    pa.field("game_seed", pa.int64()),  # RNG seed for the game
     pa.field("seat_ranks", pa.list_(pa.string())),  # ["P7","P1","P3",...]
     pa.field("winning_score", pa.int32()),
     pa.field("n_rounds", pa.int16()),

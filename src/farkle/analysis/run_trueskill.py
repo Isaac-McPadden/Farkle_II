@@ -1459,6 +1459,49 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
         long_table = pa.concat_tables(long_tables, promote_options="default")
         write_parquet_atomic(long_table, pooled_dir / "ratings_long.parquet")
 
+    if per_seed_outputs:
+        per_player_runs: dict[int, list[Mapping[str, RatingStats]]] = {}
+        for seed_outputs in per_seed_outputs.values():
+            for key, stats in seed_outputs.items():
+                try:
+                    players = int(str(key).removesuffix("p"))
+                except ValueError:
+                    continue
+                per_player_runs.setdefault(players, []).append(stats)
+
+        for players in sorted(per_player_runs):
+            runs = per_player_runs[players]
+            pooled_stats = _precision_pool(runs)
+            if not pooled_stats:
+                continue
+            dest_dir = analysis_dir / f"{players}p"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            dest = dest_dir / f"ratings_{players}.parquet"
+            seed_paths = list(dest_dir.glob(f"ratings_{players}_seed*.parquet"))
+            seed_paths.extend(list(analysis_dir.glob(f"trueskill_{players}p_seed*.parquet")))
+            newest_seed = max((p.stat().st_mtime for p in seed_paths if p.exists()), default=0.0)
+            if dest.exists() and dest.stat().st_mtime >= newest_seed:
+                LOGGER.info(
+                    "TrueSkill per-player pooled outputs up-to-date",
+                    extra={
+                        "stage": "trueskill",
+                        "players": players,
+                        "path": str(dest),
+                        "seeds": len(runs),
+                    },
+                )
+                continue
+            _save_ratings_parquet(dest, _sorted_ratings(pooled_stats))
+            LOGGER.info(
+                "TrueSkill per-player pooled outputs written",
+                extra={
+                    "stage": "trueskill",
+                    "players": players,
+                    "path": str(dest),
+                    "seeds": len(runs),
+                },
+            )
+
     pooled_stats = _precision_pool(per_seed_results.values())
     if not pooled_stats:
         raise RuntimeError("TrueSkill pooling produced no results")
