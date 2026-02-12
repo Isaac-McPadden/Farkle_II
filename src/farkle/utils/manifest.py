@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
@@ -38,6 +39,11 @@ if os.name == "nt":
     import msvcrt
 else:
     import fcntl
+
+
+_WINDOWS_LOCK_OFFSET = 0
+_WINDOWS_LOCK_BYTES = 1
+_WINDOWS_LOCK_RETRY_S = 0.05
 
 __all__ = ["append_manifest_line", "append_manifest_many", "iter_manifest"]
 
@@ -66,21 +72,34 @@ def _open_append_fd(path: os.PathLike[str] | str) -> int:
     return os.open(os.fspath(path), flags, 0o644)
 
 
-def _lock_fd(fd: int) -> None:
-    """Acquire an exclusive lock for *fd* (blocks until available)."""
-    if os.name == "nt":
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_LOCK, 1)
-    else:
+if os.name == "nt":
+
+    def _lock_fd(fd: int) -> None:
+        """Acquire an exclusive lock for *fd* (blocks until available)."""
+        os.lseek(fd, _WINDOWS_LOCK_OFFSET, os.SEEK_SET)
+        while True:
+            try:
+                msvcrt.locking(fd, msvcrt.LK_NBLCK, _WINDOWS_LOCK_BYTES)
+                return
+            except OSError:
+                time.sleep(_WINDOWS_LOCK_RETRY_S)
+
+
+    def _unlock_fd(fd: int) -> None:
+        """Release an exclusive lock for *fd*."""
+        os.lseek(fd, _WINDOWS_LOCK_OFFSET, os.SEEK_SET)
+        with suppress(OSError):
+            msvcrt.locking(fd, msvcrt.LK_UNLCK, _WINDOWS_LOCK_BYTES)
+
+else:
+
+    def _lock_fd(fd: int) -> None:
+        """Acquire an exclusive lock for *fd* (blocks until available)."""
         fcntl.flock(fd, fcntl.LOCK_EX)
 
 
-def _unlock_fd(fd: int) -> None:
-    """Release an exclusive lock for *fd*."""
-    if os.name == "nt":
-        os.lseek(fd, 0, os.SEEK_SET)
-        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
-    else:
+    def _unlock_fd(fd: int) -> None:
+        """Release an exclusive lock for *fd*."""
         fcntl.flock(fd, fcntl.LOCK_UN)
 
 
