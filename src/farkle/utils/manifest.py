@@ -33,12 +33,18 @@ import os
 import time
 from contextlib import suppress
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import TYPE_CHECKING, Any, Iterable, Iterator, Mapping
 
 if os.name == "nt":
     import msvcrt
-else:
+
+if TYPE_CHECKING:
+    import fcntl as _fcntl_t
+
+if os.name != "nt":
     import fcntl
+
+    _FCNTL: _fcntl_t = fcntl
 
 
 _WINDOWS_LOCK_OFFSET = 0
@@ -95,12 +101,12 @@ else:
 
     def _lock_fd(fd: int) -> None:
         """Acquire an exclusive lock for *fd* (blocks until available)."""
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        _FCNTL.flock(fd, _FCNTL.LOCK_EX)
 
 
     def _unlock_fd(fd: int) -> None:
         """Release an exclusive lock for *fd*."""
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        _FCNTL.flock(fd, _FCNTL.LOCK_UN)
 
 
 def _write_all(fd: int, data: bytes) -> None:
