@@ -16,6 +16,7 @@ from itertools import chain
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -181,17 +182,30 @@ def _winner_strategies(
     if winner_col == "winner_strategy":
         return df[winner_col]
 
-    seat_lookup = {col.removesuffix("_strategy"): col for col in strat_cols}
+    valid_cols = [col for col in strat_cols if _SEAT_STRATEGY_RE.match(col)]
+    seat_to_col_position = {
+        int(cast(re.Match[str], _SEAT_STRATEGY_RE.match(col)).group(1)): idx
+        for idx, col in enumerate(valid_cols)
+    }
+    winners = pd.Series(pd.NA, index=df.index, dtype="string")
 
-    def _resolve(row: pd.Series) -> Any:
-        seat = row[winner_col]
-        if isinstance(seat, str):
-            key = seat_lookup.get(seat)
-            if key:
-                return row.get(key)
-        return None
+    if not valid_cols:
+        return winners
 
-    return df.apply(_resolve, axis=1)
+    seat_indices = pd.to_numeric(
+        df[winner_col].astype("string").str.extract(r"^P(\d+)$", expand=False),
+        errors="coerce",
+    ).astype("Int64")
+    resolved_positions = seat_indices.map(seat_to_col_position)
+    valid_mask = resolved_positions.notna()
+    if not valid_mask.any():
+        return winners
+
+    strategy_values = df[valid_cols].astype("string").to_numpy(dtype=object)
+    winner_rows = np.flatnonzero(valid_mask.to_numpy())
+    winner_cols = resolved_positions[valid_mask].astype(int).to_numpy()
+    winners.iloc[winner_rows] = strategy_values[winner_rows, winner_cols]
+    return winners
 
 
 def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFrame:
