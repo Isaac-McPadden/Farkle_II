@@ -77,3 +77,22 @@ def test_seat_strategy_columns_excludes_winner_strategy_and_sorts(tmp_path):
     )
 
     assert cols == ["P1_strategy", "P2_strategy", "P10_strategy"]
+
+
+def test_build_matchup_labels_handles_mixed_player_counts_and_nulls():
+    df = pd.DataFrame(
+        {
+            "game_seed": [1001, 1002, 1003],
+            "P1_strategy": ["Alpha", "Bravo", "Delta"],
+            "P2_strategy": ["Charlie", pd.NA, "Echo"],
+            "P3_strategy": [pd.NA, pd.NA, "Foxtrot"],
+        }
+    )
+
+    labels = rng_diagnostics._build_matchup_labels(df, ["P1_strategy", "P2_strategy", "P3_strategy"])
+
+    assert labels.tolist() == [
+        "Alpha | Charlie",
+        "Bravo",
+        "Delta | Echo | Foxtrot",
+    ]
