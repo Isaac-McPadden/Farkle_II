@@ -341,12 +341,13 @@ def _write_frequentist_scores(
     effective_games_raw = (
         winrates_by_players.groupby("n_players")["games"].sum().sort_index()
     )
-    effective_games: dict[int, float] = {}
-    for key, value in effective_games_raw.items():
-        normalized_key = _normalize_mapping_key(key)
-        if isinstance(normalized_key, int):
-            effective_games[normalized_key] = float(value)
-
+    effective_games: dict[int | Hashable, float] = {}
+    for k_raw_hash, games in effective_games_raw.items():
+        k_raw_int = cast(int, k_raw_hash)
+        k_norm = _normalize_mapping_key(k_raw_int)
+        if isinstance(k_norm, int):
+            effective_games[k_norm] = float(games)
+         
     provenance = {
         "pooling_rule": "weighted_mean_by_k",
         "weight_source": weight_source,

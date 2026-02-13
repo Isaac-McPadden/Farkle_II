@@ -30,17 +30,16 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping
 
-if os.name == "nt":
+if sys.platform == "win32":
     import msvcrt
-
-if os.name != "nt":
-    from fcntl import LOCK_EX, LOCK_UN
-    from fcntl import flock as posix_flock
+else:
+    import fcntl
 
 
 _WINDOWS_LOCK_OFFSET = 0
@@ -74,7 +73,8 @@ def _open_append_fd(path: os.PathLike[str] | str) -> int:
     return os.open(os.fspath(path), flags, 0o644)
 
 
-if os.name == "nt":
+
+if sys.platform == "win32":
 
     def _lock_fd(fd: int) -> None:
         """Acquire an exclusive lock for *fd* (blocks until available)."""
@@ -97,12 +97,12 @@ else:
 
     def _lock_fd(fd: int) -> None:
         """Acquire an exclusive lock for *fd* (blocks until available)."""
-        posix_flock(fd, LOCK_EX)
+        fcntl.flock(fd, fcntl.LOCK_EX)  # type: ignore[attr-defined]
 
 
     def _unlock_fd(fd: int) -> None:
         """Release an exclusive lock for *fd*."""
-        posix_flock(fd, LOCK_UN)
+        fcntl.flock(fd, fcntl.LOCK_UN)  # type: ignore[attr-defined]
 
 
 def _write_all(fd: int, data: bytes) -> None:
