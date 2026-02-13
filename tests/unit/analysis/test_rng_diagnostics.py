@@ -54,9 +54,9 @@ def test_normalize_lags_and_winner_resolution():
 
     df = pd.DataFrame(
         {
-            "winner_seat": ["P2", "P1"],
-            "P1_strategy": ["X", "Y"],
-            "P2_strategy": ["Z", "Z"],
+            "winner_seat": ["P2", "P1", "P9", "PX", pd.NA],
+            "P1_strategy": ["X", "Y", "A", "B", "C"],
+            "P2_strategy": ["Z", "Z", "D", "E", "F"],
         }
     )
     resolved = rng_diagnostics._winner_strategies(
@@ -65,7 +65,7 @@ def test_normalize_lags_and_winner_resolution():
         strat_cols=["P1_strategy", "P2_strategy"],
     )
 
-    assert resolved.tolist() == ["Z", "Y"]
+    assert resolved.tolist() == ["Z", "Y", pd.NA, pd.NA, pd.NA]
 
 
 def test_seat_strategy_columns_excludes_winner_strategy_and_sorts(tmp_path):
