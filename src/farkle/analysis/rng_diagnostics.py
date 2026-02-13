@@ -96,7 +96,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     columns = ["game_seed", "n_rounds", winner_col, *strat_cols]
     df = dataset.to_table(columns=columns).to_pandas(categories=strat_cols)
     df = df.sort_values("game_seed")
-    df["matchup"] = df[strat_cols].apply(_matchup_label, axis=1)
+    df["matchup"] = _build_matchup_labels(df, strat_cols)
     df["n_players"] = df[strat_cols].notna().sum(axis=1).astype(int)
     df["winner_strategy"] = _winner_strategies(df, winner_col, strat_cols)
 
@@ -156,9 +156,23 @@ def _seat_strategy_columns(cfg: AppConfig, schema_names: Sequence[str]) -> list[
     return sorted(present, key=lambda col: int(_SEAT_STRATEGY_RE.match(col).group(1)))
 
 
-def _matchup_label(row: pd.Series) -> str:
-    participants = [str(val) for val in row if pd.notna(val)]
-    return " | ".join(sorted(participants))
+def _build_matchup_labels(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.Series:
+    valid_seat_cols = [col for col in strat_cols if col in df.columns and _SEAT_STRATEGY_RE.match(col)]
+    if not valid_seat_cols:
+        return pd.Series(index=df.index, dtype="string")
+
+    seat_values = df[valid_seat_cols].astype("string")
+    stacked = seat_values.stack()
+    stacked = stacked[stacked.notna()]
+    if stacked.empty:
+        return pd.Series(index=df.index, dtype="string")
+
+    matchups = (
+        stacked.groupby(level=0, sort=False)
+        .agg(list)
+        .map(lambda participants: " | ".join(sorted(participants)))
+    )
+    return matchups.reindex(df.index).astype("string")
 
 
 def _winner_strategies(
