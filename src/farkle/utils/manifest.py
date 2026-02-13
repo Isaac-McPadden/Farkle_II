@@ -39,7 +39,8 @@ if os.name == "nt":
     import msvcrt
 
 if os.name != "nt":
-    import fcntl
+    from fcntl import LOCK_EX, LOCK_UN
+    from fcntl import flock as posix_flock
 
 
 _WINDOWS_LOCK_OFFSET = 0
@@ -96,12 +97,12 @@ else:
 
     def _lock_fd(fd: int) -> None:
         """Acquire an exclusive lock for *fd* (blocks until available)."""
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        posix_flock(fd, LOCK_EX)
 
 
     def _unlock_fd(fd: int) -> None:
         """Release an exclusive lock for *fd*."""
-        fcntl.flock(fd, fcntl.LOCK_UN)
+        posix_flock(fd, LOCK_UN)
 
 
 def _write_all(fd: int, data: bytes) -> None:
