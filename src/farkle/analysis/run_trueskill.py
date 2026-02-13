@@ -48,6 +48,7 @@ import yaml  # type: ignore[import-untyped]
 from trueskill import Rating
 
 from farkle.config import AppConfig
+from farkle.orchestration.seed_utils import resolve_results_dir, split_seeded_results_dir
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.random import seed_everything
 from farkle.utils.schema_helpers import n_players_from_schema
@@ -1445,6 +1446,41 @@ def _write_conservative_tiers(
     return tiers_path
 
 
+def _resolve_seed_results_root(cfg: AppConfig, seed: int) -> Path:
+    """Resolve per-seed results root for interseed processing."""
+
+    base_root, parsed_seed = split_seeded_results_dir(cfg.results_root)
+    if parsed_seed is None:
+        return cfg.results_root
+    return resolve_results_dir(base_root, int(seed))
+
+
+def _resolve_seed_row_data_dir(cfg: AppConfig, seed_results_root: Path) -> Path | None:
+    """Resolve curated row-data directory under a specific seed's analysis root."""
+
+    analysis_root = seed_results_root / cfg.io.analysis_subdir
+    candidates: list[Path] = []
+
+    input_folder = cfg._interseed_input_folder("curate")
+    if input_folder is not None:
+        candidates.append(analysis_root / input_folder)
+
+    stage_folder = cfg.stage_layout.folder_for("curate")
+    if stage_folder is not None:
+        stage_candidate = analysis_root / stage_folder
+        if stage_candidate not in candidates:
+            candidates.append(stage_candidate)
+
+    legacy_candidate = analysis_root / "curate"
+    if legacy_candidate not in candidates:
+        candidates.append(legacy_candidate)
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     """Run TrueSkill for each configured seed and pool the results."""
 
@@ -1466,6 +1502,16 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     pooled_dir = cfg.trueskill_pooled_dir
     pooled_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = analysis_dir.parent
+    default_row_data_dir = cfg.resolve_input_stage_dir("curate")
+    if default_row_data_dir is None or not default_row_data_dir.exists():
+        fallback_row_data_dir = cfg.data_dir
+        default_row_data_dir = (
+            fallback_row_data_dir if fallback_row_data_dir.exists() else None
+        )
+    seed_results_roots = {seed: _resolve_seed_results_root(cfg, seed) for seed in seeds}
+    seed_row_data_dirs = {
+        seed: _resolve_seed_row_data_dir(cfg, seed_results_roots[seed]) for seed in seeds
+    }
 
     env_kwargs: dict[str, float] = _coerce_trueskill_env_kwargs(
         {
@@ -1483,19 +1529,23 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     for seed in seeds:
         seed_everything(seed)
+        seed_results_root = seed_results_roots.get(seed, cfg.results_root)
+        seed_row_data_dir = seed_row_data_dirs.get(seed) or default_row_data_dir
         LOGGER.info(
             "TrueSkill seed run start",
             extra={
                 "stage": "trueskill",
                 "seed": seed,
                 "analysis_dir": str(analysis_dir),
+                "dataroot": str(seed_results_root),
+                "row_data_dir": str(seed_row_data_dir) if seed_row_data_dir else None,
             },
         )
         run_trueskill(
             output_seed=seed,
             root=analysis_dir,
-            dataroot=cfg.results_root,
-            row_data_dir=cfg.data_dir,
+            dataroot=seed_results_root,
+            row_data_dir=seed_row_data_dir,
             curated_rows_name=cfg.curated_rows_name,
             workers=analysis_cfg.n_jobs or None,
             env_kwargs=env_kwargs,

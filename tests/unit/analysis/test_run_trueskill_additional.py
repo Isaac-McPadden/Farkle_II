@@ -13,6 +13,8 @@ import pytest
 import trueskill
 
 import farkle.analysis.run_trueskill as rt
+from farkle.analysis.stage_registry import resolve_interseed_stage_layout
+from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.utils.types import Compression, normalize_compression
 
 
@@ -689,3 +691,83 @@ def test_run_trueskill_rebuilds_outdated_pooled(
     assert pooled_path.stat().st_mtime > old_time
     assert (analysis_root / "pooled" / "ratings_pooled.json").exists()
     assert (analysis_root / "tiers.json").exists()
+
+
+def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    pair_root = tmp_path / "results_seed_pair_12_13"
+    seed12_root = pair_root / "results_seed_12"
+    seed13_root = pair_root / "results_seed_13"
+    seed12_analysis = seed12_root / "analysis"
+    seed13_analysis = seed13_root / "analysis"
+    expected_seed12_row_data_dir = seed12_analysis / "01_curate"
+    expected_seed13_row_data_dir = seed13_analysis / "01_curate"
+    expected_seed12_row_data_dir.mkdir(parents=True, exist_ok=True)
+    expected_seed13_row_data_dir.mkdir(parents=True, exist_ok=True)
+
+    cfg = AppConfig(
+        io=IOConfig(
+            results_dir_prefix=seed12_root,
+            interseed_input_dir=seed12_analysis,
+            interseed_input_layout={"curate": "01_curate"},
+        ),
+        sim=SimConfig(seed=12, n_players_list=[2], seed_list=[12, 13], seed_pair=(12, 13)),
+    )
+    cfg.analysis.tiering_seeds = [12, 13]
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+
+    seen_seed_inputs: list[tuple[int, Path | None, Path | None]] = []
+
+    def fake_run_trueskill(
+        output_seed: int = 0,
+        root: Path | None = None,
+        dataroot: Path | None = None,
+        row_data_dir: Path | None = None,
+        curated_rows_name: str | None = None,
+        workers: int | None = None,
+        batch_rows: int = 100_000,
+        resume_per_n: bool = True,
+        checkpoint_every_batches: int = 500,
+        env_kwargs: Mapping[str, float] | rt.TrueSkillInitKwargs | None = None,
+        pooled_weights_by_k: Mapping[int, float] | None = None,
+        tiering_z: float | None = None,
+        tiering_min_gap: float | None = None,
+    ) -> None:
+        _ = (
+            dataroot,
+            curated_rows_name,
+            workers,
+            batch_rows,
+            resume_per_n,
+            checkpoint_every_batches,
+            env_kwargs,
+            pooled_weights_by_k,
+            tiering_z,
+            tiering_min_gap,
+        )
+        seen_seed_inputs.append(
+            (
+                int(output_seed),
+                Path(dataroot) if dataroot is not None else None,
+                Path(row_data_dir) if row_data_dir is not None else None,
+            )
+        )
+        assert root is not None
+        root = Path(root)
+        rt._save_ratings_parquet(
+            root / "2p" / f"ratings_2_seed{output_seed}.parquet",
+            {"alpha": rt.RatingStats(25.0, 8.0)},
+        )
+        rt._save_ratings_parquet(
+            root / "pooled" / f"ratings_pooled_seed{output_seed}.parquet",
+            {"alpha": rt.RatingStats(25.0, 8.0)},
+        )
+
+    monkeypatch.setattr(rt, "run_trueskill", fake_run_trueskill)
+    rt.run_trueskill_all_seeds(cfg)
+
+    assert seen_seed_inputs == [
+        (12, seed12_root, expected_seed12_row_data_dir),
+        (13, seed13_root, expected_seed13_row_data_dir),
+    ]

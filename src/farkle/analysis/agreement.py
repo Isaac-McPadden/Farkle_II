@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Callable, Iterable, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -28,6 +29,7 @@ from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
+_SEED_SUFFIX_RE = re.compile(r"_seed(\d+)$")
 
 
 @dataclass
@@ -272,16 +274,22 @@ def _resolve_trueskill_seed_paths(
     cfg: AppConfig, players: int | str, *, pooled_scope: bool
 ) -> list[Path]:
     """Collect candidate TrueSkill seed parquet paths for a scope."""
-    seed_candidates: set[Path] = set()
+    seed_candidates: list[Path] = []
     if pooled_scope:
-        seed_candidates.update(cfg.analysis_dir.glob("ratings_pooled_seed*.parquet"))
+        seed_candidates.extend(cfg.analysis_dir.glob("ratings_pooled_seed*.parquet"))
         trueskill_pooled_dir = cfg.stage_dir_if_active("trueskill", "pooled")
         if trueskill_pooled_dir is not None:
-            seed_candidates.update(trueskill_pooled_dir.glob("ratings_pooled_seed*.parquet"))
+            seed_candidates.extend(trueskill_pooled_dir.glob("ratings_pooled_seed*.parquet"))
         trueskill_stage_dir = cfg.stage_dir_if_active("trueskill")
         if trueskill_stage_dir is not None:
-            seed_candidates.update(trueskill_stage_dir.glob("ratings_pooled_seed*.parquet"))
-        return sorted(seed_candidates)
+            seed_candidates.extend(trueskill_stage_dir.glob("ratings_pooled_seed*.parquet"))
+        return _select_seed_paths(
+            seed_candidates,
+            key_fn=lambda path: (
+                0 if path.parent.name == "pooled" else 1,
+                str(path),
+            ),
+        )
 
     if AppConfig.is_pooled_players(players):
         return []
@@ -289,13 +297,52 @@ def _resolve_trueskill_seed_paths(
     stage_dir = cfg.stage_dir_if_active("trueskill")
     roots = [root for root in (stage_dir, cfg.analysis_dir) if root is not None]
     for root in roots:
-        seed_candidates.update(root.glob(f"{players_int}p/ratings_{players_int}_seed*.parquet"))
-        seed_candidates.update(root.glob(f"ratings_{players_int}_seed*.parquet"))
-        seed_candidates.update(root.glob(f"trueskill_{players_int}p_seed*.parquet"))
-        seed_candidates.update(
+        seed_candidates.extend(root.glob(f"{players_int}p/ratings_{players_int}_seed*.parquet"))
+        seed_candidates.extend(root.glob(f"ratings_{players_int}_seed*.parquet"))
+        seed_candidates.extend(root.glob(f"trueskill_{players_int}p_seed*.parquet"))
+        seed_candidates.extend(
             root.glob(f"data/{players_int}p/ratings_{players_int}_seed*.parquet")
         )
-    return sorted(seed_candidates)
+    return _select_seed_paths(
+        seed_candidates,
+        key_fn=lambda path: (
+            _trueskill_seed_path_priority(path, players_int),
+            str(path),
+        ),
+    )
+
+
+def _seed_from_path(path: Path) -> int | None:
+    match = _SEED_SUFFIX_RE.search(path.stem)
+    if match is None:
+        return None
+    return int(match.group(1))
+
+
+def _select_seed_paths(paths: Iterable[Path], key_fn: Callable[[Path], tuple[int, str]]) -> list[Path]:
+    selected_by_seed: dict[int, Path] = {}
+    selected_keys: dict[int, tuple[int, str]] = {}
+    for path in sorted(set(paths), key=str):
+        seed = _seed_from_path(path)
+        if seed is None:
+            continue
+        key = key_fn(path)
+        current_key = selected_keys.get(seed)
+        if current_key is None or key < current_key:
+            selected_by_seed[seed] = path
+            selected_keys[seed] = key
+    return [selected_by_seed[seed] for seed in sorted(selected_by_seed)]
+
+
+def _trueskill_seed_path_priority(path: Path, players: int) -> int:
+    name = path.name
+    if path.parent.name == f"{players}p" and name.startswith(f"ratings_{players}_seed"):
+        return 0
+    if name.startswith(f"ratings_{players}_seed"):
+        return 1
+    if name.startswith(f"trueskill_{players}p_seed"):
+        return 2
+    return 3
 
 
 def _load_frequentist(cfg: AppConfig, players: int | str) -> MethodData | None:

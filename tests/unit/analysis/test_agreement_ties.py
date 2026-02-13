@@ -1,5 +1,6 @@
 import json
 import logging
+from pathlib import Path
 from typing import Any
 
 import pandas as pd
@@ -143,6 +144,35 @@ def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
     assert trueskill.tiers == {"a": 1, "b": 2}
     assert frequentist.tiers == {"a": 1, "b": 2}
     assert frequentist.per_seed_scores == []
+
+
+def test_resolve_trueskill_seed_paths_deduplicates_alias_outputs(tmp_path: Path) -> None:
+    cfg = agreement.AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+
+    stage_dir = cfg.trueskill_stage_dir
+    per_player_dir = stage_dir / "2p"
+    per_player_dir.mkdir(parents=True, exist_ok=True)
+
+    payload = pd.DataFrame(
+        {
+            "strategy": ["a", "b"],
+            "mu": [10.0, 9.0],
+            "sigma": [1.0, 1.1],
+        }
+    )
+
+    payload.to_parquet(per_player_dir / "ratings_2_seed12.parquet")
+    payload.to_parquet(per_player_dir / "ratings_2_seed13.parquet")
+    payload.to_parquet(stage_dir / "trueskill_2p_seed12.parquet")
+    payload.to_parquet(stage_dir / "trueskill_2p_seed13.parquet")
+
+    seed_paths = agreement._resolve_trueskill_seed_paths(cfg, players=2, pooled_scope=False)
+
+    assert [path.name for path in seed_paths] == [
+        "ratings_2_seed12.parquet",
+        "ratings_2_seed13.parquet",
+    ]
 
 
 def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, monkeypatch):
