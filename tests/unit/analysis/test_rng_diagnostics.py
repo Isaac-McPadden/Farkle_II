@@ -66,3 +66,14 @@ def test_normalize_lags_and_winner_resolution():
     )
 
     assert resolved.tolist() == ["Z", "Y"]
+
+
+def test_seat_strategy_columns_excludes_winner_strategy_and_sorts(tmp_path):
+    cfg, _, _ = build_curated_fixture(tmp_path)
+
+    cols = rng_diagnostics._seat_strategy_columns(
+        cfg,
+        ["winner_strategy", "P10_strategy", "P2_strategy", "P1_strategy", "other"],
+    )
+
+    assert cols == ["P1_strategy", "P2_strategy", "P10_strategy"]

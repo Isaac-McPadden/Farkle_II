@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterable, Sequence
 from itertools import chain
 from pathlib import Path
@@ -28,6 +29,7 @@ from farkle.utils.writer import atomic_path
 LOGGER = logging.getLogger(__name__)
 
 _EXPECTED_NOTE = "Expected ~0 under IID seeds"
+_SEAT_STRATEGY_RE = re.compile(r"^P(\d+)_strategy$")
 
 
 def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = False) -> None:
@@ -71,15 +73,23 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
 
     dataset = ds.dataset(data_file)
     schema_names = set(dataset.schema.names)
-    strat_cols = [name for name in dataset.schema.names if name.endswith("_strategy")]
+    strat_cols = _seat_strategy_columns(cfg, dataset.schema.names)
     winner_col = _winner_column(schema_names)
 
     required = {"game_seed", "n_rounds"}
-    if not required.issubset(schema_names) or not strat_cols or winner_col is None:
+    if not required.issubset(schema_names) or winner_col is None:
         stage_log.missing_input(
             "curated parquet missing required columns",
             path=str(data_file),
             required_cols=sorted(required | {"winner_strategy", "winner_seat"}),
+        )
+        return
+
+    if not strat_cols:
+        stage_log.missing_input(
+            "curated parquet missing seat strategy columns",
+            path=str(data_file),
+            required_cols=["P1_strategy"],
         )
         return
 
@@ -128,6 +138,22 @@ def _winner_column(names: set[str]) -> str | None:
     if "winner_seat" in names:
         return "winner_seat"
     return None
+
+
+def _seat_strategy_columns(cfg: AppConfig, schema_names: Sequence[str]) -> list[str]:
+    schema_set = set(schema_names)
+    configured_candidates: list[str] = []
+    if cfg.sim.n_players_list:
+        max_players = max(cfg.sim.n_players_list)
+        configured_candidates = [f"P{seat}_strategy" for seat in range(1, max_players + 1)]
+
+    fallback_candidates = [
+        name for name in schema_names if _SEAT_STRATEGY_RE.match(name) and name != "winner_strategy"
+    ]
+    merged_candidates = set(configured_candidates) | set(fallback_candidates)
+    present = [name for name in merged_candidates if name in schema_set and name != "winner_strategy"]
+
+    return sorted(present, key=lambda col: int(_SEAT_STRATEGY_RE.match(col).group(1)))
 
 
 def _matchup_label(row: pd.Series) -> str:
