@@ -1,4 +1,5 @@
 from pathlib import Path
+import hashlib
 import json
 
 import pandas as pd
@@ -180,3 +181,104 @@ def test_global_stats_warns_when_seat_ranks_missing(caplog: pytest.LogCaptureFix
 
     assert result.empty
     assert "Combined parquet missing seat_ranks" in caplog.text
+
+
+def _write_multi_k_curated_inputs(cfg: AppConfig) -> None:
+    rows_2p = pd.DataFrame(
+        [
+            {
+                "seat_ranks": ["P1", "P2"],
+                "n_rounds": 5,
+                "P1_strategy": 1,
+                "P2_strategy": 2,
+                "P1_score": 120,
+                "P2_score": 100,
+            },
+            {
+                "seat_ranks": ["P2", "P1"],
+                "n_rounds": 7,
+                "P1_strategy": 1,
+                "P2_strategy": 2,
+                "P1_score": 70,
+                "P2_score": 160,
+            },
+        ]
+    )
+    rows_3p = pd.DataFrame(
+        [
+            {
+                "seat_ranks": ["P1", "P2", "P3"],
+                "n_rounds": 6,
+                "P1_strategy": 1,
+                "P2_strategy": 2,
+                "P3_strategy": 3,
+                "P1_score": 210,
+                "P2_score": 180,
+                "P3_score": 120,
+            },
+            {
+                "seat_ranks": ["P3", "P1", "P2"],
+                "n_rounds": 10,
+                "P1_strategy": 1,
+                "P2_strategy": 2,
+                "P3_strategy": 3,
+                "P1_score": 190,
+                "P2_score": 150,
+                "P3_score": 230,
+            },
+        ]
+    )
+
+    for n_players, rows in ((2, rows_2p), (3, rows_3p)):
+        per_n_path = cfg.ingested_rows_curated(n_players)
+        per_n_path.parent.mkdir(parents=True, exist_ok=True)
+        rows.to_parquet(per_n_path)
+
+    combined = pd.concat([rows_2p, rows_3p], ignore_index=True, sort=False)
+    combined_path = cfg.curated_parquet
+    combined_path.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_parquet(combined_path)
+
+
+def _hash_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def test_run_writes_per_k_outputs_and_is_idempotent_for_multi_k(tmp_path: Path) -> None:
+    k_values = [2, 3]
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path),
+        sim=SimConfig(n_players_list=k_values, seed=123, seed_list=[123]),
+    )
+    _write_multi_k_curated_inputs(cfg)
+
+    game_stats.run(cfg)
+
+    pooled_targets = {
+        "game_length.parquet": cfg.game_stats_output_path("game_length.parquet"),
+        "margin_stats.parquet": cfg.game_stats_output_path("margin_stats.parquet"),
+    }
+    for output_path in pooled_targets.values():
+        assert output_path.exists()
+
+    expected_per_k_paths: list[Path] = []
+    for k in k_values:
+        for filename in pooled_targets:
+            path = cfg.per_k_subdir("game_stats", k) / filename
+            assert path.exists()
+            expected_per_k_paths.append(path)
+
+            per_k_df = pd.read_parquet(path)
+            assert set(per_k_df["n_players"].dropna().astype(int).unique()) <= {k}
+
+            pooled_df = pd.read_parquet(pooled_targets[filename])
+            expected = pooled_df.loc[pooled_df["n_players"] == k].reset_index(drop=True)
+            pd.testing.assert_frame_equal(per_k_df.reset_index(drop=True), expected)
+
+    tracked_paths = list(pooled_targets.values()) + expected_per_k_paths
+    before = {path: (path.stat().st_mtime_ns, _hash_file(path)) for path in tracked_paths}
+
+    game_stats.run(cfg)
+
+    after = {path: (path.stat().st_mtime_ns, _hash_file(path)) for path in tracked_paths}
+    assert after == before
