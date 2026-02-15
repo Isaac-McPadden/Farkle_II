@@ -7,7 +7,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis.checks import check_post_combine, check_pre_metrics
+from farkle.analysis.checks import (
+    check_post_combine,
+    check_pre_metrics,
+    check_stage_artifact_families,
+)
 from farkle.config import AppConfig, IOConfig
 from farkle.utils.schema_helpers import expected_schema_for
 
@@ -189,3 +193,61 @@ def test_check_post_combine_success(tmp_path: Path, caplog) -> None:
         check_post_combine([curated], combined, max_players=1)
 
     assert "check_post_combine passed" in caplog.text
+
+
+def test_check_stage_artifact_families_game_stats_contract(tmp_path: Path) -> None:
+    analysis_root = tmp_path / "analysis"
+    stage_dir = analysis_root / "04_game_stats"
+
+    for k in ("2p", "3p"):
+        per_k_dir = stage_dir / k
+        per_k_dir.mkdir(parents=True, exist_ok=True)
+        for name in ("game_length.parquet", "margin_stats.parquet"):
+            (per_k_dir / name).write_text("ok")
+
+    pooled = stage_dir / "pooled"
+    pooled.mkdir(parents=True, exist_ok=True)
+    for name in ("game_length_k_weighted.parquet", "margin_k_weighted.parquet"):
+        (pooled / name).write_text("ok")
+
+    check_stage_artifact_families(analysis_root)
+
+
+def test_check_stage_artifact_families_detects_layout_drift(tmp_path: Path) -> None:
+    analysis_root = tmp_path / "analysis"
+    stage_dir = analysis_root / "04_game_stats"
+
+    per_k_dir = stage_dir / "2p"
+    per_k_dir.mkdir(parents=True, exist_ok=True)
+    (per_k_dir / "game_length.parquet").write_text("ok")
+    (per_k_dir / "margin_stats.parquet").write_text("ok")
+
+    pooled = stage_dir / "pooled"
+    pooled.mkdir(parents=True, exist_ok=True)
+    (pooled / "game_length_k_weighted.parquet").write_text("ok")
+    (pooled / "margin_k_weighted.parquet").write_text("ok")
+
+    (stage_dir / "summary").mkdir(parents=True, exist_ok=True)
+
+    with pytest.raises(RuntimeError, match="unexpected directory layout entries"):
+        check_stage_artifact_families(analysis_root)
+
+
+def test_check_stage_artifact_families_detects_missing_game_stats_artifacts(tmp_path: Path) -> None:
+    analysis_root = tmp_path / "analysis"
+    stage_dir = analysis_root / "04_game_stats"
+
+    per_k_dir = stage_dir / "2p"
+    per_k_dir.mkdir(parents=True, exist_ok=True)
+    (per_k_dir / "game_length.parquet").write_text("ok")
+
+    pooled = stage_dir / "pooled"
+    pooled.mkdir(parents=True, exist_ok=True)
+    (pooled / "game_length_k_weighted.parquet").write_text("ok")
+
+    with pytest.raises(RuntimeError, match="missing") as excinfo:
+        check_stage_artifact_families(analysis_root)
+
+    msg = str(excinfo.value)
+    assert "margin_stats.parquet" in msg
+    assert "margin_k_weighted.parquet" in msg

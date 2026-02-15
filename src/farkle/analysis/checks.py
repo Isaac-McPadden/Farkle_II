@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
+from typing import Mapping
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -18,6 +20,87 @@ from farkle.utils.manifest import iter_manifest
 from farkle.utils.schema_helpers import expected_schema_for
 
 LOGGER = logging.getLogger(__name__)
+
+
+_PER_K_DIR_RE = re.compile(r"^\d+p$")
+
+
+def _resolve_stage_dir(analysis_root: Path, stage_key: str) -> Path | None:
+    suffix = f"_{stage_key}"
+    matches = [p for p in analysis_root.iterdir() if p.is_dir() and p.name.endswith(suffix)]
+    if not matches:
+        return None
+    return sorted(matches, key=lambda p: p.name)[-1]
+
+
+def check_stage_artifact_families(
+    analysis_root: Path,
+    *,
+    expected_matrix: Mapping[str, Mapping[str, tuple[str, ...]]] | None = None,
+) -> None:
+    """Validate stage output families (per-k, pooled concat, pooled aggregate).
+
+    The default contract intentionally focuses on artifact families that should
+    remain stable for CI checks:
+
+    - ``game_stats`` must emit per-k game/margin files.
+    - ``game_stats`` must emit pooled weighted aggregates.
+    """
+
+    matrix = expected_matrix or {
+        "game_stats": {
+            "per_k": ("game_length.parquet", "margin_stats.parquet"),
+            "pooled_concat": (),
+            "pooled_aggregate": (
+                "game_length_k_weighted.parquet",
+                "margin_k_weighted.parquet",
+            ),
+        }
+    }
+
+    violations: list[str] = []
+    for stage_key, families in matrix.items():
+        stage_dir = _resolve_stage_dir(analysis_root, stage_key)
+        if stage_dir is None:
+            continue
+
+        stage_subdirs = [p for p in stage_dir.iterdir() if p.is_dir()]
+        allowed_dir_names = {"pooled"}
+        allowed_dir_names.update(p.name for p in stage_subdirs if _PER_K_DIR_RE.fullmatch(p.name))
+
+        drift_dirs = sorted(
+            p.name
+            for p in stage_subdirs
+            if p.name not in allowed_dir_names
+        )
+        if drift_dirs:
+            violations.append(
+                f"{stage_key}: unexpected directory layout entries: {', '.join(drift_dirs)}"
+            )
+
+        per_k_expected = tuple(families.get("per_k", ()))
+        per_k_dirs = sorted(p for p in stage_subdirs if _PER_K_DIR_RE.fullmatch(p.name))
+        if per_k_expected and not per_k_dirs:
+            violations.append(f"{stage_key}: missing per-k directories")
+        for per_k_dir in per_k_dirs:
+            for filename in per_k_expected:
+                path = per_k_dir / filename
+                if not path.exists():
+                    violations.append(f"{stage_key}: missing {path.relative_to(stage_dir)}")
+
+        pooled_dir = stage_dir / "pooled"
+        pooled_concat_expected = tuple(families.get("pooled_concat", ()))
+        pooled_agg_expected = tuple(families.get("pooled_aggregate", ()))
+        pooled_expected = pooled_concat_expected + pooled_agg_expected
+        if pooled_expected and not pooled_dir.exists():
+            violations.append(f"{stage_key}: missing pooled directory")
+        for filename in pooled_expected:
+            path = pooled_dir / filename
+            if not path.exists():
+                violations.append(f"{stage_key}: missing pooled/{filename}")
+
+    if violations:
+        raise RuntimeError("artifact family contract violated:\n- " + "\n- ".join(violations))
 
 
 def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> None:
