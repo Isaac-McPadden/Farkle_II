@@ -182,6 +182,13 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     margin_output = cfg.game_stats_output_path("margin_stats.parquet")
     pooled_game_length_output = cfg.game_stats_output_path("game_length_pooled.parquet")
     pooled_margin_output = cfg.game_stats_output_path("margin_pooled.parquet")
+    configured_k_values = cfg.agreement_players()
+    per_k_game_length_outputs = {
+        k: cfg.per_k_subdir("game_stats", k) / "game_length.parquet" for k in configured_k_values
+    }
+    per_k_margin_outputs = {
+        k: cfg.per_k_subdir("game_stats", k) / "margin_stats.parquet" for k in configured_k_values
+    }
     rare_events_output = cfg.game_stats_output_path("rare_events.parquet")
     rare_events_details_output = cfg.game_stats_output_path("rare_events_details.parquet")
     stamp_path = stage_done_path(stage_dir, "game_stats")
@@ -189,6 +196,12 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     margin_stamp = stage_done_path(stage_dir, "game_stats.margin")
     pooled_game_length_stamp = stage_done_path(stage_dir, "game_stats.game_length_pooled")
     pooled_margin_stamp = stage_done_path(stage_dir, "game_stats.margin_pooled")
+    per_k_game_length_stamps = {
+        k: stage_done_path(stage_dir, f"game_stats.game_length.{k}p") for k in configured_k_values
+    }
+    per_k_margin_stamps = {
+        k: stage_done_path(stage_dir, f"game_stats.margin.{k}p") for k in configured_k_values
+    }
     rare_events_summary_stamp = stage_done_path(stage_dir, "game_stats.rare_events_summary")
     rare_events_details_stamp = stage_done_path(stage_dir, "game_stats.rare_events_details")
 
@@ -208,9 +221,13 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     outputs = [game_length_output, margin_output, rare_events_output]
     if write_details:
         outputs.append(rare_events_details_output)
+
     pooled_possible = bool(per_n_inputs)
     if pooled_possible:
         outputs.extend([pooled_game_length_output, pooled_margin_output])
+    outputs.extend(per_k_game_length_outputs.values())
+    outputs.extend(per_k_margin_outputs.values())
+
     game_length_up_to_date = not force and stage_is_up_to_date(
         game_length_stamp,
         inputs=input_paths,
@@ -229,6 +246,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         outputs=[rare_events_output],
         config_sha=cfg.config_sha,
     )
+
     rare_events_details_up_to_date = True
     if write_details:
         rare_events_details_up_to_date = not force and stage_is_up_to_date(
@@ -237,6 +255,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             outputs=[rare_events_details_output],
             config_sha=cfg.config_sha,
         )
+
     pooled_game_length_up_to_date = True
     pooled_margin_up_to_date = True
     if pooled_possible:
@@ -254,11 +273,34 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             config_sha=cfg.config_sha,
         )
 
+    per_k_game_length_up_to_date = {
+        k: (not force)
+        and stage_is_up_to_date(
+            per_k_game_length_stamps[k],
+            inputs=input_paths,
+            outputs=[per_k_game_length_outputs[k]],
+            config_sha=cfg.config_sha,
+        )
+        for k in configured_k_values
+    }
+    per_k_margin_up_to_date = {
+        k: (not force)
+        and stage_is_up_to_date(
+            per_k_margin_stamps[k],
+            inputs=input_paths,
+            outputs=[per_k_margin_outputs[k]],
+            config_sha=cfg.config_sha,
+        )
+        for k in configured_k_values
+    }
+
     if (
         game_length_up_to_date
         and margin_up_to_date
         and pooled_game_length_up_to_date
         and pooled_margin_up_to_date
+        and all(per_k_game_length_up_to_date.values())
+        and all(per_k_margin_up_to_date.values())
         and rare_events_summary_up_to_date
         and rare_events_details_up_to_date
     ):
@@ -285,6 +327,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     )
 
     combined_rows: int | None = None
+    combined: pd.DataFrame | None = None
     if not game_length_up_to_date:
         strategy_stats = _per_strategy_stats(per_n_inputs)
         global_stats = _global_stats(combined_path) if combined_path.exists() else pd.DataFrame()
@@ -306,6 +349,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             config_sha=cfg.config_sha,
         )
 
+    margin_stats: pd.DataFrame | None = None
     if not margin_up_to_date:
         margin_stats = _per_strategy_margin_stats(
             per_n_inputs, thresholds=cfg.game_stats_margin_thresholds
@@ -324,6 +368,46 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             outputs=[margin_output],
             config_sha=cfg.config_sha,
         )
+
+    if not all(per_k_game_length_up_to_date.values()):
+        if combined is None:
+            combined = pd.read_parquet(game_length_output)
+        for k in configured_k_values:
+            if per_k_game_length_up_to_date[k]:
+                continue
+            per_k_game_length = combined.loc[combined["n_players"] == k].copy()
+            per_k_game_length_table = pa.Table.from_pandas(per_k_game_length, preserve_index=False)
+            write_parquet_atomic(
+                per_k_game_length_table,
+                per_k_game_length_outputs[k],
+                codec=cfg.parquet_codec,
+            )
+            write_stage_done(
+                per_k_game_length_stamps[k],
+                inputs=input_paths,
+                outputs=[per_k_game_length_outputs[k]],
+                config_sha=cfg.config_sha,
+            )
+
+    if not all(per_k_margin_up_to_date.values()):
+        if margin_stats is None:
+            margin_stats = pd.read_parquet(margin_output)
+        for k in configured_k_values:
+            if per_k_margin_up_to_date[k]:
+                continue
+            per_k_margin = margin_stats.loc[margin_stats["n_players"] == k].copy()
+            per_k_margin_table = pa.Table.from_pandas(per_k_margin, preserve_index=False)
+            write_parquet_atomic(
+                per_k_margin_table,
+                per_k_margin_outputs[k],
+                codec=cfg.parquet_codec,
+            )
+            write_stage_done(
+                per_k_margin_stamps[k],
+                inputs=input_paths,
+                outputs=[per_k_margin_outputs[k]],
+                config_sha=cfg.config_sha,
+            )
 
     if pooled_possible and not (pooled_game_length_up_to_date and pooled_margin_up_to_date):
         pooling_scheme = _normalize_pooling_scheme(cfg.analysis.pooling_weights)
