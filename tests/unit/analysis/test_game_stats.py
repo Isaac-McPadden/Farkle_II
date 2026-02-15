@@ -6,7 +6,7 @@ import pytest
 from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import game_stats
-from farkle.config import AppConfig, IOConfig
+from farkle.config import AppConfig, IOConfig, SimConfig
 
 
 def test_rare_event_flags_cover_game_and_strategy_levels(tmp_path):
@@ -85,7 +85,7 @@ def _build_parquet(tmp_path: Path, cfg):
 
 
 def test_run_generates_all_outputs(tmp_path: Path):
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
     per_n_path, combined_path = _build_parquet(tmp_path, cfg)
 
     game_stats.run(cfg, force=True)
@@ -109,6 +109,16 @@ def test_run_generates_all_outputs(tmp_path: Path):
         col in margin_df.columns
         for col in ("mean_margin_runner_up", "median_margin_runner_up", "mean_score_spread")
     )
+
+    per_k_game_length = cfg.per_k_subdir("game_stats", 2) / "game_length.parquet"
+    per_k_margin = cfg.per_k_subdir("game_stats", 2) / "margin_stats.parquet"
+    assert per_k_game_length.exists()
+    assert per_k_margin.exists()
+
+    per_k_game_df = pd.read_parquet(per_k_game_length)
+    per_k_margin_df = pd.read_parquet(per_k_margin)
+    assert set(per_k_game_df["n_players"].dropna().astype(int).unique()) <= {2}
+    assert set(per_k_margin_df["n_players"].dropna().astype(int).unique()) <= {2}
 
     rare_df = pd.read_parquet(rare_events_path)
     assert {"game", "strategy", "n_players"} <= set(rare_df["summary_level"].unique())
