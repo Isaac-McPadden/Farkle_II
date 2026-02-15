@@ -319,11 +319,11 @@ def _write_frequentist_scores(
     )
 
     scores = pd.concat([base, aggregated], ignore_index=True, sort=False)
-    scores_path = _tiering_artifact(cfg, "frequentist_scores.parquet")
+    scores_path = _tiering_artifact(cfg, "frequentist_scores_k_weighted.parquet")
     with atomic_path(str(scores_path)) as tmp_path:
         scores.to_parquet(tmp_path, index=False)
 
-    pooled_provenance_path = _tiering_artifact(cfg, "tiering_pooled_provenance.json")
+    pooled_provenance_path = _tiering_artifact(cfg, "tiering_k_weighted_provenance.json")
     if weights_by_k:
         weight_source = "config:tiering_weights_by_k"
         normalized_weights: dict[int, float] = {}

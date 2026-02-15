@@ -49,7 +49,7 @@ class PermutationImportanceResult(Protocol):
 # ---------------------------------------------------------------------------
 DEFAULT_ROOT = Path("results_seed_0") / "analysis" / "10_hgb"
 METRICS_NAME = "metrics.parquet"
-RATINGS_NAME = "ratings_pooled.parquet"
+RATINGS_NAME = "ratings_k_weighted.parquet"
 MAX_PD_PLOTS = 30
 IMPORTANCE_TEMPLATE = "feature_importance_{players}p.parquet"
 OVERALL_IMPORTANCE_NAME = "feature_importance_overall.parquet"
@@ -68,7 +68,7 @@ FEATURE_SPECS: list[tuple[str, str]] = [
     ("run_up_score", "float32"),
 ]
 
-_SEED_PATTERN = re.compile(r"ratings_pooled_seed(?P<seed>\d+)\.parquet$")
+_SEED_PATTERN = re.compile(r"ratings_(?:k_weighted|pooled)_seed(?P<seed>\d+)\.parquet$")
 
 
 LOGGER = logging.getLogger(__name__)
@@ -160,7 +160,7 @@ def _parse_strategy_features(
 def _load_seed_targets(root: Path) -> pd.DataFrame:
     """Load per-seed TrueSkill targets used for grouped CV."""
     frames: list[pd.DataFrame] = []
-    for path in sorted(root.glob("ratings_pooled_seed*.parquet")):
+    for path in sorted(root.glob("ratings_k_weighted_seed*.parquet")):
         match = _SEED_PATTERN.match(path.name)
         if match is None:
             continue

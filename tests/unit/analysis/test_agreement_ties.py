@@ -111,7 +111,7 @@ def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
     players = 2
 
     cfg.trueskill_path = lambda filename: tmp_path / filename
-    trueskill_path = cfg.trueskill_path("ratings_pooled.parquet")
+    trueskill_path = cfg.trueskill_path("ratings_k_weighted.parquet")
     trueskill_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {"strategy": ["a", "b"], "mu": [1.0, 2.0], "players": [players, players]},
@@ -126,7 +126,7 @@ def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
         lambda self, key: key,
     )
     cfg.tiering_path = lambda filename: tmp_path / filename
-    freq_path = cfg.tiering_path("frequentist_scores.parquet")
+    freq_path = cfg.tiering_path("frequentist_scores_k_weighted.parquet")
     freq_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {
@@ -182,7 +182,7 @@ def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, 
     cfg.analysis.agreement_include_pooled = True
     cfg.sim.seed_list = [11, 22]
 
-    pooled_path = cfg.trueskill_path("ratings_pooled.parquet")
+    pooled_path = cfg.trueskill_path("ratings_k_weighted.parquet")
     pooled_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {
@@ -196,7 +196,7 @@ def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, 
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"pooled": {"tiers": {"a": 1, "b": 2}}}))
 
-    freq_path = cfg.tiering_path("frequentist_scores.parquet")
+    freq_path = cfg.tiering_path("frequentist_scores_k_weighted.parquet")
     freq_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {

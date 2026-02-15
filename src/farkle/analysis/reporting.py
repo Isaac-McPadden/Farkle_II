@@ -154,16 +154,16 @@ def _ratings_path(analysis_dir: Path, layout: StageLayout | None = None) -> Path
             analysis_dir,
             "trueskill",
             layout=layout,
-            filename=Path("pooled") / "ratings_pooled.parquet",
+            filename=Path("pooled") / "ratings_k_weighted.parquet",
         ),
         *_stage_candidates(
             analysis_dir,
             "trueskill",
             layout=layout,
-            filename=Path("ratings_pooled.parquet"),
+            filename=Path("ratings_k_weighted.parquet"),
         ),
-        analysis_dir / "pooled" / "ratings_pooled.parquet",
-        analysis_dir / "ratings_pooled.parquet",
+        analysis_dir / "pooled" / "ratings_k_weighted.parquet",
+        analysis_dir / "ratings_k_weighted.parquet",
     ]
     return _first_existing(candidates)
 
@@ -323,7 +323,7 @@ def _load_ratings(
     df = pd.read_parquet(path)
     df = df.copy()
     if "strategy" not in df.columns or "mu" not in df.columns or "sigma" not in df.columns:
-        raise ReportError("ratings_pooled.parquet missing required columns")
+        raise ReportError("ratings_k_weighted.parquet missing required columns")
 
     player_column = None
     for column in ("players", "n_players", "player_count"):

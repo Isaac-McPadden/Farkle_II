@@ -177,11 +177,11 @@ def run_interseed_analysis(
         ts_mod.run(cfg)
 
     def _agreement(cfg: AppConfig) -> None:
-        ratings_pooled_path = cfg.trueskill_path("ratings_pooled.parquet")
+        ratings_pooled_path = cfg.trueskill_path("ratings_k_weighted.parquet")
         if not ratings_pooled_path.exists() or ratings_pooled_path.stat().st_size <= 0:
             stage_logger("agreement", logger=LOGGER).missing_input(
                 "missing required TrueSkill pooled ratings input",
-                dependency="trueskill.ratings_pooled.parquet",
+                dependency="trueskill.ratings_k_weighted.parquet",
                 path=str(ratings_pooled_path),
             )
             return

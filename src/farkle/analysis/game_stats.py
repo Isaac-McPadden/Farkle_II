@@ -180,8 +180,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     stage_dir = cfg.game_stats_stage_dir
     game_length_output = cfg.game_stats_output_path("game_length.parquet")
     margin_output = cfg.game_stats_output_path("margin_stats.parquet")
-    pooled_game_length_output = cfg.game_stats_output_path("game_length_pooled.parquet")
-    pooled_margin_output = cfg.game_stats_output_path("margin_pooled.parquet")
+    pooled_game_length_output = cfg.game_stats_output_path("game_length_k_weighted.parquet")
+    pooled_margin_output = cfg.game_stats_output_path("margin_k_weighted.parquet")
     configured_k_values = cfg.agreement_players()
     per_k_game_length_outputs = {
         k: cfg.per_k_subdir("game_stats", k) / "game_length.parquet" for k in configured_k_values

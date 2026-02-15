@@ -61,7 +61,7 @@ def test_load_seed_targets_collects_seed_metadata(tmp_path):
 
     for seed in (1, 2):
         frame = pd.DataFrame({"strategy": ["A", "B"], "mu": [1.0 * seed, 2.0 * seed]})
-        frame.to_parquet(seeds_dir / f"ratings_pooled_seed{seed}.parquet")
+        frame.to_parquet(seeds_dir / f"ratings_k_weighted_seed{seed}.parquet")
 
     combined = run_hgb._load_seed_targets(seeds_dir)
 

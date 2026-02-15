@@ -172,7 +172,7 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
     if not target_hours or target_hours <= 0:
         return
 
-    ratings_path = cfg.trueskill_path("ratings_pooled.parquet")
+    ratings_path = cfg.trueskill_path("ratings_k_weighted.parquet")
     tiers_path = cfg.preferred_tiers_path()
     if not ratings_path.exists():
         LOGGER.warning(
