@@ -200,12 +200,12 @@ def _game_stats_outputs(cfg: AppConfig) -> list[Path]:
 
 def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
     outputs = [
-        cfg.trueskill_path("ratings_pooled.parquet"),
-        cfg.trueskill_path("ratings_pooled.json"),
+        cfg.trueskill_path("ratings_k_weighted.parquet"),
+        cfg.trueskill_path("ratings_k_weighted.json"),
         cfg.trueskill_stage_dir / "tiers.json",
     ]
-    outputs.extend(sorted(cfg.trueskill_pooled_dir.glob("ratings_pooled_seed*.parquet")))
-    outputs.extend(sorted(cfg.trueskill_stage_dir.glob("ratings_pooled_seed*.parquet")))
+    outputs.extend(sorted(cfg.trueskill_pooled_dir.glob("ratings_k_weighted_seed*.parquet")))
+    outputs.extend(sorted(cfg.trueskill_stage_dir.glob("ratings_k_weighted_seed*.parquet")))
     return outputs
 
 

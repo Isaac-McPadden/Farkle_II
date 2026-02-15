@@ -124,8 +124,8 @@ def test_run_trueskill_pooling_and_short_circuit(
 
     assert created_executors and created_executors[0].max_workers == 2
 
-    pooled_path = analysis_root / "pooled" / "ratings_pooled.parquet"
-    json_path = analysis_root / "pooled" / "ratings_pooled.json"
+    pooled_path = analysis_root / "pooled" / "ratings_k_weighted.parquet"
+    json_path = analysis_root / "pooled" / "ratings_k_weighted.json"
     tiers_path = analysis_root / "tiers.json"
     assert pooled_path.exists() and json_path.exists() and tiers_path.exists()
 
@@ -204,6 +204,6 @@ def test_run_trueskill_skips_zero_game_block(
 
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
 
-    pooled = rt._load_ratings_parquet(analysis_root / "pooled" / "ratings_pooled.parquet")
+    pooled = rt._load_ratings_parquet(analysis_root / "pooled" / "ratings_k_weighted.parquet")
     assert set(pooled) == {"A"}
     assert pooled["A"].mu == pytest.approx(10.0)

@@ -78,7 +78,7 @@ def test_interseed_run_uses_upstream_combine_and_writes_pooled_outputs(tmp_path,
         pooled_dir = app_cfg.trueskill_pooled_dir
         pooled_dir.mkdir(parents=True, exist_ok=True)
         (pooled_dir / "ratings_long.parquet").write_text("long")
-        (pooled_dir / "ratings_pooled.parquet").write_text("pooled")
+        (pooled_dir / "ratings_k_weighted.parquet").write_text("pooled")
         (app_cfg.trueskill_stage_dir / "tiers.json").write_text("{}")
 
     monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill_all_seeds", fake_run)
@@ -87,7 +87,7 @@ def test_interseed_run_uses_upstream_combine_and_writes_pooled_outputs(tmp_path,
 
     pooled_dir = cfg.analysis_dir / "03_trueskill" / "pooled"
     assert (pooled_dir / "ratings_long.parquet").exists()
-    assert (pooled_dir / "ratings_pooled.parquet").exists()
+    assert (pooled_dir / "ratings_k_weighted.parquet").exists()
 
 
 def test_run_logs_curated_candidates_when_missing(tmp_path, caplog):

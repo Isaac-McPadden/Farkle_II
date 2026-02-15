@@ -61,7 +61,7 @@ def test_iter_rating_parquets_deduplicates_and_filters(tmp_path: Path) -> None:
     root.mkdir()
     (root / "2p").mkdir()
     (root / "2p" / "ratings_2_seed0.parquet").touch()
-    (root / "ratings_pooled_seed0.parquet").touch()
+    (root / "ratings_k_weighted_seed0.parquet").touch()
     (root / "data" / "2p").mkdir(parents=True)
     (root / "data" / "2p" / "ratings_2_seed0.parquet").touch()
 
@@ -139,7 +139,7 @@ def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
     ratings_2 = rt._load_ratings_parquet(ratings_dir / "2p" / "ratings_2.parquet")
     ratings3_path = ratings_dir / "3p" / "ratings_3.parquet"
     ratings_3 = rt._load_ratings_parquet(ratings3_path) if ratings3_path.exists() else {}
-    pooled = rt._load_ratings_parquet(data_root / "pooled" / "ratings_pooled.parquet")
+    pooled = rt._load_ratings_parquet(data_root / "pooled" / "ratings_k_weighted.parquet")
 
     assert set(ratings_2)
     assert ratings_3 == {}
@@ -162,4 +162,4 @@ def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
         os.chdir(cwd)
 
     assert (data_root / "2p" / "ratings_2_seed3.parquet").exists()
-    assert (data_root / "pooled" / "ratings_pooled_seed3.parquet").exists()
+    assert (data_root / "pooled" / "ratings_k_weighted_seed3.parquet").exists()

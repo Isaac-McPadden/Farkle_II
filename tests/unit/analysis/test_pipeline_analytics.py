@@ -36,7 +36,7 @@ def _setup(tmp_path: Path) -> tuple[Path, AppConfig]:
     metrics_path = cfg.metrics_output_path("metrics.parquet")
     metrics_df.to_parquet(metrics_path)
     ratings_df = pd.DataFrame({"strategy": ["A", "B"], "mu": [1.0, 0.5], "sigma": [1.0, 1.0]})
-    ratings_path = cfg.trueskill_pooled_dir / "ratings_pooled.parquet"
+    ratings_path = cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet"
     ratings_path.parent.mkdir(parents=True, exist_ok=True)
     ratings_df.to_parquet(ratings_path)
     tiers = cfg.preferred_tiers_path()
@@ -63,7 +63,7 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
         app_cfg.set_stage_layout(stage_registry.resolve_stage_layout(app_cfg))
         outputs = [app_cfg.agreement_output_path(p) for p in app_cfg.sim.n_players_list]
         done = _done_path(outputs[0])
-        inputs = [app_cfg.trueskill_path("ratings_pooled.parquet")]
+        inputs = [app_cfg.trueskill_path("ratings_k_weighted.parquet")]
         if is_up_to_date(done, inputs, outputs):
             print("SKIP agreement (up to date)")
             return

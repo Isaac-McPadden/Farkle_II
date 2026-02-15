@@ -137,7 +137,7 @@ def _build_payload(
             "missing TrueSkill ratings",
             players=players,
             path=(
-                str(cfg.trueskill_path("ratings_pooled.parquet"))
+                str(cfg.trueskill_path("ratings_k_weighted.parquet"))
                 if pooled_scope
                 else f"{players}p ratings parquet"
             ),
@@ -214,7 +214,7 @@ def _load_trueskill(
         Prepared ``MethodData`` or ``None`` when no ratings are available.
     """
     path = (
-        cfg.trueskill_path("ratings_pooled.parquet")
+        cfg.trueskill_path("ratings_k_weighted.parquet")
         if pooled_scope
         else _resolve_trueskill_per_k_path(cfg, players)
     )
@@ -224,9 +224,9 @@ def _load_trueskill(
     df = pd.read_parquet(path)
     df = _filter_by_players(df, players)
     if "strategy" not in df.columns:
-        raise ValueError("ratings_pooled.parquet missing 'strategy' column")
+        raise ValueError("ratings_k_weighted.parquet missing 'strategy' column")
     if "mu" not in df.columns:
-        raise ValueError("ratings_pooled.parquet missing 'mu' column")
+        raise ValueError("ratings_k_weighted.parquet missing 'mu' column")
 
     series = df.set_index(df["strategy"].astype(str))["mu"].astype(float).sort_index()
 
@@ -276,13 +276,13 @@ def _resolve_trueskill_seed_paths(
     """Collect candidate TrueSkill seed parquet paths for a scope."""
     seed_candidates: list[Path] = []
     if pooled_scope:
-        seed_candidates.extend(cfg.analysis_dir.glob("ratings_pooled_seed*.parquet"))
+        seed_candidates.extend(cfg.analysis_dir.glob("ratings_k_weighted_seed*.parquet"))
         trueskill_pooled_dir = cfg.stage_dir_if_active("trueskill", "pooled")
         if trueskill_pooled_dir is not None:
-            seed_candidates.extend(trueskill_pooled_dir.glob("ratings_pooled_seed*.parquet"))
+            seed_candidates.extend(trueskill_pooled_dir.glob("ratings_k_weighted_seed*.parquet"))
         trueskill_stage_dir = cfg.stage_dir_if_active("trueskill")
         if trueskill_stage_dir is not None:
-            seed_candidates.extend(trueskill_stage_dir.glob("ratings_pooled_seed*.parquet"))
+            seed_candidates.extend(trueskill_stage_dir.glob("ratings_k_weighted_seed*.parquet"))
         return _select_seed_paths(
             seed_candidates,
             key_fn=lambda path: (
@@ -355,7 +355,7 @@ def _load_frequentist(cfg: AppConfig, players: int | str) -> MethodData | None:
     Returns:
         Populated ``MethodData`` or ``None`` when the file is absent or empty.
     """
-    path = cfg.tiering_path("frequentist_scores.parquet")
+    path = cfg.tiering_path("frequentist_scores_k_weighted.parquet")
     if not path.exists():
         return None
 
@@ -364,7 +364,7 @@ def _load_frequentist(cfg: AppConfig, players: int | str) -> MethodData | None:
     if df.empty:
         return None
     if "strategy" not in df.columns:
-        raise ValueError("frequentist_scores.parquet missing 'strategy' column")
+        raise ValueError("frequentist_scores_k_weighted.parquet missing 'strategy' column")
 
     score_col = _select_score_column(df, ["win_rate", "score", "estimate", "value"])
     series = df.set_index(df["strategy"].astype(str))[score_col].astype(float).sort_index()
@@ -475,11 +475,11 @@ def _select_score_column(df: pd.DataFrame, candidates: Iterable[str]) -> str:
             return col
     numeric_cols = [c for c in df.columns if pd.api.types.is_numeric_dtype(df[c])]
     if not numeric_cols:
-        raise ValueError("frequentist_scores.parquet lacks a numeric score column")
+        raise ValueError("frequentist_scores_k_weighted.parquet lacks a numeric score column")
     if len(numeric_cols) == 1:
         return numeric_cols[0]
     raise ValueError(
-        "frequentist_scores.parquet has multiple numeric columns; specify score column"
+        "frequentist_scores_k_weighted.parquet has multiple numeric columns; specify score column"
     )
 
 

@@ -55,6 +55,20 @@ DEPRECATED_ANALYSIS_FLAGS = {
     "run_report",
 }
 
+_CANONICAL_ARTIFACT_NAMES: dict[str, str] = {
+    "ratings_pooled.parquet": "ratings_k_weighted.parquet",
+    "ratings_pooled.json": "ratings_k_weighted.json",
+    "game_length_pooled.parquet": "game_length_k_weighted.parquet",
+    "margin_pooled.parquet": "margin_k_weighted.parquet",
+    "frequentist_scores.parquet": "frequentist_scores_k_weighted.parquet",
+    "tiering_pooled_provenance.json": "tiering_k_weighted_provenance.json",
+    "agreement_pooled.json": "agreement_k_weighted.json",
+}
+
+_LEGACY_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
+    canonical: (legacy,) for legacy, canonical in _CANONICAL_ARTIFACT_NAMES.items()
+}
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataclasses (schema)
 # ─────────────────────────────────────────────────────────────────────────────
@@ -868,7 +882,8 @@ class AppConfig:
     def game_stats_output_path(self, name: str) -> Path:
         """Preferred path for pooled game-stat outputs."""
 
-        path = self.game_stats_pooled_dir / name
+        canonical_name = self.canonical_artifact_name(name)
+        path = self.game_stats_pooled_dir / canonical_name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -993,6 +1008,16 @@ class AppConfig:
         outputs = self.analysis.outputs or {}
         return str(outputs.get("manifest_name", "manifest.jsonl"))
 
+    def canonical_artifact_name(self, filename: str) -> str:
+        """Return the canonical filename for a possibly legacy artifact name."""
+
+        return _CANONICAL_ARTIFACT_NAMES.get(filename, filename)
+
+    def legacy_artifact_names(self, filename: str) -> tuple[str, ...]:
+        """Return legacy aliases for a canonical artifact filename."""
+
+        return _LEGACY_ARTIFACT_NAMES.get(filename, ())
+
     def _preferred_stage_path(
         self,
         stage_dir: Path | None,
@@ -1004,29 +1029,40 @@ class AppConfig:
     ) -> Path:
         """Return *filename* within the stage dir, falling back to legacy when absent."""
 
-        legacy_path = legacy_dir / filename
+        canonical = self.canonical_artifact_name(filename)
+        legacy_names = self.legacy_artifact_names(canonical)
+        stage_candidate_names = (canonical, *legacy_names)
+
+        legacy_paths = [legacy_dir / candidate for candidate in stage_candidate_names]
         if stage_dir is not None:
             stage_dir.mkdir(parents=True, exist_ok=True)
-            stage_path = stage_dir / filename
-            if stage_path.exists():
-                return stage_path
-            interseed_input_path = self._interseed_input_candidate(stage_dir, filename)
-            if interseed_input_path is not None and interseed_input_path.exists():
-                return interseed_input_path
-            if legacy_path.exists():
-                return legacy_path
-            return stage_path
+            stage_paths = [stage_dir / candidate for candidate in stage_candidate_names]
+            for stage_path in stage_paths:
+                if stage_path.exists():
+                    return stage_path
+            for candidate in stage_candidate_names:
+                interseed_input_path = self._interseed_input_candidate(stage_dir, candidate)
+                if interseed_input_path is not None and interseed_input_path.exists():
+                    return interseed_input_path
+            for legacy_path in legacy_paths:
+                if legacy_path.exists():
+                    return legacy_path
+            return stage_paths[0]
 
         interseed_path: Path | None = None
         if stage_key is not None:
             interseed_dir = self._interseed_stage_dir(stage_key, *stage_parts)
             if interseed_dir is not None:
-                interseed_path = interseed_dir / filename
-                if interseed_path.exists():
-                    return interseed_path
-        if legacy_path.exists():
-            return legacy_path
-        return interseed_path or legacy_path
+                for candidate in stage_candidate_names:
+                    interseed_path = interseed_dir / candidate
+                    if interseed_path.exists():
+                        return interseed_path
+        for legacy_path in legacy_paths:
+            if legacy_path.exists():
+                return legacy_path
+        if interseed_path is not None:
+            return interseed_path
+        return legacy_paths[0]
 
     def _resolve_stage_artifact_path(
         self,
@@ -1037,6 +1073,9 @@ class AppConfig:
     ) -> Path:
         """Resolve a stage artifact without creating directories."""
 
+        canonical = self.canonical_artifact_name(filename)
+        candidate_names = (canonical, *self.legacy_artifact_names(canonical))
+
         candidates: list[Path] = []
         input_dir = self._input_stage_path(stage_key, *parts)
         stage_dir = self._stage_dir_if_active(stage_key, *parts)
@@ -1045,27 +1084,28 @@ class AppConfig:
         # seed run; prefer that input root deterministically when configured.
         if stage_key == "combine":
             if input_dir is not None:
-                candidates.append(input_dir / filename)
+                candidates.extend([input_dir / name for name in candidate_names])
             if stage_dir is not None:
-                candidates.append(stage_dir / filename)
+                candidates.extend([stage_dir / name for name in candidate_names])
         else:
             if stage_dir is not None:
-                candidates.append(stage_dir / filename)
+                candidates.extend([stage_dir / name for name in candidate_names])
             if input_dir is not None:
-                candidates.append(input_dir / filename)
+                candidates.extend([input_dir / name for name in candidate_names])
 
         interseed_dir = self._interseed_stage_dir(stage_key, *parts)
         if interseed_dir is not None:
-            interseed_candidate = interseed_dir / filename
-            if interseed_candidate not in candidates:
-                candidates.append(interseed_candidate)
+            interseed_candidates = [interseed_dir / name for name in candidate_names]
+            for interseed_candidate in interseed_candidates:
+                if interseed_candidate not in candidates:
+                    candidates.append(interseed_candidate)
 
         for legacy_path in legacy_paths:
             if legacy_path not in candidates:
                 candidates.append(legacy_path)
 
         if not candidates:
-            candidates.append(self.analysis_dir / filename)
+            candidates.append(self.analysis_dir / canonical)
 
         for candidate in candidates:
             if candidate.exists():
@@ -1109,7 +1149,7 @@ class AppConfig:
     def agreement_output_path_pooled(self) -> Path:
         """Preferred path for pooled agreement analytics."""
 
-        filename = "agreement_pooled.json"
+        filename = self.canonical_artifact_name("agreement_pooled.json")
         stage_dir = self.stage_subdir("agreement", "pooled")
         return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
 
@@ -1125,7 +1165,8 @@ class AppConfig:
 
     def trueskill_path(self, filename: str) -> Path:
         """Resolve a TrueSkill artifact path with legacy fallback."""
-        pooled = filename.startswith("ratings_pooled")
+        filename = self.canonical_artifact_name(filename)
+        pooled = filename.startswith("ratings_pooled") or filename.startswith("ratings_k_weighted")
         parts = ("pooled",) if pooled else ()
         stage_dir = self._stage_dir_if_active("trueskill", *parts)
         return self._preferred_stage_path(
@@ -1157,7 +1198,7 @@ class AppConfig:
         head2head_dir = self._stage_dir_if_active("head2head")
         if head2head_dir is not None:
             candidates.append(head2head_dir / filename)
-        candidates.append(self.analysis_dir / filename)
+        candidates.append(self.analysis_dir / canonical)
         for candidate in candidates:
             if candidate.exists():
                 return candidate
@@ -1166,11 +1207,12 @@ class AppConfig:
     def tiering_path(self, filename: str) -> Path:
         """Resolve a tiering artifact path with legacy fallback."""
 
+        canonical = self.canonical_artifact_name(filename)
         stage_dir = self._stage_dir_if_active("tiering")
         return self._preferred_stage_path(
             stage_dir,
             self.analysis_dir,
-            filename,
+            canonical,
             stage_key="tiering",
         )
 
@@ -1224,7 +1266,7 @@ class AppConfig:
         candidates: list[Path] = []
         input_dir = self._input_stage_path("combine", "pooled")
         if input_dir is not None:
-            candidates.append(input_dir / filename)
+            candidates.extend([input_dir / name for name in candidate_names])
 
         stage_dir = self._stage_dir_if_active("combine", "pooled")
         if stage_dir is not None:
@@ -1234,16 +1276,17 @@ class AppConfig:
 
         interseed_dir = self._interseed_stage_dir("combine", "pooled")
         if interseed_dir is not None:
-            interseed_candidate = interseed_dir / filename
-            if interseed_candidate not in candidates:
-                candidates.append(interseed_candidate)
+            interseed_candidates = [interseed_dir / name for name in candidate_names]
+            for interseed_candidate in interseed_candidates:
+                if interseed_candidate not in candidates:
+                    candidates.append(interseed_candidate)
 
         for legacy_path in legacy_paths:
             if legacy_path not in candidates:
                 candidates.append(legacy_path)
 
         if not candidates:
-            candidates.append(self.analysis_dir / filename)
+            candidates.append(self.analysis_dir / canonical)
         return tuple(candidates)
 
     def _resolve_combine_artifact_path(self, filename: str) -> Path:

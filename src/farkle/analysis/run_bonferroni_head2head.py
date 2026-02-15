@@ -295,9 +295,9 @@ def run_bonferroni_head2head(
         raise RuntimeError(f"No tiers found in {tiers_path}")
     top_val = min(tiers.values())
     tier_elites = [str(s) for s, t in tiers.items() if t == top_val]
-    ratings_path = cfg.trueskill_pooled_dir / "ratings_pooled.parquet"
+    ratings_path = cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet"
     if not ratings_path.exists():
-        fallback = cfg.trueskill_stage_dir / "ratings_pooled.parquet"
+        fallback = cfg.trueskill_stage_dir / "ratings_k_weighted.parquet"
         if fallback.exists():
             LOGGER.warning(
                 "Using legacy pooled ratings path; prefer stage-aware pooled directory",

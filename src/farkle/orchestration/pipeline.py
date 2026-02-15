@@ -181,9 +181,9 @@ def analyze_hgb(exp_dir: Path) -> None:
     out = cfg.hgb_pooled_dir / "hgb_importance.json"
     done = _done_path(out)
     metrics = cfg.metrics_input_path("metrics.parquet")
-    ratings = cfg.trueskill_pooled_dir / "ratings_pooled.parquet"
+    ratings = cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet"
     if not ratings.exists():
-        ratings = cfg.trueskill_stage_dir / "ratings_pooled.parquet"
+        ratings = cfg.trueskill_stage_dir / "ratings_k_weighted.parquet"
     inputs = [metrics, ratings]
     if is_up_to_date(done, inputs, [out]):
         print("SKIP hgb (up to date)")
@@ -210,16 +210,16 @@ def analyze_agreement(exp_dir: Path) -> None:
     analysis_dir = cfg.analysis_dir
     ratings = _first_existing(
         [
-            cfg.trueskill_pooled_dir / "ratings_pooled.parquet",
-            cfg.trueskill_stage_dir / "ratings_pooled.parquet",
-            analysis_dir / "ratings_pooled.parquet",
-            *analysis_dir.glob("*_trueskill/pooled/ratings_pooled.parquet"),
-            *analysis_dir.glob("*_trueskill/ratings_pooled.parquet"),
+            cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet",
+            cfg.trueskill_stage_dir / "ratings_k_weighted.parquet",
+            analysis_dir / "ratings_k_weighted.parquet",
+            *analysis_dir.glob("*_trueskill/pooled/ratings_k_weighted.parquet"),
+            *analysis_dir.glob("*_trueskill/ratings_k_weighted.parquet"),
         ]
     )
     if not ratings.exists():
         raise FileNotFoundError(
-            "agreement analysis requires ratings_pooled.parquet; run trueskill first"
+            "agreement analysis requires ratings_k_weighted.parquet; run trueskill first"
         )
 
     players = _detect_player_counts(analysis_dir)
@@ -232,9 +232,9 @@ def analyze_agreement(exp_dir: Path) -> None:
     for candidate in (
         _first_existing(
             [
-                cfg.tiering_stage_dir / "frequentist_scores.parquet",
-                analysis_dir / "frequentist_scores.parquet",
-                *analysis_dir.glob("*_tiering/frequentist_scores.parquet"),
+                cfg.tiering_stage_dir / "frequentist_scores_k_weighted.parquet",
+                analysis_dir / "frequentist_scores_k_weighted.parquet",
+                *analysis_dir.glob("*_tiering/frequentist_scores_k_weighted.parquet"),
             ]
         ),
         _first_existing(

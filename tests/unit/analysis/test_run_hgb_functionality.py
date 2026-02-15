@@ -64,7 +64,7 @@ def _setup_data(tmp_path: Path) -> Path:
             "sigma": [1.0, 1.0],
         }
     )
-    ratings.to_parquet(data_dir / "ratings_pooled.parquet", index=False)
+    ratings.to_parquet(data_dir / "ratings_k_weighted.parquet", index=False)
     return data_dir
 
 
@@ -275,7 +275,7 @@ def test_partial_dependence_skips_constant_features(tmp_path, monkeypatch, caplo
             "sigma": [1.0, 1.0],
         }
     )
-    ratings.to_parquet(data_dir / "ratings_pooled.parquet", index=False)
+    ratings.to_parquet(data_dir / "ratings_k_weighted.parquet", index=False)
 
     class DummyModel:
         def fit(self, _X, _y):

@@ -9,7 +9,7 @@ directly, so the parsing layer has been removed.
 
 Outputs
 -------
-``ratings_<N>.parquet`` and ``ratings_pooled.parquet``
+``ratings_<N>.parquet`` and ``ratings_k_weighted.parquet``
     Parquet tables with columns ``{strategy, mu, sigma}`` written under
     ``06_trueskill/<Np>/`` and ``06_trueskill/pooled/`` respectively.
 ``tiers.json``
@@ -179,7 +179,7 @@ def _iter_rating_parquets(root: Path, suffix: str, legacy_root: Path | None = No
     out: list[Path] = []
     seen: set[str] = set()
     for path in per_player:
-        if path.stem.startswith("ratings_pooled"):
+        if path.stem.startswith("ratings_pooled") or path.stem.startswith("ratings_k_weighted"):
             continue
         key = path.resolve().as_posix()
         if key in seen:
@@ -1131,8 +1131,11 @@ def run_trueskill(
 
     # Combine per-N ratings into pooled stats
     pooled_parquet = _ensure_new_location(
+        pooled_dir / f"ratings_k_weighted{suffix}.parquet",
         pooled_dir / f"ratings_pooled{suffix}.parquet",
+        root / f"ratings_k_weighted{suffix}.parquet",
         root / f"ratings_pooled{suffix}.parquet",
+        legacy_root / f"ratings_k_weighted{suffix}.parquet",
         legacy_root / f"ratings_pooled{suffix}.parquet",
     )
     per_player_parquets = _iter_rating_parquets(root, suffix, legacy_root=legacy_root)
@@ -1176,8 +1179,11 @@ def run_trueskill(
     _save_ratings_parquet(pooled_parquet, pooled_rating_stats)
     pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled_rating_stats.items()}
     pooled_json_path = _ensure_new_location(
+        pooled_dir / f"ratings_k_weighted{suffix}.json",
         pooled_dir / f"ratings_pooled{suffix}.json",
+        root / f"ratings_k_weighted{suffix}.json",
         root / f"ratings_pooled{suffix}.json",
+        legacy_root / f"ratings_k_weighted{suffix}.json",
         legacy_root / f"ratings_pooled{suffix}.json",
     )
     with atomic_path(str(pooled_json_path)) as tmp_path:
@@ -1555,8 +1561,11 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
         )
 
         pooled_path = _ensure_new_location(
+            pooled_dir / f"ratings_k_weighted_seed{seed}.parquet",
             pooled_dir / f"ratings_pooled_seed{seed}.parquet",
+            analysis_dir / f"ratings_k_weighted_seed{seed}.parquet",
             analysis_dir / f"ratings_pooled_seed{seed}.parquet",
+            legacy_root / f"ratings_k_weighted_seed{seed}.parquet",
             legacy_root / f"ratings_pooled_seed{seed}.parquet",
         )
         if not pooled_path.exists():
@@ -1652,15 +1661,21 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     ordered_pooled = _ensure_strict_mu_ordering(_sorted_ratings(pooled_seed_stats))
 
     pooled_parquet = _ensure_new_location(
+        pooled_dir / "ratings_k_weighted.parquet",
         pooled_dir / "ratings_pooled.parquet",
+        analysis_dir / "ratings_k_weighted.parquet",
         analysis_dir / "ratings_pooled.parquet",
+        legacy_root / "ratings_k_weighted.parquet",
         legacy_root / "ratings_pooled.parquet",
     )
     _save_ratings_parquet(pooled_parquet, ordered_pooled)
 
     pooled_json_path = _ensure_new_location(
+        pooled_dir / "ratings_k_weighted.json",
         pooled_dir / "ratings_pooled.json",
+        analysis_dir / "ratings_k_weighted.json",
         analysis_dir / "ratings_pooled.json",
+        legacy_root / "ratings_k_weighted.json",
         legacy_root / "ratings_pooled.json",
     )
     with atomic_path(str(pooled_json_path)) as tmp_path:
