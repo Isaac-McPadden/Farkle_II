@@ -1,4 +1,5 @@
 from pathlib import Path
+import json
 
 import pandas as pd
 import pyarrow as pa
@@ -125,6 +126,10 @@ def test_run_generates_all_outputs(tmp_path: Path):
 
     stamp = cfg.game_stats_stage_dir / "game_stats.done.json"
     assert stamp.exists()
+    stamp_meta = json.loads(stamp.read_text())
+    assert str(per_k_game_length) in stamp_meta["outputs"]
+    assert str(per_k_margin) in stamp_meta["outputs"]
+
 
 
 def test_run_requires_inputs(tmp_path: Path):

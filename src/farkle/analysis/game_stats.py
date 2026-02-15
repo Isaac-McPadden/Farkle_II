@@ -218,15 +218,32 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         return
 
     write_details = cfg.analysis.rare_event_write_details
-    outputs = [game_length_output, margin_output, rare_events_output]
+    required_outputs = [game_length_output, margin_output, rare_events_output]
     if write_details:
-        outputs.append(rare_events_details_output)
+        required_outputs.append(rare_events_details_output)
 
     pooled_possible = bool(per_n_inputs)
     if pooled_possible:
-        outputs.extend([pooled_game_length_output, pooled_margin_output])
-    outputs.extend(per_k_game_length_outputs.values())
-    outputs.extend(per_k_margin_outputs.values())
+        required_outputs.extend([pooled_game_length_output, pooled_margin_output])
+    required_outputs.extend(per_k_game_length_outputs.values())
+    required_outputs.extend(per_k_margin_outputs.values())
+
+    if not force and stage_is_up_to_date(
+        stamp_path,
+        inputs=input_paths,
+        outputs=required_outputs,
+        config_sha=cfg.config_sha,
+    ):
+        LOGGER.info(
+            "Game-length stats up-to-date",
+            extra={
+                "stage": "game_stats",
+                "game_length_output": str(game_length_output),
+                "margin_output": str(margin_output),
+                "stamp": str(stamp_path),
+            },
+        )
+        return
 
     game_length_up_to_date = not force and stage_is_up_to_date(
         game_length_stamp,
@@ -515,7 +532,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     write_stage_done(
         stamp_path,
         inputs=input_paths,
-        outputs=outputs,
+        outputs=required_outputs,
         config_sha=cfg.config_sha,
     )
 
