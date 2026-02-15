@@ -1191,14 +1191,22 @@ class AppConfig:
     def post_h2h_path(self, filename: str) -> Path:
         """Resolve a post head-to-head artifact path with legacy fallback."""
 
+        canonical = self.canonical_artifact_name(filename)
+        candidate_names = (canonical, *self.legacy_artifact_names(canonical))
         candidates: list[Path] = []
         post_h2h_dir = self._stage_dir_if_active("post_h2h")
         if post_h2h_dir is not None:
-            candidates.append(post_h2h_dir / filename)
+            candidates.extend(post_h2h_dir / name for name in candidate_names)
         head2head_dir = self._stage_dir_if_active("head2head")
         if head2head_dir is not None:
-            candidates.append(head2head_dir / filename)
-        candidates.append(self.analysis_dir / canonical)
+            for name in candidate_names:
+                candidate = head2head_dir / name
+                if candidate not in candidates:
+                    candidates.append(candidate)
+        for name in candidate_names:
+            candidate = self.analysis_dir / name
+            if candidate not in candidates:
+                candidates.append(candidate)
         for candidate in candidates:
             if candidate.exists():
                 return candidate
@@ -1247,22 +1255,25 @@ class AppConfig:
     def _combine_artifact_candidates(self, filename: str) -> tuple[Path, ...]:
         """Return ordered candidate paths for a combine-stage pooled artifact."""
 
+        canonical = self.canonical_artifact_name(filename)
+        candidate_names = (canonical, *self.legacy_artifact_names(canonical))
         combine_dir = self.resolve_input_stage_dir("combine") or self.analysis_dir / "combine"
-        legacy_paths: list[Path] = [
-            combine_dir / f"{self.combine_max_players}p" / "pooled" / filename,
-            combine_dir / "all_n_players_combined" / filename,
-            self.data_dir / "all_n_players_combined" / filename,
-            self.analysis_dir / "all_n_players_combined" / filename,
-            self.analysis_dir / "data" / "all_n_players_combined" / filename,
+        legacy_dirs: list[Path] = [
+            combine_dir / f"{self.combine_max_players}p" / "pooled",
+            combine_dir / "all_n_players_combined",
+            self.data_dir / "all_n_players_combined",
+            self.analysis_dir / "all_n_players_combined",
+            self.analysis_dir / "data" / "all_n_players_combined",
         ]
         interseed_root = self.interseed_input_dir
         if interseed_root is not None:
-            legacy_paths.extend(
+            legacy_dirs.extend(
                 [
-                    interseed_root / "all_n_players_combined" / filename,
-                    interseed_root / "data" / "all_n_players_combined" / filename,
+                    interseed_root / "all_n_players_combined",
+                    interseed_root / "data" / "all_n_players_combined",
                 ]
             )
+        legacy_paths = [legacy_dir / name for legacy_dir in legacy_dirs for name in candidate_names]
         candidates: list[Path] = []
         input_dir = self._input_stage_path("combine", "pooled")
         if input_dir is not None:
@@ -1270,9 +1281,10 @@ class AppConfig:
 
         stage_dir = self._stage_dir_if_active("combine", "pooled")
         if stage_dir is not None:
-            stage_candidate = stage_dir / filename
-            if stage_candidate not in candidates:
-                candidates.append(stage_candidate)
+            for name in candidate_names:
+                stage_candidate = stage_dir / name
+                if stage_candidate not in candidates:
+                    candidates.append(stage_candidate)
 
         interseed_dir = self._interseed_stage_dir("combine", "pooled")
         if interseed_dir is not None:
