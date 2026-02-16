@@ -1,6 +1,4 @@
 import importlib.util
-import sys
-import types
 from pathlib import Path
 
 CONF_PATH = Path(__file__).resolve().parents[1] / "conftest.py"
@@ -12,20 +10,22 @@ spec.loader.exec_module(conf)
 
 
 def test_pytest_configure_patches_numba(monkeypatch):
-    dummy = types.SimpleNamespace()
     sentinel_jit = object()
     sentinel_njit = object()
-    dummy.jit = sentinel_jit
-    dummy.njit = sentinel_njit
-    monkeypatch.setitem(sys.modules, "numba", dummy)
+
+    # pytest_configure mutates the module object captured in tests/conftest.py,
+    # regardless of whether that object came from a real numba install or a
+    # fallback shim. Patch that object directly to avoid coupling to import order.
+    monkeypatch.setattr(conf.numba, "jit", sentinel_jit)
+    monkeypatch.setattr(conf.numba, "njit", sentinel_njit)
 
     conf.pytest_configure()
 
-    assert dummy.jit is not sentinel_jit
-    assert dummy.njit is dummy.jit
+    assert conf.numba.jit is conf._identity_jit
+    assert conf.numba.njit is conf._identity_jit
 
     def func():
         return 42
 
-    assert dummy.jit()(func) is func  # type: ignore
-    assert dummy.njit()(func) is func  # type: ignore
+    assert conf.numba.jit()(func) is func  # type: ignore[misc]
+    assert conf.numba.njit()(func) is func  # type: ignore[misc]
