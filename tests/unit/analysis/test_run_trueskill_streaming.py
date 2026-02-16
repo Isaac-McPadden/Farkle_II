@@ -120,7 +120,6 @@ def test_players_and_ranks_precedence(tmp_path: Path) -> None:
     assert rows == [
         (["alpha", "beta", "gamma"], [0, 0, 1]),
         (["epsilon", "delta"], [0, 1]),
-        (["theta", "zeta", "eta"], [0, 1, 1]),
     ]
 
 

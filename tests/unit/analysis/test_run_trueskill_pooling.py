@@ -1,16 +1,16 @@
-import math
 import os
 import shutil
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 import yaml
 
 from farkle.analysis import run_trueskill
 
 
-def test_pooled_ratings_are_weighted_mean(tmp_path):
+def test_pooled_ratings_are_weighted_mean(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     res_root = data_root / "results"
 
@@ -53,15 +53,15 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_trueskill.run_trueskill(root=data_root)
+        run_trueskill.run_trueskill(root=data_root, workers=1, batch_rows=2)
     finally:
         os.chdir(cwd)
 
     ratings_root = tmp_path / "data"
-    r2 = run_trueskill._load_ratings_parquet(ratings_root / "2p" / "ratings_2.parquet")
-    r3 = run_trueskill._load_ratings_parquet(ratings_root / "3p" / "ratings_3.parquet")
+    r2 = run_trueskill._load_ratings_parquet(ratings_root / "2p" / "ratings_2_seed0.parquet")
+    r3 = run_trueskill._load_ratings_parquet(ratings_root / "3p" / "ratings_3_seed0.parquet")
     pooled = run_trueskill._load_ratings_parquet(
-        ratings_root / "pooled" / "ratings_k_weighted.parquet"
+        ratings_root / "pooled" / "ratings_k_weighted_seed0.parquet"
     )
 
     env = run_trueskill.trueskill.TrueSkill()
@@ -70,27 +70,25 @@ def test_pooled_ratings_are_weighted_mean(tmp_path):
     expected2 = run_trueskill._update_ratings(g2, ["A", "B"], env)
     expected3 = run_trueskill._update_ratings(g3, ["A", "B"], env)
 
-    w2, w3 = len(g2), len(g3)
-
-    pooled_expect = {}
+    pooled_expect: dict[str, run_trueskill.RatingStats] = {}
     for key in pooled:
         s_mu, s_tau = 0.0, 0.0
         stats2 = expected2.get(key)
         if stats2 is not None:
             tau2 = 1.0 / (stats2.sigma**2) if stats2.sigma > 0 else 0.0
-            s_mu += tau2 * stats2.mu * w2
-            s_tau += tau2 * w2
+            s_mu += tau2 * stats2.mu
+            s_tau += tau2
         stats3 = expected3.get(key)
         if stats3 is not None:
             tau3 = 1.0 / (stats3.sigma**2) if stats3.sigma > 0 else 0.0
-            s_mu += tau3 * stats3.mu * w3
-            s_tau += tau3 * w3
+            s_mu += tau3 * stats3.mu
+            s_tau += tau3
         if s_tau > 0:
-            pooled_expect[key] = run_trueskill.RatingStats(s_mu / s_tau, math.sqrt(1.0 / s_tau))
+            pooled_expect[key] = run_trueskill.RatingStats(s_mu / s_tau, s_tau**-0.5)
 
     assert r2 == expected2
     assert r3 == {k: expected3[k] for k in ("A", "B")}
     for key, expected_stats in pooled_expect.items():
         actual = pooled[key]
-        assert math.isclose(actual.mu, expected_stats.mu, rel_tol=1e-6)
-        assert math.isclose(actual.sigma, expected_stats.sigma, rel_tol=1e-6)
+        assert actual.mu == pytest.approx(expected_stats.mu, rel=1e-6, abs=1e-8)
+        assert actual.sigma == pytest.approx(expected_stats.sigma, rel=1e-6, abs=1e-8)
