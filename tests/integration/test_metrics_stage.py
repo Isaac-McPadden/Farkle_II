@@ -27,7 +27,7 @@ def test_metrics_run_matches_goldens(tmp_path, update_goldens):
     validate_outputs(cfg, update_goldens=update_goldens)
 
     df = pd.read_parquet(cfg.metrics_output_path())
-    assert list(df.columns) == [
+    required_columns = {
         "strategy",
         "n_players",
         "games",
@@ -44,8 +44,14 @@ def test_metrics_run_matches_goldens(tmp_path, update_goldens):
         "sum_n_rounds",
         "sq_sum_n_rounds",
         "false_wins_handled",
-    ]
+    }
+    assert required_columns.issubset(df.columns)
+    assert set(df["n_players"]) == {2, 3}
     assert len(df) == 8
+
+    seat_adv = pd.read_parquet(cfg.metrics_output_path("seat_advantage.parquet"))
+    assert {"seat", "wins", "games_with_seat", "win_rate"}.issubset(seat_adv.columns)
+    assert len(seat_adv) == 12
 
 
 def test_golden_mismatch_requires_update_flag(tmp_path, update_goldens):
@@ -63,11 +69,11 @@ def test_golden_mismatch_requires_update_flag(tmp_path, update_goldens):
     metrics.run(cfg)
 
     if update_goldens:
-        pytest.skip("Update mode refreshes goldens instead of enforcing mismatches.")
+        pytest.skip("Mismatch checks are disabled when --update-goldens is active.")
 
     metrics_path = cfg.metrics_output_path()
     df = pd.read_parquet(metrics_path).iloc[:-1]
     df.to_parquet(metrics_path, index=False)
 
-    with pytest.raises(GoldenMismatchError):
+    with pytest.raises(GoldenMismatchError, match="--update-goldens"):
         validate_outputs(cfg, update_goldens=False)
