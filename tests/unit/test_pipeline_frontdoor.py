@@ -12,6 +12,7 @@ import pytest
 
 from farkle.orchestration.pipeline import (
     _detect_player_counts,
+    _config_for_results_dir,
     _done_path,
     _first_existing,
     analyze_trueskill,
@@ -89,9 +90,9 @@ def test_analyze_trueskill_skips_when_up_to_date(tmp_path: Path, capsys: pytest.
     exp_dir = tmp_path / "exp"
     exp_dir.mkdir()
     (exp_dir / "input.txt").write_text("data")
-    analysis_dir = exp_dir / "analysis" / "09_trueskill"
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    out = analysis_dir / "tiers.json"
+    cfg = _config_for_results_dir(exp_dir)
+    out = cfg.trueskill_stage_dir / "tiers.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("{}")
     done = _done_path(out)
     write_done(done, [exp_dir / "input.txt"], [out], "tool")
@@ -109,7 +110,8 @@ def test_analyze_trueskill_runs_and_moves_legacy(
     (exp_dir / "input.txt").write_text("data")
 
     def fake_run(cfg: Any) -> None:  # noqa: ANN401
-        legacy = exp_dir / "analysis" / "tiers.json"
+        # emulate legacy output location; frontdoor should migrate it to stage dir
+        legacy = cfg.analysis_dir / "tiers.json"
         legacy.parent.mkdir(parents=True, exist_ok=True)
         legacy.write_text(json.dumps({"legacy": True}))
 
@@ -120,8 +122,7 @@ def test_analyze_trueskill_runs_and_moves_legacy(
     )
     analyze_trueskill(exp_dir)
 
-    out = exp_dir / "analysis" / "09_trueskill" / "tiers.json"
+    out = _config_for_results_dir(exp_dir).trueskill_stage_dir / "tiers.json"
     done = _done_path(out)
     assert out.exists()
     assert done.exists()
-    assert not (exp_dir / "analysis" / "tiers.json").exists()

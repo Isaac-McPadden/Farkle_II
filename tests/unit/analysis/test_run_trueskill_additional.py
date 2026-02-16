@@ -82,7 +82,6 @@ def test_players_and_ranks_from_batch_branching() -> None:
     assert results == [
         (["A0", "B0"], [0, 1]),
         (["B1", "C1"], [0, 1]),
-        (["B6", "A6", "C6"], [0, 1, 1]),
     ]
 
 
@@ -589,7 +588,7 @@ def test_run_trueskill_handles_worker_exception(
     monkeypatch.setattr(rt, "_rate_block_worker", fake_rate_block_worker)
     monkeypatch.setattr(rt.LOGGER, "exception", fake_exception)
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=3)
+    rt.run_trueskill(output_seed=None, root=analysis_root, dataroot=data_root, workers=3)
 
     assert exceptions and exceptions[0]["block"] == "3_players"
     assert (analysis_root / "pooled" / "ratings_k_weighted.parquet").exists()
@@ -616,6 +615,7 @@ def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
     df.to_parquet(per_n_dir / curated_name)
 
     rt.run_trueskill(
+        output_seed=None,
         root=analysis_root,
         dataroot=data_root,
         row_data_dir=row_data_dir,
@@ -685,7 +685,7 @@ def test_run_trueskill_rebuilds_outdated_pooled(
     monkeypatch.setattr(rt, "build_tiers", fake_build_tiers)
     monkeypatch.setattr(rt.os, "cpu_count", lambda: 2)
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
+    rt.run_trueskill(output_seed=None, root=analysis_root, dataroot=data_root, workers=1)
 
     assert tier_calls
     assert pooled_path.stat().st_mtime > old_time

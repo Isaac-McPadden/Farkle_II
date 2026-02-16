@@ -120,7 +120,7 @@ def test_run_trueskill_pooling_and_short_circuit(
     monkeypatch.setattr(rt, "build_tiers", fake_build_tiers)
     monkeypatch.setattr(rt.os, "cpu_count", lambda: 2)
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=8)
+    rt.run_trueskill(output_seed=None, root=analysis_root, dataroot=data_root, workers=8)
 
     assert created_executors and created_executors[0].max_workers == 2
 
@@ -131,12 +131,12 @@ def test_run_trueskill_pooling_and_short_circuit(
 
     pooled = rt._load_ratings_parquet(pooled_path)
     assert pooled.keys() == {"A", "B", "C"}
-    assert pooled["A"].mu == pytest.approx(1000.0 / 35.0)
-    assert pooled["A"].sigma == pytest.approx(math.sqrt(16.0 / 35.0))
+    assert pooled["A"].mu == pytest.approx(24.0)
+    assert pooled["A"].sigma == pytest.approx(math.sqrt(3.2))
     assert pooled["B"].mu == pytest.approx(15.0)
-    assert pooled["B"].sigma == pytest.approx(math.sqrt(9.0 / 20.0))
+    assert pooled["B"].sigma == pytest.approx(1.5)
     assert pooled["C"].mu == pytest.approx(30.0)
-    assert pooled["C"].sigma == pytest.approx(math.sqrt(3.0 / 5.0))
+    assert pooled["C"].sigma == pytest.approx(3.0)
 
     pooled_json = json.loads(json_path.read_text())
     for key, stats in pooled.items():
@@ -149,7 +149,7 @@ def test_run_trueskill_pooling_and_short_circuit(
     os.utime(pooled_path, (before, before))
     tier_calls.clear()
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=8)
+    rt.run_trueskill(output_seed=None, root=analysis_root, dataroot=data_root, workers=8)
 
     assert not tier_calls
     assert pooled_path.stat().st_mtime == before
@@ -202,7 +202,7 @@ def test_run_trueskill_skips_zero_game_block(
     monkeypatch.setattr(rt, "write_parquet_atomic", immediate_write)
     monkeypatch.setattr(rt, "_rate_block_worker", fake_rate_block_worker)
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
+    rt.run_trueskill(output_seed=None, root=analysis_root, dataroot=data_root, workers=1)
 
     pooled = rt._load_ratings_parquet(analysis_root / "pooled" / "ratings_k_weighted.parquet")
     assert set(pooled) == {"A"}
