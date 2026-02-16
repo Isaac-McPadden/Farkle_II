@@ -1,128 +1,142 @@
-import importlib.machinery
+import itertools
 import logging
-import sys
-import types
-from typing import List
+from typing import Any
 
 import pytest
 
 from farkle.config import AppConfig
 
+LEGACY_FLAG_NAMES = (
+    "run_trueskill",
+    "run_head2head",
+    "run_hgb",
+    "run_frequentist",
+    "run_post_h2h_analysis",
+    "run_agreement",
+)
+
 
 @pytest.mark.parametrize(
-    "ts,h2h,hgb",
-    [
-        (True, True, True),
-        (True, True, False),
-        (True, False, True),
-        (True, False, False),
-        (False, True, True),
-        (False, True, False),
-        (False, False, True),
-        (False, False, False),
-    ],
+    "legacy_values",
+    list(itertools.product((True, False), repeat=len(LEGACY_FLAG_NAMES))),
 )
-def test_run_all_invokes_expected_modules(
-    ts, h2h, hgb, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_run_all_uses_current_stage_order_for_all_legacy_flag_combinations(
+    legacy_values: tuple[bool, ...],
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    calls: List[str] = []
+    import farkle.analysis as analysis_mod
 
-    def make_module(
-        name: str, label: str, *, func_name: str = "run", record_call: bool = True
-    ) -> types.ModuleType:
-        module = types.ModuleType(f"farkle.analysis.{name}")
-        module.__spec__ = importlib.machinery.ModuleSpec(name, loader=None)
+    calls: list[str] = []
 
-        def _run(cfg, **_):  # noqa: ANN001
-            if record_call:
-                calls.append(label)
+    def _single_seed(cfg: AppConfig, *, force: bool = False) -> None:  # noqa: ARG001
+        assert force is False
+        calls.append("single_seed")
 
-        setattr(module, func_name, _run)
-        return module
+    def _interseed(
+        cfg: AppConfig,  # noqa: ARG001
+        *,
+        force: bool = False,
+        manifest_path: Any = None,
+        rng_lags: list[int] | None = None,
+        run_rng_diagnostics: bool | None = None,
+    ) -> None:
+        assert force is False
+        assert manifest_path is None
+        assert rng_lags == [1, 3]
+        assert run_rng_diagnostics is False
+        calls.append("interseed")
 
-    monkeypatch.setitem(
-        sys.modules,
-        "farkle.analysis.trueskill",
-        make_module("trueskill", "trueskill"),
+    def _h2h_tier_trends(cfg: AppConfig, *, force: bool = False) -> None:  # noqa: ARG001
+        assert force is False
+        calls.append("h2h_tier_trends")
+
+    monkeypatch.setattr(analysis_mod, "run_single_seed_analysis", _single_seed)
+    monkeypatch.setattr(analysis_mod, "run_interseed_analysis", _interseed)
+    monkeypatch.setattr(analysis_mod, "run_h2h_tier_trends", _h2h_tier_trends)
+
+    # Legacy direct module hooks removed from run_all should not be called.
+    monkeypatch.setattr(
+        analysis_mod,
+        "run_seed_summaries",
+        lambda cfg, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected call")),
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "farkle.analysis.head2head",
-        make_module("head2head", "head2head"),
+    monkeypatch.setattr(
+        analysis_mod,
+        "run_variance",
+        lambda cfg, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected call")),
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "farkle.analysis.h2h_analysis",
-        make_module("h2h_analysis", "h2h_analysis", func_name="run_post_h2h", record_call=False),
+    monkeypatch.setattr(
+        analysis_mod,
+        "run_meta",
+        lambda cfg, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected call")),
     )
-    monkeypatch.setitem(
-        sys.modules,
-        "farkle.analysis.hgb_feat",
-        make_module("hgb_feat", "hgb"),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "farkle.analysis.tiering_report",
-        make_module("tiering_report", "tiering_report", record_call=False),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "farkle.analysis.agreement",
-        make_module("agreement", "agreement"),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "farkle.analysis.meta",
-        make_module("meta", "meta", record_call=False),
-    )
-
-    import farkle.analysis as analysis_mod  # import after stubbing dependencies
-
-    run_all = analysis_mod.run_all
-
-    def _seed_stub(cfg, **_):  # noqa: ANN001
-        calls.append("seed_summaries")
-
-    monkeypatch.setattr(analysis_mod, "run_seed_summaries", _seed_stub)
-    monkeypatch.setattr(analysis_mod, "run_variance", lambda cfg, **__: calls.append("variance"))
-    monkeypatch.setattr(analysis_mod, "run_meta", lambda cfg, **__: calls.append("meta"))
 
     cfg = AppConfig()
-    cfg.analysis.run_trueskill = ts
-    cfg.analysis.run_head2head = h2h
-    cfg.analysis.run_hgb = hgb
-    cfg.analysis.run_post_h2h_analysis = True
-    cfg.analysis.run_frequentist = True
-    cfg.analysis.run_agreement = True
+    for name, value in zip(LEGACY_FLAG_NAMES, legacy_values):
+        setattr(cfg.analysis, name, value)
 
     with caplog.at_level(logging.INFO):
-        run_all(cfg)
+        analysis_mod.run_all(cfg, run_rng_diagnostics=False, rng_lags=[1, 3])
 
-    expected_calls: List[str] = ["seed_summaries", "variance", "meta"]
-    if ts:
-        expected_calls.append("trueskill")
-        assert "Analytics: skipping trueskill" not in caplog.text
-    else:
-        assert "Analytics: skipping trueskill" in caplog.text
-    if h2h:
-        expected_calls.append("head2head")
-        assert "Analytics: skipping head-to-head" not in caplog.text
-    else:
-        assert "Analytics: skipping head-to-head" in caplog.text
-    if hgb:
-        expected_calls.append("hgb")
-        assert "Analytics: skipping hist gradient boosting" not in caplog.text
-    else:
-        assert "Analytics: skipping hist gradient boosting" in caplog.text
-
-    if cfg.analysis.run_agreement:
-        expected_calls.append("agreement")
-        assert "Analytics: skipping agreement" not in caplog.text
-    else:
-        assert "Analytics: skipping agreement" in caplog.text
-    assert calls == expected_calls
+    assert calls == ["single_seed", "interseed", "h2h_tier_trends"]
     assert "Analytics: starting all modules" in caplog.text
     assert "Analytics: all modules finished" in caplog.text
+
+
+def test_run_all_does_not_invoke_removed_direct_module_hooks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import farkle.analysis as analysis_mod
+
+    called: list[str] = []
+
+    monkeypatch.setattr(
+        analysis_mod,
+        "run_single_seed_analysis",
+        lambda cfg, **kwargs: called.append("single_seed"),
+    )
+    monkeypatch.setattr(
+        analysis_mod,
+        "run_interseed_analysis",
+        lambda cfg, **kwargs: called.append("interseed"),
+    )
+    monkeypatch.setattr(
+        analysis_mod,
+        "run_h2h_tier_trends",
+        lambda cfg, **kwargs: called.append("h2h_tier_trends"),
+    )
+
+    for removed_hook in ("run_seed_summaries", "run_variance", "run_meta"):
+        monkeypatch.setattr(
+            analysis_mod,
+            removed_hook,
+            lambda cfg, _hook=removed_hook, **kwargs: called.append(_hook),
+        )
+
+    analysis_mod.run_all(AppConfig())
+
+    assert called == ["single_seed", "interseed", "h2h_tier_trends"]
+
+
+def test_run_all_respects_idempotent_short_circuit_when_outputs_are_fresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import farkle.analysis as analysis_mod
+
+    expensive_work: list[str] = []
+
+    def _fresh_stage(_: AppConfig, *, force: bool = False, **kwargs: object) -> None:
+        if force:
+            expensive_work.append("recompute")
+
+    monkeypatch.setattr(analysis_mod, "run_single_seed_analysis", _fresh_stage)
+    monkeypatch.setattr(analysis_mod, "run_interseed_analysis", _fresh_stage)
+    monkeypatch.setattr(analysis_mod, "run_h2h_tier_trends", _fresh_stage)
+
+    analysis_mod.run_all(AppConfig())
+
+    assert expensive_work == []
 
 
 def test_optional_import_logs_missing(caplog: pytest.LogCaptureFixture) -> None:
