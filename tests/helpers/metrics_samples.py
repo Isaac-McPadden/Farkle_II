@@ -41,16 +41,18 @@ _STRATEGIES = [
     "Strat(200,0)[SD][F-FD][OR][HR]",
 ]
 
+_STRATEGY_IDS = {name: idx + 1 for idx, name in enumerate(_STRATEGIES)}
+
 _COMBINED_ROWS: list[dict[str, object]] = [
     {
         "winner_seat": "P1",
-        "winner_strategy": _STRATEGIES[0],
+        "winner_strategy": _STRATEGY_IDS[_STRATEGIES[0]],
         "seat_ranks": ["P1", "P2", "P3"],
         "winning_score": 100,
         "n_rounds": 10,
-        "P1_strategy": _STRATEGIES[0],
-        "P2_strategy": _STRATEGIES[1],
-        "P3_strategy": _STRATEGIES[2],
+        "P1_strategy": _STRATEGY_IDS[_STRATEGIES[0]],
+        "P2_strategy": _STRATEGY_IDS[_STRATEGIES[1]],
+        "P3_strategy": _STRATEGY_IDS[_STRATEGIES[2]],
         "P1_rank": 1,
         "P2_rank": 2,
         "P3_rank": 3,
@@ -69,13 +71,13 @@ _COMBINED_ROWS: list[dict[str, object]] = [
     },
     {
         "winner_seat": "P2",
-        "winner_strategy": _STRATEGIES[1],
+        "winner_strategy": _STRATEGY_IDS[_STRATEGIES[1]],
         "seat_ranks": ["P2", "P1", "P3"],
         "winning_score": 110,
         "n_rounds": 11,
-        "P1_strategy": _STRATEGIES[0],
-        "P2_strategy": _STRATEGIES[1],
-        "P3_strategy": _STRATEGIES[2],
+        "P1_strategy": _STRATEGY_IDS[_STRATEGIES[0]],
+        "P2_strategy": _STRATEGY_IDS[_STRATEGIES[1]],
+        "P3_strategy": _STRATEGY_IDS[_STRATEGIES[2]],
         "P1_rank": 2,
         "P2_rank": 1,
         "P3_rank": 3,
@@ -94,12 +96,12 @@ _COMBINED_ROWS: list[dict[str, object]] = [
     },
     {
         "winner_seat": "P1",
-        "winner_strategy": _STRATEGIES[0],
+        "winner_strategy": _STRATEGY_IDS[_STRATEGIES[0]],
         "seat_ranks": ["P1", "P2"],
         "winning_score": 95,
         "n_rounds": 9,
-        "P1_strategy": _STRATEGIES[0],
-        "P2_strategy": _STRATEGIES[3],
+        "P1_strategy": _STRATEGY_IDS[_STRATEGIES[0]],
+        "P2_strategy": _STRATEGY_IDS[_STRATEGIES[3]],
         "P3_strategy": None,
         "P1_rank": 1,
         "P2_rank": 2,
