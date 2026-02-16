@@ -60,22 +60,21 @@ def test_parse_level_accepts_int(preserve_root_logger):
     assert root.level == logging.ERROR
 
 
-def test_analyze_metrics_dispatches_rng(monkeypatch, preserve_root_logger):
-    calls: list[tuple[str, tuple[int, ...] | None]] = []
+def test_analyze_metrics_ignores_rng_flags(monkeypatch, preserve_root_logger):
+    calls: list[str] = []
 
-    monkeypatch.setattr(cli_main.metrics, "run", lambda cfg: calls.append(("metrics", None)))
-
-    def _fake_rng(cfg, *, lags=None, force=False):  # noqa: ANN001
-        calls.append(("rng", tuple(lags) if lags is not None else None))
-
-    monkeypatch.setattr("farkle.analysis.rng_diagnostics.run", _fake_rng, raising=True)
+    monkeypatch.setattr(cli_main.metrics, "run", lambda cfg: calls.append("metrics"))
+    monkeypatch.setattr(
+        cli_main.analysis_pkg,
+        "run_all",
+        lambda cfg, **kwargs: calls.append("run_all"),
+    )
 
     cli_main.main(
         ["analyze", "metrics", "--rng-diagnostics", "--rng-lags", "2", "1", "2"]
     )
 
-    assert ("metrics", None) in calls
-    assert ("rng", (1, 2)) in calls
+    assert calls == ["metrics"]
 
 
 def test_stringify_paths_handles_nested_structures():
@@ -141,13 +140,26 @@ def test_analyze_variance_dispatch(monkeypatch, tmp_path: Path, preserve_root_lo
     assert called == {"force": True}
 
 
-def test_analyze_pipeline_runs_preprocess(monkeypatch, tmp_path: Path, preserve_root_logger):
-    calls: list[str] = []
+def test_analyze_pipeline_dispatches_preprocess_and_analytics(
+    monkeypatch, tmp_path: Path, preserve_root_logger
+):
+    calls: list[tuple[str, object]] = []
 
-    monkeypatch.setattr(cli_main, "_run_preprocess", lambda cfg, **kwargs: calls.append("preprocess"))
-    monkeypatch.setattr(cli_main.analysis_pkg, "run_all", lambda cfg: calls.append("run_all"))
+    monkeypatch.setattr(
+        cli_main,
+        "_run_preprocess",
+        lambda cfg, **kwargs: calls.append(("analyze:pipeline", kwargs.get("compute_game_stats"))),
+    )
+    monkeypatch.setattr(
+        cli_main.analysis_pkg,
+        "run_all",
+        lambda cfg, **kwargs: calls.append(("analyze:analytics", kwargs)),
+    )
 
     cfg_path = _write_cfg(tmp_path)
-    cli_main.main(["--config", str(cfg_path), "analyze", "pipeline", "--compute-game-stats"])
+    cli_main.main(["--config", str(cfg_path), "analyze", "pipeline"])
 
-    assert calls == ["preprocess", "run_all"]
+    assert calls == [
+        ("analyze:pipeline", False),
+        ("analyze:analytics", {"run_rng_diagnostics": False, "rng_lags": None}),
+    ]
