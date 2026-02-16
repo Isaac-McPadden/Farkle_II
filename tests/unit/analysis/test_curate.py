@@ -31,8 +31,21 @@ def _empty_table(schema: pa.Schema) -> pa.Table:
     )
 
 
+def _canonical_schema_digest(schema: pa.Schema) -> str:
+    pa_serialize = getattr(pa.ipc, "serialize", None)
+    if pa_serialize is not None:
+        payload = pa_serialize(schema).to_buffer().to_pybytes()
+    else:
+        payload = schema.serialize().to_pybytes()
+    return hashlib.sha256(payload).hexdigest()
+
+
 def test_schema_hash_known_value():
-    assert _schema_hash(2) == "8d6a2409c58593937b2a9b7c69d12ca745fd16ad064e7e201bbdd1bb7e3a69cf"
+    schema = expected_schema_for(2)
+    expected = _canonical_schema_digest(schema)
+
+    assert _schema_hash(2) == expected
+    assert expected == "81da1a048aa54451b2f1d7a93e945aa6adc061d416261f0ecbe4f29f38ac8902"
 
 
 def test_schema_hash_uses_schema_serialize_when_pa_ipc_missing(monkeypatch):
@@ -71,7 +84,8 @@ def test_already_curated_schema_hash(tmp_path):
     table1 = pa.table(
         {
             "winner_seat": ["P1"],
-            "winner_strategy": ["none"],
+            "winner_strategy": [1],
+            "game_seed": [0],
             "seat_ranks": [[]],
             "winning_score": [100],
             "n_rounds": [1],
@@ -124,7 +138,8 @@ def test_already_curated_manifest_failures(tmp_path):
     table = pa.table(
         {
             "winner_seat": ["P1"],
-            "winner_strategy": ["none"],
+            "winner_strategy": [1],
+            "game_seed": [0],
             "seat_ranks": [[]],
             "winning_score": [100],
             "n_rounds": [1],
@@ -141,6 +156,12 @@ def test_already_curated_manifest_failures(tmp_path):
     assert not _already_curated(file, manifest)
 
     _write_manifest(manifest, rows=99, schema=schema, cfg=cfg)
+    assert not _already_curated(file, manifest)
+
+    _write_manifest(manifest, rows=1, schema=schema, cfg=cfg)
+    meta = json.loads(manifest.read_text())
+    meta.pop("row_count", None)
+    manifest.write_text(json.dumps(meta))
     assert not _already_curated(file, manifest)
 
     _write_manifest(manifest, rows=1, schema=schema, cfg=cfg)

@@ -32,15 +32,27 @@ pytestmark = pytest.mark.skipif(
 
 if TYPE_CHECKING or HAS_UTC:
     from farkle.analysis import combine, curate, ingest, metrics
+    from farkle.analysis.curate import _schema_hash
 else:  # pragma: no cover - tests skipped when UTC unavailable
     combine = curate = ingest = metrics = None  # type: ignore[assignment]
+    _schema_hash = None  # type: ignore[assignment]
 
 
-def test_ingest_golden_dataset(analysis_config, caplog, golden_dataset):
+def _patch_nan_to_num_readonly(monkeypatch: pytest.MonkeyPatch) -> None:
+    original = ingest.np.nan_to_num
+
+    def _safe_nan_to_num(x, copy=True, nan=0.0, posinf=None, neginf=None):
+        return original(x, copy=True, nan=nan, posinf=posinf, neginf=neginf)
+
+    monkeypatch.setattr(ingest.np, "nan_to_num", _safe_nan_to_num)
+
+
+def test_ingest_golden_dataset(analysis_config, caplog, golden_dataset, monkeypatch):
     cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_root)
 
+    _patch_nan_to_num_readonly(monkeypatch)
     caplog.set_level(logging.INFO, logger="farkle.analysis.ingest")
     ingest.run(cfg)
 
@@ -73,11 +85,12 @@ def test_ingest_golden_dataset(analysis_config, caplog, golden_dataset):
     assert any("Ingest finished" in msg for msg in messages)
 
 
-def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
+def test_curate_golden_dataset(analysis_config, caplog, golden_dataset, monkeypatch):
     cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_root)
     raw_path = cfg_proto.ingested_rows_raw(3)
+    _patch_nan_to_num_readonly(monkeypatch)
     ingest.run(cfg)
     assert raw_path.exists()
 
@@ -100,7 +113,7 @@ def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
     assert table.num_rows == len(golden_dataset.dataframe)
     meta = json.loads(manifest.read_text())
     assert meta["row_count"] == len(golden_dataset.dataframe)
-    assert meta["schema_hash"]
+    assert meta["schema_hash"] == _schema_hash(3)
     assert meta.get("compression") == cfg_proto.parquet_codec
     assert "created_at" in meta
 
@@ -108,11 +121,12 @@ def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
     assert any("Curate finished" in msg for msg in messages)
 
 
-def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched_strategy_grid):
+def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched_strategy_grid, monkeypatch):
     cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_root)
     golden_dataset.write_metrics(cfg_proto.results_root)
+    _patch_nan_to_num_readonly(monkeypatch)
     ingest.run(cfg)
     curate.run(cfg)
     combine.run(cfg)
