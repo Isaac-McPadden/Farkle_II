@@ -76,9 +76,9 @@ def test_run_bonferroni_head2head_resumes_and_shards(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    analysis_dir = cfg.analysis_dir
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    (analysis_dir / "tiers.json").write_text(json.dumps({"S1": 0, "S2": 0, "S3": 0}))
+    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
+    tiers_path.write_text(json.dumps({"S1": 0, "S2": 0, "S3": 0}))
 
     existing = pd.DataFrame(
         [
@@ -96,7 +96,7 @@ def test_run_bonferroni_head2head_resumes_and_shards(
             }
         ]
     )
-    shard_dir = analysis_dir / "bonferroni_pairwise_shards"
+    shard_dir = cfg.head2head_stage_dir / "bonferroni_pairwise_shards"
     shard_dir.mkdir()
     existing_path = shard_dir / "bonferroni_pairwise_shard_0000.parquet"
     existing.to_parquet(existing_path)
@@ -111,7 +111,11 @@ def test_run_bonferroni_head2head_resumes_and_shards(
         return pd.DataFrame({"winner_strategy": [str(strategies[0])] * len(seeds)})
 
     monkeypatch.setattr(rb, "games_for_power", fake_games_for_power)
-    monkeypatch.setattr(rb, "parse_strategy", lambda name: name)
+    monkeypatch.setattr(
+        rb,
+        "parse_strategy_identifier",
+        lambda name, manifest=None, parse_legacy=None: name,
+    )
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_simulate)
 
     rb.run_bonferroni_head2head(seed=1, cfg=cfg, shard_size=1)
@@ -127,17 +131,60 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     assert call_counter["calls"] == 2
 
 
+def test_run_bonferroni_head2head_progress_cadence_logs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cfg = AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
+    tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
+
+    monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: 1)  # noqa: ANN001
+    monkeypatch.setattr(
+        rb,
+        "parse_strategy_identifier",
+        lambda name, manifest=None, parse_legacy=None: name,
+    )
+    monkeypatch.setattr(
+        rb,
+        "simulate_many_games_from_seeds",
+        lambda seeds, strategies, n_jobs: pd.DataFrame(
+            {"winner_strategy": [str(strategies[0])] * len(seeds)}
+        ),
+    )
+
+    ticks = iter([0.0, 0.0, 1.0, 2.1, 4.3, 8.6])
+    monkeypatch.setattr(rb.time, "monotonic", lambda: next(ticks))
+
+    with caplog.at_level("INFO"):
+        rb.run_bonferroni_head2head(
+            cfg=cfg,
+            n_jobs=1,
+            progress_schedule=[0.5, 1.5, 2.0],
+        )
+
+    progress_logs = [rec for rec in caplog.records if rec.message == "Head-to-head progress"]
+    assert len(progress_logs) >= 2
+
+
 def test_run_bonferroni_head2head_progress_schedule_validation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    analysis_dir = cfg.analysis_dir
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    (analysis_dir / "tiers.json").write_text(json.dumps({"A": 0, "B": 0}))
+    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
+    tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
     monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: 1)  # noqa: ANN001
-    monkeypatch.setattr(rb, "parse_strategy", lambda name: name)
+    monkeypatch.setattr(
+        rb,
+        "parse_strategy_identifier",
+        lambda name, manifest=None, parse_legacy=None: name,
+    )
     monkeypatch.setattr(
         rb,
         "simulate_many_games_from_seeds",
@@ -151,12 +198,16 @@ def test_run_bonferroni_head2head_progress_schedule_validation(
 def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    analysis_dir = cfg.analysis_dir
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    (analysis_dir / "tiers.json").write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
+    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
+    tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
     monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: 1)  # noqa: ANN001
-    monkeypatch.setattr(rb, "parse_strategy", lambda name: name)
+    monkeypatch.setattr(
+        rb,
+        "parse_strategy_identifier",
+        lambda name, manifest=None, parse_legacy=None: name,
+    )
 
     pair_jobs: list[int] = []
 
@@ -201,18 +252,25 @@ def test_load_top_strategies_handles_missing_and_invalid(tmp_path: Path, caplog)
     metrics = tmp_path / "metrics.parquet"
 
     caplog.set_level("INFO")
-    strategies = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
+    strategies, info = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
 
     assert strategies == []
+    assert info["combined_count"] == 0
     assert any("Fallback selection skipped" in rec.message for rec in caplog.records)
+
+    ratings.write_text("not a parquet")
+    invalid_again, invalid_info = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
+    assert invalid_again == []
+    assert invalid_info["ratings_count"] == 0
 
     ratings_df = pd.DataFrame({"strategy": ["S1", "S2"], "mu": [1.0, 2.0]})
     metrics_df = pd.DataFrame({"strategy": ["S2", "S3"], "win_rate": [0.2, 0.8]})
     ratings_df.to_parquet(ratings)
     metrics_df.to_parquet(metrics)
 
-    combined = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
+    combined, combined_info = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
     assert combined == ["S2", "S1", "S3"]
+    assert combined_info["combined_count"] == 3
 
 
 def test_tiers_path_prefers_stage_layout_and_warns(tmp_path: Path, caplog):
