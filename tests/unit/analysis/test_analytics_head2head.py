@@ -213,7 +213,7 @@ def test_write_graph_json_emits_payload(tmp_path: Path) -> None:
     assert payload["edges"][0]["source"] == "A"
 
 
-def test_run_post_h2h_writes_outputs(_cfg: AppConfig, tmp_path: Path) -> None:
+def test_run_post_h2h_writes_outputs(_cfg: AppConfig) -> None:
     cfg = _cfg
     df_pairs = pd.DataFrame(
         [
@@ -227,12 +227,16 @@ def test_run_post_h2h_writes_outputs(_cfg: AppConfig, tmp_path: Path) -> None:
 
     h2h_analysis.run_post_h2h(cfg)
 
-    decisions = cfg.head2head_stage_dir / "bonferroni_decisions.parquet"
-    graph_json = cfg.head2head_stage_dir / "h2h_significant_graph.json"
-    ranking_csv = cfg.head2head_stage_dir / "h2h_significant_ranking.csv"
+    decisions = cfg.post_h2h_stage_dir / "bonferroni_decisions.parquet"
+    graph_json = cfg.post_h2h_stage_dir / "h2h_significant_graph.json"
+    ranking_csv = cfg.post_h2h_stage_dir / "h2h_significant_ranking.csv"
+    tiers_csv = cfg.post_h2h_stage_dir / "h2h_significant_tiers.csv"
+    s_tiers_json = cfg.post_h2h_stage_dir / "h2h_s_tiers.json"
     assert decisions.exists()
     assert graph_json.exists()
     assert ranking_csv.exists()
+    assert tiers_csv.exists()
+    assert s_tiers_json.exists()
 
     manifest = cfg.analysis_dir / cfg.manifest_name
     assert manifest.exists()
