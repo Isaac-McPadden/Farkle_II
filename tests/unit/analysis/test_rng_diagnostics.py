@@ -6,7 +6,7 @@ import pyarrow.parquet as pq
 from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import rng_diagnostics
-from farkle.analysis.stage_registry import resolve_stage_layout
+from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 from farkle.utils.types import Compression
 
 
@@ -19,7 +19,8 @@ def test_collect_diagnostics_empty_input():
 
 def test_run_skips_when_missing_columns(tmp_path):
     cfg, _, _ = build_curated_fixture(tmp_path)
-    cfg.set_stage_layout(resolve_stage_layout(cfg))
+    cfg.io.interseed_input_dir = tmp_path / "interseed"
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
     curated = cfg.curated_parquet
     curated.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(
