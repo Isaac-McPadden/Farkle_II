@@ -10,6 +10,7 @@ from typing import Any
 import pandas as pd
 import pytest
 
+from farkle.config import AppConfig, IOConfig
 from farkle.orchestration.pipeline import (
     _detect_player_counts,
     _done_path,
@@ -73,7 +74,8 @@ def test_first_existing_prefers_first_existing(tmp_path: Path) -> None:
 
 
 def test_detect_player_counts_reads_parquet(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    metrics = tmp_path / "analysis" / "03_metrics" / "metrics.parquet"
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "exp"))
+    metrics = cfg.metrics_stage_dir / "metrics.parquet"
     metrics.parent.mkdir(parents=True, exist_ok=True)
     metrics.touch()
 
@@ -81,7 +83,7 @@ def test_detect_player_counts_reads_parquet(monkeypatch: pytest.MonkeyPatch, tmp
     monkeypatch.setattr("importlib.util.find_spec", lambda name: object() if name == "pandas" else None)
     monkeypatch.setattr("pandas.read_parquet", lambda *_args, **_kwargs: df)
 
-    counts = _detect_player_counts(tmp_path / "analysis")
+    counts = _detect_player_counts(cfg.analysis_dir)
     assert counts == [2, 5]
 
 
@@ -89,9 +91,9 @@ def test_analyze_trueskill_skips_when_up_to_date(tmp_path: Path, capsys: pytest.
     exp_dir = tmp_path / "exp"
     exp_dir.mkdir()
     (exp_dir / "input.txt").write_text("data")
-    analysis_dir = exp_dir / "analysis" / "09_trueskill"
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    out = analysis_dir / "tiers.json"
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=exp_dir))
+    out = cfg.trueskill_stage_dir / "tiers.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("{}")
     done = _done_path(out)
     write_done(done, [exp_dir / "input.txt"], [out], "tool")
@@ -107,11 +109,14 @@ def test_analyze_trueskill_runs_and_moves_legacy(
     exp_dir = tmp_path / "exp"
     exp_dir.mkdir()
     (exp_dir / "input.txt").write_text("data")
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=exp_dir))
+
+    expected_out = cfg.trueskill_stage_dir / "tiers.json"
+    expected_out.parent.mkdir(parents=True, exist_ok=True)
 
     def fake_run(cfg: Any) -> None:  # noqa: ANN401
-        legacy = exp_dir / "analysis" / "tiers.json"
-        legacy.parent.mkdir(parents=True, exist_ok=True)
-        legacy.write_text(json.dumps({"legacy": True}))
+        cfg.trueskill_stage_dir.mkdir(parents=True, exist_ok=True)
+        (cfg.analysis_dir / "tiers.json").write_text(json.dumps({"legacy": True}))
 
     monkeypatch.setattr(
         "farkle.analysis.run_trueskill.run_trueskill_all_seeds",
@@ -120,7 +125,7 @@ def test_analyze_trueskill_runs_and_moves_legacy(
     )
     analyze_trueskill(exp_dir)
 
-    out = exp_dir / "analysis" / "09_trueskill" / "tiers.json"
+    out = expected_out
     done = _done_path(out)
     assert out.exists()
     assert done.exists()
