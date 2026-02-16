@@ -108,7 +108,7 @@ def test_runner_rejects_malformed_checkpoints(tmp_path, monkeypatch, payload, ex
 
 
 def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
-    payload = {"win_totals": {"alpha": "2", 9: 3}}
+    payload = {"win_totals": {"alpha": "2", "beta": 3}}
     calls = _patch_tournament(monkeypatch, payload)
 
     tournament = runner.TournamentConfig(n_players=3)
@@ -128,7 +128,8 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
     assert summary_path.exists()
     summary_df = pd.read_parquet(summary_path)
     counters = dict(zip(summary_df["strategy"], summary_df["wins"], strict=False))
-    assert counters == {"alpha": 2, "9": 3}
+    assert counters == {"alpha": 2.0, "beta": 3.0}
+    assert summary_df["strategy"].tolist() == ["alpha", "beta"]
 
     config = cast(runner.TournamentConfig, calls["config"])
     expected_total = config.games_per_shuffle * cfg.sim.num_shuffles

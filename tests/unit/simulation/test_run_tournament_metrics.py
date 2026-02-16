@@ -83,7 +83,7 @@ def _fake_play_one_shuffle(
     list[dict[str, object]],
 ]:
     """Return simple deterministic aggregates based on the seed."""
-    winner = f"S{seed}"
+    winner = seed
     wins: Counter[int | str] = Counter({winner: 1})
     sums: dict[str, dict[int | str, float]] = {
         label: defaultdict(float, {winner: float(seed)}) for label in rt.METRIC_LABELS
@@ -151,12 +151,12 @@ def test_run_chunk_metrics_accumulates(monkeypatch):
 
     wins, sums, sqs = rt._run_chunk_metrics([1, 2], collect_rows=False)
 
-    assert wins == Counter({"S1": 1, "S2": 1})
+    assert wins == Counter({1: 1, 2: 1})
     for label in rt.METRIC_LABELS:
-        assert sums[label]["S1"] == 1
-        assert sums[label]["S2"] == 2
-        assert sqs[label]["S1"] == 1
-        assert sqs[label]["S2"] == 4
+        assert sums[label][1] == 1
+        assert sums[label][2] == 2
+        assert sqs[label][1] == 1
+        assert sqs[label][2] == 4
 
 
 def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
@@ -186,11 +186,11 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
         [3], collect_rows=True, row_dir=tmp_path, manifest_path=manifest
     )
 
-    assert recorded["rows"] == [{"game_seed": 3, "winner_strategy": "S3"}]
+    assert recorded["rows"] == [{"game_seed": 3, "winner_strategy": 3}]
     assert recorded["out_path"] == tmp_path / "rows_42_3.parquet"
     assert recorded["manifest_path"] == manifest
     assert recorded["schema"] == pa.schema(
-        [("game_seed", pa.int64()), ("winner_strategy", pa.string())]
+        [("game_seed", pa.int64()), ("winner_strategy", pa.int64())]
     )
     assert recorded["batches"] and isinstance(recorded["batches"][0], pa.Table)
     assert recorded["extra"] == {
@@ -261,6 +261,8 @@ def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch
     metric_records = list(manifest.iter_manifest(metrics_manifest))
     assert len(metric_records) == 1
     assert {record["path"] for record in metric_records} == {f.name for f in chunk_files}
+    assert metric_records[0]["chunk_index"] == 1
+    assert metric_records[0]["n_players"] == config.n_players
 
     row_files = list(row_dir.glob("rows_*.parquet"))
     assert len(row_files) == config.num_shuffles
@@ -268,6 +270,8 @@ def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch
     assert len(row_records) == config.num_shuffles
     assert {Path(record["path"]).name for record in row_records} == {f.name for f in row_files}
     assert all(record.get("rows") == 1 for record in row_records)
+    assert {record["shuffle_seed"] for record in row_records} == {0, 1, 2}
+    assert all(record["n_players"] == config.n_players for record in row_records)
 
     metrics_path = checkpoint_path.with_name("2p_metrics.parquet")
     table = pq.read_table(metrics_path)
@@ -281,7 +285,7 @@ def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch
     }
     for seed in range(3):
         for label in rt.METRIC_LABELS:
-            assert metrics_rows[(label, f"S{seed}")] == (float(seed), float(seed * seed))
+            assert metrics_rows[(label, seed)] == (float(seed), float(seed * seed))
 
 
 def test_run_tournament_checkpoint_cadence(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
@@ -319,9 +323,10 @@ def test_run_tournament_checkpoint_cadence(monkeypatch: pytest.MonkeyPatch, tmp_
         num_shuffles=2,
     )
 
-    assert len(calls) == 2  # one in-loop checkpoint plus the final flush
+    assert len(calls) == 2  # in-loop checkpoint plus final flush
     mid_run_calls = calls[:-1]
     assert all(call[2] is None and call[3] is None for call in mid_run_calls)
+    assert [sum(call[1].values()) for call in mid_run_calls] == [2]
     final_path, final_wins, final_sums, final_sq = calls[-1]
     assert final_path == checkpoint_path
     assert isinstance(final_wins, Counter)
@@ -340,15 +345,23 @@ def test_run_tournament_reuses_existing_metric_chunks(
     pre_rows = [
         {
             "metric": label,
-            "strategy": "S_pre",
+            "strategy": 99,
             "sum": 5.0,
             "square_sum": 25.0,
         }
         for label in rt.METRIC_LABELS
     ]
-    pq.write_table(pa.Table.from_pylist(pre_rows), metrics_dir / "metrics_000010.parquet")
+    existing_chunk = metrics_dir / "metrics_000001.parquet"
+    pq.write_table(pa.Table.from_pylist(pre_rows), existing_chunk)
 
     checkpoint_path = tmp_path / "run" / "checkpoint.pkl"
+    rt._save_checkpoint(checkpoint_path, Counter({99: 1}), None, None)
+    manifest.append_manifest_line(
+        metrics_dir / "metrics_manifest.jsonl",
+        {"path": existing_chunk.name, "chunk_index": 1, "n_players": 2},
+        add_timestamp=False,
+    )
+
     config = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
 
     rt.run_tournament(
@@ -362,16 +375,35 @@ def test_run_tournament_reuses_existing_metric_chunks(
     )
 
     produced_chunks = sorted(metrics_dir.glob("metrics_*.parquet"))
-    assert any(path.name == "metrics_000001.parquet" for path in produced_chunks)
+    assert produced_chunks == [existing_chunk]
 
     metrics_path = checkpoint_path.with_name("2p_metrics.parquet")
     table = pq.read_table(metrics_path)
     rows = {(row["metric"], row["strategy"]): row for row in table.to_pylist()}
     for label in rt.METRIC_LABELS:
-        assert rows[(label, "S_pre")]["sum"] == 5.0
-        assert rows[(label, "S_pre")]["square_sum"] == 25.0
-        assert rows[(label, "S0")]["sum"] == 0.0
-        assert rows[(label, "S0")]["square_sum"] == 0.0
+        assert rows[(label, 99)]["sum"] == 5.0
+        assert rows[(label, 99)]["square_sum"] == 25.0
+
+    rt.run_tournament(
+        config=config,
+        global_seed=0,
+        checkpoint_path=checkpoint_path,
+        n_jobs=1,
+        collect_metrics=True,
+        metric_chunk_directory=metrics_dir,
+        num_shuffles=1,
+        resume=False,
+    )
+
+    produced_chunks = sorted(metrics_dir.glob("metrics_*.parquet"))
+    assert produced_chunks == [existing_chunk]
+
+    table = pq.read_table(metrics_path)
+    rows = {(row["metric"], row["strategy"]): row for row in table.to_pylist()}
+    for label in rt.METRIC_LABELS:
+        assert (label, 99) not in rows
+        assert rows[(label, 0)]["sum"] == 0.0
+        assert rows[(label, 0)]["square_sum"] == 0.0
 
 
 def test_run_tournament_no_metrics_wins_only_checkpoint(
