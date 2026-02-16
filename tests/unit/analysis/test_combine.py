@@ -24,7 +24,17 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
         p1,
         schema1,
         [
-            {"winner": "P1", "n_rounds": 1, "winning_score": 100, "P1_strategy": "A", "P1_rank": 1},
+            {
+                "winner_seat": "P1",
+                "winner_strategy": 11,
+                "game_seed": 101,
+                "seat_ranks": ["P1"],
+                "n_rounds": 1,
+                "winning_score": 100,
+                # use wider integer dtypes so combine must normalize to target schema
+                "P1_strategy": 11,
+                "P1_rank": 1,
+            },
         ],
     )
     p2 = cfg.ingested_rows_curated(2)
@@ -34,11 +44,14 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
         schema2,
         [
             {
-                "winner": "P1",
+                "winner_seat": "P1",
+                "winner_strategy": 22,
+                "game_seed": 202,
+                "seat_ranks": ["P1", "P2"],
                 "n_rounds": 1,
                 "winning_score": 200,
-                "P1_strategy": "A",
-                "P2_strategy": "B",
+                "P1_strategy": 22,
+                "P2_strategy": 33,
                 "P1_rank": 1,
                 "P2_rank": 2,
             },
@@ -55,8 +68,21 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
     combine.run(cfg)
     out = cfg.combine_pooled_dir() / "all_ingested_rows.parquet"
     pf = pq.ParquetFile(out)
+    schema = pq.read_schema(out)
+
+    # Invariants: shard rows are preserved and canonical superset fields are present.
     assert pf.metadata.num_rows == 2
-    assert pq.read_schema(out).names == expected_schema_for(12).names
+    assert schema.names == expected_schema_for(12).names
+    for required in ("winner_seat", "winner_strategy", "game_seed", "P1_strategy", "P12_rank"):
+        assert required in schema.names
+    assert schema.field("winner_strategy").type == pa.int32()
+    assert schema.field("P1_strategy").type == pa.int32()
+    assert schema.field("n_rounds").type == pa.int16()
+
+    # Invariants: atomic writer leaves only finalized files.
+    assert not list(cfg.combine_pooled_dir().glob("*.tmp"))
+    assert not list(cfg.combine_pooled_dir().glob("*.partial"))
+
     log = next(rec for rec in capinfo.records if rec.message == "Combine: parquet written")
     assert getattr(log, "stage", None) == "combine"
     assert getattr(log, "path", "") == str(out)

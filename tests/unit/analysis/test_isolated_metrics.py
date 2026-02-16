@@ -70,7 +70,7 @@ def test_prepare_metrics_dataframe_recomputes_metrics_and_pads():
 
     from farkle.simulation.simulation import generate_strategy_grid
 
-    strategies, _ = generate_strategy_grid(
+    _, strategy_meta = generate_strategy_grid(
         score_thresholds=cfg.sim.score_thresholds,
         dice_thresholds=cfg.sim.dice_thresholds,
         smart_five_opts=cfg.sim.smart_five_opts,
@@ -80,11 +80,11 @@ def test_prepare_metrics_dataframe_recomputes_metrics_and_pads():
         auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
         run_up_score_opts=cfg.sim.run_up_score_opts,
     )
-    strategy_label = str(strategies[0])
+    strategy_id = int(strategy_meta["strategy_id"].iloc[0])
 
     df = pd.DataFrame(
         {
-            "strategy": [strategy_label],
+            "strategy": [strategy_id],
             "wins": [5.0],
             "total_games_strat": [10],
             "sum_winner_hit_max_rounds": [2.0],
@@ -97,13 +97,34 @@ def test_prepare_metrics_dataframe_recomputes_metrics_and_pads():
 
     processed = isolated_metrics._prepare_metrics_dataframe(cfg, df, player_count=2)
 
-    assert processed["wins"].iloc[0] == 3  # corrected by hit-flag subtraction
-    assert processed["false_wins_handled"].iloc[0] == 2
-    assert "mean_score" in processed.columns
-    assert "sd_score" in processed.columns
-    assert processed["games"].iloc[0] == 10
-    assert processed["win_rate"].iloc[0] == pytest.approx(0.3)
-    assert processed["n_players"].iloc[0] == 2
-
-    # Strategy padding ensures expected strategy grid length
+    # Invariants: prepare helper preserves row counts of the strategy grid.
     assert len(processed) == len(isolated_metrics._STRATEGY_CACHE[id(cfg)])
+
+    # Invariants: required normalized fields exist.
+    required_fields = {
+        "strategy",
+        "n_players",
+        "games",
+        "wins",
+        "win_rate",
+        "win_prob",
+        "false_wins_handled",
+        "missing_before_pad",
+        "mean_score",
+        "sd_score",
+    }
+    assert required_fields.issubset(set(processed.columns))
+
+    # Invariants on the populated strategy row after recompute correction.
+    populated = processed.loc[processed["strategy"] == strategy_id].iloc[0]
+    assert populated["wins"] == 3  # corrected by hit-flag subtraction
+    assert populated["false_wins_handled"] == 2
+    assert populated["games"] == 10
+    assert populated["win_rate"] == pytest.approx(0.3)
+    assert populated["n_players"] == 2
+
+    # Invariants for padded rows: no synthetic partial outputs.
+    padded = processed.loc[processed["strategy"] != strategy_id]
+    if not padded.empty:
+        assert (padded["wins"] == 0).all()
+        assert (padded["win_rate"] == 0).all()
