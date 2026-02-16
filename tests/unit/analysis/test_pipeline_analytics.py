@@ -21,6 +21,7 @@ def _setup(tmp_path: Path) -> tuple[Path, AppConfig]:
     cfg.analysis.run_agreement = True
     cfg.set_stage_layout(resolve_stage_layout(cfg))
     exp = cfg.results_root
+    exp.mkdir(parents=True, exist_ok=True)
     # minimal inputs
     (exp / "sim.txt").write_text("data")  # simulation placeholder
     metrics_df = pd.DataFrame(
@@ -63,7 +64,7 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
         app_cfg.set_stage_layout(stage_registry.resolve_stage_layout(app_cfg))
         outputs = [app_cfg.agreement_output_path(p) for p in app_cfg.sim.n_players_list]
         done = _done_path(outputs[0])
-        inputs = [app_cfg.trueskill_path("ratings_k_weighted.parquet")]
+        inputs = [app_cfg.preferred_tiers_path()]
         if is_up_to_date(done, inputs, outputs):
             print("SKIP agreement (up to date)")
             return
