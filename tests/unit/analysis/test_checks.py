@@ -7,7 +7,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from farkle.analysis.checks import check_post_combine, check_pre_metrics
+from farkle.analysis.checks import (
+    check_post_combine,
+    check_pre_metrics,
+    check_stage_artifact_families,
+)
 from farkle.config import AppConfig, IOConfig
 from farkle.utils.schema_helpers import expected_schema_for
 
@@ -189,3 +193,58 @@ def test_check_post_combine_success(tmp_path: Path, caplog) -> None:
         check_post_combine([curated], combined, max_players=1)
 
     assert "check_post_combine passed" in caplog.text
+
+
+def test_check_stage_artifact_families_passes_expected_matrix(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+
+    stage_dirs = {
+        "combine": cfg.stage_dir("combine"),
+        "metrics": cfg.stage_dir("metrics"),
+        "game_stats": cfg.stage_dir("game_stats"),
+    }
+    k_values = (2, 3)
+
+    combine_out = stage_dirs["combine"] / "pooled" / "all_ingested_rows.parquet"
+    combine_out.parent.mkdir(parents=True, exist_ok=True)
+    combine_out.touch()
+    metrics_out = stage_dirs["metrics"] / "pooled" / "metrics.parquet"
+    metrics_out.parent.mkdir(parents=True, exist_ok=True)
+    metrics_out.touch()
+    for k in k_values:
+        metrics_per_k = stage_dirs["metrics"] / f"{k}p" / f"{k}p_isolated_metrics.parquet"
+        metrics_per_k.parent.mkdir(parents=True, exist_ok=True)
+        metrics_per_k.touch()
+    pooled_game_length = stage_dirs["game_stats"] / "pooled" / "game_length.parquet"
+    pooled_game_length.parent.mkdir(parents=True, exist_ok=True)
+    pooled_game_length.touch()
+    pooled_margin = stage_dirs["game_stats"] / "pooled" / "margin_stats.parquet"
+    pooled_margin.touch()
+    (stage_dirs["game_stats"] / "pooled" / "game_length_k_weighted.parquet").touch()
+    (stage_dirs["game_stats"] / "pooled" / "margin_k_weighted.parquet").touch()
+    for k in k_values:
+        per_k_game_length = stage_dirs["game_stats"] / f"{k}p" / "game_length.parquet"
+        per_k_game_length.parent.mkdir(parents=True, exist_ok=True)
+        per_k_game_length.touch()
+        (stage_dirs["game_stats"] / f"{k}p" / "margin_stats.parquet").touch()
+
+    check_stage_artifact_families(cfg.analysis_dir, stage_dirs, k_values)
+
+
+def test_check_stage_artifact_families_flags_missing_and_layout_drift(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    stage_dir = cfg.stage_dir("game_stats")
+    stage_dirs = {"game_stats": stage_dir}
+
+    # Drift: pooled aggregate written to stage root instead of pooled/.
+    drift = stage_dir / "game_length.parquet"
+    drift.parent.mkdir(parents=True, exist_ok=True)
+    drift.touch()
+    # Missing: other required artifacts intentionally omitted.
+
+    with pytest.raises(RuntimeError) as excinfo:
+        check_stage_artifact_families(cfg.analysis_dir, stage_dirs, (2,))
+
+    msg = str(excinfo.value)
+    assert "missing per-k artifact" in msg
+    assert "layout drift" in msg
