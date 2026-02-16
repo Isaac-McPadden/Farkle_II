@@ -39,9 +39,14 @@ def test_parse_strategy_features_handles_invalid_and_types():
 
     frame = run_hgb._parse_strategy_features(strategies)
 
-    assert "score_threshold" in frame.columns
-    assert set(frame.index) == {valid}
+    expected_columns = [name for name, _dtype in run_hgb.FEATURE_SPECS]
+    assert list(frame.columns) == expected_columns
+    assert set(frame.index) == {valid, "invalid"}
     assert frame.loc[valid, "dice_threshold"] == pytest.approx(2.0)
+    assert pd.isna(frame.loc["invalid", "score_threshold"])
+    assert pd.isna(frame.loc["invalid", "dice_threshold"])
+    assert frame.loc["invalid", ["consider_score", "consider_dice", "smart_five", "smart_one", "favor_score", "require_both", "auto_hot_dice", "run_up_score"]].eq(0.0).all()
+    assert str(frame.dtypes["score_threshold"]) == "float32"
 
 
 def test_metric_helpers_handle_edge_cases():

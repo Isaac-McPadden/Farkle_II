@@ -66,15 +66,23 @@ def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyP
     )
     os.utime(json_out, (1000, 1000))
     os.utime(parquet_out, (1000, 1000))
-    os.utime(curated, (1010, 1010))
+    os.utime(curated, (1020, 1020))
 
     called = {}
 
-    def fake_run(*, root: Path, output_path: Path, metrics_path: Path, ratings_path: Path, seed: int = 0):
+    def fake_run(
+        *,
+        root: Path,
+        output_path: Path,
+        metrics_path: Path,
+        ratings_path: Path,
+        manifest_path: Path | None,
+    ) -> None:
         assert root == cfg.hgb_stage_dir
         assert output_path == json_out
         assert metrics_path == cfg.metrics_input_path()
         assert ratings_path == cfg.trueskill_path(hgb_feat._hgb.RATINGS_NAME)
+        assert manifest_path == cfg.strategy_manifest_root_path()
         called["root"] = root
 
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
