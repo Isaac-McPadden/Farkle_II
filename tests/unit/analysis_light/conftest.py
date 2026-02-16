@@ -18,7 +18,7 @@ pq = pytest.importorskip("pyarrow.parquet")
 class GoldenDataset:
     parquet: Path
     dataframe: pd.DataFrame
-    strategy_map: Mapping[str, str] | None = None
+    strategy_map: Mapping[str, int] | None = None
 
     def copy_into(self, results_root: Path) -> Path:
         block = results_root / "3_players"
@@ -32,7 +32,7 @@ class GoldenDataset:
         results_root: Path,
         *,
         player_count: int = 3,
-        strategy_map: Mapping[str, str] | None = None,
+        strategy_map: Mapping[str, int] | None = None,
     ) -> Path:
         mapping = dict(strategy_map or self.strategy_map or {})
         strategies = self.dataframe["winner"].map(mapping)
@@ -72,25 +72,20 @@ def _build_golden_df() -> pd.DataFrame:
     winners = ["P1"] * 20 + ["P2"] * 15 + ["P3"] * 15
     rounds = [6 + (i % 4) for i in range(50)]
     base_scores = 950 + np.arange(50) * 7
-    strategies = {
-        "P1": "Aggro",
-        "P2": "Balanced",
-        "P3": "Cautious",
-    }
+    strategies = {"P1": 1, "P2": 2, "P3": 3}
     rows = []
     for idx, seat in enumerate(winners):
+        seat_ranks = [seat, *[s for s in ("P1", "P2", "P3") if s != seat]]
         row = {
             "winner": seat,
             "n_rounds": rounds[idx],
             "winning_score": int(base_scores[idx] + (idx % 3) * 10),
+            "winner_strategy": strategies[seat],
+            "seat_ranks": seat_ranks,
             "P1_strategy": strategies["P1"],
             "P2_strategy": strategies["P2"],
             "P3_strategy": strategies["P3"],
         }
-        ranks = {"P1": 2, "P2": 3, "P3": 4}
-        ranks[seat] = 1
-        for seat_label, rank in ranks.items():
-            row[f"{seat_label}_rank"] = rank
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -103,7 +98,7 @@ def golden_dataset(tmp_path_factory: pytest.TempPathFactory) -> GoldenDataset:
     table = pa.Table.from_pandas(df, preserve_index=False)
     pq.write_table(table, parquet)
 
-    strategy_map = {"P1": "Aggro", "P2": "Balanced", "P3": "Cautious"}
+    strategy_map = {"P1": 1, "P2": 2, "P3": 3}
     return GoldenDataset(parquet=parquet, dataframe=df, strategy_map=strategy_map)
 
 
@@ -119,7 +114,7 @@ def patched_strategy_grid(monkeypatch: pytest.MonkeyPatch) -> Sequence[object]:
     strategies = [_StubStrategy(name) for name in ("Aggro", "Balanced", "Cautious")]
 
     def _grid(**_: object):
-        return strategies, {}
+        return strategies, {"strategy_id": pd.Series([1, 2, 3], dtype="int64")}
 
     monkeypatch.setattr(
         "farkle.analysis.isolated_metrics.generate_strategy_grid", _grid, raising=False
