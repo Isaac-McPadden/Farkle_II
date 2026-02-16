@@ -33,10 +33,11 @@ def test_iter_shards_consolidated(tmp_path, caplog):
     assert shard_path.name == "2p_rows.parquet"
     assert list(shard_df.columns) == ["winner", "P1_strategy"]
 
-    messages = [
-        record.message for record in caplog.records if record.name == "farkle.analysis.ingest"
-    ]
-    assert "Row file missing requested columns" in messages
+    assert any(
+        "Row file missing requested columns" in record.message
+        for record in caplog.records
+        if record.name == "farkle.analysis.ingest"
+    )
 
 
 def test_iter_shards_legacy_dirs(tmp_path):
@@ -76,36 +77,36 @@ def test_iter_shards_subset_logs_missing(tmp_path, caplog):
     assert shard_path.name == "solo.parquet"
     assert list(shard_df.columns) == ["winner", "P1_strategy"]
 
-    messages = [
-        record.message for record in caplog.records if record.name == "farkle.analysis.ingest"
-    ]
-    assert "Shard missing requested columns" in messages
+    assert any(
+        "Shard missing requested columns" in record.message
+        for record in caplog.records
+        if record.name == "farkle.analysis.ingest"
+    )
 
 
 # -------------------- _fix_winner --------------------------------------
 
 
-def test_fix_winner_with_ranks():
+def test_fix_winner_with_seat_ranks_passthrough():
     df = pd.DataFrame(
         {
             "winner": ["P2"],
-            "P1_strategy": ["A"],
-            "P2_strategy": ["B"],
-            "P1_rank": [2],
-            "P2_rank": [1],
+            "P1_strategy": [1],
+            "P2_strategy": [2],
+            "seat_ranks": [["P2", "P1"]],
         }
     )
     result = _fix_winner(df)
-    assert result["winner_strategy"].iloc[0] == "B"
+    assert result["winner_strategy"].iloc[0] == 2
     assert result["winner_seat"].iloc[0] == "P2"
     assert result["seat_ranks"].iloc[0] == ["P2", "P1"]
     assert "winner" not in result.columns
 
 
 def test_fix_winner_without_ranks():
-    df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"], "P2_strategy": ["B"]})
+    df = pd.DataFrame({"winner": ["P1"], "P1_strategy": [1], "P2_strategy": [2]})
     result = _fix_winner(df)
-    assert result["winner_strategy"].iloc[0] == "A"
+    assert result["winner_strategy"].iloc[0] == 1
     assert result["winner_seat"].iloc[0] == "P1"
     assert result["seat_ranks"].iloc[0] == ["P1"]
     assert "winner" not in result.columns
@@ -116,7 +117,7 @@ def test_fix_winner_preserves_existing_fields():
         {
             "winner": ["P1"],
             "winner_seat": ["P1"],
-            "winner_strategy": ["kept"],
+            "winner_strategy": [11],
             "seat_ranks": [["P1", "P2"]],
         }
     )
@@ -125,7 +126,7 @@ def test_fix_winner_preserves_existing_fields():
 
     assert "winner" not in result.columns
     assert result["winner_seat"].iloc[0] == "P1"
-    assert result["winner_strategy"].iloc[0] == "kept"
+    assert result["winner_strategy"].iloc[0] == 11
     assert result["seat_ranks"].iloc[0] == ["P1", "P2"]
 
 
@@ -202,12 +203,9 @@ def test_process_block_handles_legacy_shards(tmp_results_dir, monkeypatch):
     df = pd.DataFrame(
         {
             "winner": ["P2"],
-            "P1_strategy": ["alpha"],
-            "P1_rank": [2],
-            "P2_strategy": ["beta"],
-            "P2_rank": [1],
-            "P3_strategy": ["gamma"],
-            "P3_rank": [3],
+            "P1_strategy": [1],
+            "P2_strategy": [2],
+            "P3_strategy": [3],
             "n_rounds": [4],
             "winning_score": [250],
         }
@@ -228,8 +226,8 @@ def test_process_block_handles_legacy_shards(tmp_results_dir, monkeypatch):
     assert batches
     processed = batches[0]
     assert processed["winner_seat"].iloc[0] == "P2"
-    assert processed["winner_strategy"].iloc[0] == "beta"
-    assert processed["seat_ranks"].iloc[0][0] == "P2"
+    assert processed["winner_strategy"].iloc[0] == 2
+    assert processed["seat_ranks"].iloc[0] == ["P2"]
 
 
 def test_process_block_zero_rows_without_outputs(tmp_results_dir, monkeypatch):
@@ -279,10 +277,10 @@ def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatc
 
     def fake_iter_shards(block, cols) -> Iterator[tuple[pd.DataFrame, Path]]:  # noqa: ARG001
         if block.name.startswith("block1"):
-            df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"]})
+            df = pd.DataFrame({"winner": ["P1"], "P1_strategy": [1]})
             yield df, block / "good.parquet"
         else:
-            df = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"], "bad": [1]})
+            df = pd.DataFrame({"winner": ["P1"], "P1_strategy": [1], "bad": [1]})
             yield df, block / "bad.parquet"
 
     monkeypatch.setattr("farkle.analysis.ingest._iter_shards", fake_iter_shards)
@@ -291,7 +289,9 @@ def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatc
     with pytest.raises(RuntimeError):
         run(cfg)
 
-    assert any("Schema mismatch" in rec.message for rec in caplog.records)
+    assert any(
+        "Schema mismatch" in rec.message and rec.levelname == "ERROR" for rec in caplog.records
+    )
     assert len(calls) == 1
 
 
@@ -347,13 +347,15 @@ def test_run_emits_logging(tmp_results_dir, caplog):
     block = cfg.results_root / "2_players"
     block.mkdir(parents=True)
     df = pd.DataFrame(
-        {"winner": ["P1"], "P1_strategy": ["A"], "n_rounds": [1], "winning_score": [100]}
+        {"winner": ["P1"], "P1_strategy": [1], "n_rounds": [1], "winning_score": [100]}
     )
     df.to_parquet(block / "2p_rows.parquet", index=False)
 
     caplog.set_level(logging.INFO, logger="farkle.analysis.ingest")
     run(cfg)
 
-    messages = [rec.message for rec in caplog.records]
-    assert any("Ingest started" in msg for msg in messages)
-    assert any("Ingest block complete" in msg for msg in messages)
+    assert any("Ingest started" in rec.message and rec.levelname == "INFO" for rec in caplog.records)
+    assert any(
+        "Ingest block complete" in rec.message and rec.levelname == "INFO"
+        for rec in caplog.records
+    )

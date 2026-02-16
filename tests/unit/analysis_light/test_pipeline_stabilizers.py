@@ -65,12 +65,13 @@ def test_ingest_golden_dataset(analysis_config, caplog, golden_dataset):
         .to_dict()
     )
     assert observed_strategies == expected_strategies
-    assert all(set(ranks) == {"P1", "P2", "P3"} for ranks in df["seat_ranks"])
+    assert df.apply(lambda row: row["seat_ranks"] == [row["winner_seat"]], axis=1).all()
     expected = golden_dataset.dataframe["winner"].value_counts().to_dict()
     assert df["winner_seat"].value_counts().to_dict() == expected
 
-    messages = [rec.message for rec in caplog.records]
-    assert any("Ingest finished" in msg for msg in messages)
+    assert any(
+        rec.levelname == "INFO" and "Ingest finished" in rec.message for rec in caplog.records
+    )
 
 
 def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
@@ -104,8 +105,9 @@ def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
     assert meta.get("compression") == cfg_proto.parquet_codec
     assert "created_at" in meta
 
-    messages = [rec.message for rec in caplog.records]
-    assert any("Curate finished" in msg for msg in messages)
+    assert any(
+        rec.levelname == "INFO" and "Curate finished" in rec.message for rec in caplog.records
+    )
 
 
 def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched_strategy_grid):
@@ -182,6 +184,11 @@ def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched
         check_dtype=False,
     )
 
-    messages = [rec.message for rec in caplog.records]
-    assert any("Metrics leaderboard computed" in msg for msg in messages)
-    assert any("Metrics stage complete" in msg for msg in messages)
+    assert any(
+        rec.levelname == "INFO" and "Metrics leaderboard computed" in rec.message
+        for rec in caplog.records
+    )
+    assert any(
+        rec.levelname == "INFO" and "Metrics stage complete" in rec.message
+        for rec in caplog.records
+    )
