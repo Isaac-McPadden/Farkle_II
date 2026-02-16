@@ -131,15 +131,15 @@ def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(root=data_root)
+        rt.run_trueskill(root=data_root, workers=1, batch_rows=2)
     finally:
         os.chdir(cwd)
 
     ratings_dir = data_root
-    ratings_2 = rt._load_ratings_parquet(ratings_dir / "2p" / "ratings_2.parquet")
-    ratings3_path = ratings_dir / "3p" / "ratings_3.parquet"
+    ratings_2 = rt._load_ratings_parquet(ratings_dir / "2p" / "ratings_2_seed0.parquet")
+    ratings3_path = ratings_dir / "3p" / "ratings_3_seed0.parquet"
     ratings_3 = rt._load_ratings_parquet(ratings3_path) if ratings3_path.exists() else {}
-    pooled = rt._load_ratings_parquet(data_root / "pooled" / "ratings_k_weighted.parquet")
+    pooled = rt._load_ratings_parquet(data_root / "pooled" / "ratings_k_weighted_seed0.parquet")
 
     assert set(ratings_2)
     assert ratings_3 == {}
@@ -157,7 +157,7 @@ def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(output_seed=3, root=data_root)
+        rt.run_trueskill(output_seed=3, root=data_root, workers=1, batch_rows=2)
     finally:
         os.chdir(cwd)
 
