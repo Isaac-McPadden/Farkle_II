@@ -105,45 +105,103 @@ def test_significant_graph_ranking_to_tier_map_integration():
     assert tiers == {"a": 1, "b": 2, "c": 3}
 
 
-def test_load_frequentist_and_trueskill(tmp_path, monkeypatch):
+def test_load_frequentist_and_trueskill(tmp_path):
     cfg = agreement.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
     players = 2
 
-    cfg.trueskill_path = lambda filename: tmp_path / filename
-    trueskill_path = cfg.trueskill_path("ratings_k_weighted.parquet")
+    assert agreement._load_trueskill(cfg, players, pooled_scope=False) is None
+    assert agreement._load_frequentist(cfg, players) is None
+
+    trueskill_path = cfg.trueskill_stage_dir / f"{players}p" / f"ratings_{players}.parquet"
     trueskill_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
-        {"strategy": ["a", "b"], "mu": [1.0, 2.0], "players": [players, players]},
+        {
+            "strategy": ["a", "b", "ignored"],
+            "mu": [1.0, 2.0, 9.9],
+            "players": [players, players, 3],
+            "sigma": [0.2, 0.3, 0.4],
+        },
     ).to_parquet(trueskill_path)
+    trueskill_path.with_suffix(".manifest.jsonl").write_text("{}\n")
 
-    tiers_path = tmp_path / "tiers.json"
-    cfg.preferred_tiers_path = lambda: tiers_path
+    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({str(players): {"tiers": {"a": 1, "b": 2}}}))
 
-    monkeypatch.setattr(
-        "farkle.analysis.stage_registry.StageLayout.require_folder",
-        lambda self, key: key,
-    )
-    cfg.tiering_path = lambda filename: tmp_path / filename
     freq_path = cfg.tiering_path("frequentist_scores_k_weighted.parquet")
     freq_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {
-            "strategy": ["a", "b"],
-            "win_rate": [0.5, 0.6],
-            "players": [players, players],
-            "tier": [1, 2],
+            "strategy": ["a", "b", "ignored"],
+            "win_rate": [0.5, 0.6, 0.1],
+            "n_players": [players, players, 3],
+            "tier": [1, 2, 9],
+            "metadata": ["x", "y", "z"],
         }
     ).to_parquet(freq_path)
+    freq_path.with_suffix(".manifest.jsonl").write_text("{}\n")
 
     trueskill = agreement._load_trueskill(cfg, players, pooled_scope=False)
     frequentist = agreement._load_frequentist(cfg, players)
 
     assert trueskill is not None and frequentist is not None
-    assert trueskill.tiers == {"a": 1, "b": 2}
-    assert frequentist.tiers == {"a": 1, "b": 2}
+    trueskill_norm = pd.DataFrame(
+        {
+            "strategy": trueskill.scores.index,
+            "score": trueskill.scores.to_numpy(),
+            "tier": [trueskill.tiers[s] for s in trueskill.scores.index],
+        }
+    )
+    freq_norm = pd.DataFrame(
+        {
+            "strategy": frequentist.scores.index,
+            "score": frequentist.scores.to_numpy(),
+            "tier": [frequentist.tiers[s] for s in frequentist.scores.index],
+        }
+    )
+    assert trueskill_norm.columns.tolist() == ["strategy", "score", "tier"]
+    assert freq_norm.columns.tolist() == ["strategy", "score", "tier"]
+    assert trueskill_norm["strategy"].tolist() == ["a", "b"]
+    assert freq_norm["strategy"].tolist() == ["a", "b"]
+    assert trueskill_norm["score"].dtype == "float64"
+    assert freq_norm["score"].dtype == "float64"
+    assert trueskill_norm["tier"].dtype == "int64"
+    assert freq_norm["tier"].dtype == "int64"
     assert frequentist.per_seed_scores == []
+
+    trueskill_path.unlink()
+    pd.DataFrame({"mu": [1.0], "players": [players]}).to_parquet(trueskill_path)
+    with pytest.raises(
+        ValueError,
+        match="ratings_k_weighted.parquet missing 'strategy' column",
+    ):
+        agreement._load_trueskill(cfg, players, pooled_scope=False)
+
+    freq_path.unlink()
+    pd.DataFrame({"win_rate": [0.1], "players": [players]}).to_parquet(freq_path)
+    with pytest.raises(
+        ValueError,
+        match="frequentist_scores_k_weighted.parquet missing 'strategy' column",
+    ):
+        agreement._load_frequentist(cfg, players)
+
+    pd.DataFrame(
+        {
+            "strategy": ["a", "b"],
+            "players": [players, players],
+            "metric_a": [0.1, 0.2],
+            "metric_b": [1.0, 2.0],
+        }
+    ).to_parquet(freq_path)
+    with pytest.raises(
+        ValueError,
+        match=(
+            "frequentist_scores_k_weighted.parquet has multiple numeric columns; "
+            "specify score column"
+        ),
+    ):
+        agreement._load_frequentist(cfg, players)
 
 
 def test_resolve_trueskill_seed_paths_deduplicates_alias_outputs(tmp_path: Path) -> None:
