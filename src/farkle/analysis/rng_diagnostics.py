@@ -154,7 +154,7 @@ def _seat_strategy_columns(cfg: AppConfig, schema_names: Sequence[str]) -> list[
     merged_candidates = set(configured_candidates) | set(fallback_candidates)
     present = [name for name in merged_candidates if name in schema_set and name != "winner_strategy"]
 
-    return sorted(present, key=lambda col: int(_SEAT_STRATEGY_RE.match(col).group(1)))
+    return sorted(present, key=_seat_number_from_strategy_column)
 
 
 def _build_matchup_labels(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.Series:
@@ -163,17 +163,17 @@ def _build_matchup_labels(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.Ser
         return pd.Series(index=df.index, dtype="string")
 
     seat_values = df[valid_seat_cols].astype("string")
-    stacked = seat_values.stack()
-    stacked = stacked[stacked.notna()]
+    stacked = cast(pd.Series, seat_values.stack()).dropna()
     if stacked.empty:
         return pd.Series(index=df.index, dtype="string")
 
-    matchups = (
+    matchups = cast(
+        pd.Series,
         stacked.groupby(level=0, sort=False)
         .agg(list)
-        .map(lambda participants: " | ".join(sorted(participants)))
+        .map(lambda participants: " | ".join(sorted(participants))),
     )
-    return matchups.reindex(df.index).astype("string")
+    return cast(pd.Series, matchups.reindex(df.index).astype("string"))
 
 
 def _winner_strategies(
@@ -206,6 +206,13 @@ def _winner_strategies(
     winner_cols = resolved_positions[valid_mask].astype(int).to_numpy()
     winners.iloc[winner_rows] = strategy_values[winner_rows, winner_cols]
     return winners
+
+
+def _seat_number_from_strategy_column(column_name: str) -> int:
+    match = _SEAT_STRATEGY_RE.match(column_name)
+    if match is None:
+        raise ValueError(f"invalid seat strategy column: {column_name}")
+    return int(match.group(1))
 
 
 def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFrame:
