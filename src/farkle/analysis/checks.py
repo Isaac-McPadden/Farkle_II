@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Mapping, Sequence
 
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -18,6 +19,22 @@ from farkle.utils.manifest import iter_manifest
 from farkle.utils.schema_helpers import expected_schema_for
 
 LOGGER = logging.getLogger(__name__)
+
+
+_ARTIFACT_FAMILY_MATRIX: dict[str, dict[str, tuple[str, ...]]] = {
+    "combine": {
+        "pooled_concat": ("all_ingested_rows.parquet",),
+    },
+    "metrics": {
+        "per_k": ("{k}p_isolated_metrics.parquet",),
+        "pooled_concat": ("metrics.parquet",),
+    },
+    "game_stats": {
+        "per_k": ("game_length.parquet", "margin_stats.parquet"),
+        "pooled_concat": ("game_length.parquet", "margin_stats.parquet"),
+        "pooled_weighted": ("game_length_k_weighted.parquet", "margin_k_weighted.parquet"),
+    },
+}
 
 
 def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> None:
@@ -160,4 +177,69 @@ def check_post_combine(
     LOGGER.info(
         "check_post_combine passed",
         extra={"stage": "checks", "path": str(combined_parquet)},
+    )
+
+
+def check_stage_artifact_families(
+    analysis_dir: Path,
+    stage_dirs: Mapping[str, Path],
+    k_values: Sequence[int],
+    matrix: Mapping[str, Mapping[str, Sequence[str]]] | None = None,
+) -> None:
+    """Validate per-stage artifact families and directory conventions.
+
+    Parameters
+    ----------
+    analysis_dir:
+        Root analysis directory used in error messages.
+    stage_dirs:
+        Mapping of stage key to resolved stage directory.
+    k_values:
+        Player-count values expected for per-k artifacts.
+    matrix:
+        Optional override for the stage artifact-family matrix.
+    """
+
+    contracts = matrix or _ARTIFACT_FAMILY_MATRIX
+    failures: list[str] = []
+    stage_dirs_norm = {key: Path(path) for key, path in stage_dirs.items()}
+
+    for stage, families in contracts.items():
+        stage_dir = stage_dirs_norm.get(stage)
+        if stage_dir is None or not stage_dir.exists():
+            continue
+
+        for pattern in families.get("per_k", ()):
+            for k in k_values:
+                expected = stage_dir / f"{k}p" / pattern.format(k=k)
+                if not expected.exists():
+                    failures.append(f"{stage}: missing per-k artifact {expected}")
+
+                drift = stage_dir / pattern.format(k=k)
+                if drift.exists():
+                    failures.append(
+                        f"{stage}: layout drift; expected {expected} but found {drift}"
+                    )
+
+        for family in ("pooled_concat", "pooled_weighted"):
+            for filename in families.get(family, ()):
+                expected = stage_dir / "pooled" / filename
+                if not expected.exists():
+                    failures.append(f"{stage}: missing {family} artifact {expected}")
+
+                drift = stage_dir / filename
+                if drift.exists():
+                    failures.append(
+                        f"{stage}: layout drift; expected {expected} but found {drift}"
+                    )
+
+    if failures:
+        details = "\n - ".join(["", *failures])
+        raise RuntimeError(
+            f"check_stage_artifact_families failed under {analysis_dir}:{details}"
+        )
+
+    LOGGER.info(
+        "check_stage_artifact_families passed",
+        extra={"stage": "checks", "path": str(analysis_dir)},
     )
