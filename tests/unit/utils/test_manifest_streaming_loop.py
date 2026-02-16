@@ -96,6 +96,7 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
                     "row_group_size": row_group_size,
                 }
             )
+            self._out_path = Path(out_path)
             self.rows_written = 0
 
         def __enter__(self):
@@ -108,6 +109,7 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
             batches = list(batch_iterable)
             captured_batches.append(batches)
             self.rows_written = sum(tbl.num_rows for tbl in batches)
+            self._out_path.write_bytes(b"ok")
 
     monkeypatch.setattr(streaming_loop, "ParquetShardWriter", DummyWriter)
 
@@ -147,18 +149,8 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
     # falls back to the manifest directory (and ultimately an absolute path) when
     # necessary. Accept any of those equivalents to avoid sensitivity to the
     # runner's working directory.
-    manifest_dir = os.fspath(Path(manifest_path).parent)
-    expected_paths = set()
-    try:
-        expected_paths.add(os.path.relpath(os.fspath(out_path)))
-    except ValueError:
-        # Cross-drive relative paths may not be representable.
-        expected_paths.add(os.fspath(out_path))
-    try:
-        expected_paths.add(os.path.relpath(os.fspath(out_path), start=manifest_dir))
-    except ValueError:
-        expected_paths.add(os.fspath(out_path))
-    assert manifest_record["path"] in expected_paths
+    expected_path = os.path.relpath(os.fspath(out_path), start=os.fspath(Path(manifest_path).parent))
+    assert manifest_record["path"] == expected_path
     assert manifest_record["rows"] == sum(tbl.num_rows for tbl in tables)
     for key, value in run_extra.items():
         assert manifest_record[key] == value
@@ -176,6 +168,7 @@ def test_run_streaming_shard_manifest_path_without_dir(tmp_path, monkeypatch):
 
     class DummyWriter:
         def __init__(self, *, out_path, schema, compression, row_group_size):
+            self._out_path = Path(out_path)
             self.rows_written = 0
 
         def __enter__(self):
@@ -187,6 +180,7 @@ def test_run_streaming_shard_manifest_path_without_dir(tmp_path, monkeypatch):
         def write_batches(self, batch_iterable):
             for tbl in batch_iterable:
                 self.rows_written += tbl.num_rows
+            self._out_path.write_bytes(b"ok")
 
     monkeypatch.setattr(streaming_loop, "ParquetShardWriter", DummyWriter)
 
@@ -198,13 +192,10 @@ def test_run_streaming_shard_manifest_path_without_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(streaming_loop, "append_manifest_line", fake_append)
 
     relpath_calls = []
-    real_relpath = os.path.relpath
 
     def fake_relpath(path, start=os.curdir) -> str:
         relpath_calls.append((path, start))
-        if len(relpath_calls) <= 2:
-            raise ValueError("boom")
-        return real_relpath(path, start=start)
+        raise ValueError("boom")
 
     monkeypatch.setattr(os.path, "relpath", fake_relpath)
 
@@ -219,9 +210,8 @@ def test_run_streaming_shard_manifest_path_without_dir(tmp_path, monkeypatch):
         manifest_extra=None,
     )
 
-    assert len(relpath_calls) == 2
-    assert relpath_calls[0] == (out_path_str, os.curdir)
-    assert relpath_calls[1] == (out_path_str, expected_manifest_dir)
+    assert len(relpath_calls) == 1
+    assert relpath_calls[0] == (out_path_str, expected_manifest_dir)
 
     assert manifest_calls and manifest_calls[0][0] == manifest_path
     manifest_record = manifest_calls[0][1]
@@ -245,7 +235,9 @@ def test_writer_thread_forwards_manifest(monkeypatch):
     captured = {}
 
     def fake_run_streaming_shard(**kwargs) -> None:
-        batches = list(kwargs.pop("batch_iter"))
+        batch_iter = kwargs.pop("batch_iter")
+        assert iter(batch_iter) is batch_iter
+        batches = list(batch_iter)
         captured.update(kwargs)
         captured["batches"] = batches
 
@@ -269,9 +261,37 @@ def test_writer_thread_forwards_manifest(monkeypatch):
     assert captured["row_group_size"] == 5
     assert captured["compression"] == "snappy"
     assert captured["manifest_extra"] == manifest_extra
+    assert len(pop_calls) == len(tables) + 1
     assert len(captured["batches"]) == len(tables)
     for expected, actual in zip(tables, captured["batches"], strict=False):
         assert actual is expected
+
+
+def test_manifest_helpers_support_resumable_idempotent_append(tmp_path):
+    manifest_path = tmp_path / "manifest.ndjson"
+    append_manifest_many(
+        manifest_path,
+        [{"path": "a.parquet"}, {"path": "b.parquet"}],
+        add_timestamp=False,
+    )
+
+    completed = {record["path"] for record in iter_manifest(manifest_path)}
+    pending = [
+        {"path": "b.parquet"},
+        {"path": "c.parquet"},
+    ]
+
+    append_manifest_many(
+        manifest_path,
+        (record for record in pending if record["path"] not in completed),
+        add_timestamp=False,
+    )
+
+    assert [record["path"] for record in iter_manifest(manifest_path)] == [
+        "a.parquet",
+        "b.parquet",
+        "c.parquet",
+    ]
 
 
 def test_producer_thread_pushes_all_tables():
