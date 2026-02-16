@@ -109,13 +109,18 @@ def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
 
 
 def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched_strategy_grid):
+    # Refresh these deterministic fixtures only when metrics output schemas/columns,
+    # canonical output paths, or metrics math changes.
     cfg = analysis_config()
     cfg_proto = cast(_CfgProto, cfg)
-    golden_dataset.copy_into(cfg_proto.results_root)
+    raw_path = golden_dataset.copy_into(cfg_proto.results_root)
+    curated_path = cfg_proto.curated_parquet
+    curated_path.parent.mkdir(parents=True, exist_ok=True)
+    curated_path.write_bytes(raw_path.read_bytes())
+    manifest_path = cfg_proto.manifest_for(3)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest_path.write_text(json.dumps({"row_count": len(golden_dataset.dataframe)}) + "\n")
     golden_dataset.write_metrics(cfg_proto.results_root)
-    ingest.run(cfg)
-    curate.run(cfg)
-    combine.run(cfg)
 
     caplog.set_level(logging.INFO, logger="farkle.analysis.metrics")
     metrics.run(cfg)

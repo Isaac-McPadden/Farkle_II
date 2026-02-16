@@ -18,7 +18,7 @@ pq = pytest.importorskip("pyarrow.parquet")
 class GoldenDataset:
     parquet: Path
     dataframe: pd.DataFrame
-    strategy_map: Mapping[str, str] | None = None
+    strategy_map: Mapping[str, int] | None = None
 
     def copy_into(self, results_root: Path) -> Path:
         block = results_root / "3_players"
@@ -32,7 +32,7 @@ class GoldenDataset:
         results_root: Path,
         *,
         player_count: int = 3,
-        strategy_map: Mapping[str, str] | None = None,
+        strategy_map: Mapping[str, int] | None = None,
     ) -> Path:
         mapping = dict(strategy_map or self.strategy_map or {})
         strategies = self.dataframe["winner"].map(mapping)
@@ -72,17 +72,18 @@ def _build_golden_df() -> pd.DataFrame:
     winners = ["P1"] * 20 + ["P2"] * 15 + ["P3"] * 15
     rounds = [6 + (i % 4) for i in range(50)]
     base_scores = 950 + np.arange(50) * 7
-    strategies = {
-        "P1": "Aggro",
-        "P2": "Balanced",
-        "P3": "Cautious",
-    }
+    strategies = {"P1": 101, "P2": 202, "P3": 303}
     rows = []
     for idx, seat in enumerate(winners):
+        score_base = int(base_scores[idx])
         row = {
             "winner": seat,
+            "winner_seat": seat,
+            "winner_strategy": strategies[seat],
+            "game_seed": idx,
+            "seat_ranks": [seat, *(s for s in ("P1", "P2", "P3") if s != seat)],
             "n_rounds": rounds[idx],
-            "winning_score": int(base_scores[idx] + (idx % 3) * 10),
+            "winning_score": int(score_base + (idx % 3) * 10),
             "P1_strategy": strategies["P1"],
             "P2_strategy": strategies["P2"],
             "P3_strategy": strategies["P3"],
@@ -91,6 +92,16 @@ def _build_golden_df() -> pd.DataFrame:
         ranks[seat] = 1
         for seat_label, rank in ranks.items():
             row[f"{seat_label}_rank"] = rank
+            row[f"{seat_label}_score"] = score_base + (rank * 3)
+            row[f"{seat_label}_farkles"] = 1 if seat_label != seat else 0
+            row[f"{seat_label}_rolls"] = rounds[idx] + rank
+            row[f"{seat_label}_highest_turn"] = max(1, rounds[idx] - rank)
+            row[f"{seat_label}_loss_margin"] = 10 * rank
+            row[f"{seat_label}_smart_five_uses"] = rank
+            row[f"{seat_label}_n_smart_five_dice"] = rank + 1
+            row[f"{seat_label}_smart_one_uses"] = rank - 1
+            row[f"{seat_label}_n_smart_one_dice"] = rank
+            row[f"{seat_label}_hot_dice"] = 1 if rank == 1 else 0
         rows.append(row)
     return pd.DataFrame(rows)
 
@@ -103,7 +114,7 @@ def golden_dataset(tmp_path_factory: pytest.TempPathFactory) -> GoldenDataset:
     table = pa.Table.from_pandas(df, preserve_index=False)
     pq.write_table(table, parquet)
 
-    strategy_map = {"P1": "Aggro", "P2": "Balanced", "P3": "Cautious"}
+    strategy_map = {"P1": 101, "P2": 202, "P3": 303}
     return GoldenDataset(parquet=parquet, dataframe=df, strategy_map=strategy_map)
 
 
@@ -116,10 +127,10 @@ def patched_strategy_grid(monkeypatch: pytest.MonkeyPatch) -> Sequence[object]:
         def __str__(self) -> str:  # pragma: no cover - trivial
             return self._label
 
-    strategies = [_StubStrategy(name) for name in ("Aggro", "Balanced", "Cautious")]
+    strategies = [_StubStrategy(name) for name in ("101", "202", "303")]
 
     def _grid(**_: object):
-        return strategies, {}
+        return strategies, pd.DataFrame({"strategy_id": [101, 202, 303]})
 
     monkeypatch.setattr(
         "farkle.analysis.isolated_metrics.generate_strategy_grid", _grid, raising=False

@@ -14,6 +14,10 @@ from farkle.analysis import metrics
 def test_metrics_run_matches_goldens(tmp_path, update_goldens):
     """Run the metrics stage and compare outputs to goldens.
 
+    Golden refresh should be triggered only when deterministic metrics behavior
+    changes (schema/columns, output-path wiring, or computation logic) and then
+    executed with ``--update-goldens`` to rewrite checked-in expectations.
+
     Args:
         tmp_path: Temporary directory for staging artifacts.
         update_goldens: Flag controlling golden regeneration.
@@ -44,12 +48,17 @@ def test_metrics_run_matches_goldens(tmp_path, update_goldens):
         "sum_n_rounds",
         "sq_sum_n_rounds",
         "false_wins_handled",
+        "missing_before_pad",
     ]
     assert len(df) == 8
 
 
 def test_golden_mismatch_requires_update_flag(tmp_path, update_goldens):
     """Ensure mismatched outputs raise without the update flag set.
+
+    This test documents the explicit opt-in policy: when generated outputs drift
+    from stored goldens, developers must pass ``--update-goldens`` to refresh
+    fixtures; default runs should fail loudly instead of silently rewriting data.
 
     Args:
         tmp_path: Temporary directory for staging artifacts.
@@ -69,5 +78,5 @@ def test_golden_mismatch_requires_update_flag(tmp_path, update_goldens):
     df = pd.read_parquet(metrics_path).iloc[:-1]
     df.to_parquet(metrics_path, index=False)
 
-    with pytest.raises(GoldenMismatchError):
+    with pytest.raises(GoldenMismatchError, match="--update-goldens"):
         validate_outputs(cfg, update_goldens=False)
