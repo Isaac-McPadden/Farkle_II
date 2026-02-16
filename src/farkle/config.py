@@ -189,11 +189,10 @@ class SimConfig:
 
     def populate_seed_list(self, expected_len: int) -> list[int]:
         """Populate ``seed_list`` based on current config and return it."""
-        if self.seed_list is not None and self.seed_pair is not None:
-            if list(self.seed_pair) != list(self.seed_list):
-                raise ValueError(
-                    "sim.seed_list and sim.seed_pair must match when both are set"
-                )
+        if self.seed_list is not None and self.seed_pair is not None and list(self.seed_pair) != list(self.seed_list):
+            raise ValueError(
+                "sim.seed_list and sim.seed_pair must match when both are set"
+            )
         seeds = self.resolve_seed_list(expected_len)
         self.seed_list = list(seeds)
         if expected_len == 1:
@@ -813,7 +812,7 @@ class AppConfig:
         """Path to the metrics parquet for ``n`` players."""
         return self.n_dir(n) / f"{n}p_metrics.parquet"
 
-    def strategy_manifest_path(self, n: int) -> Path:
+    def strategy_manifest_path(self, n: int) -> Path:  # noqa: ARG002
         """Path to the strategy manifest parquet for the current results root."""
         return self.strategy_manifest_root_path()
 

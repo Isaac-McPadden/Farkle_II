@@ -64,10 +64,7 @@ def split_seeded_results_dir(path: Path) -> tuple[Path, int | None]:
 
 def seed_has_completion_markers(cfg: AppConfig) -> bool:
     """Return True when all simulation outputs are present for this seed."""
-    for n in cfg.sim.n_players_list:
-        if not runner.simulation_is_complete(cfg, n):
-            return False
-    return True
+    return all(runner.simulation_is_complete(cfg, n) for n in cfg.sim.n_players_list)
 
 
 def _stringify_paths(obj: Any) -> Any:

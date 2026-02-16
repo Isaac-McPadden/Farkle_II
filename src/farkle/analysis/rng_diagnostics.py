@@ -14,7 +14,7 @@ import re
 from collections.abc import Iterable, Sequence
 from itertools import chain
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 import numpy as np
 import pandas as pd

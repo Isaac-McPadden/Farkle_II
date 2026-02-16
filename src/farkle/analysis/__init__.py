@@ -10,9 +10,9 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Callable, Sequence
 
-from farkle.config import AppConfig
-from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout
+from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
+from farkle.config import AppConfig
 
 LOGGER = logging.getLogger(__name__)
 

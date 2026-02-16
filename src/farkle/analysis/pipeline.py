@@ -18,8 +18,8 @@ import yaml  # type: ignore[import-untyped]
 from farkle import analysis
 from farkle.analysis import combine, coverage_by_k, curate, game_stats, ingest, metrics
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout, resolve_stage_layout
-from farkle.config import AppConfig, load_app_config
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
+from farkle.config import AppConfig, load_app_config
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
