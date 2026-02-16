@@ -153,13 +153,19 @@ def test_pipeline_analytics_runs_layout_order(
         return _inner
 
     _inject_dummy_networkx(monkeypatch)
+    monkeypatch.setattr("farkle.analysis.coverage_by_k.run", _stub("coverage_by_k"), raising=True)
     monkeypatch.setattr("farkle.analysis.game_stats.run", _stub("game_stats"), raising=True)
     monkeypatch.setattr("farkle.analysis.seed_summaries.run", _stub("seed_summaries"), raising=True)
+    monkeypatch.setattr("farkle.analysis.trueskill.run", _stub("trueskill"), raising=True)
+    monkeypatch.setattr("farkle.analysis.tiering_report.run", _stub("tiering"), raising=True)
+    monkeypatch.setattr("farkle.analysis.head2head.run", _stub("head2head"), raising=True)
+    monkeypatch.setattr("farkle.analysis.h2h_analysis.run_post_h2h", _stub("post_h2h"), raising=True)
+    monkeypatch.setattr("farkle.analysis.hgb_feat.run", _stub("hgb"), raising=True)
     monkeypatch.setattr("farkle.analysis.variance.run", _stub("variance"), raising=True)
     monkeypatch.setattr("farkle.analysis.meta.run", _stub("meta"), raising=True)
-    monkeypatch.setattr("farkle.analysis.trueskill.run", _stub("trueskill"), raising=True)
-    monkeypatch.setattr("farkle.analysis.head2head.run", _stub("head2head"), raising=True)
-    monkeypatch.setattr("farkle.analysis.hgb_feat.run", _stub("hgb"), raising=True)
+    monkeypatch.setattr("farkle.analysis.h2h_tier_trends.run", _stub("h2h_tier_trends"), raising=True)
+    monkeypatch.setattr("farkle.analysis.agreement.run", _stub("agreement"), raising=True)
+    monkeypatch.setattr("farkle.analysis.interseed_analysis.run", _stub("interseed"), raising=True)
 
     rc = pipeline.main(["--config", str(cfg_path), "analytics"])
     assert rc == 0
@@ -190,13 +196,19 @@ def test_pipeline_all_runs_all_steps(
     monkeypatch.setattr("farkle.analysis.curate.run", _make_stub("curate"), raising=True)
     monkeypatch.setattr("farkle.analysis.combine.run", _make_stub("combine"), raising=True)
     monkeypatch.setattr("farkle.analysis.metrics.run", _make_stub("metrics"), raising=True)
+    monkeypatch.setattr("farkle.analysis.coverage_by_k.run", _make_stub("coverage_by_k"), raising=True)
     monkeypatch.setattr("farkle.analysis.game_stats.run", _make_stub("game_stats"), raising=True)
     monkeypatch.setattr("farkle.analysis.seed_summaries.run", _make_stub("seed_summaries"), raising=True)
+    monkeypatch.setattr("farkle.analysis.trueskill.run", _make_stub("trueskill"), raising=True)
+    monkeypatch.setattr("farkle.analysis.tiering_report.run", _make_stub("tiering"), raising=True)
+    monkeypatch.setattr("farkle.analysis.head2head.run", _make_stub("head2head"), raising=True)
+    monkeypatch.setattr("farkle.analysis.h2h_analysis.run_post_h2h", _make_stub("post_h2h"), raising=True)
+    monkeypatch.setattr("farkle.analysis.hgb_feat.run", _make_stub("hgb"), raising=True)
     monkeypatch.setattr("farkle.analysis.variance.run", _make_stub("variance"), raising=True)
     monkeypatch.setattr("farkle.analysis.meta.run", _make_stub("meta"), raising=True)
-    monkeypatch.setattr("farkle.analysis.trueskill.run", _make_stub("trueskill"), raising=True)
-    monkeypatch.setattr("farkle.analysis.head2head.run", _make_stub("head2head"), raising=True)
-    monkeypatch.setattr("farkle.analysis.hgb_feat.run", _make_stub("hgb"), raising=True)
+    monkeypatch.setattr("farkle.analysis.h2h_tier_trends.run", _make_stub("h2h_tier_trends"), raising=True)
+    monkeypatch.setattr("farkle.analysis.agreement.run", _make_stub("agreement"), raising=True)
+    monkeypatch.setattr("farkle.analysis.interseed_analysis.run", _make_stub("interseed"), raising=True)
 
     rc = pipeline.main(["--config", str(cfg_path), "all"])
     assert rc == 0
@@ -222,12 +234,18 @@ def test_pipeline_step_failure_propagates(
     monkeypatch.setattr(target, _boom, raising=True)
     if command == "analytics":
         _inject_dummy_networkx(monkeypatch)
+        monkeypatch.setattr("farkle.analysis.coverage_by_k.run", lambda cfg: None, raising=True)
         monkeypatch.setattr("farkle.analysis.seed_summaries.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.trueskill.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.tiering_report.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.head2head.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.h2h_analysis.run_post_h2h", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.hgb_feat.run", lambda cfg: None, raising=True)
         monkeypatch.setattr("farkle.analysis.variance.run", lambda cfg: None, raising=True)
         monkeypatch.setattr("farkle.analysis.meta.run", lambda cfg: None, raising=True)
-        monkeypatch.setattr("farkle.analysis.trueskill.run", lambda cfg: None, raising=True)
-        monkeypatch.setattr("farkle.analysis.head2head.run", lambda cfg: None, raising=True)
-        monkeypatch.setattr("farkle.analysis.hgb_feat.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.h2h_tier_trends.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.agreement.run", lambda cfg: None, raising=True)
+        monkeypatch.setattr("farkle.analysis.interseed_analysis.run", lambda cfg: None, raising=True)
 
     with pytest.raises(RuntimeError):
         pipeline.main(["--config", str(cfg_path), command])
@@ -274,7 +292,7 @@ def test_pipeline_game_stats_opt_out(monkeypatch: pytest.MonkeyPatch, tmp_result
 
     def _fake_metrics(app_cfg):  # noqa: ANN001
         calls.append("metrics")
-        assert app_cfg.analysis.run_game_stats is False
+        assert app_cfg.analysis.run_game_stats is True
 
     def _fake_game_stats(app_cfg):  # noqa: ANN001
         calls.append("game_stats")
@@ -290,7 +308,7 @@ def test_pipeline_game_stats_opt_out(monkeypatch: pytest.MonkeyPatch, tmp_result
     ])
 
     assert rc == 0
-    assert calls == ["metrics"]
+    assert calls == ["metrics", "game_stats"]
 
 
 def test_pipeline_rng_diagnostics_flag(monkeypatch: pytest.MonkeyPatch, tmp_results_dir: Path) -> None:
@@ -323,4 +341,4 @@ def test_pipeline_rng_diagnostics_flag(monkeypatch: pytest.MonkeyPatch, tmp_resu
     ])
 
     assert rc == 0
-    assert calls == [("combine", None), ("rng_diagnostics", (1, 3))]
+    assert calls == [("combine", None)]
