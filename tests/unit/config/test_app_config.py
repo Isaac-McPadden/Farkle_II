@@ -9,6 +9,7 @@ import yaml
 
 from farkle.analysis.stage_registry import StageDefinition, StageLayout, StagePlacement
 from farkle.config import AppConfig, IOConfig, apply_dot_overrides, load_app_config
+from farkle.utils.types import normalize_compression
 
 
 @pytest.fixture
@@ -215,3 +216,127 @@ def test_curate_stage_dir_prefers_layout_folder(tmp_path: Path) -> None:
     folder = layout.folder_for("curate")
     assert folder is not None
     assert cfg.curate_stage_dir == cfg.analysis_dir / folder
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_results_root", "expected_analysis"),
+    [
+        (
+            {"io": {"results_dir_prefix": "results"}, "sim": {"seed": 3}},
+            Path("data") / "results_seed_3",
+            Path("data") / "results_seed_3" / "analysis",
+        ),
+        (
+            {
+                "io": {
+                    "results_dir": "data/custom_seed_4",
+                    "analysis_dir": "alt_analysis",
+                }
+            },
+            Path("data") / "custom_seed_0",
+            Path("data") / "custom_seed_0" / "alt_analysis",
+        ),
+    ],
+)
+def test_load_app_config_defaults_and_overrides(
+    write_yaml, payload, expected_results_root, expected_analysis
+) -> None:
+    config = write_yaml("defaults_overrides.yaml", payload)
+
+    cfg = load_app_config(config)
+
+    assert cfg.results_root == expected_results_root
+    assert cfg.analysis_dir == expected_analysis
+
+
+@pytest.mark.parametrize(
+    ("input_prefix", "expected_prefix"),
+    [
+        ("data/results_seed_10", Path("results")),
+        ("nested/output_seed_2", Path("nested/output")),
+        (Path("already_normal"), Path("already_normal")),
+    ],
+)
+def test_results_dir_normalization_via_load_and_overrides(
+    write_yaml, input_prefix, expected_prefix
+) -> None:
+    config = write_yaml("norm.yaml", {"io": {"results_dir": str(input_prefix)}})
+
+    cfg = load_app_config(config)
+    assert cfg.io.results_dir_prefix == expected_prefix
+
+    apply_dot_overrides(cfg, [f"io.results_dir_prefix={input_prefix}"])
+    assert cfg.io.results_dir_prefix == expected_prefix
+
+
+@pytest.mark.parametrize(
+    ("section", "key", "value"),
+    [
+        ("analysis", "log_level", "NOT_A_LEVEL"),
+        ("ingest", "parquet_codec", "zipper"),
+        ("analysis", "pooling_weights", "mystery-weight"),
+    ],
+)
+def test_invalid_enum_codec_and_compression_values(write_yaml, section, key, value) -> None:
+    config = write_yaml("invalid_values.yaml", {section: {key: value}})
+
+    cfg = load_app_config(config)
+
+    if key == "parquet_codec":
+        with pytest.raises(ValueError):
+            _ = cfg.parquet_codec
+    else:
+        assert getattr(getattr(cfg, section), key) == value
+
+
+@pytest.mark.parametrize(
+    ("cfg", "expected"),
+    [
+        (AppConfig(), (False, "interseed inputs missing")),
+        (AppConfig(sim=AppConfig().sim.__class__()), (False, "interseed inputs missing")),
+    ],
+)
+def test_interseed_ready_missing_inputs(cfg: AppConfig, expected: tuple[bool, str]) -> None:
+    ready, message = cfg.interseed_ready()
+
+    assert ready is expected[0]
+    assert expected[1] in message
+
+
+@pytest.mark.parametrize(
+    "cfg",
+    [
+        AppConfig(sim=AppConfig().sim.__class__(seed_list=[1, 2])),
+        AppConfig(io=IOConfig(interseed_input_dir=Path("inputs"))),
+    ],
+)
+def test_interseed_ready_accepts_seed_list_or_input_dir(cfg: AppConfig) -> None:
+    ready, message = cfg.interseed_ready()
+
+    assert ready is True
+    assert message == ""
+
+
+def test_stage_layout_edge_case_resolve_stage_dir_without_folder(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg.set_stage_layout(
+        StageLayout(
+            placements=[
+                StagePlacement(
+                    definition=StageDefinition(key="ingest", group="pipeline"),
+                    index=0,
+                    folder_name="00_ingest",
+                )
+            ]
+        )
+    )
+
+    with pytest.raises(KeyError):
+        cfg.stage_dir("curate")
+
+    assert cfg.resolve_stage_dir("curate", allow_missing=True) == cfg.analysis_dir / "curate"
+
+
+def test_normalize_compression_rejects_invalid_codec() -> None:
+    with pytest.raises(ValueError):
+        normalize_compression("bad-codec")

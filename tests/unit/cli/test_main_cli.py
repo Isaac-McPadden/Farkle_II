@@ -163,3 +163,71 @@ def test_analyze_pipeline_dispatches_preprocess_and_analytics(
         ("analyze:pipeline", False),
         ("analyze:analytics", {"run_rng_diagnostics": False, "rng_lags": None}),
     ]
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_call"),
+    [
+        (["analyze", "ingest"], "ingest"),
+        (["analyze", "curate"], "curate"),
+        (["analyze", "combine"], "combine"),
+        (["analyze", "metrics"], "metrics"),
+        (["analyze", "analytics"], "analytics"),
+    ],
+)
+def test_analyze_subcommands_dispatch(monkeypatch, preserve_root_logger, argv, expected_call):
+    calls: list[str] = []
+
+    monkeypatch.setattr(cli_main.ingest, "run", lambda cfg: calls.append("ingest"))
+    monkeypatch.setattr(cli_main.curate, "run", lambda cfg: calls.append("curate"))
+    monkeypatch.setattr(cli_main.combine, "run", lambda cfg: calls.append("combine"))
+    monkeypatch.setattr(cli_main.metrics, "run", lambda cfg: calls.append("metrics"))
+    monkeypatch.setattr(
+        cli_main.analysis_pkg,
+        "run_all",
+        lambda cfg, **kwargs: calls.append("analytics"),
+    )
+
+    cli_main.main(argv)
+
+    assert calls == [expected_call]
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--seed-pair", "1", "2", "--seed-a", "1", "--seed-b", "2", "run"],
+        ["--seed-a", "1", "run"],
+        ["--seed-b", "2", "run"],
+    ],
+)
+def test_main_rejects_conflicting_seed_flags(preserve_root_logger, argv):
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main.main(argv)
+
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("argv", "attr", "method"),
+    [
+        (["run"], "runner", "run_single_n"),
+        (["analyze", "ingest"], "ingest", "run"),
+        (["analyze", "variance"], "analysis_pkg", "run_variance"),
+        (["two-seed-pipeline", "--seed-pair", "3", "4"], "two_seed_pipeline", "run_pipeline"),
+    ],
+)
+def test_main_propagates_delegated_failure_codes(
+    monkeypatch, preserve_root_logger, argv, attr, method
+):
+    module_obj = getattr(cli_main, attr)
+
+    def _raise(*args, **kwargs):
+        raise SystemExit(9)
+
+    monkeypatch.setattr(module_obj, method, _raise)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main.main(argv)
+
+    assert excinfo.value.code == 9
