@@ -1,5 +1,5 @@
 PYTHON ?= python3
-COV_THRESHOLD ?= 60
+COV_THRESHOLD ?= 90
 
 .PHONY: install lint format typecheck test ci
 
