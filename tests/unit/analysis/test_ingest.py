@@ -8,6 +8,7 @@ import pytest
 
 from farkle.analysis.ingest import _fix_winner, _iter_shards, _process_block, run
 from farkle.config import AppConfig, IngestConfig, IOConfig
+from farkle.utils.schema_helpers import expected_schema_for
 
 
 def _make_cfg(
@@ -82,6 +83,27 @@ def test_iter_shards_subset_logs_missing(tmp_path, caplog):
         for record in caplog.records
         if record.name == "farkle.analysis.ingest"
     )
+
+
+def test_iter_shards_prefers_consolidated_over_partial_legacy_set(tmp_path):
+    block = tmp_path
+    consolidated = pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"]})
+    consolidated.to_parquet(block / "2p_rows.parquet", index=False)
+
+    # Legacy partial files should be ignored when consolidated output exists.
+    legacy_dir = block / "2p_rows"
+    legacy_dir.mkdir()
+    pd.DataFrame({"winner": ["P2"], "P1_strategy": ["B"]}).to_parquet(
+        legacy_dir / "legacy.parquet", index=False
+    )
+    pd.DataFrame({"winner": ["P3"]}).to_csv(block / "winners.csv", index=False)
+
+    shards = list(_iter_shards(block, ("winner", "P1_strategy")))
+
+    assert len(shards) == 1
+    shard_df, shard_path = shards[0]
+    assert shard_path.name == "2p_rows.parquet"
+    assert shard_df.to_dict("records") == [{"winner": "P1", "P1_strategy": "A"}]
 
 
 # -------------------- _fix_winner --------------------------------------
@@ -252,6 +274,142 @@ def test_process_block_zero_rows_without_outputs(tmp_results_dir, monkeypatch):
     raw_out = cfg.ingested_rows_raw(5)
     assert not raw_out.exists()
     assert not raw_out.with_suffix(".manifest.jsonl").exists()
+
+
+@pytest.fixture
+def malformed_and_valid_shards() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    malformed = pd.DataFrame(
+        {
+            "winner": ["P1"],
+            "P1_strategy": ["not-an-int"],
+            "P2_strategy": ["2"],
+            "n_rounds": [2],
+            "winning_score": [5000],
+        }
+    )
+    valid_1 = pd.DataFrame(
+        {
+            "winner": ["P2"],
+            "P1_strategy": ["10"],
+            "P2_strategy": ["20"],
+            "n_rounds": [3],
+            "winning_score": [10000],
+            "game_seed": [111],
+        }
+    )
+    valid_2 = pd.DataFrame(
+        {
+            "winner": ["P1"],
+            "P1_strategy": ["30"],
+            "P2_strategy": ["40"],
+            "n_rounds": [4],
+            "winning_score": [9000],
+            "game_seed": [222],
+        }
+    )
+    return malformed, valid_1, valid_2
+
+
+def test_process_block_coerces_types_and_writes_deterministic_schema(tmp_results_dir):
+    cfg = _make_cfg(tmp_results_dir)
+    block = cfg.results_root / "2_players"
+    block.mkdir(parents=True)
+    pd.DataFrame(
+        {
+            "winner": ["P2", "P1"],
+            "P1_strategy": ["10", "30"],
+            "P2_strategy": ["20", "40"],
+            "n_rounds": [3, 4],
+            "winning_score": [10000, 9000],
+            "game_seed": [111, 222],
+        }
+    ).to_parquet(block / "2p_rows.parquet", index=False)
+
+    total = _process_block(block, cfg)
+
+    assert total == 2
+    raw_out = cfg.ingested_rows_raw(2)
+    result = pd.read_parquet(raw_out)
+    expected_schema = expected_schema_for(2)
+    assert list(result.columns) == expected_schema.names
+    assert pd.api.types.is_integer_dtype(result["P1_strategy"].dtype)
+    assert pd.api.types.is_integer_dtype(result["P2_strategy"].dtype)
+    assert pd.api.types.is_integer_dtype(result["winner_strategy"].dtype)
+    assert result["winner_strategy"].tolist() == [20, 30]
+
+
+def test_process_block_rejects_malformed_partial_schema_set(
+    tmp_results_dir, malformed_and_valid_shards
+):
+    cfg = _make_cfg(tmp_results_dir)
+    block = cfg.results_root / "2_players"
+    row_dir = block / "2p_rows"
+    row_dir.mkdir(parents=True)
+    malformed, valid_1, _ = malformed_and_valid_shards
+
+    malformed.to_parquet(row_dir / "a_bad.parquet", index=False)
+    valid_1.to_parquet(row_dir / "b_valid.parquet", index=False)
+
+    with pytest.raises(RuntimeError, match="Missing strategy manifest"):
+
+        _process_block(block, cfg)
+
+
+def test_process_block_atomic_rerun_replaces_output(tmp_results_dir, malformed_and_valid_shards):
+    cfg = _make_cfg(tmp_results_dir)
+    block = cfg.results_root / "2_players"
+    block.mkdir(parents=True)
+    _, valid_1, valid_2 = malformed_and_valid_shards
+
+    shard = block / "2p_rows.parquet"
+    valid_1.to_parquet(shard, index=False)
+    first_total = _process_block(block, cfg)
+    assert first_total == 1
+
+    raw_out = cfg.ingested_rows_raw(2)
+    first_rows = pd.read_parquet(raw_out)
+    assert len(first_rows) == 1
+    assert first_rows["game_seed"].tolist() == [111]
+
+    # Ensure source mtime forces a rerun and output replacement.
+    newer = raw_out.stat().st_mtime + 5
+    valid_2.to_parquet(shard, index=False)
+    os.utime(shard, (newer, newer))
+
+    second_total = _process_block(block, cfg)
+    assert second_total == 1
+    second_rows = pd.read_parquet(raw_out)
+    assert len(second_rows) == 1
+    assert second_rows["game_seed"].tolist() == [222]
+
+    # Manifest should append deterministic entries and no temp files should remain.
+    manifest = cfg.ingest_manifest(2)
+    lines = [line for line in manifest.read_text().splitlines() if line.strip()]
+    assert len(lines) == 2
+    assert not list(raw_out.parent.glob("._tmp_*"))
+
+
+def test_process_block_empty_stream_deletes_stale_files_even_on_rerun(tmp_results_dir, monkeypatch):
+    cfg = _make_cfg(tmp_results_dir)
+    block = cfg.results_root / "2_players"
+    block.mkdir(parents=True)
+
+    raw_out = cfg.ingested_rows_raw(2)
+    raw_out.parent.mkdir(parents=True, exist_ok=True)
+    raw_out.write_text("stale")
+    manifest = cfg.ingest_manifest(2)
+    manifest.write_text("stale-manifest")
+
+    def fake_iter_shards(block_path, cols) -> Iterator[tuple[pd.DataFrame, Path]]:  # noqa: ARG001
+        yield pd.DataFrame(columns=cols), block / "empty-1.parquet"
+        yield pd.DataFrame(columns=cols), block / "empty-2.parquet"
+
+    monkeypatch.setattr("farkle.analysis.ingest._iter_shards", fake_iter_shards)
+
+    total = _process_block(block, cfg)
+    assert total == 0
+    assert not raw_out.exists()
+    assert not manifest.exists()
 
 
 # -------------------- run integration ----------------------------------
