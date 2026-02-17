@@ -266,7 +266,11 @@ def test_analyze_agreement_autodetects_players_without_optional_inputs(
             out.parent.mkdir(parents=True, exist_ok=True)
             out.write_text("{}")
 
-    monkeypatch.setitem(sys.modules, "farkle.analysis.agreement", types.SimpleNamespace(run=fake_agreement_run))
+    detected_players = _detect_player_counts(cfg.analysis_dir)
+    assert detected_players == [2, 4]
+
+    monkeypatch.setitem(sys.modules, "networkx", types.SimpleNamespace())
+    monkeypatch.setattr("farkle.analysis.agreement.run", fake_agreement_run, raising=True)
 
     analyze_agreement(exp_dir)
 
