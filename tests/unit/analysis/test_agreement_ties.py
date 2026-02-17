@@ -233,6 +233,161 @@ def test_resolve_trueskill_seed_paths_deduplicates_alias_outputs(tmp_path: Path)
     ]
 
 
+def test_load_trueskill_mixed_seed_paths_prefers_per_k_and_filters_players(tmp_path: Path) -> None:
+    cfg = agreement.AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    players = 2
+
+    trueskill_path = cfg.trueskill_stage_dir / f"{players}p" / f"ratings_{players}.parquet"
+    trueskill_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "strategy": ["a", "b", "x"],
+            "mu": [1.0, 2.0, 99.0],
+            "players": [players, players, 3],
+        }
+    ).to_parquet(trueskill_path)
+
+    tiers_path = cfg.preferred_tiers_path()
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
+    tiers_path.write_text(json.dumps({str(players): {"tiers": {"a": 1, "b": 2, "x": 9}}}))
+
+    per_k_seed = cfg.trueskill_stage_dir / f"{players}p" / f"ratings_{players}_seed5.parquet"
+    fallback_seed = cfg.trueskill_stage_dir / f"trueskill_{players}p_seed5.parquet"
+    ignored_seed = cfg.trueskill_stage_dir / f"{players}p" / f"ratings_{players}_seed6.parquet"
+    pd.DataFrame(
+        {
+            "strategy": ["a", "b", "x"],
+            "mu": [10.0, 20.0, 30.0],
+            "players": [players, players, 3],
+        }
+    ).to_parquet(per_k_seed)
+    pd.DataFrame(
+        {
+            "strategy": ["a", "b"],
+            "mu": [100.0, 200.0],
+            "players": [players, players],
+        }
+    ).to_parquet(fallback_seed)
+    pd.DataFrame({"strategy": ["a"], "players": [players]}).to_parquet(ignored_seed)
+
+    loaded = agreement._load_trueskill(cfg, players, pooled_scope=False)
+
+    assert loaded is not None
+    assert loaded.scores.index.tolist() == ["a", "b"]
+    assert loaded.scores.tolist() == [1.0, 2.0]
+    assert loaded.tiers == {"a": 1, "b": 2, "x": 9}
+    assert len(loaded.per_seed_scores) == 1
+    assert loaded.per_seed_scores[0].tolist() == [10.0, 20.0]
+
+
+def test_load_frequentist_mixed_seed_paths_and_per_k_filtering(tmp_path: Path) -> None:
+    cfg = agreement.AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    players = 2
+
+    freq_path = cfg.tiering_path("frequentist_scores_k_weighted.parquet")
+    freq_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "strategy": ["a", "b", "x"],
+            "estimate": [0.6, 0.5, 0.1],
+            "n_players": [players, players, 3],
+            "tier_label": [1, 2, 9],
+        }
+    ).to_parquet(freq_path)
+
+    seed_ok_analysis = cfg.analysis_dir / "frequentist_scores_seed11.parquet"
+    seed_ok_tiering = cfg.tiering_stage_dir / "frequentist_scores_seed12.parquet"
+    seed_invalid = cfg.tiering_stage_dir / "frequentist_scores_seed13.parquet"
+    seed_ok_analysis.parent.mkdir(parents=True, exist_ok=True)
+    seed_ok_tiering.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "strategy": ["a", "b", "x"],
+            "estimate": [0.7, 0.4, 0.3],
+            "players": [players, players, 3],
+        }
+    ).to_parquet(seed_ok_analysis)
+    pd.DataFrame(
+        {
+            "strategy": ["a", "b"],
+            "estimate": [0.65, 0.45],
+            "n_players": [players, players],
+        }
+    ).to_parquet(seed_ok_tiering)
+    pd.DataFrame({"strategy": ["a"], "players": [players]}).to_parquet(seed_invalid)
+
+    loaded = agreement._load_frequentist(cfg, players)
+
+    assert loaded is not None
+    assert loaded.scores.index.tolist() == ["a", "b"]
+    assert loaded.scores.tolist() == [0.6, 0.5]
+    assert loaded.tiers == {"a": 1, "b": 2}
+    assert len(loaded.per_seed_scores) == 2
+    per_seed_vectors = sorted(series.tolist() for series in loaded.per_seed_scores)
+    assert per_seed_vectors == [[0.65, 0.45], [0.7, 0.4]]
+
+
+def test_load_head2head_returns_none_for_empty_and_builds_scores_for_valid_graph(tmp_path: Path) -> None:
+    cfg = agreement.AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+
+    decisions_path = cfg.post_h2h_path("bonferroni_decisions.parquet")
+    decisions_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(columns=["a", "b", "dir", "is_sig", "pval", "adj_p"]).to_parquet(decisions_path)
+    assert agreement._load_head2head(cfg) is None
+
+    pd.DataFrame(
+        [
+            {"a": "a", "b": "b", "dir": "a>b", "is_sig": True, "pval": 0.01, "adj_p": 0.01},
+            {"a": "b", "b": "c", "dir": "a>b", "is_sig": True, "pval": 0.02, "adj_p": 0.02},
+        ]
+    ).to_parquet(decisions_path)
+
+    loaded = agreement._load_head2head(cfg)
+
+    assert loaded is not None
+    assert loaded.scores.to_dict() == {"a": 3.0, "b": 2.0, "c": 1.0}
+    assert loaded.tiers == {"a": 1, "b": 2, "c": 3}
+    assert loaded.per_seed_scores == []
+
+
+def test_select_score_column_branches_and_assert_no_ties_without_duplicates(caplog) -> None:
+    preferred = pd.DataFrame({"strategy": ["a"], "score": [0.5], "aux": [9.0]})
+    fallback = pd.DataFrame({"strategy": ["a"], "metric": [0.4]})
+    no_tie_series = pd.Series([1.0, 2.0], index=["a", "b"])
+
+    assert agreement._select_score_column(preferred, ["score", "win_rate"]) == "score"
+    assert agreement._select_score_column(fallback, ["win_rate"]) == "metric"
+
+    with caplog.at_level(logging.WARNING):
+        agreement._assert_no_ties(no_tie_series, "no ties")
+    assert "Ties detected" not in caplog.text
+
+
+def test_summarize_seed_stability_branch_cases_and_flatten_payload_nested_values() -> None:
+    assert agreement._summarize_seed_stability([]) is None
+
+    disjoint = [
+        pd.Series([1.0], index=["a"]),
+        pd.Series([2.0], index=["b"]),
+    ]
+    assert agreement._summarize_seed_stability(disjoint) is None
+
+    payload = {
+        "players": "pooled",
+        "comparison_scope": {"mode": "pooled", "meta": {"version": 1}},
+        "methods": ["trueskill", "frequentist"],
+    }
+    flat = agreement._flatten_payload(payload)
+
+    assert flat["players"] == "pooled"
+    assert flat["comparison_scope_mode"] == "pooled"
+    assert flat["comparison_scope_meta_version"] == 1
+    assert flat["methods"] == '["trueskill", "frequentist"]'
+
+
 def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, monkeypatch):
     cfg = agreement.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
