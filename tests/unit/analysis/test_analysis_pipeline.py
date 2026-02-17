@@ -190,12 +190,12 @@ def test_pipeline_analytics_runs_layout_order(
 
     rc = pipeline.main(["--config", str(cfg_path), "analytics"])
     assert rc == 0
-    analytics_keys = [
+    expected_analytics_order = [
         placement.definition.key
         for placement in cfg.stage_layout.placements
         if placement.definition.group == "analytics"
     ]
-    assert calls == analytics_keys
+    assert calls == expected_analytics_order
 
 
 def test_pipeline_all_runs_all_steps(
@@ -209,7 +209,7 @@ def test_pipeline_all_runs_all_steps(
 
     rc = pipeline.main(["--config", str(cfg_path), "all"])
     assert rc == 0
-    assert calls == [placement.definition.key for placement in cfg.stage_layout.placements]
+    assert calls == cfg.stage_layout.keys()
 
 
 @pytest.mark.parametrize(
