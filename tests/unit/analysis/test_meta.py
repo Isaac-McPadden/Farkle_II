@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -256,3 +257,141 @@ def test_meta_strategy_intersection_non_empty_for_shared_grid() -> None:
     assert missing == {}
     assert filtered
     assert filtered[0]["strategy_id"].tolist()
+
+
+def test_collect_seed_summaries_prefers_stage_then_meta_then_analysis(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_cfg(tmp_path)
+    stage_root = tmp_path / "stages" / "seed_summaries"
+    meta_root = tmp_path / "meta_inputs"
+    analysis_root = cfg.analysis_dir
+    meta_root.mkdir(parents=True, exist_ok=True)
+    stage_root.mkdir(parents=True, exist_ok=True)
+    cfg.io.meta_analysis_dir = meta_root
+
+    monkeypatch.setattr(
+        cfg,
+        "stage_dir_if_active",
+        lambda stage: stage_root if stage == "seed_summaries" else None,
+    )
+
+    stage_file = stage_root / "strategy_summary_2p_seed1.parquet"
+    meta_file = meta_root / "strategy_summary_2p_seed2.parquet"
+    analysis_file = analysis_root / "strategy_summary_2p_seed3.parquet"
+    for path in (stage_file, meta_file, analysis_file):
+        pd.DataFrame(
+            [{"strategy_id": "A", "players": 2, "seed": int(path.stem.split("seed")[-1]), "games": 1, "wins": 1, "win_rate": 1.0}]
+        ).to_parquet(path, index=False)
+
+    # Duplicate seed in a lower-precedence dir should not override stage result.
+    duplicate = meta_root / "strategy_summary_2p_seed1.parquet"
+    pd.DataFrame(
+        [{"strategy_id": "B", "players": 2, "seed": 1, "games": 1, "wins": 0, "win_rate": 0.0}]
+    ).to_parquet(duplicate, index=False)
+
+    collected = meta._collect_seed_summaries(cfg)
+    assert collected[2][1] == stage_file
+    assert collected[2][2] == meta_file
+    assert collected[2][3] == analysis_file
+
+
+def test_normalize_meta_frame_enforces_sort_and_dtypes() -> None:
+    raw = pd.DataFrame(
+        [
+            {
+                "strategy_id": 2,
+                "players": 2.0,
+                "win_rate": "0.4",
+                "se": "0.1",
+                "ci_lo": "0.2",
+                "ci_hi": "0.6",
+                "n_seeds": 2.0,
+            },
+            {
+                "strategy_id": 1,
+                "players": 2.0,
+                "win_rate": "0.8",
+                "se": "0.05",
+                "ci_lo": "0.7",
+                "ci_hi": "0.9",
+                "n_seeds": 2.0,
+            },
+        ]
+    )
+
+    normalized = meta._normalize_meta_frame(raw)
+    assert normalized["strategy_id"].tolist() == ["1", "2"]
+    assert pd.api.types.is_integer_dtype(normalized["players"])
+    assert pd.api.types.is_float_dtype(normalized["win_rate"])
+    assert pd.api.types.is_integer_dtype(normalized["n_seeds"])
+
+
+def test_meta_run_idempotent_skip_and_force_rewrite(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    df_seed1 = pd.DataFrame(
+        [{"strategy_id": "A", "players": 2, "seed": 1, "games": 10, "wins": 5, "win_rate": 0.5}]
+    )
+    df_seed2 = pd.DataFrame(
+        [{"strategy_id": "A", "players": 2, "seed": 2, "games": 10, "wins": 6, "win_rate": 0.6}]
+    )
+    df_seed1.to_parquet(cfg.analysis_dir / "strategy_summary_2p_seed1.parquet", index=False)
+    df_seed2.to_parquet(cfg.analysis_dir / "strategy_summary_2p_seed2.parquet", index=False)
+
+    meta.run(cfg, use_random_if_I2_gt=90.0)
+    per_k_parquet = cfg.meta_output_path(2, "strategy_summary_2p_meta.parquet")
+    per_k_json = cfg.meta_output_path(2, "meta_2p.json")
+    long_path = cfg.meta_pooled_dir / "meta_long.parquet"
+    assert per_k_parquet.exists()
+    assert per_k_json.exists()
+    assert long_path.exists()
+    assert per_k_parquet.parent == cfg.meta_per_k_dir(2)
+
+    parquet_mtime_1 = per_k_parquet.stat().st_mtime
+    json_mtime_1 = per_k_json.stat().st_mtime
+    long_mtime_1 = long_path.stat().st_mtime
+
+    time.sleep(1.1)
+    meta.run(cfg, force=False, use_random_if_I2_gt=90.0)
+    assert per_k_parquet.stat().st_mtime == pytest.approx(parquet_mtime_1)
+    assert per_k_json.stat().st_mtime == pytest.approx(json_mtime_1)
+    assert long_path.stat().st_mtime == pytest.approx(long_mtime_1)
+
+    time.sleep(1.1)
+    meta.run(cfg, force=True, use_random_if_I2_gt=90.0)
+    assert per_k_parquet.stat().st_mtime > parquet_mtime_1
+    assert per_k_json.stat().st_mtime > json_mtime_1
+    assert long_path.stat().st_mtime > long_mtime_1
+
+
+def test_meta_run_recomputes_when_artifacts_partially_missing(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    for seed, wins in ((1, 5), (2, 7)):
+        pd.DataFrame(
+            [{"strategy_id": "A", "players": 2, "seed": seed, "games": 10, "wins": wins, "win_rate": wins / 10.0}]
+        ).to_parquet(cfg.analysis_dir / f"strategy_summary_2p_seed{seed}.parquet", index=False)
+
+    meta.run(cfg)
+    parquet_path = cfg.meta_output_path(2, "strategy_summary_2p_meta.parquet")
+    json_path = cfg.meta_output_path(2, "meta_2p.json")
+    assert parquet_path.exists() and json_path.exists()
+
+    json_path.unlink()
+    time.sleep(1.1)
+    before = parquet_path.stat().st_mtime
+    meta.run(cfg, force=False)
+    assert json_path.exists()
+    assert parquet_path.stat().st_mtime == pytest.approx(before)
+
+
+def test_meta_run_skips_zero_row_inputs(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    empty = pd.DataFrame(columns=["strategy_id", "players", "seed", "games", "wins", "win_rate"])
+    empty.to_parquet(cfg.analysis_dir / "strategy_summary_2p_seed1.parquet", index=False)
+    empty.to_parquet(cfg.analysis_dir / "strategy_summary_2p_seed2.parquet", index=False)
+
+    meta.run(cfg)
+
+    assert not cfg.meta_output_path(2, "strategy_summary_2p_meta.parquet").exists()
+    assert not cfg.meta_output_path(2, "meta_2p.json").exists()
+    assert not (cfg.meta_pooled_dir / "meta_long.parquet").exists()
