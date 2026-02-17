@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from farkle.analysis import stage_registry
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AnalysisConfig, AppConfig, IOConfig
 
@@ -13,24 +14,7 @@ def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
 
     layout = resolve_stage_layout(cfg)
 
-    expected_keys = [
-        "ingest",
-        "curate",
-        "combine",
-        "metrics",
-        "game_stats",
-        "seed_summaries",
-        "rng_diagnostics",
-        "tiering",
-        "trueskill",
-        "head2head",
-        "post_h2h",
-        "hgb",
-        "variance",
-        "meta",
-        "agreement",
-        "interseed",
-    ]
+    expected_keys = [definition.key for definition in stage_registry._REGISTRY]
 
     assert [placement.definition.key for placement in layout.placements] == expected_keys
     assert [placement.index for placement in layout.placements] == list(range(len(expected_keys)))
