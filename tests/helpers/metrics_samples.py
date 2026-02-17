@@ -22,7 +22,10 @@ INPUT_ROOT = DATA_ROOT / "inputs"
 GOLDEN_ROOT = DATA_ROOT / "goldens"
 VERSION_FILE = DATA_ROOT / "VERSION.txt"
 
+_SIM_SEED = 0
+
 _SIM_KWARGS = {
+    "seed": _SIM_SEED,
     "n_players_list": [2, 3],
     "score_thresholds": [200],
     "dice_thresholds": [0],
@@ -227,7 +230,7 @@ def _write_version_note() -> None:
     """
 
     VERSION_FILE.write_text(
-        "v2 metrics goldens generated via tests/helpers/metrics_samples.py using metrics.run (CSV goldens)\n"
+        "v2 metrics goldens generated via tests/helpers/metrics_samples.py using metrics.run (CSV goldens, seed=0)\n"
     )
 
 
@@ -322,7 +325,7 @@ def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
     if refresh_inputs or not _parquet_inputs_exist(inputs_root):
         regenerate_inputs(inputs_root)
 
-    workspace = tmp_path / "results_seed_0"
+    workspace = tmp_path / f"results_seed_{_SIM_SEED}"
     shutil.copytree(inputs_root, workspace, dirs_exist_ok=True)
 
     cfg = build_config(workspace)

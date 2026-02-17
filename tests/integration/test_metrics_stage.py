@@ -22,6 +22,9 @@ def test_metrics_run_matches_goldens(tmp_path, update_goldens):
         None
     """
 
+    # Golden refresh is only needed when metrics schema/output columns change,
+    # metrics computation logic changes, or the deterministic sample inputs evolve.
+    # Routine refactors should not require touching stored goldens.
     cfg = stage_sample_run(tmp_path, refresh_inputs=update_goldens)
     metrics.run(cfg)
     validate_outputs(cfg, update_goldens=update_goldens)
@@ -44,6 +47,7 @@ def test_metrics_run_matches_goldens(tmp_path, update_goldens):
         "sum_n_rounds",
         "sq_sum_n_rounds",
         "false_wins_handled",
+        "missing_before_pad",
     }
     assert required_columns.issubset(df.columns)
     assert set(df["n_players"]) == {2, 3}
@@ -75,5 +79,8 @@ def test_golden_mismatch_requires_update_flag(tmp_path, update_goldens):
     df = pd.read_parquet(metrics_path).iloc[:-1]
     df.to_parquet(metrics_path, index=False)
 
-    with pytest.raises(GoldenMismatchError, match="--update-goldens"):
+    with pytest.raises(
+        GoldenMismatchError,
+        match="Run tests with --update-goldens to refresh stored artifacts.",
+    ):
         validate_outputs(cfg, update_goldens=False)

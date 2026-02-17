@@ -145,6 +145,9 @@ def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched
     assert seat_parquet.exists()
     assert stamp_path.exists()
 
+    # Refresh this metrics expectation block only when stage-level metric
+    # definitions or output schema change; deterministic seed=0 fixtures should
+    # keep values stable across routine code cleanup.
     metrics_df = pq.read_table(metrics_path).to_pandas()
     stamp = json.loads(stamp_path.read_text())
     expected_input = str(cfg_proto.curated_parquet)
@@ -154,6 +157,26 @@ def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched
     strategy_series = golden_dataset.dataframe["winner"].map(golden_dataset.strategy_map)
     expected_wins = strategy_series.value_counts()
     total_games = len(golden_dataset.dataframe)
+    required_columns = {
+        "strategy",
+        "n_players",
+        "games",
+        "wins",
+        "win_rate",
+        "se_win_rate",
+        "win_rate_ci_lo",
+        "win_rate_ci_hi",
+        "win_prob",
+        "expected_score",
+        "mean_score",
+        "mean_n_rounds",
+        "false_wins_handled",
+        "missing_before_pad",
+        "sd_score",
+        "sd_n_rounds",
+    }
+    assert required_columns.issubset(metrics_df.columns)
+
     metrics_by_strategy = metrics_df.set_index("strategy")
     games_by_strategy = metrics_by_strategy["games"].to_dict()
     wins_by_strategy = metrics_by_strategy["wins"].to_dict()
