@@ -282,3 +282,63 @@ def test_run_writes_per_k_outputs_and_is_idempotent_for_multi_k(tmp_path: Path) 
 
     after = {path: (path.stat().st_mtime_ns, _hash_file(path)) for path in tracked_paths}
     assert after == before
+
+
+def test_run_resolves_rare_event_thresholds_from_histograms(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    _build_parquet(tmp_path, cfg)
+    cfg.analysis.rare_event_margin_quantile = 0.5
+    cfg.analysis.rare_event_target_rate = 0.4
+
+    game_stats.run(cfg, force=True)
+
+    rare_df = pd.read_parquet(cfg.game_stats_output_path("rare_events.parquet"))
+    assert "margin_le_150" in rare_df.columns
+
+    strat_row = rare_df[
+        (rare_df["summary_level"] == "strategy") & (rare_df["strategy"] == 1.0)
+    ].iloc[0]
+    assert strat_row["multi_reached_target"] == pytest.approx(2 / 3)
+
+
+def test_run_generates_margin_summary_columns_and_histogram_inputs(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    _build_parquet(tmp_path, cfg)
+    cfg.analysis.game_stats_margin_thresholds = (25, 175)
+    cfg.analysis.rare_event_margin_quantile = 0.9
+    cfg.analysis.rare_event_target_rate = 0.2
+
+    game_stats.run(cfg, force=True)
+
+    margin_df = pd.read_parquet(cfg.game_stats_output_path("margin_stats.parquet"))
+    pooled_margin_df = pd.read_parquet(cfg.game_stats_output_path("margin_k_weighted.parquet"))
+    rare_df = pd.read_parquet(cfg.game_stats_output_path("rare_events.parquet"))
+
+    for threshold in (25, 175):
+        assert f"prob_margin_runner_up_le_{threshold}" in margin_df.columns
+        assert f"prob_score_spread_le_{threshold}" in margin_df.columns
+        assert f"prob_margin_runner_up_le_{threshold}" in pooled_margin_df.columns
+        assert f"prob_score_spread_le_{threshold}" in pooled_margin_df.columns
+
+    derived_margin_cols = [c for c in rare_df.columns if c.startswith("margin_le_")]
+    assert derived_margin_cols == ["margin_le_200"]
+
+
+def test_run_accepts_pooling_scheme_aliases(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    _build_parquet(tmp_path, cfg)
+    cfg.analysis.pooling_weights = "equal_k"
+
+    game_stats.run(cfg, force=True)
+
+    assert cfg.game_stats_output_path("game_length_k_weighted.parquet").exists()
+    assert cfg.game_stats_output_path("margin_k_weighted.parquet").exists()
+
+
+def test_run_raises_for_invalid_pooling_scheme(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    _build_parquet(tmp_path, cfg)
+    cfg.analysis.pooling_weights = "invalid-scheme"
+
+    with pytest.raises(ValueError, match="Unknown pooling scheme"):
+        game_stats.run(cfg, force=True)
