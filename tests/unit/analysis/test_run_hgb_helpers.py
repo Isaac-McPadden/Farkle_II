@@ -77,3 +77,33 @@ def test_load_seed_targets_collects_seed_metadata(tmp_path):
 
     assert set(combined["seed"]) == {1, 2}
     assert combined.shape[0] == 4
+
+
+def test_load_seed_targets_returns_empty_when_missing_or_nonmatching(tmp_path):
+    seeds_dir = tmp_path / "pooled"
+    seeds_dir.mkdir()
+    pd.DataFrame({"strategy": ["A"], "mu": [1.0]}).to_parquet(
+        seeds_dir / "ratings_k_weighted.parquet"
+    )
+
+    combined = run_hgb._load_seed_targets(seeds_dir)
+
+    assert combined.empty
+    assert list(combined.columns) == ["strategy", "mu", "seed"]
+
+
+def test_select_partial_dependence_features_empty_input_is_noop():
+    features = pd.DataFrame(columns=["a", "b"])
+
+    kept, skipped = run_hgb._select_partial_dependence_features(features)
+
+    assert kept == []
+    assert skipped == ["a", "b"]
+
+
+def test_parse_strategy_features_empty_series_returns_expected_schema():
+    frame = run_hgb._parse_strategy_features(pd.Series(dtype=object))
+
+    expected_columns = [name for name, _dtype in run_hgb.FEATURE_SPECS]
+    assert list(frame.columns) == expected_columns
+    assert frame.empty
