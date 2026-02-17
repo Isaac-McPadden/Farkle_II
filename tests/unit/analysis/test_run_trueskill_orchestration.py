@@ -124,19 +124,19 @@ def test_run_trueskill_pooling_and_short_circuit(
 
     assert created_executors and created_executors[0].max_workers == 2
 
-    pooled_path = analysis_root / "pooled" / "ratings_k_weighted.parquet"
-    json_path = analysis_root / "pooled" / "ratings_k_weighted.json"
+    pooled_path = analysis_root / "pooled" / "ratings_k_weighted_seed0.parquet"
+    json_path = analysis_root / "pooled" / "ratings_k_weighted_seed0.json"
     tiers_path = analysis_root / "tiers.json"
     assert pooled_path.exists() and json_path.exists() and tiers_path.exists()
 
     pooled = rt._load_ratings_parquet(pooled_path)
     assert pooled.keys() == {"A", "B", "C"}
-    assert pooled["A"].mu == pytest.approx(1000.0 / 35.0)
-    assert pooled["A"].sigma == pytest.approx(math.sqrt(16.0 / 35.0))
+    assert pooled["A"].mu == pytest.approx(24.0)
+    assert pooled["A"].sigma == pytest.approx(math.sqrt(16.0 / 5.0))
     assert pooled["B"].mu == pytest.approx(15.0)
-    assert pooled["B"].sigma == pytest.approx(math.sqrt(9.0 / 20.0))
+    assert pooled["B"].sigma == pytest.approx(1.5)
     assert pooled["C"].mu == pytest.approx(30.0)
-    assert pooled["C"].sigma == pytest.approx(math.sqrt(3.0 / 5.0))
+    assert pooled["C"].sigma == pytest.approx(3.0)
 
     pooled_json = json.loads(json_path.read_text())
     for key, stats in pooled.items():
@@ -204,6 +204,8 @@ def test_run_trueskill_skips_zero_game_block(
 
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
 
-    pooled = rt._load_ratings_parquet(analysis_root / "pooled" / "ratings_k_weighted.parquet")
+    pooled = rt._load_ratings_parquet(
+        analysis_root / "pooled" / "ratings_k_weighted_seed0.parquet"
+    )
     assert set(pooled) == {"A"}
     assert pooled["A"].mu == pytest.approx(10.0)
