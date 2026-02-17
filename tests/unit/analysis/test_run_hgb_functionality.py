@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+import json
 
 import numpy as np
 import pandas as pd
@@ -347,3 +348,150 @@ def test_run_hgb_default_output(tmp_path, monkeypatch):
         / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
     )
     assert parquet_path.exists()
+
+
+@pytest.mark.parametrize("seed", [0, 17])
+def test_run_hgb_passes_seed_to_model_and_permutation(tmp_path, monkeypatch, seed):
+    data_dir = _setup_data(tmp_path)
+    model_random_states: list[int | None] = []
+    perm_calls: list[tuple[int, int | None]] = []
+
+    class DummyModel:
+        def fit(self, _X, _y):
+            return self
+
+    def fake_model(*, random_state=None):
+        model_random_states.append(random_state)
+        return DummyModel()
+
+    def fake_perm(model, X, y, n_repeats=5, random_state=None):
+        _ = model, y
+        perm_calls.append((n_repeats, random_state))
+        return _perm_result(np.zeros(X.shape[1]))
+
+    monkeypatch.setattr(run_hgb, "HistGradientBoostingRegressor", fake_model)
+    monkeypatch.setattr(run_hgb, "permutation_importance", fake_perm)
+    monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run_hgb,
+        "plot_partial_dependence",
+        lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
+    )
+
+    run_hgb.run_hgb(seed=seed, root=data_dir)
+
+    assert model_random_states == [seed]
+    assert perm_calls == [(10, seed)]
+
+
+def test_run_hgb_reads_manifest_and_writes_deterministic_output(tmp_path, monkeypatch):
+    data_dir = _setup_data(tmp_path)
+    manifest_path = data_dir / "strategy_manifest.parquet"
+    manifest = pd.DataFrame({"strategy": ["dummy"], "source": ["manifest"]})
+    manifest.to_parquet(manifest_path, index=False)
+
+    captured_manifest = {}
+    original_parse = run_hgb._parse_strategy_features
+
+    def fake_parse(strategies, *, manifest=None):
+        captured_manifest["manifest"] = manifest
+        return original_parse(strategies, manifest=manifest)
+
+    class DummyModel:
+        def fit(self, _X, _y):
+            return self
+
+    monkeypatch.setattr(run_hgb, "_parse_strategy_features", fake_parse)
+    monkeypatch.setattr(
+        run_hgb,
+        "HistGradientBoostingRegressor",
+        lambda random_state=None: DummyModel(),  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        run_hgb,
+        "permutation_importance",
+        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+            np.zeros(X.shape[1])
+        ),
+    )
+    monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run_hgb,
+        "plot_partial_dependence",
+        lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
+    )
+
+    run_hgb.run_hgb(root=data_dir, manifest_path=manifest_path)
+
+    assert captured_manifest["manifest"].equals(manifest)
+    expected_output = data_dir / "pooled" / "hgb_importance.json"
+    assert expected_output.exists()
+    payload = json.loads(expected_output.read_text())
+    assert "2p" in payload
+
+
+def test_run_hgb_missing_win_rate_column_raises(tmp_path):
+    data_dir = _setup_data(tmp_path)
+    metrics = pd.read_parquet(data_dir / "metrics.parquet").drop(columns=["win_rate"])
+    metrics.to_parquet(data_dir / "metrics.parquet", index=False)
+
+    with pytest.raises(ValueError, match="missing win_rate"):
+        run_hgb.run_hgb(root=data_dir)
+
+
+def test_run_hgb_skips_when_no_features_or_join_rows(tmp_path, monkeypatch):
+    data_dir = _setup_data(tmp_path)
+
+    monkeypatch.setattr(
+        run_hgb,
+        "_parse_strategy_features",
+        lambda strategies, *, manifest=None: pd.DataFrame(index=pd.Index([], name="strategy")),  # noqa: ARG005
+    )
+    run_hgb.run_hgb(root=data_dir)
+    assert not (data_dir / "pooled" / "hgb_importance.json").exists()
+
+    def wrong_index(strategies, *, manifest=None):
+        _ = strategies, manifest
+        cols = [name for name, _dtype in run_hgb.FEATURE_SPECS]
+        return pd.DataFrame([{c: 1.0 for c in cols}], index=["other-strategy"])
+
+    monkeypatch.setattr(run_hgb, "_parse_strategy_features", wrong_index)
+    run_hgb.run_hgb(root=data_dir)
+    assert not (data_dir / "pooled" / "hgb_importance.json").exists()
+
+
+def test_run_hgb_propagates_model_fit_failure(tmp_path, monkeypatch):
+    data_dir = _setup_data(tmp_path)
+
+    class BoomModel:
+        def fit(self, _X, _y):
+            raise RuntimeError("fit failed")
+
+    monkeypatch.setattr(
+        run_hgb,
+        "HistGradientBoostingRegressor",
+        lambda random_state=None: BoomModel(),  # noqa: ARG005
+    )
+
+    with pytest.raises(RuntimeError, match="fit failed"):
+        run_hgb.run_hgb(output_path=data_dir / "out.json", root=data_dir)
+    assert not (data_dir / "out.tmp").exists()
+
+
+def test_run_hgb_schema_mismatch_feature_columns_raises(tmp_path, monkeypatch):
+    data_dir = _setup_data(tmp_path)
+
+    def bad_features(_strategies, *, manifest=None):
+        _ = manifest
+        return pd.DataFrame(
+            {
+                "score_threshold": [300.0, 450.0],
+                "dice_threshold": [2.0, 1.0],
+            },
+            index=pd.read_parquet(data_dir / "metrics.parquet")["strategy"],
+        )
+
+    monkeypatch.setattr(run_hgb, "_parse_strategy_features", bad_features)
+
+    with pytest.raises(KeyError):
+        run_hgb.run_hgb(root=data_dir)
