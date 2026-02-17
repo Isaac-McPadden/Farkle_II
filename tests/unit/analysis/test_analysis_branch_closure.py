@@ -108,7 +108,7 @@ def test_isolated_metrics_locator_from_config_uses_prefix_template(tmp_path: Pat
     locator = isolated_metrics.locator_from_config(cfg, seeds=(3,), player_counts=(2,))
 
     path = locator.path_for(3, 2)
-    assert str(path).endswith("analysis/root_seed_3/2_players/2p_metrics.parquet")
+    assert path.as_posix().endswith("analysis/root_seed_3/2_players/2p_metrics.parquet")
 
 
 def test_isolated_metrics_collect_empty_returns_summary_with_missing_jobs(tmp_path: Path) -> None:
