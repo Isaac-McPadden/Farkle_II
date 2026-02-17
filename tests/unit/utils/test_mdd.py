@@ -1,4 +1,5 @@
 from typing import cast
+import warnings
 
 import pandas as pd
 import pytest
@@ -58,7 +59,15 @@ def test_estimate_tau2_sxk_with_weights():
         }
     )
 
-    tau2 = estimate_tau2_sxk(cell, tau2_seed=0.01, weights_by_k={2: 1.0, 3: 2.0}, robust=False)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        tau2 = estimate_tau2_sxk(
+            cell,
+            tau2_seed=0.01,
+            weights_by_k={2: 1.0, 3: 2.0},
+            robust=False,
+        )
+    assert not any(issubclass(w.category, FutureWarning) for w in record)
     assert tau2 >= 0
 
 
@@ -88,7 +97,10 @@ def test_tiering_ingredients_from_df_round_trip():
         }
     )
 
-    result = tiering_ingredients_from_df(df, weights_by_k={2: 1.0}, z_star=1.0)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        result = tiering_ingredients_from_df(df, weights_by_k={2: 1.0}, z_star=1.0)
+    assert not any(issubclass(w.category, FutureWarning) for w in record)
     assert set(result.keys()) == {"cell", "components", "tau2_sxk", "mdd"}
     mdd = cast(float, result["mdd"])
     assert mdd > 0
