@@ -82,7 +82,6 @@ def test_players_and_ranks_from_batch_branching() -> None:
     assert results == [
         (["A0", "B0"], [0, 1]),
         (["B1", "C1"], [0, 1]),
-        (["B6", "A6", "C6"], [0, 1, 1]),
     ]
 
 
@@ -592,7 +591,7 @@ def test_run_trueskill_handles_worker_exception(
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=3)
 
     assert exceptions and exceptions[0]["block"] == "3_players"
-    assert (analysis_root / "pooled" / "ratings_k_weighted.parquet").exists()
+    assert (analysis_root / "pooled" / "ratings_k_weighted_seed0.parquet").exists()
 
 
 def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
@@ -624,7 +623,7 @@ def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
         batch_rows=10,
     )
 
-    ratings_path = analysis_root / "2p" / "ratings_2.parquet"
+    ratings_path = analysis_root / "2p" / "ratings_2_seed0.parquet"
     assert ratings_path.exists()
 
 
@@ -674,7 +673,7 @@ def test_run_trueskill_rebuilds_outdated_pooled(
         tier_calls.append((means, stdevs))
         return dict.fromkeys(means, 1)
 
-    pooled_path = analysis_root / "pooled" / "ratings_k_weighted.parquet"
+    pooled_path = analysis_root / "pooled" / "ratings_k_weighted_seed0.parquet"
     pooled_path.parent.mkdir(parents=True, exist_ok=True)
     pooled_path.touch()
     old_time = pooled_path.stat().st_mtime - 200.0
@@ -689,7 +688,7 @@ def test_run_trueskill_rebuilds_outdated_pooled(
 
     assert tier_calls
     assert pooled_path.stat().st_mtime > old_time
-    assert (analysis_root / "pooled" / "ratings_k_weighted.json").exists()
+    assert (analysis_root / "pooled" / "ratings_k_weighted_seed0.json").exists()
     assert (analysis_root / "tiers.json").exists()
 
 

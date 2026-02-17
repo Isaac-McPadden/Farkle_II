@@ -103,7 +103,7 @@ def test_analyze_trueskill_skips_when_up_to_date(tmp_path: Path, capsys: pytest.
     assert "SKIP trueskill" in captured
 
 
-def test_analyze_trueskill_runs_and_moves_legacy(
+def test_analyze_trueskill_runs_current_entrypoint_contract(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     exp_dir = tmp_path / "exp"
@@ -116,7 +116,7 @@ def test_analyze_trueskill_runs_and_moves_legacy(
 
     def fake_run(cfg: Any) -> None:  # noqa: ANN401
         cfg.trueskill_stage_dir.mkdir(parents=True, exist_ok=True)
-        (cfg.analysis_dir / "tiers.json").write_text(json.dumps({"legacy": True}))
+        (cfg.trueskill_stage_dir / "tiers.json").write_text(json.dumps({"current": True}))
 
     monkeypatch.setattr(
         "farkle.analysis.run_trueskill.run_trueskill_all_seeds",
@@ -129,4 +129,3 @@ def test_analyze_trueskill_runs_and_moves_legacy(
     done = _done_path(out)
     assert out.exists()
     assert done.exists()
-    assert not (exp_dir / "analysis" / "tiers.json").exists()
