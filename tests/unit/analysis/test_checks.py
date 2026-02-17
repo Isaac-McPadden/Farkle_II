@@ -45,8 +45,10 @@ def test_check_pre_metrics_missing_winner_column(tmp_path: Path) -> None:
     _write_table(combined, schema, [{"n_rounds": 1}])
     _write_manifest(data_dir, 1, {"row_count": 1})
 
-    with pytest.raises(RuntimeError, match="missing 'winner'"):
+    with pytest.raises(RuntimeError) as excinfo:
         check_pre_metrics(combined)
+
+    assert str(excinfo.value) == f"check_pre_metrics: missing 'winner' column in {combined}"
 
 
 def test_check_pre_metrics_negative_integer_column(tmp_path: Path) -> None:
@@ -65,8 +67,10 @@ def test_check_pre_metrics_negative_integer_column(tmp_path: Path) -> None:
     )
     _write_manifest(data_dir, 1, {"row_count": 1})
 
-    with pytest.raises(RuntimeError, match="negative values present"):
+    with pytest.raises(RuntimeError) as excinfo:
         check_pre_metrics(combined)
+
+    assert str(excinfo.value) == "check_pre_metrics: negative values present in bad_counts"
 
 
 def test_check_pre_metrics_unreadable_manifest(tmp_path: Path) -> None:
@@ -85,8 +89,11 @@ def test_check_pre_metrics_unreadable_manifest(tmp_path: Path) -> None:
     )
     _write_manifest(data_dir, 1, "{not json")
 
-    with pytest.raises(RuntimeError, match="failed to parse"):
+    with pytest.raises(RuntimeError) as excinfo:
         check_pre_metrics(combined)
+
+    manifest = data_dir / "1p" / "manifest_1p.json"
+    assert str(excinfo.value).startswith(f"check_pre_metrics: failed to parse {manifest}:")
 
 
 def test_check_pre_metrics_manifest_row_mismatch(tmp_path: Path) -> None:
@@ -108,23 +115,40 @@ def test_check_pre_metrics_manifest_row_mismatch(tmp_path: Path) -> None:
     )
     _write_manifest(data_dir, 1, {"row_count": 1})
 
-    with pytest.raises(RuntimeError, match="row-count mismatch"):
+    with pytest.raises(RuntimeError) as excinfo:
         check_pre_metrics(combined)
+
+    assert str(excinfo.value) == "check_pre_metrics: row-count mismatch 2 != 1"
+
+
+def test_check_pre_metrics_missing_manifest_files(tmp_path: Path) -> None:
+    data_dir, combined = _combined_path(tmp_path)
+    schema = pa.schema([("winner", pa.string())])
+    _write_table(combined, schema, [{"winner": "P1"}])
+
+    with pytest.raises(RuntimeError) as excinfo:
+        check_pre_metrics(combined)
+
+    assert str(excinfo.value) == f"check_pre_metrics: no manifest files found under {data_dir}"
 
 
 def test_check_post_combine_missing_output(tmp_path: Path) -> None:
     combined = tmp_path / "missing.parquet"
 
-    with pytest.raises(RuntimeError, match="missing"):
+    with pytest.raises(RuntimeError) as excinfo:
         check_post_combine([], combined)
+
+    assert str(excinfo.value) == f"check_post_combine: missing {combined}"
 
 
 def test_check_post_combine_unreadable_output(tmp_path: Path) -> None:
     combined = tmp_path / "bad.parquet"
     combined.write_text("not parquet data")
 
-    with pytest.raises(RuntimeError, match="unable to read"):
+    with pytest.raises(RuntimeError) as excinfo:
         check_post_combine([], combined)
+
+    assert str(excinfo.value).startswith(f"check_post_combine: unable to read {combined}:")
 
 
 def test_check_post_combine_row_count_mismatch(tmp_path: Path) -> None:
@@ -139,8 +163,10 @@ def test_check_post_combine_row_count_mismatch(tmp_path: Path) -> None:
         [{"winning_score": 100}, {"winning_score": 200}],
     )
 
-    with pytest.raises(RuntimeError, match="row-count mismatch"):
+    with pytest.raises(RuntimeError) as excinfo:
         check_post_combine([curated], combined, max_players=1)
+
+    assert str(excinfo.value) == "check_post_combine: row-count mismatch 2 != 1"
 
 
 def test_check_post_combine_schema_mismatch(tmp_path: Path) -> None:
@@ -152,8 +178,22 @@ def test_check_post_combine_schema_mismatch(tmp_path: Path) -> None:
     wrong_schema = pa.schema([("winner_seat", pa.string())])
     _write_table(combined, wrong_schema, [{"winner_seat": "P1"}])
 
-    with pytest.raises(RuntimeError, match="output schema mismatch"):
+    with pytest.raises(RuntimeError) as excinfo:
         check_post_combine([curated], combined, max_players=1)
+
+    assert str(excinfo.value) == "check_post_combine: output schema mismatch"
+
+
+def test_check_post_combine_unreadable_curated_file(tmp_path: Path) -> None:
+    combined = tmp_path / "combined.parquet"
+    _write_table(combined, pa.schema([("winner", pa.string())]), [{"winner": "P1"}])
+    curated = tmp_path / "broken.parquet"
+    curated.write_text("not parquet")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        check_post_combine([curated], combined, max_players=1)
+
+    assert str(excinfo.value).startswith(f"check_post_combine: unable to read {curated}:")
 
 
 def test_check_pre_metrics_passes_with_manifest(tmp_path: Path, caplog) -> None:
@@ -245,6 +285,47 @@ def test_check_stage_artifact_families_flags_missing_and_layout_drift(tmp_path: 
     with pytest.raises(RuntimeError) as excinfo:
         check_stage_artifact_families(cfg.analysis_dir, stage_dirs, (2,))
 
-    msg = str(excinfo.value)
-    assert "missing per-k artifact" in msg
-    assert "layout drift" in msg
+    expected = (
+        f"check_stage_artifact_families failed under {cfg.analysis_dir}:\n"
+        f" - game_stats: missing per-k artifact {stage_dir / '2p' / 'game_length.parquet'}\n"
+        f" - game_stats: layout drift; expected {stage_dir / '2p' / 'game_length.parquet'} "
+        f"but found {stage_dir / 'game_length.parquet'}\n"
+        f" - game_stats: missing per-k artifact {stage_dir / '2p' / 'margin_stats.parquet'}\n"
+        f" - game_stats: missing pooled_concat artifact {stage_dir / 'pooled' / 'game_length.parquet'}\n"
+        f" - game_stats: layout drift; expected {stage_dir / 'pooled' / 'game_length.parquet'} "
+        f"but found {stage_dir / 'game_length.parquet'}\n"
+        f" - game_stats: missing pooled_concat artifact {stage_dir / 'pooled' / 'margin_stats.parquet'}\n"
+        f" - game_stats: missing pooled_weighted artifact "
+        f"{stage_dir / 'pooled' / 'game_length_k_weighted.parquet'}\n"
+        f" - game_stats: missing pooled_weighted artifact "
+        f"{stage_dir / 'pooled' / 'margin_k_weighted.parquet'}"
+    )
+    assert str(excinfo.value) == expected
+
+
+def test_check_stage_artifact_families_flags_duplicate_and_mismatched_family_outputs(
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    stage_dir = cfg.stage_dir("metrics")
+    stage_dirs = {"metrics": stage_dir}
+
+    pooled = stage_dir / "pooled"
+    pooled.mkdir(parents=True, exist_ok=True)
+    # Mismatched-family output: per-k artifact written in pooled/.
+    misplaced_per_k = pooled / "2p_isolated_metrics.parquet"
+    misplaced_per_k.touch()
+    # Duplicate output: pooled artifact also exists at stage root.
+    root_duplicate = stage_dir / "metrics.parquet"
+    root_duplicate.touch()
+
+    with pytest.raises(RuntimeError) as excinfo:
+        check_stage_artifact_families(cfg.analysis_dir, stage_dirs, (2,))
+
+    expected = (
+        f"check_stage_artifact_families failed under {cfg.analysis_dir}:\n"
+        f" - metrics: missing per-k artifact {stage_dir / '2p' / '2p_isolated_metrics.parquet'}\n"
+        f" - metrics: missing pooled_concat artifact {pooled / 'metrics.parquet'}\n"
+        f" - metrics: layout drift; expected {pooled / 'metrics.parquet'} but found {root_duplicate}"
+    )
+    assert str(excinfo.value) == expected
