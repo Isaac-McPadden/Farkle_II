@@ -128,3 +128,114 @@ def test_prepare_metrics_dataframe_recomputes_metrics_and_pads():
     if not padded.empty:
         assert (padded["wins"] == 0).all()
         assert (padded["win_rate"] == 0).all()
+
+
+def test_collect_isolated_metrics_filters_player_counts_and_missing_seeds(tmp_path):
+    locator = isolated_metrics.MetricsLocator(
+        data_root=tmp_path,
+        seeds=[11, 12],
+        player_counts=[2, 4],
+    )
+
+    seed11_k2 = locator.path_for(11, 2)
+    seed11_k2.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {
+            "strategy": [10, 11],
+            "wins": [6, 4],
+            "total_games_strat": [10, 10],
+        }
+    ).to_parquet(seed11_k2, index=False)
+
+    loaded, summary = isolated_metrics.collect_isolated_metrics(locator)
+
+    assert loaded[["seed", "k", "strategy"]].to_dict("records") == [
+        {"seed": 11, "k": 2, "strategy": 10},
+        {"seed": 11, "k": 2, "strategy": 11},
+    ]
+    assert summary.expected_pairs == 4
+    assert summary.loaded_pairs == 1
+    assert summary.has_missing is True
+    assert summary.row_counts.loc[11, 2] == 2
+    assert summary.row_counts.loc[11, 4] == 0
+    assert summary.row_counts.loc[12, 2] == 0
+    assert summary.strategy_counts.loc[11, 2] == 2
+    assert "Seed 12 missing data for player counts [2, 4]" in summary.warnings
+    assert "Player count 4 missing data for seeds [11, 12]" in summary.warnings
+
+
+def test_collect_isolated_metrics_empty_isolates_schema_is_stable(tmp_path):
+    locator = isolated_metrics.MetricsLocator(data_root=tmp_path, seeds=[31], player_counts=[2])
+
+    frame, summary = isolated_metrics.collect_isolated_metrics(locator)
+
+    assert frame.empty
+    assert list(frame.columns) == [
+        "strategy",
+        "wins",
+        "games",
+        "win_rate",
+        "winrate",
+        "seed",
+        "player_count",
+        "k",
+    ]
+    assert summary.row_counts.index.to_list() == [31]
+    assert summary.row_counts.columns.to_list() == [2]
+    assert summary.row_counts.loc[31, 2] == 0
+    assert summary.strategy_counts.loc[31, 2] == 0
+
+
+def test_prepare_metrics_dataframe_rollups_and_optional_output_branches():
+    cfg = AppConfig()
+    cfg.sim.score_thresholds = [10]
+    cfg.sim.dice_thresholds = [0]
+    cfg.sim.smart_five_opts = [False]
+    cfg.sim.smart_one_opts = [False]
+    cfg.sim.consider_score_opts = [False]
+    cfg.sim.consider_dice_opts = [False]
+    cfg.sim.auto_hot_dice_opts = [False]
+    cfg.sim.run_up_score_opts = [False]
+
+    from farkle.simulation.simulation import generate_strategy_grid
+
+    _, strategy_meta = generate_strategy_grid(
+        score_thresholds=cfg.sim.score_thresholds,
+        dice_thresholds=cfg.sim.dice_thresholds,
+        smart_five_opts=cfg.sim.smart_five_opts,
+        smart_one_opts=cfg.sim.smart_one_opts,
+        consider_score_opts=cfg.sim.consider_score_opts,
+        consider_dice_opts=cfg.sim.consider_dice_opts,
+        auto_hot_dice_opts=cfg.sim.auto_hot_dice_opts,
+        run_up_score_opts=cfg.sim.run_up_score_opts,
+    )
+    strategy_id = int(strategy_meta["strategy_id"].iloc[0])
+
+    with_score = pd.DataFrame(
+        {
+            "strategy": [strategy_id],
+            "wins": [5.0],
+            "total_games_strat": [10],
+            "sum_winning_score": [200.0],
+            "sq_sum_winning_score": [4400.0],
+            "mean_winning_score": [40.0],
+            "var_winning_score": [100.0],
+        }
+    )
+    out_with = isolated_metrics._prepare_metrics_dataframe(cfg, with_score, player_count=2)
+    row = out_with.loc[out_with["strategy"] == strategy_id].iloc[0]
+
+    assert row["expected_score"] == pytest.approx(20.0)
+    assert row["mean_score"] == pytest.approx(40.0)
+    assert row["sd_score"] == pytest.approx(10.0)
+
+    without_score = pd.DataFrame(
+        {
+            "strategy": [strategy_id],
+            "wins": [3.0],
+            "total_games_strat": [10],
+        }
+    )
+
+    with pytest.raises(KeyError, match="expected_score"):
+        isolated_metrics._prepare_metrics_dataframe(cfg, without_score, player_count=2)
