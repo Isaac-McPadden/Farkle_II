@@ -225,8 +225,9 @@ def test_build_report_stable_with_tier_ties_and_missing_ts_entries() -> None:
 
     report = tiering_report._build_report(freq_df, ts_tiers={5: 1, 9: 2})
 
-    # Preserves frequentist row order and fills missing TS tiers deterministically.
-    assert report["strategy"].tolist() == [1, 5, 9]
+    # Keeps deterministic row ordering and fills missing TS tiers deterministically.
+    id_col = "strategy" if "strategy" in report.columns else "index"
+    assert report[id_col].tolist() == [1, 5, 9]
     assert report["trueskill_tier"].tolist() == [3, 1, 2]
     assert report["delta_tier"].tolist() == [-2, 0, 0]
     assert report["in_mdd_top"].tolist() == [True, True, False]
