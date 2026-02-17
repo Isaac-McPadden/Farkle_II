@@ -166,6 +166,23 @@ def test_analyze_pipeline_dispatches_preprocess_and_analytics(
 
 
 @pytest.mark.parametrize(
+    "argv",
+    [
+        ["analyze"],
+        ["--seed-pair", "1", "2"],
+        ["--seed-pair", "1"],
+    ],
+)
+def test_main_rejects_missing_required_args_with_exit_code_2(
+    preserve_root_logger, argv
+):
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main.main(argv)
+
+    assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize(
     ("argv", "expected_call"),
     [
         (["analyze", "ingest"], "ingest"),
@@ -235,3 +252,141 @@ def test_main_propagates_delegated_failure_codes(
 
     assert delegated_called
     assert excinfo.value.code == 9
+
+
+@pytest.mark.parametrize(
+    ("argv", "error_type", "expected_substring"),
+    [
+        (["--set", "sim.seed", "run"], ValueError, "Invalid override"),
+        (
+            ["--set", "sim.seed=not-an-int", "run"],
+            ValueError,
+            "invalid literal for int",
+        ),
+        (
+            ["--set", "sim.unknown=1", "run"],
+            AttributeError,
+            "Unknown option",
+        ),
+    ],
+)
+def test_main_surfaces_dot_override_parsing_failures(
+    monkeypatch,
+    preserve_root_logger,
+    argv,
+    error_type,
+    expected_substring,
+):
+    monkeypatch.setattr(cli_main, "_write_active_config", lambda cfg, dest_dir: None)
+    monkeypatch.setattr(cli_main.runner, "run_single_n", lambda cfg, n, **kwargs: None)
+
+    with pytest.raises(error_type, match=expected_substring):
+        cli_main.main(argv)
+
+
+def test_main_dispatches_each_simulation_and_analysis_stage(
+    monkeypatch, tmp_path: Path, preserve_root_logger
+):
+    stage_calls: list[str] = []
+
+    def _write_cfg(name: str, n_players_list: list[int], seed_list: list[int]) -> Path:
+        cfg = {
+            "io": {"results_dir_prefix": str(tmp_path / f"out-{name}")},
+            "sim": {
+                "seed": 7,
+                "seed_list": seed_list,
+                "n_players_list": n_players_list,
+                "num_shuffles": 1,
+                "recompute_num_shuffles": False,
+            },
+        }
+        path = tmp_path / f"{name}.yml"
+        path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+        return path
+
+    cfg_single = _write_cfg("single", [2], [11])
+    cfg_multi = _write_cfg("multi", [2, 3], [11])
+    cfg_pair = _write_cfg("pair", [2], [3, 4])
+
+    monkeypatch.setattr(cli_main, "_write_active_config", lambda cfg, dest_dir: None)
+    monkeypatch.setattr(
+        cli_main.runner,
+        "run_single_n",
+        lambda cfg, n, **kwargs: stage_calls.append("run:single"),
+    )
+    monkeypatch.setattr(
+        cli_main.runner,
+        "run_multi",
+        lambda cfg, **kwargs: stage_calls.append("run:multi"),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "measure_sim_times",
+        lambda **kwargs: stage_calls.append("time"),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "watch_game",
+        lambda **kwargs: stage_calls.append("watch"),
+    )
+    monkeypatch.setattr(cli_main.ingest, "run", lambda cfg: stage_calls.append("analyze:ingest"))
+    monkeypatch.setattr(cli_main.curate, "run", lambda cfg: stage_calls.append("analyze:curate"))
+    monkeypatch.setattr(cli_main.combine, "run", lambda cfg: stage_calls.append("analyze:combine"))
+    monkeypatch.setattr(cli_main.metrics, "run", lambda cfg: stage_calls.append("analyze:metrics"))
+    monkeypatch.setattr(
+        cli_main.analysis_pkg,
+        "run_all",
+        lambda cfg, **kwargs: stage_calls.append("analyze:analytics"),
+    )
+    monkeypatch.setattr(
+        cli_main.analysis_pkg,
+        "run_variance",
+        lambda cfg, **kwargs: stage_calls.append("analyze:variance"),
+    )
+    monkeypatch.setattr(
+        cli_main,
+        "_run_preprocess",
+        lambda cfg, **kwargs: stage_calls.append("analyze:preprocess"),
+    )
+    monkeypatch.setattr(
+        cli_main.two_seed_pipeline,
+        "run_pipeline",
+        lambda cfg, **kwargs: stage_calls.append("two-seed-pipeline"),
+    )
+
+    invocations = [
+        ["--config", str(cfg_single), "run"],
+        ["--config", str(cfg_multi), "run"],
+        ["time"],
+        ["watch"],
+        ["--config", str(cfg_single), "analyze", "ingest"],
+        ["--config", str(cfg_single), "analyze", "curate"],
+        ["--config", str(cfg_single), "analyze", "combine"],
+        ["--config", str(cfg_single), "analyze", "metrics"],
+        ["--config", str(cfg_single), "analyze", "preprocess"],
+        ["--config", str(cfg_single), "analyze", "analytics"],
+        ["--config", str(cfg_single), "analyze", "variance"],
+        ["--config", str(cfg_single), "analyze", "pipeline"],
+        ["--config", str(cfg_pair), "analyze", "two-seed-pipeline"],
+        ["--config", str(cfg_pair), "two-seed-pipeline"],
+    ]
+    for argv in invocations:
+        cli_main.main(argv)
+
+    assert stage_calls == [
+        "run:single",
+        "run:multi",
+        "time",
+        "watch",
+        "analyze:ingest",
+        "analyze:curate",
+        "analyze:combine",
+        "analyze:metrics",
+        "analyze:preprocess",
+        "analyze:analytics",
+        "analyze:variance",
+        "analyze:preprocess",
+        "analyze:analytics",
+        "two-seed-pipeline",
+        "two-seed-pipeline",
+    ]
