@@ -21,13 +21,14 @@ def test_main_module_calls_cli(monkeypatch):
     assert called
 
 
-def test_main_module_propagates_cli_failure(monkeypatch):
+@pytest.mark.parametrize("exit_code", [2, 5, 9])
+def test_main_module_propagates_cli_failure_codes(monkeypatch, exit_code):
     def fake_main():
-        raise SystemExit(5)
+        raise SystemExit(exit_code)
 
     monkeypatch.setattr(cli_main, "main", fake_main)
 
     with pytest.raises(SystemExit) as excinfo:
         runpy.run_module("farkle", run_name="__main__")
 
-    assert excinfo.value.code == 5
+    assert excinfo.value.code == exit_code
