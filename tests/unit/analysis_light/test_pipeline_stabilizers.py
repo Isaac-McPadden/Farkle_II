@@ -1,5 +1,6 @@
 # tests/unit/analysis_light/test_pipeline_stabilizers.py
 import datetime as _dt
+import hashlib
 import json
 import logging
 import os
@@ -34,6 +35,16 @@ if TYPE_CHECKING or HAS_UTC:
     from farkle.analysis import combine, curate, ingest, metrics
 else:  # pragma: no cover - tests skipped when UTC unavailable
     combine = curate = ingest = metrics = None  # type: ignore[assignment]
+
+
+def _canonical_schema_hash(n_players: int) -> str:
+    schema = curate.expected_schema_for(n_players)
+    pa_serialize = getattr(curate.pa.ipc, "serialize", None)
+    if pa_serialize is not None:
+        serialized = pa_serialize(schema).to_buffer().to_pybytes()
+    else:
+        serialized = schema.serialize().to_pybytes()
+    return hashlib.sha256(serialized).hexdigest()
 
 
 def test_ingest_golden_dataset(analysis_config, caplog, golden_dataset):
@@ -101,7 +112,9 @@ def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
     assert table.num_rows == len(golden_dataset.dataframe)
     meta = json.loads(manifest.read_text())
     assert meta["row_count"] == len(golden_dataset.dataframe)
-    assert meta["schema_hash"]
+    expected_schema_hash = _canonical_schema_hash(3)
+    assert meta["schema_hash"] == expected_schema_hash
+    assert meta["schema_hash"] == curate._schema_hash(3)
     assert meta.get("compression") == cfg_proto.parquet_codec
     assert "created_at" in meta
 
