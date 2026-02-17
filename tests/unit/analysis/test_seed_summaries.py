@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import pandas as pd
@@ -196,11 +197,142 @@ def test_seed_summaries_rebuilds_missing_meta_mirror(tmp_path: Path) -> None:
 
     meta_long_path = cfg.meta_analysis_dir / "seed_18_summary_long.parquet"
     assert meta_long_path.exists()
-    meta_long_path.unlink()
+
+
+def test_seed_summaries_rebuilds_missing_seed_file_only(tmp_path: Path, monkeypatch) -> None:
+    cfg = _make_cfg(tmp_path)
+    metrics = pd.DataFrame(
+        [
+            {"strategy": "1", "n_players": 2, "games": 10, "wins": 6, "seed": 18},
+            {"strategy": "1", "n_players": 2, "games": 8, "wins": 5, "seed": 19},
+        ]
+    )
+    _write_metrics(cfg, metrics)
+    seed_summaries.run(cfg)
+
+    missing_path = cfg.seed_summaries_dir(2) / "strategy_summary_2p_seed19.parquet"
+    assert missing_path.exists()
+    missing_path.unlink()
+
+    calls: list[Path] = []
+    original_writer = seed_summaries.write_parquet_atomic
+
+    def _record_writer(table, path, codec="snappy"):  # noqa: ARG001
+        calls.append(Path(path))
+        original_writer(table, path)
+
+    monkeypatch.setattr(seed_summaries, "write_parquet_atomic", _record_writer)
+    seed_summaries.run(cfg)
+
+    assert missing_path.exists()
+    assert {p.name for p in calls} == {"strategy_summary_2p_seed19.parquet"}
+
+
+def test_seed_summaries_handles_mixed_schema_across_seeds_and_orders_rows(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    metrics = pd.DataFrame(
+        [
+            {
+                "strategy": "2",
+                "n_players": 2,
+                "seed": 19,
+                "games": 3,
+                "wins": 2,
+                "mean_n_rounds": float("nan"),
+                "mean_farkles": 2.0,
+            },
+            {
+                "strategy": "1",
+                "n_players": 3,
+                "seed": 18,
+                "games": 5,
+                "wins": 3,
+                "mean_n_rounds": 20.0,
+                "mean_farkles": float("nan"),
+            },
+            {
+                "strategy": "1",
+                "n_players": 2,
+                "seed": 19,
+                "games": 7,
+                "wins": 4,
+                "mean_n_rounds": float("nan"),
+                "mean_farkles": 1.0,
+            },
+            {
+                "strategy": "2",
+                "n_players": 3,
+                "seed": 18,
+                "games": 4,
+                "wins": 2,
+                "mean_n_rounds": 16.0,
+                "mean_farkles": float("nan"),
+            },
+        ]
+    )
+    _write_metrics(cfg, metrics)
 
     seed_summaries.run(cfg)
 
-    assert meta_long_path.exists()
+    seed18_long = pd.read_parquet(cfg.seed_summaries_stage_dir / "seed_18_summary_long.parquet")
+    assert seed18_long["players"].tolist() == [3, 3]
+    assert seed18_long["strategy_id"].tolist() == [1, 2]
+    assert seed18_long["turns_mean"].tolist() == pytest.approx([20.0, 16.0])
+    assert seed18_long["farkles_mean"].isna().all()
+
+    seed19_long = pd.read_parquet(cfg.seed_summaries_stage_dir / "seed_19_summary_long.parquet")
+    assert seed19_long["players"].tolist() == [2, 2]
+    assert seed19_long["strategy_id"].tolist() == [1, 2]
+    assert seed19_long["farkles_mean"].tolist() == pytest.approx([1.0, 2.0])
+    assert seed19_long["turns_mean"].isna().all()
+
+
+def test_seed_summaries_zero_game_seed_logs_pooling_warning_and_persists_outputs(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = _make_cfg(tmp_path)
+    cfg.analysis.pooling_weights = "config"
+    cfg.analysis.pooling_weights_by_k = {2: 1.0}
+    metrics = pd.DataFrame(
+        [
+            {
+                "strategy": "10",
+                "n_players": 2,
+                "seed": 31,
+                "games": 0,
+                "wins": 0,
+                "mean_n_rounds": float("nan"),
+            },
+            {
+                "strategy": "11",
+                "n_players": 3,
+                "seed": 31,
+                "games": 0,
+                "wins": 0,
+                "mean_n_rounds": float("nan"),
+            },
+        ]
+    )
+    _write_metrics(cfg, metrics)
+
+    with caplog.at_level(logging.WARNING):
+        seed_summaries.run(cfg)
+
+    warning_records = [
+        rec for rec in caplog.records if "Missing pooling weights for player counts" in rec.message
+    ]
+    assert len(warning_records) == 1
+    assert warning_records[0].missing == [3]
+
+    seed2 = pd.read_parquet(cfg.seed_summaries_dir(2) / "strategy_summary_2p_seed31.parquet")
+    assert seed2["games"].tolist() == [0]
+    assert seed2["win_rate"].tolist() == pytest.approx([0.0])
+    assert seed2["ci_lo"].tolist() == pytest.approx([0.0])
+    assert seed2["ci_hi"].tolist() == pytest.approx([1.0])
+
+    weighted = pd.read_parquet(cfg.seed_summaries_stage_dir / "seed_31_summary_weighted.parquet")
+    assert weighted["strategy_id"].tolist() == [10, 11]
+    assert weighted["pooling_weight_sum"].tolist() == pytest.approx([0.0, 0.0])
 
 
 def test_load_metrics_frame_validates_inputs(tmp_path: Path) -> None:
