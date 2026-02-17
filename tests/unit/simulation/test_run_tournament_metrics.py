@@ -454,3 +454,98 @@ def test_run_tournament_no_metrics_wins_only_checkpoint(
         assert extra is not None
         assert extra["chunk_index"] == idx
         assert extra["wins"] == 2
+
+
+
+def test_run_tournament_metrics_chunk_execution(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    _setup_serial_run(monkeypatch)
+    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
+
+    chunk_calls: list[list[int]] = []
+
+    def fake_process_map(func, iterable, *, initializer=None, initargs=(), **kwargs):
+        if initializer is not None:
+            initializer(*initargs)
+        for item in iterable:
+            chunk_calls.append(list(item[1]))
+            yield func(item)
+
+    monkeypatch.setattr(rt.parallel, "process_map", fake_process_map)
+    monkeypatch.setattr(rt, "_measure_throughput", lambda sample_strategies: 6.0, raising=True)
+
+
+    config = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
+    rt.run_tournament(
+        config=config,
+        global_seed=0,
+        checkpoint_path=tmp_path / "checkpoint.pkl",
+        n_jobs=1,
+        collect_metrics=True,
+        num_shuffles=5,
+    )
+
+    assert chunk_calls == [[0, 1], [2, 3], [4]]
+
+
+def test_run_tournament_metrics_resume_uses_metric_sq_sums_fallback(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _setup_serial_run(monkeypatch)
+    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
+
+    checkpoint_path = tmp_path / "checkpoint.pkl"
+    metric_sums = {label: {"1": 10.0} for label in rt.METRIC_LABELS}
+    metric_sq_sums = {label: {"1": 100.0} for label in rt.METRIC_LABELS}
+    checkpoint_path.write_bytes(
+        pickle.dumps(
+            {
+                "win_totals": {"1": 2},
+                "metric_sums": metric_sums,
+                "metric_sq_sums": metric_sq_sums,
+            }
+        )
+    )
+
+    cfg = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
+    rt.run_tournament(
+        config=cfg,
+        global_seed=0,
+        checkpoint_path=checkpoint_path,
+        n_jobs=1,
+        collect_metrics=True,
+        num_shuffles=1,
+    )
+
+    payload = pickle.loads(checkpoint_path.read_bytes())
+    assert sum(payload["win_totals"].values()) == 3
+    assert payload["metric_sums"]["winning_score"][1] == pytest.approx(10.0)
+    assert payload["metric_square_sums"]["winning_score"][1] == pytest.approx(100.0)
+
+
+def test_run_tournament_metrics_corrupt_checkpoint_payload_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _setup_serial_run(monkeypatch)
+    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
+
+    checkpoint_path = tmp_path / "checkpoint.pkl"
+    checkpoint_path.write_bytes(
+        pickle.dumps(
+            {
+                "win_totals": {"0": 1},
+                "metric_sums": ["bad"],
+                "metric_square_sums": {label: {"0": 1.0} for label in rt.METRIC_LABELS},
+            }
+        )
+    )
+
+    cfg = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
+    with pytest.raises(AttributeError):
+        rt.run_tournament(
+            config=cfg,
+            global_seed=0,
+            checkpoint_path=checkpoint_path,
+            n_jobs=1,
+            collect_metrics=True,
+            num_shuffles=1,
+        )

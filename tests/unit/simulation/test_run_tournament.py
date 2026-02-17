@@ -8,8 +8,10 @@ We monkey-patch the heavy helpers so no real games are played.
 from __future__ import annotations
 
 import logging
+import pickle
 import types  # noqa: F401
 from collections import Counter
+from pathlib import Path
 
 import numpy as np  # noqa: F401 | Potentially imports something that needs it
 import pytest
@@ -94,3 +96,93 @@ def test_run_chunk_logs_and_propagates(monkeypatch, caplog) -> None:
     logged = [rec for rec in caplog.records if "Shuffle failed" in rec.getMessage()][0]
     assert logged.stage == "simulation"
     assert logged.shuffle_seed == 123
+
+
+def test_coerce_counter_and_metric_sums_helpers() -> None:
+    wins = rt._coerce_counter({"1": "2", "A": 3})
+    assert wins == Counter({1: 2, "A": 3})
+
+    sums = rt._coerce_metric_sums({"winning_score": {"5": "4.5"}})
+    assert sums is not None
+    assert sums["winning_score"][5] == pytest.approx(4.5)
+    assert sums["winner_rolls"] == {}
+
+
+def test_coerce_counter_rejects_invalid_payload() -> None:
+    with pytest.raises(TypeError, match="Unexpected win_totals payload type"):
+        rt._coerce_counter([("A", 1)])
+
+
+def test_measure_throughput_uses_spawned_seeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    observed: list[int] = []
+
+    monkeypatch.setattr(rt.urandom, "spawn_seeds", lambda n, seed=0: [11, 22, 33], raising=True)
+    monkeypatch.setattr(
+        rt,
+        "_play_game",
+        lambda seed, strategies: observed.append(seed) or {"winner": "p0"},
+        raising=True,
+    )
+
+    perf_state = {"idx": 0, "vals": [10.0, 10.5]}
+
+    def fake_perf() -> float:
+        value = perf_state["vals"][perf_state["idx"]]
+        perf_state["idx"] += 1
+        return value
+
+    monkeypatch.setattr(rt.time, "perf_counter", fake_perf, raising=True)
+
+    value = rt._measure_throughput(_mini_strats(2), sample_games=3, seed=7)
+    assert value == pytest.approx(6.0)
+    assert observed == [11, 22, 33]
+
+
+def test_manifest_int_set_parses_valid_values(tmp_path: Path) -> None:
+    manifest_path = tmp_path / "manifest.jsonl"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                '{"shuffle_seed": "5"}',
+                '{"shuffle_seed": "bad"}',
+                '{"shuffle_seed": 3}',
+                '{"other": 9}',
+            ]
+        )
+        + "\n"
+    )
+
+    assert rt._manifest_int_set(manifest_path, "shuffle_seed") == {3, 5}
+
+
+def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    strats = _mini_strats(4)
+    monkeypatch.setattr(rt, "generate_strategy_grid", lambda *a, **k: (strats, None), raising=True)
+    monkeypatch.setattr(rt, "_measure_throughput", lambda sample: 8.0, raising=True)
+    monkeypatch.setattr(rt.urandom, "spawn_seeds", lambda n, seed=0: list(range(n)), raising=True)
+
+    chunk_calls: list[list[int]] = []
+
+    def fake_process_map(func, iterable, *, initializer=None, initargs=(), **kwargs):
+        if initializer is not None:
+            initializer(*initargs)
+        for item in iterable:
+            chunk_calls.append(list(item[1]))
+            yield func(item)
+
+    monkeypatch.setattr(rt.parallel, "process_map", fake_process_map)
+    monkeypatch.setattr(rt, "_play_shuffle", lambda seed: Counter({f"W{seed}": 1}), raising=True)
+
+    cfg = rt.TournamentConfig(n_players=2, num_shuffles=5, desired_sec_per_chunk=1, ckpt_every_sec=999)
+    ckpt = tmp_path / "checkpoint.pkl"
+    rt.run_tournament(config=cfg, checkpoint_path=ckpt, n_jobs=1, collect_metrics=False)
+
+    assert chunk_calls == [[0, 1], [2, 3], [4]]
+    payload = pickle.loads(ckpt.read_bytes())
+    assert payload["win_totals"] == Counter({"W0": 1, "W1": 1, "W2": 1, "W3": 1, "W4": 1})
+
+    ckpt.write_bytes(pickle.dumps(123))
+    with pytest.raises(AttributeError):
+        rt.run_tournament(config=cfg, checkpoint_path=ckpt, n_jobs=1, collect_metrics=False)
