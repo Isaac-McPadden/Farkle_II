@@ -8,6 +8,7 @@ import os
 import warnings
 from pathlib import Path
 
+import networkx as nx
 import pandas as pd
 import pytest
 
@@ -195,6 +196,83 @@ def test_build_significant_graph_allows_cycles_in_tiers() -> None:
     graph = h2h_analysis.build_significant_graph(df)
     tiers = h2h_analysis.derive_sig_ranking(graph)
     assert tiers == [["A", "B"]]
+
+
+def test_topological_order_dag_disconnected_is_deterministic() -> None:
+    graph = nx.DiGraph()
+    graph.add_edges_from([("A", "C"), ("B", "C")])
+    graph.add_node("D")
+
+    assert h2h_analysis._topological_order(graph) == ["A", "B", "C", "D"]
+
+
+def test_topological_order_raises_on_cycle() -> None:
+    graph = nx.DiGraph()
+    graph.add_edges_from([("A", "B"), ("B", "A")])
+
+    with pytest.raises(RuntimeError, match="Ranking incomplete"):
+        h2h_analysis._topological_order(graph)
+
+
+def test_insert_sorted_covers_front_middle_and_end() -> None:
+    items = [2, 4]
+
+    h2h_analysis._insert_sorted(items, 1, key_fn=lambda value: value)
+    h2h_analysis._insert_sorted(items, 3, key_fn=lambda value: value)
+    h2h_analysis._insert_sorted(items, 5, key_fn=lambda value: value)
+
+    assert items == [1, 2, 3, 4, 5]
+
+
+def test_derive_sig_tiers_condenses_cycle() -> None:
+    graph = nx.DiGraph()
+    graph.add_edges_from([("A", "B"), ("B", "A"), ("B", "C")])
+
+    tiers, condensation, scc_tier_nodes = h2h_analysis._derive_sig_tiers(graph)
+
+    assert tiers == [["A", "B"], ["C"]]
+    assert condensation.number_of_nodes() == 2
+    assert len(scc_tier_nodes) == 2
+
+
+def test_derive_sig_tiers_dag_with_disconnected_components() -> None:
+    graph = nx.DiGraph()
+    graph.add_edges_from([("A", "B"), ("C", "D")])
+    graph.add_node("E")
+
+    tiers, condensation, dag_tier_nodes = h2h_analysis._derive_sig_tiers(graph)
+
+    assert tiers == [["A"], ["B"], ["C"], ["D"], ["E"]]
+    assert condensation.number_of_nodes() == 5
+    assert len(dag_tier_nodes) == 5
+
+
+def test_holm_and_tiers_are_stable_with_equal_p_and_ties() -> None:
+    df_pairs = pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "wins_a": 5, "wins_b": 5, "games": 10},
+            {"a": "C", "b": "D", "wins_a": 9, "wins_b": 1, "games": 10},
+            {"a": "E", "b": "F", "wins_a": 9, "wins_b": 1, "games": 10},
+        ]
+    )
+    shuffled = df_pairs.iloc[[2, 0, 1]].reset_index(drop=True)
+
+    decisions = h2h_analysis.holm_bonferroni(df_pairs, alpha=0.05, tie_policy="neutral_edge")
+    decisions_shuffled = h2h_analysis.holm_bonferroni(
+        shuffled, alpha=0.05, tie_policy="neutral_edge"
+    )
+
+    normalized = decisions.sort_values(["a", "b", "dir"]).reset_index(drop=True)
+    normalized_shuffled = decisions_shuffled.sort_values(["a", "b", "dir"]).reset_index(drop=True)
+    pd.testing.assert_frame_equal(normalized, normalized_shuffled)
+
+    tiers = h2h_analysis.derive_sig_ranking(
+        h2h_analysis.build_significant_graph(decisions, tie_policy="neutral_edge")
+    )
+    tiers_shuffled = h2h_analysis.derive_sig_ranking(
+        h2h_analysis.build_significant_graph(decisions_shuffled, tie_policy="neutral_edge")
+    )
+    assert tiers == tiers_shuffled
 
 
 def test_write_graph_json_emits_payload(tmp_path: Path) -> None:
