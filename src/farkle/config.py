@@ -1561,6 +1561,8 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
     pooled_requested = False
     if "sim" in data:
         sim_section = data["sim"]
+        if not isinstance(sim_section, Mapping):
+            raise TypeError("Config section 'sim' must be a mapping")
         seed_provided = "seed" in sim_section
         seed_list_provided = "seed_list" in sim_section
         seed_pair_provided = "seed_pair" in sim_section

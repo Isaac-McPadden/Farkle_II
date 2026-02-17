@@ -8,7 +8,15 @@ import pytest
 import yaml
 
 from farkle.analysis.stage_registry import StageDefinition, StageLayout, StagePlacement
-from farkle.config import AppConfig, IOConfig, apply_dot_overrides, load_app_config
+from farkle.config import (
+    AppConfig,
+    IOConfig,
+    _annotation_contains,
+    _coerce,
+    _deep_merge,
+    apply_dot_overrides,
+    load_app_config,
+)
 from farkle.utils.types import normalize_compression
 
 
@@ -132,6 +140,50 @@ def test_load_app_config_rejects_non_mapping(tmp_path: Path) -> None:
         load_app_config(config)
 
 
+@pytest.mark.parametrize(
+    ("payload", "error", "message"),
+    [
+        ({"sim": "bad-shape"}, TypeError, "Config section 'sim' must be a mapping"),
+        (
+            {"sim": {"per_n": [1, 2]}},
+            TypeError,
+            "sim.per_n must be a mapping of per-player overrides",
+        ),
+    ],
+)
+def test_load_app_config_rejects_invalid_section_shapes(
+    write_yaml, payload, error, message
+) -> None:
+    config = write_yaml("invalid_shapes.yaml", payload)
+
+    with pytest.raises(error, match=message):
+        load_app_config(config)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        (
+            {"simm": {"seed": 1}},
+            "Unknown top-level config section\\(s\\): 'simm' \\(did you mean 'sim'\\?\\)",
+        ),
+        (
+            {"sim": {"n_playerz": [5]}},
+            "Unknown key\\(s\\) in config section 'sim': 'n_playerz' \\(did you mean 'n_players_list'\\?\\)",
+        ),
+        (
+            {"sim": {"per_n": {5: {"num_shufflez": 5}}}},
+            "Unknown key\\(s\\) in config section sim.per_n\\[5\\]: 'num_shufflez' \\(did you mean 'num_shuffles'\\?\\)",
+        ),
+    ],
+)
+def test_load_app_config_reports_unknown_keys(write_yaml, payload, message: str) -> None:
+    config = write_yaml("unknown_keys.yaml", payload)
+
+    with pytest.raises(ValueError, match=message):
+        load_app_config(config)
+
+
 def test_apply_dot_overrides_coerces_values() -> None:
     cfg = AppConfig()
 
@@ -165,6 +217,149 @@ def test_apply_dot_overrides_unknown_option() -> None:
 
     with pytest.raises(AttributeError):
         apply_dot_overrides(cfg, ["sim.unknown=1"])
+
+
+@pytest.mark.parametrize(
+    ("override", "attribute", "expected"),
+    [
+        ("analysis.run_report=ON", ("analysis", "run_report"), True),
+        ("sim.seed=42", ("sim", "seed"), 42),
+        ("io.results_dir_prefix=tmp/output_seed_9", ("io", "results_dir_prefix"), Path("tmp/output")),
+        
+    ],
+)
+def test_apply_dot_overrides_edge_case_coercions(override, attribute, expected) -> None:
+    cfg = AppConfig()
+
+    apply_dot_overrides(cfg, [override])
+
+    section_name, option = attribute
+    assert getattr(getattr(cfg, section_name), option) == expected
+
+
+
+
+def test_apply_dot_overrides_list_coercion_edge_case_raises_value_error() -> None:
+    cfg = AppConfig()
+
+    with pytest.raises(ValueError, match=r"invalid literal for int\(\)"):
+        apply_dot_overrides(cfg, ["sim.seed_list=1,2"])
+
+def test_deep_merge_recursively_overrides_only_overlay_keys() -> None:
+    merged = _deep_merge(
+        {"sim": {"seed": 1, "per_n": {5: {"num_shuffles": 10}}}, "analysis": {"log_level": "INFO"}},
+        {"sim": {"per_n": {5: {"seed": 3}}}, "analysis": {"run_report": False}},
+    )
+
+    assert merged == {
+        "sim": {"seed": 1, "per_n": {5: {"num_shuffles": 10, "seed": 3}}},
+        "analysis": {"log_level": "INFO", "run_report": False},
+    }
+
+
+@pytest.mark.parametrize(
+    ("value", "current", "annotation", "expected"),
+    [
+        ("true", False, bool, True),
+        ("11", 0, int, 11),
+        ("5.5", 0.0, float, 5.5),
+        ("tmp/results", Path("results"), Path, Path("tmp/results")),
+        
+    ],
+)
+def test_coerce_type_behavior(value, current, annotation, expected) -> None:
+    assert _coerce(value, current, annotation) == expected
+
+
+
+
+def test_coerce_list_annotation_edge_case_raises_value_error() -> None:
+    with pytest.raises(ValueError, match=r"invalid literal for int\(\)"):
+        _coerce("1,2,3", None, list[int])
+
+def test_coerce_rejects_invalid_booleans() -> None:
+    with pytest.raises(ValueError, match="Cannot parse boolean value"):
+        _coerce("not_bool", False, bool)
+
+
+@pytest.mark.parametrize(
+    ("annotation", "target", "expected"),
+    [
+        (Path | None, Path, True),
+        (list[int] | None, int, True),
+        (tuple[str, ...], int, False),
+        (None, bool, False),
+    ],
+)
+def test_annotation_contains(annotation, target, expected: bool) -> None:
+    assert _annotation_contains(annotation, target) is expected
+
+
+@pytest.mark.parametrize(
+    ("payload", "seed_list_len", "message"),
+    [
+        (
+            {"sim": {"seed": 9, "seed_pair": [8, 9]}},
+            None,
+            "sim.seed must match seed_pair\\[0\\] when both are set",
+        ),
+        (
+            {"sim": {"seed_list": [1, 2], "seed_pair": [1, 3]}},
+            None,
+            "load_app_config: sim.seed_list and sim.seed_pair must match when both are set",
+        ),
+        (
+            {"sim": {"seed_list": [1, 2]}},
+            1,
+            "load_app_config: sim.seed_list must contain exactly 1 seeds, got \\[1, 2\\]",
+        ),
+    ],
+)
+def test_load_app_config_seed_source_conflicts(write_yaml, payload, seed_list_len, message) -> None:
+    config = write_yaml("seed_conflicts.yaml", payload)
+
+    with pytest.raises(ValueError, match=message):
+        load_app_config(config, seed_list_len=seed_list_len)
+
+
+def test_load_app_config_seed_list_normalization(write_yaml) -> None:
+    config = write_yaml("seed_normalization.yaml", {"sim": {"seed_list": ("8", "9")}})
+
+    cfg = load_app_config(config, seed_list_len=2)
+
+    assert cfg.sim.seed_list == [8, 9]
+    assert cfg.sim.seed == 8
+    assert cfg.sim.seed_pair == (8, 9)
+
+
+def test_load_app_config_overlay_and_dot_override_round_trip_is_deterministic(write_yaml) -> None:
+    base = write_yaml(
+        "round_trip_base.yaml",
+        {
+            "io": {"results_dir_prefix": "results"},
+            "sim": {"seed": 3, "n_players_list": [5, 7]},
+            "analysis": {"log_level": "INFO", "run_report": False},
+        },
+    )
+    overlay = write_yaml(
+        "round_trip_overlay.yaml",
+        {
+            "io.analysis_subdir": "custom",
+            "sim": {"seed_list": [3], "num_shuffles": 50},
+            "analysis": {"run_report": True},
+        },
+    )
+    overrides = [
+        "analysis.log_level=DEBUG",
+        "sim.seed=3",
+        "io.results_dir_prefix=data/results_seed_3",
+    ]
+
+    cfg_a = apply_dot_overrides(load_app_config(base, overlay), overrides)
+    cfg_b = apply_dot_overrides(load_app_config(base, overlay), overrides)
+
+    assert cfg_a == cfg_b
+    assert cfg_a.analysis_dir == Path("data") / "results_seed_3" / "custom"
 
 
 def test_curated_parquet_falls_back_without_curate_stage(tmp_path: Path) -> None:
