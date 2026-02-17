@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import pickle
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
@@ -216,6 +217,106 @@ def test_run_single_n_force_overwrite_and_resume_paths(
     assert runner.run_single_n(cfg, 2, force=False) > 0
 
 
+@pytest.mark.parametrize(
+    ("case", "force", "existing_outputs", "resume_side_effect", "expect_games", "expect_error"),
+    [
+        pytest.param("force", True, False, None, 3, None, id="force-cleanup"),
+        pytest.param("resume-valid", False, True, None, 3, None, id="resume-valid"),
+        pytest.param(
+            "resume-invalid",
+            False,
+            True,
+            ValueError("resume metadata mismatch"),
+            None,
+            ValueError,
+            id="resume-invalid",
+        ),
+    ],
+)
+def test_run_single_n_branch_table(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+    force: bool,
+    existing_outputs: bool,
+    resume_side_effect: Exception | None,
+    expect_games: int | None,
+    expect_error: type[Exception] | None,
+) -> None:
+    cfg = _cfg(tmp_path, row_dir=Path("rows"), metric_chunk_dir=Path("metrics"), num_shuffles=3)
+    n_players = 2
+    n_dir = cfg.results_root / "2_players"
+    n_dir.mkdir(parents=True, exist_ok=True)
+    stale_done = runner.simulation_done_path(cfg, n_players)
+    stale_done.parent.mkdir(parents=True, exist_ok=True)
+    stale_done.write_text('{"stale": true}')
+
+    strategies = [ThresholdStrategy(300, 3), ThresholdStrategy(500, 2)]
+    monkeypatch.setattr(runner, "_resolve_strategies", lambda cfg, strategies: (strategies or [], 2, True))
+    monkeypatch.setattr(runner, "_compute_num_shuffles_from_config", lambda *_args, **_kwargs: 3)
+    monkeypatch.setattr(runner, "build_strategy_manifest", lambda _strategies: _manifest_df())
+
+    calls: dict[str, int] = {"worker": 0}
+
+    def fake_run_tournament(**kwargs: object) -> None:  # noqa: ANN001
+        calls["worker"] += 1
+        ckpt = Path(kwargs["checkpoint_path"])
+        meta = kwargs["checkpoint_metadata"]
+        assert isinstance(meta, dict)
+        ckpt.write_bytes(
+            pickle.dumps(
+                {
+                    "win_totals": {"s0": 1, "s1": 0},
+                    "meta": {
+                        "n_players": kwargs["n_players"],
+                        "num_shuffles": kwargs["num_shuffles"],
+                        "global_seed": kwargs["global_seed"],
+                        "n_strategies": len(kwargs["strategies"]),
+                        "strategy_manifest_sha": meta["strategy_manifest_sha"],
+                    },
+                }
+            )
+        )
+
+    monkeypatch.setattr(runner.tournament_mod, "run_tournament", fake_run_tournament)
+
+    purge_mock = MagicMock(side_effect=runner._purge_simulation_outputs)
+    has_outputs_mock = MagicMock(return_value=existing_outputs)
+    validate_mock = MagicMock(side_effect=resume_side_effect)
+    monkeypatch.setattr(runner, "_purge_simulation_outputs", purge_mock)
+    monkeypatch.setattr(runner, "_has_existing_outputs", has_outputs_mock)
+    monkeypatch.setattr(runner, "_validate_resume_outputs", validate_mock)
+
+    if expect_error is not None:
+        with pytest.raises(expect_error):
+            runner.run_single_n(cfg, n_players, strategies=strategies, force=force)
+        assert calls["worker"] == 0
+    else:
+        assert runner.run_single_n(cfg, n_players, strategies=strategies, force=force) == expect_games
+        assert calls["worker"] == 1
+        assert runner.simulation_is_complete(cfg, n_players)
+
+    assert purge_mock.call_count == (1 if force else 0), case
+    assert has_outputs_mock.call_count == (0 if force else 1), case
+    assert validate_mock.call_count == (1 if (not force and existing_outputs) else 0), case
+
+
+def test_run_single_n_cleanup_purges_done_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _cfg(tmp_path, row_dir=Path("rows"), metric_chunk_dir=Path("metrics"), num_shuffles=1)
+    _patch_tournament_writer(monkeypatch)
+
+    n_players = 2
+    n_dir = cfg.results_root / "2_players"
+    n_dir.mkdir(parents=True, exist_ok=True)
+    stale_done = n_dir / "simulation.done.json"
+    stale_done.write_text('{"stale": true}')
+
+    assert runner.run_single_n(cfg, n_players, force=True) > 0
+    payload = json.loads(stale_done.read_text())
+    assert payload["n_players"] == n_players
+    assert payload["num_shuffles"] == 1
+
+
 def test_run_single_n_resume_invalid_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = _cfg(tmp_path, row_dir=Path("rows"), num_shuffles=1)
     _patch_tournament_writer(monkeypatch)
@@ -250,3 +351,64 @@ def test_run_multi_invalid_counts_warns_and_returns_empty(
 
     assert out == {}
     assert any("No valid player counts remain" in rec.getMessage() for rec in caplog.records)
+
+
+def test_run_multi_filters_counts_and_calls_worker_once_per_valid(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path, n_players_list=[1, 2, 3, 4, 6])
+
+    monkeypatch.setattr(
+        runner,
+        "generate_strategy_grid",
+        lambda **_: ([ThresholdStrategy(300, 3) for _ in range(6)], None),
+    )
+
+    worker_calls: list[tuple[int, bool]] = []
+
+    def fake_run_single_n(
+        cfg: AppConfig,
+        n: int,
+        strategies: list[ThresholdStrategy] | None = None,
+        *,
+        force: bool = False,
+    ) -> int:
+        assert strategies is not None
+        worker_calls.append((n, force))
+        return 10 * n
+
+    monkeypatch.setattr(runner, "run_single_n", fake_run_single_n)
+    out = runner.run_multi(cfg, force=True)
+
+    assert out == {1: 10, 2: 20, 3: 30, 6: 60}
+    assert worker_calls == [(1, True), (2, True), (3, True), (6, True)]
+
+
+def test_filter_player_counts_zero_grid_allows_positive_counts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = _cfg(tmp_path, smart_five_opts=[False], smart_one_opts=[True])
+    monkeypatch.setattr(runner, "experiment_size", lambda **_: 0)
+
+    valid, invalid, grid_size, source = runner._filter_player_counts(cfg, [0, -2, 1, 2, 3])
+
+    assert valid == [1, 2, 3]
+    assert invalid == [0, -2]
+    assert grid_size == 0
+    assert source == "experiment_size"
+
+
+def test_compute_num_shuffles_invalid_power_config_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path, recompute_num_shuffles=True)
+
+    def fail_power(**_: object) -> int:
+        raise ValueError("invalid power configuration")
+
+    monkeypatch.setattr(runner, "games_for_power_from_design", fail_power)
+
+    with pytest.raises(ValueError, match="invalid power configuration"):
+        runner._compute_num_shuffles_from_config(cfg, n_strategies=8, n_players=2)
