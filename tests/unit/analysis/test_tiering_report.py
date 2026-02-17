@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from farkle.analysis import tiering_report
 from farkle.config import AppConfig
@@ -198,3 +199,142 @@ def test_write_outputs_serializes_expected_columns_and_sorted_rows(tmp_path: Pat
     assert summary["total_strategies"] == 3
     assert summary["disagreements"] == 2
     assert summary["trueskill_z_star"] == 1.645
+
+
+def test_build_frequentist_tiers_handles_ties_and_no_significant_differences() -> None:
+    tied = pd.Series([0.72, 0.72, 0.70], index=[30, 10, 20], name="weighted")
+    tied_out = tiering_report._build_frequentist_tiers(tied, mdd=0.01)
+
+    assert tied_out["strategy"].tolist() == [30, 10, 20]
+    assert tied_out["mdd_tier"].tolist() == [1, 1, 2]
+
+    # Large MDD means all pairwise differences are practically insignificant.
+    no_diff = pd.Series([0.80, 0.77, 0.74], index=[1, 2, 3], name="weighted")
+    no_diff_out = tiering_report._build_frequentist_tiers(no_diff, mdd=0.25)
+    assert no_diff_out["mdd_tier"].tolist() == [1, 1, 1]
+
+
+def test_build_report_stable_with_tier_ties_and_missing_ts_entries() -> None:
+    freq_df = pd.DataFrame(
+        [
+            {"strategy": 5, "win_rate": 0.70, "mdd_tier": 1},
+            {"strategy": 1, "win_rate": 0.70, "mdd_tier": 1},
+            {"strategy": 9, "win_rate": 0.60, "mdd_tier": 2},
+        ]
+    )
+
+    report = tiering_report._build_report(freq_df, ts_tiers={5: 1, 9: 2})
+
+    # Preserves frequentist row order and fills missing TS tiers deterministically.
+    assert report["strategy"].tolist() == [1, 5, 9]
+    assert report["trueskill_tier"].tolist() == [3, 1, 2]
+    assert report["delta_tier"].tolist() == [-2, 0, 0]
+    assert report["in_mdd_top"].tolist() == [True, True, False]
+    assert report["in_ts_top"].tolist() == [False, True, False]
+
+
+def test_write_frequentist_scores_writes_parquet_for_full_and_partial_inputs(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    full_tiers = pd.DataFrame(
+        [
+            {"strategy": 1, "win_rate": 0.7, "mdd_tier": 1},
+            {"strategy": 2, "win_rate": 0.5, "mdd_tier": 2},
+        ]
+    )
+    winrates = pd.Series({1: 0.7, 2: 0.5}, name="weighted")
+    full_per_k = pd.DataFrame(
+        [
+            {"strategy": 1, "n_players": 2, "games": 10.0, "win_rate": 0.7},
+            {"strategy": 2, "n_players": 2, "games": 12.0, "win_rate": 0.5},
+        ]
+    )
+
+    tiering_report._write_frequentist_scores(
+        cfg,
+        full_tiers,
+        winrates,
+        full_per_k,
+        weights_by_k={2: 1.0},
+    )
+
+    score_path = cfg.tiering_stage_dir / "frequentist_scores_k_weighted.parquet"
+    provenance_path = cfg.tiering_stage_dir / "tiering_k_weighted_provenance.json"
+    written = pd.read_parquet(score_path).sort_values(["players", "strategy"]).reset_index(drop=True)
+    assert written.columns.tolist() == ["strategy", "players", "win_rate", "tier", "mdd_tier"]
+    assert written["players"].tolist() == [0, 0, 2, 2]
+    assert written["tier"].tolist() == [1, 2, 1, 2]
+
+    provenance = json.loads(provenance_path.read_text())
+    assert provenance["weight_source"] == "config:tiering_weights_by_k"
+    assert provenance["normalized_weights_by_k"] == {"2": 1.0}
+
+    # Re-run with a partial per-k frame (missing optional columns like games) and no explicit weights.
+    partial_per_k = pd.DataFrame(
+        [
+            {"strategy": 1, "n_players": 2, "win_rate": 0.7},
+            {"strategy": 2, "n_players": 3, "win_rate": 0.5},
+        ]
+    )
+    tiering_report._write_frequentist_scores(
+        cfg,
+        full_tiers,
+        winrates,
+        partial_per_k,
+        weights_by_k=None,
+    )
+    uniform_provenance = json.loads(provenance_path.read_text())
+    assert uniform_provenance["weight_source"] == "uniform_by_k"
+    assert uniform_provenance["normalized_weights_by_k"] == {"2": 0.5, "3": 0.5}
+    assert "effective_sample_sizes_games_by_k" in uniform_provenance
+
+
+def test_tiering_artifact_preserves_existing_stage_output_over_legacy(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    stage = cfg.tiering_stage_dir / "tiers.json"
+    legacy = cfg.analysis_dir / "tiers.json"
+    stage.write_text('{"source": "stage"}')
+    legacy.write_text('{"source": "legacy"}')
+
+    resolved = tiering_report._tiering_artifact(cfg, "tiers.json")
+
+    # Existing stage artifact should not be replaced by legacy output.
+    assert resolved == stage
+    assert json.loads(stage.read_text())["source"] == "stage"
+
+
+def test_load_isolated_metrics_logs_warning_for_missing_and_partial_inputs(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cfg = _cfg(tmp_path)
+    inputs = tiering_report.TieringInputs(seeds=[1, 2], player_counts=[2, 3], weights_by_k=None, z_star=1.645, min_gap=None)
+
+    seed1_root = tmp_path / "results" / "run_seed_1"
+    seed1_root.mkdir(parents=True)
+
+    def _results_dir(_cfg: AppConfig, seed: int) -> Path:
+        if seed == 1:
+            return seed1_root
+        raise FileNotFoundError("missing")
+
+    monkeypatch.setattr(tiering_report, "_results_dir_for_seed", _results_dir)
+    monkeypatch.setattr(tiering_report, "prepare_seed_config", lambda cfg, **_k: cfg)
+
+    p2 = tmp_path / "seed1_2p.parquet"
+    pd.DataFrame([{"strategy": 1, "n_players": 2, "games": 10, "wins": 6, "win_rate": 0.6}]).to_parquet(p2)
+
+    def _build(_cfg: AppConfig, k: int) -> Path:
+        if k == 2:
+            return p2
+        raise FileNotFoundError("missing 3p")
+
+    monkeypatch.setattr(tiering_report, "build_isolated_metrics", _build)
+
+    with caplog.at_level("WARNING"):
+        out = tiering_report._load_isolated_metrics(cfg, inputs)
+
+    assert out.shape[0] == 1
+    assert set(out.columns) >= {"strategy", "n_players", "games", "wins", "win_rate", "seed"}
+    assert "Skipping seed: results directory not found" in caplog.text
+    assert "Missing isolated metrics" in caplog.text

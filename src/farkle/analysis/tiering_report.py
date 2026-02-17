@@ -338,9 +338,12 @@ def _write_frequentist_scores(
             for k in sorted(winrates_by_players["n_players"].unique())
         }
 
-    effective_games_raw = (
-        winrates_by_players.groupby("n_players")["games"].sum().sort_index()
-    )
+    if "games" in winrates_by_players.columns:
+        effective_games_raw = (
+            winrates_by_players.groupby("n_players")["games"].sum().sort_index()
+        )
+    else:
+        effective_games_raw = pd.Series(dtype="float64")
     effective_games: dict[int | Hashable, float] = {}
     for k_raw_hash, games in effective_games_raw.items():
         k_raw_int = cast(int, k_raw_hash)
