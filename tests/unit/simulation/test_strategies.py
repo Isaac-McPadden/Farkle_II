@@ -8,11 +8,19 @@ import pytest
 from farkle.simulation.strategies import (
     FavorDiceOrScore,
     StopAtStrategy,
+    StrategyGridOptions,
     ThresholdStrategy,
+    _build_strategy_encoder_cached,
+    _parse_strategy_flags,
     _sample_favor_score,
     build_stop_at_strategy,
+    build_strategy_encoder,
+    coerce_strategy_ids,
+    decode_strategy_id,
     load_farkle_results,
+    normalize_strategy_ids,
     parse_strategy,
+    parse_strategy_identifier,
     parse_strategy_for_df,
     random_threshold_strategy,
 )
@@ -253,6 +261,21 @@ def test_parse_strategy_round_trip_str():
     assert str(parse_strategy(s)) == s
 
 
+@pytest.mark.parametrize(
+    "strategy_str",
+    [
+        "Strat(200,0)[SD][FOFS][AND][HR]",
+        "Strat(250,1)[S-][F-FS][OR][--]",
+        "Strat(300,2)[-D][--FD][OR][H-]",
+        "Strat(350,3)[--][--FS][OR][-R]",
+    ],
+)
+def test_parse_strategy_flag_permutations_round_trip(strategy_str):
+    parsed = parse_strategy(strategy_str)
+    reparsed = parse_strategy(str(parsed))
+    assert reparsed == parsed
+
+
 def test_entry_gate_requires_rolling():
     strat = ThresholdStrategy(score_threshold=300, dice_threshold=2)
     assert strat.decide(
@@ -293,6 +316,20 @@ def test_entry_gate_requires_rolling():
 def test_parse_strategy_invalid(bad_str):
     with pytest.raises(ValueError):
         parse_strategy(bad_str)
+
+
+@pytest.mark.parametrize(
+    "bad_str",
+    [
+        "Strat(300,2)[SD][FOXP][AND][HR]",
+        "Strat(300,2)[SD][FOFA][AND][HR]",
+        "Strat(300,2)[SD][FOFS][XOR][HR]",
+        "Strat(300,2)[SD][FOFS][AND][HX]",
+    ],
+)
+def test_parse_strategy_invalid_flag_tokens(bad_str):
+    with pytest.raises(ValueError):
+        _parse_strategy_flags(bad_str)
 
 
 def test_parse_strategy_for_df():  # noqa: ARG001
@@ -339,6 +376,126 @@ def test_sample_favor_score_deterministic():
     expected_ff = rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
     rng = random.Random(0)
     assert _sample_favor_score(False, False, rng) is expected_ff
+
+
+class _DeterministicRng:
+    def __init__(self, *, choices, randrange_value=350, randint_value=2):
+        self._choices = list(choices)
+        self.randrange_value = randrange_value
+        self.randint_value = randint_value
+
+    def choice(self, options):
+        value = self._choices.pop(0)
+        assert value in options
+        return value
+
+    def randrange(self, *_args):
+        return self.randrange_value
+
+    def randint(self, *_args):
+        return self.randint_value
+
+
+def test_sample_favor_score_branch_rng_choice():
+    rng = _DeterministicRng(choices=[FavorDiceOrScore.DICE])
+    assert _sample_favor_score(True, True, rng) is FavorDiceOrScore.DICE
+
+    rng = _DeterministicRng(choices=[FavorDiceOrScore.SCORE])
+    assert _sample_favor_score(False, False, rng) is FavorDiceOrScore.SCORE
+
+
+def test_random_threshold_strategy_with_deterministic_rng():
+    rng = _DeterministicRng(
+        choices=[True, True, True, True, False, FavorDiceOrScore.DICE],
+        randrange_value=500,
+        randint_value=4,
+    )
+    strategy = random_threshold_strategy(rng)
+
+    assert strategy.smart_five is True
+    assert strategy.smart_one is True
+    assert strategy.consider_score is True
+    assert strategy.consider_dice is True
+    assert strategy.require_both is False
+    assert strategy.favor_dice_or_score is FavorDiceOrScore.DICE
+    assert strategy.score_threshold == 500
+    assert strategy.dice_threshold == 4
+
+
+def test_build_strategy_encoder_cached_paths_and_decode_failure():
+    options = StrategyGridOptions.from_inputs(
+        score_thresholds=(300,),
+        dice_thresholds=(2,),
+        smart_five_opts=(True,),
+        smart_one_opts=(True,),
+        consider_score_opts=(True,),
+        consider_dice_opts=(True,),
+        auto_hot_dice_opts=(False,),
+        run_up_score_opts=(False,),
+    )
+    _build_strategy_encoder_cached.cache_clear()
+
+    encoder_first = _build_strategy_encoder_cached(options)
+    encoder_cached = _build_strategy_encoder_cached(options)
+    encoder_public = build_strategy_encoder(
+        score_thresholds=(300,),
+        dice_thresholds=(2,),
+        smart_five_opts=(True,),
+        smart_one_opts=(True,),
+        consider_score_opts=(True,),
+        consider_dice_opts=(True,),
+        auto_hot_dice_opts=(False,),
+        run_up_score_opts=(False,),
+    )
+
+    assert encoder_first is encoder_cached
+    assert encoder_first is encoder_public
+    assert len(encoder_first.tuples) == 4
+
+    with pytest.raises(IndexError):
+        decode_strategy_id(99, encoder_first)
+
+
+def test_strategy_id_normalization_and_coercion_helpers():
+    series = pd.Series(["1", "02", "foo", None, 7])
+
+    normalized = normalize_strategy_ids(series)
+    assert normalized.tolist() == [1, 2, pd.NA, pd.NA, 7]
+
+    coerced = coerce_strategy_ids(series)
+    assert coerced.tolist() == [1, 2, "foo", None, 7]
+
+
+def test_strategy_id_normalization_decimal_failure_mode():
+    series = pd.Series(["1", "3.5"])
+
+    with pytest.raises(TypeError):
+        normalize_strategy_ids(series)
+
+    with pytest.raises(TypeError):
+        coerce_strategy_ids(series)
+
+
+def test_parse_strategy_identifier_decode_failures():
+    encoder = build_strategy_encoder(
+        score_thresholds=(300,),
+        dice_thresholds=(2,),
+        smart_five_opts=(True,),
+        smart_one_opts=(True,),
+        consider_score_opts=(True,),
+        consider_dice_opts=(True,),
+        auto_hot_dice_opts=(False,),
+        run_up_score_opts=(False,),
+    )
+
+    with pytest.raises(IndexError):
+        parse_strategy_identifier(10, encoder=encoder)
+
+    with pytest.raises(KeyError):
+        parse_strategy_identifier(3, manifest=pd.DataFrame(columns=["strategy_id"]))
+
+    with pytest.raises(ValueError):
+        parse_strategy_identifier("legacy-only")
 
 
 def test_load_farkle_results(tmp_path):
