@@ -179,7 +179,8 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
     ckpt = tmp_path / "checkpoint.pkl"
     rt.run_tournament(config=cfg, checkpoint_path=ckpt, n_jobs=1, collect_metrics=False)
 
-    assert chunk_calls == [[0, 1], [2, 3], [4]]
+    # shuffles_per_chunk = max(1, int(1 * 8.0 // (4 // 2))) = 4 for this fixture.
+    assert chunk_calls == [[0, 1, 2, 3], [4]]
     payload = pickle.loads(ckpt.read_bytes())
     assert payload["win_totals"] == Counter({"W0": 1, "W1": 1, "W2": 1, "W3": 1, "W4": 1})
 
