@@ -214,15 +214,18 @@ def test_main_rejects_conflicting_seed_flags(preserve_root_logger, argv):
         (["run"], "runner", "run_single_n"),
         (["analyze", "ingest"], "ingest", "run"),
         (["analyze", "variance"], "analysis_pkg", "run_variance"),
-        (["two-seed-pipeline", "--seed-pair", "3", "4"], "two_seed_pipeline", "run_pipeline"),
+        (["--seed-pair", "3", "4", "two-seed-pipeline"], "two_seed_pipeline", "run_pipeline"),
     ],
 )
 def test_main_propagates_delegated_failure_codes(
     monkeypatch, preserve_root_logger, argv, attr, method
 ):
     module_obj = getattr(cli_main, attr)
+    delegated_called = False
 
     def _raise(*args, **kwargs):
+        nonlocal delegated_called
+        delegated_called = True
         raise SystemExit(9)
 
     monkeypatch.setattr(module_obj, method, _raise)
@@ -230,4 +233,5 @@ def test_main_propagates_delegated_failure_codes(
     with pytest.raises(SystemExit) as excinfo:
         cli_main.main(argv)
 
+    assert delegated_called
     assert excinfo.value.code == 9
