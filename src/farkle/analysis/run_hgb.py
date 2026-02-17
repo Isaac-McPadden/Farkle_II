@@ -91,8 +91,12 @@ def _select_partial_dependence_features(
         if values.size == 0:
             skipped.append(column)
             continue
-        spread = float(np.nanmax(values) - np.nanmin(values))
-        if np.isnan(spread) or spread <= tolerance:
+        valid = values[np.isfinite(values)]
+        if valid.size == 0:
+            skipped.append(column)
+            continue
+        spread = float(valid.max() - valid.min())
+        if spread <= tolerance:
             skipped.append(column)
             continue
         kept.append(column)
