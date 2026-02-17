@@ -8,6 +8,35 @@ from farkle.analysis import variance
 from farkle.config import AppConfig, IOConfig, SimConfig
 
 
+@pytest.fixture
+def constant_seed_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "strategy_id": ["CONST", "CONST", "CONST"],
+            "players": [2, 2, 2],
+            "seed": [11, 12, 13],
+            "win_rate": [0.5, 0.5, 0.5],
+            "score_mean": [100.0, 100.0, 100.0],
+            "turns_mean": [8.0, 8.0, 8.0],
+            "mean_farkles": [1.0, 1.0, 1.0],
+        }
+    )
+
+
+@pytest.fixture
+def high_variance_seed_frame() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "strategy_id": ["SPIKY"] * 6,
+            "players": [4] * 6,
+            "seed": [1, 2, 3, 4, 5, 6],
+            "win_rate": [0.0, 1.0, 0.05, 0.95, 0.1, 0.9],
+            "score_mean": [50.0, 200.0, 60.0, 190.0, 55.0, 195.0],
+            "turns_mean": [2.0, 30.0, 3.0, 28.0, 4.0, 29.0],
+        }
+    )
+
+
 def test_compute_variance_and_components_minimums():
     seed_frame = pd.DataFrame(
         {
@@ -36,6 +65,88 @@ def test_compute_variance_and_components_minimums():
     assert mean_score["variance"] == ((100 - 110) ** 2 + (110 - 110) ** 2 + (120 - 110) ** 2) / 2
 
     assert components[components["strategy_id"] == "B"].empty
+
+
+def test_constant_outcomes_numeric_stability(constant_seed_frame: pd.DataFrame) -> None:
+    detailed = variance._compute_variance(constant_seed_frame)
+    assert len(detailed) == 1
+    row = detailed.iloc[0]
+    assert row["variance_win_rate"] == pytest.approx(0.0, abs=1e-15)
+    assert row["std_win_rate"] == pytest.approx(0.0, abs=1e-15)
+    assert row["se_win_rate"] == pytest.approx(0.0, abs=1e-15)
+
+    components = variance._compute_variance_components(constant_seed_frame)
+    win_component = components[components["component"] == "win_rate"].iloc[0]
+    assert win_component["variance"] == pytest.approx(0.0, abs=1e-15)
+    assert win_component["ci_lower"] == pytest.approx(0.5, abs=1e-12)
+    assert win_component["ci_upper"] == pytest.approx(0.5, abs=1e-12)
+
+
+def test_tiny_samples_and_nan_inf_guards() -> None:
+    seed_frame = pd.DataFrame(
+        {
+            "strategy_id": ["ONE", "ONE", "TWO", "TWO"],
+            "players": [2, 2, 2, 2],
+            "seed": [1, 1, 1, 2],
+            "win_rate": [0.6, np.nan, np.inf, 0.4],
+            "score_mean": [100.0, np.nan, np.inf, 95.0],
+            "turns_mean": [9.0, np.nan, np.inf, 8.0],
+        }
+    )
+
+    detailed = variance._compute_variance(seed_frame)
+    one = detailed[detailed["strategy_id"] == "ONE"].iloc[0]
+    assert one["n_seeds"] == 1
+    assert one["variance_win_rate"] == pytest.approx(0.0, abs=1e-15)
+    assert one["se_win_rate"] == pytest.approx(0.0, abs=1e-15)
+
+    with pytest.warns(RuntimeWarning, match="invalid value encountered in subtract"):
+        components = variance._compute_variance_components(seed_frame, min_seeds=2)
+    assert set(components["strategy_id"]) == {"TWO"}
+    assert components["variance"].isna().all()
+    assert components["ci_lower"].isna().all()
+    assert components["ci_upper"].isna().all()
+
+    merged = variance._merge_metrics(
+        pd.DataFrame(
+            {
+                "strategy_id": ["ONE", "TWO"],
+                "players": [2, 2],
+                "win_rate": [np.nan, np.inf],
+            }
+        ),
+        detailed,
+    )
+    one_merged = merged[merged["strategy_id"] == "ONE"].iloc[0]
+    assert np.isnan(one_merged["signal_to_noise"])
+    two_merged = merged[merged["strategy_id"] == "TWO"].iloc[0]
+    assert np.isnan(two_merged["signal_to_noise"])
+
+
+def test_high_variance_components_confidence_interval_and_signal(
+    high_variance_seed_frame: pd.DataFrame,
+) -> None:
+    detailed = variance._compute_variance(high_variance_seed_frame)
+    row = detailed.iloc[0]
+    assert row["variance_win_rate"] > 0.2
+    assert row["std_win_rate"] == pytest.approx(np.sqrt(row["variance_win_rate"]), rel=1e-12)
+    assert row["se_win_rate"] > 0
+
+    components = variance._compute_variance_components(high_variance_seed_frame)
+    win_component = components[components["component"] == "win_rate"].iloc[0]
+    assert win_component["ci_upper"] > win_component["ci_lower"]
+    assert win_component["ci_lower"] == pytest.approx(
+        win_component["mean"] - 1.96 * win_component["se_mean"], rel=1e-12
+    )
+    assert win_component["ci_upper"] == pytest.approx(
+        win_component["mean"] + 1.96 * win_component["se_mean"], rel=1e-12
+    )
+
+    merged = variance._merge_metrics(
+        pd.DataFrame({"strategy_id": ["SPIKY"], "players": [4], "win_rate": [0.5]}),
+        detailed,
+    )
+    assert merged["signal_to_noise"].iloc[0] == pytest.approx(0.0, abs=1e-12)
 
 
 def test_discover_seed_summaries_filters(tmp_path: Path) -> None:
