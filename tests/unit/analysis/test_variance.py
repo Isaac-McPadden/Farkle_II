@@ -94,7 +94,8 @@ def test_tiny_samples_and_nan_inf_guards() -> None:
         }
     )
 
-    detailed = variance._compute_variance(seed_frame)
+    with pytest.warns(RuntimeWarning, match="invalid value encountered in subtract"):
+        detailed = variance._compute_variance(seed_frame)
     one = detailed[detailed["strategy_id"] == "ONE"].iloc[0]
     assert one["n_seeds"] == 1
     assert one["variance_win_rate"] == pytest.approx(0.0, abs=1e-15)
