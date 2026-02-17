@@ -20,6 +20,7 @@ from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, TypeAlias, TypedDict
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
@@ -51,6 +52,9 @@ _PANDAS_SCALAR_RUNTIME_TYPES = (
     int,
     float,
     complex,
+    np.bool_,
+    np.integer,
+    np.floating,
     pd.Timestamp,
     pd.Timedelta,
 )
