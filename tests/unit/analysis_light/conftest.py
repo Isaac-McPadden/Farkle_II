@@ -128,7 +128,9 @@ def analysis_config(tmp_results_dir: Path) -> Callable[..., AppConfig]:
     def _factory(**overrides: Any) -> AppConfig:
         sim_cfg = cast(SimConfig | None, overrides.pop("sim", None))
         if sim_cfg is None:
-            sim_cfg = SimConfig(n_players_list=[3], expanded_metrics=True)
+            # Keep the unit-test golden dataset deterministic even if SimConfig
+            # defaults change in the production config.
+            sim_cfg = SimConfig(n_players_list=[3], expanded_metrics=True, seed=0)
         io_cfg = IOConfig(results_dir_prefix=tmp_results_dir)
         return AppConfig(io=io_cfg, sim=sim_cfg, **overrides)
 

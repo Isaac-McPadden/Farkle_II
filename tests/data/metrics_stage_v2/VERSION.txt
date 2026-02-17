@@ -1,1 +1,1 @@
-v2 metrics goldens generated via tests/helpers/metrics_samples.py using metrics.run (CSV goldens)
+v2 metrics goldens generated via tests/helpers/metrics_samples.py using metrics.run (CSV goldens, seed=0)
