@@ -119,3 +119,49 @@ def test_compute_mdd_for_tiers_reindexes_string_k_index() -> None:
     )
 
     assert mdd > 0
+
+
+
+def test_ensure_winrate_without_jeffreys_fills_nan_to_zero() -> None:
+    df = pd.DataFrame({"wins": [0], "games": [0]})
+
+    result = _ensure_winrate(
+        df,
+        wins_col="wins",
+        games_col="games",
+        winrate_col=None,
+        use_jeffreys=False,
+    )
+
+    assert result.tolist() == [0.0]
+
+
+def test_prepare_cell_means_defaults_games_when_column_missing() -> None:
+    df = pd.DataFrame(
+        {
+            "strategy": ["A", "A"],
+            "player_count": [2, 2],
+            "seed": [1, 2],
+            "winrate": [0.2, 0.4],
+        }
+    )
+
+    cell = prepare_cell_means(df, wins_col=None, games_col=None, winrate_col="winrate")
+
+    assert set(cell["games"].tolist()) == {1.0}
+
+
+def test_estimate_tau2_sxk_uses_equal_weights_by_default() -> None:
+    cell = pd.DataFrame(
+        {
+            "strategy": ["A", "A", "A", "A"],
+            "k": [2, 3, 2, 3],
+            "seed": [1, 1, 2, 2],
+            "winrate": [0.5, 0.6, 0.4, 0.55],
+            "games": [10, 10, 10, 10],
+        }
+    )
+
+    tau2 = estimate_tau2_sxk(cell, tau2_seed=0.01, weights_by_k=None, robust=True)
+
+    assert tau2 >= 0

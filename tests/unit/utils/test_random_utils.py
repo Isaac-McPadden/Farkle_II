@@ -46,6 +46,47 @@ def test_seed_everything_optional_backends(monkeypatch):
     assert tf_calls == ["random:77", "keras:77"]
 
 
+def test_seed_everything_ignores_torch_import_error(monkeypatch) -> None:
+    calls: list[str] = []
+
+    tf_mod = types.SimpleNamespace(random=types.SimpleNamespace(set_seed=lambda _seed: calls.append("tf")))
+
+    def fake_import(name: str):
+        if name == "torch":
+            raise RuntimeError("torch backend unavailable")
+        if name == "tensorflow":
+            return tf_mod
+        raise ImportError(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import)
+
+    seed_everything(42)
+
+    assert calls == ["tf"]
+
+
+def test_seed_everything_suppresses_tensorflow_set_seed_error(monkeypatch) -> None:
+    torch_mod = types.SimpleNamespace(
+        manual_seed=lambda _seed: None,
+        cuda=types.SimpleNamespace(is_available=lambda: False, manual_seed_all=lambda _s: None),
+    )
+    tf_mod = types.SimpleNamespace(
+        random=types.SimpleNamespace(set_seed=lambda _seed: (_ for _ in ()).throw(RuntimeError("bad tf seed"))),
+        keras=types.SimpleNamespace(utils=types.SimpleNamespace(set_random_seed=lambda _seed: None)),
+    )
+
+    def fake_import(name: str):
+        if name == "torch":
+            return torch_mod
+        if name == "tensorflow":
+            return tf_mod
+        raise ImportError(name)
+
+    monkeypatch.setattr("importlib.import_module", fake_import)
+
+    seed_everything(9)
+
+
 
 def test_spawn_seeds_child_stream_determinism() -> None:
     root = np.random.SeedSequence(2024)
