@@ -190,9 +190,11 @@ def _build_coverage(
         index=False
     )
     counts = grid.merge(counts, on=["seed", "k"], how="left")
-    counts["games"] = counts["games"].fillna(0).astype(int)
-    counts["estimated_games"] = (counts["games"] / counts["k"]).astype(float)
-    counts["strategies"] = counts["strategies"].fillna(0).astype(int)
+    counts["games"] = pd.to_numeric(counts["games"], errors="coerce")
+    counts["strategies"] = pd.to_numeric(counts["strategies"], errors="coerce")
+    counts["games"] = counts["games"].fillna(0).astype("Int64")
+    counts["estimated_games"] = (counts["games"].astype(float) / counts["k"]).astype(float)
+    counts["strategies"] = counts["strategies"].fillna(0).astype("Int64")
     if "missing_before_pad" not in counts.columns:
         counts["missing_before_pad"] = pd.NA
     counts["missing_before_pad"] = counts["missing_before_pad"].astype("Int64")
@@ -213,7 +215,7 @@ def _build_coverage(
     strategies_by_k = counts.groupby("k", sort=False)["strategies"].max()
     seeds_by_k = counts.groupby("k", sort=False)["seed"].nunique()
     counts["games_per_k"] = counts["k"].map(games_by_k)
-    counts["estimated_games_per_k"] = counts["games_per_k"] / counts["k"]
+    counts["estimated_games_per_k"] = counts["games_per_k"].astype(float) / counts["k"]
     counts["strategies_per_k"] = counts["k"].map(strategies_by_k)
     counts["seeds_present"] = counts["k"].map(seeds_by_k)
 

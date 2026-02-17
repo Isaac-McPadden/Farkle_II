@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import warnings
 from pathlib import Path
 
 import pandas as pd
@@ -132,8 +133,14 @@ def test_build_coverage_handles_empty_counts_and_rollups(tmp_path: Path, monkeyp
     )
     monkeypatch.setattr(coverage_by_k, "_expected_strategies_by_k", lambda *_args, **_kwargs: {2: 4, 3: 4})
 
-    out = coverage_by_k._build_coverage(cfg, tmp_path / "metrics.parquet", [])
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        out = coverage_by_k._build_coverage(cfg, tmp_path / "metrics.parquet", [])
+
+    assert len(captured) == 0
     assert len(out) == 4
+    assert str(out["games"].dtype) == "Int64"
+    assert str(out["strategies"].dtype) == "Int64"
     assert set(out["games"]) == {0}
     assert set(out["missing_strategies"]) == {4}
     assert out.groupby("k")["games_per_k"].first().to_dict() == {2: 0, 3: 0}
@@ -166,6 +173,29 @@ def test_build_coverage_non_empty_counts_pads_missing_and_rolls_up(
 
     by_k_games = out.groupby("k")["games_per_k"].first().to_dict()
     assert by_k_games == {2: 20, 3: 0}
+
+
+def test_build_coverage_coerces_non_numeric_counts_without_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path, sim=SimConfig(n_players_list=[2], seed=11, seed_list=[11]))
+
+    counts = pd.DataFrame(
+        [{"seed": 11, "k": 2, "games": "bad", "strategies": None, "missing_before_pad": pd.NA}]
+    )
+    monkeypatch.setattr(coverage_by_k, "_stream_metrics_counts", lambda *_args, **_kwargs: counts)
+    monkeypatch.setattr(coverage_by_k, "_expected_strategies_by_k", lambda *_args, **_kwargs: {2: 3})
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        out = coverage_by_k._build_coverage(cfg, tmp_path / "metrics.parquet", [])
+
+    assert len(captured) == 0
+    row = out.iloc[0]
+    assert row["games"] == 0
+    assert row["strategies"] == 0
+    assert row["estimated_games"] == 0.0
+    assert row["missing_strategies"] == 3
 
 
 def test_run_missing_metrics_input_skips(tmp_path: Path) -> None:
