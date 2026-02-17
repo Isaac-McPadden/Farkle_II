@@ -162,6 +162,7 @@ def test_run_chunk_metrics_accumulates(monkeypatch):
 def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
     monkeypatch.setattr(rt, "getpid", lambda: 42)
+    monkeypatch.setattr(rt, "_STATE", None)
 
     recorded: dict[str, Any] = {}
 
@@ -199,6 +200,25 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
         "shuffle_seed": 3,
         "pid": 42,
     }
+
+
+def test_run_chunk_metrics_row_logging_with_worker_state(monkeypatch, tmp_path):
+    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
+    monkeypatch.setattr(rt, "getpid", lambda: 84)
+    monkeypatch.setattr(rt, "_STATE", None)
+
+    recorded: dict[str, Any] = {}
+
+    def fake_run_streaming_shard(**kwargs) -> None:
+        recorded["extra"] = kwargs.get("manifest_extra")
+
+    monkeypatch.setattr(rt, "run_streaming_shard", fake_run_streaming_shard)
+
+    rt._init_worker(_mini_strategies(4), rt.TournamentConfig(n_players=2))
+
+    rt._run_chunk_metrics([5], collect_rows=True, row_dir=tmp_path, manifest_path=tmp_path / "m.jsonl")
+
+    assert recorded["extra"]["n_players"] == 2
 
 
 def test_save_checkpoint_round_trip(tmp_path):
