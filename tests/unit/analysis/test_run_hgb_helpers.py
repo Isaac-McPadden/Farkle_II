@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -27,8 +29,11 @@ def test_select_partial_dependence_features_filters_constants():
         {"a": [1, 1, 1], "b": [0.0, 0.5, 1.0], "c": [np.nan, np.nan, np.nan]}
     )
 
-    kept, skipped = run_hgb._select_partial_dependence_features(features, tolerance=0.0)
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        kept, skipped = run_hgb._select_partial_dependence_features(features, tolerance=0.0)
 
+    assert len(record) == 0
     assert kept == ["b"]
     assert set(skipped) == {"a", "c"}
 
