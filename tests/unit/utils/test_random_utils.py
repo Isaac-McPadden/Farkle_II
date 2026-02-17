@@ -44,3 +44,16 @@ def test_seed_everything_optional_backends(monkeypatch):
 
     assert torch_calls == [77]
     assert tf_calls == ["random:77", "keras:77"]
+
+
+
+def test_spawn_seeds_child_stream_determinism() -> None:
+    root = np.random.SeedSequence(2024)
+    children_a = root.spawn(2)
+    root_replay = np.random.SeedSequence(2024)
+    children_b = root_replay.spawn(2)
+
+    seq_a = [spawn_seeds(4, seed=int(child.generate_state(1)[0])) for child in children_a]
+    seq_b = [spawn_seeds(4, seed=int(child.generate_state(1)[0])) for child in children_b]
+
+    assert all(np.array_equal(a, b) for a, b in zip(seq_a, seq_b, strict=False))

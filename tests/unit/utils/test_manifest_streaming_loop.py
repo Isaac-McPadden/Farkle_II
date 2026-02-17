@@ -347,3 +347,127 @@ def test_bounded_queue_blocks_and_closes():
 
     queue.close()
     assert queue.pop() is None
+
+
+def test_output_ready_missing_file_returns_false(tmp_path):
+    out_path = tmp_path / "missing.parquet"
+
+    assert (
+        streaming_loop._output_ready(str(out_path), "manifest.ndjson", {"run": 1}) is False
+    )
+
+
+def test_output_ready_delayed_file_branch(tmp_path, monkeypatch):
+    out_path = tmp_path / "delayed.parquet"
+    state = {"exists_calls": 0}
+
+    def fake_exists(path: str) -> bool:
+        if path != str(out_path):
+            return os.path.exists(path)
+        state["exists_calls"] += 1
+        if state["exists_calls"] >= 2:
+            out_path.write_bytes(b"data")
+            return True
+        return False
+
+    monkeypatch.setattr(streaming_loop.os.path, "exists", fake_exists)
+
+    assert streaming_loop._output_ready(str(out_path), "manifest.ndjson", None) is True
+    assert state["exists_calls"] >= 2
+
+
+def test_check_output_size_zero_bytes_returns_false(tmp_path):
+    out_path = tmp_path / "empty.parquet"
+    out_path.write_bytes(b"")
+
+    assert streaming_loop._check_output_size(str(out_path), "manifest.ndjson", None) is False
+
+
+def test_run_streaming_shard_manifest_outside_dir_uses_absolute(tmp_path, monkeypatch):
+    table = pa.table({"value": [1]})
+    schema = table.schema
+    out_path = tmp_path / "out.parquet"
+    manifest_path = tmp_path / "manifest.ndjson"
+
+    class DummyWriter:
+        def __init__(self, *, out_path, schema, compression, row_group_size):
+            self._out_path = Path(out_path)
+            self.rows_written = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def write_batches(self, batch_iterable):
+            for tbl in batch_iterable:
+                self.rows_written += tbl.num_rows
+            self._out_path.write_bytes(b"ok")
+
+    monkeypatch.setattr(streaming_loop, "ParquetShardWriter", DummyWriter)
+
+    def fake_relpath(path, start=os.curdir) -> str:
+        return os.path.join("..", "outside", "out.parquet")
+
+    monkeypatch.setattr(os.path, "relpath", fake_relpath)
+
+    manifest_calls = []
+
+    def fake_append(path, record) -> None:
+        manifest_calls.append((path, record))
+
+    monkeypatch.setattr(streaming_loop, "append_manifest_line", fake_append)
+
+    streaming_loop.run_streaming_shard(
+        out_path=str(out_path),
+        manifest_path=str(manifest_path),
+        schema=schema,
+        batch_iter=iter([table]),
+    )
+
+    assert manifest_calls
+    assert manifest_calls[0][1]["path"] == os.path.abspath(os.fspath(out_path))
+
+
+def test_writer_thread_stops_on_first_sentinel(monkeypatch):
+    table = pa.table({"value": [1]})
+    queue = [table, None, pa.table({"value": [2]})]
+
+    def fake_pop():
+        return queue.pop(0)
+
+    captured = {}
+
+    def fake_run_streaming_shard(**kwargs):
+        batches = list(kwargs.pop("batch_iter"))
+        captured["batches"] = batches
+
+    monkeypatch.setattr(streaming_loop, "run_streaming_shard", fake_run_streaming_shard)
+
+    streaming_loop.writer_thread(
+        fake_pop,
+        out_path="out.parquet",
+        manifest_path="manifest.ndjson",
+        schema=table.schema,
+        row_group_size=100,
+        compression="snappy",
+        manifest_extra=None,
+    )
+
+    assert len(captured["batches"]) == 1
+    assert captured["batches"][0] is table
+
+
+def test_bounded_queue_close_enqueues_sentinel_after_pending_item():
+    queue = streaming_loop.BoundedQueue(maxsize=2)
+    table = pa.table({"value": [1]})
+
+    queue.push(table)
+    queue.close()
+
+    first = queue.pop()
+    second = queue.pop()
+
+    assert first is table
+    assert second is None

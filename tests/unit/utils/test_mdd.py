@@ -104,3 +104,18 @@ def test_tiering_ingredients_from_df_round_trip():
     assert set(result.keys()) == {"cell", "components", "tau2_sxk", "mdd"}
     mdd = cast(float, result["mdd"])
     assert mdd > 0
+
+
+def test_compute_mdd_for_tiers_reindexes_string_k_index() -> None:
+    binom_by_k = pd.Series([0.1, 0.2], index=["2", "3"])
+
+    mdd = compute_mdd_for_tiers(
+        tau2_seed=0.1,
+        tau2_sxk=0.05,
+        binom_by_k=binom_by_k,
+        weights_by_k={2: 1.0, 3: 1.0},
+        R=4,
+        z_star=2.0,
+    )
+
+    assert mdd > 0
