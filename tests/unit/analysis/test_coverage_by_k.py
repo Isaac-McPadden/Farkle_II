@@ -59,6 +59,73 @@ def test_player_counts_from_config_filters_invalid_and_non_positive(tmp_path: Pa
     assert coverage_by_k._player_counts_from_config(cfg) == [2, 3, 5]
 
 
+def test_resolve_isolated_metrics_path_branches(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+
+    preferred = cfg.metrics_isolated_path(2)
+    preferred.parent.mkdir(parents=True, exist_ok=True)
+    preferred.write_bytes(b"ok")
+    assert coverage_by_k._resolve_isolated_metrics_path(cfg, 2) == preferred
+
+    preferred_legacy = cfg.metrics_isolated_path(3)
+    legacy = cfg.legacy_metrics_isolated_path(3)
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_bytes(b"legacy")
+    assert not preferred_legacy.exists()
+    assert coverage_by_k._resolve_isolated_metrics_path(cfg, 3) == legacy
+
+    preferred_missing = cfg.metrics_isolated_path(4)
+    preferred_missing.parent.mkdir(parents=True, exist_ok=True)
+    assert coverage_by_k._resolve_isolated_metrics_path(cfg, 4) == preferred_missing
+
+    missing_parent_path = tmp_path / "missing" / "5p_isolated_metrics.parquet"
+    monkey_cfg = _cfg(tmp_path)
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(monkey_cfg, "metrics_isolated_path", lambda _k: missing_parent_path)
+    monkeypatch.setattr(
+        monkey_cfg,
+        "legacy_metrics_isolated_path",
+        lambda _k: tmp_path / "legacy_missing" / "5p_isolated_metrics.parquet",
+    )
+    try:
+        assert coverage_by_k._resolve_isolated_metrics_path(monkey_cfg, 5) is None
+    finally:
+        monkeypatch.undo()
+
+
+def test_map_isolated_paths_uses_resolved_lookup_and_unresolved_fallback(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    k2 = cfg.metrics_isolated_path(2)
+    k2.parent.mkdir(parents=True, exist_ok=True)
+    k2.write_bytes(b"k2")
+
+    alias_root = tmp_path / "alias"
+    alias_root.symlink_to(k2.parent, target_is_directory=True)
+    rel_k2 = alias_root / k2.name
+
+    mapping = coverage_by_k._map_isolated_paths(cfg, [2, 3], [rel_k2])
+
+    assert mapping[2] == rel_k2
+    assert mapping[3] == cfg.metrics_isolated_path(3)
+
+
+def test_coverage_inputs_includes_metrics_existing_isolated_and_deduped_ordered(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, sim=SimConfig(n_players_list=[3, "bad", 3, 0, -1, 2, 2]))
+    metrics_path = cfg.metrics_input_path()
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    metrics_path.write_bytes(b"metrics")
+
+    iso2 = cfg.metrics_isolated_path(2)
+    iso2.parent.mkdir(parents=True, exist_ok=True)
+    iso2.write_bytes(b"k2")
+
+    # k=3 resolves to preferred path but file does not exist, so it should be excluded.
+    cfg.metrics_isolated_path(3).parent.mkdir(parents=True, exist_ok=True)
+
+    inputs = coverage_by_k._coverage_inputs(cfg, metrics_path)
+    assert inputs == [metrics_path, iso2]
+
+
 def test_stream_metrics_counts_raises_for_missing_required_columns(tmp_path: Path) -> None:
     path = tmp_path / "metrics_missing.parquet"
     pd.DataFrame({"foo": [1], "bar": [2]}).to_parquet(path, index=False)
@@ -84,6 +151,45 @@ def test_stream_metrics_counts_alt_columns_seed_fallback_and_missing_merge(tmp_p
     assert counts.to_dict(orient="records") == [
         {"seed": 123, "k": 2, "games": 12, "strategies": 2, "missing_before_pad": 4},
         {"seed": 123, "k": 3, "games": 15, "strategies": 2, "missing_before_pad": 2},
+    ]
+
+
+def test_stream_metrics_counts_canonical_filters_invalid_and_seed_fallback(tmp_path: Path) -> None:
+    path = tmp_path / "metrics_canonical.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "n_players": ["2", "2", "x", "2", "3"],
+                "strategy": ["1", "2", "3", "bad", "1"],
+                "games": [5, 7, 9, 4, 10],
+                "seed": ["bad", "9", "9", "9", None],
+            }
+        ),
+        path,
+    )
+
+    counts = coverage_by_k._stream_metrics_counts(path, default_seed=77)
+    assert counts.to_dict(orient="records") == [
+        {"seed": 9, "k": 2, "games": 7, "strategies": 1, "missing_before_pad": None},
+        {"seed": 77, "k": 2, "games": 5, "strategies": 1, "missing_before_pad": None},
+        {"seed": 77, "k": 3, "games": 10, "strategies": 1, "missing_before_pad": None},
+    ]
+
+
+def test_stream_metrics_counts_without_optional_missing_column(tmp_path: Path) -> None:
+    path = tmp_path / "metrics_no_missing_col.parquet"
+    pd.DataFrame(
+        {
+            "n_players": [2, 2, 2],
+            "strategy": [1, 1, 2],
+            "games": [1, 3, 6],
+            "seed": [4, 4, 4],
+        }
+    ).to_parquet(path, index=False)
+
+    counts = coverage_by_k._stream_metrics_counts(path, default_seed=42)
+    assert counts.to_dict(orient="records") == [
+        {"seed": 4, "k": 2, "games": 10, "strategies": 2, "missing_before_pad": None}
     ]
 
 
@@ -198,6 +304,69 @@ def test_build_coverage_coerces_non_numeric_counts_without_warnings(
     assert row["missing_strategies"] == 3
 
 
+def test_build_coverage_infers_k_grid_and_synthesizes_missing_column(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _cfg(tmp_path, sim=SimConfig(n_players_list=[], seed=17, seed_list=[]))
+    counts = pd.DataFrame(
+        [
+            {"seed": 17, "k": 3, "games": 9, "strategies": 2},
+            {"seed": 19, "k": 2, "games": 8, "strategies": 2},
+        ]
+    )
+
+    monkeypatch.setattr(coverage_by_k, "_stream_metrics_counts", lambda *_args, **_kwargs: counts)
+    monkeypatch.setattr(coverage_by_k, "_expected_strategies_by_k", lambda *_args, **_kwargs: {2: 3, 3: 4})
+
+    out = coverage_by_k._build_coverage(cfg, tmp_path / "metrics.parquet", [])
+
+    assert out[["k", "seed"]].to_dict(orient="records") == [
+        {"k": 2, "seed": 17},
+        {"k": 2, "seed": 19},
+        {"k": 3, "seed": 17},
+        {"k": 3, "seed": 19},
+    ]
+    assert str(out["missing_before_pad"].dtype) == "Int64"
+    assert str(out["games"].dtype) == "Int64"
+    assert str(out["strategies"].dtype) == "Int64"
+    assert out.groupby("k")["games_per_k"].first().to_dict() == {2: 8, 3: 9}
+
+
+def test_build_coverage_empty_counts_uses_seed_fallback_when_seed_list_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path, sim=SimConfig(n_players_list=[2], seed=31, seed_list=[]))
+    monkeypatch.setattr(
+        coverage_by_k,
+        "_stream_metrics_counts",
+        lambda *_args, **_kwargs: pd.DataFrame(columns=["seed", "k", "games", "strategies"]),
+    )
+    monkeypatch.setattr(coverage_by_k, "_expected_strategies_by_k", lambda *_args, **_kwargs: {2: 2})
+
+    out = coverage_by_k._build_coverage(cfg, tmp_path / "metrics.parquet", [])
+    assert out[["seed", "k"]].to_dict(orient="records") == [{"seed": 31, "k": 2}]
+    assert out.iloc[0]["seeds_present"] == 1
+
+
+def test_log_imbalance_warnings_paths(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING"):
+        coverage_by_k._log_imbalance_warnings(pd.DataFrame())
+    assert not caplog.records
+
+    coverage = pd.DataFrame(
+        [
+            {"k": 2, "seed": 7, "strategies": 4, "games": 100, "missing_strategies": 2},
+            {"k": 2, "seed": 8, "strategies": 2, "games": 80, "missing_strategies": 1},
+        ]
+    )
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        coverage_by_k._log_imbalance_warnings(coverage)
+
+    messages = [record.message for record in caplog.records]
+    assert "Coverage: strategy counts differ across seeds" in messages
+    assert "Coverage: game counts differ across seeds" in messages
+    assert "Coverage: missing strategies detected" in messages
+
+
 def test_run_missing_metrics_input_skips(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     coverage_by_k.run(cfg)
@@ -286,6 +455,83 @@ def test_run_success_writes_outputs_and_done(tmp_path: Path, monkeypatch: pytest
     assert out[["k", "seed", "games"]].to_dict(orient="records") == [
         {"k": 2, "seed": 7, "games": 10}
     ]
+
+
+def test_run_force_recomputes_even_if_up_to_date(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = _cfg(tmp_path)
+    metrics_path = cfg.metrics_input_path()
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"n_players": [2], "strategy": [1], "games": [1], "seed": [7]}).to_parquet(
+        metrics_path,
+        index=False,
+    )
+
+    coverage = pd.DataFrame(
+        {
+            "k": [2],
+            "seed": [7],
+            "games": [1],
+            "estimated_games": [0.5],
+            "games_per_k": [1],
+            "estimated_games_per_k": [0.5],
+            "strategies": [1],
+            "strategies_per_k": [1],
+            "expected_strategies": [1],
+            "missing_before_pad": [pd.NA],
+            "missing_strategies": [0],
+            "padded_strategies": [0],
+            "seeds_present": [1],
+        }
+    )
+    called = {"build": 0}
+
+    monkeypatch.setattr(coverage_by_k, "stage_is_up_to_date", lambda *_args, **_kwargs: True)
+
+    def _build(*_args: object, **_kwargs: object) -> pd.DataFrame:
+        called["build"] += 1
+        return coverage
+
+    monkeypatch.setattr(coverage_by_k, "_build_coverage", _build)
+    coverage_by_k.run(cfg, force=True)
+    assert called["build"] == 1
+
+
+def test_run_without_csv_output_writes_parquet_and_done_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path, analysis=AnalysisConfig(outputs={"coverage_by_k_csv": False}))
+    metrics_path = cfg.metrics_input_path()
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"n_players": [2], "strategy": [1], "games": [1], "seed": [7]}).to_parquet(
+        metrics_path,
+        index=False,
+    )
+
+    coverage = pd.DataFrame(
+        {
+            "k": [2],
+            "seed": [7],
+            "games": [3],
+            "estimated_games": [1.5],
+            "games_per_k": [3],
+            "estimated_games_per_k": [1.5],
+            "strategies": [1],
+            "strategies_per_k": [1],
+            "expected_strategies": [1],
+            "missing_before_pad": [pd.NA],
+            "missing_strategies": [0],
+            "padded_strategies": [0],
+            "seeds_present": [1],
+        }
+    )
+    monkeypatch.setattr(coverage_by_k, "_build_coverage", lambda *_args, **_kwargs: coverage)
+
+    coverage_by_k.run(cfg)
+
+    stage_dir = cfg.stage_dir("coverage_by_k")
+    assert (stage_dir / "coverage_by_k.parquet").exists()
+    assert not (stage_dir / "coverage_by_k.csv").exists()
+    assert stage_done_path(stage_dir, "coverage_by_k").exists()
 
 
 def test_run_up_to_date_with_real_done_marker(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
