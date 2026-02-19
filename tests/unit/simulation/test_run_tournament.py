@@ -177,7 +177,13 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
 
     cfg = rt.TournamentConfig(n_players=2, num_shuffles=5, desired_sec_per_chunk=1, ckpt_every_sec=999)
     ckpt = tmp_path / "checkpoint.pkl"
-    rt.run_tournament(config=cfg, checkpoint_path=ckpt, n_jobs=1, collect_metrics=False)
+    rt.run_tournament(
+        config=cfg,
+        num_shuffles=cfg.num_shuffles,
+        checkpoint_path=ckpt,
+        n_jobs=1,
+        collect_metrics=False,
+    )
 
     # shuffles_per_chunk = max(1, int(1 * 8.0 // (4 // 2))) = 4 for this fixture.
     assert chunk_calls == [[0, 1, 2, 3], [4]]
@@ -186,4 +192,10 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
 
     ckpt.write_bytes(pickle.dumps(123))
     with pytest.raises(AttributeError):
-        rt.run_tournament(config=cfg, checkpoint_path=ckpt, n_jobs=1, collect_metrics=False)
+        rt.run_tournament(
+            config=cfg,
+            num_shuffles=cfg.num_shuffles,
+            checkpoint_path=ckpt,
+            n_jobs=1,
+            collect_metrics=False,
+        )
