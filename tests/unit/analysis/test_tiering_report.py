@@ -339,3 +339,183 @@ def test_load_isolated_metrics_logs_warning_for_missing_and_partial_inputs(
     assert set(out.columns) >= {"strategy", "n_players", "games", "wins", "win_rate", "seed"}
     assert "Skipping seed: results directory not found" in caplog.text
     assert "Missing isolated metrics" in caplog.text
+
+
+def test_tiering_report_helper_branch_coverage_and_run_happy_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+
+    # _prepare_inputs: normalization + integer key coercion + seed/z fallback.
+    cfg.sim.seed = 77
+    cfg.analysis.tiering_seeds = []
+    cfg.sim.n_players_list = [4, 2, 4]
+    cfg.analysis.tiering_weights_by_k = {"2": 2.0, 4: 1.0}
+    cfg.analysis.tiering_z_star = 0.0
+    cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+    prepared = tiering_report._prepare_inputs(cfg)
+    assert prepared.seeds == [77]
+    assert prepared.player_counts == [2, 4]
+    assert prepared.z_star == pytest.approx(1.645)
+    assert prepared.weights_by_k is not None
+    assert prepared.weights_by_k == {2: pytest.approx(2 / 3), 4: pytest.approx(1 / 3)}
+
+    # _prepare_inputs: zero-sum weights should disable weighted pooling.
+    cfg.analysis.tiering_weights_by_k = {2: 0.0, 4: 0.0}
+    prepared_zero = tiering_report._prepare_inputs(cfg)
+    assert prepared_zero.weights_by_k is None
+
+    # _results_dir_for_seed: existing and missing branches.
+    existing = tmp_path / "existing_seed"
+    existing.mkdir(parents=True)
+    monkeypatch.setattr(tiering_report, "base_results_dir", lambda _cfg: tmp_path / "base")
+    monkeypatch.setattr(tiering_report, "resolve_results_dir", lambda _base, _seed: existing)
+    assert tiering_report._results_dir_for_seed(cfg, 77) == existing
+
+    missing = tmp_path / "missing_seed"
+    monkeypatch.setattr(tiering_report, "resolve_results_dir", lambda _base, _seed: missing)
+    with pytest.raises(FileNotFoundError):
+        tiering_report._results_dir_for_seed(cfg, 77)
+
+    # direct key/id coercion helpers.
+    integral = tiering_report._coerce_strategy_ids(pd.Series([1.0, 2.0]))
+    assert str(integral.dtype) == "int64"
+    non_integral = tiering_report._coerce_strategy_ids(pd.Series([1.25, 2.0]))
+    assert pd.api.types.is_float_dtype(non_integral)
+
+    assert tiering_report._normalize_mapping_key(4) == 4
+    assert tiering_report._normalize_mapping_key("5") == 5
+    assert tiering_report._normalize_mapping_key("x") == "x"
+    marker = object()
+    assert tiering_report._normalize_mapping_key(marker) == str(marker)
+
+    coerced_tiers = tiering_report._coerce_tier_keys({"1": 1, 2: 2, "x": 9, marker: 8})
+    assert coerced_tiers == {1: 1, 2: 2}
+
+    # _tiering_artifact migration branch: legacy moved into stage directory.
+    legacy_path = cfg.analysis_dir / "legacy_only.json"
+    legacy_payload = {"source": "legacy"}
+    legacy_path.write_text(json.dumps(legacy_payload))
+    migrated_path = tiering_report._tiering_artifact(cfg, "legacy_only.json")
+    assert migrated_path == cfg.tiering_stage_dir / "legacy_only.json"
+    assert json.loads(migrated_path.read_text()) == legacy_payload
+
+    # _write_consolidated_tiers payload content and trueskill passthrough/None behavior.
+    captured_payloads: list[dict[str, object]] = []
+
+    def _capture_write(_path: Path, *, trueskill, frequentist):
+        captured_payloads.append({"trueskill": trueskill, "frequentist": frequentist})
+
+    monkeypatch.setattr(tiering_report, "write_tier_payload", _capture_write)
+    freq_df = pd.DataFrame([{"strategy": 1, "win_rate": 0.7, "mdd_tier": 1}])
+    tiering_report._write_consolidated_tiers(
+        cfg,
+        ts_payload={},
+        freq_tiers=freq_df,
+        mdd=0.05,
+        weights_by_k=None,
+    )
+    tiering_report._write_consolidated_tiers(
+        cfg,
+        ts_payload={"tiers": {"1": 1}},
+        freq_tiers=freq_df,
+        mdd=0.05,
+        weights_by_k={2: 1.0},
+    )
+    assert captured_payloads[0]["trueskill"] is None
+    assert captured_payloads[0]["frequentist"] == {"tiers": {1: 1}, "mdd": 0.05}
+    assert captured_payloads[1]["trueskill"] == {"tiers": {"1": 1}}
+    assert captured_payloads[1]["frequentist"] == {
+        "tiers": {1: 1},
+        "mdd": 0.05,
+        "weights_by_k": {2: 1.0},
+    }
+
+    # run() orchestration happy-path: verify transformed args passed through.
+    inputs = tiering_report.TieringInputs([11], [2], {2: 1.0}, 1.96, 0.02)
+    monkeypatch.setattr(tiering_report, "_prepare_inputs", lambda _cfg: inputs)
+    monkeypatch.setattr(
+        tiering_report,
+        "load_tier_payload",
+        lambda _path: {"trueskill": {"tiers": {"1": 1, "x": 99}}},
+    )
+    monkeypatch.setattr(
+        tiering_report,
+        "_load_isolated_metrics",
+        lambda _cfg, _inputs: pd.DataFrame(
+            [{"strategy": "1", "seed": 11, "n_players": 2, "games": 5, "wins": 3, "win_rate": 0.6}]
+        ),
+    )
+    monkeypatch.setattr(
+        tiering_report,
+        "tiering_ingredients_from_df",
+        lambda *_a, **_k: {
+            "mdd": 0.07,
+            "tau2_sxk": 0.0,
+            "components": type("C", (), {"tau2_seed": 0.0, "R": 1, "K": 1})(),
+        },
+    )
+    monkeypatch.setattr(
+        tiering_report,
+        "_weighted_winrate",
+        lambda *_a, **_k: (
+            pd.Series({1: 0.6}, name="weighted"),
+            pd.DataFrame([{"strategy": 1, "n_players": 2, "games": 5.0, "win_rate": 0.6}]),
+        ),
+    )
+
+    run_calls: dict[str, object] = {}
+
+    def _capture_build_frequentist(winrates: pd.Series, mdd: float) -> pd.DataFrame:
+        run_calls["build_freq"] = {"index": list(winrates.index), "mdd": mdd}
+        return pd.DataFrame([{"strategy": 1, "win_rate": 0.6, "mdd_tier": 1}])
+
+    monkeypatch.setattr(tiering_report, "_build_frequentist_tiers", _capture_build_frequentist)
+    def _capture_build_report(_freq: pd.DataFrame, ts: dict[int, int]) -> pd.DataFrame:
+        run_calls["build_report"] = dict(ts)
+        return pd.DataFrame(
+            [
+                {
+                    "strategy": 1,
+                    "win_rate": 0.6,
+                    "mdd_tier": 1,
+                    "trueskill_tier": 1,
+                    "delta_tier": 0,
+                    "in_mdd_top": True,
+                    "in_ts_top": True,
+                }
+            ]
+        )
+
+    monkeypatch.setattr(tiering_report, "_build_report", _capture_build_report)
+    monkeypatch.setattr(
+        tiering_report,
+        "_write_outputs",
+        lambda _cfg, _report, tier_data, _inputs: run_calls.setdefault("write_outputs", tier_data["mdd"]),
+    )
+    monkeypatch.setattr(
+        tiering_report,
+        "_write_consolidated_tiers",
+        lambda _cfg, **kwargs: run_calls.setdefault("write_consolidated", kwargs),
+    )
+    monkeypatch.setattr(
+        tiering_report,
+        "_write_frequentist_scores",
+        lambda _cfg, _tiers, _win, _per_k, **kwargs: run_calls.setdefault("write_scores", kwargs),
+    )
+
+    tiering_report.run(cfg)
+
+    assert run_calls["build_freq"] == {"index": [1], "mdd": 0.07}
+    assert run_calls["build_report"] == {1: 1}
+    assert run_calls["write_outputs"] == 0.07
+    consolidated = run_calls["write_consolidated"]
+    assert isinstance(consolidated, dict)
+    assert consolidated["ts_payload"] == {"tiers": {"1": 1, "x": 99}}
+    assert consolidated["mdd"] == 0.07
+    assert consolidated["weights_by_k"] == {2: 1.0}
+    pd.testing.assert_frame_equal(
+        consolidated["freq_tiers"],
+        pd.DataFrame([{"strategy": 1, "win_rate": 0.6, "mdd_tier": 1}]),
+    )
+    assert run_calls["write_scores"] == {"weights_by_k": {2: 1.0}}
