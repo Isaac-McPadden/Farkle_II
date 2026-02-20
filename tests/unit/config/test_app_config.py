@@ -15,6 +15,8 @@ from farkle.config import (
     _annotation_contains,
     _coerce,
     _deep_merge,
+    _normalize_seed_list,
+    _normalize_seed_pair,
     apply_dot_overrides,
     expected_seed_list_length,
     load_app_config,
@@ -332,6 +334,207 @@ def test_load_app_config_seed_list_normalization(write_yaml) -> None:
     assert cfg.sim.seed_list == [8, 9]
     assert cfg.sim.seed == 8
     assert cfg.sim.seed_pair == (8, 9)
+
+
+# --- seed validation + normalization branches ---
+
+
+@pytest.mark.parametrize(
+    ("seed_list", "error", "message"),
+    [
+        (123, TypeError, "sim.seed_list must be a list/tuple of integers"),
+        ([], ValueError, "sim.seed_list must contain at least one seed"),
+    ],
+)
+def test_normalize_seed_list_rejects_invalid_shapes(seed_list, error, message: str) -> None:
+    sim = SimConfig(seed_list=seed_list)
+
+    with pytest.raises(error, match=message):
+        _normalize_seed_list(sim)
+
+
+@pytest.mark.parametrize(
+    ("seed_pair", "seed_provided", "error", "message"),
+    [
+        (123, False, TypeError, "sim.seed_pair must be a tuple/list of two integers"),
+        ([1], False, ValueError, "sim.seed_pair must contain exactly two seeds"),
+    ],
+)
+def test_normalize_seed_pair_rejects_invalid_shapes(
+    seed_pair, seed_provided: bool, error, message: str
+) -> None:
+    sim = SimConfig(seed_pair=seed_pair)
+
+    with pytest.raises(error, match=message):
+        _normalize_seed_pair(sim, seed_provided=seed_provided)
+
+
+def test_normalize_seed_pair_autosyncs_seed_when_seed_not_explicitly_provided() -> None:
+    sim = SimConfig(seed=999, seed_pair=(12, 34))
+
+    _normalize_seed_pair(sim, seed_provided=False)
+
+    assert sim.seed == 12
+
+
+def test_load_app_config_seed_list_len_two_autopopulates_seed_pair(write_yaml) -> None:
+    cfg = load_app_config(write_yaml("seed_pair_autopop.yaml", {"sim": {"seed_list": [31, 47]}}))
+
+    assert cfg.sim.seed_pair == (31, 47)
+
+
+def test_load_app_config_logs_legacy_seed_precedence_warning(write_yaml, caplog: pytest.LogCaptureFixture) -> None:
+    config = write_yaml(
+        "seed_precedence_warning.yaml",
+        {"sim": {"seed": 11, "seed_pair": [11, 12], "seed_list": [11, 12]}},
+    )
+
+    with caplog.at_level("WARNING"):
+        cfg = load_app_config(config)
+
+    assert cfg.sim.seed == 11
+    assert any("sim.seed_list overrides legacy sim.seed/seed_pair settings" in rec.message for rec in caplog.records)
+
+
+def test_load_app_config_per_n_seed_override_tracking_valid_int_key(write_yaml) -> None:
+    config = write_yaml(
+        "per_n_seed_tracking.yaml",
+        {"sim": {"per_n": {"5": {"seed_list": [7, 8]}}}},
+    )
+
+    cfg = load_app_config(config)
+
+    assert cfg.sim.per_n[5].seed_list == [7, 8]
+    assert cfg.sim.per_n[5].seed == 7
+    assert cfg.sim.per_n[5].seed_pair == (7, 8)
+
+
+def test_load_app_config_per_n_non_int_key_raises_gracefully(write_yaml) -> None:
+    config = write_yaml(
+        "per_n_non_int_key.yaml",
+        {"sim": {"per_n": {"not-an-int": {"seed": 100}}}},
+    )
+
+    with pytest.raises(ValueError, match="invalid literal for int"):
+        load_app_config(config)
+
+
+# --- path resolution + fallback order branches ---
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (Path("/tmp/meta_abs"), Path("/tmp/meta_abs")),
+        (Path("data/shared_meta"), Path("data/shared_meta")),
+        (Path("shared/meta"), Path("data") / "shared" / "meta"),
+    ],
+)
+def test_meta_analysis_dir_resolution_modes(configured: Path, expected: Path) -> None:
+    cfg = AppConfig(io=IOConfig(meta_analysis_dir=configured))
+    assert cfg.meta_analysis_dir == expected
+
+
+@pytest.mark.parametrize(
+    ("configured", "expected"),
+    [
+        (Path("/tmp/interseed_abs"), Path("/tmp/interseed_abs")),
+        (Path("data/interseed_anchor"), Path("data/interseed_anchor")),
+        (Path("upstream"), Path("data") / "results_seed_0" / "upstream"),
+    ],
+)
+def test_interseed_input_dir_resolution_modes(configured: Path, expected: Path) -> None:
+    cfg = AppConfig(io=IOConfig(interseed_input_dir=configured))
+    assert cfg.interseed_input_dir == expected
+
+
+def test_metrics_input_path_fallback_ordering(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
+    name = "metrics.parquet"
+    stage_path = cfg._stage_dir_if_active("metrics", "pooled") / name  # type: ignore[operator]
+    interseed_path = cfg._input_stage_path("metrics", "pooled") / name  # type: ignore[operator]
+    legacy_path = cfg.analysis_dir / name
+
+    interseed_path.parent.mkdir(parents=True, exist_ok=True)
+    interseed_path.write_text("interseed")
+    assert cfg.metrics_input_path(name) == interseed_path
+
+    stage_path.parent.mkdir(parents=True, exist_ok=True)
+    stage_path.write_text("stage")
+    assert cfg.metrics_input_path(name) == interseed_path
+
+    interseed_path.unlink()
+    assert cfg.metrics_input_path(name) == stage_path
+
+    stage_path.unlink()
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text("legacy")
+    assert cfg.metrics_input_path(name) == legacy_path
+
+
+def test_meta_input_path_fallback_ordering(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
+    name = "meta.json"
+    preferred = cfg.meta_per_k_dir(5) / name
+    interseed = cfg._input_stage_path("meta", "5p") / name  # type: ignore[operator]
+    legacy_pooled = cfg.meta_pooled_dir / name
+
+    preferred.parent.mkdir(parents=True, exist_ok=True)
+    preferred.write_text("stage")
+    assert cfg.meta_input_path(5, name) == preferred
+
+    preferred.unlink()
+    interseed.parent.mkdir(parents=True, exist_ok=True)
+    interseed.write_text("interseed")
+    assert cfg.meta_input_path(5, name) == interseed
+
+    interseed.unlink()
+    legacy_pooled.parent.mkdir(parents=True, exist_ok=True)
+    legacy_pooled.write_text("legacy-pooled")
+    assert cfg.meta_input_path(5, name) == legacy_pooled
+
+
+def test_post_h2h_path_fallback_ordering(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    filename = "ratings_pooled.parquet"
+    canonical = cfg.canonical_artifact_name(filename)
+    post_h2h_stage = cfg._stage_dir_if_active("post_h2h") / canonical  # type: ignore[operator]
+    head2head_stage = cfg._stage_dir_if_active("head2head") / canonical  # type: ignore[operator]
+    legacy = cfg.analysis_dir / canonical
+
+    post_h2h_stage.parent.mkdir(parents=True, exist_ok=True)
+    post_h2h_stage.write_text("post_h2h")
+    assert cfg.post_h2h_path(filename) == post_h2h_stage
+
+    post_h2h_stage.unlink()
+    head2head_stage.parent.mkdir(parents=True, exist_ok=True)
+    head2head_stage.write_text("head2head")
+    assert cfg.post_h2h_path(filename) == head2head_stage
+
+    head2head_stage.unlink()
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("legacy")
+    assert cfg.post_h2h_path(filename) == legacy
+
+
+# --- override coercion + warnings ---
+
+
+def test_apply_dot_overrides_alias_remap_and_deprecated_flag_warning(caplog: pytest.LogCaptureFixture) -> None:
+    cfg = AppConfig()
+
+    with caplog.at_level("WARNING"):
+        apply_dot_overrides(cfg, ["io.results_dir=/tmp/remapped_seed_9", "analysis.run_report=true"])
+
+    assert cfg.io.results_dir_prefix == Path("/tmp/remapped")
+    assert any("Deprecated analysis flag override provided; stages ignore it" in rec.message for rec in caplog.records)
+
+
+def test_apply_dot_overrides_invalid_bool_raises() -> None:
+    cfg = AppConfig()
+
+    with pytest.raises(ValueError, match="Cannot parse boolean value"):
+        apply_dot_overrides(cfg, ["analysis.run_report=definitely-not-bool"])
 
 
 def test_load_app_config_overlay_and_dot_override_round_trip_is_deterministic(write_yaml) -> None:
@@ -820,3 +1023,110 @@ def test_small_properties_cover_pooled_and_trueskill_variants(tmp_path: Path) ->
     assert pooled_trueskill.name in {"ratings_k_weighted.parquet", "ratings_pooled.parquet"}
     non_pooled = cfg.trueskill_path("tiers.json")
     assert non_pooled.name == "tiers.json"
+
+
+def test_app_config_stage_and_alias_helpers_cover_common_paths(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+
+    assert cfg.ingest_block_dir(5).name == "5p"
+    assert cfg.curate_block_dir(5).name == "5p"
+    assert cfg.combine_block_dir(5).name == "5p"
+    assert cfg.combine_pooled_dir().name == "pooled"
+    assert cfg.metrics_per_k_dir(5).name == "5p"
+    assert cfg.metrics_pooled_dir.name == "pooled"
+
+    assert cfg.game_stats_stage_dir.parent == cfg.analysis_dir
+    assert cfg.game_stats_pooled_dir.name == "pooled"
+    assert cfg.seed_summaries_stage_dir.parent == cfg.analysis_dir
+    assert cfg.seed_summaries_dir(5).name == "5p"
+    assert cfg.variance_stage_dir.parent == cfg.analysis_dir
+    assert cfg.variance_pooled_dir.name == "pooled"
+    assert cfg.meta_stage_dir.parent == cfg.analysis_dir
+    assert cfg.meta_pooled_dir.name == "pooled"
+    assert cfg.agreement_stage_dir.parent == cfg.analysis_dir
+    assert cfg.interseed_stage_dir.parent == cfg.analysis_dir
+    assert cfg.ingest_stage_dir.parent == cfg.analysis_dir
+    assert cfg.combine_stage_dir.parent == cfg.analysis_dir
+    assert cfg.metrics_stage_dir.parent == cfg.analysis_dir
+    assert cfg.trueskill_stage_dir.parent == cfg.analysis_dir
+    assert cfg.trueskill_pooled_dir.name == "pooled"
+    assert cfg.head2head_stage_dir.parent == cfg.analysis_dir
+    assert cfg.post_h2h_stage_dir.parent == cfg.analysis_dir
+    assert cfg.hgb_stage_dir.parent == cfg.analysis_dir
+    assert cfg.hgb_per_k_dir(7).name == "7p"
+    assert cfg.hgb_pooled_dir.name == "pooled"
+    assert cfg.tiering_stage_dir.parent == cfg.analysis_dir
+
+    assert cfg.n_dir(5).name == "5_players"
+    assert cfg.checkpoint_path(5).name == "5p_checkpoint.pkl"
+    assert cfg.metrics_path(5).name == "5p_metrics.parquet"
+    assert cfg.strategy_manifest_path(5) == cfg.strategy_manifest_root_path()
+    assert cfg.row_group_size == cfg.ingest.row_group_size
+    assert cfg.n_jobs_ingest == cfg.ingest.n_jobs
+    assert cfg.batch_rows == cfg.ingest.batch_rows
+    assert cfg.trueskill_beta == cfg.trueskill.beta
+    assert cfg.hgb_max_iter == cfg.hgb.n_estimators
+    assert cfg.combine_max_players == cfg.combine.max_players
+    assert cfg.metrics_seat_range == cfg.metrics.seat_range
+
+
+def test_app_config_input_output_helpers_cover_stage_wrappers(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+
+    assert cfg.metrics_output_path("m.parquet").name == "m.parquet"
+    assert cfg.game_stats_output_path("margin_pooled.parquet").name in {
+        "margin_pooled.parquet",
+        "margin_k_weighted.parquet",
+    }
+    assert cfg.game_stats_input_path("stats.parquet").name == "stats.parquet"
+    assert cfg.variance_output_path("variance.json").name == "variance.json"
+    assert cfg.variance_input_path("variance.json").name == "variance.json"
+    assert cfg.meta_output_path(5, "meta.json").name == "meta.json"
+
+
+def test_metrics_input_path_defaults_to_interseed_then_stage_when_missing(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
+
+    interseed_default = cfg._input_stage_path("metrics", "pooled")
+    assert interseed_default is not None
+    assert cfg.metrics_input_path() == interseed_default / cfg.metrics_name
+
+    cfg_no_input = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "local_only"))
+    stage_default = cfg_no_input._stage_dir_if_active("metrics", "pooled")
+    assert stage_default is not None
+    assert cfg_no_input.metrics_input_path() == stage_default / cfg_no_input.metrics_name
+
+
+def test_additional_branch_coverage_for_optional_stage_and_input_helpers(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+
+    assert cfg.meta_analysis_dir == cfg.analysis_dir
+    assert cfg._interseed_input_folder(None) is None
+    assert cfg._interseed_input_candidate(cfg.analysis_dir, "x.txt") is None
+    assert cfg._stage_dir_if_active("not_registered") is None
+    assert cfg._interseed_stage_dir("combine") is None
+
+    cfg.io.interseed_input_layout = object()
+    assert cfg._interseed_input_folder("combine") is None
+
+
+def test_rng_paths_when_rng_stage_registered(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    cfg.set_stage_layout(
+        StageLayout(
+            placements=[
+                StagePlacement(
+                    definition=StageDefinition(key="rng_diagnostics", group="analysis"),
+                    index=0,
+                    folder_name="00_rng",
+                )
+            ]
+        )
+    )
+
+    out_path = cfg.rng_output_path("rng.json")
+    out_path.write_text("rng")
+
+    assert cfg.rng_pooled_dir.name == "pooled"
+    assert cfg.rng_stage_dir.parent == cfg.analysis_dir
+    assert cfg.rng_input_path("rng.json") == out_path
