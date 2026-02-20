@@ -297,8 +297,28 @@ def test_run_post_h2h_writes_outputs(_cfg: AppConfig) -> None:
     cfg = _cfg
     df_pairs = pd.DataFrame(
         [
-            {"a": "Aggro", "b": "Control", "wins_a": 10, "wins_b": 5, "games": 15},
-            {"a": "Aggro", "b": "Mid", "wins_a": 7, "wins_b": 3, "games": 10},
+            {
+                "a": "Aggro",
+                "b": "Control",
+                "wins_a": 10,
+                "wins_b": 5,
+                "games": 15,
+                "mean_farkles_a": 1.1,
+                "mean_farkles_b": 1.3,
+                "mean_score_a": 9200.0,
+                "mean_score_b": 8700.0,
+            },
+            {
+                "a": "Aggro",
+                "b": "Mid",
+                "wins_a": 7,
+                "wins_b": 3,
+                "games": 10,
+                "mean_farkles_a": 1.0,
+                "mean_farkles_b": 1.4,
+                "mean_score_a": 9300.0,
+                "mean_score_b": 8600.0,
+            },
         ]
     )
     pairwise_path = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
