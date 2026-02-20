@@ -264,7 +264,7 @@ def run_single_seed_analysis(
     force: bool = False,
     manifest_path: Path | None = None,
 ) -> None:
-    """Run per-seed analytics in order (seed summaries → trueskill → tiering → head2head → seed_symmetry → post_h2h → hgb)."""
+    """Run per-seed analytics in order (seed summaries → coverage_by_k → trueskill → tiering → head2head → seed_symmetry → post_h2h → hgb)."""
     def _seed_summaries(cfg: AppConfig) -> None:
         run_seed_summaries(cfg, force=force)
 
@@ -296,6 +296,9 @@ def run_single_seed_analysis(
             return
         post_h2h_mod.run_post_h2h(cfg)
 
+    def _seed_symmetry(cfg: AppConfig) -> None:
+        run_seed_symmetry(cfg, force=force)
+
     def _hgb(cfg: AppConfig) -> None:
         stage_log = stage_logger("hgb", logger=LOGGER)
         hgb_mod = _optional_import("farkle.analysis.hgb_feat", stage_log=stage_log)
@@ -309,7 +312,7 @@ def run_single_seed_analysis(
         StagePlanItem("trueskill", _trueskill),
         StagePlanItem("tiering", _tiering),
         StagePlanItem("head2head", _head2head),
-        StagePlanItem("seed_symmetry", lambda cfg: run_seed_symmetry(cfg, force=force)),
+        StagePlanItem("seed_symmetry", _seed_symmetry),
         StagePlanItem("post_h2h", _post_h2h),
         StagePlanItem("hgb", _hgb),
     ]
