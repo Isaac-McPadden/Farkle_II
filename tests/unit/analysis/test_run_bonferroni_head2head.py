@@ -156,6 +156,16 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     assert populated["mean_score_seat2"].notna().all()
     selfplay = pd.read_parquet(selfplay_path)
     assert set(selfplay["strategy"]) == {"S1", "S2", "S3"}
+    assert {
+        "mean_farkles_seat1",
+        "mean_farkles_seat2",
+        "mean_score_seat1",
+        "mean_score_seat2",
+    }.issubset(selfplay.columns)
+    assert (selfplay["mean_farkles_seat1"] == 1.0).all()
+    assert (selfplay["mean_farkles_seat2"] == 2.0).all()
+    assert (selfplay["mean_score_seat1"] == 300.0).all()
+    assert (selfplay["mean_score_seat2"] == 250.0).all()
 
     shards = sorted(shard_dir.glob("*.parquet"))
     assert len(shards) >= 2
