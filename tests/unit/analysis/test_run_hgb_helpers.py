@@ -2,6 +2,7 @@ import warnings
 import builtins
 import sys
 import types
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -120,10 +121,11 @@ def test_run_grouped_cv_logs_skip_reasons_and_success(monkeypatch):
             **{name: [0.0, 1.0] for name in feature_cols},
         }
     )
-    logged: list[tuple[str, dict]] = []
+    logged: list[tuple[str, dict[str, Any]]] = []
 
     def _log(message: str, *_args: object, **kwargs: object) -> None:
-        logged.append((message, kwargs.get("extra", {})))
+        extra = kwargs.get("extra", {})
+        logged.append((message, extra if isinstance(extra, dict) else {}))
 
     monkeypatch.setattr(run_hgb.LOGGER, "info", _log)
 
@@ -138,7 +140,7 @@ def test_run_grouped_cv_logs_skip_reasons_and_success(monkeypatch):
             _ = X, y, groups
             return iter(())
 
-    model_selection.GroupKFold = PlaceholderSplitter
+    model_selection.GroupKFold = PlaceholderSplitter  # type: ignore[attr-defined]  # intentional monkeypatch of dynamic module attribute in test
     monkeypatch.setitem(sys.modules, "sklearn.model_selection", model_selection)
     monkeypatch.setattr(sys.modules["sklearn"], "__path__", [], raising=False)
 

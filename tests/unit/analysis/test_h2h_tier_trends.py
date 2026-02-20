@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -15,7 +16,8 @@ from farkle.config import AppConfig
 def _cfg(tmp_path: Path) -> AppConfig:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    cfg.sim.n_players_list = [2, "3", "bad", -1]
+    bad_n_players_list: Any = [2, "3", "bad", -1]
+    cfg.sim.n_players_list = bad_n_players_list
     cfg.analysis.outputs = {}
     cfg.results_root.mkdir(parents=True, exist_ok=True)
     cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -147,7 +149,8 @@ def test_players_from_path(dirname: str, expected: int) -> None:
 
 
 def test_clean_variances_handles_nan_and_nonpositive_values() -> None:
-    cleaned = h2h_tier_trends._clean_variances([None, 0.0, -1.0, 0.2])
+    bad_variances: Any = [None, 0.0, -1.0, 0.2]
+    cleaned = h2h_tier_trends._clean_variances(bad_variances)
     assert np.isfinite(cleaned).all()
     assert (cleaned >= h2h_tier_trends.MIN_VARIANCE).all()
     assert cleaned[-1] == pytest.approx(0.2)
@@ -262,7 +265,7 @@ def test_run_force_true_bypasses_up_to_date_short_circuit(tmp_path: Path, monkey
     calls: list[Path] = []
     original_write = h2h_tier_trends.write_parquet_atomic
 
-    def _record_write(table, out_path: Path, codec: str) -> None:
+    def _record_write(table, out_path: Path, codec: Any) -> None:
         calls.append(out_path)
         original_write(table, out_path, codec=codec)
 

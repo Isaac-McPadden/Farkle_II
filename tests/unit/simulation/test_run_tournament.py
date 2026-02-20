@@ -12,6 +12,7 @@ import pickle
 import types  # noqa: F401
 from collections import Counter
 from pathlib import Path
+from typing import Any
 
 import numpy as np  # noqa: F401 | Potentially imports something that needs it
 import pytest
@@ -102,7 +103,8 @@ def test_coerce_counter_and_metric_sums_helpers() -> None:
     wins = rt._coerce_counter({"1": "2", "A": 3})
     assert wins == Counter({1: 2, "A": 3})
 
-    sums = rt._coerce_metric_sums({"winning_score": {"5": "4.5"}})
+    bad_metric_payload: Any = {"winning_score": {"5": "4.5"}}
+    sums = rt._coerce_metric_sums(bad_metric_payload)
     assert sums is not None
     assert sums["winning_score"][5] == pytest.approx(4.5)
     assert sums["winner_rolls"] == {}
