@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+from collections.abc import Callable
 from pathlib import Path
-from typing import Mapping
+from typing import Mapping, cast
 
 import numpy as np
 import pandas as pd
@@ -770,3 +772,281 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
         (12, seed12_root, expected_seed12_row_data_dir),
         (13, seed13_root, expected_seed13_row_data_dir),
     ]
+
+
+def test_coerce_trueskill_env_kwargs_branches() -> None:
+    assert rt._coerce_trueskill_env_kwargs(None) == {}
+
+    coerced = rt._coerce_trueskill_env_kwargs(
+        {
+            "mu": 25,
+            "sigma": 8.333,
+            "beta": "4.2",
+            "tau": "0.0833333",
+            "draw_probability": 0,
+        }
+    )
+    assert coerced == pytest.approx(
+        {
+            "mu": 25.0,
+            "sigma": 8.333,
+            "beta": 4.2,
+            "tau": 0.0833333,
+            "draw_probability": 0.0,
+        }
+    )
+
+    with pytest.raises(TypeError, match="beta"):
+        rt._coerce_trueskill_env_kwargs({"beta": [1.0]})
+
+
+@pytest.mark.parametrize("loader", [rt._load_ckpt, rt._load_block_ckpt])
+def test_checkpoint_loaders_reject_malformed_and_invalid_payloads(
+    loader: Callable[[Path], object | None], tmp_path: Path
+) -> None:
+    ckpt_path = tmp_path / "bad.ckpt.json"
+
+    ckpt_path.write_text("{broken")
+    assert loader(ckpt_path) is None
+
+    ckpt_path.write_text(json.dumps(["not", "dict"]))
+    assert loader(ckpt_path) is None
+
+    invalid_payloads: list[dict[str, object]] = []
+    if loader is rt._load_ckpt:
+        invalid_payloads.extend(
+            [
+                {
+                    "source": "rows.parquet",
+                    "row_group": 1,
+                    "batch_index": 2,
+                    "games_done": 3,
+                },
+                {
+                    "source": "rows.parquet",
+                    "row_group": "1",
+                    "batch_index": 2,
+                    "games_done": 3,
+                    "ratings_path": "ratings.parquet",
+                },
+                {
+                    "source": "rows.parquet",
+                    "row_group": 1,
+                    "batch_index": 2,
+                    "games_done": 3,
+                    "ratings_path": "ratings.parquet",
+                    "version": "1",
+                },
+            ]
+        )
+    else:
+        invalid_payloads.extend(
+            [
+                {
+                    "row_file": "rows.parquet",
+                    "row_group": 1,
+                    "batch_index": 2,
+                    "games_done": 3,
+                },
+                {
+                    "row_file": "rows.parquet",
+                    "row_group": 1,
+                    "batch_index": "2",
+                    "games_done": 3,
+                    "ratings_path": "ratings.parquet",
+                },
+                {
+                    "row_file": "rows.parquet",
+                    "row_group": 1,
+                    "batch_index": 2,
+                    "games_done": 3,
+                    "ratings_path": "ratings.parquet",
+                    "version": "1",
+                },
+            ]
+        )
+
+    for payload in invalid_payloads:
+        ckpt_path.write_text(json.dumps(payload))
+        assert loader(ckpt_path) is None
+
+
+def test_checkpoint_loaders_reconstruct_valid_payload(tmp_path: Path) -> None:
+    ck_path = tmp_path / "valid.ckpt.json"
+    block_path = tmp_path / "valid.block.ckpt.json"
+    ck_payload = {
+        "source": "combined.parquet",
+        "row_group": 4,
+        "batch_index": 5,
+        "games_done": 9,
+        "ratings_path": "ratings.checkpoint.parquet",
+        "version": 2,
+    }
+    block_payload = {
+        "row_file": "rows.parquet",
+        "row_group": 6,
+        "batch_index": 7,
+        "games_done": 11,
+        "ratings_path": "block.checkpoint.parquet",
+        "version": 3,
+    }
+
+    ck_path.write_text(json.dumps(ck_payload))
+    block_path.write_text(json.dumps(block_payload))
+
+    assert rt._load_ckpt(ck_path) == rt._TSCheckpoint(**ck_payload)
+    assert rt._load_block_ckpt(block_path) == rt._BlockCkpt(**block_payload)
+
+
+def test_ordering_and_json_safe_helpers() -> None:
+    ordered = rt._ensure_strict_mu_ordering(
+        {
+            "zeta": rt.RatingStats(11.0, 1.0),
+            "alpha": rt.RatingStats(11.0, 1.2),
+            "beta": rt.RatingStats(10.0, 1.1),
+        }
+    )
+    assert list(ordered) == ["alpha", "zeta", "beta"]
+
+    assert rt._json_safe_number(1.25) == 1.25
+    assert rt._json_safe_number(4) == 4
+    assert rt._json_safe_number(math.nan) is None
+    assert rt._json_safe_number(math.inf) is None
+    assert rt._json_safe_number(-math.inf) is None
+
+
+def test_rank_correlations_vs_pooled_nan_branches(monkeypatch: pytest.MonkeyPatch) -> None:
+    pooled = {
+        "A": rt.RatingStats(10.0, 1.0),
+        "B": rt.RatingStats(9.0, 1.0),
+    }
+    lt_two_common = rt._rank_correlations_vs_pooled(
+        {1: {"A": rt.RatingStats(11.0, 1.0)}},
+        pooled,
+    )
+    assert math.isnan(lt_two_common[1])
+
+    np_array = np.array
+    monkeypatch.setattr(rt.np, "array", lambda *args, **kwargs: np_array([1.0, 1.0]))
+    denom_zero = rt._rank_correlations_vs_pooled(
+        {2: {"A": rt.RatingStats(11.0, 1.0), "B": rt.RatingStats(10.0, 1.0)}},
+        {"A": rt.RatingStats(10.0, 1.0), "B": rt.RatingStats(9.0, 1.0)},
+    )
+    assert math.isnan(denom_zero[2])
+
+
+def test_write_seed_alignment_summary_writes_csv_json_and_missing_seed_values(
+    tmp_path: Path,
+) -> None:
+    summary_paths = rt._write_seed_alignment_summary(
+        tmp_path,
+        seeds=[101, 102],
+        per_seed_results={
+            101: {
+                "alpha": rt.RatingStats(10.0, 1.0),
+                "beta": rt.RatingStats(11.0, 1.0),
+            },
+            102: {"alpha": rt.RatingStats(12.0, 1.0)},
+        },
+        pooled={"alpha": rt.RatingStats(11.0, 0.5), "beta": rt.RatingStats(11.0, 0.5)},
+        write_csv=True,
+        write_json=True,
+    )
+
+    assert summary_paths["csv"] is not None and cast(Path, summary_paths["csv"]).exists()
+    assert summary_paths["json"] is not None and cast(Path, summary_paths["json"]).exists()
+
+    payload = json.loads(cast(Path, summary_paths["json"]).read_text())
+    assert "rank_correlation_vs_pooled" in payload
+    beta_row = next(row for row in payload["alignment"] if row["strategy"] == "beta")
+    assert beta_row["seeds_missing"] == 1
+    assert beta_row["seed_102_mu"] is None
+
+
+def test_resolve_seed_results_and_row_data_fallbacks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    unseeded_root = tmp_path / "plain_results"
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=unseeded_root), sim=SimConfig(seed=7))
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+    monkeypatch.setattr(rt, "split_seeded_results_dir", lambda _path: (_path, None))
+    assert rt._resolve_seed_results_root(cfg, seed=123) == cfg.results_root
+
+    class _DummyLayout:
+        def folder_for(self, stage: str) -> str | None:
+            return "01_curate" if stage == "curate" else None
+
+    class _DummyIO:
+        analysis_subdir = "analysis"
+
+    class _DummyCfg:
+        io = _DummyIO()
+        stage_layout = _DummyLayout()
+
+        @staticmethod
+        def _interseed_input_folder(stage: str) -> str | None:
+            return "00_curate" if stage == "curate" else None
+
+    seed_root = tmp_path / "results_seed_12"
+    analysis_root = seed_root / "analysis"
+    input_candidate = analysis_root / "00_curate"
+    stage_candidate = analysis_root / "01_curate"
+    legacy_candidate = analysis_root / "curate"
+
+    input_candidate.mkdir(parents=True, exist_ok=True)
+    assert rt._resolve_seed_row_data_dir(_DummyCfg(), seed_root) == input_candidate
+
+    input_candidate.rmdir()
+    stage_candidate.mkdir(parents=True, exist_ok=True)
+    assert rt._resolve_seed_row_data_dir(_DummyCfg(), seed_root) == stage_candidate
+
+    stage_candidate.rmdir()
+    legacy_candidate.mkdir(parents=True, exist_ok=True)
+    assert rt._resolve_seed_row_data_dir(_DummyCfg(), seed_root) == legacy_candidate
+
+    legacy_candidate.rmdir()
+    assert rt._resolve_seed_row_data_dir(_DummyCfg(), seed_root) is None
+
+
+def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path: Path) -> None:
+    results_root = tmp_path / "results_seed_1"
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=results_root), sim=SimConfig(seed=1, seed_pair=(1, 2)))
+    cfg.analysis.tiering_seeds = [1]
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+
+    def fake_run_trueskill(**kwargs: object) -> None:
+        root = Path(cast(Path, kwargs["root"]))
+        output_seed = int(cast(int, kwargs["output_seed"]))
+        rt._save_ratings_parquet(
+            root / "pooled" / f"ratings_k_weighted_seed{output_seed}.parquet",
+            {"alpha": rt.RatingStats(25.0, 8.0)},
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rt, "run_trueskill", fake_run_trueskill)
+        with pytest.raises(RuntimeError, match="No per-player outputs generated for seed 1"):
+            rt.run_trueskill_all_seeds(cfg)
+
+
+def test_run_trueskill_all_seeds_raises_when_pooled_precision_empty(tmp_path: Path) -> None:
+    results_root = tmp_path / "results_seed_4"
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=results_root), sim=SimConfig(seed=4, seed_pair=(4, 5)))
+    cfg.analysis.tiering_seeds = [4]
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+
+    def fake_run_trueskill(**kwargs: object) -> None:
+        root = Path(cast(Path, kwargs["root"]))
+        output_seed = int(cast(int, kwargs["output_seed"]))
+        rt._save_ratings_parquet(
+            root / "2p" / f"ratings_2_seed{output_seed}.parquet",
+            {"alpha": rt.RatingStats(20.0, 2.0)},
+        )
+        rt._save_ratings_parquet(
+            root / "pooled" / f"ratings_k_weighted_seed{output_seed}.parquet",
+            {"alpha": rt.RatingStats(20.0, 0.0)},
+        )
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(rt, "run_trueskill", fake_run_trueskill)
+        with pytest.raises(RuntimeError, match="TrueSkill pooling produced no results"):
+            rt.run_trueskill_all_seeds(cfg)
