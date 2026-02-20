@@ -117,7 +117,7 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     call_counter = {"calls": 0}
 
     def fake_games_for_power(**kwargs):  # noqa: ANN001
-        return 1
+        return 2
 
     def fake_simulate(seeds, strategies, n_jobs):  # noqa: ANN001,ARG001
         call_counter["calls"] += 1
@@ -141,6 +141,21 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     assert selfplay_path.exists()
     df = pd.read_parquet(pairwise_path)
     assert set(df["pair_id"]) == {0, 1, 2}
+    assert {
+        "mean_farkles_a",
+        "mean_farkles_b",
+        "mean_score_a",
+        "mean_score_b",
+    }.issubset(df.columns)
+    populated_pairs = df[(df["games"] > 0) & (df["pair_id"] != 0)]
+    assert populated_pairs["mean_farkles_a"].notna().all()
+    assert populated_pairs["mean_farkles_b"].notna().all()
+    assert populated_pairs["mean_score_a"].notna().all()
+    assert populated_pairs["mean_score_b"].notna().all()
+    assert populated_pairs["mean_farkles_a"].between(1.0, 2.0).all()
+    assert populated_pairs["mean_farkles_b"].between(1.0, 2.0).all()
+    assert populated_pairs["mean_score_a"].between(250.0, 300.0).all()
+    assert populated_pairs["mean_score_b"].between(250.0, 300.0).all()
     ordered = pd.read_parquet(ordered_path)
     assert set(ordered["ordering"]) == {"a_b", "b_a"}
     assert {

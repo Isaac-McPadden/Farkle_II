@@ -198,6 +198,10 @@ def _pairwise_schema() -> pa.Schema:
         pa.field("wins_b", pa.int64()),
         pa.field("win_rate_a", pa.float64()),
         pa.field("pval_one_sided", pa.float64()),
+        pa.field("mean_farkles_a", pa.float64()),
+        pa.field("mean_farkles_b", pa.float64()),
+        pa.field("mean_score_a", pa.float64()),
+        pa.field("mean_score_b", pa.float64()),
     ]
     return pa.schema(fields)
 
@@ -288,6 +292,10 @@ def run_bonferroni_head2head(
         wins_b: int64
         win_rate_a: float64
         pval_one_sided: float64
+        mean_farkles_a: float64
+        mean_farkles_b: float64
+        mean_score_a: float64
+        mean_score_b: float64
 
     Each row summarises a pairwise matchup with deterministic seeding; the
     p-value is produced by :func:`scipy.stats.binomtest` using the ``greater``
@@ -709,9 +717,30 @@ def run_bonferroni_head2head(
 
             wa_ab, wb_ab = _count_pair_wins(df_ab, a, b)
             wb_ba, wa_ba = _count_pair_wins(df_ba, b, a)
+
+            games_ab = len(seeds_ab)
+            games_ba = len(seeds_ba)
+            total_games = games_ab + games_ba
+
+            def weighted_mean(first_mean: float, first_weight: int, second_mean: float, second_weight: int) -> float:
+                denominator = first_weight + second_weight
+                if denominator <= 0:
+                    return math.nan
+                total = 0.0
+                if first_weight > 0:
+                    total += first_mean * first_weight
+                if second_weight > 0:
+                    total += second_mean * second_weight
+                return total / denominator
+
+            mean_farkles_a = weighted_mean(mean_farkles_ab_seat1, games_ab, mean_farkles_ba_seat2, games_ba)
+            mean_farkles_b = weighted_mean(mean_farkles_ab_seat2, games_ab, mean_farkles_ba_seat1, games_ba)
+            mean_score_a = weighted_mean(mean_score_ab_seat1, games_ab, mean_score_ba_seat2, games_ba)
+            mean_score_b = weighted_mean(mean_score_ab_seat2, games_ab, mean_score_ba_seat1, games_ba)
+
             wa = wa_ab + wa_ba
             wb = wb_ab + wb_ba
-            games_played = len(seeds)
+            games_played = total_games
             if wa + wb != games_played:
                 raise RuntimeError(
                     f"Tie or missing outcome detected for pair ({a}, {b}); wins_a={wa} wins_b={wb} games={games_played}",
@@ -728,6 +757,10 @@ def run_bonferroni_head2head(
                 "wins_b": wb,
                 "win_rate_a": wa / games_played if games_played else math.nan,
                 "pval_one_sided": pval,
+                "mean_farkles_a": mean_farkles_a,
+                "mean_farkles_b": mean_farkles_b,
+                "mean_score_a": mean_score_a,
+                "mean_score_b": mean_score_b,
             }
             ordered = [
                 {
