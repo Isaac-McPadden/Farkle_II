@@ -7,22 +7,31 @@ import pytest
 
 from farkle.simulation.strategies import (
     FavorDiceOrScore,
+    STOP_AT_REGISTRY,
+    STRATEGY_TUPLE_FIELDS,
     StopAtStrategy,
     StrategyGridOptions,
     ThresholdStrategy,
     _build_strategy_encoder_cached,
+    _coerce_options,
+    _favor_options,
     _parse_strategy_flags,
     _sample_favor_score,
     build_stop_at_strategy,
     build_strategy_encoder,
+    build_strategy_manifest,
     coerce_strategy_ids,
     decode_strategy_id,
+    encode_strategy,
+    iter_strategy_combos,
     load_farkle_results,
     normalize_strategy_ids,
     parse_strategy,
     parse_strategy_identifier,
     parse_strategy_for_df,
     random_threshold_strategy,
+    strategy_attributes_from_series,
+    strategy_tuple,
 )
 
 
@@ -286,6 +295,36 @@ def test_entry_gate_requires_rolling():
     )
 
 
+@pytest.mark.parametrize(
+    "run_up_score,running_total,expected",
+    [
+        (False, 1000, True),
+        (False, 1300, False),
+        (True, 1300, True),
+    ],
+)
+def test_decide_final_round_branches(run_up_score, running_total, expected):
+    strat = ThresholdStrategy(
+        score_threshold=300,
+        dice_threshold=2,
+        consider_score=True,
+        consider_dice=False,
+        run_up_score=run_up_score,
+    )
+    assert (
+        strat.decide(
+            turn_score=200,
+            dice_left=3,
+            has_scored=True,
+            score_needed=1_000,
+            final_round=True,
+            score_to_beat=1200,
+            running_total=running_total,
+        )
+        is expected
+    )
+
+
 # ────────────────────────────────────────────────────────────────────────────
 # 2) A collection of malformed strings that should all raise ValueError
 # ────────────────────────────────────────────────────────────────────────────
@@ -543,3 +582,122 @@ def test_load_farkle_results_unordered(tmp_path):
         "run_up_score",
         "favor_dice_or_score",
     ]
+
+
+def test_option_combo_encoder_manifest_identifier_and_results_paths(tmp_path):
+    assert _coerce_options([3, 1, 2], fallback=(9,), normalize=True) == (1, 2, 3)
+    assert _coerce_options([1, "a", 3], fallback=(9,), normalize=True) == (1, "a", 3)
+
+    combos = list(
+        iter_strategy_combos(
+            score_thresholds=(300,),
+            dice_thresholds=(2,),
+            smart_five_opts=(True, False),
+            smart_one_opts=(True, False),
+            consider_score_opts=(True,),
+            consider_dice_opts=(True,),
+            auto_hot_dice_opts=(False,),
+            run_up_score_opts=(False,),
+            inactive_score_threshold=299,
+            inactive_dice_threshold=1,
+            allowed_smart_pairs={(True, False)},
+        )
+    )
+    assert combos
+    assert all(combo[2] is True for combo in combos)
+
+    assert _favor_options(True, True, True) == (FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE)
+    assert _favor_options(False, True, False) == (FavorDiceOrScore.SCORE,)
+    assert _favor_options(False, False, True) == (FavorDiceOrScore.DICE,)
+    assert _favor_options(False, False, False) == (FavorDiceOrScore.SCORE,)
+
+    encoder = build_strategy_encoder(
+        score_thresholds=(300,),
+        dice_thresholds=(2,),
+        smart_five_opts=(True,),
+        smart_one_opts=(True,),
+        consider_score_opts=(True,),
+        consider_dice_opts=(True,),
+        auto_hot_dice_opts=(False,),
+        run_up_score_opts=(False,),
+        include_stop_at=True,
+        include_stop_at_heuristic=True,
+    )
+    assert len(encoder.tuples) == 12
+
+    base_strategy = ThresholdStrategy(
+        score_threshold=300,
+        dice_threshold=2,
+        smart_five=True,
+        smart_one=True,
+        consider_score=True,
+        consider_dice=True,
+        require_both=False,
+        auto_hot_dice=False,
+        run_up_score=False,
+        favor_dice_or_score=FavorDiceOrScore.SCORE,
+    )
+    combo = strategy_tuple(base_strategy)
+    strategy_id = encoder.encode_tuple(combo)
+    assert strategy_id >= 0
+    assert encode_strategy(base_strategy, encoder) == strategy_id
+    assert encoder.encode_strategy(base_strategy) == strategy_id
+
+    parsed_via_encoder = parse_strategy_identifier(strategy_id, encoder=encoder)
+    assert parsed_via_encoder.favor_dice_or_score is FavorDiceOrScore.SCORE
+
+    duplicate = ThresholdStrategy(**parse_strategy_for_df(str(base_strategy)), strategy_id=7)
+    duplicate_2 = ThresholdStrategy(**parse_strategy_for_df(str(base_strategy)), strategy_id=7)
+    no_id = ThresholdStrategy(**parse_strategy_for_df(str(base_strategy)), strategy_id=None)
+    dice_favor = ThresholdStrategy(
+        **parse_strategy_for_df("Strat(300,2)[-D][--FD][OR][--]"), strategy_id=8
+    )
+    manifest = build_strategy_manifest([duplicate, duplicate_2, no_id, dice_favor])
+    assert manifest["strategy_id"].tolist() == [7, 8]
+    assert manifest.loc[manifest["strategy_id"] == 8, "favor_dice_or_score"].iat[0] == "dice"
+
+    parsed_via_manifest = parse_strategy_identifier(8, manifest=manifest)
+    assert parsed_via_manifest.favor_dice_or_score is FavorDiceOrScore.DICE
+
+    stop_at_key = "stop_at_350"
+    parsed_stop_at = parse_strategy_identifier(stop_at_key)
+    assert stop_at_key in STOP_AT_REGISTRY
+    assert str(parsed_stop_at) == stop_at_key
+
+    parsed_legacy = parse_strategy_identifier(
+        "legacy",
+        parse_legacy=lambda _s: {
+            "score_threshold": 450,
+            "dice_threshold": 1,
+            "smart_five": False,
+            "smart_one": False,
+            "consider_score": True,
+            "consider_dice": False,
+            "require_both": False,
+            "auto_hot_dice": False,
+            "run_up_score": False,
+            "favor_dice_or_score": FavorDiceOrScore.SCORE,
+        },
+    )
+    assert parsed_legacy.score_threshold == 450
+
+    mixed = pd.Series([7, "Strat(300,2)[-D][--FD][OR][--]", 8], index=[11, 13, 17])
+    attrs = strategy_attributes_from_series(mixed, manifest=manifest, parse_legacy=parse_strategy_for_df)
+    assert attrs.index.tolist() == [11, 13, 17]
+    assert attrs.loc[11, "favor_dice_or_score"] == "score"
+    assert attrs.loc[13, "favor_dice_or_score"] is FavorDiceOrScore.DICE
+
+    empty_attrs = strategy_attributes_from_series(pd.Series([None, pd.NA]))
+    assert empty_attrs.empty
+    assert empty_attrs.columns.tolist() == list(STRATEGY_TUPLE_FIELDS)
+
+    counter = Counter({"7": 3, "Strat(300,2)[-D][--FD][OR][--]": 2})
+    pkl = tmp_path / "results_manifest.pkl"
+    pkl.write_bytes(pickle.dumps(counter))
+
+    ordered_df = load_farkle_results(pkl, manifest=manifest, ordered=True)
+    unordered_df = load_farkle_results(pkl, manifest=manifest, ordered=False)
+
+    assert ordered_df["wins"].tolist() == [3, 2]
+    assert ordered_df.columns[0:2].tolist() == ["strategy", "wins"]
+    assert unordered_df["strategy"].tolist() == ["7", "Strat(300,2)[-D][--FD][OR][--]"]
