@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import pickle
 from pathlib import Path
+from types import TracebackType
+from typing import Any
 from unittest.mock import MagicMock
 
 import pandas as pd
@@ -15,7 +17,7 @@ from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.simulation.strategies import ThresholdStrategy
 
 
-def _cfg(tmp_path: Path, **sim_kwargs: object) -> AppConfig:
+def _cfg(tmp_path: Path, **sim_kwargs: Any) -> AppConfig:
     sim_defaults = {
         "n_players_list": [2],
         "num_shuffles": 2,
@@ -178,7 +180,7 @@ def test_purge_existing_and_resume_output_validation(tmp_path: Path) -> None:
 
 
 def _patch_tournament_writer(monkeypatch: pytest.MonkeyPatch, *, wrong_meta: bool = False) -> None:
-    def fake_run_tournament(**kwargs: object) -> None:  # noqa: ANN001
+    def fake_run_tournament(**kwargs: Any) -> None:  # noqa: ANN001
         ckpt = Path(kwargs["checkpoint_path"])
         ckpt.parent.mkdir(parents=True, exist_ok=True)
         metadata = kwargs["checkpoint_metadata"]
@@ -258,7 +260,7 @@ def test_run_single_n_branch_table(
 
     calls: dict[str, int] = {"worker": 0}
 
-    def fake_run_tournament(**kwargs: object) -> None:  # noqa: ANN001
+    def fake_run_tournament(**kwargs: Any) -> None:  # noqa: ANN001
         calls["worker"] += 1
         ckpt = Path(kwargs["checkpoint_path"])
         meta = kwargs["checkpoint_metadata"]
@@ -405,7 +407,7 @@ def test_compute_num_shuffles_invalid_power_config_raises(
 ) -> None:
     cfg = _cfg(tmp_path, recompute_num_shuffles=True)
 
-    def fail_power(**_: object) -> int:
+    def fail_power(**_: Any) -> int:
         raise ValueError("invalid power configuration")
 
     monkeypatch.setattr(runner, "games_for_power_from_design", fail_power)
@@ -451,7 +453,12 @@ def test_handle_remove_error_chmod_retry_and_failure(monkeypatch: pytest.MonkeyP
     chmod_calls: list[str] = []
     monkeypatch.setattr(runner.os, "chmod", lambda path, mode: chmod_calls.append(path))
     err = PermissionError("original")
-    runner._handle_remove_error(fake_remover, "x.txt", (PermissionError, err, None))
+    try:
+        raise err
+    except PermissionError as exc:
+        tb = exc.__traceback__
+        assert tb is not None
+        runner._handle_remove_error(fake_remover, "x.txt", (PermissionError, err, tb))
 
     assert chmod_calls == ["x.txt"]
     assert removed == ["x.txt"]
@@ -462,7 +469,12 @@ def test_handle_remove_error_chmod_retry_and_failure(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(runner.os, "chmod", fail_chmod)
     original = PermissionError("keep me")
     with pytest.raises(PermissionError, match="keep me"):
-        runner._handle_remove_error(fake_remover, "y.txt", (PermissionError, original, None))
+        try:
+            raise original
+        except PermissionError as exc:
+            tb = exc.__traceback__
+            assert tb is not None
+            runner._handle_remove_error(fake_remover, "y.txt", (PermissionError, original, tb))
 
 
 def test_remove_paths_missing_directory_and_permission_retry(
@@ -484,12 +496,12 @@ def test_remove_paths_missing_directory_and_permission_retry(
     orig_unlink = Path.unlink
     unlink_calls = {"count": 0}
 
-    def fake_unlink(path: Path, *args: object, **kwargs: object) -> None:
+    def fake_unlink(path: Path, *, missing_ok: bool = False) -> None:
         if path == file_path and unlink_calls["count"] == 0:
             unlink_calls["count"] += 1
             raise PermissionError("deny")
         unlink_calls["count"] += 1
-        return orig_unlink(path, *args, **kwargs)
+        return orig_unlink(path, missing_ok=missing_ok)
 
     chmod_calls: list[Path] = []
     monkeypatch.setattr(Path, "unlink", fake_unlink)
@@ -567,7 +579,7 @@ def test_has_existing_outputs_negative_case(tmp_path: Path) -> None:
     )
 
 
-def _write_manifest_lines(path: Path, lines: list[dict[str, object]]) -> None:
+def _write_manifest_lines(path: Path, lines: list[dict[str, int]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
 
@@ -609,7 +621,7 @@ def test_validate_resume_outputs_promotes_legacy_manifest(tmp_path: Path) -> Non
 
 @pytest.mark.parametrize("meta", [None, "bad"])
 def test_validate_resume_outputs_checkpoint_meta_missing_or_non_mapping(
-    tmp_path: Path, meta: object
+    tmp_path: Path, meta: str | None
 ) -> None:
     cfg = _cfg(tmp_path)
     n_dir = cfg.results_root / "2_players"
@@ -642,7 +654,7 @@ def test_validate_resume_outputs_checkpoint_meta_missing_or_non_mapping(
 def test_validate_resume_outputs_checkpoint_meta_mismatch_keys(
     tmp_path: Path,
     bad_key: str,
-    bad_value: object,
+    bad_value: int | str,
 ) -> None:
     cfg = _cfg(tmp_path)
     manifest = _manifest_df()
@@ -704,7 +716,7 @@ def test_validate_resume_outputs_no_checkpoint_and_no_valid_manifest_raises(tmp_
 def test_validate_resume_outputs_row_manifest_invalid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    rows: list[dict[str, object]],
+    rows: list[dict[str, int]],
     match: str,
 ) -> None:
     cfg = _cfg(tmp_path)
@@ -735,7 +747,7 @@ def test_validate_resume_outputs_row_manifest_invalid(
 )
 def test_validate_resume_outputs_metrics_manifest_invalid(
     tmp_path: Path,
-    rows: list[dict[str, object]],
+    rows: list[dict[str, int]],
     match: str,
 ) -> None:
     cfg = _cfg(tmp_path)
@@ -830,7 +842,7 @@ def test_run_single_n_empty_rows_and_legacy_sq_sum_outputs(
         },
     ]
 
-    def fake_worker(**kwargs: object) -> None:  # noqa: ANN001
+    def fake_worker(**kwargs: Any) -> None:  # noqa: ANN001
         ckpt = Path(kwargs["checkpoint_path"])
         meta_sha = kwargs["checkpoint_metadata"]["strategy_manifest_sha"]
         payload = payloads.pop(0)
