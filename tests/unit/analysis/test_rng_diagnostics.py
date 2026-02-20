@@ -1,4 +1,5 @@
 import logging
+from pathlib import Path
 from typing import cast
 
 import pandas as pd
@@ -129,6 +130,99 @@ def test_run_missing_curated_file_logs_and_emits_no_artifact(tmp_path, caplog):
     )
 
 
+def test_run_interseed_not_ready_short_circuits(tmp_path, caplog):
+    cfg, _, _ = build_curated_fixture(tmp_path)
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+    cfg.io.interseed_input_dir = None
+
+    caplog.set_level(logging.INFO)
+    rng_diagnostics.run(cfg, lags=(1,), force=True)
+
+    assert not cfg.rng_output_path("rng_diagnostics.parquet").exists()
+    assert any(
+        getattr(rec, "stage", None) == "rng_diagnostics"
+        and "interseed inputs missing" in str(getattr(rec, "reason", ""))
+        for rec in caplog.records
+    )
+
+
+def test_run_invalid_lags_short_circuits(tmp_path, caplog):
+    cfg, _, _ = build_curated_fixture(tmp_path)
+    cfg.io.interseed_input_dir = tmp_path / "interseed"
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+
+    caplog.set_level(logging.INFO)
+    rng_diagnostics.run(cfg, lags=(0, -5), force=True)
+
+    assert not cfg.rng_output_path("rng_diagnostics.parquet").exists()
+    assert any(
+        getattr(rec, "stage", None) == "rng_diagnostics"
+        and getattr(rec, "reason", None) == "no valid lags provided"
+        for rec in caplog.records
+    )
+
+
+def test_run_missing_seat_strategy_columns_logs_and_skips(tmp_path, caplog):
+    cfg, _, _ = build_curated_fixture(tmp_path)
+    cfg.io.interseed_input_dir = tmp_path / "interseed"
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+    curated = cfg.curated_parquet
+    curated.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.Table.from_pydict(
+            {
+                "game_seed": [1, 2],
+                "n_rounds": [7, 8],
+                "winner_strategy": ["A", "B"],
+            }
+        ),
+        curated,
+    )
+
+    caplog.set_level(logging.INFO)
+    rng_diagnostics.run(cfg, lags=(1,), force=True)
+
+    assert not cfg.rng_output_path("rng_diagnostics.parquet").exists()
+    assert any(
+        getattr(rec, "stage", None) == "rng_diagnostics"
+        and getattr(rec, "reason", None) == "curated parquet missing seat strategy columns"
+        for rec in caplog.records
+    )
+
+
+def test_run_up_to_date_short_circuit_skips_dataset_read(tmp_path, monkeypatch, caplog):
+    cfg, _, _ = build_curated_fixture(tmp_path)
+    cfg.io.interseed_input_dir = tmp_path / "interseed"
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+
+    curated = cfg.curated_parquet
+    curated.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.Table.from_pydict(
+            {
+                "game_seed": [1, 2, 3, 4, 5, 6],
+                "n_rounds": [2, 4, 6, 8, 10, 12],
+                "winner_strategy": ["A", "B", "A", "B", "A", "B"],
+                "P1_strategy": ["A"] * 6,
+                "P2_strategy": ["B"] * 6,
+            }
+        ),
+        curated,
+    )
+
+    rng_diagnostics.run(cfg, lags=(1, 2), force=True)
+    assert cfg.rng_output_path("rng_diagnostics.parquet").exists()
+
+    def _raise_if_called(_: Path):
+        raise AssertionError("dataset read should not run when done stamp is up-to-date")
+
+    monkeypatch.setattr(rng_diagnostics.ds, "dataset", _raise_if_called)
+    caplog.set_level(logging.INFO)
+    rng_diagnostics.run(cfg, lags=(1, 2), force=False)
+
+    assert any("rng-diagnostics: up-to-date" in rec.getMessage() for rec in caplog.records)
+
+
 def test_run_malformed_schema_logs_and_emits_no_artifact(tmp_path, caplog):
     cfg, _, _ = build_curated_fixture(tmp_path)
     cfg.io.interseed_input_dir = tmp_path / "interseed"
@@ -215,6 +309,36 @@ def test_normalize_lags_and_winner_resolution():
     assert resolved.tolist() == ["Z", "Y", pd.NA, pd.NA, pd.NA]
 
 
+def test_winner_column_and_winner_strategy_edge_cases():
+    assert rng_diagnostics._winner_column({"winner_strategy", "winner_seat"}) == "winner_strategy"
+    assert rng_diagnostics._winner_column({"winner_seat"}) == "winner_seat"
+    assert rng_diagnostics._winner_column({"P1_strategy"}) is None
+
+    direct = pd.DataFrame({"winner_strategy": ["A", "B"]})
+    assert rng_diagnostics._winner_strategies(direct, "winner_strategy", ["P1_strategy"]).tolist() == [
+        "A",
+        "B",
+    ]
+
+    seat_df = pd.DataFrame({"winner_seat": ["P1", "P2"], "other": [1, 2]})
+    none_cols = rng_diagnostics._winner_strategies(seat_df, "winner_seat", ["other"])
+    assert none_cols.tolist() == [pd.NA, pd.NA]
+
+    unresolved = pd.DataFrame(
+        {
+            "winner_seat": ["P7", "bad"],
+            "P1_strategy": ["A", "C"],
+            "P2_strategy": ["B", "D"],
+        }
+    )
+    unresolved_winners = rng_diagnostics._winner_strategies(
+        unresolved,
+        "winner_seat",
+        ["P1_strategy", "P2_strategy"],
+    )
+    assert unresolved_winners.tolist() == [pd.NA, pd.NA]
+
+
 def test_seat_strategy_columns_excludes_winner_strategy_and_sorts(tmp_path):
     cfg, _, _ = build_curated_fixture(tmp_path)
 
@@ -243,3 +367,124 @@ def test_build_matchup_labels_handles_mixed_player_counts_and_nulls():
         "Bravo",
         "Delta | Echo | Foxtrot",
     ]
+
+
+def test_build_matchup_labels_empty_paths_and_strategy_parser_error():
+    no_valid_cols = pd.DataFrame({"x": [1, 2]})
+    labels = rng_diagnostics._build_matchup_labels(no_valid_cols, ["x", "y"])
+    assert labels.tolist() == [pd.NA, pd.NA]
+
+    all_nulls = pd.DataFrame({"P1_strategy": [pd.NA, pd.NA]})
+    null_labels = rng_diagnostics._build_matchup_labels(all_nulls, ["P1_strategy"])
+    assert null_labels.tolist() == [pd.NA, pd.NA]
+
+    with pytest.raises(ValueError, match="invalid seat strategy column"):
+        rng_diagnostics._seat_number_from_strategy_column("seat_1")
+
+
+def test_group_diagnostics_edge_cases_and_stamp_lifecycle(tmp_path):
+    short_group = pd.DataFrame(
+        {
+            "game_seed": [1, 2],
+            "win_indicator": [1, 0],
+            "n_rounds": [5, 6],
+        }
+    )
+    assert not rng_diagnostics._group_diagnostics(
+        short_group,
+        lags=(3,),
+        summary_level="strategy",
+        strategy="A",
+        n_players=2,
+    )
+
+    constant_group = pd.DataFrame(
+        {
+            "game_seed": [3, 2, 1],
+            "win_indicator": [1, 1, 1],
+            "n_rounds": [10, 10, 10],
+        }
+    )
+    assert not rng_diagnostics._group_diagnostics(
+        constant_group,
+        lags=(1,),
+        summary_level="strategy",
+        strategy="B",
+        n_players=2,
+    )
+
+    input_path = tmp_path / "in.txt"
+    output_path = tmp_path / "out.txt"
+    stamp_path = tmp_path / "stamp.json"
+    input_path.write_text("input")
+    output_path.write_text("output")
+
+    stamp = rng_diagnostics._stamp(input_path)
+    assert set(stamp) == {"mtime", "size"}
+    assert stamp["size"] == input_path.stat().st_size
+
+    rng_diagnostics._write_stamp(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        lags=(1, 2),
+        config_sha="abc",
+    )
+    assert rng_diagnostics._is_up_to_date(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        lags=(1, 2),
+        config_sha="abc",
+    )
+
+    assert not rng_diagnostics._is_up_to_date(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        lags=(2, 3),
+        config_sha="abc",
+    )
+    assert not rng_diagnostics._is_up_to_date(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        lags=(1, 2),
+        config_sha="def",
+    )
+
+    input_path.write_text("input-changed")
+    assert not rng_diagnostics._is_up_to_date(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        lags=(1, 2),
+        config_sha="abc",
+    )
+
+    input_path.write_text("input")
+    rng_diagnostics._write_stamp(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        lags=(1, 2),
+        config_sha="abc",
+    )
+    output_path.unlink()
+    assert not rng_diagnostics._is_up_to_date(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        lags=(1, 2),
+        config_sha="abc",
+    )
+
+    output_path.write_text("output")
+    stamp_path.write_text("not-json")
+    assert not rng_diagnostics._is_up_to_date(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        lags=(1, 2),
+        config_sha="abc",
+    )
