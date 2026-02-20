@@ -97,6 +97,12 @@ def test_two_seed_resolve_seed_pair_and_parser_validation() -> None:
         two_seed._resolve_seed_pair(args, parser)
 
 
+def test_two_seed_resolve_seed_pair_empty_args_returns_none() -> None:
+    parser = two_seed.build_parser()
+    args = parser.parse_args([])
+    assert two_seed._resolve_seed_pair(args, parser) is None
+
+
 def test_two_seed_build_parser_defaults() -> None:
     parser = two_seed.build_parser()
     args = parser.parse_args([])
@@ -127,6 +133,109 @@ def test_two_seed_main_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     assert called["logging"] is True
     assert called["seed_pair"] == (7, 8)
     assert called["force"] is True
+
+
+@pytest.mark.parametrize(
+    ("force", "markers", "expected_runs", "expected_marker_checks"),
+    [
+        (False, {3: True, 4: True}, [], [3, 4]),
+        (False, {3: False, 4: False}, [3, 4], [3, 4]),
+        (True, {3: True, 4: True}, [3, 4], []),
+    ],
+)
+def test_two_seed_run_seeds_skip_normal_and_forced(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    force: bool,
+    markers: dict[int, bool],
+    expected_runs: list[int],
+    expected_marker_checks: list[int],
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    seed_pair = (3, 4)
+
+    call_log: dict[str, list[Any]] = {
+        "seed_pair_seed_root": [],
+        "prepare_seed_config": [],
+        "marker_checks": [],
+        "write_active_config": [],
+        "run_tournament": [],
+    }
+
+    def fake_seed_pair_seed_root(_cfg: AppConfig, pair: tuple[int, int], seed: int) -> Path:
+        call_log["seed_pair_seed_root"].append((pair, seed))
+        return tmp_path / f"seed_{seed}"
+
+    def fake_prepare_seed_config(
+        _cfg: AppConfig,
+        *,
+        seed: int,
+        base_results_dir: Path,
+        meta_analysis_dir: Path | None = None,
+    ) -> AppConfig:
+        del meta_analysis_dir
+        call_log["prepare_seed_config"].append((seed, base_results_dir))
+        seed_cfg = AppConfig(io=IOConfig(results_dir_prefix=base_results_dir))
+        seed_cfg.sim.seed = seed
+        return seed_cfg
+
+    def fake_seed_has_completion_markers(seed_cfg: AppConfig) -> bool:
+        seed = seed_cfg.sim.seed
+        assert seed is not None
+        call_log["marker_checks"].append(seed)
+        return markers[seed]
+
+    def fake_write_active_config(seed_cfg: AppConfig) -> None:
+        call_log["write_active_config"].append(seed_cfg.sim.seed)
+
+    def fake_run_tournament(seed_cfg: AppConfig, *, force: bool = False) -> None:
+        call_log["run_tournament"].append((seed_cfg.sim.seed, force))
+
+    monkeypatch.setattr(two_seed, "seed_pair_seed_root", fake_seed_pair_seed_root)
+    monkeypatch.setattr(two_seed, "prepare_seed_config", fake_prepare_seed_config)
+    monkeypatch.setattr(two_seed, "seed_has_completion_markers", fake_seed_has_completion_markers)
+    monkeypatch.setattr(two_seed, "write_active_config", fake_write_active_config)
+    monkeypatch.setattr(two_seed.runner, "run_tournament", fake_run_tournament)
+
+    two_seed.run_seeds(cfg, seed_pair=seed_pair, force=force)
+
+    assert call_log["seed_pair_seed_root"] == [((3, 4), 3), ((3, 4), 4)]
+    assert [seed for seed, _ in call_log["prepare_seed_config"]] == [3, 4]
+    assert call_log["marker_checks"] == expected_marker_checks
+    assert call_log["write_active_config"] == expected_runs
+    assert call_log["run_tournament"] == [(seed, force) for seed in expected_runs]
+
+
+def test_two_seed_main_uses_populated_seed_pair_when_no_cli_seed_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+
+    called: dict[str, Any] = {}
+
+    def fake_populate_seed_list(count: int) -> list[int]:
+        called["populate_count"] = count
+        return [101, 202]
+
+    monkeypatch.setattr(cfg.sim, "populate_seed_list", fake_populate_seed_list)
+    monkeypatch.setattr(two_seed, "setup_info_logging", lambda: called.setdefault("logging", True))
+    monkeypatch.setattr(two_seed, "load_app_config", lambda path, seed_list_len=0: cfg)
+    monkeypatch.setattr(two_seed, "apply_dot_overrides", lambda c, overrides: c)
+
+    def fake_run_seeds(run_cfg: AppConfig, *, seed_pair: tuple[int, int], force: bool) -> None:
+        called["cfg"] = run_cfg
+        called["seed_pair"] = seed_pair
+        called["force"] = force
+
+    monkeypatch.setattr(two_seed, "run_seeds", fake_run_seeds)
+
+    rc = two_seed.main([])
+    assert rc == 0
+    assert called["logging"] is True
+    assert called["populate_count"] == 2
+    assert called["cfg"] is cfg
+    assert called["seed_pair"] == (101, 202)
+    assert called["force"] is False
 
 
 def test_two_seed_pipeline_helpers(base_cfg: AppConfig, tmp_path: Path) -> None:
