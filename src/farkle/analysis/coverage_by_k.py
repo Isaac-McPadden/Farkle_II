@@ -30,7 +30,7 @@ from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.simulation.simulation import generate_strategy_grid
-from farkle.utils.analysis_shared import to_int
+from farkle.utils.analysis_shared import is_na, to_int
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
 
 LOGGER = logging.getLogger(__name__)
@@ -77,10 +77,7 @@ def _pandas_scalar_to_int(value: _CoverageScalar) -> int | None:
     if not isinstance(normalized, _PANDAS_SCALAR_RUNTIME_TYPES):
         return None
 
-    is_na = pd.isna(normalized)
-    if not isinstance(is_na, bool):
-        return None
-    if is_na:
+    if is_na(normalized):
         return None
 
     try:

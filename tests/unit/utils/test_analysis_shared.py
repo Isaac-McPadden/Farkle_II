@@ -1,7 +1,15 @@
 import numpy as np
 import pytest
 
-from farkle.utils.analysis_shared import tiers_to_map, to_int, to_stat_value, try_to_int
+from farkle.utils.analysis_shared import (
+    as_float,
+    as_int,
+    is_na,
+    tiers_to_map,
+    to_int,
+    to_stat_value,
+    try_to_int,
+)
 
 
 def test_try_to_int_handles_numpy_scalar_bool_invalid_and_non_finite() -> None:
@@ -93,3 +101,34 @@ def test_tiers_to_map_handles_empty_tiers_with_stable_ranks() -> None:
         "B": 4,
         "C": 4,
     }
+
+
+def test_is_na_accepts_common_scalar_missing_values() -> None:
+    assert is_na(None) is True
+    assert is_na(np.nan) is True
+    assert is_na(np.float64(np.nan)) is True
+    assert is_na(np.int64(2)) is False
+
+
+def test_as_float_and_as_int_reject_na_and_non_numeric() -> None:
+    with pytest.raises(ValueError, match="NA value"):
+        as_float(np.nan)
+    with pytest.raises(ValueError, match="NA value"):
+        as_int(np.nan)
+
+    with pytest.raises(TypeError, match="numeric scalar"):
+        as_float("1.2")
+    with pytest.raises(TypeError, match="numeric scalar"):
+        as_int("2")
+
+
+def test_as_int_requires_integral_float_values() -> None:
+    assert as_int(np.float64(4.0)) == 4
+    with pytest.raises(ValueError, match="non-integral float"):
+        as_int(4.5)
+
+
+def test_as_float_accepts_numpy_and_python_numeric_scalars() -> None:
+    assert as_float(np.int64(3)) == pytest.approx(3.0)
+    assert as_float(np.float32(1.5)) == pytest.approx(1.5)
+    assert as_float(True) == pytest.approx(1.0)

@@ -11,6 +11,7 @@ import pytest
 from farkle.analysis import h2h_tier_trends
 from farkle.analysis.stage_state import stage_done_path
 from farkle.config import AppConfig
+from farkle.utils.analysis_shared import is_na
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
@@ -168,8 +169,8 @@ def test_pooled_across_k_zero_weight_and_heterogeneity_metrics() -> None:
 
     pooled = h2h_tier_trends._pooled_across_k(frame).set_index("strategy_id")
 
-    assert math.isnan(float(pooled.loc["nanw", "pooled_win_rate"]))
-    assert math.isnan(float(pooled.loc["nanw", "pooled_se"]))
+    assert is_na(pooled.loc["nanw", "pooled_win_rate"])
+    assert is_na(pooled.loc["nanw", "pooled_se"])
 
     assert pooled.loc["het", "Q"] == 18.0
     assert pooled.loc["het", "I2"] == ((18.0 - 1.0) / 18.0) * 100.0

@@ -10,6 +10,7 @@ import pytest
 
 from farkle.analysis import seed_summaries
 from farkle.config import AppConfig
+from farkle.utils.analysis_shared import is_na
 from farkle.utils.stats import wilson_ci
 
 
@@ -454,7 +455,7 @@ def test_weighted_means_helpers_ignore_nan_and_zero_weights() -> None:
     )
     by_strategy = seed_summaries._weighted_means_by_strategy(frame, ["mean_score"])
     assert by_strategy.loc[1, "score_mean"] == pytest.approx(2.0)
-    assert np.isnan(by_strategy.loc[2, "score_mean"])
+    assert is_na(by_strategy.loc[2, "score_mean"])
 
     weighted = seed_summaries._weighted_means_with_weights(
         frame,
@@ -464,7 +465,7 @@ def test_weighted_means_helpers_ignore_nan_and_zero_weights() -> None:
     assert weighted.loc[1, "pooling_weight_sum"] == pytest.approx(1.0)
     assert weighted.loc[1, "mean_score"] == pytest.approx(2.0)
     assert weighted.loc[2, "pooling_weight_sum"] == pytest.approx(0.0)
-    assert np.isnan(weighted.loc[2, "mean_score"])
+    assert is_na(weighted.loc[2, "mean_score"])
 
 
 def test_load_metrics_frame_raises_for_missing_file_null_seed_and_non_numeric_strategy(

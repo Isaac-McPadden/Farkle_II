@@ -9,6 +9,7 @@ import pytest
 from farkle.analysis import variance
 from farkle.analysis.stage_state import stage_done_path, write_stage_done
 from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.utils.analysis_shared import is_na
 
 
 @pytest.fixture
@@ -288,7 +289,7 @@ def test_helper_edge_cases_and_column_order(caplog: pytest.LogCaptureFixture, tm
     merged_right = variance._merge_metrics(metrics_empty, variance_frame)
     assert merged_right.loc[0, "win_rate_mean"] == pytest.approx(0.60)
     assert merged_right.loc[0, "signal_to_noise"] == pytest.approx(1.0)
-    assert np.isnan(merged_right.loc[1, "signal_to_noise"])
+    assert is_na(merged_right.loc[1, "signal_to_noise"])
 
     desired_order = [
         "strategy_id",
