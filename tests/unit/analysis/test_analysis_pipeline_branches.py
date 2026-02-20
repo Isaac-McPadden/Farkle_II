@@ -29,14 +29,18 @@ def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tupl
     return cfg_path, cfg
 
 
-def test_cli_errors_when_seed_pair_and_single_seed_flags_combined(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_errors_when_seed_pair_and_single_seed_flags_combined(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     with pytest.raises(SystemExit):
         pipeline.main(["--seed-pair", "1", "2", "--seed-a", "9", "ingest"])
 
     assert "Use --seed-pair or --seed-a/--seed-b, not both." in capsys.readouterr().err
 
 
-def test_cli_errors_when_only_one_seed_from_pair_is_provided(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_errors_when_only_one_seed_from_pair_is_provided(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
     with pytest.raises(SystemExit):
         pipeline.main(["--seed-a", "9", "ingest"])
 
@@ -128,7 +132,11 @@ def test_main_logs_deprecated_flag_warnings(
         for rec in caplog.records
         if rec.getMessage() == "Deprecated CLI flag ignored; stages now run based on inputs"
     ]
-    assert {cast(Any, rec).flag for rec in records} == {"disable_trueskill", "disable_head2head", "run_interseed"}
+    assert {cast(Any, rec).flag for rec in records} == {
+        "disable_trueskill",
+        "disable_head2head",
+        "run_interseed",
+    }
 
 
 def test_interseed_summary_skips_rng_stage_when_disabled(
@@ -144,7 +152,9 @@ def test_interseed_summary_skips_rng_stage_when_disabled(
                 run=lambda cfg, **kwargs: calls.append(("interseed", kwargs["run_rng_diagnostics"]))
             )
         if module == "farkle.analysis.rng_diagnostics":
-            return types.SimpleNamespace(run=lambda cfg, **kwargs: calls.append(("rng", kwargs.get("lags"))))
+            return types.SimpleNamespace(
+                run=lambda cfg, **kwargs: calls.append(("rng", kwargs.get("lags")))
+            )
         return None
 
     monkeypatch.setattr("farkle.analysis._optional_import", _optional_import, raising=True)
@@ -179,7 +189,9 @@ def test_interseed_summary_runs_rng_stage_and_uses_sorted_unique_lags(
                 run=lambda cfg, **kwargs: calls.append(("interseed", kwargs["run_rng_diagnostics"]))
             )
         if module == "farkle.analysis.rng_diagnostics":
-            return types.SimpleNamespace(run=lambda cfg, **kwargs: calls.append(("rng", kwargs.get("lags"))))
+            return types.SimpleNamespace(
+                run=lambda cfg, **kwargs: calls.append(("rng", kwargs.get("lags")))
+            )
         return None
 
     monkeypatch.setattr("farkle.analysis._optional_import", _optional_import, raising=True)
@@ -222,7 +234,9 @@ def test_interseed_layout_is_restored_when_rng_stage_raises(
         if module == "farkle.analysis.interseed_analysis":
             return types.SimpleNamespace(run=lambda cfg, **kwargs: None)
         if module == "farkle.analysis.rng_diagnostics":
-            return types.SimpleNamespace(run=lambda cfg, **kwargs: (_ for _ in ()).throw(RuntimeError("rng boom")))
+            return types.SimpleNamespace(
+                run=lambda cfg, **kwargs: (_ for _ in ()).throw(RuntimeError("rng boom"))
+            )
         return None
 
     monkeypatch.setattr("farkle.analysis._optional_import", _optional_import, raising=True)
@@ -238,6 +252,45 @@ def test_interseed_layout_is_restored_when_rng_stage_raises(
         pipeline.main(["--config", str(cfg_path), "--rng-diagnostics", "analytics"])
 
     assert cfg._stage_layout is before_after["before"]
+
+
+def test_seed_symmetry_stage_runs_after_head2head(
+    tmp_results_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg_path, _ = _make_config(tmp_results_dir, monkeypatch)
+    calls: list[str] = []
+
+    def _optional_import(module: str, *, stage_log=None):  # noqa: ANN001
+        if module == "farkle.analysis.head2head":
+            return types.SimpleNamespace(run=lambda cfg: calls.append("head2head_run"))
+        if module == "farkle.analysis.h2h_analysis":
+            return types.SimpleNamespace(run_post_h2h=lambda cfg: None)
+        if module == "farkle.analysis.hgb_feat":
+            return types.SimpleNamespace(run=lambda cfg: None)
+        if module == "farkle.analysis.tiering_report":
+            return types.SimpleNamespace(run=lambda cfg: None)
+        if module == "farkle.analysis.trueskill":
+            return types.SimpleNamespace(run=lambda cfg: None)
+        return None
+
+    monkeypatch.setattr("farkle.analysis._optional_import", _optional_import, raising=True)
+    monkeypatch.setattr(
+        "farkle.analysis.run_seed_symmetry",
+        lambda cfg, force=False: calls.append(f"seed_symmetry_run:{force}"),
+        raising=True,
+    )
+
+    def _run_targeted_steps(plan, context, **_kwargs):  # noqa: ANN001
+        for name in ("head2head", "seed_symmetry"):
+            next(item for item in plan if item.name == name).action(context.config)
+
+    monkeypatch.setattr("farkle.analysis.pipeline.StageRunner.run", _run_targeted_steps)
+
+    rc = pipeline.main(["--config", str(cfg_path), "analytics"])
+
+    assert rc == 0
+    assert calls == ["head2head_run", "seed_symmetry_run:False"]
 
 
 def test_stringify_paths_recurses_for_nested_collections() -> None:

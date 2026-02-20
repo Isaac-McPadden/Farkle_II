@@ -39,13 +39,29 @@ def test_run_no_longer_invokes_symmetry_branch(tmp_path, monkeypatch):
 
     stamp_calls: list[tuple[Path, list[Path], list[Path]]] = []
     done_calls: list[tuple[Path, list[Path], list[Path]]] = []
+    up_to_date_calls: list[tuple[Path, list[Path], list[Path]]] = []
 
     monkeypatch.setattr(metrics, "check_pre_metrics", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(metrics, "stage_is_up_to_date", lambda *_args, **_kwargs: False)
+
+    def _record_stage_check(done_path: Path, *, inputs, outputs, config_sha=None):  # noqa: ANN001
+        up_to_date_calls.append((done_path, list(inputs), list(outputs)))
+        return False
+
+    monkeypatch.setattr(metrics, "stage_is_up_to_date", _record_stage_check)
+    monkeypatch.setattr(
+        cfg,
+        "head2head_path",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("metrics must not consult head2head artifacts")
+        ),
+    )
     monkeypatch.setattr(
         metrics,
         "_ensure_isolated_metrics",
-        lambda *_args, **_kwargs: ([cfg.metrics_isolated_path(3)], [cfg.results_root / "3_players" / "3p_metrics.parquet"]),
+        lambda *_args, **_kwargs: (
+            [cfg.metrics_isolated_path(3)],
+            [cfg.results_root / "3_players" / "3p_metrics.parquet"],
+        ),
     )
     monkeypatch.setattr(
         metrics,
@@ -62,9 +78,21 @@ def test_run_no_longer_invokes_symmetry_branch(tmp_path, monkeypatch):
             }
         ),
     )
-    monkeypatch.setattr(metrics, "_compute_weighted_metrics", lambda *_args, **_kwargs: pd.DataFrame({"strategy": [1]}))
-    monkeypatch.setattr(metrics, "compute_seat_advantage", lambda *_args, **_kwargs: pd.DataFrame({"seat": [1], "games_with_seat": [1], "wins": [1], "win_rate": [1.0]}))
-    monkeypatch.setattr(metrics, "compute_seat_metrics", lambda *_args, **_kwargs: pd.DataFrame({"seat": [1]}))
+    monkeypatch.setattr(
+        metrics,
+        "_compute_weighted_metrics",
+        lambda *_args, **_kwargs: pd.DataFrame({"strategy": [1]}),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "compute_seat_advantage",
+        lambda *_args, **_kwargs: pd.DataFrame(
+            {"seat": [1], "games_with_seat": [1], "wins": [1], "win_rate": [1.0]}
+        ),
+    )
+    monkeypatch.setattr(
+        metrics, "compute_seat_metrics", lambda *_args, **_kwargs: pd.DataFrame({"seat": [1]})
+    )
 
     monkeypatch.setattr(metrics, "write_parquet_atomic", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(metrics, "write_csv_atomic", lambda *_args, **_kwargs: None)
@@ -76,13 +104,20 @@ def test_run_no_longer_invokes_symmetry_branch(tmp_path, monkeypatch):
     monkeypatch.setattr(
         metrics,
         "write_stage_done",
-        lambda path, *, inputs, outputs, config_sha=None: done_calls.append((path, list(inputs), list(outputs))),
+        lambda path, *, inputs, outputs, config_sha=None: done_calls.append(
+            (path, list(inputs), list(outputs))
+        ),
     )
 
     metrics.run(cfg)
 
     assert stamp_calls
     assert done_calls
+    assert all(
+        "bonferroni_selfplay_symmetry.parquet" not in str(path)
+        for _done, inputs, outputs in up_to_date_calls
+        for path in [*inputs, *outputs]
+    )
 
 
 def test_run_stage_up_to_date_permutations(tmp_path, monkeypatch):
@@ -125,13 +160,36 @@ def test_run_stage_up_to_date_permutations(tmp_path, monkeypatch):
     monkeypatch.setattr(metrics, "check_pre_metrics", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(metrics, "stage_is_up_to_date", fake_stage_up_to_date)
     monkeypatch.setattr(metrics.pd, "read_parquet", fake_read_parquet)
-    monkeypatch.setattr(metrics.pd, "read_csv", lambda path, *_args, **_kwargs: calls.append(f"read_csv:{Path(path).name}") or pd.DataFrame({"seat": [1], "games_with_seat": [1], "wins": [1], "win_rate": [1.0]}))
-    monkeypatch.setattr(metrics, "_compute_weighted_metrics", lambda *_args, **_kwargs: calls.append("compute_weighted") or pd.DataFrame({"strategy": ["A"], "games": [10], "wins": [6]}))
-    monkeypatch.setattr(metrics, "compute_seat_metrics", lambda *_args, **_kwargs: calls.append("compute_seat_metrics") or pd.DataFrame({"seat": [1]}))
-    monkeypatch.setattr(metrics, "write_parquet_atomic", lambda *_args, **_kwargs: calls.append("write_parquet"))
-    monkeypatch.setattr(metrics, "write_csv_atomic", lambda *_args, **_kwargs: calls.append("write_csv"))
-    monkeypatch.setattr(metrics, "_write_stamp", lambda *_args, **_kwargs: calls.append("write_stamp"))
-    monkeypatch.setattr(metrics, "write_stage_done", lambda *_args, **_kwargs: calls.append("write_done"))
+    monkeypatch.setattr(
+        metrics.pd,
+        "read_csv",
+        lambda path, *_args, **_kwargs: calls.append(f"read_csv:{Path(path).name}")
+        or pd.DataFrame({"seat": [1], "games_with_seat": [1], "wins": [1], "win_rate": [1.0]}),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "_compute_weighted_metrics",
+        lambda *_args, **_kwargs: calls.append("compute_weighted")
+        or pd.DataFrame({"strategy": ["A"], "games": [10], "wins": [6]}),
+    )
+    monkeypatch.setattr(
+        metrics,
+        "compute_seat_metrics",
+        lambda *_args, **_kwargs: calls.append("compute_seat_metrics")
+        or pd.DataFrame({"seat": [1]}),
+    )
+    monkeypatch.setattr(
+        metrics, "write_parquet_atomic", lambda *_args, **_kwargs: calls.append("write_parquet")
+    )
+    monkeypatch.setattr(
+        metrics, "write_csv_atomic", lambda *_args, **_kwargs: calls.append("write_csv")
+    )
+    monkeypatch.setattr(
+        metrics, "_write_stamp", lambda *_args, **_kwargs: calls.append("write_stamp")
+    )
+    monkeypatch.setattr(
+        metrics, "write_stage_done", lambda *_args, **_kwargs: calls.append("write_done")
+    )
 
     metrics.run(cfg)
 
@@ -163,9 +221,7 @@ def test_pooling_weights_for_metrics_variants_and_warning(caplog):
     )
     assert game_count.tolist() == [10.0, 30.0, 5.0]
 
-    equal_k = metrics._pooling_weights_for_metrics(
-        frame, pooling_scheme="equal-k", weights_by_k={}
-    )
+    equal_k = metrics._pooling_weights_for_metrics(frame, pooling_scheme="equal-k", weights_by_k={})
     assert equal_k.tolist() == [0.25, 0.75, 1.0]
 
     with caplog.at_level("WARNING"):
@@ -201,7 +257,9 @@ def test_compute_weighted_metrics_empty_missing_config_and_zero_weight_rows():
 
     out_empty = metrics._compute_weighted_metrics(
         pd.DataFrame(),
-        make_test_app_config(analysis=AnalysisConfig(pooling_weights="equal-k", pooling_weights_by_k={})),
+        make_test_app_config(
+            analysis=AnalysisConfig(pooling_weights="equal-k", pooling_weights_by_k={})
+        ),
     )
     assert out_empty.empty
 
@@ -218,7 +276,9 @@ def test_compute_weighted_metrics_empty_missing_config_and_zero_weight_rows():
     )
     out = metrics._compute_weighted_metrics(
         frame,
-        make_test_app_config(analysis=AnalysisConfig(pooling_weights="game-count", pooling_weights_by_k={})),
+        make_test_app_config(
+            analysis=AnalysisConfig(pooling_weights="game-count", pooling_weights_by_k={})
+        ),
     )
     assert out["strategy"].tolist() == ["B"]
 
@@ -302,7 +362,9 @@ def test_write_stamp_includes_only_existing_paths(tmp_path):
 
 
 def test_ensure_isolated_metrics_fallback_and_missing_raw_warning(tmp_path, monkeypatch, caplog):
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2, 3, 4]))
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2, 3, 4])
+    )
 
     raw2 = cfg.results_root / "2_players" / "2p_metrics.parquet"
     raw3 = cfg.results_root / "3_players" / "3p_metrics.parquet"
