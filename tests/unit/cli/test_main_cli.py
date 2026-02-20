@@ -60,6 +60,49 @@ def test_parse_level_accepts_int(preserve_root_logger):
     assert root.level == logging.ERROR
 
 
+def test_parse_level_unknown_string_defaults_to_info():
+    assert cli_main._parse_level("not-a-real-level") == logging.INFO
+
+
+def test_resolve_seed_pair_prefers_seed_pair_form():
+    parser = cli_main.build_parser()
+    args, _ = parser.parse_known_args(["--seed-pair", "10", "20", "run"])
+
+    assert cli_main._resolve_seed_pair(args, parser) == (10, 20)
+
+
+def test_resolve_seed_pair_accepts_seed_a_seed_b_form():
+    parser = cli_main.build_parser()
+    args, _ = parser.parse_known_args(["--seed-a", "10", "--seed-b", "20", "run"])
+
+    assert cli_main._resolve_seed_pair(args, parser) == (10, 20)
+
+
+def test_resolve_seed_pair_returns_none_when_unset():
+    parser = cli_main.build_parser()
+    args, _ = parser.parse_known_args(["run"])
+
+    assert cli_main._resolve_seed_pair(args, parser) is None
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--seed-pair", "1", "2", "--seed-a", "3", "--seed-b", "4", "run"],
+        ["--seed-a", "1", "run"],
+        ["--seed-b", "2", "run"],
+    ],
+)
+def test_resolve_seed_pair_rejects_invalid_combinations(argv):
+    parser = cli_main.build_parser()
+    args, _ = parser.parse_known_args(argv)
+
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main._resolve_seed_pair(args, parser)
+
+    assert excinfo.value.code == 2
+
+
 def test_analyze_metrics_ignores_rng_flags(monkeypatch, preserve_root_logger):
     calls: list[str] = []
 
@@ -165,6 +208,77 @@ def test_analyze_pipeline_dispatches_preprocess_and_analytics(
     ]
 
 
+def test_analyze_metrics_applies_analysis_overrides(
+    monkeypatch, tmp_path: Path, preserve_root_logger
+):
+    captured: dict[str, object] = {}
+
+    def _fake_metrics_run(cfg):
+        captured["thresholds"] = cfg.analysis.game_stats_margin_thresholds
+        captured["target"] = cfg.analysis.rare_event_target_score
+        captured["quantile"] = cfg.analysis.rare_event_margin_quantile
+        captured["target_rate"] = cfg.analysis.rare_event_target_rate
+
+    monkeypatch.setattr(cli_main.metrics, "run", _fake_metrics_run)
+
+    cfg_path = _write_cfg(tmp_path)
+    cli_main.main(
+        [
+            "--config",
+            str(cfg_path),
+            "analyze",
+            "metrics",
+            "--margin-thresholds",
+            "50",
+            "200",
+            "--rare-event-target",
+            "12000",
+            "--rare-event-margin-quantile",
+            "0.05",
+            "--rare-event-target-rate",
+            "0.0002",
+        ]
+    )
+
+    assert captured == {
+        "thresholds": (50, 200),
+        "target": 12000,
+        "quantile": 0.05,
+        "target_rate": 0.0002,
+    }
+
+
+def test_analyze_pipeline_sorts_and_deduplicates_rng_lags(
+    monkeypatch, tmp_path: Path, preserve_root_logger
+):
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        cli_main.analysis_pkg,
+        "run_all",
+        lambda cfg, **kwargs: captured.update(kwargs),
+    )
+    monkeypatch.setattr(cli_main, "_run_preprocess", lambda cfg, **kwargs: None)
+
+    cfg_path = _write_cfg(tmp_path)
+    cli_main.main(
+        [
+            "--config",
+            str(cfg_path),
+            "analyze",
+            "pipeline",
+            "--rng-lags",
+            "4",
+            "2",
+            "4",
+            "1",
+        ]
+    )
+
+    assert captured["rng_lags"] == (1, 2, 4)
+
+
+
 @pytest.mark.parametrize(
     "argv",
     [
@@ -223,6 +337,133 @@ def test_main_rejects_conflicting_seed_flags(preserve_root_logger, argv):
         cli_main.main(argv)
 
     assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize(
+    ("argv", "expected_force", "expected_metrics", "has_row_dir"),
+    [
+        (["run"], False, False, False),
+        (["run", "--metrics", "--force", "--row-dir", "rows"], True, True, True),
+    ],
+)
+def test_run_command_option_branches(
+    monkeypatch,
+    tmp_path: Path,
+    preserve_root_logger,
+    argv,
+    expected_force,
+    expected_metrics,
+    has_row_dir,
+):
+    captured: dict[str, object] = {}
+    cfg_path = _write_cfg(tmp_path)
+
+    monkeypatch.setattr(cli_main, "_write_active_config", lambda cfg, dest_dir: None)
+
+    def _fake_run_single(cfg, n, **kwargs):
+        captured["force"] = kwargs.get("force")
+        captured["expanded_metrics"] = cfg.sim.expanded_metrics
+        captured["row_dir"] = cfg.sim.row_dir
+
+    monkeypatch.setattr(cli_main.runner, "run_single_n", _fake_run_single)
+
+    cli_main.main(["--config", str(cfg_path), *argv])
+
+    assert captured["force"] is expected_force
+    assert captured["expanded_metrics"] is expected_metrics
+    if has_row_dir:
+        assert captured["row_dir"] == Path("rows")
+
+
+def test_analyze_metrics_compute_game_stats_runs_postprocessing(
+    monkeypatch, tmp_path: Path, preserve_root_logger
+):
+    calls: list[str] = []
+
+    monkeypatch.setattr(cli_main.metrics, "run", lambda cfg: calls.append("metrics"))
+    import farkle.analysis.game_stats as game_stats
+
+    monkeypatch.setattr(game_stats, "run", lambda cfg: calls.append("game_stats"))
+
+    cfg_path = _write_cfg(tmp_path)
+    cli_main.main(["--config", str(cfg_path), "analyze", "metrics", "--compute-game-stats"])
+
+    assert calls == ["metrics", "game_stats"]
+
+
+@pytest.mark.parametrize("compute_game_stats", [False, True])
+def test_run_preprocess_optional_game_stats(monkeypatch, compute_game_stats):
+    calls: list[str] = []
+
+    monkeypatch.setattr(cli_main.ingest, "run", lambda cfg: calls.append("ingest"))
+    monkeypatch.setattr(cli_main.curate, "run", lambda cfg: calls.append("curate"))
+    monkeypatch.setattr(cli_main.combine, "run", lambda cfg: calls.append("combine"))
+    monkeypatch.setattr(cli_main.metrics, "run", lambda cfg: calls.append("metrics"))
+    import farkle.analysis.game_stats as game_stats
+
+    monkeypatch.setattr(game_stats, "run", lambda cfg: calls.append("game_stats"))
+
+    cli_main._run_preprocess(cli_main.AppConfig(), compute_game_stats=compute_game_stats)
+
+    expected = ["ingest", "curate", "combine", "metrics"]
+    if compute_game_stats:
+        expected.append("game_stats")
+    assert calls == expected
+
+
+def test_two_seed_pipeline_top_level_passes_force_and_seed_pair(
+    monkeypatch, tmp_path: Path, preserve_root_logger
+):
+    captured: dict[str, object] = {}
+    cfg_path = _write_cfg(tmp_path)
+
+    def _fake_run_pipeline(cfg, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main.two_seed_pipeline, "run_pipeline", _fake_run_pipeline)
+
+    cli_main.main(
+        [
+            "--config",
+            str(cfg_path),
+            "--seed-pair",
+            "9",
+            "11",
+            "two-seed-pipeline",
+            "--force",
+        ]
+    )
+
+    assert captured == {"seed_pair": (9, 11), "force": True}
+
+
+def test_two_seed_pipeline_analyze_variant_passes_force_and_logs_warning(
+    monkeypatch, tmp_path: Path, preserve_root_logger, caplog
+):
+    captured: dict[str, object] = {}
+    cfg_path = _write_cfg(tmp_path)
+
+    def _fake_run_pipeline(cfg, **kwargs):
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli_main.two_seed_pipeline, "run_pipeline", _fake_run_pipeline)
+
+    with caplog.at_level(logging.WARNING):
+        cli_main.main(
+            [
+                "--config",
+                str(cfg_path),
+                "--seed-pair",
+                "9",
+                "11",
+                "analyze",
+                "two-seed-pipeline",
+                "--force",
+            ]
+        )
+
+    assert captured == {"seed_pair": (9, 11), "force": True}
+    assert "deprecated" in caplog.text
 
 
 @pytest.mark.parametrize(
