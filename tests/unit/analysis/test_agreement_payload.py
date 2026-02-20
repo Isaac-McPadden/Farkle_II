@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
+from scipy.stats import ConstantInputWarning
 
 from farkle.analysis import agreement
 from farkle.analysis.agreement import MethodData
@@ -260,7 +262,8 @@ def test_tier_and_rank_and_seed_helpers_degenerate_cases() -> None:
         "a": pd.Series([1.0, 1.0], index=["s1", "s2"]),
         "b": pd.Series([2.0, 2.0], index=["s1", "s2"]),
     }
-    spearman, kendall, _ = agreement._rank_correlations(constant)
+    with pytest.warns(ConstantInputWarning):
+        spearman, kendall, _ = agreement._rank_correlations(constant)
     assert spearman == {"a_vs_b": None}
     assert kendall == {"a_vs_b": None}
 
