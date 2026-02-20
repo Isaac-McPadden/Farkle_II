@@ -12,6 +12,19 @@ from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import ThresholdStrategy
 
 
+def _mock_simulated_games(strategies: list[str], seeds: list[int], winner: str | None = None) -> pd.DataFrame:
+    winners = [winner if winner is not None else str(strategies[0])] * len(seeds)
+    return pd.DataFrame(
+        {
+            "winner_strategy": winners,
+            "P1_n_farkles": [1.0] * len(seeds),
+            "P2_n_farkles": [2.0] * len(seeds),
+            "P1_score": [300.0] * len(seeds),
+            "P2_score": [250.0] * len(seeds),
+        }
+    )
+
+
 def test_simulate_many_games_from_seeds(monkeypatch):
     def fake_play(seed, strategies, target_score=10_000):  # noqa: ARG001
         return {
@@ -108,7 +121,7 @@ def test_run_bonferroni_head2head_resumes_and_shards(
 
     def fake_simulate(seeds, strategies, n_jobs):  # noqa: ANN001,ARG001
         call_counter["calls"] += 1
-        return pd.DataFrame({"winner_strategy": [str(strategies[0])] * len(seeds)})
+        return _mock_simulated_games(strategies, seeds)
 
     monkeypatch.setattr(rb, "games_for_power", fake_games_for_power)
     monkeypatch.setattr(
@@ -130,6 +143,17 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     assert set(df["pair_id"]) == {0, 1, 2}
     ordered = pd.read_parquet(ordered_path)
     assert set(ordered["ordering"]) == {"a_b", "b_a"}
+    assert {
+        "mean_farkles_seat1",
+        "mean_farkles_seat2",
+        "mean_score_seat1",
+        "mean_score_seat2",
+    }.issubset(ordered.columns)
+    populated = ordered[ordered["games"] > 0]
+    assert populated["mean_farkles_seat1"].notna().all()
+    assert populated["mean_farkles_seat2"].notna().all()
+    assert populated["mean_score_seat1"].notna().all()
+    assert populated["mean_score_seat2"].notna().all()
     selfplay = pd.read_parquet(selfplay_path)
     assert set(selfplay["strategy"]) == {"S1", "S2", "S3"}
 
@@ -159,9 +183,7 @@ def test_run_bonferroni_head2head_progress_cadence_logs(
     monkeypatch.setattr(
         rb,
         "simulate_many_games_from_seeds",
-        lambda seeds, strategies, n_jobs: pd.DataFrame(
-            {"winner_strategy": [str(strategies[0])] * len(seeds)}
-        ),
+        lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds),
     )
 
     ticks = iter([0.0, 0.0, 1.0, 2.1, 4.3, 8.6])
@@ -196,7 +218,7 @@ def test_run_bonferroni_head2head_progress_schedule_validation(
     monkeypatch.setattr(
         rb,
         "simulate_many_games_from_seeds",
-        lambda seeds, strategies, n_jobs: pd.DataFrame({"winner_strategy": ["A"]}),
+        lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds, winner="A"),
     )
 
     with pytest.raises(ValueError, match="progress_schedule must have three values"):
@@ -221,7 +243,7 @@ def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.Mon
 
     def fake_simulate(seeds, strategies, n_jobs):  # noqa: ANN001,ARG001
         pair_jobs.append(n_jobs)
-        return pd.DataFrame({"winner_strategy": [str(strategies[0])] * len(seeds)})
+        return _mock_simulated_games(strategies, seeds)
 
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_simulate)
 
@@ -437,7 +459,7 @@ def test_run_bonferroni_head2head_shard_pair_id_read_exception_warns_and_continu
     monkeypatch.setattr(rb, "games_for_power", lambda **_: 1)  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: (["A", "B"], {"ratings_count": 0, "metrics_count": 0, "combined_count": 2, "ratings_path": "", "metrics_path": ""}))
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda name, **_: name)
-    monkeypatch.setattr(rb, "simulate_many_games_from_seeds", lambda seeds, strategies, n_jobs: pd.DataFrame({"winner_strategy": [str(strategies[0])] * len(seeds)}))
+    monkeypatch.setattr(rb, "simulate_many_games_from_seeds", lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds))
 
     real_read = rb.pd.read_parquet
 
@@ -471,7 +493,7 @@ def test_run_bonferroni_head2head_missing_pair_id_column_warns(
     monkeypatch.setattr(rb, "games_for_power", lambda **_: 1)  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: (["A", "B"], {"ratings_count": 0, "metrics_count": 0, "combined_count": 2, "ratings_path": "", "metrics_path": ""}))
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda name, **_: name)
-    monkeypatch.setattr(rb, "simulate_many_games_from_seeds", lambda seeds, strategies, n_jobs: pd.DataFrame({"winner_strategy": [str(strategies[0])] * len(seeds)}))
+    monkeypatch.setattr(rb, "simulate_many_games_from_seeds", lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds))
 
     real_read = rb.pd.read_parquet
 
@@ -503,7 +525,7 @@ def test_run_bonferroni_head2head_warns_when_final_pairwise_load_fails(
     monkeypatch.setattr(rb, "games_for_power", lambda **_: 1)  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: (["A", "B"], {"ratings_count": 0, "metrics_count": 0, "combined_count": 2, "ratings_path": "", "metrics_path": ""}))
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda name, **_: name)
-    monkeypatch.setattr(rb, "simulate_many_games_from_seeds", lambda seeds, strategies, n_jobs: pd.DataFrame({"winner_strategy": [str(strategies[0])] * len(seeds)}))
+    monkeypatch.setattr(rb, "simulate_many_games_from_seeds", lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds))
 
     real_read = rb.pd.read_parquet
 
@@ -536,7 +558,7 @@ def test_run_bonferroni_head2head_errors_on_ties_or_missing_outcomes(
     monkeypatch.setattr(
         rb,
         "simulate_many_games_from_seeds",
-        lambda seeds, strategies, n_jobs: pd.DataFrame({"winner_strategy": ["unknown"] * len(seeds)}),
+        lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds, winner="unknown"),
     )
 
     with pytest.raises(RuntimeError, match="Tie or missing outcome detected"):
