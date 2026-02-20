@@ -342,3 +342,67 @@ def test_run_raises_for_invalid_pooling_scheme(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Unknown pooling scheme"):
         game_stats.run(cfg, force=True)
+
+def test_discover_per_n_inputs_handles_partial_layouts(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2, 3]))
+
+    assert game_stats._discover_per_n_inputs(cfg) == []
+
+    valid_dir = cfg.data_dir / "2p"
+    valid_dir.mkdir(parents=True, exist_ok=True)
+    invalid_dir = cfg.data_dir / "badp"
+    invalid_dir.mkdir(parents=True, exist_ok=True)
+    missing_file_dir = cfg.data_dir / "3p"
+    missing_file_dir.mkdir(parents=True, exist_ok=True)
+
+    rows = pd.DataFrame(
+        [{"seat_ranks": ["P1", "P2"], "n_rounds": 3, "P1_strategy": 1, "P2_strategy": 2, "P1_score": 100, "P2_score": 90}]
+    )
+    rows.to_parquet(valid_dir / cfg.curated_rows_name)
+
+    discovered = game_stats._discover_per_n_inputs(cfg)
+    assert discovered == [(2, valid_dir / cfg.curated_rows_name)]
+
+
+def test_run_force_and_uptodate_paths_and_partial_per_k(tmp_path: Path) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path),
+        sim=SimConfig(n_players_list=[2, 3], seed=101, seed_list=[101]),
+    )
+    _build_parquet(tmp_path, cfg)
+
+    game_stats.run(cfg, force=True)
+
+    game_length = cfg.game_stats_output_path("game_length.parquet")
+    margin = cfg.game_stats_output_path("margin_stats.parquet")
+    per_k_2_game = cfg.per_k_subdir("game_stats", 2) / "game_length.parquet"
+    per_k_3_game = cfg.per_k_subdir("game_stats", 3) / "game_length.parquet"
+
+    assert game_length.exists()
+    assert margin.exists()
+    assert per_k_2_game.exists()
+    assert per_k_3_game.exists()
+
+    before_main = game_length.stat().st_mtime_ns
+    game_stats.run(cfg, force=False)
+    assert game_length.stat().st_mtime_ns == before_main
+
+    # remove only one per-k output to force partial recompute path
+    per_k_2_game.unlink()
+    assert not per_k_2_game.exists()
+    game_stats.run(cfg, force=False)
+    assert per_k_2_game.exists()
+    assert per_k_3_game.exists()
+
+
+def test_run_pooling_alias_and_invalid_via_run(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    _build_parquet(tmp_path, cfg)
+
+    cfg.analysis.pooling_weights = "count"
+    game_stats.run(cfg, force=True)
+    assert cfg.game_stats_output_path("game_length_k_weighted.parquet").exists()
+
+    cfg.analysis.pooling_weights = "definitely-bad"
+    with pytest.raises(ValueError, match="Unknown pooling scheme"):
+        game_stats.run(cfg, force=True)
