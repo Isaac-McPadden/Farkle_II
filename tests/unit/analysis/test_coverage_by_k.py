@@ -378,6 +378,40 @@ def test_log_imbalance_warnings_paths(caplog: pytest.LogCaptureFixture) -> None:
     assert "Coverage: missing strategies detected" in messages
 
 
+
+def test_log_imbalance_warnings_treats_padding_as_informational(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    coverage = pd.DataFrame(
+        [
+            {
+                "k": 2,
+                "seed": 7,
+                "strategies": 4,
+                "expected_strategies": 4,
+                "games": 100,
+                "missing_before_pad": 3,
+                "missing_strategies": 3,
+            },
+            {
+                "k": 2,
+                "seed": 8,
+                "strategies": 4,
+                "expected_strategies": 4,
+                "games": 100,
+                "missing_before_pad": 3,
+                "missing_strategies": 3,
+            },
+        ]
+    )
+
+    with caplog.at_level("INFO"):
+        coverage_by_k._log_imbalance_warnings(coverage)
+
+    messages = [record.message for record in caplog.records]
+    assert "Coverage: missing strategies detected" not in messages
+    assert "Coverage: reconciled padded strategies" in messages
+
 def test_run_missing_metrics_input_skips(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     coverage_by_k.run(cfg)
