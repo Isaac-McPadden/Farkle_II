@@ -202,6 +202,40 @@ def _pairwise_schema() -> pa.Schema:
     return pa.schema(fields)
 
 
+def _pairwise_ordered_schema() -> pa.Schema:
+    fields: list[pa.Field] = [
+        pa.field("players", pa.int64()),
+        pa.field("seed", pa.int64()),
+        pa.field("pair_id", pa.int64()),
+        pa.field("a", pa.string()),
+        pa.field("b", pa.string()),
+        pa.field("ordering", pa.string()),
+        pa.field("seat1_strategy", pa.string()),
+        pa.field("seat2_strategy", pa.string()),
+        pa.field("games", pa.int64()),
+        pa.field("wins_a", pa.int64()),
+        pa.field("wins_b", pa.int64()),
+        pa.field("wins_seat1", pa.int64()),
+        pa.field("wins_seat2", pa.int64()),
+    ]
+    return pa.schema(fields)
+
+
+def _selfplay_schema() -> pa.Schema:
+    fields: list[pa.Field] = [
+        pa.field("players", pa.int64()),
+        pa.field("seed", pa.int64()),
+        pa.field("strategy", pa.string()),
+        pa.field("games", pa.int64()),
+        pa.field("wins_seat1", pa.int64()),
+        pa.field("wins_seat2", pa.int64()),
+        pa.field("seat1_win_rate", pa.float64()),
+        pa.field("seat2_win_rate", pa.float64()),
+        pa.field("seat_win_rate_diff", pa.float64()),
+    ]
+    return pa.schema(fields)
+
+
 def run_bonferroni_head2head(
     *,
     seed: int = 0,
@@ -281,6 +315,8 @@ def run_bonferroni_head2head(
     tiers_path = _tiers_path(cfg)
 
     pairwise_parquet = cfg.head2head_path("bonferroni_pairwise.parquet")
+    pairwise_ordered_parquet = cfg.head2head_path("bonferroni_pairwise_ordered.parquet")
+    selfplay_parquet = cfg.head2head_path("bonferroni_selfplay_symmetry.parquet")
     default_shards = sub_root / "bonferroni_pairwise_shards"
     legacy_shards = analysis_root / "bonferroni_pairwise_shards"
     shard_dir = shard_dir or (default_shards if default_shards.exists() or not legacy_shards.exists() else legacy_shards)
@@ -413,7 +449,12 @@ def run_bonferroni_head2head(
                 inputs.append(ratings_path)
             if metrics_path.exists():
                 inputs.append(metrics_path)
-            outputs = [pairwise_parquet, union_candidates_path]
+            outputs = [
+                pairwise_parquet,
+                pairwise_ordered_parquet,
+                selfplay_parquet,
+                union_candidates_path,
+            ]
             if not pairwise_parquet.exists():
                 empty_table = pa.Table.from_pylist([], schema=_pairwise_schema())
                 write_parquet_atomic(empty_table, pairwise_parquet)
@@ -421,6 +462,12 @@ def run_bonferroni_head2head(
                     "Bonferroni head-to-head: wrote empty pairwise parquet",
                     extra={"stage": "head2head", "path": str(pairwise_parquet)},
                 )
+            if not pairwise_ordered_parquet.exists():
+                empty_ordered = pa.Table.from_pylist([], schema=_pairwise_ordered_schema())
+                write_parquet_atomic(empty_ordered, pairwise_ordered_parquet)
+            if not selfplay_parquet.exists():
+                empty_selfplay = pa.Table.from_pylist([], schema=_selfplay_schema())
+                write_parquet_atomic(empty_selfplay, selfplay_parquet)
             write_stage_done(
                 stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
                 inputs=inputs,
@@ -469,6 +516,7 @@ def run_bonferroni_head2head(
 
     rng = np.random.default_rng(seed)
     records: list[dict[str, Any]] = []
+    ordered_records: list[dict[str, Any]] = []
     pending_shard_records: list[dict[str, Any]] = []
     strategies_cache: Dict[int | str, Any] = {}
     shard_dir.mkdir(parents=True, exist_ok=True)
@@ -569,6 +617,13 @@ def run_bonferroni_head2head(
         else:
             next_progress = max(next_progress, fast_phase_end) + slow_interval
 
+    strategies_cache = {
+        name: parse_strategy_identifier(
+            name, manifest=manifest, parse_legacy=parse_strategy_for_df
+        )
+        for name in sorted_elites
+    }
+
     scheduled_pairs: list[tuple[int, int | str, int | str, list[int]]] = []
     processed_pairs = len(completed_pairs)
     for pair_id, (a, b) in enumerate(combinations(sorted_elites, 2)):
@@ -593,17 +648,10 @@ def run_bonferroni_head2head(
             continue
         scheduled_pairs.append((pair_id, a, b, seeds))
 
+    pair_jobs = max(1, n_jobs)
     if not scheduled_pairs:
         shard_count = flush_shard(pending_shard_records, shard_count)
     else:
-        strategy_names = {name for _, a, b, _ in scheduled_pairs for name in (a, b)}
-        strategies_cache = {
-            name: parse_strategy_identifier(
-                name, manifest=manifest, parse_legacy=parse_strategy_for_df
-            )
-            for name in strategy_names
-        }
-
         effective_jobs = n_jobs if n_jobs > 0 else 1
         if effective_jobs <= 1:
             worker_count = 1
@@ -612,21 +660,35 @@ def run_bonferroni_head2head(
             worker_count = min(len(scheduled_pairs), max(1, effective_jobs // 2))
             pair_jobs = max(1, effective_jobs // worker_count)
 
-        def simulate_pair(job: tuple[int, int | str, int | str, list[int]]) -> dict[str, Any]:
+        def simulate_pair(job: tuple[int, int | str, int | str, list[int]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
             pair_id, a, b, seeds = job
-            df = simulate_many_games_from_seeds(
-                seeds=seeds,
+            split = len(seeds) // 2
+            seeds_ab = seeds[:split]
+            seeds_ba = seeds[split:]
+
+            df_ab = simulate_many_games_from_seeds(
+                seeds=seeds_ab,
                 strategies=[strategies_cache[a], strategies_cache[b]],
                 n_jobs=pair_jobs,
             )
-            wa, wb = _count_pair_wins(df, a, b)
+
+            df_ba = simulate_many_games_from_seeds(
+                seeds=seeds_ba,
+                strategies=[strategies_cache[b], strategies_cache[a]],
+                n_jobs=pair_jobs,
+            )
+
+            wa_ab, wb_ab = _count_pair_wins(df_ab, a, b)
+            wb_ba, wa_ba = _count_pair_wins(df_ba, b, a)
+            wa = wa_ab + wa_ba
+            wb = wb_ab + wb_ba
             games_played = len(seeds)
             if wa + wb != games_played:
                 raise RuntimeError(
                     f"Tie or missing outcome detected for pair ({a}, {b}); wins_a={wa} wins_b={wb} games={games_played}",
                 )
             pval = binomtest(wa, games_played, alternative="greater").pvalue
-            return {
+            record = {
                 "players": k_players,
                 "seed": seed,
                 "pair_id": pair_id,
@@ -638,6 +700,39 @@ def run_bonferroni_head2head(
                 "win_rate_a": wa / games_played if games_played else math.nan,
                 "pval_one_sided": pval,
             }
+            ordered = [
+                {
+                    "players": k_players,
+                    "seed": seed,
+                    "pair_id": pair_id,
+                    "a": a,
+                    "b": b,
+                    "ordering": "a_b",
+                    "seat1_strategy": a,
+                    "seat2_strategy": b,
+                    "games": len(seeds_ab),
+                    "wins_a": wa_ab,
+                    "wins_b": wb_ab,
+                    "wins_seat1": wa_ab,
+                    "wins_seat2": wb_ab,
+                },
+                {
+                    "players": k_players,
+                    "seed": seed,
+                    "pair_id": pair_id,
+                    "a": a,
+                    "b": b,
+                    "ordering": "b_a",
+                    "seat1_strategy": b,
+                    "seat2_strategy": a,
+                    "games": len(seeds_ba),
+                    "wins_a": wa_ba,
+                    "wins_b": wb_ba,
+                    "wins_seat1": wb_ba,
+                    "wins_seat2": wa_ba,
+                },
+            ]
+            return record, ordered
 
         LOGGER.info(
             "Dispatching head-to-head batches",
@@ -654,8 +749,9 @@ def run_bonferroni_head2head(
             }
             for future in as_completed(future_to_job):
                 job_pair_id, job_a, job_b, _ = future_to_job[future]
-                record = future.result()
+                record, record_orderings = future.result()
                 records.append(record)
+                ordered_records.extend(record_orderings)
                 pending_shard_records.append(record)
                 if len(pending_shard_records) >= shard_size:
                     shard_count = flush_shard(pending_shard_records, shard_count)
@@ -700,11 +796,57 @@ def run_bonferroni_head2head(
     )
     pairwise_table = pa.Table.from_pandas(combined_df, schema=shard_schema, preserve_index=False)
     write_parquet_atomic(pairwise_table, pairwise_parquet)
+
+    ordered_schema = _pairwise_ordered_schema()
+    ordered_df = pd.DataFrame.from_records(ordered_records)
+    if ordered_df.empty:
+        ordered_table = pa.Table.from_pylist([], schema=ordered_schema)
+    else:
+        ordered_table = pa.Table.from_pandas(ordered_df, schema=ordered_schema, preserve_index=False)
+    write_parquet_atomic(ordered_table, pairwise_ordered_parquet)
+
+    selfplay_records: list[dict[str, Any]] = []
+    for strat in sorted_elites:
+        selfplay_seeds = rng.integers(0, MAX_UINT32, size=games_per_pair, dtype=np.uint32).tolist()
+        df_self = simulate_many_games_from_seeds(
+            seeds=selfplay_seeds,
+            strategies=[strategies_cache[strat], strategies_cache[strat]],
+            n_jobs=pair_jobs,
+        )
+        wins_seat1, wins_seat2 = _count_pair_wins(df_self, strat, strat)
+        games = len(selfplay_seeds)
+        seat1_rate = wins_seat1 / games if games else math.nan
+        seat2_rate = wins_seat2 / games if games else math.nan
+        selfplay_records.append(
+            {
+                "players": k_players,
+                "seed": seed,
+                "strategy": strat,
+                "games": games,
+                "wins_seat1": wins_seat1,
+                "wins_seat2": wins_seat2,
+                "seat1_win_rate": seat1_rate,
+                "seat2_win_rate": seat2_rate,
+                "seat_win_rate_diff": seat1_rate - seat2_rate,
+            }
+        )
+
+    selfplay_schema = _selfplay_schema()
+    selfplay_df = pd.DataFrame.from_records(selfplay_records)
+    if selfplay_df.empty:
+        selfplay_table = pa.Table.from_pylist([], schema=selfplay_schema)
+    else:
+        selfplay_table = pa.Table.from_pandas(selfplay_df, schema=selfplay_schema, preserve_index=False)
+    write_parquet_atomic(selfplay_table, selfplay_parquet)
+
     LOGGER.info(
         "Bonferroni head-to-head results written",
         extra={
             "stage": "head2head",
             "rows": pairwise_table.num_rows,
             "path": str(pairwise_parquet),
+            "ordered_path": str(pairwise_ordered_parquet),
+            "selfplay_rows": selfplay_table.num_rows,
+            "selfplay_path": str(selfplay_parquet),
         },
     )
