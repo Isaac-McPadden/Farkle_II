@@ -146,18 +146,22 @@ def test_load_frequentist_and_trueskill(tmp_path):
     frequentist = agreement._load_frequentist(cfg, players)
 
     assert trueskill is not None and frequentist is not None
+    assert trueskill.tiers is not None
+    assert frequentist.tiers is not None
+    trueskill_strategy_ids = [str(strategy_id) for strategy_id in trueskill.scores.index]
+    frequentist_strategy_ids = [str(strategy_id) for strategy_id in frequentist.scores.index]
     trueskill_norm = pd.DataFrame(
         {
-            "strategy": trueskill.scores.index,
+            "strategy": trueskill_strategy_ids,
             "score": trueskill.scores.to_numpy(),
-            "tier": [trueskill.tiers[s] for s in trueskill.scores.index],
+            "tier": [trueskill.tiers[strategy_id] for strategy_id in trueskill_strategy_ids],
         }
     )
     freq_norm = pd.DataFrame(
         {
-            "strategy": frequentist.scores.index,
+            "strategy": frequentist_strategy_ids,
             "score": frequentist.scores.to_numpy(),
-            "tier": [frequentist.tiers[s] for s in frequentist.scores.index],
+            "tier": [frequentist.tiers[strategy_id] for strategy_id in frequentist_strategy_ids],
         }
     )
     assert trueskill_norm.columns.tolist() == ["strategy", "score", "tier"]
