@@ -31,9 +31,12 @@ def _cfg(tmp_path: Path, **kwargs: object) -> AppConfig:
 def test_pandas_scalar_to_int_cases() -> None:
     assert coverage_by_k._pandas_scalar_to_int(pa.scalar(11)) == 11
     assert coverage_by_k._pandas_scalar_to_int(pd.NA) is None
-    assert coverage_by_k._pandas_scalar_to_int(object()) is None
     assert coverage_by_k._pandas_scalar_to_int(3.0) == 3
-    assert coverage_by_k._pandas_scalar_to_int(3.25) is None
+    assert coverage_by_k._pandas_scalar_to_int(3.25) == 3
+    assert coverage_by_k._pandas_scalar_to_int("12") == 12
+    assert coverage_by_k._pandas_scalar_to_int(" 13.0 ") == 13
+    assert coverage_by_k._pandas_scalar_to_int(object()) is None
+    assert coverage_by_k._pandas_scalar_to_int(complex(2, 1)) is None
 
 
 @pytest.mark.parametrize("setting", [None, "", 0, False])
