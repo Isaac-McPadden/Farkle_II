@@ -217,6 +217,10 @@ def _pairwise_ordered_schema() -> pa.Schema:
         pa.field("wins_b", pa.int64()),
         pa.field("wins_seat1", pa.int64()),
         pa.field("wins_seat2", pa.int64()),
+        pa.field("mean_farkles_seat1", pa.float64()),
+        pa.field("mean_farkles_seat2", pa.float64()),
+        pa.field("mean_score_seat1", pa.float64()),
+        pa.field("mean_score_seat2", pa.float64()),
     ]
     return pa.schema(fields)
 
@@ -666,6 +670,14 @@ def run_bonferroni_head2head(
             seeds_ab = seeds[:split]
             seeds_ba = seeds[split:]
 
+            def seat_means(df: pd.DataFrame) -> tuple[float, float, float, float]:
+                return (
+                    float(df["P1_n_farkles"].mean()),
+                    float(df["P2_n_farkles"].mean()),
+                    float(df["P1_score"].mean()),
+                    float(df["P2_score"].mean()),
+                )
+
             df_ab = simulate_many_games_from_seeds(
                 seeds=seeds_ab,
                 strategies=[strategies_cache[a], strategies_cache[b]],
@@ -677,6 +689,19 @@ def run_bonferroni_head2head(
                 strategies=[strategies_cache[b], strategies_cache[a]],
                 n_jobs=pair_jobs,
             )
+
+            (
+                mean_farkles_ab_seat1,
+                mean_farkles_ab_seat2,
+                mean_score_ab_seat1,
+                mean_score_ab_seat2,
+            ) = seat_means(df_ab)
+            (
+                mean_farkles_ba_seat1,
+                mean_farkles_ba_seat2,
+                mean_score_ba_seat1,
+                mean_score_ba_seat2,
+            ) = seat_means(df_ba)
 
             wa_ab, wb_ab = _count_pair_wins(df_ab, a, b)
             wb_ba, wa_ba = _count_pair_wins(df_ba, b, a)
@@ -715,6 +740,10 @@ def run_bonferroni_head2head(
                     "wins_b": wb_ab,
                     "wins_seat1": wa_ab,
                     "wins_seat2": wb_ab,
+                    "mean_farkles_seat1": mean_farkles_ab_seat1,
+                    "mean_farkles_seat2": mean_farkles_ab_seat2,
+                    "mean_score_seat1": mean_score_ab_seat1,
+                    "mean_score_seat2": mean_score_ab_seat2,
                 },
                 {
                     "players": k_players,
@@ -730,6 +759,10 @@ def run_bonferroni_head2head(
                     "wins_b": wb_ba,
                     "wins_seat1": wb_ba,
                     "wins_seat2": wa_ba,
+                    "mean_farkles_seat1": mean_farkles_ba_seat1,
+                    "mean_farkles_seat2": mean_farkles_ba_seat2,
+                    "mean_score_seat1": mean_score_ba_seat1,
+                    "mean_score_seat2": mean_score_ba_seat2,
                 },
             ]
             return record, ordered
