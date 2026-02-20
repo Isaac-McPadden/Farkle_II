@@ -1,4 +1,7 @@
 import warnings
+import builtins
+import sys
+import types
 
 import numpy as np
 import pandas as pd
@@ -107,3 +110,159 @@ def test_parse_strategy_features_empty_series_returns_expected_schema():
     expected_columns = [name for name, _dtype in run_hgb.FEATURE_SPECS]
     assert list(frame.columns) == expected_columns
     assert frame.empty
+
+
+def test_run_grouped_cv_logs_skip_reasons_and_success(monkeypatch):
+    feature_cols = [name for name, _dtype in run_hgb.FEATURE_SPECS]
+    subset = pd.DataFrame(
+        {
+            "strategy": ["s1", "s2"],
+            **{name: [0.0, 1.0] for name in feature_cols},
+        }
+    )
+    logged: list[tuple[str, dict]] = []
+
+    def _log(message: str, *_args: object, **kwargs: object) -> None:
+        logged.append((message, kwargs.get("extra", {})))
+
+    monkeypatch.setattr(run_hgb.LOGGER, "info", _log)
+
+    model_selection = types.ModuleType("model_selection")
+    model_selection.__spec__ = None
+
+    class PlaceholderSplitter:
+        def __init__(self, n_splits: int):
+            _ = n_splits
+
+        def split(self, X, y, groups):
+            _ = X, y, groups
+            return iter(())
+
+    model_selection.GroupKFold = PlaceholderSplitter
+    monkeypatch.setitem(sys.modules, "sklearn.model_selection", model_selection)
+    monkeypatch.setattr(sys.modules["sklearn"], "__path__", [], raising=False)
+
+    # no per-seed ratings
+    run_hgb._run_grouped_cv(
+        players=2,
+        subset=subset,
+        feature_cols=feature_cols,
+        seed_targets=pd.DataFrame(columns=["strategy", "mu", "seed"]),
+        random_state=0,
+    )
+    assert logged[-1][0] == "Grouped CV skipped: no per-seed ratings"
+
+    # insufficient overlap
+    run_hgb._run_grouped_cv(
+        players=2,
+        subset=subset,
+        feature_cols=feature_cols,
+        seed_targets=pd.DataFrame({"strategy": ["other"], "mu": [1.0], "seed": [1]}),
+        random_state=0,
+    )
+    assert logged[-1][0] == "Grouped CV skipped: insufficient overlap"
+
+    # <2 unique seeds
+    run_hgb._run_grouped_cv(
+        players=2,
+        subset=subset,
+        feature_cols=feature_cols,
+        seed_targets=pd.DataFrame(
+            {
+                "strategy": ["s1", "s2"],
+                "mu": [1.0, 2.0],
+                "seed": [1, 1],
+            }
+        ),
+        random_state=0,
+    )
+    assert logged[-1][0] == "Grouped CV skipped: <2 unique seeds"
+
+    # insufficient splits
+    original_min = builtins.min
+
+    def fake_min(left: int, right: int):
+        if {left, right} == {2, 5}:
+            return 1
+        return original_min(left, right)
+
+    monkeypatch.setattr(builtins, "min", fake_min)
+    run_hgb._run_grouped_cv(
+        players=2,
+        subset=subset,
+        feature_cols=feature_cols,
+        seed_targets=pd.DataFrame(
+            {
+                "strategy": ["s1", "s2"],
+                "mu": [1.0, 2.0],
+                "seed": [1, 2],
+            }
+        ),
+        random_state=0,
+    )
+    assert logged[-1][0] == "Grouped CV skipped: insufficient splits"
+
+    class EmptyFoldSplitter:
+        def __init__(self, n_splits: int):
+            _ = n_splits
+
+        def split(self, X, y, groups):
+            _ = X, y, groups
+            yield np.array([], dtype=int), np.array([], dtype=int)
+
+    monkeypatch.setattr(builtins, "min", original_min)
+    monkeypatch.setattr(model_selection, "GroupKFold", EmptyFoldSplitter)
+    run_hgb._run_grouped_cv(
+        players=2,
+        subset=subset,
+        feature_cols=feature_cols,
+        seed_targets=pd.DataFrame(
+            {
+                "strategy": ["s1", "s2"],
+                "mu": [1.0, 2.0],
+                "seed": [1, 2],
+            }
+        ),
+        random_state=0,
+    )
+    assert logged[-1][0] == "Grouped CV skipped: empty folds"
+
+    class DummyModel:
+        def __init__(self, random_state: int):
+            _ = random_state
+
+        def fit(self, _X, _y):
+            return self
+
+        def predict(self, X):
+            return np.zeros(len(X), dtype=np.float32)
+
+    class Splitter:
+        def __init__(self, n_splits: int):
+            _ = n_splits
+
+        def split(self, X, y, groups):
+            _ = y, groups
+            yield np.array([0], dtype=int), np.array([1], dtype=int)
+            yield np.array([1], dtype=int), np.array([0], dtype=int)
+
+    monkeypatch.setattr(model_selection, "GroupKFold", Splitter)
+    monkeypatch.setattr(
+        "sklearn.ensemble.HistGradientBoostingRegressor",
+        lambda random_state=0: DummyModel(random_state),
+    )
+    run_hgb._run_grouped_cv(
+        players=2,
+        subset=subset,
+        feature_cols=feature_cols,
+        seed_targets=pd.DataFrame(
+            {
+                "strategy": ["s1", "s2", "s1", "s2"],
+                "mu": [1.0, 2.0, 1.5, 2.5],
+                "seed": [1, 1, 2, 2],
+            }
+        ),
+        random_state=0,
+    )
+    assert logged[-1][0] == "Grouped CV metrics"
+    assert logged[-1][1]["splits"] == 2
