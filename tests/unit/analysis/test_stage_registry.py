@@ -28,6 +28,15 @@ def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
         placement.definition.folder_name(placement.index) for placement in layout.placements
     ]
 
+    ordered_keys = [placement.definition.key for placement in layout.placements]
+    head2head_idx = ordered_keys.index("head2head")
+    seed_symmetry_idx = ordered_keys.index("seed_symmetry")
+    post_h2h_idx = ordered_keys.index("post_h2h")
+
+    assert seed_symmetry_idx == head2head_idx + 1
+    assert post_h2h_idx == seed_symmetry_idx + 1
+    assert layout.placements[seed_symmetry_idx].folder_name.endswith("_seed_symmetry")
+
 
 def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
     cfg = AppConfig(
