@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import numpy as np
 import pandas as pd
 import pytest
 from tests.helpers import metrics_samples as sample_data
+from tests.helpers.config_factory import make_test_app_config
 from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import metrics
@@ -121,7 +120,7 @@ def test_collect_metrics_frames_optional_columns_absent_and_present(tmp_path):
 def test_compute_seat_advantage_matches_manifest(sample_config):
     seat_df = metrics._compute_seat_advantage(sample_config, sample_config.curated_parquet)
     assert len(seat_df) == 12
-    assert set(["seat", "wins", "games_with_seat", "win_rate"]).issubset(seat_df.columns)
+    assert {"seat", "wins", "games_with_seat", "win_rate"}.issubset(seat_df.columns)
 
     games_by_seat = seat_df.set_index("seat")["games_with_seat"].to_dict()
     assert games_by_seat[1] == 3
@@ -258,9 +257,9 @@ def test_compute_weighted_metrics_grouping_order_and_nan_handling():
             "expected_score": [40.0, 60.0, 55.0, 50.0, 100.0],
         }
     )
-    cfg = SimpleNamespace(
-        analysis=SimpleNamespace(pooling_weights="equal-k", pooling_weights_by_k={})
-    )
+    cfg = make_test_app_config()
+    cfg.analysis.pooling_weights = "equal-k"
+    cfg.analysis.pooling_weights_by_k = {}
 
     out = metrics._compute_weighted_metrics(frame, cfg)
 

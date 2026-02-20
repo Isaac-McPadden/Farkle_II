@@ -5,7 +5,7 @@ import math
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Mapping, cast
+from typing import Any, Mapping, cast
 
 import numpy as np
 import pandas as pd
@@ -13,6 +13,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 import trueskill
+from tests.helpers.config_factory import make_test_app_config
 
 import farkle.analysis.run_trueskill as rt
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout
@@ -972,20 +973,14 @@ def test_resolve_seed_results_and_row_data_fallbacks(
     monkeypatch.setattr(rt, "split_seeded_results_dir", lambda _path: (_path, None))
     assert rt._resolve_seed_results_root(cfg, seed=123) == cfg.results_root
 
+    row_cfg = make_test_app_config(results_dir_prefix=tmp_path / "base")
+    row_cfg.io.interseed_input_layout = {"curate": "00_curate"}
+
     class _DummyLayout:
         def folder_for(self, stage: str) -> str | None:
             return "01_curate" if stage == "curate" else None
 
-    class _DummyIO:
-        analysis_subdir = "analysis"
-
-    class _DummyCfg:
-        io = _DummyIO()
-        stage_layout = _DummyLayout()
-
-        @staticmethod
-        def _interseed_input_folder(stage: str) -> str | None:
-            return "00_curate" if stage == "curate" else None
+    row_cfg.set_stage_layout(cast(Any, _DummyLayout()))
 
     seed_root = tmp_path / "results_seed_12"
     analysis_root = seed_root / "analysis"
@@ -994,18 +989,18 @@ def test_resolve_seed_results_and_row_data_fallbacks(
     legacy_candidate = analysis_root / "curate"
 
     input_candidate.mkdir(parents=True, exist_ok=True)
-    assert rt._resolve_seed_row_data_dir(_DummyCfg(), seed_root) == input_candidate
+    assert rt._resolve_seed_row_data_dir(row_cfg, seed_root) == input_candidate
 
     input_candidate.rmdir()
     stage_candidate.mkdir(parents=True, exist_ok=True)
-    assert rt._resolve_seed_row_data_dir(_DummyCfg(), seed_root) == stage_candidate
+    assert rt._resolve_seed_row_data_dir(row_cfg, seed_root) == stage_candidate
 
     stage_candidate.rmdir()
     legacy_candidate.mkdir(parents=True, exist_ok=True)
-    assert rt._resolve_seed_row_data_dir(_DummyCfg(), seed_root) == legacy_candidate
+    assert rt._resolve_seed_row_data_dir(row_cfg, seed_root) == legacy_candidate
 
     legacy_candidate.rmdir()
-    assert rt._resolve_seed_row_data_dir(_DummyCfg(), seed_root) is None
+    assert rt._resolve_seed_row_data_dir(row_cfg, seed_root) is None
 
 
 def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path: Path) -> None:

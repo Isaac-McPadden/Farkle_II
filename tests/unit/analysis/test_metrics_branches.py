@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
 import pytest
 from tests.helpers import metrics_samples as sample_data
+from tests.helpers.config_factory import make_test_app_config
 
 from farkle.analysis import metrics
-from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.config import AnalysisConfig, AppConfig, IOConfig, SimConfig
 
 
 def test_run_raises_when_combined_parquet_missing(tmp_path):
@@ -192,9 +192,9 @@ def test_pooling_weights_for_metrics_variants_and_warning(caplog):
 
 
 def test_compute_weighted_metrics_empty_missing_config_and_zero_weight_rows():
-    cfg_config = SimpleNamespace(
-        analysis=SimpleNamespace(pooling_weights="config", pooling_weights_by_k=None)
-    )
+    cfg_config = make_test_app_config()
+    cfg_config.analysis.pooling_weights = "config"
+    cfg_config.analysis.pooling_weights_by_k = None
     with pytest.raises(ValueError, match="pooling_weights_by_k must be set"):
         metrics._compute_weighted_metrics(
             pd.DataFrame(
@@ -213,7 +213,7 @@ def test_compute_weighted_metrics_empty_missing_config_and_zero_weight_rows():
 
     out_empty = metrics._compute_weighted_metrics(
         pd.DataFrame(),
-        SimpleNamespace(analysis=SimpleNamespace(pooling_weights="equal-k", pooling_weights_by_k={})),
+        make_test_app_config(analysis=AnalysisConfig(pooling_weights="equal-k", pooling_weights_by_k={})),
     )
     assert out_empty.empty
 
@@ -230,7 +230,7 @@ def test_compute_weighted_metrics_empty_missing_config_and_zero_weight_rows():
     )
     out = metrics._compute_weighted_metrics(
         frame,
-        SimpleNamespace(analysis=SimpleNamespace(pooling_weights="game-count", pooling_weights_by_k={})),
+        make_test_app_config(analysis=AnalysisConfig(pooling_weights="game-count", pooling_weights_by_k={})),
     )
     assert out["strategy"].tolist() == ["B"]
 
