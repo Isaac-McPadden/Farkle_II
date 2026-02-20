@@ -55,6 +55,69 @@ def test_seed_analysis_dirs_dedups_and_filters_nonexistent(tmp_path: Path) -> No
     ]
 
 
+def test_seed_analysis_dirs_rebases_parent_when_input_is_analysis_subdir(tmp_path: Path) -> None:
+    input_root = tmp_path / "shared_results"
+    analysis_dir = input_root / "analysis"
+    analysis_dir.mkdir(parents=True)
+
+    for seed in (11, 12):
+        (tmp_path / f"shared_results_seed_{seed}" / "analysis").mkdir(parents=True)
+
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=analysis_dir),
+        sim=SimConfig(seed=99, seed_list=[11, 12]),
+    )
+
+    resolved = game_stats_interseed._seed_analysis_dirs(cfg)
+
+    assert resolved == [
+        game_stats_interseed.SeedInputs(seed=11, analysis_dir=tmp_path / "shared_results_seed_11" / "analysis"),
+        game_stats_interseed.SeedInputs(seed=12, analysis_dir=tmp_path / "shared_results_seed_12" / "analysis"),
+    ]
+
+
+def test_seed_analysis_dirs_uses_explicit_interseed_seed_list(tmp_path: Path) -> None:
+    prefix = tmp_path / "explicit"
+    (tmp_path / "explicit_seed_3" / "analysis").mkdir(parents=True)
+    (tmp_path / "explicit_seed_7" / "analysis").mkdir(parents=True)
+
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=prefix),
+        sim=SimConfig(seed=1, seed_list=[7, 3]),
+    )
+
+    resolved = game_stats_interseed._seed_analysis_dirs(cfg)
+
+    assert [entry.seed for entry in resolved] == [3, 7]
+
+
+def test_seed_analysis_dirs_falls_back_to_sim_seed_when_no_discovery(tmp_path: Path) -> None:
+    prefix = tmp_path / "fallback"
+    fallback_analysis = tmp_path / "fallback_seed_55" / "analysis"
+    fallback_analysis.mkdir(parents=True)
+
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=prefix), sim=SimConfig(seed=55))
+
+    resolved = game_stats_interseed._seed_analysis_dirs(cfg)
+
+    assert resolved == [game_stats_interseed.SeedInputs(seed=55, analysis_dir=fallback_analysis)]
+
+
+def test_seed_analysis_dirs_dedups_identical_analysis_dirs_from_seed_list(tmp_path: Path) -> None:
+    prefix = tmp_path / "dup"
+    analysis_dir = tmp_path / "dup_seed_8" / "analysis"
+    analysis_dir.mkdir(parents=True)
+
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=prefix),
+        sim=SimConfig(seed=1, seed_list=[8, 8]),
+    )
+
+    resolved = game_stats_interseed._seed_analysis_dirs(cfg)
+
+    assert resolved == [game_stats_interseed.SeedInputs(seed=8, analysis_dir=analysis_dir)]
+
+
 @pytest.mark.parametrize("stage_folder", ["preferred_game_stats", "legacy_game_stats"])
 def test_seed_input_paths_resolves_preferred_and_legacy_stage_folder(
     tmp_path: Path,
@@ -95,6 +158,26 @@ def test_seed_input_paths_returns_empty_when_no_candidates(tmp_path: Path) -> No
     )
 
     assert found == []
+
+
+def test_seed_input_paths_returns_empty_when_stage_mapping_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"), sim=SimConfig(seed=1))
+    monkeypatch.setattr(cfg, "_interseed_input_folder", lambda key: None)
+    cfg._stage_layout = type("Layout", (), {"folder_for": staticmethod(lambda key: None)})()
+
+    with caplog.at_level("WARNING"):
+        found = game_stats_interseed._seed_input_paths(
+            [game_stats_interseed.SeedInputs(seed=1, analysis_dir=tmp_path / "missing")],
+            cfg,
+            candidates=("game_length_stats.parquet",),
+        )
+
+    assert found == []
+    assert "Missing game stats input folder" in caplog.text
 
 
 def test_load_seed_frames_normalizes_players_and_skips_empty(tmp_path: Path) -> None:
@@ -143,6 +226,26 @@ def test_aggregate_seed_stats_outputs_expected_ordering() -> None:
     assert {"metric_seed_std", "metric_seed_ci_lo", "metric_seed_ci_hi"} <= set(out.columns)
 
 
+def test_aggregate_seed_stats_returns_empty_frame_early() -> None:
+    out = game_stats_interseed._aggregate_seed_stats(pd.DataFrame())
+
+    assert out.empty
+
+
+def test_aggregate_seed_stats_single_seed_has_null_ci_bounds() -> None:
+    frame = pd.DataFrame(
+        [
+            {"summary_level": "strategy", "strategy": "A", "n_players": 2, "metric": 10.0, "seed": 1},
+        ]
+    )
+
+    out = game_stats_interseed._aggregate_seed_stats(frame)
+
+    assert out.loc[0, "n_seeds"] == 1
+    assert pd.isna(out.loc[0, "metric_seed_ci_lo"])
+    assert pd.isna(out.loc[0, "metric_seed_ci_hi"])
+
+
 def test_critical_values_uses_t_for_small_n_and_normal_for_large_n(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -154,6 +257,21 @@ def test_critical_values_uses_t_for_small_n_and_normal_for_large_n(
 
     assert crit.loc["small"] == pytest.approx(9.0)
     assert crit.loc["large"] == pytest.approx(game_stats_interseed.NORMAL_975)
+
+
+def test_critical_values_skips_t_distribution_when_no_small_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    n_seeds = pd.Series([1, game_stats_interseed.T_CRIT_N_SEEDS], index=["one", "large"])
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("t.ppf should not be called")
+
+    monkeypatch.setattr(game_stats_interseed.t, "ppf", _fail)
+
+    crit = game_stats_interseed._critical_values(n_seeds)
+
+    assert crit.eq(game_stats_interseed.NORMAL_975).all()
 
 
 def test_run_returns_early_when_no_seed_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -242,3 +360,110 @@ def test_run_writes_outputs_and_stage_stamps(tmp_path: Path, monkeypatch: pytest
     assert margin_stamp.exists()
     pd.testing.assert_frame_equal(pd.read_parquet(game_output), aggregated)
     pd.testing.assert_frame_equal(pd.read_parquet(margin_output), aggregated)
+
+
+def test_run_recomputes_only_stale_metric_when_other_is_up_to_date(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"), sim=SimConfig(seed=1))
+    seeds = [
+        game_stats_interseed.SeedInputs(seed=1, analysis_dir=tmp_path / "seed1"),
+        game_stats_interseed.SeedInputs(seed=2, analysis_dir=tmp_path / "seed2"),
+    ]
+    game_inputs = [(1, tmp_path / "gl_1.parquet"), (2, tmp_path / "gl_2.parquet")]
+    margin_inputs = [(1, tmp_path / "m_1.parquet"), (2, tmp_path / "m_2.parquet")]
+    aggregated = pd.DataFrame([{"summary_level": "strategy", "strategy": "A", "n_players": 2, "n_seeds": 2}])
+
+    monkeypatch.setattr(game_stats_interseed, "_seed_analysis_dirs", lambda _cfg: seeds)
+    monkeypatch.setattr(
+        game_stats_interseed,
+        "_seed_input_paths",
+        lambda *_args, candidates, **_kwargs: game_inputs if tuple(candidates) == game_stats_interseed.GAME_LENGTH_INPUTS else margin_inputs,
+    )
+    calls: list[list[tuple[int, Path]]] = []
+
+    def _up_to_date(stamp: Path, **kwargs):
+        return stamp.name.endswith("interseed.margin.done.json")
+
+    monkeypatch.setattr(game_stats_interseed, "stage_is_up_to_date", _up_to_date)
+
+    def _load(paths):
+        calls.append(list(paths))
+        return pd.DataFrame({"metric": [1.0], "n_players": [2], "seed": [1]})
+
+    monkeypatch.setattr(game_stats_interseed, "_load_seed_frames", _load)
+    monkeypatch.setattr(game_stats_interseed, "_aggregate_seed_stats", lambda frame: aggregated)
+
+    game_stats_interseed.run(cfg)
+
+    assert calls == [game_inputs]
+    assert (cfg.interseed_stage_dir / game_stats_interseed.GAME_LENGTH_OUTPUT).exists()
+    assert not (cfg.interseed_stage_dir / game_stats_interseed.MARGIN_OUTPUT).exists()
+
+
+def test_run_empty_loaded_frame_skips_aggregate_write_and_stamp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"), sim=SimConfig(seed=1))
+    seeds = [
+        game_stats_interseed.SeedInputs(seed=1, analysis_dir=tmp_path / "seed1"),
+        game_stats_interseed.SeedInputs(seed=2, analysis_dir=tmp_path / "seed2"),
+    ]
+    game_inputs = [(1, tmp_path / "gl_1.parquet"), (2, tmp_path / "gl_2.parquet")]
+    margin_inputs: list[tuple[int, Path]] = []
+
+    monkeypatch.setattr(game_stats_interseed, "_seed_analysis_dirs", lambda _cfg: seeds)
+    monkeypatch.setattr(
+        game_stats_interseed,
+        "_seed_input_paths",
+        lambda *_args, candidates, **_kwargs: game_inputs if tuple(candidates) == game_stats_interseed.GAME_LENGTH_INPUTS else margin_inputs,
+    )
+    monkeypatch.setattr(game_stats_interseed, "stage_is_up_to_date", lambda *args, **kwargs: False)
+    monkeypatch.setattr(game_stats_interseed, "_load_seed_frames", lambda _paths: pd.DataFrame())
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("should not aggregate/write for empty seed frame")
+
+    monkeypatch.setattr(game_stats_interseed, "_aggregate_seed_stats", _fail)
+    monkeypatch.setattr(game_stats_interseed, "write_stage_done", _fail)
+
+    game_stats_interseed.run(cfg)
+
+    assert not (cfg.interseed_stage_dir / game_stats_interseed.GAME_LENGTH_OUTPUT).exists()
+    assert not game_stats_interseed.stage_done_path(cfg.interseed_stage_dir, "interseed.game_length").exists()
+
+
+def test_run_force_recomputes_even_when_stage_is_current(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"), sim=SimConfig(seed=1))
+    seeds = [
+        game_stats_interseed.SeedInputs(seed=1, analysis_dir=tmp_path / "seed1"),
+        game_stats_interseed.SeedInputs(seed=2, analysis_dir=tmp_path / "seed2"),
+    ]
+    game_inputs = [(1, tmp_path / "gl_1.parquet"), (2, tmp_path / "gl_2.parquet")]
+    margin_inputs = [(1, tmp_path / "m_1.parquet"), (2, tmp_path / "m_2.parquet")]
+    aggregated = pd.DataFrame([{"summary_level": "strategy", "strategy": "A", "n_players": 2, "n_seeds": 2}])
+
+    monkeypatch.setattr(game_stats_interseed, "_seed_analysis_dirs", lambda _cfg: seeds)
+    monkeypatch.setattr(
+        game_stats_interseed,
+        "_seed_input_paths",
+        lambda *_args, candidates, **_kwargs: game_inputs if tuple(candidates) == game_stats_interseed.GAME_LENGTH_INPUTS else margin_inputs,
+    )
+    monkeypatch.setattr(game_stats_interseed, "stage_is_up_to_date", lambda *args, **kwargs: True)
+
+    loads: list[list[tuple[int, Path]]] = []
+    monkeypatch.setattr(
+        game_stats_interseed,
+        "_load_seed_frames",
+        lambda paths: loads.append(list(paths)) or pd.DataFrame({"metric": [1.0], "n_players": [2], "seed": [1]}),
+    )
+    monkeypatch.setattr(game_stats_interseed, "_aggregate_seed_stats", lambda frame: aggregated)
+
+    game_stats_interseed.run(cfg, force=True)
+
+    assert loads == [game_inputs, margin_inputs]

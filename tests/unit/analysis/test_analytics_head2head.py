@@ -821,3 +821,258 @@ def test_calibrate_h2h_games_per_sec_success(monkeypatch: pytest.MonkeyPatch) ->
     assert calls["seeds"][0] == 11
     assert len(calls["seeds"]) == 2000
     assert gps == pytest.approx(500.0)
+@pytest.mark.parametrize(
+    ("df_pairs", "tie_policy", "error_type", "match"),
+    [
+        (
+            pd.DataFrame([{"a": "A", "b": "B", "wins_a": 1, "wins_b": 0, "games": 1}]),
+            "bad_policy",
+            ValueError,
+            "Unknown tie_policy",
+        ),
+        (
+            pd.DataFrame([{"a": "A", "b": "B", "wins_a": 1}]),
+            "neutral_edge",
+            ValueError,
+            "pairwise dataframe missing columns: games, wins_b",
+        ),
+        (
+            pd.DataFrame([{"a": "A", "b": "B", "wins_a": 2, "wins_b": 1, "games": 99}]),
+            "neutral_edge",
+            RuntimeError,
+            "Detected wins != games",
+        ),
+    ],
+)
+def test_holm_bonferroni_validation_errors_table(
+    df_pairs: pd.DataFrame,
+    tie_policy: str,
+    error_type: type[Exception],
+    match: str,
+) -> None:
+    with pytest.raises(error_type, match=match):
+        h2h_analysis.holm_bonferroni(df_pairs=df_pairs, alpha=0.05, tie_policy=tie_policy)
+
+
+def test_holm_bonferroni_all_rows_tied_with_simulation() -> None:
+    df = pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "wins_a": 3, "wins_b": 3, "games": 6},
+            {"a": "C", "b": "D", "wins_a": 5, "wins_b": 5, "games": 10},
+        ]
+    )
+
+    decisions = h2h_analysis.holm_bonferroni(
+        df, alpha=0.05, tie_policy="simulate_game", tie_break_seed=11
+    )
+
+    assert len(decisions) == 2
+    assert set(decisions["dir"]).issubset({"a>b", "b>a"})
+    assert decisions["tie_break"].tolist() == [True, True]
+    assert decisions["tie_policy"].tolist() == ["simulate_game", "simulate_game"]
+
+
+def test_build_significant_graph_validation_and_error_branches() -> None:
+    with pytest.raises(ValueError, match="missing required columns"):
+        h2h_analysis.build_significant_graph(pd.DataFrame([{"a": "A", "b": "B"}]))
+
+    invalid_dir = pd.DataFrame(
+        [{"a": "A", "b": "B", "dir": "???", "is_sig": True, "pval": 0.01, "adj_p": 0.01}]
+    )
+    with pytest.raises(ValueError, match="Unknown direction"):
+        h2h_analysis.build_significant_graph(invalid_dir)
+
+    duplicate_edge_rows = pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "dir": "a>b", "is_sig": True, "pval": 0.01, "adj_p": 0.01},
+            {"a": "A", "b": "B", "dir": "a>b", "is_sig": True, "pval": 0.02, "adj_p": 0.02},
+        ]
+    )
+    with pytest.raises(RuntimeError, match="Duplicate edge detected"):
+        h2h_analysis.build_significant_graph(duplicate_edge_rows)
+
+
+def test_build_significant_graph_skips_non_sig_without_tie_break() -> None:
+    df = pd.DataFrame(
+        [
+            {
+                "a": "A",
+                "b": "B",
+                "dir": "a>b",
+                "is_sig": False,
+                "pval": 0.7,
+                "adj_p": 0.9,
+                "tie_break": False,
+            },
+            {
+                "a": "C",
+                "b": "D",
+                "dir": "a>b",
+                "is_sig": False,
+                "pval": 1.0,
+                "adj_p": 1.0,
+                "tie_break": True,
+                "tie_policy": "simulate_game",
+            },
+        ]
+    )
+    graph = h2h_analysis.build_significant_graph(df, tie_policy="simulate_game", tie_break_seed=9)
+    assert not graph.has_edge("A", "B")
+    assert graph.has_edge("C", "D")
+
+
+def test_load_union_candidates_branches(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    candidates, meta, path = h2h_analysis._load_union_candidates(cfg)
+    assert candidates == []
+    assert meta is None
+    assert path is None
+
+    candidate_path = cfg.analysis_dir / "h2h_union_candidates.json"
+    candidate_path.parent.mkdir(parents=True, exist_ok=True)
+    candidate_path.write_text("not valid json", encoding="utf-8")
+    candidates, meta, path = h2h_analysis._load_union_candidates(cfg)
+    assert candidates == []
+    assert meta is None
+    assert path is None
+
+    payload = {
+        "candidates": ["Alpha", "Beta"],
+        "ratings_count": 2,
+        "metrics_path": "metrics.csv",
+    }
+    candidate_path.write_text(json.dumps(payload), encoding="utf-8")
+    candidates, meta, path = h2h_analysis._load_union_candidates(cfg)
+    assert candidates == ["Alpha", "Beta"]
+    assert meta == {"ratings_count": 2, "metrics_path": "metrics.csv"}
+    assert path == candidate_path
+
+
+def test_infer_h2h_input_metadata_branches(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    assert h2h_analysis._infer_h2h_input_metadata(None)["pairwise_path"] is None
+
+    pairwise_path = tmp_path / "pairs.parquet"
+    pd.DataFrame([{"a": "A", "b": "B", "games": 2}]).to_parquet(pairwise_path)
+
+    monkeypatch.setattr(
+        h2h_analysis.pq,
+        "read_schema",
+        lambda *_: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    meta = h2h_analysis._infer_h2h_input_metadata(pairwise_path)
+    assert meta["pooling_mode"] == "unknown"
+
+    monkeypatch.undo()
+    pooled_meta = h2h_analysis._infer_h2h_input_metadata(pairwise_path)
+    assert pooled_meta["pooling_mode"] == "pooled"
+    assert pooled_meta["pooled_implied_k"] == 2
+
+    players_path = tmp_path / "players.parquet"
+    pd.DataFrame([{"players": 2}, {"players": 4}]).to_parquet(players_path)
+    monkeypatch.setattr(
+        h2h_analysis.pd,
+        "read_parquet",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad read")),
+    )
+    read_fail_meta = h2h_analysis._infer_h2h_input_metadata(players_path)
+    assert read_fail_meta["pooling_mode"] == "k_stratified"
+
+    monkeypatch.undo()
+    empty_players_path = tmp_path / "empty_players.parquet"
+    pd.DataFrame({"players": []}).to_parquet(empty_players_path)
+    empty_meta = h2h_analysis._infer_h2h_input_metadata(empty_players_path)
+    assert empty_meta["pooling_mode"] == "k_stratified"
+    assert empty_meta["k_values"] == []
+
+
+def test_build_candidate_selection_metadata_branching(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    metadata = h2h_analysis._build_candidate_selection_metadata(
+        cfg=cfg,
+        union_meta=None,
+        union_path=None,
+        fallback_used=False,
+    )
+    assert metadata["method"] == "union_top_ratings_metrics"
+    assert metadata["source_path"] is None
+
+    union_meta = {
+        "ratings_count": 5,
+        "metrics_count": 6,
+        "combined_count": 9,
+        "ratings_path": "ratings.csv",
+        "metrics_path": "metrics.csv",
+        "ignore_me": "x",
+    }
+    metadata = h2h_analysis._build_candidate_selection_metadata(
+        cfg=cfg,
+        union_meta=union_meta,
+        union_path=Path("/tmp/union.json"),
+        fallback_used=True,
+    )
+    assert metadata["method"] == "ranking_fallback"
+    assert metadata["fallback_used"] is True
+    assert metadata["ratings_count"] == 5
+    assert metadata["metrics_count"] == 6
+    assert metadata["combined_count"] == 9
+    assert metadata["ratings_path"] == "ratings.csv"
+    assert metadata["metrics_path"] == "metrics.csv"
+    assert "ignore_me" not in metadata
+
+
+def test_run_post_h2h_skips_when_pairwise_missing(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    upstream_done = stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head")
+    write_stage_done(
+        upstream_done,
+        inputs=[],
+        outputs=[],
+        config_sha=cfg.config_sha,
+        status="completed",
+    )
+
+    h2h_analysis.run_post_h2h(cfg)
+
+    done = read_stage_done(stage_done_path(cfg.post_h2h_stage_dir, "post_h2h"))
+    assert done["status"] == "skipped"
+    assert done["reason"] == "missing bonferroni pairwise parquet"
+    assert pd.read_parquet(cfg.post_h2h_stage_dir / "bonferroni_decisions.parquet").empty
+
+
+def test_run_post_h2h_falls_back_when_union_missing(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    pairwise_path = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
+    pairwise_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "wins_a": 9, "wins_b": 1, "games": 10},
+            {"a": "B", "b": "C", "wins_a": 9, "wins_b": 1, "games": 10},
+        ]
+    ).to_parquet(pairwise_path)
+
+    h2h_analysis.run_post_h2h(cfg)
+
+    payload = json.loads((cfg.post_h2h_stage_dir / "h2h_s_tiers.json").read_text(encoding="utf-8"))
+    candidate_meta = payload["_meta"]["candidate_selection"]
+    assert candidate_meta["fallback_used"] is True
+    assert candidate_meta["method"] == "ranking_fallback"
+
+
+def test_run_post_h2h_omits_ranking_output_for_cyclic_graph(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    pairwise_path = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
+    pairwise_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "wins_a": 19, "wins_b": 1, "games": 20},
+            {"a": "B", "b": "C", "wins_a": 19, "wins_b": 1, "games": 20},
+            {"a": "C", "b": "A", "wins_a": 19, "wins_b": 1, "games": 20},
+        ]
+    ).to_parquet(pairwise_path)
+
+    h2h_analysis.run_post_h2h(cfg)
+
+    done = read_stage_done(stage_done_path(cfg.post_h2h_stage_dir, "post_h2h"))
+    output_names = {Path(path).name for path in done["outputs"]}
+    assert "h2h_significant_ranking.csv" not in output_names
+    assert not (cfg.post_h2h_stage_dir / "h2h_significant_ranking.csv").exists()
