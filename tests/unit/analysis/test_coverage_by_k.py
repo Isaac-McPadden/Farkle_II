@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import warnings
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 import pyarrow as pa
@@ -15,11 +16,14 @@ from farkle.config import AnalysisConfig, AppConfig, IOConfig, SimConfig
 
 
 def _cfg(tmp_path: Path, **kwargs: object) -> AppConfig:
+    sim_cfg: Any = kwargs.pop("sim", SimConfig(n_players_list=[2, 3], seed=7, seed_list=[7, 8]))
+    analysis_cfg: Any = kwargs.pop("analysis", AnalysisConfig())
+    io_cfg: Any = kwargs.pop("io", IOConfig(results_dir_prefix=tmp_path))
     return make_test_app_config(
         results_dir_prefix=tmp_path,
-        sim=kwargs.pop("sim", SimConfig(n_players_list=[2, 3], seed=7, seed_list=[7, 8])),
-        analysis=kwargs.pop("analysis", AnalysisConfig()),
-        io=kwargs.pop("io", IOConfig(results_dir_prefix=tmp_path)),
+        sim=sim_cfg,
+        analysis=analysis_cfg,
+        io=io_cfg,
         **kwargs,
     )
 
@@ -59,7 +63,8 @@ def test_optional_csv_path_relative_and_absolute_and_non_string(tmp_path: Path) 
 
 
 def test_player_counts_from_config_filters_invalid_and_non_positive(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path, sim=SimConfig(n_players_list=[3, "x", 0, -2, 2.0, 3, 5]))
+    bad_n_players_list: Any = [3, "x", 0, -2, 2.0, 3, 5]
+    cfg = _cfg(tmp_path, sim=SimConfig(n_players_list=bad_n_players_list))
     assert coverage_by_k._player_counts_from_config(cfg) == [2, 3, 5]
 
 
@@ -112,7 +117,8 @@ def test_map_isolated_paths_uses_resolved_lookup_and_unresolved_fallback(tmp_pat
 
 
 def test_coverage_inputs_includes_metrics_existing_isolated_and_deduped_ordered(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path, sim=SimConfig(n_players_list=[3, "bad", 3, 0, -1, 2, 2]))
+    bad_n_players_list: Any = [3, "bad", 3, 0, -1, 2, 2]
+    cfg = _cfg(tmp_path, sim=SimConfig(n_players_list=bad_n_players_list))
     metrics_path = cfg.metrics_input_path()
     metrics_path.parent.mkdir(parents=True, exist_ok=True)
     metrics_path.write_bytes(b"metrics")

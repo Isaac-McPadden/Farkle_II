@@ -1,4 +1,5 @@
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -67,11 +68,13 @@ def test_strategy_conversion_helpers(tmp_path: Path) -> None:
 
     assert game_stats._strategy_key_to_int(np.int64(9)) == 9
     with pytest.raises(ValueError, match="invalid strategy scalar"):
-        game_stats._strategy_key_to_int(None)
+        bad_value: Any = None
+        game_stats._strategy_key_to_int(bad_value)
 
     assert game_stats._strategy_stat_value(np.float32(2.5)) == pytest.approx(2.5)
     assert game_stats._strategy_stat_value(b"abc") == "abc"
-    assert game_stats._strategy_stat_value(pd.NA) is pd.NA
+    bad_value: Any = pd.NA
+    assert game_stats._strategy_stat_value(bad_value) is pd.NA
 
     raw = pd.DataFrame({"strategy": [1, 2, None]})
     coerced = game_stats._coerce_strategy_dtype(raw, pa.uint8())
@@ -181,13 +184,15 @@ def test_margin_and_round_helpers_with_edge_cases(caplog: pytest.LogCaptureFixtu
 
     empty_margin = game_stats._summarize_margins([], thresholds=(50,))
     assert empty_margin["observations"] == 0
-    assert np.isnan(empty_margin["prob_margin_runner_up_le_50"])
+    prob_margin: Any = empty_margin["prob_margin_runner_up_le_50"]
+    assert np.isnan(prob_margin)
 
     single_margin = game_stats._summarize_margins([25], thresholds=(10, 25))
     assert single_margin["observations"] == 1
     assert single_margin["prob_margin_runner_up_le_25"] == 1.0
 
-    mixed_rounds = game_stats._summarize_rounds([1, "2", np.nan, 20])
+    mixed_round_values: Any = [1, "2", np.nan, 20]
+    mixed_rounds = game_stats._summarize_rounds(mixed_round_values)
     assert mixed_rounds["observations"] == 3
     assert mixed_rounds["prob_rounds_ge_20"] == pytest.approx(1 / 3)
 
@@ -331,7 +336,10 @@ def test_additional_branch_coverage_paths(caplog: pytest.LogCaptureFixture, tmp_
     assert game_stats._strategy_numpy_dtype(pa.uint64()) == np.dtype("uint64")
 
     assert game_stats._strategy_stat_value(True) == 1
-    assert game_stats._strategy_stat_value(object()).startswith("<object object")
+    bad_value: Any = object()
+    strategy_repr = game_stats._strategy_stat_value(bad_value)
+    assert isinstance(strategy_repr, str)
+    assert strategy_repr.startswith("<object object")
 
     # coerce early returns
     assert game_stats._coerce_strategy_dtype(pd.DataFrame(), pa.int64()).empty
