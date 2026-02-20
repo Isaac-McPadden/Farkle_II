@@ -44,7 +44,13 @@ def test_seed_symmetry_run_writes_outputs_and_done(tmp_path: Path) -> None:
     done = stage_done_path(cfg.seed_symmetry_stage_dir, "seed_symmetry")
     payload = json.loads(done.read_text())
     assert payload["status"] == "success"
-    assert str(source) in payload["inputs"]
+    assert payload["inputs"] == [str(source)]
+    assert payload["outputs"] == [
+        str(cfg.seed_symmetry_stage_dir / "seed_symmetry_checks.parquet"),
+        str(cfg.seed_symmetry_stage_dir / "seed_symmetry_checks.csv"),
+        str(cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet"),
+        str(cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.csv"),
+    ]
 
 
 def test_seed_symmetry_missing_input_marks_stage_skipped(tmp_path: Path) -> None:
@@ -56,3 +62,22 @@ def test_seed_symmetry_missing_input_marks_stage_skipped(tmp_path: Path) -> None
     payload = json.loads(done.read_text())
     assert payload["status"] == "skipped"
     assert payload["outputs"] == []
+
+
+def test_seed_symmetry_skips_when_done_stamp_is_up_to_date(tmp_path: Path, monkeypatch) -> None:
+    cfg = _make_cfg(tmp_path)
+    source = cfg.head2head_path("bonferroni_selfplay_symmetry.parquet")
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("placeholder")
+
+    done = stage_done_path(cfg.seed_symmetry_stage_dir, "seed_symmetry")
+    monkeypatch.setattr(seed_symmetry, "stage_is_up_to_date", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        seed_symmetry.pd,
+        "read_parquet",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("should not recompute")),
+    )
+
+    seed_symmetry.run(cfg)
+
+    assert not done.exists()

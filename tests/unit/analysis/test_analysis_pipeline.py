@@ -40,20 +40,24 @@ def _patch_pipeline_stage_stubs(
     monkeypatch.setattr("farkle.analysis.metrics.run", _record("metrics"), raising=True)
     monkeypatch.setattr("farkle.analysis.coverage_by_k.run", _record("coverage_by_k"), raising=True)
     monkeypatch.setattr("farkle.analysis.game_stats.run", _record("game_stats"), raising=True)
-    monkeypatch.setattr("farkle.analysis.seed_summaries.run", _record("seed_summaries"), raising=True)
+    monkeypatch.setattr(
+        "farkle.analysis.seed_summaries.run", _record("seed_summaries"), raising=True
+    )
     monkeypatch.setattr("farkle.analysis.seed_symmetry.run", _record("seed_symmetry"), raising=True)
     monkeypatch.setattr("farkle.analysis.variance.run", _record("variance"), raising=True)
     monkeypatch.setattr("farkle.analysis.meta.run", _record("meta"), raising=True)
-    monkeypatch.setattr("farkle.analysis.h2h_tier_trends.run", _record("h2h_tier_trends"), raising=True)
-    monkeypatch.setattr("farkle.analysis.rng_diagnostics.run", _record("rng_diagnostics"), raising=True)
+    monkeypatch.setattr(
+        "farkle.analysis.h2h_tier_trends.run", _record("h2h_tier_trends"), raising=True
+    )
+    monkeypatch.setattr(
+        "farkle.analysis.rng_diagnostics.run", _record("rng_diagnostics"), raising=True
+    )
 
     def _fake_optional_import(module: str, *, stage_log=None):  # noqa: ANN001
         mapping = {
             "farkle.analysis.trueskill": types.SimpleNamespace(run=_record("trueskill")),
             "farkle.analysis.head2head": types.SimpleNamespace(run=_record("head2head")),
-            "farkle.analysis.h2h_analysis": types.SimpleNamespace(
-                run_post_h2h=_record("post_h2h")
-            ),
+            "farkle.analysis.h2h_analysis": types.SimpleNamespace(run_post_h2h=_record("post_h2h")),
             "farkle.analysis.hgb_feat": types.SimpleNamespace(run=_record("hgb")),
             "farkle.analysis.tiering_report": types.SimpleNamespace(run=_record("tiering")),
             "farkle.analysis.agreement": types.SimpleNamespace(run=_record("agreement")),
@@ -153,7 +157,7 @@ def test_pipeline_writes_resolved_config_and_manifest(
         ("combine", "farkle.analysis.combine.run"),
         ("metrics", "farkle.analysis.metrics.run"),
     ],
-    )
+)
 def test_pipeline_individual_commands_invoke_target(
     tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch, command: str, target: str
 ) -> None:
@@ -197,6 +201,7 @@ def test_pipeline_analytics_runs_layout_order(
         if placement.definition.group == "analytics"
     ]
     assert calls == expected_analytics_order
+    assert calls.index("seed_symmetry") == calls.index("head2head") + 1
 
 
 def test_pipeline_all_runs_all_steps(
@@ -276,7 +281,9 @@ def test_pipeline_game_stats_flag(monkeypatch: pytest.MonkeyPatch, tmp_results_d
     assert calls == ["metrics", "game_stats"]
 
 
-def test_pipeline_game_stats_opt_out(monkeypatch: pytest.MonkeyPatch, tmp_results_dir: Path) -> None:
+def test_pipeline_game_stats_opt_out(
+    monkeypatch: pytest.MonkeyPatch, tmp_results_dir: Path
+) -> None:
     cfg_path, cfg = _make_config(tmp_results_dir, monkeypatch)
     cfg.analysis.run_game_stats = True
 
@@ -298,7 +305,9 @@ def test_pipeline_game_stats_opt_out(monkeypatch: pytest.MonkeyPatch, tmp_result
     assert calls == ["metrics", "game_stats"]
 
 
-def test_pipeline_rng_diagnostics_flag(monkeypatch: pytest.MonkeyPatch, tmp_results_dir: Path) -> None:
+def test_pipeline_rng_diagnostics_flag(
+    monkeypatch: pytest.MonkeyPatch, tmp_results_dir: Path
+) -> None:
     cfg_path, _ = _make_config(tmp_results_dir, monkeypatch)
 
     calls: list[str] = []
@@ -308,16 +317,18 @@ def test_pipeline_rng_diagnostics_flag(monkeypatch: pytest.MonkeyPatch, tmp_resu
 
     monkeypatch.setattr("farkle.analysis.combine.run", _fake_combine, raising=True)
 
-    rc = pipeline.main([
-        "--config",
-        str(cfg_path),
-        "--rng-diagnostics",
-        "--rng-lags",
-        "3",
-        "--rng-lags",
-        "1",
-        "combine",
-    ])
+    rc = pipeline.main(
+        [
+            "--config",
+            str(cfg_path),
+            "--rng-diagnostics",
+            "--rng-lags",
+            "3",
+            "--rng-lags",
+            "1",
+            "combine",
+        ]
+    )
 
     assert rc == 0
     assert calls == ["combine"]
