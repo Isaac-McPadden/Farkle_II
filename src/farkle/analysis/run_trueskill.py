@@ -32,7 +32,6 @@ from typing import (
     Iterator,
     Mapping,
     Optional,
-    Protocol,
     Sequence,
     Tuple,
     TypedDict,
@@ -64,20 +63,6 @@ DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results"
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
-
-
-class _StageLayoutLike(Protocol):
-    def folder_for(self, stage: str) -> str | None: ...
-
-
-class _SeedRowDirConfig(Protocol):
-    @property
-    def io(self) -> object: ...
-
-    @property
-    def stage_layout(self) -> _StageLayoutLike: ...
-
-    def _interseed_input_folder(self, key: str | None) -> str | None: ...
 
 
 class RatingArtifactPaths(TypedDict):
@@ -1476,11 +1461,10 @@ def _resolve_seed_results_root(cfg: AppConfig, seed: int) -> Path:
     return resolve_results_dir(base_root, int(seed))
 
 
-def _resolve_seed_row_data_dir(cfg: _SeedRowDirConfig, seed_results_root: Path) -> Path | None:
+def _resolve_seed_row_data_dir(cfg: AppConfig, seed_results_root: Path) -> Path | None:
     """Resolve curated row-data directory under a specific seed's analysis root."""
 
-    analysis_subdir = cast(str, getattr(cfg.io, "analysis_subdir", "analysis"))
-    analysis_root = seed_results_root / analysis_subdir
+    analysis_root = seed_results_root / cfg.io.analysis_subdir
     candidates: list[Path] = []
 
     input_folder = cfg._interseed_input_folder("curate")
