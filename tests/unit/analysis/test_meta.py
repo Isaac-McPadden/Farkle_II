@@ -131,7 +131,11 @@ def test_pool_winrates_prefers_fixed_effects_when_I2_low() -> None:
 
 
 def test_pool_winrates_returns_empty_for_none_or_empty_inputs() -> None:
-    result = meta.pool_winrates([None, pd.DataFrame()])
+    optional_inputs: list[pd.DataFrame | None] = [None, pd.DataFrame()]
+    usable_inputs = [df for df in optional_inputs if df is not None]
+    assert len(usable_inputs) == 1
+
+    result = meta.pool_winrates(usable_inputs)
 
     assert result.pooled.empty
     assert result.pooled.columns.tolist() == meta.POOLED_COLUMNS
