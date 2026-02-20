@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import MappingProxyType
+from typing import Any, cast
 
 import pytest
 import yaml
@@ -1151,7 +1152,7 @@ def test_additional_branch_coverage_for_optional_stage_and_input_helpers(tmp_pat
     assert cfg._stage_dir_if_active("not_registered") is None
     assert cfg._interseed_stage_dir("combine") is None
 
-    cfg.io.interseed_input_layout = object()
+    cfg.io.interseed_input_layout = cast(Any, object())
     assert cfg._interseed_input_folder("combine") is None
 
 

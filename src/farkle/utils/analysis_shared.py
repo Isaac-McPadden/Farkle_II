@@ -7,7 +7,7 @@ analysis stages can stay vectorized and avoid per-row Python loops.
 from __future__ import annotations
 
 import math
-from typing import Any, TypeAlias
+from typing import Any, TypeAlias, cast
 
 import numpy as np
 import pandas as pd
@@ -23,7 +23,7 @@ def is_na(x: object) -> bool:
 
     if x is None or x is pd.NA:
         return True
-    na_result = pd.isna(x)
+    na_result = pd.isna(cast(Any, x))
     if isinstance(na_result, bool):
         return na_result
     raise TypeError(

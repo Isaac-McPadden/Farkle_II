@@ -159,8 +159,7 @@ def estimate_tau2_sxk(
     sk["noise_term"] = (sk["_w"] ** 2) * (sk["v_binom_seeded"] + sk["v_seed_only"])
 
     # Use squared weights for variance propagation
-    noise_by_s = sk.groupby("strategy", as_index=False)["noise_term"].sum()
-    noise_by_s = noise_by_s.rename(columns={"noise_term": "noise_into_k"})
+    noise_by_s = sk.groupby("strategy", as_index=False).agg(noise_into_k=("noise_term", "sum"))
     noise_by_s["noise_into_k"] = noise_by_s["noise_into_k"].astype(float)
 
     s = s.merge(noise_by_s, on="strategy", how="left")

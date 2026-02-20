@@ -874,4 +874,4 @@ def test_run_single_n_empty_rows_and_legacy_sq_sum_outputs(
 
     runner.run_single_n(cfg, 2, force=True)
     metrics = pd.read_parquet(n_dir / "2p_metrics.parquet")
-    assert float(metrics.loc[0, "sq_sum_winning_score"]) == 40.0
+    assert metrics["sq_sum_winning_score"].to_numpy(dtype=float)[0] == 40.0

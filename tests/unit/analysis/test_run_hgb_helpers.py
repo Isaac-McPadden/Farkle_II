@@ -54,7 +54,18 @@ def test_parse_strategy_features_handles_invalid_and_types():
     assert frame.loc[valid, "dice_threshold"] == pytest.approx(2.0)
     assert pd.isna(frame.loc["invalid", "score_threshold"])
     assert pd.isna(frame.loc["invalid", "dice_threshold"])
-    assert frame.loc["invalid", ["consider_score", "consider_dice", "smart_five", "smart_one", "favor_score", "require_both", "auto_hot_dice", "run_up_score"]].eq(0.0).all()
+    check_cols = [
+        "consider_score",
+        "consider_dice",
+        "smart_five",
+        "smart_one",
+        "favor_score",
+        "require_both",
+        "auto_hot_dice",
+        "run_up_score",
+    ]
+    invalid_row = frame.reindex(index=["invalid"], columns=check_cols).iloc[0]
+    assert invalid_row.eq(0.0).all()
     assert str(frame.dtypes["score_threshold"]) == "float32"
 
 

@@ -427,9 +427,9 @@ class _DeterministicRng:
         self.randrange_value = randrange_value
         self.randint_value = randint_value
 
-    def choice(self, options: Sequence[T]) -> T:
+    def choice(self, seq: Sequence[T]) -> T:
         value = self._choices.pop(0)
-        assert value in options
+        assert value in seq
         return value
 
     def randrange(self, start: int, stop: int | None = None, step: int = 1) -> int:  # noqa: ARG002

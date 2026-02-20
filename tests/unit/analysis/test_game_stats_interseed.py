@@ -6,6 +6,7 @@ import pandas as pd
 import pytest
 
 from farkle.analysis import game_stats_interseed
+from farkle.analysis.stage_registry import StageDefinition, StageLayout, StagePlacement
 from farkle.config import AppConfig, IOConfig, SimConfig
 
 
@@ -130,7 +131,15 @@ def test_seed_input_paths_resolves_preferred_and_legacy_stage_folder(
         monkeypatch.setattr(cfg, "_interseed_input_folder", lambda key: "preferred_game_stats")
     else:
         monkeypatch.setattr(cfg, "_interseed_input_folder", lambda key: None)
-        cfg._stage_layout = type("Layout", (), {"folder_for": staticmethod(lambda key: "legacy_game_stats")})()
+        cfg._stage_layout = StageLayout(
+            placements=[
+                StagePlacement(
+                    definition=StageDefinition(key="game_stats", group="analytics"),
+                    index=0,
+                    folder_name="legacy_game_stats",
+                )
+            ]
+        )
 
     seed_dir = tmp_path / "seed_analysis"
     target = seed_dir / stage_folder / "pooled" / "game_length_stats.parquet"
@@ -167,7 +176,7 @@ def test_seed_input_paths_returns_empty_when_stage_mapping_missing(
 ) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"), sim=SimConfig(seed=1))
     monkeypatch.setattr(cfg, "_interseed_input_folder", lambda key: None)
-    cfg._stage_layout = type("Layout", (), {"folder_for": staticmethod(lambda key: None)})()
+    cfg._stage_layout = StageLayout(placements=[])
 
     with caplog.at_level("WARNING"):
         found = game_stats_interseed._seed_input_paths(

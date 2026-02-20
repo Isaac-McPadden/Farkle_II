@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -87,7 +88,7 @@ def test_interseed_context_preserves_existing_tiering_seeds(tmp_path: Path) -> N
 def test_run_context_config_interseed_folder_unknown_layout_returns_none(tmp_path: Path) -> None:
     base_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
     run_cfg = RunContextConfig.from_base(base_cfg)
-    run_cfg._interseed_input_layout_override = object()
+    run_cfg._interseed_input_layout_override = cast(Any, object())
 
     assert run_cfg._interseed_input_folder("combine") is None
 

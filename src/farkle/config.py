@@ -1623,27 +1623,27 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                     if "seed_pair" in val:
                         per_n_seed_pair_provided[per_n_key] = True
     if pooled_requested:
-        analysis_section = data.setdefault("analysis", {})
-        if not isinstance(analysis_section, MutableMapping):
-            analysis_section = {}
-            data["analysis"] = analysis_section
-        analysis_section.setdefault("agreement_include_pooled", True)
+        pooled_analysis_section = data.setdefault("analysis", {})
+        if not isinstance(pooled_analysis_section, MutableMapping):
+            pooled_analysis_section = {}
+            data["analysis"] = pooled_analysis_section
+        pooled_analysis_section.setdefault("agreement_include_pooled", True)
 
     if "analysis" in data:
         analysis_section_raw = data["analysis"]
         if isinstance(analysis_section_raw, Mapping):
-            analysis_section: MutableMapping[str, Any]
+            analysis_section_map: MutableMapping[str, Any]
             if isinstance(analysis_section_raw, MutableMapping):
-                analysis_section = analysis_section_raw
+                analysis_section_map = analysis_section_raw
             else:
-                analysis_section = dict(analysis_section_raw)
-                data["analysis"] = analysis_section
-            legacy_alias = "run_tiering_report" in analysis_section
-            if "run_tiering_report" in analysis_section:
-                alias_val = analysis_section.pop("run_tiering_report")
-                analysis_section.setdefault("run_frequentist", alias_val)
+                analysis_section_map = dict(analysis_section_raw)
+                data["analysis"] = analysis_section_map
+            legacy_alias = "run_tiering_report" in analysis_section_map
+            if "run_tiering_report" in analysis_section_map:
+                alias_val = analysis_section_map.pop("run_tiering_report")
+                analysis_section_map.setdefault("run_frequentist", alias_val)
             deprecated = sorted(
-                key for key in analysis_section if key in DEPRECATED_ANALYSIS_FLAGS
+                key for key in analysis_section_map if key in DEPRECATED_ANALYSIS_FLAGS
             )
             if legacy_alias:
                 deprecated.append("run_tiering_report")

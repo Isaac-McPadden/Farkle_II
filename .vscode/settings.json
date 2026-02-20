@@ -1,24 +1,3 @@
-// {
-//   // Use the venv inside the repo
-//   "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
-
-//   // Point VS Code at the venv’s pytest
-//   // "python.testing.pytestPath": "${workspaceFolder}\\.venv\\Scripts\\pytest.exe",
-
-//   "python.testing.pytestEnabled": true,
-//   "python.testing.unittestEnabled": false,
-
-//   // Let pytest.ini drive discovery, but keep cwd clean
-//   "python.testing.cwd": "${workspaceFolder}",
-
-//   "python.testing.pytestArgs": ["tests"],
-
-//   "python.terminal.activateEnvironment": true,
-//   "cSpell.words": ["Farkle","strats","farkle"],
-//   "python.analysis.packageIndexDepths": [{ "name": "farkle", "depth": 3 }],
-//   "python.analysis.useLibraryCodeForTypes": true
-// }
-
 {
   // Use the repo's venv (Windows)
   "python.defaultInterpreterPath": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
@@ -32,9 +11,11 @@
   "python.testing.cwd": "${workspaceFolder}",
   "python.testing.pytestArgs": ["tests"],
 
-
-    // Make Pylance analyze the whole repo (not just open files)
+  // Pylance
   "python.analysis.diagnosticMode": "workspace",
+  "python.analysis.extraPaths": ["${workspaceFolder}\\src"],
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.useLibraryCodeForTypes": true,
 
   // Ruff extension
   "ruff.enable": true,
@@ -45,7 +26,7 @@
   "mypy-type-checker.args": ["--config-file", "pyproject.toml"],
   "mypy-type-checker.reportingScope": "workspace",
   "mypy-type-checker.ignorePatterns": [
-  "**/tests/**",
-  "tests/**"
-],
+    "**/tests/**",
+    "tests/**"
+  ]
 }
