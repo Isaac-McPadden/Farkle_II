@@ -167,7 +167,8 @@ def test_integer_and_stat_helpers_boundaries() -> None:
 
 def test_margin_and_round_helpers_with_edge_cases(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
     scores = np.array([[10.0, 6.0], [5.0, np.nan], [np.nan, np.nan]])
-    margin, spread = game_stats._compute_margin_arrays(scores)
+    with pytest.warns(RuntimeWarning, match="All-NaN slice encountered"):
+        margin, spread = game_stats._compute_margin_arrays(scores)
     assert margin[0] == 4
     assert spread[0] == 4
     assert np.isnan(margin[1])
@@ -457,9 +458,11 @@ def test_margin_pooling_and_strategy_empty_paths(caplog: pytest.LogCaptureFixtur
     assert pooled_missing_strategy.empty
     assert pooled_missing_score.empty
 
-    pooled_nan = game_stats._pooled_margin_stats(
-        [(2, nan_scores)], thresholds=(10,), pooling_scheme="equal-k", weights_by_k={}
-    )
-    per_strategy_nan = game_stats._per_strategy_margin_stats([(2, nan_scores)], thresholds=(10,))
+    with pytest.warns(RuntimeWarning, match="All-NaN slice encountered"):
+        pooled_nan = game_stats._pooled_margin_stats(
+            [(2, nan_scores)], thresholds=(10,), pooling_scheme="equal-k", weights_by_k={}
+        )
+    with pytest.warns(RuntimeWarning, match="All-NaN slice encountered"):
+        per_strategy_nan = game_stats._per_strategy_margin_stats([(2, nan_scores)], thresholds=(10,))
     assert pooled_nan.empty
     assert per_strategy_nan.empty
