@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -374,3 +375,249 @@ def test_load_metrics_frame_raises_on_invalid_inputs(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="negative game counts"):
         seed_summaries._load_metrics_frame(cfg)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("game-count", "game-count"),
+        ("GameCount", "game-count"),
+        ("count", "game-count"),
+        ("equal_k", "equal-k"),
+        ("equalk", "equal-k"),
+        ("custom", "config"),
+    ],
+)
+def test_normalize_pooling_scheme_aliases(raw: str, expected: str) -> None:
+    assert seed_summaries._normalize_pooling_scheme(raw) == expected
+
+
+def test_normalize_pooling_scheme_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="Unknown pooling scheme"):
+        seed_summaries._normalize_pooling_scheme("mystery")
+
+
+def test_pooling_weights_for_seed_summary_schemes() -> None:
+    frame = pd.DataFrame(
+        {
+            "players": [2, 2, 3],
+            "games": [4, 6, 10],
+        }
+    )
+    game_count = seed_summaries._pooling_weights_for_seed_summary(
+        frame, pooling_scheme="game-count", weights_by_k={}
+    )
+    assert game_count.tolist() == pytest.approx([4.0, 6.0, 10.0])
+
+    equal_k = seed_summaries._pooling_weights_for_seed_summary(
+        frame, pooling_scheme="equal-k", weights_by_k={}
+    )
+    assert equal_k.tolist() == pytest.approx([0.4, 0.6, 1.0])
+
+    config = seed_summaries._pooling_weights_for_seed_summary(
+        frame,
+        pooling_scheme="config",
+        weights_by_k={2: 0.5, 3: 0.25},
+    )
+    assert config.tolist() == pytest.approx([0.2, 0.3, 0.25])
+
+
+def test_pooling_weights_for_seed_summary_rejects_unknown_scheme() -> None:
+    frame = pd.DataFrame({"players": [2], "games": [1]})
+    with pytest.raises(ValueError, match="Unknown pooling scheme"):
+        seed_summaries._pooling_weights_for_seed_summary(
+            frame, pooling_scheme="unknown", weights_by_k={}
+        )
+
+
+def test_mean_output_name_override_and_default_passthrough() -> None:
+    assert seed_summaries._mean_output_name("mean_n_rounds") == "turns_mean"
+    assert seed_summaries._mean_output_name("mean_custom_metric") == "custom_metric_mean"
+
+
+def test_cast_int32_if_safe_handles_bounds() -> None:
+    safe = pd.Series([0, np.iinfo(np.int32).max])
+    assert seed_summaries._cast_int32_if_safe(safe).dtype == np.int32
+
+    overflow = pd.Series([0, np.iinfo(np.int32).max + 1], dtype=np.int64)
+    assert seed_summaries._cast_int32_if_safe(overflow).dtype == np.int64
+
+
+def test_weighted_means_helpers_ignore_nan_and_zero_weights() -> None:
+    frame = pd.DataFrame(
+        {
+            "strategy_id": [1, 1, 2, 2],
+            "games": [5, 0, 0, 0],
+            "mean_score": [2.0, 8.0, np.nan, 3.0],
+        }
+    )
+    by_strategy = seed_summaries._weighted_means_by_strategy(frame, ["mean_score"])
+    assert by_strategy.loc[1, "score_mean"] == pytest.approx(2.0)
+    assert np.isnan(by_strategy.loc[2, "score_mean"])
+
+    weighted = seed_summaries._weighted_means_with_weights(
+        frame,
+        ["mean_score"],
+        pd.Series([1.0, 0.0, 0.0, 0.0]),
+    )
+    assert weighted.loc[1, "pooling_weight_sum"] == pytest.approx(1.0)
+    assert weighted.loc[1, "mean_score"] == pytest.approx(2.0)
+    assert weighted.loc[2, "pooling_weight_sum"] == pytest.approx(0.0)
+    assert np.isnan(weighted.loc[2, "mean_score"])
+
+
+def test_load_metrics_frame_raises_for_missing_file_null_seed_and_non_numeric_strategy(
+    tmp_path: Path,
+) -> None:
+    cfg = _make_cfg(tmp_path)
+    with pytest.raises(FileNotFoundError):
+        seed_summaries._load_metrics_frame(cfg)
+
+    _write_metrics(
+        cfg,
+        pd.DataFrame(
+            [
+                {"strategy": "1", "n_players": 2, "games": 1, "wins": 1, "seed": np.nan},
+            ]
+        ),
+    )
+    with pytest.raises(ValueError, match="null seed"):
+        seed_summaries._load_metrics_frame(cfg)
+
+    _write_metrics(
+        cfg,
+        pd.DataFrame(
+            [
+                {"strategy": "not-an-int", "n_players": 2, "games": 1, "wins": 1, "seed": 5},
+            ]
+        ),
+    )
+    with pytest.raises(ValueError, match="non-numeric strategy_id"):
+        seed_summaries._load_metrics_frame(cfg)
+
+
+def test_existing_summary_matches_handles_missing_corrupt_column_and_value_mismatch(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "summary.parquet"
+    new_df = pd.DataFrame({"strategy_id": [1], "seed": [1], "games": [2], "wins": [1]})
+    assert seed_summaries._existing_summary_matches(path, new_df) is False
+
+    path.write_text("not parquet")
+    assert seed_summaries._existing_summary_matches(path, new_df) is False
+
+    pd.DataFrame({"strategy_id": [1], "seed": [1], "games": [2]}).to_parquet(path, index=False)
+    assert seed_summaries._existing_summary_matches(path, new_df) is False
+
+    pd.DataFrame({"strategy_id": [1], "seed": [1], "games": [2], "wins": [0]}).to_parquet(
+        path, index=False
+    )
+    assert seed_summaries._existing_summary_matches(path, new_df) is False
+
+
+def test_sync_meta_summary_short_circuits_or_skips_rewrite(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_cfg(tmp_path)
+    summary = pd.DataFrame({"strategy_id": [1], "seed": [18], "games": [1], "wins": [1]})
+    analysis_path = cfg.seed_summaries_stage_dir / "seed_18_summary_long.parquet"
+
+    assert seed_summaries._sync_meta_summary(cfg, summary, analysis_path) is None
+
+    cfg.io.meta_analysis_dir = cfg.analysis_dir
+    same_path = cfg.analysis_dir / "seed_18_summary_long.parquet"
+    assert seed_summaries._sync_meta_summary(cfg, summary, same_path) is None
+
+    cfg.io.meta_analysis_dir = Path("meta")
+    writes: list[Path] = []
+
+    def _record_write(df: pd.DataFrame, path: Path) -> None:
+        writes.append(path)
+
+    monkeypatch.setattr(seed_summaries, "_write_summary", _record_write)
+    mirrored = cfg.meta_analysis_dir / analysis_path.name
+    mirrored.parent.mkdir(parents=True, exist_ok=True)
+    summary.to_parquet(mirrored, index=False)
+    result = seed_summaries._sync_meta_summary(cfg, summary, analysis_path)
+    assert result == mirrored
+    assert writes == []
+
+
+def test_run_returns_early_for_missing_and_empty_metrics(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    seed_summaries.run(cfg)
+    done = seed_summaries.stage_done_path(cfg.seed_summaries_stage_dir, "seed_summaries")
+    assert not done.exists()
+
+    _write_metrics(cfg, pd.DataFrame(columns=["strategy", "n_players", "games", "wins"]))
+    seed_summaries.run(cfg)
+    assert not done.exists()
+
+
+def test_run_raises_for_config_pooling_without_weights(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+    cfg.analysis.pooling_weights = "config"
+    cfg.analysis.pooling_weights_by_k = {}
+    _write_metrics(cfg, pd.DataFrame([{"strategy": "1", "n_players": 2, "games": 1, "wins": 1}]))
+
+    with pytest.raises(ValueError, match="pooling_weights_by_k must be set"):
+        seed_summaries.run(cfg)
+
+
+def test_run_does_not_write_stage_done_when_expected_outputs_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_cfg(tmp_path)
+    metrics_path = cfg.metrics_output_path()
+    metrics_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame([{"strategy": "1", "n_players": 2, "games": 1, "wins": 1}]).to_parquet(
+        metrics_path, index=False
+    )
+
+    weird_frame = pd.DataFrame(
+        [{"strategy_id": 1, "players": np.nan, "seed": 10, "games": 1, "wins": 1}]
+    )
+    monkeypatch.setattr(seed_summaries, "_load_metrics_frame", lambda _cfg: (weird_frame, metrics_path))
+    marker: list[Path] = []
+
+    def _record_stage_done(*_args, **_kwargs) -> None:
+        marker.append(Path("called"))
+
+    monkeypatch.setattr(seed_summaries, "write_stage_done", _record_stage_done)
+    seed_summaries.run(cfg)
+    assert marker == []
+
+
+def test_run_rewrites_only_when_long_or_weighted_differs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _make_cfg(tmp_path)
+    _write_metrics(
+        cfg,
+        pd.DataFrame([{"strategy": "1", "n_players": 2, "games": 10, "wins": 5}]),
+    )
+    seed_summaries.run(cfg)
+
+    monkeypatch.setattr(seed_summaries, "stage_is_up_to_date", lambda *args, **kwargs: False)
+    written: list[str] = []
+
+    def _record_write(_df: pd.DataFrame, path: Path) -> None:
+        written.append(path.name)
+
+    monkeypatch.setattr(seed_summaries, "_write_summary", _record_write)
+
+    def _only_weighted_diff(path: Path, _df: pd.DataFrame) -> bool:
+        return path.name != "seed_18_summary_weighted.parquet"
+
+    monkeypatch.setattr(seed_summaries, "_existing_summary_matches", _only_weighted_diff)
+    seed_summaries.run(cfg)
+    assert written == ["seed_18_summary_weighted.parquet"]
+
+    written.clear()
+
+    def _only_long_diff(path: Path, _df: pd.DataFrame) -> bool:
+        return path.name != "seed_18_summary_long.parquet"
+
+    monkeypatch.setattr(seed_summaries, "_existing_summary_matches", _only_long_diff)
+    seed_summaries.run(cfg)
+    assert written == ["seed_18_summary_long.parquet"]
