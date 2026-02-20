@@ -5,7 +5,7 @@ import math
 import os
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Mapping, cast
+from typing import Mapping, cast
 
 import numpy as np
 import pandas as pd
@@ -16,7 +16,7 @@ import trueskill
 from tests.helpers.config_factory import make_test_app_config
 
 import farkle.analysis.run_trueskill as rt
-from farkle.analysis.stage_registry import resolve_interseed_stage_layout
+from farkle.analysis.stage_registry import resolve_interseed_stage_layout, resolve_stage_layout
 from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.utils.types import Compression, normalize_compression
 
@@ -976,11 +976,7 @@ def test_resolve_seed_results_and_row_data_fallbacks(
     row_cfg = make_test_app_config(results_dir_prefix=tmp_path / "base")
     row_cfg.io.interseed_input_layout = {"curate": "00_curate"}
 
-    class _DummyLayout:
-        def folder_for(self, stage: str) -> str | None:
-            return "01_curate" if stage == "curate" else None
-
-    row_cfg.set_stage_layout(cast(Any, _DummyLayout()))
+    row_cfg.set_stage_layout(resolve_stage_layout(row_cfg))
 
     seed_root = tmp_path / "results_seed_12"
     analysis_root = seed_root / "analysis"
