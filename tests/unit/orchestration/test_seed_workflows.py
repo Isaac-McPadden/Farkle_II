@@ -253,15 +253,25 @@ def test_two_seed_pipeline_helpers(base_cfg: AppConfig, tmp_path: Path) -> None:
 def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     captured: dict[str, Any] = {}
+    delegated: list[tuple[AppConfig, Path]] = []
 
     def fake_run(plan: list[Any], context: Any, raise_on_failure: bool) -> None:
         captured["plan_names"] = [item.name for item in plan]
         captured["run_label"] = context.run_label
         captured["raise_on_failure"] = raise_on_failure
+        for item in plan:
+            if item.name == "single_seed_analysis":
+                item.action(context.config)
 
     monkeypatch.setattr(two_seed_pipeline.StageRunner, "run", staticmethod(fake_run))
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_single_seed_analysis",
+        lambda app_cfg, *, manifest_path: delegated.append((app_cfg, manifest_path)),
+    )
 
-    two_seed_pipeline._run_per_seed_analysis(cfg, manifest_path=tmp_path / "manifest.jsonl", seed=9)
+    manifest_path = tmp_path / "manifest.jsonl"
+    two_seed_pipeline._run_per_seed_analysis(cfg, manifest_path=manifest_path, seed=9)
     assert captured["plan_names"] == [
         "ingest",
         "curate",
@@ -272,6 +282,7 @@ def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPa
     ]
     assert captured["run_label"] == "per_seed_pipeline_9"
     assert captured["raise_on_failure"] is True
+    assert delegated == [(cfg, manifest_path)]
 
 
 def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -300,7 +311,20 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     two_seed_pipeline.run_pipeline(cfg, seed_pair=(1, 2), force=False)
     assert sim_calls == []
     assert per_seed_calls == [1, 2]
-    assert "seed_simulation_skipped" in manifest_events
+    assert manifest_events == [
+        "run_start",
+        "seed_start",
+        "seed_simulation_skipped",
+        "seed_analysis_complete",
+        "seed_start",
+        "seed_simulation_skipped",
+        "seed_analysis_complete",
+        "interseed_start",
+        "interseed_complete",
+        "h2h_tier_trends_start",
+        "h2h_tier_trends_complete",
+        "run_end",
+    ]
 
     sim_calls.clear()
     per_seed_calls.clear()
@@ -308,7 +332,20 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     two_seed_pipeline.run_pipeline(cfg, seed_pair=(1, 2), force=True)
     assert sim_calls == [1, 2]
     assert per_seed_calls == [1, 2]
-    assert "seed_simulation_complete" in manifest_events
+    assert manifest_events == [
+        "run_start",
+        "seed_start",
+        "seed_simulation_complete",
+        "seed_analysis_complete",
+        "seed_start",
+        "seed_simulation_complete",
+        "seed_analysis_complete",
+        "interseed_start",
+        "interseed_complete",
+        "h2h_tier_trends_start",
+        "h2h_tier_trends_complete",
+        "run_end",
+    ]
 
 
 def test_two_seed_pipeline_main_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

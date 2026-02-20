@@ -82,10 +82,16 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
 ) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
     calls: list[str] = []
+    plan_names: list[str] = []
 
-    monkeypatch.setattr("farkle.analysis.StageRunner.run", lambda plan, context, raise_on_failure=True: [item.action(context.config) for item in plan], raising=True)
+    def _run_plan(plan, context, raise_on_failure=True):  # noqa: ANN001
+        plan_names.extend(item.name for item in plan)
+        return [item.action(context.config) for item in plan]
+
+    monkeypatch.setattr("farkle.analysis.StageRunner.run", _run_plan, raising=True)
     monkeypatch.setattr("farkle.analysis.run_seed_summaries", lambda app_cfg, force=False: calls.append(f"seed:{force}"), raising=True)
     monkeypatch.setattr("farkle.analysis.run_coverage_by_k", lambda app_cfg, force=False: calls.append(f"coverage:{force}"), raising=True)
+    monkeypatch.setattr("farkle.analysis.run_seed_symmetry", lambda app_cfg, force=False: calls.append(f"seed_symmetry:{force}"), raising=True)
 
     enabled_modules = {
         "farkle.analysis.trueskill": SimpleNamespace(run=lambda app_cfg: calls.append("trueskill")),
@@ -103,12 +109,24 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
 
     analysis_mod.run_single_seed_analysis(cfg, force=True)
 
+    assert plan_names == [
+        "seed_summaries",
+        "coverage_by_k",
+        "trueskill",
+        "tiering",
+        "head2head",
+        "seed_symmetry",
+        "post_h2h",
+        "hgb",
+    ]
+
     assert calls == [
         "seed:True",
         "coverage:True",
         "trueskill",
         "tiering",
         "head2head",
+        "seed_symmetry:True",
         "post_h2h",
     ]
 
