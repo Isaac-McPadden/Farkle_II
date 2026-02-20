@@ -1,9 +1,10 @@
-﻿from pathlib import Path
-import json
+﻿import json
 import sys
+from pathlib import Path
 from statistics import median
 
 import pyarrow.parquet as pq
+
 from farkle.utils.manifest import iter_manifest
 
 BASE = Path('data/results_seed_pair_4444_4445')
