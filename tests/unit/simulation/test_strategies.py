@@ -1,6 +1,7 @@
 import pickle
 import random
 from collections import Counter
+from typing import Sequence
 
 import pandas as pd
 import pytest
@@ -423,15 +424,15 @@ class _DeterministicRng:
         self.randrange_value = randrange_value
         self.randint_value = randint_value
 
-    def choice(self, options):
+    def choice(self, options: Sequence[object]) -> object:
         value = self._choices.pop(0)
         assert value in options
         return value
 
-    def randrange(self, *_args):
+    def randrange(self, start: int, stop: int | None = None, step: int = 1) -> int:  # noqa: ARG002
         return self.randrange_value
 
-    def randint(self, *_args):
+    def randint(self, a: int, b: int) -> int:  # noqa: ARG002
         return self.randint_value
 
 
