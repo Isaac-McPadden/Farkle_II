@@ -370,6 +370,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "h2h_tier_trends": analysis.run_h2h_tier_trends,
         "trueskill": _optional_stage("farkle.analysis.trueskill", "trueskill"),
         "head2head": _head2head_only,
+        "seed_symmetry": analysis.run_seed_symmetry,
         "post_h2h": _post_h2h_only,
         "hgb": _optional_stage("farkle.analysis.hgb_feat", "hgb"),
         "tiering": _optional_stage("farkle.analysis.tiering_report", "tiering"),

@@ -111,6 +111,13 @@ def run_h2h_tier_trends(cfg: AppConfig, *, force: bool = False) -> None:
     h2h_tier_trends.run(cfg, force=force)
 
 
+def run_seed_symmetry(cfg: AppConfig, *, force: bool = False) -> None:
+    """Wrapper around :mod:`farkle.analysis.seed_symmetry`."""
+    from farkle.analysis import seed_symmetry
+
+    seed_symmetry.run(cfg, force=force)
+
+
 def run_interseed_analysis(
     cfg: AppConfig,
     *,
@@ -257,7 +264,7 @@ def run_single_seed_analysis(
     force: bool = False,
     manifest_path: Path | None = None,
 ) -> None:
-    """Run per-seed analytics in order (seed summaries → trueskill → tiering → head2head → post_h2h → hgb)."""
+    """Run per-seed analytics in order (seed summaries → trueskill → tiering → head2head → seed_symmetry → post_h2h → hgb)."""
     def _seed_summaries(cfg: AppConfig) -> None:
         run_seed_summaries(cfg, force=force)
 
@@ -302,6 +309,7 @@ def run_single_seed_analysis(
         StagePlanItem("trueskill", _trueskill),
         StagePlanItem("tiering", _tiering),
         StagePlanItem("head2head", _head2head),
+        StagePlanItem("seed_symmetry", lambda cfg: run_seed_symmetry(cfg, force=force)),
         StagePlanItem("post_h2h", _post_h2h),
         StagePlanItem("hgb", _hgb),
     ]

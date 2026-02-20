@@ -655,6 +655,10 @@ class AppConfig:
         return self.stage_subdir("head2head")
 
     @property
+    def seed_symmetry_stage_dir(self) -> Path:
+        return self.stage_subdir("seed_symmetry")
+
+    @property
     def post_h2h_stage_dir(self) -> Path:
         return self.stage_subdir("post_h2h")
 

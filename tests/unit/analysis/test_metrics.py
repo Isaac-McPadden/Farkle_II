@@ -159,25 +159,9 @@ def test_seat_metrics_include_per_seat_stats(sample_config):
     assert row["mean_rounds"] == pytest.approx(10.5)
 
 
-def test_symmetry_checks_empty_when_no_symmetric_pairs(sample_config):
-    symmetry_path = sample_config.metrics_input_path("symmetry_checks.parquet")
-    df = pd.read_parquet(symmetry_path)
-
-    required = {
-        "strategy",
-        "n_players",
-        "observations",
-        "mean_p1_farkles",
-        "mean_p2_farkles",
-        "farkle_diff",
-        "mean_p1_rounds",
-        "mean_p2_rounds",
-        "rounds_diff",
-        "farkle_flagged",
-        "rounds_flagged",
-    }
-    assert required.issubset(df.columns)
-    assert df.empty
+def test_metrics_does_not_own_symmetry_outputs(sample_config):
+    assert not sample_config.metrics_output_path("symmetry_checks.parquet").exists()
+    assert not sample_config.metrics_output_path("symmetry_checks.csv").exists()
 
 
 def test_metrics_skip_when_up_to_date(sample_config, monkeypatch):

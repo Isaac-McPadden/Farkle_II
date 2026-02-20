@@ -41,6 +41,7 @@ def _patch_pipeline_stage_stubs(
     monkeypatch.setattr("farkle.analysis.coverage_by_k.run", _record("coverage_by_k"), raising=True)
     monkeypatch.setattr("farkle.analysis.game_stats.run", _record("game_stats"), raising=True)
     monkeypatch.setattr("farkle.analysis.seed_summaries.run", _record("seed_summaries"), raising=True)
+    monkeypatch.setattr("farkle.analysis.seed_symmetry.run", _record("seed_symmetry"), raising=True)
     monkeypatch.setattr("farkle.analysis.variance.run", _record("variance"), raising=True)
     monkeypatch.setattr("farkle.analysis.meta.run", _record("meta"), raising=True)
     monkeypatch.setattr("farkle.analysis.h2h_tier_trends.run", _record("h2h_tier_trends"), raising=True)

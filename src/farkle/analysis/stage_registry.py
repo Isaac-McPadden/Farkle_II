@@ -102,6 +102,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition("trueskill", group="analytics"),
     StageDefinition("tiering", group="analytics"),
     StageDefinition("head2head", group="analytics"),
+    StageDefinition("seed_symmetry", group="analytics"),
     StageDefinition("post_h2h", group="analytics"),
     StageDefinition("hgb", group="analytics"),
     StageDefinition("variance", group="analytics"),

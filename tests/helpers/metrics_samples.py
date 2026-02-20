@@ -361,13 +361,10 @@ def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
     seat_parquet = cfg.metrics_output_path("seat_advantage.parquet")
     seat_metrics = cfg.metrics_output_path("seat_metrics.parquet")
     seat_metrics_csv = cfg.metrics_output_path("seat_metrics.csv")
-    symmetry_path = cfg.metrics_output_path("symmetry_checks.parquet")
-    symmetry_csv = cfg.metrics_output_path("symmetry_checks.csv")
     iso_paths = sorted(cfg.metrics_stage_dir.glob("*p/*_isolated_metrics.parquet"))
     metrics_golden = GOLDEN_ROOT / "metrics.csv"
     seat_golden = GOLDEN_ROOT / "seat_advantage.csv"
     seat_metrics_golden = GOLDEN_ROOT / "seat_metrics.csv"
-    symmetry_golden = GOLDEN_ROOT / "symmetry_checks.csv"
 
     assert_parquet_golden(
         metrics_path, metrics_golden, update=update_goldens, sort_by=["n_players", "strategy"]
@@ -383,16 +380,6 @@ def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
         update=update_goldens,
         sort_by=["strategy", "seat", "n_players"],
     )
-    assert_parquet_golden(
-        symmetry_path, symmetry_golden, update=update_goldens, sort_by=["strategy", "n_players"]
-    )
-    assert_csv_golden(
-        symmetry_csv,
-        symmetry_golden,
-        update=update_goldens,
-        sort_by=["strategy", "n_players"],
-    )
-
     for iso_path in iso_paths:
         golden_iso = GOLDEN_ROOT / "data" / iso_path.parent.name / iso_path.with_suffix(".csv").name
         assert_parquet_golden(iso_path, golden_iso, update=update_goldens, sort_by=["strategy"])
@@ -413,8 +400,6 @@ def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
             seat_parquet,
             seat_metrics,
             seat_metrics_csv,
-            symmetry_path,
-            symmetry_csv,
             *iso_paths,
         ],
     )

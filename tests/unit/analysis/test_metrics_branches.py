@@ -33,7 +33,7 @@ def test_run_raises_when_no_isolated_metrics_generated(tmp_path, monkeypatch):
         metrics.run(cfg)
 
 
-def test_run_skips_symmetry_when_no_two_player_config(tmp_path, monkeypatch):
+def test_run_no_longer_invokes_symmetry_branch(tmp_path, monkeypatch):
     cfg = sample_data.stage_sample_run(tmp_path, refresh_inputs=True)
     cfg.sim.n_players_list = [3]
 
@@ -66,10 +66,6 @@ def test_run_skips_symmetry_when_no_two_player_config(tmp_path, monkeypatch):
     monkeypatch.setattr(metrics, "compute_seat_advantage", lambda *_args, **_kwargs: pd.DataFrame({"seat": [1], "games_with_seat": [1], "wins": [1], "win_rate": [1.0]}))
     monkeypatch.setattr(metrics, "compute_seat_metrics", lambda *_args, **_kwargs: pd.DataFrame({"seat": [1]}))
 
-    def _fail_symmetry(*_args, **_kwargs):
-        raise AssertionError("symmetry should be skipped")
-
-    monkeypatch.setattr(metrics, "compute_symmetry_checks", _fail_symmetry)
     monkeypatch.setattr(metrics, "write_parquet_atomic", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(metrics, "write_csv_atomic", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
@@ -85,11 +81,8 @@ def test_run_skips_symmetry_when_no_two_player_config(tmp_path, monkeypatch):
 
     metrics.run(cfg)
 
-    symmetry_stamp = cfg.metrics_output_path("metrics.symmetry.stamp.json")
-    assert any(path == symmetry_stamp and inputs == [] and outputs == [] for path, inputs, outputs in stamp_calls)
-
-    symmetry_done = cfg.metrics_stage_dir / "metrics_symmetry.done.json"
-    assert any(path == symmetry_done and inputs == [] and outputs == [] for path, inputs, outputs in done_calls)
+    assert stamp_calls
+    assert done_calls
 
 
 def test_run_stage_up_to_date_permutations(tmp_path, monkeypatch):
@@ -109,7 +102,6 @@ def test_run_stage_up_to_date_permutations(tmp_path, monkeypatch):
             "metrics_weighted.done.json": False,
             "metrics_seat_advantage.done.json": True,
             "metrics_seat_metrics.done.json": False,
-            "metrics_symmetry.done.json": True,
         }
         return mapping[done_path.name]
 
@@ -128,8 +120,6 @@ def test_run_stage_up_to_date_permutations(tmp_path, monkeypatch):
                     "expected_score": [15.0],
                 }
             )
-        if name == "symmetry_checks.parquet":
-            return pd.DataFrame({"strategy": ["A"], "n_players": [2], "observations": [1]})
         raise AssertionError(f"unexpected read_parquet path: {path}")
 
     monkeypatch.setattr(metrics, "check_pre_metrics", lambda *_args, **_kwargs: None)
@@ -138,7 +128,6 @@ def test_run_stage_up_to_date_permutations(tmp_path, monkeypatch):
     monkeypatch.setattr(metrics.pd, "read_csv", lambda path, *_args, **_kwargs: calls.append(f"read_csv:{Path(path).name}") or pd.DataFrame({"seat": [1], "games_with_seat": [1], "wins": [1], "win_rate": [1.0]}))
     monkeypatch.setattr(metrics, "_compute_weighted_metrics", lambda *_args, **_kwargs: calls.append("compute_weighted") or pd.DataFrame({"strategy": ["A"], "games": [10], "wins": [6]}))
     monkeypatch.setattr(metrics, "compute_seat_metrics", lambda *_args, **_kwargs: calls.append("compute_seat_metrics") or pd.DataFrame({"seat": [1]}))
-    monkeypatch.setattr(metrics, "compute_symmetry_checks", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("symmetry compute should not run")))
     monkeypatch.setattr(metrics, "write_parquet_atomic", lambda *_args, **_kwargs: calls.append("write_parquet"))
     monkeypatch.setattr(metrics, "write_csv_atomic", lambda *_args, **_kwargs: calls.append("write_csv"))
     monkeypatch.setattr(metrics, "_write_stamp", lambda *_args, **_kwargs: calls.append("write_stamp"))
@@ -150,7 +139,6 @@ def test_run_stage_up_to_date_permutations(tmp_path, monkeypatch):
     assert "compute_weighted" in calls
     assert "read_csv:seat_advantage.csv" in calls
     assert "compute_seat_metrics" in calls
-    assert "read_parquet:symmetry_checks.parquet" in calls
 
 
 def test_normalize_pooling_scheme_aliases_and_invalid():
