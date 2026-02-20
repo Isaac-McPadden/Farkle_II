@@ -121,14 +121,22 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     rb.run_bonferroni_head2head(seed=1, cfg=cfg, shard_size=1)
 
     pairwise_path = cfg.head2head_path("bonferroni_pairwise.parquet")
+    ordered_path = cfg.head2head_path("bonferroni_pairwise_ordered.parquet")
+    selfplay_path = cfg.head2head_path("bonferroni_selfplay_symmetry.parquet")
     assert pairwise_path.exists()
+    assert ordered_path.exists()
+    assert selfplay_path.exists()
     df = pd.read_parquet(pairwise_path)
     assert set(df["pair_id"]) == {0, 1, 2}
+    ordered = pd.read_parquet(ordered_path)
+    assert set(ordered["ordering"]) == {"a_b", "b_a"}
+    selfplay = pd.read_parquet(selfplay_path)
+    assert set(selfplay["strategy"]) == {"S1", "S2", "S3"}
 
     shards = sorted(shard_dir.glob("*.parquet"))
     assert len(shards) >= 2
-    # Only two pairs should be simulated because one was already completed
-    assert call_counter["calls"] == 2
+    # Two pending pairs -> each runs two seat orderings, plus one self-play run per elite.
+    assert call_counter["calls"] == 7
 
 
 def test_run_bonferroni_head2head_progress_cadence_logs(
@@ -221,6 +229,7 @@ def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.Mon
 
     assert pair_jobs
     assert all(job == 2 for job in pair_jobs)
+    assert len(pair_jobs) == 9
 
 
 def test_run_bonferroni_head2head_safeguard_skips(
