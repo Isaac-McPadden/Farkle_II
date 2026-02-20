@@ -7,6 +7,7 @@ import logging
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Protocol, cast
 
 import pytest
 
@@ -14,6 +15,11 @@ import farkle.analysis as analysis_pkg
 from farkle.analysis import interseed_analysis
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 from farkle.config import AnalysisConfig, AppConfig, IOConfig
+
+
+class _StageReasonRecord(Protocol):
+    stage: str
+    reason: str
 
 
 def _make_cfg(tmp_path: Path, *, seed_list: list[int] | None = None) -> AppConfig:
@@ -65,7 +71,8 @@ def test_run_interseed_analysis_rng_diagnostics_paths(
     )
     assert rng_calls == []
     assert any(
-        rec.stage == "rng_diagnostics" and rec.reason == "disabled by CLI flag"
+        cast(_StageReasonRecord, rec).stage == "rng_diagnostics"
+        and cast(_StageReasonRecord, rec).reason == "disabled by CLI flag"
         for rec in caplog.records
     )
 
@@ -85,7 +92,8 @@ def test_run_interseed_analysis_rng_diagnostics_paths(
     analysis_pkg.run_interseed_analysis(cfg, run_rng_diagnostics=None)
     assert rng_calls == [(False, (1, 3))]
     assert any(
-        rec.stage == "rng_diagnostics" and rec.reason == "disabled by config"
+        cast(_StageReasonRecord, rec).stage == "rng_diagnostics"
+        and cast(_StageReasonRecord, rec).reason == "disabled by config"
         for rec in caplog.records
     )
 
@@ -122,7 +130,7 @@ def test_run_interseed_analysis_skips_all_stages_when_not_interseed_ready(
     assert called == []
     skipped = [rec for rec in caplog.records if getattr(rec, "status", None) == "SKIPPED"]
     assert len(skipped) == 7
-    assert all("interseed inputs missing" in rec.reason for rec in skipped)
+    assert all("interseed inputs missing" in cast(_StageReasonRecord, rec).reason for rec in skipped)
 
 
 def test_run_interseed_analysis_optional_import_missing_dependency_path(

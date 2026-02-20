@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
@@ -323,7 +324,7 @@ def test_seed_summaries_zero_game_seed_logs_pooling_warning_and_persists_outputs
         rec for rec in caplog.records if "Missing pooling weights for player counts" in rec.message
     ]
     assert len(warning_records) == 1
-    assert warning_records[0].missing == [3]
+    assert cast(Any, warning_records[0]).missing == [3]
 
     seed2 = pd.read_parquet(cfg.seed_summaries_dir(2) / "strategy_summary_2p_seed31.parquet")
     assert seed2["games"].tolist() == [0]

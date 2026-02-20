@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -59,8 +60,8 @@ def test_optional_import_missing_dependency_logs_stage(
     assert imported is None
     assert any(
         rec.msg == "Analytics module skipped due to missing dependency"
-        and rec.stage == "optional-stage"
-        and rec.status == "SKIPPED"
+        and cast(Any, rec).stage == "optional-stage"
+        and cast(Any, rec).status == "SKIPPED"
         for rec in caplog.records
     )
 
