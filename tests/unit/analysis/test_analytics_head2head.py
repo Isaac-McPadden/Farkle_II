@@ -8,6 +8,7 @@ import os
 import warnings
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any, cast
 
 import networkx as nx
 import pandas as pd
@@ -374,7 +375,7 @@ def test_run_exits_early_when_curated_missing(
     cfg.curated_parquet.unlink()
     called = False
 
-    def _boom(*args: object, **kwargs: object) -> None:
+    def _boom(*args: Any, **kwargs: Any) -> None:
         nonlocal called
         called = True
 
@@ -398,10 +399,10 @@ def test_run_calls_autotune_before_freshness_check_and_skips_when_legacy_fresh(
     os.utime(legacy_out, (2000, 2000))
     call_order: list[str] = []
 
-    def _spy_autotune(cfg: AppConfig, design_kwargs: dict[str, object]) -> None:  # noqa: ARG001
+    def _spy_autotune(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None:  # noqa: ARG001
         call_order.append("autotune")
 
-    def _boom(*args: object, **kwargs: object) -> None:
+    def _boom(*args: Any, **kwargs: Any) -> None:
         raise AssertionError("H2H simulation should not run when legacy output is fresh")
 
     monkeypatch.setattr(head2head, "_maybe_autotune_tiers", _spy_autotune)
@@ -422,7 +423,7 @@ def test_run_calls_bonferroni_with_expected_args(
     cfg.head2head.n_jobs = 4
     design = {"tail": "Two-Sided", "foo": "drop"}
     cfg.head2head.bonferroni_design = design
-    captured: dict[str, object] = {}
+    captured: dict[str, Any] = {}
 
     out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
     legacy_out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
@@ -437,7 +438,7 @@ def test_run_calls_bonferroni_with_expected_args(
 
     monkeypatch.setattr(head2head, "_maybe_autotune_tiers", lambda *_args, **_kwargs: None)
 
-    def _capture_run(*args: object, **kwargs: object) -> None:
+    def _capture_run(*args: Any, **kwargs: Any) -> None:
         captured["args"] = args
         captured.update(kwargs)
 
@@ -445,7 +446,7 @@ def test_run_calls_bonferroni_with_expected_args(
 
     head2head.run(cfg)
 
-    args = captured.get("args", ())
+    args = cast(tuple[Any, ...], captured.get("args", ()))
     if "n_jobs" in captured:
         assert args == ()
         assert captured["n_jobs"] == 4
@@ -483,9 +484,9 @@ def test_resolve_h2h_jobs_precedence(
     expected: int,
 ) -> None:
     cfg = _cfg
-    cfg.head2head.n_jobs = h2h_jobs
-    cfg.analysis.n_jobs = analysis_jobs
-    cfg.sim.n_jobs = sim_jobs
+    cast(Any, cfg.head2head).n_jobs = h2h_jobs
+    cast(Any, cfg.analysis).n_jobs = analysis_jobs
+    cast(Any, cfg.sim).n_jobs = sim_jobs
     assert head2head._resolve_h2h_jobs(cfg) == expected
 
 
@@ -522,7 +523,7 @@ def test_maybe_autotune_tiers_early_return_when_target_hours_non_positive(
     cfg.analysis.head2head_target_hours = 0.0
     called = False
 
-    def _boom(*args: object, **kwargs: object) -> None:
+    def _boom(*args: Any, **kwargs: Any) -> None:
         nonlocal called
         called = True
 
@@ -563,11 +564,11 @@ def test_maybe_autotune_tiers_uses_configured_throughput_and_candidate_none(
     ).to_parquet(ratings_path)
     called = {"calibrate": False, "gps": None}
 
-    def _boom(*args: object, **kwargs: object) -> float:
+    def _boom(*args: Any, **kwargs: Any) -> float:
         called["calibrate"] = True
         raise AssertionError("Calibration should be skipped when throughput is configured")
 
-    def _capture_search(**kwargs: object) -> None:
+    def _capture_search(**kwargs: Any) -> None:
         called["gps"] = kwargs["games_per_sec"]
         return None
 
@@ -600,7 +601,7 @@ def test_maybe_autotune_tiers_handles_calibration_failure(
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("nope")),
     )
 
-    def _search(**kwargs: object) -> None:
+    def _search(**kwargs: Any) -> None:
         nonlocal searched
         searched = True
         return None
@@ -633,12 +634,12 @@ def test_maybe_autotune_tiers_success_writes_payload_and_meta(
         total_games=111,
         total_pairs=1,
     )
-    payload: dict[str, object] = {}
+    payload: dict[str, Any] = {}
     atomic_calls: list[str] = []
 
     monkeypatch.setattr(head2head, "_search_candidate", lambda **kwargs: candidate)
 
-    def _capture_payload(path: Path, **kwargs: object) -> None:
+    def _capture_payload(path: Path, **kwargs: Any) -> None:
         payload["path"] = path
         payload.update(kwargs)
 
@@ -798,7 +799,7 @@ def test_calibrate_h2h_games_per_sec_success(monkeypatch: pytest.MonkeyPatch) ->
             "sigma": [1.0, 1.0, 1.0],
         }
     )
-    calls: dict[str, object] = {}
+    calls: dict[str, Any] = {}
 
     monkeypatch.setattr(
         head2head,
@@ -807,7 +808,7 @@ def test_calibrate_h2h_games_per_sec_success(monkeypatch: pytest.MonkeyPatch) ->
     )
     monkeypatch.setattr(head2head, "spawn_seeds", lambda n, seed: [seed + idx for idx in range(n)])
 
-    def _simulate_many_games_from_seeds(**kwargs: object) -> None:
+    def _simulate_many_games_from_seeds(**kwargs: Any) -> None:
         calls.update(kwargs)
 
     monkeypatch.setattr(head2head, "simulate_many_games_from_seeds", _simulate_many_games_from_seeds)
@@ -818,8 +819,9 @@ def test_calibrate_h2h_games_per_sec_success(monkeypatch: pytest.MonkeyPatch) ->
 
     assert calls["n_jobs"] == 3
     assert calls["strategies"] == ["parsed:S1", "parsed:S2"]
-    assert calls["seeds"][0] == 11
-    assert len(calls["seeds"]) == 2000
+    seeds = cast(list[int], calls["seeds"])
+    assert seeds[0] == 11
+    assert len(seeds) == 2000
     assert gps == pytest.approx(500.0)
 @pytest.mark.parametrize(
     ("df_pairs", "tie_policy", "error_type", "match"),
@@ -1073,6 +1075,6 @@ def test_run_post_h2h_omits_ranking_output_for_cyclic_graph(_cfg: AppConfig) -> 
     h2h_analysis.run_post_h2h(cfg)
 
     done = read_stage_done(stage_done_path(cfg.post_h2h_stage_dir, "post_h2h"))
-    output_names = {Path(path).name for path in done["outputs"]}
+    output_names = {Path(path).name for path in cast(list[str], done["outputs"])}
     assert "h2h_significant_ranking.csv" not in output_names
     assert not (cfg.post_h2h_stage_dir / "h2h_significant_ranking.csv").exists()

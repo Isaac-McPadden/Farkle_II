@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, TypedDict, cast
 
 import pandas as pd
 import pytest
@@ -12,10 +13,28 @@ from farkle.analysis.agreement import MethodData
 
 class _StubStageLog:
     def __init__(self) -> None:
-        self.missing_calls: list[tuple[str, dict[str, object]]] = []
+        self.missing_calls: list[tuple[str, dict[str, Any]]] = []
 
-    def missing_input(self, reason: str, **extra: object) -> None:
+    def missing_input(self, reason: str, **extra: Any) -> None:
         self.missing_calls.append((reason, extra))
+
+
+class _TopStrategy(TypedDict):
+    strategy: str
+    stddev: float
+
+
+class _SeedStabilitySummary(TypedDict):
+    seeds: int
+    strategies: int
+    top_strategies: list[_TopStrategy]
+
+
+class _AgreementPayload(TypedDict):
+    methods: list[str]
+    comparison_scope: dict[str, str | None]
+    strategy_counts: dict[str, int]
+    seed_stability: dict[str, _SeedStabilitySummary | None]
 
 
 class _GraphWithNodes:
@@ -34,21 +53,21 @@ def test_build_payload_trueskill_errors_and_missing_inputs(tmp_path: Path, monke
     stage_log = _StubStageLog()
 
     monkeypatch.setattr(agreement, "_load_trueskill", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("not found")))
-    assert agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=stage_log) is None
+    assert agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=cast(Any, stage_log)) is None
     assert stage_log.missing_calls[-1][0] == "not found"
 
     monkeypatch.setattr(agreement, "_load_trueskill", lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad ts")))
-    assert agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=stage_log) is None
+    assert agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=cast(Any, stage_log)) is None
     assert stage_log.missing_calls[-1][0] == "bad ts"
 
     monkeypatch.setattr(agreement, "_load_trueskill", lambda *_args, **_kwargs: None)
-    assert agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=stage_log) is None
+    assert agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=cast(Any, stage_log)) is None
     assert stage_log.missing_calls[-1][0] == "missing TrueSkill ratings"
 
 
 def test_build_payload_with_frequentist_error_and_strategy_filtering(tmp_path: Path, monkeypatch) -> None:
     cfg = _mk_cfg(tmp_path)
-    cfg.analysis.agreement_strategies = ["s1", "s2"]
+    cfg.analysis.agreement_strategies = ("s1", "s2")
     stage_log = _StubStageLog()
 
     trueskill_data = MethodData(
@@ -67,13 +86,18 @@ def test_build_payload_with_frequentist_error_and_strategy_filtering(tmp_path: P
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("freq bad")),
     )
 
-    payload = agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=stage_log)
+    payload = cast(
+        _AgreementPayload,
+        agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=cast(Any, stage_log)),
+    )
 
     assert payload is not None
     assert payload["methods"] == ["trueskill"]
     assert payload["strategy_counts"]["trueskill"] == 2
-    assert payload["seed_stability"]["trueskill"]["strategies"] == 2
-    assert payload["seed_stability"]["trueskill"]["seeds"] == 2
+    trueskill_stability = payload["seed_stability"]["trueskill"]
+    assert trueskill_stability is not None
+    assert trueskill_stability["strategies"] == 2
+    assert trueskill_stability["seeds"] == 2
     assert stage_log.missing_calls[-1][0] == "freq bad"
 
 
@@ -93,13 +117,19 @@ def test_build_payload_pooled_h2h_error_and_missing(tmp_path: Path, monkeypatch)
         "_load_head2head",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("h2h bad")),
     )
-    payload = agreement._build_payload(cfg, players=0, pooled_scope=True, stage_log=stage_log)
+    payload = cast(
+        _AgreementPayload,
+        agreement._build_payload(cfg, players=0, pooled_scope=True, stage_log=cast(Any, stage_log)),
+    )
     assert payload is not None
     assert payload["comparison_scope"]["h2h"] is None
     assert stage_log.missing_calls[-1][0] == "h2h bad"
 
     monkeypatch.setattr(agreement, "_load_head2head", lambda *_args, **_kwargs: None)
-    payload = agreement._build_payload(cfg, players=0, pooled_scope=True, stage_log=stage_log)
+    payload = cast(
+        _AgreementPayload,
+        agreement._build_payload(cfg, players=0, pooled_scope=True, stage_log=cast(Any, stage_log)),
+    )
     assert payload is not None
     assert payload["comparison_scope"]["h2h"] is None
 
@@ -115,7 +145,7 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
         def start(self) -> None:
             return None
 
-        def missing_input(self, reason: str, **_extra: object) -> None:
+        def missing_input(self, reason: str, **_extra: Any) -> None:
             missing_msgs.append(reason)
 
     monkeypatch.setattr(agreement, "stage_logger", lambda *_args, **_kwargs: _RunStageLog())
@@ -125,7 +155,7 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
     assert missing_msgs[-1] == "no agreement payloads generated"
     assert not (cfg.agreement_stage_dir / "agreement_summary.parquet").exists()
 
-    def _per_k_only(_cfg: agreement.AppConfig, players: int, pooled_scope: bool, **_kwargs: object):
+    def _per_k_only(_cfg: agreement.AppConfig, players: int, pooled_scope: bool, **_kwargs: Any):
         if pooled_scope:
             return None
         return {
@@ -147,7 +177,7 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
     assert summary.iloc[0]["players"] == 2
     assert cfg.agreement_output_path(2).exists()
 
-    def _pooled_only(_cfg: agreement.AppConfig, players: int, pooled_scope: bool, **_kwargs: object):
+    def _pooled_only(_cfg: agreement.AppConfig, players: int, pooled_scope: bool, **_kwargs: Any):
         if not pooled_scope:
             return None
         return {
@@ -172,7 +202,7 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
     cfg.sim.n_players_list = [2, 3]
     cfg.analysis.agreement_include_pooled = False
 
-    def _both(_cfg: agreement.AppConfig, players: int, pooled_scope: bool, **_kwargs: object):
+    def _both(_cfg: agreement.AppConfig, players: int, pooled_scope: bool, **_kwargs: Any):
         if pooled_scope:
             return None
         return {
@@ -282,7 +312,7 @@ def test_tier_and_rank_and_seed_helpers_degenerate_cases() -> None:
         ]
     )
     assert summaries is not None
-    top = summaries["top_strategies"]
+    top = cast(list[_TopStrategy], summaries["top_strategies"])
     assert len(top) == 5
     assert top[0]["stddev"] >= top[-1]["stddev"]
 
