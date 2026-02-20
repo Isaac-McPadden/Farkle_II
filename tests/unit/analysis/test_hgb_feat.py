@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
 import pytest
 
 pytest.importorskip("matplotlib")
@@ -89,3 +90,80 @@ def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyP
     hgb_feat.run(cfg)
     assert called
     assert not any(cfg.analysis_dir.glob("*.pkl"))
+
+
+def test_hgb_feat_returns_when_metrics_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg.sim.n_players_list = [2]
+    cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+
+    called = False
+
+    def boom(**kwargs):  # pragma: no cover - should not be called
+        nonlocal called
+        called = True
+        raise AssertionError("_hgb.run_hgb should not be called when metrics are missing")
+
+    monkeypatch.setattr(hgb_feat._hgb, "run_hgb", boom)
+
+    hgb_feat.run(cfg)
+
+    assert called is False
+
+
+def test_hgb_feat_returns_when_ratings_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg.sim.n_players_list = [2]
+    cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+    cfg.metrics_input_path().parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"strategy": ["S"], "n_players": [2]}).to_parquet(cfg.metrics_input_path(), index=False)
+
+    called = False
+
+    def boom(**kwargs):  # pragma: no cover - should not be called
+        nonlocal called
+        called = True
+        raise AssertionError("_hgb.run_hgb should not be called when ratings are missing")
+
+    monkeypatch.setattr(hgb_feat._hgb, "run_hgb", boom)
+
+    hgb_feat.run(cfg)
+
+    assert called is False
+
+
+def test_unique_players_uses_players_fallback_column(tmp_path: Path) -> None:
+    metrics_path = tmp_path / "metrics.parquet"
+    pd.DataFrame({"players": [4, 2, 4, 5]}).to_parquet(metrics_path, index=False)
+
+    players = hgb_feat._unique_players(metrics_path, hints=[3, 2, 3])
+
+    assert players == [2, 3, 4, 5]
+
+
+def test_unique_players_gracefully_handles_read_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    metrics_path = tmp_path / "metrics.parquet"
+    metrics_path.touch()
+
+    def raise_read_error(path: Path, columns: list[str]):
+        if columns == ["n_players"]:
+            raise pa.ArrowInvalid("missing n_players")
+        raise KeyError("missing players")
+
+    monkeypatch.setattr(hgb_feat.pq, "read_table", raise_read_error)
+
+    players = hgb_feat._unique_players(metrics_path, hints=[6, 2, 6])
+
+    assert players == [2, 6]
+
+
+def test_latest_mtime_returns_zero_for_missing_paths(tmp_path: Path) -> None:
+    paths = [tmp_path / "does_not_exist_a.parquet", tmp_path / "does_not_exist_b.parquet"]
+
+    assert hgb_feat._latest_mtime(paths) == 0.0
