@@ -11,10 +11,12 @@ from farkle.analysis.stage_registry import StageDefinition, StageLayout, StagePl
 from farkle.config import (
     AppConfig,
     IOConfig,
+    SimConfig,
     _annotation_contains,
     _coerce,
     _deep_merge,
     apply_dot_overrides,
+    expected_seed_list_length,
     load_app_config,
 )
 from farkle.utils.types import normalize_compression
@@ -535,3 +537,286 @@ def test_stage_layout_edge_case_resolve_stage_dir_without_folder(tmp_path: Path)
 def test_normalize_compression_rejects_invalid_codec() -> None:
     with pytest.raises(ValueError):
         normalize_compression("bad-codec")
+
+
+@pytest.mark.parametrize(
+    ("command", "subcommand", "expected"),
+    [
+        ("analyze", "two-seed-pipeline", 2),
+        ("run", None, 1),
+        ("unknown", None, None),
+    ],
+)
+def test_expected_seed_list_length(command: str, subcommand: str | None, expected: int | None) -> None:
+    assert expected_seed_list_length(command, subcommand=subcommand) == expected
+
+
+def test_sim_config_resolve_seed_list_rejects_invalid_expected_len() -> None:
+    with pytest.raises(ValueError, match="expected_len must be >= 1"):
+        SimConfig().resolve_seed_list(0)
+
+
+def test_sim_config_resolve_seed_list_rejects_seed_list_mismatch() -> None:
+    sim = SimConfig(seed_list=[1, 2])
+
+    with pytest.raises(ValueError, match=r"must contain exactly 1 seeds"):
+        sim.resolve_seed_list(1)
+
+
+def test_sim_config_resolve_seed_list_uses_seed_fallback_for_single_seed() -> None:
+    assert SimConfig(seed=17).resolve_seed_list(1) == [17]
+
+
+def test_sim_config_resolve_seed_list_uses_seed_pair_fallback_for_two_seed() -> None:
+    assert SimConfig(seed_pair=(17, 23)).resolve_seed_list(2) == [17, 23]
+
+
+def test_sim_config_resolve_seed_list_rejects_unsupported_length() -> None:
+    with pytest.raises(ValueError, match="Unsupported expected seed length 3"):
+        SimConfig().resolve_seed_list(3)
+
+
+def test_sim_config_populate_seed_list_rejects_conflicting_sources() -> None:
+    sim = SimConfig(seed_list=[1, 2], seed_pair=(1, 3))
+
+    with pytest.raises(ValueError, match="sim.seed_list and sim.seed_pair must match"):
+        sim.populate_seed_list(2)
+
+
+def test_sim_config_populate_seed_list_expected_len_1_updates_seed() -> None:
+    sim = SimConfig(seed=5, seed_list=[13])
+
+    seeds = sim.populate_seed_list(1)
+
+    assert seeds == [13]
+    assert sim.seed == 13
+    assert sim.seed_list == [13]
+
+
+def test_sim_config_populate_seed_list_expected_len_2_sets_seed_pair_and_syncs_seed() -> None:
+    sim = SimConfig(seed=5, seed_list=[13, 21])
+
+    seeds = sim.populate_seed_list(2)
+
+    assert seeds == [13, 21]
+    assert sim.seed_pair == (13, 21)
+    assert sim.seed == 13
+
+
+def test_sim_config_require_seed_pair_rejects_invalid_seed_list_length() -> None:
+    with pytest.raises(ValueError, match="must contain exactly two seeds"):
+        SimConfig(seed_list=[1]).require_seed_pair()
+
+
+def test_sim_config_require_seed_pair_rejects_missing_seed_pair() -> None:
+    with pytest.raises(ValueError, match="sim.seed_pair must be set"):
+        SimConfig().require_seed_pair()
+
+
+def test_sim_config_require_seed_pair_accepts_seed_list_or_seed_pair() -> None:
+    assert SimConfig(seed_list=[4, 9]).require_seed_pair() == (4, 9)
+    assert SimConfig(seed_pair=(11, 12)).require_seed_pair() == (11, 12)
+
+
+def test_interseed_input_folder_supports_none_mapping_and_stage_layout() -> None:
+    cfg = AppConfig()
+    assert cfg._interseed_input_folder("combine") is None
+
+    cfg = AppConfig(io=IOConfig(interseed_input_layout={"combine": "02_combine"}))
+    assert cfg._interseed_input_folder("combine") == "02_combine"
+
+    layout = StageLayout(
+        placements=[
+            StagePlacement(
+                definition=StageDefinition(key="combine", group="pipeline"),
+                index=0,
+                folder_name="02_combine",
+            )
+        ]
+    )
+    cfg = AppConfig(io=IOConfig(interseed_input_layout=layout))
+    assert cfg._interseed_input_folder("combine") == "02_combine"
+
+
+def test_resolve_input_stage_dir_prefers_input_root_then_stage_then_none(tmp_path: Path) -> None:
+    cfg = AppConfig(
+        io=IOConfig(interseed_input_dir=tmp_path / "upstream", interseed_input_layout={"combine": "02_combine"})
+    )
+    assert cfg.resolve_input_stage_dir("combine", "pooled") == tmp_path / "upstream" / "02_combine" / "pooled"
+
+    local_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    local_path = local_cfg.resolve_input_stage_dir("combine", "pooled")
+    assert local_path is not None
+    assert local_path == local_cfg.analysis_dir / local_cfg.stage_layout.folder_for("combine") / "pooled"
+
+    assert local_cfg.resolve_input_stage_dir("not_a_stage") is None
+
+
+def test_stage_key_for_folder_matching_and_non_matching(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    combine_folder = cfg.stage_layout.folder_for("combine")
+    assert combine_folder is not None
+
+    assert cfg._stage_key_for_folder(combine_folder) == "combine"
+    assert cfg._stage_key_for_folder("99_missing") is None
+
+
+def test_interseed_input_candidate_relative_and_fallback(tmp_path: Path) -> None:
+    cfg = AppConfig(
+        io=IOConfig(
+            results_dir_prefix=tmp_path / "results",
+            interseed_input_dir=tmp_path / "upstream",
+            interseed_input_layout={"combine": "02_combine"},
+        )
+    )
+    combine_folder = cfg.stage_layout.folder_for("combine")
+    assert combine_folder is not None
+
+    inside_stage = cfg.analysis_dir / combine_folder / "pooled"
+    assert cfg._interseed_input_candidate(inside_stage, "rows.parquet") == tmp_path / "upstream" / "02_combine" / "pooled" / "rows.parquet"
+
+    external = tmp_path / "external"
+    assert cfg._interseed_input_candidate(external, "rows.parquet") == tmp_path / "upstream" / "rows.parquet"
+
+
+def test_preferred_stage_path_candidate_ordering(tmp_path: Path) -> None:
+    cfg = AppConfig(
+        io=IOConfig(
+            results_dir_prefix=tmp_path / "results",
+            interseed_input_dir=tmp_path / "upstream",
+            interseed_input_layout={"trueskill": "05_trueskill"},
+        )
+    )
+    stage_dir = cfg.analysis_dir / (cfg.stage_layout.folder_for("trueskill") or "trueskill")
+    legacy_dir = cfg.analysis_dir
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    filename = "ratings_k_weighted.parquet"
+
+    stage_path = stage_dir / filename
+    stage_path.write_text("stage")
+    assert cfg._preferred_stage_path(stage_dir, legacy_dir, filename) == stage_path
+
+    stage_path.unlink()
+    interseed_path = tmp_path / "upstream" / "05_trueskill" / filename
+    interseed_path.parent.mkdir(parents=True, exist_ok=True)
+    interseed_path.write_text("input")
+    assert cfg._preferred_stage_path(stage_dir, legacy_dir, filename) == interseed_path
+
+    interseed_path.unlink()
+    legacy_path = legacy_dir / filename
+    legacy_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_path.write_text("legacy")
+    assert cfg._preferred_stage_path(stage_dir, legacy_dir, filename) == legacy_path
+
+    legacy_path.unlink()
+    assert cfg._preferred_stage_path(stage_dir, legacy_dir, filename) == stage_path
+
+
+def test_resolve_stage_artifact_path_ordering_for_combine_and_non_combine(tmp_path: Path) -> None:
+    cfg = AppConfig(
+        io=IOConfig(
+            results_dir_prefix=tmp_path / "results",
+            interseed_input_dir=tmp_path / "upstream",
+            interseed_input_layout={"combine": "01_combine", "tiering": "08_tiering"},
+        )
+    )
+
+    combine_stage = cfg._stage_dir_if_active("combine", "pooled")
+    assert combine_stage is not None
+    combine_local = combine_stage / "all_ingested_rows.parquet"
+    combine_local.parent.mkdir(parents=True, exist_ok=True)
+    combine_local.write_text("local")
+    combine_input = tmp_path / "upstream" / "01_combine" / "pooled" / "all_ingested_rows.parquet"
+    combine_input.parent.mkdir(parents=True, exist_ok=True)
+    combine_input.write_text("input")
+    assert cfg._resolve_stage_artifact_path("combine", "all_ingested_rows.parquet", "pooled") == combine_input
+
+    tiering_stage = cfg._stage_dir_if_active("tiering")
+    assert tiering_stage is not None
+    tiering_local = tiering_stage / "tiers.json"
+    tiering_local.parent.mkdir(parents=True, exist_ok=True)
+    tiering_local.write_text("local")
+    tiering_input = tmp_path / "upstream" / "08_tiering" / "tiers.json"
+    tiering_input.parent.mkdir(parents=True, exist_ok=True)
+    tiering_input.write_text("input")
+    assert cfg._resolve_stage_artifact_path("tiering", "tiers.json") == tiering_local
+
+    tiering_local.unlink()
+    tiering_input.unlink()
+    legacy = cfg.analysis_dir / "legacy_tiers.json"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text("legacy")
+    assert cfg._resolve_stage_artifact_path("tiering", "tiers.json", legacy_paths=(legacy,)) == legacy
+
+
+def test_preferred_tiers_path_fallback_ordering(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+
+    tiering_path = cfg._resolve_stage_artifact_path("tiering", "tiers.json")
+    tiering_path.parent.mkdir(parents=True, exist_ok=True)
+    tiering_path.write_text("tiering")
+    assert cfg.preferred_tiers_path() == tiering_path
+
+    tiering_path.unlink()
+    trueskill_path = cfg._resolve_stage_artifact_path("trueskill", "tiers.json")
+    trueskill_path.parent.mkdir(parents=True, exist_ok=True)
+    trueskill_path.write_text("trueskill")
+    assert cfg.preferred_tiers_path() == trueskill_path
+
+    trueskill_path.unlink()
+    analysis_path = cfg.analysis_dir / "tiers.json"
+    analysis_path.parent.mkdir(parents=True, exist_ok=True)
+    analysis_path.write_text("analysis")
+    assert cfg.preferred_tiers_path() == analysis_path
+
+    analysis_path.unlink()
+    assert cfg.preferred_tiers_path() == cfg._resolve_stage_artifact_path("tiering", "tiers.json")
+
+
+def test_load_app_config_n_players_list_pooled_normalization_and_validation(write_yaml) -> None:
+    config = write_yaml(
+        "pooled_players.yaml",
+        {"sim": {"n_players_list": ["pooled", 0, "5"]}},
+    )
+
+    cfg = load_app_config(config)
+
+    assert cfg.sim.n_players_list == [5]
+    assert cfg.analysis.agreement_include_pooled is True
+
+    bad_config = write_yaml("bad_players.yaml", {"sim": {"n_players_list": ["abc"]}})
+    with pytest.raises(ValueError, match="invalid n_players_list entry"):
+        load_app_config(bad_config)
+
+
+def test_load_app_config_maps_run_tiering_report_alias(write_yaml) -> None:
+    config = write_yaml("tier_alias.yaml", {"analysis": {"run_tiering_report": False}})
+
+    cfg = load_app_config(config)
+
+    assert cfg.analysis.run_frequentist is False
+    assert cfg.analysis.run_tiering_report is False
+
+
+def test_load_app_config_rejects_non_sim_bad_section_shape(write_yaml) -> None:
+    config = write_yaml("bad_analysis_shape.yaml", {"analysis": "bad"})
+
+    with pytest.raises(TypeError, match="Config section 'analysis' must be a mapping"):
+        load_app_config(config)
+
+
+def test_small_properties_cover_pooled_and_trueskill_variants(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+
+    assert cfg.is_pooled_players("pooled") is True
+    assert cfg.is_pooled_players(0) is True
+    assert cfg.is_pooled_players("not-pooled") is False
+
+    pooled_path = cfg.agreement_output_path("pooled")
+    assert pooled_path.name in {"agreement_k_weighted.json", "agreement_pooled.json"}
+    assert cfg.agreement_output_path(5).name == "agreement_5p.json"
+
+    pooled_trueskill = cfg.trueskill_path("ratings_pooled.parquet")
+    assert pooled_trueskill.name in {"ratings_k_weighted.parquet", "ratings_pooled.parquet"}
+    non_pooled = cfg.trueskill_path("tiers.json")
+    assert non_pooled.name == "tiers.json"
