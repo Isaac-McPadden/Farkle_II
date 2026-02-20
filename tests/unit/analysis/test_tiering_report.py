@@ -350,7 +350,8 @@ def test_tiering_report_helper_branch_coverage_and_run_happy_path(
     cfg.sim.seed = 77
     cfg.analysis.tiering_seeds = []
     cfg.sim.n_players_list = [4, 2, 4]
-    cfg.analysis.tiering_weights_by_k = {"2": 2.0, 4: 1.0}
+    weights_by_k = {"2": 2.0, 4: 1.0}
+    cfg.analysis.tiering_weights_by_k = {int(k): v for k, v in weights_by_k.items()}
     cfg.analysis.tiering_z_star = 0.0
     cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
     prepared = tiering_report._prepare_inputs(cfg)

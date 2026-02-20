@@ -893,7 +893,9 @@ def test_resolve_input_stage_dir_prefers_input_root_then_stage_then_none(tmp_pat
     local_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     local_path = local_cfg.resolve_input_stage_dir("combine", "pooled")
     assert local_path is not None
-    assert local_path == local_cfg.analysis_dir / local_cfg.stage_layout.folder_for("combine") / "pooled"
+    combine_folder = local_cfg.stage_layout.folder_for("combine")
+    assert combine_folder is not None
+    assert local_path == local_cfg.analysis_dir / combine_folder / "pooled"
 
     assert local_cfg.resolve_input_stage_dir("not_a_stage") is None
 
