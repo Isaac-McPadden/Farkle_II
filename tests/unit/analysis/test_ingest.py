@@ -5,8 +5,19 @@ from typing import Any, Iterator
 
 import pandas as pd
 import pytest
+import pyarrow as pa
+import pyarrow.parquet as pq
 
-from farkle.analysis.ingest import _fix_winner, _iter_shards, _process_block, run
+from farkle.analysis.ingest import (
+    _coerce_strategy_ids,
+    _fix_winner,
+    _iter_shards,
+    _migrate_legacy_raw,
+    _n_from_block,
+    _process_block,
+    _validate_strategy_dtypes,
+    run,
+)
 from farkle.config import AppConfig, IngestConfig, IOConfig
 from farkle.utils.schema_helpers import expected_schema_for
 
@@ -106,6 +117,25 @@ def test_iter_shards_prefers_consolidated_over_partial_legacy_set(tmp_path):
     assert shard_df.to_dict("records") == [{"winner": "P1", "P1_strategy": "A"}]
 
 
+def test_iter_shards_consolidated_emits_one_frame_per_row_group(tmp_path):
+    block = tmp_path
+    table = pa.table(
+        {
+            "winner": ["P1", "P2"],
+            "P1_strategy": [1, 2],
+        }
+    )
+    with pq.ParquetWriter(block / "2p_rows.parquet", table.schema) as writer:
+        writer.write_table(table.slice(0, 1))
+        writer.write_table(table.slice(1, 1))
+
+    shards = list(_iter_shards(block, ("winner", "P1_strategy")))
+
+    assert len(shards) == 2
+    assert [df["winner"].iloc[0] for df, _ in shards] == ["P1", "P2"]
+    assert all(path.name == "2p_rows.parquet" for _, path in shards)
+
+
 # -------------------- _fix_winner --------------------------------------
 
 
@@ -150,6 +180,96 @@ def test_fix_winner_preserves_existing_fields():
     assert result["winner_seat"].iloc[0] == "P1"
     assert result["winner_strategy"].iloc[0] == 11
     assert result["seat_ranks"].iloc[0] == ["P1", "P2"]
+
+
+# -------------------- strategy coercion/validation ---------------------
+
+
+def test_coerce_strategy_ids_raises_for_fractional_value():
+    df = pd.DataFrame({"P1_strategy": [1.5], "winner_strategy": [1]})
+
+    with pytest.raises(RuntimeError, match="Non-integer strategy value detected in ingest"):
+        _coerce_strategy_ids(df, strategy_lookup=None)
+
+
+def test_coerce_strategy_ids_maps_legacy_strings_with_manifest_lookup():
+    df = pd.DataFrame({"P1_strategy": ["legacy-a"], "winner_strategy": ["legacy-a"]})
+
+    coerced = _coerce_strategy_ids(df, strategy_lookup={"legacy-a": 7})
+
+    assert coerced["P1_strategy"].tolist() == [7]
+    assert coerced["winner_strategy"].tolist() == [7]
+
+
+def test_coerce_strategy_ids_raises_when_manifest_missing_for_legacy_values():
+    df = pd.DataFrame({"P1_strategy": ["legacy-a"], "winner_strategy": [1]})
+
+    with pytest.raises(RuntimeError, match="Missing strategy manifest for legacy strategies"):
+        _coerce_strategy_ids(df, strategy_lookup=None)
+
+
+def test_coerce_strategy_ids_raises_for_unmapped_legacy_identifier():
+    df = pd.DataFrame({"P1_strategy": ["legacy-a"], "winner_strategy": [1]})
+
+    with pytest.raises(RuntimeError, match="Unmapped strategy identifiers detected"):
+        _coerce_strategy_ids(df, strategy_lookup={"other": 9})
+
+
+def test_validate_strategy_dtypes_rejects_non_integer_strategy_columns():
+    df = pd.DataFrame({"P1_strategy": ["a"], "winner_strategy": [1]})
+
+    with pytest.raises(RuntimeError, match="Strategy column dtype mismatch"):
+        _validate_strategy_dtypes(df)
+
+
+def test_validate_strategy_dtypes_accepts_integer_strategy_columns():
+    df = pd.DataFrame({"P1_strategy": pd.Series([1], dtype="Int64"), "winner_strategy": [1]})
+
+    _validate_strategy_dtypes(df)
+
+
+# -------------------- migration helpers --------------------------------
+
+
+def test_migrate_legacy_raw_noop_when_new_output_exists(tmp_results_dir):
+    cfg = _make_cfg(tmp_results_dir)
+    n = 2
+    new_raw = cfg.ingested_rows_raw(n)
+    new_raw.parent.mkdir(parents=True, exist_ok=True)
+    new_raw.write_text("new")
+    legacy_raw = cfg.combine_stage_dir / "2p" / "2p_ingested_rows.raw.parquet"
+    legacy_raw.parent.mkdir(parents=True, exist_ok=True)
+    legacy_raw.write_text("legacy")
+
+    _migrate_legacy_raw(n, cfg)
+
+    assert new_raw.read_text() == "new"
+    assert legacy_raw.exists()
+
+
+def test_migrate_legacy_raw_moves_raw_and_manifest(tmp_results_dir):
+    cfg = _make_cfg(tmp_results_dir)
+    n = 3
+    legacy_raw = cfg.combine_stage_dir / "3p" / "3p_ingested_rows.raw.parquet"
+    legacy_raw.parent.mkdir(parents=True, exist_ok=True)
+    legacy_raw.write_text("legacy")
+    legacy_manifest = legacy_raw.with_suffix(".manifest.jsonl")
+    legacy_manifest.write_text("legacy-manifest")
+
+    _migrate_legacy_raw(n, cfg)
+
+    assert cfg.ingested_rows_raw(n).read_text() == "legacy"
+    assert cfg.ingest_manifest(n).read_text() == "legacy-manifest"
+    assert not legacy_raw.exists()
+    assert not legacy_manifest.exists()
+
+
+# -------------------- block parsing + run-stage state ------------------
+
+
+def test_n_from_block_valid_and_invalid_names():
+    assert _n_from_block("6_players") == 6
+    assert _n_from_block("players_6") == 0
 
 
 # -------------------- _process_block -----------------------------------
@@ -498,6 +618,46 @@ def test_run_process_pool_path(tmp_results_dir, monkeypatch):
 
     assert seen["value"] == cfg.n_jobs_ingest
     assert calls == ["1_players", "2_players"]
+
+
+def test_run_short_circuits_when_stage_up_to_date(tmp_results_dir, monkeypatch):
+    cfg = _make_cfg(tmp_results_dir)
+    (cfg.results_root / "2_players").mkdir(parents=True)
+    writes: list[tuple] = []
+
+    monkeypatch.setattr("farkle.analysis.ingest.stage_is_up_to_date", lambda *args, **kwargs: True)
+    monkeypatch.setattr(
+        "farkle.analysis.ingest._process_block",
+        lambda *args, **kwargs: pytest.fail("unexpected block processing"),
+    )
+    monkeypatch.setattr(
+        "farkle.analysis.ingest.write_stage_done",
+        lambda *args, **kwargs: writes.append((args, kwargs)),
+    )
+
+    run(cfg)
+
+    assert writes == []
+
+
+def test_run_writes_stage_done_when_stage_not_up_to_date(tmp_results_dir, monkeypatch):
+    cfg = _make_cfg(tmp_results_dir)
+    (cfg.results_root / "2_players").mkdir(parents=True)
+    writes: list[tuple] = []
+
+    monkeypatch.setattr("farkle.analysis.ingest.stage_is_up_to_date", lambda *args, **kwargs: False)
+    monkeypatch.setattr("farkle.analysis.ingest._process_block", lambda *args, **kwargs: 4)
+    monkeypatch.setattr(
+        "farkle.analysis.ingest.write_stage_done",
+        lambda *args, **kwargs: writes.append((args, kwargs)),
+    )
+
+    run(cfg)
+
+    assert len(writes) == 1
+    args, kwargs = writes[0]
+    assert args[0] == cfg.ingest_stage_dir / "ingest.done.json"
+    assert kwargs["inputs"] == [cfg.results_root]
 
 
 def test_run_emits_logging(tmp_results_dir, caplog):
