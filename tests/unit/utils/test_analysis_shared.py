@@ -92,7 +92,7 @@ def test_tiers_to_map_rejects_duplicate_strategy() -> None:
 
 def test_tiers_to_map_rejects_duplicate_strategy_ids_after_str_coercion() -> None:
     with pytest.raises(ValueError, match="duplicate strategy"):
-        tiers_to_map([["101"], [101]])
+        tiers_to_map([["101"], [str(101)]])
 
 
 def test_tiers_to_map_handles_empty_tiers_with_stable_ranks() -> None:

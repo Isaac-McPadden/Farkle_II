@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from typing import Literal
 
 import pandas as pd
 import pyarrow as pa
@@ -288,7 +289,12 @@ def test_compute_symmetry_checks_coerces_non_int_group_keys(
 
     orig_astype = seat_stats.pd.Series.astype
 
-    def _astype_preserve_strings(self, dtype, copy=True, errors="raise"):
+    def _astype_preserve_strings(
+        self,
+        dtype,
+        copy: bool = True,
+        errors: Literal["ignore", "raise"] = "raise",
+    ):
         if self.name == "n_players" and dtype in {int, "int"}:
             return self
         return orig_astype(self, dtype=dtype, copy=copy, errors=errors)

@@ -1,7 +1,7 @@
 import pickle
 import random
 from collections import Counter
-from typing import Sequence
+from typing import Sequence, TypeVar
 
 import pandas as pd
 import pytest
@@ -418,13 +418,16 @@ def test_sample_favor_score_deterministic():
     assert _sample_favor_score(False, False, rng) is expected_ff
 
 
+T = TypeVar("T")
+
+
 class _DeterministicRng:
     def __init__(self, *, choices, randrange_value=350, randint_value=2):
         self._choices = list(choices)
         self.randrange_value = randrange_value
         self.randint_value = randint_value
 
-    def choice(self, options: Sequence[object]) -> object:
+    def choice(self, options: Sequence[T]) -> T:
         value = self._choices.pop(0)
         assert value in options
         return value
