@@ -377,11 +377,21 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
         return
     for k, group in coverage.groupby("k", sort=True):
         k_i = to_int(k)
+        seeds = sorted(group["seed"].unique().tolist())
         strategy_min = to_int(group["strategies"].min())
         strategy_max = to_int(group["strategies"].max())
         games_min = to_int(group["games"].min())
         games_max = to_int(group["games"].max())
-        missing = to_int(group["missing_strategies"].sum())
+        reported_missing = to_int(group["missing_strategies"].sum())
+
+        actionable_missing = reported_missing
+        if {"expected_strategies", "strategies"}.issubset(group.columns):
+            expected = pd.to_numeric(group["expected_strategies"], errors="coerce")
+            strategies = pd.to_numeric(group["strategies"], errors="coerce").fillna(0)
+            if expected.notna().any():
+                actionable_missing = to_int((expected.fillna(strategies) - strategies).clip(lower=0).sum())
+
+        padded_reconciliation = max(0, reported_missing - actionable_missing)
 
         if strategy_min != strategy_max:
             LOGGER.warning(
@@ -391,7 +401,7 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
                     "player_count": k_i,
                     "min_strategies": strategy_min,
                     "max_strategies": strategy_max,
-                    "seeds": sorted(group["seed"].unique().tolist()),
+                    "seeds": seeds,
                 },
             )
 
@@ -403,18 +413,28 @@ def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
                     "player_count": k_i,
                     "min_games": games_min,
                     "max_games": games_max,
-                    "seeds": sorted(group["seed"].unique().tolist()),
+                    "seeds": seeds,
                 },
             )
 
-        if missing > 0:
+        if actionable_missing > 0:
             LOGGER.warning(
                 "Coverage: missing strategies detected",
                 extra={
                     "stage": "coverage_by_k",
                     "player_count": k_i,
-                    "missing_strategies": missing,
-                    "seeds": sorted(group["seed"].unique().tolist()),
+                    "missing_strategies": actionable_missing,
+                    "seeds": seeds,
+                },
+            )
+        elif padded_reconciliation > 0:
+            LOGGER.info(
+                "Coverage: reconciled padded strategies",
+                extra={
+                    "stage": "coverage_by_k",
+                    "player_count": k_i,
+                    "padded_strategies": padded_reconciliation,
+                    "seeds": seeds,
                 },
             )
 
