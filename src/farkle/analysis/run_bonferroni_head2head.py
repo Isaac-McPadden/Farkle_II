@@ -236,6 +236,10 @@ def _selfplay_schema() -> pa.Schema:
         pa.field("seat1_win_rate", pa.float64()),
         pa.field("seat2_win_rate", pa.float64()),
         pa.field("seat_win_rate_diff", pa.float64()),
+        pa.field("mean_farkles_seat1", pa.float64()),
+        pa.field("mean_farkles_seat2", pa.float64()),
+        pa.field("mean_score_seat1", pa.float64()),
+        pa.field("mean_score_seat2", pa.float64()),
     ]
     return pa.schema(fields)
 
@@ -850,6 +854,10 @@ def run_bonferroni_head2head(
         games = len(selfplay_seeds)
         seat1_rate = wins_seat1 / games if games else math.nan
         seat2_rate = wins_seat2 / games if games else math.nan
+        mean_farkles_seat1 = float(df_self["P1_n_farkles"].mean())
+        mean_farkles_seat2 = float(df_self["P2_n_farkles"].mean())
+        mean_score_seat1 = float(df_self["P1_score"].mean())
+        mean_score_seat2 = float(df_self["P2_score"].mean())
         selfplay_records.append(
             {
                 "players": k_players,
@@ -861,6 +869,10 @@ def run_bonferroni_head2head(
                 "seat1_win_rate": seat1_rate,
                 "seat2_win_rate": seat2_rate,
                 "seat_win_rate_diff": seat1_rate - seat2_rate,
+                "mean_farkles_seat1": mean_farkles_seat1,
+                "mean_farkles_seat2": mean_farkles_seat2,
+                "mean_score_seat1": mean_score_seat1,
+                "mean_score_seat2": mean_score_seat2,
             }
         )
 
