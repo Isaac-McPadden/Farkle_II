@@ -244,8 +244,8 @@ def test_compute_symmetry_checks_derived_or_default_players(
     assert row["observations"] == 2
     assert row["farkle_diff"] == pytest.approx(0.0)
     assert row["rounds_diff"] == pytest.approx(0.0)
-    assert row["farkle_flagged"] == False
-    assert row["rounds_flagged"] == False
+    assert not row["farkle_flagged"]
+    assert not row["rounds_flagged"]
 
 
 def test_compute_symmetry_checks_returns_empty_when_no_symmetric_rows(tmp_path: Path) -> None:
@@ -300,8 +300,8 @@ def test_compute_symmetry_checks_coerces_non_int_group_keys(
 
     row = df.iloc[0]
     assert row["n_players"] == 2
-    assert row["farkle_flagged"] == True
-    assert row["rounds_flagged"] == True
+    assert row["farkle_flagged"]
+    assert row["rounds_flagged"]
 
 
 def test_compute_seat_advantage_builds_deltas(tmp_path: Path) -> None:

@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import pickle
 from pathlib import Path
-from types import TracebackType
 from typing import Any
 from unittest.mock import MagicMock
 

@@ -7,9 +7,9 @@ import pandas as pd
 import pytest
 
 from farkle.simulation.strategies import (
-    FavorDiceOrScore,
     STOP_AT_REGISTRY,
     STRATEGY_TUPLE_FIELDS,
+    FavorDiceOrScore,
     StopAtStrategy,
     StrategyGridOptions,
     ThresholdStrategy,
@@ -28,8 +28,8 @@ from farkle.simulation.strategies import (
     load_farkle_results,
     normalize_strategy_ids,
     parse_strategy,
-    parse_strategy_identifier,
     parse_strategy_for_df,
+    parse_strategy_identifier,
     random_threshold_strategy,
     strategy_attributes_from_series,
     strategy_tuple,

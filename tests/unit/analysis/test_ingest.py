@@ -4,9 +4,9 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import pandas as pd
-import pytest
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 
 from farkle.analysis.ingest import (
     _coerce_strategy_ids,

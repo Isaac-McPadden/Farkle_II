@@ -437,7 +437,7 @@ def test_low_level_numeric_edge_branches(monkeypatch: pytest.MonkeyPatch) -> Non
     assert set(out["n_players"].astype(int).tolist()) == {1}
 
 def test_margin_pooling_and_strategy_empty_paths(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
 
     no_strategy = tmp_path / "m_no_strategy.parquet"
     _write_rows(no_strategy, pd.DataFrame({"P1_score": [10], "P2_score": [8]}))

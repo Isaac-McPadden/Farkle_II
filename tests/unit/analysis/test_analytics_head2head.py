@@ -658,7 +658,7 @@ def test_maybe_autotune_tiers_success_writes_payload_and_meta(
     meta_path = cfg.analysis_dir / "tiers_autotune.json"
     assert str(meta_path) in atomic_calls
     meta = json.loads(meta_path.read_text())
-    assert set(["z", "predicted_hours", "games_per_pair", "total_games", "games_per_sec"]).issubset(
+    assert {"z", "predicted_hours", "games_per_pair", "total_games", "games_per_sec"}.issubset(
         meta
     )
 

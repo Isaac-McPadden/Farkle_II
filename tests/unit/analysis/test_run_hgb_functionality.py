@@ -1,8 +1,8 @@
+import json
 import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-import json
 
 import numpy as np
 import pandas as pd
@@ -453,7 +453,7 @@ def test_run_hgb_skips_when_no_features_or_join_rows(tmp_path, monkeypatch):
     def wrong_index(strategies, *, manifest=None):
         _ = strategies, manifest
         cols = [name for name, _dtype in run_hgb.FEATURE_SPECS]
-        return pd.DataFrame([{c: 1.0 for c in cols}], index=["other-strategy"])
+        return pd.DataFrame([dict.fromkeys(cols, 1.0)], index=["other-strategy"])
 
     monkeypatch.setattr(run_hgb, "_parse_strategy_features", wrong_index)
     run_hgb.run_hgb(root=data_dir)
@@ -634,4 +634,4 @@ def test_run_hgb_players_only_schema_and_manifest_fallback_and_pooled_artifacts(
 
     payload = json.loads((data_dir / "pooled" / "hgb_importance.json").read_text())
     assert list(payload) == ["2p", "4p", "overall"]
-    assert set(payload["overall"]) == set(name for name, _dtype in run_hgb.FEATURE_SPECS)
+    assert set(payload["overall"]) == {name for name, _dtype in run_hgb.FEATURE_SPECS}

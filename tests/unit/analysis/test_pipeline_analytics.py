@@ -1,15 +1,15 @@
 from __future__ import annotations
 
 import io
+import types
 from contextlib import redirect_stdout
 from pathlib import Path
-import types
 
 import pandas as pd
 import pytest
 
-import farkle.analysis.stage_registry as stage_registry
 import farkle.analysis as analysis_mod
+import farkle.analysis.stage_registry as stage_registry
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, IOConfig
 from farkle.orchestration.pipeline import _done_path, analyze_all, is_up_to_date, write_done

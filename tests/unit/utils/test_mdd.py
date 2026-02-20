@@ -1,5 +1,5 @@
-from typing import cast
 import warnings
+from typing import cast
 
 import pandas as pd
 import pytest

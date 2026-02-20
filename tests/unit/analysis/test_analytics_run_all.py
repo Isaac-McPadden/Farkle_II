@@ -73,7 +73,7 @@ def test_run_all_uses_current_stage_order_for_all_legacy_flag_combinations(
     )
 
     cfg = AppConfig()
-    for name, value in zip(LEGACY_FLAG_NAMES, legacy_values):
+    for name, value in zip(LEGACY_FLAG_NAMES, legacy_values, strict=False):
         setattr(cfg.analysis, name, value)
 
     with caplog.at_level(logging.INFO):

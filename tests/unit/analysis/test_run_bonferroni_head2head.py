@@ -324,7 +324,7 @@ def test_warn_legacy_stage_dirs_only_warns_for_legacy(tmp_path: Path, caplog) ->
 
     warnings = [rec for rec in caplog.records if rec.message == "Legacy stage directory detected; prefer layout-aware helpers"]
     assert len(warnings) == 1
-    assert getattr(warnings[0], "legacy_path") == str(legacy)
+    assert warnings[0].legacy_path == str(legacy)
 
 
 def test_tiers_path_fallback_and_no_existing_candidates(tmp_path: Path, caplog) -> None:
