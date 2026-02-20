@@ -15,6 +15,53 @@ import pandas as pd
 TierMap: TypeAlias = dict[str, int]
 
 
+_NUMERIC_RUNTIME_TYPES = (int, float, np.integer, np.floating)
+
+
+def is_na(x: object) -> bool:
+    """Return whether a scalar value should be treated as missing/NA."""
+
+    if x is None or x is pd.NA:
+        return True
+    na_result = pd.isna(x)
+    if isinstance(na_result, bool):
+        return na_result
+    raise TypeError(
+        f"pd.isna returned non-bool for scalar check: type={type(x).__name__}, value={x!r}"
+    )
+
+
+def as_float(x: object) -> float:
+    """Convert a Python/Numpy numeric scalar to ``float`` with explicit NA rejection."""
+
+    if is_na(x):
+        raise ValueError(f"cannot convert NA value to float: {x!r}")
+    if isinstance(x, (bool, np.bool_)):
+        return float(int(x))
+    if isinstance(x, _NUMERIC_RUNTIME_TYPES):
+        return float(x)
+    raise TypeError(f"expected numeric scalar for float conversion, got {type(x).__name__}")
+
+
+def as_int(x: object) -> int:
+    """Convert a Python/Numpy numeric scalar to ``int`` with explicit checks."""
+
+    if is_na(x):
+        raise ValueError(f"cannot convert NA value to int: {x!r}")
+    if isinstance(x, (bool, np.bool_)):
+        return int(x)
+    if isinstance(x, (int, np.integer)):
+        return int(x)
+    if isinstance(x, (float, np.floating)):
+        numeric = float(x)
+        if math.isfinite(numeric) and numeric.is_integer():
+            return int(numeric)
+        raise ValueError(
+            f"cannot convert non-integral float to int: type={type(x).__name__}, value={x!r}"
+        )
+    raise TypeError(f"expected numeric scalar for int conversion, got {type(x).__name__}")
+
+
 def try_to_int(value: Any) -> int | None:
     """Best-effort integer conversion for boundary data.
 
@@ -113,4 +160,13 @@ def tiers_to_map(tier_lists: list[list[str]]) -> TierMap:
     return tiers
 
 
-__all__ = ["TierMap", "tiers_to_map", "to_int", "to_stat_value", "try_to_int"]
+__all__ = [
+    "TierMap",
+    "as_float",
+    "as_int",
+    "is_na",
+    "tiers_to_map",
+    "to_int",
+    "to_stat_value",
+    "try_to_int",
+]

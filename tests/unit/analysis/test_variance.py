@@ -6,6 +6,7 @@ import pytest
 
 from farkle.analysis import variance
 from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.utils.analysis_shared import as_float, is_na
 
 
 @pytest.fixture
@@ -119,9 +120,9 @@ def test_tiny_samples_and_nan_inf_guards() -> None:
         detailed,
     )
     one_merged = merged[merged["strategy_id"] == "ONE"].iloc[0]
-    assert np.isnan(one_merged["signal_to_noise"])
+    assert is_na(one_merged["signal_to_noise"])
     two_merged = merged[merged["strategy_id"] == "TWO"].iloc[0]
-    assert np.isnan(two_merged["signal_to_noise"])
+    assert is_na(two_merged["signal_to_noise"])
 
 
 def test_high_variance_components_confidence_interval_and_signal(
@@ -130,7 +131,7 @@ def test_high_variance_components_confidence_interval_and_signal(
     detailed = variance._compute_variance(high_variance_seed_frame)
     row = detailed.iloc[0]
     assert row["variance_win_rate"] > 0.2
-    assert row["std_win_rate"] == pytest.approx(np.sqrt(row["variance_win_rate"]), rel=1e-12)
+    assert row["std_win_rate"] == pytest.approx(np.sqrt(as_float(row["variance_win_rate"])), rel=1e-12)
     assert row["se_win_rate"] > 0
 
     components = variance._compute_variance_components(high_variance_seed_frame)
