@@ -233,7 +233,7 @@ def run_bonferroni_head2head(
 
     The function reads ``data/tiers.json`` to find strategies in the highest
     tier. It derives a per-pair game budget from :func:`~farkle.utils.stats.games_for_power`
-    using the same one-sided tail as the exact test and writes
+    using the configured design tail for power sizing and writes
     ``analysis/bonferroni_pairwise.parquet``. The output schema is::
 
         players: int64
@@ -377,11 +377,9 @@ def run_bonferroni_head2head(
     if not full_pairwise:
         raise ValueError("Bonferroni head-to-head requires full_pairwise comparisons")
     tail = str(design_kwargs.get("tail", "one_sided")).lower().replace("-", "_")
-    if tail != "one_sided":
-        raise ValueError(
-            "Bonferroni head-to-head uses a one-sided exact test; set tail='one_sided'",
-        )
-    design_kwargs["tail"] = "one_sided"
+    if tail not in {"one_sided", "two_sided"}:
+        raise ValueError("tail must be 'one_sided' or 'two_sided'")
+    design_kwargs["tail"] = tail
     k_players = int(design_kwargs.get("k_players", 2))
     if k_players != 2:
         raise ValueError("Bonferroni head-to-head only supports k_players=2")

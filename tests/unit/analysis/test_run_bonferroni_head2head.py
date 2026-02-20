@@ -352,7 +352,7 @@ def test_tiers_path_fallback_and_no_existing_candidates(tmp_path: Path, caplog) 
     [
         ({"method": "holm"}, "requires method='bonferroni'"),
         ({"full_pairwise": False}, "requires full_pairwise comparisons"),
-        ({"tail": "two-sided"}, "set tail='one_sided'"),
+        ({"tail": "sideways"}, "tail must be 'one_sided' or 'two_sided'"),
         ({"k_players": 3}, "only supports k_players=2"),
     ],
 )

@@ -129,12 +129,13 @@ def _build_design_kwargs(cfg: AppConfig) -> dict[str, Any]:
     filtered["full_pairwise"] = True
     filtered.setdefault("endpoint", "pairwise")
     tail = str(filtered.get("tail", "one_sided")).lower().replace("-", "_")
-    if tail != "one_sided":
-        LOGGER.info(
-            "\"one_sided\" is required, tail changed to \"one_sided\"",
-            extra={"stage": "head2head", "tail": tail},
+    allowed_tails = {"one_sided", "two_sided"}
+    if tail not in allowed_tails:
+        raise ValueError(
+            "Invalid bonferroni_design.tail %r; allowed values are %s"
+            % (tail, sorted(allowed_tails)),
         )
-    filtered["tail"] = "one_sided"
+    filtered["tail"] = tail
     return filtered
 
 
