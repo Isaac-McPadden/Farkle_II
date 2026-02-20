@@ -709,12 +709,12 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
     expected_seed13_row_data_dir.mkdir(parents=True, exist_ok=True)
 
     cfg = AppConfig(
-        io=IOConfig(
+        IOConfig(
             results_dir_prefix=seed12_root,
             interseed_input_dir=seed12_analysis,
             interseed_input_layout={"curate": "01_curate"},
         ),
-        sim=SimConfig(seed=12, n_players_list=[2], seed_list=[12, 13], seed_pair=(12, 13)),
+        SimConfig(seed=12, n_players_list=[2], seed_list=[12, 13], seed_pair=(12, 13)),
     )
     cfg.analysis.tiering_seeds = [12, 13]
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
@@ -968,7 +968,7 @@ def test_resolve_seed_results_and_row_data_fallbacks(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     unseeded_root = tmp_path / "plain_results"
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=unseeded_root), sim=SimConfig(seed=7))
+    cfg = AppConfig(IOConfig(results_dir_prefix=unseeded_root), SimConfig(seed=7))
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
     monkeypatch.setattr(rt, "split_seeded_results_dir", lambda _path: (_path, None))
     assert rt._resolve_seed_results_root(cfg, seed=123) == cfg.results_root
@@ -1001,7 +1001,10 @@ def test_resolve_seed_results_and_row_data_fallbacks(
 
 def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path: Path) -> None:
     results_root = tmp_path / "results_seed_1"
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=results_root), sim=SimConfig(seed=1, seed_pair=(1, 2)))
+    cfg = AppConfig(
+        IOConfig(results_dir_prefix=results_root),
+        SimConfig(seed=1, seed_pair=(1, 2)),
+    )
     cfg.analysis.tiering_seeds = [1]
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
 
@@ -1021,7 +1024,10 @@ def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path:
 
 def test_run_trueskill_all_seeds_raises_when_pooled_precision_empty(tmp_path: Path) -> None:
     results_root = tmp_path / "results_seed_4"
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=results_root), sim=SimConfig(seed=4, seed_pair=(4, 5)))
+    cfg = AppConfig(
+        IOConfig(results_dir_prefix=results_root),
+        SimConfig(seed=4, seed_pair=(4, 5)),
+    )
     cfg.analysis.tiering_seeds = [4]
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
 

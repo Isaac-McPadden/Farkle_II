@@ -152,7 +152,7 @@ def test_high_variance_components_confidence_interval_and_signal(
 
 
 def test_discover_seed_summaries_filters(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
     cfg.analysis.outputs = {}
     valid = cfg.seed_summaries_dir(2) / "strategy_summary_2p_seed1.parquet"
     legacy = cfg.analysis_dir / "strategy_summary_2p_seed2.parquet"
@@ -233,8 +233,8 @@ def test_merge_and_summarize_variance() -> None:
 
 def test_run_writes_outputs(tmp_path: Path) -> None:
     cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / "results"),
-        sim=SimConfig(seed=1, n_players_list=[2]),
+        IOConfig(results_dir_prefix=tmp_path / "results"),
+        SimConfig(seed=1, n_players_list=[2]),
     )
     cfg.analysis.outputs = {}
 

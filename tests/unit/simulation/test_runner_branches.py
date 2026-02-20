@@ -24,7 +24,7 @@ def _cfg(tmp_path: Path, **sim_kwargs: Any) -> AppConfig:
         "recompute_num_shuffles": False,
     }
     sim_defaults.update(sim_kwargs)
-    return AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "out"), sim=SimConfig(**sim_defaults))
+    return AppConfig(IOConfig(results_dir_prefix=tmp_path / "out"), SimConfig(**sim_defaults))
 
 
 def _manifest_df() -> pd.DataFrame:

@@ -15,8 +15,8 @@ from farkle.utils.analysis_shared import is_na
 @pytest.fixture
 def cfg(tmp_path: Path) -> AppConfig:
     config = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / "results"),
-        sim=SimConfig(seed=7, n_players_list=[2]),
+        IOConfig(results_dir_prefix=tmp_path / "results"),
+        SimConfig(seed=7, n_players_list=[2]),
     )
     config.analysis.outputs = {}
     return config
@@ -133,7 +133,10 @@ def test_run_no_overlap_and_insufficient_seed_pruning(cfg: AppConfig) -> None:
     variance.run(cfg)
     assert not cfg.variance_output_path(variance.VARIANCE_OUTPUT).exists()
 
-    cfg2 = AppConfig(io=IOConfig(results_dir_prefix=cfg.io.results_dir_prefix.parent / "results2"), sim=SimConfig(seed=7, n_players_list=[2]))
+    cfg2 = AppConfig(
+        IOConfig(results_dir_prefix=cfg.io.results_dir_prefix.parent / "results2"),
+        SimConfig(seed=7, n_players_list=[2]),
+    )
     cfg2.analysis.outputs = {}
     _write_metrics(cfg2, [{"strategy_id": "A", "players": 2, "win_rate": 0.52}])
     _write_seed_summary(

@@ -12,11 +12,11 @@ from farkle.analysis.stage_registry import (
     resolve_interseed_stage_layout,
     resolve_stage_layout,
 )
-from farkle.config import AnalysisConfig, AppConfig, IOConfig
+from farkle.config import AnalysisConfig, AppConfig, IOConfig, SimConfig
 
 
 def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
 
     layout = resolve_stage_layout(cfg)
 
@@ -31,8 +31,9 @@ def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
 
 def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
     cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path),
-        analysis=AnalysisConfig(
+        IOConfig(results_dir_prefix=tmp_path),
+        SimConfig(),
+        AnalysisConfig(
             disable_game_stats=True,
             disable_rng_diagnostics=False,
             disable_trueskill=True,
@@ -42,7 +43,7 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
         ),
     )
 
-    base_layout = resolve_stage_layout(AppConfig(io=IOConfig(results_dir_prefix=tmp_path)))
+    base_layout = resolve_stage_layout(AppConfig(IOConfig(results_dir_prefix=tmp_path)))
     layout = resolve_stage_layout(cfg)
 
     assert [placement.definition.key for placement in layout.placements] == [
@@ -54,7 +55,7 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
 
 
 def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
 
     base_layout = resolve_stage_layout(cfg)
     cfg.analysis.disable_rng_diagnostics = True
@@ -67,7 +68,7 @@ def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
 
 
 def test_stage_registry_helpers_and_interseed_layout(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
 
     always_enabled = StageDefinition(key="always", group="unit", disabled_predicate=None)
     disabled_when_true = StageDefinition(

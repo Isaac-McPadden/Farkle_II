@@ -1,6 +1,8 @@
 import numpy as np
+import pandas as pd
 import pytest
 
+import farkle.utils.analysis_shared as analysis_shared
 from farkle.utils.analysis_shared import (
     as_float,
     as_int,
@@ -132,3 +134,65 @@ def test_as_float_accepts_numpy_and_python_numeric_scalars() -> None:
     assert as_float(np.int64(3)) == pytest.approx(3.0)
     assert as_float(np.float32(1.5)) == pytest.approx(1.5)
     assert as_float(True) == pytest.approx(1.0)
+
+
+def test_is_na_raises_when_pd_isna_returns_non_bool(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(analysis_shared.pd, "isna", lambda _x: np.array([True], dtype=bool))
+    with pytest.raises(TypeError, match="pd.isna returned non-bool"):
+        is_na("value")
+
+
+def test_as_int_accepts_bool_and_integer_scalars() -> None:
+    assert as_int(True) == 1
+    assert as_int(5) == 5
+    assert as_int(np.int64(12)) == 12
+
+
+def test_try_to_int_handles_pdna_finite_float_and_isna_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert try_to_int(pd.NA) is None
+    assert try_to_int(8.9) == 8
+
+    class IntLike:
+        def __int__(self) -> int:
+            return 11
+
+    value = IntLike()
+
+    def _raising_isna(x: object) -> bool:
+        if x is value:
+            raise RuntimeError("boom")
+        return False
+
+    monkeypatch.setattr(analysis_shared.pd, "isna", _raising_isna)
+    assert try_to_int(value) == 11
+
+
+def test_to_int_accepts_integral_scalars_across_types() -> None:
+    assert to_int(True) == 1
+    assert to_int(7) == 7
+    assert to_int(np.int64(9)) == 9
+    assert to_int(np.float64(10.0)) == 10
+
+
+def test_to_stat_value_handles_none_pdna_bool_and_isna_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert to_stat_value(None) is None
+    assert to_stat_value(pd.NA) is None
+    assert to_stat_value(True) == 1
+
+    class Stringable:
+        def __str__(self) -> str:
+            return "stringable"
+
+    value = Stringable()
+
+    def _raising_isna(x: object) -> bool:
+        if x is value:
+            raise RuntimeError("boom")
+        return False
+
+    monkeypatch.setattr(analysis_shared.pd, "isna", _raising_isna)
+    assert to_stat_value(value) == "stringable"
