@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING, Hashable, Iterable, Sequence, TypeAlias
+from typing import TYPE_CHECKING, Hashable, Iterable, Protocol, Sequence, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -36,6 +36,19 @@ else:  # pragma: no cover - fallback for older pandas
     Scalar: TypeAlias = Hashable
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _AnalysisPoolingConfig(Protocol):
+    @property
+    def pooling_weights(self) -> str: ...
+
+    @property
+    def pooling_weights_by_k(self) -> dict[int, float] | None: ...
+
+
+class _MetricsPoolingConfig(Protocol):
+    @property
+    def analysis(self) -> _AnalysisPoolingConfig: ...
 
 
 def run(cfg: AppConfig) -> None:
@@ -591,7 +604,7 @@ def _weighted_mean(values: pd.Series, weights: np.ndarray) -> float:
     return float(np.average(numeric[mask], weights=subset_weights))
 
 
-def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: AppConfig) -> pd.DataFrame:
+def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: _MetricsPoolingConfig) -> pd.DataFrame:
     """Compute pooled weighted metrics across player counts."""
 
     columns = [

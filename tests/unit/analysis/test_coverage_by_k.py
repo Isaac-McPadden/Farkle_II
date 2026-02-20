@@ -7,6 +7,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.config_factory import make_test_app_config
 
 from farkle.analysis import coverage_by_k
 from farkle.analysis.stage_state import stage_done_path, write_stage_done
@@ -14,10 +15,13 @@ from farkle.config import AnalysisConfig, AppConfig, IOConfig, SimConfig
 
 
 def _cfg(tmp_path: Path, **kwargs: object) -> AppConfig:
-    sim = kwargs.pop("sim", SimConfig(n_players_list=[2, 3], seed=7, seed_list=[7, 8]))
-    analysis = kwargs.pop("analysis", AnalysisConfig())
-    io = kwargs.pop("io", IOConfig(results_dir_prefix=tmp_path))
-    return AppConfig(io=io, sim=sim, analysis=analysis, **kwargs)
+    return make_test_app_config(
+        results_dir_prefix=tmp_path,
+        sim=kwargs.pop("sim", SimConfig(n_players_list=[2, 3], seed=7, seed_list=[7, 8])),
+        analysis=kwargs.pop("analysis", AnalysisConfig()),
+        io=kwargs.pop("io", IOConfig(results_dir_prefix=tmp_path)),
+        **kwargs,
+    )
 
 
 def test_pandas_scalar_to_int_cases() -> None:
