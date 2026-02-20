@@ -495,3 +495,143 @@ def test_run_hgb_schema_mismatch_feature_columns_raises(tmp_path, monkeypatch):
 
     with pytest.raises(KeyError):
         run_hgb.run_hgb(root=data_dir)
+
+
+
+def test_run_hgb_handles_empty_and_insufficient_player_buckets(tmp_path, monkeypatch):
+    data_dir = _setup_data(tmp_path)
+    metrics = pd.read_parquet(data_dir / "metrics.parquet")
+    metrics = pd.concat(
+        [
+            metrics,
+            pd.DataFrame(
+                {
+                    "strategy": [metrics.loc[0, "strategy"], None],
+                    "n_players": [3, 4],
+                    "games": [10, 10],
+                    "win_rate": [0.7, 0.1],
+                }
+            ),
+        ],
+        ignore_index=True,
+    )
+    metrics.to_parquet(data_dir / "metrics.parquet", index=False)
+
+    class DummyModel:
+        def fit(self, _X, _y):
+            return self
+
+    monkeypatch.setattr(
+        run_hgb,
+        "HistGradientBoostingRegressor",
+        lambda random_state=None: DummyModel(),  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        run_hgb,
+        "permutation_importance",
+        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+            np.arange(X.shape[1], dtype=float)
+        ),
+    )
+    monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run_hgb,
+        "plot_partial_dependence",
+        lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
+    )
+
+    run_hgb.run_hgb(root=data_dir)
+
+    three_p = pd.read_parquet(data_dir / "3p" / run_hgb.IMPORTANCE_TEMPLATE.format(players=3))
+    assert three_p.empty
+    assert list(three_p.columns) == ["feature", "importance_mean", "importance_std", "players"]
+
+    four_p = pd.read_parquet(data_dir / "4p" / run_hgb.IMPORTANCE_TEMPLATE.format(players=4))
+    assert four_p.empty
+
+
+def test_run_hgb_players_only_schema_and_manifest_fallback_and_pooled_artifacts(tmp_path, monkeypatch):
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    strategies = [
+        _strategy_literal(
+            score_threshold=300,
+            dice_threshold=2,
+            smart_five=True,
+            smart_one=True,
+            consider_score=True,
+            consider_dice=True,
+            require_both=True,
+            auto_hot_dice=True,
+            run_up_score=False,
+            favor_dice_or_score=FavorDiceOrScore.SCORE,
+        ),
+        _strategy_literal(
+            score_threshold=450,
+            dice_threshold=1,
+            smart_five=False,
+            smart_one=False,
+            consider_score=False,
+            consider_dice=True,
+            require_both=False,
+            auto_hot_dice=False,
+            run_up_score=True,
+            favor_dice_or_score=FavorDiceOrScore.DICE,
+        ),
+    ]
+    metrics = pd.DataFrame(
+        {
+            "strategy": [strategies[0], strategies[1], strategies[0], strategies[1]],
+            "players": [2, 2, 4, 4],
+            "games": [10, 10, 10, 10],
+            "win_rate": [0.2, 0.8, 0.6, 0.4],
+        }
+    )
+    metrics.to_parquet(data_dir / "metrics.parquet", index=False)
+    pd.DataFrame({"strategy": strategies, "mu": [0.0, 0.1]}).to_parquet(
+        data_dir / "ratings_k_weighted.parquet", index=False
+    )
+
+    captured_manifest = {}
+    original_parse = run_hgb._parse_strategy_features
+
+    def fake_parse(strategies_in, *, manifest=None):
+        captured_manifest["manifest"] = manifest
+        return original_parse(strategies_in, manifest=manifest)
+
+    class DummyModel:
+        def fit(self, _X, _y):
+            return self
+
+    monkeypatch.setattr(run_hgb, "_parse_strategy_features", fake_parse)
+    monkeypatch.setattr(
+        run_hgb,
+        "HistGradientBoostingRegressor",
+        lambda random_state=None: DummyModel(),  # noqa: ARG005
+    )
+    monkeypatch.setattr(
+        run_hgb,
+        "permutation_importance",
+        lambda model, X, y, n_repeats=10, random_state=None: _perm_result(  # noqa: ARG005
+            np.linspace(0.0, 1.0, X.shape[1])
+        ),
+    )
+    monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        run_hgb,
+        "plot_partial_dependence",
+        lambda model, X, column, out_dir: Path(out_dir) / f"pd_{column}.png",  # noqa: ARG005
+    )
+
+    run_hgb.run_hgb(root=data_dir, manifest_path=data_dir / "missing_manifest.parquet")
+
+    assert captured_manifest["manifest"] is None
+
+    pooled_long = pd.read_parquet(data_dir / "pooled" / run_hgb.LONG_IMPORTANCE_NAME)
+    pooled_overall = pd.read_parquet(data_dir / "pooled" / run_hgb.OVERALL_IMPORTANCE_NAME)
+    assert set(pooled_long["players"]) == {2, 4}
+    assert set(pooled_overall["players"]) == {"overall"}
+
+    payload = json.loads((data_dir / "pooled" / "hgb_importance.json").read_text())
+    assert list(payload) == ["2p", "4p", "overall"]
+    assert set(payload["overall"]) == set(name for name, _dtype in run_hgb.FEATURE_SPECS)
