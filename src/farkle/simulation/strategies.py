@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache, partial
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence, Tuple
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence, Tuple, TypeVar
 
 import numba as nb
 import pandas as pd
@@ -87,6 +87,18 @@ DEFAULT_STRATEGY_GRID: dict[str, tuple[object, ...]] = {
 }
 
 StrategyTuple = Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]
+
+_ChoiceT = TypeVar("_ChoiceT")
+
+
+class StrategyRng(Protocol):
+    """RNG protocol for random strategy generation helpers."""
+
+    def choice(self, seq: Sequence[_ChoiceT]) -> _ChoiceT: ...
+
+    def randrange(self, start: int, stop: int | None = None, step: int = 1) -> int: ...
+
+    def randint(self, a: int, b: int) -> int: ...
 
 
 _STRAT_RE = re.compile(
@@ -392,7 +404,7 @@ def iter_strategy_combos(
                                             )
 
 
-def _sample_favor_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrScore:
+def _sample_favor_score(cs: bool, cd: bool, rng: StrategyRng) -> FavorDiceOrScore:
     """
     Return the *only* legal value(s) for `favor_dice_or_score`
     given the (consider_score, consider_dice) pair.
@@ -411,12 +423,12 @@ def _sample_favor_score(cs: bool, cd: bool, rng: random.Random) -> FavorDiceOrSc
     return FavorDiceOrScore.SCORE if cs else FavorDiceOrScore.DICE
 
 
-def random_threshold_strategy(rng: random.Random | None = None) -> ThresholdStrategy:
+def random_threshold_strategy(rng: StrategyRng | None = None) -> ThresholdStrategy:
     """Create a randomized threshold strategy consistent with engine rules.
 
     Parameters
     ----------
-    rng : random.Random | None, default None
+    rng : StrategyRng | None, default None
         Source of randomness. A new generator is created when ``None`` is provided.
 
     Returns
