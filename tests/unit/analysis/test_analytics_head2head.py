@@ -463,7 +463,7 @@ def test_run_calls_bonferroni_with_expected_args(
         "method": "bonferroni",
         "full_pairwise": True,
         "endpoint": "pairwise",
-        "tail": "one_sided",
+        "tail": "two_sided",
     }
 
 
@@ -490,7 +490,7 @@ def test_resolve_h2h_jobs_precedence(
     assert head2head._resolve_h2h_jobs(cfg) == expected
 
 
-def test_build_design_kwargs_sanitizes_defaults_and_forces_tail(_cfg: AppConfig) -> None:
+def test_build_design_kwargs_sanitizes_defaults_and_preserves_valid_tail(_cfg: AppConfig) -> None:
     cfg = _cfg
     cfg.head2head.bonferroni_design = {
         "k_players": 5,
@@ -506,13 +506,21 @@ def test_build_design_kwargs_sanitizes_defaults_and_forces_tail(_cfg: AppConfig)
     assert design["endpoint"] == "not_pairwise"
     assert design["method"] == "bonferroni"
     assert design["full_pairwise"] is True
-    assert design["tail"] == "one_sided"
+    assert design["tail"] == "two_sided"
 
     cfg.head2head.bonferroni_design = {"tail": "ONE_SIDED"}
     defaults = head2head._build_design_kwargs(cfg)
     assert defaults["k_players"] == 2
     assert defaults["endpoint"] == "pairwise"
     assert defaults["tail"] == "one_sided"
+
+
+def test_build_design_kwargs_rejects_invalid_tail(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    cfg.head2head.bonferroni_design = {"tail": "sideways"}
+
+    with pytest.raises(ValueError, match="allowed values"):
+        head2head._build_design_kwargs(cfg)
 
 
 def test_maybe_autotune_tiers_early_return_when_target_hours_non_positive(
