@@ -99,9 +99,7 @@ def test_map_isolated_paths_uses_resolved_lookup_and_unresolved_fallback(tmp_pat
     k2.parent.mkdir(parents=True, exist_ok=True)
     k2.write_bytes(b"k2")
 
-    alias_root = tmp_path / "alias"
-    alias_root.symlink_to(k2.parent, target_is_directory=True)
-    rel_k2 = alias_root / k2.name
+    rel_k2 = k2.parent / ".." / k2.parent.name / k2.name
 
     mapping = coverage_by_k._map_isolated_paths(cfg, [2, 3], [rel_k2])
 
