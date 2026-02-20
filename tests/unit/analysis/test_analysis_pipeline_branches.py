@@ -6,6 +6,7 @@ import argparse
 import logging
 import types
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -127,7 +128,7 @@ def test_main_logs_deprecated_flag_warnings(
         for rec in caplog.records
         if rec.getMessage() == "Deprecated CLI flag ignored; stages now run based on inputs"
     ]
-    assert {rec.flag for rec in records} == {"disable_trueskill", "disable_head2head", "run_interseed"}
+    assert {cast(Any, rec).flag for rec in records} == {"disable_trueskill", "disable_head2head", "run_interseed"}
 
 
 def test_interseed_summary_skips_rng_stage_when_disabled(
