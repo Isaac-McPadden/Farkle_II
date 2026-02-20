@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import MappingProxyType
 
 import pytest
 import yaml
@@ -120,6 +121,48 @@ def test_load_app_config_normalizes_legacy_keys(write_yaml) -> None:
     assert cfg.sim.n_players_list == [5]
     assert cfg.sim.expanded_metrics is True
 
+
+
+
+def test_load_app_config_normalizes_legacy_keys_from_read_only_mappings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "legacy_read_only.yaml"
+    config.write_text("{}")
+
+    overlay = MappingProxyType(
+        {
+            "io": MappingProxyType({"analysis_dir": "analysis", "results_dir": "data/custom_seed_11"}),
+            "sim": MappingProxyType({"n_players": 5, "collect_metrics": True}),
+            "analysis": MappingProxyType({"run_tiering_report": True}),
+        }
+    )
+
+    monkeypatch.setattr("farkle.config.expand_dotted_keys", lambda _payload: overlay)
+
+    cfg = load_app_config(config)
+
+    assert cfg.io.analysis_subdir == "analysis"
+    assert cfg.io.results_dir_prefix == Path("custom")
+    assert cfg.sim.n_players_list == [5]
+    assert cfg.sim.expanded_metrics is True
+    assert cfg.analysis.run_frequentist is True
+
+
+def test_load_app_config_handles_read_only_sim_without_mutating_source(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = tmp_path / "sim_read_only.yaml"
+    config.write_text("{}")
+    sim_payload = MappingProxyType({"n_players": 7, "collect_metrics": True})
+
+    monkeypatch.setattr("farkle.config.expand_dotted_keys", lambda _payload: {"sim": sim_payload})
+
+    cfg = load_app_config(config)
+
+    assert sim_payload == {"n_players": 7, "collect_metrics": True}
+    assert cfg.sim.n_players_list == [7]
+    assert cfg.sim.expanded_metrics is True
 
 def test_load_app_config_keeps_results_dir(write_yaml) -> None:
     config = write_yaml(

@@ -1545,13 +1545,20 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
 
     # Light compatibility if someone uses old keys
     if "io" in data:
-        io_section = data["io"]
-        if "analysis_dir" in io_section and "analysis_subdir" not in io_section:
-            io_section["analysis_subdir"] = io_section.pop("analysis_dir")
-        if "results_dir" in io_section and "results_dir_prefix" not in io_section:
-            io_section["results_dir_prefix"] = _normalize_results_dir_prefix(
-                io_section.pop("results_dir")
-            )
+        io_section_raw = data["io"]
+        if isinstance(io_section_raw, Mapping):
+            io_section: MutableMapping[str, Any]
+            if isinstance(io_section_raw, MutableMapping):
+                io_section = io_section_raw
+            else:
+                io_section = dict(io_section_raw)
+                data["io"] = io_section
+            if "analysis_dir" in io_section and "analysis_subdir" not in io_section:
+                io_section["analysis_subdir"] = io_section.pop("analysis_dir")
+            if "results_dir" in io_section and "results_dir_prefix" not in io_section:
+                io_section["results_dir_prefix"] = _normalize_results_dir_prefix(
+                    io_section.pop("results_dir")
+                )
     seed_provided = False
     seed_list_provided = False
     seed_pair_provided = False
@@ -1560,9 +1567,15 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
     per_n_seed_pair_provided: dict[int, bool] = {}
     pooled_requested = False
     if "sim" in data:
-        sim_section = data["sim"]
-        if not isinstance(sim_section, Mapping):
+        sim_section_raw = data["sim"]
+        if not isinstance(sim_section_raw, Mapping):
             raise TypeError("Config section 'sim' must be a mapping")
+        sim_section: MutableMapping[str, Any]
+        if isinstance(sim_section_raw, MutableMapping):
+            sim_section = sim_section_raw
+        else:
+            sim_section = dict(sim_section_raw)
+            data["sim"] = sim_section
         seed_provided = "seed" in sim_section
         seed_list_provided = "seed_list" in sim_section
         seed_pair_provided = "seed_pair" in sim_section
@@ -1617,22 +1630,29 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         analysis_section.setdefault("agreement_include_pooled", True)
 
     if "analysis" in data:
-        analysis_section = data["analysis"]
-        legacy_alias = "run_tiering_report" in analysis_section
-        if "run_tiering_report" in analysis_section:
-            alias_val = analysis_section.pop("run_tiering_report")
-            analysis_section.setdefault("run_frequentist", alias_val)
-        deprecated = sorted(
-            key for key in analysis_section if key in DEPRECATED_ANALYSIS_FLAGS
-        )
-        if legacy_alias:
-            deprecated.append("run_tiering_report")
-            deprecated = sorted(set(deprecated))
-        if deprecated:
-            LOGGER.warning(
-                "Deprecated analysis flags no longer disable stages; flags ignored",
-                extra={"stage": "config", "flags": deprecated},
+        analysis_section_raw = data["analysis"]
+        if isinstance(analysis_section_raw, Mapping):
+            analysis_section: MutableMapping[str, Any]
+            if isinstance(analysis_section_raw, MutableMapping):
+                analysis_section = analysis_section_raw
+            else:
+                analysis_section = dict(analysis_section_raw)
+                data["analysis"] = analysis_section
+            legacy_alias = "run_tiering_report" in analysis_section
+            if "run_tiering_report" in analysis_section:
+                alias_val = analysis_section.pop("run_tiering_report")
+                analysis_section.setdefault("run_frequentist", alias_val)
+            deprecated = sorted(
+                key for key in analysis_section if key in DEPRECATED_ANALYSIS_FLAGS
             )
+            if legacy_alias:
+                deprecated.append("run_tiering_report")
+                deprecated = sorted(set(deprecated))
+            if deprecated:
+                LOGGER.warning(
+                    "Deprecated analysis flags no longer disable stages; flags ignored",
+                    extra={"stage": "config", "flags": deprecated},
+                )
 
     _validate_config_keys(data)
 
