@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import warnings
+from contextlib import contextmanager
 from pathlib import Path
 
 import networkx as nx
@@ -365,63 +366,458 @@ def test_run_post_h2h_skipped_is_deterministic(_cfg: AppConfig) -> None:
     assert first_outputs == second_outputs
 
 
-def test_build_design_kwargs_normalizes_tail(_cfg: AppConfig) -> None:
+def test_run_exits_early_when_curated_missing(
+    _cfg: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     cfg = _cfg
-    cfg.head2head.bonferroni_design = {"tail": "two-sided", "bh_target_rank": 3}
+    cfg.curated_parquet.unlink()
+    called = False
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(head2head, "_maybe_autotune_tiers", _boom)
+    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", _boom)
+
+    head2head.run(cfg)
+
+    assert called is False
+
+
+def test_run_calls_autotune_before_freshness_check_and_skips_when_legacy_fresh(
+    _cfg: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg
+    legacy_out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
+    legacy_out.parent.mkdir(parents=True, exist_ok=True)
+    legacy_out.touch()
+    os.utime(cfg.curated_parquet, (1000, 1000))
+    os.utime(legacy_out, (2000, 2000))
+    call_order: list[str] = []
+
+    def _spy_autotune(cfg: AppConfig, design_kwargs: dict[str, object]) -> None:  # noqa: ARG001
+        call_order.append("autotune")
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise AssertionError("H2H simulation should not run when legacy output is fresh")
+
+    monkeypatch.setattr(head2head, "_maybe_autotune_tiers", _spy_autotune)
+    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", _boom)
+
+    head2head.run(cfg)
+
+    assert call_order == ["autotune"]
+
+
+def test_run_calls_bonferroni_with_expected_args(
+    _cfg: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg
+    cfg.sim.seed = 987
+    cfg.sim.n_jobs = 7
+    cfg.head2head.n_jobs = 4
+    design = {"tail": "Two-Sided", "foo": "drop"}
+    cfg.head2head.bonferroni_design = design
+    captured: dict[str, object] = {}
+
+    out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
+    legacy_out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
+    if legacy_out.exists():
+        legacy_out.unlink()
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.touch()
+    cfg.curated_parquet.parent.mkdir(parents=True, exist_ok=True)
+    cfg.curated_parquet.touch()
+    os.utime(out, (1000, 1000))
+    os.utime(cfg.curated_parquet, (2000, 2000))
+
+    monkeypatch.setattr(head2head, "_maybe_autotune_tiers", lambda *_args, **_kwargs: None)
+
+    def _capture_run(*args: object, **kwargs: object) -> None:
+        captured["args"] = args
+        captured.update(kwargs)
+
+    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", _capture_run)
+
+    head2head.run(cfg)
+
+    args = captured.get("args", ())
+    if "n_jobs" in captured:
+        assert args == ()
+        assert captured["n_jobs"] == 4
+        assert captured["seed"] == 987
+        design_payload = captured["design"]
+    else:
+        assert args
+        assert 4 in args
+        assert 987 in args
+        design_payload = next(item for item in args if isinstance(item, dict))
+
+    assert design_payload == {
+        "k_players": 2,
+        "method": "bonferroni",
+        "full_pairwise": True,
+        "endpoint": "pairwise",
+        "tail": "one_sided",
+    }
+
+
+@pytest.mark.parametrize(
+    ("h2h_jobs", "analysis_jobs", "sim_jobs", "expected"),
+    [
+        (4, 8, 10, 4),
+        (0, 5, 10, 5),
+        (None, None, 3, 3),
+        (0, None, 0, 1),
+    ],
+)
+def test_resolve_h2h_jobs_precedence(
+    _cfg: AppConfig,
+    h2h_jobs: int | None,
+    analysis_jobs: int | None,
+    sim_jobs: int | None,
+    expected: int,
+) -> None:
+    cfg = _cfg
+    cfg.head2head.n_jobs = h2h_jobs
+    cfg.analysis.n_jobs = analysis_jobs
+    cfg.sim.n_jobs = sim_jobs
+    assert head2head._resolve_h2h_jobs(cfg) == expected
+
+
+def test_build_design_kwargs_sanitizes_defaults_and_forces_tail(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    cfg.head2head.bonferroni_design = {
+        "k_players": 5,
+        "endpoint": "not_pairwise",
+        "tail": "Two-Sided",
+        "method": "holm",
+        "full_pairwise": False,
+        "unknown": "drop-me",
+    }
     design = head2head._build_design_kwargs(cfg)
+    assert "unknown" not in design
+    assert design["k_players"] == 5
+    assert design["endpoint"] == "not_pairwise"
+    assert design["method"] == "bonferroni"
+    assert design["full_pairwise"] is True
     assert design["tail"] == "one_sided"
-    assert design["bh_target_rank"] == 3
+
+    cfg.head2head.bonferroni_design = {"tail": "ONE_SIDED"}
+    defaults = head2head._build_design_kwargs(cfg)
+    assert defaults["k_players"] == 2
+    assert defaults["endpoint"] == "pairwise"
+    assert defaults["tail"] == "one_sided"
 
 
-def test_maybe_autotune_tiers_handles_missing_inputs(_cfg: AppConfig, caplog: pytest.LogCaptureFixture) -> None:
+def test_maybe_autotune_tiers_early_return_when_target_hours_non_positive(
+    _cfg: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg
+    cfg.analysis.head2head_target_hours = 0.0
+    called = False
+
+    def _boom(*args: object, **kwargs: object) -> None:
+        nonlocal called
+        called = True
+
+    monkeypatch.setattr(head2head.pd, "read_parquet", _boom)
+    head2head._maybe_autotune_tiers(cfg, {})
+    assert called is False
+
+
+def test_maybe_autotune_tiers_handles_missing_and_empty_ratings(
+    _cfg: AppConfig,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     cfg = _cfg
     cfg.analysis.head2head_target_hours = 1.0
     with caplog.at_level("WARNING"):
         head2head._maybe_autotune_tiers(cfg, {})
-    assert "Tier auto-tune skipped" in caplog.text
+    assert "missing pooled ratings" in caplog.text
+
+    ratings_path = cfg.trueskill_path("ratings_k_weighted.parquet")
+    ratings_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(columns=["strategy", "mu", "sigma"]).to_parquet(ratings_path)
+    with caplog.at_level("WARNING"):
+        head2head._maybe_autotune_tiers(cfg, {})
+    assert "pooled ratings empty" in caplog.text
 
 
-def test_search_candidate_uses_bounds(monkeypatch: pytest.MonkeyPatch) -> None:
-    means = {"A": 10.0, "B": 8.0, "C": 7.5}
-    stdevs = {"A": 1.0, "B": 1.2, "C": 0.9}
-    design_kwargs = {"k_players": 2}
+def test_maybe_autotune_tiers_uses_configured_throughput_and_candidate_none(
+    _cfg: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg
+    cfg.analysis.head2head_target_hours = 1.0
+    cfg.analysis.head2head_games_per_sec = 321.0
+    ratings_path = cfg.trueskill_path("ratings_k_weighted.parquet")
+    ratings_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {"strategy": ["A", "B"], "mu": [20.0, 19.5], "sigma": [1.0, 1.1]}
+    ).to_parquet(ratings_path)
+    called = {"calibrate": False, "gps": None}
 
-    monkeypatch.setattr(head2head, "_predict_runtime", lambda *args, **_: (5.0, 10, 100, 3))
+    def _boom(*args: object, **kwargs: object) -> float:
+        called["calibrate"] = True
+        raise AssertionError("Calibration should be skipped when throughput is configured")
 
-    candidate = head2head._search_candidate(
+    def _capture_search(**kwargs: object) -> None:
+        called["gps"] = kwargs["games_per_sec"]
+        return None
+
+    monkeypatch.setattr(head2head, "_calibrate_h2h_games_per_sec", _boom)
+    monkeypatch.setattr(head2head, "_search_candidate", _capture_search)
+
+    head2head._maybe_autotune_tiers(cfg, {})
+
+    assert called["calibrate"] is False
+    assert called["gps"] == 321.0
+
+
+def test_maybe_autotune_tiers_handles_calibration_failure(
+    _cfg: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg
+    cfg.analysis.head2head_target_hours = 1.0
+    cfg.analysis.head2head_games_per_sec = 0.0
+    ratings_path = cfg.trueskill_path("ratings_k_weighted.parquet")
+    ratings_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {"strategy": ["A", "B"], "mu": [20.0, 19.5], "sigma": [1.0, 1.1]}
+    ).to_parquet(ratings_path)
+    searched = False
+
+    monkeypatch.setattr(
+        head2head,
+        "_calibrate_h2h_games_per_sec",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("nope")),
+    )
+
+    def _search(**kwargs: object) -> None:
+        nonlocal searched
+        searched = True
+        return None
+
+    monkeypatch.setattr(head2head, "_search_candidate", _search)
+    head2head._maybe_autotune_tiers(cfg, {})
+    assert searched is False
+
+
+def test_maybe_autotune_tiers_success_writes_payload_and_meta(
+    _cfg: AppConfig,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg
+    cfg.analysis.head2head_target_hours = 2.0
+    cfg.analysis.head2head_games_per_sec = 50.0
+    cfg.analysis.tiering_min_gap = 0.2
+    ratings_path = cfg.trueskill_path("ratings_k_weighted.parquet")
+    ratings_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        {"strategy": ["A", "B", "C"], "mu": [25.0, 24.0, 10.0], "sigma": [1.0, 1.0, 1.0]}
+    ).to_parquet(ratings_path)
+
+    candidate = head2head.TierCandidate(
+        z=1.75,
+        runtime_hours=1.9,
+        tiers={"A": 1, "B": 1, "C": 2},
+        elite_count=2,
+        games_per_pair=111,
+        total_games=111,
+        total_pairs=1,
+    )
+    payload: dict[str, object] = {}
+    atomic_calls: list[str] = []
+
+    monkeypatch.setattr(head2head, "_search_candidate", lambda **kwargs: candidate)
+
+    def _capture_payload(path: Path, **kwargs: object) -> None:
+        payload["path"] = path
+        payload.update(kwargs)
+
+    @contextmanager
+    def _atomic(path: str):
+        atomic_calls.append(path)
+        yield path
+
+    monkeypatch.setattr(head2head, "write_tier_payload", _capture_payload)
+    monkeypatch.setattr(head2head, "atomic_path", _atomic)
+
+    head2head._maybe_autotune_tiers(cfg, {"k_players": 2})
+
+    assert payload["active"] == "trueskill"
+    assert payload["trueskill"] == {"tiers": candidate.tiers, "z": 1.75, "min_gap": 0.2}
+    meta_path = cfg.analysis_dir / "tiers_autotune.json"
+    assert str(meta_path) in atomic_calls
+    meta = json.loads(meta_path.read_text())
+    assert set(["z", "predicted_hours", "games_per_pair", "total_games", "games_per_sec"]).issubset(
+        meta
+    )
+
+
+def test_search_candidate_returns_none_when_means_empty() -> None:
+    assert (
+        head2head._search_candidate(
+            means={},
+            stdevs={},
+            target_hours=1.0,
+            tolerance_pct=5.0,
+            games_per_sec=10.0,
+            design_kwargs={},
+            tiering_z=1.645,
+            tiering_min_gap=None,
+        )
+        is None
+    )
+
+
+def test_search_candidate_baseline_low_high_branches(monkeypatch: pytest.MonkeyPatch) -> None:
+    means = {"A": 10.0, "B": 8.0}
+    stdevs = {"A": 1.0, "B": 1.0}
+    monkeypatch.setattr(head2head, "build_tiers", lambda *args, **kwargs: {"A": 1, "B": 1})
+    runtimes = [5.0, 9.0, 11.0]
+    monkeypatch.setattr(
+        head2head,
+        "_predict_runtime",
+        lambda *args, **kwargs: (runtimes.pop(0), 20, 40, 1),
+    )
+    baseline = head2head._search_candidate(
         means=means,
         stdevs=stdevs,
-        target_hours=1.0,
-        tolerance_pct=10.0,
-        games_per_sec=50.0,
-        design_kwargs=design_kwargs,
+        target_hours=5.0,
+        tolerance_pct=5.0,
+        games_per_sec=1.0,
+        design_kwargs={},
         tiering_z=2.0,
         tiering_min_gap=None,
     )
+    assert baseline is not None and baseline.z == 2.0
 
-    assert candidate is not None
-    assert candidate.games_per_pair == 10
-    assert candidate.total_pairs == 3
+    runtimes = [1.0, 11.0, 5.0]
+    low = head2head._search_candidate(
+        means=means,
+        stdevs=stdevs,
+        target_hours=5.0,
+        tolerance_pct=5.0,
+        games_per_sec=1.0,
+        design_kwargs={},
+        tiering_z=2.0,
+        tiering_min_gap=None,
+    )
+    assert low is not None and low.z == 0.5
+
+    runtimes = [1.0, 5.0, 2.0]
+    high = head2head._search_candidate(
+        means=means,
+        stdevs=stdevs,
+        target_hours=5.0,
+        tolerance_pct=5.0,
+        games_per_sec=1.0,
+        design_kwargs={},
+        tiering_z=2.0,
+        tiering_min_gap=None,
+    )
+    assert high is not None and high.z == 6.0
 
 
-def test_predict_runtime_handles_elite_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(head2head, "games_for_power", lambda **_: 4)
+def test_search_candidate_binary_search_and_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+    means = {"A": 10.0, "B": 9.0, "C": 8.0}
+    stdevs = {"A": 1.0, "B": 1.0, "C": 1.0}
+    monkeypatch.setattr(head2head, "build_tiers", lambda *args, **kwargs: {"A": 1, "B": 1, "C": 1})
+
+    values = [0.1, 0.2, 9.0, 5.0]
+    monkeypatch.setattr(head2head, "_predict_runtime", lambda *args, **kwargs: (values.pop(0), 1, 1, 1))
+    hit = head2head._search_candidate(
+        means=means,
+        stdevs=stdevs,
+        target_hours=5.0,
+        tolerance_pct=1.0,
+        games_per_sec=1.0,
+        design_kwargs={},
+        tiering_z=1.0,
+        tiering_min_gap=None,
+    )
+    assert hit is not None and hit.runtime_hours == 5.0
+
+    monkeypatch.setattr(head2head, "_predict_runtime", lambda *args, **kwargs: (20.0, 1, 1, 1))
+    closest = head2head._search_candidate(
+        means=means,
+        stdevs=stdevs,
+        target_hours=5.0,
+        tolerance_pct=1.0,
+        games_per_sec=1.0,
+        design_kwargs={},
+        tiering_z=1.0,
+        tiering_min_gap=None,
+    )
+    assert closest is not None
+    assert closest.runtime_hours == 20.0
+
+
+def test_predict_runtime_handles_edges_and_rounding(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert head2head._predict_runtime(elite_count=1, games_per_sec=1.0, design_kwargs={}) == (0.0, 0, 0, 0)
+
+    monkeypatch.setattr(head2head, "games_for_power", lambda **_: 5)
     runtime, games_per_pair, total_games, pairs = head2head._predict_runtime(
         elite_count=3,
         games_per_sec=2.0,
-        design_kwargs={"k_players": 2},
+        design_kwargs={"k_players": 4},
     )
-
-    assert games_per_pair == 2
-    assert total_games == 6
+    assert games_per_pair == 8
     assert pairs == 3
-    assert runtime > 0
+    assert total_games == 24
+    assert runtime == pytest.approx(24 / (2.0 * 3600.0))
 
-    zero_runtime = head2head._predict_runtime(elite_count=1, games_per_sec=1.0, design_kwargs={})
-    assert zero_runtime == (0.0, 0, 0, 0)
+    monkeypatch.setattr(head2head, "games_for_power", lambda **_: 0)
+    assert head2head._predict_runtime(elite_count=4, games_per_sec=3.0, design_kwargs={"k_players": 2}) == (
+        0.0,
+        0,
+        0,
+        6,
+    )
 
 
 def test_calibrate_h2h_games_per_sec_requires_two_strategies(tmp_path: Path) -> None:
     df = pd.DataFrame({"strategy": ["A"], "mu": [1.0], "sigma": [0.1]})
     with pytest.raises(ValueError):
         head2head._calibrate_h2h_games_per_sec(df, seed=1, n_jobs=1)
+
+
+def test_calibrate_h2h_games_per_sec_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    df = pd.DataFrame(
+        {
+            "strategy": ["S1", "S2", "S3"],
+            "mu": [5.0, 4.0, 1.0],
+            "sigma": [1.0, 1.0, 1.0],
+        }
+    )
+    calls: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        head2head,
+        "parse_strategy_identifier",
+        lambda identifier, **kwargs: f"parsed:{identifier}",
+    )
+    monkeypatch.setattr(head2head, "spawn_seeds", lambda n, seed: [seed + idx for idx in range(n)])
+
+    def _simulate_many_games_from_seeds(**kwargs: object) -> None:
+        calls.update(kwargs)
+
+    monkeypatch.setattr(head2head, "simulate_many_games_from_seeds", _simulate_many_games_from_seeds)
+    times = iter([10.0, 14.0])
+    monkeypatch.setattr(head2head.time, "perf_counter", lambda: next(times))
+
+    gps = head2head._calibrate_h2h_games_per_sec(df, seed=11, n_jobs=3, sample_games=2000)
+
+    assert calls["n_jobs"] == 3
+    assert calls["strategies"] == ["parsed:S1", "parsed:S2"]
+    assert calls["seeds"][0] == 11
+    assert len(calls["seeds"]) == 2000
+    assert gps == pytest.approx(500.0)
