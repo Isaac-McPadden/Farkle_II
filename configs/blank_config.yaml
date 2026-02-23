@@ -51,6 +51,8 @@ analysis:
   n_jobs:    # int: parallel workers for analysis
   log_level:    # str: logger level during analysis
   results_glob:    # str: glob selecting per-N result folders
+  h2h_tier_trends_seed_s_tier_paths:    # list[Path|str]|None: explicit per-seed 11_post_h2h/h2h_s_tiers.json paths; required for two-seed trend runs unless interseed file is provided
+  h2h_tier_trends_interseed_s_tier_path:    # Path|str|None: explicit interseed-combined S-tier JSON path; mutually exclusive with h2h_tier_trends_seed_s_tier_paths
   outputs:
     curated_rows_name:    # str: curated rows filename
     metrics_name:    # str: metrics parquet filename

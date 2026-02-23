@@ -30,22 +30,71 @@ def _write_meta(path: Path, rows: list[dict[str, object]]) -> None:
     pd.DataFrame(rows).to_parquet(path, index=False)
 
 
-def test_resolve_s_tiers_path_prefers_post_h2h_then_head2head_then_analysis(tmp_path: Path) -> None:
+def test_resolve_s_tier_inputs_uses_seed_paths_contract(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    post_path = cfg.post_h2h_stage_dir / "h2h_s_tiers.json"
-    h2h_path = cfg.head2head_stage_dir / "h2h_s_tiers.json"
-    analysis_path = cfg.analysis_dir / "h2h_s_tiers.json"
+    a_path = tmp_path / "a" / "h2h_s_tiers.json"
+    b_path = tmp_path / "b" / "h2h_s_tiers.json"
+    a_path.parent.mkdir(parents=True, exist_ok=True)
+    b_path.parent.mkdir(parents=True, exist_ok=True)
+    a_path.write_text('{"1": "S"}')
+    b_path.write_text('{"1": "S+"}')
 
-    analysis_path.write_text('{"1": "S"}')
-    assert h2h_tier_trends._resolve_s_tiers_path(cfg) == analysis_path
+    resolved = h2h_tier_trends._resolve_s_tier_inputs(
+        cfg,
+        seed_s_tier_paths=[a_path, b_path],
+        interseed_s_tier_path=None,
+    )
+    assert [item.path for item in resolved] == [a_path, b_path]
 
-    h2h_path.parent.mkdir(parents=True, exist_ok=True)
-    h2h_path.write_text('{"1": "A"}')
-    assert h2h_tier_trends._resolve_s_tiers_path(cfg) == h2h_path
 
-    post_path.parent.mkdir(parents=True, exist_ok=True)
-    post_path.write_text('{"1": "S+"}')
-    assert h2h_tier_trends._resolve_s_tiers_path(cfg) == post_path
+def test_resolve_s_tier_inputs_uses_interseed_contract(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    interseed_path = tmp_path / "interseed" / "combined.json"
+    interseed_path.parent.mkdir(parents=True, exist_ok=True)
+    interseed_path.write_text('{"1": "S"}')
+
+    resolved = h2h_tier_trends._resolve_s_tier_inputs(
+        cfg,
+        seed_s_tier_paths=None,
+        interseed_s_tier_path=interseed_path,
+    )
+    assert len(resolved) == 1
+    assert resolved[0].path == interseed_path
+
+
+def test_resolve_s_tier_inputs_rejects_missing_paths_with_stage_hint(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    missing = tmp_path / "missing" / "h2h_s_tiers.json"
+
+    with pytest.raises(h2h_tier_trends.MissingTierInputsError) as excinfo:
+        h2h_tier_trends._resolve_s_tier_inputs(
+            cfg,
+            seed_s_tier_paths=[missing],
+            interseed_s_tier_path=None,
+        )
+
+    message = str(excinfo.value)
+    assert "Expected producer stage" in message
+    assert "11_post_h2h/h2h_s_tiers.json" in message
+    assert str(missing) in message
+
+
+def test_load_s_tiers_from_sources_merges_by_majority_vote(tmp_path: Path) -> None:
+    a = tmp_path / "a.json"
+    b = tmp_path / "b.json"
+    c = tmp_path / "c.json"
+    a.write_text('{"1": "S", "2": "S-"}')
+    b.write_text('{"1": "S+", "2": "S-"}')
+    c.write_text('{"1": "S", "2": "S"}')
+
+    merged = h2h_tier_trends._load_s_tiers_from_sources(
+        [
+            h2h_tier_trends.SSource(path=a, source_label="seed[0]"),
+            h2h_tier_trends.SSource(path=b, source_label="seed[1]"),
+            h2h_tier_trends.SSource(path=c, source_label="seed[2]"),
+        ]
+    )
+    assert merged == {"1": "S", "2": "S-"}
 
 
 def test_load_s_tiers_handles_invalid_json_shapes_and_mixed_values(tmp_path: Path) -> None:

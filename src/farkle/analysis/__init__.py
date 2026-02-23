@@ -104,11 +104,22 @@ def run_variance(cfg: AppConfig, *, force: bool = False) -> None:
     variance.run(cfg, force=force)
 
 
-def run_h2h_tier_trends(cfg: AppConfig, *, force: bool = False) -> None:
+def run_h2h_tier_trends(
+    cfg: AppConfig,
+    *,
+    force: bool = False,
+    seed_s_tier_paths: Sequence[Path] | None = None,
+    interseed_s_tier_path: Path | None = None,
+) -> None:
     """Wrapper around :mod:`farkle.analysis.h2h_tier_trends`."""
     from farkle.analysis import h2h_tier_trends
 
-    h2h_tier_trends.run(cfg, force=force)
+    h2h_tier_trends.run(
+        cfg,
+        force=force,
+        seed_s_tier_paths=seed_s_tier_paths,
+        interseed_s_tier_path=interseed_s_tier_path,
+    )
 
 
 def run_seed_symmetry(

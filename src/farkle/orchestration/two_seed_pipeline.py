@@ -245,7 +245,14 @@ def run_pipeline(
             "results_dir": str(interseed_cfg.results_root),
         },
     )
-    analysis.run_h2h_tier_trends(interseed_cfg, force=force)
+    seed_s_tier_paths = [
+        seed_contexts[seed].config.post_h2h_stage_dir / "h2h_s_tiers.json" for seed in seed_pair
+    ]
+    analysis.run_h2h_tier_trends(
+        interseed_cfg,
+        force=force,
+        seed_s_tier_paths=seed_s_tier_paths,
+    )
     append_manifest_line(
         manifest_path,
         {

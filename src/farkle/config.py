@@ -308,6 +308,12 @@ class AnalysisConfig:
     rare_event_target_rate: float | None = None
     """Optional target rate for multi-target rare-event thresholds."""
 
+    h2h_tier_trends_seed_s_tier_paths: list[Path] | None = None
+    """Optional explicit per-seed S-tier JSON paths for h2h tier trends."""
+
+    h2h_tier_trends_interseed_s_tier_path: Path | None = None
+    """Optional interseed-combined S-tier JSON path for h2h tier trends."""
+
     @property
     def run_tiering_report(self) -> bool:
         """Deprecated alias for run_frequentist; kept for config compatibility."""
