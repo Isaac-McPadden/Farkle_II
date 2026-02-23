@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -295,10 +296,19 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
     monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
     monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda seed_cfg, force=False: sim_calls.append(seed_cfg.sim.seed))
-    monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", lambda _cfg, manifest_path, seed: per_seed_calls.append(seed))
+    def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+        del manifest_path
+        per_seed_calls.append(seed)
+        seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text("ok")
+        seed_cfg.post_h2h_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json").write_text("{}")
+
+    monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", _fake_per_seed)
     monkeypatch.setattr(two_seed_pipeline, "append_manifest_line", lambda _path, rec: manifest_events.append(rec["event"]))
 
     interseed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "interseed"))
+    interseed_cfg.stage_dir("h2h_tier_trends").mkdir(parents=True, exist_ok=True)
     interseed_context = SimpleNamespace(config=interseed_cfg)
     monkeypatch.setattr(
         two_seed_pipeline.InterseedRunContext,
@@ -310,6 +320,7 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
     def _record_h2h(_cfg, **kwargs):
         h2h_calls.append(kwargs)
+        (_cfg.stage_dir("h2h_tier_trends") / "s_tier_trends.parquet").write_text("ok")
 
     monkeypatch.setattr(two_seed_pipeline.analysis, "run_h2h_tier_trends", _record_h2h)
 
@@ -383,6 +394,51 @@ def test_two_seed_pipeline_main_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert called["logging"] is True
     assert called["seed_pair"] == (3, 4)
     assert called["force"] is False
+
+
+def test_two_seed_pipeline_head2head_failure_chain_integration_fixture(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    cfg.sim.seed_pair = (101, 202)
+    pair_root = seed_utils.seed_pair_root(cfg, (101, 202))
+
+    monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
+    monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
+
+    def _failing_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+        del manifest_path
+        seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
+        if seed == 101:
+            (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text("ok")
+            seed_cfg.post_h2h_stage_dir.mkdir(parents=True, exist_ok=True)
+            (seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json").write_text("{}")
+            return
+        raise RuntimeError("simulated head2head failure")
+
+    monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", _failing_per_seed)
+    monkeypatch.setattr(
+        two_seed_pipeline.InterseedRunContext,
+        "from_seed_context",
+        classmethod(
+            lambda cls, seed_context, seed_pair, analysis_root: SimpleNamespace(
+                config=AppConfig(io=IOConfig(results_dir_prefix=analysis_root / "results_seed_101"))
+            )
+        ),
+    )
+    monkeypatch.setattr(two_seed_pipeline.analysis, "run_interseed_analysis", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(two_seed_pipeline.analysis, "run_h2h_tier_trends", lambda *_args, **_kwargs: None)
+
+    two_seed_pipeline.run_pipeline(cfg, seed_pair=(101, 202), force=False)
+
+    health = json.loads((pair_root / "pipeline_health.json").read_text(encoding="utf-8"))
+    assert health["status"] == "failed_blocked"
+    assert health["stage_statuses"]["seed_101.seed_symmetry"]["status"] == "success"
+    assert health["stage_statuses"]["seed_101.post_h2h"]["status"] == "success"
+    assert health["stage_statuses"]["seed_202.seed_symmetry"]["status"] == "blocked"
+    assert health["stage_statuses"]["seed_202.post_h2h"]["status"] == "blocked"
+    assert health["stage_statuses"]["h2h_tier_trends"]["status"] == "blocked"
+    assert health["first_blocking_failure"]["stage"] == "seed_202.analysis"
 
 
 def test_pipeline_main_and_detect_player_counts_fallback(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
