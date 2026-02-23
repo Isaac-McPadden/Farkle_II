@@ -35,6 +35,24 @@ from farkle.utils.writer import atomic_path
 LOGGER = logging.getLogger(__name__)
 
 
+class Head2HeadPipelineError(RuntimeError):
+    """Typed pipeline failure with structured context for artifact diagnostics."""
+
+    def __init__(self, message: str, *, error_code: str, context: dict[str, Any] | None = None):
+        super().__init__(message)
+        self.error_code = error_code
+        self.context = dict(context or {})
+
+    def to_payload(self) -> dict[str, Any]:
+        """Return JSON-safe error metadata for stage artifacts."""
+        return {
+            "type": type(self).__name__,
+            "error_code": self.error_code,
+            "message": str(self),
+            "context": self.context,
+        }
+
+
 def _warn_legacy_stage_dirs(cfg: AppConfig, suffix: str) -> None:
     """Emit a warning when legacy stage directories are present."""
 
@@ -248,6 +266,61 @@ def _selfplay_schema() -> pa.Schema:
     return pa.schema(fields)
 
 
+def _validate_union_candidates_payload(payload: dict[str, Any]) -> None:
+    """Validate persisted union candidate payload shape and assumptions."""
+
+    expected_fields: dict[str, type] = {
+        "candidates": list,
+        "ratings_count": int,
+        "metrics_count": int,
+        "combined_count": int,
+        "ratings_path": str,
+        "metrics_path": str,
+    }
+    missing_fields = sorted(field for field in expected_fields if field not in payload)
+    if missing_fields:
+        raise Head2HeadPipelineError(
+            "Union candidate payload is missing required fields",
+            error_code="invalid_union_candidates_schema",
+            context={"missing_fields": missing_fields, "payload_keys": sorted(payload.keys())},
+        )
+
+    invalid_types = {
+        field: type(payload[field]).__name__
+        for field, expected_type in expected_fields.items()
+        if not isinstance(payload[field], expected_type)
+    }
+    if invalid_types:
+        raise Head2HeadPipelineError(
+            "Union candidate payload has invalid field types",
+            error_code="invalid_union_candidates_schema",
+            context={"invalid_types": invalid_types},
+        )
+
+    candidates = [str(name) for name in payload["candidates"]]
+    if not candidates:
+        raise Head2HeadPipelineError(
+            "Union candidate set is empty; cannot generate pairwise schedule",
+            error_code="empty_candidate_set",
+            context={
+                "ratings_count": int(payload["ratings_count"]),
+                "metrics_count": int(payload["metrics_count"]),
+                "combined_count": int(payload["combined_count"]),
+                "filters_applied": ["top_ratings_limit", "top_metrics_limit", "dedupe_union"],
+            },
+        )
+
+    if int(payload["combined_count"]) != len(candidates):
+        raise Head2HeadPipelineError(
+            "Union candidate payload combined_count does not match candidate list length",
+            error_code="invalid_union_candidates_schema",
+            context={
+                "combined_count": int(payload["combined_count"]),
+                "candidate_list_len": len(candidates),
+            },
+        )
+
+
 def run_bonferroni_head2head(
     *,
     seed: int = 0,
@@ -370,10 +443,31 @@ def run_bonferroni_head2head(
         "ratings_path": union_info["ratings_path"],
         "metrics_path": union_info["metrics_path"],
     }
+    _validate_union_candidates_payload(union_candidates_payload)
     union_candidates_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(union_candidates_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(union_candidates_payload, indent=2, sort_keys=True))
     use_tier_elites = bool(getattr(cfg.head2head, "use_tier_elites", False))
+    debug_summary_path = cfg.head2head_stage_dir / "head2head.debug_summary.json"
+    debug_summary: dict[str, Any] = {
+        "input_candidates": {
+            "tier_elites": len(tier_elites),
+            "union_candidates": len(union_strategies),
+            "selection_source": "",
+            "selected_elites": 0,
+        },
+        "filtered_pairs": {
+            "pair_count": 0,
+            "precompleted_pairs": 0,
+            "scheduled_pairs": 0,
+            "self_play_pairs_included": False,
+        },
+        "shards": {
+            "existing_before_run": 0,
+            "written_this_run": 0,
+            "total_after_run": 0,
+        },
+    }
 
     if use_tier_elites:
         elites = list(tier_elites)
@@ -403,6 +497,28 @@ def run_bonferroni_head2head(
                 "metrics_path": union_info["metrics_path"],
             },
         )
+    debug_summary["input_candidates"]["selection_source"] = selection_source
+    debug_summary["input_candidates"]["selected_elites"] = len(elites)
+
+    if len(elites) < 2:
+        raise Head2HeadPipelineError(
+            "At least two candidate strategies are required for pairwise testing",
+            error_code="insufficient_candidate_set",
+            context={
+                "selection_source": selection_source,
+                "tier_elite_count": len(tier_elites),
+                "union_candidate_count": len(union_strategies),
+                "selected_elite_count": len(elites),
+            },
+        )
+
+    if len(set(elites)) != len(elites):
+        raise Head2HeadPipelineError(
+            "Elite strategy selection contains duplicate identifiers",
+            error_code="duplicate_candidate_ids",
+            context={"selection_source": selection_source, "elite_count": len(elites)},
+        )
+
     LOGGER.info(
         "Loaded elite strategies",
         extra={
@@ -559,6 +675,8 @@ def run_bonferroni_head2head(
 
     shard_paths = sorted(shard_dir.glob("bonferroni_pairwise_shard_*.parquet"))
     shard_count = len(shard_paths)
+    initial_shard_count = shard_count
+    debug_summary["shards"]["existing_before_run"] = shard_count
     existing_shard_frames: list[pd.DataFrame] = []
     completed_pairs: set[int] = {int(pid) for pid in (completed_pair_ids or ())}
     for shard_path in shard_paths:
@@ -573,6 +691,7 @@ def run_bonferroni_head2head(
             )
     existing_final_pairs = _read_pair_ids_from_parquet(pairwise_parquet)
     completed_pairs.update(existing_final_pairs)
+    debug_summary["filtered_pairs"]["precompleted_pairs"] = len(completed_pairs)
 
     LOGGER.info(
         "Resuming head-to-head schedule",
@@ -663,6 +782,10 @@ def run_bonferroni_head2head(
         if not seeds:
             continue
         scheduled_pairs.append((pair_id, a, b, seeds))
+
+    debug_summary["filtered_pairs"]["pair_count"] = pair_count
+    debug_summary["filtered_pairs"]["scheduled_pairs"] = len(scheduled_pairs)
+    debug_summary["filtered_pairs"]["self_play_pairs_included"] = False
 
     pair_jobs = max(1, n_jobs)
     if not scheduled_pairs:
@@ -841,6 +964,36 @@ def run_bonferroni_head2head(
                 )
 
     shard_count = flush_shard(pending_shard_records, shard_count)
+    final_shard_paths = sorted(shard_dir.glob("bonferroni_pairwise_shard_*.parquet"))
+    debug_summary["shards"]["written_this_run"] = max(0, shard_count - initial_shard_count)
+    debug_summary["shards"]["total_after_run"] = len(final_shard_paths)
+    debug_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(debug_summary_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(debug_summary, indent=2, sort_keys=True), encoding="utf-8")
+
+    if not final_shard_paths:
+        raise Head2HeadPipelineError(
+            "No pairwise shard files were produced",
+            error_code="empty_pairwise_shard_directory",
+            context={
+                "candidate_counts": debug_summary["input_candidates"],
+                "filters_applied": {
+                    "selection_source": selection_source,
+                    "use_tier_elites": use_tier_elites,
+                    "fallback_merge": "+fallback" in selection_source,
+                    "self_play_pairs_included": False,
+                    "precompleted_pairs": len(completed_pairs),
+                },
+                "shard_params": {
+                    "shard_dir": str(shard_dir),
+                    "shard_size": int(shard_size),
+                    "pair_count": int(pair_count),
+                    "scheduled_pairs": len(scheduled_pairs),
+                    "games_per_pair": int(games_per_pair),
+                },
+            },
+        )
+
     all_frames: list[pd.DataFrame] = []
     if records:
         all_frames.append(pd.DataFrame.from_records(records))

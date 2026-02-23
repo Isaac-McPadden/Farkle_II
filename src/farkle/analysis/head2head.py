@@ -87,6 +87,15 @@ def _write_error_artifact(
         },
         "inputs": {key: str(path) for key, path in input_paths.items()},
     }
+    to_payload = getattr(exc, "to_payload", None)
+    if callable(to_payload):
+        try:
+            payload["pipeline_error"] = to_payload()
+        except Exception:  # noqa: BLE001
+            payload["pipeline_error"] = {
+                "type": type(exc).__name__,
+                "message": str(exc),
+            }
     error_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(error_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
