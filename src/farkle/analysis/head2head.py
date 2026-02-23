@@ -491,7 +491,7 @@ def _predict_runtime(
             "endpoint": "pairwise",
         }
     )
-    games_per_strategy = games_for_power(**kwargs)
+    games_per_strategy = games_for_power(**kwargs, log_mode="never")
     per_pair = max(0, elite_count - 1)
     k_players = int(kwargs.get("k_players", 2))
     games_per_pair = (
