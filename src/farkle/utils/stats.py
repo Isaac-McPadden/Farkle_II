@@ -20,13 +20,64 @@ import itertools
 import logging
 from dataclasses import dataclass
 from math import ceil, sqrt
-from typing import Dict, List, Literal, overload
+from typing import Dict, List, Literal, TypeAlias, overload
 
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
 from farkle.utils.random import MAX_UINT32
+
+GamesForPowerLogSignature: TypeAlias = tuple[
+    str,
+    str,
+    int,
+    int,
+    int,
+    float,
+    str,
+    float,
+    float,
+    int,
+    bool,
+    bool,
+]
+
+_EMITTED_GAMES_FOR_POWER_INFO_SIGNATURES: set[GamesForPowerLogSignature] = set()
+_GAMES_FOR_POWER_INFO_REPEAT_COUNTS: dict[GamesForPowerLogSignature, int] = {}
+
+
+def _games_for_power_log_signature(
+    *,
+    endpoint: str,
+    method: str,
+    n_strategies: int,
+    k_players: int,
+    m: int,
+    control: float,
+    tail: str,
+    p0: float,
+    detectable_lift: float,
+    games_per_strategy: int,
+    applied_floor: bool,
+    applied_cap: bool,
+) -> GamesForPowerLogSignature:
+    """Build a stable signature for deduplicating games_for_power INFO logs."""
+
+    return (
+        endpoint,
+        method,
+        n_strategies,
+        k_players,
+        m,
+        float(control),
+        tail,
+        float(p0),
+        float(detectable_lift),
+        games_per_strategy,
+        applied_floor,
+        applied_cap,
+    )
 
 
 @dataclass(frozen=True)
@@ -274,8 +325,13 @@ def games_for_power(
         and better used after screening with "top1".
     log_mode : Literal["auto", "always", "never"]
         Controls how sizing logs are emitted:
-        - ``"auto"``: one concise summary message with source marker.
-        - ``"always"``: concise summary plus detailed diagnostic message.
+        - ``"auto"``: emits the concise INFO summary only once per unique
+          canonical sizing signature (endpoint, method, n, k, m, control,
+          tail, p0, delta, final games, floor/cap state) per process.
+          Repeated identical calls are intentionally quiet at INFO and are
+          instead counted and emitted at DEBUG.
+        - ``"always"``: same INFO deduplication behavior as ``"auto"`` plus
+          the detailed diagnostic INFO message on every call.
         - ``"never"``: suppress sizing summary/detail logs.
     return_details : bool
         If ``True``, return :class:`GamesForPowerResult`; otherwise return an
@@ -427,29 +483,56 @@ def games_for_power(
     else:
         sizing_source = "computed"
 
+    signature = _games_for_power_log_signature(
+        endpoint=endpoint,
+        method=method,
+        n_strategies=n_strategies,
+        k_players=k_players,
+        m=m,
+        control=control,
+        tail=tail,
+        p0=p0,
+        detectable_lift=detectable_lift,
+        games_per_strategy=games_per_strategy,
+        applied_floor=applied_floor,
+        applied_cap=applied_cap,
+    )
+
     if log_mode in {"auto", "always"}:
-        if games_per_strategy == games_per_strategy_uncapped:
-            LOGGER.info(
-                "stats.py: sizing_source=%s mode=%s endpoint=%s method=%s m=%d "
-                "games_per_strategy=%d (computed directly)",
-                sizing_source,
-                log_mode,
-                endpoint,
-                method,
-                m,
-                games_per_strategy,
-            )
+        if signature not in _EMITTED_GAMES_FOR_POWER_INFO_SIGNATURES:
+            _EMITTED_GAMES_FOR_POWER_INFO_SIGNATURES.add(signature)
+            _GAMES_FOR_POWER_INFO_REPEAT_COUNTS[signature] = 0
+            if games_per_strategy == games_per_strategy_uncapped:
+                LOGGER.info(
+                    "stats.py: sizing_source=%s mode=%s endpoint=%s method=%s m=%d "
+                    "games_per_strategy=%d (computed directly)",
+                    sizing_source,
+                    log_mode,
+                    endpoint,
+                    method,
+                    m,
+                    games_per_strategy,
+                )
+            else:
+                LOGGER.info(
+                    "stats.py: sizing_source=%s mode=%s endpoint=%s method=%s m=%d "
+                    "games_per_strategy_raw=%d games_per_strategy=%d (overridden by floor/cap)",
+                    sizing_source,
+                    log_mode,
+                    endpoint,
+                    method,
+                    m,
+                    games_per_strategy_uncapped,
+                    games_per_strategy,
+                )
         else:
-            LOGGER.info(
-                "stats.py: sizing_source=%s mode=%s endpoint=%s method=%s m=%d "
-                "games_per_strategy_raw=%d games_per_strategy=%d (overridden by floor/cap)",
-                sizing_source,
-                log_mode,
-                endpoint,
-                method,
-                m,
-                games_per_strategy_uncapped,
-                games_per_strategy,
+            repeat_count = _GAMES_FOR_POWER_INFO_REPEAT_COUNTS.get(signature, 0) + 1
+            _GAMES_FOR_POWER_INFO_REPEAT_COUNTS[signature] = repeat_count
+            LOGGER.debug(
+                "stats.py: skipped duplicate games_for_power INFO summary "
+                "for signature=%s (repeat_count=%d)",
+                signature,
+                repeat_count,
             )
 
     if log_mode == "always":

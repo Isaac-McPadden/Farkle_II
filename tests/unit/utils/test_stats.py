@@ -5,6 +5,7 @@ from typing import Any
 import numpy as np
 import pytest
 
+import farkle.utils.stats as stats_module
 from farkle.utils.stats import GamesForPowerResult, bh_correct, games_for_power, wilson_ci
 
 
@@ -141,6 +142,8 @@ def test_games_for_power_return_details() -> None:
 
 
 def test_games_for_power_auto_log_reports_override(caplog: pytest.LogCaptureFixture) -> None:
+    stats_module._EMITTED_GAMES_FOR_POWER_INFO_SIGNATURES.clear()
+    stats_module._GAMES_FOR_POWER_INFO_REPEAT_COUNTS.clear()
     caplog.set_level("INFO")
     games_for_power(
         n_strategies=6,
@@ -164,3 +167,21 @@ def test_bh_correct_handles_strings_castable_to_float() -> None:
     pvals = np.array(["0.01", "0.02", "0.5"], dtype=object)
     mask = bh_correct(pvals.astype(float), alpha=0.05)
     assert mask.tolist() == [True, True, False]
+
+
+def test_games_for_power_auto_log_deduplicates_at_info(caplog: pytest.LogCaptureFixture) -> None:
+    stats_module._EMITTED_GAMES_FOR_POWER_INFO_SIGNATURES.clear()
+    stats_module._GAMES_FOR_POWER_INFO_REPEAT_COUNTS.clear()
+    caplog.set_level("DEBUG")
+    kwargs = {
+        "n_strategies": 6,
+        "min_games_floor": 5,
+        "max_games_cap": 10,
+        "log_mode": "auto",
+    }
+
+    games_for_power(**kwargs)
+    games_for_power(**kwargs)
+
+    assert sum("sizing_source=capped" in message for message in caplog.messages) == 1
+    assert any("repeat_count=1" in message for message in caplog.messages)
