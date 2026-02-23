@@ -22,10 +22,11 @@ from farkle.config import (
     load_app_config,
 )
 from farkle.orchestration import two_seed_pipeline
+from farkle.orchestration.seed_utils import seed_pair_root
 from farkle.simulation import runner
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
-from farkle.utils.logging import setup_info_logging
+from farkle.utils.logging import configure_logging, setup_info_logging
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -370,6 +371,21 @@ def _run_preprocess(
         game_stats.run(cfg)
 
 
+def _resolve_log_file(args: argparse.Namespace, cfg: AppConfig | None) -> Path | None:
+    """Resolve the CLI log destination for commands writing under ``data``."""
+    if cfg is None:
+        return None
+
+    command = getattr(args, "command", None)
+    an_cmd = getattr(args, "an_cmd", None)
+    if command == "two-seed-pipeline" or (command == "analyze" and an_cmd == "two-seed-pipeline"):
+        seed_pair = cfg.sim.require_seed_pair()
+        return seed_pair_root(cfg, seed_pair) / "log.txt"
+    if command in {"run", "analyze"}:
+        return cfg.results_root / "log.txt"
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for the ``farkle`` CLI dispatcher."""
     parser = build_parser()
@@ -380,8 +396,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     setup_info_logging()
+    log_level = _parse_level(args.log_level)
     root_logger = logging.getLogger()
-    root_logger.setLevel(_parse_level(args.log_level))
+    root_logger.setLevel(log_level)
 
     LOGGER.info(
         "CLI arguments parsed",
@@ -439,6 +456,12 @@ def main(argv: Sequence[str] | None = None) -> None:
                 "expanded_metrics": cfg.sim.expanded_metrics,
             },
         )
+
+    log_file = _resolve_log_file(args, cfg)
+    if log_file is not None:
+        configure_logging(level=log_level, log_file=log_file)
+    else:
+        root_logger.setLevel(log_level)
 
     if args.command == "run":
         if cfg is None:  # pragma: no cover - guarded by command gate above
