@@ -7,7 +7,7 @@ import json
 import logging
 import math
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence
@@ -327,6 +327,206 @@ def _validate_union_candidates_payload(payload: dict[str, Any]) -> None:
         )
 
 
+def _seat_means(df: pd.DataFrame) -> tuple[float, float, float, float]:
+    """Return seat-level means for farkles and score."""
+
+    return (
+        _player_metric_mean(df, 1, "farkles"),
+        _player_metric_mean(df, 2, "farkles"),
+        _player_metric_mean(df, 1, "score"),
+        _player_metric_mean(df, 2, "score"),
+    )
+
+
+def _weighted_mean(
+    first_mean: float,
+    first_weight: int,
+    second_mean: float,
+    second_weight: int,
+) -> float:
+    denominator = first_weight + second_weight
+    if denominator <= 0:
+        return math.nan
+    total = 0.0
+    if first_weight > 0:
+        total += first_mean * first_weight
+    if second_weight > 0:
+        total += second_mean * second_weight
+    return total / denominator
+
+
+def _simulate_pair_job(
+    *,
+    pair_id: int,
+    a: int | str,
+    b: int | str,
+    seeds: list[int],
+    strategy_a: Any,
+    strategy_b: Any,
+    k_players: int,
+    base_seed: int,
+    sim_n_jobs: int = 1,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Execute one pairwise Bonferroni matchup in a worker process."""
+
+    split = len(seeds) // 2
+    seeds_ab = seeds[:split]
+    seeds_ba = seeds[split:]
+
+    df_ab = simulate_many_games_from_seeds(
+        seeds=seeds_ab,
+        strategies=[strategy_a, strategy_b],
+        n_jobs=sim_n_jobs,
+    )
+
+    df_ba = simulate_many_games_from_seeds(
+        seeds=seeds_ba,
+        strategies=[strategy_b, strategy_a],
+        n_jobs=sim_n_jobs,
+    )
+
+    (
+        mean_farkles_ab_seat1,
+        mean_farkles_ab_seat2,
+        mean_score_ab_seat1,
+        mean_score_ab_seat2,
+    ) = _seat_means(df_ab)
+    (
+        mean_farkles_ba_seat1,
+        mean_farkles_ba_seat2,
+        mean_score_ba_seat1,
+        mean_score_ba_seat2,
+    ) = _seat_means(df_ba)
+
+    wa_ab, wb_ab = _count_pair_wins(df_ab, a, b)
+    wb_ba, wa_ba = _count_pair_wins(df_ba, b, a)
+
+    games_ab = len(seeds_ab)
+    games_ba = len(seeds_ba)
+    games_played = games_ab + games_ba
+
+    mean_farkles_a = _weighted_mean(
+        mean_farkles_ab_seat1, games_ab, mean_farkles_ba_seat2, games_ba
+    )
+    mean_farkles_b = _weighted_mean(
+        mean_farkles_ab_seat2, games_ab, mean_farkles_ba_seat1, games_ba
+    )
+    mean_score_a = _weighted_mean(
+        mean_score_ab_seat1, games_ab, mean_score_ba_seat2, games_ba
+    )
+    mean_score_b = _weighted_mean(
+        mean_score_ab_seat2, games_ab, mean_score_ba_seat1, games_ba
+    )
+
+    wa = wa_ab + wa_ba
+    wb = wb_ab + wb_ba
+    if wa + wb != games_played:
+        raise RuntimeError(
+            f"Tie or missing outcome detected for pair ({a}, {b}); "
+            f"wins_a={wa} wins_b={wb} games={games_played}",
+        )
+
+    pval = binomtest(wa, games_played, alternative="greater").pvalue
+    record = {
+        "players": k_players,
+        "seed": base_seed,
+        "pair_id": pair_id,
+        "a": a,
+        "b": b,
+        "games": games_played,
+        "wins_a": wa,
+        "wins_b": wb,
+        "win_rate_a": wa / games_played if games_played else math.nan,
+        "pval_one_sided": pval,
+        "mean_farkles_a": mean_farkles_a,
+        "mean_farkles_b": mean_farkles_b,
+        "mean_score_a": mean_score_a,
+        "mean_score_b": mean_score_b,
+    }
+    ordered = [
+        {
+            "players": k_players,
+            "seed": base_seed,
+            "pair_id": pair_id,
+            "a": a,
+            "b": b,
+            "ordering": "a_b",
+            "seat1_strategy": a,
+            "seat2_strategy": b,
+            "games": len(seeds_ab),
+            "wins_a": wa_ab,
+            "wins_b": wb_ab,
+            "wins_seat1": wa_ab,
+            "wins_seat2": wb_ab,
+            "mean_farkles_seat1": mean_farkles_ab_seat1,
+            "mean_farkles_seat2": mean_farkles_ab_seat2,
+            "mean_score_seat1": mean_score_ab_seat1,
+            "mean_score_seat2": mean_score_ab_seat2,
+        },
+        {
+            "players": k_players,
+            "seed": base_seed,
+            "pair_id": pair_id,
+            "a": a,
+            "b": b,
+            "ordering": "b_a",
+            "seat1_strategy": b,
+            "seat2_strategy": a,
+            "games": len(seeds_ba),
+            "wins_a": wa_ba,
+            "wins_b": wb_ba,
+            "wins_seat1": wb_ba,
+            "wins_seat2": wa_ba,
+            "mean_farkles_seat1": mean_farkles_ba_seat1,
+            "mean_farkles_seat2": mean_farkles_ba_seat2,
+            "mean_score_seat1": mean_score_ba_seat1,
+            "mean_score_seat2": mean_score_ba_seat2,
+        },
+    ]
+    return record, ordered
+
+
+def _simulate_selfplay_job(
+    *,
+    strategy_id: int | str,
+    seeds: list[int],
+    strategy: Any,
+    k_players: int,
+    base_seed: int,
+    sim_n_jobs: int = 1,
+) -> dict[str, Any]:
+    """Execute one self-play symmetry job in a worker process."""
+
+    df_self = simulate_many_games_from_seeds(
+        seeds=seeds,
+        strategies=[strategy, strategy],
+        n_jobs=sim_n_jobs,
+    )
+    wins_seat1, wins_seat2 = _count_pair_wins(df_self, strategy_id, strategy_id)
+    games = len(seeds)
+    seat1_rate = wins_seat1 / games if games else math.nan
+    seat2_rate = wins_seat2 / games if games else math.nan
+    mean_farkles_seat1 = _player_metric_mean(df_self, 1, "farkles")
+    mean_farkles_seat2 = _player_metric_mean(df_self, 2, "farkles")
+    mean_score_seat1 = _player_metric_mean(df_self, 1, "score")
+    mean_score_seat2 = _player_metric_mean(df_self, 2, "score")
+    return {
+        "players": k_players,
+        "seed": base_seed,
+        "strategy": strategy_id,
+        "games": games,
+        "wins_seat1": wins_seat1,
+        "wins_seat2": wins_seat2,
+        "seat1_win_rate": seat1_rate,
+        "seat2_win_rate": seat2_rate,
+        "seat_win_rate_diff": seat1_rate - seat2_rate,
+        "mean_farkles_seat1": mean_farkles_seat1,
+        "mean_farkles_seat2": mean_farkles_seat2,
+        "mean_score_seat1": mean_score_seat1,
+        "mean_score_seat2": mean_score_seat2,
+    }
+
+
 def run_bonferroni_head2head(
     *,
     seed: int = 0,
@@ -473,6 +673,13 @@ def run_bonferroni_head2head(
             "written_this_run": 0,
             "total_after_run": 0,
         },
+        "selfplay": {
+            "scheduled_strategies": 0,
+            "completed_before_run": 0,
+            "existing_shards_before_run": 0,
+            "written_this_run": 0,
+            "total_shards_after_run": 0,
+        },
     }
 
     if use_tier_elites:
@@ -617,7 +824,7 @@ def run_bonferroni_head2head(
                     "reason": reason,
                 },
             )
-            inputs: list[Path] = [tiers_path]
+            inputs = [tiers_path]
             if ratings_path.exists():
                 inputs.append(ratings_path)
             if metrics_path.exists():
@@ -720,12 +927,20 @@ def run_bonferroni_head2head(
     )
 
     rng = np.random.default_rng(seed)
-    records: list[dict[str, Any]] = []
     ordered_records: list[dict[str, Any]] = []
-    pending_shard_records: list[dict[str, Any]] = []
-    strategies_cache: Dict[int | str, Any] = {}
+    pending_pairwise_shard_records: list[dict[str, Any]] = []
+    pending_selfplay_shard_records: list[dict[str, Any]] = []
+    pairwise_shard_schema = _pairwise_schema()
+    selfplay_shard_schema = _selfplay_schema()
+    default_selfplay_shards = sub_root / "bonferroni_selfplay_shards"
+    legacy_selfplay_shards = analysis_root / "bonferroni_selfplay_shards"
+    selfplay_shard_dir = (
+        default_selfplay_shards
+        if default_selfplay_shards.exists() or not legacy_selfplay_shards.exists()
+        else legacy_selfplay_shards
+    )
     shard_dir.mkdir(parents=True, exist_ok=True)
-    shard_schema = _pairwise_schema()
+    selfplay_shard_dir.mkdir(parents=True, exist_ok=True)
 
     def _read_pair_ids_from_parquet(path: Path) -> set[int]:
         if not path.exists():
@@ -746,17 +961,36 @@ def run_bonferroni_head2head(
             return set()
         return {int(pid) for pid in df["pair_id"].dropna().astype(int).tolist()}
 
+    def _read_selfplay_ids_from_parquet(path: Path) -> set[str]:
+        if not path.exists():
+            return set()
+        try:
+            df = pd.read_parquet(path, columns=["strategy"])
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load completed self-play strategy ids",
+                extra={"stage": "head2head", "path": str(path), "error": str(exc)},
+            )
+            return set()
+        if "strategy" not in df:
+            LOGGER.warning(
+                "Existing self-play parquet missing strategy column",
+                extra={"stage": "head2head", "path": str(path)},
+            )
+            return set()
+        return {str(value) for value in df["strategy"].dropna().astype(str).tolist()}
+
     shard_paths = sorted(shard_dir.glob("bonferroni_pairwise_shard_*.parquet"))
     shard_count = len(shard_paths)
     initial_shard_count = shard_count
     debug_summary["shards"]["existing_before_run"] = shard_count
-    existing_shard_frames: list[pd.DataFrame] = []
+    existing_pairwise_shard_frames: list[pd.DataFrame] = []
     completed_pairs: set[int] = {int(pid) for pid in (completed_pair_ids or ())}
     for shard_path in shard_paths:
         completed_pairs.update(_read_pair_ids_from_parquet(shard_path))
         try:
             df = pd.read_parquet(shard_path)
-            existing_shard_frames.append(df)
+            existing_pairwise_shard_frames.append(df)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "Failed to load shard data",
@@ -779,7 +1013,7 @@ def run_bonferroni_head2head(
         if not records_to_flush:
             return shard_index
         shard_path = shard_dir / f"bonferroni_pairwise_shard_{shard_index:04d}.parquet"
-        shard_table = pa.Table.from_pylist(records_to_flush, schema=shard_schema)
+        shard_table = pa.Table.from_pylist(records_to_flush, schema=pairwise_shard_schema)
         write_parquet_atomic(shard_table, shard_path)
         LOGGER.info(
             "Shard written",
@@ -789,7 +1023,7 @@ def run_bonferroni_head2head(
                 "path": str(shard_path),
             },
         )
-        existing_shard_frames.append(shard_table.to_pandas())
+        existing_pairwise_shard_frames.append(shard_table.to_pandas())
         records_to_flush.clear()
         return shard_index + 1
 
@@ -832,7 +1066,7 @@ def run_bonferroni_head2head(
         for name in sorted_elites
     }
 
-    scheduled_pairs: list[tuple[int, int | str, int | str, list[int]]] = []
+    scheduled_pairs: list[tuple[int, int | str, int | str, list[int], Any, Any]] = []
     processed_pairs = len(completed_pairs)
     for pair_id, (a, b) in enumerate(combinations(sorted_elites, 2)):
         if pair_id in completed_pairs:
@@ -854,152 +1088,33 @@ def run_bonferroni_head2head(
         )
         if not seeds:
             continue
-        scheduled_pairs.append((pair_id, a, b, seeds))
+        scheduled_pairs.append((pair_id, a, b, seeds, strategies_cache[a], strategies_cache[b]))
 
     debug_summary["filtered_pairs"]["pair_count"] = pair_count
     debug_summary["filtered_pairs"]["scheduled_pairs"] = len(scheduled_pairs)
     debug_summary["filtered_pairs"]["self_play_pairs_included"] = False
 
-    pair_jobs = max(1, n_jobs)
+    effective_jobs = max(1, int(n_jobs))
+    use_process_workers = (
+        getattr(simulate_many_games_from_seeds, "__module__", "")
+        == "farkle.simulation.simulation"
+    )
+    pair_jobs = 1
     if not scheduled_pairs:
-        shard_count = flush_shard(pending_shard_records, shard_count)
+        shard_count = flush_shard(pending_pairwise_shard_records, shard_count)
     else:
-        effective_jobs = n_jobs if n_jobs > 0 else 1
-        if effective_jobs <= 1:
+        if use_process_workers:
+            worker_count = min(len(scheduled_pairs), effective_jobs)
+            pair_jobs = 1
+            executor_cls: type[ProcessPoolExecutor | ThreadPoolExecutor] = ProcessPoolExecutor
+        elif effective_jobs <= 1:
             worker_count = 1
             pair_jobs = 1
+            executor_cls = ThreadPoolExecutor
         else:
             worker_count = min(len(scheduled_pairs), max(1, effective_jobs // 2))
             pair_jobs = max(1, effective_jobs // worker_count)
-
-        def simulate_pair(job: tuple[int, int | str, int | str, list[int]]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-            pair_id, a, b, seeds = job
-            split = len(seeds) // 2
-            seeds_ab = seeds[:split]
-            seeds_ba = seeds[split:]
-
-            def seat_means(df: pd.DataFrame) -> tuple[float, float, float, float]:
-                return (
-                    _player_metric_mean(df, 1, "farkles"),
-                    _player_metric_mean(df, 2, "farkles"),
-                    _player_metric_mean(df, 1, "score"),
-                    _player_metric_mean(df, 2, "score"),
-                )
-
-            df_ab = simulate_many_games_from_seeds(
-                seeds=seeds_ab,
-                strategies=[strategies_cache[a], strategies_cache[b]],
-                n_jobs=pair_jobs,
-            )
-
-            df_ba = simulate_many_games_from_seeds(
-                seeds=seeds_ba,
-                strategies=[strategies_cache[b], strategies_cache[a]],
-                n_jobs=pair_jobs,
-            )
-
-            (
-                mean_farkles_ab_seat1,
-                mean_farkles_ab_seat2,
-                mean_score_ab_seat1,
-                mean_score_ab_seat2,
-            ) = seat_means(df_ab)
-            (
-                mean_farkles_ba_seat1,
-                mean_farkles_ba_seat2,
-                mean_score_ba_seat1,
-                mean_score_ba_seat2,
-            ) = seat_means(df_ba)
-
-            wa_ab, wb_ab = _count_pair_wins(df_ab, a, b)
-            wb_ba, wa_ba = _count_pair_wins(df_ba, b, a)
-
-            games_ab = len(seeds_ab)
-            games_ba = len(seeds_ba)
-            total_games = games_ab + games_ba
-
-            def weighted_mean(first_mean: float, first_weight: int, second_mean: float, second_weight: int) -> float:
-                denominator = first_weight + second_weight
-                if denominator <= 0:
-                    return math.nan
-                total = 0.0
-                if first_weight > 0:
-                    total += first_mean * first_weight
-                if second_weight > 0:
-                    total += second_mean * second_weight
-                return total / denominator
-
-            mean_farkles_a = weighted_mean(mean_farkles_ab_seat1, games_ab, mean_farkles_ba_seat2, games_ba)
-            mean_farkles_b = weighted_mean(mean_farkles_ab_seat2, games_ab, mean_farkles_ba_seat1, games_ba)
-            mean_score_a = weighted_mean(mean_score_ab_seat1, games_ab, mean_score_ba_seat2, games_ba)
-            mean_score_b = weighted_mean(mean_score_ab_seat2, games_ab, mean_score_ba_seat1, games_ba)
-
-            wa = wa_ab + wa_ba
-            wb = wb_ab + wb_ba
-            games_played = total_games
-            if wa + wb != games_played:
-                raise RuntimeError(
-                    f"Tie or missing outcome detected for pair ({a}, {b}); wins_a={wa} wins_b={wb} games={games_played}",
-                )
-            pval = binomtest(wa, games_played, alternative="greater").pvalue
-            record = {
-                "players": k_players,
-                "seed": seed,
-                "pair_id": pair_id,
-                "a": a,
-                "b": b,
-                "games": games_played,
-                "wins_a": wa,
-                "wins_b": wb,
-                "win_rate_a": wa / games_played if games_played else math.nan,
-                "pval_one_sided": pval,
-                "mean_farkles_a": mean_farkles_a,
-                "mean_farkles_b": mean_farkles_b,
-                "mean_score_a": mean_score_a,
-                "mean_score_b": mean_score_b,
-            }
-            ordered = [
-                {
-                    "players": k_players,
-                    "seed": seed,
-                    "pair_id": pair_id,
-                    "a": a,
-                    "b": b,
-                    "ordering": "a_b",
-                    "seat1_strategy": a,
-                    "seat2_strategy": b,
-                    "games": len(seeds_ab),
-                    "wins_a": wa_ab,
-                    "wins_b": wb_ab,
-                    "wins_seat1": wa_ab,
-                    "wins_seat2": wb_ab,
-                    "mean_farkles_seat1": mean_farkles_ab_seat1,
-                    "mean_farkles_seat2": mean_farkles_ab_seat2,
-                    "mean_score_seat1": mean_score_ab_seat1,
-                    "mean_score_seat2": mean_score_ab_seat2,
-                },
-                {
-                    "players": k_players,
-                    "seed": seed,
-                    "pair_id": pair_id,
-                    "a": a,
-                    "b": b,
-                    "ordering": "b_a",
-                    "seat1_strategy": b,
-                    "seat2_strategy": a,
-                    "games": len(seeds_ba),
-                    "wins_a": wa_ba,
-                    "wins_b": wb_ba,
-                    "wins_seat1": wb_ba,
-                    "wins_seat2": wa_ba,
-                    "mean_farkles_seat1": mean_farkles_ba_seat1,
-                    "mean_farkles_seat2": mean_farkles_ba_seat2,
-                    "mean_score_seat1": mean_score_ba_seat1,
-                    "mean_score_seat2": mean_score_ba_seat2,
-                },
-            ]
-            return record, ordered
-
+            executor_cls = ThreadPoolExecutor
         LOGGER.info(
             "Dispatching head-to-head batches",
             extra={
@@ -1007,42 +1122,72 @@ def run_bonferroni_head2head(
                 "pending_pairs": len(scheduled_pairs),
                 "workers": worker_count,
                 "pair_jobs": pair_jobs,
+                "executor_backend": "process" if use_process_workers else "thread",
             },
         )
-        with ThreadPoolExecutor(max_workers=worker_count) as executor:
-            future_to_job = {
-                executor.submit(simulate_pair, job): job for job in scheduled_pairs
-            }
-            for future in as_completed(future_to_job):
-                job_pair_id, job_a, job_b, _ = future_to_job[future]
-                record, record_orderings = future.result()
-                records.append(record)
+        if worker_count <= 1:
+            for pair_id, pair_a, pair_b, seeds, strategy_a, strategy_b in scheduled_pairs:
+                record, record_orderings = _simulate_pair_job(
+                    pair_id=pair_id,
+                    a=pair_a,
+                    b=pair_b,
+                    seeds=seeds,
+                    strategy_a=strategy_a,
+                    strategy_b=strategy_b,
+                    k_players=k_players,
+                    base_seed=seed,
+                    sim_n_jobs=pair_jobs,
+                )
                 ordered_records.extend(record_orderings)
-                pending_shard_records.append(record)
-                if len(pending_shard_records) >= shard_size:
-                    shard_count = flush_shard(pending_shard_records, shard_count)
-                completed_pairs.add(job_pair_id)
+                pending_pairwise_shard_records.append(record)
+                if len(pending_pairwise_shard_records) >= shard_size:
+                    shard_count = flush_shard(pending_pairwise_shard_records, shard_count)
+                completed_pairs.add(pair_id)
                 processed_pairs += 1
                 maybe_log_progress(processed_pairs)
-                LOGGER.debug(
-                    "Completed head-to-head batch",
-                    extra={
-                        "stage": "head2head",
-                        "strategy_a": job_a,
-                        "strategy_b": job_b,
-                        "wins_a": record["wins_a"],
-                        "wins_b": record["wins_b"],
-                        "pvalue": record["pval_one_sided"],
-                    },
-                )
+        else:
+            with executor_cls(max_workers=worker_count) as executor:
+                future_to_job = {
+                    executor.submit(
+                        _simulate_pair_job,
+                        pair_id=pair_id,
+                        a=a,
+                        b=b,
+                        seeds=seeds,
+                        strategy_a=strategy_a,
+                        strategy_b=strategy_b,
+                        k_players=k_players,
+                        base_seed=seed,
+                        sim_n_jobs=pair_jobs,
+                    ): (pair_id, a, b)
+                    for pair_id, a, b, seeds, strategy_a, strategy_b in scheduled_pairs
+                }
+                for future in as_completed(future_to_job):
+                    job_pair_id, job_a, job_b = future_to_job[future]
+                    record, record_orderings = future.result()
+                    ordered_records.extend(record_orderings)
+                    pending_pairwise_shard_records.append(record)
+                    if len(pending_pairwise_shard_records) >= shard_size:
+                        shard_count = flush_shard(pending_pairwise_shard_records, shard_count)
+                    completed_pairs.add(job_pair_id)
+                    processed_pairs += 1
+                    maybe_log_progress(processed_pairs)
+                    LOGGER.debug(
+                        "Completed head-to-head batch",
+                        extra={
+                            "stage": "head2head",
+                            "strategy_a": job_a,
+                            "strategy_b": job_b,
+                            "wins_a": record["wins_a"],
+                            "wins_b": record["wins_b"],
+                            "pvalue": record["pval_one_sided"],
+                        },
+                    )
 
-    shard_count = flush_shard(pending_shard_records, shard_count)
+    shard_count = flush_shard(pending_pairwise_shard_records, shard_count)
     final_shard_paths = sorted(shard_dir.glob("bonferroni_pairwise_shard_*.parquet"))
     debug_summary["shards"]["written_this_run"] = max(0, shard_count - initial_shard_count)
     debug_summary["shards"]["total_after_run"] = len(final_shard_paths)
-    debug_summary_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(debug_summary_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(debug_summary, indent=2, sort_keys=True), encoding="utf-8")
 
     if not final_shard_paths:
         raise Head2HeadPipelineError(
@@ -1068,9 +1213,7 @@ def run_bonferroni_head2head(
         )
 
     all_frames: list[pd.DataFrame] = []
-    if records:
-        all_frames.append(pd.DataFrame.from_records(records))
-    all_frames.extend(existing_shard_frames)
+    all_frames.extend(existing_pairwise_shard_frames)
     if pairwise_parquet.exists():
         try:
             all_frames.append(pd.read_parquet(pairwise_parquet))
@@ -1095,7 +1238,9 @@ def run_bonferroni_head2head(
         .sort_values("pair_id")
         .drop_duplicates(subset=["pair_id"], keep="last")
     )
-    pairwise_table = pa.Table.from_pandas(combined_df, schema=shard_schema, preserve_index=False)
+    pairwise_table = pa.Table.from_pandas(
+        combined_df, schema=pairwise_shard_schema, preserve_index=False
+    )
     write_parquet_atomic(pairwise_table, pairwise_parquet)
 
     ordered_schema = _pairwise_ordered_schema()
@@ -1106,47 +1251,159 @@ def run_bonferroni_head2head(
         ordered_table = pa.Table.from_pandas(ordered_df, schema=ordered_schema, preserve_index=False)
     write_parquet_atomic(ordered_table, pairwise_ordered_parquet)
 
-    selfplay_records: list[dict[str, Any]] = []
+    selfplay_shard_paths = sorted(selfplay_shard_dir.glob("bonferroni_selfplay_shard_*.parquet"))
+    selfplay_shard_count = len(selfplay_shard_paths)
+    initial_selfplay_shard_count = selfplay_shard_count
+    debug_summary["selfplay"]["existing_shards_before_run"] = selfplay_shard_count
+    existing_selfplay_shard_frames: list[pd.DataFrame] = []
+    completed_selfplay_ids: set[str] = set()
+    for shard_path in selfplay_shard_paths:
+        completed_selfplay_ids.update(_read_selfplay_ids_from_parquet(shard_path))
+        try:
+            existing_selfplay_shard_frames.append(pd.read_parquet(shard_path))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load self-play shard data",
+                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
+            )
+    completed_selfplay_ids.update(_read_selfplay_ids_from_parquet(selfplay_parquet))
+    debug_summary["selfplay"]["completed_before_run"] = len(completed_selfplay_ids)
+
+    pending_selfplay_jobs: list[tuple[int | str, list[int], Any]] = []
     for strat in sorted_elites:
         selfplay_seeds = rng.integers(0, MAX_UINT32, size=games_per_pair, dtype=np.uint32).tolist()
-        df_self = simulate_many_games_from_seeds(
-            seeds=selfplay_seeds,
-            strategies=[strategies_cache[strat], strategies_cache[strat]],
-            n_jobs=pair_jobs,
-        )
-        wins_seat1, wins_seat2 = _count_pair_wins(df_self, strat, strat)
-        games = len(selfplay_seeds)
-        seat1_rate = wins_seat1 / games if games else math.nan
-        seat2_rate = wins_seat2 / games if games else math.nan
-        mean_farkles_seat1 = _player_metric_mean(df_self, 1, "farkles")
-        mean_farkles_seat2 = _player_metric_mean(df_self, 2, "farkles")
-        mean_score_seat1 = _player_metric_mean(df_self, 1, "score")
-        mean_score_seat2 = _player_metric_mean(df_self, 2, "score")
-        selfplay_records.append(
-            {
-                "players": k_players,
-                "seed": seed,
-                "strategy": strat,
-                "games": games,
-                "wins_seat1": wins_seat1,
-                "wins_seat2": wins_seat2,
-                "seat1_win_rate": seat1_rate,
-                "seat2_win_rate": seat2_rate,
-                "seat_win_rate_diff": seat1_rate - seat2_rate,
-                "mean_farkles_seat1": mean_farkles_seat1,
-                "mean_farkles_seat2": mean_farkles_seat2,
-                "mean_score_seat1": mean_score_seat1,
-                "mean_score_seat2": mean_score_seat2,
-            }
-        )
+        if str(strat) in completed_selfplay_ids:
+            continue
+        pending_selfplay_jobs.append((strat, selfplay_seeds, strategies_cache[strat]))
+    debug_summary["selfplay"]["scheduled_strategies"] = len(pending_selfplay_jobs)
 
-    selfplay_schema = _selfplay_schema()
-    selfplay_df = pd.DataFrame.from_records(selfplay_records)
-    if selfplay_df.empty:
-        selfplay_table = pa.Table.from_pylist([], schema=selfplay_schema)
+    def flush_selfplay_shard(records_to_flush: list[dict[str, Any]], shard_index: int) -> int:
+        if not records_to_flush:
+            return shard_index
+        shard_path = selfplay_shard_dir / f"bonferroni_selfplay_shard_{shard_index:04d}.parquet"
+        shard_table = pa.Table.from_pylist(records_to_flush, schema=selfplay_shard_schema)
+        write_parquet_atomic(shard_table, shard_path)
+        LOGGER.info(
+            "Self-play shard written",
+            extra={
+                "stage": "head2head",
+                "rows": shard_table.num_rows,
+                "path": str(shard_path),
+            },
+        )
+        existing_selfplay_shard_frames.append(shard_table.to_pandas())
+        records_to_flush.clear()
+        return shard_index + 1
+
+    if not pending_selfplay_jobs:
+        selfplay_shard_count = flush_selfplay_shard(
+            pending_selfplay_shard_records, selfplay_shard_count
+        )
     else:
-        selfplay_table = pa.Table.from_pandas(selfplay_df, schema=selfplay_schema, preserve_index=False)
+        if use_process_workers:
+            selfplay_worker_count = min(len(pending_selfplay_jobs), effective_jobs)
+            selfplay_executor_cls: type[ProcessPoolExecutor | ThreadPoolExecutor] = ProcessPoolExecutor
+        elif effective_jobs <= 1:
+            selfplay_worker_count = 1
+            selfplay_executor_cls = ThreadPoolExecutor
+        else:
+            selfplay_worker_count = min(len(pending_selfplay_jobs), max(1, effective_jobs // 2))
+            selfplay_executor_cls = ThreadPoolExecutor
+        LOGGER.info(
+            "Dispatching self-play symmetry batches",
+            extra={
+                "stage": "head2head",
+                "pending_strategies": len(pending_selfplay_jobs),
+                "workers": selfplay_worker_count,
+                "pair_jobs": pair_jobs,
+                "executor_backend": "process" if use_process_workers else "thread",
+            },
+        )
+        if selfplay_worker_count <= 1:
+            for strategy_id, selfplay_seeds, strategy in pending_selfplay_jobs:
+                pending_selfplay_shard_records.append(
+                    _simulate_selfplay_job(
+                        strategy_id=strategy_id,
+                        seeds=selfplay_seeds,
+                        strategy=strategy,
+                        k_players=k_players,
+                        base_seed=seed,
+                        sim_n_jobs=pair_jobs,
+                    )
+                )
+                if len(pending_selfplay_shard_records) >= shard_size:
+                    selfplay_shard_count = flush_selfplay_shard(
+                        pending_selfplay_shard_records, selfplay_shard_count
+                    )
+        else:
+            with selfplay_executor_cls(max_workers=selfplay_worker_count) as executor:
+                future_to_strategy = {
+                    executor.submit(
+                        _simulate_selfplay_job,
+                        strategy_id=strategy_id,
+                        seeds=selfplay_seeds,
+                        strategy=strategy,
+                        k_players=k_players,
+                        base_seed=seed,
+                        sim_n_jobs=pair_jobs,
+                    ): str(strategy_id)
+                    for strategy_id, selfplay_seeds, strategy in pending_selfplay_jobs
+                }
+                for selfplay_future in as_completed(future_to_strategy):
+                    pending_selfplay_shard_records.append(selfplay_future.result())
+                    if len(pending_selfplay_shard_records) >= shard_size:
+                        selfplay_shard_count = flush_selfplay_shard(
+                            pending_selfplay_shard_records, selfplay_shard_count
+                        )
+
+    selfplay_shard_count = flush_selfplay_shard(
+        pending_selfplay_shard_records, selfplay_shard_count
+    )
+    final_selfplay_shard_paths = sorted(
+        selfplay_shard_dir.glob("bonferroni_selfplay_shard_*.parquet")
+    )
+    debug_summary["selfplay"]["written_this_run"] = max(
+        0, selfplay_shard_count - initial_selfplay_shard_count
+    )
+    debug_summary["selfplay"]["total_shards_after_run"] = len(final_selfplay_shard_paths)
+
+    all_selfplay_frames: list[pd.DataFrame] = []
+    all_selfplay_frames.extend(existing_selfplay_shard_frames)
+    if selfplay_parquet.exists():
+        try:
+            all_selfplay_frames.append(pd.read_parquet(selfplay_parquet))
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load existing self-play parquet",
+                extra={"stage": "head2head", "path": str(selfplay_parquet), "error": str(exc)},
+            )
+    if not all_selfplay_frames and sorted_elites:
+        raise Head2HeadPipelineError(
+            "No self-play frames available after shard collection/merge",
+            error_code="empty_selfplay_merge",
+            context={
+                "elite_count": len(elites),
+                "scheduled_selfplay": len(pending_selfplay_jobs),
+                "selfplay_shards": len(final_selfplay_shard_paths),
+                "selfplay_path": str(selfplay_parquet),
+            },
+        )
+    if all_selfplay_frames:
+        combined_selfplay_df = (
+            pd.concat(all_selfplay_frames, ignore_index=True)
+            .assign(strategy=lambda frame: frame["strategy"].astype(str))
+            .sort_values("strategy")
+            .drop_duplicates(subset=["strategy"], keep="last")
+        )
+        selfplay_table = pa.Table.from_pandas(
+            combined_selfplay_df, schema=selfplay_shard_schema, preserve_index=False
+        )
+    else:
+        selfplay_table = pa.Table.from_pylist([], schema=selfplay_shard_schema)
     write_parquet_atomic(selfplay_table, selfplay_parquet)
+    debug_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(debug_summary_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(debug_summary, indent=2, sort_keys=True), encoding="utf-8")
 
     LOGGER.info(
         "Bonferroni head-to-head results written",

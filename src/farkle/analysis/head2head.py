@@ -139,19 +139,21 @@ def run(cfg: AppConfig) -> None:
     existing_out = out if out.exists() else legacy_out
     required_outputs = required_success_outputs(cfg)
     missing_required_outputs = [path for path in required_outputs if not path.exists()]
-    if (
-        existing_out.exists()
-        and existing_out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime
-        and not missing_required_outputs
-    ):
+    if existing_out.exists() and existing_out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
         LOGGER.info(
             "Head-to-head results up-to-date",
             extra={"stage": "head2head", "path": str(existing_out)},
         )
         return
     if missing_required_outputs:
-        LOGGER.warning(
-            "Head-to-head artifacts incomplete; recomputing",
+        log_fn = LOGGER.warning if existing_out.exists() else LOGGER.info
+        message = (
+            "Head-to-head artifacts incomplete; recomputing"
+            if existing_out.exists()
+            else "Head-to-head artifacts missing; running fresh compute"
+        )
+        log_fn(
+            message,
             extra={
                 "stage": "head2head",
                 "missing_outputs": [str(path) for path in missing_required_outputs],

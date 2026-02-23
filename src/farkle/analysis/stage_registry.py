@@ -123,6 +123,7 @@ _INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition("trueskill", group="analytics"),
     StageDefinition("agreement", group="analytics"),
     StageDefinition("interseed", group="analytics"),
+    StageDefinition("h2h_tier_trends", group="analytics"),
 )
 
 
