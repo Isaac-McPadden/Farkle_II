@@ -359,6 +359,8 @@ def test_run_post_h2h_skipped_is_deterministic(_cfg: AppConfig) -> None:
         config_sha=cfg.config_sha,
         status="skipped",
         reason="safeguard exceeded",
+        blocking_dependency="bonferroni_total_games_safeguard",
+        upstream_stage="bonferroni_head2head",
     )
 
     h2h_analysis.run_post_h2h(cfg)
@@ -367,30 +369,14 @@ def test_run_post_h2h_skipped_is_deterministic(_cfg: AppConfig) -> None:
     assert post_done["status"] == "skipped"
     assert post_done["reason"] == "safeguard exceeded"
 
-    graph_path = cfg.post_h2h_stage_dir / "h2h_significant_graph.json"
-    first_graph = json.loads(graph_path.read_text())
-    assert first_graph["tie_break_seed"] == 101
-
     decisions_path = cfg.post_h2h_stage_dir / "bonferroni_decisions.parquet"
-    assert pd.read_parquet(decisions_path).empty
-
-    first_outputs = {
-        "graph": graph_path.read_text(),
-        "tiers": (cfg.post_h2h_stage_dir / "h2h_significant_tiers.csv").read_text(),
-        "ranking": (cfg.post_h2h_stage_dir / "h2h_significant_ranking.csv").read_text(),
-        "s_tiers": (cfg.post_h2h_stage_dir / "h2h_s_tiers.json").read_text(),
-    }
+    assert not decisions_path.exists()
 
     h2h_analysis.run_post_h2h(cfg)
 
-    second_outputs = {
-        "graph": graph_path.read_text(),
-        "tiers": (cfg.post_h2h_stage_dir / "h2h_significant_tiers.csv").read_text(),
-        "ranking": (cfg.post_h2h_stage_dir / "h2h_significant_ranking.csv").read_text(),
-        "s_tiers": (cfg.post_h2h_stage_dir / "h2h_s_tiers.json").read_text(),
-    }
-
-    assert first_outputs == second_outputs
+    second_done = read_stage_done(stage_done_path(cfg.post_h2h_stage_dir, "post_h2h"))
+    assert second_done["status"] == "skipped"
+    assert second_done["reason"] == "safeguard exceeded"
 
 
 def test_run_exits_early_when_curated_missing(
@@ -1064,15 +1050,15 @@ def test_run_post_h2h_skips_when_pairwise_missing(_cfg: AppConfig) -> None:
         inputs=[],
         outputs=[],
         config_sha=cfg.config_sha,
-        status="completed",
     )
 
     h2h_analysis.run_post_h2h(cfg)
 
     done = read_stage_done(stage_done_path(cfg.post_h2h_stage_dir, "post_h2h"))
-    assert done["status"] == "skipped"
+    assert done["status"] == "failed"
     assert done["reason"] == "missing bonferroni pairwise parquet"
-    assert pd.read_parquet(cfg.post_h2h_stage_dir / "bonferroni_decisions.parquet").empty
+    assert done["upstream_stage"] == "bonferroni_head2head"
+    assert not (cfg.post_h2h_stage_dir / "bonferroni_decisions.parquet").exists()
 
 
 def test_run_post_h2h_falls_back_when_union_missing(_cfg: AppConfig) -> None:

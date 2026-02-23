@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from farkle.analysis import seed_symmetry
 from farkle.analysis.stage_state import stage_done_path
@@ -53,15 +54,28 @@ def test_seed_symmetry_run_writes_outputs_and_done(tmp_path: Path) -> None:
     ]
 
 
-def test_seed_symmetry_missing_input_marks_stage_skipped(tmp_path: Path) -> None:
+def test_seed_symmetry_missing_input_fails_by_default(tmp_path: Path) -> None:
     cfg = _make_cfg(tmp_path)
 
-    seed_symmetry.run(cfg)
+    with pytest.raises(FileNotFoundError):
+        seed_symmetry.run(cfg)
+
+    done = stage_done_path(cfg.seed_symmetry_stage_dir, "seed_symmetry")
+    payload = json.loads(done.read_text())
+    assert payload["status"] == "failed"
+    assert payload["outputs"] == []
+    assert payload["upstream_stage"] == "bonferroni_head2head"
+
+
+def test_seed_symmetry_missing_input_can_be_skipped_for_manual_debug(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path)
+
+    seed_symmetry.run(cfg, allow_missing_upstream=True)
 
     done = stage_done_path(cfg.seed_symmetry_stage_dir, "seed_symmetry")
     payload = json.loads(done.read_text())
     assert payload["status"] == "skipped"
-    assert payload["outputs"] == []
+    assert payload["upstream_stage"] == "bonferroni_head2head"
 
 
 def test_seed_symmetry_skips_when_done_stamp_is_up_to_date(tmp_path: Path, monkeypatch) -> None:

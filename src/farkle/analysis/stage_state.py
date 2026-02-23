@@ -11,6 +11,7 @@ from farkle.utils.writer import atomic_path
 __all__ = ["read_stage_done", "stage_done_path", "stage_is_up_to_date", "write_stage_done"]
 
 _DEFAULT_STATUS = "success"
+_ALLOWED_STATUSES = {"success", "failed", "skipped"}
 
 
 def stage_done_path(stage_dir: Path, name: str) -> Path:
@@ -37,6 +38,8 @@ def read_stage_done(done_path: Path) -> dict[str, object]:
         "outputs": [],
         "status": "missing",
         "reason": None,
+        "blocking_dependency": None,
+        "upstream_stage": None,
     }
     if not done_path.exists():
         return payload
@@ -51,6 +54,8 @@ def read_stage_done(done_path: Path) -> dict[str, object]:
     payload["outputs"] = list(meta.get("outputs") or [])
     payload["status"] = meta.get("status", _DEFAULT_STATUS)
     payload["reason"] = meta.get("reason")
+    payload["blocking_dependency"] = meta.get("blocking_dependency")
+    payload["upstream_stage"] = meta.get("upstream_stage")
     return payload
 
 
@@ -67,7 +72,7 @@ def stage_is_up_to_date(
         return False
     meta = read_stage_done(done_path)
     status = meta.get("status", _DEFAULT_STATUS)
-    if status not in {"success", "skipped"}:
+    if status != "success":
         return False
     recorded_sha = meta.get("config_sha")
     if config_sha is not None and recorded_sha not in (None, config_sha):
@@ -88,8 +93,17 @@ def write_stage_done(
     config_sha: str | None = None,
     status: str = _DEFAULT_STATUS,
     reason: str | None = None,
+    blocking_dependency: str | None = None,
+    upstream_stage: str | None = None,
 ) -> None:
     """Persist a minimal completion stamp for a stage."""
+
+    if status not in _ALLOWED_STATUSES:
+        raise ValueError(f"Unsupported stage status {status!r}; expected one of {_ALLOWED_STATUSES}")
+    if status in {"failed", "skipped"} and (blocking_dependency is None or upstream_stage is None):
+        raise ValueError(
+            "blocking_dependency and upstream_stage are required when status is failed/skipped"
+        )
 
     payload = {
         "config_sha": config_sha,
@@ -97,6 +111,8 @@ def write_stage_done(
         "outputs": [str(p) for p in _coerce_paths(outputs)],
         "status": status,
         "reason": reason,
+        "blocking_dependency": blocking_dependency,
+        "upstream_stage": upstream_stage,
     }
     done_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(done_path)) as tmp_path:

@@ -607,6 +607,8 @@ def run_bonferroni_head2head(
                 config_sha=cfg.config_sha,
                 status="skipped",
                 reason=reason,
+                blocking_dependency=str(tiers_path),
+                upstream_stage="tiering",
             )
             return
     opponents = max(0, len(elites) - 1)

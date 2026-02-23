@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+from farkle.analysis.stage_state import read_stage_done, stage_done_path
 from farkle.config import AppConfig
 from farkle.utils.manifest import append_manifest_line
 
@@ -82,6 +83,8 @@ class StageRunner:
 
         failed_steps: list[str] = []
         first_failure: Exception | None = None
+        degraded_steps: list[str] = []
+        stage_health_states: dict[str, str] = {}
         iterator: Iterable[StagePlanItem] = plan
         if context.use_progress and len(plan) > 1:
             from tqdm import tqdm
@@ -108,13 +111,32 @@ class StageRunner:
                 missing_outputs = [path for path in item.required_outputs if not path.exists()]
                 if missing_outputs:
                     raise StageValidationError(item.name, missing_outputs)
+                try:
+                    done_path = stage_done_path(context.config.stage_dir(item.name), item.name)
+                except Exception:  # noqa: BLE001
+                    done_path = None
+                stage_done = read_stage_done(done_path) if done_path is not None else {"status": "success"}
+                stage_status = str(stage_done.get("status", "success"))
+                stage_health = "healthy"
+                if stage_status == "skipped":
+                    stage_health = "degraded"
+                    degraded_steps.append(item.name)
+                elif stage_status == "failed":
+                    stage_health = "unhealthy"
+                    degraded_steps.append(item.name)
+                stage_health_states[item.name] = stage_health
                 append_manifest_line(
                     manifest_path,
                     {
                         "event": context.stage_end_event,
                         "run": context.run_label,
                         "stage": item.name,
-                        "ok": True,
+                        "ok": stage_health == "healthy",
+                        "status": stage_status,
+                        "health": stage_health,
+                        "reason": stage_done.get("reason"),
+                        "blocking_dependency": stage_done.get("blocking_dependency"),
+                        "upstream_stage": stage_done.get("upstream_stage"),
                     },
                 )
             except Exception as exc:  # noqa: BLE001
@@ -153,11 +175,15 @@ class StageRunner:
         run_end_payload = {
             "event": context.run_end_event,
             "run": context.run_label,
-            "ok": not failed_steps,
+            "ok": not failed_steps and not degraded_steps,
+            "health": "healthy" if (not failed_steps and not degraded_steps) else "degraded",
             **context.run_end_metadata,
         }
         if failed_steps:
             run_end_payload["failed_steps"] = failed_steps
+        if degraded_steps:
+            run_end_payload["degraded_steps"] = degraded_steps
+            run_end_payload["stage_health"] = stage_health_states
         append_manifest_line(manifest_path, run_end_payload)
 
         if failed_steps:

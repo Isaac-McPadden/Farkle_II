@@ -30,7 +30,12 @@ _REQUIRED_COLUMNS = {
 }
 
 
-def run(cfg: AppConfig, *, force: bool = False) -> None:
+def run(
+    cfg: AppConfig,
+    *,
+    force: bool = False,
+    allow_missing_upstream: bool = False,
+) -> None:
     """Compute deterministic seed-symmetry diagnostics from head-to-head self-play."""
 
     source = cfg.head2head_path("bonferroni_selfplay_symmetry.parquet")
@@ -43,7 +48,21 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     outputs = [out_seed, out_seed_csv, out_summary, out_summary_csv]
 
     if not source.exists():
-        LOGGER.info(
+        reason = f"missing input: {source}"
+        if not allow_missing_upstream:
+            write_stage_done(
+                done,
+                inputs=[],
+                outputs=[],
+                config_sha=getattr(cfg, "config_sha", None),
+                status="failed",
+                reason=reason,
+                blocking_dependency=str(source),
+                upstream_stage="bonferroni_head2head",
+            )
+            raise FileNotFoundError(f"seed_symmetry requires upstream artifact: {source}")
+
+        LOGGER.warning(
             "Seed-symmetry skipped: missing head2head self-play artifact",
             extra={"stage": "seed_symmetry", "path": str(source)},
         )
@@ -53,7 +72,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             outputs=[],
             config_sha=getattr(cfg, "config_sha", None),
             status="skipped",
-            reason=f"missing input: {source}",
+            reason=reason,
+            blocking_dependency=str(source),
+            upstream_stage="bonferroni_head2head",
         )
         return
 

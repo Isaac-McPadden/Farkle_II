@@ -362,26 +362,15 @@ def run_post_h2h(cfg: AppConfig) -> None:
     union_candidates, union_meta, union_path = _load_union_candidates(cfg)
     if upstream_status == "skipped":
         reason = str(upstream_meta.get("reason") or "upstream bonferroni head-to-head skipped")
-        s_tier_meta = _build_s_tier_metadata(
-            cfg,
-            pairwise_path=None,
-            union_meta=union_meta,
-            union_path=union_path,
-            fallback_used=not bool(union_candidates),
-        )
-        outputs = _write_empty_post_h2h_outputs(
-            analysis_dir,
-            tie_policy=tie_policy,
-            tie_break_seed=tie_break_seed,
-            s_tier_metadata=s_tier_meta,
-        )
         write_stage_done(
             done_path,
             inputs=[upstream_done_path],
-            outputs=outputs,
+            outputs=[],
             config_sha=cfg.config_sha,
             status="skipped",
             reason=reason,
+            blocking_dependency=str(upstream_done_path),
+            upstream_stage="bonferroni_head2head",
         )
         LOGGER.info(
             "Post H2H skipped: upstream head-to-head skipped",
@@ -407,26 +396,15 @@ def run_post_h2h(cfg: AppConfig) -> None:
     pairwise_path = next((p for p in pairwise_candidates if p.exists()), pairwise_candidates[0])
     if not pairwise_path.exists():
         reason = "missing bonferroni pairwise parquet"
-        s_tier_meta = _build_s_tier_metadata(
-            cfg,
-            pairwise_path=pairwise_path,
-            union_meta=union_meta,
-            union_path=union_path,
-            fallback_used=not bool(union_candidates),
-        )
-        outputs = _write_empty_post_h2h_outputs(
-            analysis_dir,
-            tie_policy=tie_policy,
-            tie_break_seed=tie_break_seed,
-            s_tier_metadata=s_tier_meta,
-        )
         write_stage_done(
             done_path,
             inputs=[upstream_done_path],
-            outputs=outputs,
+            outputs=[],
             config_sha=cfg.config_sha,
-            status="skipped",
+            status="failed",
             reason=reason,
+            blocking_dependency=str(pairwise_path),
+            upstream_stage="bonferroni_head2head",
         )
         LOGGER.warning(
             "Post H2H skipped: missing bonferroni pairwise parquet",
