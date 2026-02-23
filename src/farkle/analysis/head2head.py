@@ -179,6 +179,8 @@ def run(cfg: AppConfig) -> None:
             config_sha=cfg.config_sha,
             status="failed",
             reason="head2head compute error",
+            blocking_dependency=str(cfg.curated_parquet),
+            upstream_stage="curate",
         )
         LOGGER.exception(
             "Head-to-head failed",

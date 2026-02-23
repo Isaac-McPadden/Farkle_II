@@ -242,7 +242,17 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Target rate for multi-target rare events (e.g., 1e-4)",
     )
-    analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
+    pipeline_parser.add_argument(
+        "--allow-missing-upstream",
+        action="store_true",
+        help="Allow analytics stages to skip when mandatory upstream artifacts are missing (manual debugging only)",
+    )
+    analytics_parser = analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
+    analytics_parser.add_argument(
+        "--allow-missing-upstream",
+        action="store_true",
+        help="Allow analytics stages to skip when mandatory upstream artifacts are missing (manual debugging only)",
+    )
     two_seed_parser = analyze_sub.add_parser(
         "two-seed-pipeline",
         help=(
@@ -511,6 +521,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 cfg,
                 run_rng_diagnostics=compute_rng_diagnostics,
                 rng_lags=rng_lags,
+                allow_missing_upstream=getattr(args, "allow_missing_upstream", False),
             )
         elif args.an_cmd == "variance":
             analysis_pkg.run_variance(cfg, force=getattr(args, "force", False))
@@ -535,6 +546,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 cfg,
                 run_rng_diagnostics=compute_rng_diagnostics,
                 rng_lags=rng_lags,
+                allow_missing_upstream=getattr(args, "allow_missing_upstream", False),
             )
         if args.an_cmd == "metrics" and compute_game_stats:
             from farkle.analysis import game_stats

@@ -111,11 +111,20 @@ def run_h2h_tier_trends(cfg: AppConfig, *, force: bool = False) -> None:
     h2h_tier_trends.run(cfg, force=force)
 
 
-def run_seed_symmetry(cfg: AppConfig, *, force: bool = False) -> None:
+def run_seed_symmetry(
+    cfg: AppConfig,
+    *,
+    force: bool = False,
+    allow_missing_upstream: bool = False,
+) -> None:
     """Wrapper around :mod:`farkle.analysis.seed_symmetry`."""
     from farkle.analysis import seed_symmetry
 
-    seed_symmetry.run(cfg, force=force)
+    seed_symmetry.run(
+        cfg,
+        force=force,
+        allow_missing_upstream=allow_missing_upstream,
+    )
 
 
 def run_interseed_analysis(
@@ -263,6 +272,7 @@ def run_single_seed_analysis(
     *,
     force: bool = False,
     manifest_path: Path | None = None,
+    allow_missing_upstream: bool = False,
 ) -> None:
     """Run per-seed analytics in order (seed summaries → coverage_by_k → trueskill → tiering → head2head → seed_symmetry → post_h2h → hgb)."""
     def _seed_summaries(cfg: AppConfig) -> None:
@@ -297,7 +307,11 @@ def run_single_seed_analysis(
         post_h2h_mod.run_post_h2h(cfg)
 
     def _seed_symmetry(cfg: AppConfig) -> None:
-        run_seed_symmetry(cfg, force=force)
+        run_seed_symmetry(
+            cfg,
+            force=force,
+            allow_missing_upstream=allow_missing_upstream,
+        )
 
     def _hgb(cfg: AppConfig) -> None:
         stage_log = stage_logger("hgb", logger=LOGGER)
@@ -343,10 +357,11 @@ def run_all(
     *,
     run_rng_diagnostics: bool | None = None,
     rng_lags: Sequence[int] | None = None,
+    allow_missing_upstream: bool = False,
 ) -> None:
     """Run single-seed analytics first, then interseed analytics if enabled."""
     LOGGER.info("Analytics: starting all modules", extra={"stage": "analysis"})
-    run_single_seed_analysis(cfg)
+    run_single_seed_analysis(cfg, allow_missing_upstream=allow_missing_upstream)
     run_interseed_analysis(
         cfg,
         run_rng_diagnostics=run_rng_diagnostics,
