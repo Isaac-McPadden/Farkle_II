@@ -55,8 +55,8 @@ def test_run_skips_if_up_to_date(
     assert "Head-to-head results up-to-date" in caplog.text
 
 
-def test_run_logs_warning_on_failure(
-    _cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+def test_run_writes_failure_contract_and_raises_on_compute_error(
+    _cfg: AppConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = _cfg
     out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
@@ -66,23 +66,29 @@ def test_run_logs_warning_on_failure(
     os.utime(out, (1000, 1000))
     os.utime(curated, (2000, 2000))
 
-    called = False
-
     def boom(cfg: AppConfig, *, root: Path | None = None, n_jobs: int, **kwargs) -> None:  # noqa: ARG001
-        nonlocal called
-        called = True
         raise RuntimeError("boom")
 
     monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", boom)
 
-    with caplog.at_level(logging.INFO):
+    with pytest.raises(RuntimeError, match="boom"):
         head2head.run(cfg)
 
-    assert called
-    assert any(
-        rec.levelname == "WARNING" and rec.message == "Head-to-head skipped"
-        for rec in caplog.records
-    )
+    error_path = cfg.head2head_stage_dir / "head2head.error.json"
+    assert error_path.exists()
+    payload = json.loads(error_path.read_text())
+    assert payload["status"] == "failed"
+    assert payload["seed"] == cfg.sim.seed
+    assert payload["stage"] == "bonferroni_head2head.compute"
+    assert payload["exception"]["type"] == "RuntimeError"
+    assert payload["exception"]["message"] == "boom"
+    assert "Traceback" in payload["exception"]["traceback"]
+
+    done = read_stage_done(stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"))
+    assert done["status"] == "failed"
+    assert done["reason"] == "head2head compute error"
+    outputs = [Path(v) for v in cast(list[str], done["outputs"])]
+    assert error_path in outputs
 
 
 def test_holm_bonferroni_ties_marked_non_sig(caplog: pytest.LogCaptureFixture) -> None:

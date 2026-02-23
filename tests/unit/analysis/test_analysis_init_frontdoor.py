@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 import farkle.analysis as analysis_mod
+from farkle.analysis.stage_runner import StageValidationError
 from farkle.config import AppConfig, IOConfig
 
 
@@ -170,3 +171,37 @@ def test_run_manifest_metadata_handles_missing_and_partial_fields(tmp_path: Path
     assert partial["results_dir"] == str(cfg_partial.results_root)
     assert partial["analysis_dir"] == str(cfg_partial.analysis_dir)
     assert partial["config_sha"] == "abc123"
+
+
+def test_run_single_seed_analysis_stops_when_head2head_misses_required_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    calls: list[str] = []
+
+    monkeypatch.setattr("farkle.analysis.run_seed_summaries", lambda app_cfg, force=False: calls.append("seed"), raising=True)
+    monkeypatch.setattr("farkle.analysis.run_coverage_by_k", lambda app_cfg, force=False: calls.append("coverage"), raising=True)
+    monkeypatch.setattr("farkle.analysis.run_seed_symmetry", lambda app_cfg, force=False: calls.append("seed_symmetry"), raising=True)
+
+    def _head2head(_cfg: AppConfig) -> None:
+        calls.append("head2head")
+
+    enabled_modules = {
+        "farkle.analysis.trueskill": SimpleNamespace(run=lambda app_cfg: calls.append("trueskill")),
+        "farkle.analysis.tiering_report": SimpleNamespace(run=lambda app_cfg: calls.append("tiering")),
+        "farkle.analysis.head2head": SimpleNamespace(run=_head2head),
+        "farkle.analysis.h2h_analysis": SimpleNamespace(run_post_h2h=lambda app_cfg: calls.append("post_h2h")),
+    }
+
+    def _optional(module: str, *, stage_log=None):  # noqa: ANN001
+        if module == "farkle.analysis.hgb_feat":
+            return None
+        return enabled_modules[module]
+
+    monkeypatch.setattr("farkle.analysis._optional_import", _optional, raising=True)
+
+    with pytest.raises(StageValidationError, match="missing required outputs"):
+        analysis_mod.run_single_seed_analysis(cfg, force=False)
+
+    assert calls == ["seed", "coverage", "trueskill", "tiering", "head2head"]

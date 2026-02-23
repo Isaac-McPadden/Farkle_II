@@ -311,7 +311,16 @@ def run_single_seed_analysis(
         StagePlanItem("coverage_by_k", lambda cfg: run_coverage_by_k(cfg, force=force)),
         StagePlanItem("trueskill", _trueskill),
         StagePlanItem("tiering", _tiering),
-        StagePlanItem("head2head", _head2head),
+        StagePlanItem(
+            "head2head",
+            _head2head,
+            required_outputs=(
+                cfg.head2head_stage_dir / "bonferroni_pairwise.parquet",
+                cfg.head2head_stage_dir / "bonferroni_pairwise_ordered.parquet",
+                cfg.head2head_stage_dir / "bonferroni_selfplay_symmetry.parquet",
+                cfg.head2head_stage_dir / "bonferroni_head2head.done.json",
+            ),
+        ),
         StagePlanItem("seed_symmetry", _seed_symmetry),
         StagePlanItem("post_h2h", _post_h2h),
         StagePlanItem("hgb", _hgb),
