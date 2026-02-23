@@ -57,6 +57,8 @@ analysis:
   tiering_z_star: 1.645     # float: z* threshold for MDD tiers
   tiering_min_gap: null     # float|None: minimum gap required to split tiers
   tiering_weights_by_k: null  # dict[int,float]|None: optional weights for player counts
+  h2h_tier_trends_seed_s_tier_paths: null  # list[Path|str]|None: explicit per-seed 11_post_h2h/h2h_s_tiers.json inputs
+  h2h_tier_trends_interseed_s_tier_path: null  # Path|str|None: explicit interseed-combined S-tier JSON input (mutually exclusive with per-seed paths)
   meta_max_other_seeds: null # int|None: cap on non-primary seeds used in meta pooling
   meta_comparison_seed: null # int|None: fixed comparison seed when limiting meta pooling
   outputs: {}               # dict[str, Any]: optional custom output filenames

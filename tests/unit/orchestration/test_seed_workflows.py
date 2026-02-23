@@ -306,7 +306,12 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         classmethod(lambda cls, seed_context, seed_pair, analysis_root: interseed_context),
     )
     monkeypatch.setattr(two_seed_pipeline.analysis, "run_interseed_analysis", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(two_seed_pipeline.analysis, "run_h2h_tier_trends", lambda *_args, **_kwargs: None)
+    h2h_calls: list[dict[str, object]] = []
+
+    def _record_h2h(_cfg, **kwargs):
+        h2h_calls.append(kwargs)
+
+    monkeypatch.setattr(two_seed_pipeline.analysis, "run_h2h_tier_trends", _record_h2h)
 
     two_seed_pipeline.run_pipeline(cfg, seed_pair=(1, 2), force=False)
     assert sim_calls == []
@@ -325,10 +330,18 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         "h2h_tier_trends_complete",
         "run_end",
     ]
+    assert len(h2h_calls) == 1
+    assert h2h_calls[0]["force"] is False
+    pair_root = seed_utils.seed_pair_root(cfg, (1, 2))
+    assert h2h_calls[0]["seed_s_tier_paths"] == [
+        pair_root / "results_seed_1" / "analysis" / "11_post_h2h" / "h2h_s_tiers.json",
+        pair_root / "results_seed_2" / "analysis" / "11_post_h2h" / "h2h_s_tiers.json",
+    ]
 
     sim_calls.clear()
     per_seed_calls.clear()
     manifest_events.clear()
+    h2h_calls.clear()
     two_seed_pipeline.run_pipeline(cfg, seed_pair=(1, 2), force=True)
     assert sim_calls == [1, 2]
     assert per_seed_calls == [1, 2]
@@ -346,6 +359,8 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         "h2h_tier_trends_complete",
         "run_end",
     ]
+    assert len(h2h_calls) == 1
+    assert h2h_calls[0]["force"] is True
 
 
 def test_two_seed_pipeline_main_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

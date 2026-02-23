@@ -6,8 +6,9 @@ from __future__ import annotations
 import json
 import logging
 import math
+from collections import Counter
 from pathlib import Path
-from typing import Any, Iterable, cast
+from typing import Any, Iterable, Sequence, cast
 
 import numpy as np
 import pandas as pd
@@ -25,19 +26,33 @@ OUTPUT_PARQUET = "s_tier_trends.parquet"
 META_TEMPLATE = "strategy_summary_{players}p_meta.parquet"
 
 
-def run(cfg: AppConfig, *, force: bool = False) -> None:
+def run(
+    cfg: AppConfig,
+    *,
+    force: bool = False,
+    seed_s_tier_paths: Sequence[Path] | None = None,
+    interseed_s_tier_path: Path | None = None,
+) -> None:
     """Generate per-strategy win-rate trends for S-tier head-to-head picks."""
     stage_log = stage_logger("h2h_tier_trends", logger=LOGGER)
     stage_log.start()
 
-    s_tiers_path = _resolve_s_tiers_path(cfg)
-    if s_tiers_path is None or not s_tiers_path.exists():
-        stage_log.missing_input("h2h_s_tiers.json missing", path=str(s_tiers_path))
+    try:
+        s_tier_inputs = _resolve_s_tier_inputs(
+            cfg,
+            seed_s_tier_paths=seed_s_tier_paths,
+            interseed_s_tier_path=interseed_s_tier_path,
+        )
+    except MissingTierInputsError as exc:
+        stage_log.missing_input(str(exc))
         return
-
-    s_tiers = _load_s_tiers(s_tiers_path)
+    s_tier_input_paths = [source.path for source in s_tier_inputs]
+    s_tiers = _load_s_tiers_from_sources(s_tier_inputs)
     if not s_tiers:
-        stage_log.missing_input("h2h_s_tiers.json empty", path=str(s_tiers_path))
+        stage_log.missing_input(
+            "h2h_s_tiers.json empty",
+            path=", ".join(str(path) for path in s_tier_input_paths),
+        )
         return
 
     meta_paths = _collect_meta_paths(cfg)
@@ -48,7 +63,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     stage_dir = cfg.stage_dir("h2h_tier_trends")
     output_path = stage_dir / OUTPUT_PARQUET
     done_path = stage_done_path(stage_dir, "h2h_tier_trends")
-    inputs = [s_tiers_path, *meta_paths]
+    inputs = [*s_tier_input_paths, *meta_paths]
     outputs = [output_path]
 
     if not force and stage_is_up_to_date(
@@ -111,17 +126,98 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     write_stage_done(done_path, inputs=inputs, outputs=outputs, config_sha=cfg.config_sha)
 
 
-def _resolve_s_tiers_path(cfg: AppConfig) -> Path | None:
-    candidates: list[Path] = []
+class MissingTierInputsError(ValueError):
+    """Raised when required S-tier inputs are missing."""
+
+
+class SSource:
+    """Resolved S-tier source contract for h2h tier trends."""
+
+    def __init__(self, *, path: Path, source_label: str) -> None:
+        self.path = path
+        self.source_label = source_label
+
+
+def _resolve_s_tier_inputs(
+    cfg: AppConfig,
+    *,
+    seed_s_tier_paths: Sequence[Path] | None,
+    interseed_s_tier_path: Path | None,
+) -> list[SSource]:
+    configured_seed_paths = getattr(cfg.analysis, "h2h_tier_trends_seed_s_tier_paths", None)
+    configured_interseed_path = getattr(cfg.analysis, "h2h_tier_trends_interseed_s_tier_path", None)
+
+    effective_seed_paths = list(seed_s_tier_paths or configured_seed_paths or [])
+    effective_interseed_path = interseed_s_tier_path or configured_interseed_path
+
+    if effective_seed_paths and effective_interseed_path is not None:
+        raise MissingTierInputsError(
+            "h2h_tier_trends input contract violation: provide either per-seed "
+            "h2h_tier_trends_seed_s_tier_paths OR h2h_tier_trends_interseed_s_tier_path, not both."
+        )
+
+    if effective_seed_paths:
+        missing = [path for path in effective_seed_paths if not path.exists()]
+        if missing:
+            missing_paths = "\n".join(f"  - {path}" for path in missing)
+            raise MissingTierInputsError(
+                "Missing required per-seed S-tier files for h2h tier trends.\n"
+                f"Expected producer stage: each seed's post_h2h stage (11_post_h2h/h2h_s_tiers.json).\n"
+                f"Missing paths:\n{missing_paths}"
+            )
+        return [SSource(path=path, source_label=f"seed[{idx}]") for idx, path in enumerate(effective_seed_paths)]
+
+    if effective_interseed_path is not None:
+        if not effective_interseed_path.exists():
+            raise MissingTierInputsError(
+                "Missing required interseed-combined S-tier file for h2h tier trends.\n"
+                "Expected producer stage: explicit interseed combine/export stage configured via "
+                "analysis.h2h_tier_trends_interseed_s_tier_path.\n"
+                f"Missing path:\n  - {effective_interseed_path}"
+            )
+        return [SSource(path=effective_interseed_path, source_label="interseed_combined")]
+
+    fallback = _resolve_single_seed_default_path(cfg)
+    if fallback is None or not fallback.exists():
+        expected = "post_h2h/h2h_s_tiers.json (or head2head/h2h_s_tiers.json fallback)"
+        missing_items = []
+        if fallback is not None:
+            missing_items.append(fallback)
+        missing_paths = "\n".join(f"  - {path}" for path in missing_items) if missing_items else "  - <unresolved>"
+        raise MissingTierInputsError(
+            "Missing S-tier inputs for h2h tier trends.\n"
+            "Input contract: provide per-seed tier files OR an interseed-combined tier file.\n"
+            f"Expected producer stage: {expected}.\n"
+            f"Missing paths:\n{missing_paths}"
+        )
+    return [SSource(path=fallback, source_label="single_seed_default")]
+
+
+def _resolve_single_seed_default_path(cfg: AppConfig) -> Path | None:
     for stage in ("post_h2h", "head2head"):
         stage_dir = cfg.stage_dir_if_active(stage)
         if stage_dir is not None:
-            candidates.append(stage_dir / "h2h_s_tiers.json")
-    candidates.append(cfg.analysis_dir / "h2h_s_tiers.json")
-    for path in candidates:
-        if path.exists():
-            return path
-    return candidates[0] if candidates else None
+            return stage_dir / "h2h_s_tiers.json"
+    return None
+
+
+def _load_s_tiers_from_sources(sources: Sequence[SSource]) -> dict[str, str]:
+    aggregated: dict[str, list[str]] = {}
+    for source in sources:
+        loaded = _load_s_tiers(source.path)
+        for strategy_id, label in loaded.items():
+            aggregated.setdefault(strategy_id, []).append(label)
+
+    resolved: dict[str, str] = {}
+    for strategy_id, labels in aggregated.items():
+        counts = Counter(labels)
+        max_count = max(counts.values())
+        winning_labels = {label for label, count in counts.items() if count == max_count}
+        for label in labels:
+            if label in winning_labels:
+                resolved[strategy_id] = label
+                break
+    return resolved
 
 
 def _load_s_tiers(path: Path) -> dict[str, str]:

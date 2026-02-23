@@ -72,6 +72,8 @@ analysis:
   tiering_z_star: 1.645
   tiering_min_gap: null
   tiering_weights_by_k: null
+  h2h_tier_trends_seed_s_tier_paths: null
+  h2h_tier_trends_interseed_s_tier_path: null
 
 ingest:
   row_group_size: 64000           # parquet/arrow row group target
