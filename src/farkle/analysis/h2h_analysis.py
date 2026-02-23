@@ -487,6 +487,54 @@ def run_post_h2h(cfg: AppConfig) -> None:
         fallback_used = True
     candidate_set = {str(name) for name in union_candidates}
     ordered_candidates = [name for name in tier_order if name in candidate_set]
+    diagnostics = {
+        "strategies_evaluated": len(tier_order),
+        "decisions_retained": int(graph.number_of_edges()),
+        "thresholds_applied": {
+            "holm_alpha": float(alpha),
+            "s_tier_cutoffs": {"S+": 10, "S": 30},
+        },
+    }
+    if not ordered_candidates:
+        if diagnostics["strategies_evaluated"] == 0:
+            status = "skipped"
+            reason = "missing_input"
+        else:
+            status = "failed"
+            reason = "insufficient_signal"
+        s_tier_meta = _build_s_tier_metadata(
+            cfg,
+            pairwise_path=pairwise_path,
+            union_meta=union_meta,
+            union_path=union_path,
+            fallback_used=fallback_used,
+        )
+        s_tier_meta.update(
+            {
+                "status": status,
+                "reason": reason,
+                "diagnostics": diagnostics,
+            }
+        )
+        s_tiers_path = analysis_dir / "h2h_s_tiers.json"
+        with atomic_path(str(s_tiers_path)) as tmp_path, open(tmp_path, "w", encoding="utf-8") as handle:
+            json.dump({"_meta": s_tier_meta}, handle, indent=2, sort_keys=True)
+        write_stage_done(
+            done_path,
+            inputs=[pairwise_path],
+            outputs=[decisions_path, graph_path, tiers_path, s_tiers_path],
+            config_sha=cfg.config_sha,
+            status=status,
+            reason=reason,
+            blocking_dependency=str(pairwise_path),
+            upstream_stage="post_h2h",
+        )
+        LOGGER.warning(
+            "Post H2H did not produce S tiers",
+            extra={"stage": "post_h2h", "status": status, "reason": reason, **diagnostics},
+        )
+        return
+
     s_tiers = _assign_s_tiers(ordered_candidates)
     s_tier_meta = _build_s_tier_metadata(
         cfg,
