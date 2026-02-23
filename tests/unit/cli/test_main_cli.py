@@ -103,6 +103,51 @@ def test_resolve_seed_pair_rejects_invalid_combinations(argv):
     assert excinfo.value.code == 2
 
 
+
+
+def test_resolve_log_file_for_run(tmp_path: Path):
+    cfg = cli_main.AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    cfg.sim.seed = 11
+
+    parser = cli_main.build_parser()
+    args, _ = parser.parse_known_args(["run"])
+
+    log_file = cli_main._resolve_log_file(args, cfg)
+
+    assert log_file == cfg.results_root / "log.txt"
+
+
+def test_resolve_log_file_for_two_seed_pipeline(tmp_path: Path):
+    cfg = cli_main.AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    cfg.sim.seed_pair = (3, 7)
+    cfg.sim.seed_list = [3, 7]
+
+    parser = cli_main.build_parser()
+    args, _ = parser.parse_known_args(["two-seed-pipeline"])
+
+    log_file = cli_main._resolve_log_file(args, cfg)
+
+    assert log_file == (tmp_path / "results_seed_pair_3_7" / "log.txt")
+
+
+def test_main_run_configures_file_logging(monkeypatch, tmp_path: Path, preserve_root_logger):
+    captured: dict[str, object] = {}
+
+    def _fake_configure_logging(*, level, log_file=None):
+        captured["level"] = level
+        captured["log_file"] = log_file
+
+    monkeypatch.setattr(cli_main, "configure_logging", _fake_configure_logging)
+    monkeypatch.setattr(cli_main.runner, "run_single_n", lambda cfg, n_players, force=False: None)
+
+    cfg_path = _write_cfg(tmp_path)
+    cli_main.main(["--config", str(cfg_path), "run"])
+
+    assert captured["log_file"] == tmp_path / "out_seed_7" / "log.txt"
+
+
 def test_analyze_metrics_ignores_rng_flags(monkeypatch, preserve_root_logger):
     calls: list[str] = []
 
@@ -204,7 +249,7 @@ def test_analyze_pipeline_dispatches_preprocess_and_analytics(
 
     assert calls == [
         ("analyze:pipeline", False),
-        ("analyze:analytics", {"run_rng_diagnostics": False, "rng_lags": None}),
+        ("analyze:analytics", {"run_rng_diagnostics": False, "rng_lags": None, "allow_missing_upstream": False}),
     ]
 
 
@@ -447,6 +492,7 @@ def test_two_seed_pipeline_analyze_variant_passes_force_and_logs_warning(
         captured.update(kwargs)
 
     monkeypatch.setattr(cli_main.two_seed_pipeline, "run_pipeline", _fake_run_pipeline)
+    monkeypatch.setattr(cli_main, "configure_logging", lambda **kwargs: None)
 
     with caplog.at_level(logging.WARNING):
         cli_main.main(
