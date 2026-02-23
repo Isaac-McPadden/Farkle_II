@@ -800,11 +800,20 @@ def run_bonferroni_head2head(
     if k_players != 2:
         raise ValueError("Bonferroni head-to-head only supports k_players=2")
 
-    games_per_strategy = games_for_power(
+    sizing_result = games_for_power(
         n_strategies=len(elites),
         method=method,
         full_pairwise=True,
+        log_mode="never",
+        return_details=True,
         **design_kwargs,
+    )
+    games_per_strategy_raw = int(sizing_result.games_per_strategy_uncapped)
+    games_per_strategy = int(sizing_result.games_per_strategy)
+    override_reason = (
+        "max_games_cap"
+        if sizing_result.applied_cap
+        else "min_games_floor" if sizing_result.applied_floor else "none"
     )
     safeguard = cfg.head2head.bonferroni_total_games_safeguard
     if safeguard is not None and safeguard > 0:
@@ -866,12 +875,14 @@ def run_bonferroni_head2head(
         else int(math.ceil(games_per_strategy * max(1, k_players - 1) / opponents))
     )
     LOGGER.info(
-        "Bonferroni head-to-head sizing",
+        "Bonferroni head-to-head final design",
         extra={
             "stage": "head2head",
-            "games_per_strategy": games_per_strategy,
-            "games_per_pair": games_per_pair,
             "elite_count": len(elites),
+            "games_per_strategy_raw": games_per_strategy_raw,
+            "games_per_strategy_final": games_per_strategy,
+            "override_reason": override_reason,
+            "games_per_pair": games_per_pair,
             "k_players": k_players,
         },
     )
