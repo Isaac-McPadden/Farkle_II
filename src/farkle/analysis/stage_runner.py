@@ -21,6 +21,17 @@ class StagePlanItem:
     name: str
     action: Callable[[AppConfig], None]
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
+    required_outputs: Sequence[Path] = dataclasses.field(default_factory=tuple)
+
+
+class StageValidationError(RuntimeError):
+    """Raised when a stage completes without required artifacts."""
+
+    def __init__(self, stage: str, missing_outputs: Sequence[Path]):
+        self.stage = stage
+        self.missing_outputs = tuple(missing_outputs)
+        missing_text = ", ".join(str(path) for path in self.missing_outputs)
+        super().__init__(f"Stage {stage!r} missing required outputs: {missing_text}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -94,6 +105,9 @@ class StageRunner:
             )
             try:
                 item.action(context.config)
+                missing_outputs = [path for path in item.required_outputs if not path.exists()]
+                if missing_outputs:
+                    raise StageValidationError(item.name, missing_outputs)
                 append_manifest_line(
                     manifest_path,
                     {
@@ -124,6 +138,13 @@ class StageRunner:
                         "stage": item.name,
                         "ok": False,
                         "error": f"{type(exc).__name__}: {exc}",
+                        **(
+                            {
+                                "missing_outputs": [str(path) for path in exc.missing_outputs],
+                            }
+                            if isinstance(exc, StageValidationError)
+                            else {}
+                        ),
                     },
                 )
                 if not context.continue_on_error:

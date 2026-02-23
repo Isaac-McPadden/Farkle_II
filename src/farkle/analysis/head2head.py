@@ -11,6 +11,7 @@ import json
 import logging
 import math
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict
@@ -19,6 +20,7 @@ import pandas as pd
 
 from farkle.analysis import run_bonferroni_head2head as _h2h
 from farkle.analysis import stage_logger
+from farkle.analysis.stage_state import stage_done_path, write_stage_done
 from farkle.config import AppConfig
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy_for_df, parse_strategy_identifier
@@ -46,6 +48,49 @@ _GFP_FIELDS = {
     "bh_target_frac",
     "endpoint",
 }
+
+
+_REQUIRED_SUCCESS_ARTIFACTS = (
+    "bonferroni_pairwise.parquet",
+    "bonferroni_pairwise_ordered.parquet",
+    "bonferroni_selfplay_symmetry.parquet",
+    "bonferroni_head2head.done.json",
+)
+
+
+def required_success_outputs(cfg: AppConfig) -> tuple[Path, ...]:
+    """Return required artifacts that define successful head-to-head completion."""
+
+    done = stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head")
+    outputs = tuple(cfg.head2head_stage_dir / name for name in _REQUIRED_SUCCESS_ARTIFACTS[:-1])
+    return outputs + (done,)
+
+
+def _write_error_artifact(
+    cfg: AppConfig,
+    *,
+    exc: Exception,
+    stage_name: str,
+    input_paths: dict[str, Path],
+) -> Path:
+    """Persist structured failure diagnostics for the head-to-head stage."""
+
+    error_path = cfg.head2head_stage_dir / "head2head.error.json"
+    payload = {
+        "status": "failed",
+        "stage": stage_name,
+        "seed": int(cfg.sim.seed),
+        "exception": {
+            "type": type(exc).__name__,
+            "message": str(exc),
+            "traceback": traceback.format_exc(),
+        },
+        "inputs": {key: str(path) for key, path in input_paths.items()},
+    }
+    error_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(error_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return error_path
 
 
 @dataclass
@@ -105,12 +150,36 @@ def run(cfg: AppConfig) -> None:
             seed=cfg.sim.seed,
             design=design_kwargs,
         )
-    except Exception as e:  # noqa: BLE001
-        LOGGER.warning(
-            "Head-to-head skipped",
-            extra={"stage": "head2head", "error": str(e)},
+    except Exception as exc:  # noqa: BLE001
+        inputs = {
+            "curated_parquet": cfg.curated_parquet,
+            "preferred_tiers": cfg.preferred_tiers_path(),
+            "ratings": cfg.trueskill_path("ratings_k_weighted.parquet"),
+            "metrics": cfg.metrics_input_path("metrics.parquet"),
+        }
+        error_path = _write_error_artifact(
+            cfg,
+            exc=exc,
+            stage_name="bonferroni_head2head.compute",
+            input_paths=inputs,
         )
-        return
+        write_stage_done(
+            stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
+            inputs=[p for p in inputs.values() if p.exists()],
+            outputs=[error_path],
+            config_sha=cfg.config_sha,
+            status="failed",
+            reason="head2head compute error",
+        )
+        LOGGER.exception(
+            "Head-to-head failed",
+            extra={
+                "stage": "head2head",
+                "error_artifact": str(error_path),
+                "status": "failed",
+            },
+        )
+        raise
 
 
 def _build_design_kwargs(cfg: AppConfig) -> dict[str, Any]:
