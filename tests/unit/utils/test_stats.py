@@ -5,7 +5,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from farkle.utils.stats import bh_correct, games_for_power, wilson_ci
+from farkle.utils.stats import GamesForPowerResult, bh_correct, games_for_power, wilson_ci
 
 
 @pytest.mark.parametrize(
@@ -115,6 +115,7 @@ def test_games_for_power_with_logging_defaults(caplog: pytest.LogCaptureFixture)
     )
     assert games > 0
     assert any("ignoring rank" in message for message in caplog.messages)
+    assert any("sizing_source=" in message for message in caplog.messages)
 
 
 def test_games_for_power_floor_and_cap() -> None:
@@ -122,6 +123,41 @@ def test_games_for_power_floor_and_cap() -> None:
     assert games >= 1000
     capped = games_for_power(n_strategies=6, min_games_floor=5, max_games_cap=10)
     assert capped == 10
+
+
+def test_games_for_power_return_details() -> None:
+    result = games_for_power(
+        n_strategies=6,
+        min_games_floor=5,
+        max_games_cap=10,
+        return_details=True,
+        log_mode="never",
+    )
+    assert isinstance(result, GamesForPowerResult)
+    assert result.games_per_strategy == 10
+    assert result.games_per_strategy_uncapped >= result.games_per_strategy
+    assert result.applied_cap is True
+    assert result.sizing_source == "capped"
+
+
+def test_games_for_power_auto_log_reports_override(caplog: pytest.LogCaptureFixture) -> None:
+    caplog.set_level("INFO")
+    games_for_power(
+        n_strategies=6,
+        min_games_floor=5,
+        max_games_cap=10,
+        log_mode="auto",
+    )
+    assert any("sizing_source=capped" in message for message in caplog.messages)
+    assert any("games_per_strategy_raw=" in message for message in caplog.messages)
+
+
+def test_games_for_power_never_log_suppresses_sizing_summary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level("INFO")
+    games_for_power(n_strategies=6, log_mode="never")
+    assert not any("sizing_source=" in message for message in caplog.messages)
 
 
 def test_bh_correct_handles_strings_castable_to_float() -> None:

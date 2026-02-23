@@ -18,14 +18,37 @@ from __future__ import annotations
 
 import itertools
 import logging
+from dataclasses import dataclass
 from math import ceil, sqrt
-from typing import Dict, List
+from typing import Dict, List, Literal, overload
 
 import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
 from farkle.utils.random import MAX_UINT32
+
+
+@dataclass(frozen=True)
+class GamesForPowerResult:
+    """Structured output for :func:`games_for_power`.
+
+    Attributes capture raw and final sizing values plus key design parameters.
+    """
+
+    games_per_strategy_uncapped: int
+    games_per_strategy: int
+    applied_floor: bool
+    applied_cap: bool
+    sizing_source: Literal["computed", "floored", "capped"]
+    m: int
+    alpha_star: float
+    alpha_for_z: float
+    z_alpha: float
+    z_beta: float
+    p0: float
+    p1: float
+    detectable_lift: float
 
 
 def wilson_ci(k: int, n: int, alpha: float = 0.05) -> tuple[float, float]:
@@ -124,6 +147,52 @@ def _per_test_level(
     return (i_star / m) * (q / c_m)
 
 
+@overload
+def games_for_power(
+    *,
+    n_strategies: int = 7140,
+    k_players: int = 2,
+    method: str = "bh",
+    power: float = 0.8,
+    control: float = 0.1,
+    detectable_lift: float = 0.03,
+    baseline_rate: float | None = None,
+    tail: str = "two_sided",
+    full_pairwise: bool = False,
+    use_BY: bool = False,
+    min_games_floor: int | None = None,
+    max_games_cap: int | None = None,
+    bh_target_rank: int | None = None,
+    bh_target_frac: float | None = None,
+    endpoint: str = "top1",
+    log_mode: Literal["auto", "always", "never"] = "auto",
+    return_details: Literal[False] = False,
+) -> int: ...
+
+
+@overload
+def games_for_power(
+    *,
+    n_strategies: int = 7140,
+    k_players: int = 2,
+    method: str = "bh",
+    power: float = 0.8,
+    control: float = 0.1,
+    detectable_lift: float = 0.03,
+    baseline_rate: float | None = None,
+    tail: str = "two_sided",
+    full_pairwise: bool = False,
+    use_BY: bool = False,
+    min_games_floor: int | None = None,
+    max_games_cap: int | None = None,
+    bh_target_rank: int | None = None,
+    bh_target_frac: float | None = None,
+    endpoint: str = "top1",
+    log_mode: Literal["auto", "always", "never"] = "auto",
+    return_details: Literal[True] = True,
+) -> GamesForPowerResult: ...
+
+
 def games_for_power(
     *,
     n_strategies: int = 7140,
@@ -141,7 +210,9 @@ def games_for_power(
     bh_target_rank: int | None = None,
     bh_target_frac: float | None = None,
     endpoint: str = "top1",  # "pairwise" (A vs B) or "top1" (wins whole game)
-) -> int:
+    log_mode: Literal["auto", "always", "never"] = "auto",
+    return_details: bool = False,
+) -> int | GamesForPowerResult:
     """
     Returns the required number of GAMES PER STRATEGY (rounded up) for a
     k-player round-robin style experiment, using BH false discovery rate (FDR)
@@ -201,11 +272,19 @@ def games_for_power(
         "pairwise" or "top1".  "pairwise" considers outcomes based on all players in
         a match.  "top1" only cares about the winner.  "pairwise" is extremely granular
         and better used after screening with "top1".
+    log_mode : Literal["auto", "always", "never"]
+        Controls how sizing logs are emitted:
+        - ``"auto"``: one concise summary message with source marker.
+        - ``"always"``: concise summary plus detailed diagnostic message.
+        - ``"never"``: suppress sizing summary/detail logs.
+    return_details : bool
+        If ``True``, return :class:`GamesForPowerResult`; otherwise return an
+        ``int`` (backward compatible).
     Returns
     -------
-    int
-        Number of games required per strategy (rounded up to the next
-        integer).
+    int | GamesForPowerResult
+        Number of games required per strategy (rounded up), or structured
+        sizing details when ``return_details=True``.
     """
     LOGGER = logging.getLogger(__name__)
 
@@ -224,6 +303,8 @@ def games_for_power(
         raise ValueError("baseline_rate + detectable_lift must be < 1")
     if tail not in {"one_sided", "two_sided"}:
         raise ValueError("tail must be 'one_sided' or 'two_sided'")
+    if log_mode not in {"auto", "always", "never"}:
+        raise ValueError("log_mode must be 'auto', 'always', or 'never'")
 
     # Endpoint-specific baseline default
     if endpoint == "pairwise":
@@ -316,44 +397,107 @@ def games_for_power(
         n_arm_per_pair = (numerator / detectable_lift) ** 2
 
         # Convert co-appearances → games per strategy via /(k-1)
-        games_per_strategy = ceil(n_arm_per_pair * (n_strategies - 1) / (k_players - 1))
+        games_per_strategy_uncapped = ceil(n_arm_per_pair * (n_strategies - 1) / (k_players - 1))
 
     else:  # endpoint == "top1"
         # One-sample proportion vs known p0; each game yields one Bernoulli for strategy i
         p1 = p0 + detectable_lift
         numerator = z_alpha * sqrt(p0 * (1.0 - p0)) + z_beta * sqrt(p1 * (1.0 - p1))
         n_games_per_strategy = (numerator / (p1 - p0)) ** 2
-        games_per_strategy = ceil(n_games_per_strategy)
+        games_per_strategy_uncapped = ceil(n_games_per_strategy)
 
     # -------------------- floors / caps --------------------
+    games_per_strategy = games_per_strategy_uncapped
+    applied_floor = False
+    applied_cap = False
     if min_games_floor is not None:
-        games_per_strategy = max(games_per_strategy, int(min_games_floor))
+        floored_value = max(games_per_strategy, int(min_games_floor))
+        applied_floor = floored_value != games_per_strategy
+        games_per_strategy = floored_value
     if max_games_cap is not None:
-        games_per_strategy = min(games_per_strategy, int(max_games_cap))
+        capped_value = min(games_per_strategy, int(max_games_cap))
+        applied_cap = capped_value != games_per_strategy
+        games_per_strategy = capped_value
 
-    LOGGER.info(
-        "stats.py: endpoint=%s method=%s full_pairwise=%s | n=%d k=%d m=%d | "
-        "control=%.6g tail=%s BY=%s | p0=%.6g p1=%.6g delta=%.6g | "
-        "alpha*=%.6g alpha_for_z=%.6g z_alpha=%.4f z_beta=%.4f -> games/strategy=%d",
-        endpoint,
-        method,
-        full_pairwise if endpoint == "pairwise" else False,
-        n_strategies,
-        k_players,
-        m,
-        control,
-        tail,
-        bool(use_BY) if method == "bh" else False,
-        p0,
-        (p0 + detectable_lift),
-        detectable_lift,
-        alpha_star,
-        alpha_for_z,
-        z_alpha,
-        z_beta,
-        games_per_strategy,
+    sizing_source: Literal["computed", "floored", "capped"]
+    if applied_cap:
+        sizing_source = "capped"
+    elif applied_floor:
+        sizing_source = "floored"
+    else:
+        sizing_source = "computed"
+
+    if log_mode in {"auto", "always"}:
+        if games_per_strategy == games_per_strategy_uncapped:
+            LOGGER.info(
+                "stats.py: sizing_source=%s mode=%s endpoint=%s method=%s m=%d "
+                "games_per_strategy=%d (computed directly)",
+                sizing_source,
+                log_mode,
+                endpoint,
+                method,
+                m,
+                games_per_strategy,
+            )
+        else:
+            LOGGER.info(
+                "stats.py: sizing_source=%s mode=%s endpoint=%s method=%s m=%d "
+                "games_per_strategy_raw=%d games_per_strategy=%d (overridden by floor/cap)",
+                sizing_source,
+                log_mode,
+                endpoint,
+                method,
+                m,
+                games_per_strategy_uncapped,
+                games_per_strategy,
+            )
+
+    if log_mode == "always":
+        LOGGER.info(
+            "stats.py: endpoint=%s method=%s full_pairwise=%s | n=%d k=%d m=%d | "
+            "control=%.6g tail=%s BY=%s | p0=%.6g p1=%.6g delta=%.6g | "
+            "alpha*=%.6g alpha_for_z=%.6g z_alpha=%.4f z_beta=%.4f "
+            "raw_games/strategy=%d final_games/strategy=%d applied_floor=%s applied_cap=%s",
+            endpoint,
+            method,
+            full_pairwise if endpoint == "pairwise" else False,
+            n_strategies,
+            k_players,
+            m,
+            control,
+            tail,
+            bool(use_BY) if method == "bh" else False,
+            p0,
+            (p0 + detectable_lift),
+            detectable_lift,
+            alpha_star,
+            alpha_for_z,
+            z_alpha,
+            z_beta,
+            games_per_strategy_uncapped,
+            games_per_strategy,
+            applied_floor,
+            applied_cap,
+        )
+
+    result = GamesForPowerResult(
+        games_per_strategy_uncapped=int(games_per_strategy_uncapped),
+        games_per_strategy=int(games_per_strategy),
+        applied_floor=applied_floor,
+        applied_cap=applied_cap,
+        sizing_source=sizing_source,
+        m=m,
+        alpha_star=alpha_star,
+        alpha_for_z=alpha_for_z,
+        z_alpha=z_alpha,
+        z_beta=z_beta,
+        p0=p0,
+        p1=(p0 + detectable_lift),
+        detectable_lift=detectable_lift,
     )
-    return int(games_per_strategy)
+    if return_details:
+        return result
+    return result.games_per_strategy
 
 
 def build_tiers(
