@@ -137,12 +137,26 @@ def run(cfg: AppConfig) -> None:
     out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
     legacy_out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
     existing_out = out if out.exists() else legacy_out
-    if existing_out.exists() and existing_out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
+    required_outputs = required_success_outputs(cfg)
+    missing_required_outputs = [path for path in required_outputs if not path.exists()]
+    if (
+        existing_out.exists()
+        and existing_out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime
+        and not missing_required_outputs
+    ):
         LOGGER.info(
             "Head-to-head results up-to-date",
             extra={"stage": "head2head", "path": str(existing_out)},
         )
         return
+    if missing_required_outputs:
+        LOGGER.warning(
+            "Head-to-head artifacts incomplete; recomputing",
+            extra={
+                "stage": "head2head",
+                "missing_outputs": [str(path) for path in missing_required_outputs],
+            },
+        )
 
     LOGGER.info(
         "Head-to-head analysis running",

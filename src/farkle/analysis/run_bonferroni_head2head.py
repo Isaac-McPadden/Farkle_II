@@ -204,6 +204,23 @@ def _count_pair_wins(
     return wins_a, wins_b
 
 
+def _player_metric_mean(df: pd.DataFrame, player: int, metric: str) -> float:
+    """Return the mean value for a seat metric with legacy column aliases."""
+
+    aliases: dict[str, tuple[str, ...]] = {
+        "farkles": (f"P{player}_farkles", f"P{player}_n_farkles"),
+        "score": (f"P{player}_score",),
+    }
+    if metric not in aliases:
+        raise KeyError(f"Unsupported metric alias lookup: {metric}")
+    for column in aliases[metric]:
+        if column in df.columns:
+            return float(df[column].mean())
+    raise KeyError(
+        f"Missing expected columns for P{player}_{metric}; looked for {aliases[metric]} in {list(df.columns)}"
+    )
+
+
 def _pairwise_schema() -> pa.Schema:
     fields: list[pa.Field] = [
         pa.field("players", pa.int64()),
@@ -298,17 +315,6 @@ def _validate_union_candidates_payload(payload: dict[str, Any]) -> None:
         )
 
     candidates = [str(name) for name in payload["candidates"]]
-    if not candidates:
-        raise Head2HeadPipelineError(
-            "Union candidate set is empty; cannot generate pairwise schedule",
-            error_code="empty_candidate_set",
-            context={
-                "ratings_count": int(payload["ratings_count"]),
-                "metrics_count": int(payload["metrics_count"]),
-                "combined_count": int(payload["combined_count"]),
-                "filters_applied": ["top_ratings_limit", "top_metrics_limit", "dedupe_union"],
-            },
-        )
 
     if int(payload["combined_count"]) != len(candidates):
         raise Head2HeadPipelineError(
@@ -501,16 +507,51 @@ def run_bonferroni_head2head(
     debug_summary["input_candidates"]["selected_elites"] = len(elites)
 
     if len(elites) < 2:
-        raise Head2HeadPipelineError(
-            "At least two candidate strategies are required for pairwise testing",
-            error_code="insufficient_candidate_set",
-            context={
+        reason = (
+            "insufficient candidate strategies for pairwise testing "
+            f"(selected={len(elites)}, required>=2)"
+        )
+        LOGGER.warning(
+            "Bonferroni head-to-head skipped: insufficient candidate set",
+            extra={
+                "stage": "head2head",
                 "selection_source": selection_source,
                 "tier_elite_count": len(tier_elites),
                 "union_candidate_count": len(union_strategies),
                 "selected_elite_count": len(elites),
             },
         )
+        empty_pairwise = pa.Table.from_pylist([], schema=_pairwise_schema())
+        empty_ordered = pa.Table.from_pylist([], schema=_pairwise_ordered_schema())
+        empty_selfplay = pa.Table.from_pylist([], schema=_selfplay_schema())
+        write_parquet_atomic(empty_pairwise, pairwise_parquet)
+        write_parquet_atomic(empty_ordered, pairwise_ordered_parquet)
+        write_parquet_atomic(empty_selfplay, selfplay_parquet)
+        debug_summary_path.parent.mkdir(parents=True, exist_ok=True)
+        with atomic_path(str(debug_summary_path)) as tmp_path:
+            Path(tmp_path).write_text(json.dumps(debug_summary, indent=2, sort_keys=True), encoding="utf-8")
+        inputs = [tiers_path]
+        if ratings_path.exists():
+            inputs.append(ratings_path)
+        if metrics_path.exists():
+            inputs.append(metrics_path)
+        write_stage_done(
+            stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
+            inputs=inputs,
+            outputs=[
+                pairwise_parquet,
+                pairwise_ordered_parquet,
+                selfplay_parquet,
+                union_candidates_path,
+                debug_summary_path,
+            ],
+            config_sha=cfg.config_sha,
+            status="skipped",
+            reason=reason,
+            blocking_dependency=str(tiers_path),
+            upstream_stage="tiering",
+        )
+        return
 
     if len(set(elites)) != len(elites):
         raise Head2HeadPipelineError(
@@ -632,6 +673,36 @@ def run_bonferroni_head2head(
         LOGGER.info(
             "Bonferroni head-to-head: no games scheduled",
             extra={"stage": "head2head", "elite_count": len(elites)},
+        )
+        empty_pairwise = pa.Table.from_pylist([], schema=_pairwise_schema())
+        empty_ordered = pa.Table.from_pylist([], schema=_pairwise_ordered_schema())
+        empty_selfplay = pa.Table.from_pylist([], schema=_selfplay_schema())
+        write_parquet_atomic(empty_pairwise, pairwise_parquet)
+        write_parquet_atomic(empty_ordered, pairwise_ordered_parquet)
+        write_parquet_atomic(empty_selfplay, selfplay_parquet)
+        debug_summary_path.parent.mkdir(parents=True, exist_ok=True)
+        with atomic_path(str(debug_summary_path)) as tmp_path:
+            Path(tmp_path).write_text(json.dumps(debug_summary, indent=2, sort_keys=True), encoding="utf-8")
+        inputs = [tiers_path]
+        if ratings_path.exists():
+            inputs.append(ratings_path)
+        if metrics_path.exists():
+            inputs.append(metrics_path)
+        write_stage_done(
+            stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
+            inputs=inputs,
+            outputs=[
+                pairwise_parquet,
+                pairwise_ordered_parquet,
+                selfplay_parquet,
+                union_candidates_path,
+                debug_summary_path,
+            ],
+            config_sha=cfg.config_sha,
+            status="skipped",
+            reason="no games scheduled (games_per_pair <= 0)",
+            blocking_dependency=str(tiers_path),
+            upstream_stage="tiering",
         )
         return
 
@@ -809,10 +880,10 @@ def run_bonferroni_head2head(
 
             def seat_means(df: pd.DataFrame) -> tuple[float, float, float, float]:
                 return (
-                    float(df["P1_n_farkles"].mean()),
-                    float(df["P2_n_farkles"].mean()),
-                    float(df["P1_score"].mean()),
-                    float(df["P2_score"].mean()),
+                    _player_metric_mean(df, 1, "farkles"),
+                    _player_metric_mean(df, 2, "farkles"),
+                    _player_metric_mean(df, 1, "score"),
+                    _player_metric_mean(df, 2, "score"),
                 )
 
             df_ab = simulate_many_games_from_seeds(
@@ -1009,11 +1080,16 @@ def run_bonferroni_head2head(
                 extra={"stage": "head2head", "path": str(pairwise_parquet), "error": str(exc)},
             )
     if not all_frames:
-        LOGGER.info(
-            "Bonferroni head-to-head: no results to write",
-            extra={"stage": "head2head", "elite_count": len(elites)},
+        raise Head2HeadPipelineError(
+            "No pairwise frames available after shard collection/merge",
+            error_code="empty_pairwise_merge",
+            context={
+                "elite_count": len(elites),
+                "scheduled_pairs": len(scheduled_pairs),
+                "final_shards": len(final_shard_paths),
+                "pairwise_path": str(pairwise_parquet),
+            },
         )
-        return
     combined_df = (
         pd.concat(all_frames, ignore_index=True)
         .sort_values("pair_id")
@@ -1042,10 +1118,10 @@ def run_bonferroni_head2head(
         games = len(selfplay_seeds)
         seat1_rate = wins_seat1 / games if games else math.nan
         seat2_rate = wins_seat2 / games if games else math.nan
-        mean_farkles_seat1 = float(df_self["P1_n_farkles"].mean())
-        mean_farkles_seat2 = float(df_self["P2_n_farkles"].mean())
-        mean_score_seat1 = float(df_self["P1_score"].mean())
-        mean_score_seat2 = float(df_self["P2_score"].mean())
+        mean_farkles_seat1 = _player_metric_mean(df_self, 1, "farkles")
+        mean_farkles_seat2 = _player_metric_mean(df_self, 2, "farkles")
+        mean_score_seat1 = _player_metric_mean(df_self, 1, "score")
+        mean_score_seat2 = _player_metric_mean(df_self, 2, "score")
         selfplay_records.append(
             {
                 "players": k_players,
@@ -1082,4 +1158,21 @@ def run_bonferroni_head2head(
             "selfplay_rows": selfplay_table.num_rows,
             "selfplay_path": str(selfplay_parquet),
         },
+    )
+    inputs = [tiers_path]
+    if ratings_path.exists():
+        inputs.append(ratings_path)
+    if metrics_path.exists():
+        inputs.append(metrics_path)
+    write_stage_done(
+        stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
+        inputs=inputs,
+        outputs=[
+            pairwise_parquet,
+            pairwise_ordered_parquet,
+            selfplay_parquet,
+            union_candidates_path,
+            debug_summary_path,
+        ],
+        config_sha=cfg.config_sha,
     )

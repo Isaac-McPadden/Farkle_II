@@ -25,6 +25,21 @@ def _mock_simulated_games(strategies: list[str], seeds: list[int], winner: str |
     )
 
 
+def _mock_simulated_games_legacy_farkles(
+    strategies: list[str], seeds: list[int], winner: str | None = None
+) -> pd.DataFrame:
+    winners = [winner if winner is not None else str(strategies[0])] * len(seeds)
+    return pd.DataFrame(
+        {
+            "winner_strategy": winners,
+            "P1_farkles": [3.0] * len(seeds),
+            "P2_farkles": [4.0] * len(seeds),
+            "P1_score": [300.0] * len(seeds),
+            "P2_score": [250.0] * len(seeds),
+        }
+    )
+
+
 def test_simulate_many_games_from_seeds(monkeypatch):
     def fake_play(seed, strategies, target_score=10_000):  # noqa: ARG001
         return {
@@ -126,6 +141,20 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     monkeypatch.setattr(rb, "games_for_power", fake_games_for_power)
     monkeypatch.setattr(
         rb,
+        "_load_top_strategies",
+        lambda **_: (
+            ["S1", "S2", "S3"],
+            {
+                "ratings_count": 3,
+                "metrics_count": 3,
+                "combined_count": 3,
+                "ratings_path": "",
+                "metrics_path": "",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        rb,
         "parse_strategy_identifier",
         lambda name, manifest=None, parse_legacy=None: name,
     )
@@ -186,6 +215,57 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     assert len(shards) >= 2
     # Two pending pairs -> each runs two seat orderings, plus one self-play run per elite.
     assert call_counter["calls"] == 7
+
+
+def test_run_bonferroni_head2head_accepts_legacy_farkles_columns(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
+    tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
+
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: 2)  # noqa: ANN001
+    monkeypatch.setattr(
+        rb,
+        "_load_top_strategies",
+        lambda **_: (
+            ["A", "B"],
+            {
+                "ratings_count": 0,
+                "metrics_count": 0,
+                "combined_count": 2,
+                "ratings_path": "",
+                "metrics_path": "",
+            },
+        ),
+    )
+    monkeypatch.setattr(
+        rb,
+        "parse_strategy_identifier",
+        lambda name, manifest=None, parse_legacy=None: name,
+    )
+    monkeypatch.setattr(
+        rb,
+        "simulate_many_games_from_seeds",
+        lambda seeds, strategies, n_jobs: _mock_simulated_games_legacy_farkles(strategies, seeds),
+    )
+
+    rb.run_bonferroni_head2head(seed=1, cfg=cfg)
+
+    pairwise_path = cfg.head2head_path("bonferroni_pairwise.parquet")
+    selfplay_path = cfg.head2head_path("bonferroni_selfplay_symmetry.parquet")
+    assert pairwise_path.exists()
+    assert selfplay_path.exists()
+
+    pairwise = pd.read_parquet(pairwise_path)
+    assert (pairwise["mean_farkles_a"] == 3.5).all()
+    assert (pairwise["mean_farkles_b"] == 3.5).all()
+
+    selfplay = pd.read_parquet(selfplay_path)
+    assert (selfplay["mean_farkles_seat1"] == 3.0).all()
+    assert (selfplay["mean_farkles_seat2"] == 4.0).all()
 
 
 def test_run_bonferroni_head2head_progress_cadence_logs(
@@ -290,6 +370,20 @@ def test_run_bonferroni_head2head_safeguard_skips(
     tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
     monkeypatch.setattr(rb, "games_for_power", lambda **_: 10)  # noqa: ANN001
+    monkeypatch.setattr(
+        rb,
+        "_load_top_strategies",
+        lambda **_: (
+            ["A", "B", "C"],
+            {
+                "ratings_count": 3,
+                "metrics_count": 3,
+                "combined_count": 3,
+                "ratings_path": "",
+                "metrics_path": "",
+            },
+        ),
+    )
 
     rb.run_bonferroni_head2head(cfg=cfg)
 
@@ -464,7 +558,19 @@ def test_run_bonferroni_head2head_single_elite_no_dispatch(
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("parse should not be called")))
 
     rb.run_bonferroni_head2head(cfg=cfg)
-    assert not cfg.head2head_path("bonferroni_pairwise.parquet").exists()
+    pairwise_path = cfg.head2head_path("bonferroni_pairwise.parquet")
+    ordered_path = cfg.head2head_path("bonferroni_pairwise_ordered.parquet")
+    selfplay_path = cfg.head2head_path("bonferroni_selfplay_symmetry.parquet")
+    assert pairwise_path.exists()
+    assert ordered_path.exists()
+    assert selfplay_path.exists()
+    assert pd.read_parquet(pairwise_path).empty
+    assert pd.read_parquet(ordered_path).empty
+    assert pd.read_parquet(selfplay_path).empty
+
+    done = read_stage_done(stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"))
+    assert done["status"] == "skipped"
+    assert "insufficient candidate strategies" in str(done["reason"])
 
 
 def test_run_bonferroni_head2head_shard_pair_id_read_exception_warns_and_continues(
