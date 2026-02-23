@@ -111,6 +111,12 @@ def test_load_s_tiers_handles_invalid_json_shapes_and_mixed_values(tmp_path: Pat
     assert h2h_tier_trends._load_s_tiers(mixed) == {"1": "S", "3": "A"}
 
 
+def test_load_s_tiers_rejects_meta_only_payload(tmp_path: Path) -> None:
+    meta_only = tmp_path / "meta_only.json"
+    meta_only.write_text('{"_meta": {"status": "failed", "reason": "insufficient_signal"}}')
+    assert h2h_tier_trends._load_s_tiers(meta_only) == {}
+
+
 def test_collect_meta_paths_uses_config_then_glob_fallback(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
 

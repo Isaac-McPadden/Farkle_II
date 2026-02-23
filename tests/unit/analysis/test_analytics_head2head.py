@@ -1098,3 +1098,53 @@ def test_run_post_h2h_omits_ranking_output_for_cyclic_graph(_cfg: AppConfig) -> 
     output_names = {Path(path).name for path in cast(list[str], done["outputs"])}
     assert "h2h_significant_ranking.csv" not in output_names
     assert not (cfg.post_h2h_stage_dir / "h2h_significant_ranking.csv").exists()
+
+
+def test_run_post_h2h_keeps_success_only_with_non_empty_s_tier_domain(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    pairwise_path = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
+    pairwise_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "wins_a": 9, "wins_b": 1, "games": 10},
+            {"a": "B", "b": "C", "wins_a": 9, "wins_b": 1, "games": 10},
+        ]
+    ).to_parquet(pairwise_path)
+
+    h2h_analysis.run_post_h2h(cfg)
+
+    done = read_stage_done(stage_done_path(cfg.post_h2h_stage_dir, "post_h2h"))
+    assert done["status"] == "success"
+    payload = json.loads((cfg.post_h2h_stage_dir / "h2h_s_tiers.json").read_text(encoding="utf-8"))
+    non_meta = {key: value for key, value in payload.items() if key != "_meta"}
+    assert non_meta
+
+
+def test_run_post_h2h_writes_meta_only_failure_when_tier_domain_empty(_cfg: AppConfig) -> None:
+    cfg = _cfg
+    pairwise_path = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
+    pairwise_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"a": "A", "b": "B", "wins_a": 9, "wins_b": 1, "games": 10},
+            {"a": "B", "b": "C", "wins_a": 9, "wins_b": 1, "games": 10},
+        ]
+    ).to_parquet(pairwise_path)
+
+    union_path = cfg.head2head_stage_dir / "h2h_union_candidates.json"
+    union_path.write_text(json.dumps(["Z"]))
+
+    h2h_analysis.run_post_h2h(cfg)
+
+    done = read_stage_done(stage_done_path(cfg.post_h2h_stage_dir, "post_h2h"))
+    assert done["status"] == "failed"
+    assert done["reason"] == "insufficient_signal"
+
+    payload = json.loads((cfg.post_h2h_stage_dir / "h2h_s_tiers.json").read_text(encoding="utf-8"))
+    assert set(payload.keys()) == {"_meta"}
+    assert payload["_meta"]["status"] == "failed"
+    assert payload["_meta"]["reason"] == "insufficient_signal"
+    diagnostics = cast(dict[str, Any], payload["_meta"]["diagnostics"])
+    assert diagnostics["strategies_evaluated"] == 3
+    assert diagnostics["decisions_retained"] >= 0
+    assert diagnostics["thresholds_applied"]["holm_alpha"] > 0

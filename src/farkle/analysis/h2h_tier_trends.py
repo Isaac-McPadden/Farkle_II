@@ -228,6 +228,13 @@ def _load_s_tiers(path: Path) -> dict[str, str]:
     if not isinstance(payload_any, dict):
         return {}
 
+    if not _is_valid_s_tier_payload(payload_any):
+        LOGGER.warning(
+            "Invalid S-tier payload schema; expected at least one strategy label",
+            extra={"stage": "h2h_tier_trends", "path": str(path)},
+        )
+        return {}
+
     validated: dict[str, str] = {}
     for strategy, label in payload_any.items():
         if strategy == "_meta":
@@ -236,6 +243,22 @@ def _load_s_tiers(path: Path) -> dict[str, str]:
             continue
         validated[str(strategy)] = label
     return cast(dict[str, str], validated)
+
+
+def _is_valid_s_tier_payload(payload: dict[str, Any]) -> bool:
+    """Validate schema for S-tier payloads consumed by tier trends.
+
+    Payloads must include at least one non-_meta strategy mapping to a string label.
+    """
+
+    strategy_items = [
+        (strategy, label)
+        for strategy, label in payload.items()
+        if strategy != "_meta"
+    ]
+    if not strategy_items:
+        return False
+    return all(isinstance(strategy, str) and isinstance(label, str) for strategy, label in strategy_items)
 
 
 def _collect_meta_paths(cfg: AppConfig) -> list[Path]:
