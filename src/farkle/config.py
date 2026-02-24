@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass, field, is_dataclass
@@ -1833,6 +1835,46 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
     return cfg
 
 
+def _stringify_paths_for_serialization(obj: Any) -> Any:
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {key: _stringify_paths_for_serialization(val) for key, val in obj.items()}
+    if isinstance(obj, list):
+        return [_stringify_paths_for_serialization(val) for val in obj]
+    if isinstance(obj, tuple):
+        return tuple(_stringify_paths_for_serialization(val) for val in obj)
+    return obj
+
+
+def effective_config_dict(cfg: AppConfig) -> dict[str, Any]:
+    """Return a materialized config mapping suitable for persistence and hashing."""
+
+    resolved = _stringify_paths_for_serialization(dataclasses.asdict(cfg))
+    resolved.pop("config_sha", None)
+    resolved.pop("_stage_layout", None)
+    return resolved
+
+
+def compute_config_sha(cfg: AppConfig) -> str:
+    """Return a deterministic sha256 over the effective configuration payload."""
+
+    canonical_json = json.dumps(
+        effective_config_dict(cfg),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
+def assign_config_sha(cfg: AppConfig) -> str:
+    """Compute and persist ``cfg.config_sha`` using canonical serialization."""
+
+    cfg.config_sha = compute_config_sha(cfg)
+    return cfg.config_sha
+
+
 __all__ = [
     "IOConfig",
     "SimConfig",
@@ -1848,4 +1890,7 @@ __all__ = [
     "expected_seed_list_length",
     "load_app_config",
     "apply_dot_overrides",
+    "assign_config_sha",
+    "compute_config_sha",
+    "effective_config_dict",
 ]

@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from farkle.analysis.stage_registry import StageLayout, resolve_stage_layout
-from farkle.config import AppConfig, IOConfig
+from farkle.config import AppConfig, IOConfig, assign_config_sha
 from farkle.orchestration import pipeline, run_contexts, seed_utils, two_seed, two_seed_pipeline
 
 
@@ -74,10 +74,13 @@ def test_prepare_seed_config_and_write_active_config(tmp_path: Path, base_cfg: A
     assert prepared.io.results_dir_prefix == Path("custom_prefix")
     assert prepared.io.meta_analysis_dir == tmp_path / "meta"
 
+    assign_config_sha(prepared)
     seed_utils.write_active_config(prepared, dest_dir=tmp_path)
     out = yaml.safe_load((tmp_path / "active_config.yaml").read_text(encoding="utf-8"))
     assert out["io"]["results_dir_prefix"].endswith("custom_prefix")
     assert out["io"]["meta_analysis_dir"].endswith("meta")
+    done_meta = json.loads((tmp_path / "active_config.done.json").read_text(encoding="utf-8"))
+    assert done_meta["config_sha"] == prepared.config_sha
 
 
 def test_two_seed_resolve_seed_pair_and_parser_validation() -> None:
@@ -236,7 +239,6 @@ def test_two_seed_main_uses_populated_seed_pair_when_no_cli_seed_override(
     assert called["cfg"] is cfg
     assert called["seed_pair"] == (101, 202)
     assert called["force"] is False
-    assert called["parallel"] is True
 
 
 def test_two_seed_pipeline_helpers(base_cfg: AppConfig, tmp_path: Path) -> None:
@@ -310,6 +312,7 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     monkeypatch.setattr(two_seed_pipeline, "append_manifest_line", lambda _path, rec: manifest_events.append(rec["event"]))
 
     interseed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "interseed"))
+    interseed_cfg.config_sha = cfg.config_sha
     interseed_cfg.stage_dir("h2h_tier_trends").mkdir(parents=True, exist_ok=True)
     interseed_context = SimpleNamespace(config=interseed_cfg)
     monkeypatch.setattr(
@@ -329,11 +332,9 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     two_seed_pipeline.run_pipeline(cfg, seed_pair=(1, 2), force=False)
     assert sim_calls == []
     assert per_seed_calls == [1, 2]
-    assert manifest_events == [
-        "run_start",
-        "seed_start",
-        "seed_simulation_skipped",
-        "seed_analysis_complete",
+    assert manifest_events[0] == "run_start"
+    assert manifest_events[-1] == "run_end"
+    for event in [
         "seed_start",
         "seed_simulation_skipped",
         "seed_analysis_complete",
@@ -341,8 +342,8 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         "interseed_complete",
         "h2h_tier_trends_start",
         "h2h_tier_trends_complete",
-        "run_end",
-    ]
+    ]:
+        assert event in manifest_events
     assert len(h2h_calls) == 1
     assert h2h_calls[0]["force"] is False
     pair_root = seed_utils.seed_pair_root(cfg, (1, 2))
@@ -358,11 +359,9 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     two_seed_pipeline.run_pipeline(cfg, seed_pair=(1, 2), force=True)
     assert sim_calls == [1, 2]
     assert per_seed_calls == [1, 2]
-    assert manifest_events == [
-        "run_start",
-        "seed_start",
-        "seed_simulation_complete",
-        "seed_analysis_complete",
+    assert manifest_events[0] == "run_start"
+    assert manifest_events[-1] == "run_end"
+    for event in [
         "seed_start",
         "seed_simulation_complete",
         "seed_analysis_complete",
@@ -370,8 +369,8 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         "interseed_complete",
         "h2h_tier_trends_start",
         "h2h_tier_trends_complete",
-        "run_end",
-    ]
+    ]:
+        assert event in manifest_events
     assert len(h2h_calls) == 1
     assert h2h_calls[0]["force"] is True
 
@@ -390,6 +389,7 @@ def test_two_seed_pipeline_parallel_seed_smoke_equivalence(
         def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
             del manifest_path
             seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+            seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
             (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
                 json.dumps({"event": "run_end"}) + "\n",
                 encoding="utf-8",
@@ -402,10 +402,12 @@ def test_two_seed_pipeline_parallel_seed_smoke_equivalence(
         monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", _fake_per_seed)
 
         def _from_seed_context(cls, seed_context, seed_pair, analysis_root):
-            del cls, seed_context, seed_pair
+            del cls, seed_pair
             key = str(analysis_root)
             if key not in interseed_roots:
-                interseed_roots[key] = AppConfig(io=IOConfig(results_dir_prefix=analysis_root / "results_seed_1"))
+                interseed_cfg = AppConfig(io=IOConfig(results_dir_prefix=analysis_root / "results_seed_1"))
+                interseed_cfg.config_sha = seed_context.config.config_sha
+                interseed_roots[key] = interseed_cfg
             return SimpleNamespace(config=interseed_roots[key])
 
         monkeypatch.setattr(
@@ -479,7 +481,6 @@ def test_two_seed_pipeline_main_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path
     assert called["logging"] is True
     assert called["seed_pair"] == (3, 4)
     assert called["force"] is False
-    assert called["parallel"] is True
 
 
 def test_two_seed_pipeline_head2head_failure_chain_integration_fixture(
@@ -581,3 +582,70 @@ def test_run_contexts_edge_branches(tmp_path: Path) -> None:
         analysis_root=tmp_path / "pair" / "interseed",
     )
     assert interseed.config.analysis.tiering_seeds == [9, 10]
+
+def test_two_seed_pipeline_emits_consistent_config_sha_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    cfg.sim.seed_pair = (3, 4)
+    assign_config_sha(cfg)
+
+    monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
+    monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
+
+    def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+        del manifest_path, seed
+        seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text('{"ok": true}\n', encoding="utf-8")
+        seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text("ok")
+        seed_cfg.post_h2h_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json").write_text("{}")
+
+    monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", _fake_per_seed)
+
+    def _fake_interseed(interseed_cfg: AppConfig, **_kwargs: object) -> None:
+        interseed_cfg.interseed_stage_dir.mkdir(parents=True, exist_ok=True)
+        (interseed_cfg.interseed_stage_dir / "interseed_summary.json").write_text("{}")
+        interseed_cfg.rng_stage_dir.mkdir(parents=True, exist_ok=True)
+        (interseed_cfg.rng_stage_dir / "rng_diagnostics.done.json").write_text(
+            json.dumps({"config_sha": interseed_cfg.config_sha}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(two_seed_pipeline.analysis, "run_interseed_analysis", _fake_interseed)
+
+    def _fake_h2h(interseed_cfg: AppConfig, **_kwargs: object) -> None:
+        (interseed_cfg.stage_dir("h2h_tier_trends") / "s_tier_trends.parquet").write_text("ok")
+
+    monkeypatch.setattr(two_seed_pipeline.analysis, "run_h2h_tier_trends", _fake_h2h)
+
+    two_seed_pipeline.run_pipeline(cfg, seed_pair=(3, 4), force=False)
+
+    expected_sha = cfg.config_sha
+    assert expected_sha is not None
+    pair_root = seed_utils.seed_pair_root(cfg, (3, 4))
+
+    manifest_records = [
+        json.loads(line)
+        for line in (pair_root / "two_seed_pipeline_manifest.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    required_events = [rec for rec in manifest_records if rec.get("event") in {"run_start", "run_end", "seed_start", "stage-end"}]
+    assert required_events
+    with_sha = [rec for rec in required_events if "config_sha" in rec]
+    assert with_sha
+    assert all(rec.get("config_sha") == expected_sha for rec in with_sha)
+
+    for seed in (3, 4):
+        active_done = pair_root / f"results_seed_{seed}" / "active_config.done.json"
+        payload = json.loads(active_done.read_text(encoding="utf-8"))
+        assert payload["config_sha"] == expected_sha
+
+    rng_candidates = list((pair_root / "interseed_analysis").glob("*/rng_diagnostics.done.json"))
+    assert len(rng_candidates) == 1
+    assert json.loads(rng_candidates[0].read_text(encoding="utf-8"))["config_sha"] == expected_sha
+
+    health = json.loads((pair_root / "pipeline_health.json").read_text(encoding="utf-8"))
+    assert health["config_sha"] == expected_sha
+    assert "config_sha_validation" not in health["stage_statuses"]

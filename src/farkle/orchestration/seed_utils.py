@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import re
 from pathlib import Path
-from typing import Any
 
 import yaml  # type: ignore[import-untyped]
 
-from farkle.config import AppConfig
+from farkle.config import AppConfig, effective_config_dict
 from farkle.simulation import runner
 from farkle.utils.writer import atomic_path
 
@@ -67,27 +67,20 @@ def seed_has_completion_markers(cfg: AppConfig) -> bool:
     return all(runner.simulation_is_complete(cfg, n) for n in cfg.sim.n_players_list)
 
 
-def _stringify_paths(obj: Any) -> Any:
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, dict):
-        return {k: _stringify_paths(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_stringify_paths(v) for v in obj]
-    if isinstance(obj, tuple):
-        return tuple(_stringify_paths(v) for v in obj)
-    return obj
-
-
 def write_active_config(cfg: AppConfig, dest_dir: Path | None = None) -> None:
     """Persist the resolved configuration alongside results."""
     target_dir = dest_dir or cfg.results_root
     target_dir.mkdir(parents=True, exist_ok=True)
-    resolved_dict = _stringify_paths(dataclasses.asdict(cfg))
+    resolved_dict = effective_config_dict(cfg)
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     target = target_dir / "active_config.yaml"
     with atomic_path(str(target)) as tmp_path:
         Path(tmp_path).write_text(resolved_yaml, encoding="utf-8")
+
+    done_payload = {"active_config": str(target), "config_sha": cfg.config_sha}
+    done_path = target.with_suffix(".done.json")
+    with atomic_path(str(done_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(done_payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def prepare_seed_config(
@@ -109,7 +102,9 @@ def prepare_seed_config(
         ),
     )
     sim_cfg = dataclasses.replace(base_cfg.sim, seed=seed)
-    return dataclasses.replace(base_cfg, io=io_cfg, sim=sim_cfg)
+    prepared = dataclasses.replace(base_cfg, io=io_cfg, sim=sim_cfg)
+    prepared.config_sha = base_cfg.config_sha
+    return prepared
 
 
 __all__ = [

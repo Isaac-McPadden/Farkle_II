@@ -9,12 +9,17 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from farkle import analysis
 from farkle.analysis import combine, curate, game_stats, ingest, metrics
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
-from farkle.config import AppConfig, apply_dot_overrides, load_app_config
+from farkle.config import (
+    AppConfig,
+    apply_dot_overrides,
+    assign_config_sha,
+    load_app_config,
+)
 from farkle.orchestration.run_contexts import InterseedRunContext, SeedRunContext
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
@@ -108,6 +113,7 @@ def _run_one_seed(
             "seed": seed,
             "results_dir": str(seed_cfg.results_root),
             "active_config": str(active_config_path),
+            "config_sha": seed_cfg.config_sha,
         },
     )
 
@@ -341,6 +347,52 @@ def _write_pipeline_health(path: Path, payload: dict[str, Any]) -> None:
         Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
+
+
+def _validate_required_config_sha_outputs(
+    *,
+    expected_sha: str,
+    manifest_path: Path,
+    seed_contexts: Mapping[int, SeedRunContext],
+    interseed_cfg: AppConfig,
+) -> list[str]:
+    errors: list[str] = []
+
+    def _check_json(path: Path) -> None:
+        if not path.exists():
+            errors.append(f"missing metadata: {path}")
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"invalid metadata {path}: {type(exc).__name__}: {exc}")
+            return
+        value = payload.get("config_sha") if isinstance(payload, dict) else None
+        if value != expected_sha:
+            errors.append(f"{path} config_sha={value!r} expected {expected_sha!r}")
+
+    if not manifest_path.exists():
+        errors.append(f"missing metadata: {manifest_path}")
+    else:
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            event = record.get("event")
+            if event in {"run_start", "run_end", "stage-end", "seed_start"} and record.get("config_sha") != expected_sha:
+                errors.append(f"manifest event {event} has config_sha={record.get('config_sha')!r}")
+
+    for seed_context in seed_contexts.values():
+        _check_json(seed_context.active_config_path.with_suffix(".done.json"))
+
+    rng_stage_dir = interseed_cfg.stage_dir_if_active("rng_diagnostics")
+    if rng_stage_dir is not None:
+        rng_done = rng_stage_dir / "rng_diagnostics.done.json"
+        if rng_done.exists():
+            _check_json(rng_done)
+
+    return errors
+
 def _resolve_seed_pair(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> tuple[int, int] | None:
@@ -389,7 +441,9 @@ def _run_per_seed_analysis(
             "seed": seed,
             "results_dir": str(cfg.results_root),
             "analysis_dir": str(cfg.analysis_dir),
+            "config_sha": cfg.config_sha,
         },
+        run_end_metadata={"config_sha": cfg.config_sha},
         continue_on_error=False,
         logger=LOGGER,
     )
@@ -402,6 +456,8 @@ def run_pipeline(
     seed_pair: tuple[int, int],
     force: bool = False,
 ) -> None:
+    if cfg.config_sha is None:
+        assign_config_sha(cfg)
     pair_root = seed_pair_root(cfg, seed_pair)
     meta_dir = _shared_meta_dir(cfg, pair_root, seed_pair)
     meta_dir.mkdir(parents=True, exist_ok=True)
@@ -417,6 +473,7 @@ def run_pipeline(
             "seed_pair": list(seed_pair),
             "results_dir": str(pair_root),
             "meta_analysis_dir": str(meta_dir),
+            "config_sha": cfg.config_sha,
         },
     )
 
@@ -488,6 +545,7 @@ def run_pipeline(
                     "status": resolved.status,
                     "diagnostics": resolved.diagnostics,
                     "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
+                    "config_sha": cfg.config_sha,
                 },
             )
 
@@ -567,6 +625,7 @@ def run_pipeline(
                 "event": "h2h_tier_trends_start",
                 "seed": interseed_seed,
                 "results_dir": str(interseed_cfg.results_root),
+                "config_sha": interseed_cfg.config_sha,
             },
         )
         try:
@@ -581,6 +640,7 @@ def run_pipeline(
                     "event": "h2h_tier_trends_complete",
                     "seed": interseed_seed,
                     "results_dir": str(interseed_cfg.results_root),
+                    "config_sha": interseed_cfg.config_sha,
                 },
             )
         except Exception as exc:  # noqa: BLE001
@@ -613,8 +673,26 @@ def run_pipeline(
                 "status": resolved.status,
                 "diagnostics": resolved.diagnostics,
                 "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
+                "config_sha": interseed_cfg.config_sha,
             },
         )
+
+    sha_errors = _validate_required_config_sha_outputs(
+        expected_sha=cfg.config_sha or "",
+        manifest_path=manifest_path,
+        seed_contexts=seed_contexts,
+        interseed_cfg=interseed_cfg,
+    )
+    if sha_errors:
+        stage_statuses["config_sha_validation"] = {
+            "status": "failed",
+            "diagnostics": sha_errors,
+            "required_outputs": [
+                str(manifest_path),
+                *[str(ctx.active_config_path.with_suffix(".done.json")) for ctx in seed_contexts.values()],
+            ],
+            "missing_required_outputs": [],
+        }
 
     if any(payload["status"] in {"failed", "missing"} for payload in stage_statuses.values()):
         overall_status = "failed_blocked"
@@ -646,6 +724,7 @@ def run_pipeline(
     health_payload = {
         "seed_pair": list(seed_pair),
         "status": overall_status,
+        "config_sha": cfg.config_sha,
         "stage_statuses": stage_statuses,
         "missing_required_outputs": {
             name: payload.get("missing_required_outputs", [])
@@ -662,6 +741,7 @@ def run_pipeline(
             "event": "run_end",
             "status": overall_status,
             "health_artifact": str(pipeline_health_path),
+            "config_sha": cfg.config_sha,
         },
     )
 
@@ -724,6 +804,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cfg.sim.seed_list = list(seed_pair)
         cfg.sim.seed_pair = seed_pair
     resolved_seeds = cfg.sim.populate_seed_list(2)
+    assign_config_sha(cfg)
     seed_pair = (resolved_seeds[0], resolved_seeds[1])
 
     run_pipeline(cfg, seed_pair=seed_pair, force=args.force)
