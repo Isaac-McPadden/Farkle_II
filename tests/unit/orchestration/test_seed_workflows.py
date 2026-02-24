@@ -389,6 +389,11 @@ def test_two_seed_pipeline_parallel_seed_smoke_equivalence(
 
         def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
             del manifest_path
+            seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+            (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
+                json.dumps({"event": "run_end"}) + "\n",
+                encoding="utf-8",
+            )
             seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
             (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text("ok")
             seed_cfg.post_h2h_stage_dir.mkdir(parents=True, exist_ok=True)
@@ -408,7 +413,11 @@ def test_two_seed_pipeline_parallel_seed_smoke_equivalence(
             "from_seed_context",
             classmethod(_from_seed_context),
         )
-        monkeypatch.setattr(two_seed_pipeline.analysis, "run_interseed_analysis", lambda *_args, **_kwargs: None)
+        def _record_interseed(cfg: AppConfig, **_kwargs) -> None:
+            cfg.interseed_stage_dir.mkdir(parents=True, exist_ok=True)
+            (cfg.interseed_stage_dir / "interseed_summary.json").write_text("{}", encoding="utf-8")
+
+        monkeypatch.setattr(two_seed_pipeline.analysis, "run_interseed_analysis", _record_interseed)
 
         def _record_h2h(_cfg, **_kwargs):
             (_cfg.stage_dir("h2h_tier_trends") / "s_tier_trends.parquet").write_text("ok")
@@ -436,6 +445,15 @@ def test_two_seed_pipeline_parallel_seed_smoke_equivalence(
     } == {
         stage: payload["status"] for stage, payload in parallel["stage_statuses"].items()
     }
+
+    manifest_records = [
+        json.loads(line)
+        for line in (seed_utils.seed_pair_root(cfg=AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "sequential" / "results")), seed_pair=(7, 8)) / "two_seed_pipeline_manifest.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    stage_end_records = [record for record in manifest_records if record.get("event") == "stage-end"]
+    assert stage_end_records
+    assert all(record.get("status") != "missing" for record in stage_end_records)
 
 def test_two_seed_pipeline_main_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
@@ -476,6 +494,11 @@ def test_two_seed_pipeline_head2head_failure_chain_integration_fixture(
 
     def _failing_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
         del manifest_path
+        seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
+            json.dumps({"event": "run_end"}) + "\n",
+            encoding="utf-8",
+        )
         seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
         if seed == 101:
             (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text("ok")
@@ -503,9 +526,9 @@ def test_two_seed_pipeline_head2head_failure_chain_integration_fixture(
     assert health["status"] == "failed_blocked"
     assert health["stage_statuses"]["seed_101.seed_symmetry"]["status"] == "success"
     assert health["stage_statuses"]["seed_101.post_h2h"]["status"] == "success"
-    assert health["stage_statuses"]["seed_202.seed_symmetry"]["status"] == "blocked"
-    assert health["stage_statuses"]["seed_202.post_h2h"]["status"] == "blocked"
-    assert health["stage_statuses"]["h2h_tier_trends"]["status"] == "blocked"
+    assert health["stage_statuses"]["seed_202.seed_symmetry"]["status"] == "missing"
+    assert health["stage_statuses"]["seed_202.post_h2h"]["status"] == "missing"
+    assert health["stage_statuses"]["h2h_tier_trends"]["status"] == "missing"
     assert health["first_blocking_failure"]["stage"] == "seed_202.analysis"
 
 
