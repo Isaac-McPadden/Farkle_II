@@ -199,7 +199,140 @@ def _run_one_seed(
 class _PipelineStageContract:
     name: str
     required_outputs: tuple[Path, ...]
-    depends_on: tuple[str, ...] = tuple()
+    depends_on: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class _ResolvedStageStatus:
+    status: str
+    diagnostics: list[str]
+    required_outputs: tuple[Path, ...]
+    missing_outputs: tuple[Path, ...]
+
+
+def _is_valid_artifact(path: Path) -> tuple[bool, str | None]:
+    if not path.exists():
+        return False, "missing"
+    if path.stat().st_size <= 0:
+        return False, "empty"
+    if path.suffix in {".json", ".jsonl"}:
+        try:
+            if path.suffix == ".jsonl":
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    stripped = line.strip()
+                    if stripped:
+                        json.loads(stripped)
+                        break
+                else:
+                    return False, "empty jsonl"
+            else:
+                json.loads(path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return False, "unparseable metadata"
+    return True, None
+
+
+def _resolve_stage_contract_status(
+    contract: _PipelineStageContract,
+    *,
+    dependency_statuses: Sequence[str] = (),
+    explicit_error: str | None = None,
+) -> _ResolvedStageStatus:
+    diagnostics: list[str] = []
+    if explicit_error:
+        diagnostics.append(explicit_error)
+    if dependency_statuses and any(status != "success" for status in dependency_statuses):
+        diagnostics.append(f"upstream incomplete: {', '.join(dependency_statuses)}")
+
+    missing_outputs: list[Path] = []
+    for output_path in contract.required_outputs:
+        valid, reason = _is_valid_artifact(output_path)
+        if not valid:
+            missing_outputs.append(output_path)
+            diagnostics.append(f"{output_path}: {reason}")
+
+    if explicit_error or any("unparseable metadata" in reason for reason in diagnostics):
+        status = "failed"
+    elif missing_outputs:
+        status = "missing"
+    else:
+        status = "success"
+    return _ResolvedStageStatus(
+        status=status,
+        diagnostics=diagnostics,
+        required_outputs=contract.required_outputs,
+        missing_outputs=tuple(missing_outputs),
+    )
+
+
+def _resolve_seed_family_statuses(
+    seed: int,
+    *,
+    seed_cfg: AppConfig,
+    analysis_error: str | None,
+) -> dict[str, _ResolvedStageStatus]:
+    stage_contracts = (
+        _PipelineStageContract(
+            name=f"seed_{seed}.analysis",
+            required_outputs=(seed_cfg.analysis_dir / "analysis_manifest.jsonl",),
+        ),
+        _PipelineStageContract(
+            name=f"seed_{seed}.seed_symmetry",
+            required_outputs=(seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet",),
+            depends_on=(f"seed_{seed}.analysis",),
+        ),
+        _PipelineStageContract(
+            name=f"seed_{seed}.post_h2h",
+            required_outputs=(seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json",),
+            depends_on=(f"seed_{seed}.analysis",),
+        ),
+    )
+    analysis_status = _resolve_stage_contract_status(stage_contracts[0], explicit_error=analysis_error)
+    return {
+        stage_contracts[0].name: analysis_status,
+        stage_contracts[1].name: _resolve_stage_contract_status(
+            stage_contracts[1], dependency_statuses=(analysis_status.status,)
+        ),
+        stage_contracts[2].name: _resolve_stage_contract_status(
+            stage_contracts[2], dependency_statuses=(analysis_status.status,)
+        ),
+    }
+
+
+def _resolve_interseed_family_statuses(
+    *,
+    interseed_cfg: AppConfig,
+    seed_pair: tuple[int, int],
+    stage_statuses: dict[str, dict[str, Any]],
+    interseed_error: str | None,
+    h2h_error: str | None,
+) -> dict[str, _ResolvedStageStatus]:
+    per_seed_post_h2h_stages = tuple(f"seed_{seed}.post_h2h" for seed in seed_pair)
+    interseed_contract = _PipelineStageContract(
+        name="interseed_analysis",
+        required_outputs=(interseed_cfg.interseed_stage_dir / "interseed_summary.json",),
+        depends_on=per_seed_post_h2h_stages,
+    )
+    interseed_status = _resolve_stage_contract_status(
+        interseed_contract,
+        dependency_statuses=tuple(stage_statuses.get(name, {}).get("status", "missing") for name in per_seed_post_h2h_stages),
+        explicit_error=interseed_error,
+    )
+
+    h2h_contract = _PipelineStageContract(
+        name="h2h_tier_trends",
+        required_outputs=(interseed_cfg.stage_dir("h2h_tier_trends") / "s_tier_trends.parquet",),
+        depends_on=("interseed_analysis", *per_seed_post_h2h_stages),
+    )
+    h2h_status = _resolve_stage_contract_status(
+        h2h_contract,
+        dependency_statuses=(interseed_status.status,),
+        explicit_error=h2h_error,
+    )
+    return {
+        interseed_contract.name: interseed_status,
+        h2h_contract.name: h2h_status,
+    }
 
 
 def _write_pipeline_health(path: Path, payload: dict[str, Any]) -> None:
@@ -275,36 +408,7 @@ def run_pipeline(
     manifest_path = pair_root / "two_seed_pipeline_manifest.jsonl"
     pipeline_health_path = pair_root / "pipeline_health.json"
     stage_statuses: dict[str, dict[str, Any]] = {}
-    first_blocking_failure: dict[str, Any] | None = None
-
-    def _record_stage(
-        stage_name: str,
-        *,
-        status: str,
-        required_outputs: Sequence[Path] = tuple(),
-        missing_outputs: Sequence[Path] = tuple(),
-        depends_on: Sequence[str] = tuple(),
-        error: str | None = None,
-    ) -> None:
-        nonlocal first_blocking_failure
-        stage_statuses[stage_name] = {
-            "status": status,
-            "depends_on": list(depends_on),
-            "required_outputs": [str(path) for path in required_outputs],
-            "missing_required_outputs": [str(path) for path in missing_outputs],
-            **({"error": error} if error else {}),
-        }
-        if first_blocking_failure is None and status in {"failed", "blocked"}:
-            first_blocking_failure = {
-                "stage": stage_name,
-                "status": status,
-                **({"error": error} if error else {}),
-                **(
-                    {"missing_required_outputs": [str(path) for path in missing_outputs]}
-                    if missing_outputs
-                    else {}
-                ),
-            }
+    stage_errors: dict[str, str] = {}
 
     append_manifest_line(
         manifest_path,
@@ -317,7 +421,6 @@ def run_pipeline(
     )
 
     seed_contexts: dict[int, SeedRunContext] = {}
-    seed_analysis_ok: dict[int, bool] = {}
     simulation_workers, ingest_workers, analysis_workers = _derive_per_seed_job_budgets(
         cfg,
         len(seed_pair),
@@ -362,53 +465,31 @@ def run_pipeline(
         seed_context = seed_result.context
         seed_contexts[seed] = seed_context
         seed_cfg = seed_context.config
-        seed_analysis_ok[seed] = seed_result.analysis_ok
-        if seed_result.analysis_ok:
-            _record_stage(f"seed_{seed}.analysis", status="success")
-        else:
-            _record_stage(
-                f"seed_{seed}.analysis",
-                status="failed",
-                error=seed_result.error,
-            )
+        if seed_result.error:
+            stage_errors[f"seed_{seed}.analysis"] = seed_result.error
 
-        seed_stage_contracts = [
-            _PipelineStageContract(
-                name=f"seed_{seed}.seed_symmetry",
-                required_outputs=(seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet",),
-                depends_on=(f"seed_{seed}.analysis",),
-            ),
-            _PipelineStageContract(
-                name=f"seed_{seed}.post_h2h",
-                required_outputs=(seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json",),
-                depends_on=(f"seed_{seed}.analysis",),
-            ),
-        ]
-        for contract in seed_stage_contracts:
-            missing_outputs = [path for path in contract.required_outputs if not path.exists()]
-            if not seed_analysis_ok[seed]:
-                _record_stage(
-                    contract.name,
-                    status="blocked",
-                    required_outputs=contract.required_outputs,
-                    missing_outputs=missing_outputs,
-                    depends_on=contract.depends_on,
-                )
-            elif missing_outputs:
-                _record_stage(
-                    contract.name,
-                    status="failed",
-                    required_outputs=contract.required_outputs,
-                    missing_outputs=missing_outputs,
-                    depends_on=contract.depends_on,
-                )
-            else:
-                _record_stage(
-                    contract.name,
-                    status="success",
-                    required_outputs=contract.required_outputs,
-                    depends_on=contract.depends_on,
-                )
+        seed_resolved = _resolve_seed_family_statuses(
+            seed,
+            seed_cfg=seed_cfg,
+            analysis_error=seed_result.error,
+        )
+        for stage_name, resolved in seed_resolved.items():
+            stage_statuses[stage_name] = {
+                "status": resolved.status,
+                "required_outputs": [str(path) for path in resolved.required_outputs],
+                "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
+                "diagnostics": resolved.diagnostics,
+            }
+            append_manifest_line(
+                manifest_path,
+                {
+                    "event": "stage-end",
+                    "stage": stage_name,
+                    "status": resolved.status,
+                    "diagnostics": resolved.diagnostics,
+                    "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
+                },
+            )
 
     interseed_seed = seed_pair[0]
     interseed_seed_context = seed_contexts[interseed_seed]
@@ -420,7 +501,9 @@ def run_pipeline(
     interseed_cfg = interseed_context.config
 
     per_seed_post_h2h_stages = tuple(f"seed_{seed}.post_h2h" for seed in seed_pair)
-    interseed_should_run = all(stage_statuses.get(stage, {}).get("status") == "success" for stage in per_seed_post_h2h_stages)
+    interseed_should_run = all(
+        stage_statuses.get(stage, {}).get("status") == "success" for stage in per_seed_post_h2h_stages
+    )
     if interseed_should_run:
         LOGGER.info(
             "Running interseed analysis",
@@ -453,7 +536,6 @@ def run_pipeline(
                     "results_dir": str(interseed_cfg.results_root),
                 },
             )
-            _record_stage("interseed_analysis", status="success", depends_on=per_seed_post_h2h_stages)
         except Exception as exc:  # noqa: BLE001
             append_manifest_line(
                 manifest_path,
@@ -464,31 +546,12 @@ def run_pipeline(
                     "error": f"{type(exc).__name__}: {exc}",
                 },
             )
-            _record_stage(
-                "interseed_analysis",
-                status="failed",
-                depends_on=per_seed_post_h2h_stages,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-    else:
-        _record_stage(
-            "interseed_analysis",
-            status="blocked",
-            depends_on=per_seed_post_h2h_stages,
-        )
+            stage_errors["interseed_analysis"] = f"{type(exc).__name__}: {exc}"
     seed_s_tier_paths = [
         seed_contexts[seed].config.post_h2h_stage_dir / "h2h_s_tiers.json" for seed in seed_pair
     ]
-    tier_contract = _PipelineStageContract(
-        name="h2h_tier_trends",
-        required_outputs=(interseed_cfg.stage_dir("h2h_tier_trends") / "s_tier_trends.parquet",),
-        depends_on=("interseed_analysis", *per_seed_post_h2h_stages),
-    )
     missing_tier_inputs = [path for path in seed_s_tier_paths if not path.exists()]
-    tier_should_run = (
-        stage_statuses.get("interseed_analysis", {}).get("status") == "success"
-        and not missing_tier_inputs
-    )
+    tier_should_run = interseed_should_run and "interseed_analysis" not in stage_errors and not missing_tier_inputs
     if tier_should_run:
         LOGGER.info(
             "Running head-to-head tier trends",
@@ -512,55 +575,73 @@ def run_pipeline(
                 force=force,
                 seed_s_tier_paths=seed_s_tier_paths,
             )
-            missing_tier_outputs = [
-                path for path in tier_contract.required_outputs if not path.exists()
-            ]
-            if missing_tier_outputs:
-                _record_stage(
-                    tier_contract.name,
-                    status="failed",
-                    required_outputs=tier_contract.required_outputs,
-                    missing_outputs=missing_tier_outputs,
-                    depends_on=tier_contract.depends_on,
-                )
-            else:
-                _record_stage(
-                    tier_contract.name,
-                    status="success",
-                    required_outputs=tier_contract.required_outputs,
-                    depends_on=tier_contract.depends_on,
-                )
-                append_manifest_line(
-                    manifest_path,
-                    {
-                        "event": "h2h_tier_trends_complete",
-                        "seed": interseed_seed,
-                        "results_dir": str(interseed_cfg.results_root),
-                    },
-                )
-        except Exception as exc:  # noqa: BLE001
-            _record_stage(
-                tier_contract.name,
-                status="failed",
-                required_outputs=tier_contract.required_outputs,
-                depends_on=tier_contract.depends_on,
-                error=f"{type(exc).__name__}: {exc}",
+            append_manifest_line(
+                manifest_path,
+                {
+                    "event": "h2h_tier_trends_complete",
+                    "seed": interseed_seed,
+                    "results_dir": str(interseed_cfg.results_root),
+                },
             )
-    else:
-        _record_stage(
-            tier_contract.name,
-            status="blocked",
-            required_outputs=tier_contract.required_outputs,
-            missing_outputs=missing_tier_inputs,
-            depends_on=tier_contract.depends_on,
+        except Exception as exc:  # noqa: BLE001
+            stage_errors["h2h_tier_trends"] = f"{type(exc).__name__}: {exc}"
+
+    interseed_resolved = _resolve_interseed_family_statuses(
+        interseed_cfg=interseed_cfg,
+        seed_pair=seed_pair,
+        stage_statuses=stage_statuses,
+        interseed_error=stage_errors.get("interseed_analysis"),
+        h2h_error=stage_errors.get("h2h_tier_trends"),
+    )
+    for stage_name, resolved in interseed_resolved.items():
+        stage_statuses[stage_name] = {
+            "status": resolved.status,
+            "depends_on": list(
+                tuple(f"seed_{seed}.post_h2h" for seed in seed_pair)
+                if stage_name == "interseed_analysis"
+                else ("interseed_analysis", *(f"seed_{seed}.post_h2h" for seed in seed_pair))
+            ),
+            "required_outputs": [str(path) for path in resolved.required_outputs],
+            "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
+            "diagnostics": resolved.diagnostics,
+        }
+        append_manifest_line(
+            manifest_path,
+            {
+                "event": "stage-end",
+                "stage": stage_name,
+                "status": resolved.status,
+                "diagnostics": resolved.diagnostics,
+                "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
+            },
         )
 
-    if any(payload["status"] in {"failed", "blocked"} for payload in stage_statuses.values()):
+    if any(payload["status"] in {"failed", "missing"} for payload in stage_statuses.values()):
         overall_status = "failed_blocked"
-    elif any(payload["status"] == "skipped" for payload in stage_statuses.values()):
-        overall_status = "complete_with_skips"
     else:
         overall_status = "complete_success"
+
+    first_blocking_failure = next(
+        (
+            {
+                "stage": name,
+                "status": payload["status"],
+                **(
+                    {"missing_required_outputs": payload.get("missing_required_outputs", [])}
+                    if payload.get("missing_required_outputs")
+                    else {}
+                ),
+                **(
+                    {"error": payload["diagnostics"][0]}
+                    if payload.get("diagnostics")
+                    else {}
+                ),
+            }
+            for name, payload in stage_statuses.items()
+            if payload["status"] in {"failed", "missing"}
+        ),
+        None,
+    )
 
     health_payload = {
         "seed_pair": list(seed_pair),
