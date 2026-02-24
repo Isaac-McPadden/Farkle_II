@@ -570,7 +570,7 @@ def _discover_per_n_inputs(cfg: AppConfig) -> list[tuple[int, Path]]:
 def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFrame:
     """Compute statistics grouped by strategy and player count."""
 
-    long_frames: list[pd.DataFrame] = []
+    grouped_rounds: dict[tuple[Scalar, int], list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -581,22 +581,27 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
             )
             continue
 
-        for col in strategy_cols:
-            columns = ["n_rounds", col]
-            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
-            for batch in scanner.to_batches():
-                df = batch.to_pandas(categories=[col])
-                if df.empty:
-                    continue
-                melted = df.melt(id_vars=["n_rounds"], value_vars=[col], value_name="strategy")
-                melted = melted.dropna(subset=["strategy"])
-                if melted.empty:
-                    continue
-                melted["strategy"] = melted["strategy"].astype("category")
-                melted["n_players"] = n_players
-                long_frames.append(melted[["strategy", "n_players", "n_rounds"]])
+        scanner = ds_in.scanner(columns=["n_rounds", *strategy_cols], batch_size=65_536)
+        for batch in scanner.to_batches():
+            df = batch.to_pandas(categories=strategy_cols)
+            if df.empty:
+                continue
+            melted = df.melt(id_vars=["n_rounds"], value_vars=strategy_cols, value_name="strategy")
+            melted = melted.dropna(subset=["strategy"])
+            if melted.empty:
+                continue
 
-    if not long_frames:
+            melted["n_rounds"] = pd.to_numeric(melted["n_rounds"], errors="coerce")
+            melted = melted.dropna(subset=["n_rounds"])
+            if melted.empty:
+                continue
+
+            batch_grouped = melted.groupby("strategy", observed=True, sort=False)["n_rounds"]
+            for strategy, series in batch_grouped:
+                key = (strategy, n_players)
+                grouped_rounds.setdefault(key, []).append(series.to_numpy(dtype=float, copy=False))
+
+    if not grouped_rounds:
         return pd.DataFrame(
             columns=[
                 "summary_level",
@@ -615,65 +620,30 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
             ]
         )
 
-    long_df = pd.concat(long_frames, ignore_index=True)
-    long_df["n_rounds"] = pd.to_numeric(long_df["n_rounds"], errors="coerce")
-    long_df = long_df.dropna(subset=["n_rounds", "strategy"])
-    if long_df.empty:
-        return pd.DataFrame(
-            columns=[
-                "summary_level",
-                "strategy",
-                "n_players",
-                "observations",
-                "mean_rounds",
-                "median_rounds",
-                "std_rounds",
-                "p10_rounds",
-                "p50_rounds",
-                "p90_rounds",
-                "prob_rounds_le_5",
-                "prob_rounds_le_10",
-                "prob_rounds_ge_20",
-            ]
+    rows: list[dict[str, StatValue]] = []
+    for (strategy, n_players), chunks in grouped_rounds.items():
+        values = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+        if values.size == 0:
+            continue
+        rows.append(
+            {
+                "summary_level": "strategy",
+                "strategy": _strategy_stat_value(strategy),
+                "n_players": n_players,
+                "observations": _strategy_key_to_int(values.size, field="observations"),
+                "mean_rounds": float(np.mean(values)),
+                "median_rounds": float(np.quantile(values, 0.5)),
+                "std_rounds": float(np.std(values, ddof=0)),
+                "p10_rounds": float(np.quantile(values, 0.1)),
+                "p50_rounds": float(np.quantile(values, 0.5)),
+                "p90_rounds": float(np.quantile(values, 0.9)),
+                "prob_rounds_le_5": float(np.mean(values <= 5)),
+                "prob_rounds_le_10": float(np.mean(values <= 10)),
+                "prob_rounds_ge_20": float(np.mean(values >= 20)),
+            }
         )
 
-    group_keys = ["strategy", "n_players"]
-    grouped = long_df.groupby(group_keys, observed=True, sort=False)["n_rounds"]
-    stats = grouped.agg(
-        observations="count",
-        mean_rounds="mean",
-        median_rounds="median",
-        std_rounds=lambda s: s.std(ddof=0),
-        p10_rounds=lambda s: s.quantile(0.1),
-        p50_rounds=lambda s: s.quantile(0.5),
-        p90_rounds=lambda s: s.quantile(0.9),
-    )
-    prob_rounds_le_5 = (
-        long_df["n_rounds"]
-        .le(5)
-        .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
-        .mean()
-        .rename("prob_rounds_le_5")
-    )
-    prob_rounds_le_10 = (
-        long_df["n_rounds"]
-        .le(10)
-        .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
-        .mean()
-        .rename("prob_rounds_le_10")
-    )
-    prob_rounds_ge_20 = (
-        long_df["n_rounds"]
-        .ge(20)
-        .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
-        .mean()
-        .rename("prob_rounds_ge_20")
-    )
-
-    stats = stats.join([prob_rounds_le_5, prob_rounds_le_10, prob_rounds_ge_20])
-    stats = stats.reset_index()
-    stats.insert(0, "summary_level", "strategy")
-
+    stats = pd.DataFrame(rows)
     return stats[
         [
             "summary_level",
@@ -779,7 +749,8 @@ def _pooled_strategy_stats(
 ) -> pd.DataFrame:
     """Compute pooled game-length statistics across player counts."""
 
-    long_frames: list[pd.DataFrame] = []
+    grouped_values: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
+    grouped_weights: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -790,22 +761,36 @@ def _pooled_strategy_stats(
             )
             continue
 
-        for col in strategy_cols:
-            columns = ["n_rounds", col]
-            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
-            for batch in scanner.to_batches():
-                df = batch.to_pandas(categories=[col])
-                if df.empty:
-                    continue
-                melted = df.melt(id_vars=["n_rounds"], value_vars=[col], value_name="strategy")
-                melted = melted.dropna(subset=["strategy"])
-                if melted.empty:
-                    continue
-                melted["strategy"] = melted["strategy"].astype("category")
-                melted["n_players"] = n_players
-                long_frames.append(melted[["strategy", "n_players", "n_rounds"]])
+        scanner = ds_in.scanner(columns=["n_rounds", *strategy_cols], batch_size=65_536)
+        for batch in scanner.to_batches():
+            df = batch.to_pandas(categories=strategy_cols)
+            if df.empty:
+                continue
+            melted = df.melt(id_vars=["n_rounds"], value_vars=strategy_cols, value_name="strategy")
+            melted = melted.dropna(subset=["strategy"])
+            if melted.empty:
+                continue
+            melted["n_rounds"] = pd.to_numeric(melted["n_rounds"], errors="coerce")
+            melted = melted.dropna(subset=["n_rounds"])
+            if melted.empty:
+                continue
+            melted["n_players"] = n_players
+            melted["weight"] = _pooling_weights_for_rows(
+                melted["n_players"],
+                pooling_scheme=pooling_scheme,
+                weights_by_k=weights_by_k,
+            )
 
-    if not long_frames:
+            batch_grouped = melted.groupby("strategy", observed=True, sort=False)
+            for strategy, group in batch_grouped:
+                grouped_values.setdefault(strategy, []).append(
+                    group["n_rounds"].to_numpy(dtype=float, copy=False)
+                )
+                grouped_weights.setdefault(strategy, []).append(
+                    group["weight"].to_numpy(dtype=float, copy=False)
+                )
+
+    if not grouped_values:
         return pd.DataFrame(
             columns=[
                 "summary_level",
@@ -822,38 +807,11 @@ def _pooled_strategy_stats(
                 "prob_rounds_ge_20",
             ]
         )
-
-    long_df = pd.concat(long_frames, ignore_index=True)
-    long_df["n_rounds"] = pd.to_numeric(long_df["n_rounds"], errors="coerce")
-    long_df = long_df.dropna(subset=["n_rounds", "strategy", "n_players"])
-    if long_df.empty:
-        return pd.DataFrame(
-            columns=[
-                "summary_level",
-                "strategy",
-                "observations",
-                "mean_rounds",
-                "median_rounds",
-                "std_rounds",
-                "p10_rounds",
-                "p50_rounds",
-                "p90_rounds",
-                "prob_rounds_le_5",
-                "prob_rounds_le_10",
-                "prob_rounds_ge_20",
-            ]
-        )
-
-    long_df["weight"] = _pooling_weights_for_rows(
-        long_df["n_players"],
-        pooling_scheme=pooling_scheme,
-        weights_by_k=weights_by_k,
-    )
-    grouped = long_df.groupby("strategy", observed=True, sort=False)
     pooled_rows: list[dict[str, StatValue]] = []
-    for strategy, group in grouped:
-        values = group["n_rounds"].to_numpy(dtype=float)
-        weights = group["weight"].to_numpy(dtype=float)
+    for strategy, chunks in grouped_values.items():
+        values = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
+        weight_chunks = grouped_weights.get(strategy, [])
+        weights = np.concatenate(weight_chunks) if len(weight_chunks) > 1 else weight_chunks[0]
         weight_total = weights.sum()
         if not math.isfinite(weight_total) or weight_total <= 0:
             continue
@@ -861,7 +819,7 @@ def _pooled_strategy_stats(
             {
                 "summary_level": "pooled",
                 "strategy": _strategy_stat_value(strategy),
-                "observations": _strategy_key_to_int(group.shape[0], field="observations"),
+                "observations": _strategy_key_to_int(values.size, field="observations"),
                 "mean_rounds": _weighted_mean(values, weights),
                 "median_rounds": _weighted_quantile(values, weights, 0.5),
                 "std_rounds": _weighted_std(values, weights),
@@ -903,7 +861,9 @@ def _pooled_margin_stats(
 ) -> pd.DataFrame:
     """Compute pooled victory-margin statistics across player counts."""
 
-    long_frames: list[pd.DataFrame] = []
+    grouped_runner: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
+    grouped_spread: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
+    grouped_weights: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -925,33 +885,51 @@ def _pooled_margin_stats(
             )
             continue
 
-        for col in strategy_cols:
-            columns = [*score_cols, col]
-            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
-            for batch in scanner.to_batches():
-                df = batch.to_pandas(categories=[col])
-                if df.empty:
-                    continue
-                margin_cols = _compute_margin_columns(df, score_cols)
-                df = df.assign(
-                    margin_runner_up=margin_cols["margin_runner_up"],
-                    score_spread=margin_cols["score_spread"],
+        scanner = ds_in.scanner(columns=[*score_cols, *strategy_cols], batch_size=65_536)
+        for batch in scanner.to_batches():
+            df = batch.to_pandas(categories=strategy_cols)
+            if df.empty:
+                continue
+            margin_cols = _compute_margin_columns(df, score_cols)
+            df = df.assign(
+                margin_runner_up=margin_cols["margin_runner_up"],
+                score_spread=margin_cols["score_spread"],
+            )
+            melted = df.melt(
+                id_vars=["margin_runner_up", "score_spread"],
+                value_vars=strategy_cols,
+                value_name="strategy",
+            )
+            melted = melted.dropna(subset=["strategy"])
+            if melted.empty:
+                continue
+
+            melted["margin_runner_up"] = pd.to_numeric(melted["margin_runner_up"], errors="coerce")
+            melted["score_spread"] = pd.to_numeric(melted["score_spread"], errors="coerce")
+            melted = melted.dropna(subset=["margin_runner_up"])
+            if melted.empty:
+                continue
+
+            melted["n_players"] = n_players
+            melted["weight"] = _pooling_weights_for_rows(
+                melted["n_players"],
+                pooling_scheme=pooling_scheme,
+                weights_by_k=weights_by_k,
+            )
+
+            batch_grouped = melted.groupby("strategy", observed=True, sort=False)
+            for strategy, group in batch_grouped:
+                grouped_runner.setdefault(strategy, []).append(
+                    group["margin_runner_up"].to_numpy(dtype=float, copy=False)
                 )
-                melted = df.melt(
-                    id_vars=["margin_runner_up", "score_spread"],
-                    value_vars=[col],
-                    value_name="strategy",
+                grouped_spread.setdefault(strategy, []).append(
+                    group["score_spread"].to_numpy(dtype=float, copy=False)
                 )
-                melted = melted.dropna(subset=["strategy"])
-                if melted.empty:
-                    continue
-                melted["strategy"] = melted["strategy"].astype("category")
-                melted["n_players"] = n_players
-                long_frames.append(
-                    melted[["strategy", "n_players", "margin_runner_up", "score_spread"]]
+                grouped_weights.setdefault(strategy, []).append(
+                    group["weight"].to_numpy(dtype=float, copy=False)
                 )
 
-    if not long_frames:
+    if not grouped_runner:
         columns = [
             "summary_level",
             "strategy",
@@ -967,37 +945,13 @@ def _pooled_margin_stats(
         ]
         return pd.DataFrame(columns=columns)
 
-    long_df = pd.concat(long_frames, ignore_index=True)
-    long_df["margin_runner_up"] = pd.to_numeric(long_df["margin_runner_up"], errors="coerce")
-    long_df["score_spread"] = pd.to_numeric(long_df["score_spread"], errors="coerce")
-    long_df = long_df.dropna(subset=["margin_runner_up", "strategy", "n_players"])
-    if long_df.empty:
-        columns = [
-            "summary_level",
-            "strategy",
-            "observations",
-            "mean_margin_runner_up",
-            "median_margin_runner_up",
-            "std_margin_runner_up",
-            *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
-            "mean_score_spread",
-            "median_score_spread",
-            "std_score_spread",
-            *[f"prob_score_spread_le_{thr}" for thr in thresholds],
-        ]
-        return pd.DataFrame(columns=columns)
-
-    long_df["weight"] = _pooling_weights_for_rows(
-        long_df["n_players"],
-        pooling_scheme=pooling_scheme,
-        weights_by_k=weights_by_k,
-    )
-    grouped = long_df.groupby("strategy", observed=True, sort=False)
     pooled_rows: list[dict[str, StatValue]] = []
-    for strategy, group in grouped:
-        runner_vals = group["margin_runner_up"].to_numpy(dtype=float)
-        spread_vals = group["score_spread"].to_numpy(dtype=float)
-        weights = group["weight"].to_numpy(dtype=float)
+    for strategy, runner_chunks in grouped_runner.items():
+        runner_vals = np.concatenate(runner_chunks) if len(runner_chunks) > 1 else runner_chunks[0]
+        spread_chunks = grouped_spread.get(strategy, [])
+        spread_vals = np.concatenate(spread_chunks) if len(spread_chunks) > 1 else spread_chunks[0]
+        weight_chunks = grouped_weights.get(strategy, [])
+        weights = np.concatenate(weight_chunks) if len(weight_chunks) > 1 else weight_chunks[0]
         weight_total = weights.sum()
         if not math.isfinite(weight_total) or weight_total <= 0:
             continue
@@ -1005,7 +959,7 @@ def _pooled_margin_stats(
         pooled_row: dict[str, StatValue] = {
             "summary_level": "pooled",
             "strategy": _strategy_stat_value(strategy),
-            "observations": _strategy_key_to_int(group.shape[0], field="observations"),
+            "observations": _strategy_key_to_int(runner_vals.size, field="observations"),
             "mean_margin_runner_up": _weighted_mean(runner_vals, weights),
             "median_margin_runner_up": _weighted_quantile(runner_vals, weights, 0.5),
             "std_margin_runner_up": _weighted_std(runner_vals, weights),
@@ -1043,7 +997,8 @@ def _per_strategy_margin_stats(
 ) -> pd.DataFrame:
     """Compute victory-margin statistics grouped by strategy and player count."""
 
-    long_frames: list[pd.DataFrame] = []
+    grouped_runner: dict[tuple[Scalar, int], list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
+    grouped_spread: dict[tuple[Scalar, int], list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -1065,33 +1020,42 @@ def _per_strategy_margin_stats(
             )
             continue
 
-        for col in strategy_cols:
-            columns = [*score_cols, col]
-            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
-            for batch in scanner.to_batches():
-                df = batch.to_pandas(categories=[col])
-                if df.empty:
-                    continue
-                margin_cols = _compute_margin_columns(df, score_cols)
-                df = df.assign(
-                    margin_runner_up=margin_cols["margin_runner_up"],
-                    score_spread=margin_cols["score_spread"],
+        scanner = ds_in.scanner(columns=[*score_cols, *strategy_cols], batch_size=65_536)
+        for batch in scanner.to_batches():
+            df = batch.to_pandas(categories=strategy_cols)
+            if df.empty:
+                continue
+            margin_cols = _compute_margin_columns(df, score_cols)
+            df = df.assign(
+                margin_runner_up=margin_cols["margin_runner_up"],
+                score_spread=margin_cols["score_spread"],
+            )
+            melted = df.melt(
+                id_vars=["margin_runner_up", "score_spread"],
+                value_vars=strategy_cols,
+                value_name="strategy",
+            )
+            melted = melted.dropna(subset=["strategy"])
+            if melted.empty:
+                continue
+
+            melted["margin_runner_up"] = pd.to_numeric(melted["margin_runner_up"], errors="coerce")
+            melted["score_spread"] = pd.to_numeric(melted["score_spread"], errors="coerce")
+            melted = melted.dropna(subset=["margin_runner_up"])
+            if melted.empty:
+                continue
+
+            batch_grouped = melted.groupby("strategy", observed=True, sort=False)
+            for strategy, group in batch_grouped:
+                key = (strategy, n_players)
+                grouped_runner.setdefault(key, []).append(
+                    group["margin_runner_up"].to_numpy(dtype=float, copy=False)
                 )
-                melted = df.melt(
-                    id_vars=["margin_runner_up", "score_spread"],
-                    value_vars=[col],
-                    value_name="strategy",
-                )
-                melted = melted.dropna(subset=["strategy"])
-                if melted.empty:
-                    continue
-                melted["strategy"] = melted["strategy"].astype("category")
-                melted["n_players"] = n_players
-                long_frames.append(
-                    melted[["strategy", "n_players", "margin_runner_up", "score_spread"]]
+                grouped_spread.setdefault(key, []).append(
+                    group["score_spread"].to_numpy(dtype=float, copy=False)
                 )
 
-    if not long_frames:
+    if not grouped_runner:
         columns = [
             "summary_level",
             "strategy",
@@ -1108,61 +1072,31 @@ def _per_strategy_margin_stats(
         ]
         return pd.DataFrame(columns=columns)
 
-    long_df = pd.concat(long_frames, ignore_index=True)
-    long_df["margin_runner_up"] = pd.to_numeric(long_df["margin_runner_up"], errors="coerce")
-    long_df["score_spread"] = pd.to_numeric(long_df["score_spread"], errors="coerce")
-    long_df = long_df.dropna(subset=["margin_runner_up", "strategy"])
-    if long_df.empty:
-        columns = [
-            "summary_level",
-            "strategy",
-            "n_players",
-            "observations",
-            "mean_margin_runner_up",
-            "median_margin_runner_up",
-            "std_margin_runner_up",
-            *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
-            "mean_score_spread",
-            "median_score_spread",
-            "std_score_spread",
-            *[f"prob_score_spread_le_{thr}" for thr in thresholds],
-        ]
-        return pd.DataFrame(columns=columns)
+    rows: list[dict[str, StatValue]] = []
+    for (strategy, n_players), runner_chunks in grouped_runner.items():
+        runner_vals = np.concatenate(runner_chunks) if len(runner_chunks) > 1 else runner_chunks[0]
+        spread_chunks = grouped_spread.get((strategy, n_players), [])
+        spread_vals = np.concatenate(spread_chunks) if len(spread_chunks) > 1 else spread_chunks[0]
+        if runner_vals.size == 0:
+            continue
+        row: dict[str, StatValue] = {
+            "summary_level": "strategy",
+            "strategy": _strategy_stat_value(strategy),
+            "n_players": n_players,
+            "observations": _strategy_key_to_int(runner_vals.size, field="observations"),
+            "mean_margin_runner_up": float(np.mean(runner_vals)),
+            "median_margin_runner_up": float(np.quantile(runner_vals, 0.5)),
+            "std_margin_runner_up": float(np.std(runner_vals, ddof=0)),
+            "mean_score_spread": float(np.mean(spread_vals)),
+            "median_score_spread": float(np.quantile(spread_vals, 0.5)),
+            "std_score_spread": float(np.std(spread_vals, ddof=0)),
+        }
+        for thr in thresholds:
+            row[f"prob_margin_runner_up_le_{thr}"] = float(np.mean(runner_vals <= thr))
+            row[f"prob_score_spread_le_{thr}"] = float(np.mean(spread_vals <= thr))
+        rows.append(row)
 
-    group_keys = ["strategy", "n_players"]
-    grouped = long_df.groupby(group_keys, observed=True, sort=False)
-    runner_stats = grouped["margin_runner_up"].agg(
-        observations="count",
-        mean_margin_runner_up="mean",
-        median_margin_runner_up="median",
-        std_margin_runner_up=lambda s: s.std(ddof=0),
-    )
-    spread_stats = grouped["score_spread"].agg(
-        mean_score_spread="mean",
-        median_score_spread="median",
-        std_score_spread=lambda s: s.std(ddof=0),
-    )
-    prob_frames = []
-    for thr in thresholds:
-        runner_prob = (
-            long_df["margin_runner_up"]
-            .le(thr)
-            .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
-            .mean()
-            .rename(f"prob_margin_runner_up_le_{thr}")
-        )
-        spread_prob = (
-            long_df["score_spread"]
-            .le(thr)
-            .groupby([long_df["strategy"], long_df["n_players"]], observed=True, sort=False)
-            .mean()
-            .rename(f"prob_score_spread_le_{thr}")
-        )
-        prob_frames.extend([runner_prob, spread_prob])
-
-    stats = runner_stats.join([spread_stats, *prob_frames])
-    stats = stats.reset_index()
-    stats.insert(0, "summary_level", "strategy")
+    stats = pd.DataFrame(rows)
 
     ordered_cols = [
         "summary_level",
