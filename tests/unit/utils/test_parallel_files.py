@@ -1,6 +1,7 @@
 import csv
 import multiprocessing as mp
 import threading
+from multiprocessing.context import BaseContext
 from pathlib import Path
 from typing import Mapping, Sequence
 
@@ -223,7 +224,7 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
 
 def test_process_map_context_modes_identical_artifacts(tmp_path: Path) -> None:
     items = [1, 2, 3, 4]
-    contexts = [None]
+    contexts: list[BaseContext | None] = [None]
     if "spawn" in mp.get_all_start_methods():
         contexts.append(parallel.resolve_mp_context("spawn"))
 

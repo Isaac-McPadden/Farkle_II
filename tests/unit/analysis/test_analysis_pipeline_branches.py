@@ -11,7 +11,7 @@ from typing import Any, cast
 import pytest
 
 from farkle.analysis import pipeline
-from farkle.config import AppConfig, IOConfig
+from farkle.config import AppConfig, IOConfig, _stringify_paths_for_serialization
 
 
 def _make_config(tmp_results_dir: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, AppConfig]:
@@ -300,7 +300,7 @@ def test_stringify_paths_recurses_for_nested_collections() -> None:
         "plain": ("ok", {"deep": [Path("delta"), 7]}),
     }
 
-    actual = pipeline._stringify_paths(nested)
+    actual = _stringify_paths_for_serialization(nested)
 
     assert actual == {
         "path": "alpha",

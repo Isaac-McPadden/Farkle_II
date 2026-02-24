@@ -545,8 +545,9 @@ def test_run_trueskill_handles_worker_exception(
             return self._result
 
     class _Executor:
-        def __init__(self, max_workers: int):
+        def __init__(self, max_workers: int, mp_context=None):  # noqa: ANN001
             self.max_workers = max_workers
+            self.mp_context = mp_context
 
         def submit(self, fn, *args, **kwargs):
             block_name = Path(args[0]).name.split("_")[0]
@@ -735,6 +736,7 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
         pooled_weights_by_k: Mapping[int, float] | None = None,
         tiering_z: float | None = None,
         tiering_min_gap: float | None = None,
+        mp_start_method: str | None = None,
     ) -> None:
         _ = (
             dataroot,
@@ -747,6 +749,7 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
             pooled_weights_by_k,
             tiering_z,
             tiering_min_gap,
+            mp_start_method,
         )
         seen_seed_inputs.append(
             (

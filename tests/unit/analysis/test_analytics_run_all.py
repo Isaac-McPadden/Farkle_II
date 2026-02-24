@@ -29,8 +29,11 @@ def test_run_all_uses_current_stage_order_for_all_legacy_flag_combinations(
 
     calls: list[str] = []
 
-    def _single_seed(cfg: AppConfig, *, force: bool = False) -> None:  # noqa: ARG001
+    def _single_seed(
+        cfg: AppConfig, *, force: bool = False, allow_missing_upstream: bool = False
+    ) -> None:  # noqa: ARG001
         assert force is False
+        assert allow_missing_upstream is False
         calls.append("single_seed")
 
     def _interseed(

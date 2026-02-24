@@ -10,6 +10,7 @@ pytest.importorskip("pydantic")
 pytest.importorskip("pyarrow")
 
 import farkle.cli.main as cli_main
+from farkle.config import _stringify_paths_for_serialization
 
 
 @pytest.fixture(autouse=True)
@@ -171,7 +172,7 @@ def test_stringify_paths_handles_nested_structures():
         "items": [Path("a"), {"b": Path("c")}, (Path("d"),)],
     }
 
-    result = cli_main._stringify_paths(nested)
+    result = _stringify_paths_for_serialization(nested)
 
     assert result == {
         "path": str(Path("/tmp/example")),

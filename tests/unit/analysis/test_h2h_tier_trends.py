@@ -108,7 +108,7 @@ def test_load_s_tiers_handles_invalid_json_shapes_and_mixed_values(tmp_path: Pat
 
     mixed = tmp_path / "mixed.json"
     mixed.write_text('{"1": "S", "2": 2, "_meta": "skip", "3": "A"}')
-    assert h2h_tier_trends._load_s_tiers(mixed) == {"1": "S", "3": "A"}
+    assert h2h_tier_trends._load_s_tiers(mixed) == {}
 
 
 def test_load_s_tiers_rejects_meta_only_payload(tmp_path: Path) -> None:

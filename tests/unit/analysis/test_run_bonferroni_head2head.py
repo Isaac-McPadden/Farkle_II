@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -37,6 +38,25 @@ def _mock_simulated_games_legacy_farkles(
             "P1_score": [300.0] * len(seeds),
             "P2_score": [250.0] * len(seeds),
         }
+    )
+
+
+def _mock_sizing_result(
+    games_per_strategy: int,
+    *,
+    games_per_strategy_uncapped: int | None = None,
+    applied_floor: bool = False,
+    applied_cap: bool = False,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        games_per_strategy_uncapped=(
+            games_per_strategy
+            if games_per_strategy_uncapped is None
+            else games_per_strategy_uncapped
+        ),
+        games_per_strategy=games_per_strategy,
+        applied_floor=applied_floor,
+        applied_cap=applied_cap,
     )
 
 
@@ -132,7 +152,7 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     call_counter = {"calls": 0}
 
     def fake_games_for_power(**kwargs):  # noqa: ANN001
-        return 2
+        return _mock_sizing_result(2)
 
     def fake_simulate(seeds, strategies, n_jobs):  # noqa: ANN001,ARG001
         call_counter["calls"] += 1
@@ -226,7 +246,7 @@ def test_run_bonferroni_head2head_accepts_legacy_farkles_columns(
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **_: 2)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(2))  # noqa: ANN001
     monkeypatch.setattr(
         rb,
         "_load_top_strategies",
@@ -279,7 +299,7 @@ def test_run_bonferroni_head2head_progress_cadence_logs(
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: 1)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: _mock_sizing_result(1))  # noqa: ANN001
     monkeypatch.setattr(
         rb,
         "parse_strategy_identifier",
@@ -314,7 +334,7 @@ def test_run_bonferroni_head2head_progress_schedule_validation(
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: 1)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: _mock_sizing_result(1))  # noqa: ANN001
     monkeypatch.setattr(
         rb,
         "parse_strategy_identifier",
@@ -337,7 +357,7 @@ def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.Mon
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: 1)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **kwargs: _mock_sizing_result(1))  # noqa: ANN001
     monkeypatch.setattr(
         rb,
         "parse_strategy_identifier",
@@ -369,7 +389,7 @@ def test_run_bonferroni_head2head_safeguard_skips(
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **_: 10)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(10))  # noqa: ANN001
     monkeypatch.setattr(
         rb,
         "_load_top_strategies",
@@ -530,7 +550,7 @@ def test_run_bonferroni_head2head_returns_when_games_per_pair_non_positive(
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **_: 0)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(0))  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: (["A", "B", "C"], {"ratings_count": 0, "metrics_count": 0, "combined_count": 3, "ratings_path": "", "metrics_path": ""}))
 
     called = {"simulate": 0}
@@ -553,7 +573,7 @@ def test_run_bonferroni_head2head_single_elite_no_dispatch(
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"only": 0}))
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **_: 5)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(5))  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: ([], {"ratings_count": 0, "metrics_count": 0, "combined_count": 0, "ratings_path": "", "metrics_path": ""}))
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("parse should not be called")))
 
@@ -587,7 +607,7 @@ def test_run_bonferroni_head2head_shard_pair_id_read_exception_warns_and_continu
     shard_path = shard_dir / "bonferroni_pairwise_shard_0000.parquet"
     pd.DataFrame([{"pair_id": 99}]).to_parquet(shard_path)
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **_: 1)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(1))  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: (["A", "B"], {"ratings_count": 0, "metrics_count": 0, "combined_count": 2, "ratings_path": "", "metrics_path": ""}))
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda name, **_: name)
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds))
@@ -621,7 +641,7 @@ def test_run_bonferroni_head2head_missing_pair_id_column_warns(
     pairwise_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([{"players": 2}]).to_parquet(pairwise_path)
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **_: 1)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(1))  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: (["A", "B"], {"ratings_count": 0, "metrics_count": 0, "combined_count": 2, "ratings_path": "", "metrics_path": ""}))
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda name, **_: name)
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds))
@@ -653,7 +673,7 @@ def test_run_bonferroni_head2head_warns_when_final_pairwise_load_fails(
     pairwise_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame([{"pair_id": 88}]).to_parquet(pairwise_path)
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **_: 1)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(1))  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: (["A", "B"], {"ratings_count": 0, "metrics_count": 0, "combined_count": 2, "ratings_path": "", "metrics_path": ""}))
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda name, **_: name)
     monkeypatch.setattr(rb, "simulate_many_games_from_seeds", lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds))
@@ -683,7 +703,7 @@ def test_run_bonferroni_head2head_errors_on_ties_or_missing_outcomes(
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **_: 1)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(1))  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: (["A", "B"], {"ratings_count": 0, "metrics_count": 0, "combined_count": 2, "ratings_path": "", "metrics_path": ""}))
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda name, **_: name)
     monkeypatch.setattr(
@@ -707,7 +727,7 @@ def test_run_bonferroni_head2head_root_seed_override_updates_cfg(
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
-    monkeypatch.setattr(rb, "games_for_power", lambda **_: 0)  # noqa: ANN001
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(0))  # noqa: ANN001
     monkeypatch.setattr(rb, "_load_top_strategies", lambda **_: (["A", "B"], {"ratings_count": 0, "metrics_count": 0, "combined_count": 2, "ratings_path": "", "metrics_path": ""}))
 
     rb.run_bonferroni_head2head(cfg=cfg, root=root)

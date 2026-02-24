@@ -31,17 +31,23 @@ def test_run_wrappers_call_underlying_run_with_force(
     module_path: str,
 ) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-    calls: list[tuple[AppConfig, bool]] = []
+    calls: list[tuple[AppConfig, bool, dict[str, Any]]] = []
 
-    def _run(app_cfg: AppConfig, *, force: bool = False) -> None:
-        calls.append((app_cfg, force))
+    def _run(app_cfg: AppConfig, *, force: bool = False, **kwargs: Any) -> None:
+        calls.append((app_cfg, force, kwargs))
 
     monkeypatch.setattr(f"{module_path}.run", _run, raising=True)
 
     wrapper = getattr(analysis_mod, wrapper_name)
     wrapper(cfg, force=True)
 
-    assert calls == [(cfg, True)]
+    expected_kwargs: dict[str, Any] = {}
+    if wrapper_name == "run_h2h_tier_trends":
+        expected_kwargs = {
+            "seed_s_tier_paths": None,
+            "interseed_s_tier_path": None,
+        }
+    assert calls == [(cfg, True, expected_kwargs)]
 
 
 def test_optional_import_success_path() -> None:
@@ -92,7 +98,13 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
     monkeypatch.setattr("farkle.analysis.StageRunner.run", _run_plan, raising=True)
     monkeypatch.setattr("farkle.analysis.run_seed_summaries", lambda app_cfg, force=False: calls.append(f"seed:{force}"), raising=True)
     monkeypatch.setattr("farkle.analysis.run_coverage_by_k", lambda app_cfg, force=False: calls.append(f"coverage:{force}"), raising=True)
-    monkeypatch.setattr("farkle.analysis.run_seed_symmetry", lambda app_cfg, force=False: calls.append(f"seed_symmetry:{force}"), raising=True)
+    monkeypatch.setattr(
+        "farkle.analysis.run_seed_symmetry",
+        lambda app_cfg, force=False, allow_missing_upstream=False: calls.append(
+            f"seed_symmetry:{force}:{allow_missing_upstream}"
+        ),
+        raising=True,
+    )
 
     enabled_modules = {
         "farkle.analysis.trueskill": SimpleNamespace(run=lambda app_cfg: calls.append("trueskill")),
@@ -127,7 +139,7 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
         "trueskill",
         "tiering",
         "head2head",
-        "seed_symmetry:True",
+        "seed_symmetry:True:False",
         "post_h2h",
     ]
 
@@ -139,7 +151,13 @@ def test_run_all_forwards_flags_and_runs_all_enabled_stages(
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
     calls: list[str] = []
 
-    monkeypatch.setattr("farkle.analysis.run_single_seed_analysis", lambda app_cfg: calls.append("single_seed"), raising=True)
+    monkeypatch.setattr(
+        "farkle.analysis.run_single_seed_analysis",
+        lambda app_cfg, *, allow_missing_upstream=False: calls.append(
+            f"single_seed:{allow_missing_upstream}"
+        ),
+        raising=True,
+    )
     monkeypatch.setattr(
         "farkle.analysis.run_interseed_analysis",
         lambda app_cfg, *, run_rng_diagnostics=None, rng_lags=None: calls.append(
@@ -151,7 +169,7 @@ def test_run_all_forwards_flags_and_runs_all_enabled_stages(
 
     analysis_mod.run_all(cfg, run_rng_diagnostics=False, rng_lags=(2, 4))
 
-    assert calls == ["single_seed", "interseed:False:(2, 4)", "h2h_tier_trends"]
+    assert calls == ["single_seed:False", "interseed:False:(2, 4)", "h2h_tier_trends"]
 
 
 def test_run_manifest_metadata_handles_missing_and_partial_fields(tmp_path: Path) -> None:
@@ -182,7 +200,13 @@ def test_run_single_seed_analysis_stops_when_head2head_misses_required_outputs(
 
     monkeypatch.setattr("farkle.analysis.run_seed_summaries", lambda app_cfg, force=False: calls.append("seed"), raising=True)
     monkeypatch.setattr("farkle.analysis.run_coverage_by_k", lambda app_cfg, force=False: calls.append("coverage"), raising=True)
-    monkeypatch.setattr("farkle.analysis.run_seed_symmetry", lambda app_cfg, force=False: calls.append("seed_symmetry"), raising=True)
+    monkeypatch.setattr(
+        "farkle.analysis.run_seed_symmetry",
+        lambda app_cfg, force=False, allow_missing_upstream=False: calls.append(
+            "seed_symmetry"
+        ),
+        raising=True,
+    )
 
     def _head2head(_cfg: AppConfig) -> None:
         calls.append("head2head")

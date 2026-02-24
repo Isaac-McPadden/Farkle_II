@@ -434,7 +434,7 @@ def test_low_level_numeric_edge_branches(monkeypatch: pytest.MonkeyPatch) -> Non
     monkeypatch.setattr(game_stats.ds, "dataset", lambda _path: DummyDataset())
     out = game_stats._global_stats(Path("dummy"))
     assert not out.empty
-    assert set(out["n_players"].astype(int).tolist()) == {1}
+    assert set(out["n_players"].astype(int).tolist()) == {1, 2}
 
 def test_margin_pooling_and_strategy_empty_paths(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
     AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
