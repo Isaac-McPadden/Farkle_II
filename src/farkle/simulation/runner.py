@@ -711,6 +711,7 @@ def run_single_n(
         desired_sec_per_chunk=cfg.sim.desired_sec_per_chunk,
         ckpt_every_sec=cfg.sim.ckpt_every_sec,
         n_strategies=grid_size,
+        mp_start_method=cfg.sim.mp_start_method,
     )
     tournament_mod.run_tournament(
         n_players=n,

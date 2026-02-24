@@ -50,6 +50,7 @@ from trueskill import Rating
 from farkle.config import AppConfig
 from farkle.orchestration.seed_utils import resolve_results_dir, split_seeded_results_dir
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.random import seed_everything
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.stats import build_tiers
@@ -991,6 +992,7 @@ def run_trueskill(
     pooled_weights_by_k: Mapping[int, float] | None = None,
     tiering_z: float | None = None,
     tiering_min_gap: float | None = None,
+    mp_start_method: str | None = None,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -1064,6 +1066,8 @@ def run_trueskill(
         },
     )
 
+    mp_context = resolve_mp_context(mp_start_method)
+
     pooled: dict[str, tuple[float, float]] = {}
     per_block_games: dict[str, int] = {}
     pooled_weights_by_k = dict(pooled_weights_by_k or {})
@@ -1087,7 +1091,7 @@ def run_trueskill(
             },
         )
     if actual_workers > 1 and len(blocks) > 1:
-        with cf.ProcessPoolExecutor(max_workers=actual_workers) as ex:
+        with cf.ProcessPoolExecutor(max_workers=actual_workers, mp_context=mp_context) as ex:
             futures = {
                 ex.submit(
                     _rate_block_worker,
@@ -1558,6 +1562,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             pooled_weights_by_k=cfg.trueskill.pooled_weights_by_k,
             tiering_z=tiering_z,
             tiering_min_gap=tiering_min_gap,
+            mp_start_method=analysis_cfg.mp_start_method,
         )
 
         pooled_path = _ensure_new_location(

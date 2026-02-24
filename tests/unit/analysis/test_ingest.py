@@ -602,8 +602,9 @@ def test_run_process_pool_path(tmp_results_dir, monkeypatch):
             return self._value
 
     class DummyPool:
-        def __init__(self, max_workers):
+        def __init__(self, max_workers, **kwargs):
             seen["value"] = max_workers
+            seen["mp_context"] = kwargs.get("mp_context")
 
         def __enter__(self):
             return self

@@ -34,6 +34,7 @@ sim:
     bh_target_rank:    # int|None: target BH order statistic i*
     bh_target_frac:    # float|None: target discovery fraction for BH
   n_jobs:    # int|None: parallel workers for simulation
+  mp_start_method:    # str|None: multiprocessing start method for simulation pools (default|null|spawn|fork|forkserver)
   desired_sec_per_chunk:    # int: target seconds per work chunk
   ckpt_every_sec:    # int: checkpoint interval in seconds
   score_thresholds:    # list[int]|None: custom threshold grid for scoring
@@ -49,6 +50,7 @@ sim:
 
 analysis:
   n_jobs:    # int: parallel workers for analysis
+  mp_start_method:    # str|None: multiprocessing start method for analysis pools (default|null|spawn|fork|forkserver)
   log_level:    # str: logger level during analysis
   results_glob:    # str: glob selecting per-N result folders
   h2h_tier_trends_seed_s_tier_paths:    # list[Path|str]|None: explicit per-seed 11_post_h2h/h2h_s_tiers.json paths; required for two-seed trend runs unless interseed file is provided
