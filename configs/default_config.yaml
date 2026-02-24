@@ -33,6 +33,7 @@ sim:
     bh_target_rank: null    # int|None: target BH order statistic i*
     bh_target_frac: 0.03    # float|None: target discovery fraction for BH
   n_jobs: null              # int|None: parallel workers for simulation
+  mp_start_method: null     # str|None: multiprocessing start method for simulation pools (default|null|spawn|fork|forkserver)
   desired_sec_per_chunk: 10 # int: target seconds per work chunk
   ckpt_every_sec: 30        # int: checkpoint interval in seconds
   score_thresholds: null    # list[int]|None: custom threshold grid for scoring
@@ -48,6 +49,7 @@ sim:
 
 analysis:
   n_jobs: 1                 # int: parallel workers for analysis
+  mp_start_method: null     # str|None: multiprocessing start method for analysis pools (default|null|spawn|fork|forkserver)
   log_level: "INFO"         # str: logger level during analysis
   results_glob: "*_players" # str: glob selecting per-N result folders
   head2head_target_hours: 8.0         # float: target runtime window for Bonferroni H2H (<=0 disables)

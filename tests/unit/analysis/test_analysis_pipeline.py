@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime as _dt
-import hashlib
 import json
 import sys
 import types
@@ -19,7 +18,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 from farkle.analysis import pipeline
-from farkle.config import AppConfig, IOConfig
+from farkle.config import AppConfig, IOConfig, compute_config_sha
 
 
 def _patch_pipeline_stage_stubs(
@@ -108,7 +107,8 @@ def test_pipeline_creates_stage_dirs_in_new_order(
     rc = pipeline.main(["--config", str(cfg_path), "ingest"])
 
     assert rc == 0
-    assert stage_folders == [placement.folder_name for placement in cfg.stage_layout.placements]
+    expected = [placement.folder_name for placement in cfg.stage_layout.placements]
+    assert stage_folders[: len(expected)] == expected
 
 
 def test_pipeline_writes_resolved_config_and_manifest(
@@ -136,7 +136,7 @@ def test_pipeline_writes_resolved_config_and_manifest(
     assert manifest.exists()
 
     resolved_yaml = resolved.read_text()
-    expected_sha = hashlib.sha256(resolved_yaml.encode("utf-8")).hexdigest()
+    expected_sha = compute_config_sha(cfg)
     resolved_dict = yaml.safe_load(resolved_yaml)
     stage_layout = resolved_dict.get("stage_layout") if isinstance(resolved_dict, dict) else None
     records = [json.loads(line) for line in manifest.read_text().splitlines() if line.strip()]

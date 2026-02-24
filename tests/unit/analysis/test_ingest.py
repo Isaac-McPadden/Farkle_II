@@ -11,6 +11,7 @@ import pytest
 from farkle.analysis.ingest import (
     _coerce_strategy_ids,
     _fix_winner,
+    _ingest_upstream_inputs,
     _iter_shards,
     _migrate_legacy_raw,
     _n_from_block,
@@ -18,6 +19,7 @@ from farkle.analysis.ingest import (
     _validate_strategy_dtypes,
     run,
 )
+from farkle.analysis.stage_state import stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, IngestConfig, IOConfig
 from farkle.utils.schema_helpers import expected_schema_for
 
@@ -600,8 +602,9 @@ def test_run_process_pool_path(tmp_results_dir, monkeypatch):
             return self._value
 
     class DummyPool:
-        def __init__(self, max_workers):
+        def __init__(self, max_workers, **kwargs):
             seen["value"] = max_workers
+            seen["mp_context"] = kwargs.get("mp_context")
 
         def __enter__(self):
             return self
@@ -642,7 +645,10 @@ def test_run_short_circuits_when_stage_up_to_date(tmp_results_dir, monkeypatch):
 
 def test_run_writes_stage_done_when_stage_not_up_to_date(tmp_results_dir, monkeypatch):
     cfg = _make_cfg(tmp_results_dir)
-    (cfg.results_root / "2_players").mkdir(parents=True)
+    block = cfg.results_root / "2_players"
+    block.mkdir(parents=True)
+    marker = block / "done.txt"
+    marker.write_text("ready")
     writes: list[tuple] = []
 
     monkeypatch.setattr("farkle.analysis.ingest.stage_is_up_to_date", lambda *args, **kwargs: False)
@@ -657,8 +663,53 @@ def test_run_writes_stage_done_when_stage_not_up_to_date(tmp_results_dir, monkey
     assert len(writes) == 1
     args, kwargs = writes[0]
     assert args[0] == cfg.ingest_stage_dir / "ingest.done.json"
-    assert kwargs["inputs"] == [cfg.results_root]
+    assert kwargs["inputs"] == [marker]
 
+
+
+def test_ingest_upstream_inputs_directory_mtime_tracks_child_file_changes(tmp_path):
+    results_root = tmp_path / "results"
+    block = results_root / "2_players"
+    block.mkdir(parents=True)
+
+    marker = block / "done.txt"
+    marker.write_text("v1")
+
+    inputs_before = _ingest_upstream_inputs(results_root)
+    assert inputs_before == [marker]
+
+    marker.write_text("v2")
+    inputs_after = _ingest_upstream_inputs(results_root)
+
+    assert inputs_after == [marker]
+
+
+def test_stage_freshness_directory_mtime_invalidates_when_child_file_changes(tmp_path):
+    results_root = tmp_path / "results"
+    block = results_root / "2_players"
+    block.mkdir(parents=True)
+    child = block / "done.txt"
+    child.write_text("before")
+
+    output = tmp_path / "analysis" / "00_ingest" / "2p" / "2p_ingested_rows.raw.parquet"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("out")
+
+    done = tmp_path / "analysis" / "00_ingest" / "ingest.done.json"
+    inputs = _ingest_upstream_inputs(results_root)
+    write_stage_done(done, inputs=inputs, outputs=[output], config_sha=None)
+
+    assert stage_is_up_to_date(done, inputs=_ingest_upstream_inputs(results_root), outputs=[output])
+
+    child.write_text("after")
+    done_mtime = done.stat().st_mtime
+    os.utime(child, (done_mtime + 1, done_mtime + 1))
+
+    assert not stage_is_up_to_date(
+        done,
+        inputs=_ingest_upstream_inputs(results_root),
+        outputs=[output],
+    )
 
 def test_run_emits_logging(tmp_results_dir, caplog):
     cfg = _make_cfg(tmp_results_dir)

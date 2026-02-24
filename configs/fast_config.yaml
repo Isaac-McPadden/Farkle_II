@@ -17,6 +17,7 @@ sim:
   seed: 26                        # primary RNG seed (results_root uses seed suffix)
   seed_list: [26, 27]             # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 12                    # null = auto; otherwise an int
+  mp_start_method: null          # start method: default|null|spawn|fork|forkserver
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
   row_dir: "rows"                   # rows => per-N rows under {results_root}/{N}_players/rows/
                                     # If row_dir == null, row writing skipped
@@ -63,6 +64,7 @@ sim:
 
 analysis:
   n_jobs: 4
+  mp_start_method: null
   log_level: "INFO"
   head2head_target_hours: 1.0
   head2head_tolerance_pct: 5.0

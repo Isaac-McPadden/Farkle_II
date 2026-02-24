@@ -11,7 +11,6 @@ row.  A parquet dump of all rows can also be requested via --row-dir.
 from __future__ import annotations
 
 import logging
-import multiprocessing as mp
 import pickle
 import time
 from collections import Counter, defaultdict
@@ -553,7 +552,7 @@ def run_tournament(
             metric_sums = None
             metric_sq_sums = None
 
-    mp.get_context("spawn")
+    mp_context = parallel.resolve_mp_context(cfg.mp_start_method)
 
     if resume and payload is not None and row_output_directory is not None:
         manifest_file = row_output_directory / "manifest.jsonl"
@@ -636,6 +635,7 @@ def run_tournament(
             initializer=_init_worker,
             initargs=(strategies, cfg),
             window=4 * (n_jobs or 1),
+            mp_context=mp_context,
         ):
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(

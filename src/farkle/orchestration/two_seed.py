@@ -7,7 +7,7 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
-from farkle.config import AppConfig, apply_dot_overrides, load_app_config
+from farkle.config import AppConfig, apply_dot_overrides, assign_config_sha, load_app_config
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
     seed_has_completion_markers,
@@ -121,6 +121,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     resolved_seeds = cfg.sim.populate_seed_list(2)
     seed_pair = (resolved_seeds[0], resolved_seeds[1])
 
+    assign_config_sha(cfg)
     run_seeds(cfg, seed_pair=seed_pair, force=args.force)
     return 0
 

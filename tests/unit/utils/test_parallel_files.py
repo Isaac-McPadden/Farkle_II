@@ -11,6 +11,10 @@ import farkle.utils.csv_files as csv_files
 import farkle.utils.parallel as parallel
 
 
+def _times_two(value: int) -> int:
+    return value * 2
+
+
 @pytest.fixture
 def writer_queue() -> mp.Queue:  # type: ignore
     queue: mp.Queue = mp.Queue()
@@ -170,6 +174,7 @@ def test_process_map_serial():
 
 def test_process_map_executor(monkeypatch: MonkeyPatch):
     submitted = []
+    executor_kwargs = {}
 
     class DummyFuture:
         def __init__(self, value):
@@ -181,6 +186,7 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
     class DummyExecutor:
         def __init__(self, **kwargs):  # noqa: ANN003
             self.kwargs = kwargs
+            executor_kwargs.update(kwargs)
 
         def __enter__(self):
             return self
@@ -195,7 +201,39 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
     monkeypatch.setattr(parallel, "ProcessPoolExecutor", DummyExecutor)
     monkeypatch.setattr(parallel, "as_completed", lambda futures: iter(futures))
 
-    result = list(parallel.process_map(lambda x: x * 2, [1, 2, 3], n_jobs=2, window=2))
+    mp_context = (
+        parallel.resolve_mp_context("spawn")
+        if "spawn" in mp.get_all_start_methods()
+        else None
+    )
+    result = list(
+        parallel.process_map(
+            _times_two,
+            [1, 2, 3],
+            n_jobs=2,
+            window=2,
+            mp_context=mp_context,
+        )
+    )
 
     assert result == [2, 4, 6]
     assert submitted == [1, 2, 3]
+    assert executor_kwargs.get("mp_context") is mp_context
+
+
+def test_process_map_context_modes_identical_artifacts(tmp_path: Path) -> None:
+    items = [1, 2, 3, 4]
+    contexts = [None]
+    if "spawn" in mp.get_all_start_methods():
+        contexts.append(parallel.resolve_mp_context("spawn"))
+
+    artifact_paths: list[Path] = []
+    for idx, context in enumerate(contexts):
+        values = sorted(parallel.process_map(_times_two, items, n_jobs=2, mp_context=context))
+        out_path = tmp_path / f"result_{idx}.csv"
+        out_path.write_text("\n".join(str(v) for v in values) + "\n", encoding="utf-8")
+        artifact_paths.append(out_path)
+
+    baseline = artifact_paths[0].read_text(encoding="utf-8")
+    for path in artifact_paths[1:]:
+        assert path.read_text(encoding="utf-8") == baseline

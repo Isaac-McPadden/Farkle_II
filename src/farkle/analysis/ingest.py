@@ -22,6 +22,7 @@ import pyarrow.parquet as pq
 
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, load_app_config
+from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.streaming_loop import run_streaming_shard
 
@@ -260,6 +261,28 @@ def _n_from_block(name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _ingest_upstream_inputs(results_root: Path) -> list[Path]:
+    """Return deterministic upstream files that should invalidate ingest freshness.
+
+    Directory mtimes can stay unchanged when shard file contents are rewritten, so
+    ingest freshness must key off concrete files beneath each ``*_players`` block.
+    """
+
+    blocks = sorted(
+        (p for p in results_root.iterdir() if p.is_dir() and p.name.endswith("_players")),
+        key=lambda p: (_n_from_block(p.name), p.name),
+    )
+    inputs: list[Path] = []
+    allowed_suffixes = {".parquet", ".csv", ".json", ".jsonl", ".txt"}
+    for block in blocks:
+        block_files = sorted(
+            (p for p in block.rglob("*") if p.is_file() and p.suffix in allowed_suffixes),
+            key=lambda p: p.relative_to(results_root).as_posix(),
+        )
+        inputs.extend(block_files)
+    return inputs
+
+
 def _migrate_legacy_raw(n: int, cfg: AppConfig) -> None:
     """Move legacy ingest outputs into the new ``00_ingest/<k>p`` layout."""
 
@@ -466,9 +489,11 @@ def run(cfg: AppConfig) -> None:
         n = _n_from_block(block.name)
         outputs.append(cfg.ingested_rows_raw(n))
         manifests.append(cfg.ingest_manifest(n))
+    upstream_inputs = _ingest_upstream_inputs(cfg.results_root)
+
     if stage_is_up_to_date(
         done,
-        inputs=[cfg.results_root],
+        inputs=upstream_inputs,
         outputs=[*outputs, *manifests],
         config_sha=getattr(cfg, "config_sha", None),
     ):
@@ -478,12 +503,14 @@ def run(cfg: AppConfig) -> None:
         )
         return
 
+    mp_context = resolve_mp_context(cfg.analysis.mp_start_method)
+
     total_rows = 0
     if cfg.n_jobs_ingest <= 1:
         for block in blocks:
             total_rows += _process_block(block, cfg)
     else:
-        with ProcessPoolExecutor(max_workers=cfg.n_jobs_ingest) as pool:
+        with ProcessPoolExecutor(max_workers=cfg.n_jobs_ingest, mp_context=mp_context) as pool:
             futures = [pool.submit(_process_block, block, cfg) for block in blocks]
             for f in futures:
                 total_rows += f.result()
@@ -498,7 +525,7 @@ def run(cfg: AppConfig) -> None:
     )
     write_stage_done(
         done,
-        inputs=[cfg.results_root],
+        inputs=upstream_inputs,
         outputs=[*outputs, *manifests],
         config_sha=getattr(cfg, "config_sha", None),
     )

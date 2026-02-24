@@ -73,12 +73,15 @@ class StageRunner:
         raise_on_failure: bool = True,
     ) -> StageRunResult:
         manifest_path = context.manifest_path
+        config_sha = getattr(context.config, "config_sha", None)
         run_payload = {
             "event": context.run_start_event,
             "run": context.run_label,
             "stage_count": len(plan),
             **context.run_metadata,
         }
+        if config_sha is not None:
+            run_payload.setdefault("config_sha", config_sha)
         append_manifest_line(manifest_path, run_payload)
 
         failed_steps: list[str] = []
@@ -104,6 +107,7 @@ class StageRunner:
                     "run": context.run_label,
                     "stage": item.name,
                     **item.metadata,
+                    **({"config_sha": config_sha} if config_sha is not None else {}),
                 },
             )
             try:
@@ -137,6 +141,7 @@ class StageRunner:
                         "reason": stage_done.get("reason"),
                         "blocking_dependency": stage_done.get("blocking_dependency"),
                         "upstream_stage": stage_done.get("upstream_stage"),
+                        **({"config_sha": config_sha} if config_sha is not None else {}),
                     },
                 )
             except Exception as exc:  # noqa: BLE001
@@ -160,6 +165,7 @@ class StageRunner:
                         "stage": item.name,
                         "ok": False,
                         "error": f"{type(exc).__name__}: {exc}",
+                        **({"config_sha": config_sha} if config_sha is not None else {}),
                         **(
                             {
                                 "missing_outputs": [str(path) for path in exc.missing_outputs],
@@ -179,6 +185,8 @@ class StageRunner:
             "health": "healthy" if (not failed_steps and not degraded_steps) else "degraded",
             **context.run_end_metadata,
         }
+        if config_sha is not None:
+            run_end_payload.setdefault("config_sha", config_sha)
         if failed_steps:
             run_end_payload["failed_steps"] = failed_steps
         if degraded_steps:

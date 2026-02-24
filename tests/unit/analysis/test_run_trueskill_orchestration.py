@@ -64,8 +64,9 @@ def test_run_trueskill_pooling_and_short_circuit(
             return self._result
 
     class _FakeExecutor:
-        def __init__(self, max_workers: int):
+        def __init__(self, max_workers: int, **kwargs):
             self.max_workers = max_workers
+            self.mp_context = kwargs.get("mp_context")
             self.submissions: list[
                 tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
             ] = []

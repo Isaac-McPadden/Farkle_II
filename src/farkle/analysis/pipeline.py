@@ -7,11 +7,9 @@ and generating reports, mirroring the repository's documented workflow.
 from __future__ import annotations
 
 import argparse
-import dataclasses
-import hashlib
 import logging
 from pathlib import Path
-from typing import Any, Callable, Sequence, overload
+from typing import Any, Callable, Sequence
 
 import yaml  # type: ignore[import-untyped]
 
@@ -19,48 +17,10 @@ from farkle import analysis
 from farkle.analysis import combine, coverage_by_k, curate, game_stats, ingest, metrics
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout, resolve_stage_layout
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
-from farkle.config import AppConfig, load_app_config
+from farkle.config import AppConfig, assign_config_sha, effective_config_dict, load_app_config
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
-
-
-@overload
-def _stringify_paths(obj: dict[str, Any]) -> dict[str, Any]:
-    ...
-
-
-@overload
-def _stringify_paths(obj: list[Any]) -> list[Any]:
-    ...
-
-
-@overload
-def _stringify_paths(obj: tuple[Any, ...]) -> tuple[Any, ...]:
-    ...
-
-
-@overload
-def _stringify_paths(obj: Path) -> str:
-    ...
-
-
-@overload
-def _stringify_paths(obj: Any) -> Any:
-    ...
-
-
-def _stringify_paths(obj: Any) -> Any:
-    """Convert Paths nested inside mappings/sequences into plain strings."""
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, dict):
-        return {k: _stringify_paths(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_stringify_paths(v) for v in obj]
-    if isinstance(obj, tuple):
-        return tuple(_stringify_paths(v) for v in obj)
-    return obj
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -278,10 +238,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     resolved_layout = layout.to_resolved_layout()
     stage_layout_snapshot = app_cfg._stage_layout
     app_cfg._stage_layout = None
-    resolved_dict: dict[str, Any] = _stringify_paths(dataclasses.asdict(app_cfg))
+    resolved_dict: dict[str, Any] = effective_config_dict(app_cfg)
     app_cfg._stage_layout = stage_layout_snapshot
-    resolved_dict.pop("config_sha", None)
-    resolved_dict.pop("_stage_layout", None)
     resolved_dict["stage_layout"] = resolved_layout
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     with atomic_path(str(resolved)) as tmp_path:
@@ -289,8 +247,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # NDJSON manifest (append-only)
     manifest_path = analysis_dir / app_cfg.manifest_name
-    config_sha = hashlib.sha256(resolved_yaml.encode("utf-8")).hexdigest()
-    app_cfg.config_sha = config_sha  # allow downstream caching helpers to compare configs
+    config_sha = assign_config_sha(app_cfg)  # allow downstream caching helpers to compare configs
 
     def _optional_stage(module: str, stage: str) -> Callable[[AppConfig], None]:
         def _runner(cfg: AppConfig) -> None:

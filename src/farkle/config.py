@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass, field, is_dataclass
@@ -143,6 +145,8 @@ class SimConfig:
     recompute_num_shuffles: bool = True
     power_design: PowerDesign = field(default_factory=PowerDesign)
     n_jobs: int | None = None
+    mp_start_method: str | None = None
+    """Multiprocessing start method for simulation pools (default uses platform default)."""
     desired_sec_per_chunk: int = 10
     ckpt_every_sec: int = 30
 
@@ -264,6 +268,8 @@ class AnalysisConfig:
     """Emit the final report artifacts (plan step 9)."""
 
     n_jobs: int = 1
+    mp_start_method: str | None = None
+    """Multiprocessing start method for analysis pools (default uses platform default)."""
     log_level: str = "INFO"
     results_glob: str = "*_players"
     meta_random_if_I2_gt: float = 25.0
@@ -389,6 +395,13 @@ class HGBConfig:
     n_estimators: int = 300
 
 
+@dataclass
+class OrchestrationConfig:
+    """Controls top-level orchestration behavior."""
+
+    parallel_seeds: bool = False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AppConfig + convenience properties used by analysis code
 # ─────────────────────────────────────────────────────────────────────────────
@@ -407,6 +420,7 @@ class AppConfig:
     trueskill: TrueSkillConfig = field(default_factory=TrueSkillConfig)
     head2head: Head2HeadConfig = field(default_factory=Head2HeadConfig)
     hgb: HGBConfig = field(default_factory=HGBConfig)
+    orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
     # Computed at runtime; not part of user-provided YAML
     config_sha: str | None = field(default=None, init=False, repr=False, compare=False)
     _stage_layout: "StageLayout | None" = field(
@@ -1454,6 +1468,7 @@ def _validate_config_keys(data: Mapping[str, Any]) -> None:
         "trueskill": TrueSkillConfig,
         "head2head": Head2HeadConfig,
         "hgb": HGBConfig,
+        "orchestration": OrchestrationConfig,
     }
     unknown_sections = set(data) - set(top_level_sections)
     if unknown_sections:
@@ -1721,6 +1736,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         trueskill=build(TrueSkillConfig, data.get("trueskill", {})),
         head2head=build(Head2HeadConfig, data.get("head2head", {})),
         hgb=build(HGBConfig, data.get("hgb", {})),
+        orchestration=build(OrchestrationConfig, data.get("orchestration", {})),
     )
     _normalize_seed_list(cfg.sim)
     _normalize_seed_pair(cfg.sim, seed_provided=seed_provided)
@@ -1819,6 +1835,46 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
     return cfg
 
 
+def _stringify_paths_for_serialization(obj: Any) -> Any:
+    if isinstance(obj, Path):
+        return str(obj)
+    if isinstance(obj, dict):
+        return {key: _stringify_paths_for_serialization(val) for key, val in obj.items()}
+    if isinstance(obj, list):
+        return [_stringify_paths_for_serialization(val) for val in obj]
+    if isinstance(obj, tuple):
+        return tuple(_stringify_paths_for_serialization(val) for val in obj)
+    return obj
+
+
+def effective_config_dict(cfg: AppConfig) -> dict[str, Any]:
+    """Return a materialized config mapping suitable for persistence and hashing."""
+
+    resolved = _stringify_paths_for_serialization(dataclasses.asdict(cfg))
+    resolved.pop("config_sha", None)
+    resolved.pop("_stage_layout", None)
+    return resolved
+
+
+def compute_config_sha(cfg: AppConfig) -> str:
+    """Return a deterministic sha256 over the effective configuration payload."""
+
+    canonical_json = json.dumps(
+        effective_config_dict(cfg),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
+def assign_config_sha(cfg: AppConfig) -> str:
+    """Compute and persist ``cfg.config_sha`` using canonical serialization."""
+
+    cfg.config_sha = compute_config_sha(cfg)
+    return cfg.config_sha
+
+
 __all__ = [
     "IOConfig",
     "SimConfig",
@@ -1834,4 +1890,7 @@ __all__ = [
     "expected_seed_list_length",
     "load_app_config",
     "apply_dot_overrides",
+    "assign_config_sha",
+    "compute_config_sha",
+    "effective_config_dict",
 ]
