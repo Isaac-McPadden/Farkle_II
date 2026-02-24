@@ -6,10 +6,10 @@ See ../../../cli_args.md for details.
 from __future__ import annotations
 
 import argparse
-import dataclasses
+import json
 import logging
 from pathlib import Path
-from typing import Any, Sequence, overload
+from typing import Sequence
 
 import yaml  # type: ignore[import-untyped]
 
@@ -18,6 +18,8 @@ from farkle.analysis import combine, curate, ingest, metrics
 from farkle.config import (
     AppConfig,
     apply_dot_overrides,
+    assign_config_sha,
+    effective_config_dict,
     expected_seed_list_length,
     load_app_config,
 )
@@ -293,44 +295,6 @@ def _parse_level(level: str | int) -> int:
     return int(level)
 
 
-@overload
-def _stringify_paths(obj: dict[str, Any]) -> dict[str, Any]:
-    ...
-
-
-@overload
-def _stringify_paths(obj: list[Any]) -> list[Any]:
-    ...
-
-
-@overload
-def _stringify_paths(obj: tuple[Any, ...]) -> tuple[Any, ...]:
-    ...
-
-
-@overload
-def _stringify_paths(obj: Path) -> str:
-    ...
-
-
-@overload
-def _stringify_paths(obj: Any) -> Any:
-    ...
-
-
-def _stringify_paths(obj: Any) -> Any:
-    """Recursively convert :class:`pathlib.Path` instances to strings."""
-    if isinstance(obj, Path):
-        return str(obj)
-    if isinstance(obj, dict):
-        return {k: _stringify_paths(v) for k, v in obj.items()}
-    if isinstance(obj, list):
-        return [_stringify_paths(v) for v in obj]
-    if isinstance(obj, tuple):
-        return tuple(_stringify_paths(v) for v in obj)
-    return obj
-
-
 def _resolve_seed_pair(
     args: argparse.Namespace, parser: argparse.ArgumentParser
 ) -> tuple[int, int] | None:
@@ -348,11 +312,16 @@ def _resolve_seed_pair(
 def _write_active_config(cfg: AppConfig, dest_dir: Path) -> None:
     """Persist the resolved configuration alongside simulation results."""
     dest_dir.mkdir(parents=True, exist_ok=True)
-    resolved_dict = _stringify_paths(dataclasses.asdict(cfg))
+    resolved_dict = effective_config_dict(cfg)
     resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
     target = dest_dir / "active_config.yaml"
     with atomic_path(str(target)) as tmp_path:
         Path(tmp_path).write_text(resolved_yaml, encoding="utf-8")
+
+    done_payload = {"active_config": str(target), "config_sha": cfg.config_sha}
+    done_path = target.with_suffix(".done.json")
+    with atomic_path(str(done_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(done_payload, indent=2, sort_keys=True), encoding="utf-8")
 
 
 def _run_preprocess(
@@ -427,6 +396,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             cfg.sim.seed_pair = seed_pair_override
         if expected_seed_len is not None:
             cfg.sim.populate_seed_list(expected_seed_len)
+        assign_config_sha(cfg)
 
         margin_thresholds = getattr(args, "margin_thresholds", None)
         if margin_thresholds:
