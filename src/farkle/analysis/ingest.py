@@ -260,6 +260,28 @@ def _n_from_block(name: str) -> int:
     return int(m.group(1)) if m else 0
 
 
+def _ingest_upstream_inputs(results_root: Path) -> list[Path]:
+    """Return deterministic upstream files that should invalidate ingest freshness.
+
+    Directory mtimes can stay unchanged when shard file contents are rewritten, so
+    ingest freshness must key off concrete files beneath each ``*_players`` block.
+    """
+
+    blocks = sorted(
+        (p for p in results_root.iterdir() if p.is_dir() and p.name.endswith("_players")),
+        key=lambda p: (_n_from_block(p.name), p.name),
+    )
+    inputs: list[Path] = []
+    allowed_suffixes = {".parquet", ".csv", ".json", ".jsonl", ".txt"}
+    for block in blocks:
+        block_files = sorted(
+            (p for p in block.rglob("*") if p.is_file() and p.suffix in allowed_suffixes),
+            key=lambda p: p.relative_to(results_root).as_posix(),
+        )
+        inputs.extend(block_files)
+    return inputs
+
+
 def _migrate_legacy_raw(n: int, cfg: AppConfig) -> None:
     """Move legacy ingest outputs into the new ``00_ingest/<k>p`` layout."""
 
@@ -466,9 +488,11 @@ def run(cfg: AppConfig) -> None:
         n = _n_from_block(block.name)
         outputs.append(cfg.ingested_rows_raw(n))
         manifests.append(cfg.ingest_manifest(n))
+    upstream_inputs = _ingest_upstream_inputs(cfg.results_root)
+
     if stage_is_up_to_date(
         done,
-        inputs=[cfg.results_root],
+        inputs=upstream_inputs,
         outputs=[*outputs, *manifests],
         config_sha=getattr(cfg, "config_sha", None),
     ):
@@ -498,7 +522,7 @@ def run(cfg: AppConfig) -> None:
     )
     write_stage_done(
         done,
-        inputs=[cfg.results_root],
+        inputs=upstream_inputs,
         outputs=[*outputs, *manifests],
         config_sha=getattr(cfg, "config_sha", None),
     )
