@@ -236,12 +236,14 @@ def test_two_seed_main_uses_populated_seed_pair_when_no_cli_seed_override(
     assert called["cfg"] is cfg
     assert called["seed_pair"] == (101, 202)
     assert called["force"] is False
+    assert called["parallel"] is True
 
 
 def test_two_seed_pipeline_helpers(base_cfg: AppConfig, tmp_path: Path) -> None:
     parser = two_seed_pipeline.build_parser()
-    args = parser.parse_args(["--seed-pair", "13", "14"])
+    args = parser.parse_args(["--seed-pair", "13", "14", "--parallel-seeds"])
     assert two_seed_pipeline._resolve_seed_pair(args, parser) == (13, 14)
+    assert args.parallel_seeds is True
 
     pair_root = tmp_path / "pair"
     base_cfg.io.meta_analysis_dir = None
@@ -374,6 +376,67 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     assert h2h_calls[0]["force"] is True
 
 
+
+
+def test_two_seed_pipeline_parallel_seed_smoke_equivalence(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    interseed_roots: dict[str, AppConfig] = {}
+
+    def _setup_common_stubs() -> None:
+        monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
+        monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
+
+        def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+            del manifest_path
+            seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
+            (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text("ok")
+            seed_cfg.post_h2h_stage_dir.mkdir(parents=True, exist_ok=True)
+            (seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json").write_text(json.dumps({"seed": seed}))
+
+        monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", _fake_per_seed)
+
+        def _from_seed_context(cls, seed_context, seed_pair, analysis_root):
+            del cls, seed_context, seed_pair
+            key = str(analysis_root)
+            if key not in interseed_roots:
+                interseed_roots[key] = AppConfig(io=IOConfig(results_dir_prefix=analysis_root / "results_seed_1"))
+            return SimpleNamespace(config=interseed_roots[key])
+
+        monkeypatch.setattr(
+            two_seed_pipeline.InterseedRunContext,
+            "from_seed_context",
+            classmethod(_from_seed_context),
+        )
+        monkeypatch.setattr(two_seed_pipeline.analysis, "run_interseed_analysis", lambda *_args, **_kwargs: None)
+
+        def _record_h2h(_cfg, **_kwargs):
+            (_cfg.stage_dir("h2h_tier_trends") / "s_tier_trends.parquet").write_text("ok")
+
+        monkeypatch.setattr(two_seed_pipeline.analysis, "run_h2h_tier_trends", _record_h2h)
+
+    _setup_common_stubs()
+
+    def _run_case(name: str, *, parallel: bool) -> dict[str, Any]:
+        cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / name / "results"))
+        cfg.sim.seed_pair = (7, 8)
+        cfg.orchestration.parallel_seeds = parallel
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(7, 8), force=False)
+        pair_root = seed_utils.seed_pair_root(cfg, (7, 8))
+        health = json.loads((pair_root / "pipeline_health.json").read_text(encoding="utf-8"))
+        return health
+
+    sequential = _run_case("sequential", parallel=False)
+    parallel = _run_case("parallel", parallel=True)
+
+    assert sequential["status"] == "complete_success"
+    assert parallel["status"] == "complete_success"
+    assert {
+        stage: payload["status"] for stage, payload in sequential["stage_statuses"].items()
+    } == {
+        stage: payload["status"] for stage, payload in parallel["stage_statuses"].items()
+    }
+
 def test_two_seed_pipeline_main_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     cfg.sim.seed_pair = (50, 60)
@@ -386,14 +449,19 @@ def test_two_seed_pipeline_main_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path
     monkeypatch.setattr(
         two_seed_pipeline,
         "run_pipeline",
-        lambda run_cfg, *, seed_pair, force: called.update(seed_pair=seed_pair, force=force),
+        lambda run_cfg, *, seed_pair, force: called.update(
+            seed_pair=seed_pair,
+            force=force,
+            parallel=run_cfg.orchestration.parallel_seeds,
+        ),
     )
 
-    rc = two_seed_pipeline.main(["--seed-pair", "3", "4"])
+    rc = two_seed_pipeline.main(["--seed-pair", "3", "4", "--parallel-seeds"])
     assert rc == 0
     assert called["logging"] is True
     assert called["seed_pair"] == (3, 4)
     assert called["force"] is False
+    assert called["parallel"] is True
 
 
 def test_two_seed_pipeline_head2head_failure_chain_integration_fixture(

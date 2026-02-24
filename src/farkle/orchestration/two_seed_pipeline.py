@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
@@ -28,6 +30,169 @@ from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _SeedRunStatus:
+    seed: int
+    context: SeedRunContext
+    analysis_ok: bool
+    error: str | None = None
+
+
+def _per_seed_worker_budget(total_workers: int, seed_count: int) -> int:
+    if seed_count < 1:
+        raise ValueError("seed_count must be positive")
+    return max(1, total_workers // seed_count)
+
+
+def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> tuple[int, int, int]:
+    available_workers = cfg.sim.n_jobs if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else (os.cpu_count() or 1)
+    per_seed_workers = _per_seed_worker_budget(int(available_workers), seed_count)
+    simulation_workers = per_seed_workers
+    ingest_workers = min(per_seed_workers, max(1, int(cfg.ingest.n_jobs)))
+    analysis_workers = per_seed_workers
+    return simulation_workers, ingest_workers, analysis_workers
+
+
+def _build_seed_cfg(
+    cfg: AppConfig,
+    *,
+    seed_pair: tuple[int, int],
+    seed: int,
+    meta_dir: Path,
+    simulation_workers: int,
+    ingest_workers: int,
+    analysis_workers: int,
+) -> AppConfig:
+    seed_cfg = prepare_seed_config(
+        cfg,
+        seed=seed,
+        base_results_dir=seed_pair_seed_root(cfg, seed_pair, seed),
+        meta_analysis_dir=meta_dir,
+    )
+    seed_cfg.sim.n_jobs = simulation_workers
+    seed_cfg.ingest.n_jobs = ingest_workers
+    seed_cfg.analysis.n_jobs = analysis_workers
+    return seed_cfg
+
+
+def _run_one_seed(
+    cfg: AppConfig,
+    *,
+    seed: int,
+    seed_pair: tuple[int, int],
+    meta_dir: Path,
+    manifest_path: Path,
+    force: bool,
+    simulation_workers: int,
+    ingest_workers: int,
+    analysis_workers: int,
+) -> _SeedRunStatus:
+    seed_cfg = _build_seed_cfg(
+        cfg,
+        seed_pair=seed_pair,
+        seed=seed,
+        meta_dir=meta_dir,
+        simulation_workers=simulation_workers,
+        ingest_workers=ingest_workers,
+        analysis_workers=analysis_workers,
+    )
+    seed_context = SeedRunContext.from_config(seed_cfg)
+    active_config_path = seed_context.active_config_path
+
+    append_manifest_line(
+        manifest_path,
+        {
+            "event": "seed_start",
+            "seed": seed,
+            "results_dir": str(seed_cfg.results_root),
+            "active_config": str(active_config_path),
+        },
+    )
+
+    write_active_config(seed_cfg)
+    LOGGER.info(
+        "Using resolved config",
+        extra={
+            "stage": "orchestration",
+            "seed": seed,
+            "results_dir": str(seed_cfg.results_root),
+            "active_config": str(active_config_path),
+        },
+    )
+
+    if not force and seed_has_completion_markers(seed_cfg):
+        LOGGER.info(
+            "Skipping seed run (completion markers found)",
+            extra={
+                "stage": "orchestration",
+                "seed": seed,
+                "results_dir": str(seed_cfg.results_root),
+            },
+        )
+        append_manifest_line(
+            manifest_path,
+            {
+                "event": "seed_simulation_skipped",
+                "seed": seed,
+                "results_dir": str(seed_context.results_root),
+            },
+        )
+    else:
+        LOGGER.info(
+            "Running simulation",
+            extra={
+                "stage": "orchestration",
+                "seed": seed,
+                "results_dir": str(seed_cfg.results_root),
+            },
+        )
+        runner.run_tournament(seed_cfg, force=force)
+        append_manifest_line(
+            manifest_path,
+            {
+                "event": "seed_simulation_complete",
+                "seed": seed,
+                "results_dir": str(seed_context.results_root),
+            },
+        )
+
+    LOGGER.info(
+        "Running per-seed analysis",
+        extra={
+            "stage": "orchestration",
+            "seed": seed,
+            "results_dir": str(seed_cfg.results_root),
+        },
+    )
+    try:
+        _run_per_seed_analysis(seed_cfg, manifest_path=manifest_path, seed=seed)
+        append_manifest_line(
+            manifest_path,
+            {
+                "event": "seed_analysis_complete",
+                "seed": seed,
+                "results_dir": str(seed_context.results_root),
+            },
+        )
+        return _SeedRunStatus(seed=seed, context=seed_context, analysis_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        append_manifest_line(
+            manifest_path,
+            {
+                "event": "seed_analysis_failed",
+                "seed": seed,
+                "results_dir": str(seed_context.results_root),
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+        return _SeedRunStatus(
+            seed=seed,
+            context=seed_context,
+            analysis_ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+        )
 
 
 @dataclass(frozen=True)
@@ -153,109 +318,58 @@ def run_pipeline(
 
     seed_contexts: dict[int, SeedRunContext] = {}
     seed_analysis_ok: dict[int, bool] = {}
+    simulation_workers, ingest_workers, analysis_workers = _derive_per_seed_job_budgets(
+        cfg,
+        len(seed_pair),
+    )
+
+    if cfg.orchestration.parallel_seeds:
+        with ThreadPoolExecutor(max_workers=len(seed_pair)) as executor:
+            futures = {
+                seed: executor.submit(
+                    _run_one_seed,
+                    cfg,
+                    seed=seed,
+                    seed_pair=seed_pair,
+                    meta_dir=meta_dir,
+                    manifest_path=manifest_path,
+                    force=force,
+                    simulation_workers=simulation_workers,
+                    ingest_workers=ingest_workers,
+                    analysis_workers=analysis_workers,
+                )
+                for seed in seed_pair
+            }
+            seed_results = {seed: futures[seed].result() for seed in seed_pair}
+    else:
+        seed_results = {
+            seed: _run_one_seed(
+                cfg,
+                seed=seed,
+                seed_pair=seed_pair,
+                meta_dir=meta_dir,
+                manifest_path=manifest_path,
+                force=force,
+                simulation_workers=simulation_workers,
+                ingest_workers=ingest_workers,
+                analysis_workers=analysis_workers,
+            )
+            for seed in seed_pair
+        }
+
     for seed in seed_pair:
-        seed_cfg = prepare_seed_config(
-            cfg,
-            seed=seed,
-            base_results_dir=seed_pair_seed_root(cfg, seed_pair, seed),
-            meta_analysis_dir=meta_dir,
-        )
-        seed_context = SeedRunContext.from_config(seed_cfg)
+        seed_result = seed_results[seed]
+        seed_context = seed_result.context
         seed_contexts[seed] = seed_context
-        active_config_path = seed_context.active_config_path
-
-        append_manifest_line(
-            manifest_path,
-            {
-                "event": "seed_start",
-                "seed": seed,
-                "results_dir": str(seed_cfg.results_root),
-                "active_config": str(active_config_path),
-            },
-        )
-
-        write_active_config(seed_cfg)
-        LOGGER.info(
-            "Using resolved config",
-            extra={
-                "stage": "orchestration",
-                "seed": seed,
-                "results_dir": str(seed_cfg.results_root),
-                "active_config": str(active_config_path),
-            },
-        )
-
-        if not force and seed_has_completion_markers(seed_cfg):
-            LOGGER.info(
-                "Skipping seed run (completion markers found)",
-                extra={
-                    "stage": "orchestration",
-                    "seed": seed,
-                    "results_dir": str(seed_cfg.results_root),
-                },
-            )
-            append_manifest_line(
-                manifest_path,
-                {
-                    "event": "seed_simulation_skipped",
-                    "seed": seed,
-                    "results_dir": str(seed_context.results_root),
-                },
-            )
-        else:
-            LOGGER.info(
-                "Running simulation",
-                extra={
-                    "stage": "orchestration",
-                    "seed": seed,
-                    "results_dir": str(seed_cfg.results_root),
-                },
-            )
-            runner.run_tournament(seed_cfg, force=force)
-            append_manifest_line(
-                manifest_path,
-                {
-                    "event": "seed_simulation_complete",
-                    "seed": seed,
-                    "results_dir": str(seed_context.results_root),
-                },
-            )
-
-        LOGGER.info(
-            "Running per-seed analysis",
-            extra={
-                "stage": "orchestration",
-                "seed": seed,
-                "results_dir": str(seed_cfg.results_root),
-            },
-        )
-        try:
-            _run_per_seed_analysis(seed_cfg, manifest_path=manifest_path, seed=seed)
-            append_manifest_line(
-                manifest_path,
-                {
-                    "event": "seed_analysis_complete",
-                    "seed": seed,
-                    "results_dir": str(seed_context.results_root),
-                },
-            )
-            seed_analysis_ok[seed] = True
+        seed_cfg = seed_context.config
+        seed_analysis_ok[seed] = seed_result.analysis_ok
+        if seed_result.analysis_ok:
             _record_stage(f"seed_{seed}.analysis", status="success")
-        except Exception as exc:  # noqa: BLE001
-            seed_analysis_ok[seed] = False
-            append_manifest_line(
-                manifest_path,
-                {
-                    "event": "seed_analysis_failed",
-                    "seed": seed,
-                    "results_dir": str(seed_context.results_root),
-                    "error": f"{type(exc).__name__}: {exc}",
-                },
-            )
+        else:
             _record_stage(
                 f"seed_{seed}.analysis",
                 status="failed",
-                error=f"{type(exc).__name__}: {exc}",
+                error=seed_result.error,
             )
 
         seed_stage_contracts = [
@@ -506,6 +620,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Recompute even when completion markers exist",
     )
+    parser.add_argument(
+        "--parallel-seeds",
+        action="store_true",
+        help="Run per-seed simulation and analysis concurrently",
+    )
     return parser
 
 
@@ -516,6 +635,8 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     cfg = load_app_config(Path(args.config), seed_list_len=2)
     cfg = apply_dot_overrides(cfg, list(args.overrides or []))
+    if args.parallel_seeds:
+        cfg.orchestration.parallel_seeds = True
 
     seed_pair = _resolve_seed_pair(args, parser)
     if seed_pair is not None:
