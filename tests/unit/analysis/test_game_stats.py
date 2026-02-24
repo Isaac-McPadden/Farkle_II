@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
@@ -181,6 +182,33 @@ def test_global_stats_warns_when_seat_ranks_missing(caplog: pytest.LogCaptureFix
 
     assert result.empty
     assert "Combined parquet missing seat_ranks" in caplog.text
+
+
+def test_global_stats_handles_numpy_array_seat_ranks(monkeypatch: pytest.MonkeyPatch) -> None:
+    class DummyDataset:
+        schema = type("Schema", (), {"names": ["seat_ranks", "n_rounds"]})()
+
+        @staticmethod
+        def to_table(_columns=None):
+            return pa.Table.from_pandas(
+                pd.DataFrame(
+                    {
+                        "seat_ranks": [
+                            np.array(["P1", "P2"], dtype=object),
+                            np.array(["P2", "P1"], dtype=object),
+                        ],
+                        "n_rounds": [4, 8],
+                    }
+                )
+            )
+
+    monkeypatch.setattr(game_stats.ds, "dataset", lambda _path: DummyDataset())
+    monkeypatch.setattr(game_stats, "n_players_from_schema", lambda _schema: 12)
+
+    result = game_stats._global_stats(Path("dummy"))
+
+    assert not result.empty
+    assert set(result["n_players"].astype(int).tolist()) == {2}
 
 
 def _write_multi_k_curated_inputs(cfg: AppConfig) -> None:

@@ -1778,9 +1778,16 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
         )
         return pd.DataFrame()
 
-    df["n_players"] = df["seat_ranks"].apply(
-        lambda ranks: len(ranks) if isinstance(ranks, list) else n_players
-    )
+    def _player_count_from_ranks(ranks: object) -> int:
+        if isinstance(ranks, np.ndarray):
+            if ranks.ndim == 1:
+                return int(ranks.size)
+            return n_players
+        if isinstance(ranks, (list, tuple)):
+            return len(ranks)
+        return n_players
+
+    df["n_players"] = df["seat_ranks"].apply(_player_count_from_ranks)
     grouped = df.groupby("n_players", sort=False)["n_rounds"]
 
     rows: list[pd.Series] = []

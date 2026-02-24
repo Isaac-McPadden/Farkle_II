@@ -277,10 +277,18 @@ def _resolve_seed_family_statuses(
     seed_cfg: AppConfig,
     analysis_error: str | None,
 ) -> dict[str, _ResolvedStageStatus]:
+    analysis_manifest_candidates = (
+        seed_cfg.analysis_dir / seed_cfg.manifest_name,
+        seed_cfg.analysis_dir / "analysis_manifest.jsonl",
+    )
+    analysis_manifest = next(
+        (path for path in analysis_manifest_candidates if path.exists()),
+        analysis_manifest_candidates[0],
+    )
     stage_contracts = (
         _PipelineStageContract(
             name=f"seed_{seed}.analysis",
-            required_outputs=(seed_cfg.analysis_dir / "analysis_manifest.jsonl",),
+            required_outputs=(analysis_manifest,),
         ),
         _PipelineStageContract(
             name=f"seed_{seed}.seed_symmetry",
@@ -374,12 +382,31 @@ def _validate_required_config_sha_outputs(
     if not manifest_path.exists():
         errors.append(f"missing metadata: {manifest_path}")
     else:
+        records: list[dict[str, Any]] = []
         for line in manifest_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
-            record = json.loads(line)
+            try:
+                parsed = json.loads(line)
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"invalid metadata {manifest_path}: {type(exc).__name__}: {exc}")
+                continue
+            if isinstance(parsed, dict):
+                records.append(parsed)
+
+        run_start_idx = 0
+        for idx in range(len(records) - 1, -1, -1):
+            record = records[idx]
+            if record.get("event") == "run_start" and "seed_pair" in record:
+                run_start_idx = idx
+                break
+        current_run_records = records[run_start_idx:]
+
+        for record in current_run_records:
             event = record.get("event")
-            if event in {"run_start", "run_end", "stage-end", "seed_start"} and record.get("config_sha") != expected_sha:
+            if event in {"run_start", "run_end", "stage-end", "seed_start"} and record.get(
+                "config_sha"
+            ) != expected_sha:
                 errors.append(f"manifest event {event} has config_sha={record.get('config_sha')!r}")
 
     for seed_context in seed_contexts.values():

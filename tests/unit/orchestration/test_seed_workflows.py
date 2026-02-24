@@ -596,7 +596,7 @@ def test_two_seed_pipeline_emits_consistent_config_sha_metadata(
     def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
         del manifest_path, seed
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
-        (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text('{"ok": true}\n', encoding="utf-8")
+        (seed_cfg.analysis_dir / "manifest.jsonl").write_text('{"ok": true}\n', encoding="utf-8")
         seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text("ok")
         seed_cfg.post_h2h_stage_dir.mkdir(parents=True, exist_ok=True)
@@ -648,4 +648,79 @@ def test_two_seed_pipeline_emits_consistent_config_sha_metadata(
 
     health = json.loads((pair_root / "pipeline_health.json").read_text(encoding="utf-8"))
     assert health["config_sha"] == expected_sha
+    assert "config_sha_validation" not in health["stage_statuses"]
+
+
+def test_two_seed_pipeline_ignores_prior_manifest_sha_history(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    cfg.sim.seed_pair = (31, 32)
+    assign_config_sha(cfg)
+
+    pair_root = seed_utils.seed_pair_root(cfg, (31, 32))
+    pair_root.mkdir(parents=True, exist_ok=True)
+    stale_manifest = pair_root / "two_seed_pipeline_manifest.jsonl"
+    stale_manifest.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "event": "run_start",
+                        "seed_pair": [31, 32],
+                        "results_dir": str(pair_root),
+                        "config_sha": "stale_sha",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "event": "stage-end",
+                        "stage": "seed_31.analysis",
+                        "status": "missing",
+                        "config_sha": "stale_sha",
+                    }
+                ),
+                json.dumps({"event": "run_end", "status": "failed_blocked", "config_sha": "stale_sha"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
+    monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
+
+    def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+        del manifest_path, seed
+        seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.analysis_dir / "manifest.jsonl").write_text('{"ok": true}\n', encoding="utf-8")
+        seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text("ok", encoding="utf-8")
+        seed_cfg.post_h2h_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", _fake_per_seed)
+
+    def _fake_interseed(interseed_cfg: AppConfig, **_kwargs: object) -> None:
+        interseed_cfg.interseed_stage_dir.mkdir(parents=True, exist_ok=True)
+        (interseed_cfg.interseed_stage_dir / "interseed_summary.json").write_text("{}", encoding="utf-8")
+        interseed_cfg.rng_stage_dir.mkdir(parents=True, exist_ok=True)
+        (interseed_cfg.rng_stage_dir / "rng_diagnostics.done.json").write_text(
+            json.dumps({"config_sha": interseed_cfg.config_sha}),
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(two_seed_pipeline.analysis, "run_interseed_analysis", _fake_interseed)
+
+    def _fake_h2h(interseed_cfg: AppConfig, **_kwargs: object) -> None:
+        (interseed_cfg.stage_dir("h2h_tier_trends") / "s_tier_trends.parquet").write_text(
+            "ok", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(two_seed_pipeline.analysis, "run_h2h_tier_trends", _fake_h2h)
+
+    two_seed_pipeline.run_pipeline(cfg, seed_pair=(31, 32), force=False)
+
+    health = json.loads((pair_root / "pipeline_health.json").read_text(encoding="utf-8"))
+    assert health["status"] == "complete_success"
     assert "config_sha_validation" not in health["stage_statuses"]

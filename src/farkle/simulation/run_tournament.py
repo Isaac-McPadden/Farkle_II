@@ -60,6 +60,7 @@ class TournamentConfig:
     desired_sec_per_chunk: int = DESIRED_SEC_PER_CHUNK
     ckpt_every_sec: int = CKPT_EVERY_SEC
     n_strategies: int = 7_140  # overridden when strategies are provided
+    mp_start_method: str | None = None
 
     @property
     def games_per_shuffle(self) -> int:
