@@ -238,3 +238,32 @@ def test_process_map_context_modes_identical_artifacts(tmp_path: Path) -> None:
     baseline = artifact_paths[0].read_text(encoding="utf-8")
     for path in artifact_paths[1:]:
         assert path.read_text(encoding="utf-8") == baseline
+
+
+def test_resolve_mp_context_none_default_and_invalid() -> None:
+    assert parallel.resolve_mp_context(None) is None
+    assert parallel.resolve_mp_context("  ") is None
+    assert parallel.resolve_mp_context("default") is None
+
+    with pytest.raises(ValueError, match="Unsupported multiprocessing start method"):
+        parallel.resolve_mp_context("definitely-not-valid")
+
+
+def test_process_map_serial_initializer_with_explicit_initargs() -> None:
+    init_calls: list[tuple[int, int]] = []
+
+    def initializer(a: int, b: int) -> None:
+        init_calls.append((a, b))
+
+    values = list(
+        parallel.process_map(
+            lambda x: x + 10,
+            [1, 2],
+            n_jobs=1,
+            initializer=initializer,
+            initargs=[7, 9],
+        )
+    )
+
+    assert values == [11, 12]
+    assert init_calls == [(7, 9)]

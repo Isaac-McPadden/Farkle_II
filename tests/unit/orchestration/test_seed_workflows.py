@@ -724,3 +724,185 @@ def test_two_seed_pipeline_ignores_prior_manifest_sha_history(
     health = json.loads((pair_root / "pipeline_health.json").read_text(encoding="utf-8"))
     assert health["status"] == "complete_success"
     assert "config_sha_validation" not in health["stage_statuses"]
+
+
+def test_two_seed_pipeline_worker_budget_and_artifact_validation(
+    base_cfg: AppConfig, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with pytest.raises(ValueError, match="seed_count must be positive"):
+        two_seed_pipeline._per_seed_worker_budget(total_workers=4, seed_count=0)
+
+    base_cfg.sim.n_jobs = 0
+    base_cfg.ingest.n_jobs = 9
+    monkeypatch.setattr(two_seed_pipeline.os, "cpu_count", lambda: 8)
+    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2) == (4, 4, 4)
+
+    missing = tmp_path / "missing.json"
+    assert two_seed_pipeline._is_valid_artifact(missing) == (False, "missing")
+
+    empty = tmp_path / "empty.bin"
+    empty.touch()
+    assert two_seed_pipeline._is_valid_artifact(empty) == (False, "empty")
+
+    empty_jsonl = tmp_path / "empty.jsonl"
+    empty_jsonl.write_text("\n \n", encoding="utf-8")
+    assert two_seed_pipeline._is_valid_artifact(empty_jsonl) == (False, "empty jsonl")
+
+    bad_json = tmp_path / "bad.json"
+    bad_json.write_text("{not-json", encoding="utf-8")
+    assert two_seed_pipeline._is_valid_artifact(bad_json) == (False, "unparseable metadata")
+
+    valid_jsonl = tmp_path / "ok.jsonl"
+    valid_jsonl.write_text("\n \n{\"ok\": true}\n", encoding="utf-8")
+    assert two_seed_pipeline._is_valid_artifact(valid_jsonl) == (True, None)
+
+
+def test_two_seed_pipeline_validate_required_config_sha_outputs_collects_errors(
+    tmp_path: Path,
+) -> None:
+    manifest_path = tmp_path / "manifest.jsonl"
+    manifest_path.write_text(
+        "\n".join(
+            [
+                "",
+                "not-json",
+                "[]",
+                json.dumps({"event": "run_start", "config_sha": "wrong"}),
+                json.dumps({"event": "stage-end", "config_sha": "wrong"}),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    seed_a_active = tmp_path / "seed_a_active.yaml"
+    seed_b_active = tmp_path / "seed_b_active.yaml"
+    seed_b_active.with_suffix(".done.json").write_text("{bad-json", encoding="utf-8")
+    seed_contexts = {
+        1: SimpleNamespace(active_config_path=seed_a_active),
+        2: SimpleNamespace(active_config_path=seed_b_active),
+    }
+
+    interseed_cfg = SimpleNamespace(stage_dir_if_active=lambda _name: tmp_path / "rng_stage")
+
+    errors = two_seed_pipeline._validate_required_config_sha_outputs(
+        expected_sha="expected",
+        manifest_path=manifest_path,
+        seed_contexts=seed_contexts,
+        interseed_cfg=interseed_cfg,
+    )
+
+    assert any("invalid metadata" in err and "manifest.jsonl" in err for err in errors)
+    assert any(err == "manifest event run_start has config_sha='wrong'" for err in errors)
+    assert any(err == "manifest event stage-end has config_sha='wrong'" for err in errors)
+    assert any("missing metadata" in err and "seed_a_active.done.json" in err for err in errors)
+    assert any("invalid metadata" in err and "seed_b_active.done.json" in err for err in errors)
+
+
+def test_two_seed_pipeline_resolve_seed_pair_validation_errors() -> None:
+    parser = two_seed_pipeline.build_parser()
+
+    with pytest.raises(SystemExit):
+        args = parser.parse_args(["--seed-a", "9"])
+        two_seed_pipeline._resolve_seed_pair(args, parser)
+
+    with pytest.raises(SystemExit):
+        args = parser.parse_args(["--seed-a", "1", "--seed-b", "2", "--seed-pair", "3", "4"])
+        two_seed_pipeline._resolve_seed_pair(args, parser)
+
+
+def test_two_seed_pipeline_main_without_cli_seed_override(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    called: dict[str, Any] = {}
+
+    monkeypatch.setattr(two_seed_pipeline, "setup_info_logging", lambda: called.setdefault("logging", True))
+    monkeypatch.setattr(two_seed_pipeline, "load_app_config", lambda _path, seed_list_len=0: cfg)
+    monkeypatch.setattr(two_seed_pipeline, "apply_dot_overrides", lambda c, _overrides: c)
+    monkeypatch.setattr(cfg.sim, "populate_seed_list", lambda count: [91, 92] if count == 2 else [])
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "run_pipeline",
+        lambda run_cfg, *, seed_pair, force: called.update(
+            seed_pair=seed_pair,
+            force=force,
+            parallel=run_cfg.orchestration.parallel_seeds,
+        ),
+    )
+
+    rc = two_seed_pipeline.main([])
+    assert rc == 0
+    assert called["logging"] is True
+    assert called["seed_pair"] == (91, 92)
+    assert called["force"] is False
+    assert called["parallel"] is False
+
+
+@pytest.mark.parametrize("mode", ["interseed_fail", "h2h_fail"])
+def test_two_seed_pipeline_records_interseed_and_h2h_failures(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, mode: str
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    cfg.sim.seed_pair = (13, 14)
+
+    manifest_events: list[str] = []
+    monkeypatch.setattr(two_seed_pipeline, "append_manifest_line", lambda _path, rec: manifest_events.append(rec["event"]))
+    monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
+    monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
+
+    def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+        del manifest_path, seed
+        seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
+            json.dumps({"event": "run_end"}) + "\n",
+            encoding="utf-8",
+        )
+        seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text("ok", encoding="utf-8")
+        seed_cfg.post_h2h_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", _fake_per_seed)
+
+    def _from_seed_context(cls, seed_context, seed_pair, analysis_root):
+        del cls, seed_pair
+        interseed_cfg = AppConfig(io=IOConfig(results_dir_prefix=analysis_root / "results_seed_13"))
+        interseed_cfg.config_sha = seed_context.config.config_sha
+        return SimpleNamespace(config=interseed_cfg)
+
+    monkeypatch.setattr(
+        two_seed_pipeline.InterseedRunContext,
+        "from_seed_context",
+        classmethod(_from_seed_context),
+    )
+
+    if mode == "interseed_fail":
+        monkeypatch.setattr(
+            two_seed_pipeline.analysis,
+            "run_interseed_analysis",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("interseed boom")),
+        )
+        monkeypatch.setattr(two_seed_pipeline.analysis, "run_h2h_tier_trends", lambda *_args, **_kwargs: None)
+    else:
+        def _interseed_ok(interseed_cfg: AppConfig, **_kwargs: object) -> None:
+            interseed_cfg.interseed_stage_dir.mkdir(parents=True, exist_ok=True)
+            (interseed_cfg.interseed_stage_dir / "interseed_summary.json").write_text("{}", encoding="utf-8")
+
+        monkeypatch.setattr(two_seed_pipeline.analysis, "run_interseed_analysis", _interseed_ok)
+        monkeypatch.setattr(
+            two_seed_pipeline.analysis,
+            "run_h2h_tier_trends",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("h2h boom")),
+        )
+
+    two_seed_pipeline.run_pipeline(cfg, seed_pair=(13, 14), force=False)
+
+    pair_root = seed_utils.seed_pair_root(cfg, (13, 14))
+    health = json.loads((pair_root / "pipeline_health.json").read_text(encoding="utf-8"))
+    if mode == "interseed_fail":
+        assert "interseed_failed" in manifest_events
+        assert health["stage_statuses"]["interseed_analysis"]["status"] == "failed"
+    else:
+        assert "h2h_tier_trends_start" in manifest_events
+        assert health["stage_statuses"]["h2h_tier_trends"]["status"] == "failed"
