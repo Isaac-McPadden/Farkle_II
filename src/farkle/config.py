@@ -393,6 +393,13 @@ class HGBConfig:
     n_estimators: int = 300
 
 
+@dataclass
+class OrchestrationConfig:
+    """Controls top-level orchestration behavior."""
+
+    parallel_seeds: bool = False
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AppConfig + convenience properties used by analysis code
 # ─────────────────────────────────────────────────────────────────────────────
@@ -411,6 +418,7 @@ class AppConfig:
     trueskill: TrueSkillConfig = field(default_factory=TrueSkillConfig)
     head2head: Head2HeadConfig = field(default_factory=Head2HeadConfig)
     hgb: HGBConfig = field(default_factory=HGBConfig)
+    orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
     # Computed at runtime; not part of user-provided YAML
     config_sha: str | None = field(default=None, init=False, repr=False, compare=False)
     _stage_layout: "StageLayout | None" = field(
@@ -1458,6 +1466,7 @@ def _validate_config_keys(data: Mapping[str, Any]) -> None:
         "trueskill": TrueSkillConfig,
         "head2head": Head2HeadConfig,
         "hgb": HGBConfig,
+        "orchestration": OrchestrationConfig,
     }
     unknown_sections = set(data) - set(top_level_sections)
     if unknown_sections:
@@ -1725,6 +1734,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         trueskill=build(TrueSkillConfig, data.get("trueskill", {})),
         head2head=build(Head2HeadConfig, data.get("head2head", {})),
         hgb=build(HGBConfig, data.get("hgb", {})),
+        orchestration=build(OrchestrationConfig, data.get("orchestration", {})),
     )
     _normalize_seed_list(cfg.sim)
     _normalize_seed_pair(cfg.sim, seed_provided=seed_provided)
