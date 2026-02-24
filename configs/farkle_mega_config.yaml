@@ -37,7 +37,7 @@ sim:
   include_stop_at_heuristic: false
 
   # Optional per-N overrides (keys are strings)
-  per_n:
+  # per_n:
     # "12":
     #   num_shuffles: 200         # example: heavier schedule for 12-player games
 
@@ -53,7 +53,7 @@ sim:
     baseline_rate: null           # None -> 1/n_players
     full_pairwise: false          # hypotheses = n*(n-1)/2 if true else n-1
     tail: "two_sided"             # "one_sided" | "two_sided"
-    min_games_floor: 2000          # per-strategy games (num_shuffles); no adjustment to hit total-games caps
+    min_games_floor: null          # per-strategy games (num_shuffles); no adjustment to hit total-games caps
     max_games_cap: null            # per-strategy cap; totals derive from n_strategies/k without rebalancing
     use_BY: false                 # if true and using BH, use q/H_m (more conservative)
     bh_target_rank: null          # Only use one of bh_target_rank and bh_target_frac
@@ -61,7 +61,7 @@ sim:
     endpoint: "top1"              # "pairwise" or "top1"
 
 analysis:
-  n_jobs: 12                      # parallel workers for analysis
+  n_jobs: 16                      # parallel workers for analysis
   log_level: "INFO"               # logger level during analysis
 
   # How to discover per-N results
@@ -89,7 +89,7 @@ ingest:
   row_group_size: 64000           # parquet/arrow row group target
   parquet_codec: "snappy"         # parquet compression codec
   batch_rows: 100000              # rows processed per batch
-  n_jobs: 1                       # concurrent ingest workers
+  n_jobs: 8                       # concurrent ingest workers
 
 combine:
   max_players: 12                 # maximum table size to combine
@@ -116,8 +116,8 @@ head2head:
     detectable_lift: 0.05
     baseline_rate: 0.50
     full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
-    tail: "one_sided"             # must be "one_sided" for H2H
-    min_games_floor: 2000         # per-strategy games before deriving games-per-pair (ceil applied)
+    tail: "two_sided"             # must be "one_sided" for H2H
+    min_games_floor: null         # per-strategy games before deriving games-per-pair (ceil applied)
     max_games_cap: null           # per-strategy cap; games-per-pair totals may round up if not divisible
     use_BY: null                  # unused here; present for PowerDesign compatibility
 
