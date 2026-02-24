@@ -17,6 +17,7 @@ sim:
   seed: 21                        # legacy primary RNG seed (results_root uses seed suffix)
   seed_list: [21, 22]             # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 16                      # null = auto; otherwise an int
+  mp_start_method: null            # start method: default|null|spawn|fork|forkserver
   expanded_metrics: true          # if true, also write {N}p_metrics.parquet with sums & sq_sums
   row_dir: "rows"                 # rows => per-N rows under {results}/{N}_players/rows/
                                   # If row_dir == null, row writing skipped
@@ -62,6 +63,7 @@ sim:
 
 analysis:
   n_jobs: 12                      # parallel workers for analysis
+  mp_start_method: null            # start method: default|null|spawn|fork|forkserver
   log_level: "INFO"               # logger level during analysis
 
   # How to discover per-N results

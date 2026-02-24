@@ -143,6 +143,8 @@ class SimConfig:
     recompute_num_shuffles: bool = True
     power_design: PowerDesign = field(default_factory=PowerDesign)
     n_jobs: int | None = None
+    mp_start_method: str | None = None
+    """Multiprocessing start method for simulation pools (default uses platform default)."""
     desired_sec_per_chunk: int = 10
     ckpt_every_sec: int = 30
 
@@ -264,6 +266,8 @@ class AnalysisConfig:
     """Emit the final report artifacts (plan step 9)."""
 
     n_jobs: int = 1
+    mp_start_method: str | None = None
+    """Multiprocessing start method for analysis pools (default uses platform default)."""
     log_level: str = "INFO"
     results_glob: str = "*_players"
     meta_random_if_I2_gt: float = 25.0
