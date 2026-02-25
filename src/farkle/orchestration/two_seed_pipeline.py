@@ -58,6 +58,18 @@ def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> tuple[int, 
     simulation_workers = per_seed_workers
     ingest_workers = min(per_seed_workers, max(1, int(cfg.ingest.n_jobs)))
     analysis_workers = per_seed_workers
+    LOGGER.info(
+        "Derived per-seed worker budgets",
+        extra={
+            "stage": "orchestration",
+            "total_workers": int(total_workers),
+            "seed_count": seed_count,
+            "parallel_seeds": cfg.orchestration.parallel_seeds,
+            "seed_concurrency": seed_concurrency,
+            "per_seed_workers": per_seed_workers,
+            "ingest_workers": ingest_workers,
+        },
+    )
     return simulation_workers, ingest_workers, analysis_workers
 
 
