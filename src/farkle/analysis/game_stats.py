@@ -36,6 +36,7 @@ from __future__ import annotations
 import logging
 import math
 from collections.abc import Iterable, Sequence
+from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
 from pathlib import Path
 from typing import Any, TypeAlias, cast
 
@@ -70,6 +71,73 @@ StrategyPandasDtype: TypeAlias = (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _resolve_analysis_workers(cfg: AppConfig) -> int:
+    analysis_jobs = (
+        int(cfg.analysis.n_jobs) if cfg.analysis.n_jobs and cfg.analysis.n_jobs > 0 else 0
+    )
+    sim_jobs = int(cfg.sim.n_jobs) if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else 0
+    return max(1, analysis_jobs, sim_jobs)
+
+
+def _write_per_k_game_length(
+    *,
+    k: int,
+    game_length_df: pd.DataFrame,
+    output_path: Path,
+    stamp_path: Path,
+    input_paths: Sequence[Path],
+    codec: Compression,
+    config_sha: str,
+) -> None:
+    per_k_game_length = game_length_df.loc[game_length_df["n_players"] == k].copy()
+    per_k_game_length_table = pa.Table.from_pandas(per_k_game_length, preserve_index=False)
+    write_parquet_atomic(per_k_game_length_table, output_path, codec=codec)
+    write_stage_done(
+        stamp_path,
+        inputs=input_paths,
+        outputs=[output_path],
+        config_sha=config_sha,
+    )
+
+
+def _write_per_k_margin(
+    *,
+    k: int,
+    margin_df: pd.DataFrame,
+    output_path: Path,
+    stamp_path: Path,
+    input_paths: Sequence[Path],
+    codec: Compression,
+    config_sha: str,
+) -> None:
+    per_k_margin = margin_df.loc[margin_df["n_players"] == k].copy()
+    per_k_margin_table = pa.Table.from_pandas(per_k_margin, preserve_index=False)
+    write_parquet_atomic(per_k_margin_table, output_path, codec=codec)
+    write_stage_done(
+        stamp_path,
+        inputs=input_paths,
+        outputs=[output_path],
+        config_sha=config_sha,
+    )
+
+
+def _run_per_k_fanout(
+    futures: Sequence[Future[None]],
+) -> None:
+    if not futures:
+        return
+    pending = set(futures)
+    while pending:
+        done, pending = wait(pending, return_when=FIRST_EXCEPTION)
+        for future in done:
+            exc = future.exception()
+            if exc is None:
+                continue
+            for pending_future in pending:
+                pending_future.cancel()
+            raise exc
 
 
 def _strategy_arrow_type(per_n_inputs: Sequence[tuple[int, Path]]) -> pa.DataType:
@@ -389,42 +457,46 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     if not all(per_k_game_length_up_to_date.values()):
         if combined is None:
             combined = pd.read_parquet(game_length_output)
-        for k in configured_k_values:
-            if per_k_game_length_up_to_date[k]:
-                continue
-            per_k_game_length = combined.loc[combined["n_players"] == k].copy()
-            per_k_game_length_table = pa.Table.from_pandas(per_k_game_length, preserve_index=False)
-            write_parquet_atomic(
-                per_k_game_length_table,
-                per_k_game_length_outputs[k],
-                codec=cfg.parquet_codec,
-            )
-            write_stage_done(
-                per_k_game_length_stamps[k],
-                inputs=input_paths,
-                outputs=[per_k_game_length_outputs[k]],
-                config_sha=cfg.config_sha,
-            )
+        stale_game_length_ks = [
+            k for k in configured_k_values if not per_k_game_length_up_to_date[k]
+        ]
+        game_length_workers = min(len(stale_game_length_ks), _resolve_analysis_workers(cfg))
+        with ThreadPoolExecutor(max_workers=game_length_workers) as executor:
+            futures = [
+                executor.submit(
+                    _write_per_k_game_length,
+                    k=k,
+                    game_length_df=combined,
+                    output_path=per_k_game_length_outputs[k],
+                    stamp_path=per_k_game_length_stamps[k],
+                    input_paths=input_paths,
+                    codec=cfg.parquet_codec,
+                    config_sha=cfg.config_sha,
+                )
+                for k in stale_game_length_ks
+            ]
+            _run_per_k_fanout(futures)
 
     if not all(per_k_margin_up_to_date.values()):
         if margin_stats is None:
             margin_stats = pd.read_parquet(margin_output)
-        for k in configured_k_values:
-            if per_k_margin_up_to_date[k]:
-                continue
-            per_k_margin = margin_stats.loc[margin_stats["n_players"] == k].copy()
-            per_k_margin_table = pa.Table.from_pandas(per_k_margin, preserve_index=False)
-            write_parquet_atomic(
-                per_k_margin_table,
-                per_k_margin_outputs[k],
-                codec=cfg.parquet_codec,
-            )
-            write_stage_done(
-                per_k_margin_stamps[k],
-                inputs=input_paths,
-                outputs=[per_k_margin_outputs[k]],
-                config_sha=cfg.config_sha,
-            )
+        stale_margin_ks = [k for k in configured_k_values if not per_k_margin_up_to_date[k]]
+        margin_workers = min(len(stale_margin_ks), _resolve_analysis_workers(cfg))
+        with ThreadPoolExecutor(max_workers=margin_workers) as executor:
+            futures = [
+                executor.submit(
+                    _write_per_k_margin,
+                    k=k,
+                    margin_df=margin_stats,
+                    output_path=per_k_margin_outputs[k],
+                    stamp_path=per_k_margin_stamps[k],
+                    input_paths=input_paths,
+                    codec=cfg.parquet_codec,
+                    config_sha=cfg.config_sha,
+                )
+                for k in stale_margin_ks
+            ]
+            _run_per_k_fanout(futures)
 
     if pooled_possible and not (pooled_game_length_up_to_date and pooled_margin_up_to_date):
         pooling_scheme = _normalize_pooling_scheme(cfg.analysis.pooling_weights)
