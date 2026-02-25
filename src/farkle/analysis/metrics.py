@@ -4,10 +4,12 @@
 Computes win rates and seat advantages from combined parquet shards, validates
 input schemas, and emits CSV/Parquet artifacts for downstream reporting.
 """
+
 from __future__ import annotations
 
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Hashable, Iterable, Protocol, Sequence, TypeAlias
 
@@ -321,44 +323,84 @@ def _ensure_isolated_metrics(
         Tuple of normalized parquet paths discovered and the corresponding raw
         inputs checked on disk.
     """
-    iso_paths: list[Path] = []
-    raw_inputs: list[Path] = []
-    for n in player_counts:
+
+    def _resolve_worker_count() -> int:
+        analysis_jobs = (
+            int(cfg.analysis.n_jobs) if cfg.analysis.n_jobs and cfg.analysis.n_jobs > 0 else 0
+        )
+        sim_jobs = int(cfg.sim.n_jobs) if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else 0
+        return max(1, analysis_jobs, sim_jobs)
+
+    def _process_player_count(
+        n: int,
+    ) -> tuple[int, Path | None, Path, dict[str, object]]:
         raw_path = cfg.results_root / f"{n}_players" / f"{n}p_metrics.parquet"
         preferred = cfg.metrics_isolated_path(n)
         legacy = cfg.legacy_metrics_isolated_path(n)
-        raw_inputs.append(raw_path)
+
         if not raw_path.exists():
+            return n, None, raw_path, {"missing_raw": True}
+
+        try:
+            iso_path = build_isolated_metrics(cfg, n)
+            return n, iso_path, raw_path, {}
+        except Exception as exc:  # noqa: BLE001
+            log_fields: dict[str, object] = {
+                "normalization_error": str(exc),
+            }
+        if preferred.exists():
+            return n, preferred, raw_path, log_fields
+        elif legacy.exists():
+            log_fields["used_legacy"] = True
+            return n, legacy, raw_path, log_fields
+
+        return n, None, raw_path, log_fields
+
+    if not player_counts:
+        return [], []
+
+    worker_count = min(len(player_counts), _resolve_worker_count())
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        unordered_results = list(executor.map(_process_player_count, player_counts))
+
+    results_by_n = {
+        n: (iso_path, raw_path, log_fields)
+        for n, iso_path, raw_path, log_fields in unordered_results
+    }
+
+    iso_paths: list[Path] = []
+    raw_inputs: list[Path] = []
+    for n in player_counts:
+        iso_path, raw_path, log_fields = results_by_n[n]
+        raw_inputs.append(raw_path)
+        if log_fields.get("missing_raw"):
             LOGGER.warning(
                 "Expanded metrics missing",
                 extra={"stage": "metrics", "player_count": n, "path": str(raw_path)},
             )
             continue
-        try:
-            iso_paths.append(build_isolated_metrics(cfg, n))
-            continue
-        except Exception as exc:  # noqa: BLE001
+        normalization_error = log_fields.get("normalization_error")
+        if normalization_error is not None:
             LOGGER.warning(
                 "Failed to normalize metrics parquet",
                 extra={
                     "stage": "metrics",
                     "player_count": n,
                     "path": str(raw_path),
-                    "error": str(exc),
+                    "error": str(normalization_error),
                 },
             )
-        if preferred.exists():
-            iso_paths.append(preferred)
-        elif legacy.exists():
+        if log_fields.get("used_legacy"):
             LOGGER.info(
                 "Using legacy isolated metrics path",
                 extra={
                     "stage": "metrics",
                     "player_count": n,
-                    "path": str(legacy),
+                    "path": str(iso_path),
                 },
             )
-            iso_paths.append(legacy)
+        if iso_path is not None:
+            iso_paths.append(iso_path)
     return iso_paths, raw_inputs
 
 
@@ -411,7 +453,9 @@ def _add_win_rate_uncertainty(df: pd.DataFrame) -> pd.DataFrame:
     se = pd.Series(0.0, index=out.index, dtype="float64")
     safe_games = games.where(positive_games)
     win_prob = win_rate.loc[positive_games]
-    se.loc[positive_games] = ((win_prob * (1.0 - win_prob)) / safe_games.loc[positive_games]).pow(0.5)
+    se.loc[positive_games] = ((win_prob * (1.0 - win_prob)) / safe_games.loc[positive_games]).pow(
+        0.5
+    )
     out["se_win_rate"] = se
 
     z = 1.96
@@ -493,6 +537,7 @@ def _pooling_weights_for_metrics(
         return games.astype(float)
 
     if pooling_scheme == "equal-k":
+
         def _equal_factor(k: int | np.integer) -> float:
             total = totals_map.get(int(k), 0.0)
             return 1.0 / total if total > 0 else 0.0
@@ -507,6 +552,7 @@ def _pooling_weights_for_metrics(
                 "Missing pooling weights for player counts; treating as zero",
                 extra={"stage": "metrics", "missing": missing},
             )
+
         def _config_factor(k: int | np.integer) -> float:
             total = totals_map.get(int(k), 0.0)
             if total <= 0:
