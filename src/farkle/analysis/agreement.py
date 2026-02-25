@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from itertools import combinations
 from pathlib import Path
@@ -51,12 +52,31 @@ def run(cfg: AppConfig) -> None:
     stage_dir.mkdir(parents=True, exist_ok=True)
     player_counts = cfg.agreement_players()
 
-    wrote_payload = False
+    computed_payloads: list[tuple[int, dict[str, object]]] = []
+    if player_counts:
+        worker_count = min(len(player_counts), max(1, int(cfg.analysis.n_jobs)))
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            future_to_players = {
+                executor.submit(
+                    _build_payload,
+                    cfg,
+                    players=players,
+                    pooled_scope=False,
+                    stage_log=stage_log,
+                ): players
+                for players in player_counts
+            }
+            for future in as_completed(future_to_players):
+                players = future_to_players[future]
+                payload = future.result()
+                if payload is None:
+                    continue
+                computed_payloads.append((players, payload))
+
+    computed_payloads.sort(key=lambda item: item[0])
+
     summary_rows: list[dict[str, object]] = []
-    for players in player_counts:
-        payload = _build_payload(cfg, players=players, pooled_scope=False, stage_log=stage_log)
-        if payload is None:
-            continue
+    for players, payload in computed_payloads:
         payload["players"] = players
         out_path = cfg.agreement_output_path(players)
         with atomic_path(str(out_path)) as tmp_path:
@@ -70,7 +90,6 @@ def run(cfg: AppConfig) -> None:
             },
         )
         summary_rows.append(_flatten_payload(payload))
-        wrote_payload = True
 
     if cfg.agreement_include_pooled():
         payload = _build_payload(cfg, players=0, pooled_scope=True, stage_log=stage_log)
@@ -88,9 +107,8 @@ def run(cfg: AppConfig) -> None:
                 },
             )
             summary_rows.append(_flatten_payload(payload))
-            wrote_payload = True
 
-    if not wrote_payload:
+    if not summary_rows:
         stage_log.missing_input("no agreement payloads generated")
         return
 
