@@ -732,10 +732,30 @@ def test_two_seed_pipeline_worker_budget_and_artifact_validation(
     with pytest.raises(ValueError, match="seed_count must be positive"):
         two_seed_pipeline._per_seed_worker_budget(total_workers=4, seed_count=0)
 
-    base_cfg.sim.n_jobs = 0
     base_cfg.ingest.n_jobs = 9
     monkeypatch.setattr(two_seed_pipeline.os, "cpu_count", lambda: 8)
+
+    # Serial seed execution keeps the full worker budget on each seed.
+    base_cfg.orchestration.parallel_seeds = False
+    base_cfg.sim.n_jobs = 6
+    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2) == (6, 6, 6)
+
+    # Parallel seed execution splits the worker budget across concurrent seeds.
+    base_cfg.orchestration.parallel_seeds = True
+    base_cfg.sim.n_jobs = 6
+    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2) == (3, 3, 3)
+
+    # Ingest workers remain capped by cfg.ingest.n_jobs.
+    base_cfg.ingest.n_jobs = 2
+    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2) == (3, 2, 3)
+    base_cfg.ingest.n_jobs = 9
+
+    # Edge case: non-positive sim.n_jobs falls back to cpu_count() and still splits.
+    base_cfg.sim.n_jobs = 0
     assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2) == (4, 4, 4)
+
+    # Edge case: seed_count=1 should not reduce workers when running in parallel mode.
+    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=1) == (8, 8, 8)
 
     missing = tmp_path / "missing.json"
     assert two_seed_pipeline._is_valid_artifact(missing) == (False, "missing")
