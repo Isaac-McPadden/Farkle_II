@@ -52,8 +52,9 @@ def _per_seed_worker_budget(total_workers: int, seed_count: int) -> int:
 
 
 def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> tuple[int, int, int]:
-    available_workers = cfg.sim.n_jobs if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else (os.cpu_count() or 1)
-    per_seed_workers = _per_seed_worker_budget(int(available_workers), seed_count)
+    total_workers = cfg.sim.n_jobs if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else (os.cpu_count() or 1)
+    seed_concurrency = seed_count if cfg.orchestration.parallel_seeds else 1
+    per_seed_workers = _per_seed_worker_budget(int(total_workers), seed_concurrency)
     simulation_workers = per_seed_workers
     ingest_workers = min(per_seed_workers, max(1, int(cfg.ingest.n_jobs)))
     analysis_workers = per_seed_workers
