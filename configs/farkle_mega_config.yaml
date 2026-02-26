@@ -106,7 +106,7 @@ trueskill:
   pooled_weights_by_k: null
 
 head2head:
-  n_jobs: 16
+  n_jobs: 0
   games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
   fdr_q: 0.02                     # FDR control threshold for BH H2H design (if/where used)
   bonferroni_total_games_safeguard: 100000000 # skip Bonferroni H2H when estimated total games exceed this
