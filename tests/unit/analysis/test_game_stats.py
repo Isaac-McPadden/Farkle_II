@@ -423,6 +423,55 @@ def test_run_force_and_uptodate_paths_and_partial_per_k(tmp_path: Path) -> None:
     assert per_k_3_game.exists()
 
 
+def test_run_raises_when_per_k_fanout_writer_fails(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path),
+        sim=SimConfig(n_players_list=[2, 3], seed=404, seed_list=[404]),
+    )
+    _write_multi_k_curated_inputs(cfg)
+
+    game_stats.run(cfg, force=True)
+
+    stage_stamp = cfg.game_stats_stage_dir / "game_stats.done.json"
+    stage_stamp_before = stage_stamp.read_text()
+    stage_stamp_mtime_before = stage_stamp.stat().st_mtime_ns
+
+    stale_k = 2
+    stale_output = cfg.per_k_subdir("game_stats", stale_k) / "game_length.parquet"
+    stale_stamp = cfg.game_stats_stage_dir / f"game_stats.game_length.{stale_k}p.done.json"
+    stale_output.unlink()
+    stale_stamp.unlink()
+
+    healthy_k = 3
+    healthy_output = cfg.per_k_subdir("game_stats", healthy_k) / "game_length.parquet"
+    healthy_stamp = cfg.game_stats_stage_dir / f"game_stats.game_length.{healthy_k}p.done.json"
+    healthy_output_mtime_before = healthy_output.stat().st_mtime_ns
+    healthy_stamp_before = healthy_stamp.read_text()
+
+    original_writer = game_stats._write_per_k_game_length
+
+    def _fail_one_k(**kwargs):
+        if kwargs["k"] == stale_k:
+            raise RuntimeError("boom: per-k writer failure")
+        return original_writer(**kwargs)
+
+    monkeypatch.setattr(game_stats, "_write_per_k_game_length", _fail_one_k)
+
+    with pytest.raises(RuntimeError, match="per-k writer failure"):
+        game_stats.run(cfg, force=False)
+
+    assert stage_stamp.exists()
+    assert stage_stamp.read_text() == stage_stamp_before
+    assert stage_stamp.stat().st_mtime_ns == stage_stamp_mtime_before
+
+    assert not stale_output.exists()
+    assert not stale_stamp.exists()
+
+    assert healthy_output.exists()
+    assert healthy_output.stat().st_mtime_ns == healthy_output_mtime_before
+    assert healthy_stamp.read_text() == healthy_stamp_before
+
+
 def test_run_pooling_alias_and_invalid_via_run(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
     _build_parquet(tmp_path, cfg)
