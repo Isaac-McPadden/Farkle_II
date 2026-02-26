@@ -231,6 +231,45 @@ def test_seed_summaries_rebuilds_missing_seed_file_only(tmp_path: Path, monkeypa
     assert {p.name for p in calls} == {"strategy_summary_2p_seed19.parquet"}
 
 
+def test_seed_summaries_meta_sync_order_is_deterministic_under_parallel_build(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _make_cfg(tmp_path)
+    cfg.io.meta_analysis_dir = Path("shared_meta")
+    metrics = pd.DataFrame(
+        [
+            {"strategy": "1", "n_players": 3, "games": 4, "wins": 2, "seed": 20},
+            {"strategy": "1", "n_players": 2, "games": 8, "wins": 5, "seed": 19},
+            {"strategy": "2", "n_players": 3, "games": 6, "wins": 3, "seed": 19},
+            {"strategy": "2", "n_players": 2, "games": 5, "wins": 3, "seed": 20},
+        ]
+    )
+    _write_metrics(cfg, metrics)
+
+    sync_order: list[str] = []
+    original_sync = seed_summaries._sync_meta_summary
+
+    def _record_sync(local_cfg, summary, analysis_path):
+        sync_order.append(analysis_path.name)
+        return original_sync(local_cfg, summary, analysis_path)
+
+    monkeypatch.setattr(seed_summaries, "_sync_meta_summary", _record_sync)
+
+    seed_summaries.run(cfg)
+
+    assert sync_order == [
+        "strategy_summary_2p_seed19.parquet",
+        "strategy_summary_3p_seed19.parquet",
+        "seed_19_summary_long.parquet",
+        "seed_19_summary_weighted.parquet",
+        "strategy_summary_2p_seed20.parquet",
+        "strategy_summary_3p_seed20.parquet",
+        "seed_20_summary_long.parquet",
+        "seed_20_summary_weighted.parquet",
+    ]
+
+
 def test_seed_summaries_handles_mixed_schema_across_seeds_and_orders_rows(tmp_path: Path) -> None:
     cfg = _make_cfg(tmp_path)
     metrics = pd.DataFrame(

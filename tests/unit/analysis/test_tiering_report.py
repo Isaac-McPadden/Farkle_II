@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -320,7 +322,13 @@ def test_load_isolated_metrics_logs_warning_for_missing_and_partial_inputs(
         raise FileNotFoundError("missing")
 
     monkeypatch.setattr(tiering_report, "_results_dir_for_seed", _results_dir)
-    monkeypatch.setattr(tiering_report, "prepare_seed_config", lambda cfg, **_k: cfg)
+    monkeypatch.setattr(
+        tiering_report,
+        "prepare_seed_config",
+        lambda _cfg, *, seed, base_results_dir: SimpleNamespace(  # noqa: ARG005
+            sim=SimpleNamespace(seed=seed)
+        ),
+    )
 
     p2 = tmp_path / "seed1_2p.parquet"
     pd.DataFrame([{"strategy": 1, "n_players": 2, "games": 10, "wins": 6, "win_rate": 0.6}]).to_parquet(p2)
@@ -339,6 +347,74 @@ def test_load_isolated_metrics_logs_warning_for_missing_and_partial_inputs(
     assert set(out.columns) >= {"strategy", "n_players", "games", "wins", "win_rate", "seed"}
     assert "Skipping seed: results directory not found" in caplog.text
     assert "Missing isolated metrics" in caplog.text
+
+
+def test_load_isolated_metrics_orders_output_by_seed_and_players_under_parallel_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    inputs = tiering_report.TieringInputs(
+        seeds=[1, 2],
+        player_counts=[2, 3],
+        weights_by_k=None,
+        z_star=1.645,
+        min_gap=None,
+    )
+
+    for seed in inputs.seeds:
+        (tmp_path / "results" / f"run_seed_{seed}").mkdir(parents=True)
+
+    def _results_dir(_cfg: AppConfig, seed: int) -> Path:
+        return tmp_path / "results" / f"run_seed_{seed}"
+
+    monkeypatch.setattr(tiering_report, "_results_dir_for_seed", _results_dir)
+    monkeypatch.setattr(
+        tiering_report,
+        "prepare_seed_config",
+        lambda _cfg, *, seed, base_results_dir: SimpleNamespace(  # noqa: ARG005
+            sim=SimpleNamespace(seed=seed)
+        ),
+    )
+
+    paths: dict[int, dict[int, Path]] = {1: {}, 2: {}}
+    for seed in inputs.seeds:
+        for k in inputs.player_counts:
+            p = tmp_path / f"seed{seed}_{k}p.parquet"
+            pd.DataFrame(
+                [{"strategy": seed * 10 + k, "n_players": k, "games": 10, "wins": 5, "win_rate": 0.5}]
+            ).to_parquet(p)
+            paths[seed][k] = p
+
+    delays = {
+        paths[1][2]: 0.08,
+        paths[1][3]: 0.02,
+        paths[2][2]: 0.06,
+        paths[2][3]: 0.01,
+    }
+
+    def _build(seed_cfg, k: int) -> Path:
+        seed = seed_cfg.sim.seed
+        return paths[seed][k]
+
+    monkeypatch.setattr(tiering_report, "build_isolated_metrics", _build)
+
+    original_read = pd.read_parquet
+
+    def _slow_read(path, *args, **kwargs):
+        time.sleep(delays.get(Path(path), 0.0))
+        return original_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(pd, "read_parquet", _slow_read)
+
+    out = tiering_report._load_isolated_metrics(cfg, inputs)
+
+    assert out[["seed", "n_players"]].to_records(index=False).tolist() == [
+        (1, 2),
+        (1, 3),
+        (2, 2),
+        (2, 3),
+    ]
 
 
 def test_tiering_report_helper_branch_coverage_and_run_happy_path(

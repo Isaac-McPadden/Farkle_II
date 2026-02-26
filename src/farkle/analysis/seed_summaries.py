@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -100,21 +102,25 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         stage_log.missing_input("metrics parquet empty", metrics_path=str(metrics_path))
         return
 
-    seeds = sorted(metrics_frame["seed"].unique())
-    player_counts = sorted(metrics_frame["players"].unique())
+    grouped_indices = metrics_frame.groupby(["seed", "players"], sort=True).indices
+    grouped_keys = sorted((int(seed), int(players)) for seed, players in grouped_indices)
+    seeds = sorted({seed for seed, _ in grouped_keys})
+    player_counts = sorted({players for _, players in grouped_keys})
+    work_units: list[tuple[int, int, np.ndarray]] = [
+        (seed, players, grouped_indices[(seed, players)]) for seed, players in grouped_keys
+    ]
     done = stage_done_path(cfg.seed_summaries_stage_dir, "seed_summaries")
 
     expected_outputs: list[Path] = []
+    grouped_key_set = set(grouped_keys)
     for seed in seeds:
         seed_has_data = False
         for players in player_counts:
-            subset = metrics_frame[
-                (metrics_frame["seed"] == seed) & (metrics_frame["players"] == players)
-            ]
-            if subset.empty:
+            key = (int(seed), int(players))
+            if key not in grouped_key_set:
                 continue
             seed_has_data = True
-            expected_outputs.append(_summary_path(cfg, players=int(players), seed=int(seed)))
+            expected_outputs.append(_summary_path(cfg, players=key[1], seed=key[0]))
         if seed_has_data:
             expected_outputs.append(_seed_long_summary_path(cfg, seed=int(seed)))
             expected_outputs.append(_seed_weighted_summary_path(cfg, seed=int(seed)))
@@ -141,15 +147,23 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     outputs: list[Path] = []
     mirrored_outputs: list[Path] = []
+
+    summaries_by_unit: dict[tuple[int, int], pd.DataFrame] = {}
+    if work_units:
+        max_workers = max(1, min(len(work_units), os.cpu_count() or 1, 8))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for seed, players, summary in executor.map(
+                lambda unit: _build_summary_for_unit(metrics_frame, unit),
+                work_units,
+            ):
+                summaries_by_unit[(seed, players)] = summary
+
     for seed in seeds:
         seed_frames: list[pd.DataFrame] = []
         for players in player_counts:
-            subset = metrics_frame[
-                (metrics_frame["seed"] == seed) & (metrics_frame["players"] == players)
-            ]
-            if subset.empty:
+            summary = summaries_by_unit.get((int(seed), int(players)))
+            if summary is None:
                 continue
-            summary = _build_summary(subset, players=int(players), seed=int(seed))
             if summary.empty:
                 continue
             seed_frames.append(summary)
@@ -316,6 +330,18 @@ def _build_summary(frame: pd.DataFrame, *, players: int, seed: int) -> pd.DataFr
     extra_cols = [c for c in summary.columns if c not in BASE_COLUMNS]
     ordered = BASE_COLUMNS + sorted(extra_cols)
     return summary[ordered]
+
+
+def _build_summary_for_unit(
+    metrics_frame: pd.DataFrame,
+    unit: tuple[int, int, np.ndarray],
+) -> tuple[int, int, pd.DataFrame]:
+    """Build one summary for a ``(seed, players)`` work unit."""
+
+    seed, players, row_positions = unit
+    subset = metrics_frame.take(row_positions)
+    summary = _build_summary(subset, players=players, seed=seed)
+    return seed, players, summary
 
 
 def _stack_seed_summaries(frames: list[pd.DataFrame], *, seed: int) -> pd.DataFrame:
