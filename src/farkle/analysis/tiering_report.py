@@ -9,6 +9,8 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Hashable, Mapping, TypeAlias, cast
@@ -139,7 +141,7 @@ def _results_dir_for_seed(cfg: AppConfig, seed: int) -> Path:
 
 def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFrame:
     """Load per-seed isolated metrics for the desired player counts."""
-    frames: list[pd.DataFrame] = []
+    frames_by_unit: dict[tuple[int, int], pd.DataFrame] = {}
     for seed in inputs.seeds:
         try:
             root = _results_dir_for_seed(cfg, seed)
@@ -151,21 +153,39 @@ def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFram
             continue
         base_dir = root.parent / root.name.rsplit("_seed_", 1)[0]
         seed_cfg = prepare_seed_config(cfg, seed=seed, base_results_dir=base_dir)
-        for k in inputs.player_counts:
-            try:
-                path = build_isolated_metrics(seed_cfg, k)
-            except FileNotFoundError:
-                LOGGER.warning(
-                    "Missing isolated metrics",
-                    extra={"stage": "tiering", "seed": seed, "player_count": k},
-                )
-                continue
-            df = pd.read_parquet(path)
-            df["seed"] = seed
-            frames.append(df)
-    if not frames:
+        seed_work = [(int(seed), int(k), seed_cfg) for k in inputs.player_counts]
+        max_workers = max(1, min(len(seed_work), os.cpu_count() or 1, 4))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for result in executor.map(_load_isolated_metrics_unit, seed_work):
+                seed_i, k_i, df, missing = result
+                if missing:
+                    LOGGER.warning(
+                        "Missing isolated metrics",
+                        extra={"stage": "tiering", "seed": seed_i, "player_count": k_i},
+                    )
+                    continue
+                if df is None:
+                    continue
+                frames_by_unit[(seed_i, k_i)] = df
+    if not frames_by_unit:
         return pd.DataFrame(columns=["strategy", "seed", "n_players", "games", "wins", "win_rate"])
+    frames = [frames_by_unit[key] for key in sorted(frames_by_unit)]
     return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def _load_isolated_metrics_unit(
+    unit: tuple[int, int, AppConfig],
+) -> tuple[int, int, pd.DataFrame | None, bool]:
+    """Load one isolated metrics parquet for a ``(seed, k)`` unit."""
+
+    seed, k, seed_cfg = unit
+    try:
+        path = build_isolated_metrics(seed_cfg, k)
+    except FileNotFoundError:
+        return seed, k, None, True
+    df = pd.read_parquet(path)
+    df["seed"] = seed
+    return seed, k, df, False
 
 
 def _coerce_strategy_ids(values: pd.Series) -> pd.Series:
