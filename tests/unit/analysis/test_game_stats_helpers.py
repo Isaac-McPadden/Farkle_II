@@ -316,6 +316,47 @@ def test_rare_event_helpers_and_threshold_resolution(tmp_path: Path) -> None:
             target_rate=None,
         )
 
+
+def test_rare_event_flags_reuses_up_to_date_shards(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    rows = _fixture_rows_two_players()
+    per_n = cfg.ingested_rows_curated(2)
+    _write_rows(per_n, rows)
+
+    output_path = tmp_path / "rare_resume.parquet"
+    rows_first = game_stats._rare_event_flags(
+        [(2, per_n)],
+        thresholds=(25,),
+        target_score=150,
+        output_path=output_path,
+        codec=cfg.parquet_codec,
+        config_sha="resume-sha",
+    )
+    assert rows_first > 0
+
+    shard_path, stats_path, done_path = game_stats._rare_event_shard_paths(output_path, 2)
+    assert shard_path.exists()
+    assert stats_path.exists()
+    assert done_path.exists()
+
+    def _fail_rebuild(**_kwargs: Any) -> None:
+        raise AssertionError("shard should not rebuild when done-stamp is up-to-date")
+
+    monkeypatch.setattr(game_stats, "_build_rare_event_summary_shard", _fail_rebuild)
+
+    rows_second = game_stats._rare_event_flags(
+        [(2, per_n)],
+        thresholds=(25,),
+        target_score=150,
+        output_path=output_path,
+        codec=cfg.parquet_codec,
+        config_sha="resume-sha",
+    )
+    assert rows_second == rows_first
+
+
 def test_additional_branch_coverage_paths(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
     # strategy type fallback
     no_strategy = tmp_path / "nostrategy.parquet"

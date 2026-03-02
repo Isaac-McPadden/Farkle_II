@@ -995,18 +995,9 @@ def run_bonferroni_head2head(
     shard_count = len(shard_paths)
     initial_shard_count = shard_count
     debug_summary["shards"]["existing_before_run"] = shard_count
-    existing_pairwise_shard_frames: list[pd.DataFrame] = []
     completed_pairs: set[int] = {int(pid) for pid in (completed_pair_ids or ())}
     for shard_path in shard_paths:
         completed_pairs.update(_read_pair_ids_from_parquet(shard_path))
-        try:
-            df = pd.read_parquet(shard_path)
-            existing_pairwise_shard_frames.append(df)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "Failed to load shard data",
-                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
-            )
     existing_final_pairs = _read_pair_ids_from_parquet(pairwise_parquet)
     completed_pairs.update(existing_final_pairs)
     debug_summary["filtered_pairs"]["precompleted_pairs"] = len(completed_pairs)
@@ -1034,7 +1025,6 @@ def run_bonferroni_head2head(
                 "path": str(shard_path),
             },
         )
-        existing_pairwise_shard_frames.append(shard_table.to_pandas())
         records_to_flush.clear()
         return shard_index + 1
 
@@ -1223,17 +1213,36 @@ def run_bonferroni_head2head(
             },
         )
 
-    all_frames: list[pd.DataFrame] = []
-    all_frames.extend(existing_pairwise_shard_frames)
+    pairwise_by_id: dict[int, dict[str, Any]] = {}
+    for shard_path in final_shard_paths:
+        try:
+            frame = pd.read_parquet(shard_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load shard data",
+                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
+            )
+            continue
+        for record in frame.to_dict(orient="records"):
+            pair_id_val = record.get("pair_id")
+            if pair_id_val is None or pd.isna(pair_id_val):
+                continue
+            pairwise_by_id[int(pair_id_val)] = record
     if pairwise_parquet.exists():
         try:
-            all_frames.append(pd.read_parquet(pairwise_parquet))
+            existing_frame = pd.read_parquet(pairwise_parquet)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "Failed to load existing pairwise parquet",
                 extra={"stage": "head2head", "path": str(pairwise_parquet), "error": str(exc)},
             )
-    if not all_frames:
+        else:
+            for record in existing_frame.to_dict(orient="records"):
+                pair_id_val = record.get("pair_id")
+                if pair_id_val is None or pd.isna(pair_id_val):
+                    continue
+                pairwise_by_id[int(pair_id_val)] = record
+    if not pairwise_by_id:
         raise Head2HeadPipelineError(
             "No pairwise frames available after shard collection/merge",
             error_code="empty_pairwise_merge",
@@ -1244,11 +1253,8 @@ def run_bonferroni_head2head(
                 "pairwise_path": str(pairwise_parquet),
             },
         )
-    combined_df = (
-        pd.concat(all_frames, ignore_index=True)
-        .sort_values("pair_id")
-        .drop_duplicates(subset=["pair_id"], keep="last")
-    )
+    combined_records = [pairwise_by_id[pair_id] for pair_id in sorted(pairwise_by_id)]
+    combined_df = pd.DataFrame.from_records(combined_records)
     pairwise_table = pa.Table.from_pandas(
         combined_df, schema=pairwise_shard_schema, preserve_index=False
     )
@@ -1266,17 +1272,9 @@ def run_bonferroni_head2head(
     selfplay_shard_count = len(selfplay_shard_paths)
     initial_selfplay_shard_count = selfplay_shard_count
     debug_summary["selfplay"]["existing_shards_before_run"] = selfplay_shard_count
-    existing_selfplay_shard_frames: list[pd.DataFrame] = []
     completed_selfplay_ids: set[str] = set()
     for shard_path in selfplay_shard_paths:
         completed_selfplay_ids.update(_read_selfplay_ids_from_parquet(shard_path))
-        try:
-            existing_selfplay_shard_frames.append(pd.read_parquet(shard_path))
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "Failed to load self-play shard data",
-                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
-            )
     completed_selfplay_ids.update(_read_selfplay_ids_from_parquet(selfplay_parquet))
     debug_summary["selfplay"]["completed_before_run"] = len(completed_selfplay_ids)
 
@@ -1302,7 +1300,6 @@ def run_bonferroni_head2head(
                 "path": str(shard_path),
             },
         )
-        existing_selfplay_shard_frames.append(shard_table.to_pandas())
         records_to_flush.clear()
         return shard_index + 1
 
@@ -1378,17 +1375,36 @@ def run_bonferroni_head2head(
     )
     debug_summary["selfplay"]["total_shards_after_run"] = len(final_selfplay_shard_paths)
 
-    all_selfplay_frames: list[pd.DataFrame] = []
-    all_selfplay_frames.extend(existing_selfplay_shard_frames)
+    selfplay_by_strategy: dict[str, dict[str, Any]] = {}
+    for shard_path in final_selfplay_shard_paths:
+        try:
+            frame = pd.read_parquet(shard_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load self-play shard data",
+                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
+            )
+            continue
+        for record in frame.to_dict(orient="records"):
+            strategy_val = record.get("strategy")
+            if strategy_val is None or pd.isna(strategy_val):
+                continue
+            selfplay_by_strategy[str(strategy_val)] = record
     if selfplay_parquet.exists():
         try:
-            all_selfplay_frames.append(pd.read_parquet(selfplay_parquet))
+            existing_selfplay = pd.read_parquet(selfplay_parquet)
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "Failed to load existing self-play parquet",
                 extra={"stage": "head2head", "path": str(selfplay_parquet), "error": str(exc)},
             )
-    if not all_selfplay_frames and sorted_elites:
+        else:
+            for record in existing_selfplay.to_dict(orient="records"):
+                strategy_val = record.get("strategy")
+                if strategy_val is None or pd.isna(strategy_val):
+                    continue
+                selfplay_by_strategy[str(strategy_val)] = record
+    if not selfplay_by_strategy and sorted_elites:
         raise Head2HeadPipelineError(
             "No self-play frames available after shard collection/merge",
             error_code="empty_selfplay_merge",
@@ -1399,13 +1415,10 @@ def run_bonferroni_head2head(
                 "selfplay_path": str(selfplay_parquet),
             },
         )
-    if all_selfplay_frames:
-        combined_selfplay_df = (
-            pd.concat(all_selfplay_frames, ignore_index=True)
-            .assign(strategy=lambda frame: frame["strategy"].astype(str))
-            .sort_values("strategy")
-            .drop_duplicates(subset=["strategy"], keep="last")
-        )
+    if selfplay_by_strategy:
+        combined_selfplay_df = pd.DataFrame.from_records(
+            [selfplay_by_strategy[strategy] for strategy in sorted(selfplay_by_strategy)]
+        ).assign(strategy=lambda frame: frame["strategy"].astype(str))
         selfplay_table = pa.Table.from_pandas(
             combined_selfplay_df, schema=selfplay_shard_schema, preserve_index=False
         )

@@ -33,16 +33,20 @@ per-``(strategy, n_players)`` summaries. Margin schema:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 from collections.abc import Iterable, Sequence
 from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeAlias, cast
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.dataset as ds
 from pandas._libs.missing import NAType
 from pandas._typing import Scalar
@@ -54,7 +58,7 @@ from farkle.utils.analysis_shared import to_int
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.types import Compression
-from farkle.utils.writer import ParquetShardWriter
+from farkle.utils.writer import ParquetShardWriter, atomic_path
 
 StatValue: TypeAlias = float | int | str | NAType
 NormalizedScalar: TypeAlias = Scalar | None
@@ -73,6 +77,23 @@ StrategyPandasDtype: TypeAlias = (
 LOGGER = logging.getLogger(__name__)
 
 
+@dataclass(slots=True)
+class _UnweightedAccumulator:
+    count: int = 0
+    total: float = 0.0
+    total_sq: float = 0.0
+    hist: dict[float, int] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class _WeightedAccumulator:
+    count: int = 0
+    weight_total: float = 0.0
+    weighted_total: float = 0.0
+    weighted_total_sq: float = 0.0
+    hist: dict[float, float] = field(default_factory=dict)
+
+
 def _resolve_analysis_workers(cfg: AppConfig) -> int:
     analysis_jobs = (
         int(cfg.analysis.n_jobs) if cfg.analysis.n_jobs and cfg.analysis.n_jobs > 0 else 0
@@ -89,7 +110,7 @@ def _write_per_k_game_length(
     stamp_path: Path,
     input_paths: Sequence[Path],
     codec: Compression,
-    config_sha: str,
+    config_sha: str | None,
 ) -> None:
     per_k_game_length = game_length_df.loc[game_length_df["n_players"] == k].copy()
     per_k_game_length_table = pa.Table.from_pandas(per_k_game_length, preserve_index=False)
@@ -110,7 +131,7 @@ def _write_per_k_margin(
     stamp_path: Path,
     input_paths: Sequence[Path],
     codec: Compression,
-    config_sha: str,
+    config_sha: str | None,
 ) -> None:
     per_k_margin = margin_df.loc[margin_df["n_players"] == k].copy()
     per_k_margin_table = pa.Table.from_pandas(per_k_margin, preserve_index=False)
@@ -436,6 +457,14 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     margin_stats: pd.DataFrame | None = None
     if not margin_up_to_date:
+        LOGGER.info(
+            "Computing per-strategy margin stats",
+            extra={
+                "stage": "game_stats",
+                "inputs": [str(path) for _, path in per_n_inputs],
+                "thresholds": [to_int(thr) for thr in cfg.game_stats_margin_thresholds],
+            },
+        )
         margin_stats = _per_strategy_margin_stats(
             per_n_inputs, thresholds=cfg.game_stats_margin_thresholds
         )
@@ -575,6 +604,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 target_score=resolved_target_score,
                 output_path=rare_events_output,
                 codec=cfg.parquet_codec,
+                config_sha=cfg.config_sha,
+                n_workers=_resolve_analysis_workers(cfg),
             )
             if rare_event_rows == 0:
                 raise RuntimeError("game-stats: no rare events available to summarize")
@@ -642,7 +673,7 @@ def _discover_per_n_inputs(cfg: AppConfig) -> list[tuple[int, Path]]:
 def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFrame:
     """Compute statistics grouped by strategy and player count."""
 
-    grouped_rounds: dict[tuple[Scalar, int], list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
+    grouped_rounds: dict[tuple[Scalar, int], _UnweightedAccumulator] = {}
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -654,24 +685,43 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
             continue
 
         scanner = ds_in.scanner(columns=["n_rounds", *strategy_cols], batch_size=65_536)
+        batch_idx = 0
         for batch in scanner.to_batches():
+            batch_idx += 1
             df = batch.to_pandas(categories=strategy_cols)
             if df.empty:
                 continue
-            melted = df.melt(id_vars=["n_rounds"], value_vars=strategy_cols, value_name="strategy")
-            melted = melted.dropna(subset=["strategy"])
-            if melted.empty:
+            rounds = pd.to_numeric(df["n_rounds"], errors="coerce")
+            valid_rounds = rounds.notna()
+            if not bool(valid_rounds.any()):
                 continue
-
-            melted["n_rounds"] = pd.to_numeric(melted["n_rounds"], errors="coerce")
-            melted = melted.dropna(subset=["n_rounds"])
-            if melted.empty:
-                continue
-
-            batch_grouped = melted.groupby("strategy", observed=True, sort=False)["n_rounds"]
-            for strategy, series in batch_grouped:
-                key = (strategy, n_players)
-                grouped_rounds.setdefault(key, []).append(series.to_numpy(dtype=float, copy=False))
+            for strategy_col in strategy_cols:
+                strategies = df[strategy_col]
+                valid = valid_rounds & strategies.notna()
+                if not bool(valid.any()):
+                    continue
+                batch_rows = pd.DataFrame(
+                    {
+                        "strategy": strategies.loc[valid],
+                        "rounds": rounds.loc[valid],
+                    }
+                )
+                grouped = batch_rows.groupby("strategy", observed=True, sort=False)["rounds"]
+                for strategy, series in grouped:
+                    key = (strategy, n_players)
+                    acc = grouped_rounds.setdefault(key, _UnweightedAccumulator())
+                    _update_unweighted_accumulator(acc, series.to_numpy(dtype=float, copy=False))
+            if batch_idx % 50 == 0:
+                LOGGER.info(
+                    "Game-length strategy stats progress",
+                    extra={
+                        "stage": "game_stats",
+                        "n_players": n_players,
+                        "path": str(path),
+                        "batches": batch_idx,
+                        "groups": len(grouped_rounds),
+                    },
+                )
 
     if not grouped_rounds:
         return pd.DataFrame(
@@ -692,30 +742,30 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
             ]
         )
 
-    rows: list[dict[str, StatValue]] = []
-    for (strategy, n_players), chunks in grouped_rounds.items():
-        values = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
-        if values.size == 0:
+    stats_rows: list[dict[str, StatValue]] = []
+    for (strategy, n_players), acc in grouped_rounds.items():
+        if acc.count <= 0:
             continue
-        rows.append(
+        mean_rounds, std_rounds = _mean_std_from_unweighted(acc)
+        stats_rows.append(
             {
                 "summary_level": "strategy",
                 "strategy": _strategy_stat_value(strategy),
                 "n_players": n_players,
-                "observations": _strategy_key_to_int(values.size, field="observations"),
-                "mean_rounds": float(np.mean(values)),
-                "median_rounds": float(np.quantile(values, 0.5)),
-                "std_rounds": float(np.std(values, ddof=0)),
-                "p10_rounds": float(np.quantile(values, 0.1)),
-                "p50_rounds": float(np.quantile(values, 0.5)),
-                "p90_rounds": float(np.quantile(values, 0.9)),
-                "prob_rounds_le_5": float(np.mean(values <= 5)),
-                "prob_rounds_le_10": float(np.mean(values <= 10)),
-                "prob_rounds_ge_20": float(np.mean(values >= 20)),
+                "observations": _strategy_key_to_int(acc.count, field="observations"),
+                "mean_rounds": mean_rounds,
+                "median_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.5),
+                "std_rounds": std_rounds,
+                "p10_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.1),
+                "p50_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.5),
+                "p90_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.9),
+                "prob_rounds_le_5": _probability_le_from_hist(acc.hist, count=acc.count, threshold=5),
+                "prob_rounds_le_10": _probability_le_from_hist(acc.hist, count=acc.count, threshold=10),
+                "prob_rounds_ge_20": _probability_ge_from_hist(acc.hist, count=acc.count, threshold=20),
             }
         )
 
-    stats = pd.DataFrame(rows)
+    stats = pd.DataFrame(stats_rows)
     return stats[
         [
             "summary_level",
@@ -813,6 +863,148 @@ def _weighted_std(values: np.ndarray, weights: np.ndarray) -> float:
     return float(math.sqrt(variance))
 
 
+def _update_unweighted_accumulator(acc: _UnweightedAccumulator, values: np.ndarray) -> None:
+    clean = values[np.isfinite(values)]
+    if clean.size == 0:
+        return
+    acc.count += int(clean.size)
+    acc.total += float(clean.sum())
+    acc.total_sq += float(np.square(clean).sum())
+    unique, freq = np.unique(clean, return_counts=True)
+    for value, count in zip(unique.tolist(), freq.tolist(), strict=True):
+        value_key = float(value)
+        acc.hist[value_key] = acc.hist.get(value_key, 0) + int(count)
+
+
+def _update_weighted_accumulator(
+    acc: _WeightedAccumulator, values: np.ndarray, *, row_weight: float
+) -> None:
+    clean = values[np.isfinite(values)]
+    if clean.size == 0 or not math.isfinite(row_weight) or row_weight <= 0:
+        return
+    rows = int(clean.size)
+    acc.count += rows
+    acc.weight_total += row_weight * rows
+    acc.weighted_total += row_weight * float(clean.sum())
+    acc.weighted_total_sq += row_weight * float(np.square(clean).sum())
+    unique, freq = np.unique(clean, return_counts=True)
+    for value, count in zip(unique.tolist(), freq.tolist(), strict=True):
+        value_key = float(value)
+        acc.hist[value_key] = acc.hist.get(value_key, 0.0) + (row_weight * int(count))
+
+
+def _hist_value_at_rank(sorted_items: list[tuple[float, int]], rank: int) -> float:
+    running = 0
+    for value, freq in sorted_items:
+        running += int(freq)
+        if rank < running:
+            return float(value)
+    return float(sorted_items[-1][0])
+
+
+def _quantile_linear_from_hist(hist: dict[float, int], *, count: int, quantile: float) -> float:
+    if count <= 0 or not hist:
+        return float("nan")
+    if quantile <= 0.0:
+        return float(min(hist))
+    if quantile >= 1.0:
+        return float(max(hist))
+    sorted_items = sorted(hist.items())
+    h = (count - 1) * quantile
+    lower_rank = int(math.floor(h))
+    upper_rank = int(math.ceil(h))
+    lower_val = _hist_value_at_rank(sorted_items, lower_rank)
+    upper_val = _hist_value_at_rank(sorted_items, upper_rank)
+    frac = h - lower_rank
+    return float(lower_val + frac * (upper_val - lower_val))
+
+
+def _probability_le_from_hist(hist: dict[float, int], *, count: int, threshold: float) -> float:
+    if count <= 0:
+        return float("nan")
+    matched = 0
+    for value, freq in hist.items():
+        if value <= threshold:
+            matched += int(freq)
+    return float(matched / count)
+
+
+def _probability_ge_from_hist(hist: dict[float, int], *, count: int, threshold: float) -> float:
+    if count <= 0:
+        return float("nan")
+    matched = 0
+    for value, freq in hist.items():
+        if value >= threshold:
+            matched += int(freq)
+    return float(matched / count)
+
+
+def _mean_std_from_unweighted(acc: _UnweightedAccumulator) -> tuple[float, float]:
+    if acc.count <= 0:
+        return float("nan"), float("nan")
+    mean = acc.total / acc.count
+    variance = (acc.total_sq / acc.count) - (mean**2)
+    variance = max(variance, 0.0)
+    return float(mean), float(math.sqrt(variance))
+
+
+def _weighted_quantile_from_hist(
+    hist: dict[float, float], *, weight_total: float, quantile: float
+) -> float:
+    if weight_total <= 0 or not hist:
+        return float("nan")
+    if quantile <= 0.0:
+        return float(min(hist))
+    if quantile >= 1.0:
+        return float(max(hist))
+    cutoff = quantile * weight_total
+    running = 0.0
+    for value, weight in sorted(hist.items()):
+        running += float(weight)
+        if running >= cutoff:
+            return float(value)
+    return float(max(hist))
+
+
+def _weighted_probability_le_from_hist(
+    hist: dict[float, float], *, weight_total: float, threshold: float
+) -> float:
+    if weight_total <= 0:
+        return float("nan")
+    matched = 0.0
+    for value, weight in hist.items():
+        if value <= threshold:
+            matched += float(weight)
+    return float(matched / weight_total)
+
+
+def _mean_std_from_weighted(acc: _WeightedAccumulator) -> tuple[float, float]:
+    if acc.weight_total <= 0:
+        return float("nan"), float("nan")
+    mean = acc.weighted_total / acc.weight_total
+    variance = (acc.weighted_total_sq / acc.weight_total) - (mean**2)
+    variance = max(variance, 0.0)
+    return float(mean), float(math.sqrt(variance))
+
+
+def _pooling_row_weight(
+    *,
+    pooling_scheme: str,
+    n_players: int,
+    row_count: int,
+    weights_by_k: dict[int, float],
+) -> float:
+    if row_count <= 0:
+        return 0.0
+    if pooling_scheme == "game-count":
+        return 1.0
+    if pooling_scheme == "equal-k":
+        return 1.0 / row_count
+    if pooling_scheme == "config":
+        return float(weights_by_k.get(int(n_players), 0.0)) / row_count
+    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+
+
 def _pooled_strategy_stats(
     per_n_inputs: Sequence[tuple[int, Path]],
     *,
@@ -821,8 +1013,14 @@ def _pooled_strategy_stats(
 ) -> pd.DataFrame:
     """Compute pooled game-length statistics across player counts."""
 
-    grouped_values: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
-    grouped_weights: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
+    grouped_values: dict[Scalar, _WeightedAccumulator] = {}
+    if pooling_scheme == "config":
+        missing = sorted({n for n, _ in per_n_inputs} - set(weights_by_k))
+        if missing:
+            LOGGER.warning(
+                "Missing pooling weights for player counts; treating as zero",
+                extra={"stage": "game_stats", "missing": missing},
+            )
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -834,32 +1032,61 @@ def _pooled_strategy_stats(
             continue
 
         scanner = ds_in.scanner(columns=["n_rounds", *strategy_cols], batch_size=65_536)
+        batch_idx = 0
         for batch in scanner.to_batches():
+            batch_idx += 1
             df = batch.to_pandas(categories=strategy_cols)
             if df.empty:
                 continue
-            melted = df.melt(id_vars=["n_rounds"], value_vars=strategy_cols, value_name="strategy")
-            melted = melted.dropna(subset=["strategy"])
-            if melted.empty:
+            rounds = pd.to_numeric(df["n_rounds"], errors="coerce")
+            valid_rounds = rounds.notna()
+            if not bool(valid_rounds.any()):
                 continue
-            melted["n_rounds"] = pd.to_numeric(melted["n_rounds"], errors="coerce")
-            melted = melted.dropna(subset=["n_rounds"])
-            if melted.empty:
+            valid_masks: dict[str, pd.Series] = {}
+            total_rows = 0
+            for strategy_col in strategy_cols:
+                strategies = df[strategy_col]
+                valid = valid_rounds & strategies.notna()
+                if not bool(valid.any()):
+                    continue
+                valid_masks[strategy_col] = valid
+                total_rows += _strategy_key_to_int(valid.sum(), field="row_count")
+            if total_rows <= 0:
                 continue
-            melted["n_players"] = n_players
-            melted["weight"] = _pooling_weights_for_rows(
-                melted["n_players"],
+            row_weight = _pooling_row_weight(
                 pooling_scheme=pooling_scheme,
+                n_players=n_players,
+                row_count=total_rows,
                 weights_by_k=weights_by_k,
             )
+            if row_weight <= 0:
+                continue
 
-            batch_grouped = melted.groupby("strategy", observed=True, sort=False)
-            for strategy, group in batch_grouped:
-                grouped_values.setdefault(strategy, []).append(
-                    group["n_rounds"].to_numpy(dtype=float, copy=False)
+            for strategy_col, valid in valid_masks.items():
+                rows = pd.DataFrame(
+                    {
+                        "strategy": df.loc[valid, strategy_col],
+                        "rounds": rounds.loc[valid],
+                    }
                 )
-                grouped_weights.setdefault(strategy, []).append(
-                    group["weight"].to_numpy(dtype=float, copy=False)
+                grouped = rows.groupby("strategy", observed=True, sort=False)["rounds"]
+                for strategy, series in grouped:
+                    acc = grouped_values.setdefault(strategy, _WeightedAccumulator())
+                    _update_weighted_accumulator(
+                        acc,
+                        series.to_numpy(dtype=float, copy=False),
+                        row_weight=row_weight,
+                    )
+            if batch_idx % 50 == 0:
+                LOGGER.info(
+                    "Pooled game-length progress",
+                    extra={
+                        "stage": "game_stats",
+                        "n_players": n_players,
+                        "path": str(path),
+                        "batches": batch_idx,
+                        "groups": len(grouped_values),
+                    },
                 )
 
     if not grouped_values:
@@ -880,27 +1107,39 @@ def _pooled_strategy_stats(
             ]
         )
     pooled_rows: list[dict[str, StatValue]] = []
-    for strategy, chunks in grouped_values.items():
-        values = np.concatenate(chunks) if len(chunks) > 1 else chunks[0]
-        weight_chunks = grouped_weights.get(strategy, [])
-        weights = np.concatenate(weight_chunks) if len(weight_chunks) > 1 else weight_chunks[0]
-        weight_total = weights.sum()
-        if not math.isfinite(weight_total) or weight_total <= 0:
+    for strategy, acc in grouped_values.items():
+        if not math.isfinite(acc.weight_total) or acc.weight_total <= 0:
             continue
+        mean_rounds, std_rounds = _mean_std_from_weighted(acc)
         pooled_rows.append(
             {
                 "summary_level": "pooled",
                 "strategy": _strategy_stat_value(strategy),
-                "observations": _strategy_key_to_int(values.size, field="observations"),
-                "mean_rounds": _weighted_mean(values, weights),
-                "median_rounds": _weighted_quantile(values, weights, 0.5),
-                "std_rounds": _weighted_std(values, weights),
-                "p10_rounds": _weighted_quantile(values, weights, 0.1),
-                "p50_rounds": _weighted_quantile(values, weights, 0.5),
-                "p90_rounds": _weighted_quantile(values, weights, 0.9),
-                "prob_rounds_le_5": _weighted_mean(values <= 5, weights),
-                "prob_rounds_le_10": _weighted_mean(values <= 10, weights),
-                "prob_rounds_ge_20": _weighted_mean(values >= 20, weights),
+                "observations": _strategy_key_to_int(acc.count, field="observations"),
+                "mean_rounds": mean_rounds,
+                "median_rounds": _weighted_quantile_from_hist(
+                    acc.hist, weight_total=acc.weight_total, quantile=0.5
+                ),
+                "std_rounds": std_rounds,
+                "p10_rounds": _weighted_quantile_from_hist(
+                    acc.hist, weight_total=acc.weight_total, quantile=0.1
+                ),
+                "p50_rounds": _weighted_quantile_from_hist(
+                    acc.hist, weight_total=acc.weight_total, quantile=0.5
+                ),
+                "p90_rounds": _weighted_quantile_from_hist(
+                    acc.hist, weight_total=acc.weight_total, quantile=0.9
+                ),
+                "prob_rounds_le_5": _weighted_probability_le_from_hist(
+                    acc.hist, weight_total=acc.weight_total, threshold=5
+                ),
+                "prob_rounds_le_10": _weighted_probability_le_from_hist(
+                    acc.hist, weight_total=acc.weight_total, threshold=10
+                ),
+                "prob_rounds_ge_20": 1.0
+                - _weighted_probability_le_from_hist(
+                    acc.hist, weight_total=acc.weight_total, threshold=np.nextafter(20.0, -np.inf)
+                ),
             }
         )
 
@@ -933,9 +1172,15 @@ def _pooled_margin_stats(
 ) -> pd.DataFrame:
     """Compute pooled victory-margin statistics across player counts."""
 
-    grouped_runner: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
-    grouped_spread: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
-    grouped_weights: dict[Scalar, list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
+    grouped_runner: dict[Scalar, _WeightedAccumulator] = {}
+    grouped_spread: dict[Scalar, _WeightedAccumulator] = {}
+    if pooling_scheme == "config":
+        missing = sorted({n for n, _ in per_n_inputs} - set(weights_by_k))
+        if missing:
+            LOGGER.warning(
+                "Missing pooling weights for player counts; treating as zero",
+                extra={"stage": "game_stats", "missing": missing},
+            )
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -958,47 +1203,72 @@ def _pooled_margin_stats(
             continue
 
         scanner = ds_in.scanner(columns=[*score_cols, *strategy_cols], batch_size=65_536)
+        batch_idx = 0
         for batch in scanner.to_batches():
+            batch_idx += 1
             df = batch.to_pandas(categories=strategy_cols)
             if df.empty:
                 continue
             margin_cols = _compute_margin_columns(df, score_cols)
-            df = df.assign(
-                margin_runner_up=margin_cols["margin_runner_up"],
-                score_spread=margin_cols["score_spread"],
-            )
-            melted = df.melt(
-                id_vars=["margin_runner_up", "score_spread"],
-                value_vars=strategy_cols,
-                value_name="strategy",
-            )
-            melted = melted.dropna(subset=["strategy"])
-            if melted.empty:
+            runner = pd.to_numeric(margin_cols["margin_runner_up"], errors="coerce")
+            spread = pd.to_numeric(margin_cols["score_spread"], errors="coerce")
+            valid_runner = runner.notna()
+            if not bool(valid_runner.any()):
                 continue
 
-            melted["margin_runner_up"] = pd.to_numeric(melted["margin_runner_up"], errors="coerce")
-            melted["score_spread"] = pd.to_numeric(melted["score_spread"], errors="coerce")
-            melted = melted.dropna(subset=["margin_runner_up"])
-            if melted.empty:
+            valid_masks: dict[str, pd.Series] = {}
+            total_rows = 0
+            for strategy_col in strategy_cols:
+                strategies = df[strategy_col]
+                valid = valid_runner & strategies.notna()
+                if not bool(valid.any()):
+                    continue
+                valid_masks[strategy_col] = valid
+                total_rows += _strategy_key_to_int(valid.sum(), field="row_count")
+            if total_rows <= 0:
                 continue
 
-            melted["n_players"] = n_players
-            melted["weight"] = _pooling_weights_for_rows(
-                melted["n_players"],
+            row_weight = _pooling_row_weight(
                 pooling_scheme=pooling_scheme,
+                n_players=n_players,
+                row_count=total_rows,
                 weights_by_k=weights_by_k,
             )
+            if row_weight <= 0:
+                continue
 
-            batch_grouped = melted.groupby("strategy", observed=True, sort=False)
-            for strategy, group in batch_grouped:
-                grouped_runner.setdefault(strategy, []).append(
-                    group["margin_runner_up"].to_numpy(dtype=float, copy=False)
+            for strategy_col, valid in valid_masks.items():
+                batch_rows = pd.DataFrame(
+                    {
+                        "strategy": df.loc[valid, strategy_col],
+                        "runner": runner.loc[valid],
+                        "spread": spread.loc[valid],
+                    }
                 )
-                grouped_spread.setdefault(strategy, []).append(
-                    group["score_spread"].to_numpy(dtype=float, copy=False)
-                )
-                grouped_weights.setdefault(strategy, []).append(
-                    group["weight"].to_numpy(dtype=float, copy=False)
+                grouped = batch_rows.groupby("strategy", observed=True, sort=False)
+                for strategy, group in grouped:
+                    runner_acc = grouped_runner.setdefault(strategy, _WeightedAccumulator())
+                    spread_entry = grouped_spread.setdefault(strategy, _WeightedAccumulator())
+                    _update_weighted_accumulator(
+                        runner_acc,
+                        group["runner"].to_numpy(dtype=float, copy=False),
+                        row_weight=row_weight,
+                    )
+                    _update_weighted_accumulator(
+                        spread_entry,
+                        group["spread"].to_numpy(dtype=float, copy=False),
+                        row_weight=row_weight,
+                    )
+            if batch_idx % 50 == 0:
+                LOGGER.info(
+                    "Pooled margin progress",
+                    extra={
+                        "stage": "game_stats",
+                        "n_players": n_players,
+                        "path": str(path),
+                        "batches": batch_idx,
+                        "groups": len(grouped_runner),
+                    },
                 )
 
     if not grouped_runner:
@@ -1018,32 +1288,43 @@ def _pooled_margin_stats(
         return pd.DataFrame(columns=columns)
 
     pooled_rows: list[dict[str, StatValue]] = []
-    for strategy, runner_chunks in grouped_runner.items():
-        runner_vals = np.concatenate(runner_chunks) if len(runner_chunks) > 1 else runner_chunks[0]
-        spread_chunks = grouped_spread.get(strategy, [])
-        spread_vals = np.concatenate(spread_chunks) if len(spread_chunks) > 1 else spread_chunks[0]
-        weight_chunks = grouped_weights.get(strategy, [])
-        weights = np.concatenate(weight_chunks) if len(weight_chunks) > 1 else weight_chunks[0]
-        weight_total = weights.sum()
-        if not math.isfinite(weight_total) or weight_total <= 0:
+    for strategy, runner_acc in grouped_runner.items():
+        spread_acc_opt = grouped_spread.get(strategy)
+        if spread_acc_opt is None:
+            continue
+        spread_acc = spread_acc_opt
+        if (
+            not math.isfinite(runner_acc.weight_total)
+            or runner_acc.weight_total <= 0
+            or not math.isfinite(spread_acc.weight_total)
+            or spread_acc.weight_total <= 0
+        ):
             continue
 
+        mean_runner, std_runner = _mean_std_from_weighted(runner_acc)
+        mean_spread, std_spread = _mean_std_from_weighted(spread_acc)
         pooled_row: dict[str, StatValue] = {
             "summary_level": "pooled",
             "strategy": _strategy_stat_value(strategy),
-            "observations": _strategy_key_to_int(runner_vals.size, field="observations"),
-            "mean_margin_runner_up": _weighted_mean(runner_vals, weights),
-            "median_margin_runner_up": _weighted_quantile(runner_vals, weights, 0.5),
-            "std_margin_runner_up": _weighted_std(runner_vals, weights),
-            "mean_score_spread": _weighted_mean(spread_vals, weights),
-            "median_score_spread": _weighted_quantile(spread_vals, weights, 0.5),
-            "std_score_spread": _weighted_std(spread_vals, weights),
+            "observations": _strategy_key_to_int(runner_acc.count, field="observations"),
+            "mean_margin_runner_up": mean_runner,
+            "median_margin_runner_up": _weighted_quantile_from_hist(
+                runner_acc.hist, weight_total=runner_acc.weight_total, quantile=0.5
+            ),
+            "std_margin_runner_up": std_runner,
+            "mean_score_spread": mean_spread,
+            "median_score_spread": _weighted_quantile_from_hist(
+                spread_acc.hist, weight_total=spread_acc.weight_total, quantile=0.5
+            ),
+            "std_score_spread": std_spread,
         }
         for thr in thresholds:
-            pooled_row[f"prob_margin_runner_up_le_{thr}"] = _weighted_mean(
-                runner_vals <= thr, weights
+            pooled_row[f"prob_margin_runner_up_le_{thr}"] = _weighted_probability_le_from_hist(
+                runner_acc.hist, weight_total=runner_acc.weight_total, threshold=float(thr)
             )
-            pooled_row[f"prob_score_spread_le_{thr}"] = _weighted_mean(spread_vals <= thr, weights)
+            pooled_row[f"prob_score_spread_le_{thr}"] = _weighted_probability_le_from_hist(
+                spread_acc.hist, weight_total=spread_acc.weight_total, threshold=float(thr)
+            )
         pooled_rows.append(pooled_row)
 
     ordered_cols = [
@@ -1069,8 +1350,8 @@ def _per_strategy_margin_stats(
 ) -> pd.DataFrame:
     """Compute victory-margin statistics grouped by strategy and player count."""
 
-    grouped_runner: dict[tuple[Scalar, int], list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
-    grouped_spread: dict[tuple[Scalar, int], list[np.ndarray[Any, np.dtype[np.float64]]]] = {}
+    grouped_runner: dict[tuple[Scalar, int], _UnweightedAccumulator] = {}
+    grouped_spread: dict[tuple[Scalar, int], _UnweightedAccumulator] = {}
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -1093,38 +1374,51 @@ def _per_strategy_margin_stats(
             continue
 
         scanner = ds_in.scanner(columns=[*score_cols, *strategy_cols], batch_size=65_536)
+        batch_idx = 0
         for batch in scanner.to_batches():
+            batch_idx += 1
             df = batch.to_pandas(categories=strategy_cols)
             if df.empty:
                 continue
             margin_cols = _compute_margin_columns(df, score_cols)
-            df = df.assign(
-                margin_runner_up=margin_cols["margin_runner_up"],
-                score_spread=margin_cols["score_spread"],
-            )
-            melted = df.melt(
-                id_vars=["margin_runner_up", "score_spread"],
-                value_vars=strategy_cols,
-                value_name="strategy",
-            )
-            melted = melted.dropna(subset=["strategy"])
-            if melted.empty:
+            runner = pd.to_numeric(margin_cols["margin_runner_up"], errors="coerce")
+            spread = pd.to_numeric(margin_cols["score_spread"], errors="coerce")
+            valid_runner = runner.notna()
+            if not bool(valid_runner.any()):
                 continue
-
-            melted["margin_runner_up"] = pd.to_numeric(melted["margin_runner_up"], errors="coerce")
-            melted["score_spread"] = pd.to_numeric(melted["score_spread"], errors="coerce")
-            melted = melted.dropna(subset=["margin_runner_up"])
-            if melted.empty:
-                continue
-
-            batch_grouped = melted.groupby("strategy", observed=True, sort=False)
-            for strategy, group in batch_grouped:
-                key = (strategy, n_players)
-                grouped_runner.setdefault(key, []).append(
-                    group["margin_runner_up"].to_numpy(dtype=float, copy=False)
+            for strategy_col in strategy_cols:
+                strategies = df[strategy_col]
+                valid = valid_runner & strategies.notna()
+                if not bool(valid.any()):
+                    continue
+                batch_rows = pd.DataFrame(
+                    {
+                        "strategy": strategies.loc[valid],
+                        "runner": runner.loc[valid],
+                        "spread": spread.loc[valid],
+                    }
                 )
-                grouped_spread.setdefault(key, []).append(
-                    group["score_spread"].to_numpy(dtype=float, copy=False)
+                grouped = batch_rows.groupby("strategy", observed=True, sort=False)
+                for strategy, group in grouped:
+                    key = (strategy, n_players)
+                    runner_acc = grouped_runner.setdefault(key, _UnweightedAccumulator())
+                    spread_entry = grouped_spread.setdefault(key, _UnweightedAccumulator())
+                    _update_unweighted_accumulator(
+                        runner_acc, group["runner"].to_numpy(dtype=float, copy=False)
+                    )
+                    _update_unweighted_accumulator(
+                        spread_entry, group["spread"].to_numpy(dtype=float, copy=False)
+                    )
+            if batch_idx % 50 == 0:
+                LOGGER.info(
+                    "Per-strategy margin progress",
+                    extra={
+                        "stage": "game_stats",
+                        "n_players": n_players,
+                        "path": str(path),
+                        "batches": batch_idx,
+                        "groups": len(grouped_runner),
+                    },
                 )
 
     if not grouped_runner:
@@ -1144,31 +1438,40 @@ def _per_strategy_margin_stats(
         ]
         return pd.DataFrame(columns=columns)
 
-    rows: list[dict[str, StatValue]] = []
-    for (strategy, n_players), runner_chunks in grouped_runner.items():
-        runner_vals = np.concatenate(runner_chunks) if len(runner_chunks) > 1 else runner_chunks[0]
-        spread_chunks = grouped_spread.get((strategy, n_players), [])
-        spread_vals = np.concatenate(spread_chunks) if len(spread_chunks) > 1 else spread_chunks[0]
-        if runner_vals.size == 0:
+    margin_rows: list[dict[str, StatValue]] = []
+    for (strategy, n_players), runner_acc in grouped_runner.items():
+        spread_acc_opt = grouped_spread.get((strategy, n_players))
+        if runner_acc.count <= 0 or spread_acc_opt is None or spread_acc_opt.count <= 0:
             continue
+        spread_acc = spread_acc_opt
+        mean_runner, std_runner = _mean_std_from_unweighted(runner_acc)
+        mean_spread, std_spread = _mean_std_from_unweighted(spread_acc)
         row: dict[str, StatValue] = {
             "summary_level": "strategy",
             "strategy": _strategy_stat_value(strategy),
             "n_players": n_players,
-            "observations": _strategy_key_to_int(runner_vals.size, field="observations"),
-            "mean_margin_runner_up": float(np.mean(runner_vals)),
-            "median_margin_runner_up": float(np.quantile(runner_vals, 0.5)),
-            "std_margin_runner_up": float(np.std(runner_vals, ddof=0)),
-            "mean_score_spread": float(np.mean(spread_vals)),
-            "median_score_spread": float(np.quantile(spread_vals, 0.5)),
-            "std_score_spread": float(np.std(spread_vals, ddof=0)),
+            "observations": _strategy_key_to_int(runner_acc.count, field="observations"),
+            "mean_margin_runner_up": mean_runner,
+            "median_margin_runner_up": _quantile_linear_from_hist(
+                runner_acc.hist, count=runner_acc.count, quantile=0.5
+            ),
+            "std_margin_runner_up": std_runner,
+            "mean_score_spread": mean_spread,
+            "median_score_spread": _quantile_linear_from_hist(
+                spread_acc.hist, count=spread_acc.count, quantile=0.5
+            ),
+            "std_score_spread": std_spread,
         }
         for thr in thresholds:
-            row[f"prob_margin_runner_up_le_{thr}"] = float(np.mean(runner_vals <= thr))
-            row[f"prob_score_spread_le_{thr}"] = float(np.mean(spread_vals <= thr))
-        rows.append(row)
+            row[f"prob_margin_runner_up_le_{thr}"] = _probability_le_from_hist(
+                runner_acc.hist, count=runner_acc.count, threshold=float(thr)
+            )
+            row[f"prob_score_spread_le_{thr}"] = _probability_le_from_hist(
+                spread_acc.hist, count=spread_acc.count, threshold=float(thr)
+            )
+        margin_rows.append(row)
 
-    stats = pd.DataFrame(rows)
+    stats = pd.DataFrame(margin_rows)
 
     ordered_cols = [
         "summary_level",
@@ -1284,134 +1587,135 @@ def _rare_event_flags(
     target_score: int,
     output_path: Path,
     codec: Compression,
+    config_sha: str | None = None,
+    n_workers: int = 1,
 ) -> int:
     """Write combined per-game and summary rare-event rows to parquet."""
+    if not per_n_inputs:
+        return 0
 
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
-    (
-        strategy_sums,
-        global_sums,
-        rows_available,
-        _max_flag_count,
-        max_observations,
-    ) = _collect_rare_event_counts(
-        per_n_inputs,
-        thresholds=thresholds,
-        target_score=target_score,
-    )
+    resume_sha = config_sha or hashlib.sha256(
+        json.dumps(
+            {
+                "thresholds": [to_int(thr) for thr in thresholds],
+                "target_score": to_int(target_score),
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()
+    strategy_arrow = _strategy_arrow_type(per_n_inputs)
+    shard_dir = output_path.parent / f"{output_path.stem}_shards"
+    shard_dir.mkdir(parents=True, exist_ok=True)
+
+    stale_inputs: list[tuple[int, Path, Path, Path, Path]] = []
+    for n_players, path in per_n_inputs:
+        shard_path, stats_path, done_path = _rare_event_shard_paths(output_path, n_players)
+        if stage_is_up_to_date(
+            done_path,
+            inputs=[path],
+            outputs=[shard_path, stats_path],
+            config_sha=resume_sha,
+        ):
+            continue
+        stale_inputs.append((n_players, path, shard_path, stats_path, done_path))
+
+    if stale_inputs:
+        LOGGER.info(
+            "Rare-event shard rebuild required",
+            extra={
+                "stage": "game_stats",
+                "stale_shards": len(stale_inputs),
+                "total_shards": len(per_n_inputs),
+            },
+        )
+        worker_count = max(1, min(len(stale_inputs), max(1, n_workers)))
+        if worker_count == 1:
+            for n_players, path, shard_path, stats_path, done_path in stale_inputs:
+                _build_rare_event_summary_shard(
+                    n_players=n_players,
+                    input_path=path,
+                    thresholds=thresholds,
+                    target_score=target_score,
+                    strategy_arrow=strategy_arrow,
+                    shard_path=shard_path,
+                    stats_path=stats_path,
+                    done_path=done_path,
+                    codec=codec,
+                    config_sha=resume_sha,
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+                futures = [
+                    executor.submit(
+                        _build_rare_event_summary_shard,
+                        n_players=n_players,
+                        input_path=path,
+                        thresholds=thresholds,
+                        target_score=target_score,
+                        strategy_arrow=strategy_arrow,
+                        shard_path=shard_path,
+                        stats_path=stats_path,
+                        done_path=done_path,
+                        codec=codec,
+                        config_sha=resume_sha,
+                    )
+                    for n_players, path, shard_path, stats_path, done_path in stale_inputs
+                ]
+                _run_per_k_fanout(futures)
+
+    strategy_sums: dict[tuple[int, int], dict[str, int]] = {}
+    global_sums: dict[int, dict[str, int]] = {}
+    rows_available = 0
+    max_observations = 0
+
+    for n_players, _path in per_n_inputs:
+        _shard_path, stats_path, _done_path = _rare_event_shard_paths(output_path, n_players)
+        shard_rows, shard_strategy_sums, shard_global_sums = _load_rare_event_summary_shard_stats(
+            stats_path, flags=flags
+        )
+        rows_available += shard_rows
+        global_observations = _strategy_key_to_int(
+            shard_global_sums.get("observations", 0), field="observations"
+        )
+        if global_observations > 0:
+            global_sums[n_players] = shard_global_sums
+            max_observations = max(max_observations, global_observations)
+        for strategy, sums in shard_strategy_sums.items():
+            observations = _strategy_key_to_int(sums.get("observations", 0), field="observations")
+            if observations <= 0:
+                continue
+            strategy_sums[(strategy, n_players)] = sums
+            max_observations = max(max_observations, observations)
+
     if rows_available == 0:
         return 0
 
-    strategy_arrow = _strategy_arrow_type(per_n_inputs)
-    strategy_dtype = _strategy_numpy_dtype(strategy_arrow)
-    flag_dtype = np.float64
-    flag_arrow = pa.float64()
-    obs_dtype, obs_arrow = _select_int_dtype(max_observations)
-    player_dtype = np.int32
-    fields: list[pa.Field] = [
-        pa.field("summary_level", pa.string()),
-        pa.field("strategy", strategy_arrow),
-        pa.field("n_players", pa.int32()),
-        pa.field("margin_runner_up", pa.float64()),
-        pa.field("score_spread", pa.float64()),
-        pa.field("multi_reached_target", flag_arrow),
-        pa.field("observations", obs_arrow),
-        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
-    ]
-    schema = pa.schema(fields)
+    _obs_dtype, obs_arrow = _select_int_dtype(max_observations)
+    schema = _rare_event_schema(
+        thresholds=thresholds,
+        strategy_arrow=strategy_arrow,
+        flag_arrow=pa.float64(),
+        observations_arrow=obs_arrow,
+    )
 
     rows_written = 0
     writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
     try:
-        for n_players, path in per_n_inputs:
-            ds_in = ds.dataset(path)
-            strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
-            score_cols = [
-                name
-                for name in ds_in.schema.names
-                if name.startswith("P") and name.endswith("_score")
-            ]
-
-            if not strategy_cols:
-                LOGGER.warning(
-                    "Per-N parquet missing strategy columns; skipping rare events",
-                    extra={"stage": "game_stats", "path": str(path)},
-                )
-                continue
-
-            if not score_cols:
-                LOGGER.warning(
-                    "Per-N parquet missing seat score columns; skipping rare events",
-                    extra={"stage": "game_stats", "path": str(path)},
-                )
-                continue
-
-            columns = [*strategy_cols, *score_cols]
-            scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+        for n_players, _path in per_n_inputs:
+            shard_path, _stats_path, _done_path = _rare_event_shard_paths(output_path, n_players)
+            ds_in = ds.dataset(shard_path)
+            scanner = ds_in.scanner(batch_size=65_536)
             for batch in scanner.to_batches():
-                df = batch.to_pandas(categories=strategy_cols)
-                if df.empty:
-                    continue
-                margin_cols = _compute_margin_columns(df, score_cols)
-                scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
-                multi_target = (scores >= target_score).sum(axis=1) >= 2
-                flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
-                for thr in thresholds:
-                    flag_series[f"margin_le_{thr}"] = margin_cols["margin_runner_up"] <= thr
-                any_flag = flag_series["multi_reached_target"].copy()
-                for thr in thresholds:
-                    any_flag |= flag_series[f"margin_le_{thr}"]
-                base = df.loc[any_flag, strategy_cols].copy()
-                if base.empty:
-                    continue
-                base["margin_runner_up"] = margin_cols["margin_runner_up"][any_flag]
-                base["score_spread"] = margin_cols["score_spread"][any_flag]
-                base["multi_reached_target"] = flag_series["multi_reached_target"][any_flag]
-                for thr in thresholds:
-                    base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"][any_flag]
-                base["n_players"] = n_players
-                melted = base.melt(
-                    id_vars=[
-                        "margin_runner_up",
-                        "score_spread",
-                        "multi_reached_target",
-                        "n_players",
-                        *[f"margin_le_{thr}" for thr in thresholds],
-                    ],
-                    value_vars=strategy_cols,
-                    var_name="seat",
-                    value_name="strategy",
-                )
-                melted = melted.dropna(subset=["strategy"])
-                if melted.empty:
-                    continue
-                melted["strategy"] = melted["strategy"].astype("category")
-                grouped = melted.groupby("strategy", observed=True, sort=False)
-                for strategy, group in grouped:
-                    count = _strategy_key_to_int(group.shape[0], field="observations")
-                    strategy_value = _strategy_key_to_int(strategy)
-                    per_game_data: dict[str, ArrowColumnData] = {
-                        "summary_level": np.full(count, "game", dtype=object),
-                        "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
-                        "n_players": np.full(count, n_players, dtype=player_dtype),
-                        "margin_runner_up": group["margin_runner_up"].to_numpy(dtype=float),
-                        "score_spread": group["score_spread"].to_numpy(dtype=float),
-                        "multi_reached_target": group["multi_reached_target"].to_numpy(
-                            dtype=flag_dtype
-                        ),
-                        "observations": np.ones(count, dtype=obs_dtype),
-                    }
-                    for thr in thresholds:
-                        per_game_data[f"margin_le_{thr}"] = group[f"margin_le_{thr}"].to_numpy(
-                            dtype=flag_dtype
-                        )
-
-                    writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
-                    rows_written += count
+                tbl = pa.Table.from_batches([batch])
+                if not tbl.schema.equals(schema):
+                    tbl = tbl.cast(schema, safe=False)
+                writer.write_batch(tbl)
+                rows_written += tbl.num_rows
 
         summary_rows: list[dict[str, object]] = []
-        for (strategy, players), sums in strategy_sums.items():
-            observations = sums["observations"]
+        for (strategy, players), sums in sorted(strategy_sums.items()):
+            observations = _strategy_key_to_int(sums["observations"], field="observations")
             summary_row: dict[str, object] = {
                 "summary_level": "strategy",
                 "strategy": _strategy_stat_value(strategy),
@@ -1424,8 +1728,8 @@ def _rare_event_flags(
                 summary_row[flag] = sums[flag] / observations if observations else float("nan")
             summary_rows.append(summary_row)
 
-        for players, sums in global_sums.items():
-            observations = sums["observations"]
+        for players, sums in sorted(global_sums.items()):
+            observations = _strategy_key_to_int(sums["observations"], field="observations")
             summary_row = {
                 "summary_level": "n_players",
                 "strategy": pd.NA,
@@ -1459,6 +1763,235 @@ def _rare_event_flags(
         return rows_written
     finally:
         writer.close(success=rows_written > 0)
+
+
+def _rare_event_shard_paths(output_path: Path, n_players: int) -> tuple[Path, Path, Path]:
+    shard_dir = output_path.parent / f"{output_path.stem}_shards"
+    shard_path = shard_dir / f"{n_players}p.parquet"
+    stats_path = shard_dir / f"{n_players}p.stats.json"
+    done_path = shard_dir / f"{n_players}p.done.json"
+    return shard_path, stats_path, done_path
+
+
+def _rare_event_schema(
+    *,
+    thresholds: Sequence[int],
+    strategy_arrow: pa.DataType,
+    flag_arrow: pa.DataType,
+    observations_arrow: pa.DataType,
+) -> pa.Schema:
+    fields: list[pa.Field] = [
+        pa.field("summary_level", pa.string()),
+        pa.field("strategy", strategy_arrow),
+        pa.field("n_players", pa.int32()),
+        pa.field("margin_runner_up", pa.float64()),
+        pa.field("score_spread", pa.float64()),
+        pa.field("multi_reached_target", flag_arrow),
+        pa.field("observations", observations_arrow),
+        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
+    ]
+    return pa.schema(fields)
+
+
+def _empty_table(schema: pa.Schema) -> pa.Table:
+    return pa.Table.from_arrays([pa.array([], type=field.type) for field in schema], schema=schema)
+
+
+def _load_rare_event_summary_shard_stats(
+    stats_path: Path,
+    *,
+    flags: Sequence[str],
+) -> tuple[int, dict[int, dict[str, int]], dict[str, int]]:
+    payload = json.loads(stats_path.read_text(encoding="utf-8"))
+    shard_rows = _strategy_key_to_int(payload.get("rows_written", 0), field="rows_written")
+
+    strategy_sums: dict[int, dict[str, int]] = {}
+    for strategy_key, raw_sums in dict(payload.get("strategy_sums") or {}).items():
+        try:
+            strategy_int = int(strategy_key)
+        except (TypeError, ValueError) as err:
+            raise ValueError(f"invalid strategy key in rare-event shard stats: {strategy_key!r}") from err
+        sums: dict[str, int] = {"observations": 0, **dict.fromkeys(flags, 0)}
+        for key in sums:
+            sums[key] = _strategy_key_to_int(dict(raw_sums).get(key, 0), field=key)
+        strategy_sums[strategy_int] = sums
+
+    global_raw = dict(payload.get("global_sums") or {})
+    global_sums: dict[str, int] = {"observations": 0, **dict.fromkeys(flags, 0)}
+    for key in global_sums:
+        global_sums[key] = _strategy_key_to_int(global_raw.get(key, 0), field=key)
+    return shard_rows, strategy_sums, global_sums
+
+
+def _build_rare_event_summary_shard(
+    *,
+    n_players: int,
+    input_path: Path,
+    thresholds: Sequence[int],
+    target_score: int,
+    strategy_arrow: pa.DataType,
+    shard_path: Path,
+    stats_path: Path,
+    done_path: Path,
+    codec: Compression,
+    config_sha: str | None,
+) -> None:
+    flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
+    strategy_dtype = _strategy_numpy_dtype(strategy_arrow)
+    flag_dtype = np.float64
+    obs_dtype = np.uint8
+    player_dtype = np.int32
+    schema = _rare_event_schema(
+        thresholds=thresholds,
+        strategy_arrow=strategy_arrow,
+        flag_arrow=pa.float64(),
+        observations_arrow=pa.uint8(),
+    )
+
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    strategy_sums: dict[int, dict[str, int]] = {}
+    global_sums: dict[str, int] = {"observations": 0, **dict.fromkeys(flags, 0)}
+    rows_written = 0
+
+    writer = ParquetShardWriter(str(shard_path), schema=schema, compression=codec)
+    try:
+        ds_in = ds.dataset(input_path)
+        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+        score_cols = [
+            name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+        ]
+
+        if not strategy_cols:
+            LOGGER.warning(
+                "Per-N parquet missing strategy columns; skipping rare events",
+                extra={"stage": "game_stats", "path": str(input_path)},
+            )
+        elif not score_cols:
+            LOGGER.warning(
+                "Per-N parquet missing seat score columns; skipping rare events",
+                extra={"stage": "game_stats", "path": str(input_path)},
+            )
+        else:
+            scanner = ds_in.scanner(columns=[*strategy_cols, *score_cols], batch_size=65_536)
+            for batch_idx, batch in enumerate(scanner.to_batches(), start=1):
+                df = batch.to_pandas(categories=strategy_cols)
+                if df.empty:
+                    continue
+
+                margin_cols = _compute_margin_columns(df, score_cols)
+                scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
+                multi_target = (scores >= target_score).sum(axis=1) >= 2
+                flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
+                for thr in thresholds:
+                    flag_series[f"margin_le_{thr}"] = margin_cols["margin_runner_up"] <= thr
+
+                any_flag = flag_series["multi_reached_target"].copy()
+                for thr in thresholds:
+                    any_flag |= flag_series[f"margin_le_{thr}"]
+
+                base = df.loc[any_flag, strategy_cols].copy()
+                if base.empty:
+                    continue
+                base["margin_runner_up"] = margin_cols["margin_runner_up"][any_flag]
+                base["score_spread"] = margin_cols["score_spread"][any_flag]
+                base["multi_reached_target"] = flag_series["multi_reached_target"][any_flag]
+                for thr in thresholds:
+                    base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"][any_flag]
+                base["n_players"] = n_players
+
+                melted = base.melt(
+                    id_vars=[
+                        "margin_runner_up",
+                        "score_spread",
+                        "multi_reached_target",
+                        "n_players",
+                        *[f"margin_le_{thr}" for thr in thresholds],
+                    ],
+                    value_vars=strategy_cols,
+                    var_name="seat",
+                    value_name="strategy",
+                )
+                melted = melted.dropna(subset=["strategy"])
+                if melted.empty:
+                    continue
+                melted["strategy"] = melted["strategy"].astype("category")
+
+                grouped = melted.groupby("strategy", observed=True, sort=False)
+                for strategy, group in grouped:
+                    count = _strategy_key_to_int(group.shape[0], field="observations")
+                    strategy_value = _strategy_key_to_int(strategy)
+                    per_game_data: dict[str, ArrowColumnData] = {
+                        "summary_level": np.full(count, "game", dtype=object),
+                        "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
+                        "n_players": np.full(count, n_players, dtype=player_dtype),
+                        "margin_runner_up": group["margin_runner_up"].to_numpy(dtype=float),
+                        "score_spread": group["score_spread"].to_numpy(dtype=float),
+                        "multi_reached_target": group["multi_reached_target"].to_numpy(
+                            dtype=flag_dtype
+                        ),
+                        "observations": np.ones(count, dtype=obs_dtype),
+                    }
+                    for thr in thresholds:
+                        flag_name = f"margin_le_{thr}"
+                        per_game_data[flag_name] = group[flag_name].to_numpy(dtype=flag_dtype)
+
+                    writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
+                    rows_written += count
+
+                    strategy_entry = strategy_sums.setdefault(
+                        strategy_value, {"observations": 0, **dict.fromkeys(flags, 0)}
+                    )
+                    strategy_entry["observations"] += count
+                    global_sums["observations"] += count
+
+                    multi_target_sum = _strategy_key_to_int(
+                        group["multi_reached_target"].to_numpy(copy=False).sum(),
+                        field="multi_reached_target",
+                    )
+                    strategy_entry["multi_reached_target"] += multi_target_sum
+                    global_sums["multi_reached_target"] += multi_target_sum
+
+                    for thr in thresholds:
+                        flag_name = f"margin_le_{thr}"
+                        flag_total = _strategy_key_to_int(
+                            group[flag_name].to_numpy(copy=False).sum(),
+                            field=flag_name,
+                        )
+                        strategy_entry[flag_name] += flag_total
+                        global_sums[flag_name] += flag_total
+
+                if batch_idx % 50 == 0:
+                    LOGGER.info(
+                        "Rare-event shard progress",
+                        extra={
+                            "stage": "game_stats",
+                            "n_players": n_players,
+                            "batches": batch_idx,
+                            "rows_written": rows_written,
+                            "strategy_groups": len(strategy_sums),
+                        },
+                    )
+    finally:
+        writer.close(success=rows_written > 0)
+
+    if rows_written == 0:
+        write_parquet_atomic(_empty_table(schema), shard_path, codec=codec)
+
+    payload: dict[str, Any] = {
+        "n_players": n_players,
+        "rows_written": rows_written,
+        "global_sums": global_sums,
+        "strategy_sums": {str(strategy): sums for strategy, sums in strategy_sums.items()},
+    }
+    stats_path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(stats_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+    write_stage_done(
+        done_path,
+        inputs=[input_path],
+        outputs=[shard_path, stats_path],
+        config_sha=config_sha,
+    )
 
 
 def _rare_event_details(
@@ -1593,6 +2126,7 @@ def _collect_rare_event_counts(
     global_sums: dict[int, dict[str, int]] = {}
     rows_available = 0
     for n_players, path in per_n_inputs:
+        n_players_int = _strategy_key_to_int(n_players, field="n_players")
         ds_in = ds.dataset(path)
         strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
         score_cols = [
@@ -1604,7 +2138,9 @@ def _collect_rare_event_counts(
 
         columns = [*strategy_cols, *score_cols]
         scanner = ds_in.scanner(columns=columns, batch_size=65_536)
+        batch_idx = 0
         for batch in scanner.to_batches():
+            batch_idx += 1
             df = batch.to_pandas(categories=strategy_cols)
             if df.empty:
                 continue
@@ -1634,27 +2170,51 @@ def _collect_rare_event_counts(
                 continue
             melted["strategy"] = melted["strategy"].astype("category")
             grouped = melted.groupby("strategy", observed=True, sort=False)
-            for key, group in grouped:
-                count = _strategy_key_to_int(group.shape[0], field="observations")
-                rows_available += count
-                norm_key: tuple[int, int] = (
-                    _strategy_key_to_int(key),
-                    _strategy_key_to_int(n_players, field="n_players"),
+            observations = grouped.size()
+            if observations.empty:
+                continue
+            flag_sums = grouped[flags].sum()
+            batch_observations = _strategy_key_to_int(
+                observations.to_numpy(copy=False).sum(),
+                field="observations",
+            )
+            rows_available += batch_observations
+
+            global_entry = global_sums.setdefault(
+                n_players_int, {"observations": 0, **dict.fromkeys(flags, 0)}
+            )
+            global_entry["observations"] += batch_observations
+            for flag in flags:
+                global_entry[flag] += _strategy_key_to_int(
+                    flag_sums[flag].to_numpy(copy=False).sum(),
+                    field=flag,
                 )
+
+            for strategy, count in observations.items():
+                norm_key: tuple[int, int] = (_strategy_key_to_int(strategy), n_players_int)
                 strategy_entry = strategy_sums.setdefault(
                     norm_key,
                     {"observations": 0, **dict.fromkeys(flags, 0)},
                 )
-                strategy_entry["observations"] += count
-                for flag in flags:
-                    strategy_entry[flag] += _strategy_key_to_int(group[flag].sum(), field=flag)
-
-                global_entry = global_sums.setdefault(
-                    n_players, {"observations": 0, **dict.fromkeys(flags, 0)}
+                strategy_entry["observations"] += _strategy_key_to_int(
+                    count,
+                    field="observations",
                 )
-                global_entry["observations"] += count
+                row = flag_sums.loc[strategy]
                 for flag in flags:
-                    global_entry[flag] += _strategy_key_to_int(group[flag].sum(), field=flag)
+                    strategy_entry[flag] += _strategy_key_to_int(row[flag], field=flag)
+
+            if batch_idx % 50 == 0:
+                LOGGER.info(
+                    "Rare-event aggregation progress",
+                    extra={
+                        "stage": "game_stats",
+                        "n_players": n_players_int,
+                        "batches": batch_idx,
+                        "strategy_groups": len(strategy_sums),
+                        "rows_available": rows_available,
+                    },
+                )
 
     max_flag_count = 0
     max_observations = 0
@@ -1838,12 +2398,8 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
 
     ds_in = ds.dataset(combined_path)
     schema = ds_in.schema
-    n_players = n_players_from_schema(schema)
-    columns = ["n_rounds", "seat_ranks"]
-    tbl = ds_in.to_table(columns)
-    df = tbl.to_pandas()
-
-    if "seat_ranks" not in df.columns:
+    n_players_fallback = n_players_from_schema(schema)
+    if "seat_ranks" not in schema.names:
         LOGGER.warning(
             "Combined parquet missing seat_ranks; skipping global game-length stats",
             extra={"stage": "game_stats", "path": str(combined_path)},
@@ -1854,39 +2410,82 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
         if isinstance(ranks, np.ndarray):
             if ranks.ndim == 1:
                 return int(ranks.size)
-            return n_players
+            return n_players_fallback
         if isinstance(ranks, (list, tuple)):
             return len(ranks)
-        return n_players
+        return n_players_fallback
 
-    df["n_players"] = df["seat_ranks"].apply(_player_count_from_ranks)
-    grouped = df.groupby("n_players", sort=False)["n_rounds"]
+    grouped: dict[int, _UnweightedAccumulator] = {}
+    if hasattr(ds_in, "scanner"):
+        batch_iter = ds_in.scanner(columns=["n_rounds", "seat_ranks"], batch_size=65_536).to_batches()
+    else:
+        try:
+            table = ds_in.to_table(columns=["n_rounds", "seat_ranks"])
+        except TypeError:
+            table = ds_in.to_table(["n_rounds", "seat_ranks"])
+        batch_iter = iter(table.to_batches())
+    batch_idx = 0
+    for batch in batch_iter:
+        batch_idx += 1
+        if "n_players" not in batch.schema.names and "seat_ranks" in batch.schema.names:
+            seat_ranks_idx = batch.schema.get_field_index("seat_ranks")
+            seat_ranks = batch.column(seat_ranks_idx)
+            player_counts = pc.list_value_length(seat_ranks)
+            batch = batch.append_column("n_players", player_counts)
+        df = batch.to_pandas()
+        if df.empty:
+            continue
+        rounds = pd.to_numeric(df["n_rounds"], errors="coerce")
+        if "n_players" in df.columns:
+            players = pd.to_numeric(df["n_players"], errors="coerce").fillna(n_players_fallback)
+        else:
+            players = df["seat_ranks"].apply(_player_count_from_ranks)
+        valid = rounds.notna() & players.notna()
+        if not bool(valid.any()):
+            continue
+        rounds_valid = rounds.loc[valid]
+        players_valid = players.loc[valid]
+        for player_value, block in rounds_valid.groupby(players_valid, sort=False):
+            if pd.isna(player_value):
+                continue
+            if isinstance(player_value, (np.floating, float)) and (
+                not np.isfinite(player_value) or not float(player_value).is_integer()
+            ):
+                continue
+            players_int = to_int(player_value)
+            acc = grouped.setdefault(players_int, _UnweightedAccumulator())
+            _update_unweighted_accumulator(acc, block.to_numpy(dtype=float, copy=False))
+        if batch_idx % 50 == 0:
+            LOGGER.info(
+                "Global game-length progress",
+                extra={
+                    "stage": "game_stats",
+                    "path": str(combined_path),
+                    "batches": batch_idx,
+                    "groups": len(grouped),
+                },
+            )
 
     rows: list[pd.Series] = []
-    for players, rounds in grouped:
-        player_value = players
-        if not isinstance(player_value, (int, np.integer)):
-            player_value = pd.to_numeric(player_value, errors="coerce")
-        if pd.isna(player_value):
+    for players_int, acc in grouped.items():
+        if acc.count <= 0:
             continue
-        if isinstance(player_value, (np.floating, float)):
-            if not np.isfinite(player_value) or not float(player_value).is_integer():
-                continue
-            player_value = to_int(player_value)
-        elif isinstance(player_value, (np.integer, int)):
-            player_value = to_int(player_value)
-        else:
-            continue
-        stats = _summarize_rounds(rounds)
-        stats.update(
-            {
-                "summary_level": "n_players",
-                "strategy": pd.NA,
-                "n_players": player_value,
-            }
-        )
+        stats = {
+            "observations": _strategy_key_to_int(acc.count, field="observations"),
+            "mean_rounds": acc.total / acc.count,
+            "median_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.5),
+            "std_rounds": _mean_std_from_unweighted(acc)[1],
+            "p10_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.1),
+            "p50_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.5),
+            "p90_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.9),
+            "prob_rounds_le_5": _probability_le_from_hist(acc.hist, count=acc.count, threshold=5.0),
+            "prob_rounds_le_10": _probability_le_from_hist(acc.hist, count=acc.count, threshold=10.0),
+            "prob_rounds_ge_20": _probability_ge_from_hist(acc.hist, count=acc.count, threshold=20.0),
+            "summary_level": "n_players",
+            "strategy": pd.NA,
+            "n_players": players_int,
+        }
         rows.append(pd.Series(stats))
-
     return pd.DataFrame(rows)
 
 

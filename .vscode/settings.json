@@ -12,10 +12,10 @@
   "python.testing.pytestArgs": ["tests"],
 
   // Pylance
-  "python.analysis.diagnosticMode": "workspace",
-  "python.analysis.extraPaths": ["${workspaceFolder}\\src"],
-  "python.analysis.typeCheckingMode": "basic",
-  "python.analysis.useLibraryCodeForTypes": true,
+  // "python.analysis.diagnosticMode": "workspace",
+  // "python.analysis.extraPaths": ["${workspaceFolder}\\src"],
+  // "python.analysis.typeCheckingMode": "basic",
+  // "python.analysis.useLibraryCodeForTypes": true,
 
   // Ruff extension
   "ruff.enable": true,

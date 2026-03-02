@@ -11,10 +11,12 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections import deque
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass, field
 from itertools import chain
 from pathlib import Path
-from typing import cast
+from typing import Iterator, cast
 
 import numpy as np
 import pandas as pd
@@ -31,6 +33,8 @@ LOGGER = logging.getLogger(__name__)
 
 _EXPECTED_NOTE = "Expected ~0 under IID seeds"
 _SEAT_STRATEGY_RE = re.compile(r"^P(\d+)_strategy$")
+_STREAM_BATCH_SIZE = 100_000
+_STREAM_PROGRESS_EVERY = 25
 
 
 def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = False) -> None:
@@ -95,18 +99,21 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         return
 
     columns = ["game_seed", "n_rounds", winner_col, *strat_cols]
-    df = dataset.to_table(columns=columns).to_pandas(categories=strat_cols)
-    df = df.sort_values("game_seed")
-    df["matchup"] = _build_matchup_labels(df, strat_cols)
-    df["n_players"] = df[strat_cols].notna().sum(axis=1).astype(int)
-    df["winner_strategy"] = _winner_strategies(df, winner_col, strat_cols)
-
-    melted = _melt_strategies(df, strat_cols)
-    if melted.empty:
+    melted_batches = _iter_melted_batches(
+        dataset,
+        columns=columns,
+        winner_col=winner_col,
+        strat_cols=strat_cols,
+        batch_size=_STREAM_BATCH_SIZE,
+    )
+    diagnostics, melted_rows = _collect_diagnostics_streaming(
+        melted_batches,
+        lags=lags,
+        progress_every_batches=_STREAM_PROGRESS_EVERY,
+    )
+    if melted_rows == 0:
         stage_log.missing_input("no per-strategy rows after melting", path=str(data_file))
         return
-
-    diagnostics = _collect_diagnostics(melted, lags=lags)
     if diagnostics.empty:
         stage_log.missing_input("no diagnostics computed", path=str(data_file))
         return
@@ -228,6 +235,225 @@ def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFram
     melted["seat"] = melted["seat"].str.removesuffix("_strategy")
     melted["win_indicator"] = (melted["strategy"] == melted["winner_strategy"]).astype(int)
     return melted
+
+
+@dataclass(slots=True)
+class _LagCorrelationAccumulator:
+    pair_count: int = 0
+    sum_x: float = 0.0
+    sum_y: float = 0.0
+    sum_x2: float = 0.0
+    sum_y2: float = 0.0
+    sum_xy: float = 0.0
+
+    def update(self, x: float, y: float) -> None:
+        self.pair_count += 1
+        self.sum_x += x
+        self.sum_y += y
+        self.sum_x2 += x * x
+        self.sum_y2 += y * y
+        self.sum_xy += x * y
+
+    def autocorr(self) -> float | None:
+        if self.pair_count < 2:
+            return None
+        pairs = float(self.pair_count)
+        numerator = pairs * self.sum_xy - self.sum_x * self.sum_y
+        den_x = pairs * self.sum_x2 - self.sum_x * self.sum_x
+        den_y = pairs * self.sum_y2 - self.sum_y * self.sum_y
+        if den_x <= 0.0 or den_y <= 0.0:
+            return None
+        return float(numerator / (den_x * den_y) ** 0.5)
+
+
+@dataclass(slots=True)
+class _MetricStreamAccumulator:
+    lags: tuple[int, ...]
+    n_obs: int = 0
+    buffers: dict[int, deque[float]] = field(default_factory=dict)
+    states: dict[int, _LagCorrelationAccumulator] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.buffers = {lag: deque(maxlen=lag) for lag in self.lags}
+        self.states = {lag: _LagCorrelationAccumulator() for lag in self.lags}
+
+    def extend(self, values: pd.Series) -> None:
+        numeric = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
+        for value in numeric:
+            if not np.isfinite(value):
+                continue
+            self._push(float(value))
+
+    def _push(self, value: float) -> None:
+        for lag in self.lags:
+            buffer = self.buffers[lag]
+            if len(buffer) == lag:
+                self.states[lag].update(buffer[0], value)
+            buffer.append(value)
+        self.n_obs += 1
+
+    def autocorr(self, lag: int) -> float | None:
+        return self.states[lag].autocorr()
+
+
+@dataclass(slots=True)
+class _GroupStreamAccumulator:
+    lags: tuple[int, ...]
+    win_indicator: _MetricStreamAccumulator = field(init=False)
+    n_rounds: _MetricStreamAccumulator = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.win_indicator = _MetricStreamAccumulator(self.lags)
+        self.n_rounds = _MetricStreamAccumulator(self.lags)
+
+    def extend(self, frame: pd.DataFrame) -> None:
+        self.win_indicator.extend(frame["win_indicator"])
+        self.n_rounds.extend(frame["n_rounds"])
+
+
+def _iter_melted_batches(
+    dataset: ds.Dataset,
+    *,
+    columns: Sequence[str],
+    winner_col: str,
+    strat_cols: Sequence[str],
+    batch_size: int,
+) -> Iterator[pd.DataFrame]:
+    scanner = dataset.scanner(columns=list(columns), batch_size=batch_size, use_threads=True)
+    for batch in scanner.to_batches():
+        if batch.num_rows == 0:
+            continue
+        df = batch.to_pandas(categories=list(strat_cols))
+        if df.empty:
+            continue
+        df = df.sort_values("game_seed", kind="mergesort")
+        df["matchup"] = _build_matchup_labels(df, strat_cols)
+        df["n_players"] = df[strat_cols].notna().sum(axis=1).astype(int)
+        df["winner_strategy"] = _winner_strategies(df, winner_col, strat_cols)
+        melted = _melt_strategies(df, strat_cols)
+        if melted.empty:
+            continue
+        yield melted[["game_seed", "strategy", "matchup", "n_players", "win_indicator", "n_rounds"]]
+
+
+def _rows_from_group_state(
+    *,
+    summary_level: str,
+    strategy: str,
+    n_players: int,
+    lags: Sequence[int],
+    group_state: _GroupStreamAccumulator,
+    matchup: str | None = None,
+) -> list[dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    metric_states = {
+        "win_indicator": group_state.win_indicator,
+        "n_rounds": group_state.n_rounds,
+    }
+    for metric, metric_state in metric_states.items():
+        n_obs = metric_state.n_obs
+        for lag in lags:
+            if n_obs <= lag:
+                continue
+            autocorr = metric_state.autocorr(lag)
+            if autocorr is None or pd.isna(autocorr):
+                continue
+            stderr = 1.0 / n_obs**0.5
+            rows.append(
+                {
+                    "summary_level": summary_level,
+                    "strategy": strategy,
+                    "matchup": matchup,
+                    "n_players": n_players,
+                    "observations": n_obs,
+                    "lag": lag,
+                    "metric": metric,
+                    "autocorr": autocorr,
+                    "ci_lower": autocorr - 1.96 * stderr,
+                    "ci_upper": autocorr + 1.96 * stderr,
+                    "note": _EXPECTED_NOTE,
+                }
+            )
+    return rows
+
+
+def _collect_diagnostics_streaming(
+    data_batches: Iterable[pd.DataFrame],
+    *,
+    lags: Sequence[int],
+    progress_every_batches: int,
+) -> tuple[pd.DataFrame, int]:
+    normalized_lags = tuple(int(lag) for lag in lags)
+    strategy_states: dict[tuple[str, int], _GroupStreamAccumulator] = {}
+    matchup_states: dict[tuple[str | None, str, int], _GroupStreamAccumulator] = {}
+    processed_batches = 0
+    melted_rows = 0
+
+    for batch in data_batches:
+        if batch.empty:
+            continue
+        processed_batches += 1
+        melted_rows += int(batch.shape[0])
+
+        grouped_strategy = batch.groupby(["strategy", "n_players"], observed=True, sort=False)
+        for (strategy, n_players), group in grouped_strategy:
+            key = (str(strategy), int(cast(int, n_players)))
+            state = strategy_states.setdefault(key, _GroupStreamAccumulator(normalized_lags))
+            ordered = group.sort_values("game_seed", kind="mergesort")
+            state.extend(ordered)
+
+        grouped_matchup = batch.groupby(["matchup", "strategy", "n_players"], observed=True, sort=False)
+        for (matchup, strategy, n_players), group in grouped_matchup:
+            matchup_key = None if pd.isna(matchup) else str(matchup)
+            key = (matchup_key, str(strategy), int(cast(int, n_players)))
+            state = matchup_states.setdefault(key, _GroupStreamAccumulator(normalized_lags))
+            ordered = group.sort_values("game_seed", kind="mergesort")
+            state.extend(ordered)
+
+        if progress_every_batches > 0 and processed_batches % progress_every_batches == 0:
+            LOGGER.info(
+                "rng-diagnostics progress",
+                extra={
+                    "stage": "rng_diagnostics",
+                    "batches": processed_batches,
+                    "melted_rows": melted_rows,
+                    "strategy_groups": len(strategy_states),
+                    "matchup_groups": len(matchup_states),
+                },
+            )
+
+    rows: list[dict[str, object]] = []
+    for (strategy, n_players), state in strategy_states.items():
+        rows.extend(
+            _rows_from_group_state(
+                summary_level="strategy",
+                strategy=strategy,
+                n_players=n_players,
+                lags=normalized_lags,
+                group_state=state,
+            )
+        )
+    for (matchup, strategy, n_players), state in matchup_states.items():
+        rows.extend(
+            _rows_from_group_state(
+                summary_level="matchup_strategy",
+                strategy=strategy,
+                matchup=matchup,
+                n_players=n_players,
+                lags=normalized_lags,
+                group_state=state,
+            )
+        )
+    if not rows:
+        return pd.DataFrame(), melted_rows
+
+    diagnostics = pd.DataFrame(rows)
+    diagnostics = diagnostics.sort_values(
+        ["summary_level", "strategy", "n_players", "lag", "metric"],
+        kind="mergesort",
+    )
+    diagnostics.reset_index(drop=True, inplace=True)
+    return diagnostics, melted_rows
 
 
 def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataFrame:

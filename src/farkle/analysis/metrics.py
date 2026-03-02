@@ -223,6 +223,15 @@ def run(cfg: AppConfig) -> None:
     ):
         seat_df = pd.read_csv(out_seats)
     else:
+        LOGGER.info(
+            "Seat-advantage aggregation start",
+            extra={
+                "stage": "metrics",
+                "input": str(data_file),
+                "output_csv": str(out_seats),
+                "output_parquet": str(out_seats_parquet),
+            },
+        )
         seat_df = compute_seat_advantage(cfg, data_file, seat_cfg)
         write_csv_atomic(seat_df, out_seats)
         seat_table = pa.Table.from_pandas(seat_df, preserve_index=False)
@@ -247,7 +256,18 @@ def run(cfg: AppConfig) -> None:
     ):
         seat_metrics_df = pd.read_parquet(out_seat_metrics)
     else:
-        seat_metrics_df = compute_seat_metrics(data_file, seat_cfg)
+        seat_progress = cfg.metrics_output_path("seat_metrics.progress.json")
+        LOGGER.info(
+            "Seat-metrics aggregation start",
+            extra={
+                "stage": "metrics",
+                "input": str(data_file),
+                "output_parquet": str(out_seat_metrics),
+                "output_csv": str(out_seat_metrics_csv),
+                "progress": str(seat_progress),
+            },
+        )
+        seat_metrics_df = compute_seat_metrics(data_file, seat_cfg, progress_path=seat_progress)
         seat_metrics_table = pa.Table.from_pandas(seat_metrics_df, preserve_index=False)
         write_parquet_atomic(seat_metrics_table, out_seat_metrics)
         write_csv_atomic(seat_metrics_df, out_seat_metrics_csv)
