@@ -276,7 +276,13 @@ def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPa
     )
 
     manifest_path = tmp_path / "manifest.jsonl"
-    two_seed_pipeline._run_per_seed_analysis(cfg, manifest_path=manifest_path, seed=9)
+    policy_bundle = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=1)
+    two_seed_pipeline._run_per_seed_analysis(
+        cfg,
+        manifest_path=manifest_path,
+        seed=9,
+        policy_bundle=policy_bundle,
+    )
     assert captured["plan_names"] == [
         "ingest",
         "curate",
@@ -300,7 +306,12 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
 
     monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
     monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda seed_cfg, force=False: sim_calls.append(seed_cfg.sim.seed))
-    def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+    def _fake_per_seed(
+        seed_cfg: AppConfig,
+        manifest_path: Path,
+        seed: int,
+        policy_bundle: object | None = None,
+    ) -> None:
         del manifest_path
         per_seed_calls.append(seed)
         seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
@@ -386,7 +397,12 @@ def test_two_seed_pipeline_parallel_seed_smoke_equivalence(
         monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
         monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
 
-        def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+        def _fake_per_seed(
+        seed_cfg: AppConfig,
+        manifest_path: Path,
+        seed: int,
+        policy_bundle: object | None = None,
+    ) -> None:
             del manifest_path
             seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
             seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
@@ -493,7 +509,12 @@ def test_two_seed_pipeline_head2head_failure_chain_integration_fixture(
     monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
     monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
 
-    def _failing_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+    def _failing_per_seed(
+        seed_cfg: AppConfig,
+        manifest_path: Path,
+        seed: int,
+        policy_bundle: object | None = None,
+    ) -> None:
         del manifest_path
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
@@ -593,7 +614,12 @@ def test_two_seed_pipeline_emits_consistent_config_sha_metadata(
     monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
     monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
 
-    def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+    def _fake_per_seed(
+        seed_cfg: AppConfig,
+        manifest_path: Path,
+        seed: int,
+        policy_bundle: object | None = None,
+    ) -> None:
         del manifest_path, seed
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "manifest.jsonl").write_text('{"ok": true}\n', encoding="utf-8")
@@ -690,7 +716,12 @@ def test_two_seed_pipeline_ignores_prior_manifest_sha_history(
     monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
     monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
 
-    def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+    def _fake_per_seed(
+        seed_cfg: AppConfig,
+        manifest_path: Path,
+        seed: int,
+        policy_bundle: object | None = None,
+    ) -> None:
         del manifest_path, seed
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "manifest.jsonl").write_text('{"ok": true}\n', encoding="utf-8")
@@ -738,24 +769,39 @@ def test_two_seed_pipeline_worker_budget_and_artifact_validation(
     # Serial seed execution keeps the full worker budget on each seed.
     base_cfg.orchestration.parallel_seeds = False
     base_cfg.sim.n_jobs = 6
-    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2) == (6, 6, 6)
+    bundle = two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2)
+    assert bundle.simulation.process_workers == 6
+    assert bundle.ingest.process_workers == 6
+    assert bundle.analysis.process_workers == 6
 
     # Parallel seed execution splits the worker budget across concurrent seeds.
     base_cfg.orchestration.parallel_seeds = True
     base_cfg.sim.n_jobs = 6
-    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2) == (3, 3, 3)
+    bundle = two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2)
+    assert bundle.simulation.process_workers == 3
+    assert bundle.ingest.process_workers == 3
+    assert bundle.analysis.process_workers == 3
 
     # Ingest workers remain capped by cfg.ingest.n_jobs.
     base_cfg.ingest.n_jobs = 2
-    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2) == (3, 2, 3)
+    bundle = two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2)
+    assert bundle.simulation.process_workers == 3
+    assert bundle.ingest.process_workers == 2
+    assert bundle.analysis.process_workers == 3
     base_cfg.ingest.n_jobs = 9
 
     # Edge case: non-positive sim.n_jobs falls back to cpu_count() and still splits.
     base_cfg.sim.n_jobs = 0
-    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2) == (4, 4, 4)
+    bundle = two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=2)
+    assert bundle.simulation.process_workers == 4
+    assert bundle.ingest.process_workers == 4
+    assert bundle.analysis.process_workers == 4
 
     # Edge case: seed_count=1 should not reduce workers when running in parallel mode.
-    assert two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=1) == (8, 8, 8)
+    bundle = two_seed_pipeline._derive_per_seed_job_budgets(base_cfg, seed_count=1)
+    assert bundle.simulation.process_workers == 8
+    assert bundle.ingest.process_workers == 8
+    assert bundle.analysis.process_workers == 8
 
     missing = tmp_path / "missing.json"
     assert two_seed_pipeline._is_valid_artifact(missing) == (False, "missing")
@@ -871,7 +917,12 @@ def test_two_seed_pipeline_records_interseed_and_h2h_failures(
     monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
     monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
 
-    def _fake_per_seed(seed_cfg: AppConfig, manifest_path: Path, seed: int) -> None:
+    def _fake_per_seed(
+        seed_cfg: AppConfig,
+        manifest_path: Path,
+        seed: int,
+        policy_bundle: object | None = None,
+    ) -> None:
         del manifest_path, seed
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(

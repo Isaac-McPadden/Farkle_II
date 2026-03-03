@@ -32,6 +32,11 @@ from farkle.orchestration.seed_utils import (
 from farkle.simulation import runner
 from farkle.utils.logging import setup_info_logging
 from farkle.utils.manifest import append_manifest_line
+from farkle.utils.parallel import (
+    StageParallelPolicy,
+    apply_native_thread_limits,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -51,15 +56,55 @@ def _per_seed_worker_budget(total_workers: int, seed_count: int) -> int:
     return max(1, total_workers // seed_count)
 
 
-def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> tuple[int, int, int]:
+@dataclass(frozen=True)
+class _PerSeedPolicyBundle:
+    simulation: StageParallelPolicy
+    ingest: StageParallelPolicy
+    analysis: StageParallelPolicy
+
+    def as_metadata(self) -> dict[str, dict[str, int]]:
+        return {
+            "simulation": {
+                "total_cores": self.simulation.total_cores,
+                "process_workers": self.simulation.process_workers,
+                "python_threads": self.simulation.python_threads,
+                "arrow_threads": self.simulation.arrow_threads,
+                "native_threads_per_process": self.simulation.native_threads_per_process,
+            },
+            "ingest": {
+                "total_cores": self.ingest.total_cores,
+                "process_workers": self.ingest.process_workers,
+                "python_threads": self.ingest.python_threads,
+                "arrow_threads": self.ingest.arrow_threads,
+                "native_threads_per_process": self.ingest.native_threads_per_process,
+            },
+            "analysis": {
+                "total_cores": self.analysis.total_cores,
+                "process_workers": self.analysis.process_workers,
+                "python_threads": self.analysis.python_threads,
+                "arrow_threads": self.analysis.arrow_threads,
+                "native_threads_per_process": self.analysis.native_threads_per_process,
+            },
+        }
+
+
+def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPolicyBundle:
     total_workers = cfg.sim.n_jobs if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else (os.cpu_count() or 1)
     seed_concurrency = seed_count if cfg.orchestration.parallel_seeds else 1
     per_seed_workers = _per_seed_worker_budget(int(total_workers), seed_concurrency)
-    simulation_workers = per_seed_workers
-    ingest_workers = min(per_seed_workers, max(1, int(cfg.ingest.n_jobs)))
-    analysis_workers = per_seed_workers
+    simulation_policy = resolve_stage_parallel_policy("simulation", type("_Cfg", (), {"n_jobs": per_seed_workers})())
+    ingest_policy = resolve_stage_parallel_policy(
+        "ingest",
+        type("_Cfg", (), {"n_jobs": min(per_seed_workers, max(1, int(cfg.ingest.n_jobs)))})(),
+    )
+    analysis_policy = resolve_stage_parallel_policy("analysis", type("_Cfg", (), {"n_jobs": per_seed_workers})())
+    policy_bundle = _PerSeedPolicyBundle(
+        simulation=simulation_policy,
+        ingest=ingest_policy,
+        analysis=analysis_policy,
+    )
     LOGGER.info(
-        "Derived per-seed worker budgets",
+        "Derived per-seed policy bundle",
         extra={
             "stage": "orchestration",
             "total_workers": int(total_workers),
@@ -67,10 +112,10 @@ def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> tuple[int, 
             "parallel_seeds": cfg.orchestration.parallel_seeds,
             "seed_concurrency": seed_concurrency,
             "per_seed_workers": per_seed_workers,
-            "ingest_workers": ingest_workers,
+            "resolved_policy": policy_bundle.as_metadata(),
         },
     )
-    return simulation_workers, ingest_workers, analysis_workers
+    return policy_bundle
 
 
 def _build_seed_cfg(
@@ -79,9 +124,7 @@ def _build_seed_cfg(
     seed_pair: tuple[int, int],
     seed: int,
     meta_dir: Path,
-    simulation_workers: int,
-    ingest_workers: int,
-    analysis_workers: int,
+    policy_bundle: _PerSeedPolicyBundle,
 ) -> AppConfig:
     seed_cfg = prepare_seed_config(
         cfg,
@@ -89,9 +132,9 @@ def _build_seed_cfg(
         base_results_dir=seed_pair_seed_root(cfg, seed_pair, seed),
         meta_analysis_dir=meta_dir,
     )
-    seed_cfg.sim.n_jobs = simulation_workers
-    seed_cfg.ingest.n_jobs = ingest_workers
-    seed_cfg.analysis.n_jobs = analysis_workers
+    seed_cfg.sim.n_jobs = policy_bundle.simulation.process_workers
+    seed_cfg.ingest.n_jobs = policy_bundle.ingest.process_workers
+    seed_cfg.analysis.n_jobs = policy_bundle.analysis.process_workers
     return seed_cfg
 
 
@@ -103,18 +146,14 @@ def _run_one_seed(
     meta_dir: Path,
     manifest_path: Path,
     force: bool,
-    simulation_workers: int,
-    ingest_workers: int,
-    analysis_workers: int,
+    policy_bundle: _PerSeedPolicyBundle,
 ) -> _SeedRunStatus:
     seed_cfg = _build_seed_cfg(
         cfg,
         seed_pair=seed_pair,
         seed=seed,
         meta_dir=meta_dir,
-        simulation_workers=simulation_workers,
-        ingest_workers=ingest_workers,
-        analysis_workers=analysis_workers,
+        policy_bundle=policy_bundle,
     )
     seed_context = SeedRunContext.from_config(seed_cfg)
     active_config_path = seed_context.active_config_path
@@ -127,6 +166,7 @@ def _run_one_seed(
             "results_dir": str(seed_cfg.results_root),
             "active_config": str(active_config_path),
             "config_sha": seed_cfg.config_sha,
+            "resolved_policy": policy_bundle.as_metadata(),
         },
     )
 
@@ -138,8 +178,11 @@ def _run_one_seed(
             "seed": seed,
             "results_dir": str(seed_cfg.results_root),
             "active_config": str(active_config_path),
+            "resolved_policy": policy_bundle.as_metadata(),
         },
     )
+
+    apply_native_thread_limits(policy_bundle.simulation)
 
     if not force and seed_has_completion_markers(seed_cfg):
         LOGGER.info(
@@ -186,7 +229,12 @@ def _run_one_seed(
         },
     )
     try:
-        _run_per_seed_analysis(seed_cfg, manifest_path=manifest_path, seed=seed)
+        _run_per_seed_analysis(
+            seed_cfg,
+            manifest_path=manifest_path,
+            seed=seed,
+            policy_bundle=policy_bundle,
+        )
         append_manifest_line(
             manifest_path,
             {
@@ -459,7 +507,9 @@ def _run_per_seed_analysis(
     *,
     manifest_path: Path,
     seed: int,
+    policy_bundle: _PerSeedPolicyBundle,
 ) -> None:
+    apply_native_thread_limits(policy_bundle.analysis)
     plan: list[StagePlanItem] = [
         StagePlanItem("ingest", ingest.run),
         StagePlanItem("curate", curate.run),
@@ -482,8 +532,12 @@ def _run_per_seed_analysis(
             "results_dir": str(cfg.results_root),
             "analysis_dir": str(cfg.analysis_dir),
             "config_sha": cfg.config_sha,
+            "resolved_policy": policy_bundle.as_metadata(),
         },
-        run_end_metadata={"config_sha": cfg.config_sha},
+        run_end_metadata={
+            "config_sha": cfg.config_sha,
+            "resolved_policy": policy_bundle.as_metadata(),
+        },
         continue_on_error=False,
         logger=LOGGER,
     )
@@ -505,6 +559,7 @@ def run_pipeline(
     pipeline_health_path = pair_root / "pipeline_health.json"
     stage_statuses: dict[str, dict[str, Any]] = {}
     stage_errors: dict[str, str] = {}
+    policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
 
     append_manifest_line(
         manifest_path,
@@ -514,14 +569,11 @@ def run_pipeline(
             "results_dir": str(pair_root),
             "meta_analysis_dir": str(meta_dir),
             "config_sha": cfg.config_sha,
+            "resolved_policy": policy_bundle.as_metadata(),
         },
     )
 
     seed_contexts: dict[int, SeedRunContext] = {}
-    simulation_workers, ingest_workers, analysis_workers = _derive_per_seed_job_budgets(
-        cfg,
-        len(seed_pair),
-    )
 
     if cfg.orchestration.parallel_seeds:
         with ThreadPoolExecutor(max_workers=len(seed_pair)) as executor:
@@ -534,9 +586,7 @@ def run_pipeline(
                     meta_dir=meta_dir,
                     manifest_path=manifest_path,
                     force=force,
-                    simulation_workers=simulation_workers,
-                    ingest_workers=ingest_workers,
-                    analysis_workers=analysis_workers,
+                    policy_bundle=policy_bundle,
                 )
                 for seed in seed_pair
             }
@@ -550,9 +600,7 @@ def run_pipeline(
                 meta_dir=meta_dir,
                 manifest_path=manifest_path,
                 force=force,
-                simulation_workers=simulation_workers,
-                ingest_workers=ingest_workers,
-                analysis_workers=analysis_workers,
+                policy_bundle=policy_bundle,
             )
             for seed in seed_pair
         }
@@ -598,6 +646,8 @@ def run_pipeline(
     )
     interseed_cfg = interseed_context.config
 
+    apply_native_thread_limits(policy_bundle.analysis)
+
     per_seed_post_h2h_stages = tuple(f"seed_{seed}.post_h2h" for seed in seed_pair)
     interseed_should_run = all(
         stage_statuses.get(stage, {}).get("status") == "success" for stage in per_seed_post_h2h_stages
@@ -618,6 +668,7 @@ def run_pipeline(
                 "seed": interseed_seed,
                 "results_dir": str(interseed_cfg.results_root),
                 "active_config": str(interseed_cfg.results_root / "active_config.yaml"),
+                "resolved_policy": policy_bundle.as_metadata(),
             },
         )
         try:
@@ -632,6 +683,7 @@ def run_pipeline(
                     "event": "interseed_complete",
                     "seed": interseed_seed,
                     "results_dir": str(interseed_cfg.results_root),
+                    "resolved_policy": policy_bundle.as_metadata(),
                 },
             )
         except Exception as exc:  # noqa: BLE001
@@ -642,6 +694,7 @@ def run_pipeline(
                     "seed": interseed_seed,
                     "results_dir": str(interseed_cfg.results_root),
                     "error": f"{type(exc).__name__}: {exc}",
+                    "resolved_policy": policy_bundle.as_metadata(),
                 },
             )
             stage_errors["interseed_analysis"] = f"{type(exc).__name__}: {exc}"
@@ -666,6 +719,7 @@ def run_pipeline(
                 "seed": interseed_seed,
                 "results_dir": str(interseed_cfg.results_root),
                 "config_sha": interseed_cfg.config_sha,
+                "resolved_policy": policy_bundle.as_metadata(),
             },
         )
         try:
@@ -681,6 +735,7 @@ def run_pipeline(
                     "seed": interseed_seed,
                     "results_dir": str(interseed_cfg.results_root),
                     "config_sha": interseed_cfg.config_sha,
+                    "resolved_policy": policy_bundle.as_metadata(),
                 },
             )
         except Exception as exc:  # noqa: BLE001
@@ -714,6 +769,7 @@ def run_pipeline(
                 "diagnostics": resolved.diagnostics,
                 "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
                 "config_sha": interseed_cfg.config_sha,
+                "resolved_policy": policy_bundle.as_metadata(),
             },
         )
 
