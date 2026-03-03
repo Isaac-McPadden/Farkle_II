@@ -9,8 +9,40 @@ from __future__ import annotations
 
 import contextlib
 import multiprocessing as mp
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from dataclasses import dataclass
 from multiprocessing.context import BaseContext
+from typing import Any, Mapping
+
+_NATIVE_THREAD_ENV_VARS: tuple[str, ...] = (
+    "OMP_NUM_THREADS",
+    "OPENBLAS_NUM_THREADS",
+    "MKL_NUM_THREADS",
+    "NUMEXPR_NUM_THREADS",
+    "VECLIB_MAXIMUM_THREADS",
+    "BLIS_NUM_THREADS",
+)
+
+
+@dataclass(frozen=True)
+class StageParallelPolicy:
+    """Resolved parallel budget for a specific stage."""
+
+    total_cores: int
+    process_workers: int
+    python_threads: int
+    arrow_threads: int
+    native_threads_per_process: int
+
+
+@dataclass(frozen=True)
+class ParallelNestingContext:
+    """Parallel context inherited by nested work units."""
+
+    active_process_pool: bool = False
+    parent_process_workers: int = 1
+    total_cores: int | None = None
 
 
 def resolve_mp_context(mp_start_method: str | None) -> BaseContext | None:
@@ -30,6 +62,84 @@ def resolve_mp_context(mp_start_method: str | None) -> BaseContext | None:
     return mp.get_context(method)
 
 
+def normalize_n_jobs(
+    n_jobs: int | None,
+    *,
+    default: int = 1,
+    total_cores: int | None = None,
+) -> int:
+    """Normalize ``n_jobs`` with explicit deterministic semantics.
+
+    ``0`` resolves to all detected cores. ``None`` resolves to ``default``.
+    """
+    if total_cores is None:
+        total_cores = os.cpu_count() or 1
+    total_cores = max(1, int(total_cores))
+    if n_jobs is None:
+        return max(1, int(default))
+    resolved = int(n_jobs)
+    if resolved < 0:
+        raise ValueError(f"n_jobs must be >= 0 or None, got {n_jobs!r}")
+    if resolved == 0:
+        return total_cores
+    return max(1, resolved)
+
+
+def resolve_stage_parallel_policy(
+    stage: str,
+    cfg: Any,
+    outer_context: ParallelNestingContext | Mapping[str, Any] | None = None,
+) -> StageParallelPolicy:
+    """Resolve per-stage parallel budgets with optional nesting awareness."""
+    del stage  # stage remains part of API for future stage-specific rules.
+
+    total_cores = os.cpu_count() or 1
+    context_total_cores: int | None = None
+    active_process_pool = False
+    parent_workers = 1
+    if outer_context is not None:
+        if isinstance(outer_context, ParallelNestingContext):
+            active_process_pool = bool(outer_context.active_process_pool)
+            parent_workers = max(1, int(outer_context.parent_process_workers))
+            context_total_cores = outer_context.total_cores
+        else:
+            active_process_pool = bool(outer_context.get("active_process_pool", False))
+            parent_workers = max(1, int(outer_context.get("parent_process_workers", 1)))
+            total_value = outer_context.get("total_cores")
+            context_total_cores = int(total_value) if total_value is not None else None
+
+    if context_total_cores is not None:
+        total_cores = max(1, context_total_cores)
+
+    requested_n_jobs = getattr(cfg, "n_jobs", None)
+    process_workers = normalize_n_jobs(requested_n_jobs, default=1, total_cores=total_cores)
+    if active_process_pool:
+        process_workers = 1
+
+    available_native_threads = (
+        max(1, total_cores // parent_workers) if active_process_pool else total_cores
+    )
+    native_threads_per_process = max(1, available_native_threads // max(1, process_workers))
+    python_threads = native_threads_per_process
+    arrow_threads = native_threads_per_process
+
+    return StageParallelPolicy(
+        total_cores=total_cores,
+        process_workers=process_workers,
+        python_threads=python_threads,
+        arrow_threads=arrow_threads,
+        native_threads_per_process=native_threads_per_process,
+    )
+
+
+def apply_native_thread_limits(policy: StageParallelPolicy) -> None:
+    """Apply environment-based native thread caps for the current process."""
+    thread_cap = str(max(1, int(policy.native_threads_per_process)))
+    for env_var in _NATIVE_THREAD_ENV_VARS:
+        os.environ[env_var] = thread_cap
+    os.environ["PYARROW_NUM_THREADS"] = str(max(1, int(policy.arrow_threads)))
+
+
 def process_map(
     fn,
     items,
@@ -43,7 +153,8 @@ def process_map(
     """Map ``fn`` across ``items`` with optional multiprocessing support."""
     if initargs is None:
         initargs = ()
-    if n_jobs in (None, 0, 1):
+    resolved_jobs = normalize_n_jobs(n_jobs, default=1)
+    if resolved_jobs == 1:
         # Single-process path: still run initializer so modules relying on
         # per-process globals (e.g., run_tournament._STATE) are set up.
         if initializer is not None:
@@ -52,10 +163,10 @@ def process_map(
             yield fn(it)
         return
     if window <= 0:
-        window = (n_jobs or 1) * 4
+        window = resolved_jobs * 4
 
     with ProcessPoolExecutor(
-        max_workers=n_jobs,
+        max_workers=resolved_jobs,
         initializer=initializer,
         initargs=tuple(initargs),
         mp_context=mp_context,
@@ -76,4 +187,12 @@ def process_map(
                 futs.append(pool.submit(fn, next(it)))
 
 
-__all__ = ["process_map", "resolve_mp_context"]
+__all__ = [
+    "ParallelNestingContext",
+    "StageParallelPolicy",
+    "apply_native_thread_limits",
+    "normalize_n_jobs",
+    "process_map",
+    "resolve_mp_context",
+    "resolve_stage_parallel_policy",
+]
