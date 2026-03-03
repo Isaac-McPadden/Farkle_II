@@ -1,5 +1,6 @@
 import csv
 import multiprocessing as mp
+import os
 import threading
 from multiprocessing.context import BaseContext
 from pathlib import Path
@@ -203,9 +204,7 @@ def test_process_map_executor(monkeypatch: MonkeyPatch):
     monkeypatch.setattr(parallel, "as_completed", lambda futures: iter(futures))
 
     mp_context = (
-        parallel.resolve_mp_context("spawn")
-        if "spawn" in mp.get_all_start_methods()
-        else None
+        parallel.resolve_mp_context("spawn") if "spawn" in mp.get_all_start_methods() else None
     )
     result = list(
         parallel.process_map(
@@ -267,3 +266,71 @@ def test_process_map_serial_initializer_with_explicit_initargs() -> None:
 
     assert values == [11, 12]
     assert init_calls == [(7, 9)]
+
+
+def test_normalize_n_jobs_semantics() -> None:
+    assert parallel.normalize_n_jobs(None, default=3, total_cores=8) == 3
+    assert parallel.normalize_n_jobs(0, total_cores=8) == 8
+    assert parallel.normalize_n_jobs(2, total_cores=8) == 2
+
+    with pytest.raises(ValueError, match="n_jobs must be >= 0"):
+        parallel.normalize_n_jobs(-1, total_cores=8)
+
+
+def test_resolve_stage_parallel_policy_default_cfg() -> None:
+    class DummyCfg:
+        n_jobs: int | None = None
+
+    policy = parallel.resolve_stage_parallel_policy("analysis", DummyCfg())
+    assert policy.process_workers == 1
+    assert policy.python_threads >= 1
+    assert policy.arrow_threads >= 1
+    assert policy.native_threads_per_process >= 1
+
+
+def test_resolve_stage_parallel_policy_nested_context() -> None:
+    class DummyCfg:
+        n_jobs: int | None = 4
+
+    outer = parallel.ParallelNestingContext(
+        active_process_pool=True,
+        parent_process_workers=3,
+        total_cores=12,
+    )
+    policy = parallel.resolve_stage_parallel_policy("analysis", DummyCfg(), outer_context=outer)
+
+    assert policy.total_cores == 12
+    assert policy.process_workers == 1
+    assert policy.native_threads_per_process == 4
+    assert policy.python_threads == 4
+    assert policy.arrow_threads == 4
+
+
+def test_apply_native_thread_limits(monkeypatch: MonkeyPatch) -> None:
+    for key in (
+        "OMP_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+        "PYARROW_NUM_THREADS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    policy = parallel.StageParallelPolicy(
+        total_cores=8,
+        process_workers=2,
+        python_threads=4,
+        arrow_threads=3,
+        native_threads_per_process=4,
+    )
+    parallel.apply_native_thread_limits(policy)
+
+    assert os.environ["OMP_NUM_THREADS"] == "4"
+    assert os.environ["OPENBLAS_NUM_THREADS"] == "4"
+    assert os.environ["MKL_NUM_THREADS"] == "4"
+    assert os.environ["NUMEXPR_NUM_THREADS"] == "4"
+    assert os.environ["VECLIB_MAXIMUM_THREADS"] == "4"
+    assert os.environ["BLIS_NUM_THREADS"] == "4"
+    assert os.environ["PYARROW_NUM_THREADS"] == "3"
