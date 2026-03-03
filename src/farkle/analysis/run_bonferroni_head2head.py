@@ -27,6 +27,7 @@ from farkle.simulation.strategies import (
     parse_strategy_identifier,
 )
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.parallel import normalize_n_jobs
 from farkle.utils.random import MAX_UINT32
 from farkle.utils.stats import games_for_power
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
@@ -1095,7 +1096,7 @@ def run_bonferroni_head2head(
     debug_summary["filtered_pairs"]["scheduled_pairs"] = len(scheduled_pairs)
     debug_summary["filtered_pairs"]["self_play_pairs_included"] = False
 
-    effective_jobs = max(1, int(n_jobs))
+    effective_jobs = normalize_n_jobs(n_jobs)
     use_process_workers = (
         getattr(simulate_many_games_from_seeds, "__module__", "")
         == "farkle.simulation.simulation"

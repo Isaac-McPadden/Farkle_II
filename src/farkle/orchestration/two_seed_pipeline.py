@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +34,7 @@ from farkle.utils.manifest import append_manifest_line
 from farkle.utils.parallel import (
     StageParallelPolicy,
     apply_native_thread_limits,
+    normalize_n_jobs,
     resolve_stage_parallel_policy,
 )
 from farkle.utils.writer import atomic_path
@@ -89,13 +89,15 @@ class _PerSeedPolicyBundle:
 
 
 def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPolicyBundle:
-    total_workers = cfg.sim.n_jobs if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else (os.cpu_count() or 1)
+    total_workers = normalize_n_jobs(cfg.sim.n_jobs, default=1)
     seed_concurrency = seed_count if cfg.orchestration.parallel_seeds else 1
-    per_seed_workers = _per_seed_worker_budget(int(total_workers), seed_concurrency)
+    per_seed_workers = _per_seed_worker_budget(total_workers, seed_concurrency)
     simulation_policy = resolve_stage_parallel_policy("simulation", type("_Cfg", (), {"n_jobs": per_seed_workers})())
     ingest_policy = resolve_stage_parallel_policy(
         "ingest",
-        type("_Cfg", (), {"n_jobs": min(per_seed_workers, max(1, int(cfg.ingest.n_jobs)))})(),
+        type(
+            "_Cfg", (), {"n_jobs": min(per_seed_workers, normalize_n_jobs(cfg.ingest.n_jobs))}
+        )(),
     )
     analysis_policy = resolve_stage_parallel_policy("analysis", type("_Cfg", (), {"n_jobs": per_seed_workers})())
     policy_bundle = _PerSeedPolicyBundle(

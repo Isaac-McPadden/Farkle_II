@@ -145,6 +145,7 @@ class SimConfig:
     recompute_num_shuffles: bool = True
     power_design: PowerDesign = field(default_factory=PowerDesign)
     n_jobs: int | None = None
+    """Parallel worker setting (`None` => 1, `0` => os.cpu_count(), `>0` => explicit)."""
     mp_start_method: str | None = None
     """Multiprocessing start method for simulation pools (default uses platform default)."""
     desired_sec_per_chunk: int = 10
@@ -268,6 +269,7 @@ class AnalysisConfig:
     """Emit the final report artifacts (plan step 9)."""
 
     n_jobs: int = 1
+    """Parallel worker setting (`0` => os.cpu_count(), `>0` => explicit)."""
     mp_start_method: str | None = None
     """Multiprocessing start method for analysis pools (default uses platform default)."""
     log_level: str = "INFO"
@@ -339,6 +341,7 @@ class IngestConfig:
     parquet_codec: Compression = "snappy"
     batch_rows: int = 100_000
     n_jobs: int = 1
+    """Parallel worker setting (`0` => os.cpu_count(), `>0` => explicit)."""
 
 
 @dataclass
@@ -371,6 +374,7 @@ class Head2HeadConfig:
     """Configuration for head-to-head tournament simulations."""
 
     n_jobs: int = 4
+    """Parallel worker setting (`0` => os.cpu_count(), `>0` => explicit)."""
     games_per_pair: int = 10_000
     fdr_q: float = 0.02
     bonferroni_total_games_safeguard: int | None = 100_000_000
@@ -857,7 +861,7 @@ class AppConfig:
 
     @property
     def n_jobs_ingest(self) -> int:
-        """Parallel worker count for ingestion tasks."""
+        """Parallel worker setting for ingestion (0 => os.cpu_count(), >0 explicit)."""
         return self.ingest.n_jobs
 
     @property

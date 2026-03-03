@@ -585,7 +585,7 @@ def test_run_process_pool_path(tmp_results_dir, monkeypatch):
 
     calls: list[str] = []
 
-    def fake_process_block(block, passed_cfg) -> int:
+    def fake_process_block(block, passed_cfg, **_kwargs) -> int:
         assert passed_cfg is cfg
         calls.append(block.name)
         return {"1_players": 1, "2_players": 3}[block.name]

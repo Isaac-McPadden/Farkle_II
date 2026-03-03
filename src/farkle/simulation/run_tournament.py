@@ -433,9 +433,9 @@ def run_tournament(
         Location for periodic checkpoint pickles. Parent directories are
         created automatically.
     n_jobs : int | None, default None
-        Worker processes to spawn. ``None`` lets
-        :class:`~concurrent.futures.ProcessPoolExecutor` decide
-        (usually ``os.cpu_count()``).
+        Worker processes to spawn after normalization via
+        :func:`farkle.utils.parallel.normalize_n_jobs`: ``None`` uses ``1``,
+        ``0`` uses ``os.cpu_count()``, and positive values are used directly.
     collect_metrics : bool, default False
         If ``True``, per-strategy means/variances for several game metrics are
         accumulated in addition to raw win counts.
@@ -597,6 +597,8 @@ def run_tournament(
                 },
             )
 
+    resolved_n_jobs = parallel.normalize_n_jobs(n_jobs)
+
     LOGGER.info(
         "Tournament run start",
         extra={
@@ -604,7 +606,7 @@ def run_tournament(
             "n_players": cfg.n_players,
             "num_shuffles": cfg.num_shuffles,
             "global_seed": global_seed,
-            "n_jobs": n_jobs,
+            "n_jobs": resolved_n_jobs,
             "chunks": len(chunk_items),
             "collect_metrics": collect_metrics,
             "collect_rows": collect_rows,
@@ -632,10 +634,10 @@ def run_tournament(
         for chunk_index, result in parallel.process_map(
             chunk_wrapper,
             chunk_items,
-            n_jobs=n_jobs,
+            n_jobs=resolved_n_jobs,
             initializer=_init_worker,
             initargs=(strategies, cfg),
-            window=4 * (n_jobs or 1),
+            window=4 * resolved_n_jobs,
             mp_context=mp_context,
         ):
             if collect_metrics or collect_rows:

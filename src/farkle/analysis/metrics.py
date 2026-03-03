@@ -27,6 +27,7 @@ from farkle.analysis.seat_stats import (
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
+from farkle.utils.parallel import normalize_n_jobs
 from farkle.utils.writer import atomic_path
 
 if TYPE_CHECKING:  # pragma: no cover - pandas typing is optional at runtime
@@ -345,11 +346,9 @@ def _ensure_isolated_metrics(
     """
 
     def _resolve_worker_count() -> int:
-        analysis_jobs = (
-            int(cfg.analysis.n_jobs) if cfg.analysis.n_jobs and cfg.analysis.n_jobs > 0 else 0
-        )
-        sim_jobs = int(cfg.sim.n_jobs) if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else 0
-        return max(1, analysis_jobs, sim_jobs)
+        analysis_jobs = normalize_n_jobs(cfg.analysis.n_jobs)
+        sim_jobs = normalize_n_jobs(cfg.sim.n_jobs)
+        return max(analysis_jobs, sim_jobs)
 
     def _process_player_count(
         n: int,
