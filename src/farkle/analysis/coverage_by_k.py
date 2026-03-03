@@ -32,6 +32,11 @@ from farkle.config import AppConfig
 from farkle.simulation.simulation import generate_strategy_grid
 from farkle.utils.analysis_shared import is_na, to_int, try_to_int
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
+from farkle.utils.parallel import (
+    StageParallelPolicy,
+    apply_native_thread_limits,
+    resolve_stage_parallel_policy,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -82,6 +87,20 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     stage_log = stage_logger("coverage_by_k", logger=LOGGER)
     stage_log.start()
 
+    policy = resolve_stage_parallel_policy("coverage_by_k", cfg.analysis)
+    apply_native_thread_limits(policy)
+    pa.set_cpu_count(policy.arrow_threads)
+    pa.set_io_thread_count(policy.arrow_threads)
+    LOGGER.info(
+        "coverage-by-k threading resolved",
+        extra={
+            "stage": "coverage_by_k",
+            "process_workers": policy.process_workers,
+            "python_threads": policy.python_threads,
+            "arrow_threads": policy.arrow_threads,
+        },
+    )
+
     metrics_path = cfg.metrics_input_path()
     if not metrics_path.exists():
         stage_log.missing_input("metrics parquet missing", path=str(metrics_path))
@@ -107,7 +126,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         )
         return
 
-    coverage = _build_coverage(cfg, metrics_path, coverage_inputs)
+    coverage = _build_coverage(cfg, metrics_path, coverage_inputs, policy)
     if coverage.empty:
         stage_log.missing_input("metrics parquet empty", metrics_path=str(metrics_path))
         return
@@ -161,9 +180,16 @@ def _optional_csv_path(cfg: AppConfig, stage_dir: Path) -> Path | None:
 
 
 def _build_coverage(
-    cfg: AppConfig, metrics_path: Path, coverage_inputs: Iterable[Path]
+    cfg: AppConfig,
+    metrics_path: Path,
+    coverage_inputs: Iterable[Path],
+    policy: StageParallelPolicy,
 ) -> pd.DataFrame:
-    counts = _stream_metrics_counts(metrics_path, default_seed=to_int(cfg.sim.seed))
+    counts = _stream_metrics_counts(
+        metrics_path,
+        default_seed=to_int(cfg.sim.seed),
+        arrow_threads=policy.arrow_threads,
+    )
     k_grid = _player_counts_from_config(cfg)
     if not k_grid:
         k_grid = sorted(counts["k"].unique().tolist())
@@ -226,7 +252,7 @@ def _build_coverage(
     return counts[ordered + remaining].sort_values(["k", "seed"]).reset_index(drop=True)
 
 
-def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataFrame:
+def _stream_metrics_counts(metrics_path: Path, *, default_seed: int, arrow_threads: int) -> pd.DataFrame:
     dataset = ds.dataset(metrics_path, format="parquet")
     schema_names = set(dataset.schema.names)
 
@@ -248,7 +274,7 @@ def _stream_metrics_counts(metrics_path: Path, *, default_seed: int) -> pd.DataF
         columns.append(missing_col)
 
     counts: dict[tuple[int, int], _CountsPayload] = {}
-    scanner = dataset.scanner(columns=columns, use_threads=True)
+    scanner = dataset.scanner(columns=columns, use_threads=arrow_threads > 1)
     for batch in scanner.to_batches():
         if batch.num_rows == 0:
             continue

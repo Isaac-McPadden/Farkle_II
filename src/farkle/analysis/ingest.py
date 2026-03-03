@@ -22,7 +22,12 @@ import pyarrow.parquet as pq
 
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, load_app_config
-from farkle.utils.parallel import resolve_mp_context
+from farkle.utils.parallel import (
+    ParallelNestingContext,
+    apply_native_thread_limits,
+    resolve_mp_context,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.streaming_loop import run_streaming_shard
 
@@ -310,9 +315,20 @@ def _migrate_legacy_raw(n: int, cfg: AppConfig) -> None:
         shutil.move(str(legacy_manifest), new_manifest)
 
 
-def _process_block(block: Path, cfg: AppConfig) -> int:
+def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int = 1) -> int:
     """Process a single ``<N>_players`` block."""
     n = _n_from_block(block.name)
+    worker_policy = resolve_stage_parallel_policy(
+        "ingest",
+        cfg.ingest,
+        ParallelNestingContext(
+            active_process_pool=parent_process_workers > 1,
+            parent_process_workers=max(1, int(parent_process_workers)),
+        ),
+    )
+    apply_native_thread_limits(worker_policy)
+    pa.set_cpu_count(worker_policy.arrow_threads)
+    pa.set_io_thread_count(worker_policy.arrow_threads)
     LOGGER.info(
         "Ingest block discovered",
         extra={"stage": "ingest", "block": block.name, "path": str(block)},
@@ -466,6 +482,10 @@ def run(cfg: AppConfig) -> None:
         cfg: Application configuration containing input/output paths and
             parallelism controls.
     """
+    stage_policy = resolve_stage_parallel_policy("ingest", cfg.ingest)
+    apply_native_thread_limits(stage_policy)
+    pa.set_cpu_count(stage_policy.arrow_threads)
+    pa.set_io_thread_count(stage_policy.arrow_threads)
     LOGGER.info(
         "Ingest started",
         extra={
@@ -473,6 +493,9 @@ def run(cfg: AppConfig) -> None:
             "root": str(cfg.results_root),
             "data_dir": str(cfg.data_dir),
             "n_jobs": cfg.n_jobs_ingest,
+            "process_workers": stage_policy.process_workers,
+            "python_threads": stage_policy.python_threads,
+            "arrow_threads": stage_policy.arrow_threads,
         },
     )
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
@@ -506,12 +529,20 @@ def run(cfg: AppConfig) -> None:
     mp_context = resolve_mp_context(cfg.analysis.mp_start_method)
 
     total_rows = 0
-    if cfg.n_jobs_ingest <= 1:
+    if stage_policy.process_workers <= 1:
         for block in blocks:
-            total_rows += _process_block(block, cfg)
+            total_rows += _process_block(block, cfg, parent_process_workers=1)
     else:
-        with ProcessPoolExecutor(max_workers=cfg.n_jobs_ingest, mp_context=mp_context) as pool:
-            futures = [pool.submit(_process_block, block, cfg) for block in blocks]
+        with ProcessPoolExecutor(max_workers=stage_policy.process_workers, mp_context=mp_context) as pool:
+            futures = [
+                pool.submit(
+                    _process_block,
+                    block,
+                    cfg,
+                    parent_process_workers=stage_policy.process_workers,
+                )
+                for block in blocks
+            ]
             for f in futures:
                 total_rows += f.result()
 

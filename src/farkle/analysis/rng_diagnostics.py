@@ -27,6 +27,7 @@ from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.parallel import apply_native_thread_limits, resolve_stage_parallel_policy
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -48,6 +49,20 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
 
     stage_log = stage_logger("rng_diagnostics", logger=LOGGER)
     stage_log.start()
+
+    policy = resolve_stage_parallel_policy("rng_diagnostics", cfg.analysis)
+    apply_native_thread_limits(policy)
+    pa.set_cpu_count(policy.arrow_threads)
+    pa.set_io_thread_count(policy.arrow_threads)
+    LOGGER.info(
+        "rng-diagnostics threading resolved",
+        extra={
+            "stage": "rng_diagnostics",
+            "process_workers": policy.process_workers,
+            "python_threads": policy.python_threads,
+            "arrow_threads": policy.arrow_threads,
+        },
+    )
 
     interseed_ready, interseed_reason = cfg.interseed_ready()
     if not interseed_ready:
@@ -105,6 +120,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         winner_col=winner_col,
         strat_cols=strat_cols,
         batch_size=_STREAM_BATCH_SIZE,
+        arrow_threads=policy.arrow_threads,
     )
     diagnostics, melted_rows = _collect_diagnostics_streaming(
         melted_batches,
@@ -318,8 +334,13 @@ def _iter_melted_batches(
     winner_col: str,
     strat_cols: Sequence[str],
     batch_size: int,
+    arrow_threads: int,
 ) -> Iterator[pd.DataFrame]:
-    scanner = dataset.scanner(columns=list(columns), batch_size=batch_size, use_threads=True)
+    scanner = dataset.scanner(
+        columns=list(columns),
+        batch_size=batch_size,
+        use_threads=arrow_threads > 1,
+    )
     for batch in scanner.to_batches():
         if batch.num_rows == 0:
             continue

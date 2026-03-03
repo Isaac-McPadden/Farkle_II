@@ -121,7 +121,20 @@ def resolve_stage_parallel_policy(
     )
     native_threads_per_process = max(1, available_native_threads // max(1, process_workers))
     python_threads = native_threads_per_process
-    arrow_threads = native_threads_per_process
+
+    requested_arrow_threads = getattr(cfg, "arrow_threads", None)
+    if requested_arrow_threads is None:
+        arrow_threads = 1 if active_process_pool else native_threads_per_process
+    else:
+        requested_arrow_threads_i = int(requested_arrow_threads)
+        if requested_arrow_threads_i < 0:
+            raise ValueError(
+                f"arrow_threads must be >= 0 or None, got {requested_arrow_threads!r}"
+            )
+        if requested_arrow_threads_i == 0:
+            arrow_threads = native_threads_per_process
+        else:
+            arrow_threads = max(1, requested_arrow_threads_i)
 
     return StageParallelPolicy(
         total_cores=total_cores,
