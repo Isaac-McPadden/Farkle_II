@@ -25,6 +25,7 @@ from farkle.config import AppConfig, load_app_config
 from farkle.utils.parallel import (
     ParallelNestingContext,
     apply_native_thread_limits,
+    normalize_n_jobs,
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
@@ -482,6 +483,7 @@ def run(cfg: AppConfig) -> None:
         cfg: Application configuration containing input/output paths and
             parallelism controls.
     """
+    resolved_n_jobs = normalize_n_jobs(cfg.ingest.n_jobs)
     stage_policy = resolve_stage_parallel_policy("ingest", cfg.ingest)
     apply_native_thread_limits(stage_policy)
     pa.set_cpu_count(stage_policy.arrow_threads)
@@ -492,7 +494,7 @@ def run(cfg: AppConfig) -> None:
             "stage": "ingest",
             "root": str(cfg.results_root),
             "data_dir": str(cfg.data_dir),
-            "n_jobs": cfg.n_jobs_ingest,
+            "n_jobs": resolved_n_jobs,
             "process_workers": stage_policy.process_workers,
             "python_threads": stage_policy.python_threads,
             "arrow_threads": stage_policy.arrow_threads,

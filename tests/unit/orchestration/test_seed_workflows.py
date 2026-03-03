@@ -764,7 +764,7 @@ def test_two_seed_pipeline_worker_budget_and_artifact_validation(
         two_seed_pipeline._per_seed_worker_budget(total_workers=4, seed_count=0)
 
     base_cfg.ingest.n_jobs = 9
-    monkeypatch.setattr(two_seed_pipeline.os, "cpu_count", lambda: 8)
+    monkeypatch.setattr("farkle.utils.parallel.os.cpu_count", lambda: 8)
 
     # Serial seed execution keeps the full worker budget on each seed.
     base_cfg.orchestration.parallel_seeds = False

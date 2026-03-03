@@ -63,25 +63,25 @@ def resolve_mp_context(mp_start_method: str | None) -> BaseContext | None:
 
 
 def normalize_n_jobs(
-    n_jobs: int | None,
+    value: int | None,
+    cpu_count: int | None = None,
     *,
     default: int = 1,
-    total_cores: int | None = None,
 ) -> int:
     """Normalize ``n_jobs`` with explicit deterministic semantics.
 
     ``0`` resolves to all detected cores. ``None`` resolves to ``default``.
     """
-    if total_cores is None:
-        total_cores = os.cpu_count() or 1
-    total_cores = max(1, int(total_cores))
-    if n_jobs is None:
+    if cpu_count is None:
+        cpu_count = os.cpu_count() or 1
+    cpu_count = max(1, int(cpu_count))
+    if value is None:
         return max(1, int(default))
-    resolved = int(n_jobs)
+    resolved = int(value)
     if resolved < 0:
-        raise ValueError(f"n_jobs must be >= 0 or None, got {n_jobs!r}")
+        raise ValueError(f"n_jobs must be >= 0 or None, got {value!r}")
     if resolved == 0:
-        return total_cores
+        return cpu_count
     return max(1, resolved)
 
 
@@ -112,7 +112,7 @@ def resolve_stage_parallel_policy(
         total_cores = max(1, context_total_cores)
 
     requested_n_jobs = getattr(cfg, "n_jobs", None)
-    process_workers = normalize_n_jobs(requested_n_jobs, default=1, total_cores=total_cores)
+    process_workers = normalize_n_jobs(requested_n_jobs, cpu_count=total_cores, default=1)
     if active_process_pool:
         process_workers = 1
 

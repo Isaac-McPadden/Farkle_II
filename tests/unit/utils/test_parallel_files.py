@@ -269,12 +269,13 @@ def test_process_map_serial_initializer_with_explicit_initargs() -> None:
 
 
 def test_normalize_n_jobs_semantics() -> None:
-    assert parallel.normalize_n_jobs(None, default=3, total_cores=8) == 3
-    assert parallel.normalize_n_jobs(0, total_cores=8) == 8
-    assert parallel.normalize_n_jobs(2, total_cores=8) == 2
+    assert parallel.normalize_n_jobs(None, cpu_count=8, default=3) == 3
+    assert parallel.normalize_n_jobs(0, cpu_count=8) == 8
+    assert parallel.normalize_n_jobs(1, cpu_count=8) == 1
+    assert parallel.normalize_n_jobs(2, cpu_count=8) == 2
 
     with pytest.raises(ValueError, match="n_jobs must be >= 0"):
-        parallel.normalize_n_jobs(-1, total_cores=8)
+        parallel.normalize_n_jobs(-1, cpu_count=8)
 
 
 def test_resolve_stage_parallel_policy_default_cfg() -> None:
@@ -303,8 +304,27 @@ def test_resolve_stage_parallel_policy_nested_context() -> None:
     assert policy.process_workers == 1
     assert policy.native_threads_per_process == 4
     assert policy.python_threads == 4
-    assert policy.arrow_threads == 4
+    assert policy.arrow_threads == 1
 
+
+
+
+def test_resolve_stage_parallel_policy_nested_context_with_zero_n_jobs() -> None:
+    class DummyCfg:
+        n_jobs: int | None = 0
+
+    outer = parallel.ParallelNestingContext(
+        active_process_pool=True,
+        parent_process_workers=2,
+        total_cores=10,
+    )
+    policy = parallel.resolve_stage_parallel_policy("metrics", DummyCfg(), outer_context=outer)
+
+    assert policy.total_cores == 10
+    assert policy.process_workers == 1
+    assert policy.native_threads_per_process == 5
+    assert policy.python_threads == 5
+    assert policy.arrow_threads == 1
 
 def test_apply_native_thread_limits(monkeypatch: MonkeyPatch) -> None:
     for key in (
