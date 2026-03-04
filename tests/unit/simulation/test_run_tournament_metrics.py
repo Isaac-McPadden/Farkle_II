@@ -159,6 +159,31 @@ def test_run_chunk_metrics_accumulates(monkeypatch):
         assert sqs[label][2] == 4
 
 
+
+
+def test_reduce_metric_chunk_payloads_is_deterministic() -> None:
+    def _chunk_payload(value: float) -> tuple[
+        dict[str, dict[int | str, float]],
+        dict[str, dict[int | str, float]],
+    ]:
+        sums = {label: defaultdict(float, {"A": value}) for label in rt.METRIC_LABELS}
+        sqs = {label: defaultdict(float, {"A": value * value}) for label in rt.METRIC_LABELS}
+        return sums, sqs
+
+    collected_in_completion_order = {2: _chunk_payload(0.1), 1: _chunk_payload(0.2)}
+    collected_in_reverse_completion_order = {1: _chunk_payload(0.2), 2: _chunk_payload(0.1)}
+
+    sums_a = {label: defaultdict(float) for label in rt.METRIC_LABELS}
+    sqs_a = {label: defaultdict(float) for label in rt.METRIC_LABELS}
+    sums_b = {label: defaultdict(float) for label in rt.METRIC_LABELS}
+    sqs_b = {label: defaultdict(float) for label in rt.METRIC_LABELS}
+
+    rt._reduce_metric_chunk_payloads(collected_in_completion_order, sums_a, sqs_a)
+    rt._reduce_metric_chunk_payloads(collected_in_reverse_completion_order, sums_b, sqs_b)
+
+    assert sums_a == sums_b
+    assert sqs_a == sqs_b
+
 def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
     monkeypatch.setattr(rt, "getpid", lambda: 42)

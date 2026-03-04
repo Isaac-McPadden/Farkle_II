@@ -395,6 +395,28 @@ def _manifest_int_set(manifest_path: Path, key: str) -> set[int]:
     return values
 
 
+def _reduce_metric_chunk_payloads(
+    collected_chunks: Mapping[
+        int,
+        Tuple[
+            Dict[str, Dict[int | str, float]],
+            Dict[str, Dict[int | str, float]],
+        ],
+    ],
+    metric_sums: Dict[str, Dict[int | str, float]],
+    metric_sq_sums: Dict[str, Dict[int | str, float]],
+) -> None:
+    """Reduce chunk-level metric payloads in deterministic chunk order."""
+
+    for chunk_index in sorted(collected_chunks):
+        sums, sqs = collected_chunks[chunk_index]
+        for label in METRIC_LABELS:
+            for strategy, value in sums[label].items():
+                metric_sums[label][strategy] += value
+            for strategy, value in sqs[label].items():
+                metric_sq_sums[label][strategy] += value
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -627,7 +649,13 @@ def run_tournament(
     else:
         chunk_fn = _run_chunk
 
-    new_metric_chunks: list[Path] = []
+    collected_metric_chunks: dict[
+        int,
+        Tuple[
+            Dict[str, Dict[int | str, float]],
+            Dict[str, Dict[int | str, float]],
+        ],
+    ] = {}
     chunk_wrapper = partial(_run_chunk_item, chunk_fn=chunk_fn)
 
     try:
@@ -679,7 +707,6 @@ def run_tournament(
                             "n_players": cfg.n_players,
                         },
                     )
-                    new_metric_chunks.append(chunk_path)
                     LOGGER.info(
                         "Metrics chunk written",
                         extra={
@@ -689,19 +716,9 @@ def run_tournament(
                             "path": str(chunk_path),
                         },
                     )
-                    if metric_sums is not None and metric_sq_sums is not None:
-                        for label in METRIC_LABELS:
-                            for k, v in sums[label].items():
-                                metric_sums[label][k] += v
-                            for k, v in sqs[label].items():
-                                metric_sq_sums[label][k] += v
+                    collected_metric_chunks[chunk_index] = (sums, sqs)
                 else:
-                    assert metric_sums is not None and metric_sq_sums is not None
-                    for label in METRIC_LABELS:
-                        for k, v in sums[label].items():
-                            metric_sums[label][k] += v
-                        for k, v in sqs[label].items():
-                            metric_sq_sums[label][k] += v
+                    collected_metric_chunks[chunk_index] = (sums, sqs)
                 LOGGER.debug(
                     "Chunk processed",
                     extra={
@@ -747,14 +764,18 @@ def run_tournament(
                 )
                 last_ckpt = now
 
-        if metric_chunk_directory is not None and (collect_metrics or collect_rows):
-            if metric_sums is None or metric_sq_sums is None:
-                metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
-                metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
-                chunk_paths = sorted(metric_chunk_directory.glob("metrics_*.parquet"))
-            else:
-                chunk_paths = new_metric_chunks
-            for path in sorted(chunk_paths):
+        if (collect_metrics or collect_rows) and metric_sums is not None and metric_sq_sums is not None:
+            _reduce_metric_chunk_payloads(collected_metric_chunks, metric_sums, metric_sq_sums)
+
+        if (
+            metric_chunk_directory is not None
+            and (collect_metrics or collect_rows)
+            and (metric_sums is None or metric_sq_sums is None)
+        ):
+            metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
+            metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
+            chunk_paths = sorted(metric_chunk_directory.glob("metrics_*.parquet"))
+            for path in chunk_paths:
                 table = pq.read_table(path)
                 for row in table.to_pylist():
                     label = row["metric"]
