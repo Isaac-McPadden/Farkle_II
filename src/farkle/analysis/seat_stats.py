@@ -72,6 +72,7 @@ def compute_seat_metrics(
     combined: Path,
     seat_config: SeatMetricConfig,
     *,
+    include_players: set[int] | None = None,
     progress_path: Path | None = None,
     progress_every_batches: int = 50,
 ) -> pd.DataFrame:
@@ -86,7 +87,7 @@ def compute_seat_metrics(
         scores, farkles, and rounds.
     """
 
-    ds_in = ds.dataset(combined)
+    ds_in = ds.dataset(combined, format="parquet", partitioning="hive")
     schema = ds_in.schema
     n_players_fallback = n_players_from_schema(schema)
 
@@ -111,7 +112,15 @@ def compute_seat_metrics(
         )
 
     columns = base_columns + [col for col in seat_columns if col in schema.names]
-    scanner = ds_in.scanner(columns=columns, batch_size=batch_size)
+    filter_expr = None
+    if include_players and "n_players" in schema.names:
+        selected = sorted(int(v) for v in include_players)
+        expr = None
+        for val in selected:
+            branch = ds.field("n_players") == int(val)
+            expr = branch if expr is None else (expr | branch)
+        filter_expr = expr
+    scanner = ds_in.scanner(columns=columns, batch_size=batch_size, filter=filter_expr)
 
     running: pd.DataFrame | None = None
     processed_batches = 0
@@ -273,7 +282,13 @@ def compute_seat_metrics(
     ]
 
 
-def compute_seat_advantage(cfg: AppConfig, combined: Path, seat_config: SeatMetricConfig) -> pd.DataFrame:
+def compute_seat_advantage(
+    cfg: AppConfig,
+    combined: Path,
+    seat_config: SeatMetricConfig,
+    *,
+    include_players: set[int] | None = None,
+) -> pd.DataFrame:
     """Aggregate win rates by seat position with advantage deltas."""
 
     def _rows_for_n(n: int) -> int:
@@ -289,11 +304,23 @@ def compute_seat_advantage(cfg: AppConfig, combined: Path, seat_config: SeatMetr
     start, stop = seat_config.seat_range
     seats = list(range(start, stop + 1))
 
-    denom = {i: sum(_rows_for_n(n) for n in range(i, 13)) for i in seats}
-    ds_all = ds.dataset(combined, format="parquet")
-    seat_wins = {
-        i: int(ds_all.count_rows(filter=(ds.field("winner_seat") == f"P{i}"))) for i in seats
+    selected_players = set(include_players or set(range(1, 13)))
+    denom = {
+        i: sum(_rows_for_n(n) for n in range(i, 13) if n in selected_players)
+        for i in seats
     }
+    ds_all = ds.dataset(combined, format="parquet", partitioning="hive")
+    players_filter = None
+    if include_players and "n_players" in ds_all.schema.names:
+        selected = sorted(int(v) for v in include_players)
+        for val in selected:
+            branch = ds.field("n_players") == int(val)
+            players_filter = branch if players_filter is None else (players_filter | branch)
+    seat_wins = {}
+    for i in seats:
+        win_filter = ds.field("winner_seat") == f"P{i}"
+        combined_filter = win_filter if players_filter is None else (win_filter & players_filter)
+        seat_wins[i] = int(ds_all.count_rows(filter=combined_filter))
 
     seat_rows: list[dict[str, float]] = []
     for i in seats:

@@ -50,13 +50,13 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     if not combined_parquet.exists():
         raise RuntimeError(f"check_pre_metrics: missing {combined_parquet}")
 
-    schema = pq.read_schema(combined_parquet)
+    dataset = ds.dataset(combined_parquet, format="parquet", partitioning="hive")
+    schema = dataset.schema
     if winner_col not in schema.names:
         raise RuntimeError(
             f"check_pre_metrics: missing '{winner_col}' column in {combined_parquet}"
         )
 
-    dataset = ds.dataset(combined_parquet, format="parquet")
     neg_cols: list[str] = []
     for field in schema:
         if (
@@ -122,6 +122,16 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
             continue
         manifest_rows += _rows_from_manifest(manifest_path)
         seen_manifest = True
+
+
+    if combined_parquet.is_dir():
+        partition_manifests = sorted(combined_parquet.glob("n_players=*/part-*.manifest.jsonl"))
+        if not partition_manifests:
+            stage_partition_manifests = combined_parquet.parent.parent / "partition_manifests"
+            partition_manifests = sorted(stage_partition_manifests.glob("n_players=*.manifest.jsonl"))
+        if partition_manifests:
+            manifest_rows = sum(_rows_from_manifest(path) for path in partition_manifests)
+            seen_manifest = True
 
     if not seen_manifest:
         manifest_path = combined_parquet.with_suffix(".manifest.jsonl")

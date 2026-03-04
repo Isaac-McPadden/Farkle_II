@@ -1,10 +1,5 @@
 # src/farkle/analysis/combine.py
-"""Combine curated shards into a unified metrics parquet file.
-
-This stage reads per-strategy shards emitted during ingestion, pads them to a
-common schema, and concatenates the results into a single dataset for later
-analysis steps.
-"""
+"""Combine curated shards into partitioned and compatibility outputs."""
 from __future__ import annotations
 
 import logging
@@ -12,6 +7,7 @@ import shutil
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from farkle.analysis.checks import check_post_combine
@@ -24,15 +20,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
-    """Align a table to a target schema by casting or adding null columns.
-
-    Args:
-        tbl: Input Arrow table to adjust.
-        target: Desired schema ordering and types.
-
-    Returns:
-        Table whose columns match ``target`` in order and dtype.
-    """
     cols = []
     for f in target:
         if f.name in tbl.column_names:
@@ -43,8 +30,6 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
 
 
 def _migrate_combined_output(cfg: AppConfig) -> Path:
-    """Ensure any legacy combined outputs are relocated beside the new pooled path."""
-
     preferred_dir = cfg.combine_pooled_dir()
     preferred_out = preferred_dir / "all_ingested_rows.parquet"
     legacy_candidates = [
@@ -57,10 +42,6 @@ def _migrate_combined_output(cfg: AppConfig) -> Path:
         if preferred_out.exists() or not legacy.exists() or legacy == preferred_out:
             continue
         preferred_dir.mkdir(parents=True, exist_ok=True)
-        LOGGER.info(
-            "Combine: migrating legacy pooled parquet",
-            extra={"stage": "combine", "source": str(legacy), "dest": str(preferred_out)},
-        )
         shutil.move(str(legacy), preferred_out)
         legacy_manifest = legacy.with_suffix(".manifest.jsonl")
         new_manifest = preferred_out.with_suffix(".manifest.jsonl")
@@ -69,107 +50,128 @@ def _migrate_combined_output(cfg: AppConfig) -> Path:
     return preferred_out
 
 
-def run(cfg: AppConfig) -> None:
-    """Concatenate all per-N parquets into a 12-seat superset with null padding.
+def _partition_done_path(cfg: AppConfig, n_players: int) -> Path:
+    return cfg.combine_stage_dir / f"combine_partition_{int(n_players)}p.done.json"
 
-    Streaming implementation: copy row-groups into a single writer to bound RAM.
-    """
-    preferred = sorted(cfg.data_dir.glob(f"*p/{cfg.curated_rows_name}"))
-    legacy = sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet"))
-    files: list[Path] = preferred or legacy
-    if not files:
-        LOGGER.info(
-            "Combine: no inputs discovered",
-            extra={"stage": "combine", "path": str(cfg.data_dir)},
+
+def _partition_paths(cfg: AppConfig, n_players: int) -> tuple[Path, Path]:
+    partition_dir = cfg.combine_partitioned_dir / f"n_players={int(n_players)}"
+    manifest_dir = cfg.combine_stage_dir / "partition_manifests"
+    return partition_dir / "part-00000.parquet", manifest_dir / f"n_players={int(n_players)}.manifest.jsonl"
+
+
+def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Schema) -> tuple[list[Path], list[Path]]:
+    outputs: list[Path] = []
+    manifests: list[Path] = []
+    cfg.combine_partitioned_dir.mkdir(parents=True, exist_ok=True)
+    for src in files:
+        try:
+            n_players = int(src.parent.name.removesuffix("p"))
+        except ValueError:
+            continue
+        out_file, manifest_path = _partition_paths(cfg, n_players)
+        done = _partition_done_path(cfg, n_players)
+        if stage_is_up_to_date(done, inputs=[src], outputs=[out_file, manifest_path], config_sha=cfg.config_sha):
+            outputs.append(out_file)
+            manifests.append(manifest_path)
+            continue
+
+        pf = pq.ParquetFile(src)
+        if pf.metadata.num_rows == 0:
+            if out_file.exists():
+                out_file.unlink()
+            if manifest_path.exists():
+                manifest_path.unlink()
+            continue
+
+        def _iter_row_groups(pf_obj: pq.ParquetFile = pf):
+            for idx in range(pf_obj.num_row_groups):
+                table = pf_obj.read_row_group(idx)
+                if table.num_rows == 0:
+                    continue
+                if table.schema.names != target.names:
+                    table = _pad_to_schema(table, target)
+                yield table
+
+        run_streaming_shard(
+            out_path=str(out_file),
+            manifest_path=str(manifest_path),
+            schema=target,
+            batch_iter=_iter_row_groups(),
+            row_group_size=cfg.row_group_size,
+            compression=cfg.parquet_codec,
+            manifest_extra={"path": str(out_file), "n_players": int(n_players), "source_file": str(src)},
         )
-        return
+        outputs.append(out_file)
+        manifests.append(manifest_path)
+        write_stage_done(done, inputs=[src], outputs=[out_file, manifest_path], config_sha=cfg.config_sha)
+    return outputs, manifests
 
-    target = expected_schema_for(12)  # superset up to P12_*
-    out = _migrate_combined_output(cfg)
-    manifest_path = cfg.combined_manifest_path()
 
-    done = stage_done_path(cfg.combine_stage_dir, "combine")
-    if stage_is_up_to_date(
-        done,
-        inputs=files,
-        outputs=[out, manifest_path],
-        config_sha=getattr(cfg, "config_sha", None),
-    ):
-        LOGGER.info(
-            "Combine: output up-to-date",
-            extra={"stage": "combine", "path": str(out)},
-        )
-        return
-
-    # Up-to-date guard: if output is newer than all inputs, skip
-    if out.exists():
-        newest = max((p.stat().st_mtime for p in files), default=0.0)
-        if out.stat().st_mtime >= newest:
-            LOGGER.info(
-                "Combine: output up-to-date",
-                extra={"stage": "combine", "path": str(out)},
-            )
-            write_stage_done(
-                done,
-                inputs=files,
-                outputs=[out, manifest_path],
-                config_sha=getattr(cfg, "config_sha", None),
-            )
-            return
-
+def _write_monolithic_compatibility_from_partitions(cfg: AppConfig, out: Path, manifest_path: Path) -> int:
+    dataset = ds.dataset(cfg.combine_partitioned_dir, format="parquet", partitioning="hive")
+    scanner = dataset.scanner(batch_size=cfg.row_group_size, use_threads=True)
     total = 0
 
-    def _iter_row_groups():
-        """Yield padded row groups from all input parquet shards."""
+    def _iter_tables():
         nonlocal total
-        for p in files:
-            pf = pq.ParquetFile(p)
-            for i in range(pf.num_row_groups):
-                t = pf.read_row_group(i)  # small chunk in RAM
-                if t.num_rows == 0:
-                    continue
-                if t.schema.names != target.names:
-                    t = _pad_to_schema(t, target)  # pad/reorder lazily
-                total += t.num_rows
-                yield t
-
-    batches = _iter_row_groups()
-    first = next(batches, None)
-    if first is None:
-        if out.exists():
-            out.unlink()
-        manifest_candidate = out.with_suffix(".manifest.jsonl")
-        if manifest_candidate.exists():
-            manifest_candidate.unlink()
-        LOGGER.info(
-            "Combine: inputs produced zero rows",
-            extra={"stage": "combine", "path": str(cfg.data_dir)},
-        )
-        return
-
-    def _all_batches():
-        """Yield the first batch followed by all remaining batches."""
-        yield first
-        yield from batches
+        for batch in scanner.to_batches():
+            if batch.num_rows == 0:
+                continue
+            total += int(batch.num_rows)
+            table = pa.Table.from_batches([batch])
+            if "n_players" in table.column_names:
+                table = table.drop(["n_players"])
+            yield table
 
     run_streaming_shard(
         out_path=str(out),
         manifest_path=str(manifest_path),
-        schema=target,
-        batch_iter=_all_batches(),
+        schema=expected_schema_for(12),
+        batch_iter=_iter_tables(),
         row_group_size=cfg.row_group_size,
         compression=cfg.parquet_codec,
-        manifest_extra={
-            "path": out.name,
-            "source_files": len(files),
-        },
+        manifest_extra={"path": out.name, "source": "partitioned_compatibility"},
     )
+    return total
 
-    # Sanity check: file opens and row-count matches
+
+def run(cfg: AppConfig) -> None:
+    preferred = sorted(cfg.data_dir.glob(f"*p/{cfg.curated_rows_name}"))
+    legacy = sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet"))
+    files: list[Path] = preferred or legacy
+    if not files:
+        LOGGER.info("Combine: no inputs discovered", extra={"stage": "combine", "path": str(cfg.data_dir)})
+        return
+
+    target = expected_schema_for(12)
+    out = _migrate_combined_output(cfg)
+    manifest_path = cfg.combined_manifest_path()
+    done = stage_done_path(cfg.combine_stage_dir, "combine")
+
+    if stage_is_up_to_date(
+        done,
+        inputs=files,
+        outputs=[cfg.combine_partitioned_dir, out, manifest_path],
+        config_sha=cfg.config_sha,
+    ):
+        LOGGER.info("Combine: output up-to-date", extra={"stage": "combine", "path": str(out)})
+        return
+
+    partition_outputs, partition_manifests = _write_partitioned_dataset(cfg, files, target)
+    if not partition_outputs:
+        if out.exists():
+            out.unlink()
+        if manifest_path.exists():
+            manifest_path.unlink()
+        LOGGER.info("Combine: inputs produced zero rows", extra={"stage": "combine", "path": str(cfg.data_dir)})
+        return
+
+    monolithic_total = _write_monolithic_compatibility_from_partitions(cfg, out, manifest_path)
     pf_out = pq.ParquetFile(out)
-    if pf_out.metadata.num_rows != total:
-        raise RuntimeError(f"combine: row-count mismatch {pf_out.metadata.num_rows} != {total}")
-    if pq.read_schema(out).names != target.names:
+    if pf_out.metadata.num_rows != monolithic_total:
+        raise RuntimeError(f"combine: row-count mismatch {pf_out.metadata.num_rows} != {monolithic_total}")
+    if pq.read_schema(out).names != expected_schema_for(12).names:
         raise RuntimeError("combine: output schema mismatch")
 
     LOGGER.info(
@@ -177,14 +179,16 @@ def run(cfg: AppConfig) -> None:
         extra={
             "stage": "combine",
             "path": str(out),
-            "rows": total,
+            "rows": monolithic_total,
             "manifest": str(manifest_path),
+            "partitioned_root": str(cfg.combine_partitioned_dir),
+            "partitions": len(partition_outputs),
         },
     )
     check_post_combine(files, out)
     write_stage_done(
         done,
         inputs=files,
-        outputs=[out, manifest_path],
-        config_sha=getattr(cfg, "config_sha", None),
+        outputs=[cfg.combine_partitioned_dir, *partition_outputs, *partition_manifests, out, manifest_path],
+        config_sha=cfg.config_sha,
     )
