@@ -17,6 +17,7 @@ farkle.analysis.metrics: Aggregates combined data into per-strategy metrics (win
 farkle.analysis.metrics (win probability/uncertainty): Adds a win_prob alias for symmetric matchups and computes standard errors/CI bounds for win rates before writing consolidated metrics.
 
 farkle.analysis.game_stats: Derives per-game lengths, margins of victory, close-game shares, and rare tie-like flags from curated rows, emitting aggregated length/margin tables per strategy and player count.
+farkle.analysis.game_stats (quantiles): High-cardinality margin/spread quantiles use bounded-memory fixed-width bins (25-point bins), with expected quantile error bounded to roughly one bin width while keeping means/counts/win-share style rates exact.
 
 farkle.analysis.seat_stats: Extends seat-advantage outputs with per-seat win rates, score/farkle/round averages, and symmetry diagnostics comparing seats in symmetric matchups.
 

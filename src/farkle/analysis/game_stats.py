@@ -94,12 +94,34 @@ class _WeightedAccumulator:
     hist: dict[float, float] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class _BinnedAccumulator:
+    count: int = 0
+    total: float = 0.0
+    total_sq: float = 0.0
+    min_value: float = math.inf
+    max_value: float = -math.inf
+    bins: dict[int, int] = field(default_factory=dict)
+
+
+_MARGIN_BIN_WIDTH = 25.0
+
+
 def _resolve_analysis_workers(cfg: AppConfig) -> int:
     analysis_jobs = (
         int(cfg.analysis.n_jobs) if cfg.analysis.n_jobs and cfg.analysis.n_jobs > 0 else 0
     )
     sim_jobs = int(cfg.sim.n_jobs) if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else 0
     return max(1, analysis_jobs, sim_jobs)
+
+
+def _per_k_game_stats_paths(stage_dir: Path, k: int) -> tuple[Path, Path]:
+    base_dir = stage_dir / f"{k}p"
+    return base_dir / f"game_stats.{k}p.parquet", base_dir / f"game_stats.{k}p.done.json"
+
+
+def _per_k_game_stats_pool_marker(stage_dir: Path) -> Path:
+    return stage_dir / "pooled" / "game_stats.pool.done.json"
 
 
 def _write_per_k_game_length(
@@ -267,326 +289,122 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     stage_log.start()
 
     stage_dir = cfg.game_stats_stage_dir
-    game_length_output = cfg.game_stats_output_path("game_length.parquet")
-    margin_output = cfg.game_stats_output_path("margin_stats.parquet")
-    pooled_game_length_output = cfg.game_stats_output_path("game_length_k_weighted.parquet")
-    pooled_margin_output = cfg.game_stats_output_path("margin_k_weighted.parquet")
     configured_k_values = cfg.agreement_players()
-    per_k_game_length_outputs = {
-        k: cfg.per_k_subdir("game_stats", k) / "game_length.parquet" for k in configured_k_values
-    }
-    per_k_margin_outputs = {
-        k: cfg.per_k_subdir("game_stats", k) / "margin_stats.parquet" for k in configured_k_values
-    }
-    rare_events_output = cfg.game_stats_output_path("rare_events.parquet")
-    rare_events_details_output = cfg.game_stats_output_path("rare_events_details.parquet")
-    stamp_path = stage_done_path(stage_dir, "game_stats")
-    game_length_stamp = stage_done_path(stage_dir, "game_stats.game_length")
-    margin_stamp = stage_done_path(stage_dir, "game_stats.margin")
-    pooled_game_length_stamp = stage_done_path(stage_dir, "game_stats.game_length_pooled")
-    pooled_margin_stamp = stage_done_path(stage_dir, "game_stats.margin_pooled")
-    per_k_game_length_stamps = {
-        k: stage_done_path(stage_dir, f"game_stats.game_length.{k}p") for k in configured_k_values
-    }
-    per_k_margin_stamps = {
-        k: stage_done_path(stage_dir, f"game_stats.margin.{k}p") for k in configured_k_values
-    }
-    rare_events_summary_stamp = stage_done_path(stage_dir, "game_stats.rare_events_summary")
-    rare_events_details_stamp = stage_done_path(stage_dir, "game_stats.rare_events_details")
-
     per_n_inputs = _discover_per_n_inputs(cfg)
-    combined_path = cfg.curated_parquet
+    input_by_k = {k: path for k, path in per_n_inputs}
     input_paths: list[Path] = [p for _, p in per_n_inputs]
+    combined_path = cfg.curated_parquet
     if combined_path.exists():
         input_paths.append(combined_path)
 
     if not input_paths:
-        stage_log.missing_input(
-            "no curated parquet files found", analysis_dir=str(cfg.analysis_dir)
-        )
+        stage_log.missing_input("no curated parquet files found", analysis_dir=str(cfg.analysis_dir))
         return
 
-    write_details = cfg.analysis.rare_event_write_details
-    required_outputs = [game_length_output, margin_output, rare_events_output]
-    if write_details:
-        required_outputs.append(rare_events_details_output)
+    workers = min(max(1, _resolve_analysis_workers(cfg)), max(1, len(configured_k_values)))
+    _normalize_pooling_scheme(cfg.analysis.pooling_weights)
+    stale_ks: list[int] = []
+    for k in configured_k_values:
+        artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
+        input_path = input_by_k.get(k)
+        if input_path is None:
+            _write_empty_per_k_outputs(
+                k=k,
+                stage_dir=stage_dir,
+                artifact_path=artifact_path,
+                done_path=done_path,
+                thresholds=cfg.game_stats_margin_thresholds,
+                codec=cfg.parquet_codec,
+                config_sha=cfg.config_sha,
+                force=force,
+            )
+            continue
+        if force:
+            stale_ks.append(k)
+            continue
+        legacy_game = cfg.per_k_subdir("game_stats", k) / "game_length.parquet"
+        legacy_margin = cfg.per_k_subdir("game_stats", k) / "margin_stats.parquet"
+        if not stage_is_up_to_date(
+            done_path,
+            inputs=[input_path],
+            outputs=[artifact_path, legacy_game, legacy_margin],
+            config_sha=cfg.config_sha,
+        ):
+            stale_ks.append(k)
 
-    pooled_possible = bool(per_n_inputs)
-    if pooled_possible:
-        required_outputs.extend([pooled_game_length_output, pooled_margin_output])
-    required_outputs.extend(per_k_game_length_outputs.values())
-    required_outputs.extend(per_k_margin_outputs.values())
-
-    if not force and stage_is_up_to_date(
-        stamp_path,
-        inputs=input_paths,
-        outputs=required_outputs,
-        config_sha=cfg.config_sha,
-    ):
+    if stale_ks:
         LOGGER.info(
-            "Game-length stats up-to-date",
-            extra={
-                "stage": "game_stats",
-                "game_length_output": str(game_length_output),
-                "margin_output": str(margin_output),
-                "stamp": str(stamp_path),
-            },
+            "Computing per-k game stats shards",
+            extra={"stage": "game_stats", "stale_k": stale_ks, "workers": workers},
         )
-        return
+        if workers == 1:
+            for k in stale_ks:
+                _compute_k_game_stats(
+                    k=k,
+                    input_path=input_by_k[k],
+                    stage_dir=stage_dir,
+                    thresholds=cfg.game_stats_margin_thresholds,
+                    codec=cfg.parquet_codec,
+                    config_sha=cfg.config_sha,
+                )
+        else:
+            with ThreadPoolExecutor(max_workers=min(workers, len(stale_ks))) as executor:
+                futures = [
+                    executor.submit(
+                        _compute_k_game_stats,
+                        k=k,
+                        input_path=input_by_k[k],
+                        stage_dir=stage_dir,
+                        thresholds=cfg.game_stats_margin_thresholds,
+                        codec=cfg.parquet_codec,
+                        config_sha=cfg.config_sha,
+                    )
+                    for k in stale_ks
+                ]
+                _run_per_k_fanout(futures)
 
-    game_length_up_to_date = not force and stage_is_up_to_date(
-        game_length_stamp,
-        inputs=input_paths,
-        outputs=[game_length_output],
+    game_length_output = cfg.game_stats_output_path("game_length.parquet")
+    margin_output = cfg.game_stats_output_path("margin_stats.parquet")
+    pooled_game_length_output = cfg.game_stats_output_path("game_length_k_weighted.parquet")
+    pooled_margin_output = cfg.game_stats_output_path("margin_k_weighted.parquet")
+    pooled_stamp = _per_k_game_stats_pool_marker(stage_dir)
+
+    _pool_completed_k_game_stats(
+        configured_k_values=configured_k_values,
+        stage_dir=stage_dir,
+        game_length_output=game_length_output,
+        margin_output=margin_output,
+        pooled_game_length_output=pooled_game_length_output,
+        pooled_margin_output=pooled_margin_output,
+        pooled_stamp=pooled_stamp,
+        codec=cfg.parquet_codec,
         config_sha=cfg.config_sha,
+        force=force,
+        combined_path=combined_path,
     )
-    margin_up_to_date = not force and stage_is_up_to_date(
-        margin_stamp,
-        inputs=input_paths,
-        outputs=[margin_output],
-        config_sha=cfg.config_sha,
-    )
-    rare_events_summary_up_to_date = not force and stage_is_up_to_date(
+
+    rare_events_output = cfg.game_stats_output_path("rare_events.parquet")
+    rare_events_details_output = cfg.game_stats_output_path("rare_events_details.parquet")
+    rare_events_summary_stamp = stage_done_path(stage_dir, "game_stats.rare_events_summary")
+    rare_events_details_stamp = stage_done_path(stage_dir, "game_stats.rare_events_details")
+    write_details = cfg.analysis.rare_event_write_details
+
+    rare_events_summary_up_to_date = (not force) and stage_is_up_to_date(
         rare_events_summary_stamp,
         inputs=input_paths,
         outputs=[rare_events_output],
         config_sha=cfg.config_sha,
     )
-
     rare_events_details_up_to_date = True
     if write_details:
-        rare_events_details_up_to_date = not force and stage_is_up_to_date(
+        rare_events_details_up_to_date = (not force) and stage_is_up_to_date(
             rare_events_details_stamp,
             inputs=input_paths,
             outputs=[rare_events_details_output],
             config_sha=cfg.config_sha,
         )
 
-    pooled_game_length_up_to_date = True
-    pooled_margin_up_to_date = True
-    if pooled_possible:
-        pooled_inputs = [p for _, p in per_n_inputs]
-        pooled_game_length_up_to_date = not force and stage_is_up_to_date(
-            pooled_game_length_stamp,
-            inputs=pooled_inputs,
-            outputs=[pooled_game_length_output],
-            config_sha=cfg.config_sha,
-        )
-        pooled_margin_up_to_date = not force and stage_is_up_to_date(
-            pooled_margin_stamp,
-            inputs=pooled_inputs,
-            outputs=[pooled_margin_output],
-            config_sha=cfg.config_sha,
-        )
-
-    per_k_game_length_up_to_date = {
-        k: (not force)
-        and stage_is_up_to_date(
-            per_k_game_length_stamps[k],
-            inputs=input_paths,
-            outputs=[per_k_game_length_outputs[k]],
-            config_sha=cfg.config_sha,
-        )
-        for k in configured_k_values
-    }
-    per_k_margin_up_to_date = {
-        k: (not force)
-        and stage_is_up_to_date(
-            per_k_margin_stamps[k],
-            inputs=input_paths,
-            outputs=[per_k_margin_outputs[k]],
-            config_sha=cfg.config_sha,
-        )
-        for k in configured_k_values
-    }
-
-    if (
-        game_length_up_to_date
-        and margin_up_to_date
-        and pooled_game_length_up_to_date
-        and pooled_margin_up_to_date
-        and all(per_k_game_length_up_to_date.values())
-        and all(per_k_margin_up_to_date.values())
-        and rare_events_summary_up_to_date
-        and rare_events_details_up_to_date
-    ):
-        LOGGER.info(
-            "Game-length stats up-to-date",
-            extra={
-                "stage": "game_stats",
-                "game_length_output": str(game_length_output),
-                "margin_output": str(margin_output),
-                "stamp": str(stamp_path),
-            },
-        )
-        return
-
-    LOGGER.info(
-        "Computing game-length stats",
-        extra={
-            "stage": "game_stats",
-            "analysis_dir": str(cfg.analysis_dir),
-            "game_length_output": str(game_length_output),
-            "margin_output": str(margin_output),
-            "force": force,
-        },
-    )
-
-    combined_rows: int | None = None
-    combined: pd.DataFrame | None = None
-    if not game_length_up_to_date:
-        strategy_stats = _per_strategy_stats(per_n_inputs)
-        global_stats = _global_stats(combined_path) if combined_path.exists() else pd.DataFrame()
-
-        combined = pd.concat([strategy_stats, global_stats], ignore_index=True)
-        if combined.empty:
-            stage_log.missing_input("no rows available to summarize")
-            return
-        combined = _coerce_strategy_dtype(combined, _strategy_arrow_type(per_n_inputs))
-        combined = _downcast_integer_stats(combined, columns=("n_players", "observations"))
-
-        table = pa.Table.from_pandas(combined, preserve_index=False)
-        write_parquet_atomic(table, game_length_output, codec=cfg.parquet_codec)
-        combined_rows = len(combined)
-        write_stage_done(
-            game_length_stamp,
-            inputs=input_paths,
-            outputs=[game_length_output],
-            config_sha=cfg.config_sha,
-        )
-
-    margin_stats: pd.DataFrame | None = None
-    if not margin_up_to_date:
-        LOGGER.info(
-            "Computing per-strategy margin stats",
-            extra={
-                "stage": "game_stats",
-                "inputs": [str(path) for _, path in per_n_inputs],
-                "thresholds": [to_int(thr) for thr in cfg.game_stats_margin_thresholds],
-            },
-        )
-        margin_stats = _per_strategy_margin_stats(
-            per_n_inputs, thresholds=cfg.game_stats_margin_thresholds
-        )
-        if margin_stats.empty:
-            stage_log.missing_input("no margins available to summarize")
-            return
-        margin_stats = _coerce_strategy_dtype(margin_stats, _strategy_arrow_type(per_n_inputs))
-        margin_stats = _downcast_integer_stats(margin_stats, columns=("n_players", "observations"))
-
-        margin_table = pa.Table.from_pandas(margin_stats, preserve_index=False)
-        write_parquet_atomic(margin_table, margin_output, codec=cfg.parquet_codec)
-        write_stage_done(
-            margin_stamp,
-            inputs=input_paths,
-            outputs=[margin_output],
-            config_sha=cfg.config_sha,
-        )
-
-    if not all(per_k_game_length_up_to_date.values()):
-        if combined is None:
-            combined = pd.read_parquet(game_length_output)
-        stale_game_length_ks = [
-            k for k in configured_k_values if not per_k_game_length_up_to_date[k]
-        ]
-        game_length_workers = min(len(stale_game_length_ks), _resolve_analysis_workers(cfg))
-        with ThreadPoolExecutor(max_workers=game_length_workers) as executor:
-            futures = [
-                executor.submit(
-                    _write_per_k_game_length,
-                    k=k,
-                    game_length_df=combined,
-                    output_path=per_k_game_length_outputs[k],
-                    stamp_path=per_k_game_length_stamps[k],
-                    input_paths=input_paths,
-                    codec=cfg.parquet_codec,
-                    config_sha=cfg.config_sha,
-                )
-                for k in stale_game_length_ks
-            ]
-            _run_per_k_fanout(futures)
-
-    if not all(per_k_margin_up_to_date.values()):
-        if margin_stats is None:
-            margin_stats = pd.read_parquet(margin_output)
-        stale_margin_ks = [k for k in configured_k_values if not per_k_margin_up_to_date[k]]
-        margin_workers = min(len(stale_margin_ks), _resolve_analysis_workers(cfg))
-        with ThreadPoolExecutor(max_workers=margin_workers) as executor:
-            futures = [
-                executor.submit(
-                    _write_per_k_margin,
-                    k=k,
-                    margin_df=margin_stats,
-                    output_path=per_k_margin_outputs[k],
-                    stamp_path=per_k_margin_stamps[k],
-                    input_paths=input_paths,
-                    codec=cfg.parquet_codec,
-                    config_sha=cfg.config_sha,
-                )
-                for k in stale_margin_ks
-            ]
-            _run_per_k_fanout(futures)
-
-    if pooled_possible and not (pooled_game_length_up_to_date and pooled_margin_up_to_date):
-        pooling_scheme = _normalize_pooling_scheme(cfg.analysis.pooling_weights)
-        weights_by_k = dict(cfg.analysis.pooling_weights_by_k or {})
-        if pooling_scheme == "config" and not weights_by_k:
-            raise ValueError("analysis.pooling_weights_by_k must be set for config pooling")
-        LOGGER.info(
-            "Computing pooled game stats",
-            extra={
-                "stage": "game_stats",
-                "pooling_scheme": pooling_scheme,
-                "weights_by_k": weights_by_k or None,
-            },
-        )
-
-        if not pooled_game_length_up_to_date:
-            pooled_game_length = _pooled_strategy_stats(
-                per_n_inputs,
-                pooling_scheme=pooling_scheme,
-                weights_by_k=weights_by_k,
-            )
-            if pooled_game_length.empty:
-                stage_log.missing_input("no pooled game-length rows available")
-                return
-            pooled_game_length = _coerce_strategy_dtype(
-                pooled_game_length, _strategy_arrow_type(per_n_inputs)
-            )
-            pooled_game_length = _downcast_integer_stats(
-                pooled_game_length, columns=("observations",)
-            )
-            pooled_table = pa.Table.from_pandas(pooled_game_length, preserve_index=False)
-            write_parquet_atomic(pooled_table, pooled_game_length_output, codec=cfg.parquet_codec)
-            write_stage_done(
-                pooled_game_length_stamp,
-                inputs=[p for _, p in per_n_inputs],
-                outputs=[pooled_game_length_output],
-                config_sha=cfg.config_sha,
-            )
-
-        if not pooled_margin_up_to_date:
-            pooled_margin = _pooled_margin_stats(
-                per_n_inputs,
-                thresholds=cfg.game_stats_margin_thresholds,
-                pooling_scheme=pooling_scheme,
-                weights_by_k=weights_by_k,
-            )
-            if pooled_margin.empty:
-                stage_log.missing_input("no pooled margin rows available")
-                return
-            pooled_margin = _coerce_strategy_dtype(
-                pooled_margin, _strategy_arrow_type(per_n_inputs)
-            )
-            pooled_margin = _downcast_integer_stats(pooled_margin, columns=("observations",))
-            pooled_margin_table = pa.Table.from_pandas(pooled_margin, preserve_index=False)
-            write_parquet_atomic(pooled_margin_table, pooled_margin_output, codec=cfg.parquet_codec)
-            write_stage_done(
-                pooled_margin_stamp,
-                inputs=[p for _, p in per_n_inputs],
-                outputs=[pooled_margin_output],
-                config_sha=cfg.config_sha,
-            )
+    stamp_path = stage_done_path(stage_dir, "game_stats")
 
     if not (rare_events_summary_up_to_date and rare_events_details_up_to_date):
         resolved_thresholds, resolved_target_score = _resolve_rare_event_thresholds(
@@ -596,7 +414,6 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             margin_quantile=cfg.analysis.rare_event_margin_quantile,
             target_rate=cfg.analysis.rare_event_target_rate,
         )
-
         if not rare_events_summary_up_to_date:
             rare_event_rows = _rare_event_flags(
                 per_n_inputs,
@@ -605,7 +422,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 output_path=rare_events_output,
                 codec=cfg.parquet_codec,
                 config_sha=cfg.config_sha,
-                n_workers=_resolve_analysis_workers(cfg),
+                n_workers=workers,
             )
             if rare_event_rows == 0:
                 raise RuntimeError("game-stats: no rare events available to summarize")
@@ -632,23 +449,325 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 outputs=[rare_events_details_output],
                 config_sha=cfg.config_sha,
             )
+
+
     write_stage_done(
         stamp_path,
         inputs=input_paths,
-        outputs=required_outputs,
+        outputs=[
+            game_length_output,
+            margin_output,
+            pooled_game_length_output,
+            pooled_margin_output,
+            rare_events_output,
+            *[cfg.per_k_subdir("game_stats", k) / "game_length.parquet" for k in configured_k_values],
+            *[cfg.per_k_subdir("game_stats", k) / "margin_stats.parquet" for k in configured_k_values],
+            *( [rare_events_details_output] if write_details else [] ),
+        ],
         config_sha=cfg.config_sha,
     )
 
-    LOGGER.info(
-        "Game-length stats written",
-        extra={
-            "stage": "game_stats",
-            "rows": combined_rows,
-            "game_length_output": str(game_length_output),
-            "margin_output": str(margin_output),
-        },
+def _compute_k_game_stats(
+    *,
+    k: int,
+    input_path: Path,
+    stage_dir: Path,
+    thresholds: Sequence[int],
+    codec: Compression,
+    config_sha: str | None,
+) -> None:
+    artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
+    temp_state_path = artifact_path.with_suffix(".checkpoint.json")
+    ds_in = ds.dataset(input_path)
+    strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+    score_cols = [name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")]
+    if not strategy_cols:
+        return
+
+    rounds_by_strategy: dict[Scalar, _UnweightedAccumulator] = {}
+    runner_by_strategy: dict[Scalar, _BinnedAccumulator] = {}
+    spread_by_strategy: dict[Scalar, _BinnedAccumulator] = {}
+    global_rounds = _UnweightedAccumulator()
+
+    scanner_cols = ["n_rounds", *strategy_cols]
+    if score_cols:
+        scanner_cols.extend(score_cols)
+    scanner = ds_in.scanner(columns=scanner_cols, batch_size=65_536)
+    for batch_idx, batch in enumerate(scanner.to_batches(), start=1):
+        df = batch.to_pandas(categories=strategy_cols)
+        if df.empty:
+            continue
+        rounds = pd.to_numeric(df["n_rounds"], errors="coerce")
+        valid_rounds_global = rounds.notna()
+        if bool(valid_rounds_global.any()):
+            _update_unweighted_accumulator(
+                global_rounds, rounds.loc[valid_rounds_global].to_numpy(dtype=float, copy=False)
+            )
+        margin_cols = _compute_margin_columns(df, score_cols) if score_cols else None
+
+        for strategy_col in strategy_cols:
+            strategies = df[strategy_col]
+            rounds_valid = rounds.notna() & strategies.notna()
+            if bool(rounds_valid.any()):
+                grouped = pd.DataFrame(
+                    {"strategy": strategies.loc[rounds_valid], "rounds": rounds.loc[rounds_valid]}
+                ).groupby("strategy", observed=True, sort=False)["rounds"]
+                for strategy, series in grouped:
+                    acc = rounds_by_strategy.setdefault(strategy, _UnweightedAccumulator())
+                    _update_unweighted_accumulator(acc, series.to_numpy(dtype=float, copy=False))
+
+            if margin_cols is not None:
+                runner = pd.to_numeric(margin_cols["margin_runner_up"], errors="coerce")
+                spread = pd.to_numeric(margin_cols["score_spread"], errors="coerce")
+                margin_valid = runner.notna() & strategies.notna()
+                if bool(margin_valid.any()):
+                    grouped_margin = pd.DataFrame(
+                        {
+                            "strategy": strategies.loc[margin_valid],
+                            "runner": runner.loc[margin_valid],
+                            "spread": spread.loc[margin_valid],
+                        }
+                    ).groupby("strategy", observed=True, sort=False)
+                    for strategy, group in grouped_margin:
+                        r_acc = runner_by_strategy.setdefault(strategy, _BinnedAccumulator())
+                        s_acc = spread_by_strategy.setdefault(strategy, _BinnedAccumulator())
+                        _update_binned_accumulator(r_acc, group["runner"].to_numpy(dtype=float, copy=False))
+                        _update_binned_accumulator(s_acc, group["spread"].to_numpy(dtype=float, copy=False))
+
+        if batch_idx % 25 == 0:
+            with atomic_path(temp_state_path) as tmp_path:
+                tmp_path.write_text(json.dumps({"k": k, "batches": batch_idx}, sort_keys=True))
+
+    rows: list[dict[str, StatValue]] = []
+    for strategy, rounds_acc in rounds_by_strategy.items():
+        if rounds_acc.count <= 0:
+            continue
+        mean_rounds, std_rounds = _mean_std_from_unweighted(rounds_acc)
+        row: dict[str, StatValue] = {
+            "summary_level": "strategy",
+            "strategy": _strategy_stat_value(strategy),
+            "n_players": k,
+            "observations": rounds_acc.count,
+            "mean_rounds": mean_rounds,
+            "median_rounds": _quantile_linear_from_hist(rounds_acc.hist, count=rounds_acc.count, quantile=0.5),
+            "std_rounds": std_rounds,
+            "p10_rounds": _quantile_linear_from_hist(rounds_acc.hist, count=rounds_acc.count, quantile=0.1),
+            "p50_rounds": _quantile_linear_from_hist(rounds_acc.hist, count=rounds_acc.count, quantile=0.5),
+            "p90_rounds": _quantile_linear_from_hist(rounds_acc.hist, count=rounds_acc.count, quantile=0.9),
+            "prob_rounds_le_5": _probability_le_from_hist(rounds_acc.hist, count=rounds_acc.count, threshold=5),
+            "prob_rounds_le_10": _probability_le_from_hist(rounds_acc.hist, count=rounds_acc.count, threshold=10),
+            "prob_rounds_ge_20": _probability_ge_from_hist(rounds_acc.hist, count=rounds_acc.count, threshold=20),
+        }
+        runner_acc = runner_by_strategy.get(strategy)
+        spread_acc = spread_by_strategy.get(strategy)
+        if runner_acc is not None and spread_acc is not None and runner_acc.count > 0 and spread_acc.count > 0:
+            mean_runner, std_runner = _mean_std_from_binned(runner_acc)
+            mean_spread, std_spread = _mean_std_from_binned(spread_acc)
+            row.update(
+                {
+                    "mean_margin_runner_up": mean_runner,
+                    "median_margin_runner_up": _quantile_from_binned(runner_acc, 0.5),
+                    "std_margin_runner_up": std_runner,
+                    "mean_score_spread": mean_spread,
+                    "median_score_spread": _quantile_from_binned(spread_acc, 0.5),
+                    "std_score_spread": std_spread,
+                }
+            )
+            for thr in thresholds:
+                row[f"prob_margin_runner_up_le_{thr}"] = _probability_le_from_binned(runner_acc, float(thr))
+                row[f"prob_score_spread_le_{thr}"] = _probability_le_from_binned(spread_acc, float(thr))
+        rows.append(row)
+
+    if global_rounds.count > 0:
+        g_mean, g_std = _mean_std_from_unweighted(global_rounds)
+        rows.append(
+            {
+                "summary_level": "n_players",
+                "strategy": pd.NA,
+                "n_players": k,
+                "observations": global_rounds.count,
+                "mean_rounds": g_mean,
+                "median_rounds": _quantile_linear_from_hist(global_rounds.hist, count=global_rounds.count, quantile=0.5),
+                "std_rounds": g_std,
+                "p10_rounds": _quantile_linear_from_hist(global_rounds.hist, count=global_rounds.count, quantile=0.1),
+                "p50_rounds": _quantile_linear_from_hist(global_rounds.hist, count=global_rounds.count, quantile=0.5),
+                "p90_rounds": _quantile_linear_from_hist(global_rounds.hist, count=global_rounds.count, quantile=0.9),
+                "prob_rounds_le_5": _probability_le_from_hist(global_rounds.hist, count=global_rounds.count, threshold=5),
+                "prob_rounds_le_10": _probability_le_from_hist(global_rounds.hist, count=global_rounds.count, threshold=10),
+                "prob_rounds_ge_20": _probability_ge_from_hist(global_rounds.hist, count=global_rounds.count, threshold=20),
+            }
+        )
+
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        return
+    table = pa.Table.from_pandas(frame, preserve_index=False)
+    write_parquet_atomic(table, artifact_path, codec=codec)
+
+    legacy_game_path = artifact_path.parent / "game_length.parquet"
+    legacy_margin_path = artifact_path.parent / "margin_stats.parquet"
+    game_cols = [
+        "summary_level","strategy","n_players","observations","mean_rounds","median_rounds",
+        "std_rounds","p10_rounds","p50_rounds","p90_rounds","prob_rounds_le_5",
+        "prob_rounds_le_10","prob_rounds_ge_20",
+    ]
+    margin_cols = [
+        "summary_level","strategy","n_players","observations","mean_margin_runner_up",
+        "median_margin_runner_up","std_margin_runner_up",*[c for c in frame.columns if c.startswith("prob_margin_runner_up_le_")],
+        "mean_score_spread","median_score_spread","std_score_spread",*[c for c in frame.columns if c.startswith("prob_score_spread_le_")],
+    ]
+    game_frame = frame[[c for c in game_cols if c in frame.columns]].copy()
+    margin_frame = frame[[c for c in margin_cols if c in frame.columns]].copy()
+    if "strategy" in game_frame.columns:
+        game_frame["strategy"] = pd.to_numeric(game_frame["strategy"], errors="coerce").astype("Int64")
+    if "strategy" in margin_frame.columns:
+        margin_frame["strategy"] = pd.to_numeric(margin_frame["strategy"], errors="coerce").astype("Int64")
+    if "summary_level" in margin_frame.columns:
+        margin_frame = margin_frame.loc[margin_frame["summary_level"] == "strategy"].copy()
+    _write_per_k_game_length(
+        k=k,
+        game_length_df=game_frame,
+        output_path=legacy_game_path,
+        stamp_path=stage_done_path(stage_dir, f"game_stats.game_length.{k}p"),
+        input_paths=[input_path],
+        codec=codec,
+        config_sha=config_sha,
+    )
+    _write_per_k_margin(
+        k=k,
+        margin_df=margin_frame,
+        output_path=legacy_margin_path,
+        stamp_path=stage_done_path(stage_dir, f"game_stats.margin.{k}p"),
+        input_paths=[input_path],
+        codec=codec,
+        config_sha=config_sha,
     )
 
+    write_stage_done(
+        done_path,
+        inputs=[input_path],
+        outputs=[artifact_path, legacy_game_path, legacy_margin_path],
+        config_sha=config_sha,
+    )
+
+
+def _pool_completed_k_game_stats(
+    *,
+    configured_k_values: Sequence[int],
+    stage_dir: Path,
+    game_length_output: Path,
+    margin_output: Path,
+    pooled_game_length_output: Path,
+    pooled_margin_output: Path,
+    pooled_stamp: Path,
+    codec: Compression,
+    config_sha: str | None,
+    force: bool,
+    combined_path: Path,
+) -> None:
+    completed_paths: list[Path] = []
+    for k in configured_k_values:
+        artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
+        if stage_is_up_to_date(done_path, inputs=[], outputs=[artifact_path], config_sha=config_sha):
+            completed_paths.append(artifact_path)
+    if not completed_paths:
+        return
+
+    outputs = [game_length_output, margin_output, pooled_game_length_output, pooled_margin_output]
+    if (not force) and stage_is_up_to_date(
+        pooled_stamp,
+        inputs=completed_paths,
+        outputs=outputs,
+        config_sha=config_sha,
+    ):
+        return
+
+    tables = [pd.read_parquet(path) for path in completed_paths]
+    combined = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+    if combined.empty:
+        return
+
+    game_cols = [
+        "summary_level","strategy","n_players","observations","mean_rounds","median_rounds",
+        "std_rounds","p10_rounds","p50_rounds","p90_rounds","prob_rounds_le_5",
+        "prob_rounds_le_10","prob_rounds_ge_20",
+    ]
+    margin_cols = [
+        "summary_level","strategy","n_players","observations","mean_margin_runner_up",
+        "median_margin_runner_up","std_margin_runner_up",*[c for c in combined.columns if c.startswith("prob_margin_runner_up_le_")],
+        "mean_score_spread","median_score_spread","std_score_spread",*[c for c in combined.columns if c.startswith("prob_score_spread_le_")],
+    ]
+    game_df = combined[[c for c in game_cols if c in combined.columns]].copy()
+    margin_df = combined[[c for c in margin_cols if c in combined.columns]].copy()
+    if "strategy" in game_df.columns:
+        game_df["strategy"] = pd.to_numeric(game_df["strategy"], errors="coerce").astype("Int64")
+    if "strategy" in margin_df.columns:
+        margin_df["strategy"] = pd.to_numeric(margin_df["strategy"], errors="coerce").astype("Int64")
+    if "summary_level" in margin_df.columns:
+        margin_df = margin_df.loc[margin_df["summary_level"] == "strategy"].copy()
+    write_parquet_atomic(pa.Table.from_pandas(game_df, preserve_index=False), game_length_output, codec=codec)
+    write_parquet_atomic(pa.Table.from_pandas(margin_df, preserve_index=False), margin_output, codec=codec)
+
+    pooled_game = game_df.groupby("strategy", observed=True, sort=False).agg(
+        observations=("observations", "sum"),
+        mean_rounds=("mean_rounds", "mean"),
+        median_rounds=("median_rounds", "mean"),
+        std_rounds=("std_rounds", "mean"),
+        p10_rounds=("p10_rounds", "mean"),
+        p50_rounds=("p50_rounds", "mean"),
+        p90_rounds=("p90_rounds", "mean"),
+        prob_rounds_le_5=("prob_rounds_le_5", "mean"),
+        prob_rounds_le_10=("prob_rounds_le_10", "mean"),
+        prob_rounds_ge_20=("prob_rounds_ge_20", "mean"),
+    ).reset_index()
+    pooled_game.insert(0, "summary_level", "pooled")
+    write_parquet_atomic(pa.Table.from_pandas(pooled_game, preserve_index=False), pooled_game_length_output, codec=codec)
+
+    if not margin_df.empty:
+        margin_metric_cols = [c for c in margin_df.columns if c not in {"summary_level", "strategy", "n_players", "observations"}]
+        agg_map = {"observations": "sum", **{col: "mean" for col in margin_metric_cols}}
+        pooled_margin = margin_df.groupby("strategy", observed=True, sort=False).agg(agg_map).reset_index()
+        pooled_margin.insert(0, "summary_level", "pooled")
+    else:
+        pooled_margin = pd.DataFrame(columns=["summary_level", "strategy", "observations"])
+    write_parquet_atomic(pa.Table.from_pandas(pooled_margin, preserve_index=False), pooled_margin_output, codec=codec)
+
+    write_stage_done(pooled_stamp, inputs=completed_paths, outputs=outputs, config_sha=config_sha)
+
+def _write_empty_per_k_outputs(
+    *,
+    k: int,
+    stage_dir: Path,
+    artifact_path: Path,
+    done_path: Path,
+    thresholds: Sequence[int],
+    codec: Compression,
+    config_sha: str | None,
+    force: bool,
+) -> None:
+    legacy_game_path = artifact_path.parent / "game_length.parquet"
+    legacy_margin_path = artifact_path.parent / "margin_stats.parquet"
+    if (not force) and stage_is_up_to_date(
+        done_path,
+        inputs=[],
+        outputs=[artifact_path, legacy_game_path, legacy_margin_path],
+        config_sha=config_sha,
+    ):
+        return
+    cols = [
+        "summary_level","strategy","n_players","observations","mean_rounds","median_rounds",
+        "std_rounds","p10_rounds","p50_rounds","p90_rounds","prob_rounds_le_5",
+        "prob_rounds_le_10","prob_rounds_ge_20","mean_margin_runner_up","median_margin_runner_up",
+        "std_margin_runner_up",*[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
+        "mean_score_spread","median_score_spread","std_score_spread",*[f"prob_score_spread_le_{thr}" for thr in thresholds],
+    ]
+    empty = pd.DataFrame(columns=cols)
+    write_parquet_atomic(pa.Table.from_pandas(empty, preserve_index=False), artifact_path, codec=codec)
+    write_parquet_atomic(pa.Table.from_pandas(empty[[c for c in cols if c.startswith("summary") or c in {"strategy","n_players","observations","mean_rounds","median_rounds","std_rounds","p10_rounds","p50_rounds","p90_rounds","prob_rounds_le_5","prob_rounds_le_10","prob_rounds_ge_20"}]], preserve_index=False), legacy_game_path, codec=codec)
+    write_parquet_atomic(pa.Table.from_pandas(empty[[c for c in cols if c.startswith("summary") or c in {"strategy","n_players","observations","mean_margin_runner_up","median_margin_runner_up","std_margin_runner_up","mean_score_spread","median_score_spread","std_score_spread"} or c.startswith("prob_margin_runner_up_le_") or c.startswith("prob_score_spread_le_")]], preserve_index=False), legacy_margin_path, codec=codec)
+    write_stage_done(done_path, inputs=[], outputs=[artifact_path, legacy_game_path, legacy_margin_path], config_sha=config_sha)
+    write_stage_done(stage_done_path(stage_dir, f"game_stats.game_length.{k}p"), inputs=[], outputs=[legacy_game_path], config_sha=config_sha)
+    write_stage_done(stage_done_path(stage_dir, f"game_stats.margin.{k}p"), inputs=[], outputs=[legacy_margin_path], config_sha=config_sha)
 
 def _discover_per_n_inputs(cfg: AppConfig) -> list[tuple[int, Path]]:
     """Return discovered per-``n`` curated parquets in ``analysis/data``."""
@@ -946,6 +1065,57 @@ def _mean_std_from_unweighted(acc: _UnweightedAccumulator) -> tuple[float, float
     variance = (acc.total_sq / acc.count) - (mean**2)
     variance = max(variance, 0.0)
     return float(mean), float(math.sqrt(variance))
+
+
+def _update_binned_accumulator(acc: _BinnedAccumulator, values: np.ndarray) -> None:
+    clean = values[np.isfinite(values)]
+    if clean.size == 0:
+        return
+    acc.count += int(clean.size)
+    acc.total += float(clean.sum())
+    acc.total_sq += float(np.square(clean).sum())
+    acc.min_value = min(acc.min_value, float(clean.min()))
+    acc.max_value = max(acc.max_value, float(clean.max()))
+    bin_ids = np.floor(clean / _MARGIN_BIN_WIDTH).astype(np.int64)
+    unique, freq = np.unique(bin_ids, return_counts=True)
+    for bin_id, count in zip(unique.tolist(), freq.tolist(), strict=True):
+        bin_key = int(bin_id)
+        acc.bins[bin_key] = acc.bins.get(bin_key, 0) + int(count)
+
+
+def _mean_std_from_binned(acc: _BinnedAccumulator) -> tuple[float, float]:
+    if acc.count <= 0:
+        return float("nan"), float("nan")
+    mean = acc.total / acc.count
+    variance = max((acc.total_sq / acc.count) - (mean * mean), 0.0)
+    return float(mean), float(math.sqrt(variance))
+
+
+def _quantile_from_binned(acc: _BinnedAccumulator, quantile: float) -> float:
+    if acc.count <= 0 or not acc.bins:
+        return float("nan")
+    if quantile <= 0.0:
+        return float(acc.min_value)
+    if quantile >= 1.0:
+        return float(acc.max_value)
+    cutoff = int(math.ceil(acc.count * quantile))
+    running = 0
+    for bin_id, bin_count in sorted(acc.bins.items()):
+        running += int(bin_count)
+        if running >= cutoff:
+            return float((bin_id + 0.5) * _MARGIN_BIN_WIDTH)
+    return float(acc.max_value)
+
+
+def _probability_le_from_binned(acc: _BinnedAccumulator, threshold: float) -> float:
+    if acc.count <= 0 or not math.isfinite(threshold):
+        return float("nan")
+    threshold_bin = int(math.floor(threshold / _MARGIN_BIN_WIDTH))
+    le = 0
+    for bin_id, bin_count in acc.bins.items():
+        if bin_id <= threshold_bin:
+            le += int(bin_count)
+    return float(le / acc.count)
 
 
 def _weighted_quantile_from_hist(

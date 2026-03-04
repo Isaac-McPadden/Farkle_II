@@ -515,3 +515,27 @@ def test_margin_pooling_and_strategy_empty_paths(caplog: pytest.LogCaptureFixtur
         per_strategy_nan = game_stats._per_strategy_margin_stats([(2, nan_scores)], thresholds=(10,))
     assert pooled_nan.empty
     assert per_strategy_nan.empty
+
+
+def test_binned_margin_summary_parity_tolerance() -> None:
+    rng = np.random.default_rng(12345)
+    values = rng.integers(0, 5000, size=20_000).astype(float)
+
+    binned = game_stats._BinnedAccumulator()
+    game_stats._update_binned_accumulator(binned, values)
+
+    exact_hist: dict[float, int] = {}
+    for value in values:
+        key = float(value)
+        exact_hist[key] = exact_hist.get(key, 0) + 1
+
+    exact_p50 = game_stats._quantile_linear_from_hist(exact_hist, count=values.size, quantile=0.5)
+    exact_p90 = game_stats._quantile_linear_from_hist(exact_hist, count=values.size, quantile=0.9)
+
+    approx_p50 = game_stats._quantile_from_binned(binned, 0.5)
+    approx_p90 = game_stats._quantile_from_binned(binned, 0.9)
+
+    assert game_stats._mean_std_from_binned(binned)[0] == pytest.approx(float(values.mean()), rel=0.0, abs=1e-9)
+    assert game_stats._probability_le_from_binned(binned, 1000.0) == pytest.approx(float((values <= 1000).mean()), abs=0.02)
+    assert abs(approx_p50 - exact_p50) <= game_stats._MARGIN_BIN_WIDTH
+    assert abs(approx_p90 - exact_p90) <= game_stats._MARGIN_BIN_WIDTH
