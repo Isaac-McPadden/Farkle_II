@@ -114,7 +114,7 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
         for shard_path in sorted(row_dirs[0].glob("*.parquet")):
             yield _read_subset(shard_path, cols), shard_path
     else:  # compact parquet or CSV
-        for pqt in block.glob("*.parquet"):
+        for pqt in sorted(block.glob("*.parquet")):
             yield _read_subset(pqt, cols), pqt
         csv = block / "winners.csv"
         if csv.exists():
