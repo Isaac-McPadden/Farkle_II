@@ -125,10 +125,10 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
 
 
     if combined_parquet.is_dir():
-        partition_manifests = sorted(combined_parquet.glob("n_players=*/part-*.manifest.jsonl"))
+        partition_manifests = sorted(combined_parquet.glob("*p_part-*.manifest.jsonl"))
         if not partition_manifests:
             stage_partition_manifests = combined_parquet.parent.parent / "partition_manifests"
-            partition_manifests = sorted(stage_partition_manifests.glob("n_players=*.manifest.jsonl"))
+            partition_manifests = sorted(stage_partition_manifests.glob("*p_partition.manifest.jsonl"))
         if partition_manifests:
             manifest_rows = sum(_rows_from_manifest(path) for path in partition_manifests)
             seen_manifest = True

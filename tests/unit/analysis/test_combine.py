@@ -243,7 +243,7 @@ def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: 
 
     combine.run(cfg)
 
-    partition_file = cfg.combine_partitioned_dir / "n_players=2" / "part-00000.parquet"
+    partition_file = cfg.combine_partitioned_dir / "2p_part-00000.parquet"
     partition_done = cfg.combine_stage_dir / "combine_partition_2p.done.json"
     assert partition_file.exists()
     assert partition_done.exists()

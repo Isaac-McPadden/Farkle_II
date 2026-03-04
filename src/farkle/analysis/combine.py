@@ -55,9 +55,10 @@ def _partition_done_path(cfg: AppConfig, n_players: int) -> Path:
 
 
 def _partition_paths(cfg: AppConfig, n_players: int) -> tuple[Path, Path]:
-    partition_dir = cfg.combine_partitioned_dir / f"n_players={int(n_players)}"
+    prefix = f"{int(n_players)}p"
+    partition_dir = cfg.combine_partitioned_dir
     manifest_dir = cfg.combine_stage_dir / "partition_manifests"
-    return partition_dir / "part-00000.parquet", manifest_dir / f"n_players={int(n_players)}.manifest.jsonl"
+    return partition_dir / f"{prefix}_part-00000.parquet", manifest_dir / f"{prefix}_partition.manifest.jsonl"
 
 
 def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Schema) -> tuple[list[Path], list[Path]]:
