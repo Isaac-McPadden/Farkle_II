@@ -27,7 +27,8 @@ from farkle.analysis.seat_stats import (
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
-from farkle.utils.parallel import normalize_n_jobs
+from farkle.utils.pooling import normalize_pooling_scheme
+from farkle.utils.stage_io import resolve_worker_count, select_preferred_or_legacy
 from farkle.utils.writer import atomic_path
 
 if TYPE_CHECKING:  # pragma: no cover - pandas typing is optional at runtime
@@ -351,11 +352,6 @@ def _ensure_isolated_metrics(
         inputs checked on disk.
     """
 
-    def _resolve_worker_count() -> int:
-        analysis_jobs = normalize_n_jobs(cfg.analysis.n_jobs)
-        sim_jobs = normalize_n_jobs(cfg.sim.n_jobs)
-        return max(analysis_jobs, sim_jobs)
-
     def _process_player_count(
         n: int,
     ) -> tuple[int, Path | None, Path, dict[str, object]]:
@@ -373,18 +369,22 @@ def _ensure_isolated_metrics(
             log_fields: dict[str, object] = {
                 "normalization_error": str(exc),
             }
-        if preferred.exists():
-            return n, preferred, raw_path, log_fields
-        elif legacy.exists():
-            log_fields["used_legacy"] = True
-            return n, legacy, raw_path, log_fields
+        selection = select_preferred_or_legacy(preferred, legacy)
+        if selection is not None:
+            if selection.used_legacy:
+                log_fields["used_legacy"] = True
+            return n, selection.path, raw_path, log_fields
 
         return n, None, raw_path, log_fields
 
     if not player_counts:
         return [], []
 
-    worker_count = min(len(player_counts), _resolve_worker_count())
+    worker_count = resolve_worker_count(
+        cfg.analysis.n_jobs,
+        cfg.sim.n_jobs,
+        item_count=len(player_counts),
+    )
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
         unordered_results = list(executor.map(_process_player_count, player_counts))
 
@@ -529,16 +529,9 @@ def _downcast_metric_counters(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _normalize_pooling_scheme(pooling_scheme: str) -> str:
-    """Normalize pooling scheme names for pooled metrics."""
+    """Backward-compatible module-local alias for pooling normalization."""
 
-    normalized = pooling_scheme.strip().lower().replace("_", "-")
-    if normalized in {"game-count", "gamecount", "count"}:
-        return "game-count"
-    if normalized in {"equal-k", "equalk", "equal"}:
-        return "equal-k"
-    if normalized in {"config", "config-provided", "custom"}:
-        return "config"
-    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+    return normalize_pooling_scheme(pooling_scheme)
 
 
 def _pooling_weights_for_metrics(
@@ -638,7 +631,7 @@ def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: _MetricsPoolingConf
     if metrics_df.empty:
         return pd.DataFrame(columns=columns)
 
-    pooling_scheme = _normalize_pooling_scheme(cfg.analysis.pooling_weights)
+    pooling_scheme = normalize_pooling_scheme(cfg.analysis.pooling_weights)
     weights_by_k = dict(cfg.analysis.pooling_weights_by_k or {})
     if pooling_scheme == "config" and not weights_by_k:
         raise ValueError("analysis.pooling_weights_by_k must be set for config pooling")

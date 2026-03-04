@@ -56,6 +56,8 @@ from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, wr
 from farkle.config import AppConfig
 from farkle.utils.analysis_shared import to_int
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.pooling import normalize_pooling_scheme
+from farkle.utils.stage_io import discover_per_k_artifacts, resolve_worker_count
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.types import Compression
 from farkle.utils.writer import ParquetShardWriter, atomic_path
@@ -108,11 +110,7 @@ _MARGIN_BIN_WIDTH = 25.0
 
 
 def _resolve_analysis_workers(cfg: AppConfig) -> int:
-    analysis_jobs = (
-        int(cfg.analysis.n_jobs) if cfg.analysis.n_jobs and cfg.analysis.n_jobs > 0 else 0
-    )
-    sim_jobs = int(cfg.sim.n_jobs) if cfg.sim.n_jobs and cfg.sim.n_jobs > 0 else 0
-    return max(1, analysis_jobs, sim_jobs)
+    return resolve_worker_count(cfg.analysis.n_jobs, cfg.sim.n_jobs, item_count=1)
 
 
 def _per_k_game_stats_paths(stage_dir: Path, k: int) -> tuple[Path, Path]:
@@ -298,7 +296,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         input_paths.append(combined_path)
 
     if not input_paths:
-        stage_log.missing_input("no curated parquet files found", analysis_dir=str(cfg.analysis_dir))
+        stage_log.missing_input(
+            "no curated parquet files found", analysis_dir=str(cfg.analysis_dir)
+        )
         return
 
     workers = min(max(1, _resolve_analysis_workers(cfg)), max(1, len(configured_k_values)))
@@ -450,7 +450,6 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 config_sha=cfg.config_sha,
             )
 
-
     write_stage_done(
         stamp_path,
         inputs=input_paths,
@@ -460,12 +459,19 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             pooled_game_length_output,
             pooled_margin_output,
             rare_events_output,
-            *[cfg.per_k_subdir("game_stats", k) / "game_length.parquet" for k in configured_k_values],
-            *[cfg.per_k_subdir("game_stats", k) / "margin_stats.parquet" for k in configured_k_values],
-            *( [rare_events_details_output] if write_details else [] ),
+            *[
+                cfg.per_k_subdir("game_stats", k) / "game_length.parquet"
+                for k in configured_k_values
+            ],
+            *[
+                cfg.per_k_subdir("game_stats", k) / "margin_stats.parquet"
+                for k in configured_k_values
+            ],
+            *([rare_events_details_output] if write_details else []),
         ],
         config_sha=cfg.config_sha,
     )
+
 
 def _compute_k_game_stats(
     *,
@@ -480,7 +486,9 @@ def _compute_k_game_stats(
     temp_state_path = artifact_path.with_suffix(".checkpoint.json")
     ds_in = ds.dataset(input_path)
     strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
-    score_cols = [name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")]
+    score_cols = [
+        name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
+    ]
     if not strategy_cols:
         return
 
@@ -531,8 +539,12 @@ def _compute_k_game_stats(
                     for strategy, group in grouped_margin:
                         r_acc = runner_by_strategy.setdefault(strategy, _BinnedAccumulator())
                         s_acc = spread_by_strategy.setdefault(strategy, _BinnedAccumulator())
-                        _update_binned_accumulator(r_acc, group["runner"].to_numpy(dtype=float, copy=False))
-                        _update_binned_accumulator(s_acc, group["spread"].to_numpy(dtype=float, copy=False))
+                        _update_binned_accumulator(
+                            r_acc, group["runner"].to_numpy(dtype=float, copy=False)
+                        )
+                        _update_binned_accumulator(
+                            s_acc, group["spread"].to_numpy(dtype=float, copy=False)
+                        )
 
         if batch_idx % 25 == 0:
             with atomic_path(temp_state_path) as tmp_path:
@@ -549,18 +561,37 @@ def _compute_k_game_stats(
             "n_players": k,
             "observations": rounds_acc.count,
             "mean_rounds": mean_rounds,
-            "median_rounds": _quantile_linear_from_hist(rounds_acc.hist, count=rounds_acc.count, quantile=0.5),
+            "median_rounds": _quantile_linear_from_hist(
+                rounds_acc.hist, count=rounds_acc.count, quantile=0.5
+            ),
             "std_rounds": std_rounds,
-            "p10_rounds": _quantile_linear_from_hist(rounds_acc.hist, count=rounds_acc.count, quantile=0.1),
-            "p50_rounds": _quantile_linear_from_hist(rounds_acc.hist, count=rounds_acc.count, quantile=0.5),
-            "p90_rounds": _quantile_linear_from_hist(rounds_acc.hist, count=rounds_acc.count, quantile=0.9),
-            "prob_rounds_le_5": _probability_le_from_hist(rounds_acc.hist, count=rounds_acc.count, threshold=5),
-            "prob_rounds_le_10": _probability_le_from_hist(rounds_acc.hist, count=rounds_acc.count, threshold=10),
-            "prob_rounds_ge_20": _probability_ge_from_hist(rounds_acc.hist, count=rounds_acc.count, threshold=20),
+            "p10_rounds": _quantile_linear_from_hist(
+                rounds_acc.hist, count=rounds_acc.count, quantile=0.1
+            ),
+            "p50_rounds": _quantile_linear_from_hist(
+                rounds_acc.hist, count=rounds_acc.count, quantile=0.5
+            ),
+            "p90_rounds": _quantile_linear_from_hist(
+                rounds_acc.hist, count=rounds_acc.count, quantile=0.9
+            ),
+            "prob_rounds_le_5": _probability_le_from_hist(
+                rounds_acc.hist, count=rounds_acc.count, threshold=5
+            ),
+            "prob_rounds_le_10": _probability_le_from_hist(
+                rounds_acc.hist, count=rounds_acc.count, threshold=10
+            ),
+            "prob_rounds_ge_20": _probability_ge_from_hist(
+                rounds_acc.hist, count=rounds_acc.count, threshold=20
+            ),
         }
         runner_acc = runner_by_strategy.get(strategy)
         spread_acc = spread_by_strategy.get(strategy)
-        if runner_acc is not None and spread_acc is not None and runner_acc.count > 0 and spread_acc.count > 0:
+        if (
+            runner_acc is not None
+            and spread_acc is not None
+            and runner_acc.count > 0
+            and spread_acc.count > 0
+        ):
             mean_runner, std_runner = _mean_std_from_binned(runner_acc)
             mean_spread, std_spread = _mean_std_from_binned(spread_acc)
             row.update(
@@ -574,8 +605,12 @@ def _compute_k_game_stats(
                 }
             )
             for thr in thresholds:
-                row[f"prob_margin_runner_up_le_{thr}"] = _probability_le_from_binned(runner_acc, float(thr))
-                row[f"prob_score_spread_le_{thr}"] = _probability_le_from_binned(spread_acc, float(thr))
+                row[f"prob_margin_runner_up_le_{thr}"] = _probability_le_from_binned(
+                    runner_acc, float(thr)
+                )
+                row[f"prob_score_spread_le_{thr}"] = _probability_le_from_binned(
+                    spread_acc, float(thr)
+                )
         rows.append(row)
 
     if global_rounds.count > 0:
@@ -587,14 +622,28 @@ def _compute_k_game_stats(
                 "n_players": k,
                 "observations": global_rounds.count,
                 "mean_rounds": g_mean,
-                "median_rounds": _quantile_linear_from_hist(global_rounds.hist, count=global_rounds.count, quantile=0.5),
+                "median_rounds": _quantile_linear_from_hist(
+                    global_rounds.hist, count=global_rounds.count, quantile=0.5
+                ),
                 "std_rounds": g_std,
-                "p10_rounds": _quantile_linear_from_hist(global_rounds.hist, count=global_rounds.count, quantile=0.1),
-                "p50_rounds": _quantile_linear_from_hist(global_rounds.hist, count=global_rounds.count, quantile=0.5),
-                "p90_rounds": _quantile_linear_from_hist(global_rounds.hist, count=global_rounds.count, quantile=0.9),
-                "prob_rounds_le_5": _probability_le_from_hist(global_rounds.hist, count=global_rounds.count, threshold=5),
-                "prob_rounds_le_10": _probability_le_from_hist(global_rounds.hist, count=global_rounds.count, threshold=10),
-                "prob_rounds_ge_20": _probability_ge_from_hist(global_rounds.hist, count=global_rounds.count, threshold=20),
+                "p10_rounds": _quantile_linear_from_hist(
+                    global_rounds.hist, count=global_rounds.count, quantile=0.1
+                ),
+                "p50_rounds": _quantile_linear_from_hist(
+                    global_rounds.hist, count=global_rounds.count, quantile=0.5
+                ),
+                "p90_rounds": _quantile_linear_from_hist(
+                    global_rounds.hist, count=global_rounds.count, quantile=0.9
+                ),
+                "prob_rounds_le_5": _probability_le_from_hist(
+                    global_rounds.hist, count=global_rounds.count, threshold=5
+                ),
+                "prob_rounds_le_10": _probability_le_from_hist(
+                    global_rounds.hist, count=global_rounds.count, threshold=10
+                ),
+                "prob_rounds_ge_20": _probability_ge_from_hist(
+                    global_rounds.hist, count=global_rounds.count, threshold=20
+                ),
             }
         )
 
@@ -607,21 +656,44 @@ def _compute_k_game_stats(
     legacy_game_path = artifact_path.parent / "game_length.parquet"
     legacy_margin_path = artifact_path.parent / "margin_stats.parquet"
     game_cols = [
-        "summary_level","strategy","n_players","observations","mean_rounds","median_rounds",
-        "std_rounds","p10_rounds","p50_rounds","p90_rounds","prob_rounds_le_5",
-        "prob_rounds_le_10","prob_rounds_ge_20",
+        "summary_level",
+        "strategy",
+        "n_players",
+        "observations",
+        "mean_rounds",
+        "median_rounds",
+        "std_rounds",
+        "p10_rounds",
+        "p50_rounds",
+        "p90_rounds",
+        "prob_rounds_le_5",
+        "prob_rounds_le_10",
+        "prob_rounds_ge_20",
     ]
     margin_cols = [
-        "summary_level","strategy","n_players","observations","mean_margin_runner_up",
-        "median_margin_runner_up","std_margin_runner_up",*[c for c in frame.columns if c.startswith("prob_margin_runner_up_le_")],
-        "mean_score_spread","median_score_spread","std_score_spread",*[c for c in frame.columns if c.startswith("prob_score_spread_le_")],
+        "summary_level",
+        "strategy",
+        "n_players",
+        "observations",
+        "mean_margin_runner_up",
+        "median_margin_runner_up",
+        "std_margin_runner_up",
+        *[c for c in frame.columns if c.startswith("prob_margin_runner_up_le_")],
+        "mean_score_spread",
+        "median_score_spread",
+        "std_score_spread",
+        *[c for c in frame.columns if c.startswith("prob_score_spread_le_")],
     ]
     game_frame = frame[[c for c in game_cols if c in frame.columns]].copy()
     margin_frame = frame[[c for c in margin_cols if c in frame.columns]].copy()
     if "strategy" in game_frame.columns:
-        game_frame["strategy"] = pd.to_numeric(game_frame["strategy"], errors="coerce").astype("Int64")
+        game_frame["strategy"] = pd.to_numeric(game_frame["strategy"], errors="coerce").astype(
+            "Int64"
+        )
     if "strategy" in margin_frame.columns:
-        margin_frame["strategy"] = pd.to_numeric(margin_frame["strategy"], errors="coerce").astype("Int64")
+        margin_frame["strategy"] = pd.to_numeric(margin_frame["strategy"], errors="coerce").astype(
+            "Int64"
+        )
     if "summary_level" in margin_frame.columns:
         margin_frame = margin_frame.loc[margin_frame["summary_level"] == "strategy"].copy()
     _write_per_k_game_length(
@@ -668,7 +740,9 @@ def _pool_completed_k_game_stats(
     completed_paths: list[Path] = []
     for k in configured_k_values:
         artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
-        if stage_is_up_to_date(done_path, inputs=[], outputs=[artifact_path], config_sha=config_sha):
+        if stage_is_up_to_date(
+            done_path, inputs=[], outputs=[artifact_path], config_sha=config_sha
+        ):
             completed_paths.append(artifact_path)
     if not completed_paths:
         return
@@ -688,51 +762,93 @@ def _pool_completed_k_game_stats(
         return
 
     game_cols = [
-        "summary_level","strategy","n_players","observations","mean_rounds","median_rounds",
-        "std_rounds","p10_rounds","p50_rounds","p90_rounds","prob_rounds_le_5",
-        "prob_rounds_le_10","prob_rounds_ge_20",
+        "summary_level",
+        "strategy",
+        "n_players",
+        "observations",
+        "mean_rounds",
+        "median_rounds",
+        "std_rounds",
+        "p10_rounds",
+        "p50_rounds",
+        "p90_rounds",
+        "prob_rounds_le_5",
+        "prob_rounds_le_10",
+        "prob_rounds_ge_20",
     ]
     margin_cols = [
-        "summary_level","strategy","n_players","observations","mean_margin_runner_up",
-        "median_margin_runner_up","std_margin_runner_up",*[c for c in combined.columns if c.startswith("prob_margin_runner_up_le_")],
-        "mean_score_spread","median_score_spread","std_score_spread",*[c for c in combined.columns if c.startswith("prob_score_spread_le_")],
+        "summary_level",
+        "strategy",
+        "n_players",
+        "observations",
+        "mean_margin_runner_up",
+        "median_margin_runner_up",
+        "std_margin_runner_up",
+        *[c for c in combined.columns if c.startswith("prob_margin_runner_up_le_")],
+        "mean_score_spread",
+        "median_score_spread",
+        "std_score_spread",
+        *[c for c in combined.columns if c.startswith("prob_score_spread_le_")],
     ]
     game_df = combined[[c for c in game_cols if c in combined.columns]].copy()
     margin_df = combined[[c for c in margin_cols if c in combined.columns]].copy()
     if "strategy" in game_df.columns:
         game_df["strategy"] = pd.to_numeric(game_df["strategy"], errors="coerce").astype("Int64")
     if "strategy" in margin_df.columns:
-        margin_df["strategy"] = pd.to_numeric(margin_df["strategy"], errors="coerce").astype("Int64")
+        margin_df["strategy"] = pd.to_numeric(margin_df["strategy"], errors="coerce").astype(
+            "Int64"
+        )
     if "summary_level" in margin_df.columns:
         margin_df = margin_df.loc[margin_df["summary_level"] == "strategy"].copy()
-    write_parquet_atomic(pa.Table.from_pandas(game_df, preserve_index=False), game_length_output, codec=codec)
-    write_parquet_atomic(pa.Table.from_pandas(margin_df, preserve_index=False), margin_output, codec=codec)
+    write_parquet_atomic(
+        pa.Table.from_pandas(game_df, preserve_index=False), game_length_output, codec=codec
+    )
+    write_parquet_atomic(
+        pa.Table.from_pandas(margin_df, preserve_index=False), margin_output, codec=codec
+    )
 
-    pooled_game = game_df.groupby("strategy", observed=True, sort=False).agg(
-        observations=("observations", "sum"),
-        mean_rounds=("mean_rounds", "mean"),
-        median_rounds=("median_rounds", "mean"),
-        std_rounds=("std_rounds", "mean"),
-        p10_rounds=("p10_rounds", "mean"),
-        p50_rounds=("p50_rounds", "mean"),
-        p90_rounds=("p90_rounds", "mean"),
-        prob_rounds_le_5=("prob_rounds_le_5", "mean"),
-        prob_rounds_le_10=("prob_rounds_le_10", "mean"),
-        prob_rounds_ge_20=("prob_rounds_ge_20", "mean"),
-    ).reset_index()
+    pooled_game = (
+        game_df.groupby("strategy", observed=True, sort=False)
+        .agg(
+            observations=("observations", "sum"),
+            mean_rounds=("mean_rounds", "mean"),
+            median_rounds=("median_rounds", "mean"),
+            std_rounds=("std_rounds", "mean"),
+            p10_rounds=("p10_rounds", "mean"),
+            p50_rounds=("p50_rounds", "mean"),
+            p90_rounds=("p90_rounds", "mean"),
+            prob_rounds_le_5=("prob_rounds_le_5", "mean"),
+            prob_rounds_le_10=("prob_rounds_le_10", "mean"),
+            prob_rounds_ge_20=("prob_rounds_ge_20", "mean"),
+        )
+        .reset_index()
+    )
     pooled_game.insert(0, "summary_level", "pooled")
-    write_parquet_atomic(pa.Table.from_pandas(pooled_game, preserve_index=False), pooled_game_length_output, codec=codec)
+    write_parquet_atomic(
+        pa.Table.from_pandas(pooled_game, preserve_index=False),
+        pooled_game_length_output,
+        codec=codec,
+    )
 
     if not margin_df.empty:
-        margin_metric_cols = [c for c in margin_df.columns if c not in {"summary_level", "strategy", "n_players", "observations"}]
+        margin_metric_cols = [
+            c
+            for c in margin_df.columns
+            if c not in {"summary_level", "strategy", "n_players", "observations"}
+        ]
         agg_map = {"observations": "sum", **{col: "mean" for col in margin_metric_cols}}
-        pooled_margin = margin_df.groupby("strategy", observed=True, sort=False).agg(agg_map).reset_index()
+        pooled_margin = (
+            margin_df.groupby("strategy", observed=True, sort=False).agg(agg_map).reset_index()
+        )
         pooled_margin.insert(0, "summary_level", "pooled")
     else:
         pooled_margin = pd.DataFrame(columns=["summary_level", "strategy", "observations"])
-    write_parquet_atomic(pa.Table.from_pandas(pooled_margin, preserve_index=False), pooled_margin_output, codec=codec)
+    write_parquet_atomic(
+        pa.Table.from_pandas(pooled_margin, preserve_index=False), pooled_margin_output, codec=codec
+    )
 
     write_stage_done(pooled_stamp, inputs=completed_paths, outputs=outputs, config_sha=config_sha)
+
 
 def _write_empty_per_k_outputs(
     *,
@@ -755,38 +871,127 @@ def _write_empty_per_k_outputs(
     ):
         return
     cols = [
-        "summary_level","strategy","n_players","observations","mean_rounds","median_rounds",
-        "std_rounds","p10_rounds","p50_rounds","p90_rounds","prob_rounds_le_5",
-        "prob_rounds_le_10","prob_rounds_ge_20","mean_margin_runner_up","median_margin_runner_up",
-        "std_margin_runner_up",*[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
-        "mean_score_spread","median_score_spread","std_score_spread",*[f"prob_score_spread_le_{thr}" for thr in thresholds],
+        "summary_level",
+        "strategy",
+        "n_players",
+        "observations",
+        "mean_rounds",
+        "median_rounds",
+        "std_rounds",
+        "p10_rounds",
+        "p50_rounds",
+        "p90_rounds",
+        "prob_rounds_le_5",
+        "prob_rounds_le_10",
+        "prob_rounds_ge_20",
+        "mean_margin_runner_up",
+        "median_margin_runner_up",
+        "std_margin_runner_up",
+        *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
+        "mean_score_spread",
+        "median_score_spread",
+        "std_score_spread",
+        *[f"prob_score_spread_le_{thr}" for thr in thresholds],
     ]
     empty = pd.DataFrame(columns=cols)
-    write_parquet_atomic(pa.Table.from_pandas(empty, preserve_index=False), artifact_path, codec=codec)
-    write_parquet_atomic(pa.Table.from_pandas(empty[[c for c in cols if c.startswith("summary") or c in {"strategy","n_players","observations","mean_rounds","median_rounds","std_rounds","p10_rounds","p50_rounds","p90_rounds","prob_rounds_le_5","prob_rounds_le_10","prob_rounds_ge_20"}]], preserve_index=False), legacy_game_path, codec=codec)
-    write_parquet_atomic(pa.Table.from_pandas(empty[[c for c in cols if c.startswith("summary") or c in {"strategy","n_players","observations","mean_margin_runner_up","median_margin_runner_up","std_margin_runner_up","mean_score_spread","median_score_spread","std_score_spread"} or c.startswith("prob_margin_runner_up_le_") or c.startswith("prob_score_spread_le_")]], preserve_index=False), legacy_margin_path, codec=codec)
-    write_stage_done(done_path, inputs=[], outputs=[artifact_path, legacy_game_path, legacy_margin_path], config_sha=config_sha)
-    write_stage_done(stage_done_path(stage_dir, f"game_stats.game_length.{k}p"), inputs=[], outputs=[legacy_game_path], config_sha=config_sha)
-    write_stage_done(stage_done_path(stage_dir, f"game_stats.margin.{k}p"), inputs=[], outputs=[legacy_margin_path], config_sha=config_sha)
+    write_parquet_atomic(
+        pa.Table.from_pandas(empty, preserve_index=False), artifact_path, codec=codec
+    )
+    write_parquet_atomic(
+        pa.Table.from_pandas(
+            empty[
+                [
+                    c
+                    for c in cols
+                    if c.startswith("summary")
+                    or c
+                    in {
+                        "strategy",
+                        "n_players",
+                        "observations",
+                        "mean_rounds",
+                        "median_rounds",
+                        "std_rounds",
+                        "p10_rounds",
+                        "p50_rounds",
+                        "p90_rounds",
+                        "prob_rounds_le_5",
+                        "prob_rounds_le_10",
+                        "prob_rounds_ge_20",
+                    }
+                ]
+            ],
+            preserve_index=False,
+        ),
+        legacy_game_path,
+        codec=codec,
+    )
+    write_parquet_atomic(
+        pa.Table.from_pandas(
+            empty[
+                [
+                    c
+                    for c in cols
+                    if c.startswith("summary")
+                    or c
+                    in {
+                        "strategy",
+                        "n_players",
+                        "observations",
+                        "mean_margin_runner_up",
+                        "median_margin_runner_up",
+                        "std_margin_runner_up",
+                        "mean_score_spread",
+                        "median_score_spread",
+                        "std_score_spread",
+                    }
+                    or c.startswith("prob_margin_runner_up_le_")
+                    or c.startswith("prob_score_spread_le_")
+                ]
+            ],
+            preserve_index=False,
+        ),
+        legacy_margin_path,
+        codec=codec,
+    )
+    write_stage_done(
+        done_path,
+        inputs=[],
+        outputs=[artifact_path, legacy_game_path, legacy_margin_path],
+        config_sha=config_sha,
+    )
+    write_stage_done(
+        stage_done_path(stage_dir, f"game_stats.game_length.{k}p"),
+        inputs=[],
+        outputs=[legacy_game_path],
+        config_sha=config_sha,
+    )
+    write_stage_done(
+        stage_done_path(stage_dir, f"game_stats.margin.{k}p"),
+        inputs=[],
+        outputs=[legacy_margin_path],
+        config_sha=config_sha,
+    )
+
 
 def _discover_per_n_inputs(cfg: AppConfig) -> list[tuple[int, Path]]:
     """Return discovered per-``n`` curated parquets in ``analysis/data``."""
 
-    inputs: list[tuple[int, Path]] = []
+    k_values: list[int] = []
     for p_dir in sorted(cfg.data_dir.glob("*p")):
         if not p_dir.is_dir():
             continue
         try:
-            n_players = int(p_dir.name.removesuffix("p"))
+            k_values.append(int(p_dir.name.removesuffix("p")))
         except ValueError:
             continue
 
-        preferred = p_dir / cfg.curated_rows_name
-        legacy = p_dir / f"{n_players}p_ingested_rows.parquet"
-        candidate = preferred if preferred.exists() else legacy
-        if candidate.exists():
-            inputs.append((n_players, candidate))
-    return inputs
+    discovered = discover_per_k_artifacts(
+        k_values,
+        preferred_path=lambda n: cfg.data_dir / f"{n}p" / cfg.curated_rows_name,
+        legacy_path=lambda n: cfg.data_dir / f"{n}p" / f"{n}p_ingested_rows.parquet",
+    )
+    return [(n_players, selection.path) for n_players, selection in discovered]
 
 
 def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFrame:
@@ -873,14 +1078,22 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
                 "n_players": n_players,
                 "observations": _strategy_key_to_int(acc.count, field="observations"),
                 "mean_rounds": mean_rounds,
-                "median_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.5),
+                "median_rounds": _quantile_linear_from_hist(
+                    acc.hist, count=acc.count, quantile=0.5
+                ),
                 "std_rounds": std_rounds,
                 "p10_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.1),
                 "p50_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.5),
                 "p90_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.9),
-                "prob_rounds_le_5": _probability_le_from_hist(acc.hist, count=acc.count, threshold=5),
-                "prob_rounds_le_10": _probability_le_from_hist(acc.hist, count=acc.count, threshold=10),
-                "prob_rounds_ge_20": _probability_ge_from_hist(acc.hist, count=acc.count, threshold=20),
+                "prob_rounds_le_5": _probability_le_from_hist(
+                    acc.hist, count=acc.count, threshold=5
+                ),
+                "prob_rounds_le_10": _probability_le_from_hist(
+                    acc.hist, count=acc.count, threshold=10
+                ),
+                "prob_rounds_ge_20": _probability_ge_from_hist(
+                    acc.hist, count=acc.count, threshold=20
+                ),
             }
         )
 
@@ -905,16 +1118,9 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
 
 
 def _normalize_pooling_scheme(pooling_scheme: str) -> str:
-    """Normalize pooling scheme names for pooled game stats."""
+    """Backward-compatible module-local alias for pooling normalization."""
 
-    normalized = pooling_scheme.strip().lower().replace("_", "-")
-    if normalized in {"game-count", "gamecount", "count"}:
-        return "game-count"
-    if normalized in {"equal-k", "equalk", "equal"}:
-        return "equal-k"
-    if normalized in {"config", "config-provided", "custom"}:
-        return "config"
-    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+    return normalize_pooling_scheme(pooling_scheme)
 
 
 def _pooling_weights_for_rows(
@@ -1765,15 +1971,18 @@ def _rare_event_flags(
         return 0
 
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
-    resume_sha = config_sha or hashlib.sha256(
-        json.dumps(
-            {
-                "thresholds": [to_int(thr) for thr in thresholds],
-                "target_score": to_int(target_score),
-            },
-            sort_keys=True,
-        ).encode("utf-8")
-    ).hexdigest()
+    resume_sha = (
+        config_sha
+        or hashlib.sha256(
+            json.dumps(
+                {
+                    "thresholds": [to_int(thr) for thr in thresholds],
+                    "target_score": to_int(target_score),
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+        ).hexdigest()
+    )
     strategy_arrow = _strategy_arrow_type(per_n_inputs)
     shard_dir = output_path.parent / f"{output_path.stem}_shards"
     shard_dir.mkdir(parents=True, exist_ok=True)
@@ -1980,7 +2189,9 @@ def _load_rare_event_summary_shard_stats(
         try:
             strategy_int = int(strategy_key)
         except (TypeError, ValueError) as err:
-            raise ValueError(f"invalid strategy key in rare-event shard stats: {strategy_key!r}") from err
+            raise ValueError(
+                f"invalid strategy key in rare-event shard stats: {strategy_key!r}"
+            ) from err
         sums: dict[str, int] = {"observations": 0, **dict.fromkeys(flags, 0)}
         for key in sums:
             sums[key] = _strategy_key_to_int(dict(raw_sums).get(key, 0), field=key)
@@ -2587,7 +2798,9 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
 
     grouped: dict[int, _UnweightedAccumulator] = {}
     if hasattr(ds_in, "scanner"):
-        batch_iter = ds_in.scanner(columns=["n_rounds", "seat_ranks"], batch_size=65_536).to_batches()
+        batch_iter = ds_in.scanner(
+            columns=["n_rounds", "seat_ranks"], batch_size=65_536
+        ).to_batches()
     else:
         try:
             table = ds_in.to_table(columns=["n_rounds", "seat_ranks"])
@@ -2649,8 +2862,12 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
             "p50_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.5),
             "p90_rounds": _quantile_linear_from_hist(acc.hist, count=acc.count, quantile=0.9),
             "prob_rounds_le_5": _probability_le_from_hist(acc.hist, count=acc.count, threshold=5.0),
-            "prob_rounds_le_10": _probability_le_from_hist(acc.hist, count=acc.count, threshold=10.0),
-            "prob_rounds_ge_20": _probability_ge_from_hist(acc.hist, count=acc.count, threshold=20.0),
+            "prob_rounds_le_10": _probability_le_from_hist(
+                acc.hist, count=acc.count, threshold=10.0
+            ),
+            "prob_rounds_ge_20": _probability_ge_from_hist(
+                acc.hist, count=acc.count, threshold=20.0
+            ),
             "summary_level": "n_players",
             "strategy": pd.NA,
             "n_players": players_int,

@@ -138,3 +138,16 @@ re-runs of previously finished `k` blocks.
 - Cross-k weighted/averaged rollups use canonical names ending in `_weighted`/`_k_weighted`/`_aggregate`.
 - Legacy filenames (`ratings_pooled*`, `game_length_pooled.parquet`, `margin_pooled.parquet`, `frequentist_scores.parquet`, `agreement_pooled.json`, `tiering_pooled_provenance.json`) are supported as read aliases and migration sources.
 - Deprecation timeline: legacy aliases remain supported through **2026-06-30** and are scheduled for removal in the following release cycle.
+
+## Canonical stage helper usage
+
+When adding or refactoring analysis stages, prefer these shared helpers instead
+of re-implementing stage-local variants:
+
+- `farkle.utils.pooling.normalize_pooling_scheme` for pooling alias handling.
+- `farkle.utils.stage_io.resolve_worker_count` for bounded worker resolution
+  from one or more `n_jobs` sources.
+- `farkle.utils.stage_completion.{stage_done_path, stage_is_up_to_date, write_stage_done}`
+  for done-stamp creation/checking.
+- `farkle.utils.stage_io.{select_preferred_or_legacy, discover_per_k_artifacts}`
+  for preferred-vs-legacy artifact selection, including per-`k` discovery.
