@@ -10,6 +10,7 @@ import logging
 import os
 import queue
 import time
+from pathlib import Path
 from typing import Any, Callable, Dict, Iterable
 
 import pyarrow as pa
@@ -49,13 +50,16 @@ def run_streaming_shard(
     except ValueError:
         rel_path = os.path.abspath(out_path)
 
-    rel_norm = os.path.normpath(rel_path)
-    rel_is_outside = os.path.isabs(rel_path) or rel_norm == os.pardir or rel_norm.startswith(
-        os.pardir + os.sep
+    rel_norm = os.path.normpath(rel_path.replace("\\", os.sep))
+    if not os.path.isabs(rel_path):
+        rel_path = Path(rel_norm).as_posix()
+    resolved_path = (
+        os.path.abspath(rel_path)
+        if os.path.isabs(rel_path)
+        else os.path.abspath(os.path.join(manifest_dir, rel_path))
     )
-    resolved_path = rel_path if os.path.isabs(rel_path) else os.path.join(manifest_dir, rel_path)
     resolved_exists = os.path.exists(resolved_path)
-    if rel_is_outside or not resolved_exists:
+    if not resolved_exists:
         LOGGER.error(
             "Manifest path %s is invalid relative to %s (exists=%s).",
             rel_path,

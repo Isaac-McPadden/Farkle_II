@@ -48,6 +48,12 @@ def test_seed_pair_meta_root_and_completion_marker_checks(
     assert meta_root is not None
     assert meta_root.name == "meta_3_9"
 
+    base_cfg.io.meta_analysis_dir = Path("data/meta_analysis")
+    nested_meta_root = seed_utils.seed_pair_meta_root(base_cfg, (3, 9))
+    assert nested_meta_root is not None
+    assert nested_meta_root.name == "meta_analysis_3_9"
+    assert nested_meta_root.parent.name.startswith("results_seed_pair_")
+
     base_cfg.io.meta_analysis_dir = None
     assert seed_utils.seed_pair_meta_root(base_cfg, (3, 9)) is None
 
