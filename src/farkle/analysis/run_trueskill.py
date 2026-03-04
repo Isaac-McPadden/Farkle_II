@@ -359,6 +359,71 @@ class _BlockCkpt:
     version: int = 1
 
 
+@dataclass(slots=True)
+class _ShardDoneStamp:
+    """Completion stamp for independently resumable shards."""
+
+    shard_key: str
+    parquet_path: str
+    rows: int
+    created_at: float
+    version: int = 1
+
+
+def _save_done_stamp(path: Path, stamp: _ShardDoneStamp) -> None:
+    """Write a shard completion stamp atomically."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(asdict(stamp), indent=2, sort_keys=True))
+
+
+def _load_done_stamp(path: Path) -> _ShardDoneStamp | None:
+    """Load and minimally validate a shard completion stamp."""
+
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    try:
+        return _ShardDoneStamp(
+            shard_key=str(payload["shard_key"]),
+            parquet_path=str(payload["parquet_path"]),
+            rows=int(payload["rows"]),
+            created_at=float(payload["created_at"]),
+            version=int(payload.get("version", 1)),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _block_done_stamp_path(root: Path, player_count: str, suffix: str) -> Path:
+    """Canonical per-block done-stamp path."""
+
+    per_dir = _per_player_dir(root, player_count)
+    return per_dir / f"ratings_{player_count}{suffix}.done.json"
+
+
+def _block_shard_paths(root: Path, player_count: str, suffix: str) -> tuple[Path, Path]:
+    """Canonical artifact.<shard> paths for per-k shards."""
+
+    per_dir = _per_player_dir(root, player_count)
+    shard = per_dir / f"artifact.k{player_count}{suffix}"
+    return shard.with_suffix(".parquet"), shard.with_suffix(".done.json")
+
+
+def _pool_shard_paths(pooled_dir: Path, shard_key: str, suffix: str) -> tuple[Path, Path]:
+    """Return parquet and done-stamp paths for a pooled shard."""
+
+    safe_key = shard_key.replace("/", "_")
+    base = pooled_dir / f"artifact.{safe_key}{suffix}"
+    return base.with_suffix(".parquet"), base.with_suffix(".done.json")
+
+
 def _save_block_ckpt(path: Path, ck: _BlockCkpt) -> None:
     """Persist a per-block checkpoint atomically."""
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -875,6 +940,24 @@ def _rate_block_worker(
     ck_path = _ensure_new_location(paths["ckpt"], *paths["legacy_ckpt"])
     rk_path = _ensure_new_location(paths["checkpoint"], *paths["legacy_checkpoint"])
     json_path = _ensure_new_location(paths["json"], *paths["legacy_json"])
+    done_path = _block_done_stamp_path(root, player_count, suffix)
+    shard_parquet, shard_done_path = _block_shard_paths(root, player_count, suffix)
+
+    done_stamp = _load_done_stamp(done_path)
+    if done_stamp is not None:
+        stamped_parquet = Path(done_stamp.parquet_path)
+        if stamped_parquet.exists() and parquet_path.exists() and stamped_parquet == parquet_path:
+            LOGGER.info(
+                "TrueSkill block shard done stamp found; skipping",
+                extra={
+                    "stage": "trueskill",
+                    "block": player_count,
+                    "row_file": str(row_file),
+                    "parquet": str(parquet_path),
+                    "done": str(done_path),
+                },
+            )
+            return player_count, max(0, int(done_stamp.rows))
 
     if parquet_path.exists() and parquet_path.stat().st_mtime >= row_file.stat().st_mtime:
         try:
@@ -968,6 +1051,25 @@ def _rate_block_worker(
             Path(tmp_path).write_text(
                 json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
             )
+        _save_done_stamp(
+            done_path,
+            _ShardDoneStamp(
+                shard_key=f"k={player_count}",
+                parquet_path=str(parquet_path),
+                rows=int(n_games),
+                created_at=time.time(),
+            ),
+        )
+        _save_ratings_parquet(shard_parquet, ratings_stats)
+        _save_done_stamp(
+            shard_done_path,
+            _ShardDoneStamp(
+                shard_key=f"k={player_count}",
+                parquet_path=str(shard_parquet),
+                rows=int(n_games),
+                created_at=time.time(),
+            ),
+        )
 
         run_completed = True
         return player_count, n_games
@@ -1148,8 +1250,37 @@ def run_trueskill(
         legacy_root / f"ratings_pooled{suffix}.parquet",
     )
     per_player_parquets = _iter_rating_parquets(root, suffix, legacy_root=legacy_root)
+    valid_per_player_parquets: list[Path] = []
+    for parquet in per_player_parquets:
+        player_count_value = _player_count_from_stem(parquet.stem)
+        if player_count_value is None:
+            continue
+        done_path = _block_done_stamp_path(root, str(player_count_value), suffix)
+        done_stamp = _load_done_stamp(done_path)
+        if done_stamp is None:
+            LOGGER.info(
+                "Skipping per-k parquet without done stamp",
+                extra={
+                    "stage": "trueskill",
+                    "parquet": str(parquet),
+                    "done": str(done_path),
+                },
+            )
+            continue
+        if Path(done_stamp.parquet_path) != parquet:
+            LOGGER.info(
+                "Skipping per-k parquet with mismatched done stamp",
+                extra={
+                    "stage": "trueskill",
+                    "parquet": str(parquet),
+                    "stamped_parquet": done_stamp.parquet_path,
+                },
+            )
+            continue
+        valid_per_player_parquets.append(parquet)
+
     if pooled_parquet.exists():
-        newest = max((p.stat().st_mtime for p in per_player_parquets), default=0.0)
+        newest = max((p.stat().st_mtime for p in valid_per_player_parquets), default=0.0)
         if pooled_parquet.stat().st_mtime >= newest:
             LOGGER.info(
                 "TrueSkill pooled outputs up-to-date",
@@ -1157,14 +1288,15 @@ def run_trueskill(
             )
             return
 
-    for parquet in per_player_parquets:
+    for parquet in valid_per_player_parquets:
         stem = parquet.stem[len("ratings_") :]
         if suffix:
             stem = stem[: -len(suffix)]
         player_count_value = _player_count_from_stem(parquet.stem)
         if player_count_value is None:
             continue
-        games = per_block_games.get(str(player_count_value), 0)
+        done_stamp = _load_done_stamp(_block_done_stamp_path(root, str(player_count_value), suffix))
+        games = int(done_stamp.rows) if done_stamp is not None else per_block_games.get(str(player_count_value), 0)
         if games <= 0:
             continue
         weight = pooled_weights_by_k.get(player_count_value, 1.0)
@@ -1197,6 +1329,17 @@ def run_trueskill(
     )
     with atomic_path(str(pooled_json_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(pooled_json))
+    pooled_shard_parquet, pooled_shard_done = _pool_shard_paths(pooled_dir, "all-k", suffix)
+    _save_ratings_parquet(pooled_shard_parquet, pooled_rating_stats)
+    _save_done_stamp(
+        pooled_shard_done,
+        _ShardDoneStamp(
+            shard_key="all-k",
+            parquet_path=str(pooled_shard_parquet),
+            rows=len(pooled_rating_stats),
+            created_at=time.time(),
+        ),
+    )
     tiers = build_tiers(
         means={k: v.mu for k, v in pooled_rating_stats.items()},
         stdevs={k: v.sigma for k, v in pooled_rating_stats.items()},

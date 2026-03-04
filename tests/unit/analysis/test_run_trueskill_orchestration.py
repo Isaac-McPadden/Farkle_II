@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 from typing import Callable, Dict, Tuple
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
@@ -104,6 +105,15 @@ def test_run_trueskill_pooling_and_short_circuit(
         out_path = per_player / f"ratings_{player_count}{suffix}.parquet"
         if not out_path.exists():
             rt._save_ratings_parquet(out_path, stats)
+        rt._save_done_stamp(
+            analysis_root / f"{player_count}p" / f"ratings_{player_count}{suffix}.done.json",
+            rt._ShardDoneStamp(
+                shard_key=f"k={player_count}",
+                parquet_path=str(out_path),
+                rows=games,
+                created_at=1.0,
+            ),
+        )
         return player_count, games
 
     tier_calls: list[tuple[dict[str, float], dict[str, float]]] = []
@@ -195,8 +205,18 @@ def test_run_trueskill_skips_zero_game_block(
         name, stats, games = per_block[player_count]
         per_player = Path(root_dir) / f"{player_count}p"
         per_player.mkdir(parents=True, exist_ok=True)
+        out_path = per_player / f"ratings_{player_count}{suffix}.parquet"
         rt._save_ratings_parquet(
-            per_player / f"ratings_{player_count}{suffix}.parquet", {name: stats}
+            out_path, {name: stats}
+        )
+        rt._save_done_stamp(
+            analysis_root / f"{player_count}p" / f"ratings_{player_count}{suffix}.done.json",
+            rt._ShardDoneStamp(
+                shard_key=f"k={player_count}",
+                parquet_path=str(out_path),
+                rows=games,
+                created_at=1.0,
+            ),
         )
         return player_count, games
 
@@ -210,3 +230,71 @@ def test_run_trueskill_skips_zero_game_block(
     )
     assert set(pooled) == {"A"}
     assert pooled["A"].mu == pytest.approx(10.0)
+
+
+def test_run_trueskill_recovers_only_missing_k_shard(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_root = tmp_path / "results"
+    block2 = data_root / "2_players"
+    block3 = data_root / "3_players"
+    block2.mkdir(parents=True, exist_ok=True)
+    block3.mkdir(parents=True, exist_ok=True)
+    analysis_root = tmp_path / "analysis"
+
+    def immediate_write(
+        table: pa.Table, path: Path | str, *, codec: Compression = "snappy"
+    ) -> None:
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(table, path, compression=normalize_compression(codec))
+
+    monkeypatch.setattr(rt, "write_parquet_atomic", immediate_write)
+
+    pq.write_table(
+        pa.table(
+            {
+                "P1_strategy": ["A"],
+                "P1_rank": [1],
+                "P2_strategy": ["B"],
+                "P2_rank": [2],
+                "winner_seat": ["P1"],
+            }
+        ),
+        block2 / "2p_rows.parquet",
+    )
+    np.save(block2 / "keepers_2.npy", np.array(["A", "B"]))
+    pq.write_table(
+        pa.table(
+            {
+                "P1_strategy": ["C"],
+                "P1_rank": [1],
+                "P2_strategy": ["D"],
+                "P2_rank": [2],
+                "P3_strategy": ["E"],
+                "P3_rank": [3],
+                "winner_seat": ["P1"],
+            }
+        ),
+        block3 / "3p_rows.parquet",
+    )
+    np.save(block3 / "keepers_3.npy", np.array(["C", "D", "E"]))
+
+    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
+
+    done_2 = analysis_root / "2p" / "ratings_2_seed0.done.json"
+    done_3 = analysis_root / "3p" / "ratings_3_seed0.done.json"
+    assert done_2.exists()
+    assert done_3.exists()
+    two_path = analysis_root / "2p" / "ratings_2_seed0.parquet"
+    two_mtime = two_path.stat().st_mtime
+
+    # Simulate interrupted cleanup / missing shard completion by removing 3p outputs.
+    done_3.unlink()
+    (analysis_root / "3p" / "ratings_3_seed0.parquet").unlink()
+
+    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
+
+    # Recovery should preserve completed shard outputs and rebuild only missing shard.
+    assert two_path.stat().st_mtime == two_mtime
+    assert (analysis_root / "3p" / "ratings_3_seed0.parquet").exists()
