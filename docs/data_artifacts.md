@@ -92,6 +92,46 @@ on stable slot names in manifests and notebooks.
 
 These updates keep checkpoints for resumability while ensuring every canonical data product is published in a consistent, columnar format with NDJSON manifests for append-only logs.
 
+## Expensive stage inventory and shard recovery plan
+
+The longest-running analysis costs are currently concentrated in stage-level loops
+that iterate independently by player count (`k`) and, for interseed workflows,
+by seed. The primary hotspots are:
+
+1. **TrueSkill per-k updates (`run_trueskill`)** – streams very large per-k
+   game rows and historically produced reusable artifacts only once each full-k
+   block finished.
+2. **TrueSkill pooled rollup (`run_trueskill` pooled output)** – historically
+   relied on whatever per-k files existed and reused work near stage end.
+
+To improve crash recovery and resumability, TrueSkill now emits explicit shard
+artifacts and done stamps:
+
+- Per-k shard key: `k=<players>`
+  - `artifact.k<players>_seed<seed>.parquet`
+  - `artifact.k<players>_seed<seed>.done.json`
+- Final pooled shard key: `all-k`
+  - `artifact.all-k_seed<seed>.parquet`
+  - `artifact.all-k_seed<seed>.done.json`
+
+Canonical compatibility outputs (`ratings_<k>_seed<seed>.parquet` and
+`ratings_k_weighted_seed<seed>.parquet`) are still written for downstream
+consumers, but orchestration now treats each per-k shard as independently
+complete/skippable via done stamps and only includes shards with valid stamps in
+final pooling.
+
+### Recovery SLA target and shard sizing
+
+- **Target recovery SLA:** recompute after interruption should be bounded to
+  **≤ ~1 hour** of wall-clock work.
+- **Shard sizing policy:** use `k` as the baseline shard key (already
+  independent in the runner), and enable/adjust batch checkpoint cadence via
+  `checkpoint_every_batches` so each missing shard restarts from at most one
+  bounded checkpoint window rather than from stage start.
+
+This keeps recovery work proportional to missing shards only, avoiding complete
+re-runs of previously finished `k` blocks.
+
 ## Naming convention policy (pooled vs weighted)
 
 - `pooled` means concatenated long/all-k rows only.
