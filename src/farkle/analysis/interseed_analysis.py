@@ -38,7 +38,14 @@ def run(
     """Execute or summarize rng/variance/meta/TrueSkill/agreement interseed analytics."""
 
     previous_layout = cfg._stage_layout
-    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+    resolved_rng_diagnostics = (
+        run_rng_diagnostics
+        if run_rng_diagnostics is not None
+        else not cfg.analysis.disable_rng_diagnostics
+    )
+    cfg.set_stage_layout(
+        resolve_interseed_stage_layout(cfg, run_rng_diagnostics=resolved_rng_diagnostics)
+    )
 
     stage_log = stage_logger("interseed", logger=LOGGER)
     stage_log.start()
@@ -51,11 +58,7 @@ def run(
 
         statuses: dict[str, dict[str, Any]] = {}
 
-        rng_enabled = (
-            run_rng_diagnostics
-            if run_rng_diagnostics is not None
-            else not cfg.analysis.disable_rng_diagnostics
-        )
+        rng_enabled = resolved_rng_diagnostics
         variance_enabled = True
         game_stats_enabled = True
         meta_enabled = True

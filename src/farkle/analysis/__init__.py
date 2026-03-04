@@ -148,11 +148,13 @@ def run_interseed_analysis(
 ) -> None:
     """Run interseed analytics in order (rng → variance → meta → trueskill → agreement → summary)."""
     previous_layout = cfg._stage_layout
-    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
     resolved_rng_diagnostics = (
         run_rng_diagnostics
         if run_rng_diagnostics is not None
         else not cfg.analysis.disable_rng_diagnostics
+    )
+    cfg.set_stage_layout(
+        resolve_interseed_stage_layout(cfg, run_rng_diagnostics=resolved_rng_diagnostics)
     )
 
     def _require_interseed_inputs(
