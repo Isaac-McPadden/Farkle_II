@@ -49,7 +49,7 @@ def seed_pair_meta_root(cfg: AppConfig, seed_pair: tuple[int, int]) -> Path | No
     if cfg.io.meta_analysis_dir is None:
         return None
     meta_path = Path(cfg.io.meta_analysis_dir)
-    meta_name = meta_path.name if meta_path.is_absolute() else str(meta_path)
+    meta_name = meta_path.name
     seed_a, seed_b = seed_pair
     return seed_pair_root(cfg, seed_pair) / f"{meta_name}_{seed_a}_{seed_b}"
 

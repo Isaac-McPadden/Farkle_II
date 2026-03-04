@@ -430,6 +430,56 @@ def test_run_streaming_shard_manifest_outside_dir_uses_absolute(tmp_path, monkey
     assert manifest_calls[0][1]["path"] == os.path.abspath(os.fspath(out_path))
 
 
+
+
+def test_run_streaming_shard_manifest_sibling_relative_path_is_preserved(tmp_path, monkeypatch):
+    table = pa.table({"value": [1]})
+    schema = table.schema
+    out_path = tmp_path / "pooled" / "n_players=10" / "part-00000.parquet"
+    manifest_path = tmp_path / "partition_manifests" / "n_players=10.manifest.ndjson"
+
+    class DummyWriter:
+        def __init__(self, *, out_path, schema, compression, row_group_size):
+            self._out_path = Path(out_path)
+            self.rows_written = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def write_batches(self, batch_iterable):
+            for tbl in batch_iterable:
+                self.rows_written += tbl.num_rows
+            self._out_path.parent.mkdir(parents=True, exist_ok=True)
+            self._out_path.write_bytes(b"ok")
+
+    monkeypatch.setattr(streaming_loop, "ParquetShardWriter", DummyWriter)
+
+    def fake_relpath(path, start=os.curdir) -> str:
+        del path, start
+        return r"..\pooled\n_players=10\part-00000.parquet"
+
+    monkeypatch.setattr(os.path, "relpath", fake_relpath)
+
+    manifest_calls = []
+
+    def fake_append(path, record) -> None:
+        manifest_calls.append((path, record))
+
+    monkeypatch.setattr(streaming_loop, "append_manifest_line", fake_append)
+
+    streaming_loop.run_streaming_shard(
+        out_path=str(out_path),
+        manifest_path=str(manifest_path),
+        schema=schema,
+        batch_iter=iter([table]),
+    )
+
+    assert manifest_calls
+    assert manifest_calls[0][1]["path"] == "../pooled/n_players=10/part-00000.parquet"
+
 def test_writer_thread_stops_on_first_sentinel(monkeypatch):
     table = pa.table({"value": [1]})
     queue = [table, None, pa.table({"value": [2]})]
