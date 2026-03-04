@@ -561,6 +561,12 @@ class AppConfig:
 
         return self.stage_subdir("combine", "pooled")
 
+    @property
+    def combine_partitioned_dir(self) -> Path:
+        """Directory holding partitioned combined curated rows."""
+
+        return self.stage_subdir("combine", "pooled", "all_ingested_rows_partitioned")
+
     def metrics_per_k_dir(self, k: int) -> Path:
         """Directory holding metrics artifacts for ``k`` players."""
         path = self.per_k_subdir("metrics", k)
@@ -1278,6 +1284,45 @@ class AppConfig:
         """Ordered candidate paths considered when resolving ``curated_parquet``."""
 
         return self._combine_artifact_candidates("all_ingested_rows.parquet")
+
+    @property
+    def curated_dataset(self) -> Path:
+        """Path to the preferred dataset layout for combined curated rows."""
+
+        return self._resolve_combine_dataset_path()
+
+    def curated_dataset_candidates(self) -> tuple[Path, ...]:
+        """Ordered candidate paths considered when resolving ``curated_dataset``."""
+
+        return self._combine_dataset_candidates()
+
+    def _combine_dataset_candidates(self) -> tuple[Path, ...]:
+        """Return ordered candidate directories for partitioned combine outputs."""
+
+        candidates: list[Path] = []
+        input_dir = self._input_stage_path("combine", "pooled", "all_ingested_rows_partitioned")
+        if input_dir is not None:
+            candidates.append(input_dir)
+
+        stage_dir = self._stage_dir_if_active("combine", "pooled", "all_ingested_rows_partitioned")
+        if stage_dir is not None and stage_dir not in candidates:
+            candidates.append(stage_dir)
+
+        interseed_dir = self._interseed_stage_dir("combine", "pooled", "all_ingested_rows_partitioned")
+        if interseed_dir is not None and interseed_dir not in candidates:
+            candidates.append(interseed_dir)
+
+        if self.combine_partitioned_dir not in candidates:
+            candidates.append(self.combine_partitioned_dir)
+        return tuple(candidates)
+
+    def _resolve_combine_dataset_path(self) -> Path:
+        """Resolve preferred combined dataset path with monolithic fallback."""
+
+        for candidate in self._combine_dataset_candidates():
+            if candidate.exists():
+                return candidate
+        return self.curated_parquet
 
     def _combine_artifact_candidates(self, filename: str) -> tuple[Path, ...]:
         """Return ordered candidate paths for a combine-stage pooled artifact."""

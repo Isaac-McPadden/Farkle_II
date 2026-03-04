@@ -58,7 +58,7 @@ def run(cfg: AppConfig) -> None:
 
     analysis_dir = cfg.analysis_dir
     metrics_dir = cfg.metrics_pooled_dir
-    data_file = cfg.curated_parquet
+    data_file = cfg.curated_dataset
     out_metrics = cfg.metrics_output_path()
     out_metrics_weighted = cfg.metrics_output_path("metrics_weighted.parquet")
     out_seats = cfg.metrics_output_path("seat_advantage.csv")
@@ -79,6 +79,7 @@ def run(cfg: AppConfig) -> None:
     stamp_seat_advantage = cfg.metrics_output_path("metrics.seat_advantage.stamp.json")
     stamp_seat_metrics = cfg.metrics_output_path("metrics.seat_metrics.stamp.json")
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
+    include_players = set(player_counts)
     raw_metric_inputs = [
         cfg.results_root / f"{n}_players" / f"{n}p_metrics.parquet" for n in player_counts
     ]
@@ -233,7 +234,7 @@ def run(cfg: AppConfig) -> None:
                 "output_parquet": str(out_seats_parquet),
             },
         )
-        seat_df = compute_seat_advantage(cfg, data_file, seat_cfg)
+        seat_df = compute_seat_advantage(cfg, data_file, seat_cfg, include_players=include_players)
         write_csv_atomic(seat_df, out_seats)
         seat_table = pa.Table.from_pandas(seat_df, preserve_index=False)
         write_parquet_atomic(seat_table, out_seats_parquet)
@@ -268,7 +269,12 @@ def run(cfg: AppConfig) -> None:
                 "progress": str(seat_progress),
             },
         )
-        seat_metrics_df = compute_seat_metrics(data_file, seat_cfg, progress_path=seat_progress)
+        seat_metrics_df = compute_seat_metrics(
+            data_file,
+            seat_cfg,
+            include_players=include_players,
+            progress_path=seat_progress,
+        )
         seat_metrics_table = pa.Table.from_pandas(seat_metrics_df, preserve_index=False)
         write_parquet_atomic(seat_metrics_table, out_seat_metrics)
         write_csv_atomic(seat_metrics_df, out_seat_metrics_csv)
@@ -671,7 +677,8 @@ def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:
     """Backwards-compatible wrapper for seat-advantage calculations."""
 
     seat_cfg = SeatMetricConfig(seat_range=cfg.metrics_seat_range)
-    return compute_seat_advantage(cfg, combined, seat_cfg)
+    include_players = {int(n) for n in cfg.sim.n_players_list}
+    return compute_seat_advantage(cfg, combined, seat_cfg, include_players=include_players)
 
 
 def _stamp(path: Path) -> dict[str, float | int]:

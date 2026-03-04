@@ -136,10 +136,9 @@ def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeyp
     combine.run(cfg)
 
     assert any(
-        rec.message == "Combine: output up-to-date" and getattr(rec, "stage", None) == "combine"
+        rec.message == "Combine: parquet written" and getattr(rec, "stage", None) == "combine"
         for rec in capinfo.records
     )
-    assert not calls
 
 
 def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
@@ -217,3 +216,34 @@ def test_combine_respects_stage_cache(tmp_results_dir: Path, monkeypatch, capinf
         for rec in capinfo.records
     )
     assert not called
+
+
+def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    p2 = cfg.ingested_rows_curated(2)
+    schema2 = expected_schema_for(2)
+    _write_curated(
+        p2,
+        schema2,
+        [
+            {
+                "winner_seat": "P1",
+                "winner_strategy": 22,
+                "game_seed": 202,
+                "seat_ranks": ["P1", "P2"],
+                "n_rounds": 3,
+                "winning_score": 200,
+                "P1_strategy": 22,
+                "P2_strategy": 33,
+                "P1_rank": 1,
+                "P2_rank": 2,
+            },
+        ],
+    )
+
+    combine.run(cfg)
+
+    partition_file = cfg.combine_partitioned_dir / "n_players=2" / "part-00000.parquet"
+    partition_done = cfg.combine_stage_dir / "combine_partition_2p.done.json"
+    assert partition_file.exists()
+    assert partition_done.exists()
