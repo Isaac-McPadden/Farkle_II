@@ -79,6 +79,37 @@ def test_iter_shards_csv_fallback(tmp_path):
     assert names == {"shard.parquet", "winners.csv"}
 
 
+@pytest.fixture
+def compact_fallback_block_with_multiple_parquet(tmp_path) -> tuple[Path, list[str]]:
+    block = tmp_path / "compact_block"
+    block.mkdir()
+
+    pd.DataFrame({"winner": ["P2"], "P1_strategy": ["B"]}).to_parquet(
+        block / "zeta.parquet", index=False
+    )
+    pd.DataFrame({"winner": ["P1"], "P1_strategy": ["A"]}).to_parquet(
+        block / "alpha.parquet", index=False
+    )
+    pd.DataFrame({"winner": ["P3"], "P1_strategy": ["C"]}).to_parquet(
+        block / "mu.parquet", index=False
+    )
+
+    expected = ["alpha.parquet", "mu.parquet", "zeta.parquet"]
+    return block, expected
+
+
+def test_iter_shards_compact_fallback_parquet_order_is_stable(
+    compact_fallback_block_with_multiple_parquet,
+):
+    block, expected = compact_fallback_block_with_multiple_parquet
+
+    first = [p.name for _, p in _iter_shards(block, ("winner", "P1_strategy"))]
+    second = [p.name for _, p in _iter_shards(block, ("winner", "P1_strategy"))]
+
+    assert first == expected
+    assert second == expected
+
+
 def test_iter_shards_subset_logs_missing(tmp_path, caplog):
     caplog.set_level(logging.DEBUG, logger="farkle.analysis.ingest")
     block = tmp_path
