@@ -56,18 +56,35 @@ def test_rating_artifact_paths_and_ensure_new_location(tmp_path: Path) -> None:
     assert migrated.exists()
 
 
-def test_iter_rating_parquets_deduplicates_and_filters(tmp_path: Path) -> None:
+def test_iter_rating_parquets_deduplicates_filters_and_sorts_stably(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
     (root / "2p").mkdir()
     (root / "2p" / "ratings_2_seed0.parquet").touch()
+    (root / "3p").mkdir()
+    (root / "3p" / "ratings_3_seed0.parquet").touch()
     (root / "ratings_k_weighted_seed0.parquet").touch()
     (root / "data" / "2p").mkdir(parents=True)
     (root / "data" / "2p" / "ratings_2_seed0.parquet").touch()
 
-    results = rt._iter_rating_parquets(root, "_seed0")
-    assert len(results) == 2
-    assert all(path.stem.startswith("ratings_2") for path in results)
+    legacy_root = tmp_path / "legacy"
+    (legacy_root / "2p").mkdir(parents=True)
+    (legacy_root / "2p" / "ratings_2_seed0.parquet").touch()
+    (legacy_root / "1p").mkdir(parents=True)
+    (legacy_root / "1p" / "ratings_1_seed0.parquet").touch()
+
+    results = rt._iter_rating_parquets(root, "_seed0", legacy_root=legacy_root)
+    assert len(results) == 5
+    assert [rt._player_count_from_stem(path.stem) for path in results] == [1, 2, 2, 2, 3]
+
+    resolved = [path.resolve().as_posix() for path in results]
+    assert resolved == sorted(
+        resolved,
+        key=lambda p: (
+            rt._player_count_from_stem(Path(p).stem) or float("inf"),
+            p,
+        ),
+    )
 
 
 def test_player_count_from_stem_handles_variants():
