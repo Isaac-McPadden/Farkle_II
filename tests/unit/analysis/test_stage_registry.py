@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from farkle.analysis import stage_registry
 from farkle.analysis.stage_registry import (
     StageDefinition,
@@ -66,14 +68,63 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
 def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
     cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
 
-    base_layout = resolve_stage_layout(cfg)
+    base_layout = resolve_interseed_stage_layout(cfg)
     cfg.analysis.disable_rng_diagnostics = True
 
-    layout = resolve_stage_layout(cfg)
+    layout = resolve_interseed_stage_layout(cfg)
 
-    assert [placement.definition.key for placement in layout.placements] == [
-        placement.definition.key for placement in base_layout.placements
-    ]
+    assert "rng_diagnostics" in [placement.definition.key for placement in base_layout.placements]
+    assert "rng_diagnostics" not in [placement.definition.key for placement in layout.placements]
+
+
+def test_resolve_stage_layout_excludes_disabled_stages_before_numbering(tmp_path: Path) -> None:
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
+    registry = (
+        StageDefinition(key="always", group="unit"),
+        StageDefinition(
+            key="disabled",
+            group="unit",
+            disabled_predicate=lambda _cfg: True,
+        ),
+        StageDefinition(key="after", group="unit"),
+    )
+
+    layout = resolve_stage_layout(cfg, registry=registry)
+
+    assert layout.keys() == ["always", "after"]
+    assert [placement.index for placement in layout.placements] == [0, 1]
+    assert [placement.folder_name for placement in layout.placements] == ["00_always", "01_after"]
+
+
+def test_resolve_stage_layout_errors_when_enabled_dependency_is_disabled(tmp_path: Path) -> None:
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
+    registry = (
+        StageDefinition(
+            key="upstream",
+            group="unit",
+            disabled_predicate=lambda _cfg: True,
+        ),
+        StageDefinition(
+            key="downstream",
+            group="unit",
+            depends_on=("upstream",),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="depends on disabled or unknown stages"):
+        resolve_stage_layout(cfg, registry=registry)
+
+
+def test_resolve_stage_layout_keeps_enabled_dependencies_unchanged(tmp_path: Path) -> None:
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
+    registry = (
+        StageDefinition(key="upstream", group="unit"),
+        StageDefinition(key="downstream", group="unit", depends_on=("upstream",)),
+    )
+
+    layout = resolve_stage_layout(cfg, registry=registry)
+
+    assert layout.keys() == ["upstream", "downstream"]
 
 
 def test_stage_registry_helpers_and_interseed_layout(tmp_path: Path) -> None:

@@ -139,7 +139,7 @@ def test_run_interseed_analysis_optional_import_missing_dependency_path(
 ) -> None:
     cfg = _make_cfg(tmp_path, seed_list=[11, 12])
     previous_layout = cfg._stage_layout
-    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+    cfg.set_stage_layout(resolve_interseed_stage_layout(cfg, run_rng_diagnostics=False))
     cfg.trueskill_path("ratings_k_weighted.parquet").write_text("x")
     cfg._stage_layout = previous_layout
 
@@ -250,6 +250,19 @@ def test_interseed_run_force_bypasses_up_to_date(
     payload = json.loads(summary_path.read_text())
     assert payload["interseed_ready"] is True
     assert write_stage_done_called is True
+
+
+def test_interseed_summary_reports_rng_disabled_state(tmp_path: Path) -> None:
+    cfg = _make_cfg(tmp_path, seed_list=[61, 62])
+    cfg.analysis.disable_rng_diagnostics = True
+
+    interseed_analysis.run(cfg, run_stages=False, run_rng_diagnostics=None)
+
+    summary_path = next(cfg.analysis_dir.rglob(interseed_analysis.SUMMARY_NAME))
+    payload = json.loads(summary_path.read_text())
+    stages = payload["stages"]
+    assert stages["rng_diagnostics"]["enabled"] is False
+    assert stages["rng_diagnostics"]["outputs"] == []
 
 
 def test_interseed_helper_outputs(tmp_path: Path) -> None:

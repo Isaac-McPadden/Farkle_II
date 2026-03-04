@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Iterable
+from typing import Callable, Iterable, Mapping
 
 from farkle.config import AppConfig
 
@@ -24,6 +24,7 @@ class StageDefinition:
     key: str
     group: str
     folder_stub: str | None = None
+    depends_on: tuple[str, ...] = ()
     disabled_predicate: Callable[[AppConfig], bool] | None = None
 
     def folder_name(self, index: int) -> str:
@@ -117,6 +118,7 @@ _INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
         "rng_diagnostics",
         group="analytics",
         folder_stub="rng",
+        disabled_predicate=lambda cfg: cfg.analysis.disable_rng_diagnostics,
     ),
     StageDefinition("variance", group="analytics"),
     StageDefinition("meta", group="analytics"),
@@ -130,14 +132,32 @@ _INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
 def resolve_stage_layout(
     cfg: AppConfig,
     registry: Iterable[StageDefinition] | None = None,
+    enabled_overrides: Mapping[str, bool] | None = None,
 ) -> StageLayout:
     """Assign sequential numbered folder names to the supplied registry."""
 
-    _ = cfg
     definitions = tuple(registry) if registry is not None else _REGISTRY
+    enabled_definitions = tuple(
+        definition
+        for definition in definitions
+        if (
+            enabled_overrides.get(definition.key, definition.is_enabled(cfg))
+            if enabled_overrides is not None
+            else definition.is_enabled(cfg)
+        )
+    )
+    enabled_keys = {definition.key for definition in enabled_definitions}
+
+    for definition in enabled_definitions:
+        missing_dependencies = tuple(dep for dep in definition.depends_on if dep not in enabled_keys)
+        if missing_dependencies:
+            raise ValueError(
+                "Enabled stage "
+                f"{definition.key!r} depends on disabled or unknown stages: {', '.join(missing_dependencies)}"
+            )
 
     placements: list[StagePlacement] = []
-    for definition in definitions:
+    for definition in enabled_definitions:
         placement_index = len(placements)
         placements.append(
             StagePlacement(
@@ -149,7 +169,14 @@ def resolve_stage_layout(
     return StageLayout(placements=placements)
 
 
-def resolve_interseed_stage_layout(cfg: AppConfig) -> StageLayout:
+def resolve_interseed_stage_layout(
+    cfg: AppConfig,
+    *,
+    run_rng_diagnostics: bool | None = None,
+) -> StageLayout:
     """Resolve a stage layout containing only interseed-relevant stages."""
 
-    return resolve_stage_layout(cfg, registry=_INTERSEED_REGISTRY)
+    overrides = None
+    if run_rng_diagnostics is not None:
+        overrides = {"rng_diagnostics": run_rng_diagnostics}
+    return resolve_stage_layout(cfg, registry=_INTERSEED_REGISTRY, enabled_overrides=overrides)

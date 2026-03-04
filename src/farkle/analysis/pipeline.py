@@ -302,13 +302,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                 return
             rng_mod.run(interseed_cfg, lags=rng_lags)
 
-        _with_interseed_layout(cfg, _run_rng)
+        _with_interseed_layout(cfg, _run_rng, run_rng_diagnostics=run_rng_diagnostics)
 
     def _with_interseed_layout(
-        cfg: AppConfig, runner: Callable[[AppConfig], None]
+        cfg: AppConfig,
+        runner: Callable[[AppConfig], None],
+        *,
+        run_rng_diagnostics: bool | None = None,
     ) -> None:
         previous_layout = cfg._stage_layout
-        cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
+        cfg.set_stage_layout(
+            resolve_interseed_stage_layout(cfg, run_rng_diagnostics=run_rng_diagnostics)
+        )
         try:
             runner(cfg)
         finally:
