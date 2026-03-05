@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from farkle import analysis
-from farkle.analysis import combine, curate, game_stats, ingest, metrics
+from farkle.analysis import combine, coverage_by_k, curate, game_stats, ingest, metrics
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.config import (
     AppConfig,
@@ -519,6 +519,7 @@ def _run_per_seed_analysis(
         StagePlanItem("curate", curate.run),
         StagePlanItem("combine", combine.run),
         StagePlanItem("metrics", metrics.run),
+        StagePlanItem("coverage_by_k", coverage_by_k.run),  # Matches StageLayout analytics ordering.
     ]
     plan.append(StagePlanItem("game_stats", game_stats.run))
     plan.append(
