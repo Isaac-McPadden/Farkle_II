@@ -269,6 +269,7 @@ def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPa
     def fake_run(plan: list[Any], context: Any, raise_on_failure: bool) -> None:
         captured["plan_names"] = [item.name for item in plan]
         captured["run_label"] = context.run_label
+        captured["manifest_path"] = context.manifest_path
         captured["raise_on_failure"] = raise_on_failure
         for item in plan:
             if item.name == "single_seed_analysis":
@@ -294,12 +295,15 @@ def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPa
         "curate",
         "combine",
         "metrics",
+        "coverage_by_k",
         "game_stats",
         "single_seed_analysis",
     ]
+    assert captured["plan_names"].index("coverage_by_k") < captured["plan_names"].index("game_stats")
     assert captured["run_label"] == "per_seed_pipeline_9"
+    assert captured["manifest_path"] == cfg.analysis_dir / cfg.manifest_name
     assert captured["raise_on_failure"] is True
-    assert delegated == [(cfg, manifest_path)]
+    assert delegated == [(cfg, cfg.analysis_dir / cfg.manifest_name)]
 
 
 def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
