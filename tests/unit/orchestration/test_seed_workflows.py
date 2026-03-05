@@ -306,6 +306,56 @@ def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPa
     assert delegated == [(cfg, cfg.analysis_dir / cfg.manifest_name)]
 
 
+def test_run_per_seed_analysis_writes_per_seed_manifest_and_health_inputs_independent_of_pair_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    pair_manifest_path = tmp_path / "pair" / "two_seed_pipeline_manifest.jsonl"
+    policy_bundle = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=1)
+
+    for module in (
+        two_seed_pipeline.ingest,
+        two_seed_pipeline.curate,
+        two_seed_pipeline.combine,
+        two_seed_pipeline.metrics,
+        two_seed_pipeline.coverage_by_k,
+        two_seed_pipeline.game_stats,
+    ):
+        monkeypatch.setattr(module, "run", lambda _cfg: None)
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_single_seed_analysis",
+        lambda _cfg, *, manifest_path: None,
+    )
+
+    seed = 123
+    two_seed_pipeline._run_per_seed_analysis(
+        cfg,
+        manifest_path=pair_manifest_path,
+        seed=seed,
+        policy_bundle=policy_bundle,
+    )
+
+    per_seed_manifest = cfg.analysis_dir / cfg.manifest_name
+    assert per_seed_manifest.exists()
+    events = [json.loads(line) for line in per_seed_manifest.read_text(encoding="utf-8").splitlines()]
+    assert all(event["run"] == f"per_seed_pipeline_{seed}" for event in events)
+
+    stage_statuses = {
+        key: {"status": value.status, "diagnostics": list(value.diagnostics)}
+        for key, value in two_seed_pipeline._resolve_seed_family_statuses(
+            seed,
+            seed_cfg=cfg,
+            analysis_error=None,
+        ).items()
+    }
+    assert pair_manifest_path.exists() is False
+    assert stage_statuses[f"seed_{seed}.analysis"]["status"] == "success"
+    assert stage_statuses[f"seed_{seed}.seed_symmetry"]["status"] == "missing"
+    assert stage_statuses[f"seed_{seed}.post_h2h"]["status"] == "missing"
+
+
 def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     cfg.sim.seed_pair = (1, 2)
