@@ -512,6 +512,8 @@ def _run_per_seed_analysis(
     policy_bundle: _PerSeedPolicyBundle,
 ) -> None:
     apply_native_thread_limits(policy_bundle.analysis)
+    per_seed_manifest_path = cfg.analysis_dir / cfg.manifest_name
+    per_seed_manifest_path.parent.mkdir(parents=True, exist_ok=True)
     plan: list[StagePlanItem] = [
         StagePlanItem("ingest", ingest.run),
         StagePlanItem("curate", curate.run),
@@ -522,17 +524,18 @@ def _run_per_seed_analysis(
     plan.append(
         StagePlanItem(
             "single_seed_analysis",
-            lambda cfg: analysis.run_single_seed_analysis(cfg, manifest_path=manifest_path),
+            lambda cfg: analysis.run_single_seed_analysis(cfg, manifest_path=per_seed_manifest_path),
         )
     )
     context = StageRunContext(
         config=cfg,
-        manifest_path=manifest_path,
+        manifest_path=per_seed_manifest_path,
         run_label=f"per_seed_pipeline_{seed}",
         run_metadata={
             "seed": seed,
             "results_dir": str(cfg.results_root),
             "analysis_dir": str(cfg.analysis_dir),
+            "pair_manifest": str(manifest_path),
             "config_sha": cfg.config_sha,
             "resolved_policy": policy_bundle.as_metadata(),
         },
