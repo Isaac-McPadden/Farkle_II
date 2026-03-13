@@ -308,9 +308,12 @@ def _resolve_stage_contract_status(
     explicit_error: str | None = None,
 ) -> _ResolvedStageStatus:
     diagnostics: list[str] = []
+    dependency_blocked = bool(dependency_statuses) and any(
+        status != "success" for status in dependency_statuses
+    )
     if explicit_error:
         diagnostics.append(explicit_error)
-    if dependency_statuses and any(status != "success" for status in dependency_statuses):
+    if dependency_blocked:
         diagnostics.append(f"upstream incomplete: {', '.join(dependency_statuses)}")
 
     missing_outputs: list[Path] = []
@@ -320,7 +323,9 @@ def _resolve_stage_contract_status(
             missing_outputs.append(output_path)
             diagnostics.append(f"{output_path}: {reason}")
 
-    if explicit_error or any("unparseable metadata" in reason for reason in diagnostics):
+    if explicit_error or dependency_blocked and not missing_outputs or any(
+        "unparseable metadata" in reason for reason in diagnostics
+    ):
         status = "failed"
     elif missing_outputs:
         status = "missing"

@@ -90,7 +90,14 @@ class ParquetShardWriter:
         if not self._tmp_path:
             return
         if self._writer is not None:
-            self._writer.close()
+            try:
+                self._writer.close()
+            except Exception:
+                with suppress(FileNotFoundError):
+                    os.remove(self._tmp_path)
+                self._tmp_path = ""
+                self._writer = None
+                raise
         if success:
             os.replace(self._tmp_path, self.out_path)
         else:

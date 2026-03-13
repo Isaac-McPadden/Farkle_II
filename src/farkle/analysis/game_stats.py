@@ -483,6 +483,7 @@ def _compute_k_game_stats(
     config_sha: str | None,
 ) -> None:
     artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
     temp_state_path = artifact_path.with_suffix(".checkpoint.json")
     ds_in = ds.dataset(input_path)
     strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
@@ -547,8 +548,10 @@ def _compute_k_game_stats(
                         )
 
         if batch_idx % 25 == 0:
-            with atomic_path(temp_state_path) as tmp_path:
-                tmp_path.write_text(json.dumps({"k": k, "batches": batch_idx}, sort_keys=True))
+            with atomic_path(str(temp_state_path)) as tmp_path:
+                Path(tmp_path).write_text(
+                    json.dumps({"k": k, "batches": batch_idx}, sort_keys=True), encoding="utf-8"
+                )
 
     rows: list[dict[str, StatValue]] = []
     for strategy, rounds_acc in rounds_by_strategy.items():
@@ -2295,51 +2298,63 @@ def _build_rare_event_summary_shard(
                 melted = melted.dropna(subset=["strategy"])
                 if melted.empty:
                     continue
-                melted["strategy"] = melted["strategy"].astype("category")
+                strategy_numeric = pd.to_numeric(melted["strategy"], errors="coerce")
+                valid_strategy = strategy_numeric.notna()
+                if not bool(valid_strategy.any()):
+                    continue
+                melted = melted.loc[valid_strategy].copy()
+                strategy_values = strategy_numeric.loc[valid_strategy].to_numpy(
+                    dtype=strategy_dtype, copy=False
+                )
+                count = _strategy_key_to_int(melted.shape[0], field="observations")
 
-                grouped = melted.groupby("strategy", observed=True, sort=False)
+                per_game_data: dict[str, ArrowColumnData] = {
+                    "summary_level": np.full(count, "game", dtype=object),
+                    "strategy": strategy_values,
+                    "n_players": np.full(count, n_players, dtype=player_dtype),
+                    "margin_runner_up": melted["margin_runner_up"].to_numpy(dtype=float),
+                    "score_spread": melted["score_spread"].to_numpy(dtype=float),
+                    "multi_reached_target": melted["multi_reached_target"].to_numpy(dtype=flag_dtype),
+                    "observations": np.ones(count, dtype=obs_dtype),
+                }
+                for thr in thresholds:
+                    flag_name = f"margin_le_{thr}"
+                    per_game_data[flag_name] = melted[flag_name].to_numpy(dtype=flag_dtype)
+
+                writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
+                rows_written += count
+                global_sums["observations"] += count
+
+                global_multi_target_sum = _strategy_key_to_int(
+                    melted["multi_reached_target"].to_numpy(copy=False).sum(),
+                    field="multi_reached_target",
+                )
+                global_sums["multi_reached_target"] += global_multi_target_sum
+                for thr in thresholds:
+                    flag_name = f"margin_le_{thr}"
+                    global_sums[flag_name] += _strategy_key_to_int(
+                        melted[flag_name].to_numpy(copy=False).sum(),
+                        field=flag_name,
+                    )
+
+                grouped = melted.groupby(strategy_values, sort=False)
                 for strategy, group in grouped:
-                    count = _strategy_key_to_int(group.shape[0], field="observations")
+                    group_count = _strategy_key_to_int(group.shape[0], field="observations")
                     strategy_value = _strategy_key_to_int(strategy)
-                    per_game_data: dict[str, ArrowColumnData] = {
-                        "summary_level": np.full(count, "game", dtype=object),
-                        "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
-                        "n_players": np.full(count, n_players, dtype=player_dtype),
-                        "margin_runner_up": group["margin_runner_up"].to_numpy(dtype=float),
-                        "score_spread": group["score_spread"].to_numpy(dtype=float),
-                        "multi_reached_target": group["multi_reached_target"].to_numpy(
-                            dtype=flag_dtype
-                        ),
-                        "observations": np.ones(count, dtype=obs_dtype),
-                    }
-                    for thr in thresholds:
-                        flag_name = f"margin_le_{thr}"
-                        per_game_data[flag_name] = group[flag_name].to_numpy(dtype=flag_dtype)
-
-                    writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
-                    rows_written += count
-
                     strategy_entry = strategy_sums.setdefault(
                         strategy_value, {"observations": 0, **dict.fromkeys(flags, 0)}
                     )
-                    strategy_entry["observations"] += count
-                    global_sums["observations"] += count
-
-                    multi_target_sum = _strategy_key_to_int(
+                    strategy_entry["observations"] += group_count
+                    strategy_entry["multi_reached_target"] += _strategy_key_to_int(
                         group["multi_reached_target"].to_numpy(copy=False).sum(),
                         field="multi_reached_target",
                     )
-                    strategy_entry["multi_reached_target"] += multi_target_sum
-                    global_sums["multi_reached_target"] += multi_target_sum
-
                     for thr in thresholds:
                         flag_name = f"margin_le_{thr}"
-                        flag_total = _strategy_key_to_int(
+                        strategy_entry[flag_name] += _strategy_key_to_int(
                             group[flag_name].to_numpy(copy=False).sum(),
                             field=flag_name,
                         )
-                        strategy_entry[flag_name] += flag_total
-                        global_sums[flag_name] += flag_total
 
                 if batch_idx % 50 == 0:
                     LOGGER.info(
@@ -2467,29 +2482,30 @@ def _rare_event_details(
                 melted = melted.dropna(subset=["strategy"])
                 if melted.empty:
                     continue
-                melted["strategy"] = melted["strategy"].astype("category")
-                grouped = melted.groupby("strategy", observed=True, sort=False)
-                for strategy, group in grouped:
-                    count = _strategy_key_to_int(group.shape[0], field="observations")
-                    strategy_value = _strategy_key_to_int(strategy)
-                    per_game_data: dict[str, ArrowColumnData] = {
-                        "summary_level": np.full(count, "game", dtype=object),
-                        "strategy": np.full(count, strategy_value, dtype=strategy_dtype),
-                        "n_players": np.full(count, n_players, dtype=player_dtype),
-                        "margin_runner_up": group["margin_runner_up"].to_numpy(dtype=float),
-                        "score_spread": group["score_spread"].to_numpy(dtype=float),
-                        "multi_reached_target": group["multi_reached_target"].to_numpy(
-                            dtype=flag_dtype
-                        ),
-                        "observations": np.ones(count, dtype=obs_dtype),
-                    }
-                    for thr in thresholds:
-                        per_game_data[f"margin_le_{thr}"] = group[f"margin_le_{thr}"].to_numpy(
-                            dtype=flag_dtype
-                        )
-
-                    writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
-                    rows_written += count
+                strategy_numeric = pd.to_numeric(melted["strategy"], errors="coerce")
+                valid_strategy = strategy_numeric.notna()
+                if not bool(valid_strategy.any()):
+                    continue
+                melted = melted.loc[valid_strategy].copy()
+                strategy_values = strategy_numeric.loc[valid_strategy].to_numpy(
+                    dtype=strategy_dtype, copy=False
+                )
+                count = _strategy_key_to_int(melted.shape[0], field="observations")
+                per_game_data: dict[str, ArrowColumnData] = {
+                    "summary_level": np.full(count, "game", dtype=object),
+                    "strategy": strategy_values,
+                    "n_players": np.full(count, n_players, dtype=player_dtype),
+                    "margin_runner_up": melted["margin_runner_up"].to_numpy(dtype=float),
+                    "score_spread": melted["score_spread"].to_numpy(dtype=float),
+                    "multi_reached_target": melted["multi_reached_target"].to_numpy(dtype=flag_dtype),
+                    "observations": np.ones(count, dtype=obs_dtype),
+                }
+                for thr in thresholds:
+                    per_game_data[f"margin_le_{thr}"] = melted[f"margin_le_{thr}"].to_numpy(
+                        dtype=flag_dtype
+                    )
+                writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
+                rows_written += count
         return rows_written
     finally:
         writer.close(success=rows_written > 0)

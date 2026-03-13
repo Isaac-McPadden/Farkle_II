@@ -61,6 +61,13 @@ def _partition_paths(cfg: AppConfig, n_players: int) -> tuple[Path, Path]:
     return partition_dir / f"{prefix}_part-00000.parquet", manifest_dir / f"{prefix}_partition.manifest.jsonl"
 
 
+def _reset_output_manifest(manifest_path: Path) -> None:
+    """Clear a rewrite-owned manifest before appending fresh shard metadata."""
+
+    if manifest_path.exists():
+        manifest_path.unlink()
+
+
 def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Schema) -> tuple[list[Path], list[Path]]:
     outputs: list[Path] = []
     manifests: list[Path] = []
@@ -94,6 +101,7 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
                     table = _pad_to_schema(table, target)
                 yield table
 
+        _reset_output_manifest(manifest_path)
         run_streaming_shard(
             out_path=str(out_file),
             manifest_path=str(manifest_path),
@@ -125,6 +133,7 @@ def _write_monolithic_compatibility_from_partitions(cfg: AppConfig, out: Path, m
                 table = table.drop(["n_players"])
             yield table
 
+    _reset_output_manifest(manifest_path)
     run_streaming_shard(
         out_path=str(out),
         manifest_path=str(manifest_path),

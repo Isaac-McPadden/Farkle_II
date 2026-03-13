@@ -5,6 +5,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.analysis import combine
+from farkle.analysis.checks import check_pre_metrics
 from farkle.config import AppConfig, IOConfig
 from farkle.utils.schema_helpers import expected_schema_for
 
@@ -247,3 +248,42 @@ def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: 
     partition_done = cfg.combine_stage_dir / "combine_partition_2p.done.json"
     assert partition_file.exists()
     assert partition_done.exists()
+
+
+def test_combine_rerun_replaces_partition_and_pooled_manifests(tmp_results_dir: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    p2 = cfg.ingested_rows_curated(2)
+    schema2 = expected_schema_for(2)
+    _write_curated(
+        p2,
+        schema2,
+        [
+            {
+                "winner_seat": "P1",
+                "winner_strategy": 22,
+                "game_seed": 202,
+                "seat_ranks": ["P1", "P2"],
+                "n_rounds": 3,
+                "winning_score": 200,
+                "P1_strategy": 22,
+                "P2_strategy": 33,
+                "P1_rank": 1,
+                "P2_rank": 2,
+            },
+        ],
+    )
+
+    cfg.config_sha = "sha-one"
+    combine.run(cfg)
+
+    cfg.config_sha = "sha-two"
+    combine.run(cfg)
+
+    partition_manifest = cfg.combine_stage_dir / "partition_manifests" / "2p_partition.manifest.jsonl"
+    pooled_manifest = cfg.combined_manifest_path()
+    partition_lines = partition_manifest.read_text(encoding="utf-8").splitlines()
+    pooled_lines = pooled_manifest.read_text(encoding="utf-8").splitlines()
+
+    assert len([line for line in partition_lines if line.strip()]) == 1
+    assert len([line for line in pooled_lines if line.strip()]) == 1
+    check_pre_metrics(cfg.curated_dataset, winner_col="winner_seat")

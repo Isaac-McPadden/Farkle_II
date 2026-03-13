@@ -315,6 +315,8 @@ class AnalysisConfig:
     """Optional quantile for margin-of-victory rare-event thresholds."""
     rare_event_target_rate: float | None = None
     """Optional target rate for multi-target rare-event thresholds."""
+    rng_max_matchup_groups: int | None = 100_000
+    """Cap matchup-strategy group states in RNG diagnostics to bound memory use."""
 
     h2h_tier_trends_seed_s_tier_paths: list[Path] | None = None
     """Optional explicit per-seed S-tier JSON paths for h2h tier trends."""

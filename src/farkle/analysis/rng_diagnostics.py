@@ -36,6 +36,13 @@ _EXPECTED_NOTE = "Expected ~0 under IID seeds"
 _SEAT_STRATEGY_RE = re.compile(r"^P(\d+)_strategy$")
 _STREAM_BATCH_SIZE = 100_000
 _STREAM_PROGRESS_EVERY = 25
+_DEFAULT_MAX_MATCHUP_GROUPS = 100_000
+
+
+def _is_missing_scalar(value: object) -> bool:
+    if value is None or value is pd.NA:
+        return True
+    return isinstance(value, float) and np.isnan(value)
 
 
 def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = False) -> None:
@@ -114,7 +121,12 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         return
 
     columns = ["game_seed", "n_rounds", winner_col, *strat_cols]
-    melted_batches = _iter_melted_batches(
+    max_matchup_groups = cfg.analysis.rng_max_matchup_groups
+    if max_matchup_groups is None:
+        max_matchup_groups = _DEFAULT_MAX_MATCHUP_GROUPS
+    if max_matchup_groups <= 0:
+        max_matchup_groups = None
+    prepared_batches = _iter_prepared_batches(
         dataset,
         columns=columns,
         winner_col=winner_col,
@@ -122,10 +134,12 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         batch_size=_STREAM_BATCH_SIZE,
         arrow_threads=policy.arrow_threads,
     )
-    diagnostics, melted_rows = _collect_diagnostics_streaming(
-        melted_batches,
+    diagnostics, melted_rows = _collect_diagnostics_streaming_compact(
+        prepared_batches,
+        strat_cols=strat_cols,
         lags=lags,
         progress_every_batches=_STREAM_PROGRESS_EVERY,
+        max_matchup_groups=max_matchup_groups,
     )
     if melted_rows == 0:
         stage_log.missing_input("no per-strategy rows after melting", path=str(data_file))
@@ -147,6 +161,151 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         "rng-diagnostics: written",
         extra={"stage": "rng_diagnostics", "rows": len(diagnostics), "path": str(out_file)},
     )
+
+
+def _iter_prepared_batches(
+    dataset: ds.Dataset,
+    *,
+    columns: Sequence[str],
+    winner_col: str,
+    strat_cols: Sequence[str],
+    batch_size: int,
+    arrow_threads: int,
+) -> Iterator[pd.DataFrame]:
+    scanner = dataset.scanner(
+        columns=list(columns),
+        batch_size=batch_size,
+        use_threads=arrow_threads > 1,
+    )
+    for batch in scanner.to_batches():
+        if batch.num_rows == 0:
+            continue
+        df = batch.to_pandas(categories=list(strat_cols))
+        if df.empty:
+            continue
+        df = df.sort_values("game_seed", kind="mergesort")
+        df["matchup"] = _build_matchup_labels(df, strat_cols)
+        df["n_players"] = df[strat_cols].notna().sum(axis=1).astype(int)
+        df["winner_strategy"] = _winner_strategies(df, winner_col, strat_cols)
+        yield df[["n_rounds", "matchup", "n_players", "winner_strategy", *strat_cols]]
+
+
+def _collect_diagnostics_streaming_compact(
+    data_batches: Iterable[pd.DataFrame],
+    *,
+    strat_cols: Sequence[str],
+    lags: Sequence[int],
+    progress_every_batches: int,
+    max_matchup_groups: int | None,
+) -> tuple[pd.DataFrame, int]:
+    normalized_lags = tuple(int(lag) for lag in lags)
+    strategy_states: dict[tuple[str, int], _GroupStreamAccumulator] = {}
+    matchup_states: dict[tuple[str | None, str, int], _GroupStreamAccumulator] = {}
+    processed_batches = 0
+    melted_rows = 0
+    skipped_matchup_groups = 0
+    skipped_matchup_rows = 0
+
+    for batch in data_batches:
+        if batch.empty:
+            continue
+        processed_batches += 1
+
+        for strat_col in strat_cols:
+            if strat_col not in batch.columns:
+                continue
+            seat = batch[["matchup", "n_players", "winner_strategy", "n_rounds", strat_col]].rename(
+                columns={strat_col: "strategy"}
+            )
+            seat = seat.dropna(subset=["strategy"]).copy()
+            if seat.empty:
+                continue
+            seat["strategy"] = seat["strategy"].astype("string")
+            seat["win_indicator"] = (
+                seat["winner_strategy"].notna() & (seat["strategy"] == seat["winner_strategy"])
+            ).astype(np.int8)
+            seat = seat[["matchup", "strategy", "n_players", "win_indicator", "n_rounds"]]
+            melted_rows += int(seat.shape[0])
+
+            grouped_strategy = seat.groupby(["strategy", "n_players"], observed=True, sort=False)
+            for (strategy, n_players), group in grouped_strategy:
+                key = (str(strategy), int(cast(int, n_players)))
+                state = strategy_states.setdefault(key, _GroupStreamAccumulator(normalized_lags))
+                state.extend(group)
+
+            grouped_matchup = seat.groupby(["matchup", "strategy", "n_players"], observed=True, sort=False)
+            for (matchup, strategy, n_players), group in grouped_matchup:
+                matchup_key = None if _is_missing_scalar(matchup) else str(matchup)
+                matchup_state_key = (matchup_key, str(strategy), int(cast(int, n_players)))
+                matchup_state = matchup_states.get(matchup_state_key)
+                if matchup_state is None:
+                    if max_matchup_groups is not None and len(matchup_states) >= max_matchup_groups:
+                        skipped_matchup_groups += 1
+                        skipped_matchup_rows += int(group.shape[0])
+                        continue
+                    matchup_state = matchup_states.setdefault(
+                        matchup_state_key, _GroupStreamAccumulator(normalized_lags)
+                    )
+                matchup_state.extend(group)
+
+        if progress_every_batches > 0 and processed_batches % progress_every_batches == 0:
+            LOGGER.info(
+                "rng-diagnostics progress",
+                extra={
+                    "stage": "rng_diagnostics",
+                    "batches": processed_batches,
+                    "melted_rows": melted_rows,
+                    "strategy_groups": len(strategy_states),
+                    "matchup_groups": len(matchup_states),
+                    "matchup_groups_skipped": skipped_matchup_groups,
+                    "matchup_rows_skipped": skipped_matchup_rows,
+                },
+            )
+
+    if skipped_matchup_groups > 0:
+        LOGGER.warning(
+            "rng-diagnostics matchup grouping capped",
+            extra={
+                "stage": "rng_diagnostics",
+                "max_matchup_groups": max_matchup_groups,
+                "matchup_groups_tracked": len(matchup_states),
+                "matchup_groups_skipped": skipped_matchup_groups,
+                "matchup_rows_skipped": skipped_matchup_rows,
+            },
+        )
+
+    rows: list[dict[str, object]] = []
+    for (strategy, n_players), state in strategy_states.items():
+        rows.extend(
+            _rows_from_group_state(
+                summary_level="strategy",
+                strategy=strategy,
+                n_players=n_players,
+                lags=normalized_lags,
+                group_state=state,
+            )
+        )
+    for (matchup, strategy, n_players), state in matchup_states.items():
+        rows.extend(
+            _rows_from_group_state(
+                summary_level="matchup_strategy",
+                strategy=strategy,
+                matchup=matchup,
+                n_players=n_players,
+                lags=normalized_lags,
+                group_state=state,
+            )
+        )
+    if not rows:
+        return pd.DataFrame(), melted_rows
+
+    diagnostics = pd.DataFrame(rows)
+    diagnostics = diagnostics.sort_values(
+        ["summary_level", "strategy", "n_players", "lag", "metric"],
+        kind="mergesort",
+    )
+    diagnostics.reset_index(drop=True, inplace=True)
+    return diagnostics, melted_rows
 
 
 def _normalize_lags(lags: Sequence[int] | None) -> tuple[int, ...]:
@@ -403,12 +562,15 @@ def _collect_diagnostics_streaming(
     *,
     lags: Sequence[int],
     progress_every_batches: int,
+    max_matchup_groups: int | None = None,
 ) -> tuple[pd.DataFrame, int]:
     normalized_lags = tuple(int(lag) for lag in lags)
     strategy_states: dict[tuple[str, int], _GroupStreamAccumulator] = {}
     matchup_states: dict[tuple[str | None, str, int], _GroupStreamAccumulator] = {}
     processed_batches = 0
     melted_rows = 0
+    skipped_matchup_groups = 0
+    skipped_matchup_rows = 0
 
     for batch in data_batches:
         if batch.empty:
@@ -425,11 +587,19 @@ def _collect_diagnostics_streaming(
 
         grouped_matchup = batch.groupby(["matchup", "strategy", "n_players"], observed=True, sort=False)
         for (matchup, strategy, n_players), group in grouped_matchup:
-            matchup_key = None if pd.isna(matchup) else str(matchup)
-            key = (matchup_key, str(strategy), int(cast(int, n_players)))
-            state = matchup_states.setdefault(key, _GroupStreamAccumulator(normalized_lags))
+            matchup_key = None if _is_missing_scalar(matchup) else str(matchup)
+            matchup_state_key = (matchup_key, str(strategy), int(cast(int, n_players)))
+            matchup_state = matchup_states.get(matchup_state_key)
+            if matchup_state is None:
+                if max_matchup_groups is not None and len(matchup_states) >= max_matchup_groups:
+                    skipped_matchup_groups += 1
+                    skipped_matchup_rows += int(group.shape[0])
+                    continue
+                matchup_state = matchup_states.setdefault(
+                    matchup_state_key, _GroupStreamAccumulator(normalized_lags)
+                )
             ordered = group.sort_values("game_seed", kind="mergesort")
-            state.extend(ordered)
+            matchup_state.extend(ordered)
 
         if progress_every_batches > 0 and processed_batches % progress_every_batches == 0:
             LOGGER.info(
@@ -440,8 +610,22 @@ def _collect_diagnostics_streaming(
                     "melted_rows": melted_rows,
                     "strategy_groups": len(strategy_states),
                     "matchup_groups": len(matchup_states),
+                    "matchup_groups_skipped": skipped_matchup_groups,
+                    "matchup_rows_skipped": skipped_matchup_rows,
                 },
             )
+
+    if skipped_matchup_groups > 0:
+        LOGGER.warning(
+            "rng-diagnostics matchup grouping capped",
+            extra={
+                "stage": "rng_diagnostics",
+                "max_matchup_groups": max_matchup_groups,
+                "matchup_groups_tracked": len(matchup_states),
+                "matchup_groups_skipped": skipped_matchup_groups,
+                "matchup_rows_skipped": skipped_matchup_rows,
+            },
+        )
 
     rows: list[dict[str, object]] = []
     for (strategy, n_players), state in strategy_states.items():
