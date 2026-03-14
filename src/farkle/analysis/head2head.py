@@ -20,7 +20,7 @@ import pandas as pd
 
 from farkle.analysis import run_bonferroni_head2head as _h2h
 from farkle.analysis import stage_logger
-from farkle.analysis.stage_state import stage_done_path, write_stage_done
+from farkle.analysis.stage_state import read_stage_done, stage_done_path, write_stage_done
 from farkle.config import AppConfig
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy_for_df, parse_strategy_identifier
@@ -137,27 +137,37 @@ def run(cfg: AppConfig) -> None:
     out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
     legacy_out = cfg.analysis_dir / "bonferroni_pairwise.parquet"
     existing_out = out if out.exists() else legacy_out
+    done_path = stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head")
     required_outputs = required_success_outputs(cfg)
     missing_required_outputs = [path for path in required_outputs if not path.exists()]
-    if existing_out.exists() and existing_out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime:
+    stage_done = read_stage_done(done_path) if done_path.exists() else {}
+    stage_status = str(stage_done.get("status", "") or "")
+    if (
+        existing_out.exists()
+        and existing_out.stat().st_mtime >= cfg.curated_parquet.stat().st_mtime
+        and not missing_required_outputs
+        and stage_status == "success"
+    ):
         LOGGER.info(
             "Head-to-head results up-to-date",
             extra={"stage": "head2head", "path": str(existing_out)},
         )
         return
-    if missing_required_outputs:
+    if missing_required_outputs or stage_status not in {"", "success"}:
         log_fn = LOGGER.warning if existing_out.exists() else LOGGER.info
         message = (
             "Head-to-head artifacts incomplete; recomputing"
             if existing_out.exists()
             else "Head-to-head artifacts missing; running fresh compute"
         )
+        extra = {"stage": "head2head"}
+        if missing_required_outputs:
+            extra["missing_outputs"] = [str(path) for path in missing_required_outputs]
+        if stage_status not in {"", "success"}:
+            extra["stage_status"] = stage_status
         log_fn(
             message,
-            extra={
-                "stage": "head2head",
-                "missing_outputs": [str(path) for path in missing_required_outputs],
-            },
+            extra=extra,
         )
 
     LOGGER.info(

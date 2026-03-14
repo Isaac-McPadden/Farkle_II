@@ -265,6 +265,9 @@ def _pairwise_ordered_schema() -> pa.Schema:
     return pa.schema(fields)
 
 
+_ORDERED_MATCHUP_ORDERINGS = frozenset({"a_b", "b_a"})
+
+
 def _selfplay_schema() -> pa.Schema:
     fields: list[pa.Field] = [
         pa.field("players", pa.int64()),
@@ -615,7 +618,14 @@ def run_bonferroni_head2head(
     selfplay_parquet = cfg.head2head_path("bonferroni_selfplay_symmetry.parquet")
     default_shards = sub_root / "bonferroni_pairwise_shards"
     legacy_shards = analysis_root / "bonferroni_pairwise_shards"
+    default_ordered_shards = sub_root / "bonferroni_pairwise_ordered_shards"
+    legacy_ordered_shards = analysis_root / "bonferroni_pairwise_ordered_shards"
     shard_dir = shard_dir or (default_shards if default_shards.exists() or not legacy_shards.exists() else legacy_shards)
+    ordered_shard_dir = (
+        default_ordered_shards
+        if default_ordered_shards.exists() or not legacy_ordered_shards.exists()
+        else legacy_ordered_shards
+    )
 
     if not tiers_path.exists():
         raise RuntimeError(f"Tier file not found at {tiers_path}")
@@ -939,10 +949,11 @@ def run_bonferroni_head2head(
     )
 
     rng = np.random.default_rng(seed)
-    ordered_records: list[dict[str, Any]] = []
     pending_pairwise_shard_records: list[dict[str, Any]] = []
+    pending_ordered_shard_records: list[dict[str, Any]] = []
     pending_selfplay_shard_records: list[dict[str, Any]] = []
     pairwise_shard_schema = _pairwise_schema()
+    ordered_shard_schema = _pairwise_ordered_schema()
     selfplay_shard_schema = _selfplay_schema()
     default_selfplay_shards = sub_root / "bonferroni_selfplay_shards"
     legacy_selfplay_shards = analysis_root / "bonferroni_selfplay_shards"
@@ -952,6 +963,7 @@ def run_bonferroni_head2head(
         else legacy_selfplay_shards
     )
     shard_dir.mkdir(parents=True, exist_ok=True)
+    ordered_shard_dir.mkdir(parents=True, exist_ok=True)
     selfplay_shard_dir.mkdir(parents=True, exist_ok=True)
 
     def _read_pair_ids_from_parquet(path: Path) -> set[int]:
@@ -992,15 +1004,53 @@ def run_bonferroni_head2head(
             return set()
         return {str(value) for value in df["strategy"].dropna().astype(str).tolist()}
 
+    def _read_complete_ordered_pair_ids_from_parquet(path: Path) -> set[int]:
+        if not path.exists():
+            return set()
+        try:
+            df = pd.read_parquet(path, columns=["pair_id", "ordering"])
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load completed ordered pair ids",
+                extra={"stage": "head2head", "path": str(path), "error": str(exc)},
+            )
+            return set()
+        if "pair_id" not in df or "ordering" not in df:
+            LOGGER.warning(
+                "Existing ordered parquet missing pair_id/ordering columns",
+                extra={"stage": "head2head", "path": str(path)},
+            )
+            return set()
+        pair_orderings: dict[int, set[str]] = {}
+        for pair_id, ordering in zip(df["pair_id"], df["ordering"], strict=False):
+            if pd.isna(pair_id) or pd.isna(ordering):
+                continue
+            pair_orderings.setdefault(int(pair_id), set()).add(str(ordering))
+        return {
+            pair_id
+            for pair_id, orderings in pair_orderings.items()
+            if _ORDERED_MATCHUP_ORDERINGS.issubset(orderings)
+        }
+
     shard_paths = sorted(shard_dir.glob("bonferroni_pairwise_shard_*.parquet"))
+    ordered_shard_paths = sorted(
+        ordered_shard_dir.glob("bonferroni_pairwise_ordered_shard_*.parquet")
+    )
     shard_count = len(shard_paths)
     initial_shard_count = shard_count
+    ordered_shard_count = len(ordered_shard_paths)
     debug_summary["shards"]["existing_before_run"] = shard_count
-    completed_pairs: set[int] = {int(pid) for pid in (completed_pair_ids or ())}
+    persisted_pair_ids: set[int] = set()
     for shard_path in shard_paths:
-        completed_pairs.update(_read_pair_ids_from_parquet(shard_path))
+        persisted_pair_ids.update(_read_pair_ids_from_parquet(shard_path))
     existing_final_pairs = _read_pair_ids_from_parquet(pairwise_parquet)
-    completed_pairs.update(existing_final_pairs)
+    persisted_pair_ids.update(existing_final_pairs)
+    completed_ordered_pairs: set[int] = set()
+    for ordered_path in ordered_shard_paths:
+        completed_ordered_pairs.update(_read_complete_ordered_pair_ids_from_parquet(ordered_path))
+    completed_ordered_pairs.update(_read_complete_ordered_pair_ids_from_parquet(pairwise_ordered_parquet))
+    completed_pairs: set[int] = {int(pid) for pid in (completed_pair_ids or ())}
+    completed_pairs.update(persisted_pair_ids & completed_ordered_pairs)
     debug_summary["filtered_pairs"]["precompleted_pairs"] = len(completed_pairs)
 
     LOGGER.info(
@@ -1020,6 +1070,23 @@ def run_bonferroni_head2head(
         write_parquet_atomic(shard_table, shard_path)
         LOGGER.info(
             "Shard written",
+            extra={
+                "stage": "head2head",
+                "rows": shard_table.num_rows,
+                "path": str(shard_path),
+            },
+        )
+        records_to_flush.clear()
+        return shard_index + 1
+
+    def flush_ordered_shard(records_to_flush: list[dict[str, Any]], shard_index: int) -> int:
+        if not records_to_flush:
+            return shard_index
+        shard_path = ordered_shard_dir / f"bonferroni_pairwise_ordered_shard_{shard_index:04d}.parquet"
+        shard_table = pa.Table.from_pylist(records_to_flush, schema=ordered_shard_schema)
+        write_parquet_atomic(shard_table, shard_path)
+        LOGGER.info(
+            "Ordered shard written",
             extra={
                 "stage": "head2head",
                 "rows": shard_table.num_rows,
@@ -1140,9 +1207,12 @@ def run_bonferroni_head2head(
                     base_seed=seed,
                     sim_n_jobs=pair_jobs,
                 )
-                ordered_records.extend(record_orderings)
+                pending_ordered_shard_records.extend(record_orderings)
                 pending_pairwise_shard_records.append(record)
                 if len(pending_pairwise_shard_records) >= shard_size:
+                    ordered_shard_count = flush_ordered_shard(
+                        pending_ordered_shard_records, ordered_shard_count
+                    )
                     shard_count = flush_shard(pending_pairwise_shard_records, shard_count)
                 completed_pairs.add(pair_id)
                 processed_pairs += 1
@@ -1167,9 +1237,12 @@ def run_bonferroni_head2head(
                 for future in as_completed(future_to_job):
                     job_pair_id, job_a, job_b = future_to_job[future]
                     record, record_orderings = future.result()
-                    ordered_records.extend(record_orderings)
+                    pending_ordered_shard_records.extend(record_orderings)
                     pending_pairwise_shard_records.append(record)
                     if len(pending_pairwise_shard_records) >= shard_size:
+                        ordered_shard_count = flush_ordered_shard(
+                            pending_ordered_shard_records, ordered_shard_count
+                        )
                         shard_count = flush_shard(pending_pairwise_shard_records, shard_count)
                     completed_pairs.add(job_pair_id)
                     processed_pairs += 1
@@ -1186,8 +1259,12 @@ def run_bonferroni_head2head(
                         },
                     )
 
+    ordered_shard_count = flush_ordered_shard(pending_ordered_shard_records, ordered_shard_count)
     shard_count = flush_shard(pending_pairwise_shard_records, shard_count)
     final_shard_paths = sorted(shard_dir.glob("bonferroni_pairwise_shard_*.parquet"))
+    final_ordered_shard_paths = sorted(
+        ordered_shard_dir.glob("bonferroni_pairwise_ordered_shard_*.parquet")
+    )
     debug_summary["shards"]["written_this_run"] = max(0, shard_count - initial_shard_count)
     debug_summary["shards"]["total_after_run"] = len(final_shard_paths)
 
@@ -1215,20 +1292,6 @@ def run_bonferroni_head2head(
         )
 
     pairwise_by_id: dict[int, dict[str, Any]] = {}
-    for shard_path in final_shard_paths:
-        try:
-            frame = pd.read_parquet(shard_path)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "Failed to load shard data",
-                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
-            )
-            continue
-        for record in frame.to_dict(orient="records"):
-            pair_id_val = record.get("pair_id")
-            if pair_id_val is None or pd.isna(pair_id_val):
-                continue
-            pairwise_by_id[int(pair_id_val)] = record
     if pairwise_parquet.exists():
         try:
             existing_frame = pd.read_parquet(pairwise_parquet)
@@ -1243,6 +1306,20 @@ def run_bonferroni_head2head(
                 if pair_id_val is None or pd.isna(pair_id_val):
                     continue
                 pairwise_by_id[int(pair_id_val)] = record
+    for shard_path in final_shard_paths:
+        try:
+            frame = pd.read_parquet(shard_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load shard data",
+                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
+            )
+            continue
+        for record in frame.to_dict(orient="records"):
+            pair_id_val = record.get("pair_id")
+            if pair_id_val is None or pd.isna(pair_id_val):
+                continue
+            pairwise_by_id[int(pair_id_val)] = record
     if not pairwise_by_id:
         raise Head2HeadPipelineError(
             "No pairwise frames available after shard collection/merge",
@@ -1261,11 +1338,55 @@ def run_bonferroni_head2head(
     )
     write_parquet_atomic(pairwise_table, pairwise_parquet)
 
+    ordered_by_key: dict[tuple[int, str], dict[str, Any]] = {}
+    if pairwise_ordered_parquet.exists():
+        try:
+            existing_ordered = pd.read_parquet(pairwise_ordered_parquet)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load existing ordered pairwise parquet",
+                extra={"stage": "head2head", "path": str(pairwise_ordered_parquet), "error": str(exc)},
+            )
+        else:
+            for record in existing_ordered.to_dict(orient="records"):
+                pair_id_val = record.get("pair_id")
+                ordering = record.get("ordering")
+                if pair_id_val is None or pd.isna(pair_id_val) or ordering is None or pd.isna(ordering):
+                    continue
+                ordered_by_key[(int(pair_id_val), str(ordering))] = record
+    for shard_path in final_ordered_shard_paths:
+        try:
+            frame = pd.read_parquet(shard_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load ordered shard data",
+                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
+            )
+            continue
+        for record in frame.to_dict(orient="records"):
+            pair_id_val = record.get("pair_id")
+            ordering = record.get("ordering")
+            if pair_id_val is None or pd.isna(pair_id_val) or ordering is None or pd.isna(ordering):
+                continue
+            ordered_by_key[(int(pair_id_val), str(ordering))] = record
+    if not ordered_by_key and pairwise_by_id:
+        raise Head2HeadPipelineError(
+            "No ordered pairwise frames available after shard collection/merge",
+            error_code="empty_ordered_pairwise_merge",
+            context={
+                "elite_count": len(elites),
+                "scheduled_pairs": len(scheduled_pairs),
+                "ordered_shards": len(final_ordered_shard_paths),
+                "ordered_path": str(pairwise_ordered_parquet),
+            },
+        )
     ordered_schema = _pairwise_ordered_schema()
-    ordered_df = pd.DataFrame.from_records(ordered_records)
-    if ordered_df.empty:
+    if not ordered_by_key:
         ordered_table = pa.Table.from_pylist([], schema=ordered_schema)
     else:
+        ordered_df = pd.DataFrame.from_records(
+            ordered_by_key[key] for key in sorted(ordered_by_key)
+        )
         ordered_table = pa.Table.from_pandas(ordered_df, schema=ordered_schema, preserve_index=False)
     write_parquet_atomic(ordered_table, pairwise_ordered_parquet)
 
@@ -1377,20 +1498,6 @@ def run_bonferroni_head2head(
     debug_summary["selfplay"]["total_shards_after_run"] = len(final_selfplay_shard_paths)
 
     selfplay_by_strategy: dict[str, dict[str, Any]] = {}
-    for shard_path in final_selfplay_shard_paths:
-        try:
-            frame = pd.read_parquet(shard_path)
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning(
-                "Failed to load self-play shard data",
-                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
-            )
-            continue
-        for record in frame.to_dict(orient="records"):
-            strategy_val = record.get("strategy")
-            if strategy_val is None or pd.isna(strategy_val):
-                continue
-            selfplay_by_strategy[str(strategy_val)] = record
     if selfplay_parquet.exists():
         try:
             existing_selfplay = pd.read_parquet(selfplay_parquet)
@@ -1405,6 +1512,20 @@ def run_bonferroni_head2head(
                 if strategy_val is None or pd.isna(strategy_val):
                     continue
                 selfplay_by_strategy[str(strategy_val)] = record
+    for shard_path in final_selfplay_shard_paths:
+        try:
+            frame = pd.read_parquet(shard_path)
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Failed to load self-play shard data",
+                extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
+            )
+            continue
+        for record in frame.to_dict(orient="records"):
+            strategy_val = record.get("strategy")
+            if strategy_val is None or pd.isna(strategy_val):
+                continue
+            selfplay_by_strategy[str(strategy_val)] = record
     if not selfplay_by_strategy and sorted_elites:
         raise Head2HeadPipelineError(
             "No self-play frames available after shard collection/merge",

@@ -335,7 +335,7 @@ def test_run_bonferroni_head2head_warns_on_unreadable_existing_shards(
     assert any(rec.message == "Failed to load self-play shard data" for rec in caplog.records)
 
 
-def test_run_bonferroni_head2head_completed_pairs_keep_ordered_output_empty(
+def test_run_bonferroni_head2head_reruns_pairs_missing_ordered_shards(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = AppConfig()
@@ -383,6 +383,118 @@ def test_run_bonferroni_head2head_completed_pairs_keep_ordered_output_empty(
         ),
     )
     monkeypatch.setattr(rb, "parse_strategy_identifier", lambda name, **_: name)
+    call_counter = {"calls": 0}
+
+    def fake_simulate(seeds, strategies, n_jobs):  # noqa: ANN001,ARG001
+        call_counter["calls"] += 1
+        return _mock_simulated_games(strategies, seeds)
+
+    monkeypatch.setattr(rb, "simulate_many_games_from_seeds", fake_simulate)
+
+    rb.run_bonferroni_head2head(cfg=cfg, shard_size=1)
+
+    ordered = pd.read_parquet(cfg.head2head_path("bonferroni_pairwise_ordered.parquet"))
+    assert call_counter["calls"] == 4
+    assert set(ordered["pair_id"]) == {0}
+    assert set(ordered["ordering"]) == {"a_b", "b_a"}
+
+
+def test_run_bonferroni_head2head_completed_pairs_preserve_ordered_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = AppConfig()
+    cfg.io.results_dir_prefix = tmp_path / "results"
+    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path.parent.mkdir(parents=True, exist_ok=True)
+    tiers_path.write_text('{"A": 0, "B": 0}', encoding="utf-8")
+
+    shard_path = cfg.head2head_stage_dir / "bonferroni_pairwise_shards" / "bonferroni_pairwise_shard_0000.parquet"
+    shard_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "players": 2,
+                "seed": 0,
+                "pair_id": 0,
+                "a": "A",
+                "b": "B",
+                "games": 1,
+                "wins_a": 1,
+                "wins_b": 0,
+                "win_rate_a": 1.0,
+                "pval_one_sided": 0.5,
+                "mean_farkles_a": 1.0,
+                "mean_farkles_b": 2.0,
+                "mean_score_a": 300.0,
+                "mean_score_b": 250.0,
+            }
+        ]
+    ).to_parquet(shard_path)
+    ordered_shard_path = (
+        cfg.head2head_stage_dir
+        / "bonferroni_pairwise_ordered_shards"
+        / "bonferroni_pairwise_ordered_shard_0000.parquet"
+    )
+    ordered_shard_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {
+                "players": 2,
+                "seed": 0,
+                "pair_id": 0,
+                "a": "A",
+                "b": "B",
+                "ordering": "a_b",
+                "seat1_strategy": "A",
+                "seat2_strategy": "B",
+                "games": 1,
+                "wins_a": 1,
+                "wins_b": 0,
+                "wins_seat1": 1,
+                "wins_seat2": 0,
+                "mean_farkles_seat1": 1.0,
+                "mean_farkles_seat2": 2.0,
+                "mean_score_seat1": 300.0,
+                "mean_score_seat2": 250.0,
+            },
+            {
+                "players": 2,
+                "seed": 0,
+                "pair_id": 0,
+                "a": "A",
+                "b": "B",
+                "ordering": "b_a",
+                "seat1_strategy": "B",
+                "seat2_strategy": "A",
+                "games": 1,
+                "wins_a": 0,
+                "wins_b": 1,
+                "wins_seat1": 0,
+                "wins_seat2": 1,
+                "mean_farkles_seat1": 2.0,
+                "mean_farkles_seat2": 1.0,
+                "mean_score_seat1": 250.0,
+                "mean_score_seat2": 300.0,
+            },
+        ]
+    ).to_parquet(ordered_shard_path)
+
+    monkeypatch.setattr(rb, "games_for_power", lambda **_: _mock_sizing_result(1))  # noqa: ANN001
+    monkeypatch.setattr(
+        rb,
+        "_load_top_strategies",
+        lambda **_: (
+            ["A", "B"],
+            {
+                "ratings_count": 0,
+                "metrics_count": 0,
+                "combined_count": 2,
+                "ratings_path": "",
+                "metrics_path": "",
+            },
+        ),
+    )
+    monkeypatch.setattr(rb, "parse_strategy_identifier", lambda name, **_: name)
     monkeypatch.setattr(
         rb,
         "simulate_many_games_from_seeds",
@@ -392,4 +504,5 @@ def test_run_bonferroni_head2head_completed_pairs_keep_ordered_output_empty(
     rb.run_bonferroni_head2head(cfg=cfg, completed_pair_ids=[0])
 
     ordered = pd.read_parquet(cfg.head2head_path("bonferroni_pairwise_ordered.parquet"))
-    assert ordered.empty
+    assert set(ordered["pair_id"]) == {0}
+    assert set(ordered["ordering"]) == {"a_b", "b_a"}

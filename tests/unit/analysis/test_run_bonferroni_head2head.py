@@ -148,6 +148,51 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     shard_dir.mkdir()
     existing_path = shard_dir / "bonferroni_pairwise_shard_0000.parquet"
     existing.to_parquet(existing_path)
+    ordered_shard_dir = cfg.head2head_stage_dir / "bonferroni_pairwise_ordered_shards"
+    ordered_shard_dir.mkdir()
+    existing_ordered_path = ordered_shard_dir / "bonferroni_pairwise_ordered_shard_0000.parquet"
+    pd.DataFrame(
+        [
+            {
+                "players": 2,
+                "seed": 0,
+                "pair_id": 0,
+                "a": "S1",
+                "b": "S2",
+                "ordering": "a_b",
+                "seat1_strategy": "S1",
+                "seat2_strategy": "S2",
+                "games": 1,
+                "wins_a": 1,
+                "wins_b": 0,
+                "wins_seat1": 1,
+                "wins_seat2": 0,
+                "mean_farkles_seat1": 1.0,
+                "mean_farkles_seat2": 2.0,
+                "mean_score_seat1": 300.0,
+                "mean_score_seat2": 250.0,
+            },
+            {
+                "players": 2,
+                "seed": 0,
+                "pair_id": 0,
+                "a": "S1",
+                "b": "S2",
+                "ordering": "b_a",
+                "seat1_strategy": "S2",
+                "seat2_strategy": "S1",
+                "games": 1,
+                "wins_a": 0,
+                "wins_b": 1,
+                "wins_seat1": 0,
+                "wins_seat2": 1,
+                "mean_farkles_seat1": 2.0,
+                "mean_farkles_seat2": 1.0,
+                "mean_score_seat1": 250.0,
+                "mean_score_seat2": 300.0,
+            },
+        ]
+    ).to_parquet(existing_ordered_path)
 
     call_counter = {"calls": 0}
 
@@ -206,6 +251,7 @@ def test_run_bonferroni_head2head_resumes_and_shards(
     assert populated_pairs["mean_score_a"].between(250.0, 300.0).all()
     assert populated_pairs["mean_score_b"].between(250.0, 300.0).all()
     ordered = pd.read_parquet(ordered_path)
+    assert set(ordered["pair_id"]) == {0, 1, 2}
     assert set(ordered["ordering"]) == {"a_b", "b_a"}
     assert {
         "mean_farkles_seat1",

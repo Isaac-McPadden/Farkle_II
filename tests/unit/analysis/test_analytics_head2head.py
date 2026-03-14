@@ -39,10 +39,22 @@ def test_run_skips_if_up_to_date(
 ) -> None:
     cfg = _cfg
     out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
+    ordered = cfg.head2head_stage_dir / "bonferroni_pairwise_ordered.parquet"
+    selfplay = cfg.head2head_stage_dir / "bonferroni_selfplay_symmetry.parquet"
     curated = cfg.curated_parquet
     out.touch()
+    ordered.touch()
+    selfplay.touch()
+    write_stage_done(
+        stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
+        inputs=[curated],
+        outputs=[out, ordered, selfplay],
+        config_sha=cfg.config_sha,
+    )
     os.utime(curated, (1000, 1000))
     os.utime(out, (2000, 2000))
+    os.utime(ordered, (2000, 2000))
+    os.utime(selfplay, (2000, 2000))
 
     def boom(cfg: AppConfig, *, root: Path | None = None, n_jobs: int, **kwargs) -> None:  # noqa: ARG001
         raise AssertionError("head2head helper should not run when outputs are fresh")
@@ -53,6 +65,46 @@ def test_run_skips_if_up_to_date(
         head2head.run(cfg)
 
     assert "Head-to-head results up-to-date" in caplog.text
+
+
+def test_run_recomputes_when_done_status_not_success(
+    _cfg: AppConfig, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = _cfg
+    out = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
+    ordered = cfg.head2head_stage_dir / "bonferroni_pairwise_ordered.parquet"
+    selfplay = cfg.head2head_stage_dir / "bonferroni_selfplay_symmetry.parquet"
+    curated = cfg.curated_parquet
+    out.touch()
+    ordered.touch()
+    selfplay.touch()
+    write_stage_done(
+        stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
+        inputs=[curated],
+        outputs=[out, ordered, selfplay],
+        config_sha=cfg.config_sha,
+        status="failed",
+        reason="boom",
+        blocking_dependency=str(curated),
+        upstream_stage="curate",
+    )
+    os.utime(curated, (1000, 1000))
+    os.utime(out, (2000, 2000))
+    os.utime(ordered, (2000, 2000))
+    os.utime(selfplay, (2000, 2000))
+
+    called = {"run": 0}
+
+    def fake_run(cfg: AppConfig, *, root: Path | None = None, n_jobs: int, **kwargs) -> None:  # noqa: ARG001
+        called["run"] += 1
+
+    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", fake_run)
+
+    with caplog.at_level(logging.INFO):
+        head2head.run(cfg)
+
+    assert called["run"] == 1
+    assert "Head-to-head artifacts incomplete; recomputing" in caplog.text
 
 
 def test_run_writes_failure_contract_and_raises_on_compute_error(
@@ -399,7 +451,7 @@ def test_run_exits_early_when_curated_missing(
     assert called is False
 
 
-def test_run_calls_autotune_before_freshness_check_and_skips_when_legacy_fresh(
+def test_run_calls_autotune_before_freshness_check_and_recomputes_when_legacy_contract_incomplete(
     _cfg: AppConfig,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -414,15 +466,15 @@ def test_run_calls_autotune_before_freshness_check_and_skips_when_legacy_fresh(
     def _spy_autotune(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None:  # noqa: ARG001
         call_order.append("autotune")
 
-    def _boom(*args: Any, **kwargs: Any) -> None:
-        raise AssertionError("H2H simulation should not run when legacy output is fresh")
+    def _spy_run(*args: Any, **kwargs: Any) -> None:
+        call_order.append("run")
 
     monkeypatch.setattr(head2head, "_maybe_autotune_tiers", _spy_autotune)
-    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", _boom)
+    monkeypatch.setattr(head2head._h2h, "run_bonferroni_head2head", _spy_run)
 
     head2head.run(cfg)
 
-    assert call_order == ["autotune"]
+    assert call_order == ["autotune", "run"]
 
 
 def test_run_calls_bonferroni_with_expected_args(
