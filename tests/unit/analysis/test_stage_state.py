@@ -33,13 +33,23 @@ def test_stage_up_to_date_invalidates_on_newer_input(tmp_path: Path) -> None:
 
     input_path.write_text("in")
     output_path.write_text("out")
-    write_stage_done(done, inputs=[input_path], outputs=[output_path], config_sha=None)
+    write_stage_done(done, inputs=[input_path], outputs=[output_path], stage_config_sha="cache")
 
-    assert stage_is_up_to_date(done, inputs=[input_path], outputs=[output_path], config_sha=None)
+    assert stage_is_up_to_date(
+        done,
+        inputs=[input_path],
+        outputs=[output_path],
+        stage_config_sha="cache",
+    )
 
     input_path.write_text("updated")
     os.utime(input_path, (done.stat().st_mtime + 1, done.stat().st_mtime + 1))
-    assert not stage_is_up_to_date(done, inputs=[input_path], outputs=[output_path], config_sha=None)
+    assert not stage_is_up_to_date(
+        done,
+        inputs=[input_path],
+        outputs=[output_path],
+        stage_config_sha="cache",
+    )
 
 
 def test_read_stage_done_missing_invalid_and_default_status(tmp_path: Path) -> None:

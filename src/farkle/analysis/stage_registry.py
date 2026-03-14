@@ -12,6 +12,7 @@ __all__ = [
     "StageDefinition",
     "StageLayout",
     "StagePlacement",
+    "resolve_stage_definition",
     "resolve_interseed_stage_layout",
     "resolve_stage_layout",
 ]
@@ -25,6 +26,8 @@ class StageDefinition:
     group: str
     folder_stub: str | None = None
     depends_on: tuple[str, ...] = ()
+    cache_scope: tuple[str, ...] = ()
+    cache_key_version: int = 2
     disabled_predicate: Callable[[AppConfig], bool] | None = None
 
     def folder_name(self, index: int) -> str:
@@ -93,24 +96,186 @@ class StageLayout:
 
 # Ordered registry describing every possible stage.
 _REGISTRY: tuple[StageDefinition, ...] = (
-    StageDefinition("ingest", group="pipeline"),
-    StageDefinition("curate", group="pipeline"),
-    StageDefinition("combine", group="pipeline"),
-    StageDefinition("metrics", group="pipeline"),
-    StageDefinition("coverage_by_k", group="analytics"),
-    StageDefinition("game_stats", group="analytics"),
-    StageDefinition("seed_summaries", group="analytics"),
-    StageDefinition("trueskill", group="analytics"),
-    StageDefinition("tiering", group="analytics"),
-    StageDefinition("head2head", group="analytics"),
-    StageDefinition("seed_symmetry", group="analytics"),
-    StageDefinition("post_h2h", group="analytics"),
-    StageDefinition("hgb", group="analytics"),
-    StageDefinition("variance", group="analytics"),
-    StageDefinition("meta", group="analytics"),
-    StageDefinition("h2h_tier_trends", group="analytics"),
-    StageDefinition("agreement", group="analytics"),
-    StageDefinition("interseed", group="analytics"),
+    StageDefinition(
+        "ingest",
+        group="pipeline",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.seed_list",
+            "sim.seed_pair",
+            "sim.n_players_list",
+            "ingest",
+            "analysis.mp_start_method",
+        ),
+    ),
+    StageDefinition(
+        "curate",
+        group="pipeline",
+        cache_scope=("io", "analysis.outputs"),
+    ),
+    StageDefinition(
+        "combine",
+        group="pipeline",
+        cache_scope=("io", "combine"),
+    ),
+    StageDefinition(
+        "metrics",
+        group="pipeline",
+        cache_scope=(
+            "io",
+            "sim.n_players_list",
+            "metrics",
+            "analysis.pooling_weights",
+            "analysis.pooling_weights_by_k",
+            "analysis.n_jobs",
+        ),
+    ),
+    StageDefinition(
+        "coverage_by_k",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.seed_list",
+            "sim.n_players_list",
+            "sim.score_thresholds",
+            "sim.dice_thresholds",
+            "sim.smart_five_opts",
+            "sim.smart_one_opts",
+            "sim.consider_score_opts",
+            "sim.consider_dice_opts",
+            "sim.auto_hot_dice_opts",
+            "sim.run_up_score_opts",
+            "sim.include_stop_at",
+            "sim.include_stop_at_heuristic",
+            "analysis.outputs",
+            "analysis.n_jobs",
+        ),
+    ),
+    StageDefinition(
+        "game_stats",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.seed_list",
+            "sim.seed_pair",
+            "sim.n_players_list",
+            "analysis.pooling_weights",
+            "analysis.pooling_weights_by_k",
+            "analysis.rare_event_target_score",
+            "analysis.rare_event_write_details",
+            "analysis.rare_event_margin_quantile",
+            "analysis.rare_event_target_rate",
+            "analysis.n_jobs",
+        ),
+    ),
+    StageDefinition(
+        "seed_summaries",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "analysis.pooling_weights",
+            "analysis.pooling_weights_by_k",
+        ),
+    ),
+    StageDefinition(
+        "trueskill",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.seed_list",
+            "sim.seed_pair",
+            "sim.n_players_list",
+            "trueskill",
+        ),
+    ),
+    StageDefinition(
+        "tiering",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.n_players_list",
+            "analysis.tiering_seeds",
+            "analysis.tiering_z_star",
+            "analysis.tiering_min_gap",
+            "analysis.tiering_weights_by_k",
+        ),
+    ),
+    StageDefinition(
+        "head2head",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.n_players_list",
+            "analysis.head2head_target_hours",
+            "analysis.head2head_tolerance_pct",
+            "analysis.head2head_games_per_sec",
+            "analysis.head2head_force_calibrate",
+            "analysis.tiering_z_star",
+            "analysis.tiering_min_gap",
+            "head2head",
+            "trueskill.pooled_weights_by_k",
+        ),
+    ),
+    StageDefinition("seed_symmetry", group="analytics", cache_scope=("io",)),
+    StageDefinition(
+        "post_h2h",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "head2head.tie_break_policy",
+            "head2head.tie_break_seed",
+            "head2head.fdr_q",
+            "head2head.bonferroni_design",
+            "trueskill.pooled_weights_by_k",
+        ),
+    ),
+    StageDefinition(
+        "hgb",
+        group="analytics",
+        cache_scope=("io", "hgb"),
+    ),
+    StageDefinition("variance", group="analytics", cache_scope=("io",)),
+    StageDefinition(
+        "meta",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.seed_list",
+            "sim.seed_pair",
+            "analysis.meta_random_if_I2_gt",
+            "analysis.meta_max_other_seeds",
+            "analysis.meta_comparison_seed",
+        ),
+    ),
+    StageDefinition(
+        "h2h_tier_trends",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.n_players_list",
+            "analysis.h2h_tier_trends_seed_s_tier_paths",
+            "analysis.h2h_tier_trends_interseed_s_tier_path",
+        ),
+    ),
+    StageDefinition(
+        "agreement",
+        group="analytics",
+        cache_scope=("io", "analysis.agreement_strategies", "analysis.agreement_include_pooled", "analysis.n_jobs"),
+    ),
+    StageDefinition(
+        "interseed",
+        group="analytics",
+        cache_scope=("io", "sim.seed_list", "sim.seed_pair", "analysis.disable_rng_diagnostics"),
+    ),
 )
 
 _INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
@@ -118,15 +283,85 @@ _INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
         "rng_diagnostics",
         group="analytics",
         folder_stub="rng",
+        cache_scope=(
+            "io",
+            "sim.n_players_list",
+            "analysis.disable_rng_diagnostics",
+            "analysis.rng_max_matchup_groups",
+            "analysis.n_jobs",
+        ),
         disabled_predicate=lambda cfg: cfg.analysis.disable_rng_diagnostics,
     ),
-    StageDefinition("variance", group="analytics"),
-    StageDefinition("meta", group="analytics"),
-    StageDefinition("trueskill", group="analytics"),
-    StageDefinition("agreement", group="analytics"),
-    StageDefinition("interseed", group="analytics"),
-    StageDefinition("h2h_tier_trends", group="analytics"),
+    StageDefinition("variance", group="analytics", cache_scope=("io",)),
+    StageDefinition(
+        "interseed_game_stats",
+        group="analytics",
+        folder_stub="interseed_game_stats",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.seed_list",
+            "sim.seed_pair",
+            "sim.n_players_list",
+            "analysis.pooling_weights",
+            "analysis.pooling_weights_by_k",
+            "analysis.rare_event_target_score",
+            "analysis.rare_event_write_details",
+            "analysis.rare_event_margin_quantile",
+            "analysis.rare_event_target_rate",
+            "analysis.n_jobs",
+        ),
+    ),
+    StageDefinition(
+        "meta",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.seed_list",
+            "sim.seed_pair",
+            "analysis.meta_random_if_I2_gt",
+            "analysis.meta_max_other_seeds",
+            "analysis.meta_comparison_seed",
+        ),
+    ),
+    StageDefinition(
+        "trueskill",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.seed_list",
+            "sim.seed_pair",
+            "sim.n_players_list",
+            "trueskill",
+        ),
+    ),
+    StageDefinition(
+        "agreement",
+        group="analytics",
+        cache_scope=("io", "analysis.agreement_strategies", "analysis.agreement_include_pooled", "analysis.n_jobs"),
+    ),
+    StageDefinition(
+        "interseed",
+        group="analytics",
+        cache_scope=("io", "sim.seed_list", "sim.seed_pair", "analysis.disable_rng_diagnostics"),
+    ),
+    StageDefinition(
+        "h2h_tier_trends",
+        group="analytics",
+        cache_scope=(
+            "io",
+            "sim.n_players_list",
+            "analysis.h2h_tier_trends_seed_s_tier_paths",
+            "analysis.h2h_tier_trends_interseed_s_tier_path",
+        ),
+    ),
 )
+
+_DEFINITION_LOOKUP: dict[str, StageDefinition] = {
+    definition.key: definition for definition in (*_REGISTRY, *_INTERSEED_REGISTRY)
+}
 
 
 def resolve_stage_layout(
@@ -180,3 +415,12 @@ def resolve_interseed_stage_layout(
     if run_rng_diagnostics is not None:
         overrides = {"rng_diagnostics": run_rng_diagnostics}
     return resolve_stage_layout(cfg, registry=_INTERSEED_REGISTRY, enabled_overrides=overrides)
+
+
+def resolve_stage_definition(key: str) -> StageDefinition:
+    """Return the canonical definition for ``key``."""
+
+    try:
+        return _DEFINITION_LOOKUP[key]
+    except KeyError as exc:
+        raise KeyError(f"Unknown stage key {key!r}") from exc

@@ -92,8 +92,8 @@ def test_run_interseed_analysis_rng_diagnostics_paths(
     analysis_pkg.run_interseed_analysis(cfg, run_rng_diagnostics=None)
     assert rng_calls == [(False, (1, 3))]
     assert any(
-        cast(_StageReasonRecord, rec).stage == "rng_diagnostics"
-        and cast(_StageReasonRecord, rec).reason == "disabled by config"
+        getattr(rec, "stage", None) == "rng_diagnostics"
+        and rec.getMessage() == "Analytics: skipping rng_diagnostics"
         for rec in caplog.records
     )
 
@@ -302,8 +302,8 @@ def test_interseed_helper_outputs(tmp_path: Path) -> None:
     ]
 
     assert interseed_analysis._game_stats_outputs(cfg) == [
-        cfg.interseed_stage_dir / "game_length_interseed.parquet",
-        cfg.interseed_stage_dir / "margin_interseed.parquet",
+        cfg.stage_dir("interseed_game_stats") / "game_length_interseed.parquet",
+        cfg.stage_dir("interseed_game_stats") / "margin_interseed.parquet",
     ]
 
     agreement_outputs = interseed_analysis._agreement_outputs(cfg)

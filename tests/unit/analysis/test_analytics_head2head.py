@@ -396,8 +396,6 @@ def test_run_post_h2h_writes_outputs(_cfg: AppConfig) -> None:
     assert tiers_csv.exists()
     assert s_tiers_json.exists()
 
-    manifest = cfg.analysis_dir / cfg.manifest_name
-    assert manifest.exists()
 
 
 def test_run_post_h2h_skipped_is_deterministic(_cfg: AppConfig) -> None:

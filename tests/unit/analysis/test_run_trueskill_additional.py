@@ -687,6 +687,16 @@ def test_run_trueskill_rebuilds_outdated_pooled(
     monkeypatch.setattr(rt, "_rate_block_worker", fake_rate_block_worker)
     monkeypatch.setattr(rt, "build_tiers", fake_build_tiers)
     monkeypatch.setattr(rt.os, "cpu_count", lambda: 2)
+    monkeypatch.setattr(
+        rt,
+        "_load_done_stamp",
+        lambda _path: rt._ShardDoneStamp(
+            shard_key="2",
+            parquet_path=str(analysis_root / "2p" / "ratings_2_seed0.parquet"),
+            rows=10,
+            created_at=0.0,
+        ),
+    )
 
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
 

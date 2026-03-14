@@ -422,7 +422,11 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
         expected_outputs.append(cfg.meta_pooled_dir / "meta_long.parquet")
 
     if not force and inputs and expected_outputs and stage_is_up_to_date(
-        done, inputs=inputs, outputs=expected_outputs, config_sha=cfg.config_sha
+        done,
+        inputs=inputs,
+        outputs=expected_outputs,
+        cfg=cfg,
+        stage="meta",
     ):
         LOGGER.info("Meta outputs up-to-date", extra={"stage": "meta", "stamp": str(done)})
         return
@@ -583,7 +587,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
             )
 
     if outputs:
-        write_stage_done(done, inputs=inputs, outputs=outputs, config_sha=cfg.config_sha)
+        write_stage_done(done, inputs=inputs, outputs=outputs, cfg=cfg, stage="meta")
 
 
 __all__ = ["MetaResult", "pool_winrates", "run"]

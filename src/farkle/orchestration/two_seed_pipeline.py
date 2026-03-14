@@ -11,8 +11,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from farkle import analysis
-from farkle.analysis import combine, coverage_by_k, curate, game_stats, ingest, metrics
-from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
+from farkle.analysis.stage_runner import StageRunContext, StageRunner
 from farkle.config import (
     AppConfig,
     apply_dot_overrides,
@@ -22,6 +21,7 @@ from farkle.config import (
 from farkle.orchestration.run_contexts import InterseedRunContext, SeedRunContext
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
+    resolve_seed_pair_args,
     seed_has_completion_markers,
     seed_pair_meta_root,
     seed_pair_root,
@@ -30,7 +30,14 @@ from farkle.orchestration.seed_utils import (
 )
 from farkle.simulation import runner
 from farkle.utils.logging import setup_info_logging
-from farkle.utils.manifest import append_manifest_line
+from farkle.utils.manifest import (
+    EVENT_RUN_END,
+    EVENT_RUN_START,
+    EVENT_STAGE_END,
+    append_manifest_event,
+    ensure_manifest_v2,
+    make_run_id,
+)
 from farkle.utils.parallel import (
     StageParallelPolicy,
     apply_native_thread_limits,
@@ -92,14 +99,21 @@ def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPol
     total_workers = normalize_n_jobs(cfg.sim.n_jobs, default=1)
     seed_concurrency = seed_count if cfg.orchestration.parallel_seeds else 1
     per_seed_workers = _per_seed_worker_budget(total_workers, seed_concurrency)
-    simulation_policy = resolve_stage_parallel_policy("simulation", type("_Cfg", (), {"n_jobs": per_seed_workers})())
+    simulation_policy = resolve_stage_parallel_policy(
+        "simulation",
+        cfg.sim,
+        n_jobs_override=per_seed_workers,
+    )
     ingest_policy = resolve_stage_parallel_policy(
         "ingest",
-        type(
-            "_Cfg", (), {"n_jobs": min(per_seed_workers, normalize_n_jobs(cfg.ingest.n_jobs))}
-        )(),
+        cfg.ingest,
+        n_jobs_override=min(per_seed_workers, normalize_n_jobs(cfg.ingest.n_jobs)),
     )
-    analysis_policy = resolve_stage_parallel_policy("analysis", type("_Cfg", (), {"n_jobs": per_seed_workers})())
+    analysis_policy = resolve_stage_parallel_policy(
+        "analysis",
+        cfg.analysis,
+        n_jobs_override=per_seed_workers,
+    )
     policy_bundle = _PerSeedPolicyBundle(
         simulation=simulation_policy,
         ingest=ingest_policy,
@@ -147,6 +161,7 @@ def _run_one_seed(
     seed_pair: tuple[int, int],
     meta_dir: Path,
     manifest_path: Path,
+    run_id: str,
     force: bool,
     policy_bundle: _PerSeedPolicyBundle,
 ) -> _SeedRunStatus:
@@ -160,16 +175,17 @@ def _run_one_seed(
     seed_context = SeedRunContext.from_config(seed_cfg)
     active_config_path = seed_context.active_config_path
 
-    append_manifest_line(
+    append_manifest_event(
         manifest_path,
         {
             "event": "seed_start",
             "seed": seed,
             "results_dir": str(seed_cfg.results_root),
             "active_config": str(active_config_path),
-            "config_sha": seed_cfg.config_sha,
             "resolved_policy": policy_bundle.as_metadata(),
         },
+        run_id=run_id,
+        config_sha=seed_cfg.config_sha,
     )
 
     write_active_config(seed_cfg)
@@ -195,13 +211,15 @@ def _run_one_seed(
                 "results_dir": str(seed_cfg.results_root),
             },
         )
-        append_manifest_line(
+        append_manifest_event(
             manifest_path,
             {
                 "event": "seed_simulation_skipped",
                 "seed": seed,
                 "results_dir": str(seed_context.results_root),
             },
+            run_id=run_id,
+            config_sha=seed_cfg.config_sha,
         )
     else:
         LOGGER.info(
@@ -213,13 +231,15 @@ def _run_one_seed(
             },
         )
         runner.run_tournament(seed_cfg, force=force)
-        append_manifest_line(
+        append_manifest_event(
             manifest_path,
             {
                 "event": "seed_simulation_complete",
                 "seed": seed,
                 "results_dir": str(seed_context.results_root),
             },
+            run_id=run_id,
+            config_sha=seed_cfg.config_sha,
         )
 
     LOGGER.info(
@@ -233,21 +253,23 @@ def _run_one_seed(
     try:
         _run_per_seed_analysis(
             seed_cfg,
-            manifest_path=manifest_path,
             seed=seed,
+            force=force,
             policy_bundle=policy_bundle,
         )
-        append_manifest_line(
+        append_manifest_event(
             manifest_path,
             {
                 "event": "seed_analysis_complete",
                 "seed": seed,
                 "results_dir": str(seed_context.results_root),
             },
+            run_id=run_id,
+            config_sha=seed_cfg.config_sha,
         )
         return _SeedRunStatus(seed=seed, context=seed_context, analysis_ok=True)
     except Exception as exc:  # noqa: BLE001
-        append_manifest_line(
+        append_manifest_event(
             manifest_path,
             {
                 "event": "seed_analysis_failed",
@@ -255,6 +277,8 @@ def _run_one_seed(
                 "results_dir": str(seed_context.results_root),
                 "error": f"{type(exc).__name__}: {exc}",
             },
+            run_id=run_id,
+            config_sha=seed_cfg.config_sha,
         )
         return _SeedRunStatus(
             seed=seed,
@@ -275,15 +299,16 @@ class _PipelineStageContract:
 class _ResolvedStageStatus:
     status: str
     diagnostics: list[str]
+    diagnostic_codes: list[str]
     required_outputs: tuple[Path, ...]
     missing_outputs: tuple[Path, ...]
 
 
-def _is_valid_artifact(path: Path) -> tuple[bool, str | None]:
+def _validate_artifact(path: Path) -> tuple[bool, str | None, str | None]:
     if not path.exists():
-        return False, "missing"
+        return False, "missing", "missing"
     if path.stat().st_size <= 0:
-        return False, "empty"
+        return False, "empty", "empty"
     if path.suffix in {".json", ".jsonl"}:
         try:
             if path.suffix == ".jsonl":
@@ -293,12 +318,12 @@ def _is_valid_artifact(path: Path) -> tuple[bool, str | None]:
                         json.loads(stripped)
                         break
                 else:
-                    return False, "empty jsonl"
+                    return False, "empty jsonl", "empty"
             else:
                 json.loads(path.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
-            return False, "unparseable metadata"
-    return True, None
+            return False, "invalid json", "invalid_json"
+    return True, None, None
 
 
 def _resolve_stage_contract_status(
@@ -306,34 +331,38 @@ def _resolve_stage_contract_status(
     *,
     dependency_statuses: Sequence[str] = (),
     explicit_error: str | None = None,
+    explicit_error_code: str | None = None,
 ) -> _ResolvedStageStatus:
     diagnostics: list[str] = []
+    diagnostic_codes: list[str] = []
     dependency_blocked = bool(dependency_statuses) and any(
         status != "success" for status in dependency_statuses
     )
     if explicit_error:
         diagnostics.append(explicit_error)
+        diagnostic_codes.append(explicit_error_code or "stage_exception")
     if dependency_blocked:
         diagnostics.append(f"upstream incomplete: {', '.join(dependency_statuses)}")
+        diagnostic_codes.append("dependency_failed")
 
     missing_outputs: list[Path] = []
     for output_path in contract.required_outputs:
-        valid, reason = _is_valid_artifact(output_path)
+        valid, reason, code = _validate_artifact(output_path)
         if not valid:
             missing_outputs.append(output_path)
             diagnostics.append(f"{output_path}: {reason}")
+            diagnostic_codes.append(code or "missing")
 
-    if explicit_error or dependency_blocked and not missing_outputs or any(
-        "unparseable metadata" in reason for reason in diagnostics
-    ):
+    if explicit_error or (dependency_blocked and not missing_outputs):
         status = "failed"
     elif missing_outputs:
-        status = "missing"
+        status = "failed" if any(code in {"invalid_json", "stage_exception"} for code in diagnostic_codes) else "missing"
     else:
         status = "success"
     return _ResolvedStageStatus(
         status=status,
         diagnostics=diagnostics,
+        diagnostic_codes=diagnostic_codes,
         required_outputs=contract.required_outputs,
         missing_outputs=tuple(missing_outputs),
     )
@@ -369,7 +398,11 @@ def _resolve_seed_family_statuses(
             depends_on=(f"seed_{seed}.analysis",),
         ),
     )
-    analysis_status = _resolve_stage_contract_status(stage_contracts[0], explicit_error=analysis_error)
+    analysis_status = _resolve_stage_contract_status(
+        stage_contracts[0],
+        explicit_error=analysis_error,
+        explicit_error_code="stage_exception" if analysis_error else None,
+    )
     return {
         stage_contracts[0].name: analysis_status,
         stage_contracts[1].name: _resolve_stage_contract_status(
@@ -399,6 +432,7 @@ def _resolve_interseed_family_statuses(
         interseed_contract,
         dependency_statuses=tuple(stage_statuses.get(name, {}).get("status", "missing") for name in per_seed_post_h2h_stages),
         explicit_error=interseed_error,
+        explicit_error_code="stage_exception" if interseed_error else None,
     )
 
     h2h_contract = _PipelineStageContract(
@@ -410,6 +444,7 @@ def _resolve_interseed_family_statuses(
         h2h_contract,
         dependency_statuses=(interseed_status.status,),
         explicit_error=h2h_error,
+        explicit_error_code="stage_exception" if h2h_error else None,
     )
     return {
         interseed_contract.name: interseed_status,
@@ -429,6 +464,7 @@ def _validate_required_config_sha_outputs(
     *,
     expected_sha: str,
     manifest_path: Path,
+    run_id: str,
     seed_contexts: Mapping[int, SeedRunContext],
     interseed_cfg: AppConfig,
 ) -> list[str]:
@@ -450,7 +486,6 @@ def _validate_required_config_sha_outputs(
     if not manifest_path.exists():
         errors.append(f"missing metadata: {manifest_path}")
     else:
-        records: list[dict[str, Any]] = []
         for line in manifest_path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
@@ -459,23 +494,13 @@ def _validate_required_config_sha_outputs(
             except Exception as exc:  # noqa: BLE001
                 errors.append(f"invalid metadata {manifest_path}: {type(exc).__name__}: {exc}")
                 continue
-            if isinstance(parsed, dict):
-                records.append(parsed)
-
-        run_start_idx = 0
-        for idx in range(len(records) - 1, -1, -1):
-            record = records[idx]
-            if record.get("event") == "run_start" and "seed_pair" in record:
-                run_start_idx = idx
-                break
-        current_run_records = records[run_start_idx:]
-
-        for record in current_run_records:
-            event = record.get("event")
-            if event in {"run_start", "run_end", "stage-end", "seed_start"} and record.get(
-                "config_sha"
-            ) != expected_sha:
-                errors.append(f"manifest event {event} has config_sha={record.get('config_sha')!r}")
+            if not isinstance(parsed, dict) or parsed.get("run_id") != run_id:
+                continue
+            event = record_event = parsed.get("event")
+            if parsed.get("config_sha") != expected_sha:
+                errors.append(
+                    f"manifest event {record_event} has config_sha={parsed.get('config_sha')!r}"
+                )
 
     for seed_context in seed_contexts.values():
         _check_json(seed_context.active_config_path.with_suffix(".done.json"))
@@ -488,20 +513,6 @@ def _validate_required_config_sha_outputs(
 
     return errors
 
-def _resolve_seed_pair(
-    args: argparse.Namespace, parser: argparse.ArgumentParser
-) -> tuple[int, int] | None:
-    if args.seed_pair and (args.seed_a is not None or args.seed_b is not None):
-        parser.error("Use --seed-pair or --seed-a/--seed-b, not both.")
-    if (args.seed_a is None) ^ (args.seed_b is None):
-        parser.error("--seed-a and --seed-b must be provided together.")
-    if args.seed_pair:
-        return (int(args.seed_pair[0]), int(args.seed_pair[1]))
-    if args.seed_a is not None and args.seed_b is not None:
-        return (int(args.seed_a), int(args.seed_b))
-    return None
-
-
 def _shared_meta_dir(cfg: AppConfig, pair_root: Path, seed_pair: tuple[int, int]) -> Path:
     configured_meta = seed_pair_meta_root(cfg, seed_pair)
     if configured_meta is not None:
@@ -512,27 +523,14 @@ def _shared_meta_dir(cfg: AppConfig, pair_root: Path, seed_pair: tuple[int, int]
 def _run_per_seed_analysis(
     cfg: AppConfig,
     *,
-    manifest_path: Path,
     seed: int,
+    force: bool,
     policy_bundle: _PerSeedPolicyBundle,
 ) -> None:
     apply_native_thread_limits(policy_bundle.analysis)
     per_seed_manifest_path = cfg.analysis_dir / cfg.manifest_name
     per_seed_manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    plan: list[StagePlanItem] = [
-        StagePlanItem("ingest", ingest.run),
-        StagePlanItem("curate", curate.run),
-        StagePlanItem("combine", combine.run),
-        StagePlanItem("metrics", metrics.run),
-        StagePlanItem("coverage_by_k", coverage_by_k.run),  # Matches StageLayout analytics ordering.
-    ]
-    plan.append(StagePlanItem("game_stats", game_stats.run))
-    plan.append(
-        StagePlanItem(
-            "single_seed_analysis",
-            lambda cfg: analysis.run_single_seed_analysis(cfg, manifest_path=per_seed_manifest_path),
-        )
-    )
+    plan = analysis.build_per_seed_stage_plan(cfg, force=force)
     context = StageRunContext(
         config=cfg,
         manifest_path=per_seed_manifest_path,
@@ -541,7 +539,6 @@ def _run_per_seed_analysis(
             "seed": seed,
             "results_dir": str(cfg.results_root),
             "analysis_dir": str(cfg.analysis_dir),
-            "pair_manifest": str(manifest_path),
             "config_sha": cfg.config_sha,
             "resolved_policy": policy_bundle.as_metadata(),
         },
@@ -568,20 +565,23 @@ def run_pipeline(
     meta_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = pair_root / "two_seed_pipeline_manifest.jsonl"
     pipeline_health_path = pair_root / "pipeline_health.json"
+    run_id = make_run_id(f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}")
+    ensure_manifest_v2(manifest_path)
     stage_statuses: dict[str, dict[str, Any]] = {}
     stage_errors: dict[str, str] = {}
     policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
 
-    append_manifest_line(
+    append_manifest_event(
         manifest_path,
         {
-            "event": "run_start",
+            "event": EVENT_RUN_START,
             "seed_pair": list(seed_pair),
             "results_dir": str(pair_root),
             "meta_analysis_dir": str(meta_dir),
-            "config_sha": cfg.config_sha,
             "resolved_policy": policy_bundle.as_metadata(),
         },
+        run_id=run_id,
+        config_sha=cfg.config_sha,
     )
 
     seed_contexts: dict[int, SeedRunContext] = {}
@@ -596,6 +596,7 @@ def run_pipeline(
                     seed_pair=seed_pair,
                     meta_dir=meta_dir,
                     manifest_path=manifest_path,
+                    run_id=run_id,
                     force=force,
                     policy_bundle=policy_bundle,
                 )
@@ -610,6 +611,7 @@ def run_pipeline(
                 seed_pair=seed_pair,
                 meta_dir=meta_dir,
                 manifest_path=manifest_path,
+                run_id=run_id,
                 force=force,
                 policy_bundle=policy_bundle,
             )
@@ -635,17 +637,20 @@ def run_pipeline(
                 "required_outputs": [str(path) for path in resolved.required_outputs],
                 "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
                 "diagnostics": resolved.diagnostics,
+                "diagnostic_codes": resolved.diagnostic_codes,
             }
-            append_manifest_line(
+            append_manifest_event(
                 manifest_path,
                 {
-                    "event": "stage-end",
+                    "event": EVENT_STAGE_END,
                     "stage": stage_name,
                     "status": resolved.status,
                     "diagnostics": resolved.diagnostics,
+                    "diagnostic_codes": resolved.diagnostic_codes,
                     "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
-                    "config_sha": cfg.config_sha,
                 },
+                run_id=run_id,
+                config_sha=cfg.config_sha,
             )
 
     interseed_seed = seed_pair[0]
@@ -672,7 +677,7 @@ def run_pipeline(
                 "results_dir": str(interseed_cfg.results_root),
             },
         )
-        append_manifest_line(
+        append_manifest_event(
             manifest_path,
             {
                 "event": "interseed_start",
@@ -681,6 +686,8 @@ def run_pipeline(
                 "active_config": str(interseed_cfg.results_root / "active_config.yaml"),
                 "resolved_policy": policy_bundle.as_metadata(),
             },
+            run_id=run_id,
+            config_sha=interseed_cfg.config_sha,
         )
         try:
             analysis.run_interseed_analysis(
@@ -688,7 +695,7 @@ def run_pipeline(
                 force=force,
                 manifest_path=manifest_path,
             )
-            append_manifest_line(
+            append_manifest_event(
                 manifest_path,
                 {
                     "event": "interseed_complete",
@@ -696,9 +703,11 @@ def run_pipeline(
                     "results_dir": str(interseed_cfg.results_root),
                     "resolved_policy": policy_bundle.as_metadata(),
                 },
+                run_id=run_id,
+                config_sha=interseed_cfg.config_sha,
             )
         except Exception as exc:  # noqa: BLE001
-            append_manifest_line(
+            append_manifest_event(
                 manifest_path,
                 {
                     "event": "interseed_failed",
@@ -707,6 +716,8 @@ def run_pipeline(
                     "error": f"{type(exc).__name__}: {exc}",
                     "resolved_policy": policy_bundle.as_metadata(),
                 },
+                run_id=run_id,
+                config_sha=interseed_cfg.config_sha,
             )
             stage_errors["interseed_analysis"] = f"{type(exc).__name__}: {exc}"
     seed_s_tier_paths = [
@@ -723,15 +734,16 @@ def run_pipeline(
                 "results_dir": str(interseed_cfg.results_root),
             },
         )
-        append_manifest_line(
+        append_manifest_event(
             manifest_path,
             {
                 "event": "h2h_tier_trends_start",
                 "seed": interseed_seed,
                 "results_dir": str(interseed_cfg.results_root),
-                "config_sha": interseed_cfg.config_sha,
                 "resolved_policy": policy_bundle.as_metadata(),
             },
+            run_id=run_id,
+            config_sha=interseed_cfg.config_sha,
         )
         try:
             analysis.run_h2h_tier_trends(
@@ -739,15 +751,16 @@ def run_pipeline(
                 force=force,
                 seed_s_tier_paths=seed_s_tier_paths,
             )
-            append_manifest_line(
+            append_manifest_event(
                 manifest_path,
                 {
                     "event": "h2h_tier_trends_complete",
                     "seed": interseed_seed,
                     "results_dir": str(interseed_cfg.results_root),
-                    "config_sha": interseed_cfg.config_sha,
                     "resolved_policy": policy_bundle.as_metadata(),
                 },
+                run_id=run_id,
+                config_sha=interseed_cfg.config_sha,
             )
         except Exception as exc:  # noqa: BLE001
             stage_errors["h2h_tier_trends"] = f"{type(exc).__name__}: {exc}"
@@ -770,23 +783,27 @@ def run_pipeline(
             "required_outputs": [str(path) for path in resolved.required_outputs],
             "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
             "diagnostics": resolved.diagnostics,
+            "diagnostic_codes": resolved.diagnostic_codes,
         }
-        append_manifest_line(
+        append_manifest_event(
             manifest_path,
             {
-                "event": "stage-end",
+                "event": EVENT_STAGE_END,
                 "stage": stage_name,
                 "status": resolved.status,
                 "diagnostics": resolved.diagnostics,
+                "diagnostic_codes": resolved.diagnostic_codes,
                 "missing_required_outputs": [str(path) for path in resolved.missing_outputs],
-                "config_sha": interseed_cfg.config_sha,
                 "resolved_policy": policy_bundle.as_metadata(),
             },
+            run_id=run_id,
+            config_sha=interseed_cfg.config_sha,
         )
 
     sha_errors = _validate_required_config_sha_outputs(
         expected_sha=cfg.config_sha or "",
         manifest_path=manifest_path,
+        run_id=run_id,
         seed_contexts=seed_contexts,
         interseed_cfg=interseed_cfg,
     )
@@ -794,6 +811,7 @@ def run_pipeline(
         stage_statuses["config_sha_validation"] = {
             "status": "failed",
             "diagnostics": sha_errors,
+            "diagnostic_codes": ["config_sha_mismatch"] * len(sha_errors),
             "required_outputs": [
                 str(manifest_path),
                 *[str(ctx.active_config_path.with_suffix(".done.json")) for ctx in seed_contexts.values()],
@@ -842,19 +860,20 @@ def run_pipeline(
     }
     _write_pipeline_health(pipeline_health_path, health_payload)
 
-    append_manifest_line(
+    append_manifest_event(
         manifest_path,
         {
-            "event": "run_end",
+            "event": EVENT_RUN_END,
             "status": overall_status,
             "health_artifact": str(pipeline_health_path),
-            "config_sha": cfg.config_sha,
         },
+        run_id=run_id,
+        config_sha=cfg.config_sha,
     )
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="farkle-two-seed-pipeline")
+    parser = argparse.ArgumentParser(prog="farkle two-seed-pipeline")
     parser.add_argument(
         "--config", type=Path, default=Path("configs/fast_config.yaml"), help="Path to YAML config"
     )
@@ -906,7 +925,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.parallel_seeds:
         cfg.orchestration.parallel_seeds = True
 
-    seed_pair = _resolve_seed_pair(args, parser)
+    seed_pair = resolve_seed_pair_args(args, parser)
     if seed_pair is not None:
         cfg.sim.seed_list = list(seed_pair)
         cfg.sim.seed_pair = seed_pair

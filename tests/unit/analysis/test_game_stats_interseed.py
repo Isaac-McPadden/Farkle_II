@@ -360,8 +360,14 @@ def test_run_writes_outputs_and_stage_stamps(tmp_path: Path, monkeypatch: pytest
 
     game_output = cfg.interseed_stage_dir / game_stats_interseed.GAME_LENGTH_OUTPUT
     margin_output = cfg.interseed_stage_dir / game_stats_interseed.MARGIN_OUTPUT
-    game_stamp = game_stats_interseed.stage_done_path(cfg.interseed_stage_dir, "interseed.game_length")
-    margin_stamp = game_stats_interseed.stage_done_path(cfg.interseed_stage_dir, "interseed.margin")
+    game_stamp = game_stats_interseed.stage_done_path(
+        cfg.interseed_stage_dir,
+        "interseed_game_stats.game_length",
+    )
+    margin_stamp = game_stats_interseed.stage_done_path(
+        cfg.interseed_stage_dir,
+        "interseed_game_stats.margin",
+    )
 
     assert game_output.exists()
     assert margin_output.exists()
@@ -393,7 +399,7 @@ def test_run_recomputes_only_stale_metric_when_other_is_up_to_date(
     calls: list[list[tuple[int, Path]]] = []
 
     def _up_to_date(stamp: Path, **kwargs):
-        return stamp.name.endswith("interseed.margin.done.json")
+        return stamp.name.endswith("interseed_game_stats.margin.done.json")
 
     monkeypatch.setattr(game_stats_interseed, "stage_is_up_to_date", _up_to_date)
 

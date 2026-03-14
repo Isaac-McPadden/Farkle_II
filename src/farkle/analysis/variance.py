@@ -80,13 +80,25 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     inputs = [metrics_path, *seed_summary_paths]
     outputs = [variance_path, summary_path, components_path]
     detail_up_to_date = not force and stage_is_up_to_date(
-        detail_stamp, inputs=inputs, outputs=[variance_path], config_sha=cfg.config_sha
+        detail_stamp,
+        inputs=inputs,
+        outputs=[variance_path],
+        cfg=cfg,
+        stage="variance",
     )
     summary_up_to_date = not force and stage_is_up_to_date(
-        summary_stamp, inputs=inputs, outputs=[summary_path], config_sha=cfg.config_sha
+        summary_stamp,
+        inputs=inputs,
+        outputs=[summary_path],
+        cfg=cfg,
+        stage="variance",
     )
     components_up_to_date = not force and stage_is_up_to_date(
-        components_stamp, inputs=inputs, outputs=[components_path], config_sha=cfg.config_sha
+        components_stamp,
+        inputs=inputs,
+        outputs=[components_path],
+        cfg=cfg,
+        stage="variance",
     )
 
     if detail_up_to_date and summary_up_to_date and components_up_to_date:
@@ -173,7 +185,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             detail_stamp,
             inputs=inputs,
             outputs=[variance_path],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="variance",
         )
 
     if not summary_up_to_date:
@@ -190,7 +203,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             summary_stamp,
             inputs=inputs,
             outputs=[summary_path],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="variance",
         )
 
     if not components_up_to_date:
@@ -200,13 +214,15 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             components_stamp,
             inputs=inputs,
             outputs=[components_path],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="variance",
         )
     write_stage_done(
         stamp_path,
         inputs=inputs,
         outputs=outputs,
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="variance",
     )
 
     rows = len(detailed) if detailed is not None else 0

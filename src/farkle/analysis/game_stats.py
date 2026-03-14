@@ -131,6 +131,8 @@ def _write_per_k_game_length(
     input_paths: Sequence[Path],
     codec: Compression,
     config_sha: str | None,
+    stage_config_sha: str,
+    cache_key_version: int,
 ) -> None:
     per_k_game_length = game_length_df.loc[game_length_df["n_players"] == k].copy()
     per_k_game_length_table = pa.Table.from_pandas(per_k_game_length, preserve_index=False)
@@ -140,6 +142,9 @@ def _write_per_k_game_length(
         inputs=input_paths,
         outputs=[output_path],
         config_sha=config_sha,
+        stage="game_stats",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     )
 
 
@@ -152,6 +157,8 @@ def _write_per_k_margin(
     input_paths: Sequence[Path],
     codec: Compression,
     config_sha: str | None,
+    stage_config_sha: str,
+    cache_key_version: int,
 ) -> None:
     per_k_margin = margin_df.loc[margin_df["n_players"] == k].copy()
     per_k_margin_table = pa.Table.from_pandas(per_k_margin, preserve_index=False)
@@ -161,6 +168,9 @@ def _write_per_k_margin(
         inputs=input_paths,
         outputs=[output_path],
         config_sha=config_sha,
+        stage="game_stats",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     )
 
 
@@ -302,6 +312,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         return
 
     workers = min(max(1, _resolve_analysis_workers(cfg)), max(1, len(configured_k_values)))
+    stage_config_sha = cfg.stage_config_sha("game_stats")
+    cache_key_version = cfg.stage_cache_key_version("game_stats")
     _normalize_pooling_scheme(cfg.analysis.pooling_weights)
     stale_ks: list[int] = []
     for k in configured_k_values:
@@ -316,6 +328,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 thresholds=cfg.game_stats_margin_thresholds,
                 codec=cfg.parquet_codec,
                 config_sha=cfg.config_sha,
+                stage_config_sha=stage_config_sha,
+                cache_key_version=cache_key_version,
                 force=force,
             )
             continue
@@ -328,7 +342,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             done_path,
             inputs=[input_path],
             outputs=[artifact_path, legacy_game, legacy_margin],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="game_stats",
         ):
             stale_ks.append(k)
 
@@ -346,6 +361,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                     thresholds=cfg.game_stats_margin_thresholds,
                     codec=cfg.parquet_codec,
                     config_sha=cfg.config_sha,
+                    stage_config_sha=stage_config_sha,
+                    cache_key_version=cache_key_version,
                 )
         else:
             with ThreadPoolExecutor(max_workers=min(workers, len(stale_ks))) as executor:
@@ -358,6 +375,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                         thresholds=cfg.game_stats_margin_thresholds,
                         codec=cfg.parquet_codec,
                         config_sha=cfg.config_sha,
+                        stage_config_sha=stage_config_sha,
+                        cache_key_version=cache_key_version,
                     )
                     for k in stale_ks
                 ]
@@ -379,6 +398,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         pooled_stamp=pooled_stamp,
         codec=cfg.parquet_codec,
         config_sha=cfg.config_sha,
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
         force=force,
         combined_path=combined_path,
     )
@@ -393,7 +414,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         rare_events_summary_stamp,
         inputs=input_paths,
         outputs=[rare_events_output],
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="game_stats",
     )
     rare_events_details_up_to_date = True
     if write_details:
@@ -401,7 +423,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             rare_events_details_stamp,
             inputs=input_paths,
             outputs=[rare_events_details_output],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="game_stats",
         )
 
     stamp_path = stage_done_path(stage_dir, "game_stats")
@@ -422,6 +445,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 output_path=rare_events_output,
                 codec=cfg.parquet_codec,
                 config_sha=cfg.config_sha,
+                stage_config_sha=stage_config_sha,
+                cache_key_version=cache_key_version,
                 n_workers=workers,
             )
             if rare_event_rows == 0:
@@ -430,7 +455,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 rare_events_summary_stamp,
                 inputs=input_paths,
                 outputs=[rare_events_output],
-                config_sha=cfg.config_sha,
+                cfg=cfg,
+                stage="game_stats",
             )
 
         if write_details and not rare_events_details_up_to_date:
@@ -447,7 +473,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 rare_events_details_stamp,
                 inputs=input_paths,
                 outputs=[rare_events_details_output],
-                config_sha=cfg.config_sha,
+                cfg=cfg,
+                stage="game_stats",
             )
 
     write_stage_done(
@@ -469,7 +496,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             ],
             *([rare_events_details_output] if write_details else []),
         ],
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="game_stats",
     )
 
 
@@ -481,6 +509,8 @@ def _compute_k_game_stats(
     thresholds: Sequence[int],
     codec: Compression,
     config_sha: str | None,
+    stage_config_sha: str,
+    cache_key_version: int,
 ) -> None:
     artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -707,6 +737,8 @@ def _compute_k_game_stats(
         input_paths=[input_path],
         codec=codec,
         config_sha=config_sha,
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     )
     _write_per_k_margin(
         k=k,
@@ -716,6 +748,8 @@ def _compute_k_game_stats(
         input_paths=[input_path],
         codec=codec,
         config_sha=config_sha,
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     )
 
     write_stage_done(
@@ -723,6 +757,9 @@ def _compute_k_game_stats(
         inputs=[input_path],
         outputs=[artifact_path, legacy_game_path, legacy_margin_path],
         config_sha=config_sha,
+        stage="game_stats",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     )
 
 
@@ -737,6 +774,8 @@ def _pool_completed_k_game_stats(
     pooled_stamp: Path,
     codec: Compression,
     config_sha: str | None,
+    stage_config_sha: str,
+    cache_key_version: int,
     force: bool,
     combined_path: Path,
 ) -> None:
@@ -744,7 +783,12 @@ def _pool_completed_k_game_stats(
     for k in configured_k_values:
         artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
         if stage_is_up_to_date(
-            done_path, inputs=[], outputs=[artifact_path], config_sha=config_sha
+            done_path,
+            inputs=[],
+            outputs=[artifact_path],
+            stage="game_stats",
+            stage_config_sha=stage_config_sha,
+            cache_key_version=cache_key_version,
         ):
             completed_paths.append(artifact_path)
     if not completed_paths:
@@ -755,7 +799,9 @@ def _pool_completed_k_game_stats(
         pooled_stamp,
         inputs=completed_paths,
         outputs=outputs,
-        config_sha=config_sha,
+        stage="game_stats",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     ):
         return
 
@@ -850,7 +896,15 @@ def _pool_completed_k_game_stats(
         pa.Table.from_pandas(pooled_margin, preserve_index=False), pooled_margin_output, codec=codec
     )
 
-    write_stage_done(pooled_stamp, inputs=completed_paths, outputs=outputs, config_sha=config_sha)
+    write_stage_done(
+        pooled_stamp,
+        inputs=completed_paths,
+        outputs=outputs,
+        config_sha=config_sha,
+        stage="game_stats",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
+    )
 
 
 def _write_empty_per_k_outputs(
@@ -862,6 +916,8 @@ def _write_empty_per_k_outputs(
     thresholds: Sequence[int],
     codec: Compression,
     config_sha: str | None,
+    stage_config_sha: str,
+    cache_key_version: int,
     force: bool,
 ) -> None:
     legacy_game_path = artifact_path.parent / "game_length.parquet"
@@ -870,7 +926,9 @@ def _write_empty_per_k_outputs(
         done_path,
         inputs=[],
         outputs=[artifact_path, legacy_game_path, legacy_margin_path],
-        config_sha=config_sha,
+        stage="game_stats",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     ):
         return
     cols = [
@@ -962,18 +1020,27 @@ def _write_empty_per_k_outputs(
         inputs=[],
         outputs=[artifact_path, legacy_game_path, legacy_margin_path],
         config_sha=config_sha,
+        stage="game_stats",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     )
     write_stage_done(
         stage_done_path(stage_dir, f"game_stats.game_length.{k}p"),
         inputs=[],
         outputs=[legacy_game_path],
         config_sha=config_sha,
+        stage="game_stats",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     )
     write_stage_done(
         stage_done_path(stage_dir, f"game_stats.margin.{k}p"),
         inputs=[],
         outputs=[legacy_margin_path],
         config_sha=config_sha,
+        stage="game_stats",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cache_key_version,
     )
 
 
@@ -1967,6 +2034,8 @@ def _rare_event_flags(
     output_path: Path,
     codec: Compression,
     config_sha: str | None = None,
+    stage_config_sha: str | None = None,
+    cache_key_version: int = 2,
     n_workers: int = 1,
 ) -> int:
     """Write combined per-game and summary rare-event rows to parquet."""
@@ -1997,7 +2066,10 @@ def _rare_event_flags(
             done_path,
             inputs=[path],
             outputs=[shard_path, stats_path],
-            config_sha=resume_sha,
+            config_sha=config_sha,
+            stage="game_stats",
+            stage_config_sha=resume_sha,
+            cache_key_version=cache_key_version,
         ):
             continue
         stale_inputs.append((n_players, path, shard_path, stats_path, done_path))
@@ -2025,6 +2097,8 @@ def _rare_event_flags(
                     done_path=done_path,
                     codec=codec,
                     config_sha=resume_sha,
+                    run_config_sha=config_sha,
+                    cache_key_version=cache_key_version,
                 )
         else:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -2041,6 +2115,8 @@ def _rare_event_flags(
                         done_path=done_path,
                         codec=codec,
                         config_sha=resume_sha,
+                        run_config_sha=config_sha,
+                        cache_key_version=cache_key_version,
                     )
                     for n_players, path, shard_path, stats_path, done_path in stale_inputs
                 ]
@@ -2219,6 +2295,8 @@ def _build_rare_event_summary_shard(
     done_path: Path,
     codec: Compression,
     config_sha: str | None,
+    run_config_sha: str | None,
+    cache_key_version: int,
 ) -> None:
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
     strategy_dtype = _strategy_numpy_dtype(strategy_arrow)
@@ -2386,7 +2464,10 @@ def _build_rare_event_summary_shard(
         done_path,
         inputs=[input_path],
         outputs=[shard_path, stats_path],
-        config_sha=config_sha,
+        config_sha=run_config_sha,
+        stage="game_stats",
+        stage_config_sha=config_sha,
+        cache_key_version=cache_key_version,
     )
 
 

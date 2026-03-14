@@ -132,12 +132,13 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             expected_mirrors.append(mirror_path)
 
     if not force and expected_outputs and stage_is_up_to_date(
-        done, inputs=[metrics_path], outputs=expected_outputs, config_sha=cfg.config_sha
+        done, inputs=[metrics_path], outputs=expected_outputs, cfg=cfg, stage="seed_summaries"
     ) and stage_is_up_to_date(
         done,
         inputs=[metrics_path],
         outputs=expected_mirrors,
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="seed_summaries",
     ):
         LOGGER.info(
             "Seed summaries up-to-date",
@@ -256,7 +257,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             done,
             inputs=[metrics_path],
             outputs=all_outputs,
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="seed_summaries",
         )
 
 

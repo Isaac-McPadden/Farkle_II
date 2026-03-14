@@ -8,6 +8,7 @@ module logs a skip instead of raising.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -24,11 +25,10 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 
 from farkle.analysis import stage_logger
-from farkle.analysis.stage_state import stage_done_path
+from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.parallel import apply_native_thread_limits, resolve_stage_parallel_policy
-from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -89,8 +89,15 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         stage_log.missing_input("missing curated parquet", path=str(data_file))
         return
 
-    if not force and _is_up_to_date(
-        stamp_path, inputs=[data_file], outputs=[out_file], lags=lags, config_sha=cfg.config_sha
+    stage_config_sha = _rng_stage_config_sha(cfg, lags)
+    if not force and stage_is_up_to_date(
+        stamp_path,
+        inputs=[data_file],
+        outputs=[out_file],
+        config_sha=cfg.config_sha,
+        stage="rng_diagnostics",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
     ):
         LOGGER.info(
             "rng-diagnostics: up-to-date",
@@ -150,12 +157,14 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
 
     table_out = pa.Table.from_pandas(diagnostics, preserve_index=False)
     write_parquet_atomic(table_out, out_file, codec=cfg.parquet_codec)
-    _write_stamp(
+    write_stage_done(
         stamp_path,
         inputs=[data_file],
         outputs=[out_file],
-        lags=lags,
         config_sha=cfg.config_sha,
+        stage="rng_diagnostics",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
     )
     LOGGER.info(
         "rng-diagnostics: written",
@@ -755,66 +764,12 @@ def _group_diagnostics(
     return rows
 
 
-def _stamp(path: Path) -> dict[str, float | int]:
-    stat = path.stat()
-    return {"mtime": stat.st_mtime, "size": stat.st_size}
-
-
-def _write_stamp(
-    stamp_path: Path,
-    *,
-    inputs: Iterable[Path],
-    outputs: Iterable[Path],
-    lags: Sequence[int],
-    config_sha: str | None,
-) -> None:
+def _rng_stage_config_sha(cfg: AppConfig, lags: Sequence[int]) -> str:
     payload = {
-        "inputs": {str(p): _stamp(p) for p in inputs if p.exists()},
-        "outputs": {str(p): _stamp(p) for p in outputs if p.exists()},
-        "params": {"lags": list(lags)},
-        "config_sha": config_sha,
+        "base_stage_config_sha": cfg.stage_config_sha("rng_diagnostics"),
+        "lags": [int(lag) for lag in lags],
     }
-    stamp_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(stamp_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(payload, indent=2))
-
-
-def _is_up_to_date(
-    stamp_path: Path,
-    *,
-    inputs: Iterable[Path],
-    outputs: Iterable[Path],
-    lags: Sequence[int],
-    config_sha: str | None,
-) -> bool:
-    if not (stamp_path.exists() and all(p.exists() for p in outputs)):
-        return False
-    try:
-        meta = json.loads(stamp_path.read_text())
-    except Exception:  # noqa: BLE001
-        return False
-
-    recorded_sha = meta.get("config_sha")
-    if config_sha is not None and recorded_sha not in (None, config_sha):
-        return False
-
-    if meta.get("params", {}).get("lags") != list(lags):
-        return False
-
-    in_meta = meta.get("inputs", {})
-    out_meta = meta.get("outputs", {})
-
-    def _matches(paths: Iterable[Path], recorded: dict[str, dict[str, float | int]]) -> bool:
-        for p in paths:
-            data = recorded.get(str(p))
-            if data is None:
-                return False
-            stat = p.stat()
-            if data.get("mtime") != stat.st_mtime or data.get("size") != stat.st_size:
-                return False
-        return True
-
-    return _matches(inputs, in_meta) and _matches(outputs, out_meta)
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
 if __name__ == "__main__":  # pragma: no cover

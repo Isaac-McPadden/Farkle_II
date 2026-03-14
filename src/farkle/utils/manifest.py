@@ -45,8 +45,27 @@ else:
 _WINDOWS_LOCK_OFFSET = 0
 _WINDOWS_LOCK_BYTES = 1
 _WINDOWS_LOCK_RETRY_S = 0.05
+MANIFEST_SCHEMA_VERSION = 2
+EVENT_RUN_START = "run_start"
+EVENT_RUN_END = "run_end"
+EVENT_STAGE_START = "stage_start"
+EVENT_STAGE_END = "stage_end"
+LEGACY_MANIFEST_EVENTS = frozenset({"stage-end", "step_start", "step_end"})
 
-__all__ = ["append_manifest_line", "append_manifest_many", "iter_manifest"]
+__all__ = [
+    "EVENT_RUN_END",
+    "EVENT_RUN_START",
+    "EVENT_STAGE_END",
+    "EVENT_STAGE_START",
+    "LEGACY_MANIFEST_EVENTS",
+    "MANIFEST_SCHEMA_VERSION",
+    "append_manifest_event",
+    "append_manifest_line",
+    "append_manifest_many",
+    "ensure_manifest_v2",
+    "iter_manifest",
+    "make_run_id",
+]
 
 
 def _ensure_parent_dir(path: os.PathLike[str] | str) -> None:
@@ -187,3 +206,80 @@ def iter_manifest(manifest_path: os.PathLike[str] | str) -> Iterator[dict[str, A
             if not line:
                 continue
             yield json.loads(line)
+
+
+def make_run_id(run_label: str) -> str:
+    """Return a filesystem- and log-friendly run identifier."""
+
+    normalized = "".join(ch if ch.isalnum() or ch in {"_", "-"} else "_" for ch in run_label)
+    return f"{normalized}_{time.time_ns()}"
+
+
+def _manifest_lines_are_v2(path: Path) -> bool:
+    try:
+        with path.open("r", encoding="utf-8", newline="") as handle:
+            saw_record = False
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                saw_record = True
+                try:
+                    record = json.loads(line)
+                except Exception:
+                    return False
+                if not isinstance(record, dict):
+                    return False
+                event = record.get("event")
+                if event in LEGACY_MANIFEST_EVENTS:
+                    return False
+                if record.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+                    return False
+            return True if saw_record else True
+    except Exception:
+        return False
+
+
+def ensure_manifest_v2(manifest_path: os.PathLike[str] | str) -> Path | None:
+    """Rotate a legacy manifest aside before appending v2 event records."""
+
+    path = Path(manifest_path)
+    if not path.exists() or _manifest_lines_are_v2(path):
+        return None
+
+    rotated = path.with_name(f"{path.stem}.pre_v2{path.suffix}")
+    rotated.parent.mkdir(parents=True, exist_ok=True)
+    if rotated.exists():
+        rotated.unlink()
+    path.replace(rotated)
+    return rotated
+
+
+def append_manifest_event(
+    manifest_path: os.PathLike[str] | str,
+    record: Mapping[str, Any],
+    *,
+    run_id: str,
+    config_sha: str | None,
+    add_timestamp: bool = True,
+) -> None:
+    """Append a v2 pipeline/orchestration manifest event."""
+
+    event = str(record.get("event", "")).strip()
+    if not event:
+        raise ValueError("manifest event record is missing 'event'")
+    if event in LEGACY_MANIFEST_EVENTS:
+        raise ValueError(f"legacy manifest event {event!r} is not allowed in v2 manifests")
+
+    payload = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "run_id": run_id,
+        "event": event,
+        "config_sha": config_sha,
+        **{key: value for key, value in record.items() if key != "event"},
+    }
+    append_manifest_line(
+        manifest_path,
+        payload,
+        add_timestamp=add_timestamp,
+    )

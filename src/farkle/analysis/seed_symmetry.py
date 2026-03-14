@@ -54,7 +54,8 @@ def run(
                 done,
                 inputs=[],
                 outputs=[],
-                config_sha=getattr(cfg, "config_sha", None),
+                cfg=cfg,
+                stage="seed_symmetry",
                 status="failed",
                 reason=reason,
                 blocking_dependency=str(source),
@@ -70,7 +71,8 @@ def run(
             done,
             inputs=[],
             outputs=[],
-            config_sha=getattr(cfg, "config_sha", None),
+            cfg=cfg,
+            stage="seed_symmetry",
             status="skipped",
             reason=reason,
             blocking_dependency=str(source),
@@ -82,7 +84,8 @@ def run(
         done,
         inputs=[source],
         outputs=outputs,
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="seed_symmetry",
     ):
         LOGGER.info("Seed-symmetry stage up-to-date", extra={"stage": "seed_symmetry"})
         return
@@ -106,7 +109,8 @@ def run(
         done,
         inputs=[source],
         outputs=outputs,
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="seed_symmetry",
     )
 
 

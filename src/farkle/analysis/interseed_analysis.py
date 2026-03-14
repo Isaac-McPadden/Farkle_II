@@ -135,7 +135,8 @@ def run(
             done_path,
             inputs=inputs,
             outputs=[summary_path],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="interseed",
         ):
             LOGGER.info(
                 "Interseed summary up-to-date",
@@ -156,7 +157,8 @@ def run(
             done_path,
             inputs=inputs,
             outputs=[summary_path],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="interseed",
         )
 
         LOGGER.info(
@@ -195,9 +197,10 @@ def _meta_outputs(cfg: AppConfig) -> list[Path]:
 
 
 def _game_stats_outputs(cfg: AppConfig) -> list[Path]:
+    stage_dir = cfg.stage_dir("interseed_game_stats")
     return [
-        cfg.interseed_stage_dir / "game_length_interseed.parquet",
-        cfg.interseed_stage_dir / "margin_interseed.parquet",
+        stage_dir / "game_length_interseed.parquet",
+        stage_dir / "margin_interseed.parquet",
     ]
 
 
@@ -277,7 +280,8 @@ def _run_s_tier_stability(cfg: AppConfig, *, force: bool = False) -> None:
         done_path,
         inputs=inputs,
         outputs=outputs,
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="interseed",
     ):
         LOGGER.info(
             "S-tier stability outputs up-to-date",
@@ -350,7 +354,8 @@ def _run_s_tier_stability(cfg: AppConfig, *, force: bool = False) -> None:
         done_path,
         inputs=inputs,
         outputs=outputs,
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="interseed",
     )
 
 

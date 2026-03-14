@@ -10,7 +10,15 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from farkle.analysis.stage_state import read_stage_done, stage_done_path
 from farkle.config import AppConfig
-from farkle.utils.manifest import append_manifest_line
+from farkle.utils.manifest import (
+    EVENT_RUN_END,
+    EVENT_RUN_START,
+    EVENT_STAGE_END,
+    EVENT_STAGE_START,
+    append_manifest_event,
+    ensure_manifest_v2,
+    make_run_id,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,12 +50,13 @@ class StageRunContext:
     config: AppConfig
     manifest_path: Path
     run_label: str
+    run_id: str | None = None
     run_metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     run_end_metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
-    run_start_event: str = "run_start"
-    run_end_event: str = "run_end"
-    stage_start_event: str = "stage_start"
-    stage_end_event: str = "stage_end"
+    run_start_event: str = EVENT_RUN_START
+    run_end_event: str = EVENT_RUN_END
+    stage_start_event: str = EVENT_STAGE_START
+    stage_end_event: str = EVENT_STAGE_END
     continue_on_error: bool = False
     use_progress: bool = False
     progress_desc: str = "pipeline"
@@ -74,15 +83,20 @@ class StageRunner:
     ) -> StageRunResult:
         manifest_path = context.manifest_path
         config_sha = getattr(context.config, "config_sha", None)
+        run_id = context.run_id or make_run_id(context.run_label)
+        ensure_manifest_v2(manifest_path)
         run_payload = {
             "event": context.run_start_event,
             "run": context.run_label,
             "stage_count": len(plan),
             **context.run_metadata,
         }
-        if config_sha is not None:
-            run_payload.setdefault("config_sha", config_sha)
-        append_manifest_line(manifest_path, run_payload)
+        append_manifest_event(
+            manifest_path,
+            run_payload,
+            run_id=run_id,
+            config_sha=config_sha,
+        )
 
         failed_steps: list[str] = []
         first_failure: Exception | None = None
@@ -100,15 +114,16 @@ class StageRunner:
                 item.name,
                 extra={"run": context.run_label, "step": item.name},
             )
-            append_manifest_line(
+            append_manifest_event(
                 manifest_path,
                 {
                     "event": context.stage_start_event,
                     "run": context.run_label,
                     "stage": item.name,
                     **item.metadata,
-                    **({"config_sha": config_sha} if config_sha is not None else {}),
                 },
+                run_id=run_id,
+                config_sha=config_sha,
             )
             try:
                 item.action(context.config)
@@ -129,7 +144,7 @@ class StageRunner:
                     stage_health = "unhealthy"
                     degraded_steps.append(item.name)
                 stage_health_states[item.name] = stage_health
-                append_manifest_line(
+                append_manifest_event(
                     manifest_path,
                     {
                         "event": context.stage_end_event,
@@ -141,8 +156,9 @@ class StageRunner:
                         "reason": stage_done.get("reason"),
                         "blocking_dependency": stage_done.get("blocking_dependency"),
                         "upstream_stage": stage_done.get("upstream_stage"),
-                        **({"config_sha": config_sha} if config_sha is not None else {}),
                     },
+                    run_id=run_id,
+                    config_sha=config_sha,
                 )
             except Exception as exc:  # noqa: BLE001
                 failed_steps.append(item.name)
@@ -157,7 +173,7 @@ class StageRunner:
                         "error": exc,
                     },
                 )
-                append_manifest_line(
+                append_manifest_event(
                     manifest_path,
                     {
                         "event": context.stage_end_event,
@@ -165,7 +181,6 @@ class StageRunner:
                         "stage": item.name,
                         "ok": False,
                         "error": f"{type(exc).__name__}: {exc}",
-                        **({"config_sha": config_sha} if config_sha is not None else {}),
                         **(
                             {
                                 "missing_outputs": [str(path) for path in exc.missing_outputs],
@@ -174,6 +189,8 @@ class StageRunner:
                             else {}
                         ),
                     },
+                    run_id=run_id,
+                    config_sha=config_sha,
                 )
                 if not context.continue_on_error:
                     break
@@ -185,14 +202,17 @@ class StageRunner:
             "health": "healthy" if (not failed_steps and not degraded_steps) else "degraded",
             **context.run_end_metadata,
         }
-        if config_sha is not None:
-            run_end_payload.setdefault("config_sha", config_sha)
         if failed_steps:
             run_end_payload["failed_steps"] = failed_steps
         if degraded_steps:
             run_end_payload["degraded_steps"] = degraded_steps
             run_end_payload["stage_health"] = stage_health_states
-        append_manifest_line(manifest_path, run_end_payload)
+        append_manifest_event(
+            manifest_path,
+            run_end_payload,
+            run_id=run_id,
+            config_sha=config_sha,
+        )
 
         if failed_steps:
             context.logger.error(

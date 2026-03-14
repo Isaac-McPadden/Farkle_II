@@ -89,6 +89,8 @@ def resolve_stage_parallel_policy(
     stage: str,
     cfg: Any,
     outer_context: ParallelNestingContext | Mapping[str, Any] | None = None,
+    *,
+    n_jobs_override: int | None = None,
 ) -> StageParallelPolicy:
     """Resolve per-stage parallel budgets with optional nesting awareness."""
     del stage  # stage remains part of API for future stage-specific rules.
@@ -111,7 +113,7 @@ def resolve_stage_parallel_policy(
     if context_total_cores is not None:
         total_cores = max(1, context_total_cores)
 
-    requested_n_jobs = getattr(cfg, "n_jobs", None)
+    requested_n_jobs = n_jobs_override if n_jobs_override is not None else getattr(cfg, "n_jobs", None)
     process_workers = normalize_n_jobs(requested_n_jobs, cpu_count=total_cores, default=1)
     if active_process_pool:
         process_workers = 1

@@ -97,7 +97,6 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
 
     monkeypatch.setattr("farkle.analysis.StageRunner.run", _run_plan, raising=True)
     monkeypatch.setattr("farkle.analysis.run_seed_summaries", lambda app_cfg, force=False: calls.append(f"seed:{force}"), raising=True)
-    monkeypatch.setattr("farkle.analysis.run_coverage_by_k", lambda app_cfg, force=False: calls.append(f"coverage:{force}"), raising=True)
     monkeypatch.setattr(
         "farkle.analysis.run_seed_symmetry",
         lambda app_cfg, force=False, allow_missing_upstream=False: calls.append(
@@ -124,7 +123,6 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
 
     assert plan_names == [
         "seed_summaries",
-        "coverage_by_k",
         "trueskill",
         "tiering",
         "head2head",
@@ -135,7 +133,6 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
 
     assert calls == [
         "seed:True",
-        "coverage:True",
         "trueskill",
         "tiering",
         "head2head",
@@ -199,7 +196,6 @@ def test_run_single_seed_analysis_stops_when_head2head_misses_required_outputs(
     calls: list[str] = []
 
     monkeypatch.setattr("farkle.analysis.run_seed_summaries", lambda app_cfg, force=False: calls.append("seed"), raising=True)
-    monkeypatch.setattr("farkle.analysis.run_coverage_by_k", lambda app_cfg, force=False: calls.append("coverage"), raising=True)
     monkeypatch.setattr(
         "farkle.analysis.run_seed_symmetry",
         lambda app_cfg, force=False, allow_missing_upstream=False: calls.append(
@@ -228,4 +224,4 @@ def test_run_single_seed_analysis_stops_when_head2head_misses_required_outputs(
     with pytest.raises(StageValidationError, match="missing required outputs"):
         analysis_mod.run_single_seed_analysis(cfg, force=False)
 
-    assert calls == ["seed", "coverage", "trueskill", "tiering", "head2head"]
+    assert calls == ["seed", "trueskill", "tiering", "head2head"]

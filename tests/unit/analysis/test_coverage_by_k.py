@@ -593,7 +593,7 @@ def test_run_up_to_date_with_real_done_marker(tmp_path: Path, monkeypatch: pytes
     output_parquet.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"k": [2], "seed": [7], "games": [1]}).to_parquet(output_parquet, index=False)
     done = stage_done_path(stage_dir, "coverage_by_k")
-    write_stage_done(done, inputs=[metrics_path], outputs=[output_parquet], config_sha=cfg.config_sha)
+    write_stage_done(done, inputs=[metrics_path], outputs=[output_parquet], cfg=cfg, stage="coverage_by_k")
 
     monkeypatch.setattr(
         coverage_by_k,

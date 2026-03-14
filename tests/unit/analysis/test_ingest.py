@@ -728,9 +728,14 @@ def test_stage_freshness_directory_mtime_invalidates_when_child_file_changes(tmp
 
     done = tmp_path / "analysis" / "00_ingest" / "ingest.done.json"
     inputs = _ingest_upstream_inputs(results_root)
-    write_stage_done(done, inputs=inputs, outputs=[output], config_sha=None)
+    write_stage_done(done, inputs=inputs, outputs=[output], stage_config_sha="ingest-cache")
 
-    assert stage_is_up_to_date(done, inputs=_ingest_upstream_inputs(results_root), outputs=[output])
+    assert stage_is_up_to_date(
+        done,
+        inputs=_ingest_upstream_inputs(results_root),
+        outputs=[output],
+        stage_config_sha="ingest-cache",
+    )
 
     child.write_text("after")
     done_mtime = done.stat().st_mtime
@@ -740,6 +745,7 @@ def test_stage_freshness_directory_mtime_invalidates_when_child_file_changes(tmp
         done,
         inputs=_ingest_upstream_inputs(results_root),
         outputs=[output],
+        stage_config_sha="ingest-cache",
     )
 
 def test_run_emits_logging(tmp_results_dir, caplog):

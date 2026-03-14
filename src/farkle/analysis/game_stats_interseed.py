@@ -60,11 +60,14 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         stage_log.missing_input("fewer than two seeds with game stats")
         return
 
-    output_dir = cfg.interseed_stage_dir
+    try:
+        output_dir = cfg.stage_dir("interseed_game_stats")
+    except KeyError:
+        output_dir = cfg.interseed_stage_dir
     game_length_output = output_dir / GAME_LENGTH_OUTPUT
     margin_output = output_dir / MARGIN_OUTPUT
-    game_length_stamp = stage_done_path(output_dir, "interseed.game_length")
-    margin_stamp = stage_done_path(output_dir, "interseed.margin")
+    game_length_stamp = stage_done_path(output_dir, "interseed_game_stats.game_length")
+    margin_stamp = stage_done_path(output_dir, "interseed_game_stats.margin")
 
     game_length_inputs = [path for _, path in game_length_paths]
     margin_inputs = [path for _, path in margin_paths]
@@ -72,13 +75,15 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         game_length_stamp,
         inputs=game_length_inputs,
         outputs=[game_length_output],
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="interseed_game_stats",
     )
     margin_up_to_date = bool(margin_inputs) and not force and stage_is_up_to_date(
         margin_stamp,
         inputs=margin_inputs,
         outputs=[margin_output],
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="interseed_game_stats",
     )
 
     if game_length_up_to_date and margin_up_to_date:
@@ -104,7 +109,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 game_length_stamp,
                 inputs=game_length_inputs,
                 outputs=[game_length_output],
-                config_sha=cfg.config_sha,
+                cfg=cfg,
+                stage="interseed_game_stats",
             )
 
     if not margin_up_to_date and margin_inputs:
@@ -119,7 +125,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 margin_stamp,
                 inputs=margin_inputs,
                 outputs=[margin_output],
-                config_sha=cfg.config_sha,
+                cfg=cfg,
+                stage="interseed_game_stats",
             )
 
     LOGGER.info(

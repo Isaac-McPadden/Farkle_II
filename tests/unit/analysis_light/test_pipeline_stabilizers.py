@@ -150,7 +150,7 @@ def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched
     # keep values stable across routine code cleanup.
     metrics_df = pq.read_table(metrics_path).to_pandas()
     stamp = json.loads(stamp_path.read_text())
-    expected_input = str(cfg_proto.curated_parquet)
+    expected_input = str(cfg_proto.curated_dataset)
     assert expected_input in stamp.get("inputs", {})
     for expected_output in (metrics_path, seat_csv, seat_parquet):
         assert str(expected_output) in stamp.get("outputs", {})

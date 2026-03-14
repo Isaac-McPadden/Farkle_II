@@ -10,6 +10,7 @@ from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import rng_diagnostics
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout
+from farkle.config import AppConfig, IOConfig, assign_config_sha
 from farkle.utils.types import Compression
 
 
@@ -418,73 +419,88 @@ def test_group_diagnostics_edge_cases_and_stamp_lifecycle(tmp_path):
     stamp_path = tmp_path / "stamp.json"
     input_path.write_text("input")
     output_path.write_text("output")
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    assign_config_sha(cfg)
+    stage_config_sha = rng_diagnostics._rng_stage_config_sha(cfg, (1, 2))
 
-    stamp = rng_diagnostics._stamp(input_path)
-    assert set(stamp) == {"mtime", "size"}
-    assert stamp["size"] == input_path.stat().st_size
+    rng_diagnostics.write_stage_done(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        config_sha=cfg.config_sha,
+        stage="rng_diagnostics",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
+    )
+    assert rng_diagnostics.stage_is_up_to_date(
+        stamp_path,
+        inputs=[input_path],
+        outputs=[output_path],
+        config_sha=cfg.config_sha,
+        stage="rng_diagnostics",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
+    )
 
-    rng_diagnostics._write_stamp(
+    assert not rng_diagnostics.stage_is_up_to_date(
         stamp_path,
         inputs=[input_path],
         outputs=[output_path],
-        lags=(1, 2),
-        config_sha="abc",
+        config_sha=cfg.config_sha,
+        stage="rng_diagnostics",
+        stage_config_sha=rng_diagnostics._rng_stage_config_sha(cfg, (2, 3)),
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
     )
-    assert rng_diagnostics._is_up_to_date(
+    assert not rng_diagnostics.stage_is_up_to_date(
         stamp_path,
         inputs=[input_path],
         outputs=[output_path],
-        lags=(1, 2),
-        config_sha="abc",
-    )
-
-    assert not rng_diagnostics._is_up_to_date(
-        stamp_path,
-        inputs=[input_path],
-        outputs=[output_path],
-        lags=(2, 3),
-        config_sha="abc",
-    )
-    assert not rng_diagnostics._is_up_to_date(
-        stamp_path,
-        inputs=[input_path],
-        outputs=[output_path],
-        lags=(1, 2),
         config_sha="def",
+        stage="rng_diagnostics",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
     )
 
     input_path.write_text("input-changed")
-    assert not rng_diagnostics._is_up_to_date(
+    assert not rng_diagnostics.stage_is_up_to_date(
         stamp_path,
         inputs=[input_path],
         outputs=[output_path],
-        lags=(1, 2),
-        config_sha="abc",
+        config_sha=cfg.config_sha,
+        stage="rng_diagnostics",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
     )
 
     input_path.write_text("input")
-    rng_diagnostics._write_stamp(
+    rng_diagnostics.write_stage_done(
         stamp_path,
         inputs=[input_path],
         outputs=[output_path],
-        lags=(1, 2),
-        config_sha="abc",
+        config_sha=cfg.config_sha,
+        stage="rng_diagnostics",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
     )
     output_path.unlink()
-    assert not rng_diagnostics._is_up_to_date(
+    assert not rng_diagnostics.stage_is_up_to_date(
         stamp_path,
         inputs=[input_path],
         outputs=[output_path],
-        lags=(1, 2),
-        config_sha="abc",
+        config_sha=cfg.config_sha,
+        stage="rng_diagnostics",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
     )
 
     output_path.write_text("output")
     stamp_path.write_text("not-json")
-    assert not rng_diagnostics._is_up_to_date(
+    assert not rng_diagnostics.stage_is_up_to_date(
         stamp_path,
         inputs=[input_path],
         outputs=[output_path],
-        lags=(1, 2),
-        config_sha="abc",
+        config_sha=cfg.config_sha,
+        stage="rng_diagnostics",
+        stage_config_sha=stage_config_sha,
+        cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
     )

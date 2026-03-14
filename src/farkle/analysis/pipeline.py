@@ -379,8 +379,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             "analysis_dir": str(analysis_dir),
         },
         run_end_metadata={"config_sha": config_sha},
-        stage_start_event="step_start",
-        stage_end_event="step_end",
         continue_on_error=True,
         use_progress=len(plan) > 1,
         progress_desc="pipeline",

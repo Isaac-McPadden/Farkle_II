@@ -12,12 +12,12 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Sequence
 
 from farkle.config import AppConfig, IOConfig, load_app_config
 from farkle.orchestration.seed_utils import prepare_seed_config, split_seeded_results_dir
+from farkle.utils.stage_completion import stage_is_up_to_date, write_stage_done
 from farkle.utils.writer import atomic_path
 
 __all__ = [
@@ -54,7 +54,12 @@ def fingerprint(paths: list[Path]) -> list[dict]:
 
     out: list[dict] = []
     for p in paths:
-        info: dict[str, object] = {"path": str(p), "mtime": p.stat().st_mtime}
+        info: dict[str, object] = {"path": str(p)}
+        if not p.exists():
+            info["missing"] = True
+            out.append(info)
+            continue
+        info["mtime"] = p.stat().st_mtime
         try:
             if p.is_file():
                 info["sha256"] = hashlib.sha256(p.read_bytes()).hexdigest()
@@ -67,28 +72,34 @@ def fingerprint(paths: list[Path]) -> list[dict]:
 def write_done(done_path: Path, inputs: list[Path], outputs: list[Path], tool: str) -> None:
     """Write a ``.done.json`` stamp for ``tool``."""
 
-    stamp = {
-        "inputs": fingerprint(inputs),
-        "outputs": [{"path": str(p)} for p in outputs],
-        "tool": tool,
-        "version": 1,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    done_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(done_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(stamp, indent=2, sort_keys=True))
+    fingerprint_payload = fingerprint(inputs)
+    digest = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    write_stage_done(
+        done_path,
+        inputs=inputs,
+        outputs=outputs,
+        stage=tool,
+        stage_config_sha=digest,
+        cache_key_version=2,
+    )
 
 
 def is_up_to_date(done_path: Path, inputs: list[Path], outputs: list[Path]) -> bool:
     """Return ``True`` if all *inputs* are older than ``done_path`` and outputs exist."""
 
-    if not done_path.exists():
-        return False
-    done_mtime = done_path.stat().st_mtime
-    for inp in inputs:
-        if not inp.exists() or inp.stat().st_mtime > done_mtime:
-            return False
-    return all(out.exists() for out in outputs)
+    fingerprint_payload = fingerprint(inputs)
+    digest = hashlib.sha256(
+        json.dumps(fingerprint_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return stage_is_up_to_date(
+        done_path,
+        inputs=inputs,
+        outputs=outputs,
+        stage_config_sha=digest,
+        cache_key_version=2,
+    )
 
 
 # ---------------------------------------------------------------------------

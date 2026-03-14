@@ -23,7 +23,6 @@ from scipy.stats import binomtest
 from farkle.analysis.stage_state import read_stage_done, stage_done_path, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
-from farkle.utils.manifest import append_manifest_line
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -366,7 +365,8 @@ def run_post_h2h(cfg: AppConfig) -> None:
             done_path,
             inputs=[upstream_done_path],
             outputs=[],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="post_h2h",
             status="skipped",
             reason=reason,
             blocking_dependency=str(upstream_done_path),
@@ -400,7 +400,8 @@ def run_post_h2h(cfg: AppConfig) -> None:
             done_path,
             inputs=[upstream_done_path],
             outputs=[],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="post_h2h",
             status="failed",
             reason=reason,
             blocking_dependency=str(pairwise_path),
@@ -523,7 +524,8 @@ def run_post_h2h(cfg: AppConfig) -> None:
             done_path,
             inputs=[pairwise_path],
             outputs=[decisions_path, graph_path, tiers_path, s_tiers_path],
-            config_sha=cfg.config_sha,
+            cfg=cfg,
+            stage="post_h2h",
             status=status,
             reason=reason,
             blocking_dependency=str(pairwise_path),
@@ -560,19 +562,6 @@ def run_post_h2h(cfg: AppConfig) -> None:
         },
     )
 
-    manifest_path = cfg.analysis_dir / cfg.manifest_name
-    append_manifest_line(
-        manifest_path,
-        {
-            "event": "post_h2h",
-            "decisions_path": str(decisions_path),
-            "graph_path": str(graph_path),
-            "tiers_path": str(tiers_path),
-            "s_tiers_path": str(s_tiers_path),
-            "tie_policy": tie_policy,
-            "tie_break_seed": tie_break_seed,
-        },
-    )
     outputs = [decisions_path, graph_path, tiers_path, s_tiers_path]
     if ranking_written:
         outputs.append(analysis_dir / "h2h_significant_ranking.csv")
@@ -588,7 +577,8 @@ def run_post_h2h(cfg: AppConfig) -> None:
         done_path,
         inputs=inputs,
         outputs=outputs,
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="post_h2h",
     )
 
 

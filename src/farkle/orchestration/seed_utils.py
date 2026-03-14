@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import dataclasses
 import json
 import re
@@ -67,6 +68,23 @@ def seed_has_completion_markers(cfg: AppConfig) -> bool:
     return all(runner.simulation_is_complete(cfg, n) for n in cfg.sim.n_players_list)
 
 
+def resolve_seed_pair_args(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+) -> tuple[int, int] | None:
+    """Resolve mutually exclusive seed-pair CLI arguments."""
+
+    if args.seed_pair and (args.seed_a is not None or args.seed_b is not None):
+        parser.error("Use --seed-pair or --seed-a/--seed-b, not both.")
+    if (args.seed_a is None) ^ (args.seed_b is None):
+        parser.error("--seed-a and --seed-b must be provided together.")
+    if args.seed_pair:
+        return (int(args.seed_pair[0]), int(args.seed_pair[1]))
+    if args.seed_a is not None and args.seed_b is not None:
+        return (int(args.seed_a), int(args.seed_b))
+    return None
+
+
 def write_active_config(cfg: AppConfig, dest_dir: Path | None = None) -> None:
     """Persist the resolved configuration alongside results."""
     target_dir = dest_dir or cfg.results_root
@@ -111,6 +129,7 @@ __all__ = [
     "base_results_dir",
     "prepare_seed_config",
     "resolve_results_dir",
+    "resolve_seed_pair_args",
     "seed_pair_meta_root",
     "seed_pair_root",
     "seed_pair_seed_root",

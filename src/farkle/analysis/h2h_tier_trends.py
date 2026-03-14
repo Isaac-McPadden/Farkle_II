@@ -67,7 +67,11 @@ def run(
     outputs = [output_path]
 
     if not force and stage_is_up_to_date(
-        done_path, inputs=inputs, outputs=outputs, config_sha=cfg.config_sha
+        done_path,
+        inputs=inputs,
+        outputs=outputs,
+        cfg=cfg,
+        stage="h2h_tier_trends",
     ):
         LOGGER.info(
             "H2H tier trend outputs up-to-date",
@@ -123,7 +127,7 @@ def run(
 
     table = pa.Table.from_pandas(output, preserve_index=False)
     write_parquet_atomic(table, output_path, codec=cfg.parquet_codec)
-    write_stage_done(done_path, inputs=inputs, outputs=outputs, config_sha=cfg.config_sha)
+    write_stage_done(done_path, inputs=inputs, outputs=outputs, cfg=cfg, stage="h2h_tier_trends")
 
 
 class MissingTierInputsError(ValueError):

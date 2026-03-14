@@ -39,7 +39,7 @@ to discover or create the appropriate directories.
 | `cfg.metrics_output_path()` | `farkle.analysis.metrics.run` | Columns include `strategy`, `n_players`, `games`, `wins`, `win_rate`, `se_win_rate`, `win_rate_ci_lo`, `win_rate_ci_hi`, `win_prob`, and expected-score aggregates【F:src/farkle/analysis/metrics.py†L33-L151】【F:src/farkle/analysis/metrics.py†L229-L298】 | One row per strategy (~8 160) | `farkle.analysis.run_hgb` merges metrics with ratings to build the feature matrix【F:src/farkle/analysis/run_hgb.py†L125-L189】 | Preferred pooled location; legacy reads still fall back to `analysis/metrics.parquet` when present. |
 | `cfg.metrics_output_path("seat_advantage.csv")` | `farkle.analysis.metrics.run` | Columns `seat`, `wins`, `games_with_seat`, `win_rate` written from a pandas DataFrame via `write_csv_atomic` | Fixed 12 rows (one per seat) | Readable summary for documentation; also referenced when tracking seat denominators | Text-friendly mirror of the Parquet summary.【F:src/farkle/analysis/metrics.py†L111-L125】 |
 | `cfg.metrics_output_path("seat_advantage.parquet")` | Same | Arrow schema `seat` (int32), `wins`/`games_with_seat` (int64), `win_rate` (float64) derived from the same DataFrame as the CSV | 12 rows | Programmatic consumers needing columnar access to seat summaries | Written with snappy compression alongside the CSV for consistency across tooling.【F:src/farkle/analysis/metrics.py†L111-L125】 |
-| `cfg.metrics_output_path("metrics.done.json")` | `farkle.analysis.metrics.run` | JSON stamp containing input/output mtimes and sizes for cache invalidation【F:src/farkle/analysis/metrics.py†L139-L152】【F:src/farkle/analysis/metrics.py†L314-L322】 | Tiny | Used only for freshness checks before recomputing metrics | Keep as-is; not a data product; legacy runs may still place it at `analysis/metrics.done.json`. |
+| `cfg.metrics_output_path("metrics.done.json")` | `farkle.analysis.metrics.run` via `farkle.utils.stage_completion.write_stage_done` | Stage done-stamp schema v2 with `schema_version`, `stage`, full-run `config_sha`, stage-local `stage_config_sha`, `cache_key_version`, `inputs`, `outputs`, and `status` | Tiny | Used for freshness checks before recomputing metrics | Cache validity is keyed to `stage_config_sha`, not the full config hash, so unrelated config edits do not force a metrics rerun. |
 | `cfg.stage_dir("coverage_by_k") / "coverage_by_k.parquet"` (and optional CSV) | `farkle.analysis.coverage_by_k.run` | Columns `seed`, `k`, `games` (strategy participations), `estimated_games` (`games / k`), `strategies`, expected/missing/padded strategy counts, and per-k rollups like `games_per_k`, `estimated_games_per_k`, `strategies_per_k`, `seeds_present`【F:src/farkle/analysis/coverage_by_k.py†L1-L191】 | One row per `(seed, k)` in the configured grid | Coverage dashboards, quick QA checks | CSV mirror is written when `analysis.outputs.coverage_by_k_csv` is enabled. |
 
 ### Analytics (TrueSkill, head-to-head, HGB)
@@ -63,8 +63,8 @@ to discover or create the appropriate directories.
 | Artifact pattern | Producer | Purpose | Notes |
 | --- | --- | --- | --- |
 | `analysis/config.resolved.yaml` | `farkle.analysis.pipeline.main` writes the fully resolved configuration | Provenance for analysis runs【F:src/farkle/analysis/pipeline.py†L44-L49】 | Keep YAML for readability. |
-| `analysis/manifest.json` | Same | Stores config SHA and run metadata for pipeline orchestration【F:src/farkle/analysis/pipeline.py†L50-L59】 | Append-only JSON manifest. |
-| `<artifact>.done.json` (e.g. `tiers.json.done.json`, `bonferroni_pairwise.parquet.done.json`, `hgb_importance.json.done.json`) | `farkle.orchestration.pipeline.write_done` stamps after each analytics step | Records input fingerprints and tool name to skip stale recomputation【F:src/farkle/orchestration/pipeline.py†L60-L157】 | Control metadata; not part of delivered datasets. |
+| `analysis/<manifest>.jsonl` and `two_seed_pipeline_manifest.jsonl` | `farkle.analysis.stage_runner.StageRunner` and `farkle.orchestration.two_seed_pipeline` | Append-only NDJSON manifest schema v2 with `schema_version`, `run_id`, `event`, `config_sha`, plus event-specific fields | Small relative to stage outputs | Audit trail, resumability diagnostics, health checks | Event names are snake_case only. If a pre-v2 manifest exists, the next run rotates it to a deterministic `.pre_v2` backup before writing v2 records. |
+| `<artifact>.done.json` (for example `metrics.done.json`, `tiers.json.done.json`, `bonferroni_pairwise.parquet.done.json`, `hgb_importance.json.done.json`) | Stage writers plus `farkle.orchestration.pipeline.write_done` | Stage done-stamp schema v2 with `schema_version`, `stage`, `config_sha`, `stage_config_sha`, `cache_key_version`, `inputs`, `outputs`, and `status` | Control metadata; not part of delivered datasets | Cache invalidation is stage-scoped: `stage_config_sha` decides freshness, while `config_sha` remains provenance for the enclosing run. |
 
 Optional stages (e.g., `*_game_stats` or `*_rng`) keep their numbered
 subdirectories reserved even when you skip them so downstream analytics can rely
@@ -82,6 +82,16 @@ on stable slot names in manifests and notebooks.
 | Small tabular or human-facing summaries | CSV, optionally mirrored to Parquet for programmatic parity (e.g., seat advantage)【F:src/farkle/analysis/metrics.py†L236-L245】 |
 | Append-only logs / indexes | NDJSON manifests written via `farkle.utils.manifest` (already used for shards and streaming writers). Consumers should resolve each manifest entry by joining the manifest directory with the stored `path` (e.g., `os.path.join(manifest_dir, entry["path"])`) so that relative entries remain stable across runs【F:src/farkle/simulation/run_tournament.py†L283-L305】【F:src/farkle/analysis/ingest.py†L247-L269】【F:src/farkle/utils/manifest.py†L1-L111】 |
 | Checkpoints for resumability | Pickle or JSON depending on payload (retain `_checkpoint.pkl`, `ratings_*.ckpt.json`, etc.) but treat them as transient, not the published dataset【F:src/farkle/simulation/run_tournament.py†L331-L345】【F:src/farkle/analysis/run_trueskill.py†L575-L650】 |
+
+## Manifest and done-stamp schemas
+
+- Manifest schema v2 is strict: use snake_case events only and include
+  `schema_version`, `run_id`, `event`, and `config_sha` on every orchestration
+  record.
+- Stage done-stamp schema v2 is also strict: pre-v2 stamps are treated as stale
+  and overwritten on the next normal run.
+- `config_sha` is run provenance. Stage cache reuse is controlled by
+  `stage_config_sha` plus `cache_key_version`.
 
 ## Recent updates
 

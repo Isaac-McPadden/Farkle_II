@@ -10,7 +10,7 @@ import yaml
 
 from farkle.analysis.stage_registry import StageLayout, resolve_stage_layout
 from farkle.config import AppConfig, IOConfig, assign_config_sha
-from farkle.orchestration import pipeline, run_contexts, seed_utils, two_seed, two_seed_pipeline
+from farkle.orchestration import pipeline, run_contexts, seed_utils, two_seed_pipeline
 
 
 @pytest.fixture
@@ -89,168 +89,10 @@ def test_prepare_seed_config_and_write_active_config(tmp_path: Path, base_cfg: A
     assert done_meta["config_sha"] == prepared.config_sha
 
 
-def test_two_seed_resolve_seed_pair_and_parser_validation() -> None:
-    parser = two_seed.build_parser()
-    args = parser.parse_args(["--seed-pair", "1", "2"])
-    assert two_seed._resolve_seed_pair(args, parser) == (1, 2)
-
-    args = parser.parse_args(["--seed-a", "4", "--seed-b", "5"])
-    assert two_seed._resolve_seed_pair(args, parser) == (4, 5)
-
-    with pytest.raises(SystemExit):
-        args = parser.parse_args(["--seed-a", "4"])
-        two_seed._resolve_seed_pair(args, parser)
-
-    with pytest.raises(SystemExit):
-        args = parser.parse_args(["--seed-a", "4", "--seed-b", "5", "--seed-pair", "1", "2"])
-        two_seed._resolve_seed_pair(args, parser)
-
-
-def test_two_seed_resolve_seed_pair_empty_args_returns_none() -> None:
-    parser = two_seed.build_parser()
-    args = parser.parse_args([])
-    assert two_seed._resolve_seed_pair(args, parser) is None
-
-
-def test_two_seed_build_parser_defaults() -> None:
-    parser = two_seed.build_parser()
-    args = parser.parse_args([])
-    assert args.config == Path("configs/fast_config.yaml")
-    assert args.force is False
-    assert args.overrides == []
-
-
-def test_two_seed_main_wiring(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    cfg.sim.seed_pair = (10, 20)
-
-    called: dict[str, Any] = {}
-
-    monkeypatch.setattr(two_seed, "setup_info_logging", lambda: called.setdefault("logging", True))
-    monkeypatch.setattr(two_seed, "load_app_config", lambda path, seed_list_len=0: cfg)
-    monkeypatch.setattr(two_seed, "apply_dot_overrides", lambda c, overrides: c)
-
-    def fake_run_seeds(run_cfg: AppConfig, *, seed_pair: tuple[int, int], force: bool) -> None:
-        called["seed_pair"] = seed_pair
-        called["force"] = force
-        called["cfg"] = run_cfg
-
-    monkeypatch.setattr(two_seed, "run_seeds", fake_run_seeds)
-
-    rc = two_seed.main(["--seed-a", "7", "--seed-b", "8", "--force"])
-    assert rc == 0
-    assert called["logging"] is True
-    assert called["seed_pair"] == (7, 8)
-    assert called["force"] is True
-
-
-@pytest.mark.parametrize(
-    ("force", "markers", "expected_runs", "expected_marker_checks"),
-    [
-        (False, {3: True, 4: True}, [], [3, 4]),
-        (False, {3: False, 4: False}, [3, 4], [3, 4]),
-        (True, {3: True, 4: True}, [3, 4], []),
-    ],
-)
-def test_two_seed_run_seeds_skip_normal_and_forced(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-    force: bool,
-    markers: dict[int, bool],
-    expected_runs: list[int],
-    expected_marker_checks: list[int],
-) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    seed_pair = (3, 4)
-
-    call_log: dict[str, list[Any]] = {
-        "seed_pair_seed_root": [],
-        "prepare_seed_config": [],
-        "marker_checks": [],
-        "write_active_config": [],
-        "run_tournament": [],
-    }
-
-    def fake_seed_pair_seed_root(_cfg: AppConfig, pair: tuple[int, int], seed: int) -> Path:
-        call_log["seed_pair_seed_root"].append((pair, seed))
-        return tmp_path / f"seed_{seed}"
-
-    def fake_prepare_seed_config(
-        _cfg: AppConfig,
-        *,
-        seed: int,
-        base_results_dir: Path,
-        meta_analysis_dir: Path | None = None,
-    ) -> AppConfig:
-        del meta_analysis_dir
-        call_log["prepare_seed_config"].append((seed, base_results_dir))
-        seed_cfg = AppConfig(io=IOConfig(results_dir_prefix=base_results_dir))
-        seed_cfg.sim.seed = seed
-        return seed_cfg
-
-    def fake_seed_has_completion_markers(seed_cfg: AppConfig) -> bool:
-        seed = seed_cfg.sim.seed
-        assert seed is not None
-        call_log["marker_checks"].append(seed)
-        return markers[seed]
-
-    def fake_write_active_config(seed_cfg: AppConfig) -> None:
-        call_log["write_active_config"].append(seed_cfg.sim.seed)
-
-    def fake_run_tournament(seed_cfg: AppConfig, *, force: bool = False) -> None:
-        call_log["run_tournament"].append((seed_cfg.sim.seed, force))
-
-    monkeypatch.setattr(two_seed, "seed_pair_seed_root", fake_seed_pair_seed_root)
-    monkeypatch.setattr(two_seed, "prepare_seed_config", fake_prepare_seed_config)
-    monkeypatch.setattr(two_seed, "seed_has_completion_markers", fake_seed_has_completion_markers)
-    monkeypatch.setattr(two_seed, "write_active_config", fake_write_active_config)
-    monkeypatch.setattr(two_seed.runner, "run_tournament", fake_run_tournament)
-
-    two_seed.run_seeds(cfg, seed_pair=seed_pair, force=force)
-
-    assert call_log["seed_pair_seed_root"] == [((3, 4), 3), ((3, 4), 4)]
-    assert [seed for seed, _ in call_log["prepare_seed_config"]] == [3, 4]
-    assert call_log["marker_checks"] == expected_marker_checks
-    assert call_log["write_active_config"] == expected_runs
-    assert call_log["run_tournament"] == [(seed, force) for seed in expected_runs]
-
-
-def test_two_seed_main_uses_populated_seed_pair_when_no_cli_seed_override(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-
-    called: dict[str, Any] = {}
-
-    def fake_populate_seed_list(count: int) -> list[int]:
-        called["populate_count"] = count
-        return [101, 202]
-
-    monkeypatch.setattr(cfg.sim, "populate_seed_list", fake_populate_seed_list)
-    monkeypatch.setattr(two_seed, "setup_info_logging", lambda: called.setdefault("logging", True))
-    monkeypatch.setattr(two_seed, "load_app_config", lambda path, seed_list_len=0: cfg)
-    monkeypatch.setattr(two_seed, "apply_dot_overrides", lambda c, overrides: c)
-
-    def fake_run_seeds(run_cfg: AppConfig, *, seed_pair: tuple[int, int], force: bool) -> None:
-        called["cfg"] = run_cfg
-        called["seed_pair"] = seed_pair
-        called["force"] = force
-
-    monkeypatch.setattr(two_seed, "run_seeds", fake_run_seeds)
-
-    rc = two_seed.main([])
-    assert rc == 0
-    assert called["logging"] is True
-    assert called["populate_count"] == 2
-    assert called["cfg"] is cfg
-    assert called["seed_pair"] == (101, 202)
-    assert called["force"] is False
-
-
 def test_two_seed_pipeline_helpers(base_cfg: AppConfig, tmp_path: Path) -> None:
     parser = two_seed_pipeline.build_parser()
     args = parser.parse_args(["--seed-pair", "13", "14", "--parallel-seeds"])
-    assert two_seed_pipeline._resolve_seed_pair(args, parser) == (13, 14)
+    assert seed_utils.resolve_seed_pair_args(args, parser) == (13, 14)
     assert args.parallel_seeds is True
 
     pair_root = tmp_path / "pair"
@@ -264,30 +106,19 @@ def test_two_seed_pipeline_helpers(base_cfg: AppConfig, tmp_path: Path) -> None:
 def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     captured: dict[str, Any] = {}
-    delegated: list[tuple[AppConfig, Path]] = []
 
     def fake_run(plan: list[Any], context: Any, raise_on_failure: bool) -> None:
         captured["plan_names"] = [item.name for item in plan]
         captured["run_label"] = context.run_label
         captured["manifest_path"] = context.manifest_path
         captured["raise_on_failure"] = raise_on_failure
-        for item in plan:
-            if item.name == "single_seed_analysis":
-                item.action(context.config)
 
     monkeypatch.setattr(two_seed_pipeline.StageRunner, "run", staticmethod(fake_run))
-    monkeypatch.setattr(
-        two_seed_pipeline.analysis,
-        "run_single_seed_analysis",
-        lambda app_cfg, *, manifest_path: delegated.append((app_cfg, manifest_path)),
-    )
-
-    manifest_path = tmp_path / "manifest.jsonl"
     policy_bundle = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=1)
     two_seed_pipeline._run_per_seed_analysis(
         cfg,
-        manifest_path=manifest_path,
         seed=9,
+        force=False,
         policy_bundle=policy_bundle,
     )
     assert captured["plan_names"] == [
@@ -297,13 +128,18 @@ def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPa
         "metrics",
         "coverage_by_k",
         "game_stats",
-        "single_seed_analysis",
+        "seed_summaries",
+        "trueskill",
+        "tiering",
+        "head2head",
+        "seed_symmetry",
+        "post_h2h",
+        "hgb",
     ]
     assert captured["plan_names"].index("coverage_by_k") < captured["plan_names"].index("game_stats")
     assert captured["run_label"] == "per_seed_pipeline_9"
     assert captured["manifest_path"] == cfg.analysis_dir / cfg.manifest_name
     assert captured["raise_on_failure"] is True
-    assert delegated == [(cfg, cfg.analysis_dir / cfg.manifest_name)]
 
 
 def test_run_per_seed_analysis_writes_per_seed_manifest_and_health_inputs_independent_of_pair_manifest(
@@ -313,27 +149,32 @@ def test_run_per_seed_analysis_writes_per_seed_manifest_and_health_inputs_indepe
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     pair_manifest_path = tmp_path / "pair" / "two_seed_pipeline_manifest.jsonl"
     policy_bundle = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=1)
+    assign_config_sha(cfg)
 
-    for module in (
-        two_seed_pipeline.ingest,
-        two_seed_pipeline.curate,
-        two_seed_pipeline.combine,
-        two_seed_pipeline.metrics,
-        two_seed_pipeline.coverage_by_k,
-        two_seed_pipeline.game_stats,
-    ):
-        monkeypatch.setattr(module, "run", lambda _cfg: None)
-    monkeypatch.setattr(
-        two_seed_pipeline.analysis,
-        "run_single_seed_analysis",
-        lambda _cfg, *, manifest_path: None,
-    )
+    def fake_run(_plan: list[Any], context: Any, raise_on_failure: bool) -> None:
+        del raise_on_failure
+        context.manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        context.manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "run_id": "test_run",
+                    "event": "run_start",
+                    "config_sha": cfg.config_sha,
+                    "run": context.run_label,
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(two_seed_pipeline.StageRunner, "run", staticmethod(fake_run))
 
     seed = 123
     two_seed_pipeline._run_per_seed_analysis(
         cfg,
-        manifest_path=pair_manifest_path,
         seed=seed,
+        force=False,
         policy_bundle=policy_bundle,
     )
 
@@ -368,11 +209,12 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda seed_cfg, force=False: sim_calls.append(seed_cfg.sim.seed))
     def _fake_per_seed(
         seed_cfg: AppConfig,
-        manifest_path: Path,
+        *,
         seed: int,
+        force: bool = False,
         policy_bundle: object | None = None,
     ) -> None:
-        del manifest_path
+        del force, policy_bundle
         per_seed_calls.append(seed)
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
@@ -385,7 +227,11 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         (seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json").write_text("{}")
 
     monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", _fake_per_seed)
-    monkeypatch.setattr(two_seed_pipeline, "append_manifest_line", lambda _path, rec: manifest_events.append(rec["event"]))
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "append_manifest_event",
+        lambda _path, rec, **_kwargs: manifest_events.append(rec["event"]),
+    )
 
     interseed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "interseed"))
     interseed_cfg.config_sha = cfg.config_sha
@@ -463,12 +309,13 @@ def test_two_seed_pipeline_parallel_seed_smoke_equivalence(
         monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
 
         def _fake_per_seed(
-        seed_cfg: AppConfig,
-        manifest_path: Path,
-        seed: int,
-        policy_bundle: object | None = None,
-    ) -> None:
-            del manifest_path
+            seed_cfg: AppConfig,
+            *,
+            seed: int,
+            force: bool = False,
+            policy_bundle: object | None = None,
+        ) -> None:
+            del force, policy_bundle
             seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
             seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
             (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
@@ -534,7 +381,7 @@ def test_two_seed_pipeline_parallel_seed_smoke_equivalence(
         for line in (seed_utils.seed_pair_root(cfg=AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "sequential" / "results")), seed_pair=(7, 8)) / "two_seed_pipeline_manifest.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    stage_end_records = [record for record in manifest_records if record.get("event") == "stage-end"]
+    stage_end_records = [record for record in manifest_records if record.get("event") == "stage_end"]
     assert stage_end_records
     assert all(record.get("status") != "missing" for record in stage_end_records)
 
@@ -576,11 +423,12 @@ def test_two_seed_pipeline_head2head_failure_chain_integration_fixture(
 
     def _failing_per_seed(
         seed_cfg: AppConfig,
-        manifest_path: Path,
+        *,
         seed: int,
+        force: bool = False,
         policy_bundle: object | None = None,
     ) -> None:
-        del manifest_path
+        del force, policy_bundle
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
             json.dumps({"event": "run_end"}) + "\n",
@@ -631,11 +479,12 @@ def test_two_seed_pipeline_blocks_stale_post_h2h_outputs_after_analysis_failure(
 
     def _stale_post_h2h_then_fail(
         seed_cfg: AppConfig,
-        manifest_path: Path,
+        *,
         seed: int,
+        force: bool = False,
         policy_bundle: object | None = None,
     ) -> None:
-        del manifest_path, policy_bundle
+        del force, policy_bundle
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
             json.dumps({"event": "run_end"}) + "\n",
@@ -752,11 +601,12 @@ def test_two_seed_pipeline_emits_consistent_config_sha_metadata(
 
     def _fake_per_seed(
         seed_cfg: AppConfig,
-        manifest_path: Path,
+        *,
         seed: int,
+        force: bool = False,
         policy_bundle: object | None = None,
     ) -> None:
-        del manifest_path, seed
+        del force, policy_bundle, seed
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "manifest.jsonl").write_text('{"ok": true}\n', encoding="utf-8")
         seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
@@ -793,7 +643,11 @@ def test_two_seed_pipeline_emits_consistent_config_sha_metadata(
         for line in (pair_root / "two_seed_pipeline_manifest.jsonl").read_text(encoding="utf-8").splitlines()
         if line.strip()
     ]
-    required_events = [rec for rec in manifest_records if rec.get("event") in {"run_start", "run_end", "seed_start", "stage-end"}]
+    required_events = [
+        rec
+        for rec in manifest_records
+        if rec.get("event") in {"run_start", "run_end", "seed_start", "stage_end"}
+    ]
     assert required_events
     with_sha = [rec for rec in required_events if "config_sha" in rec]
     assert with_sha
@@ -836,7 +690,7 @@ def test_two_seed_pipeline_ignores_prior_manifest_sha_history(
                 ),
                 json.dumps(
                     {
-                        "event": "stage-end",
+                        "event": "stage_end",
                         "stage": "seed_31.analysis",
                         "status": "missing",
                         "config_sha": "stale_sha",
@@ -854,11 +708,12 @@ def test_two_seed_pipeline_ignores_prior_manifest_sha_history(
 
     def _fake_per_seed(
         seed_cfg: AppConfig,
-        manifest_path: Path,
+        *,
         seed: int,
+        force: bool = False,
         policy_bundle: object | None = None,
     ) -> None:
-        del manifest_path, seed
+        del force, policy_bundle, seed
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "manifest.jsonl").write_text('{"ok": true}\n', encoding="utf-8")
         seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
@@ -940,23 +795,31 @@ def test_two_seed_pipeline_worker_budget_and_artifact_validation(
     assert bundle.analysis.process_workers == 8
 
     missing = tmp_path / "missing.json"
-    assert two_seed_pipeline._is_valid_artifact(missing) == (False, "missing")
+    assert two_seed_pipeline._validate_artifact(missing) == (False, "missing", "missing")
 
     empty = tmp_path / "empty.bin"
     empty.touch()
-    assert two_seed_pipeline._is_valid_artifact(empty) == (False, "empty")
+    assert two_seed_pipeline._validate_artifact(empty) == (False, "empty", "empty")
 
     empty_jsonl = tmp_path / "empty.jsonl"
     empty_jsonl.write_text("\n \n", encoding="utf-8")
-    assert two_seed_pipeline._is_valid_artifact(empty_jsonl) == (False, "empty jsonl")
+    assert two_seed_pipeline._validate_artifact(empty_jsonl) == (
+        False,
+        "empty jsonl",
+        "empty",
+    )
 
     bad_json = tmp_path / "bad.json"
     bad_json.write_text("{not-json", encoding="utf-8")
-    assert two_seed_pipeline._is_valid_artifact(bad_json) == (False, "unparseable metadata")
+    assert two_seed_pipeline._validate_artifact(bad_json) == (
+        False,
+        "invalid json",
+        "invalid_json",
+    )
 
     valid_jsonl = tmp_path / "ok.jsonl"
     valid_jsonl.write_text("\n \n{\"ok\": true}\n", encoding="utf-8")
-    assert two_seed_pipeline._is_valid_artifact(valid_jsonl) == (True, None)
+    assert two_seed_pipeline._validate_artifact(valid_jsonl) == (True, None, None)
 
 
 def test_two_seed_pipeline_validate_required_config_sha_outputs_collects_errors(
@@ -969,8 +832,9 @@ def test_two_seed_pipeline_validate_required_config_sha_outputs_collects_errors(
                 "",
                 "not-json",
                 "[]",
-                json.dumps({"event": "run_start", "config_sha": "wrong"}),
-                json.dumps({"event": "stage-end", "config_sha": "wrong"}),
+                json.dumps({"schema_version": 2, "run_id": "current", "event": "run_start", "config_sha": "wrong"}),
+                json.dumps({"schema_version": 2, "run_id": "current", "event": "stage_end", "config_sha": "wrong"}),
+                json.dumps({"schema_version": 2, "run_id": "prior", "event": "run_end", "config_sha": "stale"}),
             ]
         )
         + "\n",
@@ -990,13 +854,14 @@ def test_two_seed_pipeline_validate_required_config_sha_outputs_collects_errors(
     errors = two_seed_pipeline._validate_required_config_sha_outputs(
         expected_sha="expected",
         manifest_path=manifest_path,
+        run_id="current",
         seed_contexts=seed_contexts,
         interseed_cfg=interseed_cfg,
     )
 
     assert any("invalid metadata" in err and "manifest.jsonl" in err for err in errors)
     assert any(err == "manifest event run_start has config_sha='wrong'" for err in errors)
-    assert any(err == "manifest event stage-end has config_sha='wrong'" for err in errors)
+    assert any(err == "manifest event stage_end has config_sha='wrong'" for err in errors)
     assert any("missing metadata" in err and "seed_a_active.done.json" in err for err in errors)
     assert any("invalid metadata" in err and "seed_b_active.done.json" in err for err in errors)
 
@@ -1006,11 +871,11 @@ def test_two_seed_pipeline_resolve_seed_pair_validation_errors() -> None:
 
     with pytest.raises(SystemExit):
         args = parser.parse_args(["--seed-a", "9"])
-        two_seed_pipeline._resolve_seed_pair(args, parser)
+        seed_utils.resolve_seed_pair_args(args, parser)
 
     with pytest.raises(SystemExit):
         args = parser.parse_args(["--seed-a", "1", "--seed-b", "2", "--seed-pair", "3", "4"])
-        two_seed_pipeline._resolve_seed_pair(args, parser)
+        seed_utils.resolve_seed_pair_args(args, parser)
 
 
 def test_two_seed_pipeline_main_without_cli_seed_override(
@@ -1049,17 +914,22 @@ def test_two_seed_pipeline_records_interseed_and_h2h_failures(
     cfg.sim.seed_pair = (13, 14)
 
     manifest_events: list[str] = []
-    monkeypatch.setattr(two_seed_pipeline, "append_manifest_line", lambda _path, rec: manifest_events.append(rec["event"]))
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "append_manifest_event",
+        lambda _path, rec, **_kwargs: manifest_events.append(rec["event"]),
+    )
     monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
     monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", lambda *_args, **_kwargs: None)
 
     def _fake_per_seed(
         seed_cfg: AppConfig,
-        manifest_path: Path,
+        *,
         seed: int,
+        force: bool = False,
         policy_bundle: object | None = None,
     ) -> None:
-        del manifest_path, seed
+        del force, policy_bundle, seed
         seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
         (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
             json.dumps({"event": "run_end"}) + "\n",

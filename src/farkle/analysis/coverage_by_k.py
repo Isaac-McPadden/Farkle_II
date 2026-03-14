@@ -118,7 +118,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         done_path,
         inputs=coverage_inputs,
         outputs=outputs,
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="coverage_by_k",
     ):
         LOGGER.info(
             "Coverage-by-k outputs up-to-date",
@@ -140,7 +141,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         done_path,
         inputs=coverage_inputs,
         outputs=outputs,
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="coverage_by_k",
     )
 
     _log_imbalance_warnings(coverage)
@@ -183,12 +185,13 @@ def _build_coverage(
     cfg: AppConfig,
     metrics_path: Path,
     coverage_inputs: Iterable[Path],
-    policy: StageParallelPolicy,
+    policy: StageParallelPolicy | None = None,
 ) -> pd.DataFrame:
+    arrow_threads = policy.arrow_threads if policy is not None else 1
     counts = _stream_metrics_counts(
         metrics_path,
         default_seed=to_int(cfg.sim.seed),
-        arrow_threads=policy.arrow_threads,
+        arrow_threads=arrow_threads,
     )
     k_grid = _player_counts_from_config(cfg)
     if not k_grid:
@@ -252,7 +255,12 @@ def _build_coverage(
     return counts[ordered + remaining].sort_values(["k", "seed"]).reset_index(drop=True)
 
 
-def _stream_metrics_counts(metrics_path: Path, *, default_seed: int, arrow_threads: int) -> pd.DataFrame:
+def _stream_metrics_counts(
+    metrics_path: Path,
+    *,
+    default_seed: int,
+    arrow_threads: int = 1,
+) -> pd.DataFrame:
     dataset = ds.dataset(metrics_path, format="parquet")
     schema_names = set(dataset.schema.names)
 

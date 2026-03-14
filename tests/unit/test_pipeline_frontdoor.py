@@ -86,6 +86,9 @@ def test_is_up_to_date_missing_stale_and_valid_states(
     if output_exists:
         out.write_text("output")
 
+    if input_exists and output_exists:
+        write_done(done_path, [inp], [out], "tool")
+
     assert is_up_to_date(done_path, [inp], [out]) is expected
 
 
@@ -98,10 +101,12 @@ def test_write_done_serializes_expected_payload(tmp_path: Path) -> None:
 
     write_done(done_path, inputs, outputs, "toolname")
     stamp = json.loads(done_path.read_text())
-    assert stamp["tool"] == "toolname"
-    assert stamp["inputs"][0]["path"] == str(inputs[0])
-    assert stamp["inputs"][0]["sha256"] == hashlib.sha256(b"in").hexdigest()
-    assert stamp["outputs"] == [{"path": str(outputs[0])}]
+    assert stamp["stage"] == "toolname"
+    assert stamp["inputs"] == [str(inputs[0])]
+    assert stamp["outputs"] == [str(outputs[0])]
+    assert stamp["stage_config_sha"] == hashlib.sha256(
+        json.dumps(fingerprint(inputs), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 def test_fingerprint_changes_with_content_hash(tmp_path: Path) -> None:

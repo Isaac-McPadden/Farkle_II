@@ -85,7 +85,7 @@ def test_interseed_run_uses_upstream_combine_and_writes_pooled_outputs(tmp_path,
 
     trueskill.run(cfg)
 
-    pooled_dir = cfg.analysis_dir / "03_trueskill" / "pooled"
+    pooled_dir = cfg.trueskill_pooled_dir
     assert (pooled_dir / "ratings_long.parquet").exists()
     assert (pooled_dir / "ratings_k_weighted.parquet").exists()
 

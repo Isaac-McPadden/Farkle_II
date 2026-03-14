@@ -150,7 +150,7 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
     # necessary. Accept any of those equivalents to avoid sensitivity to the
     # runner's working directory.
     expected_path = os.path.relpath(os.fspath(out_path), start=os.fspath(Path(manifest_path).parent))
-    assert manifest_record["path"] == expected_path
+    assert Path(manifest_record["path"]) == Path(expected_path)
     assert manifest_record["rows"] == sum(tbl.num_rows for tbl in tables)
     for key, value in run_extra.items():
         assert manifest_record[key] == value

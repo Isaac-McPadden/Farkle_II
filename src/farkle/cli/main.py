@@ -6,12 +6,9 @@ See ../../../cli_args.md for details.
 from __future__ import annotations
 
 import argparse
-import json
 import logging
 from pathlib import Path
 from typing import Sequence
-
-import yaml  # type: ignore[import-untyped]
 
 from farkle import analysis as analysis_pkg
 from farkle.analysis import combine, curate, ingest, metrics
@@ -19,17 +16,19 @@ from farkle.config import (
     AppConfig,
     apply_dot_overrides,
     assign_config_sha,
-    effective_config_dict,
     expected_seed_list_length,
     load_app_config,
 )
 from farkle.orchestration import two_seed_pipeline
-from farkle.orchestration.seed_utils import seed_pair_root
+from farkle.orchestration.seed_utils import (
+    resolve_seed_pair_args,
+    seed_pair_root,
+    write_active_config,
+)
 from farkle.simulation import runner
 from farkle.simulation.time_farkle import measure_sim_times
 from farkle.simulation.watch_game import watch_game
 from farkle.utils.logging import configure_logging, setup_info_logging
-from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -256,19 +255,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Allow analytics stages to skip when mandatory upstream artifacts are missing (manual debugging only)",
     )
-    two_seed_parser = analyze_sub.add_parser(
-        "two-seed-pipeline",
-        help=(
-            "Deprecated: use the top-level `two-seed-pipeline` command for the "
-            "two-seed simulation and analysis orchestration pipeline"
-        ),
-    )
-    two_seed_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Recompute even when completion markers exist",
-    )
-
     # two-seed-pipeline (top-level)
     two_seed_top = sub.add_parser(
         "two-seed-pipeline",
@@ -295,35 +281,6 @@ def _parse_level(level: str | int) -> int:
     return int(level)
 
 
-def _resolve_seed_pair(
-    args: argparse.Namespace, parser: argparse.ArgumentParser
-) -> tuple[int, int] | None:
-    if args.seed_pair and (args.seed_a is not None or args.seed_b is not None):
-        parser.error("Use --seed-pair or --seed-a/--seed-b, not both.")
-    if (args.seed_a is None) ^ (args.seed_b is None):
-        parser.error("--seed-a and --seed-b must be provided together.")
-    if args.seed_pair:
-        return (int(args.seed_pair[0]), int(args.seed_pair[1]))
-    if args.seed_a is not None and args.seed_b is not None:
-        return (int(args.seed_a), int(args.seed_b))
-    return None
-
-
-def _write_active_config(cfg: AppConfig, dest_dir: Path) -> None:
-    """Persist the resolved configuration alongside simulation results."""
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    resolved_dict = effective_config_dict(cfg)
-    resolved_yaml = yaml.safe_dump(resolved_dict, sort_keys=True)
-    target = dest_dir / "active_config.yaml"
-    with atomic_path(str(target)) as tmp_path:
-        Path(tmp_path).write_text(resolved_yaml, encoding="utf-8")
-
-    done_payload = {"active_config": str(target), "config_sha": cfg.config_sha}
-    done_path = target.with_suffix(".done.json")
-    with atomic_path(str(done_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(done_payload, indent=2, sort_keys=True), encoding="utf-8")
-
-
 def _run_preprocess(
     cfg: AppConfig,
     *,
@@ -347,7 +304,7 @@ def _resolve_log_file(args: argparse.Namespace, cfg: AppConfig | None) -> Path |
 
     command = getattr(args, "command", None)
     an_cmd = getattr(args, "an_cmd", None)
-    if command == "two-seed-pipeline" or (command == "analyze" and an_cmd == "two-seed-pipeline"):
+    if command == "two-seed-pipeline":
         seed_pair = cfg.sim.require_seed_pair()
         return seed_pair_root(cfg, seed_pair) / "log.txt"
     if command in {"run", "analyze"}:
@@ -359,7 +316,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for the ``farkle`` CLI dispatcher."""
     parser = build_parser()
     args, _ = parser.parse_known_args(argv)
-    seed_pair_override = _resolve_seed_pair(args, parser)
+    seed_pair_override = resolve_seed_pair_args(args, parser)
     expected_seed_len = expected_seed_list_length(
         args.command, subcommand=getattr(args, "an_cmd", None)
     )
@@ -440,7 +397,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             cfg.sim.expanded_metrics = True
         if args.row_dir is not None:
             cfg.sim.row_dir = args.row_dir
-        _write_active_config(cfg, cfg.results_root)
+        write_active_config(cfg, cfg.results_root)
         resume_run = not args.force
         LOGGER.info(
             "Dispatching run command",
@@ -518,18 +475,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             )
         elif args.an_cmd == "variance":
             analysis_pkg.run_variance(cfg, force=getattr(args, "force", False))
-        elif args.an_cmd == "two-seed-pipeline":
-            LOGGER.warning(
-                "Analyze subcommand `two-seed-pipeline` is deprecated; "
-                "use `farkle two-seed-pipeline` instead.",
-                extra={"stage": "cli", "command": "analyze:two-seed-pipeline"},
-            )
-            seed_pair = cfg.sim.require_seed_pair()
-            two_seed_pipeline.run_pipeline(
-                cfg,
-                seed_pair=seed_pair,
-                force=getattr(args, "force", False),
-            )
         elif args.an_cmd == "pipeline":
             _run_preprocess(
                 cfg,

@@ -189,7 +189,8 @@ def run(cfg: AppConfig) -> None:
         done,
         inputs=raw_files if raw_files else curated_files,
         outputs=[*curated_files, *manifests],
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="curate",
     ):
         LOGGER.info(
             "Curate up-to-date",
@@ -250,7 +251,8 @@ def run(cfg: AppConfig) -> None:
             done,
             inputs=raw_files if raw_files else curated_files,
             outputs=[*curated_files, *manifests],
-            config_sha=getattr(cfg, "config_sha", None),
+            cfg=cfg,
+            stage="curate",
         )
         return
 

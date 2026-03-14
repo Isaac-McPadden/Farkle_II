@@ -789,7 +789,7 @@ def test_normalize_compression_rejects_invalid_codec() -> None:
 @pytest.mark.parametrize(
     ("command", "subcommand", "expected"),
     [
-        ("analyze", "two-seed-pipeline", 2),
+        ("two-seed-pipeline", None, 2),
         ("run", None, 1),
         ("unknown", None, None),
     ],

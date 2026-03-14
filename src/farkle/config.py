@@ -85,8 +85,6 @@ SEED_LIST_LENGTHS_BY_COMMAND: dict[str, int] = {
 
 def expected_seed_list_length(command: str, *, subcommand: str | None = None) -> int | None:
     """Return the expected seed-list length for a CLI command."""
-    if command == "analyze" and subcommand == "two-seed-pipeline":
-        return 2
     return SEED_LIST_LENGTHS_BY_COMMAND.get(command)
 
 
@@ -465,6 +463,23 @@ class AppConfig:
 
             self._stage_layout = resolve_stage_layout(self)
         return self._stage_layout
+
+    def stage_cache_key_version(self, stage_key: str) -> int:
+        """Return the cache schema version for ``stage_key``."""
+
+        from farkle.analysis.stage_registry import resolve_stage_definition
+
+        return int(resolve_stage_definition(stage_key).cache_key_version)
+
+    def stage_config_sha(self, stage_key: str) -> str:
+        """Return the stage-scoped cache hash for ``stage_key``."""
+
+        return compute_stage_config_sha(self, stage_key)
+
+    def stage_cache_meta(self, stage_key: str) -> tuple[str, int]:
+        """Return ``(stage_config_sha, cache_key_version)`` for ``stage_key``."""
+
+        return (self.stage_config_sha(stage_key), self.stage_cache_key_version(stage_key))
 
     def set_stage_layout(self, layout: "StageLayout") -> None:
         """Override the resolved stage layout (used by CLI orchestration)."""
@@ -1907,11 +1922,64 @@ def effective_config_dict(cfg: AppConfig) -> dict[str, Any]:
     return resolved
 
 
+def _assign_nested_path(target: MutableMapping[str, Any], path: str, value: Any) -> None:
+    parts = path.split(".")
+    cursor = target
+    for part in parts[:-1]:
+        existing = cursor.get(part)
+        if not isinstance(existing, MutableMapping):
+            existing = {}
+            cursor[part] = existing
+        cursor = existing
+    cursor[parts[-1]] = value
+
+
+def _extract_scope_value(payload: Mapping[str, Any], path: str) -> tuple[bool, Any]:
+    cursor: Any = payload
+    for part in path.split("."):
+        if not isinstance(cursor, Mapping) or part not in cursor:
+            return False, None
+        cursor = cursor[part]
+    return True, cursor
+
+
+def _project_effective_config(payload: Mapping[str, Any], scope_paths: Sequence[str]) -> dict[str, Any]:
+    projected: dict[str, Any] = {}
+    for path in scope_paths:
+        present, value = _extract_scope_value(payload, path)
+        if present:
+            _assign_nested_path(projected, path, value)
+    return projected
+
+
 def compute_config_sha(cfg: AppConfig) -> str:
     """Return a deterministic sha256 over the effective configuration payload."""
 
     canonical_json = json.dumps(
         effective_config_dict(cfg),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
+    return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
+
+
+def compute_stage_config_sha(cfg: AppConfig, stage_key: str) -> str:
+    """Return a deterministic cache hash for ``stage_key`` based on its config scope."""
+
+    from farkle.analysis.stage_registry import resolve_stage_definition
+
+    definition = resolve_stage_definition(stage_key)
+    stage_scope = _project_effective_config(
+        effective_config_dict(cfg),
+        definition.cache_scope,
+    )
+    canonical_json = json.dumps(
+        {
+            "stage": stage_key,
+            "cache_key_version": definition.cache_key_version,
+            "config": stage_scope,
+        },
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -1942,6 +2010,7 @@ __all__ = [
     "load_app_config",
     "apply_dot_overrides",
     "assign_config_sha",
+    "compute_stage_config_sha",
     "compute_config_sha",
     "effective_config_dict",
 ]

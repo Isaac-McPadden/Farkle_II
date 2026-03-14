@@ -43,7 +43,7 @@ def test_run_no_longer_invokes_symmetry_branch(tmp_path, monkeypatch):
 
     monkeypatch.setattr(metrics, "check_pre_metrics", lambda *_args, **_kwargs: None)
 
-    def _record_stage_check(done_path: Path, *, inputs, outputs, config_sha=None):  # noqa: ANN001
+    def _record_stage_check(done_path: Path, *, inputs, outputs, **kwargs):  # noqa: ANN001
         up_to_date_calls.append((done_path, list(inputs), list(outputs)))
         return False
 
@@ -104,7 +104,7 @@ def test_run_no_longer_invokes_symmetry_branch(tmp_path, monkeypatch):
     monkeypatch.setattr(
         metrics,
         "write_stage_done",
-        lambda path, *, inputs, outputs, config_sha=None: done_calls.append(
+        lambda path, *, inputs, outputs, **kwargs: done_calls.append(
             (path, list(inputs), list(outputs))
         ),
     )

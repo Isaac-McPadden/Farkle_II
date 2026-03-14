@@ -11,6 +11,7 @@ pytest.importorskip("pyarrow")
 
 import farkle.cli.main as cli_main
 from farkle.config import _stringify_paths_for_serialization
+from farkle.orchestration import seed_utils
 
 
 @pytest.fixture(autouse=True)
@@ -69,21 +70,21 @@ def test_resolve_seed_pair_prefers_seed_pair_form():
     parser = cli_main.build_parser()
     args, _ = parser.parse_known_args(["--seed-pair", "10", "20", "run"])
 
-    assert cli_main._resolve_seed_pair(args, parser) == (10, 20)
+    assert seed_utils.resolve_seed_pair_args(args, parser) == (10, 20)
 
 
 def test_resolve_seed_pair_accepts_seed_a_seed_b_form():
     parser = cli_main.build_parser()
     args, _ = parser.parse_known_args(["--seed-a", "10", "--seed-b", "20", "run"])
 
-    assert cli_main._resolve_seed_pair(args, parser) == (10, 20)
+    assert seed_utils.resolve_seed_pair_args(args, parser) == (10, 20)
 
 
 def test_resolve_seed_pair_returns_none_when_unset():
     parser = cli_main.build_parser()
     args, _ = parser.parse_known_args(["run"])
 
-    assert cli_main._resolve_seed_pair(args, parser) is None
+    assert seed_utils.resolve_seed_pair_args(args, parser) is None
 
 
 @pytest.mark.parametrize(
@@ -99,7 +100,7 @@ def test_resolve_seed_pair_rejects_invalid_combinations(argv):
     args, _ = parser.parse_known_args(argv)
 
     with pytest.raises(SystemExit) as excinfo:
-        cli_main._resolve_seed_pair(args, parser)
+        seed_utils.resolve_seed_pair_args(args, parser)
 
     assert excinfo.value.code == 2
 
@@ -186,7 +187,7 @@ def test_write_active_config_persists_yaml(tmp_path: Path, monkeypatch):
     cfg.analysis.outputs = {}
     cfg.sim.row_dir = tmp_path / "rows"
 
-    cli_main._write_active_config(cfg, tmp_path)
+    cli_main.write_active_config(cfg, tmp_path)
 
     written = tmp_path / "active_config.yaml"
     assert written.exists()
@@ -252,6 +253,13 @@ def test_analyze_pipeline_dispatches_preprocess_and_analytics(
         ("analyze:pipeline", False),
         ("analyze:analytics", {"run_rng_diagnostics": False, "rng_lags": None, "allow_missing_upstream": False}),
     ]
+
+
+def test_analyze_two_seed_pipeline_alias_is_rejected(preserve_root_logger):
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main.main(["analyze", "two-seed-pipeline"])
+
+    assert excinfo.value.code == 2
 
 
 def test_analyze_metrics_applies_analysis_overrides(
@@ -404,7 +412,7 @@ def test_run_command_option_branches(
     captured: dict[str, object] = {}
     cfg_path = _write_cfg(tmp_path)
 
-    monkeypatch.setattr(cli_main, "_write_active_config", lambda cfg, dest_dir: None)
+    monkeypatch.setattr(cli_main, "write_active_config", lambda cfg, dest_dir: None)
 
     def _fake_run_single(cfg, n, **kwargs):
         captured["force"] = kwargs.get("force")
@@ -483,36 +491,6 @@ def test_two_seed_pipeline_top_level_passes_force_and_seed_pair(
     assert captured == {"seed_pair": (9, 11), "force": True}
 
 
-def test_two_seed_pipeline_analyze_variant_passes_force_and_logs_warning(
-    monkeypatch, tmp_path: Path, preserve_root_logger, caplog
-):
-    captured: dict[str, object] = {}
-    cfg_path = _write_cfg(tmp_path)
-
-    def _fake_run_pipeline(cfg, **kwargs):
-        captured.update(kwargs)
-
-    monkeypatch.setattr(cli_main.two_seed_pipeline, "run_pipeline", _fake_run_pipeline)
-    monkeypatch.setattr(cli_main, "configure_logging", lambda **kwargs: None)
-
-    with caplog.at_level(logging.WARNING):
-        cli_main.main(
-            [
-                "--config",
-                str(cfg_path),
-                "--seed-pair",
-                "9",
-                "11",
-                "analyze",
-                "two-seed-pipeline",
-                "--force",
-            ]
-        )
-
-    assert captured == {"seed_pair": (9, 11), "force": True}
-    assert "deprecated" in caplog.text
-
-
 @pytest.mark.parametrize(
     ("argv", "attr", "method"),
     [
@@ -565,7 +543,7 @@ def test_main_surfaces_dot_override_parsing_failures(
     error_type,
     expected_substring,
 ):
-    monkeypatch.setattr(cli_main, "_write_active_config", lambda cfg, dest_dir: None)
+    monkeypatch.setattr(cli_main, "write_active_config", lambda cfg, dest_dir: None)
     monkeypatch.setattr(cli_main.runner, "run_single_n", lambda cfg, n, **kwargs: None)
 
     with pytest.raises(error_type, match=expected_substring):
@@ -596,7 +574,7 @@ def test_main_dispatches_each_simulation_and_analysis_stage(
     cfg_multi = _write_cfg("multi", [2, 3], [11])
     cfg_pair = _write_cfg("pair", [2], [3, 4])
 
-    monkeypatch.setattr(cli_main, "_write_active_config", lambda cfg, dest_dir: None)
+    monkeypatch.setattr(cli_main, "write_active_config", lambda cfg, dest_dir: None)
     monkeypatch.setattr(
         cli_main.runner,
         "run_single_n",
@@ -655,7 +633,6 @@ def test_main_dispatches_each_simulation_and_analysis_stage(
         ["--config", str(cfg_single), "analyze", "analytics"],
         ["--config", str(cfg_single), "analyze", "variance"],
         ["--config", str(cfg_single), "analyze", "pipeline"],
-        ["--config", str(cfg_pair), "analyze", "two-seed-pipeline"],
         ["--config", str(cfg_pair), "two-seed-pipeline"],
     ]
     for argv in invocations:
@@ -675,6 +652,5 @@ def test_main_dispatches_each_simulation_and_analysis_stage(
         "analyze:variance",
         "analyze:preprocess",
         "analyze:analytics",
-        "two-seed-pipeline",
         "two-seed-pipeline",
     ]

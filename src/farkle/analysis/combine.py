@@ -79,7 +79,13 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
             continue
         out_file, manifest_path = _partition_paths(cfg, n_players)
         done = _partition_done_path(cfg, n_players)
-        if stage_is_up_to_date(done, inputs=[src], outputs=[out_file, manifest_path], config_sha=cfg.config_sha):
+        if stage_is_up_to_date(
+            done,
+            inputs=[src],
+            outputs=[out_file, manifest_path],
+            cfg=cfg,
+            stage="combine",
+        ):
             outputs.append(out_file)
             manifests.append(manifest_path)
             continue
@@ -113,7 +119,13 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
         )
         outputs.append(out_file)
         manifests.append(manifest_path)
-        write_stage_done(done, inputs=[src], outputs=[out_file, manifest_path], config_sha=cfg.config_sha)
+        write_stage_done(
+            done,
+            inputs=[src],
+            outputs=[out_file, manifest_path],
+            cfg=cfg,
+            stage="combine",
+        )
     return outputs, manifests
 
 
@@ -163,7 +175,8 @@ def run(cfg: AppConfig) -> None:
         done,
         inputs=files,
         outputs=[cfg.combine_partitioned_dir, out, manifest_path],
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="combine",
     ):
         LOGGER.info("Combine: output up-to-date", extra={"stage": "combine", "path": str(out)})
         return
@@ -200,5 +213,6 @@ def run(cfg: AppConfig) -> None:
         done,
         inputs=files,
         outputs=[cfg.combine_partitioned_dir, *partition_outputs, *partition_manifests, out, manifest_path],
-        config_sha=cfg.config_sha,
+        cfg=cfg,
+        stage="combine",
     )

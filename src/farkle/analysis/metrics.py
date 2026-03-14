@@ -112,7 +112,8 @@ def run(cfg: AppConfig) -> None:
         done,
         inputs=stage_inputs,
         outputs=outputs,
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="metrics",
     ):
         LOGGER.info(
             "Metrics stage up-to-date",
@@ -141,7 +142,8 @@ def run(cfg: AppConfig) -> None:
         done_isolated,
         inputs=[data_file, *available_raw_inputs],
         outputs=iso_targets,
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="metrics",
     ):
         iso_paths = [path for path in iso_targets if path.exists()]
         raw_inputs = raw_metric_inputs
@@ -156,7 +158,8 @@ def run(cfg: AppConfig) -> None:
             done_isolated,
             inputs=[data_file, *available_raw_inputs],
             outputs=iso_paths,
-            config_sha=getattr(cfg, "config_sha", None),
+            cfg=cfg,
+            stage="metrics",
         )
 
     outputs = [
@@ -173,7 +176,8 @@ def run(cfg: AppConfig) -> None:
         done_core,
         inputs=iso_paths,
         outputs=[out_metrics],
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="metrics",
     ):
         metrics_df = pd.read_parquet(out_metrics)
     else:
@@ -191,14 +195,16 @@ def run(cfg: AppConfig) -> None:
             done_core,
             inputs=iso_paths,
             outputs=[out_metrics],
-            config_sha=getattr(cfg, "config_sha", None),
+            cfg=cfg,
+            stage="metrics",
         )
 
     if stage_is_up_to_date(
         done_weighted,
         inputs=[out_metrics],
         outputs=[out_metrics_weighted],
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="metrics",
     ):
         weighted_df = pd.read_parquet(out_metrics_weighted)
     else:
@@ -214,7 +220,8 @@ def run(cfg: AppConfig) -> None:
             done_weighted,
             inputs=[out_metrics],
             outputs=[out_metrics_weighted],
-            config_sha=getattr(cfg, "config_sha", None),
+            cfg=cfg,
+            stage="metrics",
         )
 
     seat_cfg = SeatMetricConfig(seat_range=cfg.metrics_seat_range)
@@ -222,7 +229,8 @@ def run(cfg: AppConfig) -> None:
         done_seat_advantage,
         inputs=[data_file],
         outputs=[out_seats, out_seats_parquet],
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="metrics",
     ):
         seat_df = pd.read_csv(out_seats)
     else:
@@ -248,14 +256,16 @@ def run(cfg: AppConfig) -> None:
             done_seat_advantage,
             inputs=[data_file],
             outputs=[out_seats, out_seats_parquet],
-            config_sha=getattr(cfg, "config_sha", None),
+            cfg=cfg,
+            stage="metrics",
         )
 
     if stage_is_up_to_date(
         done_seat_metrics,
         inputs=[data_file],
         outputs=[out_seat_metrics, out_seat_metrics_csv],
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="metrics",
     ):
         seat_metrics_df = pd.read_parquet(out_seat_metrics)
     else:
@@ -288,7 +298,8 @@ def run(cfg: AppConfig) -> None:
             done_seat_metrics,
             inputs=[data_file],
             outputs=[out_seat_metrics, out_seat_metrics_csv],
-            config_sha=getattr(cfg, "config_sha", None),
+            cfg=cfg,
+            stage="metrics",
         )
 
     if not metrics_df.empty:
@@ -334,7 +345,8 @@ def run(cfg: AppConfig) -> None:
         done,
         inputs=stage_inputs,
         outputs=outputs,
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="metrics",
     )
 
 

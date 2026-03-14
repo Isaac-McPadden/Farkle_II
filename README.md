@@ -12,6 +12,10 @@ artifacts, and statistical helpers for sizing experiments.
 - Streaming parquet writers and append-only manifests that survive restarts.
 - Unified `farkle` CLI with `run`, `time`, `watch`, `analyze`, and
   `two-seed-pipeline` commands.
+- Manifest schema v2 and stage done-stamp schema v2 with a strict snake_case
+  event contract.
+- Stage-scoped cache hashes so unrelated config edits do not force a full
+  analysis rerun.
 - Config-driven analysis pipeline with metrics, TrueSkill, and head-to-head
   reporting.
 
@@ -123,9 +127,6 @@ into numbered directories under `analysis/`:
   depend on upstream metrics.
 - `pipeline` - run `ingest`, `curate`, `combine`, and `metrics` sequentially
   before branching into downstream analytics.
-- `two-seed-pipeline` - deprecated alias for the top-level `two-seed-pipeline`
-  command, which runs the two-seed simulation + analysis orchestration using
-  `sim.seed_list` with two seeds.
 
 ```bash
 farkle --config configs/farkle_mega_config.yaml analyze pipeline
@@ -140,27 +141,31 @@ farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
 Run simulations and per-seed analysis for both entries in `sim.seed_list`, then
 run the interseed comparisons. Interseed artifacts (variance/meta/TrueSkill/agreement
 outputs plus `interseed_summary.json`) are written under the seed-pair results
-directory in `interseed_analysis/`.
+directory in `interseed_analysis/`. This is the canonical dual-seed CLI entry
+point.
 
 ```bash
 farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
 ```
 
-### `farkle-two-seed-pipeline`
-
-Run simulations and per-seed analysis for both entries in `sim.seed_list`, then
-run the interseed comparisons. This legacy entry point is equivalent to the
-unified `farkle two-seed-pipeline` command.
-
-```bash
-farkle-two-seed-pipeline --config configs/fast_config.yaml
-```
-
-If you prefer module execution:
+For module execution:
 
 ```bash
 python -m farkle.orchestration.two_seed_pipeline --config configs/fast_config.yaml
 ```
+
+## Pipeline Metadata
+
+Pipeline manifests are NDJSON with manifest schema v2. Every orchestration
+record includes `schema_version`, `run_id`, `event`, and `config_sha`, and
+event names are snake_case only. If a pre-v2 manifest is present, the next run
+rotates it to a `.pre_v2` backup before appending new records.
+
+Stage completion markers are `.done.json` files with schema v2. They record the
+full-run `config_sha` for provenance plus a stage-local `stage_config_sha` and
+`cache_key_version` for cache validity. Recomputation decisions are based on the
+stage-local hash, so a head-to-head config change does not invalidate ingest,
+curate, combine, or other unrelated stages.
 
 ## Direct Engine Usage
 

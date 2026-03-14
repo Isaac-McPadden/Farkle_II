@@ -520,7 +520,8 @@ def run(cfg: AppConfig) -> None:
         done,
         inputs=upstream_inputs,
         outputs=[*outputs, *manifests],
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="ingest",
     ):
         LOGGER.info(
             "Ingest up-to-date",
@@ -560,7 +561,8 @@ def run(cfg: AppConfig) -> None:
         done,
         inputs=upstream_inputs,
         outputs=[*outputs, *manifests],
-        config_sha=getattr(cfg, "config_sha", None),
+        cfg=cfg,
+        stage="ingest",
     )
 
 

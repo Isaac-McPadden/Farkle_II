@@ -36,19 +36,20 @@ def test_stage_is_up_to_date_false_when_input_newer_or_skipped(tmp_path: Path) -
     inp.write_text("in")
     out.write_text("out")
 
-    write_stage_done(done, inputs=[inp], outputs=[out])
-    assert stage_is_up_to_date(done, [inp], [out])
+    write_stage_done(done, inputs=[inp], outputs=[out], stage_config_sha="cache")
+    assert stage_is_up_to_date(done, [inp], [out], stage_config_sha="cache")
 
     time.sleep(0.01)
     inp.write_text("newer")
-    assert not stage_is_up_to_date(done, [inp], [out])
+    assert not stage_is_up_to_date(done, [inp], [out], stage_config_sha="cache")
 
     write_stage_done(
         done,
         inputs=[inp],
         outputs=[out],
+        stage_config_sha="cache",
         status="skipped",
         blocking_dependency="y",
         upstream_stage="z",
     )
-    assert not stage_is_up_to_date(done, [inp], [out])
+    assert not stage_is_up_to_date(done, [inp], [out], stage_config_sha="cache")

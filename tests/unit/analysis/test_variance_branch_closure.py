@@ -107,9 +107,9 @@ def test_run_up_to_date_skip(cfg: AppConfig) -> None:
 
     detail_stamp, summary_stamp, components_stamp, _ = _variance_stamps(cfg)
     inputs = [metrics_path, seed_path]
-    write_stage_done(detail_stamp, inputs=inputs, outputs=[variance_path], config_sha=cfg.config_sha)
-    write_stage_done(summary_stamp, inputs=inputs, outputs=[summary_path], config_sha=cfg.config_sha)
-    write_stage_done(components_stamp, inputs=inputs, outputs=[components_path], config_sha=cfg.config_sha)
+    write_stage_done(detail_stamp, inputs=inputs, outputs=[variance_path], cfg=cfg, stage="variance")
+    write_stage_done(summary_stamp, inputs=inputs, outputs=[summary_path], cfg=cfg, stage="variance")
+    write_stage_done(components_stamp, inputs=inputs, outputs=[components_path], cfg=cfg, stage="variance")
 
     mtimes = [p.stat().st_mtime_ns for p in (variance_path, summary_path, components_path)]
     variance.run(cfg)

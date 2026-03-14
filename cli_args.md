@@ -70,10 +70,6 @@ Subcommands:
 - `preprocess` - run `ingest`, `curate`, `combine`, and `metrics` sequentially.
   Optional stages are ordered by their directory prefixes: `04_game_stats` then
   `05_rng` when enabled.
-- `two-seed-pipeline` - deprecated alias for the top-level `two-seed-pipeline`
-  command. Runs the two-seed simulation + analysis orchestrator for
-  `cfg.sim.seed_list` (two seeds required). This is equivalent to the legacy
-  `farkle-two-seed-pipeline` console script and module entry point.
 - `analytics` - perform statistical analysis computation steps (TrueSkill, Bonferroni head-to-head, HGB modeling, etc.) according to the configuration.
 - `pipeline` - run `preprocess` followed by `analytics` for a full end-to-end pass.
   The analytics suite follows the renumbered stage layout (`06_seed_summaries`,
@@ -85,12 +81,24 @@ Use `--help` on any subcommand for additional details (for example,
 
 ### `two-seed-pipeline`
 Run the two-seed simulation + analysis orchestrator for `cfg.sim.seed_list`.
+This is the only supported dual-seed CLI entry point.
 
 Example:
 
 ```bash
 farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
 ```
+
+The pair-level manifest `two_seed_pipeline_manifest.jsonl` uses manifest schema
+v2: every record includes `schema_version`, `run_id`, `event`, and
+`config_sha`, and event names are snake_case only. Existing pre-v2 manifests
+are rotated to a `.pre_v2` backup before new records are appended.
+
+Stage done stamps also use schema v2. Each `.done.json` includes the full-run
+`config_sha` for provenance and a stage-local `stage_config_sha` plus
+`cache_key_version` for cache checks. Freshness is determined by
+`stage_config_sha`, so unrelated config edits do not invalidate the whole
+pipeline.
 
 #### Handchecking the Pipeline
 
