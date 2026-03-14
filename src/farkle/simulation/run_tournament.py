@@ -16,9 +16,10 @@ import time
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from functools import partial
+from itertools import islice
 from os import getpid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Mapping, Sequence, Tuple, cast
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Sequence, Tuple, cast
 
 import numpy as np
 import pyarrow as pa
@@ -382,6 +383,16 @@ def _coerce_metric_sums(
     }
 
 
+def _empty_metric_aggregates() -> Tuple[
+    Dict[str, Dict[int | str, float]],
+    Dict[str, Dict[int | str, float]],
+]:
+    return (
+        {label: defaultdict(float) for label in METRIC_LABELS},
+        {label: defaultdict(float) for label in METRIC_LABELS},
+    )
+
+
 def _manifest_int_set(manifest_path: Path, key: str) -> set[int]:
     values: set[int] = set()
     for record in iter_manifest(manifest_path):
@@ -393,6 +404,121 @@ def _manifest_int_set(manifest_path: Path, key: str) -> set[int]:
         except (TypeError, ValueError):
             continue
     return values
+
+
+def _resolve_manifest_record_path(manifest_path: Path, record: Mapping[str, Any]) -> Path:
+    raw_path = record.get("path")
+    if raw_path in (None, ""):
+        raise ValueError(f"Manifest record missing path at {manifest_path}")
+    path = Path(str(raw_path))
+    if path.is_absolute():
+        return path
+    return (manifest_path.parent / path).resolve()
+
+
+def _load_row_manifest_aggregates(
+    manifest_path: Path,
+) -> Tuple[
+    Counter[int | str],
+    Dict[str, Dict[int | str, float]],
+    Dict[str, Dict[int | str, float]],
+]:
+    win_totals: Counter[int | str] = Counter()
+    metric_sums, metric_sq_sums = _empty_metric_aggregates()
+
+    for record in iter_manifest(manifest_path):
+        row_path = _resolve_manifest_record_path(manifest_path, record)
+        if not row_path.exists():
+            raise FileNotFoundError(f"Missing row shard listed in manifest: {row_path}")
+        parquet_file = pq.ParquetFile(row_path)
+        for batch in parquet_file.iter_batches():
+            for row in batch.to_pylist():
+                winner = row.get("winner_seat") or row.get("winner")
+                if winner is None:
+                    raise ValueError(f"Row shard missing winner column: {row_path}")
+                winner_name = cast(str, winner)
+                strategy = row.get(f"{winner_name}_strategy", row.get("winner_strategy"))
+                if strategy is None:
+                    raise ValueError(
+                        f"Row shard missing winner strategy for {winner_name!r}: {row_path}"
+                    )
+                metrics = _extract_winner_metrics(row, winner_name)
+                win_totals[strategy] += 1
+                for label, value in zip(METRIC_LABELS, metrics, strict=True):
+                    metric_sums[label][strategy] += float(value)
+                    metric_sq_sums[label][strategy] += float(value) * float(value)
+
+    return win_totals, metric_sums, metric_sq_sums
+
+
+def _load_metric_chunk_aggregates(
+    manifest_path: Path,
+) -> Tuple[
+    Counter[int | str] | None,
+    Dict[str, Dict[int | str, float]],
+    Dict[str, Dict[int | str, float]],
+]:
+    win_totals: Counter[int | str] = Counter()
+    metric_sums, metric_sq_sums = _empty_metric_aggregates()
+    wins_available = True
+
+    for record in iter_manifest(manifest_path):
+        chunk_path = _resolve_manifest_record_path(manifest_path, record)
+        if not chunk_path.exists():
+            raise FileNotFoundError(f"Missing metric chunk listed in manifest: {chunk_path}")
+        parquet_file = pq.ParquetFile(chunk_path)
+        column_names = set(parquet_file.schema_arrow.names)
+        file_has_wins = "wins" in column_names
+        wins_available = wins_available and file_has_wins
+        columns = ["metric", "strategy", "sum", "square_sum"]
+        if file_has_wins:
+            columns.append("wins")
+        for batch in parquet_file.iter_batches(columns=columns):
+            for row in batch.to_pylist():
+                label = row["metric"]
+                strategy = row["strategy"]
+                metric_sums[label][strategy] += float(row["sum"])
+                metric_sq_sums[label][strategy] += float(row["square_sum"])
+                if wins_available and file_has_wins and label == METRIC_LABELS[0]:
+                    win_totals[strategy] += int(row["wins"])
+
+    return (win_totals if wins_available else None), metric_sums, metric_sq_sums
+
+
+def _iter_original_chunk_items(
+    *,
+    num_shuffles: int,
+    shuffles_per_chunk: int,
+    global_seed: int,
+) -> Iterator[Tuple[int, List[int]]]:
+    seed_iter = iter(urandom.spawn_seeds(num_shuffles, seed=global_seed))
+    chunk_index = 0
+    while True:
+        chunk = list(islice(seed_iter, shuffles_per_chunk))
+        if not chunk:
+            return
+        chunk_index += 1
+        yield chunk_index, chunk
+
+
+def _iter_pending_chunk_items(
+    *,
+    num_shuffles: int,
+    shuffles_per_chunk: int,
+    global_seed: int,
+    completed_shuffles: set[int],
+    completed_chunk_indices: set[int],
+) -> Iterator[Tuple[int, List[int]]]:
+    for chunk_index, chunk in _iter_original_chunk_items(
+        num_shuffles=num_shuffles,
+        shuffles_per_chunk=shuffles_per_chunk,
+        global_seed=global_seed,
+    ):
+        if chunk_index in completed_chunk_indices:
+            continue
+        pending = [seed for seed in chunk if seed not in completed_shuffles]
+        if pending:
+            yield chunk_index, pending
 
 
 def _reduce_metric_chunk_payloads(
@@ -524,8 +650,6 @@ def run_tournament(
         },
     )
 
-    shuffle_seeds = list(urandom.spawn_seeds(cfg.num_shuffles, seed=global_seed))
-
     win_totals: Counter[int | str] = Counter()
     games_completed = 0
     metric_sums: Dict[str, Dict[int | str, float]] | None
@@ -541,11 +665,13 @@ def run_tournament(
         raw_counts = payload.get("win_totals", payload)
         win_totals = _coerce_counter(raw_counts)
         games_completed = int(sum(win_totals.values()))
+    can_resume_from_artifacts = resume and payload is not None
 
     collect_rows = row_output_directory is not None
     if collect_rows:
         assert row_output_directory is not None
         row_output_directory.mkdir(parents=True, exist_ok=True)
+    row_manifest_path = (row_output_directory / "manifest.jsonl") if row_output_directory else None
 
     metrics_manifest_path: Path | None = None
     if metric_chunk_directory is not None:
@@ -565,59 +691,113 @@ def run_tournament(
         metric_sums = None
         metric_sq_sums = None
 
-    if metric_chunk_directory is None and (collect_metrics or collect_rows):
-        if metric_sums is None:
-            metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
-        if metric_sq_sums is None:
-            metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
-    elif metric_chunk_directory is not None:
-        if metric_sums is None or metric_sq_sums is None:
-            metric_sums = None
-            metric_sq_sums = None
+    completed_shuffles: set[int] = set()
+    if can_resume_from_artifacts and row_manifest_path is not None and row_manifest_path.exists():
+        completed_shuffles = _manifest_int_set(row_manifest_path, "shuffle_seed")
+        if completed_shuffles:
+            LOGGER.info(
+                "Recovered completed shuffle seeds from row manifest",
+                extra={
+                    "stage": "simulation",
+                    "completed_shuffles": len(completed_shuffles),
+                    "remaining_shuffles": max(0, cfg.num_shuffles - len(completed_shuffles)),
+                    "manifest_path": str(row_manifest_path),
+                },
+            )
 
-    mp_context = parallel.resolve_mp_context(cfg.mp_start_method)
-
-    if resume and payload is not None and row_output_directory is not None:
-        manifest_file = row_output_directory / "manifest.jsonl"
-        if manifest_file.exists():
-            completed_shuffles = _manifest_int_set(manifest_file, "shuffle_seed")
-            if completed_shuffles:
-                shuffle_seeds = [s for s in shuffle_seeds if s not in completed_shuffles]
-                LOGGER.info(
-                    "Filtered completed shuffle seeds from row manifest",
-                    extra={
-                        "stage": "simulation",
-                        "completed_shuffles": len(completed_shuffles),
-                        "remaining_shuffles": len(shuffle_seeds),
-                        "manifest_path": str(manifest_file),
-                    },
-                )
-
-    chunks = [
-        shuffle_seeds[i : i + shuffles_per_chunk]
-        for i in range(0, len(shuffle_seeds), shuffles_per_chunk)
-    ]
-    chunk_items = list(enumerate(chunks, start=1))
+    completed_chunk_indices: set[int] = set()
     if (
-        resume
-        and payload is not None
+        can_resume_from_artifacts
         and metrics_manifest_path is not None
         and metrics_manifest_path.exists()
     ):
         completed_chunk_indices = _manifest_int_set(metrics_manifest_path, "chunk_index")
         if completed_chunk_indices:
-            chunk_items = [
-                (idx, seeds) for idx, seeds in chunk_items if idx not in completed_chunk_indices
-            ]
+            total_chunks = (cfg.num_shuffles + shuffles_per_chunk - 1) // shuffles_per_chunk
             LOGGER.info(
-                "Filtered completed metric chunks from manifest",
+                "Recovered completed metric chunks from manifest",
                 extra={
                     "stage": "simulation",
                     "completed_chunks": len(completed_chunk_indices),
-                    "remaining_chunks": len(chunk_items),
+                    "remaining_chunks": max(0, total_chunks - len(completed_chunk_indices)),
                     "manifest_path": str(metrics_manifest_path),
                 },
             )
+
+    recovered_metric_state = False
+    if can_resume_from_artifacts and row_manifest_path is not None and row_manifest_path.exists():
+        win_totals, metric_sums, metric_sq_sums = _load_row_manifest_aggregates(row_manifest_path)
+        games_completed = int(sum(win_totals.values()))
+        recovered_metric_state = collect_metrics or collect_rows
+        LOGGER.info(
+            "Recovered aggregates from row shards",
+            extra={
+                "stage": "simulation",
+                "games_completed": games_completed,
+                "manifest_path": str(row_manifest_path),
+            },
+        )
+    elif (
+        can_resume_from_artifacts
+        and metrics_manifest_path is not None
+        and metrics_manifest_path.exists()
+    ):
+        recovered_wins, recovered_sums, recovered_sq_sums = _load_metric_chunk_aggregates(
+            metrics_manifest_path
+        )
+        metric_sums = recovered_sums
+        metric_sq_sums = recovered_sq_sums
+        recovered_metric_state = collect_metrics or collect_rows
+        if recovered_wins is not None:
+            win_totals = recovered_wins
+            games_completed = int(sum(win_totals.values()))
+        else:
+            LOGGER.warning(
+                "Metric chunk recovery could not rebuild win totals; falling back to checkpoint counts",
+                extra={
+                    "stage": "simulation",
+                    "manifest_path": str(metrics_manifest_path),
+                    "checkpoint_path": str(ckpt_path),
+                },
+            )
+        LOGGER.info(
+            "Recovered aggregates from metric chunks",
+            extra={
+                "stage": "simulation",
+                "games_completed": games_completed,
+                "manifest_path": str(metrics_manifest_path),
+            },
+        )
+
+    if metric_chunk_directory is None and (collect_metrics or collect_rows):
+        if metric_sums is None:
+            metric_sums, metric_sq_sums = _empty_metric_aggregates()
+    elif (
+        metric_chunk_directory is not None
+        and not recovered_metric_state
+        and (metric_sums is None or metric_sq_sums is None)
+    ):
+        metric_sums = None
+        metric_sq_sums = None
+
+    mp_context = parallel.resolve_mp_context(cfg.mp_start_method)
+    chunk_items = _iter_pending_chunk_items(
+        num_shuffles=cfg.num_shuffles,
+        shuffles_per_chunk=shuffles_per_chunk,
+        global_seed=global_seed,
+        completed_shuffles=completed_shuffles,
+        completed_chunk_indices=completed_chunk_indices,
+    )
+    remaining_chunk_count = sum(
+        1
+        for _ in _iter_pending_chunk_items(
+            num_shuffles=cfg.num_shuffles,
+            shuffles_per_chunk=shuffles_per_chunk,
+            global_seed=global_seed,
+            completed_shuffles=completed_shuffles,
+            completed_chunk_indices=completed_chunk_indices,
+        )
+    )
 
     resolved_n_jobs = parallel.normalize_n_jobs(n_jobs)
 
@@ -629,7 +809,7 @@ def run_tournament(
             "num_shuffles": cfg.num_shuffles,
             "global_seed": global_seed,
             "n_jobs": resolved_n_jobs,
-            "chunks": len(chunk_items),
+            "chunks": remaining_chunk_count,
             "collect_metrics": collect_metrics,
             "collect_rows": collect_rows,
             "row_dir": str(row_output_directory) if row_output_directory else None,
@@ -639,7 +819,7 @@ def run_tournament(
     )
 
     if collect_metrics or collect_rows:
-        manifest_path = (row_output_directory / "manifest.jsonl") if row_output_directory else None
+        manifest_path = row_manifest_path
         chunk_fn: Callable[[Sequence[int]], object] = partial(
             _run_chunk_metrics,
             collect_rows=collect_rows,
@@ -688,6 +868,7 @@ def run_tournament(
                             "strategy": strat,
                             "sum": val,
                             "square_sum": sqs[label][strat],
+                            "wins": int(wins.get(strat, 0)),
                         }
                         for label in METRIC_LABELS
                         for strat, val in sums[label].items()
@@ -756,7 +937,7 @@ def run_tournament(
                     extra={
                         "stage": "simulation",
                         "chunk_index": chunk_index,
-                        "chunks_total": len(chunk_items),
+                        "chunks_total": remaining_chunk_count,
                         "games": games_completed,
                         "games_completed": games_completed,
                         "path": str(ckpt_path),
@@ -772,16 +953,16 @@ def run_tournament(
             and (collect_metrics or collect_rows)
             and (metric_sums is None or metric_sq_sums is None)
         ):
-            metric_sums = {m: defaultdict(float) for m in METRIC_LABELS}
-            metric_sq_sums = {m: defaultdict(float) for m in METRIC_LABELS}
-            chunk_paths = sorted(metric_chunk_directory.glob("metrics_*.parquet"))
-            for path in chunk_paths:
-                table = pq.read_table(path)
-                for row in table.to_pylist():
-                    label = row["metric"]
-                    strat = row["strategy"]
-                    metric_sums[label][strat] += row["sum"]
-                    metric_sq_sums[label][strat] += row["square_sum"]
+            if metrics_manifest_path is None or not metrics_manifest_path.exists():
+                raise FileNotFoundError(
+                    f"Missing metrics manifest required for resume-safe recovery: {metrics_manifest_path}"
+                )
+            recovered_wins, metric_sums, metric_sq_sums = _load_metric_chunk_aggregates(
+                metrics_manifest_path
+            )
+            if recovered_wins is not None:
+                win_totals = recovered_wins
+                games_completed = int(sum(win_totals.values()))
 
     finally:
         # no central writer to tear down
@@ -838,7 +1019,7 @@ def run_tournament(
             "games": games_completed,
             "games_completed": games_completed,
             "n_players": cfg.n_players,
-            "chunks": len(chunk_items),
+            "chunks": remaining_chunk_count,
             "checkpoint_path": str(ckpt_path),
         },
     )

@@ -141,6 +141,70 @@ def _setup_serial_run(monkeypatch: pytest.MonkeyPatch) -> list[ThresholdStrategy
     return strategies
 
 
+def _row_record(seed: int) -> dict[str, object]:
+    row = {
+        "game_seed": seed,
+        "winner": "p1",
+        "winning_score": seed,
+        "n_rounds": seed,
+        "p1_strategy": seed,
+    }
+    for suffix in (
+        "farkles",
+        "rolls",
+        "highest_turn",
+        "smart_five_uses",
+        "n_smart_five_dice",
+        "smart_one_uses",
+        "n_smart_one_dice",
+        "hot_dice",
+        "hit_max_rounds",
+    ):
+        row[f"p1_{suffix}"] = seed
+    return row
+
+
+def _write_row_shard(row_dir: Path, seed: int) -> None:
+    row_dir.mkdir(parents=True, exist_ok=True)
+    path = row_dir / f"rows_resume_{seed}.parquet"
+    pq.write_table(pa.Table.from_pylist([_row_record(seed)]), path)
+    manifest.append_manifest_line(
+        row_dir / "manifest.jsonl",
+        {
+            "path": path.name,
+            "rows": 1,
+            "shuffle_seed": seed,
+            "n_players": 2,
+        },
+        add_timestamp=False,
+    )
+
+
+def _write_metric_chunk(metrics_dir: Path, chunk_index: int, strategy: int) -> None:
+    metrics_dir.mkdir(parents=True, exist_ok=True)
+    path = metrics_dir / f"metrics_{chunk_index:06d}.parquet"
+    rows = [
+        {
+            "metric": label,
+            "strategy": strategy,
+            "sum": float(strategy),
+            "square_sum": float(strategy * strategy),
+            "wins": 1,
+        }
+        for label in rt.METRIC_LABELS
+    ]
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    manifest.append_manifest_line(
+        metrics_dir / "metrics_manifest.jsonl",
+        {
+            "path": path.name,
+            "chunk_index": chunk_index,
+            "n_players": 2,
+        },
+        add_timestamp=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -530,6 +594,78 @@ def test_run_tournament_metrics_chunk_execution(monkeypatch: pytest.MonkeyPatch,
     )
 
     assert chunk_calls == [[0, 1], [2, 3], [4]]
+
+
+def test_run_tournament_resume_preserves_original_chunk_boundaries(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _setup_serial_run(monkeypatch)
+    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
+    monkeypatch.setattr(rt, "_measure_throughput", lambda sample_strategies: 6.0, raising=True)
+
+    chunk_calls: list[tuple[int, list[int]]] = []
+
+    def fake_process_map(func, iterable, *, initializer=None, initargs=(), **kwargs):
+        if initializer is not None:
+            initializer(*initargs)
+        for item in iterable:
+            chunk_calls.append((item[0], list(item[1])))
+            yield func(item)
+
+    monkeypatch.setattr(rt.parallel, "process_map", fake_process_map)
+
+    checkpoint_path = tmp_path / "checkpoint.pkl"
+    rt._save_checkpoint(checkpoint_path, Counter(), None, None)
+
+    row_dir = tmp_path / "rows"
+    for seed in (0, 2, 3):
+        _write_row_shard(row_dir, seed)
+
+    config = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
+    rt.run_tournament(
+        config=config,
+        global_seed=0,
+        checkpoint_path=checkpoint_path,
+        n_jobs=1,
+        collect_metrics=True,
+        row_output_directory=row_dir,
+        num_shuffles=5,
+    )
+
+    assert chunk_calls == [(1, [1]), (3, [4])]
+
+    payload = pickle.loads(checkpoint_path.read_bytes())
+    assert payload["win_totals"] == Counter({0: 1, 1: 1, 2: 1, 3: 1, 4: 1})
+
+
+def test_run_tournament_resume_recovers_win_totals_from_metric_chunks(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    _setup_serial_run(monkeypatch)
+    monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
+    monkeypatch.setattr(rt, "_measure_throughput", lambda sample_strategies: 2.0, raising=True)
+
+    checkpoint_path = tmp_path / "checkpoint.pkl"
+    rt._save_checkpoint(checkpoint_path, Counter(), None, None)
+
+    metrics_dir = tmp_path / "metrics"
+    _write_metric_chunk(metrics_dir, chunk_index=1, strategy=0)
+
+    config = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
+    rt.run_tournament(
+        config=config,
+        global_seed=0,
+        checkpoint_path=checkpoint_path,
+        n_jobs=1,
+        collect_metrics=True,
+        metric_chunk_directory=metrics_dir,
+        num_shuffles=2,
+    )
+
+    payload = pickle.loads(checkpoint_path.read_bytes())
+    assert payload["win_totals"] == Counter({0: 1, 1: 1})
+    assert payload["metric_sums"]["winning_score"][0] == pytest.approx(0.0)
+    assert payload["metric_sums"]["winning_score"][1] == pytest.approx(1.0)
 
 
 def test_run_tournament_metrics_resume_uses_metric_sq_sums_fallback(

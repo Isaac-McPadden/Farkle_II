@@ -403,11 +403,48 @@ def _load_feature_importance(analysis_dir: Path, players: int) -> pd.DataFrame:
     return df
 
 
-def _load_seed_summaries(analysis_dir: Path, players: int) -> pd.DataFrame:
+def _seed_summary_paths(
+    cfg: AnalysisConfig | AppConfig, players: int, *, layout: StageLayout | None = None
+) -> list[Path]:
+    """Resolve per-seed summary parquet paths across stage and mirrored locations."""
+
+    analysis_dir = _analysis_dir(cfg)
+    pattern = f"strategy_summary_{players}p_seed*.parquet"
+    search_roots: list[Path] = []
+
+    stage_dirs = _stage_candidates(
+        analysis_dir,
+        "seed_summaries",
+        layout=layout,
+        filename=Path(f"{players}p"),
+    )
+    search_roots.extend(stage_dirs)
+    search_roots.append(analysis_dir)
+
+    if isinstance(cfg, AppConfig) and cfg.io.meta_analysis_dir is not None:
+        meta_dir = cfg.meta_analysis_dir
+        if meta_dir not in search_roots:
+            search_roots.append(meta_dir)
+
+    paths: list[Path] = []
+    seen: set[Path] = set()
+    for root in search_roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.glob(pattern)):
+            if path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
+    return paths
+
+
+def _load_seed_summaries(
+    cfg: AnalysisConfig | AppConfig, players: int, *, layout: StageLayout | None = None
+) -> pd.DataFrame:
     """Collect per-seed win-rate summaries across available parquet files."""
     frames: list[pd.DataFrame] = []
-    pattern = f"strategy_summary_{players}p_seed"
-    for path in sorted(analysis_dir.glob(f"{pattern}*.parquet")):
+    for path in _seed_summary_paths(cfg, players, layout=layout):
         df = pd.read_parquet(path)
         if df.empty:
             continue
@@ -551,7 +588,7 @@ def _gather_artifacts(cfg: AnalysisConfig | AppConfig, players: int) -> _ReportA
     ratings = _load_ratings(analysis_dir, players, layout=layout)
     meta_summary = _load_meta_summary(cfg, players)
     feature_importance = _load_feature_importance(analysis_dir, players)
-    seed_summaries = _load_seed_summaries(analysis_dir, players)
+    seed_summaries = _load_seed_summaries(cfg, players, layout=layout)
     tiers = _load_tiers(analysis_dir, players, layout=layout)
     h2h_decisions = _load_h2h_decisions(analysis_dir, players, layout=layout)
     h2h_ranking = _load_h2h_ranking(analysis_dir, players, layout=layout)
@@ -800,11 +837,11 @@ def plot_seed_variability_for_players(
 
     analysis_dir = _analysis_dir(cfg)
     layout = _analysis_layout(cfg)
-    pattern = list(analysis_dir.glob(f"strategy_summary_{players}p_seed*.parquet"))
+    pattern = _seed_summary_paths(cfg, players, layout=layout)
     if len(pattern) <= 1:
         return None
 
-    seeds_df = _load_seed_summaries(analysis_dir, players)
+    seeds_df = _load_seed_summaries(cfg, players, layout=layout)
     if seeds_df.empty:
         return None
 

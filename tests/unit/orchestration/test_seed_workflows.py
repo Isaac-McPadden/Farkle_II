@@ -188,6 +188,7 @@ def test_run_per_seed_analysis_writes_per_seed_manifest_and_health_inputs_indepe
         for key, value in two_seed_pipeline._resolve_seed_family_statuses(
             seed,
             seed_cfg=cfg,
+            simulation_error=None,
             analysis_error=None,
         ).items()
     }
@@ -295,6 +296,90 @@ def test_run_pipeline_skip_vs_force(monkeypatch: pytest.MonkeyPatch, tmp_path: P
         assert event in manifest_events
     assert len(h2h_calls) == 1
     assert h2h_calls[0]["force"] is True
+
+
+@pytest.mark.parametrize("parallel_seeds", [False, True])
+def test_two_seed_pipeline_continues_after_seed_simulation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    parallel_seeds: bool,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    cfg.sim.seed_pair = (41, 42)
+    cfg.orchestration.parallel_seeds = parallel_seeds
+
+    simulation_attempts: list[int] = []
+    analysis_attempts: list[int] = []
+
+    monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: False)
+
+    def _run_tournament(seed_cfg: AppConfig, force: bool = False) -> None:
+        del force
+        simulation_attempts.append(int(seed_cfg.sim.seed))
+        if int(seed_cfg.sim.seed) == 41:
+            raise RuntimeError("seed 41 simulation boom")
+
+    monkeypatch.setattr(two_seed_pipeline.runner, "run_tournament", _run_tournament)
+
+    def _fake_per_seed(
+        seed_cfg: AppConfig,
+        *,
+        seed: int,
+        force: bool = False,
+        policy_bundle: object | None = None,
+    ) -> None:
+        del force, policy_bundle
+        analysis_attempts.append(seed)
+        seed_cfg.analysis_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.analysis_dir / "analysis_manifest.jsonl").write_text(
+            json.dumps({"event": "run_end"}) + "\n",
+            encoding="utf-8",
+        )
+        seed_cfg.seed_symmetry_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.seed_symmetry_stage_dir / "seed_symmetry_summary.parquet").write_text(
+            "ok",
+            encoding="utf-8",
+        )
+        seed_cfg.post_h2h_stage_dir.mkdir(parents=True, exist_ok=True)
+        (seed_cfg.post_h2h_stage_dir / "h2h_s_tiers.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", _fake_per_seed)
+
+    interseed_calls: list[str] = []
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_interseed_analysis",
+        lambda *_args, **_kwargs: interseed_calls.append("interseed"),
+    )
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_h2h_tier_trends",
+        lambda *_args, **_kwargs: interseed_calls.append("h2h"),
+    )
+
+    two_seed_pipeline.run_pipeline(cfg, seed_pair=(41, 42), force=False)
+
+    assert sorted(simulation_attempts) == [41, 42]
+    assert analysis_attempts == [42]
+    assert interseed_calls == []
+
+    pair_root = seed_utils.seed_pair_root(cfg, (41, 42))
+    health = json.loads((pair_root / "pipeline_health.json").read_text(encoding="utf-8"))
+    assert health["status"] == "failed_blocked"
+    assert health["stage_statuses"]["seed_41.analysis"]["status"] == "failed"
+    assert "simulation failed before analysis" in health["stage_statuses"]["seed_41.analysis"]["diagnostics"][0]
+    assert health["stage_statuses"]["seed_42.analysis"]["status"] == "success"
+    assert health["stage_statuses"]["interseed_analysis"]["status"] == "missing"
+
+    manifest_records = [
+        json.loads(line)
+        for line in (pair_root / "two_seed_pipeline_manifest.jsonl").read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    manifest_events = [record["event"] for record in manifest_records]
+    assert "seed_simulation_failed" in manifest_events
+    assert "seed_analysis_skipped" in manifest_events
+    assert manifest_events[-1] == "run_end"
 
 
 

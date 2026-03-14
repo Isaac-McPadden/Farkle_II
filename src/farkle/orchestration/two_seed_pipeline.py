@@ -53,8 +53,10 @@ LOGGER = logging.getLogger(__name__)
 class _SeedRunStatus:
     seed: int
     context: SeedRunContext
+    simulation_ok: bool
     analysis_ok: bool
-    error: str | None = None
+    simulation_error: str | None = None
+    analysis_error: str | None = None
 
 
 def _per_seed_worker_budget(total_workers: int, seed_count: int) -> int:
@@ -230,17 +232,50 @@ def _run_one_seed(
                 "results_dir": str(seed_cfg.results_root),
             },
         )
-        runner.run_tournament(seed_cfg, force=force)
-        append_manifest_event(
-            manifest_path,
-            {
-                "event": "seed_simulation_complete",
-                "seed": seed,
-                "results_dir": str(seed_context.results_root),
-            },
-            run_id=run_id,
-            config_sha=seed_cfg.config_sha,
-        )
+        try:
+            runner.run_tournament(seed_cfg, force=force)
+            append_manifest_event(
+                manifest_path,
+                {
+                    "event": "seed_simulation_complete",
+                    "seed": seed,
+                    "results_dir": str(seed_context.results_root),
+                },
+                run_id=run_id,
+                config_sha=seed_cfg.config_sha,
+            )
+        except Exception as exc:  # noqa: BLE001
+            error = f"{type(exc).__name__}: {exc}"
+            append_manifest_event(
+                manifest_path,
+                {
+                    "event": "seed_simulation_failed",
+                    "seed": seed,
+                    "results_dir": str(seed_context.results_root),
+                    "error": error,
+                },
+                run_id=run_id,
+                config_sha=seed_cfg.config_sha,
+            )
+            append_manifest_event(
+                manifest_path,
+                {
+                    "event": "seed_analysis_skipped",
+                    "seed": seed,
+                    "results_dir": str(seed_context.results_root),
+                    "reason": "simulation_failed",
+                    "blocking_error": error,
+                },
+                run_id=run_id,
+                config_sha=seed_cfg.config_sha,
+            )
+            return _SeedRunStatus(
+                seed=seed,
+                context=seed_context,
+                simulation_ok=False,
+                analysis_ok=False,
+                simulation_error=error,
+            )
 
     LOGGER.info(
         "Running per-seed analysis",
@@ -267,15 +302,21 @@ def _run_one_seed(
             run_id=run_id,
             config_sha=seed_cfg.config_sha,
         )
-        return _SeedRunStatus(seed=seed, context=seed_context, analysis_ok=True)
+        return _SeedRunStatus(
+            seed=seed,
+            context=seed_context,
+            simulation_ok=True,
+            analysis_ok=True,
+        )
     except Exception as exc:  # noqa: BLE001
+        error = f"{type(exc).__name__}: {exc}"
         append_manifest_event(
             manifest_path,
             {
                 "event": "seed_analysis_failed",
                 "seed": seed,
                 "results_dir": str(seed_context.results_root),
-                "error": f"{type(exc).__name__}: {exc}",
+                "error": error,
             },
             run_id=run_id,
             config_sha=seed_cfg.config_sha,
@@ -283,8 +324,9 @@ def _run_one_seed(
         return _SeedRunStatus(
             seed=seed,
             context=seed_context,
+            simulation_ok=True,
             analysis_ok=False,
-            error=f"{type(exc).__name__}: {exc}",
+            analysis_error=error,
         )
 
 
@@ -372,6 +414,7 @@ def _resolve_seed_family_statuses(
     seed: int,
     *,
     seed_cfg: AppConfig,
+    simulation_error: str | None,
     analysis_error: str | None,
 ) -> dict[str, _ResolvedStageStatus]:
     analysis_manifest_candidates = (
@@ -400,8 +443,16 @@ def _resolve_seed_family_statuses(
     )
     analysis_status = _resolve_stage_contract_status(
         stage_contracts[0],
-        explicit_error=analysis_error,
-        explicit_error_code="stage_exception" if analysis_error else None,
+        explicit_error=(
+            analysis_error
+            if analysis_error is not None
+            else (
+                f"simulation failed before analysis: {simulation_error}"
+                if simulation_error is not None
+                else None
+            )
+        ),
+        explicit_error_code="stage_exception" if (analysis_error or simulation_error) else None,
     )
     return {
         stage_contracts[0].name: analysis_status,
@@ -496,7 +547,7 @@ def _validate_required_config_sha_outputs(
                 continue
             if not isinstance(parsed, dict) or parsed.get("run_id") != run_id:
                 continue
-            event = record_event = parsed.get("event")
+            record_event = parsed.get("event")
             if parsed.get("config_sha") != expected_sha:
                 errors.append(
                     f"manifest event {record_event} has config_sha={parsed.get('config_sha')!r}"
@@ -623,13 +674,18 @@ def run_pipeline(
         seed_context = seed_result.context
         seed_contexts[seed] = seed_context
         seed_cfg = seed_context.config
-        if seed_result.error:
-            stage_errors[f"seed_{seed}.analysis"] = seed_result.error
+        if seed_result.analysis_error:
+            stage_errors[f"seed_{seed}.analysis"] = seed_result.analysis_error
+        elif seed_result.simulation_error:
+            stage_errors[f"seed_{seed}.analysis"] = (
+                f"simulation failed before analysis: {seed_result.simulation_error}"
+            )
 
         seed_resolved = _resolve_seed_family_statuses(
             seed,
             seed_cfg=seed_cfg,
-            analysis_error=seed_result.error,
+            simulation_error=seed_result.simulation_error,
+            analysis_error=seed_result.analysis_error,
         )
         for stage_name, resolved in seed_resolved.items():
             stage_statuses[stage_name] = {

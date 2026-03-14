@@ -14,8 +14,8 @@ sim:
 
   # Schedule & runtime controls
   num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
-  seed: 100                        # legacy primary RNG seed (results_root uses seed suffix)
-  seed_list: [100, 101]             # explicit seeds (len 1 single-seed, len 2 two-seed)
+  seed: 102                        # legacy primary RNG seed (results_root uses seed suffix)
+  seed_list: [102, 103]             # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 16                      # null = auto; otherwise an int
   mp_start_method: null            # start method: default|null|spawn|fork|forkserver
   expanded_metrics: true          # if true, also write {N}p_metrics.parquet with sums & sq_sums
@@ -109,13 +109,13 @@ head2head:
   n_jobs: 0
   games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
   fdr_q: 0.02                     # FDR control threshold for BH H2H design (if/where used)
-  bonferroni_total_games_safeguard: 100000000 # skip Bonferroni H2H when estimated total games exceed this
+  bonferroni_total_games_safeguard: 250000000 # skip Bonferroni H2H when estimated total games exceed this
 
   # Bonferroni design for H2H only
   bonferroni_design:
-    power: 0.8
-    control: 0.1               # alpha (Bonferroni - FWER)
-    detectable_lift: 0.05
+    power: 0.95
+    control: 0.02               # alpha (Bonferroni - FWER)
+    detectable_lift: 0.03
     baseline_rate: 0.50
     full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
     tail: "two_sided"             # must be "one_sided" for H2H
