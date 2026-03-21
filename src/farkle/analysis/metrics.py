@@ -285,6 +285,7 @@ def run(cfg: AppConfig) -> None:
             seat_cfg,
             include_players=include_players,
             progress_path=seat_progress,
+            progress_logging=cfg.analysis.progress_logging,
         )
         seat_metrics_table = pa.Table.from_pandas(seat_metrics_df, preserve_index=False)
         write_parquet_atomic(seat_metrics_table, out_seat_metrics)

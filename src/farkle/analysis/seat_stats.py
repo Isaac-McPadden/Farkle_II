@@ -13,6 +13,7 @@ import pyarrow.compute as pc
 import pyarrow.dataset as ds
 
 from farkle.config import AppConfig
+from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.writer import atomic_path
 
@@ -75,6 +76,7 @@ def compute_seat_metrics(
     include_players: set[int] | None = None,
     progress_path: Path | None = None,
     progress_every_batches: int = 50,
+    progress_logging: ProgressLogConfig | None = None,
 ) -> pd.DataFrame:
     """Aggregate per-(strategy, seat, n_players) metrics from curated rows.
 
@@ -121,11 +123,23 @@ def compute_seat_metrics(
             expr = branch if expr is None else (expr | branch)
         filter_expr = expr
     scanner = ds_in.scanner(columns=columns, batch_size=batch_size, filter=filter_expr)
+    total_rows = int(ds_in.count_rows(filter=filter_expr))
 
     running: pd.DataFrame | None = None
     processed_batches = 0
     processed_rows = 0
     started_at = time.perf_counter()
+    progress_logger = (
+        ScheduledProgressLogger(
+            LOGGER,
+            label="Seat metrics",
+            schedule=progress_logging,
+            unit="rows",
+            total=total_rows,
+        )
+        if progress_every_batches > 0 and progress_logging is not None and total_rows > 0
+        else None
+    )
 
     for batch in scanner.to_batches():
         processed_batches += 1
@@ -204,18 +218,16 @@ def compute_seat_metrics(
             )
             running = grouped if running is None else running.add(grouped, fill_value=0.0)
 
-        should_log = progress_every_batches > 0 and (processed_batches % progress_every_batches == 0)
-        if should_log:
-            elapsed_sec = time.perf_counter() - started_at
+        if progress_logger is not None:
             group_count = int(running.shape[0]) if running is not None else 0
-            LOGGER.info(
-                "Seat metrics progress",
+            progress_logger.maybe_log(
+                processed_rows,
+                detail=f"{processed_batches:,} batches, {group_count:,} groups",
                 extra={
                     "stage": "metrics",
                     "batches": processed_batches,
                     "rows": processed_rows,
                     "groups": group_count,
-                    "elapsed_sec": float(round(elapsed_sec, 1)),
                 },
             )
             _write_seat_metrics_progress(

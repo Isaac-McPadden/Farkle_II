@@ -16,7 +16,6 @@ from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from itertools import chain
-from pathlib import Path
 from typing import Iterator, cast
 
 import numpy as np
@@ -29,13 +28,13 @@ from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, wr
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.parallel import apply_native_thread_limits, resolve_stage_parallel_policy
+from farkle.utils.progress import ScheduledProgressLogger
 
 LOGGER = logging.getLogger(__name__)
 
 _EXPECTED_NOTE = "Expected ~0 under IID seeds"
 _SEAT_STRATEGY_RE = re.compile(r"^P(\d+)_strategy$")
 _STREAM_BATCH_SIZE = 100_000
-_STREAM_PROGRESS_EVERY = 25
 _DEFAULT_MAX_MATCHUP_GROUPS = 100_000
 
 
@@ -106,6 +105,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         return
 
     dataset = ds.dataset(data_file)
+    total_source_rows = int(dataset.count_rows())
     schema_names = set(dataset.schema.names)
     strat_cols = _seat_strategy_columns(cfg, dataset.schema.names)
     winner_col = _winner_column(schema_names)
@@ -145,7 +145,13 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         prepared_batches,
         strat_cols=strat_cols,
         lags=lags,
-        progress_every_batches=_STREAM_PROGRESS_EVERY,
+        progress_logger=ScheduledProgressLogger(
+            LOGGER,
+            label="rng-diagnostics",
+            schedule=cfg.analysis.progress_logging,
+            unit="rows",
+            total=total_source_rows,
+        ),
         max_matchup_groups=max_matchup_groups,
     )
     if melted_rows == 0:
@@ -204,13 +210,14 @@ def _collect_diagnostics_streaming_compact(
     *,
     strat_cols: Sequence[str],
     lags: Sequence[int],
-    progress_every_batches: int,
+    progress_logger: ScheduledProgressLogger | None,
     max_matchup_groups: int | None,
 ) -> tuple[pd.DataFrame, int]:
     normalized_lags = tuple(int(lag) for lag in lags)
     strategy_states: dict[tuple[str, int], _GroupStreamAccumulator] = {}
     matchup_states: dict[tuple[str | None, str, int], _GroupStreamAccumulator] = {}
     processed_batches = 0
+    processed_rows = 0
     melted_rows = 0
     skipped_matchup_groups = 0
     skipped_matchup_rows = 0
@@ -219,6 +226,7 @@ def _collect_diagnostics_streaming_compact(
         if batch.empty:
             continue
         processed_batches += 1
+        processed_rows += int(batch.shape[0])
 
         for strat_col in strat_cols:
             if strat_col not in batch.columns:
@@ -230,6 +238,7 @@ def _collect_diagnostics_streaming_compact(
             if seat.empty:
                 continue
             seat["strategy"] = seat["strategy"].astype("string")
+            seat["winner_strategy"] = seat["winner_strategy"].astype("string")
             seat["win_indicator"] = (
                 seat["winner_strategy"].notna() & (seat["strategy"] == seat["winner_strategy"])
             ).astype(np.int8)
@@ -257,12 +266,19 @@ def _collect_diagnostics_streaming_compact(
                     )
                 matchup_state.extend(group)
 
-        if progress_every_batches > 0 and processed_batches % progress_every_batches == 0:
-            LOGGER.info(
-                "rng-diagnostics progress",
+        if progress_logger is not None:
+            progress_logger.maybe_log(
+                processed_rows,
+                detail=(
+                    f"{processed_batches:,} batches, {melted_rows:,} melted rows, "
+                    f"{len(strategy_states):,} strategy groups, "
+                    f"{len(matchup_states):,} matchup groups, "
+                    f"{skipped_matchup_groups:,} matchup groups skipped"
+                ),
                 extra={
                     "stage": "rng_diagnostics",
                     "batches": processed_batches,
+                    "rows": processed_rows,
                     "melted_rows": melted_rows,
                     "strategy_groups": len(strategy_states),
                     "matchup_groups": len(matchup_states),
@@ -415,7 +431,8 @@ def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFram
         value_name="strategy",
     )
     melted = melted.dropna(subset=["strategy"])
-    melted["strategy"] = melted["strategy"].astype("category")
+    melted["strategy"] = melted["strategy"].astype("string")
+    melted["winner_strategy"] = melted["winner_strategy"].astype("string")
     melted["seat"] = melted["seat"].str.removesuffix("_strategy")
     melted["win_indicator"] = (melted["strategy"] == melted["winner_strategy"]).astype(int)
     return melted
@@ -570,13 +587,14 @@ def _collect_diagnostics_streaming(
     data_batches: Iterable[pd.DataFrame],
     *,
     lags: Sequence[int],
-    progress_every_batches: int,
+    progress_logger: ScheduledProgressLogger | None,
     max_matchup_groups: int | None = None,
 ) -> tuple[pd.DataFrame, int]:
     normalized_lags = tuple(int(lag) for lag in lags)
     strategy_states: dict[tuple[str, int], _GroupStreamAccumulator] = {}
     matchup_states: dict[tuple[str | None, str, int], _GroupStreamAccumulator] = {}
     processed_batches = 0
+    processed_rows = 0
     melted_rows = 0
     skipped_matchup_groups = 0
     skipped_matchup_rows = 0
@@ -585,6 +603,7 @@ def _collect_diagnostics_streaming(
         if batch.empty:
             continue
         processed_batches += 1
+        processed_rows += int(batch.shape[0])
         melted_rows += int(batch.shape[0])
 
         grouped_strategy = batch.groupby(["strategy", "n_players"], observed=True, sort=False)
@@ -610,12 +629,19 @@ def _collect_diagnostics_streaming(
             ordered = group.sort_values("game_seed", kind="mergesort")
             matchup_state.extend(ordered)
 
-        if progress_every_batches > 0 and processed_batches % progress_every_batches == 0:
-            LOGGER.info(
-                "rng-diagnostics progress",
+        if progress_logger is not None:
+            progress_logger.maybe_log(
+                processed_rows,
+                detail=(
+                    f"{processed_batches:,} batches, {melted_rows:,} melted rows, "
+                    f"{len(strategy_states):,} strategy groups, "
+                    f"{len(matchup_states):,} matchup groups, "
+                    f"{skipped_matchup_groups:,} matchup groups skipped"
+                ),
                 extra={
                     "stage": "rng_diagnostics",
                     "batches": processed_batches,
+                    "rows": processed_rows,
                     "melted_rows": melted_rows,
                     "strategy_groups": len(strategy_states),
                     "matchup_groups": len(matchup_states),

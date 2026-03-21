@@ -28,6 +28,7 @@ from typing import (
 
 import yaml  # type: ignore[import-untyped]
 
+from farkle.utils.progress import ProgressLogConfig
 from farkle.utils.types import Compression, normalize_compression
 from farkle.utils.yaml_helpers import expand_dotted_keys
 
@@ -83,7 +84,7 @@ SEED_LIST_LENGTHS_BY_COMMAND: dict[str, int] = {
 }
 
 
-def expected_seed_list_length(command: str, *, subcommand: str | None = None) -> int | None:
+def expected_seed_list_length(command: str, *, _subcommand: str | None = None) -> int | None:
     """Return the expected seed-list length for a CLI command."""
     return SEED_LIST_LENGTHS_BY_COMMAND.get(command)
 
@@ -148,6 +149,7 @@ class SimConfig:
     """Multiprocessing start method for simulation pools (default uses platform default)."""
     desired_sec_per_chunk: int = 10
     ckpt_every_sec: int = 30
+    progress_logging: ProgressLogConfig = field(default_factory=ProgressLogConfig)
 
     # Alter strategy grid
     score_thresholds: list[int] | None = None
@@ -270,6 +272,7 @@ class AnalysisConfig:
     """Parallel worker setting (`0` => os.cpu_count(), `>0` => explicit)."""
     mp_start_method: str | None = None
     """Multiprocessing start method for analysis pools (default uses platform default)."""
+    progress_logging: ProgressLogConfig = field(default_factory=ProgressLogConfig)
     log_level: str = "INFO"
     results_glob: str = "*_players"
     meta_random_if_I2_gt: float = 25.0
@@ -1922,6 +1925,29 @@ def effective_config_dict(cfg: AppConfig) -> dict[str, Any]:
     return resolved
 
 
+def _drop_nested_path(payload: MutableMapping[str, Any], path: str) -> None:
+    cursor: MutableMapping[str, Any] | None = payload
+    parts = path.split(".")
+    for part in parts[:-1]:
+        if cursor is None:
+            return
+        next_value = cursor.get(part)
+        if not isinstance(next_value, MutableMapping):
+            return
+        cursor = next_value
+    if cursor is not None:
+        cursor.pop(parts[-1], None)
+
+
+def _hashable_config_dict(cfg: AppConfig) -> dict[str, Any]:
+    """Return the config payload used for deterministic cache hashing."""
+
+    resolved = effective_config_dict(cfg)
+    for path in ("sim.progress_logging", "analysis.progress_logging"):
+        _drop_nested_path(resolved, path)
+    return resolved
+
+
 def _assign_nested_path(target: MutableMapping[str, Any], path: str, value: Any) -> None:
     parts = path.split(".")
     cursor = target
@@ -1956,7 +1982,7 @@ def compute_config_sha(cfg: AppConfig) -> str:
     """Return a deterministic sha256 over the effective configuration payload."""
 
     canonical_json = json.dumps(
-        effective_config_dict(cfg),
+        _hashable_config_dict(cfg),
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=False,
@@ -1971,7 +1997,7 @@ def compute_stage_config_sha(cfg: AppConfig, stage_key: str) -> str:
 
     definition = resolve_stage_definition(stage_key)
     stage_scope = _project_effective_config(
-        effective_config_dict(cfg),
+        _hashable_config_dict(cfg),
         definition.cache_scope,
     )
     canonical_json = json.dumps(
@@ -1996,6 +2022,7 @@ def assign_config_sha(cfg: AppConfig) -> str:
 
 __all__ = [
     "IOConfig",
+    "ProgressLogConfig",
     "SimConfig",
     "AnalysisConfig",
     "IngestConfig",

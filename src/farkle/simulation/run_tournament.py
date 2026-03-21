@@ -14,7 +14,7 @@ import logging
 import pickle
 import time
 from collections import Counter, defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from itertools import islice
 from os import getpid
@@ -31,6 +31,7 @@ from farkle.utils import parallel
 from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.manifest import iter_manifest
+from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.streaming_loop import run_streaming_shard
 from farkle.utils.writer import atomic_path
 
@@ -60,6 +61,7 @@ class TournamentConfig:
     num_shuffles: int = NUM_SHUFFLES
     desired_sec_per_chunk: int = DESIRED_SEC_PER_CHUNK
     ckpt_every_sec: int = CKPT_EVERY_SEC
+    progress_logging: ProgressLogConfig = field(default_factory=ProgressLogConfig)
     n_strategies: int = 7_140  # overridden when strategies are provided
     mp_start_method: str | None = None
 
@@ -817,6 +819,14 @@ def run_tournament(
             "resume": resume,
         },
     )
+    total_games = cfg.num_shuffles * cfg.games_per_shuffle
+    checkpoint_progress = ScheduledProgressLogger(
+        LOGGER,
+        label=f"Tournament {cfg.n_players}p checkpoint",
+        schedule=cfg.progress_logging,
+        unit="games",
+        total=total_games,
+    )
 
     if collect_metrics or collect_rows:
         manifest_path = row_manifest_path
@@ -931,9 +941,9 @@ def run_tournament(
                     (metric_sq_sums if (collect_metrics or collect_rows) else None),
                     meta=checkpoint_meta,
                 )
-                LOGGER.info(
-                    "Checkpoint written after %d games",
+                checkpoint_progress.maybe_log(
                     games_completed,
+                    detail=f"chunk {chunk_index + 1}/{remaining_chunk_count}, checkpoint {ckpt_path.name}",
                     extra={
                         "stage": "simulation",
                         "chunk_index": chunk_index,

@@ -23,6 +23,10 @@ sim:
                                   # If row_dir == null, row writing skipped
   desired_sec_per_chunk: 10
   ckpt_every_sec: 30
+  progress_logging:
+    frequent_interval_sec: 30
+    info_phase_sec: 180
+    ongoing_interval_sec: 600
 
   # Customize strategy grid
   # null (yaml) / None (py) loads default values for that variable
@@ -65,6 +69,10 @@ analysis:
   n_jobs: 16                      # parallel workers for analysis
   mp_start_method: null            # start method: default|null|spawn|fork|forkserver
   log_level: "INFO"               # logger level during analysis
+  progress_logging:
+    frequent_interval_sec: 30
+    info_phase_sec: 180
+    ongoing_interval_sec: 600
 
   # How to discover per-N results
   results_glob: "*_players"       # glob selecting per-N result folders under results_root

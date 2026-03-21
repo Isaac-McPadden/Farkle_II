@@ -57,8 +57,9 @@ from farkle.config import AppConfig
 from farkle.utils.analysis_shared import to_int
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.pooling import normalize_pooling_scheme
-from farkle.utils.stage_io import discover_per_k_artifacts, resolve_worker_count
+from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.schema_helpers import n_players_from_schema
+from farkle.utils.stage_io import discover_per_k_artifacts, resolve_worker_count
 from farkle.utils.types import Compression
 from farkle.utils.writer import ParquetShardWriter, atomic_path
 
@@ -299,7 +300,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     stage_dir = cfg.game_stats_stage_dir
     configured_k_values = cfg.agreement_players()
     per_n_inputs = _discover_per_n_inputs(cfg)
-    input_by_k = {k: path for k, path in per_n_inputs}
+    input_by_k = dict(per_n_inputs)
     input_paths: list[Path] = [p for _, p in per_n_inputs]
     combined_path = cfg.curated_parquet
     if combined_path.exists():
@@ -363,6 +364,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                     config_sha=cfg.config_sha,
                     stage_config_sha=stage_config_sha,
                     cache_key_version=cache_key_version,
+                    progress_logging=cfg.analysis.progress_logging,
                 )
         else:
             with ThreadPoolExecutor(max_workers=min(workers, len(stale_ks))) as executor:
@@ -377,6 +379,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                         config_sha=cfg.config_sha,
                         stage_config_sha=stage_config_sha,
                         cache_key_version=cache_key_version,
+                        progress_logging=cfg.analysis.progress_logging,
                     )
                     for k in stale_ks
                 ]
@@ -401,7 +404,6 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         stage_config_sha=stage_config_sha,
         cache_key_version=cache_key_version,
         force=force,
-        combined_path=combined_path,
     )
 
     rare_events_output = cfg.game_stats_output_path("rare_events.parquet")
@@ -448,6 +450,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 stage_config_sha=stage_config_sha,
                 cache_key_version=cache_key_version,
                 n_workers=workers,
+                progress_logging=cfg.analysis.progress_logging,
             )
             if rare_event_rows == 0:
                 raise RuntimeError("game-stats: no rare events available to summarize")
@@ -466,6 +469,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 target_score=resolved_target_score,
                 output_path=rare_events_details_output,
                 codec=cfg.parquet_codec,
+                progress_logging=cfg.analysis.progress_logging,
             )
             if rare_event_rows == 0:
                 raise RuntimeError("game-stats: no rare events available to detail")
@@ -511,6 +515,7 @@ def _compute_k_game_stats(
     config_sha: str | None,
     stage_config_sha: str,
     cache_key_version: int,
+    progress_logging: ProgressLogConfig | None = None,
 ) -> None:
     artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,11 +536,25 @@ def _compute_k_game_stats(
     scanner_cols = ["n_rounds", *strategy_cols]
     if score_cols:
         scanner_cols.extend(score_cols)
+    total_rows = int(ds_in.count_rows())
+    progress_logger = (
+        ScheduledProgressLogger(
+            LOGGER,
+            label=f"Game stats {k}p",
+            schedule=progress_logging or ProgressLogConfig(),
+            unit="rows",
+            total=total_rows,
+        )
+        if total_rows > 0
+        else None
+    )
+    processed_rows = 0
     scanner = ds_in.scanner(columns=scanner_cols, batch_size=65_536)
     for batch_idx, batch in enumerate(scanner.to_batches(), start=1):
         df = batch.to_pandas(categories=strategy_cols)
         if df.empty:
             continue
+        processed_rows += int(batch.num_rows)
         rounds = pd.to_numeric(df["n_rounds"], errors="coerce")
         valid_rounds_global = rounds.notna()
         if bool(valid_rounds_global.any()):
@@ -582,6 +601,24 @@ def _compute_k_game_stats(
                 Path(tmp_path).write_text(
                     json.dumps({"k": k, "batches": batch_idx}, sort_keys=True), encoding="utf-8"
                 )
+        if progress_logger is not None:
+            progress_logger.maybe_log(
+                processed_rows,
+                detail=(
+                    f"{batch_idx:,} batches, "
+                    f"{len(rounds_by_strategy):,} round groups, "
+                    f"{len(runner_by_strategy):,} margin groups"
+                ),
+                extra={
+                    "stage": "game_stats",
+                    "n_players": k,
+                    "path": str(input_path),
+                    "batches": batch_idx,
+                    "processed_rows": processed_rows,
+                    "strategy_groups": len(rounds_by_strategy),
+                    "margin_groups": len(runner_by_strategy),
+                },
+            )
 
     rows: list[dict[str, StatValue]] = []
     for strategy, rounds_acc in rounds_by_strategy.items():
@@ -777,7 +814,6 @@ def _pool_completed_k_game_stats(
     stage_config_sha: str,
     cache_key_version: int,
     force: bool,
-    combined_path: Path,
 ) -> None:
     completed_paths: list[Path] = []
     for k in configured_k_values:
@@ -885,7 +921,7 @@ def _pool_completed_k_game_stats(
             for c in margin_df.columns
             if c not in {"summary_level", "strategy", "n_players", "observations"}
         ]
-        agg_map = {"observations": "sum", **{col: "mean" for col in margin_metric_cols}}
+        agg_map = {"observations": "sum", **dict.fromkeys(margin_metric_cols, "mean")}
         pooled_margin = (
             margin_df.groupby("strategy", observed=True, sort=False).agg(agg_map).reset_index()
         )
@@ -2034,9 +2070,10 @@ def _rare_event_flags(
     output_path: Path,
     codec: Compression,
     config_sha: str | None = None,
-    stage_config_sha: str | None = None,
+    _stage_config_sha: str | None = None,
     cache_key_version: int = 2,
     n_workers: int = 1,
+    progress_logging: ProgressLogConfig | None = None,
 ) -> int:
     """Write combined per-game and summary rare-event rows to parquet."""
     if not per_n_inputs:
@@ -2099,6 +2136,7 @@ def _rare_event_flags(
                     config_sha=resume_sha,
                     run_config_sha=config_sha,
                     cache_key_version=cache_key_version,
+                    progress_logging=progress_logging,
                 )
         else:
             with ThreadPoolExecutor(max_workers=worker_count) as executor:
@@ -2117,6 +2155,7 @@ def _rare_event_flags(
                         config_sha=resume_sha,
                         run_config_sha=config_sha,
                         cache_key_version=cache_key_version,
+                        progress_logging=progress_logging,
                     )
                     for n_players, path, shard_path, stats_path, done_path in stale_inputs
                 ]
@@ -2297,6 +2336,7 @@ def _build_rare_event_summary_shard(
     config_sha: str | None,
     run_config_sha: str | None,
     cache_key_version: int,
+    progress_logging: ProgressLogConfig | None = None,
 ) -> None:
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
     strategy_dtype = _strategy_numpy_dtype(strategy_arrow)
@@ -2334,11 +2374,25 @@ def _build_rare_event_summary_shard(
                 extra={"stage": "game_stats", "path": str(input_path)},
             )
         else:
+            total_rows = int(ds_in.count_rows())
+            progress_logger = (
+                ScheduledProgressLogger(
+                    LOGGER,
+                    label=f"Rare-event shard {n_players}p",
+                    schedule=progress_logging or ProgressLogConfig(),
+                    unit="rows",
+                    total=total_rows,
+                )
+                if total_rows > 0
+                else None
+            )
+            processed_rows = 0
             scanner = ds_in.scanner(columns=[*strategy_cols, *score_cols], batch_size=65_536)
             for batch_idx, batch in enumerate(scanner.to_batches(), start=1):
                 df = batch.to_pandas(categories=strategy_cols)
                 if df.empty:
                     continue
+                processed_rows += int(batch.num_rows)
 
                 margin_cols = _compute_margin_columns(df, score_cols)
                 scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
@@ -2434,13 +2488,15 @@ def _build_rare_event_summary_shard(
                             field=flag_name,
                         )
 
-                if batch_idx % 50 == 0:
-                    LOGGER.info(
-                        "Rare-event shard progress",
+                if progress_logger is not None:
+                    progress_logger.maybe_log(
+                        processed_rows,
+                        detail=f"{batch_idx:,} batches, {rows_written:,} rows written, {len(strategy_sums):,} strategy groups",
                         extra={
                             "stage": "game_stats",
                             "n_players": n_players,
                             "batches": batch_idx,
+                            "rows": processed_rows,
                             "rows_written": rows_written,
                             "strategy_groups": len(strategy_sums),
                         },
@@ -2478,6 +2534,7 @@ def _rare_event_details(
     target_score: int,
     output_path: Path,
     codec: Compression,
+    progress_logging: ProgressLogConfig | None = None,
 ) -> int:
     """Write per-game rare-event rows to a separate parquet."""
 
@@ -2525,11 +2582,26 @@ def _rare_event_details(
                 continue
 
             columns = [*strategy_cols, *score_cols]
+            total_rows = int(ds_in.count_rows())
+            progress_logger = (
+                ScheduledProgressLogger(
+                    LOGGER,
+                    label=f"Rare-event details {n_players}p",
+                    schedule=progress_logging or ProgressLogConfig(),
+                    unit="rows",
+                    total=total_rows,
+                )
+                if total_rows > 0
+                else None
+            )
+            processed_rows = 0
+            detail_rows_written = 0
             scanner = ds_in.scanner(columns=columns, batch_size=65_536)
-            for batch in scanner.to_batches():
+            for batch_idx, batch in enumerate(scanner.to_batches(), start=1):
                 df = batch.to_pandas(categories=strategy_cols)
                 if df.empty:
                     continue
+                processed_rows += int(batch.num_rows)
                 margin_cols = _compute_margin_columns(df, score_cols)
                 scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
                 multi_target = (scores >= target_score).sum(axis=1) >= 2
@@ -2587,6 +2659,23 @@ def _rare_event_details(
                     )
                 writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
                 rows_written += count
+                detail_rows_written += count
+                if progress_logger is not None:
+                    progress_logger.maybe_log(
+                        processed_rows,
+                        detail=(
+                            f"{batch_idx:,} batches, "
+                            f"{detail_rows_written:,} detail rows written"
+                        ),
+                        extra={
+                            "stage": "game_stats",
+                            "n_players": n_players,
+                            "path": str(path),
+                            "batches": batch_idx,
+                            "processed_rows": processed_rows,
+                            "rows_written": detail_rows_written,
+                        },
+                    )
         return rows_written
     finally:
         writer.close(success=rows_written > 0)

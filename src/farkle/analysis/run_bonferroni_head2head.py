@@ -6,7 +6,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import time
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from itertools import combinations
 from pathlib import Path
@@ -28,6 +27,7 @@ from farkle.simulation.strategies import (
 )
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.parallel import normalize_n_jobs
+from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import MAX_UINT32
 from farkle.utils.stats import games_for_power
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
@@ -1071,7 +1071,7 @@ def run_bonferroni_head2head(
         shard_path = shard_dir / f"bonferroni_pairwise_shard_{shard_index:04d}.parquet"
         shard_table = pa.Table.from_pylist(records_to_flush, schema=pairwise_shard_schema)
         write_parquet_atomic(shard_table, shard_path)
-        LOGGER.info(
+        LOGGER.debug(
             "Shard written",
             extra={
                 "stage": "head2head",
@@ -1088,7 +1088,7 @@ def run_bonferroni_head2head(
         shard_path = ordered_shard_dir / f"bonferroni_pairwise_ordered_shard_{shard_index:04d}.parquet"
         shard_table = pa.Table.from_pylist(records_to_flush, schema=ordered_shard_schema)
         write_parquet_atomic(shard_table, shard_path)
-        LOGGER.info(
+        LOGGER.debug(
             "Ordered shard written",
             extra={
                 "stage": "head2head",
@@ -1099,37 +1099,37 @@ def run_bonferroni_head2head(
         records_to_flush.clear()
         return shard_index + 1
 
-    fast_interval = 30.0
-    fast_phase_seconds = 600.0
-    slow_interval = 600.0
-    schedule: Sequence[float] = progress_schedule or [fast_interval, fast_phase_seconds, slow_interval]
-    if len(schedule) != 3:
-        raise ValueError(
-            "progress_schedule must have three values: fast interval, fast phase seconds, slow interval",
+    progress_config = cfg.analysis.progress_logging
+    if progress_schedule is not None:
+        if len(progress_schedule) != 3:
+            raise ValueError(
+                "progress_schedule must have three values: fast interval, fast phase seconds, slow interval",
+            )
+        progress_config = ProgressLogConfig(
+            frequent_interval_sec=float(progress_schedule[0]),
+            info_phase_sec=float(progress_schedule[1]),
+            ongoing_interval_sec=float(progress_schedule[2]),
         )
-    fast_interval, fast_phase_seconds, slow_interval = (float(x) for x in schedule)
-    start_time = time.monotonic()
-    next_progress = start_time + fast_interval
-    fast_phase_end = start_time + fast_phase_seconds
+    progress_logger = ScheduledProgressLogger(
+        LOGGER,
+        label="Head-to-head",
+        schedule=progress_config,
+        unit="pairs",
+        total=pair_count,
+    )
 
     def maybe_log_progress(completed: int) -> None:
-        nonlocal next_progress
-        now = time.monotonic()
-        if now < next_progress:
-            return
-        LOGGER.info(
-            "Head-to-head progress",
+        progress_logger.maybe_log(
+            completed,
+            detail=f"{shard_count:,} pairwise shards, {ordered_shard_count:,} ordered shards",
             extra={
                 "stage": "head2head",
                 "pairs_completed": completed,
                 "pairs_total": pair_count,
-                "elapsed_seconds": round(now - start_time, 1),
+                "shards": shard_count,
+                "ordered_shards": ordered_shard_count,
             },
         )
-        if now < fast_phase_end:
-            next_progress += fast_interval
-        else:
-            next_progress = max(next_progress, fast_phase_end) + slow_interval
 
     strategies_cache = {
         name: parse_strategy_identifier(
@@ -1410,6 +1410,27 @@ def run_bonferroni_head2head(
             continue
         pending_selfplay_jobs.append((strat, selfplay_seeds, strategies_cache[strat]))
     debug_summary["selfplay"]["scheduled_strategies"] = len(pending_selfplay_jobs)
+    selfplay_total = len(sorted_elites)
+    selfplay_processed = len(completed_selfplay_ids)
+    selfplay_progress_logger = ScheduledProgressLogger(
+        LOGGER,
+        label="Head-to-head self-play",
+        schedule=progress_config,
+        unit="strategies",
+        total=selfplay_total,
+    )
+
+    def maybe_log_selfplay_progress(completed: int) -> None:
+        selfplay_progress_logger.maybe_log(
+            completed,
+            detail=f"{selfplay_shard_count:,} self-play shards",
+            extra={
+                "stage": "head2head",
+                "selfplay_completed": completed,
+                "selfplay_total": selfplay_total,
+                "selfplay_shards": selfplay_shard_count,
+            },
+        )
 
     def flush_selfplay_shard(records_to_flush: list[dict[str, Any]], shard_index: int) -> int:
         if not records_to_flush:
@@ -1417,7 +1438,7 @@ def run_bonferroni_head2head(
         shard_path = selfplay_shard_dir / f"bonferroni_selfplay_shard_{shard_index:04d}.parquet"
         shard_table = pa.Table.from_pylist(records_to_flush, schema=selfplay_shard_schema)
         write_parquet_atomic(shard_table, shard_path)
-        LOGGER.info(
+        LOGGER.debug(
             "Self-play shard written",
             extra={
                 "stage": "head2head",
@@ -1468,6 +1489,8 @@ def run_bonferroni_head2head(
                     selfplay_shard_count = flush_selfplay_shard(
                         pending_selfplay_shard_records, selfplay_shard_count
                     )
+                selfplay_processed += 1
+                maybe_log_selfplay_progress(selfplay_processed)
         else:
             with selfplay_executor_cls(max_workers=selfplay_worker_count) as executor:
                 future_to_strategy = {
@@ -1488,6 +1511,8 @@ def run_bonferroni_head2head(
                         selfplay_shard_count = flush_selfplay_shard(
                             pending_selfplay_shard_records, selfplay_shard_count
                         )
+                    selfplay_processed += 1
+                    maybe_log_selfplay_progress(selfplay_processed)
 
     selfplay_shard_count = flush_selfplay_shard(
         pending_selfplay_shard_records, selfplay_shard_count

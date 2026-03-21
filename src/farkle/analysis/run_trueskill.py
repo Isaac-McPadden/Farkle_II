@@ -51,6 +51,7 @@ from farkle.config import AppConfig
 from farkle.orchestration.seed_utils import resolve_results_dir, split_seeded_results_dir
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.parallel import resolve_mp_context
+from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.stats import build_tiers
@@ -885,6 +886,7 @@ def _rate_block_worker(
     *,
     resume: bool = True,
     checkpoint_every_batches: int = 500,
+    progress_logging: ProgressLogConfig | None = None,
     env_kwargs: Mapping[str, float] | TrueSkillInitKwargs | None = None,
     row_data_dir: str | None = None,
     curated_rows_name: str | None = None,
@@ -933,6 +935,10 @@ def _rate_block_worker(
             n = n_players_from_schema(pq.read_schema(row_file))
         else:
             row_file = row_file_candidate
+    try:
+        total_input_games = max(0, int(pq.read_metadata(row_file).num_rows))
+    except Exception:
+        total_input_games = 0
 
     # Up-to-date guard
     paths = _rating_artifact_paths(root, player_count, suffix, legacy_root=legacy_root)
@@ -996,6 +1002,17 @@ def _rate_block_worker(
     try:
         last_ck = time.time()
         batches_since_ck = 0
+        progress_logger = (
+            ScheduledProgressLogger(
+                LOGGER,
+                label=f"TrueSkill {player_count}p",
+                schedule=progress_logging or ProgressLogConfig(),
+                unit="games",
+                total=total_input_games,
+            )
+            if total_input_games > 0
+            else None
+        )
         schema = pq.read_schema(row_file)
         columns = list(schema.names)
         for rg, bi, batch in _stream_batches(
@@ -1038,6 +1055,22 @@ def _rate_block_worker(
                         ratings_path=str(rk_path),
                     ),
                 )
+                if progress_logger is not None:
+                    progress_logger.maybe_log(
+                        n_games,
+                        detail=(
+                            f"row group {rg + 1}, batch {bi + 1}, "
+                            f"{len(ratings):,} ratings tracked"
+                        ),
+                        extra={
+                            "stage": "trueskill",
+                            "block": player_count,
+                            "games_done": n_games,
+                            "games_total": total_input_games,
+                            "row_group": rg,
+                            "batch_index": bi + 1,
+                        },
+                    )
                 last_ck = time.time()
                 batches_since_ck = 0
 
@@ -1100,6 +1133,7 @@ def run_trueskill(
     tiering_z: float | None = None,
     tiering_min_gap: float | None = None,
     mp_start_method: str | None = None,
+    progress_logging: ProgressLogConfig | None = None,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -1157,6 +1191,8 @@ def run_trueskill(
     suffix = f"_seed{output_seed}" if output_seed is not None else ""
     if workers is None:
         workers = max(1, (os.cpu_count() or 1) - 1)
+    if progress_logging is None:
+        progress_logging = ProgressLogConfig()
 
     LOGGER.info(
         "TrueSkill run start",
@@ -1208,6 +1244,7 @@ def run_trueskill(
                     batch_rows,
                     resume=resume_per_n,
                     checkpoint_every_batches=checkpoint_every_batches,
+                    progress_logging=progress_logging,
                     env_kwargs=env_kwargs_float,
                     row_data_dir=str(row_data_path) if row_data_path else None,
                     curated_rows_name=curated_rows_name,
@@ -1234,6 +1271,7 @@ def run_trueskill(
                 batch_rows,
                 resume=resume_per_n,
                 checkpoint_every_batches=checkpoint_every_batches,
+                progress_logging=progress_logging,
                 env_kwargs=env_kwargs_float,
                 row_data_dir=str(row_data_path) if row_data_path else None,
                 curated_rows_name=curated_rows_name,
@@ -1711,6 +1749,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             tiering_z=tiering_z,
             tiering_min_gap=tiering_min_gap,
             mp_start_method=analysis_cfg.mp_start_method,
+            progress_logging=analysis_cfg.progress_logging,
         )
 
         pooled_path = _ensure_new_location(

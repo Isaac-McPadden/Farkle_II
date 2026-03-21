@@ -710,6 +710,7 @@ def run_single_n(
         num_shuffles=n_shuffles,
         desired_sec_per_chunk=cfg.sim.desired_sec_per_chunk,
         ckpt_every_sec=cfg.sim.ckpt_every_sec,
+        progress_logging=cfg.sim.progress_logging,
         n_strategies=grid_size,
         mp_start_method=cfg.sim.mp_start_method,
     )
