@@ -1,23 +1,21 @@
 # Farkle Mk II
 
-Farkle Mk II is a high-throughput Monte Carlo engine and analytics toolkit for
-running large Farkle tournaments. It ships a unified CLI, streaming-friendly
-artifacts, and statistical helpers for sizing experiments.
+Farkle Mk II is a Monte Carlo simulation and analytics toolkit for large
+Farkle tournaments. It provides a deterministic simulation engine, a unified
+CLI, stage-aware analysis paths, and resumable artifact handling.
 
 ## Highlights
 
-- Deterministic-friendly engine for single games (`src/farkle/game/engine.py`).
-- Threshold strategy framework for roll-or-bank heuristics
-  (`src/farkle/simulation/strategies.py`).
-- Streaming parquet writers and append-only manifests that survive restarts.
-- Unified `farkle` CLI with `run`, `time`, `watch`, `analyze`, and
-  `two-seed-pipeline` commands.
-- Manifest schema v2 and stage done-stamp schema v2 with a strict snake_case
-  event contract.
-- Stage-scoped cache hashes so unrelated config edits do not force a full
-  analysis rerun.
-- Config-driven analysis pipeline with metrics, TrueSkill, and head-to-head
-  reporting.
+- Deterministic single-game and tournament simulation driven by explicit seeds.
+- Unified `farkle` CLI for simulation, benchmarking, watching games, analysis,
+  and two-seed orchestration.
+- Stage-aware `AppConfig` helpers that resolve canonical output paths without
+  hard-coding numbered analysis directories.
+- Streaming-friendly parquet outputs, append-only manifests, and `.done.json`
+  stage stamps for resumable workflows.
+- Config-driven analytics including coverage, game stats, TrueSkill,
+  frequentist tiering, head-to-head analysis, HGB modeling, variance, meta,
+  agreement, and interseed summaries.
 
 ## Installation
 
@@ -29,10 +27,40 @@ pip install farkle
 
 ## Unified Configuration
 
-All CLI workflows consume a single YAML document that maps to
-`farkle.config.AppConfig`. The top-level keys correspond to dataclass sections:
-`io`, `sim`, `analysis`, `ingest`, `combine`, `metrics`, `trueskill`,
-`head2head`, and `hgb`. Missing values fall back to sensible defaults.
+All CLI workflows load a single YAML document into `farkle.config.AppConfig`.
+The top-level sections are:
+
+- `io`
+- `sim`
+- `analysis`
+- `ingest`
+- `combine`
+- `metrics`
+- `trueskill`
+- `head2head`
+- `hgb`
+- `orchestration`
+
+Important seed semantics:
+
+- `sim.seed_list` is the canonical seed container.
+- Single-seed commands expect one seed.
+- Two-seed orchestration expects two seeds.
+- `sim.seed` and `sim.seed_pair` are still supported for compatibility, but
+  `seed_list` is the source of truth when present.
+
+Path semantics:
+
+- `io.results_dir_prefix` is rooted under `data/` unless it is already absolute.
+- Single-seed results are written to `data/<results_dir_prefix>_seed_<seed>`.
+- Analysis stage folders are assigned by `StageLayout` at runtime. Use
+  `AppConfig` helpers such as `cfg.stage_dir("metrics")`,
+  `cfg.metrics_input_path("metrics.parquet")`, and
+  `cfg.head2head_path("bonferroni_pairwise.parquet")` instead of manual string
+  concatenation.
+
+See [docs/config_reference.md](docs/config_reference.md) for a fuller config
+summary.
 
 ```yaml
 # configs/fast_config.yaml
@@ -48,29 +76,22 @@ sim:
   row_dir: data/results/fast_seed_42/rows
 
 analysis:
-  results_glob: "*_players"
   log_level: INFO
 
 ingest:
   n_jobs: 4
   row_group_size: 64000
+
+orchestration:
+  parallel_seeds: false
 ```
 
-`io.results_dir_prefix` is combined with `sim.seed` to form the results root
-directory: `data/<results_dir_prefix>_seed_<seed>` for single-seed runs. When
-`sim.seed_list` is set, `sim.seed` is derived from the first entry for
-deterministic naming.
+Configuration overlays passed with `--config` are merged in order. Inline
+overrides use dotted keys that match the dataclass structure, for example:
 
-Analysis stage directories are numbered automatically by the resolved
-``StageLayout``. Use the convenience helpers on :class:`farkle.config.AppConfig`
-instead of string concatenation when you need a path (for example
-``cfg.head2head_stage_dir`` or ``cfg.metrics_input_path("metrics.parquet")``).
-
-Configuration overlays supplied with `--config` are loaded in order; inline
-overrides use dotted keys that match the dataclass structure. For example:
-`--set sim.n_jobs=12 --set sim.seed=123`. The canonical multi-command seed
-setting lives in `sim.seed_list` (length 1 for single-seed, length 2 for
-two-seed orchestration); `sim.seed` remains as a legacy single-seed override.
+```bash
+farkle --config configs/fast_config.yaml --set sim.n_jobs=12 --set sim.seed=123 run
+```
 
 ## CLI Commands
 
@@ -78,19 +99,21 @@ two-seed orchestration); `sim.seed` remains as a legacy single-seed override.
 farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
 ```
 
-**Global options**
-- `--config PATH` - load an `AppConfig` from YAML. Used by `run`, `analyze`, and
-  `two-seed-pipeline`.
-- `--set SECTION.OPTION=VALUE` - override a single field in the loaded config
-  (coerced to the field type when possible). May be supplied multiple times.
-- `--log-level LEVEL` - set the root logging level before executing the command.
+Global options:
+
+- `--config PATH` loads one YAML overlay.
+- `--set SECTION.OPTION=VALUE` overrides a single config field.
+- `--log-level LEVEL` sets the root logging level.
+- `--seed-a`, `--seed-b`, and `--seed-pair A B` override the active two-seed
+  tuple for orchestration commands.
 
 ### `run`
 
-Launch the tournament runner using `cfg.sim`. The `--metrics` flag forces
-`cfg.sim.expanded_metrics = True`; `--row-dir PATH` updates `cfg.sim.row_dir`
-before execution. When `cfg.sim.n_players_list` contains more than one value the
-runner sweeps each player count sequentially.
+Launch the tournament runner using `cfg.sim`.
+
+- `--metrics` forces `cfg.sim.expanded_metrics = True`.
+- `--row-dir PATH` writes full per-game rows to that directory.
+- `--force` recomputes even when resumable run artifacts already exist.
 
 ```bash
 farkle --config configs/fast_config.yaml \
@@ -101,54 +124,85 @@ farkle --config configs/fast_config.yaml \
 
 ### `time`
 
-Benchmark simulation throughput using the defaults in
-`farkle.simulation.time_farkle.measure_sim_times`. No additional command
-options are parsed apart from the global logging level.
+Benchmark simulation throughput.
+
+- `--players INT` sets players per game.
+- `--n-games INT` sets the number of simulated games.
+- `--jobs INT` sets the parallel worker count.
+- `--seed INT` sets the benchmark seed.
 
 ### `watch`
 
-Interactively watch a single game. `--seed INT` locks the RNG for deterministic
-replays.
+Interactively watch a single game.
+
+- `--seed INT` locks the RNG for deterministic replays.
 
 ### `analyze`
 
-Wrapper around the analysis helpers that operate on streaming results. The
-subcommands share the same `AppConfig` and read from its `analysis`, `ingest`,
-`combine`, `metrics`, `trueskill`, `head2head`, and `hgb` sections. Stages write
-into numbered directories under `analysis/`:
+Run analysis helpers against the current `AppConfig`.
 
-- `00_ingest` - convert raw CSV rows into parquet shards.
-- `<idx>_curate` - finalize ingested shards and write manifests under `analysis/<idx>_curate` (index chosen automatically by :class:`~farkle.analysis.stage_registry.StageLayout`). Prefer ``cfg.stage_dir("curate")`` over manually concatenating folder numbers.
-- `02_combine` - merge curated shards from `01_curate` into a consolidated parquet file.
-- `03_metrics` - compute aggregate metrics, including pooled summaries.
-- `04_game_stats` / `05_rng` - optional enrichments that keep their numeric
-  slots even when skipped.
-- `09_trueskill`, `10_head2head`, `11_hgb`, `12_tiering` - analytics stages that
-  depend on upstream metrics.
-- `pipeline` - run `ingest`, `curate`, `combine`, and `metrics` sequentially
-  before branching into downstream analytics.
+Subcommands:
 
-```bash
-farkle --config configs/farkle_mega_config.yaml analyze pipeline
+- `ingest`
+- `curate`
+- `combine`
+- `metrics`
+- `variance`
+- `preprocess`
+- `pipeline`
+- `analytics`
+
+Shared analysis flags:
+
+- `metrics`, `preprocess`, and `pipeline` accept
+  `--compute-game-stats`, `--rng-diagnostics`, `--rng-lags`,
+  `--margin-thresholds`, `--rare-event-target`,
+  `--rare-event-margin-quantile`, and `--rare-event-target-rate`.
+- `pipeline` and `analytics` accept `--allow-missing-upstream`.
+- `variance` accepts `--force`.
+
+The current default single-seed stage layout resolves to:
+
+```text
+00_ingest
+01_curate
+02_combine
+03_metrics
+04_coverage_by_k
+05_game_stats
+06_seed_summaries
+07_trueskill
+08_tiering
+09_head2head
+10_seed_symmetry
+11_post_h2h
+12_hgb
+13_variance
+14_meta
+15_h2h_tier_trends
+16_agreement
+17_interseed
 ```
 
+Do not hard-code those numbers in scripts. Read `analysis/config.resolved.yaml`
+or resolve paths through `AppConfig`.
+
 ```bash
-farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
+farkle --config configs/fast_config.yaml analyze pipeline --compute-game-stats
 ```
 
 ### `two-seed-pipeline`
 
 Run simulations and per-seed analysis for both entries in `sim.seed_list`, then
-run the interseed comparisons. Interseed artifacts (variance/meta/TrueSkill/agreement
-outputs plus `interseed_summary.json`) are written under the seed-pair results
-directory in `interseed_analysis/`. This is the canonical dual-seed CLI entry
-point.
+run the interseed comparison stages.
+
+- `--force` recomputes even when completion markers exist.
 
 ```bash
 farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
 ```
 
-For module execution:
+Module execution is also available for the orchestration entry point:
 
 ```bash
 python -m farkle.orchestration.two_seed_pipeline --config configs/fast_config.yaml
@@ -156,20 +210,18 @@ python -m farkle.orchestration.two_seed_pipeline --config configs/fast_config.ya
 
 ## Pipeline Metadata
 
-Pipeline manifests are NDJSON with manifest schema v2. Every orchestration
-record includes `schema_version`, `run_id`, `event`, and `config_sha`, and
-event names are snake_case only. If a pre-v2 manifest is present, the next run
-rotates it to a `.pre_v2` backup before appending new records.
+The pipeline writes:
 
-Stage completion markers are `.done.json` files with schema v2. They record the
-full-run `config_sha` for provenance plus a stage-local `stage_config_sha` and
-`cache_key_version` for cache validity. Recomputation decisions are based on the
-stage-local hash, so a head-to-head config change does not invalidate ingest,
-curate, combine, or other unrelated stages.
+- `active_config.yaml` under each results root.
+- `analysis/config.resolved.yaml` for the resolved analysis configuration.
+- Append-only manifest files (`manifest.jsonl` by default).
+- `.done.json` stage stamps carrying `config_sha`, `stage_config_sha`, and
+  `cache_key_version`.
+
+Cache reuse is stage-scoped. Unrelated config edits should not invalidate every
+analysis stage.
 
 ## Direct Engine Usage
-
-The engine remains importable for bespoke experiments:
 
 ```python
 from farkle.game.engine import FarkleGame, FarklePlayer
@@ -188,10 +240,11 @@ print(summary.game)
 ## Repository Layout
 
 - `src/farkle` - core package code
-- `configs` - configuration presets for simulations and analysis
+- `configs` - configuration presets
+- `docs` - project documentation
 - `tests` - unit and integration tests
-- `notebooks` - exploratory notebooks and reports
-- `data` - small sample datasets and cached artifacts
+- `notebooks` - exploratory analysis
+- `data` - sample datasets and generated outputs
 
 ## Development
 
@@ -202,10 +255,11 @@ pip install -e .[dev]
 ruff .
 black --check .
 mypy
+pytest
 ```
 
-Typing notes: mypy is configured to check `src/farkle` only, so tests (including untyped test
-helpers) are intentionally exempt from strict typing requirements.
+Typing notes: `mypy` is configured to check `src/farkle` only. Tests are not
+part of the strict typing target.
 
 ## License
 

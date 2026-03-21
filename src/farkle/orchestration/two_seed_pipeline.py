@@ -144,6 +144,8 @@ def _build_seed_cfg(
     meta_dir: Path,
     policy_bundle: _PerSeedPolicyBundle,
 ) -> AppConfig:
+    """Clone ``cfg`` for one seed and apply the per-seed worker budget."""
+
     seed_cfg = prepare_seed_config(
         cfg,
         seed=seed,
@@ -167,6 +169,8 @@ def _run_one_seed(
     force: bool,
     policy_bundle: _PerSeedPolicyBundle,
 ) -> _SeedRunStatus:
+    """Run simulation and per-seed analysis for one member of the seed pair."""
+
     seed_cfg = _build_seed_cfg(
         cfg,
         seed_pair=seed_pair,
@@ -609,6 +613,8 @@ def run_pipeline(
     seed_pair: tuple[int, int],
     force: bool = False,
 ) -> None:
+    """Run the full two-seed simulation and analysis orchestration."""
+
     if cfg.config_sha is None:
         assign_config_sha(cfg)
     pair_root = seed_pair_root(cfg, seed_pair)
@@ -929,6 +935,8 @@ def run_pipeline(
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Construct the module-level parser for two-seed orchestration."""
+
     parser = argparse.ArgumentParser(prog="farkle two-seed-pipeline")
     parser.add_argument(
         "--config", type=Path, default=Path("configs/fast_config.yaml"), help="Path to YAML config"
@@ -972,6 +980,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    """Parse CLI arguments and dispatch the two-seed pipeline."""
+
     parser = build_parser()
     args = parser.parse_args(argv)
     setup_info_logging()

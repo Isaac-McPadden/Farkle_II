@@ -1,7 +1,11 @@
 # CLI Reference
 
-The package installs a single console entry point named `farkle`. It can also
-be invoked with `python -m farkle`.
+The installed console entry point is `farkle`. It is also available through
+module execution with `python -m farkle`.
+
+Normal users should prefer `farkle ...`. The legacy module entry point
+`python -m farkle.analysis.pipeline` still exists for direct module use and
+tests, but it is not the packaged front door.
 
 ```text
 farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
@@ -9,33 +13,33 @@ farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
 
 ## Global options
 
-- `--config PATH` - load an `AppConfig` from YAML. The configuration is used by
-  the `run`, `analyze`, and `two-seed-pipeline` commands; other subcommands
-  ignore it. Omitting the flag falls back to the built-in defaults.
-- `--set SECTION.OPTION=VALUE` - override a single field on the loaded config.
-  The first segment chooses the top-level section (for example `sim` or
-  `analysis`); the second names the attribute inside that dataclass. Values are
-  coerced to the existing field type when possible (bool, int, float, or path),
-  and the flag may be supplied multiple times.
-- `--log-level LEVEL` - set the root logging level before dispatching the
-  command. Accepts standard names (`INFO`, `DEBUG`, `WARNING`) or numeric levels.
-- `--seed-a INT` / `--seed-b INT` - override the two-seed list used by
-  `cfg.sim.seed_list` when running dual-seed orchestration (provide both flags).
-- `--seed-pair A B` - override `cfg.sim.seed_list` with two integer seeds in a
-  single flag (mutually exclusive with `--seed-a`/`--seed-b`).
+- `--config PATH`
+  Load a YAML overlay into `AppConfig`. This applies to `run`, `analyze`, and
+  `two-seed-pipeline`.
+- `--set SECTION.OPTION=VALUE`
+  Override one loaded config value. The flag may be repeated.
+- `--log-level LEVEL`
+  Set the root logging level before dispatch.
+- `--seed-a INT` / `--seed-b INT`
+  Override the two-seed tuple used for orchestration commands.
+- `--seed-pair A B`
+  Override the two-seed tuple in one flag. This is mutually exclusive with
+  `--seed-a` and `--seed-b`.
 
-## Subcommands
+## Commands
 
 ### `run`
-Launch the tournament runner using settings from `cfg.sim`.
+
+Launch the tournament runner using `cfg.sim`.
 
 Options:
-- `--metrics` - force `cfg.sim.expanded_metrics = True` so that extra per-seat
-  metrics are collected and persisted.
-- `--row-dir PATH` - store per-game rows under the provided directory by
-  setting `cfg.sim.row_dir` before execution.
-  Results are written to `data/<results_dir_prefix>_seed_<seed>` for single-seed runs.
-  When `sim.seed_list` is set, the first entry determines `sim.seed`.
+
+- `--metrics`
+  Force `cfg.sim.expanded_metrics = True`.
+- `--row-dir PATH`
+  Write full per-game rows to the provided directory.
+- `--force`
+  Recompute even when resumable run outputs already exist.
 
 Example:
 
@@ -47,41 +51,90 @@ farkle --config configs/fast_config.yaml \
 ```
 
 ### `time`
-Benchmark simulation throughput with the defaults from
-`farkle.simulation.time_farkle.measure_sim_times`. No additional command
-options are parsed; only the global logging level applies.
 
-### `watch`
-Interactively watch a single game session.
+Benchmark simulation throughput.
 
 Options:
-- `--seed INT` - lock the RNG so repeated runs produce the same game.
+
+- `--players INT`
+- `--n-games INT`
+- `--jobs INT`
+- `--seed INT`
+
+Example:
+
+```bash
+farkle time --players 5 --n-games 5000 --jobs 4 --seed 42
+```
+
+### `watch`
+
+Interactively watch a single game.
+
+Options:
+
+- `--seed INT`
 
 ### `analyze`
+
 Convenience wrapper around the analysis helpers. Each subcommand uses the
-shared `AppConfig`, particularly the `analysis`, `ingest`, `combine`, `metrics`,
-and `head2head` sections, to locate inputs and drive processing.
+shared `AppConfig` to locate inputs and outputs.
 
 Subcommands:
-- `ingest` - convert raw CSV rows into curated parquet shards.
-- `curate` - post-process ingested rows and update manifests.
-- `combine` - merge curated shards into a consolidated parquet file.
-- `metrics` - compute aggregate metrics and engineer useful features from curated data.
-- `preprocess` - run `ingest`, `curate`, `combine`, and `metrics` sequentially.
-  Optional stages are ordered by their directory prefixes: `04_game_stats` then
-  `05_rng` when enabled.
-- `analytics` - perform statistical analysis computation steps (TrueSkill, Bonferroni head-to-head, HGB modeling, etc.) according to the configuration.
-- `pipeline` - run `preprocess` followed by `analytics` for a full end-to-end pass.
-  The analytics suite follows the renumbered stage layout (`06_seed_summaries`,
-  `07_variance`, `08_meta`, `09_trueskill`, `10_head2head`, `11_hgb`,
-  `12_tiering`, `13_agreement`).
 
-Use `--help` on any subcommand for additional details (for example,
-`farkle analyze metrics --help`).
+- `ingest`
+  Convert raw simulation outputs into ingest-stage parquet artifacts.
+- `curate`
+  Finalize ingest outputs into canonical curated row files.
+- `combine`
+  Merge curated per-player-count files into pooled combined data.
+- `metrics`
+  Compute pooled metrics and optional game-stat and RNG side outputs.
+- `variance`
+  Compute variance summaries across seeds.
+- `preprocess`
+  Run `ingest`, `curate`, `combine`, and `metrics`.
+- `pipeline`
+  Run preprocess plus the downstream analytics tail.
+- `analytics`
+  Run the downstream analytics tail only.
+
+Shared option groups:
+
+- `metrics`, `preprocess`, `pipeline`
+  - `--compute-game-stats`
+  - `--rng-diagnostics`
+  - `--rng-lags INT [INT ...]`
+  - `--margin-thresholds INT [INT ...]`
+  - `--rare-event-target INT`
+  - `--rare-event-margin-quantile FLOAT`
+  - `--rare-event-target-rate FLOAT`
+- `pipeline`, `analytics`
+  - `--allow-missing-upstream`
+- `variance`
+  - `--force`
+
+Examples:
+
+```bash
+farkle --config configs/fast_config.yaml analyze metrics --compute-game-stats
+```
+
+```bash
+farkle --config configs/fast_config.yaml analyze pipeline \
+  --compute-game-stats \
+  --rng-diagnostics \
+  --rng-lags 1 2 4
+```
 
 ### `two-seed-pipeline`
-Run the two-seed simulation + analysis orchestrator for `cfg.sim.seed_list`.
-This is the only supported dual-seed CLI entry point.
+
+Run the dual-seed simulation and analysis orchestration pipeline.
+
+Options:
+
+- `--force`
+  Recompute even when completion markers exist.
 
 Example:
 
@@ -89,36 +142,12 @@ Example:
 farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
 ```
 
-The pair-level manifest `two_seed_pipeline_manifest.jsonl` uses manifest schema
-v2: every record includes `schema_version`, `run_id`, `event`, and
-`config_sha`, and event names are snake_case only. Existing pre-v2 manifests
-are rotated to a `.pre_v2` backup before new records are appended.
+## Notes
 
-Stage done stamps also use schema v2. Each `.done.json` includes the full-run
-`config_sha` for provenance and a stage-local `stage_config_sha` plus
-`cache_key_version` for cache checks. Freshness is determined by
-`stage_config_sha`, so unrelated config edits do not invalidate the whole
-pipeline.
-
-#### Handchecking the Pipeline
-
-Use the preset `configs/presets/handcheck_pipeline.yaml` for a quick end-to-end
-run over the bundled dummy data. The sample results at `data/results_dummy`
-include `4_players`, `5_players`, and `6_players` blocks, each with roughly two
-thousand games (<100k as a safety margin).
-
-```bash
-farkle --config configs/presets/handcheck_pipeline.yaml analyze pipeline
-```
-
-To run the dual-seed orchestration:
-
-```bash
-farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
-```
-
-The pipeline writes fresh artifacts to `data/results_dummy/analysis_handcheck`.
-Per-seat manifests such as `analysis_handcheck/data/4p/manifest_4p.json` record
-the ingested `row_count`, while the combined parquet lives at
-`analysis_handcheck/data/all_n_players_combined/all_ingested_rows.parquet`.
-Inspect those files (or load them in a Parquet viewer) to handcheck the totals.
+- Stage folder numbers are assigned by `StageLayout` at runtime. Use
+  `AppConfig` path helpers or `analysis/config.resolved.yaml` instead of
+  assuming fixed folder numbers in downstream scripts.
+- `sim.seed_list` is the canonical seed source. `sim.seed` and `sim.seed_pair`
+  remain compatibility aliases.
+- Run `farkle <command> --help` for the exact parser output for your installed
+  version.

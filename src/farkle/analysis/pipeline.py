@@ -250,7 +250,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     config_sha = assign_config_sha(app_cfg)  # allow downstream caching helpers to compare configs
 
     def _optional_stage(module: str, stage: str) -> Callable[[AppConfig], None]:
+        """Build a stage runner that imports an optional analytics module on demand."""
+
         def _runner(cfg: AppConfig) -> None:
+            """Import the target module lazily and execute its ``run`` entry point."""
+
             stage_log = analysis.stage_logger(stage, logger=LOGGER)
             mod = analysis._optional_import(module, stage_log=stage_log)
             if mod is None:
@@ -260,18 +264,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _runner
 
     def _head2head_only(cfg: AppConfig) -> None:
+        """Run only the head-to-head stage from the analytics tail."""
+
         stage_log = analysis.stage_logger("head2head", logger=LOGGER)
         head2head_mod = analysis._optional_import("farkle.analysis.head2head", stage_log=stage_log)
         if head2head_mod is not None:
             head2head_mod.run(cfg)
 
     def _post_h2h_only(cfg: AppConfig) -> None:
+        """Run only the post head-to-head clean-up stage."""
+
         post_log = analysis.stage_logger("post_h2h", logger=LOGGER)
         post_mod = analysis._optional_import("farkle.analysis.h2h_analysis", stage_log=post_log)
         if post_mod is not None:
             post_mod.run_post_h2h(cfg)
 
     def _interseed_summary(cfg: AppConfig) -> None:
+        """Run the interseed summary stage and optional RNG diagnostics tail."""
+
         stage_log = analysis.stage_logger("interseed", logger=LOGGER)
         interseed_mod = analysis._optional_import(
             "farkle.analysis.interseed_analysis", stage_log=stage_log
@@ -293,6 +303,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return
 
         def _run_rng(interseed_cfg: AppConfig) -> None:
+            """Execute RNG diagnostics under the interseed-only stage layout."""
+
             rng_log = analysis.stage_logger("rng_diagnostics", logger=LOGGER)
             rng_mod = analysis._optional_import(
                 "farkle.analysis.rng_diagnostics",
@@ -310,6 +322,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         *,
         run_rng_diagnostics: bool | None = None,
     ) -> None:
+        """Temporarily swap in the interseed layout while running ``runner``."""
+
         previous_layout = cfg._stage_layout
         cfg.set_stage_layout(
             resolve_interseed_stage_layout(cfg, run_rng_diagnostics=run_rng_diagnostics)
@@ -341,6 +355,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
 
     def _plan_steps(allowed_keys: set[str] | None) -> list[tuple[str, Callable[[AppConfig], None]]]:
+        """Return ordered stage actions filtered to ``allowed_keys`` when provided."""
+
         return [
             (placement.definition.key, stage_map[placement.definition.key])
             for placement in layout.placements

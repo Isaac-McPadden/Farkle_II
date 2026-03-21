@@ -1,17 +1,47 @@
 # Documentation audit review
 
 ## Audit command
-- Ran `python doc_audit.py > audit_report.txt` to regenerate the list of documentation issues across tracked Python files.
 
-## Findings overview
-- The audit only reported unit/integration test modules and temporary scratch scripts; no production modules under `src/` were flagged.
-- No `__init__.py` files are missing the required first-line path comment string.
+- Run `python doc_audit.py` from the repository root to regenerate the current
+  documentation audit report.
 
-## Actionable items
-- None. No production modules or package initializers currently require documentation updates based on the latest audit output.
+## Current status
 
-## Items marked as skip (false positives / low-value)
-| File(s) | Rationale |
-| --- | --- |
-| Test suites under `src/farkle/game/tests/` and `tests/` | Tests rely on descriptive names and fixtures; module/function/class docstrings or path comments would add noise without improving maintainability. |
-| Temporary scratch helpers (`tmp_debug.py`, `tmp_debug2.py`, `tmp_test.py`, `tmp_test2.py`) | Local debugging or experimentation scripts not part of the supported codebase; documenting them provides little value. |
+The current audit is not clean. The latest pass reports:
+
+- 37 `src/` files with documentation issues
+- 260 `src/` issues total
+
+Most findings are missing docstrings on private helpers inside large modules,
+not missing module-level documentation. The heaviest files are:
+
+- `src/farkle/analysis/game_stats.py` - 44 issues
+- `src/farkle/analysis/rng_diagnostics.py` - 26 issues
+- `src/farkle/analysis/interseed_analysis.py` - 24 issues
+- `src/farkle/analysis/__init__.py` - 17 issues
+- `src/farkle/orchestration/two_seed_pipeline.py` - 17 issues
+
+## Recommended priority order
+
+1. Public and front-door helpers
+   Add docstrings for `AppConfig` path helpers, CLI entry points, and
+   orchestration functions that other modules and contributors are expected to
+   call directly.
+2. Large analysis orchestrators
+   Document stage planners, fan-out helpers, and interseed orchestration logic
+   before spending time on tiny local helper functions.
+3. High-complexity accumulator modules
+   Add short docstrings to the key accumulator classes and pooled reduction
+   helpers in `game_stats.py` and `rng_diagnostics.py`.
+
+## Deliberate non-goals
+
+- Full docstring coverage for tests
+- Exhaustive prose for every small private helper
+- Hand-maintained statements that claim the audit is "clean"
+
+## Maintenance notes
+
+- Keep this file as a current summary, not a one-time milestone note.
+- If the project adopts CI enforcement for `doc_audit.py`, update this page with
+  the latest counts whenever the baseline changes.

@@ -121,6 +121,8 @@ def _first_existing(paths: list[Path]) -> Path:
 
 
 def _config_for_results_dir(exp_dir: Path) -> AppConfig:
+    """Load or synthesize an ``AppConfig`` anchored to an experiment directory."""
+
     exp_dir = Path(exp_dir)
     base_dir, seed = split_seeded_results_dir(exp_dir)
     active_config = exp_dir / "active_config.yaml"

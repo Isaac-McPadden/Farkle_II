@@ -1,163 +1,227 @@
 # Simulation and analysis data artifacts
 
-This catalog enumerates every on-disk artifact produced by the simulation and
-analysis pipelines, including who writes it, what it contains, how large it
-usually is, and which downstream steps depend on it.
+This document summarizes the artifact contracts that the codebase currently
+guarantees. It intentionally avoids historical row counts and deleted module
+references.
 
-Stage folder numbers are assigned automatically by
-:class:`farkle.analysis.stage_registry.StageLayout` based on which steps are
-enabled. Instead of hard-coding prefixes like ``analysis/*_head2head``, use the
-layout-aware helpers on :class:`farkle.config.AppConfig` (e.g.
-``cfg.head2head_stage_dir`` or ``cfg.head2head_path("bonferroni_pairwise.parquet")``)
-to discover or create the appropriate directories.
+## Path rules
 
-## Simulation stage outputs
+- Resolve analysis paths through `AppConfig` helpers.
+- Do not hard-code numbered stage folders in downstream scripts.
+- Use `analysis/config.resolved.yaml` to inspect the layout chosen for a run.
+- Interseed layouts can be renumbered when RNG diagnostics are disabled.
 
-| Artifact pattern | Producer | Schema / key fields | Typical volume | Consumers | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `results/<run>/checkpoint.pkl`<br/>`results/<n>_players/<n>p_checkpoint.pkl` | `farkle.simulation.run_tournament._save_checkpoint` when the tournament loop flushes counters or finishes | Pickle containing `{"win_totals": Counter[str]}` and, when metrics are enabled, nested `metric_sums` / `metric_square_sums` dictionaries keyed by metric label and strategy | ~8 160 strategy rows per table size (10 metric vectors per strategy) because the grid size is fixed in `run_full_field` (`GRID = 8_160`)【F:src/farkle/simulation/run_tournament.py†L331-L345】【F:src/farkle/analysis/run_full_field.py†L140-L205】 | `farkle.simulation.runner.run_tournament` unpickles the file to emit `win_counts.csv`; `analysis.run_full_field` uses presence of the file to detect completed table sizes and to resume interrupted sweeps【F:src/farkle/simulation/runner.py†L102-L128】【F:src/farkle/analysis/run_full_field.py†L80-L118】 | Long-running checkpoint (remains pickle for resumability). Final metric aggregates now land in `<n>p_metrics.parquet`. |
-| `results/<run>/win_counts.csv` | `farkle.simulation.runner.run_tournament` after reading the checkpoint | CSV header `strategy,wins` (strategy string, integer win count)【F:src/farkle/utils/sinks.py†L81-L89】 | One row per strategy (~8 160)【F:src/farkle/analysis/run_full_field.py†L140-L205】 | Human inspection; light-weight reporting prior to ingestion | Already text friendly; no change required. |
-| `results/<n>_players/<n>p_rows/rows_*.parquet` + `manifest.jsonl` | Worker shards inside `_run_chunk_metrics` when `collect_rows=True` | Arrow schema derived from `_play_one_shuffle`: `game_seed`, winner columns (`winner`, `winner_seat`, scores) and every seat-level metric defined in `analysis_config` (e.g. `P1_score`, `P1_strategy`, ranks, smart-dice counters)【F:src/farkle/simulation/run_tournament.py†L131-L168】【F:src/farkle/analysis/analysis_config.py†L82-L214】【F:src/farkle/simulation/run_tournament.py†L225-L305】 | Shard size is set by shuffle batches; final run produces the totals listed below per table size | `farkle.analysis.ingest` streams either consolidated files or these shards; manifests are append-only NDJSON via `farkle.utils.manifest` for audit/resume【F:src/farkle/analysis/ingest.py†L60-L98】【F:src/farkle/utils/manifest.py†L1-L111】 | Manifests capture `path`, player count, seed, and PID for each shard. |
-| `results/<n>_players/<n>p_rows.parquet` | `_concat_row_shards` consolidates shard directory once a table size finishes | Same schema as shards above | Deterministic totals per table size computed by `run_full_field`:<br/>2p 35 683 680 · 3p 21 618 560 · 4p 13 910 760 · 5p 9 640 224 · 6p 7 076 080 · 8p 4 296 240 · 10p 2 904 144 · 12p 2 108 000 (≈97 237 688 rows combined)【F:src/farkle/analysis/run_full_field.py†L28-L76】【F:src/farkle/analysis/run_full_field.py†L191-L259】【23871c†L1-L9】【e1f74f†L1-L1】 | Preferred ingest source; `analysis.ingest` picks these up first via `row_file = block.glob("*p_rows.parquet")`【F:src/farkle/analysis/ingest.py†L60-L86】 | Candidate for long-term canonical raw-game storage. |
-| `results/<n>_players/metrics_*.parquet` + `metrics_manifest.jsonl` (optional) | `_run_chunk_metrics` when `metric_chunk_directory` is supplied | Columns `metric`, `strategy`, `sum`, `square_sum` persisted per chunk | One row per `(metric, strategy)` in the chunk (10 metrics × ~8 160 strategies) | Only used for crash-safe aggregation: the driver reloads these files to rebuild the global sums before writing the final checkpoint【F:src/farkle/simulation/run_tournament.py†L513-L546】【F:src/farkle/simulation/run_tournament.py†L599-L604】 | Stored as parquet already; manifest follows NDJSON convention. |
-| `results/<n>_players/<n>p_metrics.parquet` | `farkle.simulation.run_tournament.run_tournament` once a table size completes | Arrow schema `metric` (string), `strategy` (string), `sum`, `square_sum` (float64) built from the final aggregates kept in memory or reconstructed from chunk files | Deterministic 10 × ~8 160 rows per table (one record per metric/strategy pair) | Downstream analytics read this instead of unpickling checkpoints; e.g. ingestion notebooks, custom reporting | Canonical metrics export written atomically with snappy compression alongside the checkpoint【F:src/farkle/simulation/run_tournament.py†L620-L651】 |
+Useful helpers live on `farkle.config.AppConfig`, including:
 
-## Analysis pipeline outputs
+- `cfg.results_root`
+- `cfg.analysis_dir`
+- `cfg.stage_dir("<stage>")`
+- `cfg.metrics_input_path("metrics.parquet")`
+- `cfg.trueskill_path("ratings_k_weighted.parquet")`
+- `cfg.head2head_path("bonferroni_pairwise.parquet")`
+- `cfg.preferred_tiers_path()`
 
-### Ingest & curate
+## Simulation artifacts
 
-| Artifact pattern | Producer | Schema / key fields | Typical volume | Consumers | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `cfg.ingest_block_dir(<n>) / "<n>p_ingested_rows.raw.parquet"` + `.manifest.jsonl` | `farkle.analysis.ingest._process_block` streams tournament rows into Arrow parquet with atomic shards | Canonical schema from `expected_schema_for(n)`: winner metadata plus `P<i>_{score,farkles,rolls,highest_turn,strategy,rank,loss_margin,smart_*}` fields up to seat `n`【F:src/farkle/analysis/ingest.py†L156-L269】【F:src/farkle/analysis/analysis_config.py†L208-L214】 | Mirrors tournament totals per table size (see above); manifest tracks row counts and provenance metadata | `farkle.analysis.curate` finalises files; `metrics` stage later uses manifest row counts for seat denominators【F:src/farkle/analysis/curate.py†L123-L144】【F:src/farkle/analysis/metrics.py†L215-L227】 | Manifest entries follow the NDJSON format from `farkle.utils.manifest` for append-only provenance【F:src/farkle/utils/manifest.py†L1-L111】. |
-| `cfg.curate_block_dir(<n>) / "<n>p_ingested_rows.parquet"` + `manifest_<n>p.json` | `farkle.analysis.curate.run` promotes raw files and writes JSON manifest with schema hash, compression, and row count | Same seat-augmented schema; manifest stores `row_count`, schema hash and config SHA for reproducibility | Same per-table totals; JSON manifest is tiny | `analysis.combine` streams these; `PipelineCfg.curated_parquet` uses them as canonical per-seat sources【F:src/farkle/analysis/curate.py†L123-L175】【F:src/farkle/analysis/analysis_config.py†L118-L126】 | Manifest enables fast freshness checks and feeds seat-advantage denominators. |
-| `cfg.curated_parquet` + `.manifest.jsonl` | `farkle.analysis.combine.run` concatenates per-seat files into a 12-seat superset, padding missing seats with nulls | Schema is `expected_schema_for(12)` (all seat columns present)【F:src/farkle/analysis/combine.py†L44-L124】【F:src/farkle/analysis/analysis_config.py†L208-L214】 | ≈97 M rows (sum of all seat counts)【e1f74f†L1-L1】 | `farkle.analysis.metrics` and other analytics read this via `PipelineCfg.curated_parquet`; `metrics` checks manifests for consistency【F:src/farkle/analysis/metrics.py†L98-L144】 | Already Parquet + NDJSON manifest; make snappy the standard compression going forward. |
+Results are rooted under `cfg.results_root`, typically:
 
-### Metrics & summaries
+```text
+data/<results_dir_prefix>_seed_<seed>
+```
 
-| Artifact pattern | Producer | Schema / key fields | Typical volume | Consumers | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `cfg.metrics_output_path()` | `farkle.analysis.metrics.run` | Columns include `strategy`, `n_players`, `games`, `wins`, `win_rate`, `se_win_rate`, `win_rate_ci_lo`, `win_rate_ci_hi`, `win_prob`, and expected-score aggregates【F:src/farkle/analysis/metrics.py†L33-L151】【F:src/farkle/analysis/metrics.py†L229-L298】 | One row per strategy (~8 160) | `farkle.analysis.run_hgb` merges metrics with ratings to build the feature matrix【F:src/farkle/analysis/run_hgb.py†L125-L189】 | Preferred pooled location; legacy reads still fall back to `analysis/metrics.parquet` when present. |
-| `cfg.metrics_output_path("seat_advantage.csv")` | `farkle.analysis.metrics.run` | Columns `seat`, `wins`, `games_with_seat`, `win_rate` written from a pandas DataFrame via `write_csv_atomic` | Fixed 12 rows (one per seat) | Readable summary for documentation; also referenced when tracking seat denominators | Text-friendly mirror of the Parquet summary.【F:src/farkle/analysis/metrics.py†L111-L125】 |
-| `cfg.metrics_output_path("seat_advantage.parquet")` | Same | Arrow schema `seat` (int32), `wins`/`games_with_seat` (int64), `win_rate` (float64) derived from the same DataFrame as the CSV | 12 rows | Programmatic consumers needing columnar access to seat summaries | Written with snappy compression alongside the CSV for consistency across tooling.【F:src/farkle/analysis/metrics.py†L111-L125】 |
-| `cfg.metrics_output_path("metrics.done.json")` | `farkle.analysis.metrics.run` via `farkle.utils.stage_completion.write_stage_done` | Stage done-stamp schema v2 with `schema_version`, `stage`, full-run `config_sha`, stage-local `stage_config_sha`, `cache_key_version`, `inputs`, `outputs`, and `status` | Tiny | Used for freshness checks before recomputing metrics | Cache validity is keyed to `stage_config_sha`, not the full config hash, so unrelated config edits do not force a metrics rerun. |
-| `cfg.stage_dir("coverage_by_k") / "coverage_by_k.parquet"` (and optional CSV) | `farkle.analysis.coverage_by_k.run` | Columns `seed`, `k`, `games` (strategy participations), `estimated_games` (`games / k`), `strategies`, expected/missing/padded strategy counts, and per-k rollups like `games_per_k`, `estimated_games_per_k`, `strategies_per_k`, `seeds_present`【F:src/farkle/analysis/coverage_by_k.py†L1-L191】 | One row per `(seed, k)` in the configured grid | Coverage dashboards, quick QA checks | CSV mirror is written when `analysis.outputs.coverage_by_k_csv` is enabled. |
+Common simulation artifacts:
 
-### Analytics (TrueSkill, head-to-head, HGB)
+- `active_config.yaml`
+  The effective config written for the run.
+- `log.txt`
+  Command log output for `run`, `analyze`, and `two-seed-pipeline`.
+- `strategy_manifest.parquet`
+  Strategy manifest used to map stable strategy identifiers.
+- `<n>_players/<n>p_checkpoint.pkl`
+  Tournament checkpoint used for resumability.
+- `<n>_players/win_counts.csv`
+  Per-strategy win totals for that player count.
+- `<n>_players/<n>p_metrics.parquet`
+  Final per-strategy metric aggregates for that player count.
+- Optional row outputs under `<n>_players`
+  Depending on `cfg.sim.row_dir`, runs may emit row parquet shards or
+  consolidated row parquet files for ingestion.
 
-| Artifact pattern | Producer | Schema / key fields | Typical volume | Consumers | Notes |
-| --- | --- | --- | --- | --- | --- |
-| `cfg.trueskill_stage_dir / "ratings_<n>.parquet"` | `farkle.analysis.run_trueskill._rate_block_worker` writes per-table ratings | Arrow table `{strategy: string, mu: float64, sigma: float64}` | One row per strategy that appeared in the block (≤8 160) | `run_trueskill` pooling phase, downstream ML | Durable parquet already. |
-| `cfg.trueskill_stage_dir / "ratings_<n>.json"` | Same | JSON mapping `strategy -> {mu, sigma}` for quick inspection【F:src/farkle/analysis/run_trueskill.py†L639-L650】 | Same row count encoded as JSON | Humans / lightweight clients | Text mirror of parquet. |
-| `cfg.trueskill_stage_dir / "ratings_<n>.checkpoint.parquet"` + `ratings_<n>.ckpt.json` | `run_trueskill` checkpointing loop | Parquet/JSON pair storing interim ratings and resume cursor (`row_group`, `batch_index`, `games_done`)【F:src/farkle/analysis/run_trueskill.py†L575-L637】 | Updated while streaming row groups | `run_trueskill` resume logic | Checkpoints; not final products but must stay in pickle/JSON family. |
-| `cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet"` & `.json` | `run_trueskill` pooling phase combines block outputs into global ratings and tiers | Same schema as per-block parquet; JSON summarises pooled stats and feeds `tiers.json` | One row per strategy (≤8 160) | `analysis/run_hgb` merges this Parquet table directly using pyarrow before fitting the regressor【F:src/farkle/analysis/run_trueskill.py†L775-L822】【F:src/farkle/analysis/run_hgb.py†L121-L150】 | Canonical ratings source consumed without pickle fallbacks. |
-| `cfg.tiering_stage_dir / "tiers.json"` (or `cfg.trueskill_stage_dir / "tiers.json"` when tiering is skipped) | `run_trueskill` | JSON mapping strategies to tier labels【F:src/farkle/analysis/run_trueskill.py†L814-L821】 | One entry per strategy | `run_bonferroni_head2head` loads it to schedule matchups【F:src/farkle/analysis/run_bonferroni_head2head.py†L46-L66】 | Already JSON; slot number is retained even if the dedicated tiering stage is omitted. |
-| `cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"` | `run_bonferroni_head2head` | Arrow schema `{a: string, b: string, wins_a: int64, wins_b: int64, pvalue: float64}` derived from simulated matches | Dense upper triangle of elite strategies (depends on tier size) | Review & reporting plus downstream statistical checks | Real Parquet output written atomically with snappy compression, matching the documented extension.【F:src/farkle/analysis/run_bonferroni_head2head.py†L39-L144】 |
-| `cfg.head2head_stage_dir / "h2h_union_candidates.json"` | `run_bonferroni_head2head` | JSON payload with `candidates` plus counts and source paths for the union of top ratings/metrics strategies | Union candidate list (size = 100 + c, where c is the number of top-metrics strategies not already in the top-100 ratings list) used to schedule head-to-head matchups【F:src/farkle/analysis/run_bonferroni_head2head.py†L74-L151】【F:src/farkle/analysis/run_bonferroni_head2head.py†L298-L349】 | `run_post_h2h` filters ranking outputs to this deterministic candidate set | Provenance for head-to-head selection. |
-| `cfg.post_h2h_stage_dir / "h2h_significant_graph.json"` | `run_post_h2h` | JSON dump of significant edges plus tie metadata (`tie_policy`, `tie_break_seed`, `neutral_pairs`, `tie_break_edges`)【F:src/farkle/analysis/h2h_analysis.py†L331-L369】 | One node per strategy, edges filtered by Holm-Bonferroni decisions | Humans / downstream agreement plots | Tie policy is recorded for reproducibility; neutral ties remain metadata while simulated tie-breaks become directed edges. |
-| `cfg.post_h2h_stage_dir / "h2h_s_tiers.json"` | `run_post_h2h` | JSON mapping `{strategy: "S+" | "S" | "S-"}` derived from ordered head-to-head rankings | Same candidate set size as `h2h_union_candidates.json`; top 10 → S+, next 20 → S, remainder → S- | Reports / quick triage | Ranking order prefers DAG topological ranking; otherwise tiers are flattened deterministically.【F:src/farkle/analysis/h2h_analysis.py†L381-L472】 |
-| `cfg.hgb_pooled_dir / "hgb_importance.json"` | `farkle.analysis.run_hgb.run_hgb` | JSON mapping feature name to permutation importance (float)【F:src/farkle/analysis/run_hgb.py†L189-L215】 | ≤10 features (strategy parameters) | Model interpretability notebooks | Already JSON; keep. |
-| `notebooks/figs/pd_*.png` | `run_hgb.run_hgb` (via `plot_partial_dependence`) | PNG partial dependence plots, up to `MAX_PD_PLOTS` features【F:src/farkle/analysis/run_hgb.py†L218-L237】 | ≤30 images (~100–200 KB each) | Reports / notebooks | Media assets; outside tabular scope. |
+## Analysis artifacts by stage
 
-### Pipeline scaffolding
+### Ingest
 
-| Artifact pattern | Producer | Purpose | Notes |
-| --- | --- | --- | --- |
-| `analysis/config.resolved.yaml` | `farkle.analysis.pipeline.main` writes the fully resolved configuration | Provenance for analysis runs【F:src/farkle/analysis/pipeline.py†L44-L49】 | Keep YAML for readability. |
-| `analysis/<manifest>.jsonl` and `two_seed_pipeline_manifest.jsonl` | `farkle.analysis.stage_runner.StageRunner` and `farkle.orchestration.two_seed_pipeline` | Append-only NDJSON manifest schema v2 with `schema_version`, `run_id`, `event`, `config_sha`, plus event-specific fields | Small relative to stage outputs | Audit trail, resumability diagnostics, health checks | Event names are snake_case only. If a pre-v2 manifest exists, the next run rotates it to a deterministic `.pre_v2` backup before writing v2 records. |
-| `<artifact>.done.json` (for example `metrics.done.json`, `tiers.json.done.json`, `bonferroni_pairwise.parquet.done.json`, `hgb_importance.json.done.json`) | Stage writers plus `farkle.orchestration.pipeline.write_done` | Stage done-stamp schema v2 with `schema_version`, `stage`, `config_sha`, `stage_config_sha`, `cache_key_version`, `inputs`, `outputs`, and `status` | Control metadata; not part of delivered datasets | Cache invalidation is stage-scoped: `stage_config_sha` decides freshness, while `config_sha` remains provenance for the enclosing run. |
+Per-player-count ingest outputs live under:
 
-Optional stages (e.g., `*_game_stats` or `*_rng`) keep their numbered
-subdirectories reserved even when you skip them so downstream analytics can rely
-on stable slot names in manifests and notebooks.
+```text
+cfg.ingest_block_dir(k)
+```
 
-## Pickle artifacts to flag
+Key files:
 
-* **Tournament checkpoints** – `checkpoint.pkl` and `<n>p_checkpoint.pkl` remain essential for resumability and still carry in-memory aggregates for crash recovery【F:src/farkle/simulation/run_tournament.py†L331-L345】. Treat them as runtime checkpoints only; the canonical metrics now live in the adjacent Parquet export.
+- `<k>p_ingested_rows.raw.parquet`
+- `<k>p_ingested_rows.raw.manifest.jsonl`
 
-## Format recommendation matrix
+### Curate
 
-| Data product type | Recommended format |
-| --- | --- |
-| Large tabular outputs (raw games, per-strategy metrics, ratings) | Parquet with snappy compression for columnar analytics【F:src/farkle/analysis/combine.py†L30-L124】【F:src/farkle/analysis/metrics.py†L247-L256】 |
-| Small tabular or human-facing summaries | CSV, optionally mirrored to Parquet for programmatic parity (e.g., seat advantage)【F:src/farkle/analysis/metrics.py†L236-L245】 |
-| Append-only logs / indexes | NDJSON manifests written via `farkle.utils.manifest` (already used for shards and streaming writers). Consumers should resolve each manifest entry by joining the manifest directory with the stored `path` (e.g., `os.path.join(manifest_dir, entry["path"])`) so that relative entries remain stable across runs【F:src/farkle/simulation/run_tournament.py†L283-L305】【F:src/farkle/analysis/ingest.py†L247-L269】【F:src/farkle/utils/manifest.py†L1-L111】 |
-| Checkpoints for resumability | Pickle or JSON depending on payload (retain `_checkpoint.pkl`, `ratings_*.ckpt.json`, etc.) but treat them as transient, not the published dataset【F:src/farkle/simulation/run_tournament.py†L331-L345】【F:src/farkle/analysis/run_trueskill.py†L575-L650】 |
+Per-player-count curated outputs live under:
 
-## Manifest and done-stamp schemas
+```text
+cfg.curate_block_dir(k)
+```
 
-- Manifest schema v2 is strict: use snake_case events only and include
-  `schema_version`, `run_id`, `event`, and `config_sha` on every orchestration
-  record.
-- Stage done-stamp schema v2 is also strict: pre-v2 stamps are treated as stale
-  and overwritten on the next normal run.
-- `config_sha` is run provenance. Stage cache reuse is controlled by
-  `stage_config_sha` plus `cache_key_version`.
+Key files:
 
-## Recent updates
+- `game_rows.parquet` by default, or `analysis.outputs.curated_rows_name`
+- `manifest.jsonl` by default, or `analysis.outputs.manifest_name`
 
-1. **Per-table metrics now land in Parquet.** The tournament driver writes `<n>p_metrics.parquet` alongside each checkpoint so downstream tools never have to load the pickle payload for canonical aggregates.【F:src/farkle/simulation/run_tournament.py†L620-L651】
-2. **Seat advantage ships as CSV *and* Parquet.** Metrics emits both formats atomically from the same DataFrame, keeping the human-readable view while providing a snappy-compressed columnar twin.【F:src/farkle/analysis/metrics.py†L225-L271】
-3. **Head-to-head parquet matches its extension.** `run_bonferroni_head2head` now materialises a real Arrow table to `cfg.head2head_path("bonferroni_pairwise.parquet")`, eliminating the CSV mismatch.【F:src/farkle/analysis/run_bonferroni_head2head.py†L39-L144】
-4. **Ratings consumers use the parquet source.** `run_hgb` ingests `ratings_k_weighted.parquet` via pyarrow, removing the legacy pickle dependency and simplifying `hgb_feat` orchestration.【F:src/farkle/analysis/run_hgb.py†L121-L189】【F:src/farkle/analysis/hgb_feat.py†L20-L33】
+### Combine
 
-These updates keep checkpoints for resumability while ensuring every canonical data product is published in a consistent, columnar format with NDJSON manifests for append-only logs.
+Pooled combine outputs are resolved through:
 
-## Expensive stage inventory and shard recovery plan
+- `cfg.curated_parquet`
+- `cfg.curated_dataset`
+- `cfg.combined_manifest_path()`
 
-The longest-running analysis costs are currently concentrated in stage-level loops
-that iterate independently by player count (`k`) and, for interseed workflows,
-by seed. The primary hotspots are:
+Current preferred locations are under:
 
-1. **TrueSkill per-k updates (`run_trueskill`)** – streams very large per-k
-   game rows and historically produced reusable artifacts only once each full-k
-   block finished.
-2. **TrueSkill pooled rollup (`run_trueskill` pooled output)** – historically
-   relied on whatever per-k files existed and reused work near stage end.
+```text
+cfg.stage_dir("combine") / "pooled"
+```
 
-To improve crash recovery and resumability, TrueSkill now emits explicit shard
-artifacts and done stamps:
+The code supports both:
 
-- Per-k shard key: `k=<players>`
-  - `artifact.k<players>_seed<seed>.parquet`
-  - `artifact.k<players>_seed<seed>.done.json`
-- Final pooled shard key: `all-k`
-  - `artifact.all-k_seed<seed>.parquet`
-  - `artifact.all-k_seed<seed>.done.json`
+- A monolithic combined parquet, typically `all_ingested_rows.parquet`
+- A partitioned dataset directory, typically `all_ingested_rows_partitioned`
 
-Canonical compatibility outputs (`ratings_<k>_seed<seed>.parquet` and
-`ratings_k_weighted_seed<seed>.parquet`) are still written for downstream
-consumers, but orchestration now treats each per-k shard as independently
-complete/skippable via done stamps and only includes shards with valid stamps in
-final pooling.
+### Metrics
 
-### Recovery SLA target and shard sizing
+Metrics outputs are resolved through:
 
-- **Target recovery SLA:** recompute after interruption should be bounded to
-  **≤ ~1 hour** of wall-clock work.
-- **Shard sizing policy:** use `k` as the baseline shard key (already
-  independent in the runner), and enable/adjust batch checkpoint cadence via
-  `checkpoint_every_batches` so each missing shard restarts from at most one
-  bounded checkpoint window rather than from stage start.
+- `cfg.metrics_output_path()`
+- `cfg.metrics_input_path()`
+- `cfg.metrics_isolated_path(k)`
 
-This keeps recovery work proportional to missing shards only, avoiding complete
-re-runs of previously finished `k` blocks.
+Common files:
 
-## Naming convention policy (pooled vs weighted)
+- `pooled/metrics.parquet`
+- `pooled/seat_advantage.csv`
+- `pooled/seat_advantage.parquet`
+- `<k>p/<k>p_isolated_metrics.parquet`
 
-- `pooled` means concatenated long/all-k rows only.
-- Cross-k weighted/averaged rollups use canonical names ending in `_weighted`/`_k_weighted`/`_aggregate`.
-- Legacy filenames (`ratings_pooled*`, `game_length_pooled.parquet`, `margin_pooled.parquet`, `frequentist_scores.parquet`, `agreement_pooled.json`, `tiering_pooled_provenance.json`) are supported as read aliases and migration sources.
-- Deprecation timeline: legacy aliases remain supported through **2026-06-30** and are scheduled for removal in the following release cycle.
+### Coverage and game stats
 
-## Canonical stage helper usage
+Common stage roots:
 
-When adding or refactoring analysis stages, prefer these shared helpers instead
-of re-implementing stage-local variants:
+- `cfg.stage_dir("coverage_by_k")`
+- `cfg.stage_dir("game_stats")`
 
-- `farkle.utils.pooling.normalize_pooling_scheme` for pooling alias handling.
-- `farkle.utils.stage_io.resolve_worker_count` for bounded worker resolution
-  from one or more `n_jobs` sources.
-- `farkle.utils.stage_completion.{stage_done_path, stage_is_up_to_date, write_stage_done}`
-  for done-stamp creation/checking.
-- `farkle.utils.stage_io.{select_preferred_or_legacy, discover_per_k_artifacts}`
-  for preferred-vs-legacy artifact selection, including per-`k` discovery.
+Typical outputs:
+
+- `coverage_by_k.parquet`
+- `game_length_k_weighted.parquet`
+- `margin_k_weighted.parquet`
+- `rare_events.parquet`
+
+Game-stat helpers also support legacy filenames through `AppConfig`
+canonicalization and fallback logic.
+
+### TrueSkill and tiering
+
+Common paths:
+
+- `cfg.trueskill_stage_dir`
+- `cfg.trueskill_pooled_dir`
+- `cfg.tiering_stage_dir`
+- `cfg.preferred_tiers_path()`
+
+Typical outputs:
+
+- `ratings_<k>.parquet`
+- `ratings_<k>.json`
+- `ratings_k_weighted.parquet`
+- `ratings_k_weighted.json`
+- `tiers.json`
+
+### Head-to-head and post-processing
+
+Common paths:
+
+- `cfg.head2head_stage_dir`
+- `cfg.post_h2h_stage_dir`
+- `cfg.head2head_path("bonferroni_pairwise.parquet")`
+- `cfg.post_h2h_path("bonferroni_decisions.parquet")`
+
+Typical outputs:
+
+- `bonferroni_pairwise.parquet`
+- `bonferroni_pairwise_ordered.parquet`
+- `bonferroni_selfplay_symmetry.parquet`
+- `bonferroni_decisions.parquet`
+- `h2h_significant_graph.json`
+- `h2h_s_tiers.json`
+
+### HGB
+
+Common paths:
+
+- `cfg.hgb_stage_dir`
+- `cfg.hgb_pooled_dir`
+
+Typical outputs:
+
+- `hgb_importance.json`
+
+### Interseed analytics
+
+Interseed runs use a dedicated layout resolved by
+`resolve_interseed_stage_layout(...)`. Relevant stage roots include:
+
+- `cfg.stage_dir("rng_diagnostics")` when RNG diagnostics are enabled
+- `cfg.variance_stage_dir`
+- `cfg.meta_stage_dir`
+- `cfg.agreement_stage_dir`
+- `cfg.interseed_stage_dir`
+
+Typical outputs include:
+
+- RNG diagnostic parquet outputs
+- variance summaries
+- interseed game-stat summaries
+- meta-analysis outputs
+- pooled/interseed TrueSkill outputs
+- agreement outputs
+- `interseed_summary.json`
+
+## Metadata artifacts
+
+The pipeline relies on metadata files in addition to tabular outputs.
+
+- `analysis/config.resolved.yaml`
+  The resolved config snapshot, including the active stage layout.
+- `manifest.jsonl`
+  Append-only run manifest written by stage orchestration.
+- `<artifact>.done.json`
+  Stage completion metadata used for skip-if-fresh checks.
+- `two_seed_pipeline_manifest.jsonl`
+  Pair-level orchestration manifest for dual-seed runs.
+- `pipeline_health.json`
+  Health/status artifact emitted by two-seed orchestration.
+
+## Legacy compatibility
+
+The codebase still reads several legacy file names and legacy directory
+locations. That compatibility is implemented in `AppConfig` path helpers.
+
+Practical guidance:
+
+- Write new code against canonical helper methods.
+- Do not assume a legacy alias is the preferred output location.
+- Do not add fixed deprecation dates to docs unless they are enforced in code.
+
+## What not to assume
+
+- Fixed stage numbers across every run type
+- Historical row counts from earlier experiments
+- Deleted modules or old helper classes
+- Flat `analysis/` artifact locations when stage helpers exist

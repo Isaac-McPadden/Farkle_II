@@ -690,53 +690,79 @@ class AppConfig:
 
     @property
     def ingest_stage_dir(self) -> Path:
+        """Stage root for ingest outputs."""
+
         return self.stage_subdir("ingest")
 
     @property
     def curate_stage_dir(self) -> Path:
+        """Stage root for curated row outputs."""
+
         return self.resolve_stage_dir("curate", allow_missing=True)
 
     @property
     def combine_stage_dir(self) -> Path:
+        """Stage root for combined curated-row outputs."""
+
         return self.stage_subdir("combine")
 
     @property
     def metrics_stage_dir(self) -> Path:
+        """Stage root for metrics outputs."""
+
         return self.stage_subdir("metrics")
 
     @property
     def trueskill_stage_dir(self) -> Path:
+        """Stage root for per-seed TrueSkill outputs."""
+
         return self.stage_subdir("trueskill")
 
     @property
     def trueskill_pooled_dir(self) -> Path:
+        """Pooled TrueSkill output directory."""
+
         return self.stage_subdir("trueskill", "pooled")
 
     @property
     def head2head_stage_dir(self) -> Path:
+        """Stage root for head-to-head analysis outputs."""
+
         return self.stage_subdir("head2head")
 
     @property
     def seed_symmetry_stage_dir(self) -> Path:
+        """Stage root for seed-symmetry analysis outputs."""
+
         return self.stage_subdir("seed_symmetry")
 
     @property
     def post_h2h_stage_dir(self) -> Path:
+        """Stage root for post head-to-head outputs."""
+
         return self.stage_subdir("post_h2h")
 
     @property
     def hgb_stage_dir(self) -> Path:
+        """Stage root for histogram gradient boosting outputs."""
+
         return self.stage_subdir("hgb")
 
     def hgb_per_k_dir(self, k: int) -> Path:
+        """Per-player-count HGB output directory."""
+
         return self.per_k_subdir("hgb", k)
 
     @property
     def hgb_pooled_dir(self) -> Path:
+        """Pooled HGB output directory."""
+
         return self.stage_subdir("hgb", "pooled")
 
     @property
     def tiering_stage_dir(self) -> Path:
+        """Stage root for frequentist tiering outputs."""
+
         return self.stage_subdir("tiering")
 
     @property
@@ -1917,6 +1943,8 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
 
 
 def _stringify_paths_for_serialization(obj: Any) -> Any:
+    """Recursively convert ``Path`` objects into strings for JSON/YAML output."""
+
     if isinstance(obj, Path):
         return str(obj)
     if isinstance(obj, dict):
@@ -1938,6 +1966,8 @@ def effective_config_dict(cfg: AppConfig) -> dict[str, Any]:
 
 
 def _drop_nested_path(payload: MutableMapping[str, Any], path: str) -> None:
+    """Remove a dotted nested key from a materialized config payload if present."""
+
     cursor: MutableMapping[str, Any] | None = payload
     parts = path.split(".")
     for part in parts[:-1]:
@@ -1961,6 +1991,8 @@ def _hashable_config_dict(cfg: AppConfig) -> dict[str, Any]:
 
 
 def _assign_nested_path(target: MutableMapping[str, Any], path: str, value: Any) -> None:
+    """Assign ``value`` to a dotted nested key, creating intermediate mappings."""
+
     parts = path.split(".")
     cursor = target
     for part in parts[:-1]:
@@ -1973,6 +2005,8 @@ def _assign_nested_path(target: MutableMapping[str, Any], path: str, value: Any)
 
 
 def _extract_scope_value(payload: Mapping[str, Any], path: str) -> tuple[bool, Any]:
+    """Return ``(present, value)`` for a dotted nested key lookup."""
+
     cursor: Any = payload
     for part in path.split("."):
         if not isinstance(cursor, Mapping) or part not in cursor:
@@ -1982,6 +2016,8 @@ def _extract_scope_value(payload: Mapping[str, Any], path: str) -> tuple[bool, A
 
 
 def _project_effective_config(payload: Mapping[str, Any], scope_paths: Sequence[str]) -> dict[str, Any]:
+    """Project a config payload down to the dotted paths used by a stage cache scope."""
+
     projected: dict[str, Any] = {}
     for path in scope_paths:
         present, value = _extract_scope_value(payload, path)
