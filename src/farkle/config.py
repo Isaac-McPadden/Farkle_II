@@ -21,6 +21,7 @@ from typing import (
     Mapping,
     MutableMapping,
     Sequence,
+    cast,
     get_args,
     get_origin,
     get_type_hints,
@@ -84,8 +85,19 @@ SEED_LIST_LENGTHS_BY_COMMAND: dict[str, int] = {
 }
 
 
-def expected_seed_list_length(command: str, *, _subcommand: str | None = None) -> int | None:
-    """Return the expected seed-list length for a CLI command."""
+def expected_seed_list_length(
+    command: str,
+    *,
+    subcommand: str | None = None,
+    _subcommand: str | None = None,
+) -> int | None:
+    """Return the expected seed-list length for a CLI command.
+
+    ``subcommand`` is retained as a compatibility alias for older callers.
+    """
+
+    if subcommand is not None and _subcommand is not None and subcommand != _subcommand:
+        raise ValueError("subcommand and _subcommand must match when both are provided")
     return SEED_LIST_LENGTHS_BY_COMMAND.get(command)
 
 
@@ -464,7 +476,7 @@ class AppConfig:
         if self._stage_layout is None:
             from farkle.analysis.stage_registry import resolve_stage_layout
 
-            self._stage_layout = resolve_stage_layout(self)
+            self._stage_layout = resolve_stage_layout(cast("AppConfig", self))
         return self._stage_layout
 
     def stage_cache_key_version(self, stage_key: str) -> int:

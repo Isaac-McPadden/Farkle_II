@@ -9,7 +9,7 @@ import math
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from itertools import combinations
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Sequence
+from typing import Any, Dict, Iterable, List, Sequence, cast
 
 import numpy as np
 import pandas as pd
@@ -91,6 +91,12 @@ def _tiers_path(cfg: AppConfig) -> Path:
             return path
 
     return candidates[0]
+
+
+def _frame_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    """Return row dictionaries with concrete string column keys."""
+
+    return cast(list[dict[str, Any]], frame.to_dict(orient="records"))
 
 
 def _load_top_strategies(
@@ -1304,7 +1310,7 @@ def run_bonferroni_head2head(
                 extra={"stage": "head2head", "path": str(pairwise_parquet), "error": str(exc)},
             )
         else:
-            for record in existing_frame.to_dict(orient="records"):
+            for record in _frame_records(existing_frame):
                 pair_id_val = record.get("pair_id")
                 if pair_id_val is None or pd.isna(pair_id_val):
                     continue
@@ -1318,7 +1324,7 @@ def run_bonferroni_head2head(
                 extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
             )
             continue
-        for record in frame.to_dict(orient="records"):
+        for record in _frame_records(frame):
             pair_id_val = record.get("pair_id")
             if pair_id_val is None or pd.isna(pair_id_val):
                 continue
@@ -1351,7 +1357,7 @@ def run_bonferroni_head2head(
                 extra={"stage": "head2head", "path": str(pairwise_ordered_parquet), "error": str(exc)},
             )
         else:
-            for record in existing_ordered.to_dict(orient="records"):
+            for record in _frame_records(existing_ordered):
                 pair_id_val = record.get("pair_id")
                 ordering = record.get("ordering")
                 if pair_id_val is None or pd.isna(pair_id_val) or ordering is None or pd.isna(ordering):
@@ -1366,7 +1372,7 @@ def run_bonferroni_head2head(
                 extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
             )
             continue
-        for record in frame.to_dict(orient="records"):
+        for record in _frame_records(frame):
             pair_id_val = record.get("pair_id")
             ordering = record.get("ordering")
             if pair_id_val is None or pd.isna(pair_id_val) or ordering is None or pd.isna(ordering):
@@ -1535,7 +1541,7 @@ def run_bonferroni_head2head(
                 extra={"stage": "head2head", "path": str(selfplay_parquet), "error": str(exc)},
             )
         else:
-            for record in existing_selfplay.to_dict(orient="records"):
+            for record in _frame_records(existing_selfplay):
                 strategy_val = record.get("strategy")
                 if strategy_val is None or pd.isna(strategy_val):
                     continue
@@ -1549,7 +1555,7 @@ def run_bonferroni_head2head(
                 extra={"stage": "head2head", "path": str(shard_path), "error": str(exc)},
             )
             continue
-        for record in frame.to_dict(orient="records"):
+        for record in _frame_records(frame):
             strategy_val = record.get("strategy")
             if strategy_val is None or pd.isna(strategy_val):
                 continue

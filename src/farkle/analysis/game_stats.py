@@ -241,25 +241,37 @@ def _strategy_pandas_dtype(strategy_type: pa.DataType) -> StrategyPandasDtype:
     return pd.Int64Dtype()
 
 
-def _to_python_scalar(value: Scalar) -> NormalizedScalar:
-    if isinstance(value, np.generic):
-        return value.item()
-    return value
+def _to_python_scalar(value: object, *, field: str = "value") -> NormalizedScalar:
+    normalized: object = value
+    if isinstance(normalized, tuple):
+        if len(normalized) != 1:
+            raise ValueError(f"invalid {field} scalar for conversion: {value!r}")
+        normalized = normalized[0]
+    if isinstance(normalized, np.generic):
+        normalized = normalized.item()
+    if normalized is pd.NA:
+        return None
+    return cast(NormalizedScalar, normalized)
 
 
-def _strategy_key_to_int(value: Scalar, *, field: str = "strategy") -> int:
-    normalized = _to_python_scalar(value)
+def _require_scalar(value: object, *, field: str = "value") -> Scalar:
+    normalized = _to_python_scalar(value, field=field)
     if normalized is None:
         raise ValueError(f"invalid {field} scalar for int conversion: {value!r}")
+    return normalized
+
+
+def _strategy_key_to_int(value: object, *, field: str = "strategy") -> int:
+    normalized = _require_scalar(value, field=field)
     try:
         return to_int(normalized)
     except ValueError as err:
         raise ValueError(f"invalid {field} scalar for int conversion: {value!r}") from err
 
 
-def _strategy_stat_value(value: Scalar) -> StatValue:
+def _strategy_stat_value(value: object) -> StatValue:
     normalized = _to_python_scalar(value)
-    if normalized is None or normalized is pd.NA:
+    if normalized is None:
         return pd.NA
     if isinstance(normalized, bytes):
         return normalized.decode("utf-8", errors="replace")
@@ -740,7 +752,7 @@ def _compute_k_game_stats(
         "prob_rounds_le_10",
         "prob_rounds_ge_20",
     ]
-    margin_cols = [
+    margin_output_cols = [
         "summary_level",
         "strategy",
         "n_players",
@@ -755,7 +767,7 @@ def _compute_k_game_stats(
         *[c for c in frame.columns if c.startswith("prob_score_spread_le_")],
     ]
     game_frame = frame[[c for c in game_cols if c in frame.columns]].copy()
-    margin_frame = frame[[c for c in margin_cols if c in frame.columns]].copy()
+    margin_frame = frame[[c for c in margin_output_cols if c in frame.columns]].copy()
     if "strategy" in game_frame.columns:
         game_frame["strategy"] = pd.to_numeric(game_frame["strategy"], errors="coerce").astype(
             "Int64"
@@ -2070,7 +2082,7 @@ def _rare_event_flags(
     output_path: Path,
     codec: Compression,
     config_sha: str | None = None,
-    _stage_config_sha: str | None = None,
+    stage_config_sha: str | None = None,
     cache_key_version: int = 2,
     n_workers: int = 1,
     progress_logging: ProgressLogConfig | None = None,
@@ -2081,7 +2093,8 @@ def _rare_event_flags(
 
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
     resume_sha = (
-        config_sha
+        stage_config_sha
+        or config_sha
         or hashlib.sha256(
             json.dumps(
                 {
@@ -2471,8 +2484,9 @@ def _build_rare_event_summary_shard(
 
                 grouped = melted.groupby(strategy_values, sort=False)
                 for strategy, group in grouped:
+                    strategy_scalar = _require_scalar(strategy, field="strategy")
                     group_count = _strategy_key_to_int(group.shape[0], field="observations")
-                    strategy_value = _strategy_key_to_int(strategy)
+                    strategy_value = _strategy_key_to_int(strategy_scalar)
                     strategy_entry = strategy_sums.setdefault(
                         strategy_value, {"observations": 0, **dict.fromkeys(flags, 0)}
                     )
@@ -2758,7 +2772,11 @@ def _collect_rare_event_counts(
                 )
 
             for strategy, count in observations.items():
-                norm_key: tuple[int, int] = (_strategy_key_to_int(strategy), n_players_int)
+                strategy_scalar = _require_scalar(strategy, field="strategy")
+                norm_key: tuple[int, int] = (
+                    _strategy_key_to_int(strategy_scalar),
+                    n_players_int,
+                )
                 strategy_entry = strategy_sums.setdefault(
                     norm_key,
                     {"observations": 0, **dict.fromkeys(flags, 0)},
@@ -2767,7 +2785,7 @@ def _collect_rare_event_counts(
                     count,
                     field="observations",
                 )
-                row = flag_sums.loc[strategy]
+                row = cast(pd.Series, flag_sums.loc[strategy_scalar])
                 for flag in flags:
                     strategy_entry[flag] += _strategy_key_to_int(row[flag], field=flag)
 

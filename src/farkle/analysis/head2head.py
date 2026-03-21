@@ -160,7 +160,7 @@ def run(cfg: AppConfig) -> None:
             if existing_out.exists()
             else "Head-to-head artifacts missing; running fresh compute"
         )
-        extra = {"stage": "head2head"}
+        extra: dict[str, object] = {"stage": "head2head"}
         if missing_required_outputs:
             extra["missing_outputs"] = [str(path) for path in missing_required_outputs]
         if stage_status not in {"", "success"}:

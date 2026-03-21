@@ -573,6 +573,7 @@ def test_run_trueskill_handles_worker_exception(
         *,
         resume: bool,
         checkpoint_every_batches: int,
+        progress_logging: object | None = None,
         env_kwargs: dict | None,
         row_data_dir: str | None = None,
         curated_rows_name: str | None = None,
@@ -659,6 +660,7 @@ def test_run_trueskill_rebuilds_outdated_pooled(
         *,
         resume: bool,
         checkpoint_every_batches: int,
+        progress_logging: object | None = None,
         env_kwargs: dict | None,
         row_data_dir: str | None = None,
         curated_rows_name: str | None = None,
@@ -747,6 +749,7 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
         tiering_z: float | None = None,
         tiering_min_gap: float | None = None,
         mp_start_method: str | None = None,
+        progress_logging: object | None = None,
     ) -> None:
         _ = (
             dataroot,
@@ -760,6 +763,7 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
             tiering_z,
             tiering_min_gap,
             mp_start_method,
+            progress_logging,
         )
         seen_seed_inputs.append(
             (

@@ -189,7 +189,7 @@ def _iter_rating_parquets(root: Path, suffix: str, legacy_root: Path | None = No
         out.append(path)
         seen.add(key)
 
-    def _sort_key(path: Path) -> tuple[int, str]:
+    def _sort_key(path: Path) -> tuple[float, str]:
         count = _player_count_from_stem(path.stem)
         return (count if count is not None else math.inf, path.resolve().as_posix())
 

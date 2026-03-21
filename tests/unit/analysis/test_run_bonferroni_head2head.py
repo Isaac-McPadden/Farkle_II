@@ -358,7 +358,7 @@ def test_run_bonferroni_head2head_progress_cadence_logs(
     )
 
     ticks = iter([0.0, 0.0, 1.0, 2.1, 4.3, 8.6])
-    monkeypatch.setattr(rb.time, "monotonic", lambda: next(ticks))
+    monkeypatch.setattr("farkle.utils.progress.time.monotonic", lambda: next(ticks, 8.6))
 
     with caplog.at_level("INFO"):
         rb.run_bonferroni_head2head(
@@ -367,7 +367,9 @@ def test_run_bonferroni_head2head_progress_cadence_logs(
             progress_schedule=[0.5, 1.5, 2.0],
         )
 
-    progress_logs = [rec for rec in caplog.records if rec.message == "Head-to-head progress"]
+    progress_logs = [
+        rec for rec in caplog.records if rec.message.startswith("Head-to-head progress:")
+    ]
     assert len(progress_logs) >= 2
 
 

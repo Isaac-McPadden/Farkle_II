@@ -303,7 +303,6 @@ def _resolve_log_file(args: argparse.Namespace, cfg: AppConfig | None) -> Path |
         return None
 
     command = getattr(args, "command", None)
-    an_cmd = getattr(args, "an_cmd", None)
     if command == "two-seed-pipeline":
         seed_pair = cfg.sim.require_seed_pair()
         return seed_pair_root(cfg, seed_pair) / "log.txt"
@@ -318,7 +317,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     args, _ = parser.parse_known_args(argv)
     seed_pair_override = resolve_seed_pair_args(args, parser)
     expected_seed_len = expected_seed_list_length(
-        args.command, subcommand=getattr(args, "an_cmd", None)
+        args.command, _subcommand=getattr(args, "an_cmd", None)
     )
 
     setup_info_logging()

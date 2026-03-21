@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import cast
 
 from farkle.analysis.stage_registry import StageLayout, resolve_interseed_stage_layout
 from farkle.config import AppConfig
@@ -70,7 +71,7 @@ class RunContextConfig(AppConfig):
         run_cfg._interseed_input_dir_override = interseed_input_dir
         run_cfg._interseed_input_layout_override = interseed_input_layout
         if stage_layout is not None:
-            run_cfg.set_stage_layout(stage_layout)
+            run_cfg.set_stage_layout(cast(StageLayout, stage_layout))
         return run_cfg
 
     @property
@@ -119,7 +120,7 @@ class InterseedRunContext:
         seed_pair: tuple[int, int],
         analysis_root: Path,
     ) -> "InterseedRunContext":
-        input_layout = seed_context.config.stage_layout
+        input_layout = cast(StageLayout, seed_context.config.stage_layout)
         combine_folder = input_layout.folder_for("combine")
         if combine_folder is None:
             raise KeyError("Seed-stage layout must include 'combine' for interseed inputs")

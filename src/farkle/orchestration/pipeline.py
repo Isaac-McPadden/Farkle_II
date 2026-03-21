@@ -18,7 +18,6 @@ from typing import Sequence
 from farkle.config import AppConfig, IOConfig, load_app_config
 from farkle.orchestration.seed_utils import prepare_seed_config, split_seeded_results_dir
 from farkle.utils.stage_completion import stage_is_up_to_date, write_stage_done
-from farkle.utils.writer import atomic_path
 
 __all__ = [
     "main",

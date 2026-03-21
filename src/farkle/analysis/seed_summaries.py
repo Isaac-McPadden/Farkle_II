@@ -14,6 +14,7 @@ import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from typing import TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -55,6 +56,7 @@ MEAN_NAME_OVERRIDES = {
     "n_smart_one_dice": "smart_one_dice",
     "hot_dice": "hot_dice",
 }
+RowPositions: TypeAlias = pd.Index | np.ndarray | list[int]
 
 
 def _summary_path(cfg: AppConfig, *, players: int, seed: int) -> Path:
@@ -102,11 +104,17 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         stage_log.missing_input("metrics parquet empty", metrics_path=str(metrics_path))
         return
 
-    grouped_indices = metrics_frame.groupby(["seed", "players"], sort=True).indices
-    grouped_keys = sorted((int(seed), int(players)) for seed, players in grouped_indices)
+    grouped_indices_raw = metrics_frame.groupby(["seed", "players"], sort=True).indices
+    grouped_indices: dict[tuple[int, int], RowPositions] = {}
+    for raw_key, row_positions in grouped_indices_raw.items():
+        if not isinstance(raw_key, tuple) or len(raw_key) != 2:
+            raise ValueError(f"unexpected seed/player group key: {raw_key!r}")
+        raw_seed, raw_players = raw_key
+        grouped_indices[(int(raw_seed), int(raw_players))] = row_positions
+    grouped_keys = sorted(grouped_indices)
     seeds = sorted({seed for seed, _ in grouped_keys})
     player_counts = sorted({players for _, players in grouped_keys})
-    work_units: list[tuple[int, int, np.ndarray]] = [
+    work_units: list[tuple[int, int, RowPositions]] = [
         (seed, players, grouped_indices[(seed, players)]) for seed, players in grouped_keys
     ]
     done = stage_done_path(cfg.seed_summaries_stage_dir, "seed_summaries")
@@ -153,24 +161,24 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     if work_units:
         max_workers = max(1, min(len(work_units), os.cpu_count() or 1, 8))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            for seed, players, summary in executor.map(
+            for seed, players, summary_frame in executor.map(
                 lambda unit: _build_summary_for_unit(metrics_frame, unit),
                 work_units,
             ):
-                summaries_by_unit[(seed, players)] = summary
+                summaries_by_unit[(seed, players)] = summary_frame
 
     for seed in seeds:
         seed_frames: list[pd.DataFrame] = []
         for players in player_counts:
-            summary = summaries_by_unit.get((int(seed), int(players)))
-            if summary is None:
+            summary_for_seed = summaries_by_unit.get((int(seed), int(players)))
+            if summary_for_seed is None:
                 continue
-            if summary.empty:
+            if summary_for_seed.empty:
                 continue
-            seed_frames.append(summary)
+            seed_frames.append(summary_for_seed)
             output_path = _summary_path(cfg, players=int(players), seed=int(seed))
             outputs.append(output_path)
-            if not force and _existing_summary_matches(output_path, summary):
+            if not force and _existing_summary_matches(output_path, summary_for_seed):
                 LOGGER.info(
                     "Seed summary already up-to-date",
                     extra={
@@ -181,19 +189,19 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                     },
                 )
             else:
-                _write_summary(summary, output_path)
+                _write_summary(summary_for_seed, output_path)
                 LOGGER.info(
                     "Seed summary written",
                     extra={
                         "stage": "seed_summaries",
                         "players": players,
                         "seed": seed,
-                        "rows": len(summary),
+                        "rows": len(summary_for_seed),
                         "path": str(output_path),
                     },
                 )
 
-            mirrored_path = _sync_meta_summary(cfg, summary, output_path)
+            mirrored_path = _sync_meta_summary(cfg, summary_for_seed, output_path)
             if mirrored_path is not None:
                 mirrored_outputs.append(mirrored_path)
         if seed_frames:
@@ -334,14 +342,24 @@ def _build_summary(frame: pd.DataFrame, *, players: int, seed: int) -> pd.DataFr
     return summary[ordered]
 
 
+def _take_positions(row_positions: RowPositions) -> np.ndarray | list[int]:
+    """Normalize pandas group indices into a ``DataFrame.take``-compatible indexer."""
+
+    if isinstance(row_positions, pd.Index):
+        return row_positions.to_numpy(dtype=np.intp, copy=False)
+    if isinstance(row_positions, np.ndarray):
+        return row_positions.astype(np.intp, copy=False)
+    return [int(position) for position in row_positions]
+
+
 def _build_summary_for_unit(
     metrics_frame: pd.DataFrame,
-    unit: tuple[int, int, np.ndarray],
+    unit: tuple[int, int, RowPositions],
 ) -> tuple[int, int, pd.DataFrame]:
     """Build one summary for a ``(seed, players)`` work unit."""
 
     seed, players, row_positions = unit
-    subset = metrics_frame.take(row_positions)
+    subset = metrics_frame.take(_take_positions(row_positions))
     summary = _build_summary(subset, players=players, seed=seed)
     return seed, players, summary
 

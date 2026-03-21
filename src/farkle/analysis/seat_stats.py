@@ -390,14 +390,12 @@ def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -
     columns = list(required | {"seat_ranks", "n_players"})
     column_list = [c for c in columns if c in ds_in.schema.names]
     filter_expr = ds.field("n_players") == 2 if "n_players" in ds_in.schema.names else None
-    scanner_kwargs: dict[str, object] = {
-        "columns": column_list,
-        "batch_size": 100_000,
-        "use_threads": True,
-    }
-    if filter_expr is not None:
-        scanner_kwargs["filter"] = filter_expr
-    scanner = ds_in.scanner(**scanner_kwargs)
+    scanner = ds_in.scanner(
+        columns=column_list,
+        batch_size=100_000,
+        use_threads=True,
+        filter=filter_expr,
+    )
 
     running: pd.DataFrame | None = None
     for batch in scanner.to_batches():
