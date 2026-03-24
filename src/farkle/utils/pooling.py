@@ -1,3 +1,4 @@
+# src/farkle/utils/pooling.py
 """Reusable pooling configuration helpers for analysis stages."""
 
 from __future__ import annotations

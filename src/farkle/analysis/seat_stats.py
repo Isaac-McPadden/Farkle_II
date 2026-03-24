@@ -1,3 +1,4 @@
+# src/farkle/analysis/seat_stats.py
 """Seat-level statistics derived from combined curated rows."""
 from __future__ import annotations
 
@@ -54,6 +55,17 @@ def _write_seat_metrics_progress(
     seat_ids: list[int],
     complete: bool,
 ) -> None:
+    """Write seat-metrics progress metadata atomically.
+
+    Args:
+        path: Optional progress JSON path to write.
+        combined: Combined curated parquet being processed.
+        batch_count: Number of batches processed so far.
+        row_count: Number of rows processed so far.
+        group_count: Number of grouped seat metric rows accumulated.
+        seat_ids: Seat identifiers included in the computation.
+        complete: Whether processing has completed.
+    """
     if path is None:
         return
     payload = {
@@ -304,6 +316,14 @@ def compute_seat_advantage(
     """Aggregate win rates by seat position with advantage deltas."""
 
     def _rows_for_n(n: int) -> int:
+        """Read the recorded row count for one player-count manifest.
+
+        Args:
+            n: Player count whose manifest should be inspected.
+
+        Returns:
+            Recorded row count, or ``0`` when the manifest is missing or unreadable.
+        """
         manifest = cfg.manifest_for(n)
         if not manifest.exists():
             return 0

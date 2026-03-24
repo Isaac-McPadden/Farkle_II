@@ -81,6 +81,16 @@ class StageRunner:
         *,
         raise_on_failure: bool = True,
     ) -> StageRunResult:
+        """Execute a stage plan while recording manifest events and validation.
+
+        Args:
+            plan: Ordered stage items to execute.
+            context: Shared config, manifest, and logging settings for the run.
+            raise_on_failure: Whether to re-raise the first stage failure.
+
+        Returns:
+            Summary containing any failed stage names and the first exception seen.
+        """
         manifest_path = context.manifest_path
         config_sha = getattr(context.config, "config_sha", None)
         run_id = context.run_id or make_run_id(context.run_label)

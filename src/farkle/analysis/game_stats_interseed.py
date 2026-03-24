@@ -1,3 +1,4 @@
+# src/farkle/analysis/game_stats_interseed.py
 """Aggregate cross-seed game length and margin statistics."""
 
 from __future__ import annotations
@@ -30,6 +31,13 @@ T_CRIT_N_SEEDS = 30
 
 @dataclass(frozen=True)
 class SeedInputs:
+    """Seed identifier paired with the analysis directory that owns its outputs.
+
+    Attributes:
+        seed: Seed number represented by the input directory.
+        analysis_dir: Root analysis directory containing per-seed stage artifacts.
+    """
+
     seed: int
     analysis_dir: Path
 
@@ -140,6 +148,14 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
 
 def _seed_analysis_dirs(cfg: AppConfig) -> list[SeedInputs]:
+    """Resolve existing per-seed analysis directories for interseed aggregation.
+
+    Args:
+        cfg: Application config used to resolve seed lists and input roots.
+
+    Returns:
+        Unique seed-analysis directory bundles that currently exist on disk.
+    """
     seeds = cfg.sim.interseed_seed_list()
     analysis_subdir = cfg.io.analysis_subdir
     inputs_list: list[SeedInputs] = []
@@ -201,6 +217,16 @@ def _seed_input_paths(
     *,
     candidates: Iterable[str],
 ) -> list[tuple[int, Path]]:
+    """Resolve available per-seed game-stat input parquet files.
+
+    Args:
+        seeds: Candidate seed-analysis directory bundles to inspect.
+        cfg: Application config used to resolve the game-stats stage folder.
+        candidates: Ordered candidate filenames to check within each pooled stage dir.
+
+    Returns:
+        ``(seed, path)`` pairs for the first existing candidate in each seed directory.
+    """
     stage_folder = cfg._interseed_input_folder("game_stats")
     if stage_folder is None:
         stage_folder = cfg.stage_layout.folder_for("game_stats")
@@ -225,6 +251,14 @@ def _seed_input_paths(
 
 
 def _load_seed_frames(paths: Iterable[tuple[int, Path]]) -> pd.DataFrame:
+    """Load and normalize per-seed game-stat frames before aggregation.
+
+    Args:
+        paths: ``(seed, parquet_path)`` pairs to read and tag.
+
+    Returns:
+        Combined frame containing a normalized ``n_players`` column and ``seed`` tag.
+    """
     frames: list[pd.DataFrame] = []
     for seed, path in paths:
         df = pd.read_parquet(path)
@@ -243,6 +277,14 @@ def _load_seed_frames(paths: Iterable[tuple[int, Path]]) -> pd.DataFrame:
 
 
 def _aggregate_seed_stats(frame: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate cross-seed means, dispersion, and confidence bounds for stats rows.
+
+    Args:
+        frame: Combined per-seed game-stat frame.
+
+    Returns:
+        Aggregated frame grouped by summary level, strategy, and player count.
+    """
     if frame.empty:
         return frame
 

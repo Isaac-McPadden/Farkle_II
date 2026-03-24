@@ -216,6 +216,14 @@ def make_run_id(run_label: str) -> str:
 
 
 def _manifest_lines_are_v2(path: Path) -> bool:
+    """Check whether a manifest JSONL file appears to use the v2 event schema.
+
+    Args:
+        path: Manifest path to inspect.
+
+    Returns:
+        ``True`` when the first parseable records look like v2 manifest events.
+    """
     try:
         with path.open("r", encoding="utf-8", newline="") as handle:
             saw_record = False

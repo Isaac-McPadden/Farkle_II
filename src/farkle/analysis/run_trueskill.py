@@ -68,6 +68,12 @@ DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 
 
 class RatingArtifactPaths(TypedDict):
+    """Resolved canonical and legacy file paths for a rating artifact bundle.
+
+    The mapping includes the preferred parquet/json/checkpoint paths, the owning
+    directory, and any legacy locations that should be migrated or inspected.
+    """
+
     parquet: Path
     json: Path
     ckpt: Path

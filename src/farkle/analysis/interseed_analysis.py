@@ -174,6 +174,14 @@ def _existing_paths(paths: list[Path]) -> list[str]:
 
 
 def _flatten_output_paths(statuses: Mapping[str, Mapping[str, Any]]) -> list[str]:
+    """Flatten the ``outputs`` lists stored in interseed stage status payloads.
+
+    Args:
+        statuses: Stage-status mapping keyed by stage name.
+
+    Returns:
+        Flat list of output path strings referenced by enabled stages.
+    """
     outputs: list[str] = []
     for details in statuses.values():
         outputs.extend(details.get("outputs", []))
@@ -189,6 +197,14 @@ def _variance_outputs(cfg: AppConfig) -> list[Path]:
 
 
 def _meta_outputs(cfg: AppConfig) -> list[Path]:
+    """Return expected interseed meta-analysis artifact paths.
+
+    Args:
+        cfg: Application config used to resolve meta output directories.
+
+    Returns:
+        Paths for per-player meta parquet and JSON artifacts.
+    """
     outputs: list[Path] = []
     for players in sorted({int(n) for n in cfg.sim.n_players_list}):
         outputs.append(cfg.meta_output_path(players, f"strategy_summary_{players}p_meta.parquet"))
@@ -205,6 +221,14 @@ def _game_stats_outputs(cfg: AppConfig) -> list[Path]:
 
 
 def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
+    """Return expected interseed TrueSkill artifact paths.
+
+    Args:
+        cfg: Application config used to resolve TrueSkill output directories.
+
+    Returns:
+        Paths for pooled ratings, tiers, and per-seed rating artifacts.
+    """
     outputs = [
         cfg.trueskill_path("ratings_k_weighted.parquet"),
         cfg.trueskill_path("ratings_k_weighted.json"),
@@ -216,6 +240,14 @@ def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
 
 
 def _agreement_outputs(cfg: AppConfig) -> list[Path]:
+    """Return expected interseed agreement artifact paths.
+
+    Args:
+        cfg: Application config used to resolve agreement output directories.
+
+    Returns:
+        Paths for per-player, pooled, and summary agreement outputs.
+    """
     outputs = [cfg.agreement_output_path(players) for players in cfg.agreement_players()]
     if cfg.agreement_include_pooled():
         outputs.append(cfg.agreement_output_path_pooled())
@@ -234,6 +266,19 @@ def _s_tier_stability_outputs(cfg: AppConfig) -> list[Path]:
 
 @dataclass(frozen=True)
 class SeedTierData:
+    """Resolved S-tier and ranking inputs for one seed.
+
+    Attributes:
+        seed: Seed identifier for the input bundle.
+        analysis_dir: Analysis directory holding the seed's artifacts.
+        s_tiers: Mapping of strategy identifier to tier label.
+        s_tiers_source: Short label describing where the tier data came from.
+        s_tiers_path: Source path for the tier mapping when one exists.
+        ranking: Optional ranking map derived from the seed inputs.
+        ranking_path: Optional path for the ranking source.
+        input_paths: Files that should invalidate downstream stability outputs.
+    """
+
     seed: int
     analysis_dir: Path
     s_tiers: dict[str, str]
@@ -245,6 +290,12 @@ class SeedTierData:
 
 
 def _run_s_tier_stability(cfg: AppConfig, *, force: bool = False) -> None:
+    """Compare S-tier assignments across seeds and write stability summaries.
+
+    Args:
+        cfg: Application config used to resolve seed inputs and output paths.
+        force: Recompute even when the done-stamp matches current inputs.
+    """
     stage_log = stage_logger("s_tier_stability", logger=LOGGER)
     stage_log.start()
 
@@ -360,6 +411,15 @@ def _run_s_tier_stability(cfg: AppConfig, *, force: bool = False) -> None:
 
 
 def _load_seed_tier_data(cfg: AppConfig, seed_input: SeedInputs) -> SeedTierData | None:
+    """Load S-tier and ranking data for one seed when any source is available.
+
+    Args:
+        cfg: Application config used to resolve optional interseed input folders.
+        seed_input: Seed directory bundle to inspect.
+
+    Returns:
+        Seed tier data for the seed, or ``None`` when no usable tier source exists.
+    """
     analysis_dir = seed_input.analysis_dir
     s_tiers_path = _resolve_h2h_path(cfg, analysis_dir, "h2h_s_tiers.json")
     ranking_path = _resolve_h2h_path(cfg, analysis_dir, "h2h_significant_ranking.csv")
@@ -407,6 +467,16 @@ def _load_seed_tier_data(cfg: AppConfig, seed_input: SeedInputs) -> SeedTierData
 
 
 def _resolve_h2h_path(cfg: AppConfig, analysis_dir: Path, filename: str) -> Path | None:
+    """Resolve a head-to-head artifact path from known stage folder conventions.
+
+    Args:
+        cfg: Application config used to resolve stage-folder overrides.
+        analysis_dir: Seed analysis directory being searched.
+        filename: Target filename to locate.
+
+    Returns:
+        Existing path when found, otherwise the first candidate path.
+    """
     candidates: list[Path] = []
     for stage in ("post_h2h", "head2head"):
         folder = cfg._interseed_input_folder(stage)
@@ -423,6 +493,14 @@ def _resolve_h2h_path(cfg: AppConfig, analysis_dir: Path, filename: str) -> Path
 
 
 def _load_s_tiers(path: Path) -> dict[str, str]:
+    """Load a validated strategy-to-tier mapping from JSON.
+
+    Args:
+        path: JSON file expected to contain a tier mapping payload.
+
+    Returns:
+        Mapping of strategy identifier to tier label, or an empty mapping on failure.
+    """
     try:
         payload_any: Any = json.loads(path.read_text())
     except json.JSONDecodeError:
@@ -441,6 +519,14 @@ def _load_s_tiers(path: Path) -> dict[str, str]:
 
 
 def _load_ranking(path: Path) -> tuple[list[str], dict[str, int]]:
+    """Load ranking order and rank lookup from a CSV artifact.
+
+    Args:
+        path: Ranking CSV path containing at least a ``strategy`` column.
+
+    Returns:
+        Tuple of ordered strategy identifiers and a rank lookup map.
+    """
     df = pd.read_csv(path)
     if "strategy" not in df.columns:
         return [], {}
@@ -459,6 +545,15 @@ def _load_ranking(path: Path) -> tuple[list[str], dict[str, int]]:
 def _load_union_candidates(
     cfg: AppConfig, analysis_dir: Path
 ) -> tuple[set[str], Path | None]:
+    """Load optional union-candidate constraints for ranking-derived tiers.
+
+    Args:
+        cfg: Application config used to resolve stage-folder overrides.
+        analysis_dir: Seed analysis directory being searched.
+
+    Returns:
+        Tuple of candidate strategy identifiers and the source path when found.
+    """
     candidates: list[Path] = []
     folder = cfg._interseed_input_folder("head2head")
     if folder is not None:
@@ -487,6 +582,14 @@ def _load_union_candidates(
 
 
 def _assign_s_tiers(ordered: list[str]) -> dict[str, str]:
+    """Assign coarse S-tier labels from a ranking order.
+
+    Args:
+        ordered: Ranked strategy identifiers from strongest to weakest.
+
+    Returns:
+        Mapping of strategy identifier to ``S+``, ``S``, or ``S-``.
+    """
     tiers: dict[str, str] = {}
     for idx, strategy in enumerate(ordered):
         if idx < 10:
@@ -500,6 +603,14 @@ def _assign_s_tiers(ordered: list[str]) -> dict[str, str]:
 
 
 def _order_tier_labels(labels: Iterable[str]) -> list[str]:
+    """Order tier labels with preferred S-tier labels first.
+
+    Args:
+        labels: Unordered iterable of tier labels.
+
+    Returns:
+        Preferred S-tier ordering followed by remaining labels alphabetically.
+    """
     preferred = ["S+", "S", "S-"]
     label_set = {label for label in labels if label}
     ordered = [label for label in preferred if label in label_set]
@@ -508,6 +619,14 @@ def _order_tier_labels(labels: Iterable[str]) -> list[str]:
 
 
 def _tiers_to_sets(tiers: dict[str, str]) -> dict[str, set[str]]:
+    """Group strategies into sets keyed by tier label.
+
+    Args:
+        tiers: Strategy-to-tier mapping.
+
+    Returns:
+        Mapping from tier label to the strategies assigned to that tier.
+    """
     grouped: dict[str, set[str]] = {}
     for strategy, label in tiers.items():
         grouped.setdefault(label, set()).add(strategy)
@@ -515,6 +634,15 @@ def _tiers_to_sets(tiers: dict[str, str]) -> dict[str, set[str]]:
 
 
 def _jaccard_index(set_a: set[str], set_b: set[str]) -> float | None:
+    """Compute the Jaccard index for two tier membership sets.
+
+    Args:
+        set_a: First set of strategies.
+        set_b: Second set of strategies.
+
+    Returns:
+        Jaccard index, or ``None`` when both sets are empty.
+    """
     union = set_a | set_b
     if not union:
         return None
@@ -524,6 +652,15 @@ def _jaccard_index(set_a: set[str], set_b: set[str]) -> float | None:
 def _rank_correlations(
     ranks_a: Mapping[str, int] | None, ranks_b: Mapping[str, int] | None
 ) -> dict[str, object]:
+    """Compute pairwise rank-correlation summaries for shared strategies.
+
+    Args:
+        ranks_a: Optional rank mapping for seed A.
+        ranks_b: Optional rank mapping for seed B.
+
+    Returns:
+        Summary payload containing overlap counts and Spearman/Kendall metrics.
+    """
     if not ranks_a or not ranks_b:
         return {
             "n_common": 0,
@@ -568,6 +705,15 @@ def _rank_correlations(
 def _tier_flips(
     data_a: SeedTierData, data_b: SeedTierData
 ) -> tuple[list[dict[str, object]], dict[str, int | float | None]]:
+    """Compare two seeds and enumerate per-strategy tier flips.
+
+    Args:
+        data_a: Tier data for the first seed.
+        data_b: Tier data for the second seed.
+
+    Returns:
+        Tuple of per-strategy flip rows and an aggregate flip summary payload.
+    """
     strategies = sorted(set(data_a.s_tiers) | set(data_b.s_tiers))
     rows: list[dict[str, object]] = []
     n_shared = 0
@@ -602,6 +748,14 @@ def _tier_flips(
 
 
 def _tier_counts(tiers: Mapping[str, str]) -> dict[str, int]:
+    """Count strategies per tier label.
+
+    Args:
+        tiers: Strategy-to-tier mapping.
+
+    Returns:
+        Mapping of tier label to the number of strategies in that tier.
+    """
     counts: dict[str, int] = {}
     for label in tiers.values():
         counts[label] = counts.get(label, 0) + 1

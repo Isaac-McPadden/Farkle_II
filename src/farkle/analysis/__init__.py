@@ -150,6 +150,11 @@ def build_single_seed_analysis_plan(
         run_seed_summaries(inner_cfg, force=force)
 
     def _trueskill(inner_cfg: AppConfig) -> None:
+        """Run the per-seed TrueSkill stage when the module is available.
+
+        Args:
+            inner_cfg: Per-seed config passed by the stage runner.
+        """
         stage_log = stage_logger("trueskill", logger=LOGGER)
         ts_mod = _optional_import("farkle.analysis.trueskill", stage_log=stage_log)
         if ts_mod is None:
@@ -157,6 +162,11 @@ def build_single_seed_analysis_plan(
         ts_mod.run(inner_cfg)
 
     def _tiering(inner_cfg: AppConfig) -> None:
+        """Run the tiering report stage when the module is available.
+
+        Args:
+            inner_cfg: Per-seed config passed by the stage runner.
+        """
         stage_log = stage_logger("tiering", logger=LOGGER)
         freq_mod = _optional_import("farkle.analysis.tiering_report", stage_log=stage_log)
         if freq_mod is None:
@@ -164,6 +174,11 @@ def build_single_seed_analysis_plan(
         freq_mod.run(inner_cfg)
 
     def _head2head(inner_cfg: AppConfig) -> None:
+        """Run the frequentist head-to-head stage when the module is available.
+
+        Args:
+            inner_cfg: Per-seed config passed by the stage runner.
+        """
         stage_log = stage_logger("head2head", logger=LOGGER)
         h2h_mod = _optional_import("farkle.analysis.head2head", stage_log=stage_log)
         if h2h_mod is None:
@@ -178,6 +193,11 @@ def build_single_seed_analysis_plan(
         )
 
     def _post_h2h(inner_cfg: AppConfig) -> None:
+        """Run the post-head-to-head analysis stage when the module is available.
+
+        Args:
+            inner_cfg: Per-seed config passed by the stage runner.
+        """
         stage_log = stage_logger("post_h2h", logger=LOGGER)
         post_h2h_mod = _optional_import("farkle.analysis.h2h_analysis", stage_log=stage_log)
         if post_h2h_mod is None:
@@ -185,6 +205,11 @@ def build_single_seed_analysis_plan(
         post_h2h_mod.run_post_h2h(inner_cfg)
 
     def _hgb(inner_cfg: AppConfig) -> None:
+        """Run the HGB feature analysis stage when the module is available.
+
+        Args:
+            inner_cfg: Per-seed config passed by the stage runner.
+        """
         stage_log = stage_logger("hgb", logger=LOGGER)
         hgb_mod = _optional_import("farkle.analysis.hgb_feat", stage_log=stage_log)
         if hgb_mod is None:
@@ -254,7 +279,21 @@ def build_interseed_analysis_plan(
     def _require_interseed_inputs(
         stage: str, runner: Callable[[AppConfig], None]
     ) -> Callable[[AppConfig], None]:
+        """Wrap an interseed stage so it skips cleanly when prerequisites are missing.
+
+        Args:
+            stage: Stage name used for structured skip logging.
+            runner: Stage function to invoke when inputs are available.
+
+        Returns:
+            Callable suitable for a :class:`StagePlanItem`.
+        """
         def _wrapped(inner_cfg: AppConfig) -> None:
+            """Run the wrapped interseed stage only when shared inputs are ready.
+
+            Args:
+                inner_cfg: Interseed config passed by the stage runner.
+            """
             ready, reason = inner_cfg.interseed_ready()
             if not ready:
                 stage_logger(stage, logger=LOGGER).missing_input(reason)
@@ -264,6 +303,11 @@ def build_interseed_analysis_plan(
         return _wrapped
 
     def _rng_diagnostics(inner_cfg: AppConfig) -> None:
+        """Run the interseed RNG diagnostics stage when enabled.
+
+        Args:
+            inner_cfg: Interseed config passed by the stage runner.
+        """
         if not resolved_rng_diagnostics:
             reason = (
                 "disabled by CLI flag"
@@ -280,6 +324,11 @@ def build_interseed_analysis_plan(
         run_variance(inner_cfg, force=force)
 
     def _interseed_game_stats(inner_cfg: AppConfig) -> None:
+        """Run interseed game-stat aggregation when the module is available.
+
+        Args:
+            inner_cfg: Interseed config passed by the stage runner.
+        """
         stage_log = stage_logger("interseed_game_stats", logger=LOGGER)
         stats_mod = _optional_import(
             "farkle.analysis.game_stats_interseed",
@@ -293,6 +342,11 @@ def build_interseed_analysis_plan(
         run_meta(inner_cfg, force=force)
 
     def _trueskill(inner_cfg: AppConfig) -> None:
+        """Run interseed TrueSkill analysis when the module is available.
+
+        Args:
+            inner_cfg: Interseed config passed by the stage runner.
+        """
         stage_log = stage_logger("trueskill", logger=LOGGER)
         ts_mod = _optional_import("farkle.analysis.trueskill", stage_log=stage_log)
         if ts_mod is None:
@@ -300,6 +354,11 @@ def build_interseed_analysis_plan(
         ts_mod.run(inner_cfg)
 
     def _agreement(inner_cfg: AppConfig) -> None:
+        """Run interseed agreement analysis once pooled ratings are present.
+
+        Args:
+            inner_cfg: Interseed config passed by the stage runner.
+        """
         ratings_pooled_path = inner_cfg.trueskill_path("ratings_k_weighted.parquet")
         if not ratings_pooled_path.exists() or ratings_pooled_path.stat().st_size <= 0:
             stage_logger("agreement", logger=LOGGER).missing_input(
@@ -315,6 +374,11 @@ def build_interseed_analysis_plan(
         agreement_mod.run(inner_cfg)
 
     def _interseed_summary(inner_cfg: AppConfig) -> None:
+        """Write the final interseed summary artifact when the module is available.
+
+        Args:
+            inner_cfg: Interseed config passed by the stage runner.
+        """
         stage_log = stage_logger("interseed", logger=LOGGER)
         interseed_mod = _optional_import(
             "farkle.analysis.interseed_analysis",
@@ -390,6 +454,14 @@ def run_interseed_analysis(
 
 
 def _run_manifest_metadata(cfg: AppConfig) -> dict[str, Any]:
+    """Build common run metadata for stage-runner manifest events.
+
+    Args:
+        cfg: Application config supplying results and analysis directories.
+
+    Returns:
+        Manifest metadata payload including resolved paths and config SHA when set.
+    """
     payload = {
         "results_dir": str(cfg.results_root),
         "analysis_dir": str(cfg.analysis_dir),

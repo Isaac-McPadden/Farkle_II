@@ -82,6 +82,8 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(slots=True)
 class _UnweightedAccumulator:
+    """Track exact counts, sums, and histogram data for unweighted metrics."""
+
     count: int = 0
     total: float = 0.0
     total_sq: float = 0.0
@@ -90,6 +92,8 @@ class _UnweightedAccumulator:
 
 @dataclass(slots=True)
 class _WeightedAccumulator:
+    """Track weighted sums and histogram mass for pooled strategy metrics."""
+
     count: int = 0
     weight_total: float = 0.0
     weighted_total: float = 0.0
@@ -99,6 +103,8 @@ class _WeightedAccumulator:
 
 @dataclass(slots=True)
 class _BinnedAccumulator:
+    """Track summary statistics and coarse histogram bins for margin metrics."""
+
     count: int = 0
     total: float = 0.0
     total_sq: float = 0.0
@@ -135,6 +141,19 @@ def _write_per_k_game_length(
     stage_config_sha: str,
     cache_key_version: int,
 ) -> None:
+    """Write the per-player-count game-length parquet and completion stamp.
+
+    Args:
+        k: Player count being written.
+        game_length_df: Full game-length frame containing all player counts.
+        output_path: Destination parquet path for the filtered slice.
+        stamp_path: Done-stamp path paired with ``output_path``.
+        input_paths: Inputs used to derive the per-``k`` output.
+        codec: Compression codec for parquet output.
+        config_sha: Optional configuration fingerprint for stage tracking.
+        stage_config_sha: Stage-specific cache fingerprint.
+        cache_key_version: Version tag for the done-stamp payload.
+    """
     per_k_game_length = game_length_df.loc[game_length_df["n_players"] == k].copy()
     per_k_game_length_table = pa.Table.from_pandas(per_k_game_length, preserve_index=False)
     write_parquet_atomic(per_k_game_length_table, output_path, codec=codec)
@@ -161,6 +180,19 @@ def _write_per_k_margin(
     stage_config_sha: str,
     cache_key_version: int,
 ) -> None:
+    """Write the per-player-count margin parquet and completion stamp.
+
+    Args:
+        k: Player count being written.
+        margin_df: Full margin frame containing all player counts.
+        output_path: Destination parquet path for the filtered slice.
+        stamp_path: Done-stamp path paired with ``output_path``.
+        input_paths: Inputs used to derive the per-``k`` output.
+        codec: Compression codec for parquet output.
+        config_sha: Optional configuration fingerprint for stage tracking.
+        stage_config_sha: Stage-specific cache fingerprint.
+        cache_key_version: Version tag for the done-stamp payload.
+    """
     per_k_margin = margin_df.loc[margin_df["n_players"] == k].copy()
     per_k_margin_table = pa.Table.from_pandas(per_k_margin, preserve_index=False)
     write_parquet_atomic(per_k_margin_table, output_path, codec=codec)
@@ -178,6 +210,11 @@ def _write_per_k_margin(
 def _run_per_k_fanout(
     futures: Sequence[Future[None]],
 ) -> None:
+    """Wait for per-``k`` workers and cancel the remainder on first failure.
+
+    Args:
+        futures: Submitted futures for independent per-player-count jobs.
+    """
     if not futures:
         return
     pending = set(futures)
@@ -193,6 +230,14 @@ def _run_per_k_fanout(
 
 
 def _strategy_arrow_type(per_n_inputs: Sequence[tuple[int, Path]]) -> pa.DataType:
+    """Infer the Arrow type used for strategy identifiers in per-``n`` inputs.
+
+    Args:
+        per_n_inputs: ``(n_players, parquet_path)`` pairs to inspect.
+
+    Returns:
+        First integer strategy type found, or ``pa.int64()`` as a fallback.
+    """
     for _, path in per_n_inputs:
         ds_in = ds.dataset(path)
         for name in ds_in.schema.names:
@@ -204,6 +249,14 @@ def _strategy_arrow_type(per_n_inputs: Sequence[tuple[int, Path]]) -> pa.DataTyp
 
 
 def _strategy_numpy_dtype(strategy_type: pa.DataType) -> np.dtype[Any]:
+    """Map an Arrow strategy type to the matching NumPy integer dtype.
+
+    Args:
+        strategy_type: Arrow type discovered in the source parquet schema.
+
+    Returns:
+        NumPy dtype suitable for loading the strategy column.
+    """
     if pa.types.is_int8(strategy_type):
         return np.dtype("int8")
     if pa.types.is_int16(strategy_type):
@@ -224,6 +277,14 @@ def _strategy_numpy_dtype(strategy_type: pa.DataType) -> np.dtype[Any]:
 
 
 def _strategy_pandas_dtype(strategy_type: pa.DataType) -> StrategyPandasDtype:
+    """Map an Arrow strategy type to the matching nullable pandas dtype.
+
+    Args:
+        strategy_type: Arrow type discovered in the source parquet schema.
+
+    Returns:
+        Pandas extension dtype for a nullable integer strategy column.
+    """
     if pa.types.is_uint8(strategy_type):
         return pd.UInt8Dtype()
     if pa.types.is_uint16(strategy_type):
@@ -242,6 +303,15 @@ def _strategy_pandas_dtype(strategy_type: pa.DataType) -> StrategyPandasDtype:
 
 
 def _to_python_scalar(value: object, *, field: str = "value") -> NormalizedScalar:
+    """Normalize tuple/NumPy/pandas scalar wrappers into plain Python values.
+
+    Args:
+        value: Raw scalar-like value read from pandas or Arrow output.
+        field: Field name used in validation errors.
+
+    Returns:
+        Plain Python scalar or ``None`` when the value represents ``pd.NA``.
+    """
     normalized: object = value
     if isinstance(normalized, tuple):
         if len(normalized) != 1:
@@ -255,6 +325,15 @@ def _to_python_scalar(value: object, *, field: str = "value") -> NormalizedScala
 
 
 def _require_scalar(value: object, *, field: str = "value") -> Scalar:
+    """Return a normalized scalar and reject null-like values.
+
+    Args:
+        value: Raw scalar-like value to validate.
+        field: Field name used in validation errors.
+
+    Returns:
+        Non-null normalized scalar value.
+    """
     normalized = _to_python_scalar(value, field=field)
     if normalized is None:
         raise ValueError(f"invalid {field} scalar for int conversion: {value!r}")
@@ -262,6 +341,15 @@ def _require_scalar(value: object, *, field: str = "value") -> Scalar:
 
 
 def _strategy_key_to_int(value: object, *, field: str = "strategy") -> int:
+    """Convert a strategy-like scalar into an integer identifier.
+
+    Args:
+        value: Raw scalar-like strategy identifier.
+        field: Field name used in validation errors.
+
+    Returns:
+        Integer strategy identifier.
+    """
     normalized = _require_scalar(value, field=field)
     try:
         return to_int(normalized)
@@ -270,6 +358,14 @@ def _strategy_key_to_int(value: object, *, field: str = "strategy") -> int:
 
 
 def _strategy_stat_value(value: object) -> StatValue:
+    """Convert raw grouped values into a stats-table compatible scalar.
+
+    Args:
+        value: Raw grouped value from pandas or Arrow processing.
+
+    Returns:
+        Normalized scalar ready to store in the output stats frame.
+    """
     normalized = _to_python_scalar(value)
     if normalized is None:
         return pd.NA
@@ -287,6 +383,15 @@ def _strategy_stat_value(value: object) -> StatValue:
 
 
 def _coerce_strategy_dtype(df: pd.DataFrame, strategy_type: pa.DataType) -> pd.DataFrame:
+    """Cast a stats frame's ``strategy`` column to the resolved nullable dtype.
+
+    Args:
+        df: Stats frame to normalize.
+        strategy_type: Arrow type chosen for strategy identifiers.
+
+    Returns:
+        Copy of ``df`` with the ``strategy`` column cast when present.
+    """
     if df.empty or "strategy" not in df.columns:
         return df
     out = df.copy()
@@ -529,6 +634,19 @@ def _compute_k_game_stats(
     cache_key_version: int,
     progress_logging: ProgressLogConfig | None = None,
 ) -> None:
+    """Compute per-``k`` round and margin statistics from one parquet input.
+
+    Args:
+        k: Player count represented by ``input_path``.
+        input_path: Per-``k`` curated parquet input.
+        stage_dir: Stage directory used for output paths and stamps.
+        thresholds: Margin thresholds for probability columns.
+        codec: Compression codec for parquet outputs.
+        config_sha: Optional configuration fingerprint for stage tracking.
+        stage_config_sha: Stage-specific cache fingerprint.
+        cache_key_version: Version tag for the done-stamp payload.
+        progress_logging: Optional progress logging schedule.
+    """
     artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     temp_state_path = artifact_path.with_suffix(".checkpoint.json")
@@ -827,6 +945,22 @@ def _pool_completed_k_game_stats(
     cache_key_version: int,
     force: bool,
 ) -> None:
+    """Pool completed per-``k`` stats files into aggregate compatibility outputs.
+
+    Args:
+        configured_k_values: Player counts expected for pooling.
+        stage_dir: Stage root containing per-``k`` artifacts.
+        game_length_output: Combined game-length parquet output.
+        margin_output: Combined margin parquet output.
+        pooled_game_length_output: Pooled-by-strategy game-length output.
+        pooled_margin_output: Pooled-by-strategy margin output.
+        pooled_stamp: Done-stamp tracking pooled outputs.
+        codec: Compression codec for parquet outputs.
+        config_sha: Optional configuration fingerprint for stage tracking.
+        stage_config_sha: Stage-specific cache fingerprint.
+        cache_key_version: Version tag for the done-stamp payload.
+        force: Recompute even when pooled outputs appear current.
+    """
     completed_paths: list[Path] = []
     for k in configured_k_values:
         artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
@@ -968,6 +1102,20 @@ def _write_empty_per_k_outputs(
     cache_key_version: int,
     force: bool,
 ) -> None:
+    """Write empty per-``k`` compatibility outputs when no rows are available.
+
+    Args:
+        k: Player count represented by the empty output set.
+        stage_dir: Stage root used to locate legacy compatibility outputs.
+        artifact_path: Main per-``k`` stats artifact path.
+        done_path: Done-stamp path paired with the empty outputs.
+        thresholds: Margin thresholds used to build empty probability columns.
+        codec: Compression codec for parquet outputs.
+        config_sha: Optional configuration fingerprint for stage tracking.
+        stage_config_sha: Stage-specific cache fingerprint.
+        cache_key_version: Version tag for the done-stamp payload.
+        force: Recompute even when the empty outputs appear current.
+    """
     legacy_game_path = artifact_path.parent / "game_length.parquet"
     legacy_margin_path = artifact_path.parent / "margin_stats.parquet"
     if (not force) and stage_is_up_to_date(
@@ -1291,6 +1439,15 @@ def _weighted_quantile(values: np.ndarray, weights: np.ndarray, quantile: float)
 
 
 def _weighted_mean(values: np.ndarray, weights: np.ndarray) -> float:
+    """Return the weighted mean for aligned value and weight arrays.
+
+    Args:
+        values: Numeric observations to average.
+        weights: Non-negative weights aligned to ``values``.
+
+    Returns:
+        Weighted mean or ``nan`` when the total weight is not positive.
+    """
     total = weights.sum()
     if total <= 0:
         return float("nan")
@@ -1298,6 +1455,15 @@ def _weighted_mean(values: np.ndarray, weights: np.ndarray) -> float:
 
 
 def _weighted_std(values: np.ndarray, weights: np.ndarray) -> float:
+    """Return the weighted population standard deviation for aligned arrays.
+
+    Args:
+        values: Numeric observations to summarize.
+        weights: Non-negative weights aligned to ``values``.
+
+    Returns:
+        Weighted standard deviation or ``nan`` when weights are invalid.
+    """
     total = weights.sum()
     if total <= 0:
         return float("nan")
@@ -1307,6 +1473,12 @@ def _weighted_std(values: np.ndarray, weights: np.ndarray) -> float:
 
 
 def _update_unweighted_accumulator(acc: _UnweightedAccumulator, values: np.ndarray) -> None:
+    """Add finite values into an unweighted accumulator and exact histogram.
+
+    Args:
+        acc: Accumulator mutated in place.
+        values: Numeric observations to incorporate.
+    """
     clean = values[np.isfinite(values)]
     if clean.size == 0:
         return
@@ -1322,6 +1494,13 @@ def _update_unweighted_accumulator(acc: _UnweightedAccumulator, values: np.ndarr
 def _update_weighted_accumulator(
     acc: _WeightedAccumulator, values: np.ndarray, *, row_weight: float
 ) -> None:
+    """Add finite values into a weighted accumulator and weighted histogram.
+
+    Args:
+        acc: Accumulator mutated in place.
+        values: Numeric observations to incorporate.
+        row_weight: Weight applied to each value in ``values``.
+    """
     clean = values[np.isfinite(values)]
     if clean.size == 0 or not math.isfinite(row_weight) or row_weight <= 0:
         return
@@ -1337,6 +1516,15 @@ def _update_weighted_accumulator(
 
 
 def _hist_value_at_rank(sorted_items: list[tuple[float, int]], rank: int) -> float:
+    """Return the histogram value occupying a zero-based rank position.
+
+    Args:
+        sorted_items: Histogram items sorted by numeric value.
+        rank: Zero-based rank to resolve across cumulative frequencies.
+
+    Returns:
+        Value at the requested rank, clamped to the final bin when needed.
+    """
     running = 0
     for value, freq in sorted_items:
         running += int(freq)
@@ -1346,6 +1534,16 @@ def _hist_value_at_rank(sorted_items: list[tuple[float, int]], rank: int) -> flo
 
 
 def _quantile_linear_from_hist(hist: dict[float, int], *, count: int, quantile: float) -> float:
+    """Estimate a quantile from an exact histogram using linear interpolation.
+
+    Args:
+        hist: Exact histogram keyed by observed value.
+        count: Total number of observations represented by ``hist``.
+        quantile: Target quantile in ``[0, 1]``.
+
+    Returns:
+        Interpolated quantile value or ``nan`` when the histogram is empty.
+    """
     if count <= 0 or not hist:
         return float("nan")
     if quantile <= 0.0:
@@ -1363,6 +1561,16 @@ def _quantile_linear_from_hist(hist: dict[float, int], *, count: int, quantile: 
 
 
 def _probability_le_from_hist(hist: dict[float, int], *, count: int, threshold: float) -> float:
+    """Return the share of histogram observations less than or equal to a threshold.
+
+    Args:
+        hist: Exact histogram keyed by observed value.
+        count: Total number of observations represented by ``hist``.
+        threshold: Inclusive threshold to evaluate.
+
+    Returns:
+        Probability estimate or ``nan`` when no observations are available.
+    """
     if count <= 0:
         return float("nan")
     matched = 0
@@ -1373,6 +1581,16 @@ def _probability_le_from_hist(hist: dict[float, int], *, count: int, threshold: 
 
 
 def _probability_ge_from_hist(hist: dict[float, int], *, count: int, threshold: float) -> float:
+    """Return the share of histogram observations greater than or equal to a threshold.
+
+    Args:
+        hist: Exact histogram keyed by observed value.
+        count: Total number of observations represented by ``hist``.
+        threshold: Inclusive threshold to evaluate.
+
+        Returns:
+            Probability estimate or ``nan`` when no observations are available.
+    """
     if count <= 0:
         return float("nan")
     matched = 0
@@ -1383,6 +1601,14 @@ def _probability_ge_from_hist(hist: dict[float, int], *, count: int, threshold: 
 
 
 def _mean_std_from_unweighted(acc: _UnweightedAccumulator) -> tuple[float, float]:
+    """Compute mean and population standard deviation from an unweighted accumulator.
+
+    Args:
+        acc: Accumulator containing count, sum, and sum-of-squares fields.
+
+    Returns:
+        ``(mean, stddev)`` or ``(nan, nan)`` when no observations were collected.
+    """
     if acc.count <= 0:
         return float("nan"), float("nan")
     mean = acc.total / acc.count
@@ -1392,6 +1618,12 @@ def _mean_std_from_unweighted(acc: _UnweightedAccumulator) -> tuple[float, float
 
 
 def _update_binned_accumulator(acc: _BinnedAccumulator, values: np.ndarray) -> None:
+    """Add finite values into a binned accumulator for approximate quantiles.
+
+    Args:
+        acc: Accumulator mutated in place.
+        values: Numeric observations to incorporate.
+    """
     clean = values[np.isfinite(values)]
     if clean.size == 0:
         return
@@ -1408,6 +1640,14 @@ def _update_binned_accumulator(acc: _BinnedAccumulator, values: np.ndarray) -> N
 
 
 def _mean_std_from_binned(acc: _BinnedAccumulator) -> tuple[float, float]:
+    """Compute mean and population standard deviation from a binned accumulator.
+
+    Args:
+        acc: Accumulator containing binned observations and summary totals.
+
+    Returns:
+        ``(mean, stddev)`` or ``(nan, nan)`` when no observations were collected.
+    """
     if acc.count <= 0:
         return float("nan"), float("nan")
     mean = acc.total / acc.count
@@ -1416,6 +1656,15 @@ def _mean_std_from_binned(acc: _BinnedAccumulator) -> tuple[float, float]:
 
 
 def _quantile_from_binned(acc: _BinnedAccumulator, quantile: float) -> float:
+    """Approximate a quantile from fixed-width margin bins.
+
+    Args:
+        acc: Accumulator containing margin bins and min/max bounds.
+        quantile: Target quantile in ``[0, 1]``.
+
+    Returns:
+        Approximate quantile value or ``nan`` when the accumulator is empty.
+    """
     if acc.count <= 0 or not acc.bins:
         return float("nan")
     if quantile <= 0.0:
@@ -1432,6 +1681,15 @@ def _quantile_from_binned(acc: _BinnedAccumulator, quantile: float) -> float:
 
 
 def _probability_le_from_binned(acc: _BinnedAccumulator, threshold: float) -> float:
+    """Estimate the share of binned observations below an inclusive threshold.
+
+    Args:
+        acc: Accumulator containing margin bins and counts.
+        threshold: Inclusive threshold to evaluate.
+
+    Returns:
+        Probability estimate or ``nan`` when inputs are invalid.
+    """
     if acc.count <= 0 or not math.isfinite(threshold):
         return float("nan")
     threshold_bin = int(math.floor(threshold / _MARGIN_BIN_WIDTH))
@@ -1445,6 +1703,16 @@ def _probability_le_from_binned(acc: _BinnedAccumulator, threshold: float) -> fl
 def _weighted_quantile_from_hist(
     hist: dict[float, float], *, weight_total: float, quantile: float
 ) -> float:
+    """Return a weighted quantile from a weighted histogram.
+
+    Args:
+        hist: Weighted histogram keyed by observed value.
+        weight_total: Total weight represented by ``hist``.
+        quantile: Target quantile in ``[0, 1]``.
+
+    Returns:
+        Weighted quantile value or ``nan`` when the histogram is empty.
+    """
     if weight_total <= 0 or not hist:
         return float("nan")
     if quantile <= 0.0:
@@ -1463,6 +1731,16 @@ def _weighted_quantile_from_hist(
 def _weighted_probability_le_from_hist(
     hist: dict[float, float], *, weight_total: float, threshold: float
 ) -> float:
+    """Return weighted probability mass below an inclusive threshold.
+
+    Args:
+        hist: Weighted histogram keyed by observed value.
+        weight_total: Total weight represented by ``hist``.
+        threshold: Inclusive threshold to evaluate.
+
+    Returns:
+        Probability estimate or ``nan`` when no weight is available.
+    """
     if weight_total <= 0:
         return float("nan")
     matched = 0.0
@@ -1473,6 +1751,14 @@ def _weighted_probability_le_from_hist(
 
 
 def _mean_std_from_weighted(acc: _WeightedAccumulator) -> tuple[float, float]:
+    """Compute weighted mean and standard deviation from an accumulator.
+
+    Args:
+        acc: Accumulator containing weighted totals and squared totals.
+
+    Returns:
+        ``(mean, stddev)`` or ``(nan, nan)`` when no positive weight exists.
+    """
     if acc.weight_total <= 0:
         return float("nan"), float("nan")
     mean = acc.weighted_total / acc.weight_total
@@ -1488,6 +1774,17 @@ def _pooling_row_weight(
     row_count: int,
     weights_by_k: dict[int, float],
 ) -> float:
+    """Resolve the per-row weight implied by the configured pooling scheme.
+
+    Args:
+        pooling_scheme: Named pooling mode such as ``game-count`` or ``config``.
+        n_players: Player count for the row being weighted.
+        row_count: Number of source rows contributing to the group.
+        weights_by_k: Configured per-``k`` weights for ``config`` pooling.
+
+    Returns:
+        Weight to apply to each row in the grouped contribution.
+    """
     if row_count <= 0:
         return 0.0
     if pooling_scheme == "game-count":
@@ -2276,6 +2573,15 @@ def _rare_event_flags(
 
 
 def _rare_event_shard_paths(output_path: Path, n_players: int) -> tuple[Path, Path, Path]:
+    """Return the shard, stats, and done paths for one rare-event player count.
+
+    Args:
+        output_path: Root rare-event output parquet path.
+        n_players: Player count whose shard paths should be derived.
+
+    Returns:
+        Tuple of ``(shard_path, stats_path, done_path)``.
+    """
     shard_dir = output_path.parent / f"{output_path.stem}_shards"
     shard_path = shard_dir / f"{n_players}p.parquet"
     stats_path = shard_dir / f"{n_players}p.stats.json"
@@ -2290,6 +2596,17 @@ def _rare_event_schema(
     flag_arrow: pa.DataType,
     observations_arrow: pa.DataType,
 ) -> pa.Schema:
+    """Build the Arrow schema used for rare-event shard parquet files.
+
+    Args:
+        thresholds: Margin thresholds to expose as boolean indicator columns.
+        strategy_arrow: Arrow type for strategy identifiers.
+        flag_arrow: Arrow type for boolean-like indicator columns.
+        observations_arrow: Arrow type for observation counts.
+
+    Returns:
+        Schema describing the rare-event shard layout.
+    """
     fields: list[pa.Field] = [
         pa.field("summary_level", pa.string()),
         pa.field("strategy", strategy_arrow),
@@ -2312,6 +2629,15 @@ def _load_rare_event_summary_shard_stats(
     *,
     flags: Sequence[str],
 ) -> tuple[int, dict[int, dict[str, int]], dict[str, int]]:
+    """Load one shard's rare-event summary counters from its JSON stats file.
+
+    Args:
+        stats_path: JSON stats path emitted for a rare-event shard.
+        flags: Indicator column names expected in the stats payload.
+
+    Returns:
+        Tuple of shard row count, per-strategy sums, and global sums.
+    """
     payload = json.loads(stats_path.read_text(encoding="utf-8"))
     shard_rows = _strategy_key_to_int(payload.get("rows_written", 0), field="rows_written")
 
@@ -2351,6 +2677,23 @@ def _build_rare_event_summary_shard(
     cache_key_version: int,
     progress_logging: ProgressLogConfig | None = None,
 ) -> None:
+    """Build one player-count rare-event shard and its summary counters.
+
+    Args:
+        n_players: Player count represented by ``input_path``.
+        input_path: Per-``n`` curated parquet input.
+        thresholds: Margin thresholds to expose as indicator columns.
+        target_score: Runner-up score threshold used for target-reach events.
+        strategy_arrow: Arrow type for strategy identifiers.
+        shard_path: Destination parquet path for the rare-event shard.
+        stats_path: JSON path for aggregated shard counters.
+        done_path: Done-stamp path paired with the shard outputs.
+        codec: Compression codec for parquet outputs.
+        config_sha: Optional configuration fingerprint for stage tracking.
+        run_config_sha: Optional run-level configuration fingerprint.
+        cache_key_version: Version tag for the done-stamp payload.
+        progress_logging: Optional progress logging schedule.
+    """
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
     strategy_dtype = _strategy_numpy_dtype(strategy_arrow)
     flag_dtype = np.float64
@@ -2854,6 +3197,16 @@ def _collect_rare_event_histograms(
     need_margins: bool,
     need_targets: bool,
 ) -> tuple[dict[int, int], dict[int, int]]:
+    """Collect integer histograms used to choose rare-event thresholds.
+
+    Args:
+        per_n_inputs: ``(n_players, parquet_path)`` pairs to inspect.
+        need_margins: Whether margin histograms are required.
+        need_targets: Whether runner-up target histograms are required.
+
+    Returns:
+        Tuple of ``(margin_counts, target_counts)`` histograms.
+    """
     margin_counts: dict[int, int] = {}
     target_counts: dict[int, int] = {}
     if not need_margins and not need_targets:
@@ -2992,6 +3345,14 @@ def _global_stats(combined_path: Path) -> pd.DataFrame:
         return pd.DataFrame()
 
     def _player_count_from_ranks(ranks: object) -> int:
+        """Infer player count from a ``seat_ranks`` cell.
+
+        Args:
+            ranks: Raw ``seat_ranks`` cell from the combined parquet.
+
+        Returns:
+            Number of ranked seats represented by ``ranks`` or the schema fallback.
+        """
         if isinstance(ranks, np.ndarray):
             if ranks.ndim == 1:
                 return int(ranks.size)

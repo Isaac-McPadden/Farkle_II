@@ -364,6 +364,14 @@ def _save_checkpoint(
 
 
 def _coerce_counter(raw: object) -> Counter[int | str]:
+    """Coerce checkpointed win totals into a normalized ``Counter``.
+
+    Args:
+        raw: Raw win-total payload loaded from checkpoint metadata.
+
+    Returns:
+        Counter keyed by normalized strategy identifiers.
+    """
     if isinstance(raw, Counter):
         return Counter(raw)
     if isinstance(raw, Mapping):
@@ -374,6 +382,14 @@ def _coerce_counter(raw: object) -> Counter[int | str]:
 def _coerce_metric_sums(
     raw: Mapping[str, Mapping[int | str, float]] | None,
 ) -> Dict[str, Dict[int | str, float]] | None:
+    """Coerce checkpointed metric aggregates into normalized nested mappings.
+
+    Args:
+        raw: Raw metric aggregate payload loaded from checkpoint metadata.
+
+    Returns:
+        Nested default-dict mapping keyed by metric label and strategy identifier.
+    """
     if raw is None:
         return None
     return {
@@ -396,6 +412,15 @@ def _empty_metric_aggregates() -> Tuple[
 
 
 def _manifest_int_set(manifest_path: Path, key: str) -> set[int]:
+    """Collect integer values for one key across manifest records.
+
+    Args:
+        manifest_path: Manifest file to scan.
+        key: Record key whose integer-like values should be collected.
+
+    Returns:
+        Set of successfully parsed integer values.
+    """
     values: set[int] = set()
     for record in iter_manifest(manifest_path):
         raw = record.get(key)
@@ -409,6 +434,15 @@ def _manifest_int_set(manifest_path: Path, key: str) -> set[int]:
 
 
 def _resolve_manifest_record_path(manifest_path: Path, record: Mapping[str, Any]) -> Path:
+    """Resolve a manifest record's relative or absolute shard path.
+
+    Args:
+        manifest_path: Manifest file containing the record.
+        record: Manifest record with a ``path`` field.
+
+    Returns:
+        Absolute shard path referenced by the record.
+    """
     raw_path = record.get("path")
     if raw_path in (None, ""):
         raise ValueError(f"Manifest record missing path at {manifest_path}")
@@ -425,6 +459,14 @@ def _load_row_manifest_aggregates(
     Dict[str, Dict[int | str, float]],
     Dict[str, Dict[int | str, float]],
 ]:
+    """Rebuild win and metric aggregates by replaying row shards from a manifest.
+
+    Args:
+        manifest_path: Manifest listing row shard parquet files.
+
+    Returns:
+        Tuple of win totals, metric sums, and metric squared sums.
+    """
     win_totals: Counter[int | str] = Counter()
     metric_sums, metric_sq_sums = _empty_metric_aggregates()
 
@@ -460,6 +502,14 @@ def _load_metric_chunk_aggregates(
     Dict[str, Dict[int | str, float]],
     Dict[str, Dict[int | str, float]],
 ]:
+    """Rebuild aggregates from metric chunk shards listed in a manifest.
+
+    Args:
+        manifest_path: Manifest listing metric chunk parquet files.
+
+    Returns:
+        Tuple of optional win totals, metric sums, and metric squared sums.
+    """
     win_totals: Counter[int | str] = Counter()
     metric_sums, metric_sq_sums = _empty_metric_aggregates()
     wins_available = True
@@ -493,6 +543,16 @@ def _iter_original_chunk_items(
     shuffles_per_chunk: int,
     global_seed: int,
 ) -> Iterator[Tuple[int, List[int]]]:
+    """Yield deterministic shuffle-seed chunks in original chunk order.
+
+    Args:
+        num_shuffles: Total number of shuffle seeds to generate.
+        shuffles_per_chunk: Maximum seeds per emitted chunk.
+        global_seed: Root seed used to spawn deterministic chunk seeds.
+
+    Yields:
+        ``(chunk_index, chunk_seeds)`` pairs in original execution order.
+    """
     seed_iter = iter(urandom.spawn_seeds(num_shuffles, seed=global_seed))
     chunk_index = 0
     while True:
@@ -511,6 +571,18 @@ def _iter_pending_chunk_items(
     completed_shuffles: set[int],
     completed_chunk_indices: set[int],
 ) -> Iterator[Tuple[int, List[int]]]:
+    """Yield only the unfinished shuffle chunks needed for a resumed run.
+
+    Args:
+        num_shuffles: Total number of shuffle seeds to generate.
+        shuffles_per_chunk: Maximum seeds per emitted chunk.
+        global_seed: Root seed used to spawn deterministic chunk seeds.
+        completed_shuffles: Shuffle seeds already processed in prior runs.
+        completed_chunk_indices: Chunk indices already fully processed.
+
+    Yields:
+        ``(chunk_index, pending_seeds)`` pairs for remaining work only.
+    """
     for chunk_index, chunk in _iter_original_chunk_items(
         num_shuffles=num_shuffles,
         shuffles_per_chunk=shuffles_per_chunk,

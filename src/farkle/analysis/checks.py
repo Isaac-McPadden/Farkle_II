@@ -83,6 +83,14 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     seen_manifest = False
 
     def _rows_from_manifest(manifest_path: Path) -> int:
+        """Read a row-count value from a manifest JSON or JSONL file.
+
+        Args:
+            manifest_path: Manifest path to inspect.
+
+        Returns:
+            Total row count reported by the manifest.
+        """
         try:
             # Try single-JSON first for backward compatibility.
             meta = json.loads(manifest_path.read_text())

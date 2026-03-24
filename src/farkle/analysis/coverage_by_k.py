@@ -65,6 +65,14 @@ class _CountsPayload(TypedDict):
 
 
 def _pandas_scalar_to_int(value: object) -> int | None:
+    """Coerce a pandas or Arrow scalar into an integer when possible.
+
+    Args:
+        value: Scalar-like value from pandas or Arrow metadata.
+
+    Returns:
+        Integer value, or ``None`` when the scalar is missing or incompatible.
+    """
     if is_na(value):
         return None
 
@@ -149,6 +157,15 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
 
 def _coverage_inputs(cfg: AppConfig, metrics_path: Path) -> list[Path]:
+    """Collect metrics artifacts that should invalidate coverage outputs.
+
+    Args:
+        cfg: Application config used to resolve isolated metrics paths.
+        metrics_path: Primary pooled metrics parquet path.
+
+    Returns:
+        Existing pooled and isolated metrics paths relevant to coverage output.
+    """
     inputs = [metrics_path]
     player_counts = _player_counts_from_config(cfg)
     for k in player_counts:
@@ -159,6 +176,14 @@ def _coverage_inputs(cfg: AppConfig, metrics_path: Path) -> list[Path]:
 
 
 def _player_counts_from_config(cfg: AppConfig) -> list[int]:
+    """Normalize configured player counts into sorted positive integers.
+
+    Args:
+        cfg: Application config containing raw ``n_players_list`` entries.
+
+    Returns:
+        Sorted unique positive player counts.
+    """
     counts = []
     for entry in cfg.sim.n_players_list:
         try:
@@ -169,6 +194,15 @@ def _player_counts_from_config(cfg: AppConfig) -> list[int]:
 
 
 def _optional_csv_path(cfg: AppConfig, stage_dir: Path) -> Path | None:
+    """Resolve the optional CSV companion output path for coverage-by-k.
+
+    Args:
+        cfg: Application config containing optional output overrides.
+        stage_dir: Default stage directory for the coverage outputs.
+
+    Returns:
+        CSV output path when enabled, otherwise ``None``.
+    """
     outputs = cfg.analysis.outputs or {}
     csv_setting = outputs.get("coverage_by_k_csv")
     if not csv_setting:
@@ -187,6 +221,17 @@ def _build_coverage(
     coverage_inputs: Iterable[Path],
     policy: StageParallelPolicy | None = None,
 ) -> pd.DataFrame:
+    """Build the normalized coverage-by-k summary frame from metrics artifacts.
+
+    Args:
+        cfg: Application config used to resolve defaults and isolated artifacts.
+        metrics_path: Primary pooled metrics parquet path.
+        coverage_inputs: Input artifacts considered for invalidation and expectations.
+        policy: Optional parallel policy used to size Arrow threading.
+
+    Returns:
+        Coverage summary frame with per-seed and per-``k`` rollups.
+    """
     arrow_threads = policy.arrow_threads if policy is not None else 1
     counts = _stream_metrics_counts(
         metrics_path,
@@ -261,6 +306,16 @@ def _stream_metrics_counts(
     default_seed: int,
     arrow_threads: int = 1,
 ) -> pd.DataFrame:
+    """Stream metrics parquet rows into per-seed, per-``k`` coverage counts.
+
+    Args:
+        metrics_path: Metrics parquet path to scan.
+        default_seed: Seed to use when the parquet has no explicit seed column.
+        arrow_threads: Number of Arrow threads available to the scanner.
+
+    Returns:
+        Data frame with ``seed``, ``k``, ``games``, and strategy-count columns.
+    """
     dataset = ds.dataset(metrics_path, format="parquet")
     schema_names = set(dataset.schema.names)
 
@@ -349,6 +404,16 @@ def _stream_metrics_counts(
 def _expected_strategies_by_k(
     cfg: AppConfig, player_counts: Iterable[int], inputs: Iterable[Path]
 ) -> dict[int, int]:
+    """Resolve the expected strategy count for each configured player count.
+
+    Args:
+        cfg: Application config used to resolve isolated metrics and grid defaults.
+        player_counts: Player counts that need expected-strategy values.
+        inputs: Coverage invalidation inputs used to reuse resolved isolated paths.
+
+    Returns:
+        Mapping of player count to expected strategy count.
+    """
     expected: dict[int, int] = {}
     iso_paths = _map_isolated_paths(cfg, player_counts, inputs)
     fallback_count: int | None = None
@@ -383,6 +448,16 @@ def _expected_strategies_by_k(
 def _map_isolated_paths(
     cfg: AppConfig, player_counts: Iterable[int], inputs: Iterable[Path]
 ) -> dict[int, Path]:
+    """Map player counts to the isolated metrics paths relevant to this run.
+
+    Args:
+        cfg: Application config used to resolve isolated metrics locations.
+        player_counts: Player counts that need isolated metrics lookups.
+        inputs: Coverage invalidation inputs available for this run.
+
+    Returns:
+        Mapping of player count to the preferred path object for that artifact.
+    """
     lookup = {path.resolve(): path for path in inputs}
     mapping: dict[int, Path] = {}
     for k in player_counts:
@@ -395,6 +470,15 @@ def _map_isolated_paths(
 
 
 def _resolve_isolated_metrics_path(cfg: AppConfig, k: int) -> Path | None:
+    """Resolve the preferred or legacy isolated metrics path for one player count.
+
+    Args:
+        cfg: Application config used to resolve isolated metrics locations.
+        k: Player count whose isolated metrics path should be located.
+
+    Returns:
+        Existing preferred or legacy path, a writable preferred path, or ``None``.
+    """
     preferred = cfg.metrics_isolated_path(k)
     if preferred.exists():
         return preferred
@@ -407,6 +491,11 @@ def _resolve_isolated_metrics_path(cfg: AppConfig, k: int) -> Path | None:
 
 
 def _log_imbalance_warnings(coverage: pd.DataFrame) -> None:
+    """Emit warnings when coverage differs materially across seeds for a player count.
+
+    Args:
+        coverage: Coverage summary frame produced by :func:`_build_coverage`.
+    """
     if coverage.empty:
         return
     for k, group in coverage.groupby("k", sort=True):

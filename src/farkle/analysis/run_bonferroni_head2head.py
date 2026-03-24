@@ -114,6 +114,17 @@ def _load_top_strategies(
     """
 
     def _sorted_from_parquet(path: Path, sort_col: str, limit: int, label: str) -> list[str]:
+        """Load and sort top strategy identifiers from one parquet artifact.
+
+        Args:
+            path: Parquet path to inspect.
+            sort_col: Descending sort column used to rank strategies.
+            limit: Maximum number of strategies to keep.
+            label: Human-readable source label for logging.
+
+        Returns:
+            Ordered strategy identifiers, or an empty list on read/shape failure.
+        """
         if not path.exists():
             LOGGER.warning(
                 "Fallback selection skipped: missing %s parquet",
@@ -354,6 +365,17 @@ def _weighted_mean(
     second_mean: float,
     second_weight: int,
 ) -> float:
+    """Return the weighted mean of two pre-aggregated means.
+
+    Args:
+        first_mean: Mean value for the first aggregate.
+        first_weight: Observation count for the first aggregate.
+        second_mean: Mean value for the second aggregate.
+        second_weight: Observation count for the second aggregate.
+
+    Returns:
+        Combined weighted mean, or ``nan`` when both weights are zero.
+    """
     denominator = first_weight + second_weight
     if denominator <= 0:
         return math.nan
@@ -976,6 +998,14 @@ def run_bonferroni_head2head(
     selfplay_shard_dir.mkdir(parents=True, exist_ok=True)
 
     def _read_pair_ids_from_parquet(path: Path) -> set[int]:
+        """Load completed pair identifiers from an existing pairwise parquet file.
+
+        Args:
+            path: Existing pairwise parquet path to inspect.
+
+        Returns:
+            Set of completed pair identifiers, or an empty set on failure.
+        """
         if not path.exists():
             return set()
         try:
@@ -995,6 +1025,14 @@ def run_bonferroni_head2head(
         return {int(pid) for pid in df["pair_id"].dropna().astype(int).tolist()}
 
     def _read_selfplay_ids_from_parquet(path: Path) -> set[str]:
+        """Load completed self-play strategy identifiers from an existing parquet file.
+
+        Args:
+            path: Existing self-play parquet path to inspect.
+
+        Returns:
+            Set of completed strategy identifiers, or an empty set on failure.
+        """
         if not path.exists():
             return set()
         try:
@@ -1014,6 +1052,14 @@ def run_bonferroni_head2head(
         return {str(value) for value in df["strategy"].dropna().astype(str).tolist()}
 
     def _read_complete_ordered_pair_ids_from_parquet(path: Path) -> set[int]:
+        """Load pair identifiers that already have both required seat orderings.
+
+        Args:
+            path: Existing ordered pairwise parquet path to inspect.
+
+        Returns:
+            Set of pair identifiers that have both ``a_b`` and ``b_a`` rows.
+        """
         if not path.exists():
             return set()
         try:
@@ -1072,6 +1118,15 @@ def run_bonferroni_head2head(
     )
 
     def flush_shard(records_to_flush: List[dict[str, Any]], shard_index: int) -> int:
+        """Write a pairwise shard and advance the shard index.
+
+        Args:
+            records_to_flush: Pending pairwise records to persist.
+            shard_index: Current shard index.
+
+        Returns:
+            Next shard index after flushing the records.
+        """
         if not records_to_flush:
             return shard_index
         shard_path = shard_dir / f"bonferroni_pairwise_shard_{shard_index:04d}.parquet"
@@ -1089,6 +1144,15 @@ def run_bonferroni_head2head(
         return shard_index + 1
 
     def flush_ordered_shard(records_to_flush: list[dict[str, Any]], shard_index: int) -> int:
+        """Write an ordered-pairwise shard and advance the shard index.
+
+        Args:
+            records_to_flush: Pending ordered records to persist.
+            shard_index: Current ordered-shard index.
+
+        Returns:
+            Next ordered-shard index after flushing the records.
+        """
         if not records_to_flush:
             return shard_index
         shard_path = ordered_shard_dir / f"bonferroni_pairwise_ordered_shard_{shard_index:04d}.parquet"
@@ -1439,6 +1503,15 @@ def run_bonferroni_head2head(
         )
 
     def flush_selfplay_shard(records_to_flush: list[dict[str, Any]], shard_index: int) -> int:
+        """Write a self-play shard and advance the shard index.
+
+        Args:
+            records_to_flush: Pending self-play records to persist.
+            shard_index: Current self-play shard index.
+
+        Returns:
+            Next self-play shard index after flushing the records.
+        """
         if not records_to_flush:
             return shard_index
         shard_path = selfplay_shard_dir / f"bonferroni_selfplay_shard_{shard_index:04d}.parquet"

@@ -41,6 +41,13 @@ from farkle.utils.writer import atomic_path
 
 
 class PermutationImportanceResult(Protocol):
+    """Protocol describing the sklearn permutation-importance payload.
+
+    Attributes:
+        importances_mean: Mean importance value for each feature column.
+        importances_std: Standard deviation of the sampled importances.
+    """
+
     importances_mean: np.ndarray
     importances_std: np.ndarray
 
@@ -115,6 +122,7 @@ def _parse_strategy_features(
         return pd.DataFrame(columns=columns).set_index("strategy")
 
     def _safe_parse(value: str) -> dict:
+        """Parse one legacy strategy literal, swallowing unsupported variants."""
         try:
             return parse_strategy_for_df(value)
         except ValueError:

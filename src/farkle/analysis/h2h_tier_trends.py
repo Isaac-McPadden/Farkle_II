@@ -148,6 +148,16 @@ def _resolve_s_tier_inputs(
     seed_s_tier_paths: Sequence[Path] | None,
     interseed_s_tier_path: Path | None,
 ) -> list[SSource]:
+    """Resolve the S-tier input contract for the tier-trends stage.
+
+    Args:
+        cfg: Application config containing optional override paths.
+        seed_s_tier_paths: Explicit per-seed S-tier paths from the caller.
+        interseed_s_tier_path: Explicit interseed-combined S-tier path from the caller.
+
+    Returns:
+        Ordered S-tier sources to load for trend analysis.
+    """
     configured_seed_paths = getattr(cfg.analysis, "h2h_tier_trends_seed_s_tier_paths", None)
     configured_interseed_path = getattr(cfg.analysis, "h2h_tier_trends_interseed_s_tier_path", None)
 
@@ -198,6 +208,14 @@ def _resolve_s_tier_inputs(
 
 
 def _resolve_single_seed_default_path(cfg: AppConfig) -> Path | None:
+    """Resolve the default single-seed S-tier artifact path.
+
+    Args:
+        cfg: Application config used to resolve active post-H2H or H2H stage dirs.
+
+    Returns:
+        Default ``h2h_s_tiers.json`` path, or ``None`` when no stage is active.
+    """
     for stage in ("post_h2h", "head2head"):
         stage_dir = cfg.stage_dir_if_active(stage)
         if stage_dir is not None:
@@ -206,6 +224,14 @@ def _resolve_single_seed_default_path(cfg: AppConfig) -> Path | None:
 
 
 def _load_s_tiers_from_sources(sources: Sequence[SSource]) -> dict[str, str]:
+    """Load and merge S-tier mappings from one or more candidate sources.
+
+    Args:
+        sources: Ordered sources supplying S-tier JSON payloads.
+
+    Returns:
+        Strategy-to-tier mapping resolved by source-order tie breaking.
+    """
     aggregated: dict[str, list[str]] = {}
     for source in sources:
         loaded = _load_s_tiers(source.path)
@@ -225,6 +251,14 @@ def _load_s_tiers_from_sources(sources: Sequence[SSource]) -> dict[str, str]:
 
 
 def _load_s_tiers(path: Path) -> dict[str, str]:
+    """Load a validated strategy-to-tier mapping from JSON.
+
+    Args:
+        path: JSON path expected to contain S-tier labels.
+
+    Returns:
+        Mapping of strategy identifier to tier label, or an empty mapping on failure.
+    """
     try:
         payload_any: Any = json.loads(path.read_text())
     except json.JSONDecodeError:
@@ -266,6 +300,14 @@ def _is_valid_s_tier_payload(payload: dict[str, Any]) -> bool:
 
 
 def _collect_meta_paths(cfg: AppConfig) -> list[Path]:
+    """Collect meta-analysis parquet inputs used to enrich tier-trend reporting.
+
+    Args:
+        cfg: Application config used to resolve meta stage outputs.
+
+    Returns:
+        Existing meta parquet paths, preferring configured per-player outputs.
+    """
     players_list: list[int] = []
     for entry in cfg.sim.n_players_list:
         try:
@@ -290,6 +332,14 @@ def _collect_meta_paths(cfg: AppConfig) -> list[Path]:
 
 
 def _load_meta_frames(meta_paths: Iterable[Path]) -> pd.DataFrame:
+    """Load and normalize meta-analysis frames used for trend summaries.
+
+    Args:
+        meta_paths: Meta parquet files to read and normalize.
+
+    Returns:
+        Combined frame with strategy, player-count, and confidence columns.
+    """
     frames: list[pd.DataFrame] = []
     for path in meta_paths:
         df = pd.read_parquet(path)
@@ -314,6 +364,14 @@ def _load_meta_frames(meta_paths: Iterable[Path]) -> pd.DataFrame:
 
 
 def _players_from_path(path: Path) -> int:
+    """Infer the player count encoded in a meta artifact path.
+
+    Args:
+        path: Meta artifact path containing a ``<k>p`` directory component.
+
+    Returns:
+        Parsed player count, or ``0`` when no such component is found.
+    """
     for part in path.parts:
         if part.endswith("p") and part[:-1].isdigit():
             return int(part[:-1])
@@ -321,6 +379,14 @@ def _players_from_path(path: Path) -> int:
 
 
 def _pooled_across_k(frame: pd.DataFrame) -> pd.DataFrame:
+    """Pool per-``k`` meta win-rate estimates into one row per strategy.
+
+    Args:
+        frame: Meta-analysis frame containing per-``k`` win-rate estimates.
+
+    Returns:
+        Pooled per-strategy win-rate summary with heterogeneity statistics.
+    """
     rows: list[dict[str, float | int | str]] = []
     for strategy_id, group in frame.groupby("strategy_id", sort=False):
         win_rates = group["win_rate"].astype(float).to_numpy()
@@ -357,6 +423,14 @@ def _pooled_across_k(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _clean_variances(variances: Iterable[float]) -> np.ndarray:
+    """Replace missing or tiny variances with a safe minimum value.
+
+    Args:
+        variances: Variance-like values used for inverse-variance weighting.
+
+    Returns:
+        NumPy array clipped to the minimum supported variance.
+    """
     vals = list(variances)
     series = pd.Series(vals, dtype="float64")
     series = series.fillna(MIN_VARIANCE)

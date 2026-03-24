@@ -1,3 +1,4 @@
+# src/farkle/utils/tiers.py
 """Helpers for reading and writing consolidated tier reports."""
 
 from __future__ import annotations

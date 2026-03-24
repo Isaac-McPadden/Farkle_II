@@ -115,6 +115,14 @@ def run(
 
 
 def _build_seed_level(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize per-seed self-play symmetry rows for downstream reporting.
+
+    Args:
+        frame: Raw self-play symmetry frame.
+
+    Returns:
+        Normalized per-seed frame with derived difference and flag columns.
+    """
     out = frame.copy()
     out["players"] = pd.to_numeric(out["players"], errors="raise").astype(int)
     out["seed"] = pd.to_numeric(out["seed"], errors="raise").astype(int)
@@ -161,6 +169,14 @@ def _build_seed_level(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _build_summary(per_seed: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate per-seed symmetry rows into one summary row per strategy and player count.
+
+    Args:
+        per_seed: Normalized per-seed self-play symmetry frame.
+
+    Returns:
+        Summary frame with per-strategy symmetry aggregates.
+    """
     grouped = (
         per_seed.groupby(["players", "strategy"], observed=True, sort=False)
         .agg(

@@ -1,3 +1,4 @@
+# src/farkle/utils/stage_io.py
 """Stage I/O helpers for worker resolution and artifact path selection."""
 
 from __future__ import annotations

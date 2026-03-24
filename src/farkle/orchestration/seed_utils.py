@@ -1,3 +1,4 @@
+# src/farkle/orchestration/seed_utils.py
 """Shared helpers for seed-based orchestration."""
 
 from __future__ import annotations

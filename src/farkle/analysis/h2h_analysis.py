@@ -589,6 +589,17 @@ def _write_empty_post_h2h_outputs(
     tie_break_seed: int | None,
     s_tier_metadata: dict[str, object] | None = None,
 ) -> list[Path]:
+    """Write empty post-H2H artifacts when no resolved decisions are available.
+
+    Args:
+        analysis_dir: Output directory for the post-H2H stage.
+        tie_policy: Tie-resolution policy to record in graph metadata.
+        tie_break_seed: Optional deterministic seed used for tie breaking.
+        s_tier_metadata: Optional metadata payload for the empty S-tier report.
+
+    Returns:
+        Output paths written for the empty post-H2H result set.
+    """
     decisions_path = analysis_dir / "bonferroni_decisions.parquet"
     empty_table = pa.Table.from_pylist([], schema=_DECISION_SCHEMA)
     write_parquet_atomic(empty_table, decisions_path)

@@ -331,6 +331,14 @@ def _resolve_trueskill_seed_paths(
 
 
 def _seed_from_path(path: Path) -> int | None:
+    """Extract the trailing seed number from a seed-specific artifact path.
+
+    Args:
+        path: Artifact path whose stem may include a ``_seed<N>`` suffix.
+
+    Returns:
+        Parsed seed number, or ``None`` when the suffix is absent.
+    """
     match = _SEED_SUFFIX_RE.search(path.stem)
     if match is None:
         return None
@@ -338,6 +346,15 @@ def _seed_from_path(path: Path) -> int | None:
 
 
 def _select_seed_paths(paths: Iterable[Path], key_fn: Callable[[Path], tuple[int, str]]) -> list[Path]:
+    """Select one preferred artifact path per seed from a candidate set.
+
+    Args:
+        paths: Candidate artifact paths that may overlap by seed.
+        key_fn: Ordering key where lower values indicate higher priority.
+
+    Returns:
+        Sorted list containing the best artifact path for each discovered seed.
+    """
     selected_by_seed: dict[int, Path] = {}
     selected_keys: dict[int, tuple[int, str]] = {}
     for path in sorted(set(paths), key=str):
@@ -353,6 +370,15 @@ def _select_seed_paths(paths: Iterable[Path], key_fn: Callable[[Path], tuple[int
 
 
 def _trueskill_seed_path_priority(path: Path, players: int) -> int:
+    """Rank seed-specific TrueSkill artifact naming conventions by preference.
+
+    Args:
+        path: Candidate TrueSkill artifact path.
+        players: Player count expected for the artifact family.
+
+    Returns:
+        Integer priority where lower numbers are preferred.
+    """
     name = path.name
     if path.parent.name == f"{players}p" and name.startswith(f"ratings_{players}_seed"):
         return 0

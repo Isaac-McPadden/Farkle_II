@@ -1,47 +1,68 @@
-# Documentation audit review
+# Documentation Audit Workflow
 
-## Audit command
+## Documentation Standard
 
-- Run `python doc_audit.py` from the repository root to regenerate the current
-  documentation audit report.
+For Python modules under `src`, use this baseline:
 
-## Current status
+- Line 1 is the repository-relative module path in a basic comment, for example
+  `# src/farkle/orchestration/pipeline.py`.
+- The module docstring starts immediately after the path comment and explains the
+  module's responsibility, key side effects, and primary outputs when relevant.
+- Public classes, functions, and methods always get docstrings.
+- Private helpers get docstrings when they are not immediately self-explanatory.
+  For this project, that usually means coordination logic, non-trivial data
+  shaping, statistical transforms, filesystem work, checkpoint handling, or
+  seed/config-driven behavior.
+- Symbol docstrings should include a short summary plus expected inputs and
+  outputs. Side effects and file artifacts should be called out when they are
+  important to callers or maintainers.
 
-The current audit is not clean. The latest pass reports:
+## Audit Commands
 
-- 37 `src/` files with documentation issues
-- 260 `src/` issues total
+Use the project virtual environment when running the audit locally:
 
-Most findings are missing docstrings on private helpers inside large modules,
-not missing module-level documentation. The heaviest files are:
+```powershell
+.\.venv\Scripts\python.exe doc_audit.py --scope src --format text --top-files 15
+```
 
-- `src/farkle/analysis/game_stats.py` - 44 issues
-- `src/farkle/analysis/rng_diagnostics.py` - 26 issues
-- `src/farkle/analysis/interseed_analysis.py` - 24 issues
-- `src/farkle/analysis/__init__.py` - 17 issues
-- `src/farkle/orchestration/two_seed_pipeline.py` - 17 issues
+Regenerate the committed Markdown backlog:
 
-## Recommended priority order
+```powershell
+.\.venv\Scripts\python.exe doc_audit.py --scope src --private-policy complex --format markdown --output docs/src_documentation_backlog.md
+```
 
-1. Public and front-door helpers
-   Add docstrings for `AppConfig` path helpers, CLI entry points, and
-   orchestration functions that other modules and contributors are expected to
-   call directly.
-2. Large analysis orchestrators
-   Document stage planners, fan-out helpers, and interseed orchestration logic
-   before spending time on tiny local helper functions.
-3. High-complexity accumulator modules
-   Add short docstrings to the key accumulator classes and pooled reduction
-   helpers in `game_stats.py` and `rng_diagnostics.py`.
+Emit machine-readable output for automation:
 
-## Deliberate non-goals
+```powershell
+.\.venv\Scripts\python.exe doc_audit.py --scope src --private-policy complex --format json
+```
 
-- Full docstring coverage for tests
-- Exhaustive prose for every small private helper
-- Hand-maintained statements that claim the audit is "clean"
+Make CI fail when scoped issues remain:
 
-## Maintenance notes
+```powershell
+.\.venv\Scripts\python.exe doc_audit.py --scope src --private-policy complex --fail-on-issues
+```
 
-- Keep this file as a current summary, not a one-time milestone note.
-- If the project adopts CI enforcement for `doc_audit.py`, update this page with
-  the latest counts whenever the baseline changes.
+## Iterative Process
+
+1. Regenerate `docs/src_documentation_backlog.md`.
+2. Clear all header and module-level issues first.
+3. Work the highest-priority hotspot files in batches of roughly 3 to 6 files or
+   25 to 40 docstrings.
+4. Prefer documenting public APIs and orchestration entry points before private
+   helpers in deeper analysis modules.
+5. Re-run the audit after each batch and commit the refreshed backlog.
+6. Once the backlog is small, enable `--fail-on-issues` in CI for changed files,
+   then ratchet to the whole `src` tree.
+
+## Priority Order
+
+Use this order when selecting the next batch:
+
+1. Missing path comments and any module docstring placement issues.
+2. Public classes, functions, and methods.
+3. Large orchestration and analysis hotspot files.
+4. Remaining private-complex helpers in utility and simulation modules.
+
+The current prioritized queue is committed in `docs/src_documentation_backlog.md`
+and should be treated as generated output rather than hand-maintained notes.

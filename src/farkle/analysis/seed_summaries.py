@@ -60,6 +60,16 @@ RowPositions: TypeAlias = pd.Index | np.ndarray | list[int]
 
 
 def _summary_path(cfg: AppConfig, *, players: int, seed: int) -> Path:
+    """Resolve the per-seed, per-player-count summary parquet path.
+
+    Args:
+        cfg: Application config used to resolve the seed-summaries stage directory.
+        players: Player count represented by the summary.
+        seed: Seed identifier represented by the summary.
+
+    Returns:
+        Output path for the per-seed summary parquet.
+    """
     filename = SUMMARY_TEMPLATE.format(players=players, seed=seed)
     stage_dir = cfg.seed_summaries_dir(players)
     stage_dir.mkdir(parents=True, exist_ok=True)
@@ -67,6 +77,15 @@ def _summary_path(cfg: AppConfig, *, players: int, seed: int) -> Path:
 
 
 def _seed_long_summary_path(cfg: AppConfig, *, seed: int) -> Path:
+    """Resolve the long-form per-seed summary parquet path.
+
+    Args:
+        cfg: Application config used to resolve the seed-summaries stage directory.
+        seed: Seed identifier represented by the summary.
+
+    Returns:
+        Output path for the long-form per-seed summary parquet.
+    """
     stage_dir = cfg.seed_summaries_stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
     filename = SEED_LONG_TEMPLATE.format(seed=seed)
@@ -74,6 +93,15 @@ def _seed_long_summary_path(cfg: AppConfig, *, seed: int) -> Path:
 
 
 def _seed_weighted_summary_path(cfg: AppConfig, *, seed: int) -> Path:
+    """Resolve the pooled per-seed summary parquet path.
+
+    Args:
+        cfg: Application config used to resolve the seed-summaries stage directory.
+        seed: Seed identifier represented by the pooled summary.
+
+    Returns:
+        Output path for the pooled per-seed summary parquet.
+    """
     stage_dir = cfg.seed_summaries_stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
     filename = SEED_WEIGHTED_TEMPLATE.format(seed=seed)
@@ -413,6 +441,14 @@ def _pooling_weights_for_seed_summary(
 
     if pooling_scheme == "equal-k":
         def _equal_factor(k: object) -> float:
+            """Resolve the per-row equal-``k`` pooling factor for one player count.
+
+            Args:
+                k: Player count key from the grouped summary rows.
+
+            Returns:
+                Weight factor that gives each player count equal total contribution.
+            """
             if not isinstance(k, (int, np.integer)):
                 raise TypeError(f"Expected integer-like player count key, got {type(k).__name__}")
             k_int = int(k)
@@ -431,6 +467,14 @@ def _pooling_weights_for_seed_summary(
             )
 
         def _config_factor(k: object) -> float:
+            """Resolve the per-row config pooling factor for one player count.
+
+            Args:
+                k: Player count key from the grouped summary rows.
+
+            Returns:
+                Weight factor that normalizes configured per-``k`` weights by row totals.
+            """
             if not isinstance(k, (int, np.integer)):
                 raise TypeError(f"Expected integer-like player count key, got {type(k).__name__}")
             k_int = int(k)

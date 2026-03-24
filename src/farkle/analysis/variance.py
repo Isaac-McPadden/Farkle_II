@@ -1,3 +1,4 @@
+# src/farkle/analysis/variance.py
 """Cross-seed variance estimates for strategy win rates.
 
 This module ingests the combined ``metrics.parquet`` produced by the metrics
@@ -239,6 +240,14 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
 
 def _discover_seed_summaries(cfg: AppConfig) -> list[Path]:
+    """Discover candidate per-seed summary parquet files for variance analysis.
+
+    Args:
+        cfg: Application config used to resolve stage, meta, and legacy roots.
+
+    Returns:
+        Sorted unique summary parquet paths matching the expected filename pattern.
+    """
     candidates: list[Path] = []
     stage_root = cfg.stage_dir_if_active("seed_summaries")
     if stage_root is not None and stage_root.exists():
@@ -265,6 +274,14 @@ def _discover_seed_summaries(cfg: AppConfig) -> list[Path]:
 
 
 def _load_metrics(path: Path) -> pd.DataFrame:
+    """Load and normalize the pooled metrics parquet used for variance joins.
+
+    Args:
+        path: Metrics parquet path to read.
+
+    Returns:
+        Normalized metrics frame with ``strategy_id``, ``players``, and ``win_rate``.
+    """
     df = pd.read_parquet(path)
     if df.empty:
         return pd.DataFrame(columns=["strategy_id", "players", "win_rate"])
@@ -288,6 +305,14 @@ def _load_metrics(path: Path) -> pd.DataFrame:
 
 
 def _load_seed_summaries(paths: Iterable[Path]) -> pd.DataFrame:
+    """Load and normalize per-seed summary parquet files.
+
+    Args:
+        paths: Seed summary parquet paths to read and combine.
+
+    Returns:
+        Combined seed-summary frame with all required variance component columns.
+    """
     frames: list[pd.DataFrame] = []
     for path in paths:
         df = pd.read_parquet(path)
@@ -310,6 +335,14 @@ def _load_seed_summaries(paths: Iterable[Path]) -> pd.DataFrame:
 
 
 def _compute_variance(seed_frame: pd.DataFrame) -> pd.DataFrame:
+    """Compute cross-seed win-rate variance per strategy and player count.
+
+    Args:
+        seed_frame: Combined per-seed summary frame.
+
+    Returns:
+        Variance summary frame keyed by ``strategy_id`` and ``players``.
+    """
     records: list[dict[str, float | int | str]] = []
     grouped = seed_frame.groupby(["strategy_id", "players"], sort=True)
     for (strategy_id, players), group in grouped:
@@ -361,6 +394,15 @@ def _compute_variance(seed_frame: pd.DataFrame) -> pd.DataFrame:
 def _compute_variance_components(
     seed_frame: pd.DataFrame, *, min_seeds: int = MIN_SEEDS
 ) -> pd.DataFrame:
+    """Compute per-component variance summaries across seeds.
+
+    Args:
+        seed_frame: Combined per-seed summary frame.
+        min_seeds: Minimum seed observations required per strategy/component group.
+
+    Returns:
+        Variance-component summary frame for all eligible groups.
+    """
     columns = [
         "strategy_id",
         "players",
@@ -449,6 +491,15 @@ def _compute_variance_components(
 
 
 def _merge_metrics(metrics_frame: pd.DataFrame, variance_frame: pd.DataFrame) -> pd.DataFrame:
+    """Join pooled metrics with cross-seed variance outputs and derive diagnostics.
+
+    Args:
+        metrics_frame: Pooled metrics frame keyed by strategy and player count.
+        variance_frame: Cross-seed variance frame keyed by strategy and player count.
+
+    Returns:
+        Joined frame enriched with signal-to-noise diagnostics.
+    """
     if metrics_frame.empty and variance_frame.empty:
         return pd.DataFrame(
             columns=[
@@ -480,6 +531,14 @@ def _merge_metrics(metrics_frame: pd.DataFrame, variance_frame: pd.DataFrame) ->
     merged["win_rate_mean"] = merged["win_rate"].combine_first(mean_seed_win_rate)
 
     def _signal_to_noise(row: pd.Series) -> float:
+        """Compute signal-to-noise ratio from pooled win rate and seed-level error.
+
+        Args:
+            row: Joined metrics/variance row.
+
+        Returns:
+            Absolute distance from ``0.5`` scaled by ``se_win_rate``, or ``nan``.
+        """
         se = row.get("se_win_rate", float("nan"))
         if se and se > 0:
             return abs(float(row.get("win_rate_mean", float("nan"))) - 0.5) / se
@@ -505,6 +564,14 @@ def _merge_metrics(metrics_frame: pd.DataFrame, variance_frame: pd.DataFrame) ->
 
 
 def _summarize_variance(frame: pd.DataFrame) -> pd.DataFrame:
+    """Summarize variance outputs by player count.
+
+    Args:
+        frame: Strategy-level variance frame.
+
+    Returns:
+        Player-count summary frame with mean and median variance columns.
+    """
     if frame.empty:
         return pd.DataFrame(columns=["n_players", "mean_variance", "median_variance"])
 

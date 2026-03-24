@@ -1,3 +1,4 @@
+# src/farkle/analysis/stage_state.py
 """Backwards-compatible re-export of shared stage completion helpers."""
 
 from __future__ import annotations

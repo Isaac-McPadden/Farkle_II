@@ -1,3 +1,4 @@
+# src/pipeline.py
 """Compatibility shim for the relocated orchestration pipeline module."""
 
 from __future__ import annotations

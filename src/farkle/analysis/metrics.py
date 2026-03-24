@@ -368,6 +368,14 @@ def _ensure_isolated_metrics(
     def _process_player_count(
         n: int,
     ) -> tuple[int, Path | None, Path, dict[str, object]]:
+        """Normalize isolated metrics for one player count when inputs exist.
+
+        Args:
+            n: Player count whose isolated metrics should be prepared.
+
+        Returns:
+            Tuple of player count, resolved isolated path, raw input path, and log metadata.
+        """
         raw_path = cfg.results_root / f"{n}_players" / f"{n}p_metrics.parquet"
         preferred = cfg.metrics_isolated_path(n)
         legacy = cfg.legacy_metrics_isolated_path(n)
@@ -570,6 +578,7 @@ def _pooling_weights_for_metrics(
     if pooling_scheme == "equal-k":
 
         def _equal_factor(k: int | np.integer) -> float:
+            """Resolve the equal-``k`` pooling factor for one player count."""
             total = totals_map.get(int(k), 0.0)
             return 1.0 / total if total > 0 else 0.0
 
@@ -585,6 +594,7 @@ def _pooling_weights_for_metrics(
             )
 
         def _config_factor(k: int | np.integer) -> float:
+            """Resolve the config-driven pooling factor for one player count."""
             total = totals_map.get(int(k), 0.0)
             if total <= 0:
                 return 0.0
@@ -597,6 +607,14 @@ def _pooling_weights_for_metrics(
 
 
 def _pooled_value_columns(df: pd.DataFrame) -> list[str]:
+    """Return numeric metric columns that should participate in pooled aggregation.
+
+    Args:
+        df: Metrics frame to inspect.
+
+    Returns:
+        Numeric value columns excluding identifiers, counters, and bookkeeping fields.
+    """
     exclude = {
         "strategy",
         "n_players",
@@ -617,6 +635,15 @@ def _pooled_value_columns(df: pd.DataFrame) -> list[str]:
 
 
 def _weighted_mean(values: pd.Series, weights: np.ndarray) -> float:
+    """Compute a weighted mean for one metrics series.
+
+    Args:
+        values: Metric values to average.
+        weights: Per-row weights aligned with ``values``.
+
+    Returns:
+        Weighted mean, or ``nan`` when no valid weighted values exist.
+    """
     numeric = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
     mask = np.isfinite(numeric) & np.isfinite(weights)
     if not mask.any():

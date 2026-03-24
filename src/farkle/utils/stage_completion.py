@@ -1,3 +1,4 @@
+# src/farkle/utils/stage_completion.py
 """Shared helpers for tracking stage completion and resumability."""
 
 from __future__ import annotations

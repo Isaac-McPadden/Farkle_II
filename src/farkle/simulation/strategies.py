@@ -530,10 +530,20 @@ class StrategyGridOptions:
 
     @property
     def inactive_score_threshold(self) -> int:
+        """Return the sentinel score threshold used for inactive strategy features.
+
+        Returns:
+            Integer lower than every configured score threshold.
+        """
         return min(self.score_thresholds) - 1
 
     @property
     def inactive_dice_threshold(self) -> int:
+        """Return the sentinel dice threshold used for inactive strategy features.
+
+        Returns:
+            Integer lower than every configured dice threshold.
+        """
         return min(self.dice_thresholds) - 1
 
     @classmethod
@@ -551,6 +561,23 @@ class StrategyGridOptions:
         include_stop_at: bool = False,
         include_stop_at_heuristic: bool = False,
     ) -> "StrategyGridOptions":
+        """Normalize raw option sequences into an immutable strategy-grid bundle.
+
+        Args:
+            score_thresholds: Optional score thresholds to encode.
+            dice_thresholds: Optional dice thresholds to encode.
+            smart_five_opts: Optional smart-five toggle values.
+            smart_one_opts: Optional smart-one toggle values.
+            consider_score_opts: Optional score-consideration toggle values.
+            consider_dice_opts: Optional dice-consideration toggle values.
+            auto_hot_dice_opts: Optional hot-dice toggle values.
+            run_up_score_opts: Optional run-up-score toggle values.
+            include_stop_at: Whether to include stop-at strategies.
+            include_stop_at_heuristic: Whether to include heuristic stop-at strategies.
+
+        Returns:
+            Normalized immutable options with defaults filled in and ordering stabilized.
+        """
         return cls(
             score_thresholds=_coerce_options(
                 score_thresholds,

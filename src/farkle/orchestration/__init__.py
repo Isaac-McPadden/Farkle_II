@@ -1,3 +1,4 @@
+# src/farkle/orchestration/__init__.py
 """Orchestration helpers for analytics pipelines."""
 
 from __future__ import annotations

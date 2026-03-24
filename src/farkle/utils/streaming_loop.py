@@ -105,6 +105,16 @@ def _output_ready(
 def _check_output_size(
     out_path: str, manifest_path: str, manifest_extra: Dict[str, Any] | None
 ) -> bool:
+    """Validate that a shard write produced a non-empty output file.
+
+    Args:
+        out_path: Output parquet path to inspect.
+        manifest_path: Manifest path associated with the shard write.
+        manifest_extra: Optional extra manifest metadata for logging.
+
+    Returns:
+        ``True`` when the output file exists and has non-zero size.
+    """
     try:
         out_size = os.path.getsize(out_path)
     except OSError:

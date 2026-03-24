@@ -20,6 +20,15 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
+    """Pad or cast a table so it matches the target schema exactly.
+
+    Args:
+        tbl: Source table read from a curated shard.
+        target: Target schema for the combined output.
+
+    Returns:
+        Table whose columns and types match ``target``.
+    """
     cols = []
     for f in target:
         if f.name in tbl.column_names:
@@ -30,6 +39,14 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
 
 
 def _migrate_combined_output(cfg: AppConfig) -> Path:
+    """Move legacy combined outputs into the current pooled location when needed.
+
+    Args:
+        cfg: Application config used to resolve preferred and legacy paths.
+
+    Returns:
+        Preferred combined parquet path after any legacy migration.
+    """
     preferred_dir = cfg.combine_pooled_dir()
     preferred_out = preferred_dir / "all_ingested_rows.parquet"
     legacy_candidates = [
@@ -55,6 +72,15 @@ def _partition_done_path(cfg: AppConfig, n_players: int) -> Path:
 
 
 def _partition_paths(cfg: AppConfig, n_players: int) -> tuple[Path, Path]:
+    """Resolve the partition parquet and manifest paths for one player count.
+
+    Args:
+        cfg: Application config used to resolve partition directories.
+        n_players: Player count represented by the partition.
+
+    Returns:
+        Tuple of ``(partition_parquet_path, partition_manifest_path)``.
+    """
     prefix = f"{int(n_players)}p"
     partition_dir = cfg.combine_partitioned_dir
     manifest_dir = cfg.combine_stage_dir / "partition_manifests"
@@ -69,6 +95,16 @@ def _reset_output_manifest(manifest_path: Path) -> None:
 
 
 def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Schema) -> tuple[list[Path], list[Path]]:
+    """Write per-player-count partitioned outputs from curated shard parquet files.
+
+    Args:
+        cfg: Application config used to resolve output directories and stamps.
+        files: Curated shard parquet files grouped by player count.
+        target: Target schema for normalized partition outputs.
+
+    Returns:
+        Tuple of written partition parquet paths and their manifest paths.
+    """
     outputs: list[Path] = []
     manifests: list[Path] = []
     cfg.combine_partitioned_dir.mkdir(parents=True, exist_ok=True)
@@ -99,6 +135,14 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
             continue
 
         def _iter_row_groups(pf_obj: pq.ParquetFile = pf):
+            """Yield normalized row groups from one parquet file.
+
+            Args:
+                pf_obj: Open parquet file whose row groups should be streamed.
+
+            Yields:
+                Row-group tables matching the target schema.
+            """
             for idx in range(pf_obj.num_row_groups):
                 table = pf_obj.read_row_group(idx)
                 if table.num_rows == 0:
@@ -130,11 +174,26 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
 
 
 def _write_monolithic_compatibility_from_partitions(cfg: AppConfig, out: Path, manifest_path: Path) -> int:
+    """Write the compatibility parquet by streaming rows from partitioned outputs.
+
+    Args:
+        cfg: Application config used to resolve partition directories and schema.
+        out: Destination parquet path for the monolithic compatibility output.
+        manifest_path: Manifest path paired with ``out``.
+
+    Returns:
+        Total number of rows written to the compatibility output.
+    """
     dataset = ds.dataset(cfg.combine_partitioned_dir, format="parquet", partitioning="hive")
     scanner = dataset.scanner(batch_size=cfg.row_group_size, use_threads=True)
     total = 0
 
     def _iter_tables():
+        """Yield partition batches as tables, dropping partition columns.
+
+        Yields:
+            Compatibility tables ready for monolithic streaming output.
+        """
         nonlocal total
         for batch in scanner.to_batches():
             if batch.num_rows == 0:
@@ -159,6 +218,15 @@ def _write_monolithic_compatibility_from_partitions(cfg: AppConfig, out: Path, m
 
 
 def run(cfg: AppConfig) -> None:
+    """Combine curated per-player shards into partitioned and compatibility outputs.
+
+    Args:
+        cfg: Loaded application config providing input directories and output paths.
+
+    Returns:
+        ``None``. The function writes partitioned parquet artifacts, a monolithic
+        compatibility parquet file, and corresponding stage metadata.
+    """
     preferred = sorted(cfg.data_dir.glob(f"*p/{cfg.curated_rows_name}"))
     legacy = sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet"))
     files: list[Path] = preferred or legacy

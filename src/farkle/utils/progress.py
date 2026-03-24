@@ -1,3 +1,4 @@
+# src/farkle/utils/progress.py
 """Shared helpers for time-based progress logging."""
 
 from __future__ import annotations
@@ -29,6 +30,16 @@ class ProgressLogConfig:
 
 
 def _advance_deadline(current: float, interval: float, now: float) -> float:
+    """Advance a log deadline forward until it lies after the current time.
+
+    Args:
+        current: Current scheduled deadline.
+        interval: Interval between successive deadlines.
+        now: Current monotonic timestamp.
+
+    Returns:
+        Next deadline after ``now``, or ``inf`` when the interval is disabled.
+    """
     if interval <= 0:
         return math.inf
     deadline = current
@@ -38,6 +49,14 @@ def _advance_deadline(current: float, interval: float, now: float) -> float:
 
 
 def _format_duration(seconds: float | None) -> str:
+    """Format a duration in seconds for progress-log display.
+
+    Args:
+        seconds: Duration in seconds, or ``None`` when unknown.
+
+    Returns:
+        Human-readable duration string.
+    """
     if seconds is None or not math.isfinite(seconds):
         return "unknown"
     total_seconds = max(0, int(round(seconds)))
@@ -51,6 +70,14 @@ def _format_duration(seconds: float | None) -> str:
 
 
 def _format_count(value: float | int) -> str:
+    """Format a count-like value for progress-log display.
+
+    Args:
+        value: Integer or float count value.
+
+    Returns:
+        Human-readable count string with separators when appropriate.
+    """
     if isinstance(value, int):
         return f"{value:,}"
     if isinstance(value, float) and value.is_integer():
@@ -59,6 +86,15 @@ def _format_count(value: float | int) -> str:
 
 
 def _format_rate(value: float, unit: str) -> str:
+    """Format a per-second rate for progress-log display.
+
+    Args:
+        value: Per-second rate value.
+        unit: Unit label associated with the rate.
+
+    Returns:
+        Human-readable rate string.
+    """
     if not math.isfinite(value) or value <= 0:
         return f"rate unknown {unit}/s"
     if value >= 100:
@@ -153,6 +189,18 @@ class ScheduledProgressLogger:
         elapsed: float,
         detail: str | None,
     ) -> str:
+        """Assemble the formatted progress-log message body.
+
+        Args:
+            completed: Completed work units.
+            total: Optional total work units.
+            unit: Unit label for the progress values.
+            elapsed: Elapsed wall-clock time in seconds.
+            detail: Optional detail suffix to append.
+
+        Returns:
+            Formatted progress-log message string.
+        """
         parts = [f"{self._label} progress:"]
         if total is not None and total > 0:
             progress_fraction = max(0.0, min(1.0, float(completed) / float(total)))

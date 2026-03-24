@@ -1,3 +1,4 @@
+# src/farkle/orchestration/two_seed_pipeline.py
 """Two-seed simulation + analysis pipeline orchestrator."""
 
 from __future__ import annotations
@@ -51,6 +52,8 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _SeedRunStatus:
+    """Capture simulation and analysis outcomes for one seed in the pair."""
+
     seed: int
     context: SeedRunContext
     simulation_ok: bool
@@ -60,6 +63,15 @@ class _SeedRunStatus:
 
 
 def _per_seed_worker_budget(total_workers: int, seed_count: int) -> int:
+    """Split the total worker budget across the number of concurrent seed runs.
+
+    Args:
+        total_workers: Total workers available to the orchestration run.
+        seed_count: Number of seed runs that may execute concurrently.
+
+    Returns:
+        Minimum worker budget to assign to each seed.
+    """
     if seed_count < 1:
         raise ValueError("seed_count must be positive")
     return max(1, total_workers // seed_count)
@@ -67,6 +79,8 @@ def _per_seed_worker_budget(total_workers: int, seed_count: int) -> int:
 
 @dataclass(frozen=True)
 class _PerSeedPolicyBundle:
+    """Resolved stage-level parallelism policies for one seeded run family."""
+
     simulation: StageParallelPolicy
     ingest: StageParallelPolicy
     analysis: StageParallelPolicy
@@ -98,6 +112,15 @@ class _PerSeedPolicyBundle:
 
 
 def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPolicyBundle:
+    """Resolve per-seed stage policies from the orchestration worker budget.
+
+    Args:
+        cfg: Application config providing stage-level ``n_jobs`` settings.
+        seed_count: Number of seeds participating in the orchestration run.
+
+    Returns:
+        Per-seed simulation, ingest, and analysis policies derived from the budget.
+    """
     total_workers = normalize_n_jobs(cfg.sim.n_jobs, default=1)
     seed_concurrency = seed_count if cfg.orchestration.parallel_seeds else 1
     per_seed_workers = _per_seed_worker_budget(total_workers, seed_concurrency)
@@ -343,6 +366,8 @@ class _PipelineStageContract:
 
 @dataclass(frozen=True)
 class _ResolvedStageStatus:
+    """Resolved artifact-validation result for one logical pipeline stage."""
+
     status: str
     diagnostics: list[str]
     diagnostic_codes: list[str]
@@ -351,6 +376,14 @@ class _ResolvedStageStatus:
 
 
 def _validate_artifact(path: Path) -> tuple[bool, str | None, str | None]:
+    """Validate that a required artifact exists and is structurally usable.
+
+    Args:
+        path: Artifact path to validate.
+
+    Returns:
+        Tuple of ``(is_valid, reason, code)`` for pipeline health reporting.
+    """
     if not path.exists():
         return False, "missing", "missing"
     if path.stat().st_size <= 0:
@@ -379,6 +412,17 @@ def _resolve_stage_contract_status(
     explicit_error: str | None = None,
     explicit_error_code: str | None = None,
 ) -> _ResolvedStageStatus:
+    """Resolve a stage contract into a success/missing/failed health status.
+
+    Args:
+        contract: Stage contract describing required outputs.
+        dependency_statuses: Upstream stage statuses that gate this contract.
+        explicit_error: Optional explicit stage error text.
+        explicit_error_code: Optional machine-readable code for ``explicit_error``.
+
+    Returns:
+        Resolved stage status with diagnostics and missing-output details.
+    """
     diagnostics: list[str] = []
     diagnostic_codes: list[str] = []
     dependency_blocked = bool(dependency_statuses) and any(
@@ -421,6 +465,17 @@ def _resolve_seed_family_statuses(
     simulation_error: str | None,
     analysis_error: str | None,
 ) -> dict[str, _ResolvedStageStatus]:
+    """Resolve health statuses for the per-seed analysis family.
+
+    Args:
+        seed: Seed being summarized.
+        seed_cfg: Resolved per-seed application config.
+        simulation_error: Optional simulation failure message.
+        analysis_error: Optional analysis failure message.
+
+    Returns:
+        Mapping of logical stage name to resolved health status.
+    """
     analysis_manifest_candidates = (
         seed_cfg.analysis_dir / seed_cfg.manifest_name,
         seed_cfg.analysis_dir / "analysis_manifest.jsonl",
@@ -477,6 +532,18 @@ def _resolve_interseed_family_statuses(
     interseed_error: str | None,
     h2h_error: str | None,
 ) -> dict[str, _ResolvedStageStatus]:
+    """Resolve health statuses for interseed and post-interseed analysis stages.
+
+    Args:
+        interseed_cfg: Interseed application config with resolved output paths.
+        seed_pair: Seed pair represented by the orchestration run.
+        stage_statuses: Existing stage-status payloads from prior phases.
+        interseed_error: Optional error from the interseed analysis run.
+        h2h_error: Optional error from the H2H tier trends run.
+
+    Returns:
+        Mapping of logical stage name to resolved health status.
+    """
     per_seed_post_h2h_stages = tuple(f"seed_{seed}.post_h2h" for seed in seed_pair)
     interseed_contract = _PipelineStageContract(
         name="interseed_analysis",
@@ -508,6 +575,12 @@ def _resolve_interseed_family_statuses(
 
 
 def _write_pipeline_health(path: Path, payload: dict[str, Any]) -> None:
+    """Write the pipeline health summary JSON atomically.
+
+    Args:
+        path: Destination JSON path.
+        payload: Serializable health payload to persist.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -523,9 +596,26 @@ def _validate_required_config_sha_outputs(
     seed_contexts: Mapping[int, SeedRunContext],
     interseed_cfg: AppConfig,
 ) -> list[str]:
+    """Validate that key metadata artifacts carry the expected ``config_sha``.
+
+    Args:
+        expected_sha: Config SHA that should appear in validated outputs.
+        manifest_path: Manifest path containing run events for this pipeline run.
+        run_id: Run identifier used to filter manifest events.
+        seed_contexts: Per-seed contexts supplying active-config artifact paths.
+        interseed_cfg: Interseed config used to resolve optional stage outputs.
+
+    Returns:
+        Human-readable validation errors, or an empty list when all checks pass.
+    """
     errors: list[str] = []
 
     def _check_json(path: Path) -> None:
+        """Validate one JSON metadata artifact against the expected config SHA.
+
+        Args:
+            path: JSON artifact to inspect.
+        """
         if not path.exists():
             errors.append(f"missing metadata: {path}")
             return
@@ -569,6 +659,16 @@ def _validate_required_config_sha_outputs(
     return errors
 
 def _shared_meta_dir(cfg: AppConfig, pair_root: Path, seed_pair: tuple[int, int]) -> Path:
+    """Resolve the shared meta-analysis directory for a seed pair.
+
+    Args:
+        cfg: Application config used to resolve configured meta roots.
+        pair_root: Root results directory for the seed pair.
+        seed_pair: Seed pair represented by the orchestration run.
+
+    Returns:
+        Directory where shared per-seed summary artifacts should be written.
+    """
     configured_meta = seed_pair_meta_root(cfg, seed_pair)
     if configured_meta is not None:
         return configured_meta
@@ -582,6 +682,14 @@ def _run_per_seed_analysis(
     force: bool,
     policy_bundle: _PerSeedPolicyBundle,
 ) -> None:
+    """Execute the per-seed analysis plan with resolved manifest metadata.
+
+    Args:
+        cfg: Per-seed application config.
+        seed: Seed being analyzed.
+        force: Recompute stages even when outputs appear current.
+        policy_bundle: Resolved parallelism policies for the seeded run.
+    """
     apply_native_thread_limits(policy_bundle.analysis)
     per_seed_manifest_path = cfg.analysis_dir / cfg.manifest_name
     per_seed_manifest_path.parent.mkdir(parents=True, exist_ok=True)

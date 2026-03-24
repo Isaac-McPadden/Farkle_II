@@ -299,6 +299,16 @@ def _resolve_per_n_output_dir(
     raw_value: Path | None,
     n_players: int,
 ) -> Path | None:
+    """Resolve a per-player-count output directory from config or placeholders.
+
+    Args:
+        cfg: Application config supplying the results root.
+        raw_value: Optional configured directory template or relative path.
+        n_players: Player count used to fill placeholders or default prefixes.
+
+    Returns:
+        Resolved output directory, or ``None`` when no override is configured.
+    """
     if not raw_value:
         return None
 
@@ -329,11 +339,26 @@ def _resolve_per_n_output_dir(
 
 
 def _strategy_manifest_digest(manifest: pd.DataFrame) -> str:
+    """Compute a stable digest for the strategy manifest contents.
+
+    Args:
+        manifest: Strategy manifest frame to fingerprint.
+
+    Returns:
+        SHA-256 digest of the CSV-serialized manifest.
+    """
     payload = manifest.to_csv(index=False).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
 def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str) -> None:
+    """Ensure an on-disk manifest matches the expected in-memory manifest.
+
+    Args:
+        manifest: Expected manifest frame for the current run.
+        path: Existing manifest parquet path to validate.
+        label: Human-readable manifest label for error messages.
+    """
     if not path.exists():
         return
 
@@ -350,6 +375,13 @@ def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str
 
 
 def _handle_remove_error(func: RemovePathCallable, path: str, exc_info: RemoveErrorInfo) -> None:
+    """Retry a failed path removal after making the target writable.
+
+    Args:
+        func: Original removal function provided by ``shutil``.
+        path: Path that failed to delete.
+        exc_info: Exception tuple reported by the removal callback.
+    """
     LOGGER.debug("Retrying removal after chmod for path=%s", path)
     try:
         os.chmod(path, stat.S_IWRITE)
@@ -361,6 +393,11 @@ def _handle_remove_error(func: RemovePathCallable, path: str, exc_info: RemoveEr
 
 
 def _remove_paths(paths: Sequence[Path]) -> None:
+    """Remove files or directories, retrying read-only paths when needed.
+
+    Args:
+        paths: Paths to delete if they exist.
+    """
     for path in paths:
         if not path.exists():
             continue
@@ -383,6 +420,16 @@ def _purge_simulation_outputs(
     metric_chunk_dir: Path | None,
     strategy_manifest_path: Path,
 ) -> None:
+    """Remove simulation outputs that would conflict with a forced rerun.
+
+    Args:
+        n_dir: Base directory for the current player-count outputs.
+        n_players: Player count for the output family.
+        ckpt_path: Checkpoint path to remove.
+        row_dir: Optional row-shard directory.
+        metric_chunk_dir: Optional metric-chunk directory.
+        strategy_manifest_path: Strategy manifest path to remove.
+    """
     done_path = n_dir / "simulation.done.json"
     ckpt_parquet = n_dir / f"{n_players}p_checkpoint.parquet"
     metrics_parquet = n_dir / f"{n_players}p_metrics.parquet"
@@ -411,6 +458,18 @@ def _has_existing_outputs(
     row_dir: Path | None,
     metric_chunk_dir: Path | None,
 ) -> bool:
+    """Check whether any outputs already exist for a player-count run.
+
+    Args:
+        n_dir: Base directory for the current player-count outputs.
+        n_players: Player count for the output family.
+        ckpt_path: Checkpoint path to inspect.
+        row_dir: Optional row-shard directory.
+        metric_chunk_dir: Optional metric-chunk directory.
+
+    Returns:
+        ``True`` when any checkpoint, manifest, or shard artifacts already exist.
+    """
     candidates = [
         ckpt_path,
         n_dir / f"{n_players}p_checkpoint.parquet",
@@ -445,6 +504,17 @@ def _validate_resume_outputs(
     row_dir: Path | None,
     metric_chunk_dir: Path | None,
 ) -> None:
+    """Validate resume-mode artifacts against the expected run metadata.
+
+    Args:
+        cfg: Application config driving the resumed run.
+        n_players: Player count being resumed.
+        n_shuffles: Expected number of shuffles for the run.
+        strategies_manifest: Strategy manifest expected for the run.
+        ckpt_path: Checkpoint path whose metadata should align with the manifest.
+        row_dir: Optional row-shard directory to validate.
+        metric_chunk_dir: Optional metric-chunk directory to validate.
+    """
     expected_meta = {
         "n_players": n_players,
         "num_shuffles": n_shuffles,

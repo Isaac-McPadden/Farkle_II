@@ -1,3 +1,4 @@
+# src/farkle/orchestration/run_contexts.py
 """Run-context helpers for seed and interseed orchestration workflows."""
 
 from __future__ import annotations
@@ -24,6 +25,14 @@ class SeedRunContext:
 
     @classmethod
     def from_config(cls, cfg: AppConfig) -> "SeedRunContext":
+        """Build a seed-run context from a resolved application config.
+
+        Args:
+            cfg: Loaded application config for a single-seed run.
+
+        Returns:
+            Seed context with resolved results, analysis, and config artifact paths.
+        """
         return cls(
             seed=int(cfg.sim.seed),
             config=cfg,
@@ -54,6 +63,18 @@ class RunContextConfig(AppConfig):
         interseed_input_layout: StageLayout | Mapping[str, str] | None = None,
         stage_layout: StageLayout | None = None,
     ) -> "RunContextConfig":
+        """Clone a base config with run-specific path overrides.
+
+        Args:
+            base: Source config to copy.
+            analysis_root: Optional override for the analysis output directory.
+            interseed_input_dir: Optional override for interseed input discovery.
+            interseed_input_layout: Optional override for interseed stage folders.
+            stage_layout: Optional replacement stage layout for the cloned config.
+
+        Returns:
+            A config instance that preserves the base settings while applying overrides.
+        """
         run_cfg = cls(
             io=base.io,
             sim=base.sim,
@@ -76,17 +97,35 @@ class RunContextConfig(AppConfig):
 
     @property
     def analysis_dir(self) -> Path:
+        """Return the analysis directory, honoring any run-specific override.
+
+        Returns:
+            Path where analysis artifacts for the active run should be written.
+        """
         if self._analysis_root_override is not None:
             return self._analysis_root_override
         return super().analysis_dir
 
     @property
     def interseed_input_dir(self) -> Path | None:
+        """Return the interseed input directory, honoring any run-specific override.
+
+        Returns:
+            Path used as the root for interseed inputs, or ``None`` when unset.
+        """
         if self._interseed_input_dir_override is not None:
             return self._interseed_input_dir_override
         return super().interseed_input_dir
 
     def _interseed_input_folder(self, key: str | None) -> str | None:
+        """Resolve the folder name for one interseed stage key.
+
+        Args:
+            key: Stage key whose folder mapping should be resolved.
+
+        Returns:
+            Folder name for the stage key, or ``None`` when no mapping is available.
+        """
         if key is None:
             return None
         layout = self._interseed_input_layout_override
@@ -120,6 +159,16 @@ class InterseedRunContext:
         seed_pair: tuple[int, int],
         analysis_root: Path,
     ) -> "InterseedRunContext":
+        """Build the interseed context derived from a completed seed run.
+
+        Args:
+            seed_context: Per-seed context supplying the base config and input paths.
+            seed_pair: Seed tuple being analyzed together.
+            analysis_root: Directory where interseed outputs should be written.
+
+        Returns:
+            Interseed context with resolved input layout and overridden config paths.
+        """
         input_layout = cast(StageLayout, seed_context.config.stage_layout)
         combine_folder = input_layout.folder_for("combine")
         if combine_folder is None:

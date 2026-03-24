@@ -1,3 +1,4 @@
+# src/farkle/utils/analysis_shared.py
 """Shared conversion helpers for analysis pipelines.
 
 These helpers centralize boundary conversions (JSON/Parquet/Pandas/Numpy) so

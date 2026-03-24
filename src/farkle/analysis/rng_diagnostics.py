@@ -1,3 +1,4 @@
+# src/farkle/analysis/rng_diagnostics.py
 """RNG diagnostics for curated rows ordered by ``game_seed``.
 
 Computes lagged autocorrelation for win indicators and game lengths at both
@@ -39,6 +40,14 @@ _DEFAULT_MAX_MATCHUP_GROUPS = 100_000
 
 
 def _is_missing_scalar(value: object) -> bool:
+    """Return whether a grouped scalar should be treated as missing.
+
+    Args:
+        value: Scalar value taken from pandas grouping keys or cells.
+
+    Returns:
+        ``True`` when the value is ``None``, ``pd.NA``, or ``NaN``.
+    """
     if value is None or value is pd.NA:
         return True
     return isinstance(value, float) and np.isnan(value)
@@ -187,6 +196,19 @@ def _iter_prepared_batches(
     batch_size: int,
     arrow_threads: int,
 ) -> Iterator[pd.DataFrame]:
+    """Yield sorted per-game batches with matchup and winner strategy columns resolved.
+
+    Args:
+        dataset: Curated parquet dataset being scanned.
+        columns: Source columns required for diagnostics.
+        winner_col: Winner column name resolved from the schema.
+        strat_cols: Seat strategy columns to inspect.
+        batch_size: Arrow scanner batch size.
+        arrow_threads: Number of Arrow threads available to the scanner.
+
+    Yields:
+        Data frames containing normalized winner, matchup, and player-count columns.
+    """
     scanner = dataset.scanner(
         columns=list(columns),
         batch_size=batch_size,
@@ -213,6 +235,18 @@ def _collect_diagnostics_streaming_compact(
     progress_logger: ScheduledProgressLogger | None,
     max_matchup_groups: int | None,
 ) -> tuple[pd.DataFrame, int]:
+    """Aggregate autocorrelation diagnostics from prepared seat-level batches.
+
+    Args:
+        data_batches: Prepared batches yielded by :func:`_iter_prepared_batches`.
+        strat_cols: Seat strategy columns that should be melted into seat rows.
+        lags: Positive lags to evaluate.
+        progress_logger: Optional scheduled progress logger.
+        max_matchup_groups: Optional cap on tracked matchup-strategy groups.
+
+    Returns:
+        Tuple of the diagnostics frame and the number of melted seat rows processed.
+    """
     normalized_lags = tuple(int(lag) for lag in lags)
     strategy_states: dict[tuple[str, int], _GroupStreamAccumulator] = {}
     matchup_states: dict[tuple[str | None, str, int], _GroupStreamAccumulator] = {}
@@ -334,6 +368,14 @@ def _collect_diagnostics_streaming_compact(
 
 
 def _normalize_lags(lags: Sequence[int] | None) -> tuple[int, ...]:
+    """Normalize lag inputs to a sorted tuple of unique positive integers.
+
+    Args:
+        lags: Optional raw lag configuration from callers.
+
+    Returns:
+        Sorted positive lag tuple, defaulting to ``(1,)`` when unset.
+    """
     if lags is None:
         return (1,)
     valid = sorted({int(lag) for lag in lags if int(lag) > 0})
@@ -341,6 +383,14 @@ def _normalize_lags(lags: Sequence[int] | None) -> tuple[int, ...]:
 
 
 def _winner_column(names: set[str]) -> str | None:
+    """Pick the preferred winner column from a parquet schema name set.
+
+    Args:
+        names: Available column names from the curated parquet schema.
+
+    Returns:
+        ``winner_strategy``, ``winner_seat``, or ``None`` when neither exists.
+    """
     if "winner_strategy" in names:
         return "winner_strategy"
     if "winner_seat" in names:
@@ -349,6 +399,15 @@ def _winner_column(names: set[str]) -> str | None:
 
 
 def _seat_strategy_columns(cfg: AppConfig, schema_names: Sequence[str]) -> list[str]:
+    """Resolve and sort seat strategy columns available in the curated schema.
+
+    Args:
+        cfg: Application config used for configured player-count hints.
+        schema_names: Column names present in the curated parquet schema.
+
+    Returns:
+        Sorted seat strategy column names that actually exist in the schema.
+    """
     schema_set = set(schema_names)
     configured_candidates: list[str] = []
     if cfg.sim.n_players_list:
@@ -365,6 +424,15 @@ def _seat_strategy_columns(cfg: AppConfig, schema_names: Sequence[str]) -> list[
 
 
 def _build_matchup_labels(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.Series:
+    """Build canonical matchup labels by sorting participating strategy names.
+
+    Args:
+        df: Batch containing seat strategy columns.
+        strat_cols: Candidate seat strategy columns to include in the label.
+
+    Returns:
+        String series aligned to ``df.index`` with matchup labels per game row.
+    """
     valid_seat_cols = [col for col in strat_cols if col in df.columns and _SEAT_STRATEGY_RE.match(col)]
     if not valid_seat_cols:
         return pd.Series(index=df.index, dtype="string")
@@ -386,6 +454,16 @@ def _build_matchup_labels(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.Ser
 def _winner_strategies(
     df: pd.DataFrame, winner_col: str, strat_cols: Sequence[str]
 ) -> pd.Series:
+    """Resolve winner strategies even when the source stores winning seats.
+
+    Args:
+        df: Batch containing winner and seat strategy columns.
+        winner_col: Winner column name, either strategy- or seat-based.
+        strat_cols: Candidate seat strategy columns in seat order.
+
+    Returns:
+        String series containing the winning strategy for each row when resolvable.
+    """
     if winner_col == "winner_strategy":
         return df[winner_col]
 
@@ -416,6 +494,14 @@ def _winner_strategies(
 
 
 def _seat_number_from_strategy_column(column_name: str) -> int:
+    """Extract the numeric seat index from a ``P<n>_strategy`` column name.
+
+    Args:
+        column_name: Seat strategy column name to parse.
+
+    Returns:
+        Parsed seat number.
+    """
     match = _SEAT_STRATEGY_RE.match(column_name)
     if match is None:
         raise ValueError(f"invalid seat strategy column: {column_name}")
@@ -423,6 +509,15 @@ def _seat_number_from_strategy_column(column_name: str) -> int:
 
 
 def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFrame:
+    """Convert seat strategy columns into one seat-level row per strategy occurrence.
+
+    Args:
+        df: Prepared batch containing matchup, winner, and seat strategy columns.
+        strat_cols: Seat strategy columns to melt.
+
+    Returns:
+        Seat-level frame with ``strategy`` and ``win_indicator`` columns.
+    """
     id_vars = ["game_seed", "n_rounds", "matchup", "n_players", "winner_strategy"]
     melted = df[id_vars + list(strat_cols)].melt(
         id_vars=id_vars,
@@ -440,6 +535,8 @@ def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFram
 
 @dataclass(slots=True)
 class _LagCorrelationAccumulator:
+    """Incrementally accumulate covariance terms for one lagged metric."""
+
     pair_count: int = 0
     sum_x: float = 0.0
     sum_y: float = 0.0
@@ -448,6 +545,12 @@ class _LagCorrelationAccumulator:
     sum_xy: float = 0.0
 
     def update(self, x: float, y: float) -> None:
+        """Add one lagged pair to the accumulator.
+
+        Args:
+            x: Earlier observation in the lagged pair.
+            y: Later observation in the lagged pair.
+        """
         self.pair_count += 1
         self.sum_x += x
         self.sum_y += y
@@ -456,6 +559,11 @@ class _LagCorrelationAccumulator:
         self.sum_xy += x * y
 
     def autocorr(self) -> float | None:
+        """Compute the Pearson autocorrelation implied by the accumulated pairs.
+
+        Returns:
+            Correlation coefficient, or ``None`` when variance is insufficient.
+        """
         if self.pair_count < 2:
             return None
         pairs = float(self.pair_count)
@@ -469,6 +577,8 @@ class _LagCorrelationAccumulator:
 
 @dataclass(slots=True)
 class _MetricStreamAccumulator:
+    """Maintain lagged state for one numeric metric streamed in time order."""
+
     lags: tuple[int, ...]
     n_obs: int = 0
     buffers: dict[int, deque[float]] = field(default_factory=dict)
@@ -479,6 +589,11 @@ class _MetricStreamAccumulator:
         self.states = {lag: _LagCorrelationAccumulator() for lag in self.lags}
 
     def extend(self, values: pd.Series) -> None:
+        """Add an ordered series of numeric observations to the stream state.
+
+        Args:
+            values: Metric series already ordered by increasing ``game_seed``.
+        """
         numeric = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
         for value in numeric:
             if not np.isfinite(value):
@@ -486,6 +601,11 @@ class _MetricStreamAccumulator:
             self._push(float(value))
 
     def _push(self, value: float) -> None:
+        """Push one finite observation through all lag buffers.
+
+        Args:
+            value: Finite metric value to append to the stream.
+        """
         for lag in self.lags:
             buffer = self.buffers[lag]
             if len(buffer) == lag:
@@ -499,6 +619,8 @@ class _MetricStreamAccumulator:
 
 @dataclass(slots=True)
 class _GroupStreamAccumulator:
+    """Track streamed lagged state for both win and round-count metrics."""
+
     lags: tuple[int, ...]
     win_indicator: _MetricStreamAccumulator = field(init=False)
     n_rounds: _MetricStreamAccumulator = field(init=False)
@@ -508,6 +630,11 @@ class _GroupStreamAccumulator:
         self.n_rounds = _MetricStreamAccumulator(self.lags)
 
     def extend(self, frame: pd.DataFrame) -> None:
+        """Extend both metric streams from an ordered seat-level batch.
+
+        Args:
+            frame: Ordered frame containing ``win_indicator`` and ``n_rounds`` columns.
+        """
         self.win_indicator.extend(frame["win_indicator"])
         self.n_rounds.extend(frame["n_rounds"])
 
@@ -521,6 +648,19 @@ def _iter_melted_batches(
     batch_size: int,
     arrow_threads: int,
 ) -> Iterator[pd.DataFrame]:
+    """Yield fully melted seat-level batches from the curated parquet dataset.
+
+    Args:
+        dataset: Curated parquet dataset being scanned.
+        columns: Source columns required for diagnostics.
+        winner_col: Winner column name resolved from the schema.
+        strat_cols: Seat strategy columns to melt.
+        batch_size: Arrow scanner batch size.
+        arrow_threads: Number of Arrow threads available to the scanner.
+
+    Yields:
+        Seat-level frames sorted by ``game_seed`` and ready for diagnostics.
+    """
     scanner = dataset.scanner(
         columns=list(columns),
         batch_size=batch_size,
@@ -551,6 +691,19 @@ def _rows_from_group_state(
     group_state: _GroupStreamAccumulator,
     matchup: str | None = None,
 ) -> list[dict[str, object]]:
+    """Materialize diagnostic rows from one accumulated strategy or matchup group.
+
+    Args:
+        summary_level: Output summary level label.
+        strategy: Strategy identifier for the group.
+        n_players: Player count for the group.
+        lags: Lags to emit diagnostics for.
+        group_state: Stream accumulator containing metric states.
+        matchup: Optional matchup label for matchup-strategy rows.
+
+    Returns:
+        Output rows ready to append to the diagnostics frame.
+    """
     rows: list[dict[str, object]] = []
     metric_states = {
         "win_indicator": group_state.win_indicator,
@@ -590,6 +743,17 @@ def _collect_diagnostics_streaming(
     progress_logger: ScheduledProgressLogger | None,
     max_matchup_groups: int | None = None,
 ) -> tuple[pd.DataFrame, int]:
+    """Aggregate diagnostics from pre-melted batches using streaming group state.
+
+    Args:
+        data_batches: Melted seat-level batches sorted by ``game_seed``.
+        lags: Positive lags to evaluate.
+        progress_logger: Optional scheduled progress logger.
+        max_matchup_groups: Optional cap on tracked matchup-strategy groups.
+
+    Returns:
+        Tuple of the diagnostics frame and total melted rows processed.
+    """
     normalized_lags = tuple(int(lag) for lag in lags)
     strategy_states: dict[tuple[str, int], _GroupStreamAccumulator] = {}
     matchup_states: dict[tuple[str | None, str, int], _GroupStreamAccumulator] = {}
@@ -697,6 +861,15 @@ def _collect_diagnostics_streaming(
 
 
 def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataFrame:
+    """Compute diagnostics eagerly from one fully materialized melted frame.
+
+    Args:
+        data: Melted seat-level diagnostics input frame.
+        lags: Positive lags to evaluate.
+
+    Returns:
+        Diagnostics frame spanning strategy and matchup-strategy groupings.
+    """
     rows: list[pd.Series] = []
 
     grouped_strategy = data.groupby(["strategy", "n_players"], observed=True, sort=False)
@@ -751,6 +924,19 @@ def _group_diagnostics(
     n_players: int,
     matchup: str | None = None,
 ) -> list[pd.Series]:
+    """Compute lagged diagnostics for one grouped, ordered seat-level frame.
+
+    Args:
+        group: Grouped seat-level frame for one strategy or matchup-strategy key.
+        lags: Positive lags to evaluate.
+        summary_level: Output summary level label.
+        strategy: Strategy identifier for the group.
+        n_players: Player count for the group.
+        matchup: Optional matchup label for matchup-strategy rows.
+
+    Returns:
+        Diagnostic rows as series objects suitable for later concatenation.
+    """
     rows: list[pd.Series] = []
     ordered = group.sort_values("game_seed")
     metrics = {
