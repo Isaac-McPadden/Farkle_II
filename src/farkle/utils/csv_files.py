@@ -1,10 +1,5 @@
 # src/farkle/utils/csv_files.py
-"""File related helper functions.
-
-Only very small, generic utilities live here so that modules which
-need to perform disk I/O do not have to duplicate boilerplate.  The
-helpers are intentionally lightweight and avoid pulling in heavy
-dependencies so they are safe to import in worker processes.
+"""Makes writer workers for streaming CSV output to disk.
 """
 
 from __future__ import annotations

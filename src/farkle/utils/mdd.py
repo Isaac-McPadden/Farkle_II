@@ -69,6 +69,18 @@ def prepare_cell_means(
 ) -> pd.DataFrame:
     """
     Collapse raw data to per-(strategy, k, seed) win-rates and games.
+
+    Notes
+    -----
+    This helper averages the per-row win-rate values within each
+    ``(strategy, k, seed)`` group and sums the per-row game counts. That is
+    appropriate when each input row is already a fully aggregated cell, or when
+    the grouped rows should contribute equally on the win-rate scale.
+
+    It does *not* recompute the grouped win-rate as ``sum(wins) / sum(games)``.
+    If future callers pass multiple rows per cell with materially different
+    game counts, the resulting ``winrate`` column will be an arithmetic mean of
+    row-level rates rather than a game-weighted pooled rate.
     """
     df = df.copy()
     df["__winrate__"] = _ensure_winrate(

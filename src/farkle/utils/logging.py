@@ -1,5 +1,5 @@
 # src/farkle/utils/logging.py
-"""Logging helpers for Farkle."""
+"""Configure console/file root logging with a shared format and clean handler replacement."""
 
 from __future__ import annotations
 
