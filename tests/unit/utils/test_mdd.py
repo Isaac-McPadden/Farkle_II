@@ -4,13 +4,13 @@ from typing import cast
 import pandas as pd
 import pytest
 
-from farkle.utils.mdd import (
+from farkle.analysis.mdd import frequentist_ingredients_from_df
+from farkle.utils.mdd_helpers import (
     _ensure_winrate,
     compute_mdd_for_tiers,
     estimate_tau2_seed,
     estimate_tau2_sxk,
     prepare_cell_means,
-    tiering_ingredients_from_df,
 )
 
 
@@ -86,7 +86,7 @@ def test_compute_mdd_for_tiers_validates_inputs():
         )
 
 
-def test_tiering_ingredients_from_df_round_trip():
+def test_frequentist_ingredients_from_df_round_trip():
     df = pd.DataFrame(
         {
             "strategy": ["S1", "S1", "S2", "S2"],
@@ -99,7 +99,7 @@ def test_tiering_ingredients_from_df_round_trip():
 
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
-        result = tiering_ingredients_from_df(df, weights_by_k={2: 1.0}, z_star=1.0)
+        result = frequentist_ingredients_from_df(df, weights_by_k={2: 1.0}, z_star=1.0)
     assert not any(issubclass(w.category, FutureWarning) for w in record)
     assert set(result.keys()) == {"cell", "components", "tau2_sxk", "mdd"}
     mdd = cast(float, result["mdd"])

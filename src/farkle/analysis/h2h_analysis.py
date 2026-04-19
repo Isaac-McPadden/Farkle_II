@@ -2,7 +2,7 @@
 """Post head-to-head significance (Holm-Bonferroni) plus graph utilities.
 
 Loads head-to-head decision tables, performs Holm-Bonferroni correction, and
-derives graph-based tiering orders for reporting and downstream comparisons.
+derives graph-based tier orders for reporting and downstream comparisons.
 """
 
 from __future__ import annotations
@@ -720,21 +720,29 @@ def _build_candidate_selection_metadata(
     fallback_used: bool,
 ) -> dict[str, object]:
     """Assemble metadata describing how candidate sets were selected."""
-    selection_method = "ranking_fallback" if fallback_used else "union_top_ratings_metrics"
+    selection_method = "ranking_fallback" if fallback_used else "union_top_ratings_frequentist"
     metadata: dict[str, object] = {
         "method": selection_method,
         "source_path": str(union_path) if union_path is not None else None,
         "fallback_used": fallback_used,
         "weights": {
             "ratings_pooling_weights_by_k": dict(cfg.trueskill.pooled_weights_by_k or {}),
-            "metrics_weighting": None,
+            "frequentist_pooling_weights_by_k": None,
         },
     }
     if union_meta is None:
         return metadata
-    for key in ("ratings_count", "metrics_count", "combined_count", "ratings_path", "metrics_path"):
-        if key in union_meta:
-            metadata[key] = union_meta[key]
+    metadata["ratings_count"] = union_meta.get("ratings_count", 0)
+    metadata["frequentist_count"] = union_meta.get(
+        "frequentist_count",
+        union_meta.get("metrics_count", 0),
+    )
+    metadata["combined_count"] = union_meta.get("combined_count", 0)
+    metadata["ratings_path"] = union_meta.get("ratings_path")
+    metadata["frequentist_path"] = union_meta.get(
+        "frequentist_path",
+        union_meta.get("metrics_path"),
+    )
     return metadata
 
 

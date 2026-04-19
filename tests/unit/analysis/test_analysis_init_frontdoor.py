@@ -107,7 +107,7 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
 
     enabled_modules = {
         "farkle.analysis.trueskill": SimpleNamespace(run=lambda app_cfg: calls.append("trueskill")),
-        "farkle.analysis.tiering_report": SimpleNamespace(run=lambda app_cfg: calls.append("tiering")),
+        "farkle.analysis.frequentist_ranking": SimpleNamespace(run=lambda app_cfg: calls.append("frequentist")),
         "farkle.analysis.head2head": SimpleNamespace(run=lambda app_cfg: calls.append("head2head")),
         "farkle.analysis.h2h_analysis": SimpleNamespace(run_post_h2h=lambda app_cfg: calls.append("post_h2h")),
     }
@@ -124,7 +124,7 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
     assert plan_names == [
         "seed_summaries",
         "trueskill",
-        "tiering",
+        "frequentist",
         "head2head",
         "seed_symmetry",
         "post_h2h",
@@ -134,7 +134,7 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
     assert calls == [
         "seed:True",
         "trueskill",
-        "tiering",
+        "frequentist",
         "head2head",
         "seed_symmetry:True:False",
         "post_h2h",
@@ -209,7 +209,7 @@ def test_run_single_seed_analysis_stops_when_head2head_misses_required_outputs(
 
     enabled_modules = {
         "farkle.analysis.trueskill": SimpleNamespace(run=lambda app_cfg: calls.append("trueskill")),
-        "farkle.analysis.tiering_report": SimpleNamespace(run=lambda app_cfg: calls.append("tiering")),
+        "farkle.analysis.frequentist_ranking": SimpleNamespace(run=lambda app_cfg: calls.append("frequentist")),
         "farkle.analysis.head2head": SimpleNamespace(run=_head2head),
         "farkle.analysis.h2h_analysis": SimpleNamespace(run_post_h2h=lambda app_cfg: calls.append("post_h2h")),
     }
@@ -224,4 +224,4 @@ def test_run_single_seed_analysis_stops_when_head2head_misses_required_outputs(
     with pytest.raises(StageValidationError, match="missing required outputs"):
         analysis_mod.run_single_seed_analysis(cfg, force=False)
 
-    assert calls == ["seed", "trueskill", "tiering", "head2head"]
+    assert calls == ["seed", "trueskill", "frequentist", "head2head"]

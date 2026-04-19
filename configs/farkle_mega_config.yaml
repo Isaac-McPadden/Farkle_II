@@ -83,10 +83,10 @@ analysis:
   head2head_games_per_sec: null   # measured H2H throughput (games per second), or null to calibrate
 
   # Tiering / frequentist controls
-  tiering_seeds: null             # list[int]|None: seeds to include in tiering report
-  tiering_z_star: 1.645           # z* threshold for MDD tiers
-  tiering_min_gap: null           # float|None: minimum gap required to split tiers
-  tiering_weights_by_k: null      # dict[int,float]|None: optional weights for player counts
+  frequentist_seeds: null         # list[int]|None: seeds to include in frequentist ranking
+  tier_z_star: 1.645              # z* threshold used when building tier bands
+  tier_min_gap: null              # float|None: minimum gap required to split tiers
+  frequentist_weights_by_k: null  # dict[int,float]|None: optional weights for player counts
 
   # Meta-analysis controls (seed-to-seed pooling / comparison)
   meta_max_other_seeds: null      # int|None: cap on non-primary seeds used in meta pooling

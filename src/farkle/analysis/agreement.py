@@ -399,7 +399,7 @@ def _load_frequentist(cfg: AppConfig, players: int | str) -> MethodData | None:
     Returns:
         Populated ``MethodData`` or ``None`` when the file is absent or empty.
     """
-    path = cfg.tiering_path("frequentist_scores_k_weighted.parquet")
+    path = cfg.frequentist_path("frequentist_scores_k_weighted.parquet")
     if not path.exists():
         return None
 
@@ -422,9 +422,9 @@ def _load_frequentist(cfg: AppConfig, players: int | str) -> MethodData | None:
 
     per_seed: list[pd.Series] = []
     seed_candidates = {*cfg.analysis_dir.glob("frequentist_scores_seed*.parquet")}
-    tiering_dir = cfg.stage_dir_if_active("tiering")
-    if tiering_dir is not None:
-        seed_candidates.update(tiering_dir.glob("frequentist_scores_seed*.parquet"))
+    frequentist_dir = cfg.stage_dir_if_active("frequentist")
+    if frequentist_dir is not None:
+        seed_candidates.update(frequentist_dir.glob("frequentist_scores_seed*.parquet"))
     for seed_path in sorted(seed_candidates):
         seed_df = pd.read_parquet(seed_path)
         seed_df = _filter_by_players(seed_df, players)

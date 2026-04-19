@@ -13,7 +13,7 @@ from farkle.analysis import (
     run_hgb,
     run_trueskill,
     seed_summaries,
-    tiering_report,
+    frequentist_ranking,
     variance,
 )
 
@@ -222,7 +222,7 @@ def test_frequentist_scores_artifact_matches_agreement_reader(tmp_path) -> None:
         ]
     )
 
-    tiering_report._write_frequentist_scores(
+    frequentist_ranking._write_frequentist_scores(
         cfg,
         frequentist_tiers,
         pooled_winrates,

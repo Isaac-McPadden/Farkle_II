@@ -1136,8 +1136,8 @@ def run_trueskill(
     checkpoint_every_batches: int = 500,
     env_kwargs: Mapping[str, float] | TrueSkillInitKwargs | None = None,
     pooled_weights_by_k: Mapping[int, float] | None = None,
-    tiering_z: float | None = None,
-    tiering_min_gap: float | None = None,
+    tier_z: float | None = None,
+    tier_min_gap: float | None = None,
     mp_start_method: str | None = None,
     progress_logging: ProgressLogConfig | None = None,
 ) -> None:
@@ -1387,11 +1387,11 @@ def run_trueskill(
     tiers = build_tiers(
         means={k: v.mu for k, v in pooled_rating_stats.items()},
         stdevs={k: v.sigma for k, v in pooled_rating_stats.items()},
-        z=float(tiering_z or 1.645),
-        min_gap=tiering_min_gap,
+        z=float(tier_z or 1.645),
+        min_gap=tier_min_gap,
     )
     tiers_path = _write_conservative_tiers(
-        root, tiers, float(tiering_z or 1.645), tiering_min_gap, legacy_root=legacy_root
+        root, tiers, float(tier_z or 1.645), tier_min_gap, legacy_root=legacy_root
     )
     LOGGER.info(
         "TrueSkill run complete",
@@ -1688,7 +1688,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     analysis_cfg = cfg.analysis
     outputs_cfg = analysis_cfg.outputs or {}
-    seeds_cfg = analysis_cfg.tiering_seeds or [cfg.sim.seed]
+    seeds_cfg = analysis_cfg.frequentist_seeds or [cfg.sim.seed]
     deduped: list[int] = []
     seen: set[int] = set()
     for raw in seeds_cfg:
@@ -1722,8 +1722,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             "draw_probability": cfg.trueskill.draw_probability,
         }
     )
-    tiering_z = float(analysis_cfg.tiering_z_star or 1.645)
-    tiering_min_gap = analysis_cfg.tiering_min_gap
+    tier_z = float(analysis_cfg.tier_z_star or 1.645)
+    tier_min_gap = analysis_cfg.tier_min_gap
 
     per_seed_results: dict[int, Mapping[str, RatingStats]] = {}
     per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
@@ -1752,8 +1752,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             workers=analysis_cfg.n_jobs or None,
             env_kwargs=env_kwargs,
             pooled_weights_by_k=cfg.trueskill.pooled_weights_by_k,
-            tiering_z=tiering_z,
-            tiering_min_gap=tiering_min_gap,
+            tier_z=tier_z,
+            tier_min_gap=tier_min_gap,
             mp_start_method=analysis_cfg.mp_start_method,
             progress_logging=analysis_cfg.progress_logging,
         )
@@ -1897,11 +1897,11 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     tiers = build_tiers(
         means={k: v.mu for k, v in ordered_pooled.items()},
         stdevs={k: v.sigma for k, v in ordered_pooled.items()},
-        z=tiering_z,
-        min_gap=tiering_min_gap,
+        z=tier_z,
+        min_gap=tier_min_gap,
     )
     tiers_path = _write_conservative_tiers(
-        analysis_dir, tiers, tiering_z, tiering_min_gap, legacy_root=legacy_root
+        analysis_dir, tiers, tier_z, tier_min_gap, legacy_root=legacy_root
     )
 
     LOGGER.info(

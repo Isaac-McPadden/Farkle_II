@@ -77,7 +77,7 @@ def test_load_app_config_applies_analysis_controls(write_yaml) -> None:
                 "head2head_target_hours": 4.5,
                 "head2head_tolerance_pct": 2.5,
                 "head2head_games_per_sec": 11.0,
-                "tiering_seeds": [3, 7],
+                "frequentist_seeds": [3, 7],
             }
         },
     )
@@ -91,7 +91,7 @@ def test_load_app_config_applies_analysis_controls(write_yaml) -> None:
     assert cfg.analysis.head2head_target_hours == pytest.approx(4.5)
     assert cfg.analysis.head2head_tolerance_pct == pytest.approx(2.5)
     assert cfg.analysis.head2head_games_per_sec == pytest.approx(11.0)
-    assert cfg.analysis.tiering_seeds == [3, 7]
+    assert cfg.analysis.frequentist_seeds == [3, 7]
 
     apply_dot_overrides(
         cfg,
@@ -135,7 +135,7 @@ def test_load_app_config_normalizes_legacy_keys_from_read_only_mappings(
         {
             "io": MappingProxyType({"analysis_dir": "analysis", "results_dir": "data/custom_seed_11"}),
             "sim": MappingProxyType({"n_players": 5, "collect_metrics": True}),
-            "analysis": MappingProxyType({"run_tiering_report": True}),
+            "analysis": MappingProxyType({"run_frequentist": True}),
         }
     )
 
@@ -966,7 +966,7 @@ def test_resolve_stage_artifact_path_ordering_for_combine_and_non_combine(tmp_pa
         io=IOConfig(
             results_dir_prefix=tmp_path / "results",
             interseed_input_dir=tmp_path / "upstream",
-            interseed_input_layout={"combine": "01_combine", "tiering": "08_tiering"},
+            interseed_input_layout={"combine": "01_combine", "frequentist": "08_frequentist"},
         )
     )
 
@@ -980,33 +980,33 @@ def test_resolve_stage_artifact_path_ordering_for_combine_and_non_combine(tmp_pa
     combine_input.write_text("input")
     assert cfg._resolve_stage_artifact_path("combine", "all_ingested_rows.parquet", "pooled") == combine_input
 
-    tiering_stage = cfg._stage_dir_if_active("tiering")
-    assert tiering_stage is not None
-    tiering_local = tiering_stage / "tiers.json"
-    tiering_local.parent.mkdir(parents=True, exist_ok=True)
-    tiering_local.write_text("local")
-    tiering_input = tmp_path / "upstream" / "08_tiering" / "tiers.json"
-    tiering_input.parent.mkdir(parents=True, exist_ok=True)
-    tiering_input.write_text("input")
-    assert cfg._resolve_stage_artifact_path("tiering", "tiers.json") == tiering_local
+    frequentist_stage = cfg._stage_dir_if_active("frequentist")
+    assert frequentist_stage is not None
+    frequentist_local = frequentist_stage / "tiers.json"
+    frequentist_local.parent.mkdir(parents=True, exist_ok=True)
+    frequentist_local.write_text("local")
+    frequentist_input = tmp_path / "upstream" / "08_frequentist" / "tiers.json"
+    frequentist_input.parent.mkdir(parents=True, exist_ok=True)
+    frequentist_input.write_text("input")
+    assert cfg._resolve_stage_artifact_path("frequentist", "tiers.json") == frequentist_local
 
-    tiering_local.unlink()
-    tiering_input.unlink()
+    frequentist_local.unlink()
+    frequentist_input.unlink()
     legacy = cfg.analysis_dir / "legacy_tiers.json"
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("legacy")
-    assert cfg._resolve_stage_artifact_path("tiering", "tiers.json", legacy_paths=(legacy,)) == legacy
+    assert cfg._resolve_stage_artifact_path("frequentist", "tiers.json", legacy_paths=(legacy,)) == legacy
 
 
 def test_preferred_tiers_path_fallback_ordering(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
 
-    tiering_path = cfg._resolve_stage_artifact_path("tiering", "tiers.json")
-    tiering_path.parent.mkdir(parents=True, exist_ok=True)
-    tiering_path.write_text("tiering")
-    assert cfg.preferred_tiers_path() == tiering_path
+    frequentist_path = cfg._resolve_stage_artifact_path("frequentist", "tiers.json")
+    frequentist_path.parent.mkdir(parents=True, exist_ok=True)
+    frequentist_path.write_text("frequentist")
+    assert cfg.preferred_tiers_path() == frequentist_path
 
-    tiering_path.unlink()
+    frequentist_path.unlink()
     trueskill_path = cfg._resolve_stage_artifact_path("trueskill", "tiers.json")
     trueskill_path.parent.mkdir(parents=True, exist_ok=True)
     trueskill_path.write_text("trueskill")
@@ -1019,7 +1019,7 @@ def test_preferred_tiers_path_fallback_ordering(tmp_path: Path) -> None:
     assert cfg.preferred_tiers_path() == analysis_path
 
     analysis_path.unlink()
-    assert cfg.preferred_tiers_path() == cfg._resolve_stage_artifact_path("tiering", "tiers.json")
+    assert cfg.preferred_tiers_path() == cfg._resolve_stage_artifact_path("frequentist", "tiers.json")
 
 
 def test_load_app_config_n_players_list_pooled_normalization_and_validation(write_yaml) -> None:
@@ -1038,13 +1038,12 @@ def test_load_app_config_n_players_list_pooled_normalization_and_validation(writ
         load_app_config(bad_config)
 
 
-def test_load_app_config_maps_run_tiering_report_alias(write_yaml) -> None:
-    config = write_yaml("tier_alias.yaml", {"analysis": {"run_tiering_report": False}})
+def test_load_app_config_reads_run_frequentist(write_yaml) -> None:
+    config = write_yaml("freq_flag.yaml", {"analysis": {"run_frequentist": False}})
 
     cfg = load_app_config(config)
 
     assert cfg.analysis.run_frequentist is False
-    assert cfg.analysis.run_tiering_report is False
 
 
 def test_load_app_config_rejects_non_sim_bad_section_shape(write_yaml) -> None:
@@ -1101,7 +1100,7 @@ def test_app_config_stage_and_alias_helpers_cover_common_paths(tmp_path: Path) -
     assert cfg.hgb_stage_dir.parent == cfg.analysis_dir
     assert cfg.hgb_per_k_dir(7).name == "7p"
     assert cfg.hgb_pooled_dir.name == "pooled"
-    assert cfg.tiering_stage_dir.parent == cfg.analysis_dir
+    assert cfg.frequentist_stage_dir.parent == cfg.analysis_dir
 
     assert cfg.n_dir(5).name == "5_players"
     assert cfg.checkpoint_path(5).name == "5p_checkpoint.pkl"

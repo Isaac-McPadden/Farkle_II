@@ -729,7 +729,7 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
         ),
         SimConfig(seed=12, n_players_list=[2], seed_list=[12, 13], seed_pair=(12, 13)),
     )
-    cfg.analysis.tiering_seeds = [12, 13]
+    cfg.analysis.frequentist_seeds = [12, 13]
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
 
     seen_seed_inputs: list[tuple[int, Path | None, Path | None]] = []
@@ -746,8 +746,8 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
         checkpoint_every_batches: int = 500,
         env_kwargs: Mapping[str, float] | rt.TrueSkillInitKwargs | None = None,
         pooled_weights_by_k: Mapping[int, float] | None = None,
-        tiering_z: float | None = None,
-        tiering_min_gap: float | None = None,
+        tier_z: float | None = None,
+        tier_min_gap: float | None = None,
         mp_start_method: str | None = None,
         progress_logging: object | None = None,
     ) -> None:
@@ -760,8 +760,8 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
             checkpoint_every_batches,
             env_kwargs,
             pooled_weights_by_k,
-            tiering_z,
-            tiering_min_gap,
+            tier_z,
+            tier_min_gap,
             mp_start_method,
             progress_logging,
         )
@@ -1022,7 +1022,7 @@ def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path:
         IOConfig(results_dir_prefix=results_root),
         SimConfig(seed=1, seed_pair=(1, 2)),
     )
-    cfg.analysis.tiering_seeds = [1]
+    cfg.analysis.frequentist_seeds = [1]
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
 
     def fake_run_trueskill(**kwargs: object) -> None:
@@ -1045,7 +1045,7 @@ def test_run_trueskill_all_seeds_raises_when_pooled_precision_empty(tmp_path: Pa
         IOConfig(results_dir_prefix=results_root),
         SimConfig(seed=4, seed_pair=(4, 5)),
     )
-    cfg.analysis.tiering_seeds = [4]
+    cfg.analysis.frequentist_seeds = [4]
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
 
     def fake_run_trueskill(**kwargs: object) -> None:

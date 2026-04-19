@@ -1,12 +1,7 @@
-# src/farkle/analysis/tiering_report.py
-"""Generate tiering reports from isolated metrics and meta inputs.
+"""Frequentist ranking and comparison reporting for the ``frequentist`` stage."""
 
-Prepares tiering inputs, computes weighted win rates, and writes consolidated
-outputs for both frequentist and TrueSkill-derived tiers across player counts.
-"""
 from __future__ import annotations
 
-import contextlib
 import json
 import logging
 import os
@@ -26,6 +21,7 @@ else:  # pragma: no cover - fallback for older pandas
 
 from farkle.analysis import stage_logger
 from farkle.analysis.isolated_metrics import build_isolated_metrics
+from farkle.analysis.mdd import frequentist_ingredients_from_df
 from farkle.config import AppConfig
 from farkle.orchestration.seed_utils import (
     base_results_dir,
@@ -33,14 +29,15 @@ from farkle.orchestration.seed_utils import (
     resolve_results_dir,
 )
 from farkle.utils.analysis_shared import try_to_int
-from farkle.utils.mdd import tiering_ingredients_from_df
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload, write_tier_payload
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
+
+
 @dataclass
-class TieringInputs:
-    """Configuration bundle for generating frequentist tier reports."""
+class FrequentistRankingInputs:
+    """Configuration bundle for generating frequentist ranking artifacts."""
 
     seeds: list[int]
     player_counts: list[int]
@@ -49,22 +46,17 @@ class TieringInputs:
     min_gap: float | None
 
 
-def _tiering_artifact(cfg: AppConfig, name: str) -> Path:
-    """Return a tiering-stage path, migrating legacy outputs when present."""
+def _frequentist_artifact(cfg: AppConfig, name: str) -> Path:
+    """Return a path within the frequentist-ranking stage directory."""
 
-    stage_dir = cfg.tiering_stage_dir
+    stage_dir = cfg.frequentist_stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
-    stage_path = stage_dir / name
-    legacy_path = cfg.analysis_dir / name
-    if legacy_path.exists() and not stage_path.exists():
-        with contextlib.suppress(Exception):  # pragma: no cover - best-effort migration
-            legacy_path.replace(stage_path)
-    return stage_path if stage_path.exists() or not legacy_path.exists() else legacy_path
+    return stage_dir / name
 
 
 def run(cfg: AppConfig) -> None:
-    """Generate a tier comparison report when frequentist analysis is enabled."""
-    stage_log = stage_logger("tiering", logger=LOGGER)
+    """Generate per-seed frequentist ranking artifacts and comparison outputs."""
+    stage_log = stage_logger("frequentist", logger=LOGGER)
     stage_log.start()
 
     inputs = _prepare_inputs(cfg)
@@ -81,7 +73,7 @@ def run(cfg: AppConfig) -> None:
         return
     df["strategy"] = _coerce_strategy_ids(df["strategy"])
 
-    tier_data = tiering_ingredients_from_df(
+    tier_data = frequentist_ingredients_from_df(
         df,
         strategy_col="strategy",
         k_col="n_players",
@@ -113,20 +105,20 @@ def run(cfg: AppConfig) -> None:
     )
 
 
-def _prepare_inputs(cfg: AppConfig) -> TieringInputs:
-    """Normalize tiering configuration values from :class:`AppConfig`."""
-    seeds = cfg.analysis.tiering_seeds or [cfg.sim.seed]
+def _prepare_inputs(cfg: AppConfig) -> FrequentistRankingInputs:
+    """Normalize frequentist-ranking configuration values from :class:`AppConfig`."""
+    seeds = cfg.analysis.frequentist_seeds or [cfg.sim.seed]
     player_counts = sorted({int(n) for n in cfg.sim.n_players_list})
-    weights = cfg.analysis.tiering_weights_by_k
+    weights = cfg.analysis.frequentist_weights_by_k
     if weights is not None:
         total = sum(weights.values())
         weights = {int(k): v / total for k, v in weights.items()} if total > 0 else None
-    return TieringInputs(
+    return FrequentistRankingInputs(
         seeds=[int(s) for s in seeds],
         player_counts=player_counts,
         weights_by_k=weights,
-        z_star=float(cfg.analysis.tiering_z_star or 1.645),
-        min_gap=cfg.analysis.tiering_min_gap,
+        z_star=float(cfg.analysis.tier_z_star or 1.645),
+        min_gap=cfg.analysis.tier_min_gap,
     )
 
 
@@ -139,7 +131,7 @@ def _results_dir_for_seed(cfg: AppConfig, seed: int) -> Path:
     raise FileNotFoundError(candidate)
 
 
-def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFrame:
+def _load_isolated_metrics(cfg: AppConfig, inputs: FrequentistRankingInputs) -> pd.DataFrame:
     """Load per-seed isolated metrics for the desired player counts."""
     frames_by_unit: dict[tuple[int, int], pd.DataFrame] = {}
     for seed in inputs.seeds:
@@ -148,7 +140,7 @@ def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFram
         except FileNotFoundError as exc:
             LOGGER.warning(
                 "Skipping seed: results directory not found",
-                extra={"stage": "tiering", "seed": seed, "error": str(exc)},
+                extra={"stage": "frequentist", "seed": seed, "error": str(exc)},
             )
             continue
         base_dir = root.parent / root.name.rsplit("_seed_", 1)[0]
@@ -161,7 +153,7 @@ def _load_isolated_metrics(cfg: AppConfig, inputs: TieringInputs) -> pd.DataFram
                 if missing:
                     LOGGER.warning(
                         "Missing isolated metrics",
-                        extra={"stage": "tiering", "seed": seed_i, "player_count": k_i},
+                        extra={"stage": "frequentist", "seed": seed_i, "player_count": k_i},
                     )
                     continue
                 if df is None:
@@ -213,13 +205,11 @@ def _coerce_tier_keys(tiers: Mapping[Any, int]) -> dict[int, int]:
     if not tiers:
         return {}
 
-    # Coerce once at the boundary so downstream joins can stay vectorized.
     normalized: dict[int, int] = {}
     for key, value in tiers.items():
         normalized_key = _normalize_mapping_key(key)
         if isinstance(normalized_key, int):
-            strategy_id = normalized_key
-            normalized[strategy_id] = value
+            normalized[normalized_key] = value
     return normalized
 
 
@@ -228,7 +218,6 @@ def _weighted_winrate(
 ) -> tuple[pd.Series, pd.DataFrame]:
     """Compute overall and per-k weighted win rates."""
 
-    # weights = games clipped to >= 1
     w = df["games"].clip(lower=1).astype(float)
 
     tmp = df.assign(
@@ -257,7 +246,6 @@ def _weighted_winrate(
         collapsed = per_k.groupby("strategy")["win_rate"].mean()
 
     return collapsed.sort_values(ascending=False), per_k
-
 
 
 def _build_frequentist_tiers(winrates: pd.Series, mdd: float) -> pd.DataFrame:
@@ -339,13 +327,13 @@ def _write_frequentist_scores(
     )
 
     scores = pd.concat([base, aggregated], ignore_index=True, sort=False)
-    scores_path = _tiering_artifact(cfg, "frequentist_scores_k_weighted.parquet")
+    scores_path = _frequentist_artifact(cfg, "frequentist_scores_k_weighted.parquet")
     with atomic_path(str(scores_path)) as tmp_path:
         scores.to_parquet(tmp_path, index=False)
 
-    pooled_provenance_path = _tiering_artifact(cfg, "tiering_k_weighted_provenance.json")
+    pooled_provenance_path = _frequentist_artifact(cfg, "frequentist_k_weighted_provenance.json")
     if weights_by_k:
-        weight_source = "config:tiering_weights_by_k"
+        weight_source = "config:frequentist_weights_by_k"
         normalized_weights: dict[int, float] = {}
         for key, value in weights_by_k.items():
             normalized_key = _normalize_mapping_key(key)
@@ -359,9 +347,7 @@ def _write_frequentist_scores(
         }
 
     if "games" in winrates_by_players.columns:
-        effective_games_raw = (
-            winrates_by_players.groupby("n_players")["games"].sum().sort_index()
-        )
+        effective_games_raw = winrates_by_players.groupby("n_players")["games"].sum().sort_index()
     else:
         effective_games_raw = pd.Series(dtype="float64")
     effective_games: dict[int | Hashable, float] = {}
@@ -370,7 +356,7 @@ def _write_frequentist_scores(
         k_norm = _normalize_mapping_key(k_raw_int)
         if isinstance(k_norm, int):
             effective_games[k_norm] = float(games)
-         
+
     provenance = {
         "pooling_rule": "weighted_mean_by_k",
         "weight_source": weight_source,
@@ -391,11 +377,11 @@ def _write_frequentist_scores(
 
 
 def _write_outputs(
-    cfg: AppConfig, report: pd.DataFrame, tier_data: dict, inputs: TieringInputs
+    cfg: AppConfig, report: pd.DataFrame, tier_data: dict, inputs: FrequentistRankingInputs
 ) -> None:
     """Write tier comparison outputs to CSV and JSON files."""
-    out_csv = _tiering_artifact(cfg, "tiering_report.csv")
-    out_json = _tiering_artifact(cfg, "tiering_report.json")
+    out_csv = _frequentist_artifact(cfg, "frequentist_report.csv")
+    out_json = _frequentist_artifact(cfg, "frequentist_report.json")
     report.sort_values(["mdd_tier", "win_rate"], ascending=[True, False]).to_csv(
         out_csv, index=False
     )
@@ -410,16 +396,16 @@ def _write_outputs(
         "total_strategies": int(len(report)),
         "disagreements": int((report["delta_tier"] != 0).sum()),
         "overlap_top": int(((report["in_mdd_top"]) & (report["in_ts_top"])).sum()),
-        "trueskill_z_star": inputs.z_star,
-        "trueskill_min_gap": inputs.min_gap,
+        "tier_z_star": inputs.z_star,
+        "tier_min_gap": inputs.min_gap,
     }
     with atomic_path(str(out_json)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(summary, indent=2))
 
     LOGGER.info(
-        "Tiering report written",
+        "Frequentist comparison report written",
         extra={
-            "stage": "tiering",
+            "stage": "frequentist",
             "rows": len(report),
             "mdd": tier_data["mdd"],
             "disagreements": summary["disagreements"],
@@ -438,7 +424,7 @@ def _write_consolidated_tiers(
 ) -> None:
     """Persist unified TrueSkill and frequentist tiers."""
 
-    tiers_path = _tiering_artifact(cfg, "tiers.json")
+    tiers_path = _frequentist_artifact(cfg, "tiers.json")
     freq_map = freq_tiers.set_index("strategy")["mdd_tier"].astype(int).to_dict()
     frequentist_payload: dict[str, object] = {"tiers": freq_map, "mdd": mdd}
     if weights_by_k:
@@ -449,3 +435,6 @@ def _write_consolidated_tiers(
         trueskill=ts_payload or None,
         frequentist=frequentist_payload,
     )
+
+
+__all__ = ["FrequentistRankingInputs", "run"]

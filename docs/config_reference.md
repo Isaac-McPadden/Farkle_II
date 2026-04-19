@@ -67,9 +67,9 @@ the CLI and orchestration code.
 - `rare_event_margin_quantile`
 - `rare_event_target_rate`
 - `rng_max_matchup_groups`
-- `tiering_seeds`
-- `tiering_z_star`
-- `tiering_min_gap`
+- `frequentist_seeds`
+- `tier_z_star`
+- `tier_min_gap`
 - `head2head_target_hours`
 - `head2head_tolerance_pct`
 - `head2head_games_per_sec`

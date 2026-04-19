@@ -139,7 +139,7 @@ def _tier_path(analysis_dir: Path, layout: StageLayout | None = None) -> Path:
     """Resolve ``tiers.json`` within stage-aware directories."""
 
     candidates = [
-        *_stage_candidates(analysis_dir, "tiering", layout=layout, filename=Path("tiers.json")),
+        *_stage_candidates(analysis_dir, "frequentist", layout=layout, filename=Path("tiers.json")),
         *_stage_candidates(analysis_dir, "trueskill", layout=layout, filename=Path("tiers.json")),
         analysis_dir / "tiers.json",
     ]

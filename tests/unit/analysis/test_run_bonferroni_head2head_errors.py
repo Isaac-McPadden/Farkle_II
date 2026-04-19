@@ -36,7 +36,7 @@ def _mock_simulated_games(strategies: list[str], seeds: list[int]) -> pd.DataFra
 def _prepare_minimal_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AppConfig:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}), encoding="utf-8")
 

@@ -186,10 +186,10 @@ class InterseedRunContext:
             interseed_input_layout=input_layout_override,
             stage_layout=resolve_interseed_stage_layout(seed_context.config),
         )
-        if run_cfg.analysis.tiering_seeds is None:
+        if run_cfg.analysis.frequentist_seeds is None:
             run_cfg.analysis = replace(
                 run_cfg.analysis,
-                tiering_seeds=[int(seed) for seed in seed_pair],
+                frequentist_seeds=[int(seed) for seed in seed_pair],
             )
         return cls(
             seed_pair=seed_pair,

@@ -46,7 +46,7 @@ DEPRECATED_ANALYSIS_FLAGS = {
     "disable_trueskill",
     "disable_head2head",
     "disable_hgb",
-    "disable_tiering",
+    "disable_frequentist",
     "disable_agreement",
     "run_trueskill",
     "run_head2head",
@@ -65,7 +65,7 @@ _CANONICAL_ARTIFACT_NAMES: dict[str, str] = {
     "game_length_pooled.parquet": "game_length_k_weighted.parquet",
     "margin_pooled.parquet": "margin_k_weighted.parquet",
     "frequentist_scores.parquet": "frequentist_scores_k_weighted.parquet",
-    "tiering_pooled_provenance.json": "tiering_k_weighted_provenance.json",
+    "frequentist_pooled_provenance.json": "frequentist_k_weighted_provenance.json",
     "agreement_pooled.json": "agreement_k_weighted.json",
 }
 
@@ -251,7 +251,7 @@ class AnalysisConfig:
     disable_trueskill: bool = False
     disable_head2head: bool = False
     disable_hgb: bool = False
-    disable_tiering: bool = False
+    disable_frequentist: bool = False
     disable_agreement: bool = False
 
     disable_rng_diagnostics: bool = False
@@ -264,7 +264,7 @@ class AnalysisConfig:
     run_game_stats: bool = True
     run_hgb: bool = True
     run_frequentist: bool = True
-    """Plan step 6: frequentist / MDD-based tiering (tiering_report)."""
+    """Plan step 6: per-seed frequentist ranking and tier reporting."""
     run_post_h2h_analysis: bool = True
     """Execute the post head-to-head clean-up pass (plan step 5)."""
 
@@ -302,12 +302,15 @@ class AnalysisConfig:
     head2head_games_per_sec: float | None = None
     """Measured throughput override for head-to-head simulations (games/second)."""
     head2head_force_calibrate: bool = False
-    tiering_seeds: list[int] | None = None
-    """Explicit seeds to use when running the tiering report."""
+    frequentist_seeds: list[int] | None = None
+    """Explicit seeds to use when running the frequentist ranking stage."""
 
-    tiering_z_star: float = 1.645
-    tiering_min_gap: float | None = None
-    tiering_weights_by_k: dict[int, float] | None = None
+    tier_z_star: float = 1.645
+    """Z-threshold used when building human-readable tier bands."""
+    tier_min_gap: float | None = None
+    """Optional minimum absolute gap required to split adjacent tiers."""
+    frequentist_weights_by_k: dict[int, float] | None = None
+    """Optional per-player-count weights for pooled frequentist scores."""
     # Optional outputs block may be provided in YAML
     # outputs:
     #   curated_rows_name: "game_rows.parquet"
@@ -336,17 +339,6 @@ class AnalysisConfig:
 
     h2h_tier_trends_interseed_s_tier_path: Path | None = None
     """Optional interseed-combined S-tier JSON path for h2h tier trends."""
-
-    @property
-    def run_tiering_report(self) -> bool:
-        """Deprecated alias for run_frequentist; kept for config compatibility."""
-        return self.run_frequentist
-
-    @run_tiering_report.setter
-    def run_tiering_report(self, value: bool) -> None:
-        """Propagate legacy setter calls to ``run_frequentist``."""
-        self.run_frequentist = bool(value)
-
 
 @dataclass
 class IngestConfig:
@@ -403,7 +395,7 @@ class Head2HeadConfig:
     """Optional RNG seed for deterministic tie-break simulation (defaults to sim.seed)."""
 
     use_tier_elites: bool = False
-    """Use tiers.json elite selection instead of the default union of top ratings/metrics."""
+    """Deprecated compatibility flag; H2H always uses the pooled ratings/frequentist union."""
 
 
 @dataclass
@@ -760,10 +752,10 @@ class AppConfig:
         return self.stage_subdir("hgb", "pooled")
 
     @property
-    def tiering_stage_dir(self) -> Path:
-        """Stage root for frequentist tiering outputs."""
+    def frequentist_stage_dir(self) -> Path:
+        """Stage root for frequentist ranking outputs."""
 
-        return self.stage_subdir("tiering")
+        return self.stage_subdir("frequentist")
 
     @property
     def meta_analysis_dir(self) -> Path:
@@ -1303,26 +1295,26 @@ class AppConfig:
                 return candidate
         return candidates[0]
 
-    def tiering_path(self, filename: str) -> Path:
-        """Resolve a tiering artifact path with legacy fallback."""
+    def frequentist_path(self, filename: str) -> Path:
+        """Resolve a frequentist-stage artifact path with legacy fallback."""
 
         canonical = self.canonical_artifact_name(filename)
-        stage_dir = self._stage_dir_if_active("tiering")
+        stage_dir = self._stage_dir_if_active("frequentist")
         return self._preferred_stage_path(
             stage_dir,
             self.analysis_dir,
             canonical,
-            stage_key="tiering",
+            stage_key="frequentist",
         )
 
     def preferred_tiers_path(self) -> Path:
-        """Locate ``tiers.json`` across tiering and TrueSkill stages."""
+        """Locate ``tiers.json`` across frequentist and TrueSkill stages."""
 
         analysis_path = self.analysis_dir / "tiers.json"
 
-        tiering_path = self._resolve_stage_artifact_path("tiering", "tiers.json")
-        if tiering_path.exists() and tiering_path != analysis_path:
-            return tiering_path
+        frequentist_path = self._resolve_stage_artifact_path("frequentist", "tiers.json")
+        if frequentist_path.exists() and frequentist_path != analysis_path:
+            return frequentist_path
 
         trueskill_path = self._resolve_stage_artifact_path("trueskill", "tiers.json")
         if trueskill_path.exists():
@@ -1330,7 +1322,7 @@ class AppConfig:
 
         if analysis_path.exists():
             return analysis_path
-        return tiering_path
+        return frequentist_path
 
     @property
     def curated_parquet(self) -> Path:
@@ -1770,16 +1762,9 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
             else:
                 analysis_section_map = dict(analysis_section_raw)
                 data["analysis"] = analysis_section_map
-            legacy_alias = "run_tiering_report" in analysis_section_map
-            if "run_tiering_report" in analysis_section_map:
-                alias_val = analysis_section_map.pop("run_tiering_report")
-                analysis_section_map.setdefault("run_frequentist", alias_val)
             deprecated = sorted(
                 key for key in analysis_section_map if key in DEPRECATED_ANALYSIS_FLAGS
             )
-            if legacy_alias:
-                deprecated.append("run_tiering_report")
-                deprecated = sorted(set(deprecated))
             if deprecated:
                 LOGGER.warning(
                     "Deprecated analysis flags no longer disable stages; flags ignored",

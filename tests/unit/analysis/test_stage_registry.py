@@ -49,7 +49,7 @@ def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
             disable_rng_diagnostics=False,
             disable_trueskill=True,
             disable_head2head=True,
-            disable_tiering=True,
+            disable_frequentist=True,
             disable_agreement=True,
         ),
     )

@@ -244,9 +244,9 @@ def analyze_agreement(exp_dir: Path) -> None:
     for candidate in (
         _first_existing(
             [
-                cfg.tiering_stage_dir / "frequentist_scores_k_weighted.parquet",
+                cfg.frequentist_stage_dir / "frequentist_scores_k_weighted.parquet",
                 analysis_dir / "frequentist_scores_k_weighted.parquet",
-                *analysis_dir.glob("*_tiering/frequentist_scores_k_weighted.parquet"),
+                *analysis_dir.glob("*_frequentist/frequentist_scores_k_weighted.parquet"),
             ]
         ),
         _first_existing(

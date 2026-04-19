@@ -70,9 +70,9 @@ def test_interseed_context_raises_when_combine_missing(tmp_path: Path, monkeypat
         )
 
 
-def test_interseed_context_preserves_existing_tiering_seeds(tmp_path: Path) -> None:
+def test_interseed_context_preserves_existing_frequentist_seeds(tmp_path: Path) -> None:
     seed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
-    seed_cfg = replace(seed_cfg, analysis=replace(seed_cfg.analysis, tiering_seeds=[99]))
+    seed_cfg = replace(seed_cfg, analysis=replace(seed_cfg.analysis, frequentist_seeds=[99]))
     seed_cfg.set_stage_layout(resolve_stage_layout(seed_cfg))
     seed_context = SeedRunContext.from_config(seed_cfg)
 
@@ -82,7 +82,7 @@ def test_interseed_context_preserves_existing_tiering_seeds(tmp_path: Path) -> N
         analysis_root=tmp_path / "pair" / "interseed_analysis",
     )
 
-    assert interseed.config.analysis.tiering_seeds == [99]
+    assert interseed.config.analysis.frequentist_seeds == [99]
 
 
 def test_run_context_config_interseed_folder_unknown_layout_returns_none(tmp_path: Path) -> None:

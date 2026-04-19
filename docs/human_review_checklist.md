@@ -181,7 +181,7 @@ If the main question is "does it do what we say it does?", bias time toward game
 - [ ] `trueskill` and `run_trueskill` read the right rows, update ratings in the intended order, checkpoint safely, and write per-`k` plus pooled outputs that match the docs.
 - [ ] `head2head` and `run_bonferroni_head2head` select candidate strategies, size experiments, simulate pairings, and compute p-values and correction targets exactly as claimed.
 - [ ] `h2h_analysis` applies the intended post-processing and produces tiers and rankings that are traceable back to the pairwise artifacts.
-- [ ] `tiering_report` combines cross-`k` frequentist scores and weights the way the docs claim.
+- [ ] `frequentist_ranking` combines cross-`k` frequentist scores and weights the way the docs claim.
 - [ ] `run_hgb` and `hgb_feat` build features from strategy encodings correctly and do not leak downstream targets into training inputs.
 - [ ] `agreement` compares compatible rankings and tiers and does not accidentally compare differently scoped artifacts.
 - [ ] `interseed_analysis`, `game_stats_interseed`, `rng_diagnostics`, and `h2h_tier_trends` really consume the paired-seed inputs they claim to consume.

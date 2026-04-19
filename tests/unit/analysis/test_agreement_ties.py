@@ -125,11 +125,11 @@ def test_load_frequentist_and_trueskill(tmp_path):
     ).to_parquet(trueskill_path)
     trueskill_path.with_suffix(".manifest.jsonl").write_text("{}\n")
 
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({str(players): {"tiers": {"a": 1, "b": 2}}}))
 
-    freq_path = cfg.tiering_path("frequentist_scores_k_weighted.parquet")
+    freq_path = cfg.frequentist_path("frequentist_scores_k_weighted.parquet")
     freq_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {
@@ -290,7 +290,7 @@ def test_load_frequentist_mixed_seed_paths_and_per_k_filtering(tmp_path: Path) -
     cfg.io.results_dir_prefix = tmp_path / "results"
     players = 2
 
-    freq_path = cfg.tiering_path("frequentist_scores_k_weighted.parquet")
+    freq_path = cfg.frequentist_path("frequentist_scores_k_weighted.parquet")
     freq_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {
@@ -302,8 +302,8 @@ def test_load_frequentist_mixed_seed_paths_and_per_k_filtering(tmp_path: Path) -
     ).to_parquet(freq_path)
 
     seed_ok_analysis = cfg.analysis_dir / "frequentist_scores_seed11.parquet"
-    seed_ok_tiering = cfg.tiering_stage_dir / "frequentist_scores_seed12.parquet"
-    seed_invalid = cfg.tiering_stage_dir / "frequentist_scores_seed13.parquet"
+    seed_ok_tiering = cfg.frequentist_stage_dir / "frequentist_scores_seed12.parquet"
+    seed_invalid = cfg.frequentist_stage_dir / "frequentist_scores_seed13.parquet"
     seed_ok_analysis.parent.mkdir(parents=True, exist_ok=True)
     seed_ok_tiering.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
@@ -413,7 +413,7 @@ def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, 
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"pooled": {"tiers": {"a": 1, "b": 2}}}))
 
-    freq_path = cfg.tiering_path("frequentist_scores_k_weighted.parquet")
+    freq_path = cfg.frequentist_path("frequentist_scores_k_weighted.parquet")
     freq_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {

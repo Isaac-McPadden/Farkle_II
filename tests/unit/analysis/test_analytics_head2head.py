@@ -688,7 +688,7 @@ def test_maybe_autotune_tiers_success_writes_payload_and_meta(
     cfg = _cfg
     cfg.analysis.head2head_target_hours = 2.0
     cfg.analysis.head2head_games_per_sec = 50.0
-    cfg.analysis.tiering_min_gap = 0.2
+    cfg.analysis.tier_min_gap = 0.2
     ratings_path = cfg.trueskill_path("ratings_k_weighted.parquet")
     ratings_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
@@ -742,8 +742,8 @@ def test_search_candidate_returns_none_when_means_empty() -> None:
             tolerance_pct=5.0,
             games_per_sec=10.0,
             design_kwargs={},
-            tiering_z=1.645,
-            tiering_min_gap=None,
+            tier_z=1.645,
+            tier_min_gap=None,
         )
         is None
     )
@@ -766,8 +766,8 @@ def test_search_candidate_baseline_low_high_branches(monkeypatch: pytest.MonkeyP
         tolerance_pct=5.0,
         games_per_sec=1.0,
         design_kwargs={},
-        tiering_z=2.0,
-        tiering_min_gap=None,
+        tier_z=2.0,
+        tier_min_gap=None,
     )
     assert baseline is not None and baseline.z == 2.0
 
@@ -779,8 +779,8 @@ def test_search_candidate_baseline_low_high_branches(monkeypatch: pytest.MonkeyP
         tolerance_pct=5.0,
         games_per_sec=1.0,
         design_kwargs={},
-        tiering_z=2.0,
-        tiering_min_gap=None,
+        tier_z=2.0,
+        tier_min_gap=None,
     )
     assert low is not None and low.z == 0.5
 
@@ -792,8 +792,8 @@ def test_search_candidate_baseline_low_high_branches(monkeypatch: pytest.MonkeyP
         tolerance_pct=5.0,
         games_per_sec=1.0,
         design_kwargs={},
-        tiering_z=2.0,
-        tiering_min_gap=None,
+        tier_z=2.0,
+        tier_min_gap=None,
     )
     assert high is not None and high.z == 6.0
 
@@ -812,8 +812,8 @@ def test_search_candidate_binary_search_and_fallback(monkeypatch: pytest.MonkeyP
         tolerance_pct=1.0,
         games_per_sec=1.0,
         design_kwargs={},
-        tiering_z=1.0,
-        tiering_min_gap=None,
+        tier_z=1.0,
+        tier_min_gap=None,
     )
     assert hit is not None and hit.runtime_hours == 5.0
 
@@ -825,8 +825,8 @@ def test_search_candidate_binary_search_and_fallback(monkeypatch: pytest.MonkeyP
         tolerance_pct=1.0,
         games_per_sec=1.0,
         design_kwargs={},
-        tiering_z=1.0,
-        tiering_min_gap=None,
+        tier_z=1.0,
+        tier_min_gap=None,
     )
     assert closest is not None
     assert closest.runtime_hours == 20.0
@@ -1011,12 +1011,12 @@ def test_load_union_candidates_branches(_cfg: AppConfig) -> None:
     payload = {
         "candidates": ["Alpha", "Beta"],
         "ratings_count": 2,
-        "metrics_path": "metrics.csv",
+        "frequentist_path": "frequentist.csv",
     }
     candidate_path.write_text(json.dumps(payload), encoding="utf-8")
     candidates, meta, path = h2h_analysis._load_union_candidates(cfg)
     assert candidates == ["Alpha", "Beta"]
-    assert meta == {"ratings_count": 2, "metrics_path": "metrics.csv"}
+    assert meta == {"ratings_count": 2, "frequentist_path": "frequentist.csv"}
     assert path == candidate_path
 
 
@@ -1065,15 +1065,15 @@ def test_build_candidate_selection_metadata_branching(_cfg: AppConfig) -> None:
         union_path=None,
         fallback_used=False,
     )
-    assert metadata["method"] == "union_top_ratings_metrics"
+    assert metadata["method"] == "union_top_ratings_frequentist"
     assert metadata["source_path"] is None
 
     union_meta = {
         "ratings_count": 5,
-        "metrics_count": 6,
+        "frequentist_count": 6,
         "combined_count": 9,
         "ratings_path": "ratings.csv",
-        "metrics_path": "metrics.csv",
+        "frequentist_path": "frequentist.csv",
         "ignore_me": "x",
     }
     metadata = h2h_analysis._build_candidate_selection_metadata(
@@ -1085,10 +1085,10 @@ def test_build_candidate_selection_metadata_branching(_cfg: AppConfig) -> None:
     assert metadata["method"] == "ranking_fallback"
     assert metadata["fallback_used"] is True
     assert metadata["ratings_count"] == 5
-    assert metadata["metrics_count"] == 6
+    assert metadata["frequentist_count"] == 6
     assert metadata["combined_count"] == 9
     assert metadata["ratings_path"] == "ratings.csv"
-    assert metadata["metrics_path"] == "metrics.csv"
+    assert metadata["frequentist_path"] == "frequentist.csv"
     assert "ignore_me" not in metadata
 
 

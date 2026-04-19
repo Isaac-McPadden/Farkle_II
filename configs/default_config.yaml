@@ -55,10 +55,10 @@ analysis:
   head2head_target_hours: 8.0         # float: target runtime window for Bonferroni H2H (<=0 disables)
   head2head_tolerance_pct: 5.0        # float: acceptable +/- percent around target hours
   head2head_games_per_sec: null       # float|None: measured H2H throughput (games per second)
-  tiering_seeds: null       # list[int]|None: seeds to include in tiering report (default current seed)
-  tiering_z_star: 1.645     # float: z* threshold for MDD tiers
-  tiering_min_gap: null     # float|None: minimum gap required to split tiers
-  tiering_weights_by_k: null  # dict[int,float]|None: optional weights for player counts
+  frequentist_seeds: null       # list[int]|None: seeds to include in frequentist ranking (default current seed)
+  tier_z_star: 1.645            # float: z* threshold used when building tier bands
+  tier_min_gap: null            # float|None: minimum gap required to split tiers
+  frequentist_weights_by_k: null  # dict[int,float]|None: optional weights for player counts
   h2h_tier_trends_seed_s_tier_paths: null  # list[Path|str]|None: explicit per-seed 11_post_h2h/h2h_s_tiers.json inputs
   h2h_tier_trends_interseed_s_tier_path: null  # Path|str|None: explicit interseed-combined S-tier JSON input (mutually exclusive with per-seed paths)
   meta_max_other_seeds: null # int|None: cap on non-primary seeds used in meta pooling

@@ -268,7 +268,7 @@ def test_seed_symmetry_stage_runs_after_head2head(
             return types.SimpleNamespace(run_post_h2h=lambda cfg: None)
         if module == "farkle.analysis.hgb_feat":
             return types.SimpleNamespace(run=lambda cfg: None)
-        if module == "farkle.analysis.tiering_report":
+        if module == "farkle.analysis.frequentist_ranking":
             return types.SimpleNamespace(run=lambda cfg: None)
         if module == "farkle.analysis.trueskill":
             return types.SimpleNamespace(run=lambda cfg: None)

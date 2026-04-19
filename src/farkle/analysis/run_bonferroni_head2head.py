@@ -1,5 +1,5 @@
 # src/farkle/analysis/run_bonferroni_head2head.py
-"""Bonferroni-corrected head-to-head comparison of top-tier strategies."""
+"""Bonferroni-corrected head-to-head comparison of top pooled-score strategies."""
 
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ def _tiers_path(cfg: AppConfig) -> Path:
     """Resolve a tiers.json path without requiring optional stages."""
 
     candidates: list[Path] = []
-    for key in ("tiering", "trueskill"):
+    for key in ("frequentist", "trueskill"):
         folder = cfg.stage_layout.folder_for(key)
         if folder is not None:
             candidates.append(cfg.analysis_dir / folder / "tiers.json")
@@ -99,21 +99,49 @@ def _frame_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
     return cast(list[dict[str, Any]], frame.to_dict(orient="records"))
 
 
+def _canonicalize_union_info(info: dict[str, Any]) -> dict[str, Any]:
+    """Normalize union-source metadata across legacy and current field names."""
+
+    frequentist_count = info.get("frequentist_count", info.get("metrics_count", 0))
+    frequentist_path = info.get("frequentist_path", info.get("metrics_path", ""))
+    normalized = {
+        "ratings_count": int(info.get("ratings_count", 0)),
+        "frequentist_count": int(frequentist_count),
+        "combined_count": int(info.get("combined_count", 0)),
+        "ratings_path": str(info.get("ratings_path", "")),
+        "frequentist_path": str(frequentist_path),
+    }
+    # Preserve legacy aliases for older callers that still inspect the raw dict.
+    normalized["metrics_count"] = normalized["frequentist_count"]
+    normalized["metrics_path"] = normalized["frequentist_path"]
+    return normalized
+
+
 def _load_top_strategies(
     *,
     ratings_path: Path,
-    metrics_path: Path,
+    frequentist_path: Path | None = None,
+    metrics_path: Path | None = None,
     ratings_limit: int = 100,
-    metrics_limit: int = 100,
+    frequentist_limit: int = 100,
 ) -> tuple[list[str], dict[str, Any]]:
-    """Collect top strategies from pooled ratings and metrics tables.
+    """Collect top strategies from pooled ratings and frequentist score tables.
 
     Strategies are sorted by their respective performance indicators and trimmed to
     the provided limits before being combined into a de-duplicated list. Ordering is
-    stable: ratings-first followed by metrics entries not already present.
+    stable: ratings-first followed by frequentist entries not already present.
     """
 
-    def _sorted_from_parquet(path: Path, sort_col: str, limit: int, label: str) -> list[str]:
+    def _sorted_from_parquet(
+        path: Path,
+        *,
+        sort_col: str,
+        limit: int,
+        label: str,
+        extra_cols: list[str] | None = None,
+        filter_col: str | None = None,
+        filter_value: int | None = None,
+    ) -> list[str]:
         """Load and sort top strategy identifiers from one parquet artifact.
 
         Args:
@@ -121,6 +149,9 @@ def _load_top_strategies(
             sort_col: Descending sort column used to rank strategies.
             limit: Maximum number of strategies to keep.
             label: Human-readable source label for logging.
+            extra_cols: Additional parquet columns required for filtering.
+            filter_col: Optional column name used to filter rows before sorting.
+            filter_value: Required value for ``filter_col`` when filtering.
 
         Returns:
             Ordered strategy identifiers, or an empty list on read/shape failure.
@@ -134,7 +165,10 @@ def _load_top_strategies(
             return []
 
         try:
-            df = pd.read_parquet(path, columns=["strategy", sort_col])
+            columns = ["strategy", sort_col]
+            if extra_cols:
+                columns.extend(extra_cols)
+            df = pd.read_parquet(path, columns=sorted(set(columns)))
         except Exception as exc:  # noqa: BLE001
             LOGGER.warning(
                 "Fallback selection skipped: failed to read %s parquet",
@@ -151,6 +185,28 @@ def _load_top_strategies(
             )
             return []
 
+        if filter_col is not None:
+            if filter_col not in df:
+                LOGGER.warning(
+                    "Fallback selection skipped: %s parquet missing filter column",
+                    label,
+                    extra={"stage": "head2head", "path": str(path), "filter_col": filter_col},
+                )
+                return []
+            df = df[df[filter_col] == filter_value]
+            if df.empty:
+                LOGGER.warning(
+                    "Fallback selection skipped: %s parquet has no matching rows",
+                    label,
+                    extra={
+                        "stage": "head2head",
+                        "path": str(path),
+                        "filter_col": filter_col,
+                        "filter_value": filter_value,
+                    },
+                )
+                return []
+
         df["strategy"] = coerce_strategy_ids(df["strategy"])
         return [
             str(value)
@@ -160,8 +216,25 @@ def _load_top_strategies(
             .tolist()
         ]
 
-    top_by_rating = _sorted_from_parquet(ratings_path, "mu", ratings_limit, "ratings")
-    top_by_win_rate = _sorted_from_parquet(metrics_path, "win_rate", metrics_limit, "metrics")
+    resolved_frequentist_path = frequentist_path or metrics_path
+    if resolved_frequentist_path is None:
+        raise ValueError("frequentist_path or metrics_path is required")
+
+    top_by_rating = _sorted_from_parquet(
+        ratings_path,
+        sort_col="mu",
+        limit=ratings_limit,
+        label="ratings",
+    )
+    top_by_win_rate = _sorted_from_parquet(
+        resolved_frequentist_path,
+        sort_col="win_rate",
+        limit=frequentist_limit,
+        label="frequentist",
+        extra_cols=["players"],
+        filter_col="players",
+        filter_value=0,
+    )
 
     combined: list[str] = []
     seen: set[str] = set()
@@ -176,19 +249,21 @@ def _load_top_strategies(
         extra={
             "stage": "head2head",
             "ratings_count": len(top_by_rating),
-            "metrics_count": len(top_by_win_rate),
+            "frequentist_count": len(top_by_win_rate),
             "combined_count": len(combined),
             "ratings_path": str(ratings_path),
-            "metrics_path": str(metrics_path),
+            "frequentist_path": str(resolved_frequentist_path),
         },
     )
-    info = {
+    info = _canonicalize_union_info(
+        {
         "ratings_count": len(top_by_rating),
-        "metrics_count": len(top_by_win_rate),
+            "frequentist_count": len(top_by_win_rate),
         "combined_count": len(combined),
         "ratings_path": str(ratings_path),
-        "metrics_path": str(metrics_path),
-    }
+            "frequentist_path": str(resolved_frequentist_path),
+        }
+    )
     return combined, info
 
 
@@ -310,12 +385,22 @@ def _validate_union_candidates_payload(payload: dict[str, Any]) -> None:
     expected_fields: dict[str, type] = {
         "candidates": list,
         "ratings_count": int,
-        "metrics_count": int,
         "combined_count": int,
         "ratings_path": str,
-        "metrics_path": str,
     }
-    missing_fields = sorted(field for field in expected_fields if field not in payload)
+    source_count_field = (
+        "frequentist_count" if "frequentist_count" in payload else "metrics_count"
+    )
+    source_path_field = "frequentist_path" if "frequentist_path" in payload else "metrics_path"
+    missing_fields = sorted(
+        field
+        for field in (
+            *expected_fields.keys(),
+            source_count_field,
+            source_path_field,
+        )
+        if field not in payload
+    )
     if missing_fields:
         raise Head2HeadPipelineError(
             "Union candidate payload is missing required fields",
@@ -328,6 +413,10 @@ def _validate_union_candidates_payload(payload: dict[str, Any]) -> None:
         for field, expected_type in expected_fields.items()
         if not isinstance(payload[field], expected_type)
     }
+    if not isinstance(payload[source_count_field], int):
+        invalid_types[source_count_field] = type(payload[source_count_field]).__name__
+    if not isinstance(payload[source_path_field], str):
+        invalid_types[source_path_field] = type(payload[source_path_field]).__name__
     if invalid_types:
         raise Head2HeadPipelineError(
             "Union candidate payload has invalid field types",
@@ -571,7 +660,7 @@ def run_bonferroni_head2head(
     shard_size: int = 25,
     progress_schedule: Sequence[float] | None = None,
 ) -> None:
-    """Run pairwise games between top-tier strategies using Bonferroni tests.
+    """Run pairwise games between top pooled-score strategies using Bonferroni tests.
 
     Parameters
     ----------
@@ -579,8 +668,8 @@ def run_bonferroni_head2head(
         Base seed for shuffling the schedule and deterministically assigning
         unique seeds to each simulated game.
     root : Path, optional
-        Base results directory containing ``tiers.json``; overrides
-        ``cfg.io.results_dir_prefix`` when provided.
+        Base results directory; overrides ``cfg.io.results_dir_prefix`` when
+        provided.
     cfg : AppConfig, optional
         Application configuration used to resolve stage-aware directories. A fresh
         default will be created when omitted.
@@ -588,10 +677,11 @@ def run_bonferroni_head2head(
         Number of worker processes; when greater than one, games are simulated in
         parallel and queued in batches so multiple pairs advance concurrently.
 
-    The function reads ``data/tiers.json`` to find strategies in the highest
-    tier. It derives a per-pair game budget from :func:`~farkle.utils.stats.games_for_power`
-    using the configured design tail for power sizing and writes
-    ``analysis/bonferroni_pairwise.parquet``. The output schema is::
+    The function unions the top pooled TrueSkill strategies with the top pooled
+    frequentist strategies, derives a per-pair game budget from
+    :func:`~farkle.utils.stats.games_for_power` using the configured design tail
+    for power sizing, and writes ``analysis/bonferroni_pairwise.parquet``. The
+    output schema is::
 
         players: int64
         seed: int64
@@ -655,16 +745,24 @@ def run_bonferroni_head2head(
         else legacy_ordered_shards
     )
 
-    if not tiers_path.exists():
-        raise RuntimeError(f"Tier file not found at {tiers_path}")
-
-    payload = load_tier_payload(tiers_path)
-    prefer_source = payload.get("active") if isinstance(payload, dict) else None
-    tiers = tier_mapping_from_payload(payload, prefer=str(prefer_source) if prefer_source else "")
-    if not tiers:
-        raise RuntimeError(f"No tiers found in {tiers_path}")
-    top_val = min(tiers.values())
-    tier_elites = [str(s) for s, t in tiers.items() if t == top_val]
+    tiers: dict[str, int] = {}
+    tier_elites: list[str] = []
+    if tiers_path.exists():
+        try:
+            payload = load_tier_payload(tiers_path)
+            prefer_source = payload.get("active") if isinstance(payload, dict) else None
+            tiers = tier_mapping_from_payload(
+                payload,
+                prefer=str(prefer_source) if prefer_source else "",
+            )
+            if tiers:
+                top_val = min(tiers.values())
+                tier_elites = [str(s) for s, t in tiers.items() if t == top_val]
+        except Exception as exc:  # noqa: BLE001
+            LOGGER.warning(
+                "Tier artifact could not be loaded for diagnostic comparison",
+                extra={"stage": "head2head", "tiers_path": str(tiers_path), "error": str(exc)},
+            )
     ratings_path = cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet"
     if not ratings_path.exists():
         fallback = cfg.trueskill_stage_dir / "ratings_k_weighted.parquet"
@@ -674,25 +772,31 @@ def run_bonferroni_head2head(
                 extra={"stage": "head2head", "legacy_path": str(fallback), "preferred": str(ratings_path)},
             )
             ratings_path = fallback
-    metrics_path = cfg.metrics_input_path("metrics.parquet")
+    frequentist_path = cfg.frequentist_path("frequentist_scores_k_weighted.parquet")
     union_strategies, union_info = _load_top_strategies(
         ratings_path=ratings_path,
-        metrics_path=metrics_path,
+        frequentist_path=frequentist_path,
     )
+    union_info = _canonicalize_union_info(union_info)
     union_candidates_path = cfg.head2head_stage_dir / "h2h_union_candidates.json"
     union_candidates_payload = {
         "candidates": union_strategies,
         "ratings_count": union_info["ratings_count"],
-        "metrics_count": union_info["metrics_count"],
+        "frequentist_count": union_info["frequentist_count"],
         "combined_count": union_info["combined_count"],
         "ratings_path": union_info["ratings_path"],
-        "metrics_path": union_info["metrics_path"],
+        "frequentist_path": union_info["frequentist_path"],
     }
     _validate_union_candidates_payload(union_candidates_payload)
     union_candidates_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(union_candidates_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(union_candidates_payload, indent=2, sort_keys=True))
     use_tier_elites = bool(getattr(cfg.head2head, "use_tier_elites", False))
+    if use_tier_elites:
+        LOGGER.warning(
+            "use_tier_elites is ignored; head-to-head candidates come from pooled score artifacts",
+            extra={"stage": "head2head"},
+        )
     debug_summary_path = cfg.head2head_stage_dir / "head2head.debug_summary.json"
     debug_summary: dict[str, Any] = {
         "input_candidates": {
@@ -721,34 +825,8 @@ def run_bonferroni_head2head(
         },
     }
 
-    if use_tier_elites:
-        elites = list(tier_elites)
-        fallback_strategies = union_strategies
-        selection_source = "tiers"
-    else:
-        elites = list(union_strategies)
-        fallback_strategies = tier_elites
-        selection_source = "union"
-
-    if len(elites) < 2 and fallback_strategies:
-        combined: list[str] = []
-        seen: set[str] = set()
-        for name in (*elites, *fallback_strategies):
-            if name not in seen:
-                combined.append(name)
-                seen.add(name)
-        elites = combined
-        selection_source = f"{selection_source}+fallback"
-        LOGGER.info(
-            "Elite selection expanded with fallback strategies",
-            extra={
-                "stage": "head2head",
-                "elite_count": len(elites),
-                "tiers_path": str(tiers_path),
-                "ratings_path": union_info["ratings_path"],
-                "metrics_path": union_info["metrics_path"],
-            },
-        )
+    elites = list(union_strategies)
+    selection_source = "union_scores"
     debug_summary["input_candidates"]["selection_source"] = selection_source
     debug_summary["input_candidates"]["selected_elites"] = len(elites)
 
@@ -776,11 +854,13 @@ def run_bonferroni_head2head(
         debug_summary_path.parent.mkdir(parents=True, exist_ok=True)
         with atomic_path(str(debug_summary_path)) as tmp_path:
             Path(tmp_path).write_text(json.dumps(debug_summary, indent=2, sort_keys=True), encoding="utf-8")
-        inputs = [tiers_path]
+        inputs: list[Path] = []
+        if tiers_path.exists():
+            inputs.append(tiers_path)
         if ratings_path.exists():
             inputs.append(ratings_path)
-        if metrics_path.exists():
-            inputs.append(metrics_path)
+        if frequentist_path.exists():
+            inputs.append(frequentist_path)
         write_stage_done(
             stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
             inputs=inputs,
@@ -795,8 +875,8 @@ def run_bonferroni_head2head(
             stage="head2head",
             status="skipped",
             reason=reason,
-            blocking_dependency=str(tiers_path),
-            upstream_stage="tiering",
+            blocking_dependency=str(frequentist_path if not frequentist_path.exists() else ratings_path),
+            upstream_stage="frequentist" if not frequentist_path.exists() else "trueskill",
         )
         return
 
@@ -817,10 +897,10 @@ def run_bonferroni_head2head(
             "strategies": len(tiers),
             "elite_count": len(elites),
             "ratings_count": union_info["ratings_count"],
-            "metrics_count": union_info["metrics_count"],
+            "frequentist_count": union_info["frequentist_count"],
             "union_count": union_info["combined_count"],
             "ratings_path": union_info["ratings_path"],
-            "metrics_path": union_info["metrics_path"],
+            "frequentist_path": union_info["frequentist_path"],
         },
     )
     design_kwargs = dict(design or {})
@@ -873,11 +953,13 @@ def run_bonferroni_head2head(
                     "reason": reason,
                 },
             )
-            inputs = [tiers_path]
+            inputs = []
+            if tiers_path.exists():
+                inputs.append(tiers_path)
             if ratings_path.exists():
                 inputs.append(ratings_path)
-            if metrics_path.exists():
-                inputs.append(metrics_path)
+            if frequentist_path.exists():
+                inputs.append(frequentist_path)
             outputs = [
                 pairwise_parquet,
                 pairwise_ordered_parquet,
@@ -905,8 +987,8 @@ def run_bonferroni_head2head(
                 stage="head2head",
                 status="skipped",
                 reason=reason,
-                blocking_dependency=str(tiers_path),
-                upstream_stage="tiering",
+                blocking_dependency=str(frequentist_path if not frequentist_path.exists() else ratings_path),
+                upstream_stage="frequentist" if not frequentist_path.exists() else "trueskill",
             )
             return
     opponents = max(0, len(elites) - 1)
@@ -942,11 +1024,13 @@ def run_bonferroni_head2head(
         debug_summary_path.parent.mkdir(parents=True, exist_ok=True)
         with atomic_path(str(debug_summary_path)) as tmp_path:
             Path(tmp_path).write_text(json.dumps(debug_summary, indent=2, sort_keys=True), encoding="utf-8")
-        inputs = [tiers_path]
+        inputs = []
+        if tiers_path.exists():
+            inputs.append(tiers_path)
         if ratings_path.exists():
             inputs.append(ratings_path)
-        if metrics_path.exists():
-            inputs.append(metrics_path)
+        if frequentist_path.exists():
+            inputs.append(frequentist_path)
         write_stage_done(
             stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
             inputs=inputs,
@@ -961,8 +1045,8 @@ def run_bonferroni_head2head(
             stage="head2head",
             status="skipped",
             reason="no games scheduled (games_per_pair <= 0)",
-            blocking_dependency=str(tiers_path),
-            upstream_stage="tiering",
+            blocking_dependency=str(frequentist_path if not frequentist_path.exists() else ratings_path),
+            upstream_stage="frequentist" if not frequentist_path.exists() else "trueskill",
         )
         return
 
@@ -1350,7 +1434,7 @@ def run_bonferroni_head2head(
                 "filters_applied": {
                     "selection_source": selection_source,
                     "use_tier_elites": use_tier_elites,
-                    "fallback_merge": "+fallback" in selection_source,
+                    "fallback_merge": False,
                     "self_play_pairs_included": False,
                     "precompleted_pairs": len(completed_pairs),
                 },
@@ -1669,11 +1753,13 @@ def run_bonferroni_head2head(
             "selfplay_path": str(selfplay_parquet),
         },
     )
-    inputs = [tiers_path]
+    inputs = []
+    if tiers_path.exists():
+        inputs.append(tiers_path)
     if ratings_path.exists():
         inputs.append(ratings_path)
-    if metrics_path.exists():
-        inputs.append(metrics_path)
+    if frequentist_path.exists():
+        inputs.append(frequentist_path)
     write_stage_done(
         stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"),
         inputs=inputs,

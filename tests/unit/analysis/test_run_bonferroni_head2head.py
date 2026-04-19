@@ -86,12 +86,14 @@ def test_simulate_many_games_from_seeds(monkeypatch):
 def test_run_bonferroni_head2head_missing_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """An informative error is raised when tiers.json is absent."""
+    """The stage skips cleanly when candidate score artifacts are unavailable."""
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(RuntimeError, match="Tier file not found"):
-        rb.run_bonferroni_head2head(seed=1, cfg=cfg)
+    rb.run_bonferroni_head2head(seed=1, cfg=cfg)
+    done = read_stage_done(stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"))
+    assert done["status"] == "skipped"
+    assert "insufficient candidate strategies" in str(done["reason"])
 
 
 def test_run_bonferroni_head2head_empty_file(
@@ -103,8 +105,10 @@ def test_run_bonferroni_head2head_empty_file(
     analysis_dir.mkdir(parents=True, exist_ok=True)
     (analysis_dir / "tiers.json").write_text("{}")
     monkeypatch.chdir(tmp_path)
-    with pytest.raises(RuntimeError, match="No tiers found"):
-        rb.run_bonferroni_head2head(cfg=cfg)
+    rb.run_bonferroni_head2head(cfg=cfg)
+    done = read_stage_done(stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"))
+    assert done["status"] == "skipped"
+    assert "insufficient candidate strategies" in str(done["reason"])
 
 
 def test_count_pair_wins_prefers_strategy_column() -> None:
@@ -124,7 +128,7 @@ def test_run_bonferroni_head2head_resumes_and_shards(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"S1": 0, "S2": 0, "S3": 0}))
 
@@ -288,7 +292,7 @@ def test_run_bonferroni_head2head_accepts_legacy_farkles_columns(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
@@ -341,7 +345,7 @@ def test_run_bonferroni_head2head_progress_cadence_logs(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
@@ -355,6 +359,20 @@ def test_run_bonferroni_head2head_progress_cadence_logs(
         rb,
         "simulate_many_games_from_seeds",
         lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds),
+    )
+    monkeypatch.setattr(
+        rb,
+        "_load_top_strategies",
+        lambda **_: (
+            ["A", "B", "C"],
+            {
+                "ratings_count": 3,
+                "frequentist_count": 3,
+                "combined_count": 3,
+                "ratings_path": "",
+                "frequentist_path": "",
+            },
+        ),
     )
 
     ticks = iter([0.0, 0.0, 1.0, 2.1, 4.3, 8.6])
@@ -378,7 +396,7 @@ def test_run_bonferroni_head2head_progress_schedule_validation(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
@@ -393,6 +411,20 @@ def test_run_bonferroni_head2head_progress_schedule_validation(
         "simulate_many_games_from_seeds",
         lambda seeds, strategies, n_jobs: _mock_simulated_games(strategies, seeds, winner="A"),
     )
+    monkeypatch.setattr(
+        rb,
+        "_load_top_strategies",
+        lambda **_: (
+            ["A", "B"],
+            {
+                "ratings_count": 2,
+                "frequentist_count": 2,
+                "combined_count": 2,
+                "ratings_path": "",
+                "frequentist_path": "",
+            },
+        ),
+    )
 
     with pytest.raises(ValueError, match="progress_schedule must have three values"):
         rb.run_bonferroni_head2head(root=cfg.results_root, progress_schedule=[1, 2])
@@ -401,7 +433,7 @@ def test_run_bonferroni_head2head_progress_schedule_validation(
 def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
@@ -410,6 +442,20 @@ def test_run_bonferroni_limits_pair_jobs(tmp_path: Path, monkeypatch: pytest.Mon
         rb,
         "parse_strategy_identifier",
         lambda name, manifest=None, parse_legacy=None: name,
+    )
+    monkeypatch.setattr(
+        rb,
+        "_load_top_strategies",
+        lambda **_: (
+            ["A", "B", "C"],
+            {
+                "ratings_count": 3,
+                "frequentist_count": 3,
+                "combined_count": 3,
+                "ratings_path": "",
+                "frequentist_path": "",
+            },
+        ),
     )
 
     pair_jobs: list[int] = []
@@ -433,7 +479,7 @@ def test_run_bonferroni_head2head_safeguard_skips(
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
     cfg.head2head.bonferroni_total_games_safeguard = 1
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
@@ -467,28 +513,41 @@ def test_run_bonferroni_head2head_safeguard_skips(
 
 def test_load_top_strategies_handles_missing_and_invalid(tmp_path: Path, caplog):
     ratings = tmp_path / "ratings.parquet"
-    metrics = tmp_path / "metrics.parquet"
+    frequentist = tmp_path / "frequentist.parquet"
 
     caplog.set_level("INFO")
-    strategies, info = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
+    strategies, info = rb._load_top_strategies(ratings_path=ratings, frequentist_path=frequentist)
 
     assert strategies == []
     assert info["combined_count"] == 0
     assert any("Fallback selection skipped" in rec.message for rec in caplog.records)
 
     ratings.write_text("not a parquet")
-    invalid_again, invalid_info = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
+    invalid_again, invalid_info = rb._load_top_strategies(
+        ratings_path=ratings,
+        frequentist_path=frequentist,
+    )
     assert invalid_again == []
     assert invalid_info["ratings_count"] == 0
 
     ratings_df = pd.DataFrame({"strategy": ["S1", "S2"], "mu": [1.0, 2.0]})
-    metrics_df = pd.DataFrame({"strategy": ["S2", "S3"], "win_rate": [0.2, 0.8]})
+    frequentist_df = pd.DataFrame(
+        {
+            "strategy": ["S2", "S3", "S3"],
+            "players": [0, 2, 0],
+            "win_rate": [0.2, 0.95, 0.8],
+        }
+    )
     ratings_df.to_parquet(ratings)
-    metrics_df.to_parquet(metrics)
+    frequentist_df.to_parquet(frequentist)
 
-    combined, combined_info = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
+    combined, combined_info = rb._load_top_strategies(
+        ratings_path=ratings,
+        frequentist_path=frequentist,
+    )
     assert combined == ["S2", "S1", "S3"]
     assert combined_info["combined_count"] == 3
+    assert combined_info["frequentist_count"] == 2
 
 
 def test_tiers_path_prefers_stage_layout_and_warns(tmp_path: Path, caplog):
@@ -503,7 +562,7 @@ def test_tiers_path_prefers_stage_layout_and_warns(tmp_path: Path, caplog):
                     folder_name="11_head2head",
                 ),
                 StagePlacement(
-                    definition=StageDefinition(key="tiering", group="analytics"),
+                    definition=StageDefinition(key="frequentist", group="analytics"),
                     index=1,
                     folder_name="11_head2head",
                 ),
@@ -548,7 +607,7 @@ def test_warn_legacy_stage_dirs_only_warns_for_legacy(tmp_path: Path, caplog) ->
 def test_tiers_path_fallback_and_no_existing_candidates(tmp_path: Path, caplog) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    cfg.tiering_stage_dir.mkdir(parents=True, exist_ok=True)
+    cfg.frequentist_stage_dir.mkdir(parents=True, exist_ok=True)
     legacy = cfg.analysis_dir / "tiers.json"
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("{}")
@@ -561,7 +620,7 @@ def test_tiers_path_fallback_and_no_existing_candidates(tmp_path: Path, caplog) 
 
     legacy.unlink()
     missing = rb._tiers_path(cfg)
-    assert missing == cfg.tiering_stage_dir / "tiers.json"
+    assert missing == cfg.frequentist_stage_dir / "tiers.json"
     assert not missing.exists()
 
 
@@ -579,7 +638,7 @@ def test_run_bonferroni_head2head_design_validation(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
@@ -594,7 +653,7 @@ def test_run_bonferroni_head2head_returns_when_games_per_pair_non_positive(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0, "C": 0}))
 
@@ -617,7 +676,7 @@ def test_run_bonferroni_head2head_single_elite_no_dispatch(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"only": 0}))
 
@@ -646,7 +705,7 @@ def test_run_bonferroni_head2head_shard_pair_id_read_exception_warns_and_continu
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
@@ -665,7 +724,8 @@ def test_run_bonferroni_head2head_shard_pair_id_read_exception_warns_and_continu
     def flaky_read(path, columns=None, *args, **kwargs):  # noqa: ANN001
         if Path(path) == shard_path and columns == ["pair_id"]:
             raise RuntimeError("broken shard pair-id read")
-        return real_read(path, columns=columns, *args, **kwargs)
+        read_kwargs = {"columns": columns, **kwargs}
+        return real_read(path, *args, **read_kwargs)
 
     monkeypatch.setattr(rb.pd, "read_parquet", flaky_read)
     with caplog.at_level("WARNING"):
@@ -681,7 +741,7 @@ def test_run_bonferroni_head2head_missing_pair_id_column_warns(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
@@ -699,7 +759,8 @@ def test_run_bonferroni_head2head_missing_pair_id_column_warns(
     def read_missing_pair(path, columns=None, *args, **kwargs):  # noqa: ANN001
         if Path(path).resolve() == pairwise_path.resolve() and columns and "pair_id" in columns:
             return pd.DataFrame({"other": [1]})
-        return real_read(path, columns=columns, *args, **kwargs)
+        read_kwargs = {"columns": columns, **kwargs}
+        return real_read(path, *args, **read_kwargs)
 
     monkeypatch.setattr(rb.pd, "read_parquet", read_missing_pair)
     with caplog.at_level("WARNING"):
@@ -713,7 +774,7 @@ def test_run_bonferroni_head2head_warns_when_final_pairwise_load_fails(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 
@@ -731,7 +792,8 @@ def test_run_bonferroni_head2head_warns_when_final_pairwise_load_fails(
     def read_with_final_failure(path, columns=None, *args, **kwargs):  # noqa: ANN001
         if Path(path) == pairwise_path and columns is None:
             raise RuntimeError("cannot read final parquet")
-        return real_read(path, columns=columns, *args, **kwargs)
+        read_kwargs = {"columns": columns, **kwargs}
+        return real_read(path, *args, **read_kwargs)
 
     monkeypatch.setattr(rb.pd, "read_parquet", read_with_final_failure)
     with caplog.at_level("WARNING"):
@@ -747,7 +809,7 @@ def test_run_bonferroni_head2head_errors_on_ties_or_missing_outcomes(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text(json.dumps({"A": 0, "B": 0}))
 

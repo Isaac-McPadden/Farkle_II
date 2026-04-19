@@ -2,7 +2,7 @@ pipeline.py (top-level): Front-door helpers that run the end-to-end analytics pi
 
 farkle.analysis.pipeline: CLI orchestrator for the analysis pipeline (ingest → curate → combine → metrics → analytics), wiring together config, manifests, and sequential execution of the statistical stages.
 
-farkle.analysis (package __init__): Lightweight orchestrator that runs the individual analytics modules (TrueSkill, head-to-head, frequentist tiering, HGB, agreement, seed summaries, meta) according to config, tying the higher-level statistical analyses together.
+farkle.analysis (package __init__): Lightweight orchestrator that runs the individual analytics modules (TrueSkill, head-to-head, frequentist ranking, HGB, agreement, seed summaries, meta) according to config, tying the higher-level statistical analyses together.
 
 farkle.analysis.ingest: Streams raw simulation outputs, validates basic schemas, and writes per–player-count parquet shards that form the raw data foundation for all downstream statistical processing.
 
@@ -21,7 +21,7 @@ farkle.analysis.game_stats (quantiles): High-cardinality margin/spread quantiles
 
 farkle.analysis.seat_stats: Extends seat-advantage outputs with per-seat win rates, score/farkle/round averages, and symmetry diagnostics comparing seats in symmetric matchups.
 
-farkle.analysis.isolated_metrics: Collects per-seed, per–player-count tournament metrics into “isolated” parquet frames, enabling seed-aware downstream analyses such as meta-analysis, tiering, and feature models.
+farkle.analysis.isolated_metrics: Collects per-seed, per–player-count tournament metrics into “isolated” parquet frames, enabling seed-aware downstream analyses such as meta-analysis, frequentist ranking, and feature models.
 
 farkle.analysis.seed_summaries: Builds per-seed, per–player-count strategy summaries with Wilson confidence intervals, capturing uncertainty on win rates for each (seed, players) combination.
 
@@ -41,7 +41,8 @@ farkle.analysis.run_bonferroni_head2head: Executes the pairwise game simulations
 
 farkle.analysis.h2h_analysis: Applies Holm–Bonferroni adjustments to head-to-head p-values, constructs a directed significance graph, and derives a statistically justified ranking based on significant pairwise differences.
 
-farkle.analysis.tiering_report: Combines isolated metrics, weighting across player counts, to compute frequentist win-rate scores and tiers, then compares them to TrueSkill tiers and emits consolidated tiering outputs.
+farkle.analysis.frequentist_ranking: Combines isolated metrics, weighting across player counts, to compute pooled frequentist win-rate scores and tier bands, then compares them to TrueSkill tiers and emits the ``frequentist`` stage outputs.
+
 
 farkle.analysis.hgb_feat: Wrapper that coordinates histogram gradient boosting feature-importance runs per player count, checking timestamps and delegating to run_hgb when new statistical feature analyses are needed.
 

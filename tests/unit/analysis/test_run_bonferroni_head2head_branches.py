@@ -124,21 +124,24 @@ def test_load_top_strategies_warns_when_sort_column_missing(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     ratings = tmp_path / "ratings.parquet"
-    metrics = tmp_path / "metrics.parquet"
+    frequentist = tmp_path / "frequentist.parquet"
     pd.DataFrame(
         {
             "strategy": pd.Series(dtype="string"),
             "mu": pd.Series(dtype="float64"),
         }
     ).to_parquet(ratings)
-    pd.DataFrame({"strategy": ["B"], "win_rate": [0.75]}).to_parquet(metrics)
+    pd.DataFrame({"strategy": ["B"], "players": [0], "win_rate": [0.75]}).to_parquet(frequentist)
 
     with caplog.at_level("WARNING"):
-        strategies, info = rb._load_top_strategies(ratings_path=ratings, metrics_path=metrics)
+        strategies, info = rb._load_top_strategies(
+            ratings_path=ratings,
+            frequentist_path=frequentist,
+        )
 
     assert strategies == ["B"]
     assert info["ratings_count"] == 0
-    assert info["metrics_count"] == 1
+    assert info["frequentist_count"] == 1
     assert any("missing data" in rec.message for rec in caplog.records)
 
 
@@ -147,7 +150,7 @@ def test_run_bonferroni_head2head_uses_legacy_ratings_path_and_records_inputs(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text('{"A": 0, "B": 0}', encoding="utf-8")
 
@@ -155,23 +158,25 @@ def test_run_bonferroni_head2head_uses_legacy_ratings_path_and_records_inputs(
     fallback_ratings.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"strategy": ["A"], "mu": [1.0]}).to_parquet(fallback_ratings)
 
-    metrics_path = cfg.metrics_input_path("metrics.parquet")
-    metrics_path.parent.mkdir(parents=True, exist_ok=True)
-    pd.DataFrame({"strategy": ["A"], "win_rate": [0.5]}).to_parquet(metrics_path)
+    frequentist_path = cfg.frequentist_path("frequentist_scores_k_weighted.parquet")
+    frequentist_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({"strategy": ["A"], "players": [0], "win_rate": [0.5]}).to_parquet(
+        frequentist_path
+    )
 
     observed: dict[str, Path] = {}
 
     def _load_top(**kwargs):  # noqa: ANN001
         observed["ratings_path"] = kwargs["ratings_path"]
-        observed["metrics_path"] = kwargs["metrics_path"]
+        observed["frequentist_path"] = kwargs["frequentist_path"]
         return (
             ["A", "B"],
             {
                 "ratings_count": 2,
-                "metrics_count": 2,
+                "frequentist_count": 2,
                 "combined_count": 2,
                 "ratings_path": str(kwargs["ratings_path"]),
-                "metrics_path": str(kwargs["metrics_path"]),
+                "frequentist_path": str(kwargs["frequentist_path"]),
             },
         )
 
@@ -182,13 +187,13 @@ def test_run_bonferroni_head2head_uses_legacy_ratings_path_and_records_inputs(
         rb.run_bonferroni_head2head(cfg=cfg)
 
     assert observed["ratings_path"] == fallback_ratings
-    assert observed["metrics_path"] == metrics_path
+    assert observed["frequentist_path"] == frequentist_path
     assert any("Using legacy pooled ratings path" in rec.message for rec in caplog.records)
 
     done = read_stage_done(stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"))
     inputs = {Path(p) for p in done["inputs"]}  # type: ignore[arg-type]
     assert fallback_ratings in inputs
-    assert metrics_path in inputs
+    assert frequentist_path in inputs
 
 
 def test_run_bonferroni_head2head_warns_when_selfplay_strategy_column_missing(
@@ -196,7 +201,7 @@ def test_run_bonferroni_head2head_warns_when_selfplay_strategy_column_missing(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text('{"A": 0, "B": 0}', encoding="utf-8")
 
@@ -248,7 +253,7 @@ def test_run_bonferroni_head2head_warns_on_unreadable_existing_shards(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text('{"A": 0, "B": 0}', encoding="utf-8")
 
@@ -340,7 +345,7 @@ def test_run_bonferroni_head2head_reruns_pairs_missing_ordered_shards(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text('{"A": 0, "B": 0}', encoding="utf-8")
 
@@ -404,7 +409,7 @@ def test_run_bonferroni_head2head_completed_pairs_preserve_ordered_output(
 ) -> None:
     cfg = AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    tiers_path = cfg.tiering_stage_dir / "tiers.json"
+    tiers_path = cfg.frequentist_stage_dir / "tiers.json"
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
     tiers_path.write_text('{"A": 0, "B": 0}', encoding="utf-8")
 

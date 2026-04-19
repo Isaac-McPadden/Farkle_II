@@ -130,7 +130,7 @@ def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPa
         "game_stats",
         "seed_summaries",
         "trueskill",
-        "tiering",
+        "frequentist",
         "head2head",
         "seed_symmetry",
         "post_h2h",
@@ -672,7 +672,7 @@ def test_run_contexts_edge_branches(tmp_path: Path) -> None:
         seed_pair=(9, 10),
         analysis_root=tmp_path / "pair" / "interseed",
     )
-    assert interseed.config.analysis.tiering_seeds == [9, 10]
+    assert interseed.config.analysis.frequentist_seeds == [9, 10]
 
 def test_two_seed_pipeline_emits_consistent_config_sha_metadata(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
