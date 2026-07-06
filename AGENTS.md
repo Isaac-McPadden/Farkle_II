@@ -32,3 +32,6 @@ When operating locally in VSCode, use the venv located in the root as it has all
 
 ## Style
   This project uses Ruff, Pylance/Pyright, Mypy (just in src\\**), and occasional formatting corrections with Black
+
+## Context
+  Before starting any complex tasks, check docs/codex_context/context_prompt.md for additional relevant information.

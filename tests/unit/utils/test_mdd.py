@@ -71,6 +71,39 @@ def test_estimate_tau2_sxk_with_weights():
     assert tau2 >= 0
 
 
+def test_estimate_tau2_sxk_matches_weighted_dispersion_identity() -> None:
+    cell = pd.DataFrame(
+        {
+            "strategy": ["A", "A", "A", "A", "A", "A"],
+            "k": [2, 3, 4, 2, 3, 4],
+            "seed": [1, 1, 1, 2, 2, 2],
+            "winrate": [0.20, 0.40, 0.30, 0.20, 0.40, 0.30],
+            "games": [100_000, 100_000, 100_000, 100_000, 100_000, 100_000],
+        }
+    )
+
+    weights_by_k = {2: 1.0, 3: 2.0, 4: 1.0}
+    tau2 = estimate_tau2_sxk(
+        cell,
+        tau2_seed=0.0,
+        weights_by_k=weights_by_k,
+        robust=False,
+    )
+
+    weights = {2: 0.25, 3: 0.50, 4: 0.25}
+    means = {2: 0.20, 3: 0.40, 4: 0.30}
+    theta = sum(weights[k] * means[k] for k in weights)
+    dispersion = sum(weights[k] * (means[k] - theta) ** 2 for k in weights)
+    noise = sum(
+        weights[k] * (1.0 - weights[k]) * ((means[k] * (1.0 - means[k])) / 200_000.0)
+        for k in weights
+    )
+    denom = 1.0 - sum(w**2 for w in weights.values())
+    expected = max((dispersion - noise) / denom, 0.0)
+
+    assert tau2 == pytest.approx(expected)
+
+
 def test_compute_mdd_for_tiers_validates_inputs():
     with pytest.raises(ValueError):
         compute_mdd_for_tiers(tau2_seed=0.1, tau2_sxk=0.0, binom_by_k=pd.Series(dtype=float), R=2)
@@ -119,7 +152,6 @@ def test_compute_mdd_for_tiers_reindexes_string_k_index() -> None:
     )
 
     assert mdd > 0
-
 
 
 def test_ensure_winrate_without_jeffreys_fills_nan_to_zero() -> None:

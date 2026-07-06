@@ -137,7 +137,25 @@ def estimate_tau2_sxk(
     weights_by_k: dict[int, float] | None = None,
     robust: bool = True,
 ) -> float:
-    """Estimate strategy-by-player-count heterogeneity."""
+    """Estimate strategy-by-player-count heterogeneity.
+
+    The frequentist ranking stage pools player-count-specific win-rates as
+
+    ``theta_hat_s = sum_k w_k * p_hat_sk``.
+
+    Under a random-effects view where the true player-count-specific effects
+    vary around a strategy-level mean with variance ``tau2_sxk``, the pooled
+    score inherits a heterogeneity term ``tau2_sxk * sum_k w_k^2``.
+
+    This helper estimates ``tau2_sxk`` by matching the expected weighted
+    dispersion across player counts:
+
+    ``E[sum_k w_k (p_hat_sk - theta_hat_s)^2]``
+    ``= tau2_sxk * (1 - sum_k w_k^2) + sum_k w_k (1 - w_k) v_sk``
+
+    where ``v_sk`` is the sampling variance of ``p_hat_sk`` after averaging
+    across seeds.
+    """
 
     sk = cell.groupby(["strategy", "k"], as_index=False).agg(
         mean_p=("winrate", "mean"),
@@ -145,12 +163,13 @@ def estimate_tau2_sxk(
         R=("seed", "nunique"),
     )
 
-    s = sk.groupby("strategy").agg(var_across_k=("mean_p", "var")).reset_index()
-    s["var_across_k"] = s["var_across_k"].fillna(0.0)
+    s = sk[["strategy"]].drop_duplicates().reset_index(drop=True)
 
     if weights_by_k is None:
         weights_by_k = {int(k): 1.0 for k in sk["k"].unique()}
     wsum = float(sum(weights_by_k.values()))
+    if wsum <= 0.0:
+        raise ValueError("weights_by_k must sum to a positive value")
     weights = {int(k): v / wsum for k, v in weights_by_k.items()}
 
     sk["v_binom_seeded"] = (
@@ -158,13 +177,44 @@ def estimate_tau2_sxk(
     ) / sk["R"]
     sk["v_seed_only"] = tau2_seed / sk["R"]
     sk["_w"] = sk["k"].map(weights).astype(float)
-    sk["noise_term"] = (sk["_w"] ** 2) * (sk["v_binom_seeded"] + sk["v_seed_only"])
+    if sk["_w"].isna().any():
+        missing_k = sorted({int(k) for k in sk.loc[sk["_w"].isna(), "k"].tolist()})
+        raise ValueError(
+            "weights_by_k is missing weights for observed k values: "
+            f"{missing_k}. Known weights: {sorted(weights)}"
+        )
 
-    noise_by_s = sk.groupby("strategy", as_index=False).agg(noise_into_k=("noise_term", "sum"))
-    noise_by_s["noise_into_k"] = noise_by_s["noise_into_k"].astype(float)
+    sum_w2 = float(sum(wk**2 for wk in weights.values()))
+    denom = 1.0 - sum_w2
+    if denom <= 0.0:
+        return 0.0
 
-    s = s.merge(noise_by_s, on="strategy", how="left")
-    s["tau2_sxk_s"] = (s["var_across_k"] - s["noise_into_k"]).clip(lower=0.0)
+    sk["_weighted_mean_component"] = sk["_w"] * sk["mean_p"]
+    sk["_theta"] = sk.groupby("strategy")["_weighted_mean_component"].transform("sum")
+    sk["weighted_sq_resid"] = sk["_w"] * (sk["mean_p"] - sk["_theta"]) ** 2
+    sk["noise_term"] = sk["_w"] * (1.0 - sk["_w"]) * (sk["v_binom_seeded"] + sk["v_seed_only"])
+
+    detail_by_s = sk.groupby("strategy", as_index=False).agg(
+        weighted_dispersion=("weighted_sq_resid", "sum"),
+        noise_into_k=("noise_term", "sum"),
+        weight_mass=("_w", "sum"),
+    )
+    detail_by_s["noise_into_k"] = detail_by_s["noise_into_k"].astype(float)
+    detail_by_s["weighted_dispersion"] = detail_by_s["weighted_dispersion"].astype(float)
+
+    incomplete = detail_by_s.loc[~np.isclose(detail_by_s["weight_mass"], 1.0), "strategy"]
+    if not incomplete.empty:
+        raise ValueError(
+            "Each strategy must have data for every weighted k level. Missing coverage for "
+            f"strategies: {incomplete.tolist()}"
+        )
+
+    s = s.merge(
+        detail_by_s[["strategy", "weighted_dispersion", "noise_into_k"]],
+        on="strategy",
+        how="left",
+    )
+    s["tau2_sxk_s"] = (s["weighted_dispersion"] - s["noise_into_k"]).clip(lower=0.0) / denom
 
     tau2_sxk = s["tau2_sxk_s"].median() if robust else s["tau2_sxk_s"].mean()
     return float(tau2_sxk)
