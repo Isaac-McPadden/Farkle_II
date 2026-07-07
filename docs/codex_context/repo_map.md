@@ -24,7 +24,7 @@ processing, and reuse of helpers under `src/farkle/utils`.
 - Module CLI: `src/farkle/__main__.py`.
 - Simulation front door: `src/farkle/simulation/runner.py`.
 - Low-level tournament engine: `src/farkle/simulation/run_tournament.py`.
-- Analysis CLI pipeline: `src/farkle/analysis/pipeline.py`.
+- Standalone analysis CLI pipeline: `src/farkle/analysis/pipeline.py`.
 - Analysis plan builders: `src/farkle/analysis/__init__.py`.
 - Two-seed orchestration: `src/farkle/orchestration/two_seed_pipeline.py`.
 - Legacy/top-level analytics helper: `src/pipeline.py`.

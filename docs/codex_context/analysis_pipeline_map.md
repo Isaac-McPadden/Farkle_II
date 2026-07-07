@@ -49,7 +49,12 @@ Interseed-specific registry order:
 
 ## Pipeline Entrypoints
 
-- `farkle analyze ...` uses `src/farkle/analysis/pipeline.py`.
+- Package CLI `farkle analyze ...` is implemented in `src/farkle/cli/main.py`.
+  Its `analyze pipeline` subcommand runs `_run_preprocess(...)` followed by
+  `analysis.run_all(...)`; it does not delegate to `src/farkle/analysis/pipeline.py`.
+- `src/farkle/analysis/pipeline.py` is a standalone analysis pipeline CLI with
+  its own parser and `StageRunner` execution path. Verify which entrypoint is in
+  use before changing CLI behavior.
 - `pipeline.py` resolves `AppConfig`, writes `analysis/config.resolved.yaml`,
   assigns a config SHA, appends manifest events, then runs selected stages
   through `StageRunner`.

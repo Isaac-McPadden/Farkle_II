@@ -27,8 +27,10 @@ Always rerun targeted tests or inspect source before accepting conclusions.
 - Patches numba JIT/NJIT to identity behavior for tests.
 - Provides lightweight scikit-learn stubs if sklearn is absent.
 - Uses freezegun for deterministic timestamps.
-- Autouse seed fixture calls `random.seed(1337)`, creates a NumPy generator
-  with seed 1337, and sets `PYTHONHASHSEED=0`.
+- Autouse seed fixture calls `random.seed(1337)`, creates but does not install a
+  NumPy `default_rng(1337)`, and sets `PYTHONHASHSEED=0` after interpreter
+  startup. Do not treat this as seeding ambient `np.random.*` calls or changing
+  hash randomization for the current process.
 
 ## Useful Test Targets By Task
 
