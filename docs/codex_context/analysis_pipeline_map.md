@@ -4,9 +4,6 @@ Generated for Codex orientation. Treat this file as a cache, not authority.
 Verify `src/farkle/analysis/stage_registry.py`, `src/farkle/analysis/pipeline.py`,
 and `src/farkle/analysis/__init__.py` before changing pipeline behavior.
 
-- Last verified commit: `6cd587c3cb0625567e7d8412a2f97d1e343ef3e4`
-- Working tree note: generated from a dirty tree with existing edits in
-  `src/farkle/utils/mdd_helpers.py` and `tests/unit/utils/test_mdd.py`
 - Sources inspected: stage registry, analysis CLI pipeline, analysis plan
   builders, config path helpers, artifact docs
 

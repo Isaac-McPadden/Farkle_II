@@ -4,9 +4,6 @@ Generated for Codex orientation. Treat this file as a cache, not authority.
 For any statistical review, verify the listed source files directly and
 separate implementation fidelity from model validity.
 
-- Last verified commit: `6cd587c3cb0625567e7d8412a2f97d1e343ef3e4`
-- Working tree note: generated from a dirty tree with existing edits in
-  `src/farkle/utils/mdd_helpers.py` and `tests/unit/utils/test_mdd.py`
 - Sources inspected: `utils/stats.py`, `utils/mdd_helpers.py`, `analysis/mdd.py`,
   `analysis/metrics.py`, `analysis/seed_summaries.py`, `analysis/meta.py`,
   `analysis/variance.py`, `analysis/run_trueskill.py`,
@@ -84,8 +81,8 @@ For every statistical claim, review in this order:
   wins/games rather than an existing win-rate column.
 - `tau2_seed`: across-seed variance by `(strategy, k)` minus binomial variance,
   clipped at zero, aggregated robustly by median by default.
-- `tau2_sxk`: weighted across-k dispersion identity; current dirty-tree code
-  matches the identity documented in `mdd_helpers.py`.
+- `tau2_sxk`: weighted across-k dispersion identity; implementation matches the
+  identity documented in `mdd_helpers.py`.
 - MDD formula: `mdd = z_star * sqrt(2 * var_theta)`, where
   `var_theta = sum(w_k^2 * binom_k / R) + tau2_seed / R + tau2_sxk * sum(w_k^2)`.
 - Frequentist tiers: sort pooled win rates descending; start a new tier when

@@ -3,9 +3,6 @@
 Generated for Codex orientation. Treat this file as a cache, not authority.
 Always rerun targeted tests or inspect source before accepting conclusions.
 
-- Last verified commit: `6cd587c3cb0625567e7d8412a2f97d1e343ef3e4`
-- Working tree note: generated from a dirty tree with existing edits in
-  `src/farkle/utils/mdd_helpers.py` and `tests/unit/utils/test_mdd.py`
 - Sources inspected: `pytest.ini`, `tests/conftest.py`, `tests/FAILURE_NOTES.md`,
   `tests/helpers`, representative unit/integration test names, existing review
   checklists
@@ -71,8 +68,8 @@ Stronger evidence areas:
 
 - Wilson interval arithmetic has direct expected-value tests.
 - Variance helper arithmetic has explicit small-frame tests.
-- MDD helper tests include a weighted-dispersion identity check in the current
-  dirty tree.
+- MDD helper tests include a weighted-dispersion identity check in current
+  source.
 - Stage state and registry behavior have focused tests.
 - Manifest and streaming helpers have many edge-case tests.
 

@@ -4,9 +4,6 @@ Generated for Codex orientation. Treat this file as a cache, not authority.
 Verify source files directly before making code changes or accepting statistical
 claims.
 
-- Last verified commit: `6cd587c3cb0625567e7d8412a2f97d1e343ef3e4`
-- Working tree note: generated from a dirty tree with existing edits in
-  `src/farkle/utils/mdd_helpers.py` and `tests/unit/utils/test_mdd.py`
 - Confidence: high for repository shape and entry points, medium for details
   that may move during active refactors
 
@@ -106,6 +103,5 @@ When starting a new task, read only the relevant files first:
 ## Maintenance Rule
 
 Update this pack after meaningful changes to architecture, stage ordering,
-statistical methods, config semantics, or artifact contracts. Update the commit
-SHA and dirty-tree note at the top. Do not use these summaries as proof without
-spot-checking source.
+statistical methods, config semantics, or artifact contracts. Do not use these
+summaries as proof without spot-checking source.
