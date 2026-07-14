@@ -1,4 +1,4 @@
-strategy,n_players,games,wins,win_rate,win_prob,expected_score,total_games_strat,sum_winning_score,sq_sum_winning_score,sum_n_rounds,sq_sum_n_rounds,false_wins_handled,missing_before_pad
+strategy,n_players,games,wins,win_rate,win_prob,win_conditioned_score_contribution_per_exposure,total_games_strat,win_conditioned_score_sum,win_conditioned_score_square_sum,win_conditioned_n_rounds_sum,win_conditioned_n_rounds_square_sum,false_wins_handled,missing_before_pad
 0,3,0.0,0,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0,0
 1,3,0.0,0,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0,0
 2,3,0.0,0,0.0,0.0,,0.0,0.0,0.0,0.0,0.0,0,0

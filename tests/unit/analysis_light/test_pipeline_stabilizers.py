@@ -169,13 +169,13 @@ def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched
         "win_rate_ci_lo",
         "win_rate_ci_hi",
         "win_prob",
-        "expected_score",
-        "mean_score",
-        "mean_n_rounds",
+        "win_conditioned_score_contribution_per_exposure",
+        "win_conditioned_score_mean",
+        "win_conditioned_n_rounds_mean",
         "false_wins_handled",
         "missing_before_pad",
-        "sd_score",
-        "sd_n_rounds",
+        "win_conditioned_score_sd",
+        "win_conditioned_n_rounds_sd",
     }
     assert required_columns.issubset(metrics_df.columns)
 
@@ -196,9 +196,11 @@ def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched
         score_sum = expected_scores.loc[strategy, "score_sum"]
         round_sum = expected_scores.loc[strategy, "round_sum"]
         observed = metrics_by_strategy.loc[strategy]
-        assert observed["expected_score"] == pytest.approx(score_sum / total_games)
-        assert observed["mean_score"] == pytest.approx(score_sum / wins)
-        assert observed["mean_n_rounds"] == pytest.approx(round_sum / wins)
+        assert observed["win_conditioned_score_contribution_per_exposure"] == pytest.approx(
+            score_sum / total_games
+        )
+        assert observed["win_conditioned_score_mean"] == pytest.approx(score_sum / wins)
+        assert observed["win_conditioned_n_rounds_mean"] == pytest.approx(round_sum / wins)
 
     seat_df = pd.read_csv(seat_csv)
     seat_df["seat"] = seat_df["seat"].apply(lambda s: f"P{int(s)}")

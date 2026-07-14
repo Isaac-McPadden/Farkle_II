@@ -439,8 +439,9 @@ def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: i
     df["games"] = df[games_col].astype(np.int64)
     safe_games = df[games_col].replace(0, np.nan)
     df["win_rate"] = (df["wins"] / safe_games).fillna(0.0)
+    score_contribution = "win_conditioned_score_contribution_per_exposure"
     if "sum_winning_score" in df.columns:
-        df["expected_score"] = (df["sum_winning_score"] / safe_games).fillna(0.0)
+        df[score_contribution] = (df["sum_winning_score"] / safe_games).fillna(0.0)
 
     df = df.set_index("strategy")
     strategy_index = _strategy_index(cfg)
@@ -456,12 +457,12 @@ def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: i
         df.loc[missing_mask, "games"] = games_mode
         df.loc[missing_mask, games_col] = games_mode
         df.loc[missing_mask, "win_rate"] = 0.0
-        if "expected_score" in df.columns:
-            df.loc[missing_mask, "expected_score"] = np.nan
+        if score_contribution in df.columns:
+            df.loc[missing_mask, score_contribution] = np.nan
         numeric_cols = [
             c
             for c in df.columns
-            if c not in {"wins", games_col, "games", "win_rate", "expected_score", "_hit_flag"}
+            if c not in {"wins", games_col, "games", "win_rate", score_contribution, "_hit_flag"}
         ]
         for col in numeric_cols:
             if pd.api.types.is_numeric_dtype(df[col]):
@@ -473,12 +474,12 @@ def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: i
         df.loc[penalty_mask, "games"] = games_mode
         df.loc[penalty_mask, games_col] = games_mode
         df.loc[penalty_mask, "win_rate"] = 0.0
-        if "expected_score" in df.columns:
-            df.loc[penalty_mask, "expected_score"] = np.nan
+        if score_contribution in df.columns:
+            df.loc[penalty_mask, score_contribution] = np.nan
         numeric_cols = [
             c
             for c in df.columns
-            if c not in {"wins", games_col, "games", "win_rate", "expected_score", "_hit_flag"}
+            if c not in {"wins", games_col, "games", "win_rate", score_contribution, "_hit_flag"}
         ]
         for col in numeric_cols:
             if pd.api.types.is_numeric_dtype(df[col]):
@@ -501,7 +502,7 @@ def _prepare_metrics_dataframe(cfg: AppConfig, df: pd.DataFrame, player_count: i
         "wins",
         "win_rate",
         "win_prob",
-        "expected_score",
+        score_contribution,
     ]
     remaining = [c for c in df.columns if c not in desired_order]
     return df[desired_order + remaining]
@@ -554,11 +555,13 @@ def _games_mode(series: pd.Series) -> float:
 
 
 def _normalize_metric_name(name: str) -> str:
-    """Remove redundant prefixes from metric names for presentation consistency."""
+    """Make the winner conditioning explicit in a metric name."""
+    if name == "n_rounds":
+        return "win_conditioned_n_rounds"
     if name.startswith("winning_"):
-        name = name.removeprefix("winning_")
+        return f"win_conditioned_{name.removeprefix('winning_')}"
     if name.startswith("winner_"):
-        name = name.removeprefix("winner_")
+        return f"win_conditioned_{name.removeprefix('winner_')}"
     return name
 
 
@@ -588,8 +591,23 @@ def _compress_metric_columns(df: pd.DataFrame) -> pd.DataFrame:
         drops = [var_col, f"sum_{base}", f"sq_sum_{base}"]
         df.drop(columns=[c for c in drops if c in df.columns], inplace=True, errors="ignore")
         normalized = _normalize_metric_name(base)
-        rename_map[mean_col] = f"mean_{normalized}"
-        rename_map[sd_col] = f"sd_{normalized}"
+        rename_map[mean_col] = f"{normalized}_mean"
+        rename_map[sd_col] = f"{normalized}_sd"
+
+    for base in METRIC_LABELS:
+        if base == "winner_hit_max_rounds":
+            continue
+        normalized = _normalize_metric_name(base)
+        remaining_names = {
+            f"sum_{base}": f"{normalized}_sum",
+            f"sq_sum_{base}": f"{normalized}_square_sum",
+            f"mean_{base}": f"{normalized}_mean",
+            f"var_{base}": f"{normalized}_variance",
+            f"sd_{base}": f"{normalized}_sd",
+        }
+        rename_map.update(
+            {source: target for source, target in remaining_names.items() if source in df.columns}
+        )
 
     if rename_map:
         df.rename(columns=rename_map, inplace=True)

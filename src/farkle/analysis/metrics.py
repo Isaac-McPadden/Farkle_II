@@ -17,6 +17,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 
+from farkle.analysis.all_player_metrics import build_all_player_batch_metrics
 from farkle.analysis.checks import check_pre_metrics
 from farkle.analysis.isolated_metrics import build_isolated_metrics
 from farkle.analysis.seat_stats import (
@@ -84,6 +85,14 @@ def run(cfg: AppConfig) -> None:
     raw_metric_inputs = [
         cfg.results_root / f"{n}_players" / f"{n}p_metrics.parquet" for n in player_counts
     ]
+    all_player_inputs = [
+        cfg.ingested_rows_curated(n) for n in player_counts if cfg.ingested_rows_curated(n).exists()
+    ]
+    all_player_targets = [
+        cfg.metrics_all_player_batch_path(n)
+        for n in player_counts
+        if cfg.ingested_rows_curated(n).exists()
+    ]
     available_raw_inputs = [path for path in raw_metric_inputs if path.exists()]
     iso_targets = []
     for n in player_counts:
@@ -106,8 +115,9 @@ def run(cfg: AppConfig) -> None:
         out_seat_metrics,
         out_seat_metrics_csv,
         *iso_targets,
+        *all_player_targets,
     ]
-    stage_inputs = [data_file, *raw_metric_inputs]
+    stage_inputs = [data_file, *raw_metric_inputs, *all_player_inputs]
     if stage_is_up_to_date(
         done,
         inputs=stage_inputs,
@@ -137,6 +147,8 @@ def run(cfg: AppConfig) -> None:
     )
 
     check_pre_metrics(data_file, winner_col="winner_seat")
+
+    all_player_paths = _ensure_all_player_metrics(cfg, player_counts)
 
     if stage_is_up_to_date(
         done_isolated,
@@ -170,6 +182,7 @@ def run(cfg: AppConfig) -> None:
         out_seat_metrics,
         out_seat_metrics_csv,
         *iso_paths,
+        *all_player_paths,
     ]
 
     if stage_is_up_to_date(
@@ -326,6 +339,7 @@ def run(cfg: AppConfig) -> None:
             out_seat_metrics,
             out_seat_metrics_csv,
             *iso_paths,
+            *all_player_paths,
         ],
     )
     complete_extra = {
@@ -337,6 +351,7 @@ def run(cfg: AppConfig) -> None:
         "seat_path": str(out_seats),
         "seat_parquet": str(out_seats_parquet),
         "seat_metrics": str(out_seat_metrics),
+        "all_player_batch_metrics": [str(path) for path in all_player_paths],
     }
     LOGGER.info(
         "Metrics stage complete",
@@ -450,6 +465,31 @@ def _ensure_isolated_metrics(
     return iso_paths, raw_inputs
 
 
+def _ensure_all_player_metrics(cfg: AppConfig, player_counts: Sequence[int]) -> list[Path]:
+    """Build independent per-k unconditional exposure artifacts concurrently."""
+
+    available = [n for n in player_counts if cfg.ingested_rows_curated(n).exists()]
+    if not available:
+        LOGGER.warning(
+            "Canonical per-k curated rows unavailable; all-player batch metrics skipped",
+            extra={"stage": "metrics", "player_counts": list(player_counts)},
+        )
+        return []
+    worker_count = resolve_worker_count(
+        cfg.analysis.n_jobs,
+        cfg.sim.n_jobs,
+        item_count=len(available),
+    )
+    with ThreadPoolExecutor(max_workers=worker_count) as executor:
+        outputs = list(
+            executor.map(
+                lambda n: build_all_player_batch_metrics(cfg, n),
+                available,
+            )
+        )
+    return [path for _, path in sorted(zip(available, outputs, strict=True))]
+
+
 def _collect_metrics_frames(paths: Iterable[Path]) -> pd.DataFrame:
     """Load multiple metrics parquets into a single DataFrame."""
     frames: list[pd.DataFrame] = []
@@ -466,7 +506,7 @@ def _collect_metrics_frames(paths: Iterable[Path]) -> pd.DataFrame:
                 "wins",
                 "win_rate",
                 "win_prob",
-                "expected_score",
+                "win_conditioned_score_contribution_per_exposure",
             ]
         )
     df = pd.concat(frames, ignore_index=True)
@@ -479,7 +519,7 @@ def _collect_metrics_frames(paths: Iterable[Path]) -> pd.DataFrame:
         "wins",
         "win_rate",
         "win_prob",
-        "expected_score",
+        "win_conditioned_score_contribution_per_exposure",
     ]
     remainder = [c for c in df.columns if c not in base_cols]
     return df[base_cols + remainder]
@@ -655,7 +695,9 @@ def _weighted_mean(values: pd.Series, weights: np.ndarray) -> float:
     return float(np.average(numeric[mask], weights=subset_weights))
 
 
-def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: _MetricsAggregationConfig) -> pd.DataFrame:
+def _compute_weighted_metrics(
+    metrics_df: pd.DataFrame, cfg: _MetricsAggregationConfig
+) -> pd.DataFrame:
     """Compute combined weighted metrics across player counts."""
 
     columns = [
@@ -664,7 +706,7 @@ def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: _MetricsAggregation
         "wins",
         "win_rate",
         "win_prob",
-        "expected_score",
+        "win_conditioned_score_contribution_per_exposure",
         "aggregation_method",
         "k_aggregation_method",
     ]

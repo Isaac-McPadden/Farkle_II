@@ -112,8 +112,8 @@ def test_prepare_metrics_dataframe_recomputes_metrics_and_pads():
         "win_prob",
         "false_wins_handled",
         "missing_before_pad",
-        "mean_score",
-        "sd_score",
+        "win_conditioned_score_mean",
+        "win_conditioned_score_sd",
     }
     assert required_fields.issubset(set(processed.columns))
 
@@ -227,9 +227,9 @@ def test_prepare_metrics_dataframe_rollups_and_optional_output_branches():
     out_with = isolated_metrics._prepare_metrics_dataframe(cfg, with_score, player_count=2)
     row = out_with.loc[out_with["strategy"] == strategy_id].iloc[0]
 
-    assert row["expected_score"] == pytest.approx(20.0)
-    assert row["mean_score"] == pytest.approx(40.0)
-    assert row["sd_score"] == pytest.approx(10.0)
+    assert row["win_conditioned_score_contribution_per_exposure"] == pytest.approx(20.0)
+    assert row["win_conditioned_score_mean"] == pytest.approx(40.0)
+    assert row["win_conditioned_score_sd"] == pytest.approx(10.0)
 
     without_score = pd.DataFrame(
         {
@@ -239,7 +239,7 @@ def test_prepare_metrics_dataframe_rollups_and_optional_output_branches():
         }
     )
 
-    with pytest.raises(KeyError, match="expected_score"):
+    with pytest.raises(KeyError, match="win_conditioned_score_contribution_per_exposure"):
         isolated_metrics._prepare_metrics_dataframe(cfg, without_score, player_count=2)
 
 
@@ -280,7 +280,9 @@ def test_build_isolated_metrics_control_flow_and_output_path(tmp_path, monkeypat
 
     def fake_prepare(_cfg, frame, player_count):
         prepare_calls.append(player_count)
-        return frame.assign(n_players=player_count, games=2, win_rate=0.5, win_prob=0.5, expected_score=25.0)
+        return frame.assign(
+            n_players=player_count, games=2, win_rate=0.5, win_prob=0.5, expected_score=25.0
+        )
 
     def fake_write(table, path):
         write_calls.append((table.num_rows, str(path)))
@@ -381,14 +383,23 @@ def test_locator_from_config_data_root_prefix_and_seed_paths_copy(tmp_path):
         data_root=tmp_path / "explicit",
         override_roots={1: "custom_seed"},
     )
-    assert explicit.path_for(1, 2) == tmp_path / "explicit" / "custom_seed" / "2_players" / "2p_metrics.parquet"
+    assert (
+        explicit.path_for(1, 2)
+        == tmp_path / "explicit" / "custom_seed" / "2_players" / "2p_metrics.parquet"
+    )
 
     rel_prefix = isolated_metrics.locator_from_config(cfg, seeds=[2])
-    assert rel_prefix.path_for(2, 5) == Path("data") / "relative_results_seed_2" / "5_players" / "5p_metrics.parquet"
+    assert (
+        rel_prefix.path_for(2, 5)
+        == Path("data") / "relative_results_seed_2" / "5_players" / "5p_metrics.parquet"
+    )
 
     cfg.io.results_dir_prefix = tmp_path / "absolute_prefix"
     abs_prefix = isolated_metrics.locator_from_config(cfg, seeds=[3])
-    assert abs_prefix.path_for(3, 2) == tmp_path / "absolute_prefix_seed_3" / "2_players" / "2p_metrics.parquet"
+    assert (
+        abs_prefix.path_for(3, 2)
+        == tmp_path / "absolute_prefix_seed_3" / "2_players" / "2p_metrics.parquet"
+    )
 
     paths_copy = abs_prefix.seed_paths
     paths_copy[3] = tmp_path / "mutated"
@@ -403,7 +414,9 @@ def test_metrics_locator_validation_errors():
 
 
 def test_summarize_warning_branches_empty_loaded_and_mismatch(tmp_path):
-    empty_locator = isolated_metrics.MetricsLocator(data_root=tmp_path, seeds=[1], player_counts=[2])
+    empty_locator = isolated_metrics.MetricsLocator(
+        data_root=tmp_path, seeds=[1], player_counts=[2]
+    )
     empty_path = empty_locator.path_for(1, 2)
     empty_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame({"strategy": [], "wins": []}).to_parquet(empty_path, index=False)
@@ -412,7 +425,9 @@ def test_summarize_warning_branches_empty_loaded_and_mismatch(tmp_path):
     assert empty_frame.empty
     assert "No metrics data loaded; verify locator paths." in empty_summary.warnings
 
-    mismatch_locator = isolated_metrics.MetricsLocator(data_root=tmp_path, seeds=[10, 11], player_counts=[2])
+    mismatch_locator = isolated_metrics.MetricsLocator(
+        data_root=tmp_path, seeds=[10, 11], player_counts=[2]
+    )
     p10 = mismatch_locator.path_for(10, 2)
     p11 = mismatch_locator.path_for(11, 2)
     p10.parent.mkdir(parents=True, exist_ok=True)
@@ -429,8 +444,8 @@ def test_helper_branches_games_mode_normalize_compress_and_padding(monkeypatch):
     assert isolated_metrics._games_mode(pd.Series([None, 7, 8])) == 7
     assert isolated_metrics._games_mode(pd.Series([None, None])) == 0.0
 
-    assert isolated_metrics._normalize_metric_name("winning_score") == "score"
-    assert isolated_metrics._normalize_metric_name("winner_n_rounds") == "n_rounds"
+    assert isolated_metrics._normalize_metric_name("winning_score") == "win_conditioned_score"
+    assert isolated_metrics._normalize_metric_name("winner_n_rounds") == "win_conditioned_n_rounds"
     assert isolated_metrics._normalize_metric_name("already_normalized") == "already_normalized"
 
     compressed = isolated_metrics._compress_metric_columns(
@@ -450,19 +465,25 @@ def test_helper_branches_games_mode_normalize_compress_and_padding(monkeypatch):
     )
     assert "var_winner_hit_max_rounds" not in compressed.columns
     assert "var_lonely" in compressed.columns
-    assert "mean_score" in compressed.columns
-    assert "sd_score" in compressed.columns
+    assert "win_conditioned_score_mean" in compressed.columns
+    assert "win_conditioned_score_sd" in compressed.columns
     assert "var_winning_score" not in compressed.columns
 
     cfg = AppConfig()
     fake_index = pd.Index([101, 202], name="strategy", dtype="int64")
-    monkeypatch.setattr(isolated_metrics, "generate_strategy_grid", lambda **_: (None, pd.DataFrame({"strategy_id": [101, 202]})))
+    monkeypatch.setattr(
+        isolated_metrics,
+        "generate_strategy_grid",
+        lambda **_: (None, pd.DataFrame({"strategy_id": [101, 202]})),
+    )
     isolated_metrics._STRATEGY_CACHE.pop(id(cfg), None)
     first = isolated_metrics._strategy_index(cfg)
     second = isolated_metrics._strategy_index(cfg)
     assert first.equals(fake_index)
     assert second.equals(fake_index)
 
-    padded = isolated_metrics._pad_strategies(cfg, pd.DataFrame({"wins": [1]}, index=pd.Index([101], name="strategy")))
+    padded = isolated_metrics._pad_strategies(
+        cfg, pd.DataFrame({"wins": [1]}, index=pd.Index([101], name="strategy"))
+    )
     assert padded.index.tolist() == [101, 202]
     assert pd.isna(padded.loc[202, "wins"])

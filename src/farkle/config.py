@@ -1300,6 +1300,11 @@ class AppConfig:
 
         return self.metrics_per_k_dir(k) / f"{k}p_isolated_metrics.parquet"
 
+    def metrics_all_player_batch_path(self, k: int) -> Path:
+        """Canonical unconditional player-exposure batch metrics for ``k`` players."""
+
+        return self.metrics_per_k_dir(k) / "all_player_batch_metrics.parquet"
+
     def legacy_metrics_isolated_path(self, k: int) -> Path:
         """Legacy isolated metrics parquet path under ``analysis/data``."""
 

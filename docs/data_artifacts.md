@@ -107,6 +107,7 @@ Metrics outputs are resolved through:
 - `cfg.metrics_output_path()`
 - `cfg.metrics_input_path()`
 - `cfg.metrics_isolated_path(k)`
+- `cfg.metrics_all_player_batch_path(k)`
 
 Common files:
 
@@ -114,6 +115,22 @@ Common files:
 - `combined/seat_advantage.csv`
 - `combined/seat_advantage.parquet`
 - `<k>p/<k>p_isolated_metrics.parquet`
+- `<k>p/all_player_batch_metrics.parquet`
+
+`all_player_batch_metrics.parquet` is the canonical unconditional exposure
+artifact. It contains one row per `(root_seed, k, deterministic_batch_id,
+strategy)` and streams every player exposure, including losing and zero-score
+exposures. Its sufficient statistics support these distinct estimands:
+
+- `turn_return_turn_weighted = sum(final_score) / sum(n_turns)`
+- `turn_return_game_weighted_exact = mean(final_score / n_turns)`
+- `turn_return_round_proxy = mean(final_score / n_rounds)`
+- `round_proxy_gap`, `round_proxy_relative_gap`, and exact turn/round mismatch
+  prevalence
+
+The artifact sidecar declares `conditioning=unconditional`. Its schema rejects
+`win_conditioned_*` columns. Winner-only isolated metrics use the explicit
+`win_conditioned_*` prefix and cannot satisfy this consumer contract.
 
 ### Coverage and game stats
 

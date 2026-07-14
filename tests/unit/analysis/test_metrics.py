@@ -35,17 +35,17 @@ def test_collect_metrics_frames_preserves_stats(sample_config):
         "wins",
         "win_rate",
         "win_prob",
-        "expected_score",
+        "win_conditioned_score_contribution_per_exposure",
     ]
     assert list(frame.columns[: len(required_prefix)]) == required_prefix
     assert {2, 3}.issubset(set(frame["n_players"]))
 
     preserved_stats = {
         "total_games_strat",
-        "sum_winning_score",
-        "sq_sum_winning_score",
-        "sum_n_rounds",
-        "sq_sum_n_rounds",
+        "win_conditioned_score_sum",
+        "win_conditioned_score_square_sum",
+        "win_conditioned_n_rounds_sum",
+        "win_conditioned_n_rounds_square_sum",
         "false_wins_handled",
     }
     assert preserved_stats.issubset(set(frame.columns))
@@ -66,7 +66,7 @@ def test_collect_metrics_frames_empty_inputs_has_stable_schema():
         "wins",
         "win_rate",
         "win_prob",
-        "expected_score",
+        "win_conditioned_score_contribution_per_exposure",
     ]
     assert isinstance(frame.index, pd.RangeIndex)
 
@@ -89,7 +89,7 @@ def test_collect_metrics_frames_optional_columns_absent_and_present(tmp_path):
             "wins": [6],
             "win_rate": [0.5],
             "win_prob": [0.55],
-            "expected_score": [42.0],
+            "win_conditioned_score_contribution_per_exposure": [42.0],
             "extra_metric": [7.5],
         }
     )
@@ -108,7 +108,7 @@ def test_collect_metrics_frames_optional_columns_absent_and_present(tmp_path):
         "wins",
         "win_rate",
         "win_prob",
-        "expected_score",
+        "win_conditioned_score_contribution_per_exposure",
     ]
     assert frame.iloc[0]["strategy"] == 2
     assert frame.iloc[1]["strategy"] == 1
@@ -265,9 +265,9 @@ def test_seat_metrics_and_advantage_from_synthetic_fixture(tmp_path):
     assert seat_adv.loc[seat_adv["seat"] == 2, "win_rate"].item() == pytest.approx(1 / 3)
 
     seat_metrics = metrics.compute_seat_metrics(combined, seat_cfg)
-    aggro_seat1 = seat_metrics[
-        (seat_metrics["strategy"] == 1) & (seat_metrics["seat"] == 1)
-    ].iloc[0]
+    aggro_seat1 = seat_metrics[(seat_metrics["strategy"] == 1) & (seat_metrics["seat"] == 1)].iloc[
+        0
+    ]
     assert aggro_seat1["games"] == 3
     assert aggro_seat1["wins"] == 2
     assert aggro_seat1["mean_rounds"] == pytest.approx((6 + 9 + 12) / 3)

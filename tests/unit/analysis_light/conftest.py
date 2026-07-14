@@ -77,7 +77,16 @@ def _build_golden_df() -> pd.DataFrame:
     for idx, seat in enumerate(winners):
         seat_ranks = [seat, *[s for s in ("P1", "P2", "P3") if s != seat]]
         row = {
+            "root_seed": 0,
+            "k": 3,
+            "shuffle_index": idx,
+            "game_index": 0,
+            "deterministic_batch_id": idx // 30,
+            "shuffle_seed": 10_000 + idx,
             "winner": seat,
+            "game_seed": 20_000 + idx,
+            "rng_scheme_version": 1,
+            "rng_purpose_namespace": 102,
             "n_rounds": rounds[idx],
             "winning_score": int(base_scores[idx] + (idx % 3) * 10),
             "winner_strategy": strategies[seat],
@@ -86,6 +95,12 @@ def _build_golden_df() -> pd.DataFrame:
             "P2_strategy": strategies["P2"],
             "P3_strategy": strategies["P3"],
         }
+        for seat_index, seat_name in enumerate(("P1", "P2", "P3"), start=1):
+            is_winner = seat_name == seat
+            row[f"P{seat_index}_score"] = (
+                row["winning_score"] if is_winner else int(row["winning_score"]) - 100 * seat_index
+            )
+            row[f"P{seat_index}_n_turns"] = rounds[idx]
         rows.append(row)
     return pd.DataFrame(rows)
 
