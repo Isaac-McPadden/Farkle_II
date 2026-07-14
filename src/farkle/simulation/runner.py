@@ -32,13 +32,18 @@ import pyarrow as pa
 
 import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig
-from farkle.simulation.power_helpers import games_for_power_from_design
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
 from farkle.simulation.simulation import experiment_size, generate_strategy_grid
 from farkle.simulation.strategies import (
     STRATEGY_MANIFEST_NAME,
     ThresholdStrategy,
     build_strategy_manifest,
+)
+from farkle.simulation.workload_planner import (
+    TournamentWorkloadPlan,
+    WorkloadCapExceeded,
+    plan_tournament_workload,
+    write_workload_plan,
 )
 from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
@@ -174,76 +179,37 @@ def _filter_player_counts(
     return valid, invalid, grid_size, source
 
 
-def _compute_num_shuffles_from_config(
+def _plan_workload_from_config(
     cfg: AppConfig,
     n_strategies: int,
     n_players: int,
-) -> int:
-    """
-    Precedence:
-      1) per-n override
-      2) recompute from power_method (if enabled)
-      3) static sim.num_shuffles
-    """
-    # 1) per-n override
-    if n_players in cfg.sim.per_n and hasattr(cfg.sim.per_n[n_players], "num_shuffles"):
-        n_shuffles = cfg.sim.per_n[n_players].num_shuffles
-        LOGGER.info("Using per-n override: n=%d -> num_shuffles=%d", n_players, n_shuffles)
-        return n_shuffles
+) -> TournamentWorkloadPlan:
+    """Resolve the screening precision workload for one root/player-count cell."""
 
-    # 2) recompute via selected method
-    if cfg.sim.recompute_num_shuffles:
-        method = cfg.sim.power_method  # "bh" | "bonferroni"
-        design = cfg.sim.power_design
+    return plan_tournament_workload(
+        root_seed=cfg.sim.seed,
+        k=n_players,
+        strategy_count=n_strategies,
+        resolution_delta=cfg.screening.resolution_delta,
+        confidence=cfg.screening.interval_confidence,
+        batch_count=cfg.batching.target_batches,
+        min_shuffles_per_batch=cfg.batching.min_shuffles_per_batch,
+        shuffle_cap=cfg.screening.max_shuffles_per_root_k,
+        projected_games_per_second=cfg.screening.projected_games_per_second,
+    )
 
-        n_games_per_strat = games_for_power_from_design(
-            n_strategies=n_strategies,
-            k_players=n_players,
-            method=method,
-            design=design,
-        )
 
-        endpoint = (
-            str(getattr(design, "endpoint", "top1")).lower().replace("-", "_").replace(" ", "_")
-        )
-        if endpoint == "pairwise":
-            m_tests = (
-                (n_strategies * (n_strategies - 1)) // 2
-                if design.full_pairwise
-                else (n_strategies - 1)
-            )
-            full_pairwise = design.full_pairwise
-        else:
-            m_tests = n_strategies
-            full_pairwise = False
-        n_shuffles = n_games_per_strat
-        LOGGER.info(
-            (
-                "Power recompute: method=%s | endpoint=%s | n_strategies=%d | k_players=%d | m_tests=%d | "
-                "power=%.3f | control=%.4g | tail=%s | full_pairwise=%s | use_BY=%s | "
-                "detectable_lift=%.4f | baseline_rate=%s -> n_games_per_strat=%d -> num_shuffles=%d"
-            ),
-            method,
-            endpoint,
-            n_strategies,
-            n_players,
-            m_tests,
-            design.power,
-            design.control,
-            design.tail,
-            full_pairwise,
-            (bool(design.use_BY) if method == "bh" else False),
-            design.detectable_lift,
-            design.baseline_rate,
-            n_games_per_strat,
-            n_shuffles,
-        )
-        return n_shuffles
+def _workload_checkpoint_metadata(plan: TournamentWorkloadPlan) -> dict[str, object]:
+    """Return precision fields that make replacement checkpoint contracts stale."""
 
-    # 3) fallback
-    n_shuffles = cfg.sim.num_shuffles
-    LOGGER.info("Using configured num_shuffles=%d", n_shuffles)
-    return n_shuffles
+    return {
+        "workload_plan_version": plan.plan_version,
+        "screening_resolution_delta": plan.resolution_delta,
+        "screening_interval_confidence": plan.confidence,
+        "batch_count": plan.batch_count,
+        "shuffles_per_batch": plan.shuffles_per_batch,
+        "batch_construction": plan.batch_construction,
+    }
 
 
 def _resolve_row_output_dir(cfg: AppConfig, n_players: int) -> Path | None:
@@ -524,6 +490,13 @@ def _validate_resume_outputs(
         "strategy_manifest_sha": _strategy_manifest_digest(strategies_manifest),
         "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
         "rng_bit_generator": "PCG64DXSM",
+        **_workload_checkpoint_metadata(
+            _plan_workload_from_config(
+                cfg,
+                n_strategies=len(strategies_manifest),
+                n_players=n_players,
+            )
+        ),
     }
     root_manifest_path = cfg.strategy_manifest_root_path()
     legacy_manifest_paths = [ckpt_path.parent / STRATEGY_MANIFEST_NAME]
@@ -671,7 +644,8 @@ def run_tournament(cfg: AppConfig, *, force: bool = False) -> int:
             extra={
                 "stage": "simulation",
                 "n_players": n,
-                "num_shuffles_default": cfg.sim.num_shuffles,
+                "resolution_delta": cfg.screening.resolution_delta,
+                "batch_count": cfg.batching.target_batches,
                 "seed": cfg.sim.seed,
                 "n_jobs": cfg.sim.n_jobs,
                 "expanded_metrics": cfg.sim.expanded_metrics,
@@ -684,7 +658,8 @@ def run_tournament(cfg: AppConfig, *, force: bool = False) -> int:
         extra={
             "stage": "simulation",
             "n_players_list": n_vals,
-            "num_shuffles_default": cfg.sim.num_shuffles,
+            "resolution_delta": cfg.screening.resolution_delta,
+            "batch_count": cfg.batching.target_batches,
             "seed": cfg.sim.seed,
             "n_jobs": cfg.sim.n_jobs,
             "expanded_metrics": cfg.sim.expanded_metrics,
@@ -704,27 +679,32 @@ def run_single_n(
     """Run a Farkle tournament for a single tournament with player count *n*."""
     # --- Grid & tests ---
     strategies, grid_size, _used_custom = _resolve_strategies(cfg, strategies)
-    n_strategies = grid_size  # used for hypotheses count for power calcs
     LOGGER.info(f"{grid_size} total strategies, used custom state: {_used_custom}")
-    # --- Tournament shuffles ---
-    n_shuffles = _compute_num_shuffles_from_config(cfg, n_strategies=n_strategies, n_players=n)
-    LOGGER.info(f"n_shuffles calculated to be {n_shuffles}")
-    # --- Planned totals (log before executing) ---
-    games_per_shuffle = grid_size // n
-    total_games = n_shuffles * games_per_shuffle
-    LOGGER.info(
-        "Planned: %dp games, %d strategies -> %d games/shuffle; %d shuffles; %d total games",
-        n,
-        grid_size,
-        games_per_shuffle,
-        n_shuffles,
-        total_games,
+    workload_plan = _plan_workload_from_config(
+        cfg,
+        n_strategies=grid_size,
+        n_players=n,
     )
+    n_shuffles = workload_plan.required_shuffles
+    total_games = workload_plan.required_games
 
-    # --- Output paths ---
+    # --- Output paths and pre-scheduling plan publication ---
     results_dir = cfg.results_root
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
+    workload_plan_path = n_dir / "simulation_workload_plan.json"
+    write_workload_plan(workload_plan_path, workload_plan)
+    LOGGER.info(
+        "Tournament workload plan resolved",
+        extra={"stage": "simulation", **workload_plan.to_dict()},
+    )
+    if workload_plan.cap_exceeded:
+        LOGGER.error(
+            "Tournament workload blocked by configured cap",
+            extra={"stage": "simulation", **workload_plan.to_dict()},
+        )
+        raise WorkloadCapExceeded(workload_plan)
+
     ckpt_path = n_dir / f"{n}p_checkpoint.pkl"
     resume = not force
     checkpoint_exists = ckpt_path.exists()
@@ -812,7 +792,10 @@ def run_single_n(
             "strategy_manifest_sha": _strategy_manifest_digest(manifest),
             "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
             "rng_bit_generator": "PCG64DXSM",
+            **_workload_checkpoint_metadata(workload_plan),
         },
+        workload_plan=workload_plan,
+        workload_plan_path=workload_plan_path,
     )
 
     # --- Final checkpoint post-processing ---
@@ -895,7 +878,7 @@ def run_single_n(
             metrics_file = n_dir / f"{n}p_metrics.parquet"
             write_parquet_atomic(pa.Table.from_pylist(metrics_rows), metrics_file)
 
-    outputs: list[Path] = [ckpt_path]
+    outputs: list[Path] = [ckpt_path, workload_plan_path]
     ckpt_parquet = n_dir / f"{n}p_checkpoint.parquet"
     if ckpt_parquet.exists():
         outputs.append(ckpt_parquet)

@@ -11,7 +11,6 @@ io:
 
 sim:
   n_players_list: [5]       # list[int]: table sizes to simulate
-  num_shuffles: 100         # int: default shuffle count per table size
   seed: 0                   # int: legacy primary RNG seed (results_root uses seed suffix)
   seed_list: [0]            # list[int]|None: explicit seeds (len 1 single-seed, len 2 two-seed)
   expanded_metrics: false   # bool: write expanded metrics parquet
@@ -89,6 +88,8 @@ screening:
   candidate_contribution_size: 75
   controls: []
   mandatory_diagnostics: []
+  max_shuffles_per_root_k: null
+  projected_games_per_second: null
 
 batching:
   target_batches: 100

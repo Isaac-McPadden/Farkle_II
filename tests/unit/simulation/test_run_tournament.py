@@ -7,6 +7,7 @@ We monkey-patch the heavy helpers so no real games are played.
 
 from __future__ import annotations
 
+import json
 import logging
 import pickle
 import types  # noqa: F401
@@ -22,6 +23,7 @@ pytest.importorskip("pyarrow")
 
 import farkle.simulation.run_tournament as rt
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.simulation.workload_planner import plan_tournament_workload
 
 # --------------------------------------------------------------------------- #
 # Mini test doubles ? replace expensive pieces with cheap determinism
@@ -185,18 +187,32 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
 
     cfg = rt.TournamentConfig(n_players=2, num_shuffles=5, desired_sec_per_chunk=1, ckpt_every_sec=999)
     ckpt = tmp_path / "checkpoint.pkl"
+    plan_path = tmp_path / "workload.json"
+    workload_plan = plan_tournament_workload(
+        root_seed=0,
+        k=2,
+        strategy_count=4,
+        resolution_delta=0.9,
+        batch_count=5,
+        min_shuffles_per_batch=1,
+    )
     rt.run_tournament(
         config=cfg,
         num_shuffles=cfg.num_shuffles,
         checkpoint_path=ckpt,
         n_jobs=1,
         collect_metrics=False,
+        workload_plan=workload_plan,
+        workload_plan_path=plan_path,
     )
 
     # shuffles_per_chunk = max(1, int(1 * 8.0 // (4 // 2))) = 4 for this fixture.
     assert chunk_calls == [[0, 1, 2, 3], [4]]
     payload = pickle.loads(ckpt.read_bytes())
     assert payload["win_totals"] == Counter({"W0": 1, "W1": 1, "W2": 1, "W3": 1, "W4": 1})
+    plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
+    assert plan_payload["projected_games_per_second"] == 8.0
+    assert plan_payload["projected_runtime_seconds"] == pytest.approx(10 / 8)
 
     ckpt.write_bytes(pickle.dumps(123))
     with pytest.raises(AttributeError):

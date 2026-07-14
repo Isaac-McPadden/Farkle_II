@@ -93,23 +93,18 @@ For every statistical claim, review in this order:
   supplied `win_rate`, missing k coverage, whether MDD is interpreted as
   pairwise detectable difference rather than a confidence interval.
 
-## Power Sizing
+## Screening Workload Planning
 
-- Code: `src/farkle/utils/stats.py::games_for_power`,
-  `src/farkle/simulation/power_helpers.py`,
-  `src/farkle/simulation/runner.py::_compute_num_shuffles_from_config`,
-  `src/farkle/analysis/head2head.py::_predict_runtime`.
-- Methods: Bonferroni FWER or BH/BY-style planning level.
-- Endpoint `pairwise`: two-sample proportion sizing around `p0`, then converts
-  pair co-appearances to games per strategy by dividing by `k_players - 1`.
-- Endpoint `top1`: one-sample proportion sizing against baseline `1/k` unless
-  overridden.
-- Tests: `tests/unit/utils/test_stats.py`,
-  `tests/unit/simulation/test_simulation.py`,
+- Code: `src/farkle/simulation/workload_planner.py`,
+  `src/farkle/simulation/runner.py::_plan_workload_from_config`.
+- Method: find the smallest shuffle count whose worst-case full 95% Wilson
+  interval width meets `screening.resolution_delta`, then round upward to equal
+  contiguous batches with the configured minimum batch size.
+- Output: required shuffles and games, batch construction, achieved resolution,
+  operational cap state, and projected runtime.
+- Tests: `tests/unit/simulation/test_workload_planner.py`,
   `tests/unit/simulation/test_runner_wrapper.py`.
-- Review risks: planning approximation is not the same as final hypothesis
-  testing; BH target rank/fraction is a design choice; floor/cap may dominate
-  computed sample size.
+- H2H power remains a distinct procedure and must match the final H2H test.
 
 ## TrueSkill Ratings And Tiers
 

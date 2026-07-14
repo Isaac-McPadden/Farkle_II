@@ -11,6 +11,7 @@ import difflib
 import hashlib
 import json
 import logging
+import math
 import re
 from dataclasses import dataclass, field, is_dataclass
 from enum import Enum
@@ -88,6 +89,7 @@ _CANONICAL_ARTIFACT_NAMES: dict[str, str] = {
 }
 
 RETIRED_CONFIG_KEYS: dict[str, str] = {
+    "sim.num_shuffles": "screening.resolution_delta and batching settings",
     "sim.power_method": "screening.resolution_delta",
     "sim.recompute_num_shuffles": "screening.resolution_delta",
     "sim.power_design": "screening and head2head settings",
@@ -152,24 +154,6 @@ class IOConfig:
 
 
 @dataclass
-class PowerDesign:
-    """Parameters controlling power analyses for tournament planning."""
-
-    power: float = 0.8
-    control: float = 0.1  # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
-    detectable_lift: float = 0.03  # absolute lift in win-rate
-    baseline_rate: float = 0.50
-    tail: str = "two_sided"  # "one_sided" | "two_sided"
-    full_pairwise: bool = True
-    endpoint: str = "pairwise"  # "pairwise" | "top1"
-    min_games_floor: int = 2000
-    max_games_cap: int | None = None
-    use_BY: bool | None = False  # if true and using BH, use q/H_m (more conservative)
-    bh_target_rank: int | None = None  # target BH order statistic (i*), optional
-    bh_target_frac: float | None = 0.03  # target fraction of discoveries for BH planning
-
-
-@dataclass
 class RNGConfig:
     """Versioned deterministic random-stream contract."""
 
@@ -189,6 +173,8 @@ class ScreeningConfig:
     candidate_contribution_size: int = 75
     controls: list[int] = field(default_factory=list)
     mandatory_diagnostics: list[int] = field(default_factory=list)
+    max_shuffles_per_root_k: int | None = None
+    projected_games_per_second: float | None = None
 
 
 @dataclass
@@ -242,7 +228,6 @@ class SimConfig:
     """
 
     n_players_list: list[int] = field(default_factory=lambda: [5])
-    num_shuffles: int = 100
     seed: int = 0
     seed_list: list[int] | None = None
     """Explicit seed list (len 1 for single-seed, len 2 for two-seed)."""
@@ -252,9 +237,6 @@ class SimConfig:
     row_dir: Path | None = None
     metric_chunk_dir: Path | None = None
     per_n: dict[int, "SimConfig"] = field(default_factory=dict)
-    power_method: str = "bh"
-    recompute_num_shuffles: bool = True
-    power_design: PowerDesign = field(default_factory=PowerDesign)
     n_jobs: int | None = None
     """Parallel worker setting (`None` => 1, `0` => os.cpu_count(), `>0` => explicit)."""
     mp_start_method: str | None = None
@@ -2221,10 +2203,29 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("artifact_contract versions must all be positive integers")
     if not 0.0 < cfg.screening.resolution_delta < 1.0:
         raise ValueError("screening.resolution_delta must be between 0 and 1")
-    if not 0.0 < cfg.screening.interval_confidence < 1.0:
-        raise ValueError("screening.interval_confidence must be between 0 and 1")
-    if cfg.batching.target_batches < 2 or cfg.batching.min_shuffles_per_batch < 1:
-        raise ValueError("batching requires at least two batches and one shuffle per batch")
+    if cfg.screening.interval_confidence != 0.95:
+        raise ValueError("screening.interval_confidence is locked at 0.95")
+    if (
+        cfg.screening.max_shuffles_per_root_k is not None
+        and (
+            isinstance(cfg.screening.max_shuffles_per_root_k, bool)
+            or not isinstance(cfg.screening.max_shuffles_per_root_k, int)
+            or cfg.screening.max_shuffles_per_root_k < 1
+        )
+    ):
+        raise ValueError("screening.max_shuffles_per_root_k must be positive when configured")
+    if (
+        cfg.screening.projected_games_per_second is not None
+        and (
+            not math.isfinite(cfg.screening.projected_games_per_second)
+            or cfg.screening.projected_games_per_second <= 0.0
+        )
+    ):
+        raise ValueError("screening.projected_games_per_second must be positive when configured")
+    if cfg.batching.target_batches != 100 or cfg.batching.min_shuffles_per_batch < 30:
+        raise ValueError(
+            "batching requires exactly 100 equal batches with at least 30 shuffles per batch"
+        )
 
     practical = cfg.screening.practical_delta_by_k
     if practical is None:
@@ -2329,7 +2330,6 @@ __all__ = [
     "TrueSkillConfig",
     "Head2HeadConfig",
     "HGBConfig",
-    "PowerDesign",
     "RNGConfig",
     "ScreeningConfig",
     "BatchingConfig",

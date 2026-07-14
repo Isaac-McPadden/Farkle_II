@@ -11,7 +11,6 @@ io:
 
 sim:
   n_players_list:    # list[int]: table sizes to simulate
-  num_shuffles:    # int: default shuffle count per table size
   seed:    # int: legacy primary RNG seed (results_root uses seed suffix)
   seed_list:    # list[int]|None: explicit seeds (len 1 single-seed, len 2 two-seed)
   seed_pair:    # tuple[int,int]|None: legacy two-seed tuple (must match seed_list if set)
@@ -89,6 +88,8 @@ screening:
   candidate_contribution_size:
   controls:
   mandatory_diagnostics:
+  max_shuffles_per_root_k:
+  projected_games_per_second:
 
 batching:
   target_batches:

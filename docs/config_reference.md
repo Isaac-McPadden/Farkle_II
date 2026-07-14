@@ -8,8 +8,11 @@ the CLI and orchestration code.
 - `io`
   Filesystem roots and analysis subdirectory settings.
 - `sim`
-  Simulation seeds, player counts, strategy grid, worker counts, and progress
-  settings.
+  Simulation seeds, player counts, strategy grid, worker counts, and progress settings.
+- `screening`
+  Wilson-width resolution target, operational shuffle cap, and optional runtime rate.
+- `batching`
+  Equal contiguous shuffle-batch construction.
 - `analysis`
   Analysis-stage behavior, logging, aggregation, rare-event settings, and optional
   interseed inputs.
@@ -40,8 +43,6 @@ the CLI and orchestration code.
 
 - `n_players_list`
   Player counts to simulate.
-- `num_shuffles`
-  Tournament size per player count.
 - `row_dir`
   Optional row-output directory.
 - `metric_chunk_dir`
@@ -49,9 +50,24 @@ the CLI and orchestration code.
 - `n_jobs`
   Worker count for simulation.
 - `per_n`
-  Optional per-player-count simulation overrides.
-- `power_design`
-  Nested power-analysis inputs used by planning helpers.
+  Optional per-player-count runtime overrides. It does not override the resolved workload.
+
+## Screening workload
+
+- `screening.resolution_delta`
+  Maximum full Wilson interval width. The default is `0.03` at 95% confidence.
+- `screening.max_shuffles_per_root_k`
+  Optional operational safety cap. Insufficient caps stop before scheduling and identify this key.
+- `screening.projected_games_per_second`
+  Optional positive throughput estimate used for the pre-scheduling runtime projection.
+- `batching.target_batches`
+  Locked to `100` equal contiguous batches.
+- `batching.min_shuffles_per_batch`
+  Minimum shuffles in every batch; values below `30` are rejected.
+
+The planner finds the smallest shuffle count meeting the worst-case Wilson-width
+target, then rounds upward to the batch contract. `sim.power_method`,
+`sim.recompute_num_shuffles`, and `sim.power_design` are rejected retired keys.
 
 ## Important `analysis` fields
 

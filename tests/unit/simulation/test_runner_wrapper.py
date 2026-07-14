@@ -52,10 +52,8 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, sim_artifacts):
         SimConfig(
             n_players_list=[2],
             seed=11,
-            num_shuffles=1,
             expanded_metrics=True,
             row_dir=Path("rows"),
-            recompute_num_shuffles=False,
         ),
     )
 
@@ -69,7 +67,7 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, sim_artifacts):
     assert Path(check_absolute).is_absolute()
     assert calls["checkpoint_path"] == root / "2_players" / "2p_checkpoint.pkl"
     config = cast(runner.TournamentConfig, calls["config"])
-    expected_games = config.games_per_shuffle
+    expected_games = config.games_per_shuffle * config.num_shuffles
     assert total_games == expected_games
 
     summary_path = root / "2_players" / "2p_checkpoint.parquet"
@@ -98,7 +96,7 @@ def test_runner_rejects_malformed_checkpoints(tmp_path, monkeypatch, payload, ex
 
     cfg = AppConfig(
         IOConfig(results_dir_prefix=tmp_path / "out"),
-        SimConfig(n_players_list=[2], recompute_num_shuffles=False, num_shuffles=1),
+        SimConfig(n_players_list=[2]),
     )
 
     with pytest.raises(TypeError) as excinfo:
@@ -117,8 +115,6 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
         IOConfig(results_dir_prefix=tmp_path / "out"),
         SimConfig(
             n_players_list=[3],
-            num_shuffles=2,
-            recompute_num_shuffles=False,
         ),
     )
 
@@ -132,7 +128,7 @@ def test_runner_writes_normalized_counters(tmp_path, monkeypatch):
     assert summary_df["strategy"].tolist() == ["alpha", "beta"]
 
     config = cast(runner.TournamentConfig, calls["config"])
-    expected_total = config.games_per_shuffle * cfg.sim.num_shuffles
+    expected_total = config.games_per_shuffle * config.num_shuffles
     assert total_games == expected_total
 
 
@@ -164,23 +160,21 @@ def test_filter_player_counts_reports_invalid(monkeypatch):
     assert source == "experiment_size"
 
 
-def test_compute_num_shuffles_prefers_overrides(monkeypatch):
-    per_cfg = SimConfig(num_shuffles=7, recompute_num_shuffles=False)
+def test_workload_plan_ignores_retired_shuffle_overrides():
+    per_cfg = SimConfig()
     cfg = AppConfig(IOConfig(results_dir_prefix=Path("ignored")), SimConfig(per_n={2: per_cfg}))
 
-    n_shuffles = runner._compute_num_shuffles_from_config(cfg, n_strategies=4, n_players=2)
-    assert n_shuffles == 7
+    plan = runner._plan_workload_from_config(cfg, n_strategies=4, n_players=2)
+
+    assert plan.required_shuffles == 4_300
 
 
-def test_compute_num_shuffles_recomputes(monkeypatch):
+def test_workload_plan_uses_screening_and_batch_contracts():
     cfg = AppConfig(IOConfig(results_dir_prefix=Path("ignored")), SimConfig())
-    cfg.sim.recompute_num_shuffles = True
-    cfg.sim.num_shuffles = 1
+    cfg.screening.resolution_delta = 0.9
+    cfg.batching.target_batches = 9
+    cfg.batching.min_shuffles_per_batch = 1
 
-    # Keep the calculation deterministic
-    monkeypatch.setattr(
-        runner, "games_for_power_from_design", lambda n_strategies, k_players, method, design: 9
-    )
+    plan = runner._plan_workload_from_config(cfg, n_strategies=6, n_players=2)
 
-    n_shuffles = runner._compute_num_shuffles_from_config(cfg, n_strategies=6, n_players=2)
-    assert n_shuffles == 9
+    assert plan.required_shuffles == 9

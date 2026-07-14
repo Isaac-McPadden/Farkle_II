@@ -13,7 +13,6 @@ sim:
   n_players_list: [2, 4, 5]
 
   # Schedule & runtime controls
-  num_shuffles: 100               # default shuffles for every N (unless overridden/recomputed)
   seed: 28                        # primary RNG seed (results_root uses seed suffix)
   seed_list: [28, 29]             # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 12                    # null = auto; otherwise an int
@@ -40,7 +39,6 @@ sim:
   # Optional per-N overrides (keys are strings)
   # per_n:
     # "12":
-      # num_shuffles: 200           # example: heavier schedule for 12-player games
   
 analysis:
   n_jobs: 4
@@ -95,6 +93,8 @@ screening:
   candidate_contribution_size: 75
   controls: []
   mandatory_diagnostics: []
+  max_shuffles_per_root_k: null
+  projected_games_per_second: null
 
 batching:
   target_batches: 100

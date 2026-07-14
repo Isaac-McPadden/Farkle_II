@@ -221,8 +221,8 @@ def test_load_app_config_rejects_invalid_section_shapes(
             "Unknown key\\(s\\) in config section 'sim': 'n_playerz' \\(did you mean 'n_players_list'\\?\\)",
         ),
         (
-            {"sim": {"per_n": {5: {"num_shufflez": 5}}}},
-            "Unknown key\\(s\\) in config section sim.per_n\\[5\\]: 'num_shufflez' \\(did you mean 'num_shuffles'\\?\\)",
+            {"sim": {"per_n": {5: {"n_jobz": 5}}}},
+            "Unknown key\\(s\\) in config section sim.per_n\\[5\\]: 'n_jobz' \\(did you mean 'n_jobs'\\?\\)",
         ),
     ],
 )
@@ -576,7 +576,8 @@ def test_load_app_config_overlay_and_dot_override_round_trip_is_deterministic(wr
         "round_trip_overlay.yaml",
         {
             "io.analysis_subdir": "custom",
-            "sim": {"seed_list": [3], "num_shuffles": 50},
+            "sim": {"seed_list": [3]},
+            "screening": {"resolution_delta": 0.04},
             "analysis": {"run_report": True},
         },
     )
@@ -1203,6 +1204,40 @@ def test_statistical_contract_accepts_complete_locked_configuration() -> None:
     cfg.validate_statistical_contract(require_two_roots=True)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("max_shuffles_per_root_k", 0, "max_shuffles_per_root_k"),
+        ("projected_games_per_second", 0.0, "projected_games_per_second"),
+        ("projected_games_per_second", float("nan"), "projected_games_per_second"),
+    ],
+)
+def test_statistical_contract_validates_screening_workload_limits(
+    field: str,
+    value: int | float,
+    message: str,
+) -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[2], seed_list=[101]))
+    cfg.screening.practical_delta_by_k = {2: 0.03}
+    cfg.screening.delta_across_k = 0.03
+    setattr(cfg.screening, field, value)
+
+    with pytest.raises(ValueError, match=message):
+        cfg.validate_statistical_contract()
+
+
+@pytest.mark.parametrize(("batch_count", "minimum"), [(99, 30), (100, 29)])
+def test_statistical_contract_locks_batch_construction(batch_count: int, minimum: int) -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[2], seed_list=[101]))
+    cfg.screening.practical_delta_by_k = {2: 0.03}
+    cfg.screening.delta_across_k = 0.03
+    cfg.batching.target_batches = batch_count
+    cfg.batching.min_shuffles_per_batch = minimum
+
+    with pytest.raises(ValueError, match="exactly 100 equal batches"):
+        cfg.validate_statistical_contract()
+
+
 def test_statistical_contract_requires_declared_practical_thresholds() -> None:
     cfg = AppConfig(sim=SimConfig(n_players_list=[2, 4], seed_list=[101, 202]))
 
@@ -1303,6 +1338,13 @@ def test_load_rejects_retired_statistical_key(write_yaml) -> None:
         load_app_config(path)
 
 
+def test_load_rejects_retired_manual_shuffle_count(write_yaml) -> None:
+    path = write_yaml("retired-shuffles.yaml", {"sim": {"num_shuffles": 100}})
+
+    with pytest.raises(ValueError, match="screening.resolution_delta and batching settings"):
+        load_app_config(path)
+
+
 def test_load_builds_new_statistical_sections(write_yaml) -> None:
     path = write_yaml(
         "contract.yaml",
@@ -1311,6 +1353,8 @@ def test_load_builds_new_statistical_sections(write_yaml) -> None:
             "screening": {
                 "practical_delta_by_k": {2: 0.03},
                 "delta_across_k": 0.03,
+                "max_shuffles_per_root_k": 10_000,
+                "projected_games_per_second": 250.0,
             },
             "head2head": {"family_alpha": 0.02, "target_power": 0.8},
             "k_aggregation": {"method": "equal-k", "k_weights": None},
@@ -1321,5 +1365,7 @@ def test_load_builds_new_statistical_sections(write_yaml) -> None:
 
     assert cfg.rng.bit_generator == "PCG64DXSM"
     assert cfg.screening.practical_delta_by_k == {2: 0.03}
+    assert cfg.screening.max_shuffles_per_root_k == 10_000
+    assert cfg.screening.projected_games_per_second == pytest.approx(250.0)
     assert cfg.head2head.family_alpha == pytest.approx(0.02)
     cfg.validate_statistical_contract()

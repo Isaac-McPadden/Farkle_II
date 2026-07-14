@@ -27,6 +27,11 @@ from pyarrow import parquet as pq
 
 from farkle.simulation.simulation import _play_game, generate_strategy_grid
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.simulation.workload_planner import (
+    TournamentWorkloadPlan,
+    WorkloadCapExceeded,
+    write_workload_plan,
+)
 from farkle.utils import parallel
 from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
@@ -42,7 +47,7 @@ LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Configuration constants (patched by tests/CLI)
 # ---------------------------------------------------------------------------
-NUM_SHUFFLES: int = 5_907  # BH-power calculation for default (can be overridden)
+NUM_SHUFFLES: int = 5_907  # Direct low-level API default; runner supplies its resolved plan.
 
 # Counting metrics in pkl file
 DESIRED_SEC_PER_CHUNK: int = 10
@@ -661,6 +666,8 @@ def run_tournament(
     strategies: Sequence[ThresholdStrategy] | None = None,
     resume: bool = True,
     checkpoint_metadata: Mapping[str, Any] | None = None,
+    workload_plan: TournamentWorkloadPlan | None = None,
+    workload_plan_path: Path | None = None,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
@@ -735,8 +742,35 @@ def run_tournament(
     }
     if checkpoint_metadata:
         checkpoint_meta.update(checkpoint_metadata)
+    if workload_plan is not None:
+        checkpoint_meta.update(
+            {
+                "workload_plan_version": workload_plan.plan_version,
+                "screening_resolution_delta": workload_plan.resolution_delta,
+                "screening_interval_confidence": workload_plan.confidence,
+                "batch_count": workload_plan.batch_count,
+                "shuffles_per_batch": workload_plan.shuffles_per_batch,
+                "batch_construction": workload_plan.batch_construction,
+            }
+        )
 
     games_per_sec = _measure_throughput(strategies[: cfg.n_players])
+    if workload_plan is not None:
+        if (
+            workload_plan.k != cfg.n_players
+            or workload_plan.strategy_count != cfg.n_strategies
+            or workload_plan.required_shuffles != cfg.num_shuffles
+        ):
+            raise ValueError("Tournament workload plan does not match the resolved run configuration")
+        workload_plan = workload_plan.with_games_per_second(games_per_sec)
+        if workload_plan_path is not None:
+            write_workload_plan(workload_plan_path, workload_plan)
+        LOGGER.info(
+            "Tournament workload projection complete",
+            extra={"stage": "simulation", **workload_plan.to_dict()},
+        )
+        if workload_plan.cap_exceeded:
+            raise WorkloadCapExceeded(workload_plan)
     shuffles_per_chunk = max(
         1,
         int(cfg.desired_sec_per_chunk * games_per_sec // cfg.games_per_shuffle),

@@ -17,14 +17,17 @@ from farkle.simulation.strategies import ThresholdStrategy
 
 
 def _cfg(tmp_path: Path, **sim_kwargs: Any) -> AppConfig:
+    test_batch_count = max(2, int(sim_kwargs.pop("num_shuffles", 2)))
     sim_defaults = {
         "n_players_list": [2],
-        "num_shuffles": 2,
         "seed": 123,
-        "recompute_num_shuffles": False,
     }
     sim_defaults.update(sim_kwargs)
-    return AppConfig(IOConfig(results_dir_prefix=tmp_path / "out"), SimConfig(**sim_defaults))
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path / "out"), SimConfig(**sim_defaults))
+    cfg.screening.resolution_delta = 0.9
+    cfg.batching.target_batches = test_batch_count
+    cfg.batching.min_shuffles_per_batch = 1
+    return cfg
 
 
 def _manifest_df() -> pd.DataFrame:
@@ -34,6 +37,16 @@ def _manifest_df() -> pd.DataFrame:
             {"strategy_id": 2, "strategy_str": "s2", "score_threshold": 500},
         ]
     )
+
+
+def _workload_meta(cfg: AppConfig, manifest: pd.DataFrame | None = None) -> dict[str, object]:
+    manifest = _manifest_df() if manifest is None else manifest
+    plan = runner._plan_workload_from_config(
+        cfg,
+        n_strategies=len(manifest),
+        n_players=2,
+    )
+    return runner._workload_checkpoint_metadata(plan)
 
 
 def test_filter_player_counts_invalid_vs_grid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -48,23 +61,16 @@ def test_filter_player_counts_invalid_vs_grid(monkeypatch: pytest.MonkeyPatch, t
     assert source == "experiment_size"
 
 
-def test_compute_num_shuffles_precedence_and_validation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    per_n_cfg = SimConfig(num_shuffles=11, recompute_num_shuffles=False)
-    cfg = _cfg(tmp_path, per_n={2: per_n_cfg}, recompute_num_shuffles=True, num_shuffles=99)
+def test_workload_plan_replaces_legacy_shuffle_sizing(tmp_path: Path) -> None:
+    per_n_cfg = SimConfig()
+    cfg = _cfg(tmp_path, per_n={2: per_n_cfg}, num_shuffles=99)
+    cfg.batching.target_batches = 3
 
-    monkeypatch.setattr(
-        runner,
-        "games_for_power_from_design",
-        lambda n_strategies, k_players, method, design: (_ for _ in ()).throw(AssertionError()),
-    )
-    assert runner._compute_num_shuffles_from_config(cfg, n_strategies=8, n_players=2) == 11
+    plan = runner._plan_workload_from_config(cfg, n_strategies=8, n_players=2)
 
-    cfg_no_override = _cfg(tmp_path, recompute_num_shuffles=True, num_shuffles=77)
-    monkeypatch.setattr(runner, "games_for_power_from_design", lambda **_: 5)
-    assert runner._compute_num_shuffles_from_config(cfg_no_override, n_strategies=8, n_players=2) == 5
-
-    cfg_fallback = _cfg(tmp_path, recompute_num_shuffles=False, num_shuffles=13)
-    assert runner._compute_num_shuffles_from_config(cfg_fallback, n_strategies=8, n_players=2) == 13
+    assert plan.required_shuffles == 3
+    assert plan.required_games == 12
+    assert plan.batch_count == 3
 
 
 def test_output_dir_and_done_helpers(tmp_path: Path) -> None:
@@ -136,6 +142,7 @@ def test_purge_existing_and_resume_output_validation(tmp_path: Path) -> None:
             "strategy_manifest_sha": runner._strategy_manifest_digest(_manifest_df()),
             "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
             "rng_bit_generator": "PCG64DXSM",
+            **_workload_meta(cfg),
         }
     }
     ckpt_path.write_bytes(pickle.dumps(ckpt_payload))
@@ -193,9 +200,8 @@ def _patch_tournament_writer(monkeypatch: pytest.MonkeyPatch, *, wrong_meta: boo
                 "num_shuffles": kwargs["num_shuffles"],
                 "global_seed": kwargs["global_seed"],
                 "n_strategies": len(kwargs["strategies"]),
+                **metadata,
                 "strategy_manifest_sha": "bad" if wrong_meta else metadata["strategy_manifest_sha"],
-                "rng_scheme_version": metadata["rng_scheme_version"],
-                "rng_bit_generator": metadata["rng_bit_generator"],
             },
         }
         ckpt.write_bytes(pickle.dumps(payload))
@@ -258,7 +264,6 @@ def test_run_single_n_branch_table(
 
     strategies = [ThresholdStrategy(300, 3), ThresholdStrategy(500, 2)]
     monkeypatch.setattr(runner, "_resolve_strategies", lambda cfg, strategies: (strategies or [], 2, True))
-    monkeypatch.setattr(runner, "_compute_num_shuffles_from_config", lambda *_args, **_kwargs: 3)
     monkeypatch.setattr(runner, "build_strategy_manifest", lambda _strategies: _manifest_df())
 
     calls: dict[str, int] = {"worker": 0}
@@ -277,9 +282,7 @@ def test_run_single_n_branch_table(
                         "num_shuffles": kwargs["num_shuffles"],
                         "global_seed": kwargs["global_seed"],
                         "n_strategies": len(kwargs["strategies"]),
-                        "strategy_manifest_sha": meta["strategy_manifest_sha"],
-                        "rng_scheme_version": meta["rng_scheme_version"],
-                        "rng_bit_generator": meta["rng_bit_generator"],
+                        **meta,
                     },
                 }
             )
@@ -321,7 +324,25 @@ def test_run_single_n_cleanup_purges_done_file(tmp_path: Path, monkeypatch: pyte
     assert runner.run_single_n(cfg, n_players, force=True) > 0
     payload = json.loads(stale_done.read_text())
     assert payload["n_players"] == n_players
-    assert payload["num_shuffles"] == 1
+    assert payload["num_shuffles"] == 2
+
+
+def test_run_single_n_cap_blocks_before_force_cleanup(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, num_shuffles=2)
+    cfg.screening.max_shuffles_per_root_k = 1
+    n_dir = cfg.results_root / "2_players"
+    n_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint = n_dir / "2p_checkpoint.pkl"
+    checkpoint.write_bytes(b"preserve-me")
+
+    with pytest.raises(runner.WorkloadCapExceeded, match="max_shuffles_per_root_k"):
+        runner.run_single_n(cfg, 2, force=True)
+
+    assert checkpoint.read_bytes() == b"preserve-me"
+    plan = json.loads((n_dir / "simulation_workload_plan.json").read_text(encoding="utf-8"))
+    assert plan["status"] == "blocked_by_cap"
+    assert plan["required_shuffles"] == 2
+    assert plan["shuffle_cap"] == 1
 
 
 def test_run_single_n_resume_invalid_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -406,19 +427,11 @@ def test_filter_player_counts_zero_grid_allows_positive_counts(
     assert source == "experiment_size"
 
 
-def test_compute_num_shuffles_invalid_power_config_raises(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    cfg = _cfg(tmp_path, recompute_num_shuffles=True)
+def test_workload_plan_rejects_incompatible_strategy_count(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
 
-    def fail_power(**_: Any) -> int:
-        raise ValueError("invalid power configuration")
-
-    monkeypatch.setattr(runner, "games_for_power_from_design", fail_power)
-
-    with pytest.raises(ValueError, match="invalid power configuration"):
-        runner._compute_num_shuffles_from_config(cfg, n_strategies=8, n_players=2)
+    with pytest.raises(ValueError, match="multiple of k"):
+        runner._plan_workload_from_config(cfg, n_strategies=7, n_players=2)
 
 
 def test_resolve_per_n_output_dir_edge_cases(tmp_path: Path) -> None:
@@ -608,6 +621,7 @@ def test_validate_resume_outputs_promotes_legacy_manifest(tmp_path: Path) -> Non
                     "strategy_manifest_sha": runner._strategy_manifest_digest(manifest),
                     "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
                     "rng_bit_generator": "PCG64DXSM",
+                    **_workload_meta(cfg, manifest),
                 }
             }
         )
@@ -658,6 +672,7 @@ def test_validate_resume_outputs_checkpoint_meta_missing_or_non_mapping(
         ("strategy_manifest_sha", "wrong"),
         ("rng_scheme_version", 999),
         ("rng_bit_generator", "wrong"),
+        ("workload_plan_version", 999),
     ],
 )
 def test_validate_resume_outputs_checkpoint_meta_mismatch_keys(
@@ -678,6 +693,7 @@ def test_validate_resume_outputs_checkpoint_meta_mismatch_keys(
         "strategy_manifest_sha": runner._strategy_manifest_digest(manifest),
         "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
         "rng_bit_generator": "PCG64DXSM",
+        **_workload_meta(cfg, manifest),
     }
     meta[bad_key] = bad_value
     ckpt_path.write_bytes(pickle.dumps({"meta": meta}))
@@ -841,14 +857,18 @@ def test_run_single_n_empty_rows_and_legacy_sq_sum_outputs(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     cfg = _cfg(tmp_path, expanded_metrics=True, num_shuffles=2)
-    strategies = [ThresholdStrategy(300, 3)]
+    strategies = [ThresholdStrategy(300, 3), ThresholdStrategy(500, 2)]
 
-    monkeypatch.setattr(runner, "_resolve_strategies", lambda cfg, s: (strategies, 1, True))
-    monkeypatch.setattr(runner, "_compute_num_shuffles_from_config", lambda *_args, **_kwargs: 2)
+    monkeypatch.setattr(runner, "_resolve_strategies", lambda cfg, s: (strategies, 2, True))
     monkeypatch.setattr(
         runner,
         "build_strategy_manifest",
-        lambda _strategies: pd.DataFrame([{"strategy_id": "s0", "strategy_str": "s0"}]),
+        lambda _strategies: pd.DataFrame(
+            [
+                {"strategy_id": "s0", "strategy_str": "s0"},
+                {"strategy_id": "s1", "strategy_str": "s1"},
+            ]
+        ),
     )
 
     payloads = [
@@ -870,9 +890,8 @@ def test_run_single_n_empty_rows_and_legacy_sq_sum_outputs(
             "num_shuffles": kwargs["num_shuffles"],
             "global_seed": kwargs["global_seed"],
             "n_strategies": len(kwargs["strategies"]),
+            **kwargs["checkpoint_metadata"],
             "strategy_manifest_sha": meta_sha,
-            "rng_scheme_version": kwargs["checkpoint_metadata"]["rng_scheme_version"],
-            "rng_bit_generator": kwargs["checkpoint_metadata"]["rng_bit_generator"],
         }
         ckpt.write_bytes(pickle.dumps(payload))
 
@@ -892,7 +911,11 @@ def test_run_single_n_empty_rows_and_legacy_sq_sum_outputs(
     assert not (n_dir / "2p_checkpoint.parquet").exists()
     assert not (n_dir / "2p_metrics.parquet").exists()
     assert any("Strategy manifest written" in rec.getMessage() for rec in caplog.records)
-    assert all(p.name.endswith("checkpoint.pkl") or p.name == runner.STRATEGY_MANIFEST_NAME for p in captured_outputs[0])
+    assert all(
+        p.name.endswith("checkpoint.pkl")
+        or p.name in {runner.STRATEGY_MANIFEST_NAME, "simulation_workload_plan.json"}
+        for p in captured_outputs[0]
+    )
 
     runner.run_single_n(cfg, 2, force=True)
     metrics = pd.read_parquet(n_dir / "2p_metrics.parquet")
