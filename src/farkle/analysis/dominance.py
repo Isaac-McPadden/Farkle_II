@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, cast
@@ -30,6 +31,7 @@ _ALLOWED_DECISIONS: Final = {
     "equivalent",
     "unresolved",
 }
+_SCREENING_SCORE_OPERATIONS: Final = {"equal_k_mean", "declared_k_weighted_mean"}
 
 
 @dataclass(frozen=True)
@@ -161,6 +163,7 @@ def _read_inference(cfg: AppConfig) -> pd.DataFrame:
         "simultaneous_d_low",
         "simultaneous_d_high",
         "holm_reject",
+        "practical_delta",
         "decision_class",
     }
     schema = pq.read_schema(path)
@@ -194,6 +197,70 @@ def _read_inference(cfg: AppConfig) -> pd.DataFrame:
             f"{len(frame)} != {expected_pairs}"
         )
     return frame
+
+
+def _read_tournament_screening_scores(
+    cfg: AppConfig,
+    nodes: set[str],
+) -> tuple[dict[str, float], Path]:
+    """Read the canonical tournament score used only for within-front display."""
+
+    roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
+    if len(roots) == 2:
+        path = cfg.root_combined_performance_across_k_path()
+        expected_scope = ArtifactScope.CROSS_SEED.value
+        required = {"estimate_scope", "strategy", "across_k_score", "complete_support"}
+        score_column = "across_k_score"
+    elif len(roots) == 1:
+        path = cfg.performance_across_k_path()
+        expected_scope = ArtifactScope.ACROSS_K.value
+        required = {"strategy", "equal_k_score", "complete_support"}
+        score_column = "equal_k_score"
+    else:
+        raise ValueError(f"dominance requires one or two configured roots, found {roots}")
+    sidecar = validate_artifact_sidecar(path, expected={"scope": expected_scope})
+    if sidecar.operation not in _SCREENING_SCORE_OPERATIONS:
+        raise ValueError(
+            f"tournament screening score operation {sidecar.operation!r} is not canonical"
+        )
+    schema = pq.read_schema(path)
+    missing_columns = sorted(required.difference(schema.names))
+    if missing_columns:
+        raise ValueError(f"tournament screening scores lack columns: {missing_columns}")
+    frame = pq.read_table(path, columns=sorted(required)).to_pandas()
+    if len(roots) == 2:
+        frame = frame.loc[frame["estimate_scope"].eq("combined_roots")].copy()
+    frame["strategy"] = frame["strategy"].astype(str)
+    selected = frame.loc[frame["strategy"].isin(nodes)].copy()
+    if selected["strategy"].duplicated().any():
+        raise ValueError("tournament screening scores contain duplicate finalist rows")
+    missing_nodes = sorted(nodes.difference(set(selected["strategy"])))
+    if missing_nodes:
+        raise ValueError(f"tournament screening scores lack finalists: {missing_nodes}")
+    incomplete = selected.loc[~selected["complete_support"].astype(bool), "strategy"].tolist()
+    if incomplete:
+        raise ValueError(f"tournament screening scores lack complete support: {incomplete}")
+    if selected[score_column].isna().any():
+        raise ValueError("tournament screening scores contain unavailable finalist values")
+    return (
+        dict(
+            zip(
+                selected["strategy"],
+                selected[score_column].astype(float),
+                strict=True,
+            )
+        ),
+        path,
+    )
+
+
+def _tournament_screening_score_path(cfg: AppConfig) -> Path:
+    roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
+    if len(roots) == 2:
+        return cfg.root_combined_performance_across_k_path()
+    if len(roots) == 1:
+        return cfg.performance_across_k_path()
+    raise ValueError(f"dominance requires one or two configured roots, found {roots}")
 
 
 def _edge_frames(
@@ -230,9 +297,17 @@ def _edge_frames(
                     "d_ab": float(raw["d_ab"]),
                     "simultaneous_d_low": float(raw["simultaneous_d_low"]),
                     "simultaneous_d_high": float(raw["simultaneous_d_high"]),
+                    "practical_delta": float(raw["practical_delta"]),
+                    "practical_distance_beyond_threshold": None,
                 }
             )
         if is_practical:
+            threshold = float(raw["practical_delta"])
+            distance = (
+                float(raw["simultaneous_d_low"]) - threshold
+                if decision.endswith("_a")
+                else -float(raw["simultaneous_d_high"]) - threshold
+            )
             practical_edges.add((winner, loser))
             rows.append(
                 {
@@ -244,6 +319,8 @@ def _edge_frames(
                     "d_ab": float(raw["d_ab"]),
                     "simultaneous_d_low": float(raw["simultaneous_d_low"]),
                     "simultaneous_d_high": float(raw["simultaneous_d_high"]),
+                    "practical_delta": threshold,
+                    "practical_distance_beyond_threshold": distance,
                 }
             )
     columns = [
@@ -255,6 +332,8 @@ def _edge_frames(
         "d_ab",
         "simultaneous_d_low",
         "simultaneous_d_high",
+        "practical_delta",
+        "practical_distance_beyond_threshold",
     ]
     return pd.DataFrame(rows, columns=columns), practical_edges, statistical_edges
 
@@ -264,6 +343,7 @@ def _descriptive_scores(
     nodes: set[str],
     practical_edges: set[tuple[str, str]],
     statistical_edges: set[tuple[str, str]],
+    tournament_scores: dict[str, float],
 ) -> pd.DataFrame:
     rates: dict[str, list[float]] = {node: [] for node in nodes}
     for raw in cast(list[dict[str, Any]], frame.to_dict(orient="records")):
@@ -279,7 +359,6 @@ def _descriptive_scores(
         practical_losses = sum(loser == strategy for _, loser in practical_edges)
         statistical_wins = sum(winner == strategy for winner, _ in statistical_edges)
         statistical_losses = sum(loser == strategy for _, loser in statistical_edges)
-        unresolved_practical = opponent_count - practical_wins - practical_losses
         rows.append(
             {
                 "strategy": strategy,
@@ -289,7 +368,7 @@ def _descriptive_scores(
                 "practical_net_wins": practical_wins - practical_losses,
                 "statistical_wins": statistical_wins,
                 "statistical_losses": statistical_losses,
-                "tournament_score": practical_wins + 0.5 * unresolved_practical,
+                "tournament_screening_score": tournament_scores[strategy],
             }
         )
     return pd.DataFrame(rows)
@@ -307,12 +386,11 @@ def _front_frame(
     output["statistical_cycle_group"] = output["strategy"].map(statistical.cycle_groups)
     sort_columns = [
         "round_robin_mean_win_rate",
-        "practical_wins",
-        "practical_losses",
-        "tournament_score",
+        "practical_net_wins",
+        "tournament_screening_score",
         "strategy",
     ]
-    ascending = [False, False, True, False, True]
+    ascending = [False, False, False, True]
     for graph_type in ("practical", "statistical"):
         front_column = f"{graph_type}_front"
         position_column = f"{graph_type}_display_position_within_front"
@@ -332,30 +410,134 @@ def _front_frame(
     ).reset_index(drop=True)
 
 
+def _canonical_cycle(cycle: tuple[str, ...]) -> tuple[str, ...]:
+    """Rotate a directed cycle to its stable-ID-minimal representation."""
+
+    return min(cycle[index:] + cycle[:index] for index in range(len(cycle)))
+
+
+def _representative_shortest_cycle(
+    members: tuple[str, ...],
+    edges: set[tuple[str, str]],
+) -> tuple[str, ...]:
+    """Return a deterministic shortest directed cycle within one component."""
+
+    member_set = set(members)
+    adjacency = {
+        member: sorted(loser for winner, loser in edges if winner == member and loser in member_set)
+        for member in members
+    }
+    candidates: list[tuple[str, ...]] = []
+    for start in members:
+        queue: list[tuple[str, tuple[str, ...]]] = [
+            (neighbor, (start, neighbor)) for neighbor in adjacency[start]
+        ]
+        visited = set(adjacency[start])
+        cursor = 0
+        while cursor < len(queue):
+            node, path = queue[cursor]
+            cursor += 1
+            for neighbor in adjacency[node]:
+                if neighbor == start:
+                    candidates.append(_canonical_cycle(path))
+                    queue.clear()
+                    break
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append((neighbor, path + (neighbor,)))
+    if not candidates:
+        raise RuntimeError(f"strongly connected component lacks a directed cycle: {members}")
+    return min(candidates, key=lambda cycle: (len(cycle), cycle))
+
+
 def _cycle_frame(
     practical: _GraphStructure,
     statistical: _GraphStructure,
+    edge_frame: pd.DataFrame,
+    practical_edges: set[tuple[str, str]],
+    statistical_edges: set[tuple[str, str]],
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
-    for graph_type, structure in (
-        ("practical", practical),
-        ("statistical", statistical),
+    for graph_type, structure, graph_edges in (
+        ("practical", practical, practical_edges),
+        ("statistical", statistical, statistical_edges),
     ):
         for members in structure.cycles:
             cycle_id = structure.cycle_groups[members[0]]
+            member_set = set(members)
+            internal_practical = edge_frame.loc[
+                edge_frame["graph_type"].eq("practical")
+                & edge_frame["winner"].isin(member_set)
+                & edge_frame["loser"].isin(member_set)
+            ].copy()
+            strongest_order = internal_practical.sort_values(
+                ["practical_distance_beyond_threshold", "winner", "loser"],
+                ascending=[False, True, True],
+                kind="mergesort",
+            )
+            weakest_order = internal_practical.sort_values(
+                ["practical_distance_beyond_threshold", "winner", "loser"],
+                ascending=[True, True, True],
+                kind="mergesort",
+            )
+            strongest = strongest_order.iloc[0] if not strongest_order.empty else None
+            weakest = weakest_order.iloc[0] if not weakest_order.empty else None
+            representative = _representative_shortest_cycle(members, graph_edges)
             for member in members:
                 rows.append(
                     {
                         "graph_type": graph_type,
                         "cycle_group": cycle_id,
                         "cycle_size": len(members),
+                        "members_json": json.dumps(list(members), separators=(",", ":")),
                         "strategy": member,
                         "front": structure.fronts[member],
+                        "internal_practical_edge_evidence_available": strongest is not None,
+                        "strongest_internal_practical_winner": (
+                            None if strongest is None else str(strongest["winner"])
+                        ),
+                        "strongest_internal_practical_loser": (
+                            None if strongest is None else str(strongest["loser"])
+                        ),
+                        "strongest_internal_practical_distance": (
+                            None
+                            if strongest is None
+                            else float(strongest["practical_distance_beyond_threshold"])
+                        ),
+                        "weakest_internal_practical_winner": (
+                            None if weakest is None else str(weakest["winner"])
+                        ),
+                        "weakest_internal_practical_loser": (
+                            None if weakest is None else str(weakest["loser"])
+                        ),
+                        "weakest_internal_practical_distance": (
+                            None
+                            if weakest is None
+                            else float(weakest["practical_distance_beyond_threshold"])
+                        ),
+                        "representative_shortest_cycle_json": json.dumps(
+                            list(representative), separators=(",", ":")
+                        ),
                     }
                 )
     return pd.DataFrame(
         rows,
-        columns=["graph_type", "cycle_group", "cycle_size", "strategy", "front"],
+        columns=[
+            "graph_type",
+            "cycle_group",
+            "cycle_size",
+            "members_json",
+            "strategy",
+            "front",
+            "internal_practical_edge_evidence_available",
+            "strongest_internal_practical_winner",
+            "strongest_internal_practical_loser",
+            "strongest_internal_practical_distance",
+            "weakest_internal_practical_winner",
+            "weakest_internal_practical_loser",
+            "weakest_internal_practical_distance",
+            "representative_shortest_cycle_json",
+        ],
     )
 
 
@@ -365,7 +547,7 @@ def _write_parquet(
     path: Path,
     *,
     operation: str,
-    source: Path,
+    sources: list[Path],
     grouping_keys: list[str],
     seed_scope: str,
 ) -> None:
@@ -383,7 +565,7 @@ def _write_parquet(
         replication_unit="unordered_candidate_pair",
         conditioning="frozen_finite_grid_candidate_family",
         consistency_columns=frame.columns.tolist(),
-        source_artifacts=[source],
+        source_artifacts=sources,
         grouping_keys=grouping_keys,
         player_counts=[2],
         required_player_counts=[2],
@@ -409,9 +591,10 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         summary=cfg.h2h_dominance_summary_path(),
     )
     done = stage_done_path(cfg.h2h_2p_dir(), "h2h_dominance_fronts")
+    tournament_score_source = _tournament_screening_score_path(cfg)
     if not force and stage_is_up_to_date(
         done,
-        inputs=[source],
+        inputs=[source, tournament_score_source],
         outputs=list(artifacts.all_paths),
         cfg=cfg,
         stage="head2head",
@@ -420,6 +603,8 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         return artifacts
     inference = _read_inference(cfg)
     nodes = set(inference["strategy_a"].astype(str)) | set(inference["strategy_b"].astype(str))
+    tournament_scores, tournament_score_source = _read_tournament_screening_scores(cfg, nodes)
+    sources = [source, tournament_score_source]
     edges, practical_edges, statistical_edges = _edge_frames(inference)
     practical = _graph_structure(nodes, practical_edges, "practical")
     statistical = _graph_structure(nodes, statistical_edges, "statistical")
@@ -428,9 +613,16 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         nodes,
         practical_edges,
         statistical_edges,
+        tournament_scores,
     )
     fronts = _front_frame(scores, practical, statistical)
-    cycles = _cycle_frame(practical, statistical)
+    cycles = _cycle_frame(
+        practical,
+        statistical,
+        edges,
+        practical_edges,
+        statistical_edges,
+    )
     direct_practical_winners = sorted(
         strategy
         for strategy in nodes
@@ -466,7 +658,7 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         edges,
         artifacts.edges,
         operation="construct_dominance_graphs",
-        source=source,
+        sources=sources,
         grouping_keys=["graph_type", "winner", "loser"],
         seed_scope=seed_scope,
     )
@@ -475,7 +667,7 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         cycles,
         artifacts.cycles,
         operation="detect_strongly_connected_cycles",
-        source=source,
+        sources=sources,
         grouping_keys=["graph_type", "cycle_group", "strategy"],
         seed_scope=seed_scope,
     )
@@ -484,7 +676,7 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         fronts,
         artifacts.fronts,
         operation="condensation_dag_fronts",
-        source=source,
+        sources=sources,
         grouping_keys=["strategy"],
         seed_scope=seed_scope,
     )
@@ -502,7 +694,7 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         replication_unit="unordered_candidate_pair",
         conditioning="frozen_finite_grid_candidate_family",
         consistency_columns=list(summary),
-        source_artifacts=[source],
+        source_artifacts=sources,
         grouping_keys=["family_hash"],
         player_counts=[2],
         required_player_counts=[2],
@@ -512,7 +704,7 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
     write_json_artifact_atomic(summary, artifacts.summary, sidecar=summary_sidecar)
     write_stage_done(
         done,
-        inputs=[source],
+        inputs=sources,
         outputs=list(artifacts.all_paths),
         cfg=cfg,
         stage="head2head",
