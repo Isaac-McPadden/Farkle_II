@@ -107,6 +107,22 @@ random-effects inference or population intervals over roots.
 Every protected strategy must occur in at least one canonical contribution,
 and the cap cannot be smaller than the protected family.
 
+## H2H power and allocation
+
+- `head2head.family_alpha`: Holm familywise alpha; locked default `0.02`.
+- `head2head.target_power`: minimum worst-scenario planning power; default
+  `0.80`.
+- `head2head.practical_delta`: reported seat-adjusted target effect; default
+  `0.03`.
+- `head2head.sensitivity_deltas`: includes the target effect and `0.04`.
+- `head2head.seat1_advantage_scenarios`: locked to `0`, `0.03`, and `0.06`.
+- `head2head.total_game_cap`: operational cap checked before block scheduling.
+- `head2head.allow_single_root`: permits explicitly labelled single-root H2H.
+
+Power is calculated for the same independent two-proportion score procedure
+used downstream, at Bonferroni `family_alpha / pair_count` as a conservative
+Holm planning threshold. Allocation is equal across roots and seat orders.
+
 ## Important `analysis` fields
 
 - `log_level`

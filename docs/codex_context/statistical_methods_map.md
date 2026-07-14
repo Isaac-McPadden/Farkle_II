@@ -193,6 +193,21 @@ For every statistical claim, review in this order:
 - Tests: `tests/unit/analysis/test_candidate_family.py` covers balanced-tail
   contraction, protected candidates, no-cap behavior, sidecar scope, family-hash
   replay, and explicit single-root labelling.
+- Power and scheduling code: `src/farkle/analysis/h2h_schedule.py`.
+- Planning test: the two-sided independent two-proportion score procedure at
+  Bonferroni `family_alpha / pair_count`; the final multiplicity method remains
+  Holm. The planner finds the smallest equal root/order block size meeting
+  target power in the worst configured common seat-effect scenario and reports
+  both `0.03` and `0.04` sensitivity grids.
+- Allocation: every unordered pair receives the same count in each root/order
+  cell. Single-root execution remains exactly balanced between orders and is
+  explicitly labelled.
+- RNG and resume: each immutable block owns
+  `(root, pair, order, game_index)` coordinate streams. Atomic block artifacts
+  are skipped only after their sidecars and family/schedule identity validate.
+- Tests: `tests/unit/analysis/test_h2h_schedule.py` covers minimum power,
+  root/order equality, cap stop/resume, coordinate separation, single-root
+  labelling, and block-level resume.
 - Code: `src/farkle/analysis/head2head.py`,
   `src/farkle/analysis/run_bonferroni_head2head.py`,
   `src/farkle/analysis/h2h_analysis.py`.

@@ -199,6 +199,10 @@ The pre-scheduling two-player family is published under
 
 - `candidate_family.parquet`
 - `candidate_family.json`
+- `power_plan.json`
+- `block_manifest.parquet`
+- `blocks/pair_<id>_root_<root>_order_<order>.parquet`
+- `root_order_counts.parquet`
 
 The membership table records every canonical win-rate and TrueSkill source
 rank, method-list membership, protected control/diagnostic status, admission
@@ -212,6 +216,20 @@ optional candidate cap reduces both nonprotected method cutoffs together until
 their union plus protected entries fits. No cap retains the complete declared
 union. A single-root family is supported but explicitly labelled in the
 manifest and sidecars.
+
+`power_plan.json` sizes the independent two-proportion score procedure at the
+conservative Bonferroni threshold `family_alpha / unordered_pair_count`. It
+finds the smallest allocation that attains target power in the worst declared
+common seat-1-advantage scenario and reports the sensitivity grid. If the
+projected games exceed `head2head.total_game_cap`, it publishes
+`blocked_by_cap` guidance and does not publish a block manifest.
+
+A ready block manifest divides every pair equally across roots and both seat
+orders. Each immutable block records the family hash and its exact
+`(root, pair, order, game_index)` RNG coordinates. Completed blocks are written
+atomically with sidecars; interruption and worker-count changes therefore skip
+valid blocks without changing any stream. `root_order_counts.parquet` is the
+row-preserving union consumed by seat-adjusted inference.
 
 ### Coverage and game stats
 

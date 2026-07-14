@@ -1481,6 +1481,35 @@ class AppConfig:
 
         return self.h2h_2p_dir() / "candidate_family.json"
 
+    def h2h_power_plan_path(self) -> Path:
+        """Score-test power and root/order allocation plan."""
+
+        return self.h2h_2p_dir() / "power_plan.json"
+
+    def h2h_block_manifest_path(self) -> Path:
+        """Immutable pair/root/order simulation block manifest."""
+
+        return self.h2h_2p_dir() / "block_manifest.parquet"
+
+    def h2h_block_results_dir(self) -> Path:
+        """Directory of atomic pair/root/order block checkpoints."""
+
+        path = self.h2h_2p_dir() / "blocks"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def h2h_block_result_path(self, pair_id: int, root_seed: int, order: int) -> Path:
+        """One immutable H2H pair/root/order checkpoint path."""
+
+        return self.h2h_block_results_dir() / (
+            f"pair_{int(pair_id):06d}_root_{int(root_seed)}_order_{int(order)}.parquet"
+        )
+
+    def h2h_order_counts_path(self) -> Path:
+        """Validated row-preserving union of completed H2H blocks."""
+
+        return self.h2h_2p_dir() / "root_order_counts.parquet"
+
     def legacy_metrics_isolated_path(self, k: int) -> Path:
         """Legacy isolated metrics parquet path under ``analysis/data``."""
 
@@ -2480,6 +2509,24 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("head2head.target_power must be between 0 and 1")
     if h2h.practical_delta <= 0.0:
         raise ValueError("head2head.practical_delta must be positive")
+    sensitivity = tuple(float(delta) for delta in h2h.sensitivity_deltas)
+    if (
+        not sensitivity
+        or len(set(sensitivity)) != len(sensitivity)
+        or any(delta <= 0.0 for delta in sensitivity)
+        or h2h.practical_delta not in sensitivity
+        or 0.04 not in sensitivity
+    ):
+        raise ValueError(
+            "head2head.sensitivity_deltas must be unique positive values containing "
+            "the practical delta and 0.04"
+        )
+    if tuple(float(value) for value in h2h.seat1_advantage_scenarios) != (
+        0.0,
+        0.03,
+        0.06,
+    ):
+        raise ValueError("head2head.seat1_advantage_scenarios is locked to 0, 0.03, 0.06")
     if h2h.candidate_cap is not None and h2h.candidate_cap < 2:
         raise ValueError("head2head.candidate_cap must be at least 2")
     if h2h.candidate_cap_policy != "balanced-tail":
