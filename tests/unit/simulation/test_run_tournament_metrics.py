@@ -133,8 +133,9 @@ def _setup_serial_run(monkeypatch: pytest.MonkeyPatch) -> list[ThresholdStrategy
     monkeypatch.setattr(rt, "_measure_throughput", fake_measure, raising=True)
     monkeypatch.setattr(
         rt.urandom,
-        "spawn_seeds",
-        lambda count, seed=0: list(range(seed, seed + count)),
+        "coordinate_seed",
+        lambda _purpose, *, root_seed, shuffle_index=0, **_kwargs: root_seed
+        + shuffle_index,
         raising=True,
     )
     _install_serial_process_map(monkeypatch)

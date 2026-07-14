@@ -4,10 +4,8 @@
 # coverage.  No heavy dice-rolling here – we only verify *selected* entries.
 # """
 
-import random
 from collections import Counter
 
-import numpy as np
 import pytest
 
 import farkle.game.scoring_lookup as sl
@@ -15,6 +13,7 @@ from farkle.simulation.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
 )
+from farkle.utils.random import RandomPurpose, coordinate_rng
 
 # --- build the table once for all tests -------------------------------------
 
@@ -35,7 +34,7 @@ def test_lookup_known_patterns(counts, expected):
 
 def test_random_entry_consistency():
     """Random roll → same score via evaluate() and the pre-built table."""
-    rng = np.random.default_rng(0)
+    rng = coordinate_rng(RandomPurpose.INDEXED_SEED, root_seed=0)
     roll = rng.integers(1, 7, size=6)
     key = tuple(roll.tolist().count(i) for i in range(1, 7))
     total_score_table = LOOKUP[key][0]
@@ -45,7 +44,10 @@ def test_random_entry_consistency():
 
 def test_keys_are_sorted_and_hashable():
     """10 random keys from the table keep their structural promises."""
-    for k in random.sample(list(LOOKUP.keys()), 10):
+    rng = coordinate_rng(RandomPurpose.INDEXED_SEED, root_seed=1)
+    keys = list(LOOKUP.keys())
+    for index in rng.choice(len(keys), size=10, replace=False):
+        k = keys[int(index)]
         # tuple of 6 ints, already counts-ordered
         assert len(k) == 6 and all(isinstance(x, int) for x in k)
         hash(k)  # will raise TypeError if not hashable
@@ -56,7 +58,7 @@ def test_build_and_roundtrip():
     assert len(table) > 900  # sanity
 
     # make a random roll – score it two ways and compare
-    rng = np.random.default_rng(0)
+    rng = coordinate_rng(RandomPurpose.INDEXED_SEED, root_seed=0)
     roll = rng.integers(1, 7, size=6)
     key = tuple(roll.tolist().count(i) for i in range(1, 7))
     score_via_table = table[key][0]
@@ -96,7 +98,12 @@ def test_decide_basic(turn_score, dice_left, expect_roll):
 
 def test_random_threshold_strategy_diversity():
     """Just make sure we don't always get the same parameters."""
-    seen = Counter(random_threshold_strategy().score_threshold for _ in range(10))
+    seen = Counter(
+        random_threshold_strategy(
+            coordinate_rng(RandomPurpose.STRATEGY, root_seed=0, replicate_index=index)
+        ).score_threshold
+        for index in range(10)
+    )
     # heuristic – at least three distinct thresholds in 10 draws
     assert len(seen) >= 3
 

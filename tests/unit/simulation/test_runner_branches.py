@@ -134,6 +134,8 @@ def test_purge_existing_and_resume_output_validation(tmp_path: Path) -> None:
             "global_seed": cfg.sim.seed,
             "n_strategies": len(_manifest_df()),
             "strategy_manifest_sha": runner._strategy_manifest_digest(_manifest_df()),
+            "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+            "rng_bit_generator": "PCG64DXSM",
         }
     }
     ckpt_path.write_bytes(pickle.dumps(ckpt_payload))
@@ -192,6 +194,8 @@ def _patch_tournament_writer(monkeypatch: pytest.MonkeyPatch, *, wrong_meta: boo
                 "global_seed": kwargs["global_seed"],
                 "n_strategies": len(kwargs["strategies"]),
                 "strategy_manifest_sha": "bad" if wrong_meta else metadata["strategy_manifest_sha"],
+                "rng_scheme_version": metadata["rng_scheme_version"],
+                "rng_bit_generator": metadata["rng_bit_generator"],
             },
         }
         ckpt.write_bytes(pickle.dumps(payload))
@@ -274,6 +278,8 @@ def test_run_single_n_branch_table(
                         "global_seed": kwargs["global_seed"],
                         "n_strategies": len(kwargs["strategies"]),
                         "strategy_manifest_sha": meta["strategy_manifest_sha"],
+                        "rng_scheme_version": meta["rng_scheme_version"],
+                        "rng_bit_generator": meta["rng_bit_generator"],
                     },
                 }
             )
@@ -600,6 +606,8 @@ def test_validate_resume_outputs_promotes_legacy_manifest(tmp_path: Path) -> Non
                     "global_seed": cfg.sim.seed,
                     "n_strategies": len(manifest),
                     "strategy_manifest_sha": runner._strategy_manifest_digest(manifest),
+                    "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+                    "rng_bit_generator": "PCG64DXSM",
                 }
             }
         )
@@ -648,6 +656,8 @@ def test_validate_resume_outputs_checkpoint_meta_missing_or_non_mapping(
         ("global_seed", 999),
         ("n_strategies", 999),
         ("strategy_manifest_sha", "wrong"),
+        ("rng_scheme_version", 999),
+        ("rng_bit_generator", "wrong"),
     ],
 )
 def test_validate_resume_outputs_checkpoint_meta_mismatch_keys(
@@ -666,6 +676,8 @@ def test_validate_resume_outputs_checkpoint_meta_mismatch_keys(
         "global_seed": cfg.sim.seed,
         "n_strategies": len(manifest),
         "strategy_manifest_sha": runner._strategy_manifest_digest(manifest),
+        "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+        "rng_bit_generator": "PCG64DXSM",
     }
     meta[bad_key] = bad_value
     ckpt_path.write_bytes(pickle.dumps({"meta": meta}))
@@ -723,7 +735,11 @@ def test_validate_resume_outputs_row_manifest_invalid(
     row_dir = n_dir / "rows"
     row_dir.mkdir(parents=True, exist_ok=True)
     _write_manifest_lines(row_dir / "manifest.jsonl", rows)
-    monkeypatch.setattr(runner.urandom, "spawn_seeds", lambda n, seed: [1, 2])
+    monkeypatch.setattr(
+        runner.urandom,
+        "coordinate_seed",
+        lambda _purpose, *, shuffle_index, **_kwargs: shuffle_index + 1,
+    )
 
     with pytest.raises(ValueError, match=match):
         runner._validate_resume_outputs(
@@ -784,7 +800,11 @@ def test_validate_resume_outputs_row_and_metrics_manifests_pass(
         metric_dir / "metrics_manifest.jsonl",
         [{"chunk_index": 0, "n_players": 2}, {"chunk_index": 1, "n_players": 2}],
     )
-    monkeypatch.setattr(runner.urandom, "spawn_seeds", lambda n, seed: [1, 2])
+    monkeypatch.setattr(
+        runner.urandom,
+        "coordinate_seed",
+        lambda _purpose, *, shuffle_index, **_kwargs: shuffle_index + 1,
+    )
 
     runner._validate_resume_outputs(
         cfg=cfg,
@@ -851,6 +871,8 @@ def test_run_single_n_empty_rows_and_legacy_sq_sum_outputs(
             "global_seed": kwargs["global_seed"],
             "n_strategies": len(kwargs["strategies"]),
             "strategy_manifest_sha": meta_sha,
+            "rng_scheme_version": kwargs["checkpoint_metadata"]["rng_scheme_version"],
+            "rng_bit_generator": kwargs["checkpoint_metadata"]["rng_bit_generator"],
         }
         ckpt.write_bytes(pickle.dumps(payload))
 

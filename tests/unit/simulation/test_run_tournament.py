@@ -163,7 +163,13 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
     strats = _mini_strats(4)
     monkeypatch.setattr(rt, "generate_strategy_grid", lambda *a, **k: (strats, None), raising=True)
     monkeypatch.setattr(rt, "_measure_throughput", lambda sample: 8.0, raising=True)
-    monkeypatch.setattr(rt.urandom, "spawn_seeds", lambda n, seed=0: list(range(n)), raising=True)
+    monkeypatch.setattr(
+        rt.urandom,
+        "coordinate_seed",
+        lambda _purpose, *, root_seed, shuffle_index=0, **_kwargs: root_seed
+        + shuffle_index,
+        raising=True,
+    )
 
     chunk_calls: list[list[int]] = []
 

@@ -15,10 +15,11 @@ import numpy as np
 import pandas as pd
 
 from farkle.analysis import game_stats
+from farkle.utils.random import make_rng
 
 
 def _build_synthetic(path: Path, *, rows: int, seats: int, seed: int) -> list[tuple[int, Path]]:
-    rng = np.random.default_rng(seed)
+    rng = make_rng(seed)
     data: dict[str, np.ndarray] = {"n_rounds": rng.integers(2, 30, size=rows, dtype=np.int16)}
     for seat in range(1, seats + 1):
         data[f"P{seat}_strategy"] = rng.integers(1, 20, size=rows, dtype=np.int16)

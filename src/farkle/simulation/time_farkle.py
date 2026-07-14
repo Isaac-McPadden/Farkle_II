@@ -6,7 +6,6 @@ for determining chunk size when running tournaments.
 """
 
 import logging
-import random
 import time
 
 import pandas as pd
@@ -16,6 +15,7 @@ from farkle.simulation.simulation import (
     simulate_one_game,
 )
 from farkle.simulation.strategies import ThresholdStrategy, random_threshold_strategy
+from farkle.utils.random import RandomPurpose, coordinate_rng
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,8 +31,19 @@ def make_random_strategies(num_players: int, seed: int | None) -> list[Threshold
         A list of ThresholdStrategy objects, one for each simulated player.
     """
 
-    rng = random.Random(seed)
-    return [random_threshold_strategy(rng) for _ in range(num_players)]
+    if seed is None:
+        raise ValueError("make_random_strategies requires an explicit seed")
+    return [
+        random_threshold_strategy(
+            coordinate_rng(
+                RandomPurpose.STRATEGY,
+                root_seed=seed,
+                k=num_players,
+                seat_index=seat_index,
+            )
+        )
+        for seat_index in range(num_players)
+    ]
 
 
 def measure_sim_times(

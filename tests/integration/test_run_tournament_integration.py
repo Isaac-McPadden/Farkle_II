@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import importlib
 import pickle
-import random
 import sys
 import types
 from pathlib import Path
@@ -77,6 +76,7 @@ except ModuleNotFoundError:  # pragma: no cover - fallback used in CI
 import farkle.simulation.simulation as sim
 from farkle.simulation.run_tournament import TournamentConfig
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.random import RandomPurpose, coordinate_rng
 
 ###############################################################################
 # 1. A tiny deterministic grid (10 strategies)
@@ -90,16 +90,16 @@ def _tiny_strategy_grid(seed: int = 0) -> List[ThresholdStrategy]:
     smart_five is also *True*.
     """
 
-    rng = random.Random(seed)
+    rng = coordinate_rng(RandomPurpose.STRATEGY, root_seed=seed)
     strategies: List[ThresholdStrategy] = []
     while len(strategies) < 10:
-        smart_five = rng.choice([True, False])
-        smart_one = rng.choice([True, False]) and smart_five  # enforce rule
+        smart_five = bool(rng.integers(0, 2))
+        smart_one = bool(rng.integers(0, 2)) and smart_five  # enforce rule
         try:
             strategies.append(
                 ThresholdStrategy(
-                    score_threshold=rng.randrange(500, 5000, 250),
-                    dice_threshold=rng.randint(1, 6),
+                    score_threshold=int(rng.integers(2, 20)) * 250,
+                    dice_threshold=int(rng.integers(1, 7)),
                     smart_five=smart_five,
                     smart_one=smart_one,
                 )

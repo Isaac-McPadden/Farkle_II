@@ -224,7 +224,6 @@ def test_watch_game_runs_with_dummies(monkeypatch, caplog):
     monkeypatch.setattr(wg, "_trace_decide", lambda *a, **k: None)  # noqa: ARG005
 
     caplog.set_level(logging.INFO, logger=wg.LOGGER.name)
-    monkeypatch.setattr(wg, "spawn_seeds", lambda n, seed=None: (1, 2, 3, 4))
     wg.watch_game(seed=1)
 
     msgs = "\n".join(rec.message for rec in caplog.records)

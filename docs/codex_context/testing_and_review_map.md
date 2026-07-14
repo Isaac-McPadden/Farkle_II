@@ -25,7 +25,7 @@ Always rerun targeted tests or inspect source before accepting conclusions.
 - Provides lightweight scikit-learn stubs if sklearn is absent.
 - Uses freezegun for deterministic timestamps.
 - Autouse seed fixture calls `random.seed(1337)`, creates but does not install a
-  NumPy `default_rng(1337)`, and sets `PYTHONHASHSEED=0` after interpreter
+  coordinate-owned NumPy generators; production stream identity never depends on Python hashing
   startup. Do not treat this as seeding ambient `np.random.*` calls or changing
   hash randomization for the current process.
 

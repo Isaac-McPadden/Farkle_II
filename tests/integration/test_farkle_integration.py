@@ -13,6 +13,7 @@ from farkle.game.scoring import (
 )
 from farkle.simulation.simulation import simulate_many_games
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.random import RandomPurpose, coordinate_rng
 
 
 @pytest.fixture(scope="session")
@@ -72,7 +73,14 @@ def test_final_round_rule():
     ]
 
     # 2) wrap them in *players* that own their RNGs
-    players = [FarklePlayer(f"P{i+1}", s) for i, s in enumerate(strats)]
+    players = [
+        FarklePlayer(
+            f"P{i+1}",
+            strategy,
+            rng=coordinate_rng(RandomPurpose.PLAYER, root_seed=0, k=len(strats), seat_index=i),
+        )
+        for i, strategy in enumerate(strats)
+    ]
 
     # 3) FarkleGame takes (players, target_score)
     game = FarkleGame(players, target_score=2_000)

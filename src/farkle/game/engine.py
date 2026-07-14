@@ -21,7 +21,7 @@ from typing import Dict, List, Sequence
 
 from farkle.game.scoring import DiceRoll, default_score
 from farkle.simulation.strategies import ThresholdStrategy
-from farkle.utils.random import RngProtocol, make_rng
+from farkle.utils.random import RngProtocol
 
 __all__ = [
     "FarklePlayer",
@@ -46,9 +46,9 @@ class FarklePlayer:
 
     name: str
     strategy: ThresholdStrategy
+    rng: RngProtocol = field(repr=False)
     score: int = 0
     has_scored: bool = False  # entered game (≥500) flag
-    rng: RngProtocol = field(default_factory=make_rng, repr=False)
 
     # counters
     n_farkles: int = 0

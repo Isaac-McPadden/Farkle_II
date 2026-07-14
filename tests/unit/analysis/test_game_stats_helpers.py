@@ -8,6 +8,7 @@ import pytest
 
 from farkle.analysis import game_stats
 from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.utils.random import make_rng
 
 
 def _write_rows(path: Path, rows: pd.DataFrame) -> None:
@@ -518,7 +519,7 @@ def test_margin_aggregation_and_strategy_empty_paths(caplog: pytest.LogCaptureFi
 
 
 def test_binned_margin_summary_parity_tolerance() -> None:
-    rng = np.random.default_rng(12345)
+    rng = make_rng(12345)
     values = rng.integers(0, 5000, size=20_000).astype(float)
 
     binned = game_stats._BinnedAccumulator()

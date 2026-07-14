@@ -1,8 +1,30 @@
 import types
+from concurrent.futures import ProcessPoolExecutor
 
 import numpy as np
+import pytest
 
-from farkle.utils.random import make_rng, seed_everything, spawn_seeds
+from farkle.utils.random import (
+    PURPOSE_NAMESPACES,
+    RNG_SCHEME_VERSION,
+    RandomPurpose,
+    coordinate_rng,
+    coordinate_seed,
+    make_rng,
+    seed_everything,
+    spawn_seeds,
+)
+
+
+def _coordinate_payload(index: int) -> tuple[int, bytes]:
+    rng = coordinate_rng(
+        RandomPurpose.TOURNAMENT_GAME,
+        root_seed=92821,
+        k=4,
+        shuffle_index=index // 5,
+        game_index=index % 5,
+    )
+    return index, rng.bytes(128)
 
 
 def test_spawn_seeds_deterministic():
@@ -16,6 +38,74 @@ def test_make_rng_respects_seed():
     rng1 = make_rng(5)
     rng2 = make_rng(5)
     assert rng1.random() == rng2.random()
+    assert isinstance(rng1.bit_generator, np.random.PCG64DXSM)
+
+
+def test_coordinate_streams_are_stable_and_purpose_separated() -> None:
+    coordinates = {
+        "root_seed": 123,
+        "k": 4,
+        "shuffle_index": 9,
+        "game_index": 7,
+        "seat_index": 2,
+    }
+    first = coordinate_rng(RandomPurpose.PLAYER, **coordinates).bytes(64)
+    replay = coordinate_rng(RandomPurpose.PLAYER, **coordinates).bytes(64)
+    other_purpose = coordinate_rng(RandomPurpose.TOURNAMENT_GAME, **coordinates).bytes(64)
+
+    assert first == replay
+    assert first != other_purpose
+    assert RNG_SCHEME_VERSION == 1
+
+
+def test_coordinate_changes_are_local_and_do_not_depend_on_draw_history() -> None:
+    game_seeds = [
+        coordinate_seed(
+            RandomPurpose.TOURNAMENT_GAME,
+            root_seed=11,
+            k=2,
+            shuffle_index=3,
+            game_index=index,
+        )
+        for index in range(4)
+    ]
+    unrelated = coordinate_rng(RandomPurpose.BOOTSTRAP, root_seed=11)
+    unrelated.random(10_000)
+    replay = [
+        coordinate_seed(
+            RandomPurpose.TOURNAMENT_GAME,
+            root_seed=11,
+            k=2,
+            shuffle_index=3,
+            game_index=index,
+        )
+        for index in range(4)
+    ]
+
+    assert replay == game_seeds
+    assert len(set(game_seeds)) == len(game_seeds)
+
+
+def test_purpose_registry_is_unique_and_unknown_namespaces_fail() -> None:
+    assert len(PURPOSE_NAMESPACES) == len(set(PURPOSE_NAMESPACES.values()))
+    with pytest.raises(ValueError, match="unregistered RNG purpose"):
+        coordinate_rng(999, root_seed=1)
+    with pytest.raises(TypeError):
+        PURPOSE_NAMESPACES["new"] = 999  # type: ignore[index]
+
+
+def test_coordinate_bytes_ignore_executor_count_order_and_resume_boundary() -> None:
+    indices = list(range(20))
+    serial = dict(map(_coordinate_payload, indices))
+    with ProcessPoolExecutor(max_workers=1) as executor:
+        one_worker = dict(executor.map(_coordinate_payload, reversed(indices)))
+    with ProcessPoolExecutor(max_workers=2) as executor:
+        first_half = dict(executor.map(_coordinate_payload, indices[:7]))
+    with ProcessPoolExecutor(max_workers=3) as executor:
+        resumed = dict(executor.map(_coordinate_payload, indices[7:]))
+
+    assert one_worker == serial
+    assert {**first_half, **resumed} == serial
 
 
 def test_seed_everything_optional_backends(monkeypatch):

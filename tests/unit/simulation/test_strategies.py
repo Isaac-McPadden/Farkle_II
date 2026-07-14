@@ -1,7 +1,5 @@
 import pickle
-import random
 from collections import Counter
-from typing import Sequence, TypeVar
 
 import pandas as pd
 import pytest
@@ -34,6 +32,7 @@ from farkle.simulation.strategies import (
     strategy_attributes_from_series,
     strategy_tuple,
 )
+from farkle.utils.random import make_rng
 
 
 @pytest.mark.parametrize(
@@ -84,7 +83,7 @@ def test_require_both_guard():
 
 
 def test_random_strategy_factory():
-    rng = random.Random(123)
+    rng = make_rng(123)
     for _ in range(200):
         ts = random_threshold_strategy(rng)
         # smart_one requires smart_five
@@ -404,55 +403,38 @@ def test_parse_strategy_for_df():  # noqa: ARG001
 
 
 def test_sample_favor_score_deterministic():
-    rng = random.Random(0)
+    rng = make_rng(0)
     assert _sample_favor_score(True, False, rng) is FavorDiceOrScore.SCORE
-    rng = random.Random(0)
+    rng = make_rng(0)
     assert _sample_favor_score(False, True, rng) is FavorDiceOrScore.DICE
-    rng = random.Random(0)
-    expected_tt = rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
-    rng = random.Random(0)
+    rng = make_rng(0)
+    expected_tt = FavorDiceOrScore.SCORE if int(rng.integers(0, 2)) == 0 else FavorDiceOrScore.DICE
+    rng = make_rng(0)
     assert _sample_favor_score(True, True, rng) is expected_tt
-    rng = random.Random(0)
-    expected_ff = rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
-    rng = random.Random(0)
+    rng = make_rng(0)
+    expected_ff = FavorDiceOrScore.SCORE if int(rng.integers(0, 2)) == 0 else FavorDiceOrScore.DICE
+    rng = make_rng(0)
     assert _sample_favor_score(False, False, rng) is expected_ff
 
 
-T = TypeVar("T")
-
-
 class _DeterministicRng:
-    def __init__(self, *, choices, randrange_value=350, randint_value=2):
-        self._choices = list(choices)
-        self.randrange_value = randrange_value
-        self.randint_value = randint_value
+    def __init__(self, values: list[int]):
+        self._values = list(values)
 
-    def choice(self, seq: Sequence[T]) -> T:
-        value = self._choices.pop(0)
-        assert value in seq
-        return value
-
-    def randrange(self, start: int, stop: int | None = None, step: int = 1) -> int:  # noqa: ARG002
-        return self.randrange_value
-
-    def randint(self, a: int, b: int) -> int:  # noqa: ARG002
-        return self.randint_value
+    def integers(self, low: int, high: int | None = None) -> int:  # noqa: ARG002
+        return self._values.pop(0)
 
 
 def test_sample_favor_score_branch_rng_choice():
-    rng = _DeterministicRng(choices=[FavorDiceOrScore.DICE])
+    rng = _DeterministicRng([1])
     assert _sample_favor_score(True, True, rng) is FavorDiceOrScore.DICE
 
-    rng = _DeterministicRng(choices=[FavorDiceOrScore.SCORE])
+    rng = _DeterministicRng([0])
     assert _sample_favor_score(False, False, rng) is FavorDiceOrScore.SCORE
 
 
 def test_random_threshold_strategy_with_deterministic_rng():
-    rng = _DeterministicRng(
-        choices=[True, True, True, True, False, FavorDiceOrScore.DICE],
-        randrange_value=500,
-        randint_value=4,
-    )
+    rng = _DeterministicRng([1, 1, 1, 1, 0, 1, 10, 4])
     strategy = random_threshold_strategy(rng)
 
     assert strategy.smart_five is True

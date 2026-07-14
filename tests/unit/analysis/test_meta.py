@@ -371,7 +371,7 @@ def test_meta_limits_other_seeds_and_respects_override(tmp_path: Path) -> None:
     combined = pd.read_parquet(cfg.meta_input_path(2, "strategy_summary_2p_meta.parquet"))
     assert combined["n_seeds"].iloc[0] == 2
     expected_win_rate = meta.combine_win_rates(
-        [frames_by_seed[42], frames_by_seed[99]], use_random_if_I2_gt=90.0
+        [frames_by_seed[42], frames_by_seed[7]], use_random_if_I2_gt=90.0
     ).combined["win_rate"].iloc[0]
     assert combined["win_rate"].iloc[0] == pytest.approx(expected_win_rate)
 

@@ -28,7 +28,7 @@ from farkle.simulation.strategies import (
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.parallel import normalize_n_jobs
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
-from farkle.utils.random import MAX_UINT32
+from farkle.utils.random import RandomPurpose, coordinate_seed
 from farkle.utils.stats import games_for_power
 from farkle.utils.tiers import load_tier_payload, tier_mapping_from_payload
 from farkle.utils.writer import atomic_path
@@ -1063,7 +1063,6 @@ def run_bonferroni_head2head(
         },
     )
 
-    rng = np.random.default_rng(seed)
     pending_pairwise_shard_records: list[dict[str, Any]] = []
     pending_ordered_shard_records: list[dict[str, Any]] = []
     pending_selfplay_shard_records: list[dict[str, Any]] = []
@@ -1302,7 +1301,17 @@ def run_bonferroni_head2head(
             )
             maybe_log_progress(processed_pairs)
             continue
-        seeds = rng.integers(0, MAX_UINT32, size=games_per_pair, dtype=np.uint32).tolist()
+        seeds = [
+            coordinate_seed(
+                RandomPurpose.H2H_GAME,
+                root_seed=seed,
+                k=2,
+                pair_index=pair_id,
+                game_index=game_index,
+                dtype=np.uint32,
+            )
+            for game_index in range(games_per_pair)
+        ]
         LOGGER.debug(
             "Queueing head-to-head batch",
             extra={
@@ -1558,8 +1567,18 @@ def run_bonferroni_head2head(
     debug_summary["selfplay"]["completed_before_run"] = len(completed_selfplay_ids)
 
     pending_selfplay_jobs: list[tuple[int | str, list[int], Any]] = []
-    for strat in sorted_elites:
-        selfplay_seeds = rng.integers(0, MAX_UINT32, size=games_per_pair, dtype=np.uint32).tolist()
+    for strategy_index, strat in enumerate(sorted_elites):
+        selfplay_seeds = [
+            coordinate_seed(
+                RandomPurpose.H2H_GAME,
+                root_seed=seed,
+                k=2,
+                pair_index=pair_count + strategy_index,
+                game_index=game_index,
+                dtype=np.uint32,
+            )
+            for game_index in range(games_per_pair)
+        ]
         if str(strat) in completed_selfplay_ids:
             continue
         pending_selfplay_jobs.append((strat, selfplay_seeds, strategies_cache[strat]))

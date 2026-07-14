@@ -21,7 +21,6 @@ from __future__ import annotations
 import json
 import logging
 import math
-import random
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -35,6 +34,7 @@ from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.random import RandomPurpose, coordinate_rng
 from farkle.utils.stats import wilson_ci
 from farkle.utils.writer import atomic_path
 
@@ -386,8 +386,9 @@ def _select_seed_entries(
     if max_other_seeds is None:
         selected.extend(remaining)
     else:
-        rng = random.Random(primary_seed)
-        rng.shuffle(remaining)
+        rng = coordinate_rng(RandomPurpose.SEED_SELECTION, root_seed=primary_seed)
+        order = rng.permutation(len(remaining))
+        remaining = [remaining[int(index)] for index in order]
         selected.extend(remaining[: max_other_seeds])
 
     return sorted(selected)

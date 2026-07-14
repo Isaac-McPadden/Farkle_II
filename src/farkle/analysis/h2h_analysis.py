@@ -23,6 +23,7 @@ from scipy.stats import binomtest
 from farkle.analysis.stage_state import read_stage_done, stage_done_path, write_stage_done
 from farkle.config import AppConfig
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
+from farkle.utils.random import RandomPurpose, coordinate_rng
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -56,7 +57,8 @@ def holm_bonferroni(
     if tie_policy not in {"neutral_edge", "simulate_game"}:
         raise ValueError(f"Unknown tie_policy {tie_policy!r}")
 
-    rng = np.random.default_rng(tie_break_seed) if tie_policy == "simulate_game" else None
+    if tie_policy == "simulate_game" and tie_break_seed is None:
+        raise ValueError("simulate_game tie policy requires an explicit tie_break_seed")
     required = {"a", "b", "wins_a", "wins_b", "games"}
     missing = required - set(df_pairs.columns)
     if missing:
@@ -105,12 +107,22 @@ def holm_bonferroni(
                 }
             )
         else:
-            assert rng is not None  # for mypy
             outcomes: list[str] = []
             tie_break_flags: list[bool] = []
-            for _ in ties.itertuples(index=False):
+            ordered_ties = ties.sort_values(["a", "b"], kind="mergesort")
+            tie_outcomes: dict[tuple[str, str], str] = {}
+            for pair_index, row in enumerate(ordered_ties.itertuples(index=False)):
+                rng = coordinate_rng(
+                    RandomPurpose.TIE_BREAK,
+                    root_seed=cast(int, tie_break_seed),
+                    pair_index=pair_index,
+                )
                 tie_winner_is_a = bool(rng.integers(0, 2) == 0)
-                outcomes.append("a>b" if tie_winner_is_a else "b>a")
+                tie_outcomes[(str(row.a), str(row.b))] = (
+                    "a>b" if tie_winner_is_a else "b>a"
+                )
+            for row in ties.itertuples(index=False):
+                outcomes.append(tie_outcomes[(str(row.a), str(row.b))])
                 tie_break_flags.append(True)
 
             tie_decisions = pd.DataFrame(

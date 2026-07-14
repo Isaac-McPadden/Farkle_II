@@ -8,13 +8,12 @@ the simulation pipeline.
 from __future__ import annotations
 
 import pickle
-import random
 import re
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache, partial
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence, Tuple, TypeVar
+from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence, Tuple
 
 import numba as nb
 import pandas as pd
@@ -88,17 +87,10 @@ DEFAULT_STRATEGY_GRID: dict[str, tuple[object, ...]] = {
 
 StrategyTuple = Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]
 
-_ChoiceT = TypeVar("_ChoiceT")
-
-
 class StrategyRng(Protocol):
     """RNG protocol for random strategy generation helpers."""
 
-    def choice(self, seq: Sequence[_ChoiceT]) -> _ChoiceT: ...
-
-    def randrange(self, start: int, stop: int | None = None, step: int = 1) -> int: ...
-
-    def randint(self, a: int, b: int) -> int: ...
+    def integers(self, low: int, high: int | None = None) -> Any: ...
 
 
 _STRAT_RE = re.compile(
@@ -419,17 +411,17 @@ def _sample_favor_score(cs: bool, cd: bool, rng: StrategyRng) -> FavorDiceOrScor
     Much easier to read than a stacked ternary.
     """
     if cs == cd:  # (T,T) or (F,F)   →  free choice
-        return rng.choice([FavorDiceOrScore.SCORE, FavorDiceOrScore.DICE])
+        return FavorDiceOrScore.SCORE if int(rng.integers(0, 2)) == 0 else FavorDiceOrScore.DICE
     return FavorDiceOrScore.SCORE if cs else FavorDiceOrScore.DICE
 
 
-def random_threshold_strategy(rng: StrategyRng | None = None) -> ThresholdStrategy:
+def random_threshold_strategy(rng: StrategyRng) -> ThresholdStrategy:
     """Create a randomized threshold strategy consistent with engine rules.
 
     Parameters
     ----------
-    rng : StrategyRng | None, default None
-        Source of randomness. A new generator is created when ``None`` is provided.
+    rng : StrategyRng
+        Explicit source of randomness.
 
     Returns
     -------
@@ -438,21 +430,19 @@ def random_threshold_strategy(rng: StrategyRng | None = None) -> ThresholdStrate
         respect required invariants.
     """
 
-    rng_inst = rng if rng is not None else random.Random()
-
     # pick smart_five first; if it’s False, force smart_one=False
-    sf = rng_inst.choice([True, False])
-    so = rng_inst.choice([True, False]) if sf else False
+    sf = bool(rng.integers(0, 2))
+    so = bool(rng.integers(0, 2)) if sf else False
 
     # pick consider_score/dice; if either is False, force require_both=False
-    cs = rng_inst.choice([True, False])
-    cd = rng_inst.choice([True, False])
-    rb = rng_inst.choice([True, False]) if (cs and cd) else False
-    fs = _sample_favor_score(cs, cd, rng_inst)
+    cs = bool(rng.integers(0, 2))
+    cd = bool(rng.integers(0, 2))
+    rb = bool(rng.integers(0, 2)) if (cs and cd) else False
+    fs = _sample_favor_score(cs, cd, rng)
 
     return ThresholdStrategy(
-        score_threshold=rng_inst.randrange(50, 1000, 50),
-        dice_threshold=rng_inst.randint(0, 4),
+        score_threshold=int(rng.integers(1, 20)) * 50,
+        dice_threshold=int(rng.integers(0, 5)),
         smart_five=sf,
         smart_one=so,
         consider_score=cs,

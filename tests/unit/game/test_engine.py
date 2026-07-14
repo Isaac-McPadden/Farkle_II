@@ -7,6 +7,7 @@ import pytest
 from farkle.game.engine import ROLL_LIMIT, FarkleGame, FarklePlayer
 from farkle.game.scoring import default_score
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.random import make_rng
 
 
 class RngProtocol(Protocol):
@@ -46,12 +47,11 @@ def fixed_rng(seq) -> np.random.Generator:
     return cast(np.random.Generator, _G())
 
 
-def test_take_turn_success(monkeypatch):
+def test_take_turn_success():
     seq = [6, 6, 6, 2, 3, 4]  # 3×6 = 600 pts, uses 3 dice, reroll 3 → decide() false ⇒ stop
     # must finish turn above 500 pts
-    monkeypatch.setattr(np.random, "default_rng", lambda *_: fixed_rng(seq))
     strat = ThresholdStrategy(score_threshold=0, dice_threshold=6)  # stop after first roll
-    p = FarklePlayer("P", strat, rng=np.random.default_rng())
+    p = FarklePlayer("P", strat, rng=fixed_rng(seq))
     p.take_turn(target_score=10000)
     assert p.score == 600
     assert p.n_rolls == 1
@@ -256,6 +256,7 @@ def test_smart_discard_counters_non_negative():
     player = FarklePlayer(
         "T",
         ThresholdStrategy(smart_five=True, smart_one=True, score_threshold=1_000, dice_threshold=2),
+        rng=make_rng(1),
     )
     player._score_roll(roll, turn_score=0)
     assert player.n_smart_five_dice == d5
@@ -280,6 +281,7 @@ def test_smart_five_discard_count():
     player = FarklePlayer(
         "T",
         ThresholdStrategy(smart_five=True, smart_one=True, score_threshold=1_000, dice_threshold=3),
+        rng=make_rng(2),
     )
     player._score_roll(roll, turn_score=0)
     assert player.n_smart_five_dice == 1
@@ -316,7 +318,7 @@ def test_take_turn_roll_limit(monkeypatch):
 
     monkeypatch.setattr(FarklePlayer, "_roll", scoring_roll)
 
-    p = FarklePlayer("P", AlwaysRoll())
+    p = FarklePlayer("P", AlwaysRoll(), rng=make_rng(3))
 
     with pytest.raises(RuntimeError):
         p.take_turn(target_score=10_000)
@@ -333,7 +335,10 @@ def test_game_stops_at_default_max_rounds(monkeypatch):
 
     monkeypatch.setattr(FarklePlayer, "_roll", bust_roll)
 
-    players = [FarklePlayer("A", AlwaysRoll()), FarklePlayer("B", AlwaysRoll())]
+    players = [
+        FarklePlayer("A", AlwaysRoll(), rng=make_rng(4)),
+        FarklePlayer("B", AlwaysRoll(), rng=make_rng(5)),
+    ]
     gm = FarkleGame(players, target_score=10_000).play()
 
     assert gm.game.n_rounds == 200

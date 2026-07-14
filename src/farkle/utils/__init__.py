@@ -21,7 +21,16 @@ from .mdd_helpers import (
     estimate_tau2_sxk,
     prepare_cell_means,
 )
-from .random import MAX_UINT32, make_rng, spawn_seeds
+from .random import (
+    MAX_UINT32,
+    PURPOSE_NAMESPACES,
+    RNG_SCHEME_VERSION,
+    RandomPurpose,
+    coordinate_rng,
+    coordinate_seed,
+    make_rng,
+    spawn_seeds,
+)
 
 __all__ = [
     "TierMap",
@@ -32,6 +41,11 @@ __all__ = [
     "setup_info_logging",
     "setup_warning_logging",
     "MAX_UINT32",
+    "PURPOSE_NAMESPACES",
+    "RNG_SCHEME_VERSION",
+    "RandomPurpose",
+    "coordinate_rng",
+    "coordinate_seed",
     "make_rng",
     "spawn_seeds",
     "VarianceComponents",

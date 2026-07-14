@@ -7,11 +7,8 @@ simulation framework:
 * ``games_for_power`` computes the number of games needed for statistical power.
 * ``build_tiers`` groups strategies into overlapping confidence tiers.
 * ``benjamini_hochberg``/``bh_correct`` perform false discovery rate control.
-* ``bonferroni_pairs`` creates deterministic head-to-head schedules with RNG
-  seeds.
-
-The constant :data:`~farkle.utils.random.MAX_UINT32` is re-exported for
-convenience.
+* ``bonferroni_pairs`` creates deterministic coordinate-owned head-to-head
+  schedules.
 """
 
 from __future__ import annotations
@@ -26,7 +23,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import norm
 
-from farkle.utils.random import MAX_UINT32
+from farkle.utils.random import RandomPurpose, coordinate_seed
 
 GamesForPowerLogSignature: TypeAlias = tuple[
     str,
@@ -716,10 +713,15 @@ def bonferroni_pairs(strategies: List[str], games_needed: int, seed: int) -> pd.
     if games_needed < 0:  # explicit sanity check
         raise ValueError("games_needed must be non-negative")
 
-    random_generator = np.random.default_rng(seed)
     schedule_rows = []
-    for strat_a, strat_b in itertools.combinations(strategies, 2):
-        random_seeds = random_generator.integers(0, MAX_UINT32, size=games_needed)
-        for game_seed in random_seeds:
+    for pair_index, (strat_a, strat_b) in enumerate(itertools.combinations(strategies, 2)):
+        for game_index in range(games_needed):
+            game_seed = coordinate_seed(
+                RandomPurpose.H2H_GAME,
+                root_seed=seed,
+                pair_index=pair_index,
+                game_index=game_index,
+                dtype=np.uint32,
+            )
             schedule_rows.append({"a": strat_a, "b": strat_b, "seed": int(game_seed)})
     return pd.DataFrame(schedule_rows)

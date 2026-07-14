@@ -26,6 +26,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import Any, Mapping, Sequence, TypeAlias
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 
@@ -521,6 +522,8 @@ def _validate_resume_outputs(
         "global_seed": cfg.sim.seed,
         "n_strategies": len(strategies_manifest),
         "strategy_manifest_sha": _strategy_manifest_digest(strategies_manifest),
+        "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+        "rng_bit_generator": "PCG64DXSM",
     }
     root_manifest_path = cfg.strategy_manifest_root_path()
     legacy_manifest_paths = [ckpt_path.parent / STRATEGY_MANIFEST_NAME]
@@ -575,7 +578,16 @@ def _validate_resume_outputs(
     if row_dir is not None:
         manifest_path = row_dir / "manifest.jsonl"
         if manifest_path.exists():
-            expected_seeds = {int(s) for s in urandom.spawn_seeds(n_shuffles, seed=cfg.sim.seed)}
+            expected_seeds = {
+                urandom.coordinate_seed(
+                    urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
+                    root_seed=cfg.sim.seed,
+                    k=n_players,
+                    shuffle_index=index,
+                    dtype=np.uint32,
+                )
+                for index in range(n_shuffles)
+            }
             seen: set[int] = set()
             duplicates = 0
             unexpected = 0
@@ -796,7 +808,11 @@ def run_single_n(
         config=tourn_cfg,
         strategies=strategies,
         resume=resume,
-        checkpoint_metadata={"strategy_manifest_sha": _strategy_manifest_digest(manifest)},
+        checkpoint_metadata={
+            "strategy_manifest_sha": _strategy_manifest_digest(manifest),
+            "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+            "rng_bit_generator": "PCG64DXSM",
+        },
     )
 
     # --- Final checkpoint post-processing ---

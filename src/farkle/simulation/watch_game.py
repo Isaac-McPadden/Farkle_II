@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import contextlib
 import logging
-import random
 from dataclasses import asdict
 from types import MethodType
 
@@ -25,7 +24,7 @@ from farkle.simulation.strategies import (
     ThresholdStrategy,
     random_threshold_strategy,
 )
-from farkle.utils.random import make_rng, spawn_seeds
+from farkle.utils.random import RandomPurpose, coordinate_rng
 
 # ── 1.  Plain-text logger ----------------------------------------------------
 LOGGER = logging.getLogger(__name__)
@@ -205,11 +204,16 @@ def watch_game(seed: int | None = None) -> None:
         Optional seed forwarded to :func:`farkle.utils.random.make_rng` to make
         the game deterministic.
     """
-    strategy_seed1, strategy_seed2, player_seed1, player_seed2 = spawn_seeds(4, seed=seed)
+    if seed is None:
+        raise ValueError("watch_game requires an explicit seed")
 
     # --- make two random strategies -------------------------------------
-    strategy1 = random_threshold_strategy(random.Random(strategy_seed1))
-    strategy2 = random_threshold_strategy(random.Random(strategy_seed2))
+    strategy1 = random_threshold_strategy(
+        coordinate_rng(RandomPurpose.STRATEGY, root_seed=seed, k=2, seat_index=0)
+    )
+    strategy2 = random_threshold_strategy(
+        coordinate_rng(RandomPurpose.STRATEGY, root_seed=seed, k=2, seat_index=1)
+    )
     LOGGER.info(
         "P1 strategy\n%s\n",
         strategy_yaml(strategy1),
@@ -231,12 +235,12 @@ def watch_game(seed: int | None = None) -> None:
         p1 = TracePlayer(
             "P1",
             strategy1,
-            rng=make_rng(player_seed1),
+            rng=coordinate_rng(RandomPurpose.PLAYER, root_seed=seed, k=2, seat_index=0),
         )
         p2 = TracePlayer(
             "P2",
             strategy2,
-            rng=make_rng(player_seed2),
+            rng=coordinate_rng(RandomPurpose.PLAYER, root_seed=seed, k=2, seat_index=1),
         )
 
         game = FarkleGame([p1, p2], target_score=10_000)

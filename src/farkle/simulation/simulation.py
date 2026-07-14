@@ -28,7 +28,7 @@ from farkle.simulation.strategies import (
     iter_strategy_combos,
     strategy_tuple,
 )
-from farkle.utils.random import MAX_UINT32, make_rng, spawn_seeds
+from farkle.utils.random import RandomPurpose, coordinate_rng, spawn_seeds
 
 __all__: list[str] = [
     "generate_strategy_grid",
@@ -326,7 +326,7 @@ def experiment_size(
 # ---------------------------------------------------------------------------
 def _make_players(
     strategies: Sequence[ThresholdStrategy],
-    seed: int | None,
+    seed: int,
 ) -> List[FarklePlayer]:
     """Instantiate ``FarklePlayer`` objects for a table.
 
@@ -335,8 +335,7 @@ def _make_players(
     strategies
         Strategies applied to each player in order.
     seed
-        Seed used to create per-player random number generators.  ``None``
-        yields non-deterministic behavior.
+        Root seed used to derive coordinate-owned player generators.
 
     Returns
     -------
@@ -344,19 +343,18 @@ def _make_players(
         Players ready to be passed to ``FarkleGame``.
     """
 
-    master = make_rng(seed)
-    # derive stable per-player seeds from a single source of truth
-    player_seeds = spawn_seeds(
-        len(strategies),
-        seed=int(master.integers(0, MAX_UINT32)) if seed is not None else None,
-    )
     return [
         FarklePlayer(
             name=f"P{i+1}",
             strategy=s,
-            rng=make_rng(int(ps)),
+            rng=coordinate_rng(
+                RandomPurpose.PLAYER,
+                root_seed=seed,
+                k=len(strategies),
+                seat_index=i,
+            ),
         )
-        for i, (s, ps) in enumerate(zip(strategies, player_seeds, strict=True))
+        for i, s in enumerate(strategies)
     ]
 
 
@@ -434,6 +432,8 @@ def simulate_many_games(
     pandas.DataFrame
         One row per game as produced by :func:`_play_game`.
     """
+    if seed is None:
+        raise ValueError("simulate_many_games requires an explicit seed")
     seeds = spawn_seeds(n_games, seed=seed)
     args = [(int(s), strategies, target_score) for s in list(seeds)]
     if n_jobs == 1:
@@ -483,7 +483,7 @@ def simulate_one_game(
     *,
     strategies: Sequence[ThresholdStrategy],
     target_score: int = 10_000,
-    seed: int | None = None,
+    seed: int,
 ):
     """Play a single game using the provided strategies.
 
@@ -494,7 +494,7 @@ def simulate_one_game(
     target_score
         Score needed to trigger the final round.
     seed
-        Optional seed controlling all random number generators.
+        Required root seed controlling all random number generators.
 
     Returns
     -------

@@ -148,9 +148,22 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
 
     state = _STATE
 
-    rng = np.random.default_rng(seed)
+    rng = urandom.coordinate_rng(
+        urandom.RandomPurpose.SHUFFLE_PERMUTATION,
+        root_seed=seed,
+        k=state.cfg.n_players,  # type: ignore[union-attr]
+    )
     perm = rng.permutation(len(state.strats))  # type: ignore
-    game_seeds = urandom.spawn_seeds(state.cfg.games_per_shuffle, seed=seed)  # type: ignore
+    game_seeds = [
+        urandom.coordinate_seed(
+            urandom.RandomPurpose.TOURNAMENT_GAME,
+            root_seed=seed,
+            k=state.cfg.n_players,  # type: ignore[union-attr]
+            game_index=game_index,
+            dtype=np.uint32,
+        )
+        for game_index in range(state.cfg.games_per_shuffle)  # type: ignore[union-attr]
+    ]
 
     wins: Counter[int | str] = Counter()
     sums: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
@@ -542,6 +555,7 @@ def _iter_original_chunk_items(
     num_shuffles: int,
     shuffles_per_chunk: int,
     global_seed: int,
+    k: int = 0,
 ) -> Iterator[Tuple[int, List[int]]]:
     """Yield deterministic shuffle-seed chunks in original chunk order.
 
@@ -553,7 +567,16 @@ def _iter_original_chunk_items(
     Yields:
         ``(chunk_index, chunk_seeds)`` pairs in original execution order.
     """
-    seed_iter = iter(urandom.spawn_seeds(num_shuffles, seed=global_seed))
+    seed_iter = iter(
+        urandom.coordinate_seed(
+            urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
+            root_seed=global_seed,
+            k=k,
+            shuffle_index=shuffle_index,
+            dtype=np.uint32,
+        )
+        for shuffle_index in range(num_shuffles)
+    )
     chunk_index = 0
     while True:
         chunk = list(islice(seed_iter, shuffles_per_chunk))
@@ -568,6 +591,7 @@ def _iter_pending_chunk_items(
     num_shuffles: int,
     shuffles_per_chunk: int,
     global_seed: int,
+    k: int = 0,
     completed_shuffles: set[int],
     completed_chunk_indices: set[int],
 ) -> Iterator[Tuple[int, List[int]]]:
@@ -587,6 +611,7 @@ def _iter_pending_chunk_items(
         num_shuffles=num_shuffles,
         shuffles_per_chunk=shuffles_per_chunk,
         global_seed=global_seed,
+        k=k,
     ):
         if chunk_index in completed_chunk_indices:
             continue
@@ -705,6 +730,8 @@ def run_tournament(
         "num_shuffles": cfg.num_shuffles,
         "global_seed": global_seed,
         "n_strategies": cfg.n_strategies,
+        "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+        "rng_bit_generator": "PCG64DXSM",
     }
     if checkpoint_metadata:
         checkpoint_meta.update(checkpoint_metadata)
@@ -859,6 +886,7 @@ def run_tournament(
         num_shuffles=cfg.num_shuffles,
         shuffles_per_chunk=shuffles_per_chunk,
         global_seed=global_seed,
+        k=cfg.n_players,
         completed_shuffles=completed_shuffles,
         completed_chunk_indices=completed_chunk_indices,
     )
@@ -868,6 +896,7 @@ def run_tournament(
             num_shuffles=cfg.num_shuffles,
             shuffles_per_chunk=shuffles_per_chunk,
             global_seed=global_seed,
+            k=cfg.n_players,
             completed_shuffles=completed_shuffles,
             completed_chunk_indices=completed_chunk_indices,
         )
