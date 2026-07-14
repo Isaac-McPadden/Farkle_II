@@ -36,10 +36,17 @@ class H2HInferenceArtifacts:
 
     combined_order_counts: Path
     pairwise_inference: Path
+    root_pairwise_diagnostics: Path
+    root_agreement: Path
 
     @property
-    def all_paths(self) -> tuple[Path, Path]:
-        return (self.combined_order_counts, self.pairwise_inference)
+    def all_paths(self) -> tuple[Path, Path, Path, Path]:
+        return (
+            self.combined_order_counts,
+            self.pairwise_inference,
+            self.root_pairwise_diagnostics,
+            self.root_agreement,
+        )
 
 
 @dataclass(frozen=True)
@@ -355,6 +362,120 @@ def _pairwise_estimates(
     return output
 
 
+def _root_specific_diagnostics(
+    cfg: AppConfig,
+    counts: pd.DataFrame,
+    plan: Mapping[str, Any],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Calculate fixed-root score diagnostics and cross-root agreement summaries."""
+
+    root_frames: list[pd.DataFrame] = []
+    roots = [int(root) for root in cast(list[object], plan["root_seeds"])]
+    for root in roots:
+        selected = counts.loc[counts["root_seed"].astype(int).eq(root)].copy()
+        root_orders = selected.rename(
+            columns={
+                "games_completed": "games",
+            }
+        )
+        root_orders["root_count"] = 1
+        root_inference = _pairwise_estimates(cfg, root_orders, plan)
+        root_inference.insert(0, "root_seed", root)
+        root_inference["diagnostic_holm_decision"] = np.where(
+            root_inference["holm_reject"].astype(bool),
+            np.where(
+                root_inference["d_ab"].astype(float) > 0.0,
+                "diagnostic_advantage_a",
+                "diagnostic_advantage_b",
+            ),
+            "diagnostic_no_adjusted_rejection",
+        )
+        root_inference["inference_role"] = "fixed_root_diagnostic_not_root_population"
+        root_frames.append(
+            root_inference[
+                [
+                    "root_seed",
+                    "family_hash",
+                    "pair_id",
+                    "strategy_a",
+                    "strategy_b",
+                    "n_ab",
+                    "n_ba",
+                    "seat1_a_wins_ab",
+                    "seat1_b_wins_ba",
+                    "q_ab",
+                    "q_ba",
+                    "d_ab",
+                    "score_null_proportion",
+                    "score_z",
+                    "score_p_value",
+                    "ordinary_alpha",
+                    "ordinary_d_low",
+                    "ordinary_d_high",
+                    "holm_order",
+                    "holm_adjusted_p",
+                    "holm_reject",
+                    "diagnostic_holm_decision",
+                    "score_test_id",
+                    "interval_method_id",
+                    "inference_role",
+                ]
+            ]
+        )
+    diagnostics = pd.concat(root_frames, ignore_index=True).sort_values(
+        ["pair_id", "root_seed"], kind="mergesort"
+    )
+
+    agreement_rows: list[dict[str, Any]] = []
+    for pair_id, group in diagnostics.groupby("pair_id", sort=True):
+        ordered = group.sort_values("root_seed", kind="mergesort")
+        first = ordered.iloc[0]
+        row: dict[str, Any] = {
+            "family_hash": str(first["family_hash"]),
+            "pair_id": int(cast(int, pair_id)),
+            "strategy_a": str(first["strategy_a"]),
+            "strategy_b": str(first["strategy_b"]),
+            "root_a": int(first["root_seed"]),
+            "root_a_d_ab": float(first["d_ab"]),
+            "root_a_diagnostic_holm_decision": str(first["diagnostic_holm_decision"]),
+            "root_b": None,
+            "root_b_d_ab": None,
+            "root_b_diagnostic_holm_decision": None,
+            "effect_discrepancy_a_minus_b": None,
+            "absolute_effect_discrepancy": None,
+            "diagnostic_holm_decision_agreement": None,
+            "effect_direction_agreement": None,
+            "agreement_available": False,
+            "interpretation": "single_root_diagnostic_no_cross_root_stability_claim",
+        }
+        if len(ordered) == 2:
+            second = ordered.iloc[1]
+            first_effect = float(first["d_ab"])
+            second_effect = float(second["d_ab"])
+            discrepancy = first_effect - second_effect
+            row.update(
+                {
+                    "root_b": int(second["root_seed"]),
+                    "root_b_d_ab": second_effect,
+                    "root_b_diagnostic_holm_decision": str(
+                        second["diagnostic_holm_decision"]
+                    ),
+                    "effect_discrepancy_a_minus_b": discrepancy,
+                    "absolute_effect_discrepancy": abs(discrepancy),
+                    "diagnostic_holm_decision_agreement": str(
+                        first["diagnostic_holm_decision"]
+                    )
+                    == str(second["diagnostic_holm_decision"]),
+                    "effect_direction_agreement": int(np.sign(first_effect))
+                    == int(np.sign(second_effect)),
+                    "agreement_available": True,
+                    "interpretation": "fixed_root_reproducibility_diagnostic_not_population_inference",
+                }
+            )
+        agreement_rows.append(row)
+    return diagnostics.reset_index(drop=True), pd.DataFrame(agreement_rows)
+
+
 def _write_frame(
     cfg: AppConfig,
     frame: pd.DataFrame,
@@ -364,6 +485,8 @@ def _write_frame(
     sources: list[Path],
     grouping_keys: list[str],
     roots: list[int],
+    weighted_quantity: str = "seat_adjusted_h2h_effect",
+    uncertainty_method: str = f"{SCORE_TEST_ID}_holm",
 ) -> None:
     sidecar = make_artifact_sidecar(
         cfg,
@@ -373,9 +496,9 @@ def _write_frame(
         source_scope=ArtifactScope.H2H_2P,
         operation=operation,
         baseline="equal_seat_order_rates",
-        weighted_quantity="seat_adjusted_h2h_effect",
+        weighted_quantity=weighted_quantity,
         support_count_role="independent_games_per_seat_order",
-        uncertainty_method=f"{SCORE_TEST_ID}_holm",
+        uncertainty_method=uncertainty_method,
         replication_unit="independent_h2h_game",
         conditioning="frozen_finite_grid_candidate_family",
         consistency_columns=frame.columns.tolist(),
@@ -403,6 +526,8 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
     artifacts = H2HInferenceArtifacts(
         combined_order_counts=cfg.h2h_combined_order_counts_path(),
         pairwise_inference=cfg.h2h_pairwise_inference_path(),
+        root_pairwise_diagnostics=cfg.h2h_root_pairwise_diagnostics_path(),
+        root_agreement=cfg.h2h_root_agreement_path(),
     )
     done = stage_done_path(cfg.h2h_2p_dir(), "h2h_seat_adjusted_inference")
     if not force and stage_is_up_to_date(
@@ -417,6 +542,7 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
     counts, plan = _read_counts(cfg)
     combined = _combine_within_order(counts, plan)
     inference = _pairwise_estimates(cfg, combined, plan)
+    root_diagnostics, root_agreement = _root_specific_diagnostics(cfg, counts, plan)
     roots = [int(root) for root in plan["root_seeds"]]
     _write_frame(
         cfg,
@@ -435,6 +561,26 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
         sources=[artifacts.combined_order_counts, plan_path],
         grouping_keys=["pair_id"],
         roots=roots,
+    )
+    _write_frame(
+        cfg,
+        root_diagnostics,
+        artifacts.root_pairwise_diagnostics,
+        operation="root_specific_score_diagnostic",
+        sources=[counts_path, plan_path],
+        grouping_keys=["root_seed", "pair_id"],
+        roots=roots,
+    )
+    _write_frame(
+        cfg,
+        root_agreement,
+        artifacts.root_agreement,
+        operation="fixed_root_h2h_agreement_diagnostic",
+        sources=[artifacts.root_pairwise_diagnostics],
+        grouping_keys=["pair_id"],
+        roots=roots,
+        weighted_quantity="fixed_root_effect_discrepancy",
+        uncertainty_method="descriptive_fixed_root_decision_comparison",
     )
     write_stage_done(
         done,

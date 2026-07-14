@@ -1324,6 +1324,16 @@ class AppConfig:
 
         return self.h2h_2p_dir() / "pairwise_inference.parquet"
 
+    def h2h_root_pairwise_diagnostics_path(self) -> Path:
+        """Root-specific seat-adjusted score diagnostics."""
+
+        return self.h2h_2p_dir() / "root_pairwise_diagnostics.parquet"
+
+    def h2h_root_agreement_path(self) -> Path:
+        """Fixed-root H2H effect discrepancy and decision agreement."""
+
+        return self.h2h_2p_dir() / "root_decision_agreement.parquet"
+
     def h2h_dominance_edges_path(self) -> Path:
         """Practical and statistical directed dominance edges."""
 

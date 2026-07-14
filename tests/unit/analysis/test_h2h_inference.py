@@ -7,6 +7,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 from scipy.stats import norm
+from statsmodels.stats.proportion import (
+    confint_proportions_2indep,
+)
+from statsmodels.stats.proportion import (
+    test_proportions_2indep as statsmodels_score_test,
+)
 
 from farkle.analysis.h2h_inference import (
     run_h2h_inference,
@@ -22,12 +28,12 @@ from farkle.utils.artifacts import (
 )
 
 
-def _cfg(tmp_path: Path) -> AppConfig:
+def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(
-            seed=11,
-            seed_list=[11, 22],
+            seed=roots[0],
+            seed_list=list(roots),
             n_players_list=[2],
         ),
     )
@@ -43,9 +49,10 @@ def _publish_inputs(
     """Publish pairs as (A, B, games/order/root, x_ab/root, x_ba/root)."""
 
     family_hash = "b" * 64
+    roots = cfg.sim.seed_list or [cfg.sim.seed]
     rows: list[dict[str, object]] = []
     for pair_id, (strategy_a, strategy_b, games, x_ab, x_ba) in enumerate(pairs):
-        for root_index, root_seed in enumerate((11, 22)):
+        for root_index, root_seed in enumerate(roots):
             for order, wins_seat1 in ((0, x_ab), (1, x_ba)):
                 rows.append(
                     {
@@ -79,7 +86,7 @@ def _publish_inputs(
         player_counts=[2],
         required_player_counts=[2],
         missing_cell_policy="fail",
-        seed_scope="both_roots_combined",
+        seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
     )
     write_parquet_artifact_atomic(counts_table, counts_path, sidecar=counts_sidecar)
 
@@ -87,7 +94,7 @@ def _publish_inputs(
         "family_hash": family_hash,
         "planning_state": "complete_valid",
         "execution_state": "complete_valid",
-        "root_seeds": [11, 22],
+        "root_seeds": roots,
         "unordered_pair_count": len(pairs),
         "target_power": 0.80,
         "worst_scenario_achieved_power": 0.81,
@@ -104,7 +111,7 @@ def _publish_inputs(
         player_counts=[2],
         required_player_counts=[2],
         missing_cell_policy="fail",
-        seed_scope="both_roots_combined",
+        seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
     )
     write_json_artifact_atomic(plan, plan_path, sidecar=plan_sidecar)
 
@@ -125,6 +132,38 @@ def test_score_interval_contains_observed_difference() -> None:
     assert low < 0.2 < high
     assert low > -1.0
     assert high < 1.0
+
+
+def test_score_test_and_interval_match_statsmodels_oracles() -> None:
+    observed = two_proportion_score_test(73, 120, 51, 115)
+    expected = statsmodels_score_test(
+        73,
+        120,
+        51,
+        115,
+        value=0,
+        method="score",
+        compare="diff",
+        alternative="two-sided",
+        correction=False,
+        return_results=True,
+    )
+    expected_interval = confint_proportions_2indep(
+        73,
+        120,
+        51,
+        115,
+        method="score",
+        compare="diff",
+        alpha=0.02,
+        correction=False,
+    )
+
+    assert observed.statistic == pytest.approx(expected.statistic)
+    assert observed.p_value == pytest.approx(expected.pvalue)
+    assert score_difference_interval(73, 120, 51, 115, alpha=0.02) == pytest.approx(
+        expected_interval
+    )
 
 
 def test_seat_adjusted_inference_holm_and_decision_classes(tmp_path: Path) -> None:
@@ -163,6 +202,29 @@ def test_seat_adjusted_inference_holm_and_decision_classes(tmp_path: Path) -> No
     assert (inference["simultaneous_d_low"] <= inference["ordinary_d_low"]).all()
     assert (inference["simultaneous_d_high"] >= inference["ordinary_d_high"]).all()
 
+    root_diagnostics = pq.read_table(artifacts.root_pairwise_diagnostics).to_pandas()
+    assert len(root_diagnostics) == 6
+    assert set(root_diagnostics["root_seed"]) == {11, 22}
+    assert set(root_diagnostics["inference_role"]) == {
+        "fixed_root_diagnostic_not_root_population"
+    }
+    assert (
+        root_diagnostics["ordinary_d_low"]
+        <= root_diagnostics["d_ab"]
+    ).all()
+    assert (
+        root_diagnostics["d_ab"]
+        <= root_diagnostics["ordinary_d_high"]
+    ).all()
+    agreement = pq.read_table(artifacts.root_agreement).to_pandas()
+    assert len(agreement) == 3
+    assert agreement["agreement_available"].all()
+    assert agreement["diagnostic_holm_decision_agreement"].all()
+    assert agreement["absolute_effect_discrepancy"].eq(0.0).all()
+    assert set(agreement["interpretation"]) == {
+        "fixed_root_reproducibility_diagnostic_not_population_inference"
+    }
+
     validate_artifact_sidecar(
         artifacts.pairwise_inference,
         expected={
@@ -170,6 +232,53 @@ def test_seat_adjusted_inference_holm_and_decision_classes(tmp_path: Path) -> No
             "operation": "seat_adjusted_score_inference",
             "uncertainty_method": f"{SCORE_TEST_ID}_holm",
         },
+    )
+    validate_artifact_sidecar(
+        artifacts.root_agreement,
+        expected={
+            "scope": "h2h_2p",
+            "operation": "fixed_root_h2h_agreement_diagnostic",
+            "uncertainty_method": "descriptive_fixed_root_decision_comparison",
+        },
+    )
+
+
+@pytest.mark.parametrize("seat1_advantage", [0.03, 0.06])
+def test_common_first_seat_effect_does_not_create_strategy_effect(
+    tmp_path: Path,
+    seat1_advantage: float,
+) -> None:
+    cfg = _cfg(tmp_path)
+    games = 10_000
+    common_wins = int(round((0.5 + seat1_advantage) * games))
+    _publish_inputs(cfg, [("1", "2", games, common_wins, common_wins)])
+
+    artifacts = run_h2h_inference(cfg)
+    primary = pq.read_table(artifacts.pairwise_inference).to_pandas().iloc[0]
+    root_diagnostics = pq.read_table(artifacts.root_pairwise_diagnostics).to_pandas()
+
+    assert primary["q_ab"] == pytest.approx(0.5 + seat1_advantage)
+    assert primary["q_ba"] == pytest.approx(0.5 + seat1_advantage)
+    assert primary["d_ab"] == pytest.approx(0.0)
+    assert primary["score_p_value"] == pytest.approx(1.0)
+    assert primary["decision_class"] == "unresolved"
+    assert not root_diagnostics["holm_reject"].any()
+
+
+def test_single_root_diagnostics_are_explicitly_labelled(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, roots=(11,))
+    _publish_inputs(cfg, [("1", "2", 5_000, 2_700, 2_400)])
+
+    artifacts = run_h2h_inference(cfg)
+    root_diagnostics = pq.read_table(artifacts.root_pairwise_diagnostics).to_pandas()
+    agreement = pq.read_table(artifacts.root_agreement).to_pandas().iloc[0]
+
+    assert root_diagnostics["root_seed"].tolist() == [11]
+    assert not bool(agreement["agreement_available"])
+    assert agreement["interpretation"] == "single_root_diagnostic_no_cross_root_stability_claim"
+    validate_artifact_sidecar(
+        artifacts.root_agreement,
+        expected={"scope": "h2h_2p", "seed_scope": "single_root"},
     )
 
 
