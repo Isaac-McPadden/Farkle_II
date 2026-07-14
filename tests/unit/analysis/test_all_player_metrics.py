@@ -23,11 +23,19 @@ def _cfg(tmp_path: Path) -> AppConfig:
     )
 
 
-def _exposure_values(strategy: int, score: int, turns: int, rank: int) -> dict[str, object]:
+def _exposure_values(
+    strategy: int,
+    score: int,
+    turns: int,
+    rank: int,
+    *,
+    hit_max_rounds: bool = False,
+) -> dict[str, object]:
     return {
         "strategy": strategy,
         "score": score,
         "n_turns": turns,
+        "hit_max_rounds": hit_max_rounds,
         "rank": rank,
         "loss_margin": 0 if rank == 1 else 50,
         "rolls": turns + 1,
@@ -87,7 +95,7 @@ def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> Non
                 winner_seat="P1",
                 n_rounds=2,
                 p1=_exposure_values(10, 100, 2, 1),
-                p2=_exposure_values(20, 50, 3, 2),
+                p2=_exposure_values(20, 50, 3, 2, hit_max_rounds=True),
             ),
             _game_row(
                 shuffle_index=1,
@@ -120,6 +128,8 @@ def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> Non
     assert strategy_20["turn_round_mismatch_prevalence"] == pytest.approx(0.5)
     assert strategy_20["raw_rank_observations"] == 2
     assert strategy_20["raw_rank_sum"] == pytest.approx(3)
+    assert strategy_20["raw_max_round_abort_exposures"] == 1
+    assert strategy_10["raw_max_round_abort_exposures"] == 0
 
     validate_artifact_sidecar(
         output,
@@ -127,6 +137,14 @@ def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> Non
             "scope": "by_k",
             "operation": "aggregate_player_batch_statistics",
             "conditioning": "unconditional",
+            "method_contract": {
+                "kind": "turn_metrics",
+                "procedure": "aggregate_player_batch_statistics",
+                "parameters": {
+                    "exposure_denominator": "player_game_exposure",
+                    "abort_numerator": "player_game_exposure_with_maximum_round_abort",
+                },
+            },
         },
     )
 

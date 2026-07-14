@@ -55,6 +55,7 @@ class RootStabilityArtifacts:
     joint_discrepancy: Path
     rank_stability: Path
     top_n_stability: Path
+    bootstrap_top_n_inclusion: Path
     control_movement: Path
     shortlist_changes: Path
     matched_count_convergence: Path
@@ -71,6 +72,7 @@ class RootStabilityArtifacts:
             self.joint_discrepancy,
             self.rank_stability,
             self.top_n_stability,
+            self.bootstrap_top_n_inclusion,
             self.control_movement,
             self.shortlist_changes,
             self.matched_count_convergence,
@@ -444,6 +446,62 @@ def _rank_and_selection_stability(
         pd.DataFrame(control_rows),
         pd.DataFrame(shortlist_rows),
     )
+
+
+def _root_bootstrap_top_n_inclusion(
+    cfg: AppConfig,
+    cells: dict[tuple[int, int], RootBatchCell],
+    roots: tuple[int, int],
+    required_k: list[int],
+) -> pd.DataFrame:
+    """Estimate root-specific top-N inclusion by joint complete-support resampling."""
+
+    weights = _k_weights(cfg, required_k)
+    replicates = cfg.screening.bootstrap_replicates
+    reference = _read_cell(cells[(roots[0], required_k[0])])
+    strategies = np.sort(reference["strategy"].astype(int).unique())
+    if strategies.size == 0:
+        raise ValueError("root bootstrap top-N inclusion requires strategy support")
+    matrices: dict[tuple[int, int], _BatchMatrix] = {}
+    for root in roots:
+        for k in required_k:
+            matrices[(root, k)] = _build_matrix(_read_cell(cells[(root, k)]), strategies)
+    top_n = min(cfg.screening.candidate_contribution_size, len(strategies))
+    rows: list[dict[str, object]] = []
+    for root in roots:
+        counts = np.zeros(len(strategies), dtype=np.int64)
+        for replicate in range(replicates):
+            scores = np.zeros(len(strategies), dtype=float)
+            for k in required_k:
+                matrix = matrices[(root, k)]
+                rng = coordinate_rng(
+                    RandomPurpose.ROOT_STABILITY_BOOTSTRAP,
+                    root_seed=root,
+                    k=k,
+                    replicate_index=replicate,
+                )
+                selected = rng.integers(0, len(matrix.batch_ids), size=len(matrix.batch_ids))
+                wins = matrix.wins[selected].sum(axis=0)
+                exposures = matrix.exposures[selected].sum(axis=0)
+                if np.any(exposures <= 0):
+                    raise ValueError("root bootstrap produced zero complete-support exposure")
+                scores += weights[k] * (wins / exposures - 1.0 / k)
+            order = np.lexsort((strategies, -scores))
+            counts[order[:top_n]] += 1
+        for strategy, count in zip(strategies, counts, strict=True):
+            rows.append(
+                {
+                    "root_seed": root,
+                    "strategy": int(strategy),
+                    "required_k_count": len(required_k),
+                    "complete_support": True,
+                    "k_aggregation_method": cfg_method_name(weights, required_k),
+                    "bootstrap_replicates": replicates,
+                    "top_n_size": top_n,
+                    "top_n_inclusion_probability": float(count / replicates),
+                }
+            )
+    return pd.DataFrame(rows)
 
 
 def _scope_estimates(
@@ -975,6 +1033,7 @@ def _artifact_paths(cfg: AppConfig, required_k: list[int]) -> RootStabilityArtif
         joint_discrepancy=cfg.root_joint_discrepancy_path(),
         rank_stability=cfg.root_rank_stability_path(),
         top_n_stability=cfg.root_top_n_stability_path(),
+        bootstrap_top_n_inclusion=cfg.root_bootstrap_top_n_inclusion_path(),
         control_movement=cfg.root_control_movement_path(),
         shortlist_changes=cfg.root_shortlist_changes_path(),
         matched_count_convergence=cfg.root_matched_count_convergence_path(),
@@ -1031,6 +1090,12 @@ def build_two_root_stability(
         root_pair,
         across_by_scope,
     )
+    bootstrap_top_n = _root_bootstrap_top_n_inclusion(
+        cfg,
+        cell_map,
+        root_pair,
+        required_k,
+    )
     convergence = _matched_count_convergence(
         cfg,
         cell_map,
@@ -1066,6 +1131,17 @@ def build_two_root_stability(
         player_counts=required_k,
         grouping_keys=["estimate_scope", "root_seed", "strategy"],
         uncertainty_method="independent_k_variance_sum",
+        k_aggregation_method=aggregation_method,
+    )
+    _write_frame(
+        cfg,
+        bootstrap_top_n,
+        artifacts.bootstrap_top_n_inclusion,
+        operation="root_specific_bootstrap_top_n_inclusion",
+        sources=sources,
+        player_counts=required_k,
+        grouping_keys=["root_seed", "strategy"],
+        uncertainty_method="root_specific_joint_deterministic_batch_resampling",
         k_aggregation_method=aggregation_method,
     )
     diagnostic_frames = (

@@ -39,6 +39,7 @@ _CORE_COUNT_FIELDS: Final[tuple[str, ...]] = (
     "raw_player_game_exposures",
     "raw_wins",
     "raw_turn_round_mismatch_count",
+    "raw_max_round_abort_exposures",
 )
 _CORE_SUM_FIELDS: Final[tuple[str, ...]] = (
     "raw_final_score_sum",
@@ -125,6 +126,7 @@ def _required_source_columns(k: int) -> list[str]:
                 f"P{seat}_strategy",
                 f"P{seat}_score",
                 f"P{seat}_n_turns",
+                f"P{seat}_hit_max_rounds",
                 *(f"P{seat}_{suffix}" for suffix in _BEHAVIOR_SUFFIXES),
             ]
         )
@@ -165,6 +167,12 @@ def _update_exposure(
     exact_return = score / n_turns
     proxy_return = score / n_rounds
     turn_difference = n_turns - n_rounds
+    hit_max_rounds = row.get(f"{prefix}hit_max_rounds")
+    if hit_max_rounds is None:
+        raise ValueError(
+            f"{source} is missing maximum-round abort status for seat {seat}; "
+            "rerun simulation and curation under the turn row contract"
+        )
 
     accumulator["raw_player_game_exposures"] += 1
     accumulator["raw_wins"] += int(row.get("winner_seat") == f"P{seat}")
@@ -177,6 +185,7 @@ def _update_exposure(
     accumulator["raw_turn_return_round_proxy_sum"] += proxy_return
     accumulator["raw_turn_return_round_proxy_square_sum"] += proxy_return**2
     accumulator["raw_turn_round_mismatch_count"] += int(turn_difference != 0)
+    accumulator["raw_max_round_abort_exposures"] += int(bool(hit_max_rounds))
     accumulator["raw_turn_minus_rounds_sum"] += turn_difference
     accumulator["raw_turn_minus_rounds_square_sum"] += turn_difference**2
 
@@ -323,6 +332,14 @@ def build_all_player_batch_metrics(
         scope=ArtifactScope.BY_K,
         source_scope=ArtifactScope.BY_K,
         operation="aggregate_player_batch_statistics",
+        method_contract={
+            "kind": "turn_metrics",
+            "procedure": "aggregate_player_batch_statistics",
+            "parameters": {
+                "exposure_denominator": "player_game_exposure",
+                "abort_numerator": "player_game_exposure_with_maximum_round_abort",
+            },
+        },
         source_artifacts=[source],
         consistency_columns=all_player_batch_schema().names,
         grouping_keys=["root_seed", "k", "deterministic_batch_id", "strategy"],

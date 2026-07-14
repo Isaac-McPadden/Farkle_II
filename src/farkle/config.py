@@ -1172,6 +1172,11 @@ class AppConfig:
 
         return self.across_k_dir("metrics") / "performance_control_contrasts.parquet"
 
+    def performance_player_count_effects_path(self) -> Path:
+        """Chance-relative player-count effect and rank diagnostics."""
+
+        return self.diagnostics_dir("metrics") / "player_count_effects.parquet"
+
     def root_combined_performance_by_k_path(self, k: int) -> Path:
         """Root-specific and raw-count-combined performance for one k."""
 
@@ -1201,6 +1206,11 @@ class AppConfig:
         """Between-root top-N overlap diagnostics."""
 
         return self.cross_seed_dir("metrics") / "root_top_n_stability.parquet"
+
+    def root_bootstrap_top_n_inclusion_path(self) -> Path:
+        """Root-specific bootstrap top-N inclusion probabilities."""
+
+        return self.cross_seed_dir("metrics") / "root_bootstrap_top_n_inclusion.parquet"
 
     def root_control_movement_path(self) -> Path:
         """Declared-control rank and performance movement."""

@@ -158,8 +158,18 @@ def test_two_root_combination_and_stability_contract(tmp_path: Path) -> None:
     assert set(discrepancies["estimand_scope"]) == {"by_k", "across_k"}
 
     assert pq.read_table(artifacts.joint_discrepancy).num_rows == 1
-    assert pq.read_table(artifacts.rank_stability).num_rows == 1
+    rank_stability = pq.read_table(artifacts.rank_stability).to_pandas()
+    assert len(rank_stability) == 1
+    assert rank_stability.iloc[0]["p95_absolute_rank_movement"] >= 0.0
     assert pq.read_table(artifacts.top_n_stability).num_rows == 4
+    root_inclusion = pq.read_table(artifacts.bootstrap_top_n_inclusion).to_pandas()
+    assert set(root_inclusion["root_seed"]) == {11, 22}
+    assert len(root_inclusion) == 6
+    assert root_inclusion["complete_support"].all()
+    assert root_inclusion["top_n_inclusion_probability"].between(0.0, 1.0).all()
+    assert root_inclusion.groupby("root_seed")["top_n_inclusion_probability"].sum().tolist() == (
+        pytest.approx([2.0, 2.0])
+    )
     assert pq.read_table(artifacts.control_movement).num_rows == 1
     assert pq.read_table(artifacts.shortlist_changes).num_rows == 3
 

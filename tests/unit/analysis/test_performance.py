@@ -128,6 +128,16 @@ def test_canonical_performance_estimators_and_support_contract(tmp_path: Path) -
         across.loc[1, "equal_k_score"] - across.loc[2, "equal_k_score"]
     )
 
+    player_count = pq.read_table(artifacts.player_count_effects).to_pandas()
+    assert len(player_count) == 18
+    effects = player_count.loc[
+        player_count["diagnostic_type"].eq("strategy_k_chance_relative_log_odds")
+    ]
+    assert set(effects["strategy"].astype(int)) == {1, 2}
+    assert effects["effect_available"].all()
+    assert np.isfinite(effects["chance_relative_log_odds"]).all()
+    assert set(player_count["declared_k_method"]) == {"equal-k"}
+
     validate_artifact_sidecar(
         artifacts.across_k,
         expected={
@@ -136,6 +146,37 @@ def test_canonical_performance_estimators_and_support_contract(tmp_path: Path) -
             "k_aggregation_method": "equal_k",
         },
     )
+    validate_artifact_sidecar(
+        artifacts.player_count_effects,
+        expected={
+            "scope": "diagnostics",
+            "operation": "calculate_player_count_effect_diagnostics",
+            "k_aggregation_method": "equal_k",
+        },
+    )
+
+
+def test_player_count_boundary_log_odds_are_unavailable(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_inputs(cfg)
+    rows = [
+        _metric_row(2, batch, strategy, wins, 100)
+        for batch in (0, 1)
+        for strategy, wins in ((1, 100), (2, 40))
+    ]
+    _write_batch_metrics(cfg, 2, rows)
+
+    artifacts = build_canonical_performance(cfg)
+    diagnostics = pq.read_table(artifacts.player_count_effects).to_pandas()
+    boundary = diagnostics.loc[
+        diagnostics["diagnostic_type"].eq("strategy_k_chance_relative_log_odds")
+        & diagnostics["k"].eq(2)
+        & diagnostics["strategy"].eq(1)
+    ].iloc[0]
+
+    assert not bool(boundary["effect_available"])
+    assert pd.isna(boundary["chance_relative_log_odds"])
+    assert boundary["unavailable_reason"] == "boundary_win_rate_log_odds_unavailable"
 
 
 def test_joint_batch_resampling_is_coordinate_deterministic(tmp_path: Path) -> None:

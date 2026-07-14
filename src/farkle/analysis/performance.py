@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from scipy.stats import norm, t
+from scipy.stats import kendalltau, norm, spearmanr, t
 
 from farkle.analysis.all_player_metrics import validate_unconditional_all_player_schema
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
@@ -42,12 +42,19 @@ class PerformanceArtifacts:
     across_k: Path
     bootstrap: Path
     control_contrasts: Path
+    player_count_effects: Path
 
     @property
     def all_paths(self) -> tuple[Path, ...]:
         """Return every artifact path in deterministic order."""
 
-        return (*self.by_k, self.across_k, self.bootstrap, self.control_contrasts)
+        return (
+            *self.by_k,
+            self.across_k,
+            self.bootstrap,
+            self.control_contrasts,
+            self.player_count_effects,
+        )
 
 
 def _read_batch_metrics(path: Path, k: int) -> pd.DataFrame:
@@ -370,7 +377,8 @@ def _joint_batch_resampling(
                     "root_seed": root_seed,
                     "strategy": int(strategy),
                     "control_strategy": int(control),
-                    "observed_equal_k_contrast": observed[int(strategy)] - observed[int(control)],
+                    "observed_equal_k_contrast": observed[int(strategy)]
+                    - observed[int(control)],
                     "bootstrap_contrast_mean": float(means[index]),
                     "bootstrap_contrast_sd": float(sqrt(variances[index])),
                     "bootstrap_replicates": replicates,
@@ -388,6 +396,192 @@ def _joint_batch_resampling(
             "bootstrap_replicates",
         ],
     )
+
+
+def _declared_k_weights(cfg: AppConfig, required_k: list[int]) -> dict[int, float]:
+    """Return the complete-support player-count weights declared by config."""
+
+    if cfg.k_aggregation.method == "equal-k":
+        weight = 1.0 / len(required_k)
+        return dict.fromkeys(required_k, weight)
+    weights = cfg.k_aggregation.k_weights
+    if weights is None or {int(k) for k in weights} != set(required_k):
+        raise ValueError("declared player-count weights must cover complete configured support")
+    return {k: float(weights[k]) for k in required_k}
+
+
+def _chance_relative_log_odds(win_rate: float, k: int) -> float | None:
+    """Return finite log odds relative to chance, or ``None`` at a boundary."""
+
+    if not 0.0 < win_rate < 1.0:
+        return None
+    chance = 1.0 / k
+    return float(np.log(win_rate / (1.0 - win_rate)) - np.log(chance / (1.0 - chance)))
+
+
+def _player_count_effect_diagnostics(
+    cfg: AppConfig,
+    estimates: dict[int, pd.DataFrame],
+    required_k: list[int],
+) -> pd.DataFrame:
+    """Build complete-support relative effects, spreads, and cross-k rank checks."""
+
+    complete_strategies = sorted(
+        set.intersection(
+            *(set(frame["strategy"].astype(int).tolist()) for frame in estimates.values())
+        )
+    )
+    if not complete_strategies:
+        raise ValueError("player-count diagnostics require complete configured strategy support")
+    weights = _declared_k_weights(cfg, required_k)
+    root_seed = int(next(iter(estimates.values()))["root_seed"].iloc[0])
+    values: dict[tuple[int, int], float | None] = {}
+    rows: list[dict[str, object]] = []
+
+    def base_row(diagnostic_type: str) -> dict[str, object]:
+        return {
+            "diagnostic_type": diagnostic_type,
+            "root_seed": root_seed,
+            "strategy": None,
+            "k": None,
+            "k_a": None,
+            "k_b": None,
+            "k_weight": None,
+            "k_weight_a": None,
+            "k_weight_b": None,
+            "win_rate": None,
+            "chance_baseline": None,
+            "chance_relative_log_odds": None,
+            "effect_available": None,
+            "unavailable_reason": None,
+            "log_odds_contrast": None,
+            "finite_strategy_count": None,
+            "boundary_unavailable_count": None,
+            "log_odds_sd": None,
+            "log_odds_iqr": None,
+            "log_odds_top_minus_median": None,
+            "common_finite_strategy_count": None,
+            "spearman_rank_correlation": None,
+            "kendall_rank_correlation": None,
+            "complete_configured_k_support": True,
+            "declared_k_method": cfg.k_aggregation.method,
+        }
+
+    indexed = {k: frame.set_index("strategy") for k, frame in estimates.items()}
+    for k in required_k:
+        for strategy in complete_strategies:
+            rate = float(indexed[k].loc[strategy, "win_rate"])
+            effect = _chance_relative_log_odds(rate, k)
+            values[(k, strategy)] = effect
+            row = base_row("strategy_k_chance_relative_log_odds")
+            row.update(
+                {
+                    "strategy": strategy,
+                    "k": k,
+                    "k_weight": weights[k],
+                    "win_rate": rate,
+                    "chance_baseline": 1.0 / k,
+                    "chance_relative_log_odds": effect,
+                    "effect_available": effect is not None,
+                    "unavailable_reason": (
+                        None if effect is not None else "boundary_win_rate_log_odds_unavailable"
+                    ),
+                }
+            )
+            rows.append(row)
+
+        finite = np.asarray(
+            [
+                values[(k, strategy)]
+                for strategy in complete_strategies
+                if values[(k, strategy)] is not None
+            ],
+            dtype=float,
+        )
+        spread = base_row("within_k_strategy_spread")
+        spread.update(
+            {
+                "k": k,
+                "k_weight": weights[k],
+                "finite_strategy_count": int(finite.size),
+                "boundary_unavailable_count": len(complete_strategies) - int(finite.size),
+                "log_odds_sd": float(np.std(finite, ddof=1)) if finite.size >= 2 else None,
+                "log_odds_iqr": (
+                    float(np.quantile(finite, 0.75) - np.quantile(finite, 0.25))
+                    if finite.size
+                    else None
+                ),
+                "log_odds_top_minus_median": (
+                    float(np.max(finite) - np.median(finite)) if finite.size else None
+                ),
+            }
+        )
+        rows.append(spread)
+
+    for left_index, k_a in enumerate(required_k):
+        for k_b in required_k[left_index + 1 :]:
+            common = [
+                strategy
+                for strategy in complete_strategies
+                if values[(k_a, strategy)] is not None and values[(k_b, strategy)] is not None
+            ]
+            for strategy in complete_strategies:
+                left = values[(k_a, strategy)]
+                right = values[(k_b, strategy)]
+                row = base_row("strategy_pairwise_k_contrast")
+                row.update(
+                    {
+                        "strategy": strategy,
+                        "k_a": k_a,
+                        "k_b": k_b,
+                        "k_weight_a": weights[k_a],
+                        "k_weight_b": weights[k_b],
+                        "effect_available": left is not None and right is not None,
+                        "unavailable_reason": (
+                            None
+                            if left is not None and right is not None
+                            else "boundary_win_rate_log_odds_unavailable"
+                        ),
+                        "log_odds_contrast": (
+                            float(left - right)
+                            if left is not None and right is not None
+                            else None
+                        ),
+                    }
+                )
+                rows.append(row)
+            rank_row = base_row("pairwise_k_rank_agreement")
+            rank_row.update(
+                {
+                    "k_a": k_a,
+                    "k_b": k_b,
+                    "k_weight_a": weights[k_a],
+                    "k_weight_b": weights[k_b],
+                    "common_finite_strategy_count": len(common),
+                    "spearman_rank_correlation": (
+                        float(
+                            spearmanr(
+                                [values[(k_a, strategy)] for strategy in common],
+                                [values[(k_b, strategy)] for strategy in common],
+                            ).statistic
+                        )
+                        if len(common) >= 2
+                        else None
+                    ),
+                    "kendall_rank_correlation": (
+                        float(
+                            kendalltau(
+                                [values[(k_a, strategy)] for strategy in common],
+                                [values[(k_b, strategy)] for strategy in common],
+                            ).statistic
+                        )
+                        if len(common) >= 2
+                        else None
+                    ),
+                }
+            )
+            rows.append(rank_row)
+    return pd.DataFrame(rows)
 
 
 def _write_frame(
@@ -413,6 +607,11 @@ def _write_frame(
         baseline="chance_1_over_k",
         weighted_quantity="chance_adjusted_win_rate",
         k_aggregation_method=k_aggregation_method,
+        k_weights=(
+            cfg.k_aggregation.k_weights
+            if k_aggregation_method == "declared_mapping"
+            else None
+        ),
         support_count_role="raw_player_game_exposures",
         uncertainty_method=uncertainty_method,
         replication_unit="deterministic_shuffle_batch",
@@ -447,6 +646,7 @@ def build_canonical_performance(cfg: AppConfig, *, force: bool = False) -> Perfo
         across_k=cfg.performance_across_k_path(),
         bootstrap=cfg.performance_bootstrap_path(),
         control_contrasts=cfg.performance_control_contrasts_path(),
+        player_count_effects=cfg.performance_player_count_effects_path(),
     )
     done = stage_done_path(cfg.metrics_stage_dir, "canonical_performance")
     if not force and stage_is_up_to_date(
@@ -493,6 +693,7 @@ def build_canonical_performance(cfg: AppConfig, *, force: bool = False) -> Perfo
     if not len(strategies):
         raise ValueError("no strategies have complete configured k support")
     bootstrap, contrasts = _joint_batch_resampling(cfg, frames, across, strategies, required_k)
+    player_count_effects = _player_count_effect_diagnostics(cfg, estimates, required_k)
     _write_frame(
         cfg,
         across,
@@ -528,6 +729,21 @@ def build_canonical_performance(cfg: AppConfig, *, force: bool = False) -> Perfo
         grouping_keys=["root_seed", "strategy", "control_strategy"],
         uncertainty_method="joint_deterministic_batch_resampling",
         k_aggregation_method="equal_k",
+    )
+    diagnostic_method = (
+        "equal_k" if cfg.k_aggregation.method == "equal-k" else "declared_mapping"
+    )
+    _write_frame(
+        cfg,
+        player_count_effects,
+        artifacts.player_count_effects,
+        scope=ArtifactScope.DIAGNOSTICS,
+        operation="calculate_player_count_effect_diagnostics",
+        sources=list(by_k_paths),
+        player_counts=required_k,
+        grouping_keys=["diagnostic_type", "strategy", "k", "k_a", "k_b"],
+        uncertainty_method="descriptive_complete_support_rank_and_spread",
+        k_aggregation_method=diagnostic_method,
     )
     write_stage_done(
         done,
