@@ -1,11 +1,7 @@
-import pickle
-from collections import Counter
-
 import pandas as pd
 import pytest
 
 from farkle.simulation.strategies import (
-    STOP_AT_REGISTRY,
     STRATEGY_TUPLE_FIELDS,
     FavorDiceOrScore,
     StopAtStrategy,
@@ -23,7 +19,6 @@ from farkle.simulation.strategies import (
     decode_strategy_id,
     encode_strategy,
     iter_strategy_combos,
-    load_farkle_results,
     normalize_strategy_ids,
     parse_strategy,
     parse_strategy_for_df,
@@ -487,8 +482,8 @@ def test_strategy_id_normalization_and_coercion_helpers():
     normalized = normalize_strategy_ids(series)
     assert normalized.tolist() == [1, 2, pd.NA, pd.NA, 7]
 
-    coerced = coerce_strategy_ids(series)
-    assert coerced.tolist() == [1, 2, "foo", None, 7]
+    with pytest.raises(ValueError, match="nonnumeric strategy identifier"):
+        coerce_strategy_ids(series)
 
 
 def test_strategy_id_normalization_decimal_failure_mode():
@@ -523,54 +518,7 @@ def test_parse_strategy_identifier_decode_failures():
         parse_strategy_identifier("legacy-only")
 
 
-def test_load_farkle_results(tmp_path):
-    counter = Counter(
-        {
-            "Strat(300,2)[SD][FOFS][AND][HR]": 5,
-            "Strat(250,3)[--][--FD][OR][--]": 3,
-        }
-    )
-    pkl = tmp_path / "results.pkl"
-    pkl.write_bytes(pickle.dumps(counter))
-
-    df = load_farkle_results(pkl)
-
-    row1 = {"strategy": "Strat(300,2)[SD][FOFS][AND][HR]", "wins": 5}
-    row1.update(parse_strategy_for_df(row1["strategy"]))
-    row2 = {"strategy": "Strat(250,3)[--][--FD][OR][--]", "wins": 3}
-    row2.update(parse_strategy_for_df(row2["strategy"]))
-    expected = pd.DataFrame([row1, row2])
-    expected = expected[df.columns]
-    pd.testing.assert_frame_equal(df.reset_index(drop=True), expected)
-
-
-def test_load_farkle_results_unordered(tmp_path):
-    counter = Counter(
-        {
-            "Strat(300,2)[SD][FOFS][AND][HR]": 5,
-        }
-    )
-    pkl = tmp_path / "results.pkl"
-    pkl.write_bytes(pickle.dumps(counter))
-
-    df = load_farkle_results(pkl, ordered=False)
-    assert df.columns.tolist() == [
-        "strategy",
-        "wins",
-        "score_threshold",
-        "dice_threshold",
-        "smart_five",
-        "smart_one",
-        "consider_score",
-        "consider_dice",
-        "require_both",
-        "auto_hot_dice",
-        "run_up_score",
-        "favor_dice_or_score",
-    ]
-
-
-def test_option_combo_encoder_manifest_identifier_and_results_paths(tmp_path):
+def test_option_combo_encoder_manifest_identifier_paths():
     assert _coerce_options([3, 1, 2], fallback=(9,), normalize=True) == (1, 2, 3)
     assert _coerce_options([1, "a", 3], fallback=(9,), normalize=True) == (1, "a", 3)
 
@@ -645,45 +593,15 @@ def test_option_combo_encoder_manifest_identifier_and_results_paths(tmp_path):
     parsed_via_manifest = parse_strategy_identifier(8, manifest=manifest)
     assert parsed_via_manifest.favor_dice_or_score is FavorDiceOrScore.DICE
 
-    stop_at_key = "stop_at_350"
-    parsed_stop_at = parse_strategy_identifier(stop_at_key)
-    assert stop_at_key in STOP_AT_REGISTRY
-    assert str(parsed_stop_at) == stop_at_key
+    with pytest.raises(ValueError, match="nonnumeric strategy identifier"):
+        parse_strategy_identifier("stop_at_350")
 
-    parsed_legacy = parse_strategy_identifier(
-        "legacy",
-        parse_legacy=lambda _s: {
-            "score_threshold": 450,
-            "dice_threshold": 1,
-            "smart_five": False,
-            "smart_one": False,
-            "consider_score": True,
-            "consider_dice": False,
-            "require_both": False,
-            "auto_hot_dice": False,
-            "run_up_score": False,
-            "favor_dice_or_score": FavorDiceOrScore.SCORE,
-        },
-    )
-    assert parsed_legacy.score_threshold == 450
-
-    mixed = pd.Series([7, "Strat(300,2)[-D][--FD][OR][--]", 8], index=[11, 13, 17])
-    attrs = strategy_attributes_from_series(mixed, manifest=manifest, parse_legacy=parse_strategy_for_df)
-    assert attrs.index.tolist() == [11, 13, 17]
+    canonical_ids = pd.Series([7, 8], index=[11, 17])
+    attrs = strategy_attributes_from_series(canonical_ids, manifest=manifest)
+    assert attrs.index.tolist() == [11, 17]
     assert attrs.loc[11, "favor_dice_or_score"] == "score"
-    assert attrs.loc[13, "favor_dice_or_score"] is FavorDiceOrScore.DICE
+    assert attrs.loc[17, "favor_dice_or_score"] == "dice"
 
-    empty_attrs = strategy_attributes_from_series(pd.Series([None, pd.NA]))
+    empty_attrs = strategy_attributes_from_series(pd.Series([None, pd.NA]), manifest=manifest)
     assert empty_attrs.empty
     assert empty_attrs.columns.tolist() == list(STRATEGY_TUPLE_FIELDS)
-
-    counter = Counter({"7": 3, "Strat(300,2)[-D][--FD][OR][--]": 2})
-    pkl = tmp_path / "results_manifest.pkl"
-    pkl.write_bytes(pickle.dumps(counter))
-
-    ordered_df = load_farkle_results(pkl, manifest=manifest, ordered=True)
-    unordered_df = load_farkle_results(pkl, manifest=manifest, ordered=False)
-
-    assert ordered_df["wins"].tolist() == [3, 2]
-    assert ordered_df.columns[0:2].tolist() == ["strategy", "wins"]
-    assert unordered_df["strategy"].tolist() == ["7", "Strat(300,2)[-D][--FD][OR][--]"]

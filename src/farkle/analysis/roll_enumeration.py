@@ -11,11 +11,11 @@ from typing import Final
 import pandas as pd
 import pyarrow as pa
 
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.game.scoring import score_roll_cached
 from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 _FACES: Final = range(1, 7)
 _SELECTION_RULE: Final = "production_max_immediate_score_v1"

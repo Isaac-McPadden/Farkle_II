@@ -15,8 +15,7 @@ layer.
 
 from __future__ import annotations
 
-import warnings
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
 
 from farkle.game.scoring import DiceRoll, default_score
@@ -314,35 +313,7 @@ class GameMetrics:
     players: Dict[str, PlayerStats]
     game: GameStats
 
-    @property
-    def players_dict(self) -> Dict[str, Dict[str, int]]:
-        """Return per-player statistics as plain dictionaries.
-
-        This property mirrors the legacy :attr:`per_player` attribute which
-        originally exposed player results before :class:`PlayerStats` existed.
-        """
-        return {n: asdict(ps) for n, ps in self.players.items()}
-
-    # legacy – keep old call‑sites alive until migrated
-    @property
-    def per_player(self):
-        """Deprecated alias for :attr:`players_dict`.
-
-        The original :class:`GameMetrics` exposed player results via
-        ``per_player`` before :class:`PlayerStats` was introduced.  Existing
-        code may still rely on that attribute, so it now forwards to
-        :attr:`players_dict` and emits a :class:`DeprecationWarning`.
-        """
-        warnings.warn(
-            "GameMetrics.per_player is deprecated; use players_dict instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self.players_dict
-
-    # ------------------------------------------------------------------
-    # Compatibility helpers for the previous GameMetrics API
-    # ------------------------------------------------------------------
+    # Frequently used scalar views over the canonical nested statistics.
     @property
     def winner(self) -> str:
         """Return the name of the player with the highest score."""

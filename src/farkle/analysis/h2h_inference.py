@@ -17,15 +17,15 @@ from scipy.stats import norm
 from statsmodels.stats.proportion import confint_proportions_2indep
 
 from farkle.analysis.h2h_schedule import SCORE_TEST_ID
-from farkle.analysis.stage_state import (
+from farkle.config import AppConfig, ArtifactScope
+from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
+from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.stage_completion import (
     CompletionState,
     stage_done_path,
     stage_is_up_to_date,
     write_stage_done,
 )
-from farkle.config import AppConfig, ArtifactScope
-from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
-from farkle.utils.artifacts import write_parquet_artifact_atomic
 
 _INTERVAL_METHOD: Final = "independent_two_proportion_score_inversion_v1"
 
@@ -370,7 +370,7 @@ def _root_specific_diagnostics(
     """Calculate fixed-root score diagnostics and cross-root agreement summaries."""
 
     root_frames: list[pd.DataFrame] = []
-    roots = [int(root) for root in cast(list[object], plan["root_seeds"])]
+    roots = [int(cast(Any, root)) for root in cast(list[object], plan["root_seeds"])]
     for root in roots:
         selected = counts.loc[counts["root_seed"].astype(int).eq(root)].copy()
         root_orders = selected.rename(
@@ -457,14 +457,10 @@ def _root_specific_diagnostics(
                 {
                     "root_b": int(second["root_seed"]),
                     "root_b_d_ab": second_effect,
-                    "root_b_diagnostic_holm_decision": str(
-                        second["diagnostic_holm_decision"]
-                    ),
+                    "root_b_diagnostic_holm_decision": str(second["diagnostic_holm_decision"]),
                     "effect_discrepancy_a_minus_b": discrepancy,
                     "absolute_effect_discrepancy": abs(discrepancy),
-                    "diagnostic_holm_decision_agreement": str(
-                        first["diagnostic_holm_decision"]
-                    )
+                    "diagnostic_holm_decision_agreement": str(first["diagnostic_holm_decision"])
                     == str(second["diagnostic_holm_decision"]),
                     "effect_direction_agreement": int(np.sign(first_effect))
                     == int(np.sign(second_effect)),

@@ -24,12 +24,12 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 
 from farkle.analysis import stage_logger
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.parallel import apply_native_thread_limits, resolve_stage_parallel_policy
 from farkle.utils.progress import ScheduledProgressLogger
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 LOGGER = logging.getLogger(__name__)
 

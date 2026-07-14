@@ -8,7 +8,6 @@ from typing import Any
 import pandas as pd
 import pyarrow as pa
 
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.artifacts import (
@@ -16,6 +15,7 @@ from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
 )
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 
 def _screening_sources(cfg: AppConfig) -> tuple[list[int], list[Path]]:

@@ -149,7 +149,9 @@ def test_run_streaming_shard_invocation(tmp_path, monkeypatch):
     # falls back to the manifest directory (and ultimately an absolute path) when
     # necessary. Accept any of those equivalents to avoid sensitivity to the
     # runner's working directory.
-    expected_path = os.path.relpath(os.fspath(out_path), start=os.fspath(Path(manifest_path).parent))
+    expected_path = os.path.relpath(
+        os.fspath(out_path), start=os.fspath(Path(manifest_path).parent)
+    )
     assert Path(manifest_record["path"]) == Path(expected_path)
     assert manifest_record["rows"] == sum(tbl.num_rows for tbl in tables)
     for key, value in run_extra.items():
@@ -352,9 +354,7 @@ def test_bounded_queue_blocks_and_closes():
 def test_output_ready_missing_file_returns_false(tmp_path):
     out_path = tmp_path / "missing.parquet"
 
-    assert (
-        streaming_loop._output_ready(str(out_path), "manifest.ndjson", {"run": 1}) is False
-    )
+    assert streaming_loop._output_ready(str(out_path), "manifest.ndjson", {"run": 1}) is False
 
 
 def test_output_ready_delayed_file_branch(tmp_path, monkeypatch):
@@ -430,8 +430,6 @@ def test_run_streaming_shard_manifest_outside_dir_uses_absolute(tmp_path, monkey
     assert manifest_calls[0][1]["path"] == os.path.abspath(os.fspath(out_path))
 
 
-
-
 def test_run_streaming_shard_manifest_sibling_relative_path_is_preserved(tmp_path, monkeypatch):
     table = pa.table({"value": [1]})
     schema = table.schema
@@ -479,6 +477,7 @@ def test_run_streaming_shard_manifest_sibling_relative_path_is_preserved(tmp_pat
 
     assert manifest_calls
     assert manifest_calls[0][1]["path"] == "../combined/10p_part-00000.parquet"
+
 
 def test_writer_thread_stops_on_first_sentinel(monkeypatch):
     table = pa.table({"value": [1]})

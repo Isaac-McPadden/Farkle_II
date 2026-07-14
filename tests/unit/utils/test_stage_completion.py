@@ -102,8 +102,7 @@ def test_resolve_stage_state_distinguishes_all_lifecycle_states(tmp_path: Path) 
         is CompletionState.COMPLETE_STALE
     )
     assert (
-        resolve_stage_state(done, [], [output], cap_reached=True)
-        is CompletionState.BLOCKED_BY_CAP
+        resolve_stage_state(done, [], [output], cap_reached=True) is CompletionState.BLOCKED_BY_CAP
     )
 
 

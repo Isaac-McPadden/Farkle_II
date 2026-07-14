@@ -26,7 +26,6 @@ from farkle.simulation.strategies import (
     FavorDiceOrScore,
     ThresholdStrategy,
     coerce_strategy_ids,
-    parse_strategy_for_df,
     strategy_attributes_from_series,
 )
 from farkle.utils.artifact_contract import make_artifact_sidecar
@@ -98,14 +97,7 @@ def _parse_strategy_features(
         columns = ["strategy"] + [name for name, _dtype in FEATURE_SPECS]
         return pd.DataFrame(columns=columns).set_index("strategy")
 
-    def _safe_parse(value: str) -> dict:
-        """Parse one legacy strategy literal, swallowing unsupported variants."""
-        try:
-            return parse_strategy_for_df(value)
-        except ValueError:
-            return {}
-
-    attrs = strategy_attributes_from_series(unique, manifest=manifest, parse_legacy=_safe_parse)
+    attrs = strategy_attributes_from_series(unique, manifest=manifest)
     if attrs.empty:
         columns = ["strategy"] + [name for name, _dtype in FEATURE_SPECS]
         return pd.DataFrame(columns=columns).set_index("strategy")
@@ -493,9 +485,9 @@ def run_hgb(
     max_depth = cfg.hgb.max_depth
     max_iter = cfg.hgb.n_estimators
     proposal_limit = cfg.hgb.future_proposal_limit
-    manifest = None
-    if manifest_path is not None and Path(manifest_path).exists():
-        manifest = pd.read_parquet(manifest_path)
+    if manifest_path is None or not Path(manifest_path).exists():
+        raise FileNotFoundError("HGB requires the canonical strategy manifest")
+    manifest = pd.read_parquet(manifest_path)
 
     LOGGER.info(
         "HGB regression start",

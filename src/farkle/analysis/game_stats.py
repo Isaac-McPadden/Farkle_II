@@ -35,7 +35,7 @@ import json
 import logging
 import math
 from collections.abc import Iterable, Sequence
-from concurrent.futures import FIRST_EXCEPTION, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_EXCEPTION, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeAlias, cast
@@ -50,15 +50,15 @@ from pandas._typing import Scalar
 
 from farkle.analysis import stage_logger
 from farkle.analysis.roll_enumeration import build_exact_roll_enumeration
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.aggregation import normalize_k_aggregation_method
 from farkle.utils.analysis_shared import to_int
 from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_atomic
+from farkle.utils.parallel import normalize_n_jobs, resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.schema_helpers import n_players_from_schema
-from farkle.utils.stage_io import resolve_worker_count
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.types import Compression
 from farkle.utils.writer import ParquetShardWriter, atomic_path
 
@@ -90,17 +90,6 @@ class _UnweightedAccumulator:
 
 
 @dataclass(slots=True)
-class _WeightedAccumulator:
-    """Track weighted sums and histogram mass for combined strategy metrics."""
-
-    count: int = 0
-    weight_total: float = 0.0
-    weighted_total: float = 0.0
-    weighted_total_sq: float = 0.0
-    hist: dict[float, float] = field(default_factory=dict)
-
-
-@dataclass(slots=True)
 class _BinnedAccumulator:
     """Track summary statistics and coarse histogram bins for margin metrics."""
 
@@ -116,7 +105,7 @@ _MARGIN_BIN_WIDTH = 25.0
 
 
 def _resolve_analysis_workers(cfg: AppConfig) -> int:
-    return resolve_worker_count(cfg.analysis.n_jobs, cfg.sim.n_jobs, item_count=1)
+    return normalize_n_jobs(cfg.analysis.n_jobs)
 
 
 def _per_k_game_stats_paths(stage_dir: Path, k: int) -> tuple[Path, Path]:
@@ -126,84 +115,6 @@ def _per_k_game_stats_paths(stage_dir: Path, k: int) -> tuple[Path, Path]:
 
 def _per_k_game_stats_aggregation_marker(stage_dir: Path) -> Path:
     return stage_dir / "across_k" / "game_stats.aggregate.done.json"
-
-
-def _write_per_k_game_length(
-    *,
-    k: int,
-    game_length_df: pd.DataFrame,
-    output_path: Path,
-    stamp_path: Path,
-    input_paths: Sequence[Path],
-    codec: Compression,
-    config_sha: str | None,
-    stage_config_sha: str,
-    cache_key_version: int,
-) -> None:
-    """Write the per-player-count game-length parquet and completion stamp.
-
-    Args:
-        k: Player count being written.
-        game_length_df: Full game-length frame containing all player counts.
-        output_path: Destination parquet path for the filtered slice.
-        stamp_path: Done-stamp path paired with ``output_path``.
-        input_paths: Inputs used to derive the per-``k`` output.
-        codec: Compression codec for parquet output.
-        config_sha: Optional configuration fingerprint for stage tracking.
-        stage_config_sha: Stage-specific cache fingerprint.
-        cache_key_version: Version tag for the done-stamp payload.
-    """
-    per_k_game_length = game_length_df.loc[game_length_df["n_players"] == k].copy()
-    per_k_game_length_table = pa.Table.from_pandas(per_k_game_length, preserve_index=False)
-    write_parquet_atomic(per_k_game_length_table, output_path, codec=codec)
-    write_stage_done(
-        stamp_path,
-        inputs=input_paths,
-        outputs=[output_path],
-        config_sha=config_sha,
-        stage="game_stats",
-        stage_config_sha=stage_config_sha,
-        cache_key_version=cache_key_version,
-    )
-
-
-def _write_per_k_margin(
-    *,
-    k: int,
-    margin_df: pd.DataFrame,
-    output_path: Path,
-    stamp_path: Path,
-    input_paths: Sequence[Path],
-    codec: Compression,
-    config_sha: str | None,
-    stage_config_sha: str,
-    cache_key_version: int,
-) -> None:
-    """Write the per-player-count margin parquet and completion stamp.
-
-    Args:
-        k: Player count being written.
-        margin_df: Full margin frame containing all player counts.
-        output_path: Destination parquet path for the filtered slice.
-        stamp_path: Done-stamp path paired with ``output_path``.
-        input_paths: Inputs used to derive the per-``k`` output.
-        codec: Compression codec for parquet output.
-        config_sha: Optional configuration fingerprint for stage tracking.
-        stage_config_sha: Stage-specific cache fingerprint.
-        cache_key_version: Version tag for the done-stamp payload.
-    """
-    per_k_margin = margin_df.loc[margin_df["n_players"] == k].copy()
-    per_k_margin_table = pa.Table.from_pandas(per_k_margin, preserve_index=False)
-    write_parquet_atomic(per_k_margin_table, output_path, codec=codec)
-    write_stage_done(
-        stamp_path,
-        inputs=input_paths,
-        outputs=[output_path],
-        config_sha=config_sha,
-        stage="game_stats",
-        stage_config_sha=stage_config_sha,
-        cache_key_version=cache_key_version,
-    )
 
 
 def _run_per_k_fanout(
@@ -415,7 +326,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     roll_artifacts = build_exact_roll_enumeration(cfg, force=force)
 
     stage_dir = cfg.game_stats_stage_dir
-    configured_k_values = cfg.agreement_players()
+    configured_k_values = sorted({int(k) for k in cfg.sim.n_players_list})
     per_n_inputs = _discover_per_n_inputs(cfg)
     input_by_k = dict(per_n_inputs)
     input_paths: list[Path] = [p for _, p in per_n_inputs]
@@ -429,37 +340,25 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         )
         return
 
+    missing_k = sorted(set(configured_k_values) - set(input_by_k))
+    if missing_k:
+        raise FileNotFoundError(f"game_stats: incomplete canonical by-k support: {missing_k}")
     workers = min(max(1, _resolve_analysis_workers(cfg)), max(1, len(configured_k_values)))
     stage_config_sha = cfg.stage_config_sha("game_stats")
     cache_key_version = cfg.stage_cache_key_version("game_stats")
-    _normalize_k_aggregation_method(cfg.k_aggregation.method)
+    normalize_k_aggregation_method(cfg.k_aggregation.method)
     stale_ks: list[int] = []
     for k in configured_k_values:
         artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
         input_path = input_by_k.get(k)
-        if input_path is None:
-            _write_empty_per_k_outputs(
-                k=k,
-                stage_dir=stage_dir,
-                artifact_path=artifact_path,
-                done_path=done_path,
-                thresholds=cfg.game_stats_margin_thresholds,
-                codec=cfg.parquet_codec,
-                config_sha=cfg.config_sha,
-                stage_config_sha=stage_config_sha,
-                cache_key_version=cache_key_version,
-                force=force,
-            )
-            continue
+        assert input_path is not None
         if force:
             stale_ks.append(k)
             continue
-        legacy_game = cfg.by_k_dir("game_stats", k) / "game_length.parquet"
-        legacy_margin = cfg.by_k_dir("game_stats", k) / "margin_stats.parquet"
         if not stage_is_up_to_date(
             done_path,
             inputs=[input_path],
-            outputs=[artifact_path, legacy_game, legacy_margin],
+            outputs=[artifact_path],
             cfg=cfg,
             stage="game_stats",
         ):
@@ -473,26 +372,29 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         if workers == 1:
             for k in stale_ks:
                 _compute_k_game_stats(
+                    cfg=cfg,
                     k=k,
                     input_path=input_by_k[k],
                     stage_dir=stage_dir,
                     thresholds=cfg.game_stats_margin_thresholds,
-                    codec=cfg.parquet_codec,
                     config_sha=cfg.config_sha,
                     stage_config_sha=stage_config_sha,
                     cache_key_version=cache_key_version,
                     progress_logging=cfg.analysis.progress_logging,
                 )
         else:
-            with ThreadPoolExecutor(max_workers=min(workers, len(stale_ks))) as executor:
+            with ProcessPoolExecutor(
+                max_workers=min(workers, len(stale_ks)),
+                mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
+            ) as executor:
                 futures = [
                     executor.submit(
                         _compute_k_game_stats,
+                        cfg=cfg,
                         k=k,
                         input_path=input_by_k[k],
                         stage_dir=stage_dir,
                         thresholds=cfg.game_stats_margin_thresholds,
-                        codec=cfg.parquet_codec,
                         config_sha=cfg.config_sha,
                         stage_config_sha=stage_config_sha,
                         cache_key_version=cache_key_version,
@@ -611,14 +513,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             combined_game_length_output,
             combined_margin_output,
             rare_events_output,
-            *[
-                cfg.by_k_dir("game_stats", k) / "game_length.parquet"
-                for k in configured_k_values
-            ],
-            *[
-                cfg.by_k_dir("game_stats", k) / "margin_stats.parquet"
-                for k in configured_k_values
-            ],
+            *[_per_k_game_stats_paths(stage_dir, k)[0] for k in configured_k_values],
             *([rare_events_details_output] if write_details else []),
             *roll_artifacts.all_paths,
         ],
@@ -629,6 +524,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             margin_output,
             combined_game_length_output,
             combined_margin_output,
+            *[_per_k_game_stats_paths(stage_dir, k)[0] for k in configured_k_values],
             *roll_artifacts.all_paths,
         ],
     )
@@ -636,11 +532,11 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
 def _compute_k_game_stats(
     *,
+    cfg: AppConfig,
     k: int,
     input_path: Path,
     stage_dir: Path,
     thresholds: Sequence[int],
-    codec: Compression,
     config_sha: str | None,
     stage_config_sha: str,
     cache_key_version: int,
@@ -653,7 +549,6 @@ def _compute_k_game_stats(
         input_path: Per-``k`` curated parquet input.
         stage_dir: Stage directory used for output paths and stamps.
         thresholds: Margin thresholds for probability columns.
-        codec: Compression codec for parquet outputs.
         config_sha: Optional configuration fingerprint for stage tracking.
         stage_config_sha: Stage-specific cache fingerprint.
         cache_key_version: Version tag for the done-stamp payload.
@@ -862,79 +757,23 @@ def _compute_k_game_stats(
     frame = pd.DataFrame(rows)
     if frame.empty:
         return
-    table = pa.Table.from_pandas(frame, preserve_index=False)
-    write_parquet_atomic(table, artifact_path, codec=codec)
-
-    legacy_game_path = artifact_path.parent / "game_length.parquet"
-    legacy_margin_path = artifact_path.parent / "margin_stats.parquet"
-    game_cols = [
-        "summary_level",
-        "strategy",
-        "n_players",
-        "observations",
-        "mean_rounds",
-        "median_rounds",
-        "std_rounds",
-        "p10_rounds",
-        "p50_rounds",
-        "p90_rounds",
-        "prob_rounds_le_5",
-        "prob_rounds_le_10",
-        "prob_rounds_ge_20",
-    ]
-    margin_output_cols = [
-        "summary_level",
-        "strategy",
-        "n_players",
-        "observations",
-        "mean_margin_runner_up",
-        "median_margin_runner_up",
-        "std_margin_runner_up",
-        *[c for c in frame.columns if c.startswith("prob_margin_runner_up_le_")],
-        "mean_score_spread",
-        "median_score_spread",
-        "std_score_spread",
-        *[c for c in frame.columns if c.startswith("prob_score_spread_le_")],
-    ]
-    game_frame = frame[[c for c in game_cols if c in frame.columns]].copy()
-    margin_frame = frame[[c for c in margin_output_cols if c in frame.columns]].copy()
-    if "strategy" in game_frame.columns:
-        game_frame["strategy"] = pd.to_numeric(game_frame["strategy"], errors="coerce").astype(
-            "Int64"
-        )
-    if "strategy" in margin_frame.columns:
-        margin_frame["strategy"] = pd.to_numeric(margin_frame["strategy"], errors="coerce").astype(
-            "Int64"
-        )
-    if "summary_level" in margin_frame.columns:
-        margin_frame = margin_frame.loc[margin_frame["summary_level"] == "strategy"].copy()
-    _write_per_k_game_length(
-        k=k,
-        game_length_df=game_frame,
-        output_path=legacy_game_path,
-        stamp_path=stage_done_path(stage_dir, f"game_stats.game_length.{k}p"),
-        input_paths=[input_path],
-        codec=codec,
-        config_sha=config_sha,
-        stage_config_sha=stage_config_sha,
-        cache_key_version=cache_key_version,
-    )
-    _write_per_k_margin(
-        k=k,
-        margin_df=margin_frame,
-        output_path=legacy_margin_path,
-        stamp_path=stage_done_path(stage_dir, f"game_stats.margin.{k}p"),
-        input_paths=[input_path],
-        codec=codec,
-        config_sha=config_sha,
-        stage_config_sha=stage_config_sha,
-        cache_key_version=cache_key_version,
+    _write_scoped_game_stats(
+        cfg,
+        frame,
+        artifact_path,
+        scope=ArtifactScope.BY_K,
+        operation="summarize_game_level_by_k",
+        conditioning="strategy_specific_and_population_wide_within_k",
+        weighted_quantity="game_level_lengths_margins_and_close_game_rates",
+        sources=[input_path],
+        player_counts=[k],
     )
 
     write_stage_done(
         done_path,
         inputs=[input_path],
-        outputs=[artifact_path, legacy_game_path, legacy_margin_path],
+        outputs=[artifact_path],
+        sidecar_artifacts=[artifact_path],
         config_sha=config_sha,
         stage="game_stats",
         stage_config_sha=stage_config_sha,
@@ -1002,7 +841,7 @@ def _aggregate_completed_k_game_stats(
     cache_key_version: int,
     force: bool,
 ) -> None:
-    """Combine completed per-``k`` stats files into aggregate compatibility outputs.
+    """Publish completed per-``k`` stats as exact concatenations and equal-k means.
 
     Args:
         configured_k_values: Player counts expected for aggregation.
@@ -1032,7 +871,12 @@ def _aggregate_completed_k_game_stats(
     if not completed_paths:
         return
 
-    outputs = [game_length_output, margin_output, combined_game_length_output, combined_margin_output]
+    outputs = [
+        game_length_output,
+        margin_output,
+        combined_game_length_output,
+        combined_margin_output,
+    ]
     if (not force) and stage_is_up_to_date(
         combined_stamp,
         inputs=completed_paths,
@@ -1194,157 +1038,6 @@ def _aggregate_completed_k_game_stats(
     )
 
 
-def _write_empty_per_k_outputs(
-    *,
-    k: int,
-    stage_dir: Path,
-    artifact_path: Path,
-    done_path: Path,
-    thresholds: Sequence[int],
-    codec: Compression,
-    config_sha: str | None,
-    stage_config_sha: str,
-    cache_key_version: int,
-    force: bool,
-) -> None:
-    """Write empty per-``k`` compatibility outputs when no rows are available.
-
-    Args:
-        k: Player count represented by the empty output set.
-        stage_dir: Stage root used to locate legacy compatibility outputs.
-        artifact_path: Main per-``k`` stats artifact path.
-        done_path: Done-stamp path paired with the empty outputs.
-        thresholds: Margin thresholds used to build empty probability columns.
-        codec: Compression codec for parquet outputs.
-        config_sha: Optional configuration fingerprint for stage tracking.
-        stage_config_sha: Stage-specific cache fingerprint.
-        cache_key_version: Version tag for the done-stamp payload.
-        force: Recompute even when the empty outputs appear current.
-    """
-    legacy_game_path = artifact_path.parent / "game_length.parquet"
-    legacy_margin_path = artifact_path.parent / "margin_stats.parquet"
-    if (not force) and stage_is_up_to_date(
-        done_path,
-        inputs=[],
-        outputs=[artifact_path, legacy_game_path, legacy_margin_path],
-        stage="game_stats",
-        stage_config_sha=stage_config_sha,
-        cache_key_version=cache_key_version,
-    ):
-        return
-    cols = [
-        "summary_level",
-        "strategy",
-        "n_players",
-        "observations",
-        "mean_rounds",
-        "median_rounds",
-        "std_rounds",
-        "p10_rounds",
-        "p50_rounds",
-        "p90_rounds",
-        "prob_rounds_le_5",
-        "prob_rounds_le_10",
-        "prob_rounds_ge_20",
-        "mean_margin_runner_up",
-        "median_margin_runner_up",
-        "std_margin_runner_up",
-        *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
-        "mean_score_spread",
-        "median_score_spread",
-        "std_score_spread",
-        *[f"prob_score_spread_le_{thr}" for thr in thresholds],
-    ]
-    empty = pd.DataFrame(columns=cols)
-    write_parquet_atomic(
-        pa.Table.from_pandas(empty, preserve_index=False), artifact_path, codec=codec
-    )
-    write_parquet_atomic(
-        pa.Table.from_pandas(
-            empty[
-                [
-                    c
-                    for c in cols
-                    if c.startswith("summary")
-                    or c
-                    in {
-                        "strategy",
-                        "n_players",
-                        "observations",
-                        "mean_rounds",
-                        "median_rounds",
-                        "std_rounds",
-                        "p10_rounds",
-                        "p50_rounds",
-                        "p90_rounds",
-                        "prob_rounds_le_5",
-                        "prob_rounds_le_10",
-                        "prob_rounds_ge_20",
-                    }
-                ]
-            ],
-            preserve_index=False,
-        ),
-        legacy_game_path,
-        codec=codec,
-    )
-    write_parquet_atomic(
-        pa.Table.from_pandas(
-            empty[
-                [
-                    c
-                    for c in cols
-                    if c.startswith("summary")
-                    or c
-                    in {
-                        "strategy",
-                        "n_players",
-                        "observations",
-                        "mean_margin_runner_up",
-                        "median_margin_runner_up",
-                        "std_margin_runner_up",
-                        "mean_score_spread",
-                        "median_score_spread",
-                        "std_score_spread",
-                    }
-                    or c.startswith("prob_margin_runner_up_le_")
-                    or c.startswith("prob_score_spread_le_")
-                ]
-            ],
-            preserve_index=False,
-        ),
-        legacy_margin_path,
-        codec=codec,
-    )
-    write_stage_done(
-        done_path,
-        inputs=[],
-        outputs=[artifact_path, legacy_game_path, legacy_margin_path],
-        config_sha=config_sha,
-        stage="game_stats",
-        stage_config_sha=stage_config_sha,
-        cache_key_version=cache_key_version,
-    )
-    write_stage_done(
-        stage_done_path(stage_dir, f"game_stats.game_length.{k}p"),
-        inputs=[],
-        outputs=[legacy_game_path],
-        config_sha=config_sha,
-        stage="game_stats",
-        stage_config_sha=stage_config_sha,
-        cache_key_version=cache_key_version,
-    )
-    write_stage_done(
-        stage_done_path(stage_dir, f"game_stats.margin.{k}p"),
-        inputs=[],
-        outputs=[legacy_margin_path],
-        config_sha=config_sha,
-        stage="game_stats",
-        stage_config_sha=stage_config_sha,
-        cache_key_version=cache_key_version,
-    )
-
-
 def _discover_per_n_inputs(cfg: AppConfig) -> list[tuple[int, Path]]:
     """Return discovered per-``n`` curated parquets in ``analysis/data``."""
 
@@ -1487,95 +1180,6 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
     ]
 
 
-def _normalize_k_aggregation_method(aggregation_method: str) -> str:
-    """Backward-compatible module-local alias for aggregation normalization."""
-
-    return normalize_k_aggregation_method(aggregation_method)
-
-
-def _k_aggregation_method_for_rows(
-    n_players: pd.Series,
-    *,
-    aggregation_method: str,
-    weights_by_k: dict[int, float],
-) -> pd.Series:
-    """Return per-row weights based on aggregation scheme and player count."""
-
-    counts = n_players.value_counts().to_dict()
-    if aggregation_method == "game-count":
-        return pd.Series(1.0, index=n_players.index)
-
-    if aggregation_method == "equal-k":
-        return n_players.map(lambda k: 1.0 / counts.get(k, 1))
-
-    if aggregation_method == "config":
-        missing = sorted({to_int(k) for k in counts} - set(weights_by_k))
-        if missing:
-            LOGGER.warning(
-                "Missing aggregation weights for player counts; treating as zero",
-                extra={"stage": "game_stats", "missing": missing},
-            )
-        return n_players.map(lambda k: float(weights_by_k.get(to_int(k), 0.0)) / counts.get(k, 1))
-
-    raise ValueError(f"Unknown aggregation scheme: {aggregation_method!r}")
-
-
-def _weighted_quantile(values: np.ndarray, weights: np.ndarray, quantile: float) -> float:
-    """Compute a weighted quantile from value and weight arrays."""
-
-    if values.size == 0:
-        return float("nan")
-    if quantile <= 0.0:
-        return float(np.nanmin(values))
-    if quantile >= 1.0:
-        return float(np.nanmax(values))
-    sorter = np.argsort(values)
-    values_sorted = values[sorter]
-    weights_sorted = weights[sorter]
-    cumulative = np.cumsum(weights_sorted)
-    total = cumulative[-1]
-    if total <= 0:
-        return float("nan")
-    cutoff = quantile * total
-    idx = _strategy_key_to_int(np.searchsorted(cumulative, cutoff, side="left"), field="index")
-    idx = min(max(idx, 0), values_sorted.size - 1)
-    return float(values_sorted[idx])
-
-
-def _weighted_mean(values: np.ndarray, weights: np.ndarray) -> float:
-    """Return the weighted mean for aligned value and weight arrays.
-
-    Args:
-        values: Numeric observations to average.
-        weights: Non-negative weights aligned to ``values``.
-
-    Returns:
-        Weighted mean or ``nan`` when the total weight is not positive.
-    """
-    total = weights.sum()
-    if total <= 0:
-        return float("nan")
-    return float(np.average(values, weights=weights))
-
-
-def _weighted_std(values: np.ndarray, weights: np.ndarray) -> float:
-    """Return the weighted population standard deviation for aligned arrays.
-
-    Args:
-        values: Numeric observations to summarize.
-        weights: Non-negative weights aligned to ``values``.
-
-    Returns:
-        Weighted standard deviation or ``nan`` when weights are invalid.
-    """
-    total = weights.sum()
-    if total <= 0:
-        return float("nan")
-    mean = np.average(values, weights=weights)
-    variance = np.average((values - mean) ** 2, weights=weights)
-    return float(math.sqrt(variance))
-
-
 def _update_unweighted_accumulator(acc: _UnweightedAccumulator, values: np.ndarray) -> None:
     """Add finite values into an unweighted accumulator and exact histogram.
 
@@ -1593,30 +1197,6 @@ def _update_unweighted_accumulator(acc: _UnweightedAccumulator, values: np.ndarr
     for value, count in zip(unique.tolist(), freq.tolist(), strict=True):
         value_key = float(value)
         acc.hist[value_key] = acc.hist.get(value_key, 0) + int(count)
-
-
-def _update_weighted_accumulator(
-    acc: _WeightedAccumulator, values: np.ndarray, *, row_weight: float
-) -> None:
-    """Add finite values into a weighted accumulator and weighted histogram.
-
-    Args:
-        acc: Accumulator mutated in place.
-        values: Numeric observations to incorporate.
-        row_weight: Weight applied to each value in ``values``.
-    """
-    clean = values[np.isfinite(values)]
-    if clean.size == 0 or not math.isfinite(row_weight) or row_weight <= 0:
-        return
-    rows = int(clean.size)
-    acc.count += rows
-    acc.weight_total += row_weight * rows
-    acc.weighted_total += row_weight * float(clean.sum())
-    acc.weighted_total_sq += row_weight * float(np.square(clean).sum())
-    unique, freq = np.unique(clean, return_counts=True)
-    for value, count in zip(unique.tolist(), freq.tolist(), strict=True):
-        value_key = float(value)
-        acc.hist[value_key] = acc.hist.get(value_key, 0.0) + (row_weight * int(count))
 
 
 def _hist_value_at_rank(sorted_items: list[tuple[float, int]], rank: int) -> float:
@@ -1802,440 +1382,6 @@ def _probability_le_from_binned(acc: _BinnedAccumulator, threshold: float) -> fl
         if bin_id <= threshold_bin:
             le += int(bin_count)
     return float(le / acc.count)
-
-
-def _weighted_quantile_from_hist(
-    hist: dict[float, float], *, weight_total: float, quantile: float
-) -> float:
-    """Return a weighted quantile from a weighted histogram.
-
-    Args:
-        hist: Weighted histogram keyed by observed value.
-        weight_total: Total weight represented by ``hist``.
-        quantile: Target quantile in ``[0, 1]``.
-
-    Returns:
-        Weighted quantile value or ``nan`` when the histogram is empty.
-    """
-    if weight_total <= 0 or not hist:
-        return float("nan")
-    if quantile <= 0.0:
-        return float(min(hist))
-    if quantile >= 1.0:
-        return float(max(hist))
-    cutoff = quantile * weight_total
-    running = 0.0
-    for value, weight in sorted(hist.items()):
-        running += float(weight)
-        if running >= cutoff:
-            return float(value)
-    return float(max(hist))
-
-
-def _weighted_probability_le_from_hist(
-    hist: dict[float, float], *, weight_total: float, threshold: float
-) -> float:
-    """Return weighted probability mass below an inclusive threshold.
-
-    Args:
-        hist: Weighted histogram keyed by observed value.
-        weight_total: Total weight represented by ``hist``.
-        threshold: Inclusive threshold to evaluate.
-
-    Returns:
-        Probability estimate or ``nan`` when no weight is available.
-    """
-    if weight_total <= 0:
-        return float("nan")
-    matched = 0.0
-    for value, weight in hist.items():
-        if value <= threshold:
-            matched += float(weight)
-    return float(matched / weight_total)
-
-
-def _mean_std_from_weighted(acc: _WeightedAccumulator) -> tuple[float, float]:
-    """Compute weighted mean and standard deviation from an accumulator.
-
-    Args:
-        acc: Accumulator containing weighted totals and squared totals.
-
-    Returns:
-        ``(mean, stddev)`` or ``(nan, nan)`` when no positive weight exists.
-    """
-    if acc.weight_total <= 0:
-        return float("nan"), float("nan")
-    mean = acc.weighted_total / acc.weight_total
-    variance = (acc.weighted_total_sq / acc.weight_total) - (mean**2)
-    variance = max(variance, 0.0)
-    return float(mean), float(math.sqrt(variance))
-
-
-def _aggregation_row_weight(
-    *,
-    aggregation_method: str,
-    n_players: int,
-    row_count: int,
-    weights_by_k: dict[int, float],
-) -> float:
-    """Resolve the per-row weight implied by the configured aggregation scheme.
-
-    Args:
-        aggregation_method: Named aggregation mode such as ``game-count`` or ``config``.
-        n_players: Player count for the row being weighted.
-        row_count: Number of source rows contributing to the group.
-        weights_by_k: Configured per-``k`` weights for ``config`` aggregation.
-
-    Returns:
-        Weight to apply to each row in the grouped contribution.
-    """
-    if row_count <= 0:
-        return 0.0
-    if aggregation_method == "game-count":
-        return 1.0
-    if aggregation_method == "equal-k":
-        return 1.0 / row_count
-    if aggregation_method == "config":
-        return float(weights_by_k.get(int(n_players), 0.0)) / row_count
-    raise ValueError(f"Unknown aggregation scheme: {aggregation_method!r}")
-
-
-def _combined_strategy_stats(
-    per_n_inputs: Sequence[tuple[int, Path]],
-    *,
-    aggregation_method: str,
-    weights_by_k: dict[int, float],
-) -> pd.DataFrame:
-    """Compute combined game-length statistics across player counts."""
-
-    grouped_values: dict[Scalar, _WeightedAccumulator] = {}
-    if aggregation_method == "config":
-        missing = sorted({n for n, _ in per_n_inputs} - set(weights_by_k))
-        if missing:
-            LOGGER.warning(
-                "Missing aggregation weights for player counts; treating as zero",
-                extra={"stage": "game_stats", "missing": missing},
-            )
-    for n_players, path in per_n_inputs:
-        ds_in = ds.dataset(path)
-        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
-        if not strategy_cols:
-            LOGGER.warning(
-                "Per-N parquet missing strategy columns",
-                extra={"stage": "game_stats", "path": str(path)},
-            )
-            continue
-
-        scanner = ds_in.scanner(columns=["n_rounds", *strategy_cols], batch_size=65_536)
-        batch_idx = 0
-        for batch in scanner.to_batches():
-            batch_idx += 1
-            df = batch.to_pandas(categories=strategy_cols)
-            if df.empty:
-                continue
-            rounds = pd.to_numeric(df["n_rounds"], errors="coerce")
-            valid_rounds = rounds.notna()
-            if not bool(valid_rounds.any()):
-                continue
-            valid_masks: dict[str, pd.Series] = {}
-            total_rows = 0
-            for strategy_col in strategy_cols:
-                strategies = df[strategy_col]
-                valid = valid_rounds & strategies.notna()
-                if not bool(valid.any()):
-                    continue
-                valid_masks[strategy_col] = valid
-                total_rows += _strategy_key_to_int(valid.sum(), field="row_count")
-            if total_rows <= 0:
-                continue
-            row_weight = _aggregation_row_weight(
-                aggregation_method=aggregation_method,
-                n_players=n_players,
-                row_count=total_rows,
-                weights_by_k=weights_by_k,
-            )
-            if row_weight <= 0:
-                continue
-
-            for strategy_col, valid in valid_masks.items():
-                rows = pd.DataFrame(
-                    {
-                        "strategy": df.loc[valid, strategy_col],
-                        "rounds": rounds.loc[valid],
-                    }
-                )
-                grouped = rows.groupby("strategy", observed=True, sort=False)["rounds"]
-                for strategy, series in grouped:
-                    acc = grouped_values.setdefault(strategy, _WeightedAccumulator())
-                    _update_weighted_accumulator(
-                        acc,
-                        series.to_numpy(dtype=float, copy=False),
-                        row_weight=row_weight,
-                    )
-            if batch_idx % 50 == 0:
-                LOGGER.info(
-                    "Combined game-length progress",
-                    extra={
-                        "stage": "game_stats",
-                        "n_players": n_players,
-                        "path": str(path),
-                        "batches": batch_idx,
-                        "groups": len(grouped_values),
-                    },
-                )
-
-    if not grouped_values:
-        return pd.DataFrame(
-            columns=[
-                "summary_level",
-                "strategy",
-                "observations",
-                "mean_rounds",
-                "median_rounds",
-                "std_rounds",
-                "p10_rounds",
-                "p50_rounds",
-                "p90_rounds",
-                "prob_rounds_le_5",
-                "prob_rounds_le_10",
-                "prob_rounds_ge_20",
-            ]
-        )
-    combined_rows: list[dict[str, StatValue]] = []
-    for strategy, acc in grouped_values.items():
-        if not math.isfinite(acc.weight_total) or acc.weight_total <= 0:
-            continue
-        mean_rounds, std_rounds = _mean_std_from_weighted(acc)
-        combined_rows.append(
-            {
-                "summary_level": "combined",
-                "strategy": _strategy_stat_value(strategy),
-                "observations": _strategy_key_to_int(acc.count, field="observations"),
-                "mean_rounds": mean_rounds,
-                "median_rounds": _weighted_quantile_from_hist(
-                    acc.hist, weight_total=acc.weight_total, quantile=0.5
-                ),
-                "std_rounds": std_rounds,
-                "p10_rounds": _weighted_quantile_from_hist(
-                    acc.hist, weight_total=acc.weight_total, quantile=0.1
-                ),
-                "p50_rounds": _weighted_quantile_from_hist(
-                    acc.hist, weight_total=acc.weight_total, quantile=0.5
-                ),
-                "p90_rounds": _weighted_quantile_from_hist(
-                    acc.hist, weight_total=acc.weight_total, quantile=0.9
-                ),
-                "prob_rounds_le_5": _weighted_probability_le_from_hist(
-                    acc.hist, weight_total=acc.weight_total, threshold=5
-                ),
-                "prob_rounds_le_10": _weighted_probability_le_from_hist(
-                    acc.hist, weight_total=acc.weight_total, threshold=10
-                ),
-                "prob_rounds_ge_20": 1.0
-                - _weighted_probability_le_from_hist(
-                    acc.hist, weight_total=acc.weight_total, threshold=np.nextafter(20.0, -np.inf)
-                ),
-            }
-        )
-
-    combined_df = pd.DataFrame(
-        combined_rows,
-        columns=[
-            "summary_level",
-            "strategy",
-            "observations",
-            "mean_rounds",
-            "median_rounds",
-            "std_rounds",
-            "p10_rounds",
-            "p50_rounds",
-            "p90_rounds",
-            "prob_rounds_le_5",
-            "prob_rounds_le_10",
-            "prob_rounds_ge_20",
-        ],
-    )
-    return combined_df
-
-
-def _combined_margin_stats(
-    per_n_inputs: Sequence[tuple[int, Path]],
-    *,
-    thresholds: Sequence[int],
-    aggregation_method: str,
-    weights_by_k: dict[int, float],
-) -> pd.DataFrame:
-    """Compute combined victory-margin statistics across player counts."""
-
-    grouped_runner: dict[Scalar, _WeightedAccumulator] = {}
-    grouped_spread: dict[Scalar, _WeightedAccumulator] = {}
-    if aggregation_method == "config":
-        missing = sorted({n for n, _ in per_n_inputs} - set(weights_by_k))
-        if missing:
-            LOGGER.warning(
-                "Missing aggregation weights for player counts; treating as zero",
-                extra={"stage": "game_stats", "missing": missing},
-            )
-    for n_players, path in per_n_inputs:
-        ds_in = ds.dataset(path)
-        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
-        score_cols = [
-            name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
-        ]
-
-        if not strategy_cols:
-            LOGGER.warning(
-                "Per-N parquet missing strategy columns",
-                extra={"stage": "game_stats", "path": str(path)},
-            )
-            continue
-
-        if not score_cols:
-            LOGGER.warning(
-                "Per-N parquet missing seat score columns; skipping margins",
-                extra={"stage": "game_stats", "path": str(path)},
-            )
-            continue
-
-        scanner = ds_in.scanner(columns=[*score_cols, *strategy_cols], batch_size=65_536)
-        batch_idx = 0
-        for batch in scanner.to_batches():
-            batch_idx += 1
-            df = batch.to_pandas(categories=strategy_cols)
-            if df.empty:
-                continue
-            margin_cols = _compute_margin_columns(df, score_cols)
-            runner = pd.to_numeric(margin_cols["margin_runner_up"], errors="coerce")
-            spread = pd.to_numeric(margin_cols["score_spread"], errors="coerce")
-            valid_runner = runner.notna()
-            if not bool(valid_runner.any()):
-                continue
-
-            valid_masks: dict[str, pd.Series] = {}
-            total_rows = 0
-            for strategy_col in strategy_cols:
-                strategies = df[strategy_col]
-                valid = valid_runner & strategies.notna()
-                if not bool(valid.any()):
-                    continue
-                valid_masks[strategy_col] = valid
-                total_rows += _strategy_key_to_int(valid.sum(), field="row_count")
-            if total_rows <= 0:
-                continue
-
-            row_weight = _aggregation_row_weight(
-                aggregation_method=aggregation_method,
-                n_players=n_players,
-                row_count=total_rows,
-                weights_by_k=weights_by_k,
-            )
-            if row_weight <= 0:
-                continue
-
-            for strategy_col, valid in valid_masks.items():
-                batch_rows = pd.DataFrame(
-                    {
-                        "strategy": df.loc[valid, strategy_col],
-                        "runner": runner.loc[valid],
-                        "spread": spread.loc[valid],
-                    }
-                )
-                grouped = batch_rows.groupby("strategy", observed=True, sort=False)
-                for strategy, group in grouped:
-                    runner_acc = grouped_runner.setdefault(strategy, _WeightedAccumulator())
-                    spread_entry = grouped_spread.setdefault(strategy, _WeightedAccumulator())
-                    _update_weighted_accumulator(
-                        runner_acc,
-                        group["runner"].to_numpy(dtype=float, copy=False),
-                        row_weight=row_weight,
-                    )
-                    _update_weighted_accumulator(
-                        spread_entry,
-                        group["spread"].to_numpy(dtype=float, copy=False),
-                        row_weight=row_weight,
-                    )
-            if batch_idx % 50 == 0:
-                LOGGER.info(
-                    "Combined margin progress",
-                    extra={
-                        "stage": "game_stats",
-                        "n_players": n_players,
-                        "path": str(path),
-                        "batches": batch_idx,
-                        "groups": len(grouped_runner),
-                    },
-                )
-
-    if not grouped_runner:
-        columns = [
-            "summary_level",
-            "strategy",
-            "observations",
-            "mean_margin_runner_up",
-            "median_margin_runner_up",
-            "std_margin_runner_up",
-            *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
-            "mean_score_spread",
-            "median_score_spread",
-            "std_score_spread",
-            *[f"prob_score_spread_le_{thr}" for thr in thresholds],
-        ]
-        return pd.DataFrame(columns=columns)
-
-    combined_rows: list[dict[str, StatValue]] = []
-    for strategy, runner_acc in grouped_runner.items():
-        spread_acc_opt = grouped_spread.get(strategy)
-        if spread_acc_opt is None:
-            continue
-        spread_acc = spread_acc_opt
-        if (
-            not math.isfinite(runner_acc.weight_total)
-            or runner_acc.weight_total <= 0
-            or not math.isfinite(spread_acc.weight_total)
-            or spread_acc.weight_total <= 0
-        ):
-            continue
-
-        mean_runner, std_runner = _mean_std_from_weighted(runner_acc)
-        mean_spread, std_spread = _mean_std_from_weighted(spread_acc)
-        combined_row: dict[str, StatValue] = {
-            "summary_level": "combined",
-            "strategy": _strategy_stat_value(strategy),
-            "observations": _strategy_key_to_int(runner_acc.count, field="observations"),
-            "mean_margin_runner_up": mean_runner,
-            "median_margin_runner_up": _weighted_quantile_from_hist(
-                runner_acc.hist, weight_total=runner_acc.weight_total, quantile=0.5
-            ),
-            "std_margin_runner_up": std_runner,
-            "mean_score_spread": mean_spread,
-            "median_score_spread": _weighted_quantile_from_hist(
-                spread_acc.hist, weight_total=spread_acc.weight_total, quantile=0.5
-            ),
-            "std_score_spread": std_spread,
-        }
-        for thr in thresholds:
-            combined_row[f"prob_margin_runner_up_le_{thr}"] = _weighted_probability_le_from_hist(
-                runner_acc.hist, weight_total=runner_acc.weight_total, threshold=float(thr)
-            )
-            combined_row[f"prob_score_spread_le_{thr}"] = _weighted_probability_le_from_hist(
-                spread_acc.hist, weight_total=spread_acc.weight_total, threshold=float(thr)
-            )
-        combined_rows.append(combined_row)
-
-    ordered_cols = [
-        "summary_level",
-        "strategy",
-        "observations",
-        "mean_margin_runner_up",
-        "median_margin_runner_up",
-        "std_margin_runner_up",
-        *[f"prob_margin_runner_up_le_{thr}" for thr in thresholds],
-        "mean_score_spread",
-        "median_score_spread",
-        "std_score_spread",
-        *[f"prob_score_spread_le_{thr}" for thr in thresholds],
-    ]
-    return pd.DataFrame(combined_rows, columns=ordered_cols)
 
 
 def _per_strategy_margin_stats(
@@ -2553,7 +1699,7 @@ def _rare_event_flags(
                     progress_logging=progress_logging,
                 )
         else:
-            with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            with ProcessPoolExecutor(max_workers=worker_count) as executor:
                 futures = [
                     executor.submit(
                         _build_rare_event_summary_shard,
@@ -2906,7 +2052,9 @@ def _build_rare_event_summary_shard(
                     "n_players": np.full(count, n_players, dtype=player_dtype),
                     "margin_runner_up": melted["margin_runner_up"].to_numpy(dtype=float),
                     "score_spread": melted["score_spread"].to_numpy(dtype=float),
-                    "multi_reached_target": melted["multi_reached_target"].to_numpy(dtype=flag_dtype),
+                    "multi_reached_target": melted["multi_reached_target"].to_numpy(
+                        dtype=flag_dtype
+                    ),
                     "observations": np.ones(count, dtype=obs_dtype),
                 }
                 for thr in thresholds:
@@ -3111,7 +2259,9 @@ def _rare_event_details(
                     "n_players": np.full(count, n_players, dtype=player_dtype),
                     "margin_runner_up": melted["margin_runner_up"].to_numpy(dtype=float),
                     "score_spread": melted["score_spread"].to_numpy(dtype=float),
-                    "multi_reached_target": melted["multi_reached_target"].to_numpy(dtype=flag_dtype),
+                    "multi_reached_target": melted["multi_reached_target"].to_numpy(
+                        dtype=flag_dtype
+                    ),
                     "observations": np.ones(count, dtype=obs_dtype),
                 }
                 for thr in thresholds:

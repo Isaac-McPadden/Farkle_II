@@ -184,72 +184,6 @@ def test_run_logs_missing_input_when_no_curated_rows_exist(
     ]
 
 
-def test_run_covers_parallel_empty_output_and_rare_event_detail_paths(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    stage_log = _DummyStageLog()
-    cfg = _make_run_cfg(tmp_path, n_jobs=4, rare_event_write_details=True)
-    per_n_path = tmp_path / "inputs" / "rows_2p.parquet"
-    per_n_path.parent.mkdir(parents=True, exist_ok=True)
-    per_n_path.write_text("stub", encoding="utf-8")
-
-    compute_calls: list[int] = []
-    empty_output_calls: list[int] = []
-    combined_calls: list[tuple[int, ...]] = []
-    rare_calls: list[tuple[str, int | None]] = []
-    done_calls: list[Path] = []
-
-    monkeypatch.setattr(game_stats, "stage_logger", lambda *args, **kwargs: stage_log)
-    monkeypatch.setattr(game_stats, "_discover_per_n_inputs", lambda _cfg: [(2, per_n_path)])
-    monkeypatch.setattr(game_stats, "_resolve_analysis_workers", lambda _cfg: 4)
-    monkeypatch.setattr(game_stats, "stage_is_up_to_date", lambda *args, **kwargs: False)
-    monkeypatch.setattr(
-        game_stats,
-        "_write_empty_per_k_outputs",
-        lambda **kwargs: empty_output_calls.append(kwargs["k"]),
-    )
-    monkeypatch.setattr(
-        game_stats,
-        "_compute_k_game_stats",
-        lambda **kwargs: compute_calls.append(kwargs["k"]),
-    )
-    monkeypatch.setattr(
-        game_stats,
-        "_aggregate_completed_k_game_stats",
-        lambda **kwargs: combined_calls.append(tuple(kwargs["configured_k_values"])),
-    )
-    monkeypatch.setattr(
-        game_stats,
-        "_resolve_rare_event_thresholds",
-        lambda *args, **kwargs: ((11,), 222),
-    )
-    monkeypatch.setattr(
-        game_stats,
-        "_rare_event_flags",
-        lambda *args, **kwargs: rare_calls.append(("summary", kwargs["n_workers"])) or 5,
-    )
-    monkeypatch.setattr(
-        game_stats,
-        "_rare_event_details",
-        lambda *args, **kwargs: rare_calls.append(("details", None)) or 3,
-    )
-    monkeypatch.setattr(
-        game_stats,
-        "write_stage_done",
-        lambda path, **kwargs: done_calls.append(path),
-    )
-
-    game_stats.run(cfg, force=False)
-
-    assert stage_log.started is True
-    assert empty_output_calls == [3]
-    assert compute_calls == [2]
-    assert combined_calls == [tuple(cfg.agreement_players())]
-    assert rare_calls == [("summary", 2), ("details", None)]
-    assert len(done_calls) == 3
-
-
 def test_run_raises_when_rare_event_summary_is_empty(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -349,19 +283,19 @@ def test_compute_k_game_stats_handles_no_strategy_and_checkpoint_paths(
             progress_calls.append(processed_rows)
 
     artifact_writes: list[Path] = []
-    legacy_calls: list[int] = []
     stage_done_calls: list[Path] = []
     stage_dir = tmp_path / "stage"
     input_path = tmp_path / "input.parquet"
+    cfg = _make_run_cfg(tmp_path, n_players_list=[2])
 
     no_strategy_ds = DummyDataset(["n_rounds"], [], 0)
     monkeypatch.setattr(game_stats.ds, "dataset", lambda _path: no_strategy_ds)
     game_stats._compute_k_game_stats(
+        cfg=cfg,
         k=2,
         input_path=input_path,
         stage_dir=stage_dir,
         thresholds=(10,),
-        codec="zstd",
         config_sha="cfg",
         stage_config_sha="stage",
         cache_key_version=1,
@@ -394,18 +328,8 @@ def test_compute_k_game_stats_handles_no_strategy_and_checkpoint_paths(
     monkeypatch.setattr(game_stats, "ScheduledProgressLogger", DummyProgressLogger)
     monkeypatch.setattr(
         game_stats,
-        "write_parquet_atomic",
-        lambda table, path, codec: artifact_writes.append(path),
-    )
-    monkeypatch.setattr(
-        game_stats,
-        "_write_per_k_game_length",
-        lambda **kwargs: legacy_calls.append(kwargs["k"]),
-    )
-    monkeypatch.setattr(
-        game_stats,
-        "_write_per_k_margin",
-        lambda **kwargs: legacy_calls.append(kwargs["k"]),
+        "_write_scoped_game_stats",
+        lambda _cfg, _frame, path, **kwargs: artifact_writes.append(path),
     )
     monkeypatch.setattr(
         game_stats,
@@ -414,11 +338,11 @@ def test_compute_k_game_stats_handles_no_strategy_and_checkpoint_paths(
     )
 
     game_stats._compute_k_game_stats(
+        cfg=cfg,
         k=2,
         input_path=input_path,
         stage_dir=stage_dir,
         thresholds=(10, 20),
-        codec="zstd",
         config_sha="cfg",
         stage_config_sha="stage",
         cache_key_version=1,
@@ -430,7 +354,6 @@ def test_compute_k_game_stats_handles_no_strategy_and_checkpoint_paths(
     assert checkpoint_path.exists()
     assert checkpoint_path.read_text(encoding="utf-8") == '{"batches": 25, "k": 2}'
     assert artifact_writes == [stage_dir / "by_k" / "2p" / "game_stats.2p.parquet"]
-    assert legacy_calls == [2, 2]
     assert stage_done_calls == [stage_dir / "by_k" / "2p" / "game_stats.2p.done.json"]
     assert progress_calls[-1] == 25
 
@@ -448,31 +371,19 @@ def test_low_level_stat_helper_edge_case_branches() -> None:
     assert game_stats._quantile_linear_from_hist({1.0: 1, 3.0: 1}, count=2, quantile=1.0) == 3.0
     assert np.isnan(game_stats._probability_le_from_hist({1.0: 1}, count=0, threshold=1.0))
     assert np.isnan(game_stats._probability_ge_from_hist({1.0: 1}, count=0, threshold=1.0))
-    assert all(np.isnan(value) for value in game_stats._mean_std_from_unweighted(game_stats._UnweightedAccumulator()))
-
-    weighted = game_stats._WeightedAccumulator()
-    game_stats._update_weighted_accumulator(weighted, np.array([np.nan]), row_weight=1.0)
-    game_stats._update_weighted_accumulator(weighted, np.array([1.0, 2.0]), row_weight=float("nan"))
-    game_stats._update_weighted_accumulator(weighted, np.array([1.0, 3.0]), row_weight=0.5)
-    assert weighted.hist == {1.0: 0.5, 3.0: 0.5}
-    assert np.isnan(game_stats._weighted_quantile_from_hist({}, weight_total=0.0, quantile=0.5))
-    assert (
-        game_stats._weighted_quantile_from_hist({1.0: 1.0, 5.0: 2.0}, weight_total=3.0, quantile=0.0)
-        == 1.0
+    assert all(
+        np.isnan(value)
+        for value in game_stats._mean_std_from_unweighted(game_stats._UnweightedAccumulator())
     )
-    assert (
-        game_stats._weighted_quantile_from_hist({1.0: 1.0, 5.0: 2.0}, weight_total=3.0, quantile=1.0)
-        == 5.0
-    )
-    assert game_stats._weighted_quantile_from_hist({1.0: 1.0}, weight_total=2.0, quantile=0.75) == 1.0
-    assert np.isnan(game_stats._weighted_probability_le_from_hist({1.0: 1.0}, weight_total=0.0, threshold=1.0))
-    assert all(np.isnan(value) for value in game_stats._mean_std_from_weighted(game_stats._WeightedAccumulator()))
 
     binned = game_stats._BinnedAccumulator()
     game_stats._update_binned_accumulator(binned, np.array([np.nan]))
     assert binned.count == 0
     game_stats._update_binned_accumulator(binned, np.array([10.0, 40.0]))
-    assert all(np.isnan(value) for value in game_stats._mean_std_from_binned(game_stats._BinnedAccumulator()))
+    assert all(
+        np.isnan(value)
+        for value in game_stats._mean_std_from_binned(game_stats._BinnedAccumulator())
+    )
     assert np.isnan(game_stats._quantile_from_binned(game_stats._BinnedAccumulator(), 0.5))
     assert game_stats._quantile_from_binned(binned, 0.0) == 10.0
     assert game_stats._quantile_from_binned(binned, 1.0) == 40.0
@@ -486,47 +397,3 @@ def test_low_level_stat_helper_edge_case_branches() -> None:
     )
     assert game_stats._quantile_from_binned(corrupt_binned, 0.9) == 50.0
     assert np.isnan(game_stats._probability_le_from_binned(binned, float("nan")))
-
-    assert (
-        game_stats._aggregation_row_weight(
-            aggregation_method="game-count",
-            n_players=2,
-            row_count=0,
-            weights_by_k={},
-        )
-        == 0.0
-    )
-    assert (
-        game_stats._aggregation_row_weight(
-            aggregation_method="game-count",
-            n_players=2,
-            row_count=3,
-            weights_by_k={},
-        )
-        == 1.0
-    )
-    assert (
-        game_stats._aggregation_row_weight(
-            aggregation_method="equal-k",
-            n_players=2,
-            row_count=4,
-            weights_by_k={},
-        )
-        == 0.25
-    )
-    assert (
-        game_stats._aggregation_row_weight(
-            aggregation_method="config",
-            n_players=3,
-            row_count=2,
-            weights_by_k={3: 0.6},
-        )
-        == pytest.approx(0.3)
-    )
-    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
-        game_stats._aggregation_row_weight(
-            aggregation_method="bad",
-            n_players=2,
-            row_count=1,
-            weights_by_k={},
-        )

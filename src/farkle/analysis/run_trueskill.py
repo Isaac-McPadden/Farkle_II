@@ -39,11 +39,8 @@ from typing import (
 
 import numpy as np
 import pyarrow as pa
-import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 import trueskill
-import yaml  # type: ignore[import-untyped]
-from trueskill import Rating
 
 from farkle.analysis.trueskill_screening import (
     ScreeningRatingCell,
@@ -51,14 +48,11 @@ from farkle.analysis.trueskill_screening import (
     build_screening_diagnostics,
     publish_rating_cell_contract,
 )
-from farkle.config import AppConfig, ArtifactScope
-from farkle.orchestration.seed_utils import resolve_results_dir, split_seeded_results_dir
-from farkle.utils.artifact_contract import make_artifact_sidecar
-from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_atomic
+from farkle.config import AppConfig
+from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
-from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.writer import atomic_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
@@ -71,21 +65,13 @@ DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 
 
 class RatingArtifactPaths(TypedDict):
-    """Resolved canonical and legacy file paths for a rating artifact bundle.
-
-    The mapping includes the preferred parquet/json/checkpoint paths, the owning
-    directory, and any legacy locations that should be migrated or inspected.
-    """
+    """Canonical file paths for one root/k rating artifact bundle."""
 
     parquet: Path
     json: Path
     ckpt: Path
     checkpoint: Path
     dir: Path
-    legacy_parquet: list[Path]
-    legacy_json: list[Path]
-    legacy_ckpt: list[Path]
-    legacy_checkpoint: list[Path]
 
 
 class TrueSkillInitKwargs(TypedDict, total=False):
@@ -133,28 +119,10 @@ def _per_player_dir(root: Path, player_count: str) -> Path:
     return root / "by_k" / f"{player_count}p"
 
 
-def _ensure_new_location(dest: Path, *legacy_paths: Path) -> Path:
-    """Return the canonical destination without interpreting legacy files."""
-
-    _ = legacy_paths
-    return dest
-
-
-def _rating_artifact_paths(
-    root: Path, player_count: str, suffix: str, *, legacy_root: Path | None = None
-) -> RatingArtifactPaths:
-    """Return canonical and legacy paths for per-player artifacts."""
+def _rating_artifact_paths(root: Path, player_count: str, suffix: str) -> RatingArtifactPaths:
+    """Return canonical paths for per-player-count rating artifacts."""
 
     per_dir = _per_player_dir(root, player_count)
-    legacy_candidates = [root / "data" / f"{player_count}p"]
-    if legacy_root is not None and legacy_root != root:
-        legacy_candidates.extend(
-            [
-                legacy_root / "data" / f"{player_count}p",
-                legacy_root / f"{player_count}p",
-                legacy_root,
-            ]
-        )
     base_name = f"ratings_{player_count}{suffix}"
     return {
         "dir": per_dir,
@@ -162,12 +130,6 @@ def _rating_artifact_paths(
         "json": per_dir / f"{base_name}.json",
         "ckpt": per_dir / f"{base_name}.ckpt.json",
         "checkpoint": per_dir / f"{base_name}.checkpoint.parquet",
-        "legacy_parquet": [base / f"{base_name}.parquet" for base in legacy_candidates],
-        "legacy_json": [base / f"{base_name}.json" for base in legacy_candidates],
-        "legacy_ckpt": [base / f"{base_name}.ckpt.json" for base in legacy_candidates],
-        "legacy_checkpoint": [
-            base / f"{base_name}.checkpoint.parquet" for base in legacy_candidates
-        ],
     }
 
 
@@ -192,40 +154,15 @@ def _iter_rating_parquets(root: Path, suffix: str) -> list[Path]:
 
 
 def _player_count_from_stem(stem: str) -> int | None:
-    """Extract the player count from a ratings filename stem.
+    """Extract the player count from a canonical ratings filename stem."""
 
-    Accepts stems such as ``ratings_2_seed21`` or ``ratings_2p_seed21`` to
-    tolerate variations in legacy/materialised filenames.
-    """
-
-    match = re.match(r"ratings_(\d+)(?:p)?(?:_|$)", stem)
+    match = re.fullmatch(r"ratings_(\d+)(?:_seed\d+)?", stem)
     if not match:
         return None
     try:
         return int(match.group(1))
     except ValueError:
         return None
-
-
-def _find_combined_parquet(base: Path | None) -> Path | None:
-    """Return path to combined ``all_ingested_rows.parquet`` if it exists.
-
-    The *base* argument may point to a results directory or directly to the
-    ``analysis/data`` directory. This helper tries a few common locations and
-    returns the first existing path. ``None`` is returned when no candidate is
-    found.
-    """
-
-    if base is None:
-        return None
-    base = Path(base)
-    candidates = [
-        base / "analysis" / "02_combine" / "concat_ks" / "all_ingested_rows.parquet",
-    ]
-    for c in candidates:
-        if c.exists():
-            return c
-    return None
 
 
 @dataclass(slots=True)
@@ -235,62 +172,6 @@ class RatingStats:
     mu: float
     sigma: float
 
-
-# ---------- Checkpointing ----------
-@dataclass
-class _TSCheckpoint:
-    """Serialize streaming progress for the combined ratings pass."""
-
-    source: str  # parquet path
-    row_group: int  # next row-group to start at
-    batch_index: int  # next batch index within that row-group
-    games_done: int
-    ratings_path: str  # where the interim ratings parquet lives
-    version: int = 1
-
-
-def _save_ckpt(path: Path, ck: _TSCheckpoint) -> None:
-    """Persist a meta-level checkpoint atomically."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(asdict(ck)))
-
-
-def _load_ckpt(path: Path) -> Optional[_TSCheckpoint]:
-    """Load a previously written checkpoint if it exists and parses cleanly."""
-    if not path.exists():
-        return None
-    try:
-        payload_any: object = json.loads(path.read_text())
-    except Exception:
-        return None
-    if not isinstance(payload_any, dict):
-        return None
-
-    required_keys = {
-        "source": str,
-        "row_group": int,
-        "batch_index": int,
-        "games_done": int,
-        "ratings_path": str,
-    }
-    for key, expected_type in required_keys.items():
-        value = payload_any.get(key)
-        if not isinstance(value, expected_type):
-            return None
-
-    version_value = payload_any.get("version", 1)
-    if not isinstance(version_value, int):
-        return None
-
-    return _TSCheckpoint(
-        source=payload_any["source"],
-        row_group=payload_any["row_group"],
-        batch_index=payload_any["batch_index"],
-        games_done=payload_any["games_done"],
-        ratings_path=payload_any["ratings_path"],
-        version=version_value,
-    )
 
 def _ratings_to_table(
     mapping: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float], float]],
@@ -406,14 +287,6 @@ def _block_shard_paths(root: Path, player_count: str, suffix: str) -> tuple[Path
     per_dir = _per_player_dir(root, player_count)
     shard = per_dir / f"artifact.k{player_count}{suffix}"
     return shard.with_suffix(".parquet"), shard.with_suffix(".done.json")
-
-
-def _aggregation_shard_paths(combined_dir: Path, shard_key: str, suffix: str) -> tuple[Path, Path]:
-    """Return parquet and done-stamp paths for an aggregation shard."""
-
-    safe_key = shard_key.replace("/", "_")
-    base = combined_dir / f"artifact.{safe_key}{suffix}"
-    return base.with_suffix(".parquet"), base.with_suffix(".done.json")
 
 
 def _save_block_ckpt(path: Path, ck: _BlockCkpt) -> None:
@@ -565,300 +438,6 @@ def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[lis
             yield [winner] + losers, [0] + [1] * len(losers)
 
 
-def _rate_single_pass(
-    source: Path,
-    *,
-    env: trueskill.TrueSkill,
-    resume: bool,
-    checkpoint_path: Path,
-    ratings_ckpt_path: Path,
-    batch_rows: int,
-    checkpoint_every_batches: int = 500,
-) -> tuple[dict[str, RatingStats], int]:
-    """Stream all games from a single combined parquet, with checkpoint/resume."""
-    # Find n from schema (max seat present)
-    schema = pq.read_schema(source)
-    names = set(schema.names)
-    n = max(int(nm[1]) for nm in names if nm.startswith("P") and nm.endswith("_strategy"))
-
-    # Initialise ratings & resume point
-    start_rg = 0
-    start_bi = 0
-    games = 0
-    ratings: dict[str, trueskill.Rating] = {}
-    if resume:
-        ck = _load_ckpt(checkpoint_path)
-        if ck and Path(ck.source) == source:
-            start_rg = ck.row_group
-            start_bi = ck.batch_index
-            games = ck.games_done
-            if Path(ck.ratings_path).exists():
-                # load interim ratings from parquet and build env Rating objects
-                interim = _load_ratings_parquet(Path(ck.ratings_path))
-                ratings = {k: env.create_rating(mu=v.mu, sigma=v.sigma) for k, v in interim.items()}
-
-    last_ck = time.time()
-    batches_since_ck = 0
-    for rg, bi, batch in _stream_batches(
-        source,
-        columns=list(schema.names),
-        start_row_group=start_rg,
-        start_batch_idx=start_bi,
-        batch_rows=batch_rows,
-    ):
-        for players, ranks in _players_and_ranks_from_batch(batch, n):
-            # seed ratings
-            for s in players:
-                if s not in ratings:
-                    ratings[s] = env.create_rating()
-            teams = [[ratings[s]] for s in players]
-            new = env.rate(teams, ranks=ranks)
-            for s, t in zip(players, new, strict=False):
-                ratings[s] = t[0]
-            games += 1
-
-        # periodic checkpoint
-        batches_since_ck += 1
-        if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
-            _save_ratings_parquet(ratings_ckpt_path, ratings)
-            _save_ckpt(
-                checkpoint_path,
-                _TSCheckpoint(
-                    source=str(source),
-                    row_group=rg,
-                    batch_index=bi + 1,
-                    games_done=games,
-                    ratings_path=str(ratings_ckpt_path),
-                ),
-            )
-            last_ck = time.time()
-            batches_since_ck = 0
-
-    # finalise
-    stats = {k: RatingStats(v.mu, v.sigma) for k, v in ratings.items()}
-    return stats, games
-
-
-def _coerce_ratings(obj: Mapping[str, object]) -> dict[str, RatingStats]:
-    """Accept {strategy: RatingStats | {'mu':..,'sigma':..} | (mu,sigma)}."""
-    out: dict[str, RatingStats] = {}
-    for k, v in obj.items():
-        if isinstance(v, RatingStats):
-            out[k] = v
-        elif isinstance(v, dict) and "mu" in v and "sigma" in v:
-            out[k] = RatingStats(float(v["mu"]), float(v["sigma"]))
-        else:
-            if isinstance(v, (list, tuple)) and len(v) >= 2:
-                mu, sigma = v[:2]
-            else:
-                mu, sigma = 0.0, 0.0
-            out[k] = RatingStats(float(mu), float(sigma))
-    return out
-
-
-def _ensure_seed_ratings(
-    ratings: dict[str, Rating], all_strategies: list[str], env: trueskill.TrueSkill
-) -> None:
-    """Guarantee every strategy has an initial rating for the current seed."""
-    for strat in all_strategies:
-        ratings.setdefault(strat, env.create_rating())
-
-
-def _read_manifest_seed(path: Path) -> int:
-    """Return the tournament seed recorded in ``manifest.yaml``.
-
-    Parameters
-    ----------
-    path : Path
-        Location of the manifest file. The YAML is expected to contain a
-        ``seed`` entry.
-
-    Returns
-    -------
-    int
-        The integer seed found in the file. ``0`` is returned when the file
-        does not exist or the value is missing.
-    """
-
-    try:
-        data = yaml.safe_load(path.read_text())
-        return int(data.get("seed", 0))
-    except FileNotFoundError:
-        return 0
-
-
-def _update_ratings(
-    games: list[list[str]],
-    keepers: list[str],
-    env: trueskill.TrueSkill,
-) -> dict[str, RatingStats]:
-    """Update strategy ratings for a block of games.
-
-    Parameters
-    ----------
-    games : list[list[str]]
-        Each inner list contains strategy names ordered by finishing position
-        for a single game.
-    keepers : list[str]
-        Strategies to include in the rating calculation. If empty, all
-        strategies appearing in ``games`` are rated.
-    env : trueskill.TrueSkill
-        The environment used to perform the TrueSkill updates.
-
-    Returns
-    -------
-    dict[str, RatingStats]
-        Mapping from strategy name to its RatingStats tuple.
-    """
-    ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
-    all_strats: set[str] = set(keepers)
-    for g in games:
-        all_strats.update(g)
-    _ensure_seed_ratings(ratings, list(all_strats), env)
-
-    for game in games:
-        # keep only the strategies we really want to rate
-        players = [s for s in game if (not keepers or s in keepers)]
-        teams = [[ratings.setdefault(s, env.create_rating())] for s in players]
-
-        if len(teams) < 2:
-            continue  # need at least two teams for a rating update
-
-        new_teams = env.rate(teams, ranks=range(len(teams)))
-        for s, team_rating in zip(players, new_teams, strict=True):
-            ratings[s] = team_rating[0]
-
-    return {k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}
-
-
-def _strategy_column_names(n: int) -> list[str]:
-    return [f"P{i}_strategy" for i in range(1, n + 1)]
-
-
-def _iter_players_and_ranks(
-    row_file: Path, n: int, batch_size: int = 100_000
-) -> Iterator[tuple[list[str], list[int]]]:
-    """Yield (players, ranks) per game in a streaming fashion.
-    Prefers explicit placements via ``seat_ranks``; if absent, derives placements
-    from ``P#_rank``; if only a winner is known, treats others as a single tied group.
-    """
-    dataset = ds.dataset(row_file, format="parquet")
-    schema = dataset.schema
-    has_seat_ranks = schema.get_field_index("seat_ranks") != -1
-
-    if has_seat_ranks:
-        seat_rank_col_name = "seat_ranks"
-
-        strategy_column_names = _strategy_column_names(n)
-        seat_rank_columns: list[str] = [seat_rank_col_name, *strategy_column_names]
-
-        for batch in dataset.to_batches(columns=seat_rank_columns, batch_size=batch_size):
-            ranks_col: pa.Array = batch.column(seat_rank_col_name)
-            ranks_list = ranks_col.to_pylist()  # list[list[str]] or None
-
-            strat_cols: list[pa.Array] = [batch.column(name) for name in strategy_column_names]
-
-            for r, order in enumerate(ranks_list):
-                if not order:
-                    continue
-                players = [strat_cols[int(str(seat)[1:]) - 1][r].as_py() for seat in order]
-                if any(p is None for p in players):
-                    continue
-                yield [_normalize_strategy_id(p) for p in players], list(range(len(players)))
-        return
-
-    # seat_ranks not present → derive from P#_rank or fall back to winner + tied losers
-    rank_col_names: list[str] = [f"P{i}_rank" for i in range(1, n + 1)]
-    strategy_column_names = _strategy_column_names(n)
-    winner_col_name: str = (
-        "winner_seat" if schema.get_field_index("winner_seat") != -1 else "winner"
-    )
-    fallback_columns: list[str] = [
-        winner_col_name,
-        *rank_col_names,
-        *strategy_column_names,
-    ]
-
-    for batch in dataset.to_batches(columns=fallback_columns, batch_size=batch_size):
-        winner_seats = batch.column(winner_col_name).to_pylist()
-
-        rank_cols: list[pa.Array] = [batch.column(name) for name in rank_col_names]
-        fallback_strat_cols: list[pa.Array] = [batch.column(name) for name in strategy_column_names]
-
-        ranks = [[col[i].as_py() for col in rank_cols] for i in range(len(batch))]
-        strats = [[col[i].as_py() for col in fallback_strat_cols] for i in range(len(batch))]
-
-        for winner_seat, seat_ranks, seat_strats in zip(winner_seats, ranks, strats, strict=True):
-            # try to build placements from P#_rank if we have ≥2 ranks
-            pairs = [(i, rv) for i, rv in enumerate(seat_ranks) if rv is not None]
-            if len(pairs) >= 2:
-                # sort by rank ascending; remap rank values to 0..K-1 to keep them dense
-                pairs.sort(key=lambda x: x[1])
-                uniq = sorted({rv for _, rv in pairs})
-                remap = {rv: j for j, rv in enumerate(uniq)}
-                players = []
-                pranks = []
-                for i, rv in pairs:
-                    p = seat_strats[i]
-                    if p is None:
-                        continue
-                    players.append(_normalize_strategy_id(p))
-                    pranks.append(remap[rv])
-                if len(players) >= 2:
-                    yield players, pranks
-                    continue
-
-            # fallback: winner + (n-1) tied for 2nd
-            if not winner_seat:
-                continue
-            try:
-                w_idx = int(str(winner_seat)[1:]) - 1  # "P3" -> 2
-            except Exception:
-                continue
-            winner = seat_strats[w_idx]
-            if winner is None:
-                continue
-            losers = [
-                _normalize_strategy_id(s)
-                for j, s in enumerate(seat_strats)
-                if j != w_idx and s is not None
-            ]
-            if losers:
-                yield [_normalize_strategy_id(winner)] + losers, [0] + [1] * len(losers)
-
-
-def _rate_stream(
-    row_file: Path, n: int, keepers: list[str], env: trueskill.TrueSkill, batch_size: int = 100_000
-) -> tuple[dict[str, RatingStats], int]:
-    """Stream TrueSkill updates from parquet without materialising all games.
-    Supports ties and multiple sources of placement (seat_ranks or P#_rank)."""
-    if keepers:
-        keepers = [_normalize_strategy_id(k) for k in keepers]
-    ratings: dict[str, trueskill.Rating] = {k: env.create_rating() for k in keepers}
-    n_games = 0
-    for players, ranks in _iter_players_and_ranks(row_file, n, batch_size):
-        # Optional keepers filter
-        if keepers:
-            filt = [(p, r) for p, r in zip(players, ranks, strict=True) if p in keepers]
-            if len(filt) < 2:
-                continue
-            players = [p for p, _ in filt]
-            ranks = [r for _, r in filt]
-            # make ranks dense again in case we dropped teams
-            uniq = sorted(set(ranks))
-            rmap = {rv: j for j, rv in enumerate(uniq)}
-            ranks = [rmap[r] for r in ranks]
-        # seed ratings on the fly and rate with ranks=
-        for s in players:
-            ratings.setdefault(s, env.create_rating())
-        teams = [[ratings[s]] for s in players]
-        new_teams = env.rate(teams, ranks=ranks)
-        for s, team_rating in zip(players, new_teams, strict=False):
-            ratings[s] = team_rating[0]
-        n_games += 1
-    return ({k: RatingStats(r.mu, r.sigma) for k, r in ratings.items()}, n_games)
-
-
 def _rate_block_worker(
     block_dir: str,
     root_dir: str,
@@ -878,7 +457,6 @@ def _rate_block_worker(
     """
     block = Path(block_dir)
     root = Path(root_dir)
-    legacy_root = root.parent
     row_data_path = Path(row_data_dir) if row_data_dir else None
 
     player_count = block.name.split("_")[0]
@@ -888,45 +466,23 @@ def _rate_block_worker(
     keepers = np.load(keep_path).tolist() if keep_path.exists() else []
     keepers = [_normalize_strategy_id(k) for k in keepers]
 
-    # Locate curated parquet
-    row_file = per_player_dir / f"{player_count}p_ingested_rows.parquet"
-    n = int(player_count)
+    if row_data_path is None or curated_rows_name is None:
+        raise ValueError("TrueSkill requires an explicit canonical curated-row directory and name")
+    row_file = row_data_path / "by_k" / f"{player_count}p" / curated_rows_name
     if not row_file.exists():
-        alt_candidates: list[Path] = []
-        if row_data_path is not None:
-            per_n_dir = row_data_path
-            if per_n_dir.name != f"{player_count}p":
-                per_n_dir = per_n_dir / f"{player_count}p"
-            name_candidates = [f"{player_count}p_ingested_rows.parquet"]
-            if curated_rows_name:
-                name_candidates.insert(0, curated_rows_name)
-            name_candidates.append("game_rows.parquet")
-            seen_names: set[str] = set()
-            for name in name_candidates:
-                if name in seen_names:
-                    continue
-                seen_names.add(name)
-                alt_candidates.append(per_n_dir / name)
-        row_file_candidate = next((cand for cand in alt_candidates if cand.exists()), None)
-        if row_file_candidate is None:
-            candidate = next(block.glob("*p_rows.parquet"), None)
-            if candidate is None:
-                return player_count, 0
-            row_file = candidate
-            n = n_players_from_schema(pq.read_schema(row_file))
-        else:
-            row_file = row_file_candidate
+        raise FileNotFoundError(f"TrueSkill canonical root/k rows missing: {row_file}")
+    n = int(player_count)
     try:
         total_input_games = max(0, int(pq.read_metadata(row_file).num_rows))
     except Exception:
         total_input_games = 0
 
     # Up-to-date guard
-    paths = _rating_artifact_paths(root, player_count, suffix, legacy_root=legacy_root)
-    parquet_path = _ensure_new_location(paths["parquet"], *paths["legacy_parquet"])
-    ck_path = _ensure_new_location(paths["ckpt"], *paths["legacy_ckpt"])
-    rk_path = _ensure_new_location(paths["checkpoint"], *paths["legacy_checkpoint"])
-    json_path = _ensure_new_location(paths["json"], *paths["legacy_json"])
+    paths = _rating_artifact_paths(root, player_count, suffix)
+    parquet_path = paths["parquet"]
+    ck_path = paths["ckpt"]
+    rk_path = paths["checkpoint"]
+    json_path = paths["json"]
     done_path = _block_done_stamp_path(root, player_count, suffix)
     shard_parquet, shard_done_path = _block_shard_paths(root, player_count, suffix)
 
@@ -1060,7 +616,7 @@ def _rate_block_worker(
         # Write per-N ratings as Parquet (strategy, mu, sigma)
         _save_ratings_parquet(parquet_path, ratings_stats)
 
-        json_path = _ensure_new_location(paths["json"], *paths["legacy_json"])
+        json_path = paths["json"]
         with atomic_path(str(json_path)) as tmp_path:
             Path(tmp_path).write_text(
                 json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
@@ -1128,13 +684,9 @@ def run_trueskill(
         path defaults to ``<root>/results`` if ``root`` is given, otherwise
         to :data:`DEFAULT_DATAROOT`.
     row_data_dir: Path | None, optional
-        Directory containing curated per-player parquet inputs. When ``None``
-        the function attempts to use ``<root.parent>/02_combine/data`` if it
-        exists, falling back to ``<root.parent>/01_combine/data`` for legacy
-        layouts.
+        Canonical curate-stage directory containing ``by_k/<k>p`` inputs.
     curated_rows_name: str | None, optional
-        Custom filename for curated per-player inputs. When unset, the loader
-        searches for ``<n>p_ingested_rows.parquet`` and ``game_rows.parquet``.
+        Canonical curated-row filename. It is required with ``row_data_dir``.
 
     Production side effects are canonical per-root/per-k ratings only. Formal
     cross-k model-sigma propagation is unavailable.
@@ -1146,17 +698,9 @@ def run_trueskill(
 
     root = Path(root) if root is not None else base / "analysis" / "06_trueskill"
     root.mkdir(parents=True, exist_ok=True)
-    legacy_root = root.parent
     row_data_path = Path(row_data_dir) if row_data_dir is not None else None
-    if row_data_path is None:
-        for inferred in (
-            legacy_root / "02_combine" / "data",
-            legacy_root / "01_combine" / "data",
-        ):
-            if inferred.exists():
-                row_data_path = inferred
-                break
-    _read_manifest_seed(base / "manifest.yaml")
+    if row_data_path is None or curated_rows_name is None:
+        raise ValueError("TrueSkill requires canonical row_data_dir and curated_rows_name")
     suffix = f"_seed{output_seed}" if output_seed is not None else ""
     if workers is None:
         workers = max(1, (os.cpu_count() or 1) - 1)
@@ -1292,66 +836,28 @@ def _sorted_ratings(ratings: Mapping[str, RatingStats]) -> Mapping[str, RatingSt
     return dict(sorted(ratings.items(), key=lambda kv: kv[0]))
 
 
-def _resolve_seed_results_root(cfg: AppConfig, seed: int) -> Path:
-    """Resolve per-seed results root for interseed processing."""
+def _resolve_root_row_data_dir(cfg: AppConfig) -> Path | None:
+    """Resolve the canonical curated-row directory owned by the active root."""
 
-    base_root, parsed_seed = split_seeded_results_dir(cfg.results_root)
-    if parsed_seed is None:
-        return cfg.results_root
-    return resolve_results_dir(base_root, int(seed))
-
-
-def _resolve_seed_row_data_dir(cfg: AppConfig, seed_results_root: Path) -> Path | None:
-    """Resolve curated row-data directory under a specific seed's analysis root."""
-
-    analysis_root = seed_results_root / cfg.io.analysis_subdir
-    candidates: list[Path] = []
-
-    input_folder = cfg._interseed_input_folder("curate")
-    if input_folder is not None:
-        candidates.append(analysis_root / input_folder)
-
-    stage_folder = cfg.stage_layout.folder_for("curate")
-    if stage_folder is not None:
-        stage_candidate = analysis_root / stage_folder
-        if stage_candidate not in candidates:
-            candidates.append(stage_candidate)
-
-    legacy_candidate = analysis_root / "curate"
-    if legacy_candidate not in candidates:
-        candidates.append(legacy_candidate)
-
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return None
+    input_folder = cfg.root_input_stage_folder("curate")
+    if input_folder is None:
+        return None
+    candidate = cfg.analysis_dir / input_folder
+    return candidate if candidate.exists() else None
 
 
-def run_trueskill_all_seeds(cfg: AppConfig) -> None:
+def run_trueskill_root(cfg: AppConfig) -> None:
     """Publish canonical root/k ratings and percentile screening artifacts."""
 
     analysis_cfg = cfg.analysis
-    seeds_cfg = cfg.sim.seed_list or [cfg.sim.seed]
-    deduped: list[int] = []
-    seen: set[int] = set()
-    for raw in seeds_cfg:
-        seed = int(raw)
-        if seed in seen:
-            continue
-        seen.add(seed)
-        deduped.append(seed)
-    seeds = sorted(deduped)
+    roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
+    if len(roots) != 1:
+        raise ValueError("TrueSkill execution requires exactly one root context")
+    seeds = [roots[0]]
 
     analysis_dir = cfg.trueskill_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    concat_dir = cfg.concat_ks_dir("trueskill")
-    default_row_data_dir = cfg.resolve_input_stage_dir("curate")
-    if default_row_data_dir is not None and not default_row_data_dir.exists():
-        default_row_data_dir = None
-    seed_results_roots = {seed: _resolve_seed_results_root(cfg, seed) for seed in seeds}
-    seed_row_data_dirs = {
-        seed: _resolve_seed_row_data_dir(cfg, seed_results_roots[seed]) for seed in seeds
-    }
+    root_row_data_dir = _resolve_root_row_data_dir(cfg)
 
     env_kwargs: dict[str, float] = _coerce_trueskill_env_kwargs(
         {
@@ -1360,13 +866,12 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             "draw_probability": cfg.trueskill.draw_probability,
         }
     )
-    concat_tables: list[pa.Table] = []
     screening_cells: list[ScreeningRatingCell] = []
 
     for seed in seeds:
         seed_everything(seed)
-        seed_results_root = seed_results_roots.get(seed, cfg.results_root)
-        seed_row_data_dir = seed_row_data_dirs.get(seed) or default_row_data_dir
+        seed_results_root = cfg.results_root
+        seed_row_data_dir = root_row_data_dir
         LOGGER.info(
             "TrueSkill seed run start",
             extra={
@@ -1397,24 +902,10 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             stats = _load_ratings_parquet(parquet)
             ordered_stats = _sorted_ratings(stats)
             seed_outputs[f"{players}p"] = ordered_stats  # keyed for logging/debug
-            concat_tables.append(
-                pa.table(
-                    {
-                        "strategy": list(ordered_stats.keys()),
-                        "players": [players] * len(ordered_stats),
-                        "mu": [rating.mu for rating in ordered_stats.values()],
-                        "sigma": [rating.sigma for rating in ordered_stats.values()],
-                        "seed": [seed] * len(ordered_stats),
-                    }
-                )
-            )
             game_rows_path: Path | None = None
             if seed_row_data_dir is not None:
-                candidates = (
-                    seed_row_data_dir / "by_k" / f"{players}p" / cfg.curated_rows_name,
-                    seed_row_data_dir / f"{players}p" / cfg.curated_rows_name,
-                )
-                game_rows_path = next((path for path in candidates if path.exists()), None)
+                candidate = seed_row_data_dir / "by_k" / f"{players}p" / cfg.curated_rows_name
+                game_rows_path = candidate if candidate.exists() else None
             screening_cell = ScreeningRatingCell(
                 root_seed=seed,
                 k=players,
@@ -1433,36 +924,6 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                 "seed": seed,
                 "per_players": sorted(seed_outputs.keys()),
             },
-        )
-
-    if concat_tables:
-        concat_table = pa.concat_tables(concat_tables, promote_options="default")
-        concat_path = concat_dir / "ratings_concat_ks.parquet"
-        concat_sidecar = make_artifact_sidecar(
-            cfg,
-            concat_path,
-            producer="trueskill",
-            scope=ArtifactScope.CONCAT_KS,
-            source_scope=ArtifactScope.BY_K,
-            operation="concatenate",
-            weighted_quantity="trueskill_mu_and_model_sigma",
-            support_count_role="canonical_root_k_rating_cells",
-            uncertainty_method="trueskill_model_sigma_screening_only",
-            replication_unit="root_k_strategy_rating",
-            conditioning="finite_grid_trueskill_screening",
-            consistency_columns=concat_table.schema.names,
-            source_artifacts=[cell.ratings_path for cell in screening_cells],
-            grouping_keys=["seed", "players", "strategy"],
-            player_counts=sorted({cell.k for cell in screening_cells}),
-            required_player_counts=sorted({cell.k for cell in screening_cells}),
-            missing_cell_policy="fail",
-            seed_scope="both_roots_combined" if len(seeds) == 2 else "single_root",
-        )
-        write_parquet_artifact_atomic(
-            concat_table,
-            concat_path,
-            sidecar=concat_sidecar,
-            codec=cfg.parquet_codec,
         )
 
     if not screening_cells:

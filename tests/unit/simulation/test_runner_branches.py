@@ -212,7 +212,7 @@ def _patch_tournament_writer(monkeypatch: pytest.MonkeyPatch, *, wrong_meta: boo
         payload = {
             "win_totals": {"s0": 1},
             "meta": {
-                "n_players": kwargs["n_players"],
+                "n_players": kwargs["config"].n_players,
                 "num_shuffles": kwargs["num_shuffles"],
                 "global_seed": kwargs["global_seed"],
                 "n_strategies": len(kwargs["strategies"]),
@@ -296,7 +296,7 @@ def test_run_single_n_branch_table(
                 {
                     "win_totals": {"s0": 1, "s1": 0},
                     "meta": {
-                        "n_players": kwargs["n_players"],
+                        "n_players": kwargs["config"].n_players,
                         "num_shuffles": kwargs["num_shuffles"],
                         "global_seed": kwargs["global_seed"],
                         "n_strategies": len(kwargs["strategies"]),
@@ -626,6 +626,12 @@ def _write_manifest_lines(path: Path, lines: list[dict[str, object]]) -> None:
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
 
 
+def _write_root_strategy_manifest(cfg: AppConfig, manifest: pd.DataFrame) -> None:
+    path = cfg.strategy_manifest_root_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    runner.write_parquet_atomic(runner.pa.Table.from_pandas(manifest, preserve_index=False), path)
+
+
 def _row_manifest_record(
     cfg: AppConfig,
     shuffle_index: int,
@@ -663,7 +669,7 @@ def _metric_manifest_record(
     }
 
 
-def test_validate_resume_outputs_promotes_legacy_manifest(tmp_path: Path) -> None:
+def test_validate_resume_outputs_rejects_noncanonical_manifest_location(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     n_dir = cfg.results_root / "2_players"
     n_dir.mkdir(parents=True, exist_ok=True)
@@ -690,17 +696,17 @@ def test_validate_resume_outputs_promotes_legacy_manifest(tmp_path: Path) -> Non
         )
     )
 
-    runner._validate_resume_outputs(
-        cfg=cfg,
-        n_players=2,
-        n_shuffles=2,
-        strategies_manifest=manifest,
-        ckpt_path=ckpt_path,
-        row_dir=None,
-        metric_chunk_dir=None,
-    )
-
-    assert cfg.strategy_manifest_root_path().exists()
+    with pytest.raises(ValueError, match="Canonical strategy manifest missing"):
+        runner._validate_resume_outputs(
+            cfg=cfg,
+            n_players=2,
+            n_shuffles=2,
+            strategies_manifest=manifest,
+            ckpt_path=ckpt_path,
+            row_dir=None,
+            metric_chunk_dir=None,
+        )
+    assert not cfg.strategy_manifest_root_path().exists()
 
 
 @pytest.mark.parametrize("meta", [None, "bad"])
@@ -711,6 +717,7 @@ def test_validate_resume_outputs_checkpoint_meta_missing_or_non_mapping(
     n_dir = cfg.results_root / "2_players"
     n_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = n_dir / "2p_checkpoint.pkl"
+    _write_root_strategy_manifest(cfg, _manifest_df())
     ckpt_path.write_bytes(pickle.dumps({"meta": meta}))
 
     with pytest.raises(ValueError, match="Checkpoint metadata missing"):
@@ -745,6 +752,7 @@ def test_validate_resume_outputs_checkpoint_meta_mismatch_keys(
 ) -> None:
     cfg = _cfg(tmp_path)
     manifest = _manifest_df()
+    _write_root_strategy_manifest(cfg, manifest)
     n_dir = cfg.results_root / "2_players"
     n_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = n_dir / "2p_checkpoint.pkl"
@@ -773,26 +781,24 @@ def test_validate_resume_outputs_checkpoint_meta_mismatch_keys(
         )
 
 
-def test_validate_resume_outputs_no_checkpoint_and_no_valid_manifest_raises(tmp_path: Path) -> None:
+def test_validate_resume_outputs_accepts_canonical_manifest_without_checkpoint(
+    tmp_path: Path,
+) -> None:
     cfg = _cfg(tmp_path)
     n_dir = cfg.results_root / "2_players"
     n_dir.mkdir(parents=True, exist_ok=True)
     ckpt_path = n_dir / "2p_checkpoint.pkl"
-    runner.write_parquet_atomic(
-        runner.pa.Table.from_pandas(_manifest_df(), preserve_index=False),
-        n_dir / runner.STRATEGY_MANIFEST_NAME,
+    manifest = _manifest_df()
+    _write_root_strategy_manifest(cfg, manifest)
+    runner._validate_resume_outputs(
+        cfg=cfg,
+        n_players=2,
+        n_shuffles=2,
+        strategies_manifest=manifest,
+        ckpt_path=ckpt_path,
+        row_dir=None,
+        metric_chunk_dir=None,
     )
-
-    with pytest.raises(ValueError, match="Existing outputs found without a checkpoint"):
-        runner._validate_resume_outputs(
-            cfg=cfg,
-            n_players=2,
-            n_shuffles=2,
-            strategies_manifest=_manifest_df(),
-            ckpt_path=ckpt_path,
-            row_dir=None,
-            metric_chunk_dir=None,
-        )
 
 
 @pytest.mark.parametrize(
@@ -810,6 +816,7 @@ def test_validate_resume_outputs_row_manifest_invalid(
     match: str,
 ) -> None:
     cfg = _cfg(tmp_path)
+    _write_root_strategy_manifest(cfg, _manifest_df())
     n_dir = cfg.results_root / "2_players"
     row_dir = n_dir / "rows"
     row_dir.mkdir(parents=True, exist_ok=True)
@@ -851,6 +858,7 @@ def test_validate_resume_outputs_metrics_manifest_invalid(
     match: str,
 ) -> None:
     cfg = _cfg(tmp_path)
+    _write_root_strategy_manifest(cfg, _manifest_df())
     n_dir = cfg.results_root / "2_players"
     metric_dir = n_dir / "metrics"
     metric_dir.mkdir(parents=True, exist_ok=True)
@@ -877,6 +885,7 @@ def test_validate_resume_outputs_row_and_metrics_manifests_pass(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = _cfg(tmp_path)
+    _write_root_strategy_manifest(cfg, _manifest_df())
     n_dir = cfg.results_root / "2_players"
     row_dir = n_dir / "rows"
     metric_dir = n_dir / "metrics"
@@ -929,7 +938,7 @@ def test_run_tournament_dispatch_error_and_multi_paths(
     assert runner.run_tournament(cfg_multi, force=True) == 12
 
 
-def test_run_single_n_empty_rows_and_legacy_sq_sum_outputs(
+def test_run_single_n_empty_rows_and_metric_sq_sum_outputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
@@ -964,7 +973,7 @@ def test_run_single_n_empty_rows_and_legacy_sq_sum_outputs(
         meta_sha = kwargs["checkpoint_metadata"]["strategy_manifest_sha"]
         payload = payloads.pop(0)
         payload["meta"] = {
-            "n_players": kwargs["n_players"],
+            "n_players": kwargs["config"].n_players,
             "num_shuffles": kwargs["num_shuffles"],
             "global_seed": kwargs["global_seed"],
             "n_strategies": len(kwargs["strategies"]),

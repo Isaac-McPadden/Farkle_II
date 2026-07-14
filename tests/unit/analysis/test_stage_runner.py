@@ -36,9 +36,11 @@ def test_stage_runner_marks_failed_when_required_output_missing_and_stops_downst
     expected = cfg.head2head_stage_dir / "bonferroni_pairwise.parquet"
     plan = [
         StagePlanItem("head2head", _head2head, required_outputs=(expected,)),
-        StagePlanItem("seed_symmetry", _downstream),
+        StagePlanItem("diagnostics", _downstream),
     ]
-    context = StageRunContext(config=cfg, manifest_path=manifest_path, run_label="single_seed_analysis")
+    context = StageRunContext(
+        config=cfg, manifest_path=manifest_path, run_label="single_seed_analysis"
+    )
 
     with pytest.raises(StageValidationError):
         StageRunner.run(plan, context, raise_on_failure=True)
@@ -46,7 +48,9 @@ def test_stage_runner_marks_failed_when_required_output_missing_and_stops_downst
     assert calls == ["head2head"]
     lines = _manifest_lines(manifest_path)
     head2head_end = next(
-        line for line in lines if line.get("event") == "stage_end" and line.get("stage") == "head2head"
+        line
+        for line in lines
+        if line.get("event") == "stage_end" and line.get("stage") == "head2head"
     )
     assert head2head_end["ok"] is False
     assert head2head_end["missing_outputs"] == [str(expected)]

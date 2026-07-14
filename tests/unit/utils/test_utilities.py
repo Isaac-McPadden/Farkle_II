@@ -128,7 +128,7 @@ def test_load_config_bad_yaml(tmp_path) -> None:
         load_app_config(cfg_path)
 
 
-def test_load_config_missing_keys(tmp_path) -> None:
+def test_load_config_rejects_retired_simulation_keys(tmp_path) -> None:
     cfg_path = tmp_path / "cfg.yml"
     cfg_path.write_text(
         yaml.safe_dump(
@@ -140,7 +140,5 @@ def test_load_config_missing_keys(tmp_path) -> None:
             }
         )
     )
-    cfg = load_app_config(cfg_path)
-    assert isinstance(cfg, AppConfig)
-    assert cfg.sim.n_players_list == [3]
-    assert cfg.sim.expanded_metrics is True
+    with pytest.raises(ValueError, match="Retired config key 'sim.n_players'"):
+        load_app_config(cfg_path)

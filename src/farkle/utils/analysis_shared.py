@@ -8,13 +8,10 @@ analysis stages can stay vectorized and avoid per-row Python loops.
 from __future__ import annotations
 
 import math
-from typing import Any, TypeAlias, cast
+from typing import Any, cast
 
 import numpy as np
 import pandas as pd
-
-TierMap: TypeAlias = dict[str, int]
-
 
 _NUMERIC_RUNTIME_TYPES = (int, float, np.integer, np.floating)
 
@@ -144,29 +141,10 @@ def to_stat_value(x: Any) -> int | float | str | None:
     return str(x)
 
 
-def tiers_to_map(tier_lists: list[list[str]]) -> TierMap:
-    """Convert ordered tier groups into ``{strategy: tier_rank}``.
-
-    Tier rank is deterministic and based on outer-list position (1-indexed).
-    Duplicate strategies across tier groups are rejected.
-    """
-
-    tiers: TierMap = {}
-    for tier_rank, members in enumerate(tier_lists, start=1):
-        for strategy in members:
-            strategy_key = str(strategy)
-            if strategy_key in tiers:
-                raise ValueError(f"duplicate strategy in tier lists: {strategy_key}")
-            tiers[strategy_key] = tier_rank
-    return tiers
-
-
 __all__ = [
-    "TierMap",
     "as_float",
     "as_int",
     "is_na",
-    "tiers_to_map",
     "to_int",
     "to_stat_value",
     "try_to_int",

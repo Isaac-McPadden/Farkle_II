@@ -118,8 +118,12 @@ def test_seed_everything_optional_backends(monkeypatch):
     )
 
     tf_random = types.SimpleNamespace(set_seed=lambda seed: tf_calls.append(f"random:{seed}"))
-    tf_keras_utils = types.SimpleNamespace(set_random_seed=lambda seed: tf_calls.append(f"keras:{seed}"))
-    tf_mod = types.SimpleNamespace(random=tf_random, keras=types.SimpleNamespace(utils=tf_keras_utils))
+    tf_keras_utils = types.SimpleNamespace(
+        set_random_seed=lambda seed: tf_calls.append(f"keras:{seed}")
+    )
+    tf_mod = types.SimpleNamespace(
+        random=tf_random, keras=types.SimpleNamespace(utils=tf_keras_utils)
+    )
 
     def fake_import(name):
         if name == "torch":
@@ -139,7 +143,9 @@ def test_seed_everything_optional_backends(monkeypatch):
 def test_seed_everything_ignores_torch_import_error(monkeypatch) -> None:
     calls: list[str] = []
 
-    tf_mod = types.SimpleNamespace(random=types.SimpleNamespace(set_seed=lambda _seed: calls.append("tf")))
+    tf_mod = types.SimpleNamespace(
+        random=types.SimpleNamespace(set_seed=lambda _seed: calls.append("tf"))
+    )
 
     def fake_import(name: str):
         if name == "torch":
@@ -161,8 +167,12 @@ def test_seed_everything_suppresses_tensorflow_set_seed_error(monkeypatch) -> No
         cuda=types.SimpleNamespace(is_available=lambda: False, manual_seed_all=lambda _s: None),
     )
     tf_mod = types.SimpleNamespace(
-        random=types.SimpleNamespace(set_seed=lambda _seed: (_ for _ in ()).throw(RuntimeError("bad tf seed"))),
-        keras=types.SimpleNamespace(utils=types.SimpleNamespace(set_random_seed=lambda _seed: None)),
+        random=types.SimpleNamespace(
+            set_seed=lambda _seed: (_ for _ in ()).throw(RuntimeError("bad tf seed"))
+        ),
+        keras=types.SimpleNamespace(
+            utils=types.SimpleNamespace(set_random_seed=lambda _seed: None)
+        ),
     )
 
     def fake_import(name: str):
@@ -175,7 +185,6 @@ def test_seed_everything_suppresses_tensorflow_set_seed_error(monkeypatch) -> No
     monkeypatch.setattr("importlib.import_module", fake_import)
 
     seed_everything(9)
-
 
 
 def test_spawn_seeds_child_stream_determinism() -> None:

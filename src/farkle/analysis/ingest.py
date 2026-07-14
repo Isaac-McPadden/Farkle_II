@@ -10,18 +10,15 @@ from __future__ import annotations
 import argparse
 import logging
 import re
-import shutil
 import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Iterable
 
 import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, load_app_config
 from farkle.utils.parallel import (
     ParallelNestingContext,
@@ -31,6 +28,7 @@ from farkle.utils.parallel import (
     resolve_stage_parallel_policy,
 )
 from farkle.utils.schema_helpers import expected_schema_for
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.streaming_loop import run_streaming_shard
 
 LOGGER = logging.getLogger(__name__)
@@ -47,79 +45,17 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
     table rectangular.
     """
 
-    def _read_subset(path: Path, wanted: Iterable[str]) -> pd.DataFrame:
-        """Read *path* and return only the columns present in *wanted*."""
-
-        if path.suffix == ".csv":
-            df = pd.read_csv(path, dtype_backend="pyarrow")
-            wanted = list(wanted)
-            present = [c for c in wanted if c in df.columns]
-            if LOGGER.isEnabledFor(logging.DEBUG) and len(present) < len(wanted):
-                missing = sorted(set(wanted) - set(present))
-                LOGGER.debug(
-                    "Shard missing requested columns",
-                    extra={
-                        "stage": "ingest",
-                        "path": path.name,
-                        "missing": missing,
-                    },
-                )
-            return df[present]
-        else:
-            pf = pq.ParquetFile(path)
-            wanted = list(wanted)
-            present = [c for c in wanted if c in pf.schema_arrow.names]
-            if LOGGER.isEnabledFor(logging.DEBUG) and len(present) < len(wanted):
-                missing = sorted(set(wanted) - set(present))
-                LOGGER.debug(
-                    "Shard missing requested columns",
-                    extra={
-                        "stage": "ingest",
-                        "path": path.name,
-                        "missing": missing,
-                    },
-                )
-            return pf.read(columns=present).to_pandas()
-
-    # Newer runs emit a single `<Np_rows>.parquet` file directly under the
-    # block directory. Prefer that if present. Sorting ensures deterministic
-    # selection should multiple consolidated files coexist.
     row_files = sorted(block.glob("*p_rows.parquet"))
-    row_file = row_files[0] if row_files else None
-    if row_file is not None:
-        # Stream by row-group to keep memory bounded
-        pf = pq.ParquetFile(row_file)
-        # Determine which of the wanted columns are present once, from schema
-        wanted = list(cols)
-        present = [c for c in wanted if c in pf.schema_arrow.names]
-        missing = sorted(set(wanted) - set(present))
-        if LOGGER.isEnabledFor(logging.DEBUG) and missing:
-            LOGGER.debug(
-                "Row file missing requested columns",
-                extra={
-                    "stage": "ingest",
-                    "path": row_file.name,
-                    "missing": missing,
-                },
-            )
-        for i in range(pf.num_row_groups):
-            tbl = pf.read_row_group(i, columns=present)
-            # Convert this row-group only
-            df = tbl.to_pandas()
-            yield df, row_file
-        return
-
-    # Legacy layout with `<Np_rows>` directory containing shards
-    row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
-    if row_dirs:
-        for shard_path in sorted(row_dirs[0].glob("*.parquet")):
-            yield _read_subset(shard_path, cols), shard_path
-    else:  # compact parquet or CSV
-        for pqt in sorted(block.glob("*.parquet")):
-            yield _read_subset(pqt, cols), pqt
-        csv = block / "winners.csv"
-        if csv.exists():
-            yield _read_subset(csv, cols), csv
+    if len(row_files) != 1:
+        raise FileNotFoundError(
+            f"ingest requires exactly one canonical '*p_rows.parquet' in {block}; "
+            f"found {len(row_files)}"
+        )
+    row_file = row_files[0]
+    parquet = pq.ParquetFile(row_file)
+    present = [column for column in cols if column in parquet.schema_arrow.names]
+    for row_group in range(parquet.num_row_groups):
+        yield parquet.read_row_group(row_group, columns=present).to_pandas(), row_file
 
 
 # Regex once, reuse
@@ -127,7 +63,7 @@ _SEAT_RE = re.compile(r"^P(\d+)_strategy$")
 
 
 def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
-    """Normalize winner-related columns for compatibility with downstream code.
+    """Validate and complete the canonical winner-related columns.
 
     Args:
         df: Raw results dataframe containing winner and seat strategy columns.
@@ -138,12 +74,8 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
     """
     df = df.copy()
 
-    # Rename legacy "winner" column to "winner_seat" (drop original)
     if "winner" in df.columns:
-        if "winner_seat" in df.columns:
-            df.drop(columns=["winner"], inplace=True)
-        else:
-            df.rename(columns={"winner": "winner_seat"}, inplace=True)
+        raise ValueError("retired winner column is not accepted; expected winner_seat")
 
     # strategy seat columns (P1_strategy, …)
     seat_cols = sorted(
@@ -182,7 +114,6 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
 
 def _coerce_strategy_ids(
     df: pd.DataFrame,
-    strategy_lookup: dict[str, int] | None,
 ) -> pd.DataFrame:
     """Ensure all strategy columns are normalized to integer IDs."""
     df = df.copy()
@@ -205,19 +136,11 @@ def _coerce_strategy_ids(
         id_series = numeric.astype("Int64")
         missing_mask = id_series.isna() & series.notna()
         if missing_mask.any():
-            if strategy_lookup is None:
-                sample = series[missing_mask].iloc[0]
-                LOGGER.error(
-                    "Strategy manifest required to map legacy identifiers",
-                    extra={
-                        "stage": "ingest",
-                        "column": col,
-                        "sample": str(sample),
-                    },
-                )
-                raise RuntimeError("Missing strategy manifest for legacy strategies")
-            mapped = series[missing_mask].astype(str).map(strategy_lookup)
-            id_series.loc[missing_mask] = mapped
+            sample = series[missing_mask].iloc[0]
+            raise ValueError(
+                f"retired nonnumeric strategy identifier in {col}: {sample!r}; "
+                "regenerate simulation artifacts with numeric strategy IDs"
+            )
         unresolved = id_series.isna() & series.notna()
         if unresolved.any():
             sample = series[unresolved].iloc[0]
@@ -286,33 +209,6 @@ def _ingest_upstream_inputs(results_root: Path) -> list[Path]:
     return inputs
 
 
-def _migrate_legacy_raw(n: int, cfg: AppConfig) -> None:
-    """Move legacy ingest outputs into the new ``00_ingest/<k>p`` layout."""
-
-    new_raw = cfg.ingested_rows_raw(n)
-    legacy_raw = cfg.combine_stage_dir / f"{n}p" / f"{n}p_ingested_rows.raw.parquet"
-    if new_raw.exists() or not legacy_raw.exists() or new_raw == legacy_raw:
-        return
-
-    new_raw.parent.mkdir(parents=True, exist_ok=True)
-    LOGGER.info(
-        "Migrating legacy ingest output",
-        extra={
-            "stage": "ingest",
-            "n_players": n,
-            "source": str(legacy_raw),
-            "dest": str(new_raw),
-        },
-    )
-    shutil.move(str(legacy_raw), new_raw)
-
-    legacy_manifest = legacy_raw.with_suffix(".manifest.jsonl")
-    new_manifest = cfg.ingest_manifest(n)
-    if legacy_manifest.exists():
-        new_manifest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy_manifest), new_manifest)
-
-
 def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int = 1) -> int:
     """Process a single ``<N>_players`` block."""
     n = _n_from_block(block.name)
@@ -334,18 +230,13 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
         extra={"stage": "ingest", "block": block.name, "path": str(block)},
     )
 
-    _migrate_legacy_raw(n, cfg)
     raw_out = cfg.ingested_rows_raw(n)
-    src_mtime = 0.0
     row_files = sorted(block.glob("*p_rows.parquet"))
-    if row_files:
-        src_mtime = row_files[0].stat().st_mtime
-    else:
-        row_dirs = [p for p in block.glob("*_rows") if p.is_dir()]
-        if row_dirs:
-            shards = list(row_dirs[0].glob("*.parquet"))
-            if shards:
-                src_mtime = max(s.stat().st_mtime for s in shards)
+    if len(row_files) != 1:
+        raise FileNotFoundError(
+            f"ingest requires one canonical row artifact in {block}; found {len(row_files)}"
+        )
+    src_mtime = row_files[0].stat().st_mtime
     if raw_out.exists() and src_mtime and raw_out.stat().st_mtime >= src_mtime:
         LOGGER.info(
             "Ingest block up-to-date",
@@ -354,32 +245,10 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
         return 0
 
     canon = expected_schema_for(n)
-    manifest_path = cfg.strategy_manifest_root_path()
-    strategy_lookup: dict[str, int] | None = None
-    if manifest_path.exists():
-        manifest = pd.read_parquet(manifest_path, columns=["strategy_id", "strategy_str"])
-        if not {"strategy_id", "strategy_str"}.issubset(manifest.columns):
-            LOGGER.error(
-                "Strategy manifest missing required columns",
-                extra={
-                    "stage": "ingest",
-                    "path": str(manifest_path),
-                    "columns": list(manifest.columns),
-                },
-            )
-            raise RuntimeError("Strategy manifest missing required columns")
-        strategy_lookup = dict(
-            zip(
-                manifest["strategy_str"].astype(str),
-                manifest["strategy_id"].astype(int),
-                strict=False,
-            )
-        )
     seat_cols = [c for c in canon.names if c.startswith("P")]
     wanted = tuple(
         dict.fromkeys(
             (
-                "winner",
                 *canon.names,
                 *seat_cols,
             )
@@ -413,7 +282,7 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
             )
 
             shard_df = _fix_winner(shard_df)
-            shard_df = _coerce_strategy_ids(shard_df, strategy_lookup)
+            shard_df = _coerce_strategy_ids(shard_df)
             _validate_strategy_dtypes(shard_df)
             canon_names = canon.names
             extras = sorted(

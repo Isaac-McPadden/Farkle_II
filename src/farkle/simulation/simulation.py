@@ -140,9 +140,7 @@ def generate_strategy_grid(
             auto_hot_dice=hd,
             run_up_score=rs,
             favor_dice_or_score=ps,
-            strategy_id=encoder.encode_tuple(
-                (st, dt, sf, so, cs, cd, rb, hd, rs, ps)
-            ),
+            strategy_id=encoder.encode_tuple((st, dt, sf, so, cs, cd, rb, hd, rs, ps)),
         )
         for st, dt, sf, so, cs, cd, rb, hd, rs, ps in combos
     ]

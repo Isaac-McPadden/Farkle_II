@@ -300,9 +300,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     args, _ = parser.parse_known_args(argv)
     seed_pair_override = resolve_seed_pair_args(args, parser)
-    expected_seed_len = expected_seed_list_length(
-        args.command, _subcommand=getattr(args, "an_cmd", None)
-    )
+    expected_seed_len = expected_seed_list_length(args.command)
 
     setup_info_logging()
     log_level = _parse_level(args.log_level)

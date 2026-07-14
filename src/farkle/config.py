@@ -84,6 +84,11 @@ RETIRED_CONFIG_KEYS: dict[str, str] = {
     "head2head.use_tier_elites": "the frozen canonical candidate family",
     "io.analysis_dir": "io.analysis_subdir",
     "io.results_dir": "io.results_dir_prefix",
+    "io.meta_analysis_dir": "canonical cross_seed artifacts under the pair root",
+    "io.interseed_input_dir": "explicit root-pair run context",
+    "io.interseed_input_layout": "canonical root stage layout",
+    "analysis.agreement_strategies": "the frozen H2H candidate family",
+    "analysis.agreement_include_across_k": "selection-conditioned structure agreement",
     "sim.n_players": "sim.n_players_list",
     "sim.collect_metrics": "sim.expanded_metrics",
     "sim.seed_pair": "sim.seed_list",
@@ -124,19 +129,9 @@ SEED_LIST_LENGTHS_BY_COMMAND: dict[str, int] = {
 }
 
 
-def expected_seed_list_length(
-    command: str,
-    *,
-    subcommand: str | None = None,
-    _subcommand: str | None = None,
-) -> int | None:
-    """Return the expected seed-list length for a CLI command.
+def expected_seed_list_length(command: str) -> int | None:
+    """Return the expected root-list length for a CLI command."""
 
-    ``subcommand`` is retained as a compatibility alias for older callers.
-    """
-
-    if subcommand is not None and _subcommand is not None and subcommand != _subcommand:
-        raise ValueError("subcommand and _subcommand must match when both are provided")
     return SEED_LIST_LENGTHS_BY_COMMAND.get(command)
 
 
@@ -146,9 +141,6 @@ class IOConfig:
 
     results_dir_prefix: Path = Path("results")
     analysis_subdir: str = "analysis"
-    meta_analysis_dir: Path | None = None
-    interseed_input_dir: Path | None = None
-    interseed_input_layout: "StageLayout | Mapping[str, str] | None" = None
 
 
 @dataclass
@@ -223,8 +215,8 @@ class SimConfig:
 
     ``seed_list`` is the canonical seed container. Single-seed commands (run,
     analyze, pipeline) require exactly one seed; two-seed orchestration requires
-    exactly two seeds. ``seed`` remains the legacy primary seed for single-seed
-    workflows and for naming seed-suffixed results directories.
+    exactly two seeds. ``seed`` is the active root for single-root workflows
+    and for naming root-suffixed result directories.
     """
 
     n_players_list: list[int] = field(default_factory=lambda: [5])
@@ -254,12 +246,6 @@ class SimConfig:
     run_up_score_opts: Sequence[bool] = (True, False)
     include_stop_at: bool = False
     include_stop_at_heuristic: bool = False
-
-    def interseed_seed_list(self) -> list[int] | None:
-        """Return the two seeds used for interseed analysis, if configured."""
-        if self.seed_list is not None:
-            return list(self.seed_list) if len(self.seed_list) == 2 else None
-        return None
 
     def resolve_seed_list(self, expected_len: int) -> list[int]:
         """Resolve a seed list of ``expected_len`` from available seed settings."""
@@ -302,13 +288,7 @@ class AnalysisConfig:
     """Analysis-stage parameters that remain outside typed method settings."""
 
     disable_rng_diagnostics: bool = False
-    """Disable RNG diagnostics even when interseed analytics run by default."""
-
-    agreement_strategies: tuple[str, ...] | None = None
-    """Optional subset of strategies to include when computing agreement metrics."""
-
-    agreement_include_across_k: bool = False
-    """Whether agreement analysis should emit a declared cross-k comparison payload."""
+    """Disable RNG diagnostics in the root-local workflow."""
 
     n_jobs: int = 1
     """Parallel worker setting (`0` => os.cpu_count(), `>0` => explicit)."""
@@ -353,13 +333,6 @@ class CombineConfig:
     """Settings for merging per-player-count ingested data."""
 
     max_players: int = 12
-
-
-@dataclass
-class MetricsConfig:
-    """Metric computation options."""
-
-    seat_range: tuple[int, int] = (1, 12)
 
 
 @dataclass
@@ -421,7 +394,6 @@ class AppConfig:
     analysis: AnalysisConfig = field(default_factory=AnalysisConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     combine: CombineConfig = field(default_factory=CombineConfig)
-    metrics: MetricsConfig = field(default_factory=MetricsConfig)
     trueskill: TrueSkillConfig = field(default_factory=TrueSkillConfig)
     head2head: Head2HeadConfig = field(default_factory=Head2HeadConfig)
     hgb: HGBConfig = field(default_factory=HGBConfig)
@@ -522,12 +494,6 @@ class AppConfig:
     def set_stage_layout(self, layout: "StageLayout") -> None:
         """Override the resolved stage layout (used by CLI orchestration)."""
 
-        if (
-            self.io.interseed_input_dir is not None
-            and self.io.interseed_input_layout is None
-            and self._stage_layout is not None
-        ):
-            self.io.interseed_input_layout = self._stage_layout
         self._stage_layout = layout
 
     def validate_statistical_contract(self, *, require_two_roots: bool = False) -> None:
@@ -545,23 +511,6 @@ class AppConfig:
         stage_root = self.analysis_dir / folder
         stage_root.mkdir(parents=True, exist_ok=True)
         return stage_root
-
-    def stage_dir_if_active(self, key: str, *parts: str | Path) -> Path | None:
-        """Return the resolved stage directory for ``key`` when active."""
-
-        return self._stage_dir_if_active(key, *parts)
-
-    def interseed_ready(self) -> tuple[bool, str]:
-        """Return whether interseed inputs are configured and an optional reason."""
-
-        if self.sim.interseed_seed_list() is not None:
-            return True, ""
-        if self.interseed_input_dir is not None:
-            return True, ""
-        return (
-            False,
-            "interseed inputs missing (requires sim.seed_list with two seeds or io.interseed_input_dir)",
-        )
 
     def stage_subdir(self, key: str, *parts: str | Path) -> Path:
         """Resolve a stage root or nested subdirectory under ``analysis_dir``.
@@ -641,10 +590,7 @@ class AppConfig:
     ) -> Path:
         """Resolve one canonical scoped input from the declared input layout."""
 
-        scope_parts = self._scope_parts(scope, k=k)
-        input_scope_root = self._input_stage_path(stage, *scope_parts)
-        if input_scope_root is None:
-            input_scope_root = self.scope_dir(stage, scope, k=k, create=False)
+        input_scope_root = self.scope_dir(stage, scope, k=k, create=False)
 
         relative = Path(filename)
         if relative.is_absolute() or ".." in relative.parts:
@@ -737,46 +683,6 @@ class AppConfig:
         return self.stage_subdir("rng_diagnostics")
 
     @property
-    def seed_summaries_stage_dir(self) -> Path:
-        """Stage directory for per-seed summaries."""
-
-        return self.stage_subdir("seed_summaries")
-
-    def seed_summaries_dir(self, players: int) -> Path:
-        """Directory holding seed summaries for ``players`` count."""
-
-        return self.by_k_dir("seed_summaries", players)
-
-    @property
-    def variance_stage_dir(self) -> Path:
-        """Stage directory for variance analytics."""
-
-        return self.stage_subdir("variance")
-
-    @property
-    def meta_stage_dir(self) -> Path:
-        """Stage directory for meta-analysis outputs."""
-
-        return self.stage_subdir("meta")
-
-    def meta_per_k_dir(self, players: int) -> Path:
-        """Primary per-player meta-analysis directory."""
-
-        return self.by_k_dir("meta", players)
-
-    @property
-    def agreement_stage_dir(self) -> Path:
-        """Stage directory for cross-method agreement analytics."""
-
-        return self.stage_subdir("agreement")
-
-    @property
-    def interseed_stage_dir(self) -> Path:
-        """Stage directory for cross-seed orchestration outputs."""
-
-        return self.stage_subdir("interseed")
-
-    @property
     def ingest_stage_dir(self) -> Path:
         """Stage root for ingest outputs."""
 
@@ -811,18 +717,6 @@ class AppConfig:
         """Stage root for head-to-head analysis outputs."""
 
         return self.stage_subdir("head2head")
-
-    @property
-    def seed_symmetry_stage_dir(self) -> Path:
-        """Stage root for seed-symmetry analysis outputs."""
-
-        return self.stage_subdir("seed_symmetry")
-
-    @property
-    def post_h2h_stage_dir(self) -> Path:
-        """Stage root for post head-to-head outputs."""
-
-        return self.stage_subdir("post_h2h")
 
     @property
     def hgb_stage_dir(self) -> Path:
@@ -861,126 +755,10 @@ class AppConfig:
 
         return self.stage_subdir("screening")
 
-    @property
-    def meta_analysis_dir(self) -> Path:
-        """Directory containing per-seed summaries combined across runs."""
+    def root_input_stage_folder(self, key: str) -> str | None:
+        """Return the canonical stage folder used by root-owned input artifacts."""
 
-        configured = self.io.meta_analysis_dir
-        if configured is None:
-            return self.analysis_dir
-        meta_path = Path(configured)
-        if meta_path.is_absolute():
-            return meta_path
-        if meta_path.parts and meta_path.parts[0] == "data":
-            return meta_path
-        # Anchor relative paths to the parent of the seed-suffixed results_root
-        return self.results_root.parent / meta_path
-
-    @property
-    def interseed_input_dir(self) -> Path | None:
-        """Optional analysis root used to resolve interseed input artifacts."""
-
-        configured = self.io.interseed_input_dir
-        if configured is None:
-            return None
-        path = Path(configured)
-        if path.is_absolute():
-            return path
-        if path.parts and path.parts[0] == "data":
-            return path
-        return self.results_root / path
-
-    def _interseed_input_candidate(self, stage_dir: Path, filename: str) -> Path | None:
-        """Return a staged input path rooted at ``interseed_input_dir`` when set."""
-
-        input_root = self.interseed_input_dir
-        if input_root is None:
-            return None
-        try:
-            rel = stage_dir.relative_to(self.analysis_dir)
-        except ValueError:
-            return input_root / filename
-        if not rel.parts:
-            return input_root / filename
-        stage_key = self._stage_key_for_folder(rel.parts[0])
-        input_folder = self._interseed_input_folder(stage_key) if stage_key else None
-        if input_folder is None:
-            return input_root / rel / filename
-        return input_root / Path(input_folder, *rel.parts[1:]) / filename
-
-    def _input_stage_path(self, key: str, *parts: str | Path) -> Path | None:
-        """Return a stage path rooted at ``interseed_input_dir`` without creating it."""
-
-        input_root = self.interseed_input_dir
-        if input_root is None:
-            return None
-        stage_folder = self._interseed_input_folder(key)
-        if stage_folder is None:
-            stage_folder = self.stage_layout.folder_for(key)
-            if stage_folder is None:
-                return None
-        return input_root / stage_folder / Path(*parts)
-
-    def resolve_input_stage_dir(self, key: str, *parts: str | Path) -> Path | None:
-        """Resolve an input-stage directory without requiring the active output layout."""
-
-        interseed_path = self._input_stage_path(key, *parts)
-        if interseed_path is not None:
-            return interseed_path
-        folder = self.stage_layout.folder_for(key)
-        if folder is None:
-            return None
-        path = self.analysis_dir / folder
-        if parts:
-            path = path.joinpath(*map(Path, parts))
-        return path
-
-    def _interseed_input_folder(self, key: str | None) -> str | None:
-        """Return the input-layout folder name for a stage key, when configured."""
-
-        if key is None:
-            return None
-        layout = self.io.interseed_input_layout
-        if layout is None:
-            return None
-        if isinstance(layout, Mapping):
-            folder = layout.get(key)
-            return str(folder) if folder is not None else None
-        from farkle.analysis.stage_registry import StageLayout
-
-        if isinstance(layout, StageLayout):
-            return layout.folder_for(key)
-        return None
-
-    def _stage_key_for_folder(self, folder: str) -> str | None:
-        """Return the stage key for a numbered folder in the current layout."""
-
-        for placement in self.stage_layout.placements:
-            if placement.folder_name == folder:
-                return placement.definition.key
-        return None
-
-    def _stage_dir_if_active(self, key: str, *parts: str | Path) -> Path | None:
-        """Return the stage directory for ``key`` only when it is active."""
-
-        folder = self.stage_layout.folder_for(key)
-        if folder is None:
-            return None
-        path = self.analysis_dir / folder
-        if parts:
-            path = path.joinpath(*map(Path, parts))
-        return path
-
-    def _interseed_stage_dir(self, key: str, *parts: str | Path) -> Path | None:
-        """Return the stage directory rooted at the interseed input layout."""
-
-        input_root = self.interseed_input_dir
-        if input_root is None:
-            return None
-        folder = self._interseed_input_folder(key)
-        if folder is None:
-            return None
-        return input_root / folder / Path(*parts)
+        return self.stage_layout.folder_for(key)
 
     @property
     def data_dir(self) -> Path:
@@ -1045,27 +823,7 @@ class AppConfig:
         """Maximum player count to combine when consolidating parquet files."""
         return self.combine.max_players
 
-    @property
-    def metrics_seat_range(self) -> tuple[int, int]:
-        """Seat indices included when computing seat-level metrics."""
-        return self.metrics.seat_range
-
     # —— Output filenames and standard derived locations ——
-    @property
-    def metrics_name(self) -> str:
-        """Filename for combined metrics parquet outputs."""
-        # prefer analysis.outputs.metrics_name if provided
-        outputs = self.analysis.outputs or {}
-        return str(outputs.get("metrics_name", "metrics.parquet"))
-
-    def metrics_output_path(self, name: str | None = None) -> Path:
-        """Preferred path for combined metrics artifacts under the metrics stage."""
-
-        filename = str(self.metrics_name if name is None else name)
-        path = self.across_k_dir("metrics") / filename
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
     def game_stats_output_path(self, name: str) -> Path:
         """Preferred path for across-k game-stat estimates."""
 
@@ -1090,11 +848,6 @@ class AppConfig:
 
         return self.game_stats_stage_dir / "diagnostics" / "roll_summary_exact.parquet"
 
-    def game_stats_input_path(self, name: str) -> Path:
-        """Resolve a cross-k game-stat artifact without legacy fallback."""
-
-        return self.input_scope_path("game_stats", ArtifactScope.ACROSS_K, name)
-
     def rng_output_path(self, name: str) -> Path:
         """Preferred path for combined RNG diagnostics."""
 
@@ -1106,41 +859,6 @@ class AppConfig:
         """Resolve an RNG diagnostic artifact in its canonical scope."""
 
         return self.input_scope_path("rng_diagnostics", ArtifactScope.DIAGNOSTICS, name)
-
-    def variance_output_path(self, name: str) -> Path:
-        """Preferred path for combined variance analytics."""
-
-        path = self.cross_seed_dir("variance") / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def variance_input_path(self, name: str) -> Path:
-        """Resolve a variance artifact in the cross-root scope."""
-
-        return self.input_scope_path("variance", ArtifactScope.CROSS_SEED, name)
-
-    def meta_output_path(self, players: int, name: str) -> Path:
-        """Preferred path for per-player meta-analysis artifacts."""
-
-        path = self.meta_per_k_dir(players) / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
-
-    def meta_input_path(self, players: int, name: str) -> Path:
-        """Resolve a per-k meta-analysis artifact without scope fallback."""
-
-        return self.input_scope_path("meta", ArtifactScope.BY_K, name, k=players)
-
-    def metrics_input_path(self, name: str | None = None) -> Path:
-        """Resolve a cross-k metrics artifact without scope fallback."""
-
-        filename = str(self.metrics_name if name is None else name)
-        return self.input_scope_path("metrics", ArtifactScope.ACROSS_K, filename)
-
-    def metrics_isolated_path(self, k: int) -> Path:
-        """Preferred isolated metrics parquet for ``k`` players."""
-
-        return self.metrics_per_k_dir(k) / f"{k}p_isolated_metrics.parquet"
 
     def metrics_all_player_batch_path(self, k: int) -> Path:
         """Canonical unconditional player-exposure batch metrics for ``k`` players."""
@@ -1376,10 +1094,10 @@ class AppConfig:
 
         return self.diagnostics_dir("reporting") / "tournament_screening_scores.png"
 
-    def legacy_metrics_isolated_path(self, k: int) -> Path:
-        """Legacy isolated metrics parquet path under ``analysis/data``."""
+    def migration_report_path(self) -> Path:
+        """Non-destructive inventory of ignored retired artifacts."""
 
-        return self.analysis_dir / "data" / f"{k}p" / f"{k}p_isolated_metrics.parquet"
+        return self.diagnostics_dir("reporting") / "migration_report.json"
 
     @property
     def curated_rows_name(self) -> str:
@@ -1392,50 +1110,6 @@ class AppConfig:
         """Filename used for append-only manifests."""
         outputs = self.analysis.outputs or {}
         return str(outputs.get("manifest_name", "manifest.jsonl"))
-
-    def agreement_players(self) -> list[int]:
-        """Return normalized numeric player counts for agreement analysis outputs."""
-
-        normalized: set[int] = set()
-        for entry in self.sim.n_players_list:
-            if isinstance(entry, bool):
-                raise ValueError(f"invalid n_players_list entry: {entry!r}")
-            try:
-                value = int(entry)
-            except (TypeError, ValueError) as exc:
-                raise ValueError(f"invalid n_players_list entry: {entry!r}") from exc
-            if value <= 0:
-                raise ValueError(
-                    f"n_players_list must contain positive player counts, got {entry!r}"
-                )
-            normalized.add(value)
-        return sorted(normalized)
-
-    def agreement_include_across_k(self) -> bool:
-        """Return whether cross-k agreement output should be generated."""
-
-        return bool(self.analysis.agreement_include_across_k)
-
-    def agreement_across_k_output_path(self) -> Path:
-        """Preferred path for cross-k agreement diagnostics."""
-
-        return self.scope_path(
-            "agreement",
-            ArtifactScope.DIAGNOSTICS,
-            "agreement_across_k.json",
-        )
-
-    def agreement_output_path(self, players: int) -> Path:
-        """Preferred path for agreement analytics for a given player count."""
-
-        players_int = int(players)
-        filename = f"agreement_{players_int}p.json"
-        return self.scope_path(
-            "agreement",
-            ArtifactScope.BY_K,
-            filename,
-            k=players_int,
-        )
 
     @property
     def curated_parquet(self) -> Path:
@@ -1559,13 +1233,17 @@ def _format_unknown_keys(unknown: Iterable[str], candidates: Iterable[str]) -> l
 
 def _validate_config_keys(data: Mapping[str, Any]) -> None:
     """Validate that config sections and keys match dataclass schemas."""
+    if "metrics" in data:
+        raise ValueError(
+            "Retired config section 'metrics'; canonical all-player, performance, "
+            "and seat estimators have fixed schemas"
+        )
     top_level_sections = {
         "io": IOConfig,
         "sim": SimConfig,
         "analysis": AnalysisConfig,
         "ingest": IngestConfig,
         "combine": CombineConfig,
-        "metrics": MetricsConfig,
         "trueskill": TrueSkillConfig,
         "head2head": Head2HeadConfig,
         "hgb": HGBConfig,
@@ -1736,6 +1414,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                 stage_layout_cls = imported_stage_layout_cls
             typing_ns["StageLayout"] = stage_layout_cls
         type_hints = get_type_hints(cls, globalns=typing_ns)
+        resolved: dict[str, Any] = {}
         for f in dataclasses.fields(cls):
             if f.name not in section:
                 continue
@@ -1764,8 +1443,8 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
             ):
                 val = Path(val)
 
-            setattr(obj, f.name, val)
-        return obj
+            resolved[f.name] = val
+        return cls(**resolved)
 
     cfg = AppConfig(
         io=build(IOConfig, data.get("io", {})),
@@ -1773,7 +1452,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         analysis=build(AnalysisConfig, data.get("analysis", {})),
         ingest=build(IngestConfig, data.get("ingest", {})),
         combine=build(CombineConfig, data.get("combine", {})),
-        metrics=build(MetricsConfig, data.get("metrics", {})),
         trueskill=build(TrueSkillConfig, data.get("trueskill", {})),
         head2head=build(Head2HeadConfig, data.get("head2head", {})),
         hgb=build(HGBConfig, data.get("hgb", {})),
@@ -2139,7 +1817,6 @@ __all__ = [
     "AnalysisConfig",
     "IngestConfig",
     "CombineConfig",
-    "MetricsConfig",
     "TrueSkillConfig",
     "Head2HeadConfig",
     "HGBConfig",

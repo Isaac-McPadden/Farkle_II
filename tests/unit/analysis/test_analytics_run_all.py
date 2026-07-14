@@ -64,6 +64,7 @@ def test_single_root_tail_is_explicitly_labelled(tmp_path: Path) -> None:
         cfg.structure_report_json_path(),
         cfg.structure_report_markdown_path(),
         cfg.structure_report_plot_path(),
+        cfg.migration_report_path(),
     )
 
 

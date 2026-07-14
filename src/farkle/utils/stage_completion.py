@@ -186,7 +186,10 @@ def resolve_stage_state(
 
     metadata = read_stage_done(done_path)
     recorded_state = metadata.get("completion_state")
-    if recorded_state == CompletionState.BLOCKED_BY_CAP.value or metadata.get("status") == "blocked_by_cap":
+    if (
+        recorded_state == CompletionState.BLOCKED_BY_CAP.value
+        or metadata.get("status") == "blocked_by_cap"
+    ):
         return CompletionState.BLOCKED_BY_CAP
     if metadata.get("status") in {"failed", "skipped", "partial_resumable", "invalid"}:
         return CompletionState.PARTIAL_RESUMABLE
@@ -256,7 +259,9 @@ def stage_is_up_to_date(
 ) -> bool:
     """Return whether the stage resolves to :attr:`COMPLETE_VALID`."""
 
-    return resolve_stage_state(done_path, inputs, outputs, **kwargs) is CompletionState.COMPLETE_VALID
+    return (
+        resolve_stage_state(done_path, inputs, outputs, **kwargs) is CompletionState.COMPLETE_VALID
+    )
 
 
 def write_stage_done(
@@ -282,9 +287,7 @@ def write_stage_done(
         raise ValueError(
             f"Unsupported stage status {status!r}; expected one of {_ALLOWED_STATUSES}"
         )
-    if status in {"failed", "skipped"} and (
-        blocking_dependency is None or upstream_stage is None
-    ):
+    if status in {"failed", "skipped"} and (blocking_dependency is None or upstream_stage is None):
         raise ValueError(
             "blocking_dependency and upstream_stage are required when status is failed/skipped"
         )

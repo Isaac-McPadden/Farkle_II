@@ -90,9 +90,7 @@ def run_streaming_shard(
     )
 
 
-def _output_ready(
-    out_path: str, manifest_path: str, manifest_extra: Dict[str, Any] | None
-) -> bool:
+def _output_ready(out_path: str, manifest_path: str, manifest_extra: Dict[str, Any] | None) -> bool:
     """Return True when the output path exists and is non-empty."""
     if os.path.exists(out_path):
         return _check_output_size(out_path, manifest_path, manifest_extra)

@@ -7,12 +7,10 @@ the simulation pipeline.
 """
 from __future__ import annotations
 
-import pickle
 import re
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache, partial
-from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence, Tuple
 
 import numba as nb
@@ -86,6 +84,7 @@ DEFAULT_STRATEGY_GRID: dict[str, tuple[object, ...]] = {
 }
 
 StrategyTuple = Tuple[int, int, bool, bool, bool, bool, bool, bool, bool, FavorDiceOrScore]
+
 
 class StrategyRng(Protocol):
     """RNG protocol for random strategy generation helpers."""
@@ -488,9 +487,7 @@ STOP_AT_REGISTRY: dict[str, Callable[..., StopAtStrategy]] = {
         for threshold in STOP_AT_THRESHOLDS
     },
     **{
-        f"stop_at_{threshold}_heuristic": partial(
-            build_stop_at_strategy, threshold, heuristic=True
-        )
+        f"stop_at_{threshold}_heuristic": partial(build_stop_at_strategy, threshold, heuristic=True)
         for threshold in STOP_AT_THRESHOLDS
     },
 }
@@ -598,7 +595,8 @@ class StrategyGridOptions:
             consider_dice_opts=_coerce_options(
                 consider_dice_opts,
                 DEFAULT_STRATEGY_GRID["consider_dice_opts"],
-                normalize=consider_dice_opts is not None and not isinstance(consider_dice_opts, tuple),
+                normalize=consider_dice_opts is not None
+                and not isinstance(consider_dice_opts, tuple),
             ),
             auto_hot_dice_opts=_coerce_options(
                 auto_hot_dice_opts,
@@ -609,7 +607,8 @@ class StrategyGridOptions:
             run_up_score_opts=_coerce_options(
                 run_up_score_opts,
                 DEFAULT_STRATEGY_GRID["run_up_score_opts"],
-                normalize=run_up_score_opts is not None and not isinstance(run_up_score_opts, tuple),
+                normalize=run_up_score_opts is not None
+                and not isinstance(run_up_score_opts, tuple),
             ),
             include_stop_at=include_stop_at,
             include_stop_at_heuristic=include_stop_at_heuristic,
@@ -731,9 +730,7 @@ def build_strategy_manifest(strategies: Sequence[ThresholdStrategy]) -> pd.DataF
         sid = int(strat.strategy_id)
         if sid in rows:
             continue
-        attrs: dict[str, Any] = dict(
-            zip(STRATEGY_TUPLE_FIELDS, strategy_tuple(strat), strict=True)
-        )
+        attrs: dict[str, Any] = dict(zip(STRATEGY_TUPLE_FIELDS, strategy_tuple(strat), strict=True))
         attrs["strategy_id"] = sid
         attrs["strategy_str"] = str(strat)
         if isinstance(attrs["favor_dice_or_score"], FavorDiceOrScore):
@@ -752,9 +749,14 @@ def normalize_strategy_ids(series: pd.Series) -> pd.Series:
 
 
 def coerce_strategy_ids(series: pd.Series) -> pd.Series:
-    """Return strategy identifiers with numeric IDs coerced but legacy strings preserved."""
+    """Return nullable integer strategy IDs and reject retired string encodings."""
     normalized = normalize_strategy_ids(series)
-    return normalized.astype(object).where(normalized.notna(), series)
+    invalid = normalized.isna() & series.notna()
+    if invalid.any():
+        raise ValueError(
+            f"nonnumeric strategy identifier is not accepted: {series[invalid].iloc[0]!r}"
+        )
+    return normalized
 
 
 def parse_strategy_identifier(
@@ -762,10 +764,14 @@ def parse_strategy_identifier(
     *,
     encoder: StrategyEncoder | None = None,
     manifest: pd.DataFrame | None = None,
-    parse_legacy: Callable[[str], dict] | None = None,
 ) -> ThresholdStrategy:
-    """Return a ThresholdStrategy from an identifier (id or legacy string)."""
-    if isinstance(value, int) and not isinstance(value, bool) or isinstance(value, str) and value.isdigit():
+    """Return a strategy decoded from a canonical numeric identifier."""
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        or isinstance(value, str)
+        and value.isdigit()
+    ):
         strategy_id = int(value)
     else:
         strategy_id = None
@@ -791,45 +797,31 @@ def parse_strategy_identifier(
             )
         return ThresholdStrategy(**attrs, strategy_id=strategy_id)
 
-    if isinstance(value, str) and value in STOP_AT_REGISTRY:
-        return STOP_AT_REGISTRY[value]()
-
-    if parse_legacy is None:
-        raise ValueError(f"Cannot parse legacy strategy identifier: {value!r}")
-    strategy = ThresholdStrategy(**parse_legacy(str(value)))
-    return strategy
+    raise ValueError(f"Cannot parse nonnumeric strategy identifier: {value!r}")
 
 
 def strategy_attributes_from_series(
     strategies: pd.Series,
     *,
     manifest: pd.DataFrame | None = None,
-    parse_legacy: Callable[[str], dict] | None = None,
 ) -> pd.DataFrame:
-    """Return a DataFrame of strategy attributes for a mixed identifier series."""
-    if parse_legacy is None:
-        parse_legacy = parse_strategy_for_df
+    """Return manifest attributes for canonical numeric strategy identifiers."""
+    if manifest is None or manifest.empty:
+        raise ValueError("strategy manifest is required for attribute decoding")
     id_series = normalize_strategy_ids(strategies)
-    attrs_frames: list[pd.DataFrame] = []
-    if manifest is not None and not manifest.empty and id_series.notna().any():
-        manifest_indexed = manifest.set_index("strategy_id")
-        ids = id_series.dropna().astype(int)
-        mapped = manifest_indexed.reindex(ids.values)
-        mapped = mapped.reset_index(drop=True)
-        mapped.index = ids.index
-        attrs_frames.append(mapped[list(STRATEGY_TUPLE_FIELDS)])
-
-    missing_mask = id_series.isna() & strategies.notna()
-    if parse_legacy is not None and missing_mask.any():
-        legacy_attrs = strategies[missing_mask].apply(parse_legacy).apply(pd.Series)
-        legacy_attrs = legacy_attrs.reindex(columns=STRATEGY_TUPLE_FIELDS)
-        attrs_frames.append(legacy_attrs)
-
-    if not attrs_frames:
+    invalid = id_series.isna() & strategies.notna()
+    if invalid.any():
+        raise ValueError(f"nonnumeric strategy identifier: {strategies[invalid].iloc[0]!r}")
+    if not id_series.notna().any():
         return pd.DataFrame(columns=STRATEGY_TUPLE_FIELDS)
-
-    combined = pd.concat(attrs_frames).sort_index()
-    return combined.reindex(columns=STRATEGY_TUPLE_FIELDS)
+    manifest_indexed = manifest.set_index("strategy_id")
+    ids = id_series.dropna().astype(int)
+    mapped = manifest_indexed.reindex(ids.values)
+    if mapped[list(STRATEGY_TUPLE_FIELDS)].isna().all(axis=1).any():
+        raise KeyError("strategy ID missing from canonical manifest")
+    mapped = mapped.reset_index(drop=True)
+    mapped.index = ids.index
+    return mapped.reindex(columns=STRATEGY_TUPLE_FIELDS)
 
 
 def _parse_strategy_flags(s: str) -> dict[str, Any]:
@@ -935,90 +927,3 @@ def parse_strategy_for_df(s: str) -> dict:
     # Example literal: "Strat(300,2)[SD][FOFD][AND][H-]"
 
     return _parse_strategy_flags(s)
-
-
-def load_farkle_results(
-    pkl_path: str | Path,
-    *,
-    parse_strategy: Callable[[str], dict] = parse_strategy_for_df,
-    manifest: pd.DataFrame | None = None,
-    ordered: bool = True,
-) -> pd.DataFrame:
-    """
-    Load a pickled Counter {strategy_str: wins} and explode it into a
-    “full-fat” DataFrame with every strategy flag broken out.
-
-    Warning
-    -------
-    Unpickling data from untrusted sources can execute arbitrary code.
-    Only load pickle files from trusted sources.
-
-    Parameters
-    ----------
-    pkl_path : str | Path
-        Path to the pickle file produced by `run_tournament_2.py`.
-        The pickle must contain a `collections.Counter` or plain dict
-        whose keys are strategy strings and whose values are win counts.
-    parse_strategy : callable, default ``parse_strategy_for_df``
-        Function that converts one strategy string to a dict of columns.
-        Override only if you have a different parser.
-    ordered : bool, default True
-        Whether to return the columns in a logical, pre-defined order.
-
-    Returns
-    -------
-    pd.DataFrame
-        Columns:
-          strategy, wins,
-          score_threshold, dice_threshold,
-          consider_score, consider_dice, require_both, favor_dice_or_score,
-          smart_five, smart_one, auto_hot_dice, run_up_score
-    """
-    # ------------------------------------------------------------------
-    # 1) Load the Counter
-    # ------------------------------------------------------------------
-    pkl_path = Path(pkl_path).expanduser().resolve()
-    counter = pickle.loads(pkl_path.read_bytes())
-
-    # ------------------------------------------------------------------
-    # 2) Counter → two-column DataFrame
-    # ------------------------------------------------------------------
-    base_df = (
-        pd.Series(counter, name="wins")
-        .reset_index(drop=False)
-        .rename(columns={"index": "strategy"})
-    )
-
-    # ------------------------------------------------------------------
-    # 3) Explode strategy identifiers into individual columns
-    # ------------------------------------------------------------------
-    if manifest is not None and not manifest.empty:
-        flags_df = strategy_attributes_from_series(
-            base_df["strategy"], manifest=manifest, parse_legacy=parse_strategy
-        )
-    else:
-        flags_df = base_df["strategy"].apply(parse_strategy).apply(pd.Series)
-
-    full_df = pd.concat([base_df, flags_df], axis=1)
-
-    # ------------------------------------------------------------------
-    # 4) Nice-to-have column ordering
-    # ------------------------------------------------------------------
-    if ordered:
-        col_order = [
-            "strategy",
-            "wins",
-            "score_threshold",
-            "dice_threshold",
-            "consider_score",
-            "consider_dice",
-            "require_both",
-            "smart_five",
-            "smart_one",
-            "favor_dice_or_score",
-            "auto_hot_dice",
-            "run_up_score",
-        ]
-        full_df = full_df[col_order].sort_values(by="wins", ascending=False, ignore_index=True)
-
-    return full_df

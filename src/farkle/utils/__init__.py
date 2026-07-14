@@ -12,7 +12,7 @@ The most commonly used helpers are re-exported here for convenience.
 
 from __future__ import annotations
 
-from .analysis_shared import TierMap, tiers_to_map, to_int, to_stat_value
+from .analysis_shared import to_int, to_stat_value
 from .logging import configure_logging, setup_info_logging, setup_warning_logging
 from .random import (
     MAX_UINT32,
@@ -26,8 +26,6 @@ from .random import (
 )
 
 __all__ = [
-    "TierMap",
-    "tiers_to_map",
     "to_int",
     "to_stat_value",
     "configure_logging",

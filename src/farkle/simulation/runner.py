@@ -508,30 +508,17 @@ def _validate_resume_outputs(
         **_workload_checkpoint_metadata(workload_plan),
     }
     root_manifest_path = cfg.strategy_manifest_root_path()
-    legacy_manifest_paths = [ckpt_path.parent / STRATEGY_MANIFEST_NAME]
-    if row_dir is not None:
-        legacy_manifest_paths.append(row_dir / STRATEGY_MANIFEST_NAME)
     if root_manifest_path.exists():
         _validate_manifest_matches(strategies_manifest, root_manifest_path, label="Strategy")
     else:
-        legacy_match = None
-        for legacy_path in legacy_manifest_paths:
-            if legacy_path.exists():
-                _validate_manifest_matches(strategies_manifest, legacy_path, label="Strategy")
-                legacy_match = legacy_path
-                break
-        if legacy_match is not None:
-            write_parquet_atomic(
-                pa.Table.from_pandas(strategies_manifest, preserve_index=False),
-                root_manifest_path,
-            )
+        raise ValueError(
+            f"Canonical strategy manifest missing at {root_manifest_path}; rerun with --force."
+        )
 
     has_row_manifest = row_dir is not None and (row_dir / "manifest.jsonl").exists()
     has_metrics_manifest = (
         metric_chunk_dir is not None and (metric_chunk_dir / "metrics_manifest.jsonl").exists()
     )
-    has_legacy_manifest = any(path.exists() for path in legacy_manifest_paths)
-
     if ckpt_path.exists():
         payload = pickle.loads(ckpt_path.read_bytes())
         meta = payload.get("meta")
@@ -544,7 +531,7 @@ def _validate_resume_outputs(
                 )
     elif not has_row_manifest:
         if not has_metrics_manifest:
-            if root_manifest_path.exists() and not has_legacy_manifest:
+            if root_manifest_path.exists():
                 return
             raise ValueError(
                 "Existing outputs found without a checkpoint manifest; rerun with --force."
@@ -848,7 +835,6 @@ def run_single_n(
         deterministic_batch_size=workload_plan.shuffles_per_batch,
     )
     tournament_mod.run_tournament(
-        n_players=n,
         global_seed=cfg.sim.seed,
         n_jobs=cfg.sim.n_jobs,
         checkpoint_path=ckpt_path,

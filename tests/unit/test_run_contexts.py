@@ -44,9 +44,7 @@ def test_root_pair_context_maps_first_root_inputs_without_changing_outputs(tmp_p
     )
 
     combine_folder = first.config.stage_layout.require_folder("combine")
-    assert context.config.resolve_input_stage_dir("combine", "concat_ks") == (
-        first.analysis_root / combine_folder / "concat_ks"
-    )
+    assert context.config.root_input_stage_folder("combine") == combine_folder
     assert context.config.cross_seed_dir("cross_seed").is_relative_to(context.analysis_root)
 
 

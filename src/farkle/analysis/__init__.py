@@ -196,6 +196,7 @@ def _h2h_tail_plan(
                 cfg.structure_report_json_path(),
                 cfg.structure_report_markdown_path(),
                 cfg.structure_report_plot_path(),
+                cfg.migration_report_path(),
             ),
         ),
     ]

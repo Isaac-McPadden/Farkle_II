@@ -9,7 +9,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.config import AppConfig, IOConfig, MetricsConfig, SimConfig
+from farkle.config import AppConfig, IOConfig, SimConfig
 
 
 def build_curated_fixture(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
@@ -23,7 +23,6 @@ def build_curated_fixture(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path),
         sim=SimConfig(n_players_list=[2]),
-        metrics=MetricsConfig(seat_range=(1, 2)),
     )
 
     combined_dir = cfg.concat_ks_dir("combine")

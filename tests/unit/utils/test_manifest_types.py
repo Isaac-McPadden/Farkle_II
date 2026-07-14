@@ -34,7 +34,6 @@ def test_iter_manifest_skips_blank_lines_between_records(tmp_path) -> None:
     assert [row["path"] for row in rows] == ["a", "b"]
 
 
-
 def test_append_manifest_many_empty_records_no_file_created(tmp_path) -> None:
     manifest_path = tmp_path / "manifest.ndjson"
 
@@ -62,7 +61,6 @@ def test_open_append_fd_adds_binary_flag_on_windows(monkeypatch, tmp_path) -> No
 
     assert fd == 123
     assert observed["flags"] & manifest_mod.os.O_BINARY
-
 
 
 def test_append_manifest_many_without_ensure_dir_writes_when_parent_exists(tmp_path) -> None:

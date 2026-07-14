@@ -98,7 +98,7 @@ def _install_root_results(
         )
 
     monkeypatch.setattr(two_seed_pipeline, "_run_one_seed", fake_run_one_seed)
-    monkeypatch.setattr(two_seed_pipeline, "ensure_manifest_v2", lambda _path: None)
+    monkeypatch.setattr(two_seed_pipeline, "validate_manifest_contract", lambda _path: None)
     monkeypatch.setattr(two_seed_pipeline, "append_manifest_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(two_seed_pipeline, "write_active_config", lambda *_args, **_kwargs: None)
 

@@ -51,7 +51,7 @@ def test_append_manifest_event_validation_errors() -> None:
         )
 
 
-def test_manifest_lines_are_v2_and_rotation_cover_edge_cases(tmp_path) -> None:
+def test_manifest_contract_validation_preserves_incompatible_input(tmp_path) -> None:
     valid = tmp_path / "valid.jsonl"
     valid.write_text(
         "\n"
@@ -93,16 +93,15 @@ def test_manifest_lines_are_v2_and_rotation_cover_edge_cases(tmp_path) -> None:
     unreadable.mkdir()
     assert manifest._manifest_lines_are_v2(unreadable) is False
 
-    rotating = tmp_path / "manifest.jsonl"
-    rotating.write_text(json.dumps({"event": "step_end"}) + "\n", encoding="utf-8")
-    rotated = tmp_path / "manifest.pre_v2.jsonl"
-    rotated.write_text("stale\n", encoding="utf-8")
+    incompatible = tmp_path / "manifest.jsonl"
+    original = json.dumps({"event": "step_end"}) + "\n"
+    incompatible.write_text(original, encoding="utf-8")
 
-    result = manifest.ensure_manifest_v2(rotating)
+    with pytest.raises(ValueError, match="retired or invalid schema"):
+        manifest.validate_manifest_contract(incompatible)
 
-    assert result == rotated
-    assert rotated.read_text(encoding="utf-8") == json.dumps({"event": "step_end"}) + "\n"
-    assert not rotating.exists()
+    assert incompatible.read_text(encoding="utf-8") == original
+    assert list(tmp_path.glob("manifest.*.jsonl")) == []
 
     v2_manifest = tmp_path / "v2.jsonl"
     v2_manifest.write_text(
@@ -115,8 +114,8 @@ def test_manifest_lines_are_v2_and_rotation_cover_edge_cases(tmp_path) -> None:
         + "\n",
         encoding="utf-8",
     )
-    assert manifest.ensure_manifest_v2(v2_manifest) is None
-    assert manifest.ensure_manifest_v2(tmp_path / "missing.jsonl") is None
+    assert manifest.validate_manifest_contract(v2_manifest) is None
+    assert manifest.validate_manifest_contract(tmp_path / "missing.jsonl") is None
 
 
 def test_make_run_id_sanitizes_label(monkeypatch) -> None:

@@ -181,9 +181,7 @@ def test_completion_is_not_written_until_all_sidecars_validate(tmp_path: Path) -
         write_stage_done(done, inputs=[], outputs=[artifact], sidecar_artifacts=[artifact])
     assert not done.exists()
 
-    write_parquet_artifact_atomic(
-        pa.table({"value": [1]}), artifact, sidecar=_metadata(artifact)
-    )
+    write_parquet_artifact_atomic(pa.table({"value": [1]}), artifact, sidecar=_metadata(artifact))
     write_stage_done(
         done,
         inputs=[],

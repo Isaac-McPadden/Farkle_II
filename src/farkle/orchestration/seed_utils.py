@@ -46,16 +46,6 @@ def seed_pair_seed_root(cfg: AppConfig, seed_pair: tuple[int, int], seed: int) -
     return pair_root / f"{base_name}_seed_{seed}"
 
 
-def seed_pair_meta_root(cfg: AppConfig, seed_pair: tuple[int, int]) -> Path | None:
-    """Resolve the shared meta-analysis root for a seed pair."""
-    if cfg.io.meta_analysis_dir is None:
-        return None
-    meta_path = Path(cfg.io.meta_analysis_dir)
-    meta_name = meta_path.name
-    seed_a, seed_b = seed_pair
-    return seed_pair_root(cfg, seed_pair) / f"{meta_name}_{seed_a}_{seed_b}"
-
-
 def split_seeded_results_dir(path: Path) -> tuple[Path, int | None]:
     """Split a seeded results directory into base path and seed (if present)."""
     match = re.match(r"^(?P<base>.+)_seed_(?P<seed>\d+)$", path.name)
@@ -109,19 +99,12 @@ def prepare_seed_config(
     *,
     seed: int,
     base_results_dir: Path,
-    meta_analysis_dir: Path | None = None,
 ) -> AppConfig:
     """Return a config updated for a specific seed and results directory."""
     base_dir = Path(base_results_dir)
     if not base_dir.is_absolute() and base_dir.parts and base_dir.parts[0] == "data":
         base_dir = Path(*base_dir.parts[1:])
-    io_cfg = dataclasses.replace(
-        base_cfg.io,
-        results_dir_prefix=base_dir,
-        meta_analysis_dir=(
-            meta_analysis_dir if meta_analysis_dir is not None else base_cfg.io.meta_analysis_dir
-        ),
-    )
+    io_cfg = dataclasses.replace(base_cfg.io, results_dir_prefix=base_dir)
     sim_cfg = dataclasses.replace(base_cfg.sim, seed=seed, seed_list=[seed])
     prepared = dataclasses.replace(base_cfg, io=io_cfg, sim=sim_cfg)
     prepared.config_sha = base_cfg.config_sha
@@ -133,7 +116,6 @@ __all__ = [
     "prepare_seed_config",
     "resolve_results_dir",
     "resolve_seed_pair_args",
-    "seed_pair_meta_root",
     "seed_pair_root",
     "seed_pair_seed_root",
     "seed_has_completion_markers",

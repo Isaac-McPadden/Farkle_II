@@ -8,7 +8,6 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
-from farkle.analysis.stage_state import read_stage_done, stage_done_path
 from farkle.config import AppConfig
 from farkle.utils.manifest import (
     EVENT_RUN_END,
@@ -16,9 +15,10 @@ from farkle.utils.manifest import (
     EVENT_STAGE_END,
     EVENT_STAGE_START,
     append_manifest_event,
-    ensure_manifest_v2,
     make_run_id,
+    validate_manifest_contract,
 )
+from farkle.utils.stage_completion import read_stage_done, stage_done_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ class StageRunner:
         manifest_path = context.manifest_path
         config_sha = getattr(context.config, "config_sha", None)
         run_id = context.run_id or make_run_id(context.run_label)
-        ensure_manifest_v2(manifest_path)
+        validate_manifest_contract(manifest_path)
         run_payload = {
             "event": context.run_start_event,
             "run": context.run_label,
@@ -144,7 +144,9 @@ class StageRunner:
                     done_path = stage_done_path(context.config.stage_dir(item.name), item.name)
                 except Exception:  # noqa: BLE001
                     done_path = None
-                stage_done = read_stage_done(done_path) if done_path is not None else {"status": "success"}
+                stage_done = (
+                    read_stage_done(done_path) if done_path is not None else {"status": "success"}
+                )
                 stage_status = str(stage_done.get("status", "success"))
                 stage_health = "healthy"
                 if stage_status == "skipped":
@@ -233,8 +235,6 @@ class StageRunner:
             if raise_on_failure and first_failure is not None:
                 raise first_failure
         else:
-            context.logger.info(
-                "Stage run complete", extra={"run": context.run_label}
-            )
+            context.logger.info("Stage run complete", extra={"run": context.run_label})
 
         return StageRunResult(failed_steps=failed_steps, first_failure=first_failure)

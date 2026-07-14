@@ -18,7 +18,6 @@ from farkle.analysis.h2h_schedule import (
     independent_score_planning_power,
     plan_h2h_schedule,
 )
-from farkle.analysis.stage_state import CompletionState
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import (
@@ -26,6 +25,7 @@ from farkle.utils.artifacts import (
     write_parquet_artifact_atomic,
 )
 from farkle.utils.random import RandomPurpose, coordinate_seed
+from farkle.utils.stage_completion import CompletionState
 
 
 def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
@@ -113,13 +113,9 @@ def test_implemented_score_power_matches_brute_force_small_case() -> None:
     alpha = 0.12
     expected = 0.0
     for count1 in range(nobs + 1):
-        probability1 = math.comb(nobs, count1) * q_ab**count1 * (1.0 - q_ab) ** (
-            nobs - count1
-        )
+        probability1 = math.comb(nobs, count1) * q_ab**count1 * (1.0 - q_ab) ** (nobs - count1)
         for count2 in range(nobs + 1):
-            probability2 = math.comb(nobs, count2) * q_ba**count2 * (1.0 - q_ba) ** (
-                nobs - count2
-            )
+            probability2 = math.comb(nobs, count2) * q_ba**count2 * (1.0 - q_ba) ** (nobs - count2)
             common = (count1 + count2) / (2.0 * nobs)
             variance = common * (1.0 - common) * (2.0 / nobs)
             difference = (count1 - count2) / nobs

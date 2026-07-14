@@ -21,15 +21,9 @@ import pyarrow.parquet as pq
 from scipy.signal import fftconvolve
 from scipy.stats import binom, nchypergeom_fisher, norm
 
-from farkle.analysis.stage_state import (
-    CompletionState,
-    stage_done_path,
-    stage_is_up_to_date,
-    write_stage_done,
-)
 from farkle.config import AppConfig, ArtifactScope
 from farkle.simulation.simulation import simulate_many_games_from_seeds
-from farkle.simulation.strategies import parse_strategy_for_df, parse_strategy_identifier
+from farkle.simulation.strategies import parse_strategy_identifier
 from farkle.utils.artifact_contract import (
     load_artifact_sidecar,
     make_artifact_sidecar,
@@ -40,6 +34,12 @@ from farkle.utils.artifacts import (
     write_parquet_artifact_atomic,
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_seed
+from farkle.utils.stage_completion import (
+    CompletionState,
+    stage_done_path,
+    stage_is_up_to_date,
+    write_stage_done,
+)
 
 SCORE_TEST_ID: Final = "independent_two_proportion_score_v1"
 POWER_METHOD_ID: Final = "conditional_exact_power_for_score_rejection_v1"
@@ -119,15 +119,11 @@ def _rejection_boundaries(total: int, nobs: int, alpha: float) -> tuple[int, int
     upper = max(support_low, math.floor((total + threshold) / 2.0) + 1)
     while lower >= support_low and not _score_rejects(lower, nobs, total - lower, alpha):
         lower -= 1
-    while lower + 1 <= support_high and _score_rejects(
-        lower + 1, nobs, total - lower - 1, alpha
-    ):
+    while lower + 1 <= support_high and _score_rejects(lower + 1, nobs, total - lower - 1, alpha):
         lower += 1
     while upper <= support_high and not _score_rejects(upper, nobs, total - upper, alpha):
         upper += 1
-    while upper - 1 >= support_low and _score_rejects(
-        upper - 1, nobs, total - upper + 1, alpha
-    ):
+    while upper - 1 >= support_low and _score_rejects(upper - 1, nobs, total - upper + 1, alpha):
         upper -= 1
     return lower, upper
 
@@ -298,7 +294,7 @@ def _minimum_block_games(
                 alpha_per_pair=alpha_per_pair,
             )
             >= target_power
-    )
+        )
 
     upper = 1
     while not asymptotically_sufficient(upper):
@@ -584,9 +580,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     cap = cfg.head2head.total_game_cap
     blocked = cap is not None and total_games > cap
     planning_state = CompletionState.COMPLETE_VALID
-    execution_state = (
-        CompletionState.BLOCKED_BY_CAP if blocked else CompletionState.NOT_STARTED
-    )
+    execution_state = CompletionState.BLOCKED_BY_CAP if blocked else CompletionState.NOT_STARTED
     power_grid = _power_grid(
         cfg,
         block_games=block_games,
@@ -765,12 +759,10 @@ def _simulate_block(
     strategy1 = parse_strategy_identifier(
         block["seat1_strategy"],
         manifest=manifest,
-        parse_legacy=parse_strategy_for_df,
     )
     strategy2 = parse_strategy_identifier(
         block["seat2_strategy"],
         manifest=manifest,
-        parse_legacy=parse_strategy_for_df,
     )
     games_required = int(block["games_required"])
     wins_seat1 = 0

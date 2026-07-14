@@ -120,8 +120,7 @@ def test_collect_diagnostics_streaming_compact_caps_matchups_and_logs_progress(
     assert not diagnostics.empty
     assert progress_logger.calls
     assert any(
-        record.message == "rng-diagnostics matchup grouping capped"
-        for record in caplog.records
+        record.message == "rng-diagnostics matchup grouping capped" for record in caplog.records
     )
 
 

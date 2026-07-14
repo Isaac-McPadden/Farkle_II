@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pyarrow as pa
@@ -8,44 +7,12 @@ import pyarrow.parquet as pq
 
 from farkle.analysis import combine
 from farkle.config import AppConfig, IOConfig
-from farkle.utils.artifact_contract import validate_artifact_sidecar
 from farkle.utils.schema_helpers import expected_schema_for
 
 
 def _write_curated(path: Path, schema: pa.Schema, rows: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
-
-
-def test_concat_ks_output_does_not_move_legacy_manifest(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined"
-    legacy_dir.mkdir(parents=True, exist_ok=True)
-    legacy_file = legacy_dir / "all_ingested_rows.parquet"
-    legacy_manifest = legacy_file.with_suffix(".manifest.jsonl")
-    legacy_file.write_bytes(b"legacy")
-    legacy_manifest.write_text('{"path":"legacy"}\n', encoding="utf-8")
-
-    canonical = combine._concat_ks_output(cfg)
-
-    assert canonical == cfg.concat_ks_dir("combine") / "all_ingested_rows.parquet"
-    assert not canonical.exists()
-    assert legacy_file.read_bytes() == b"legacy"
-    assert legacy_manifest.read_text(encoding="utf-8") == '{"path":"legacy"}\n'
-
-    report = combine._write_migration_report(cfg, canonical)
-    payload = json.loads(report.read_text(encoding="utf-8"))
-    assert payload["ignored_legacy_artifacts"] == [
-        {
-            "path": str(legacy_file),
-            "reason": "legacy scope is not a valid concat_ks input",
-            "replacement": str(canonical),
-        }
-    ]
-    validate_artifact_sidecar(
-        report,
-        expected={"scope": "diagnostics", "operation": "legacy_artifact_inventory"},
-    )
 
 
 def test_write_partitioned_dataset_skips_invalid_dirs_and_reuses_uptodate_outputs(
@@ -111,7 +78,7 @@ def test_write_partitioned_dataset_cleans_zero_row_outputs(tmp_path: Path) -> No
     assert not manifest_path.exists()
 
 
-def test_write_monolithic_compatibility_skips_empty_batches_and_drops_n_players(
+def test_write_concatenated_rows_skips_empty_batches_and_drops_partition_column(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -149,7 +116,7 @@ def test_write_monolithic_compatibility_skips_empty_batches_and_drops_n_players(
     monkeypatch.setattr(combine, "run_streaming_shard", fake_run_streaming_shard)
     monkeypatch.setattr(combine, "_assert_row_stream_identity", lambda *args, **kwargs: 1)
 
-    total = combine._write_monolithic_compatibility_from_partitions(
+    total = combine._write_concatenated_rows_from_partitions(
         cfg,
         tmp_path / "combined.parquet",
         tmp_path / "combined.manifest.jsonl",

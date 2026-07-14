@@ -28,8 +28,8 @@ from farkle.utils.manifest import (
     EVENT_RUN_END,
     EVENT_RUN_START,
     append_manifest_event,
-    ensure_manifest_v2,
     make_run_id,
+    validate_manifest_contract,
 )
 from farkle.utils.parallel import (
     StageParallelPolicy,
@@ -257,7 +257,7 @@ def run_pipeline(
     manifest_path = pair_root / "two_seed_pipeline_manifest.jsonl"
     health_path = pair_root / "pipeline_health.json"
     run_id = make_run_id(f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}")
-    ensure_manifest_v2(manifest_path)
+    validate_manifest_contract(manifest_path)
     policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
     append_manifest_event(
         manifest_path,

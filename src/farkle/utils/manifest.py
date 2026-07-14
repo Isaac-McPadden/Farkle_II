@@ -62,9 +62,9 @@ __all__ = [
     "append_manifest_event",
     "append_manifest_line",
     "append_manifest_many",
-    "ensure_manifest_v2",
     "iter_manifest",
     "make_run_id",
+    "validate_manifest_contract",
 ]
 
 
@@ -92,7 +92,6 @@ def _open_append_fd(path: os.PathLike[str] | str) -> int:
     return os.open(os.fspath(path), flags, 0o644)
 
 
-
 if sys.platform == "win32":
 
     def _lock_fd(fd: int) -> None:
@@ -105,7 +104,6 @@ if sys.platform == "win32":
             except OSError:
                 time.sleep(_WINDOWS_LOCK_RETRY_S)
 
-
     def _unlock_fd(fd: int) -> None:
         """Release an exclusive lock for *fd*."""
         os.lseek(fd, _WINDOWS_LOCK_OFFSET, os.SEEK_SET)
@@ -117,7 +115,6 @@ else:
     def _lock_fd(fd: int) -> None:
         """Acquire an exclusive lock for *fd* (blocks until available)."""
         fcntl.flock(fd, fcntl.LOCK_EX)  # type: ignore[attr-defined]
-
 
     def _unlock_fd(fd: int) -> None:
         """Release an exclusive lock for *fd*."""
@@ -248,19 +245,20 @@ def _manifest_lines_are_v2(path: Path) -> bool:
         return False
 
 
-def ensure_manifest_v2(manifest_path: os.PathLike[str] | str) -> Path | None:
-    """Rotate a legacy manifest aside before appending v2 event records."""
+def validate_manifest_contract(manifest_path: os.PathLike[str] | str) -> None:
+    """Reject an incompatible existing manifest without modifying it.
+
+    A missing path is valid because the next append creates a new manifest.
+    Existing data must already use the current schema; callers may inventory an
+    incompatible path through the migration audit, but cannot reinterpret it.
+    """
 
     path = Path(manifest_path)
-    if not path.exists() or _manifest_lines_are_v2(path):
-        return None
-
-    rotated = path.with_name(f"{path.stem}.pre_v2{path.suffix}")
-    rotated.parent.mkdir(parents=True, exist_ok=True)
-    if rotated.exists():
-        rotated.unlink()
-    path.replace(rotated)
-    return rotated
+    if path.exists() and not _manifest_lines_are_v2(path):
+        raise ValueError(
+            f"Manifest {path} uses a retired or invalid schema; preserve it for "
+            "inspection and select a new canonical manifest path"
+        )
 
 
 def append_manifest_event(

@@ -15,7 +15,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NotRequired, TypeAlias, TypedDict
+from typing import TYPE_CHECKING, Any, Final, Literal, NotRequired, TypeAlias, TypedDict, cast
 
 from farkle.config import ArtifactScope, compute_config_sha
 
@@ -237,7 +237,9 @@ def make_artifact_sidecar(
         baseline=baseline,
         weighted_quantity=weighted_quantity,
         k_aggregation_method=k_aggregation_method,
-        k_weights=None if k_weights is None else {str(k): float(v) for k, v in sorted(k_weights.items())},
+        k_weights=(
+            None if k_weights is None else {str(k): float(v) for k, v in sorted(k_weights.items())}
+        ),
         support_count_role=support_count_role,
         uncertainty_method=uncertainty_method,
         replication_unit=replication_unit,
@@ -256,9 +258,7 @@ def make_artifact_sidecar(
     )
 
 
-def _default_method_contract(
-    *, producer: str, operation: str, conditioning: str
-) -> MethodContract:
+def _default_method_contract(*, producer: str, operation: str, conditioning: str) -> MethodContract:
     """Return the narrow tagged method contract implied by canonical metadata."""
 
     normalized_producer = producer.lower()
@@ -277,7 +277,7 @@ def _default_method_contract(
         kind = "conditional_metrics"
     else:
         kind = "operation"
-    return {"kind": kind, "procedure": operation}  # type: ignore[return-value]
+    return cast(MethodContract, {"kind": kind, "procedure": operation})
 
 
 def _is_sha256(value: str) -> bool:
@@ -356,7 +356,10 @@ def _validate_sidecar_fields(metadata: ArtifactSidecar) -> None:
         if not metadata.k_weights:
             raise ArtifactContractError("declared_mapping requires non-empty k_weights")
         weight_sum = sum(metadata.k_weights.values())
-        if any(weight <= 0 for weight in metadata.k_weights.values()) or abs(weight_sum - 1.0) > 1e-12:
+        if (
+            any(weight <= 0 for weight in metadata.k_weights.values())
+            or abs(weight_sum - 1.0) > 1e-12
+        ):
             raise ArtifactContractError("declared k_weights must be positive and sum to one")
     elif metadata.k_weights is not None:
         raise ArtifactContractError(

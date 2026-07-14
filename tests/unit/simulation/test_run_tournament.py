@@ -68,11 +68,11 @@ def fast_helpers(monkeypatch):
     ],
 )
 def test_run_tournament_invalid_player_counts(n_players: int, pattern: str) -> None:
-    cfg = rt.TournamentConfig()
+    cfg = rt.TournamentConfig(n_players=n_players)
     cfg.num_shuffles = 1
 
     with pytest.raises(ValueError, match=pattern):
-        rt.run_tournament(config=cfg, n_players=n_players)
+        rt.run_tournament(config=cfg)
 
 
 def test_init_worker_rejects_bad_player_counts(monkeypatch) -> None:

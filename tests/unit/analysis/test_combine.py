@@ -80,7 +80,7 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
 
     # run combine
     combine.run(cfg)
-    out = cfg.combine_combined_dir() / "all_ingested_rows.parquet"
+    out = cfg.curated_parquet
     pf = pq.ParquetFile(out)
     schema = pq.read_schema(out)
 
@@ -125,8 +125,8 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
     ]
 
     # Invariants: atomic writer leaves only finalized files.
-    assert not list(cfg.combine_combined_dir().glob("*.tmp"))
-    assert not list(cfg.combine_combined_dir().glob("*.partial"))
+    assert not list(cfg.concat_ks_dir("combine").glob("*.tmp"))
+    assert not list(cfg.concat_ks_dir("combine").glob("*.partial"))
 
     log = next(rec for rec in capinfo.records if rec.message == "Combine: parquet written")
     assert getattr(log, "stage", None) == "combine"
@@ -177,7 +177,7 @@ def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeyp
     input_path = cfg.ingested_rows_curated(1)
     _write_curated(input_path, schema, [{"winner": "P1"}])
 
-    out_dir = cfg.combine_combined_dir()
+    out_dir = cfg.concat_ks_dir("combine")
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
     pq.write_table(pa.Table.from_pylist([{"winner": "P1"}], schema=schema), out)
@@ -205,7 +205,7 @@ def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeyp
     input_path = cfg.ingested_rows_curated(1)
     _write_curated(input_path, schema, [])
 
-    out_dir = cfg.combine_combined_dir()
+    out_dir = cfg.concat_ks_dir("combine")
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
     out.write_text("stale")
@@ -348,4 +348,4 @@ def test_combine_rerun_replaces_partition_and_combined_manifests(tmp_results_dir
 
     assert len([line for line in partition_lines if line.strip()]) == 1
     assert len([line for line in combined_lines if line.strip()]) == 1
-    check_pre_metrics(cfg.curated_dataset, winner_col="winner_seat")
+    check_pre_metrics(cfg.curated_parquet, winner_col="winner_seat")

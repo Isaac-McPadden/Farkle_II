@@ -205,17 +205,9 @@ def test_seat_adjusted_inference_holm_and_decision_classes(tmp_path: Path) -> No
     root_diagnostics = pq.read_table(artifacts.root_pairwise_diagnostics).to_pandas()
     assert len(root_diagnostics) == 6
     assert set(root_diagnostics["root_seed"]) == {11, 22}
-    assert set(root_diagnostics["inference_role"]) == {
-        "fixed_root_diagnostic_not_root_population"
-    }
-    assert (
-        root_diagnostics["ordinary_d_low"]
-        <= root_diagnostics["d_ab"]
-    ).all()
-    assert (
-        root_diagnostics["d_ab"]
-        <= root_diagnostics["ordinary_d_high"]
-    ).all()
+    assert set(root_diagnostics["inference_role"]) == {"fixed_root_diagnostic_not_root_population"}
+    assert (root_diagnostics["ordinary_d_low"] <= root_diagnostics["d_ab"]).all()
+    assert (root_diagnostics["d_ab"] <= root_diagnostics["ordinary_d_high"]).all()
     agreement = pq.read_table(artifacts.root_agreement).to_pandas()
     assert len(agreement) == 3
     assert agreement["agreement_available"].all()

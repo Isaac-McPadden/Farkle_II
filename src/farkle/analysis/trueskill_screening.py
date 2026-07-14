@@ -15,7 +15,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import trueskill
 
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
@@ -23,8 +22,8 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
-from farkle.utils.parallel import resolve_mp_context
-from farkle.utils.stage_io import resolve_worker_count
+from farkle.utils.parallel import normalize_n_jobs, resolve_mp_context
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 _HOLDOUT_FRACTION: Final = 0.2
 
@@ -392,11 +391,7 @@ def build_screening_diagnostics(
         sidecar_artifacts=[output],
     ):
         return output
-    worker_count = resolve_worker_count(
-        cfg.analysis.n_jobs,
-        cfg.sim.n_jobs,
-        item_count=len(eligible),
-    )
+    worker_count = min(normalize_n_jobs(cfg.analysis.n_jobs), len(eligible))
     if worker_count > 1:
         context = resolve_mp_context(cfg.analysis.mp_start_method or cfg.sim.mp_start_method)
         with ProcessPoolExecutor(max_workers=worker_count, mp_context=context) as executor:

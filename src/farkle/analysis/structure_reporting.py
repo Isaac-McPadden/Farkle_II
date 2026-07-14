@@ -10,7 +10,6 @@ import numpy as np
 import pandas as pd
 import pyarrow.parquet as pq
 
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     ArtifactSidecar,
@@ -19,6 +18,7 @@ from farkle.utils.artifact_contract import (
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_json_artifact_atomic
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 _PERFORMANCE_OPERATIONS: Final = {"equal_k_mean", "declared_k_weighted_mean"}
 
@@ -329,7 +329,14 @@ def run(
 ) -> None:
     """Build JSON, Markdown, and plot outputs from compatible canonical artifacts."""
 
+    from farkle.analysis.migration_audit import run as run_migration_audit
+
     roots = _roots(cfg)
+    migration_path = run_migration_audit(cfg)
+    migration, _ = _read_json(
+        migration_path,
+        operation="inventory_ignored_on_disk_artifacts",
+    )
     family_manifest_path = cfg.h2h_candidate_family_manifest_path()
     family_membership_path = cfg.h2h_candidate_family_path()
     agreement_path = cfg.structure_agreement_summary_path()
@@ -382,6 +389,7 @@ def run(
         cycles_path,
         root_h2h_path,
         performance_path,
+        migration_path,
         *per_k_sources,
     ]
     tournament_stability: dict[str, Any]
@@ -518,6 +526,11 @@ def run(
             "root_specific_stability": agreement["root_specific_h2h_stability"],
         },
         "tournament_root_stability": tournament_stability,
+        "migration": {
+            "report": str(migration_path),
+            "ignored_artifact_count": migration["ignored_artifact_count"],
+            "artifacts_deleted": migration["artifacts_deleted"],
+        },
         "artifact_sources": [str(path) for path in sources],
     }
     report["claim_language"] = _claim_lines(report)

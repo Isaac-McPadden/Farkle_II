@@ -5,17 +5,14 @@
 io:
   results_dir_prefix:    # Path|str: prefix under data/ for per-N run folders
   analysis_subdir:    # str: analysis outputs subdirectory under results_root
-  meta_analysis_dir:    # Path|str|None: optional shared directory for per-seed summaries
-  interseed_input_dir:    # Path|str|None: optional upstream interseed analysis root
-  interseed_input_layout:    # dict[str,str]|None: stage layout when using interseed_input_dir
 
 sim:
   n_players_list:    # list[int]: table sizes to simulate
-  seed:    # int: legacy primary RNG seed (results_root uses seed suffix)
+  seed:    # int: active root RNG seed (results_root uses root suffix)
   seed_list:    # list[int]|None: explicit seeds (len 1 single-seed, len 2 two-seed)
   expanded_metrics:    # bool: write expanded metrics parquet
   row_dir:    # Path|str|None: relative folder for row dumps; blank skips write
-  per_n:    # dict[int, SimConfig]: per-table overrides mirroring sim options
+  per_n: {}    # dict[int, SimConfig]: per-table overrides mirroring sim options
   n_jobs:    # int|None: parallel workers for simulation
   mp_start_method:    # str|None: multiprocessing start method for simulation executors
   desired_sec_per_chunk:    # int: target seconds per work chunk
@@ -50,14 +47,10 @@ ingest:
 combine:
   max_players:    # int: maximum table size to combine
 
-metrics:
-  seat_range:    # list[int] or tuple[int,int]: seat indices included in metrics
-
 trueskill:
   beta:    # float: performance variability parameter
   tau:    # float: dynamics factor between runs
   draw_probability:    # float: draw probability
-  k_weights:    # dict[int, float]|None: optional weights per player count for aggregation
 
 head2head:
   n_jobs:

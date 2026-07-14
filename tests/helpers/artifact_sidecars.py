@@ -45,9 +45,7 @@ def sidecar_metadata(path: Path, *, scope: str = "concat_ks") -> ArtifactSidecar
     )
 
 
-def write_parquet_test_artifact(
-    table: pa.Table, path: Path, *, scope: str = "concat_ks"
-) -> None:
+def write_parquet_test_artifact(table: pa.Table, path: Path, *, scope: str = "concat_ks") -> None:
     """Write a test Parquet with a compatible adjacent sidecar."""
 
     write_parquet_artifact_atomic(table, path, sidecar=sidecar_metadata(path, scope=scope))

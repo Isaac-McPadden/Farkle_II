@@ -20,7 +20,6 @@ class SeedRunContext:
     config: AppConfig
     results_root: Path
     analysis_root: Path
-    meta_analysis_dir: Path | None
     active_config_path: Path
 
     @classmethod
@@ -38,9 +37,6 @@ class SeedRunContext:
             config=cfg,
             results_root=cfg.results_root,
             analysis_root=cfg.analysis_dir,
-            meta_analysis_dir=(
-                cfg.meta_analysis_dir if cfg.io.meta_analysis_dir is not None else None
-            ),
             active_config_path=cfg.results_root / "active_config.yaml",
         )
 
@@ -50,8 +46,7 @@ class RunContextConfig(AppConfig):
     """Config wrapper with run-specific path overrides."""
 
     _analysis_root_override: Path | None = field(default=None, init=False, repr=False)
-    _interseed_input_dir_override: Path | None = field(default=None, init=False, repr=False)
-    _interseed_input_layout_override: StageLayout | Mapping[str, str] | None = field(
+    _root_input_layout_override: StageLayout | Mapping[str, str] | None = field(
         default=None, init=False, repr=False
     )
 
@@ -61,8 +56,7 @@ class RunContextConfig(AppConfig):
         base: AppConfig,
         *,
         analysis_root: Path | None = None,
-        interseed_input_dir: Path | None = None,
-        interseed_input_layout: StageLayout | Mapping[str, str] | None = None,
+        root_input_layout: StageLayout | Mapping[str, str] | None = None,
         stage_layout: StageLayout | None = None,
     ) -> "RunContextConfig":
         """Clone a base config with run-specific path overrides.
@@ -70,8 +64,7 @@ class RunContextConfig(AppConfig):
         Args:
             base: Source config to copy.
             analysis_root: Optional override for the analysis output directory.
-            interseed_input_dir: Optional override for interseed input discovery.
-            interseed_input_layout: Optional override for interseed stage folders.
+            root_input_layout: Stage folders owned by each source root.
             stage_layout: Optional replacement stage layout for the cloned config.
 
         Returns:
@@ -84,8 +77,7 @@ class RunContextConfig(AppConfig):
         run_cfg.config_sha = base.config_sha
         run_cfg._stage_layout = base._stage_layout
         run_cfg._analysis_root_override = analysis_root
-        run_cfg._interseed_input_dir_override = interseed_input_dir
-        run_cfg._interseed_input_layout_override = interseed_input_layout
+        run_cfg._root_input_layout_override = root_input_layout
         if stage_layout is not None:
             run_cfg.set_stage_layout(cast(StageLayout, stage_layout))
         return run_cfg
@@ -101,31 +93,18 @@ class RunContextConfig(AppConfig):
             return self._analysis_root_override
         return super().analysis_dir
 
-    @property
-    def interseed_input_dir(self) -> Path | None:
-        """Return the interseed input directory, honoring any run-specific override.
-
-        Returns:
-            Path used as the root for interseed inputs, or ``None`` when unset.
-        """
-        if self._interseed_input_dir_override is not None:
-            return self._interseed_input_dir_override
-        return super().interseed_input_dir
-
-    def _interseed_input_folder(self, key: str | None) -> str | None:
-        """Resolve the folder name for one interseed stage key.
+    def root_input_stage_folder(self, key: str) -> str | None:
+        """Resolve the canonical folder name for a root-owned stage.
 
         Args:
-            key: Stage key whose folder mapping should be resolved.
+            key: Root-stage key whose folder mapping should be resolved.
 
         Returns:
             Folder name for the stage key, or ``None`` when no mapping is available.
         """
-        if key is None:
-            return None
-        layout = self._interseed_input_layout_override
+        layout = self._root_input_layout_override
         if layout is None:
-            return super()._interseed_input_folder(key)
+            return super().root_input_stage_folder(key)
         if isinstance(layout, Mapping):
             folder = layout.get(key)
             return str(folder) if folder is not None else None
@@ -174,8 +153,7 @@ class RootPairRunContext:
         run_cfg = RunContextConfig.from_base(
             pair_base,
             analysis_root=pair_analysis_root,
-            interseed_input_dir=first.analysis_root,
-            interseed_input_layout=input_layout_override,
+            root_input_layout=input_layout_override,
             stage_layout=resolve_root_pair_stage_layout(pair_base),
         )
         return cls(

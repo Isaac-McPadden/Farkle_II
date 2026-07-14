@@ -71,18 +71,14 @@ def test_custom_grid_size():
 
 def test_limited_consider_opts_grid_and_size():
     """Grid size and experiment_size with restricted consider_* options."""
-    strategies, _ = generate_strategy_grid(
-        consider_score_opts=[False], consider_dice_opts=[False]
-    )
+    strategies, _ = generate_strategy_grid(consider_score_opts=[False], consider_dice_opts=[False])
     assert len(strategies) == experiment_size(
         consider_score_opts=[False], consider_dice_opts=[False]
     )  # type: ignore[arg-type]
 
 
 def test_consider_true_true_options():
-    strategies, _ = generate_strategy_grid(
-        consider_score_opts=[True], consider_dice_opts=[True]
-    )
+    strategies, _ = generate_strategy_grid(consider_score_opts=[True], consider_dice_opts=[True])
     assert len(strategies) == experiment_size(
         consider_score_opts=[True], consider_dice_opts=[True]
     )  # type: ignore[arg-type]

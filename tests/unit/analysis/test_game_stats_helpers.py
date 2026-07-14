@@ -83,52 +83,6 @@ def test_strategy_conversion_helpers(tmp_path: Path) -> None:
     assert pd.isna(coerced.loc[2, "strategy"])
 
 
-def test_aggregation_helpers_and_weighted_stats() -> None:
-    aliases = {
-        "game-count": "game-count",
-        "GameCount": "game-count",
-        "count": "game-count",
-        "equal_k": "equal-k",
-        "equal": "equal-k",
-        "config-provided": "config",
-        "custom": "config",
-    }
-    for raw, expected in aliases.items():
-        assert game_stats._normalize_k_aggregation_method(raw) == expected
-
-    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
-        game_stats._normalize_k_aggregation_method("bad")
-
-    players = pd.Series([2, 2, 3], dtype="int64")
-    w_count = game_stats._k_aggregation_method_for_rows(players, aggregation_method="game-count", weights_by_k={})
-    assert w_count.tolist() == [1.0, 1.0, 1.0]
-
-    w_equal = game_stats._k_aggregation_method_for_rows(players, aggregation_method="equal-k", weights_by_k={})
-    assert w_equal.tolist() == [0.5, 0.5, 1.0]
-
-    w_config = game_stats._k_aggregation_method_for_rows(
-        players,
-        aggregation_method="config",
-        weights_by_k={2: 0.4, 3: 0.6},
-    )
-    assert w_config.tolist() == [0.2, 0.2, 0.6]
-
-    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
-        game_stats._k_aggregation_method_for_rows(players, aggregation_method="oops", weights_by_k={})
-
-    assert np.isnan(game_stats._weighted_quantile(np.array([]), np.array([]), 0.5))
-    assert game_stats._weighted_quantile(np.array([7.0]), np.array([1.0]), 0.5) == 7.0
-    assert game_stats._weighted_quantile(np.array([1.0, 10.0]), np.array([1.0, 9.0]), 0.5) == 10.0
-    assert np.isnan(game_stats._weighted_quantile(np.array([1.0]), np.array([0.0]), 0.5))
-
-    values = np.array([1.0, 4.0, 7.0])
-    weights = np.array([1.0, 2.0, 1.0])
-    assert game_stats._weighted_mean(values, weights) == pytest.approx(4.0)
-    assert game_stats._weighted_std(values, weights) == pytest.approx(np.sqrt(4.5))
-    assert np.isnan(game_stats._weighted_mean(values, np.zeros(3)))
-    assert np.isnan(game_stats._weighted_std(values, np.zeros(3)))
-
-
 def test_integer_and_stat_helpers_boundaries() -> None:
     scores = np.array([[5.0, 1.0], [8.0, np.nan], [np.nan, np.nan]])
     second = game_stats._second_highest(scores)
@@ -169,7 +123,9 @@ def test_integer_and_stat_helpers_boundaries() -> None:
         game_stats._downcast_integer_stats(with_nan, columns=("observations",))
 
 
-def test_margin_and_round_helpers_with_edge_cases(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
+def test_margin_and_round_helpers_with_edge_cases(
+    caplog: pytest.LogCaptureFixture, tmp_path: Path
+) -> None:
     scores = np.array([[10.0, 6.0], [5.0, np.nan], [np.nan, np.nan]])
     with pytest.warns(RuntimeWarning, match="All-NaN slice encountered"):
         margin, spread = game_stats._compute_margin_arrays(scores)
@@ -259,10 +215,12 @@ def test_rare_event_helpers_and_threshold_resolution(tmp_path: Path) -> None:
     assert set(pd.read_parquet(detail_path)["summary_level"]) == {"game"}
     assert set(pd.read_parquet(summary_path)["summary_level"]) >= {"strategy", "n_players"}
 
-    strat_sums, global_sums, rows_available, max_flag, max_obs = game_stats._collect_rare_event_counts(
-        per_n_inputs,
-        thresholds=(25,),
-        target_score=150,
+    strat_sums, global_sums, rows_available, max_flag, max_obs = (
+        game_stats._collect_rare_event_counts(
+            per_n_inputs,
+            thresholds=(25,),
+            target_score=150,
+        )
     )
     assert rows_available > 0
     assert max_flag <= max_obs
@@ -388,32 +346,10 @@ def test_additional_branch_coverage_paths(caplog: pytest.LogCaptureFixture, tmp_
     no_col = pd.DataFrame({"x": [1]})
     pd.testing.assert_frame_equal(game_stats._coerce_strategy_dtype(no_col, pa.int64()), no_col)
 
-    # aggregation config missing keys warning
-    with caplog.at_level("WARNING"):
-        weights = game_stats._k_aggregation_method_for_rows(
-            pd.Series([2, 4]), aggregation_method="config", weights_by_k={2: 1.0}
-        )
-    assert weights.tolist() == [1.0, 0.0]
-    assert "Missing aggregation weights" in caplog.text
-
-    assert game_stats._weighted_quantile(np.array([3.0, 6.0]), np.array([1.0, 1.0]), 0.0) == 3.0
-    assert game_stats._weighted_quantile(np.array([3.0, 6.0]), np.array([1.0, 1.0]), 1.0) == 6.0
-
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
     rows = _fixture_rows_two_players()
     per_n = cfg.ingested_rows_curated(2)
     _write_rows(per_n, rows)
-
-    combined = game_stats._combined_strategy_stats([(2, per_n)], aggregation_method="equal-k", weights_by_k={})
-    assert not combined.empty
-    combined_margin = game_stats._combined_margin_stats(
-        [(2, per_n)], thresholds=(10, 100), aggregation_method="equal-k", weights_by_k={}
-    )
-    assert not combined_margin.empty
-
-    # weights zero -> rows filtered out (weight_total <= 0)
-    combined_zero = game_stats._combined_strategy_stats([(2, per_n)], aggregation_method="config", weights_by_k={})
-    assert combined_zero.empty
 
     with caplog.at_level("WARNING"):
         assert game_stats._per_strategy_stats([(2, no_strategy)]).empty
@@ -427,15 +363,37 @@ def test_additional_branch_coverage_paths(caplog: pytest.LogCaptureFixture, tmp_
     assert margin_empty.empty
     assert "missing seat score columns" in caplog.text
 
-    assert game_stats._rare_event_flags(
-        [(2, no_score)], thresholds=(10,), target_score=100, output_path=tmp_path / "x.parquet", codec=cfg.parquet_codec
-    ) == 0
-    assert game_stats._rare_event_details(
-        [(2, no_score)], thresholds=(10,), target_score=100, output_path=tmp_path / "y.parquet", codec=cfg.parquet_codec
-    ) == 0
-    assert game_stats._rare_event_summary(
-        [(2, no_score)], thresholds=(10,), target_score=100, output_path=tmp_path / "z.parquet", codec=cfg.parquet_codec
-    ) == 0
+    assert (
+        game_stats._rare_event_flags(
+            [(2, no_score)],
+            thresholds=(10,),
+            target_score=100,
+            output_path=tmp_path / "x.parquet",
+            codec=cfg.parquet_codec,
+        )
+        == 0
+    )
+    assert (
+        game_stats._rare_event_details(
+            [(2, no_score)],
+            thresholds=(10,),
+            target_score=100,
+            output_path=tmp_path / "y.parquet",
+            codec=cfg.parquet_codec,
+        )
+        == 0
+    )
+    assert (
+        game_stats._rare_event_summary(
+            [(2, no_score)],
+            thresholds=(10,),
+            target_score=100,
+            output_path=tmp_path / "z.parquet",
+            codec=cfg.parquet_codec,
+        )
+        == 0
+    )
+
 
 def test_low_level_numeric_edge_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     empty_scores = np.empty((0, 0))
@@ -478,7 +436,8 @@ def test_low_level_numeric_edge_branches(monkeypatch: pytest.MonkeyPatch) -> Non
     assert not out.empty
     assert set(out["n_players"].astype(int).tolist()) == {1, 2}
 
-def test_margin_aggregation_and_strategy_empty_paths(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
+
+def test_strategy_margin_empty_paths(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
     AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
 
     no_strategy = tmp_path / "m_no_strategy.parquet"
@@ -498,23 +457,10 @@ def test_margin_aggregation_and_strategy_empty_paths(caplog: pytest.LogCaptureFi
         ),
     )
 
-    with caplog.at_level("WARNING"):
-        combined_missing_strategy = game_stats._combined_margin_stats(
-            [(2, no_strategy)], thresholds=(10,), aggregation_method="equal-k", weights_by_k={}
-        )
-        combined_missing_score = game_stats._combined_margin_stats(
-            [(2, no_score)], thresholds=(10,), aggregation_method="equal-k", weights_by_k={}
-        )
-    assert combined_missing_strategy.empty
-    assert combined_missing_score.empty
-
     with pytest.warns(RuntimeWarning, match="All-NaN slice encountered"):
-        combined_nan = game_stats._combined_margin_stats(
-            [(2, nan_scores)], thresholds=(10,), aggregation_method="equal-k", weights_by_k={}
+        per_strategy_nan = game_stats._per_strategy_margin_stats(
+            [(2, nan_scores)], thresholds=(10,)
         )
-    with pytest.warns(RuntimeWarning, match="All-NaN slice encountered"):
-        per_strategy_nan = game_stats._per_strategy_margin_stats([(2, nan_scores)], thresholds=(10,))
-    assert combined_nan.empty
     assert per_strategy_nan.empty
 
 
@@ -536,7 +482,11 @@ def test_binned_margin_summary_parity_tolerance() -> None:
     approx_p50 = game_stats._quantile_from_binned(binned, 0.5)
     approx_p90 = game_stats._quantile_from_binned(binned, 0.9)
 
-    assert game_stats._mean_std_from_binned(binned)[0] == pytest.approx(float(values.mean()), rel=0.0, abs=1e-9)
-    assert game_stats._probability_le_from_binned(binned, 1000.0) == pytest.approx(float((values <= 1000).mean()), abs=0.02)
+    assert game_stats._mean_std_from_binned(binned)[0] == pytest.approx(
+        float(values.mean()), rel=0.0, abs=1e-9
+    )
+    assert game_stats._probability_le_from_binned(binned, 1000.0) == pytest.approx(
+        float((values <= 1000).mean()), abs=0.02
+    )
     assert abs(approx_p50 - exact_p50) <= game_stats._MARGIN_BIN_WIDTH
     assert abs(approx_p90 - exact_p90) <= game_stats._MARGIN_BIN_WIDTH

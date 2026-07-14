@@ -1,31 +1,10 @@
 # src/farkle/orchestration/__init__.py
-"""Orchestration helpers for analytics pipelines."""
+"""Orchestration helpers for root and root-pair workflows."""
 
 from __future__ import annotations
 
-from . import pipeline, two_seed_pipeline
-from .pipeline import (
-    analyze_agreement,
-    analyze_all,
-    analyze_h2h,
-    analyze_hgb,
-    analyze_trueskill,
-    fingerprint,
-    is_up_to_date,
-    main,
-    write_done,
-)
+from . import two_seed_pipeline
 
 __all__ = [
-    "pipeline",
     "two_seed_pipeline",
-    "main",
-    "analyze_all",
-    "analyze_trueskill",
-    "analyze_h2h",
-    "analyze_hgb",
-    "analyze_agreement",
-    "fingerprint",
-    "write_done",
-    "is_up_to_date",
 ]

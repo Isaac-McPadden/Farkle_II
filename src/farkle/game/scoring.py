@@ -595,8 +595,7 @@ def default_score(
     dice_threshold: int = ...,
     favor_dice_or_score: Union[FavorDiceOrScore, bool] = ...,
     return_discards: Literal[False] = ...,
-) -> Tuple[int, int, int]:
-    ...
+) -> Tuple[int, int, int]: ...
 
 
 @overload
@@ -613,8 +612,7 @@ def default_score(
     dice_threshold: int = ...,
     favor_dice_or_score: Union[FavorDiceOrScore, bool] = ...,
     return_discards: Literal[True],
-) -> Tuple[int, int, int, int, int]:
-    ...
+) -> Tuple[int, int, int, int, int]: ...
 
 
 def default_score(

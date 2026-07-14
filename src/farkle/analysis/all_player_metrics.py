@@ -10,10 +10,10 @@ from typing import Any, Final
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.manifest import iter_manifest
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.streaming_loop import run_streaming_shard
 
 _BEHAVIOR_SUFFIXES: Final[tuple[str, ...]] = (
@@ -159,7 +159,7 @@ def _update_exposure(
     if strategy_value is None or score_value is None:
         raise ValueError(
             f"{source} lacks strategy/final-score values for seat {seat}; "
-            "legacy rows cannot satisfy unconditional all-player metrics"
+            "retired row schemas cannot satisfy unconditional all-player metrics"
         )
     score = float(score_value)
     n_turns = _require_positive_int(row, f"{prefix}n_turns", source=source)

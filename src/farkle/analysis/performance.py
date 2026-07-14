@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import sqrt
 from pathlib import Path
-from typing import Final, cast
+from typing import Any, Final, cast
 
 import numpy as np
 import pandas as pd
@@ -14,7 +14,6 @@ import pyarrow.parquet as pq
 from scipy.stats import kendalltau, norm, spearmanr, t
 
 from farkle.analysis.all_player_metrics import validate_unconditional_all_player_schema
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
@@ -22,6 +21,7 @@ from farkle.utils.artifact_contract import (
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.random import RandomPurpose, coordinate_rng
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.stats import wilson_ci
 
 _INPUT_COLUMNS: Final[tuple[str, ...]] = (
@@ -377,8 +377,7 @@ def _joint_batch_resampling(
                     "root_seed": root_seed,
                     "strategy": int(strategy),
                     "control_strategy": int(control),
-                    "observed_equal_k_contrast": observed[int(strategy)]
-                    - observed[int(control)],
+                    "observed_equal_k_contrast": observed[int(strategy)] - observed[int(control)],
                     "bootstrap_contrast_mean": float(means[index]),
                     "bootstrap_contrast_sd": float(sqrt(variances[index])),
                     "bootstrap_replicates": replicates,
@@ -470,7 +469,7 @@ def _player_count_effect_diagnostics(
     indexed = {k: frame.set_index("strategy") for k, frame in estimates.items()}
     for k in required_k:
         for strategy in complete_strategies:
-            rate = float(indexed[k].loc[strategy, "win_rate"])
+            rate = float(cast(Any, indexed[k].loc[strategy, "win_rate"]))
             effect = _chance_relative_log_odds(rate, k)
             values[(k, strategy)] = effect
             row = base_row("strategy_k_chance_relative_log_odds")
@@ -543,14 +542,20 @@ def _player_count_effect_diagnostics(
                             else "boundary_win_rate_log_odds_unavailable"
                         ),
                         "log_odds_contrast": (
-                            float(left - right)
-                            if left is not None and right is not None
-                            else None
+                            float(left - right) if left is not None and right is not None else None
                         ),
                     }
                 )
                 rows.append(row)
             rank_row = base_row("pairwise_k_rank_agreement")
+            ranks_a = np.asarray(
+                [float(cast(float, values[(k_a, strategy)])) for strategy in common],
+                dtype=np.float64,
+            )
+            ranks_b = np.asarray(
+                [float(cast(float, values[(k_b, strategy)])) for strategy in common],
+                dtype=np.float64,
+            )
             rank_row.update(
                 {
                     "k_a": k_a,
@@ -559,24 +564,10 @@ def _player_count_effect_diagnostics(
                     "k_weight_b": weights[k_b],
                     "common_finite_strategy_count": len(common),
                     "spearman_rank_correlation": (
-                        float(
-                            spearmanr(
-                                [values[(k_a, strategy)] for strategy in common],
-                                [values[(k_b, strategy)] for strategy in common],
-                            ).statistic
-                        )
-                        if len(common) >= 2
-                        else None
+                        float(spearmanr(ranks_a, ranks_b).statistic) if len(common) >= 2 else None
                     ),
                     "kendall_rank_correlation": (
-                        float(
-                            kendalltau(
-                                [values[(k_a, strategy)] for strategy in common],
-                                [values[(k_b, strategy)] for strategy in common],
-                            ).statistic
-                        )
-                        if len(common) >= 2
-                        else None
+                        float(kendalltau(ranks_a, ranks_b).statistic) if len(common) >= 2 else None
                     ),
                 }
             )
@@ -608,9 +599,7 @@ def _write_frame(
         weighted_quantity="chance_adjusted_win_rate",
         k_aggregation_method=k_aggregation_method,
         k_weights=(
-            cfg.k_aggregation.k_weights
-            if k_aggregation_method == "declared_mapping"
-            else None
+            cfg.k_aggregation.k_weights if k_aggregation_method == "declared_mapping" else None
         ),
         support_count_role="raw_player_game_exposures",
         uncertainty_method=uncertainty_method,
@@ -730,9 +719,7 @@ def build_canonical_performance(cfg: AppConfig, *, force: bool = False) -> Perfo
         uncertainty_method="joint_deterministic_batch_resampling",
         k_aggregation_method="equal_k",
     )
-    diagnostic_method = (
-        "equal_k" if cfg.k_aggregation.method == "equal-k" else "declared_mapping"
-    )
+    diagnostic_method = "equal_k" if cfg.k_aggregation.method == "equal-k" else "declared_mapping"
     _write_frame(
         cfg,
         player_count_effects,

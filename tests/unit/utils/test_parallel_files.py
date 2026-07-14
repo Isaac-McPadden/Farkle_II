@@ -307,8 +307,6 @@ def test_resolve_stage_parallel_policy_nested_context() -> None:
     assert policy.arrow_threads == 1
 
 
-
-
 def test_resolve_stage_parallel_policy_nested_context_with_zero_n_jobs() -> None:
     class DummyCfg:
         n_jobs: int | None = 0
@@ -325,6 +323,7 @@ def test_resolve_stage_parallel_policy_nested_context_with_zero_n_jobs() -> None
     assert policy.native_threads_per_process == 5
     assert policy.python_threads == 5
     assert policy.arrow_threads == 1
+
 
 def test_apply_native_thread_limits(monkeypatch: MonkeyPatch) -> None:
     for key in (

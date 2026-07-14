@@ -9,7 +9,7 @@ pytest.importorskip("sklearn")
 
 from farkle.analysis import hgb_feat
 from farkle.config import AppConfig, IOConfig
-from farkle.simulation.strategies import ThresholdStrategy
+from farkle.simulation.strategies import STRATEGY_TUPLE_FIELDS, ThresholdStrategy, strategy_tuple
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
     validate_artifact_sidecar,
@@ -162,15 +162,29 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
 ) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     cfg.sim.n_players_list = [2]
-    strategies = [
-        str(ThresholdStrategy(score_threshold=score, dice_threshold=dice))
+    strategy_objects = [
+        ThresholdStrategy(score_threshold=score, dice_threshold=dice)
         for score, dice in ((200, 1), (300, 2), (400, 1), (500, 2))
     ]
+    strategy_ids = list(range(len(strategy_objects)))
+    manifest = pd.DataFrame(
+        [
+            {
+                "strategy_id": strategy_id,
+                **dict(zip(STRATEGY_TUPLE_FIELDS, strategy_tuple(strategy), strict=True)),
+            }
+            for strategy_id, strategy in zip(strategy_ids, strategy_objects, strict=True)
+        ]
+    )
+    manifest["favor_dice_or_score"] = manifest["favor_dice_or_score"].map(lambda value: value.value)
+    manifest_path = cfg.strategy_manifest_root_path()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    manifest.to_parquet(manifest_path, index=False)
     performance = pd.DataFrame(
         {
             "root_seed": [0] * 4,
             "k": [2] * 4,
-            "strategy": strategies,
+            "strategy": strategy_ids,
             "win_rate": [0.35, 0.45, 0.55, 0.65],
         }
     )
@@ -203,8 +217,8 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
     for output in outputs:
         validate_artifact_sidecar(output)
     predictions = pd.read_parquet(cfg.hgb_predictive_scores_path(2))
-    assert set(predictions["strategy"]) == set(strategies)
-    assert len(predictions) == len(strategies)
+    assert set(predictions["strategy"]) == set(strategy_ids)
+    assert len(predictions) == len(strategy_ids)
     proposals = pd.read_parquet(cfg.hgb_future_proposals_path())
     if not proposals.empty:
         assert proposals["included_in_current_analysis"].eq(False).all()

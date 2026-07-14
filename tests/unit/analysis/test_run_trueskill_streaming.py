@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 from typing import Any, Callable
 
@@ -123,56 +122,6 @@ def test_players_and_ranks_precedence(tmp_path: Path) -> None:
     ]
 
 
-def test_rate_single_pass_resumes_from_checkpoint(tmp_path: Path) -> None:
-    env = trueskill.TrueSkill()
-    table = pa.table(
-        {
-            "winner_seat": ["P1", "P2"],
-            "P1_strategy": ["A", "B"],
-            "P2_strategy": ["B", "C"],
-            "P1_rank": pa.array([0, 1], type=pa.int64()),
-            "P2_rank": pa.array([1, 0], type=pa.int64()),
-        }
-    )
-    source = tmp_path / "combined.parquet"
-    pq.write_table(table, source, row_group_size=1)
-
-    ratings_ck = tmp_path / "ratings.checkpoint.parquet"
-    rt._save_ratings_parquet(ratings_ck, {"B": env.create_rating(mu=33.0, sigma=7.0)})
-    ck_path = tmp_path / "ratings.ckpt.json"
-    rt._save_ckpt(
-        ck_path,
-        rt._TSCheckpoint(
-            source=str(source),
-            row_group=1,
-            batch_index=0,
-            games_done=3,
-            ratings_path=str(ratings_ck),
-        ),
-    )
-
-    stats, games = rt._rate_single_pass(
-        source=source,
-        env=env,
-        resume=True,
-        checkpoint_path=ck_path,
-        ratings_ckpt_path=ratings_ck,
-        batch_rows=1,
-        checkpoint_every_batches=1,
-    )
-    assert games == 4
-    assert set(stats) == {"B", "C"}
-    assert "A" not in stats
-
-    updated = json.loads(ck_path.read_text())
-    assert updated["row_group"] == 1
-    assert updated["batch_index"] == 1
-    assert updated["games_done"] == games
-
-    interim = rt._load_ratings_parquet(ratings_ck)
-    assert set(interim) == {"B", "C"}
-
-
 def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     data_dir = root / "by_k" / "2p"
@@ -217,6 +166,8 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
         batch_rows=1,
         resume=True,
         checkpoint_every_batches=1,
+        row_data_dir=str(root),
+        curated_rows_name="2p_ingested_rows.parquet",
     )
     assert player_count == "2"
     assert games == 8
@@ -231,7 +182,6 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("loader", "filename"),
     [
-        (rt._load_ckpt, "ratings.ckpt.json"),
         (rt._load_block_ckpt, "block.ckpt.json"),
     ],
 )
@@ -245,65 +195,18 @@ def test_load_ckpts_handle_missing_and_invalid(
     assert loader(path) is None
 
 
-def test_rate_block_worker_missing_curated_and_fallback(tmp_path: Path) -> None:
+def test_rate_block_worker_rejects_missing_canonical_coordinates(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     root.mkdir(parents=True, exist_ok=True)
     block = tmp_path / "results" / "2_players"
     block.mkdir(parents=True, exist_ok=True)
 
-    player_count, games = rt._rate_block_worker(
-        str(block),
-        str(root),
-        "",
-        batch_rows=1,
-        resume=False,
-        checkpoint_every_batches=1,
-    )
-
-    assert player_count == "2"
-    assert games == 0
-
-
-def test_coerce_and_seed_ratings() -> None:
-    mapping: dict[str, Any] = {
-        "A": rt.RatingStats(1.0, 2.0),
-        "B": {"mu": 3.0, "sigma": 4.0},
-        "C": (5.0, 6.0),
-        "D": [7.0, 8.0, 9.0],
-        "E": 10.0,
-    }
-    coerced = rt._coerce_ratings(mapping)
-    assert coerced["A"] == rt.RatingStats(1.0, 2.0)
-    assert coerced["B"] == rt.RatingStats(3.0, 4.0)
-    assert coerced["C"] == rt.RatingStats(5.0, 6.0)
-    assert coerced["D"] == rt.RatingStats(7.0, 8.0)
-    assert coerced["E"] == rt.RatingStats(0.0, 0.0)
-
-    env = _DummyEnv()
-    ratings = {"A": _DummyRating(0.5, 0.1)}
-    rt._ensure_seed_ratings(ratings, ["A", "B"], env)  # type: ignore[arg-type]
-    assert {"A", "B"} <= set(ratings)
-    assert isinstance(ratings["B"], _DummyRating)
-
-
-def test_rate_stream_applies_keeper_filter(tmp_path: Path) -> None:
-    env = _DummyEnv()
-    table = pa.table(
-        {
-            "winner": ["P1"],
-            "P1_strategy": ["A"],
-            "P2_strategy": ["B"],
-            "P3_strategy": ["C"],
-            "P1_rank": pa.array([0], type=pa.int64()),
-            "P2_rank": pa.array([2], type=pa.int64()),
-            "P3_rank": pa.array([5], type=pa.int64()),
-        }
-    )
-    path = tmp_path / "stream.parquet"
-    pq.write_table(table, path)
-    ratings, games = rt._rate_stream(path, 3, ["A", "C"], env, batch_size=1)  # type: ignore[arg-type]
-    assert games == 1
-    assert env.rate_calls == [[0, 1]]
-    assert set(ratings) == {"A", "C"}
-    assert ratings["A"].mu == 0.0
-    assert ratings["C"].mu == 1.0
+    with pytest.raises(ValueError, match="explicit canonical curated-row"):
+        rt._rate_block_worker(
+            str(block),
+            str(root),
+            "",
+            batch_rows=1,
+            resume=False,
+            checkpoint_every_batches=1,
+        )

@@ -7,465 +7,115 @@ import pyarrow as pa
 import pytest
 from tests.helpers.artifact_sidecars import write_parquet_test_artifact
 
-from farkle.analysis.checks import (
-    check_post_combine,
-    check_pre_metrics,
-    check_stage_artifact_families,
-)
+from farkle.analysis.checks import check_post_combine, check_pre_metrics
 from farkle.config import AppConfig, IOConfig
 from farkle.utils.schema_helpers import expected_schema_for
 
 
-def _combined_path(tmp_path: Path) -> tuple[Path, Path]:
+def _canonical_concat(tmp_path: Path, rows: list[dict[str, object]], schema: pa.Schema) -> Path:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-    data_dir = cfg.stage_dir("curate")
-    combined_dir = cfg.concat_ks_dir("combine")
-    return data_dir, combined_dir / "all_ingested_rows.parquet"
-
-
-def _write_table(path: Path, schema: pa.Schema, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    table = pa.Table.from_pylist(rows, schema=schema)
-    write_parquet_test_artifact(table, path)
-
-
-def _write_manifest(data_dir: Path, n_players: int, payload: dict[str, object] | str) -> Path:
-    manifest = data_dir / "by_k" / f"{n_players}p" / f"manifest_{n_players}p.json"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    if isinstance(payload, str):
-        manifest.write_text(payload)
-    else:
-        manifest.write_text(json.dumps(payload))
-    return manifest
-
-
-def test_check_pre_metrics_missing_winner_column(tmp_path: Path) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema([pa.field("n_rounds", pa.int16())])
-    _write_table(combined, schema, [{"n_rounds": 1}])
-    _write_manifest(data_dir, 1, {"row_count": 1})
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_pre_metrics(combined)
-
-    assert str(excinfo.value) == f"check_pre_metrics: missing 'winner' column in {combined}"
-
-
-def test_check_pre_metrics_negative_integer_column(tmp_path: Path) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema(
-        [
-            pa.field("winner", pa.string()),
-            pa.field("n_rounds", pa.int16()),
-            pa.field("bad_counts", pa.int32()),
-        ]
+    output = cfg.curated_parquet
+    write_parquet_test_artifact(
+        pa.Table.from_pylist(rows, schema=schema),
+        output,
+        scope="concat_ks",
     )
-    _write_table(
-        combined,
-        schema,
-        [{"winner": "P1", "n_rounds": 1, "bad_counts": -3}],
+    output.with_suffix(".manifest.jsonl").write_text(
+        json.dumps({"path": output.name, "rows": len(rows)}) + "\n",
+        encoding="utf-8",
     )
-    _write_manifest(data_dir, 1, {"row_count": 1})
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_pre_metrics(combined)
-
-    assert str(excinfo.value) == "check_pre_metrics: negative values present in bad_counts"
+    return output
 
 
-def test_check_pre_metrics_unreadable_manifest(tmp_path: Path) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema(
-        [
-            pa.field("winner", pa.string()),
-            pa.field("n_rounds", pa.int16()),
-            pa.field("good_counts", pa.int32()),
-        ]
+def test_check_pre_metrics_accepts_canonical_concat(tmp_path: Path) -> None:
+    output = _canonical_concat(
+        tmp_path,
+        [{"winner_seat": "P1", "n_rounds": 3}],
+        pa.schema([("winner_seat", pa.string()), ("n_rounds", pa.int16())]),
     )
-    _write_table(
-        combined,
-        schema,
-        [{"winner": "P1", "n_rounds": 1, "good_counts": 5}],
+    check_pre_metrics(output, winner_col="winner_seat")
+
+
+def test_check_pre_metrics_rejects_missing_winner(tmp_path: Path) -> None:
+    output = _canonical_concat(tmp_path, [{"n_rounds": 1}], pa.schema([("n_rounds", pa.int16())]))
+    with pytest.raises(RuntimeError, match="missing 'winner_seat' column"):
+        check_pre_metrics(output, winner_col="winner_seat")
+
+
+def test_check_pre_metrics_rejects_negative_counter(tmp_path: Path) -> None:
+    output = _canonical_concat(
+        tmp_path,
+        [{"winner_seat": "P1", "bad_count": -1}],
+        pa.schema([("winner_seat", pa.string()), ("bad_count", pa.int32())]),
     )
-    _write_manifest(data_dir, 1, "{not json")
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_pre_metrics(combined)
-
-    manifest = data_dir / "by_k" / "1p" / "manifest_1p.json"
-    assert str(excinfo.value).startswith(f"check_pre_metrics: failed to parse {manifest}:")
+    with pytest.raises(RuntimeError, match="negative values present in bad_count"):
+        check_pre_metrics(output, winner_col="winner_seat")
 
 
-def test_check_pre_metrics_manifest_row_mismatch(tmp_path: Path) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema(
-        [
-            pa.field("winner", pa.string()),
-            pa.field("n_rounds", pa.int16()),
-            pa.field("good_counts", pa.int32()),
-        ]
+def test_check_pre_metrics_rejects_manifest_mismatch(tmp_path: Path) -> None:
+    output = _canonical_concat(
+        tmp_path,
+        [{"winner_seat": "P1"}],
+        pa.schema([("winner_seat", pa.string())]),
     )
-    _write_table(
-        combined,
-        schema,
-        [
-            {"winner": "P1", "n_rounds": 1, "good_counts": 5},
-            {"winner": "P2", "n_rounds": 1, "good_counts": 6},
-        ],
+    output.with_suffix(".manifest.jsonl").write_text('{"rows":2}\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="row-count mismatch 1 != 2"):
+        check_pre_metrics(output, winner_col="winner_seat")
+
+
+def test_check_pre_metrics_rejects_missing_or_multiple_manifest_records(tmp_path: Path) -> None:
+    output = _canonical_concat(
+        tmp_path,
+        [{"winner_seat": "P1"}],
+        pa.schema([("winner_seat", pa.string())]),
     )
-    _write_manifest(data_dir, 1, {"row_count": 1})
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_pre_metrics(combined)
-
-    assert str(excinfo.value) == "check_pre_metrics: row-count mismatch 2 != 1"
-
-
-def test_check_pre_metrics_missing_manifest_files(tmp_path: Path) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema([("winner", pa.string())])
-    _write_table(combined, schema, [{"winner": "P1"}])
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_pre_metrics(combined)
-
-    assert str(excinfo.value) == f"check_pre_metrics: no manifest files found under {data_dir}"
+    manifest = output.with_suffix(".manifest.jsonl")
+    manifest.unlink()
+    with pytest.raises(RuntimeError, match="missing canonical manifest"):
+        check_pre_metrics(output, winner_col="winner_seat")
+    manifest.write_text('{"rows":1}\n{"rows":1}\n', encoding="utf-8")
+    with pytest.raises(RuntimeError, match="expected exactly one manifest record"):
+        check_pre_metrics(output, winner_col="winner_seat")
 
 
-def test_check_post_combine_missing_output(tmp_path: Path) -> None:
-    combined = tmp_path / "missing.parquet"
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_post_combine([], combined)
-
-    assert str(excinfo.value) == f"check_post_combine: missing {combined}"
-
-
-def test_check_post_combine_unreadable_output(tmp_path: Path) -> None:
-    combined = tmp_path / "bad.parquet"
-    combined.write_text("not parquet data")
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_post_combine([], combined)
-
-    assert str(excinfo.value).startswith(f"check_post_combine: unable to read {combined}:")
-
-
-def test_check_post_combine_row_count_mismatch(tmp_path: Path) -> None:
-    schema = expected_schema_for(1)
-    curated = tmp_path / "1p" / "curated.parquet"
-    _write_table(curated, schema, [{"winning_score": 100}])
-
-    combined = tmp_path / "combined.parquet"
-    _write_table(
-        combined,
-        schema,
-        [{"winning_score": 100}, {"winning_score": 200}],
+def test_check_pre_metrics_rejects_scope_mismatch(tmp_path: Path) -> None:
+    path = tmp_path / "unscoped" / "rows.parquet"
+    write_parquet_test_artifact(
+        pa.Table.from_pylist([{"winner_seat": "P1"}]),
+        path,
+        scope="concat_ks",
     )
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_post_combine([curated], combined, max_players=1)
-
-    assert str(excinfo.value) == "check_post_combine: row-count mismatch 2 != 1"
-
-
-def test_check_post_combine_schema_mismatch(tmp_path: Path) -> None:
-    schema = expected_schema_for(1)
-    curated = tmp_path / "1p" / "curated.parquet"
-    _write_table(curated, schema, [{"winning_score": 100}])
-
-    combined = tmp_path / "combined.parquet"
-    wrong_schema = pa.schema([("winner_seat", pa.string())])
-    _write_table(combined, wrong_schema, [{"winner_seat": "P1"}])
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_post_combine([curated], combined, max_players=1)
-
-    assert str(excinfo.value) == "check_post_combine: output schema mismatch"
-
-
-def test_check_post_combine_unreadable_curated_file(tmp_path: Path) -> None:
-    combined = tmp_path / "combined.parquet"
-    _write_table(combined, pa.schema([("winner", pa.string())]), [{"winner": "P1"}])
-    curated = tmp_path / "broken.parquet"
-    curated.write_text("not parquet")
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_post_combine([curated], combined, max_players=1)
-
-    assert str(excinfo.value).startswith(f"check_post_combine: unable to read {curated}:")
-
-
-def test_check_pre_metrics_passes_with_manifest(tmp_path: Path, caplog) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema([("winner", pa.string()), ("n_rounds", pa.int16())])
-    _write_table(combined, schema, [{"winner": "P1", "n_rounds": 3}])
-    _write_manifest(data_dir, 1, {"row_count": 1})
-
-    with caplog.at_level("INFO"):
-        check_pre_metrics(combined)
-
-    assert "check_pre_metrics passed" in caplog.text
-
-
-def test_check_pre_metrics_manifest_fallback(tmp_path: Path, caplog) -> None:
-    _, combined = _combined_path(tmp_path)
-    combined.parent.mkdir(parents=True, exist_ok=True)
-    schema = pa.schema([("winner", pa.string())])
-    _write_table(combined, schema, [{"winner": "P1"}])
-    manifest_path = combined.with_suffix(".manifest.jsonl")
-    manifest_path.write_text(json.dumps({"row_count": 1}))
-
-    with caplog.at_level("INFO"):
-        check_pre_metrics(combined)
-
-    assert "check_pre_metrics passed" in caplog.text
-
-
-def test_check_pre_metrics_rejects_legacy_all_k_directory(
-    tmp_path: Path,
-    caplog,
-) -> None:
-    data_dir = tmp_path / "02_combine"
-    combined = (
-        tmp_path
-        / "02_combine"
-        / "all_n_players_combined"
-        / "all_ingested_rows.parquet"
-    )
-    schema = pa.schema([("winner", pa.string())])
-    _write_table(combined, schema, [{"winner": "P1"}])
-    _write_manifest(data_dir, 1, {"row_count": 1})
-
     with pytest.raises(RuntimeError, match="scope mismatch"):
-        check_pre_metrics(combined)
+        check_pre_metrics(path, winner_col="winner_seat")
 
 
-def test_check_pre_metrics_rejects_generic_combined_directory(
-    tmp_path: Path,
-    caplog,
-) -> None:
-    analysis_root = tmp_path / "analysis"
-    combined = analysis_root / "02_combine" / "combined" / "all_ingested_rows.parquet"
-    schema = pa.schema([("winner", pa.string())])
-    _write_table(combined, schema, [{"winner": "P1"}])
-    _write_manifest(analysis_root, 1, {"row_count": 1})
-
-    with pytest.raises(RuntimeError, match="scope mismatch"):
-        check_pre_metrics(combined)
-
-
-def test_check_pre_metrics_rejects_unscoped_parent(tmp_path: Path, caplog) -> None:
-    combined_parent = tmp_path / "custom"
-    combined = combined_parent / "all_ingested_rows.parquet"
-    schema = pa.schema([("winner", pa.string())])
-    _write_table(combined, schema, [{"winner": "P1"}])
-    _write_manifest(combined_parent, 1, {"row_count": 1})
-
-    with pytest.raises(RuntimeError, match="scope mismatch"):
-        check_pre_metrics(combined)
-
-
-def test_check_pre_metrics_json_manifest_rows_key(tmp_path: Path, caplog) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema([("winner", pa.string())])
-    _write_table(combined, schema, [{"winner": "P1"}])
-    _write_manifest(data_dir, 1, {"rows": 1})
-
-    with caplog.at_level("INFO"):
-        check_pre_metrics(combined)
-
-    assert "check_pre_metrics passed" in caplog.text
-
-
-def test_check_pre_metrics_jsonl_manifest_mixed_records(tmp_path: Path, caplog) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema([("winner", pa.string())])
-    _write_table(combined, schema, [{"winner": "P1"}, {"winner": "P2"}])
-    manifest = data_dir / "by_k" / "1p" / "manifest_1p.json"
-    manifest.parent.mkdir(parents=True, exist_ok=True)
-    manifest.write_text(
-        "\n".join(
-            [
-                json.dumps({"row_count": 1}),
-                json.dumps("ignore this record"),
-                json.dumps({"rows": 1}),
-            ]
-        )
-    )
-
-    with caplog.at_level("INFO"):
-        check_pre_metrics(combined)
-
-    assert "check_pre_metrics passed" in caplog.text
-
-
-def test_check_pre_metrics_manifest_candidate_priority_prefers_jsonl(
-    tmp_path: Path,
-    caplog,
-) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema([("winner", pa.string())])
-    _write_table(combined, schema, [{"winner": "P1"}])
-    seat_dir = data_dir / "by_k" / "1p"
-    seat_dir.mkdir(parents=True, exist_ok=True)
-    (seat_dir / "manifest.jsonl").write_text(json.dumps({"row_count": 1}))
-    (seat_dir / "manifest_1p.json").write_text(json.dumps({"row_count": 999}))
-
-    with caplog.at_level("INFO"):
-        check_pre_metrics(combined)
-
-    assert "check_pre_metrics passed" in caplog.text
-
-
-def test_check_pre_metrics_negative_loss_margin_allowed(tmp_path: Path, caplog) -> None:
-    data_dir, combined = _combined_path(tmp_path)
-    schema = pa.schema([("winner", pa.string()), ("loss_margin", pa.int32())])
-    _write_table(combined, schema, [{"winner": "P1", "loss_margin": -5}])
-    _write_manifest(data_dir, 1, {"row_count": 1})
-
-    with caplog.at_level("INFO"):
-        check_pre_metrics(combined)
-
-    assert "check_pre_metrics passed" in caplog.text
-
-
-def test_check_post_combine_success(tmp_path: Path, caplog) -> None:
+def test_check_post_combine_accepts_matching_rows_and_schema(tmp_path: Path) -> None:
     schema = expected_schema_for(1)
-    curated = tmp_path / "1p" / "curated.parquet"
-    _write_table(curated, schema, [{"winning_score": 100}])
+    curated = tmp_path / "1p" / "rows.parquet"
     combined = tmp_path / "combined.parquet"
-    _write_table(combined, schema, [{"winning_score": 100}])
+    write_parquet_test_artifact(
+        pa.Table.from_pylist([{"winning_score": 100}], schema=schema), curated
+    )
+    write_parquet_test_artifact(
+        pa.Table.from_pylist([{"winning_score": 100}], schema=schema), combined
+    )
+    check_post_combine([curated], combined, max_players=1)
 
-    with caplog.at_level("INFO"):
+
+def test_check_post_combine_rejects_missing_and_row_mismatch(tmp_path: Path) -> None:
+    missing = tmp_path / "missing.parquet"
+    with pytest.raises(RuntimeError, match="missing"):
+        check_post_combine([], missing)
+
+    schema = expected_schema_for(1)
+    curated = tmp_path / "1p" / "rows.parquet"
+    combined = tmp_path / "combined.parquet"
+    write_parquet_test_artifact(
+        pa.Table.from_pylist([{"winning_score": 100}], schema=schema), curated
+    )
+    write_parquet_test_artifact(
+        pa.Table.from_pylist([{"winning_score": 100}, {"winning_score": 200}], schema=schema),
+        combined,
+    )
+    with pytest.raises(RuntimeError, match="row-count mismatch 2 != 1"):
         check_post_combine([curated], combined, max_players=1)
-
-    assert "check_post_combine passed" in caplog.text
-
-
-def test_check_stage_artifact_families_passes_expected_matrix(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-
-    stage_dirs = {
-        "combine": cfg.stage_dir("combine"),
-        "metrics": cfg.stage_dir("metrics"),
-        "game_stats": cfg.stage_dir("game_stats"),
-    }
-    k_values = (2, 3)
-
-    combine_out = stage_dirs["combine"] / "concat_ks" / "all_ingested_rows.parquet"
-    combine_out.parent.mkdir(parents=True, exist_ok=True)
-    combine_out.touch()
-    metrics_out = stage_dirs["metrics"] / "concat_ks" / "metrics.parquet"
-    metrics_out.parent.mkdir(parents=True, exist_ok=True)
-    metrics_out.touch()
-    for k in k_values:
-        metrics_per_k = stage_dirs["metrics"] / "by_k" / f"{k}p" / f"{k}p_isolated_metrics.parquet"
-        metrics_per_k.parent.mkdir(parents=True, exist_ok=True)
-        metrics_per_k.touch()
-    combined_game_length = stage_dirs["game_stats"] / "concat_ks" / "game_length.parquet"
-    combined_game_length.parent.mkdir(parents=True, exist_ok=True)
-    combined_game_length.touch()
-    combined_margin = stage_dirs["game_stats"] / "concat_ks" / "margin_stats.parquet"
-    combined_margin.touch()
-    across_k = stage_dirs["game_stats"] / "across_k"
-    across_k.mkdir(parents=True, exist_ok=True)
-    (across_k / "game_length_strategy_conditioned_equal_k_mean.parquet").touch()
-    (across_k / "margin_strategy_conditioned_equal_k_mean.parquet").touch()
-    for k in k_values:
-        per_k_game_length = stage_dirs["game_stats"] / "by_k" / f"{k}p" / "game_length.parquet"
-        per_k_game_length.parent.mkdir(parents=True, exist_ok=True)
-        per_k_game_length.touch()
-        (stage_dirs["game_stats"] / "by_k" / f"{k}p" / "margin_stats.parquet").touch()
-
-    check_stage_artifact_families(cfg.analysis_dir, stage_dirs, k_values)
-
-
-def test_check_stage_artifact_families_flags_missing_and_layout_drift(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-    stage_dir = cfg.stage_dir("game_stats")
-    stage_dirs = {"game_stats": stage_dir}
-
-    # Drift: combined aggregate written to stage root instead of combined/.
-    drift = stage_dir / "game_length.parquet"
-    drift.parent.mkdir(parents=True, exist_ok=True)
-    drift.touch()
-    # Missing: other required artifacts intentionally omitted.
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_stage_artifact_families(cfg.analysis_dir, stage_dirs, (2,))
-
-    message = str(excinfo.value)
-    assert str(stage_dir / "by_k" / "2p" / "game_length.parquet") in message
-    assert "missing concat_ks artifact" in message
-    assert "missing across_k artifact" in message
-
-
-def test_check_stage_artifact_families_flags_duplicate_and_mismatched_family_outputs(
-    tmp_path: Path,
-) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-    stage_dir = cfg.stage_dir("metrics")
-    stage_dirs = {"metrics": stage_dir}
-
-    combined = stage_dir / "concat_ks"
-    combined.mkdir(parents=True, exist_ok=True)
-    # Mismatched-family output: per-k artifact written in combined/.
-    misplaced_per_k = combined / "2p_isolated_metrics.parquet"
-    misplaced_per_k.touch()
-    # Duplicate output: combined artifact also exists at stage root.
-    root_duplicate = stage_dir / "metrics.parquet"
-    root_duplicate.touch()
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_stage_artifact_families(cfg.analysis_dir, stage_dirs, (2,))
-
-    message = str(excinfo.value)
-    assert str(stage_dir / "by_k" / "2p" / "2p_isolated_metrics.parquet") in message
-    assert "missing concat_ks artifact" in message
-    assert str(root_duplicate) in message
-
-
-def test_check_stage_artifact_families_skips_missing_stage_keys(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-    check_stage_artifact_families(cfg.analysis_dir, {}, (2,))
-
-
-def test_check_stage_artifact_families_skips_nonexistent_stage_dir(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-    stage_dirs = {"metrics": tmp_path / "missing_metrics"}
-    check_stage_artifact_families(cfg.analysis_dir, stage_dirs, (2,))
-
-
-def test_check_stage_artifact_families_honors_custom_matrix_success(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-    stage_dir = cfg.stage_dir("metrics")
-    expected = stage_dir / "concat_ks" / "only_here.parquet"
-    expected.parent.mkdir(parents=True, exist_ok=True)
-    expected.touch()
-
-    check_stage_artifact_families(
-        cfg.analysis_dir,
-        {"metrics": stage_dir},
-        (2,),
-        matrix={"metrics": {"concat_ks": ("only_here.parquet",)}},
-    )
-
-
-def test_check_stage_artifact_families_honors_custom_matrix_failure(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-    stage_dir = cfg.stage_dir("metrics")
-
-    with pytest.raises(RuntimeError) as excinfo:
-        check_stage_artifact_families(
-            cfg.analysis_dir,
-            {"metrics": stage_dir},
-            (2,),
-            matrix={"metrics": {"concat_ks": ("required.parquet",)}},
-        )
-
-    expected = (
-        f"check_stage_artifact_families failed under {cfg.analysis_dir}:\n"
-        f" - metrics: missing concat_ks artifact {stage_dir / 'concat_ks' / 'required.parquet'}"
-    )
-    assert str(excinfo.value) == expected

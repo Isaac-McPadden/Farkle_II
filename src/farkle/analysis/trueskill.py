@@ -1,5 +1,5 @@
 # src/farkle/analysis/trueskill.py
-"""Wrapper to trigger TrueSkill tier generation within the analysis pipeline."""
+"""Run canonical per-root/per-k TrueSkill screening diagnostics."""
 from __future__ import annotations
 
 import logging
@@ -16,21 +16,15 @@ def run(cfg: AppConfig) -> None:
     stage_log.start()
 
     curated_parquet = cfg.curated_parquet
-    if not curated_parquet.exists():
-        candidates = [str(cfg.curated_parquet)]
-        payload = {
-            "path": str(curated_parquet),
-            "candidate_paths": candidates,
-        }
-        interseed_root = cfg.interseed_input_dir
-        if interseed_root is not None:
-            payload["interseed_input_root"] = str(interseed_root)
-        stage_log.missing_input("curated parquet missing", **payload)
-        return
+    roots = tuple(cfg.sim.seed_list or [cfg.sim.seed])
+    if len(roots) == 1 and not curated_parquet.exists():
+        raise FileNotFoundError(
+            f"TrueSkill requires canonical concatenated rows: {curated_parquet}"
+        )
 
     out = cfg.trueskill_candidate_contribution_path()
     target = out
-    if out.exists() and out.stat().st_mtime >= curated_parquet.stat().st_mtime:
+    if len(roots) == 1 and out.exists() and out.stat().st_mtime >= curated_parquet.stat().st_mtime:
         LOGGER.info(
             "TrueSkill results up-to-date",
             extra={"stage": "trueskill", "path": str(out)},
@@ -41,7 +35,7 @@ def run(cfg: AppConfig) -> None:
         "TrueSkill analysis running",
         extra={"stage": "trueskill", "analysis_dir": str(cfg.analysis_dir)},
     )
-    run_trueskill.run_trueskill_all_seeds(cfg)
+    run_trueskill.run_trueskill_root(cfg)
     LOGGER.info(
         "TrueSkill analysis complete",
         extra={"stage": "trueskill", "path": str(target)},

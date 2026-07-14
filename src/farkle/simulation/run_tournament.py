@@ -721,7 +721,6 @@ def _reduce_metric_chunk_payloads(
 def run_tournament(
     *,
     config: TournamentConfig | None = None,
-    n_players: int | None = None,
     global_seed: int = 0,
     checkpoint_path: Path | str = "checkpoint.pkl",
     n_jobs: int | None = None,
@@ -743,9 +742,6 @@ def run_tournament(
         Encapsulates all tunable constants (number of players, shuffle count,
         checkpoint cadence, etc.). If ``None`` a default instance is created
         from the module-level constants.
-    n_players : int | None, optional
-        Deprecated override for ``config.n_players``. If provided it replaces
-        the value inside ``config`` for this run.
     global_seed : int, default 0
         Seed for the master RNG that generates per-shuffle seeds -- make this
         different to obtain a fresh tournament.
@@ -788,8 +784,6 @@ def run_tournament(
         strategies, _ = generate_strategy_grid()  # 7_140 strategies
 
     cfg = config or TournamentConfig()
-    if n_players is not None:
-        cfg.n_players = n_players
     if num_shuffles != cfg.num_shuffles:
         cfg.num_shuffles = num_shuffles
     if cfg.n_players < 2:

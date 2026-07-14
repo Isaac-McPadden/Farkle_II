@@ -138,41 +138,6 @@ def patch_scoring():
         default_score = orig_local
 
 
-def _patch_default_score() -> None:
-    """Backward compatible patch for unit tests."""
-
-    global default_score
-    import farkle.game.engine as _engine_mod
-    import farkle.game.scoring as _scoring_mod
-
-    orig_local = default_score
-    orig_mod = _scoring_mod.default_score
-    orig_engine = _engine_mod.default_score
-
-    def traced_default_score(*args, **kw):
-        """Log scoring outputs while delegating to the original implementation."""
-        res = orig_mod(*args, **kw)  # type: ignore[arg-type]
-        pts, used, reroll = res[:3]
-        roll = args[0] if args else kw.get("dice_roll")
-        LOGGER.info(
-            "score(%s) -> pts=%s used=%s reroll=%s",
-            roll,
-            f"{pts:<4}",
-            used,
-            reroll,
-            extra={"stage": "watch"},
-        )
-        return res
-
-    _scoring_mod.default_score = traced_default_score  # type: ignore[assignment]
-    _engine_mod.default_score = traced_default_score  # type: ignore[assignment]
-    default_score = traced_default_score
-
-    _patch_default_score._orig_local = orig_local  # type: ignore[attr-defined]
-    _patch_default_score._orig_mod = orig_mod  # type: ignore[attr-defined]
-    _patch_default_score._orig_engine = orig_engine  # type: ignore[attr-defined]
-
-
 class TracePlayer(FarklePlayer):
     """Subclass of :class:`FarklePlayer` that logs every dice roll."""
 

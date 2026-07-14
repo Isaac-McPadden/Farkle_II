@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from farkle.analysis.stage_state import (
+from farkle.utils.stage_completion import (
     read_stage_done,
     stage_done_path,
     stage_is_up_to_date,
@@ -23,7 +23,9 @@ def test_stage_up_to_date_respects_config_sha(tmp_path: Path) -> None:
     write_stage_done(done, inputs=[input_path], outputs=[output_path], config_sha="abc")
 
     assert stage_is_up_to_date(done, inputs=[input_path], outputs=[output_path], config_sha="abc")
-    assert not stage_is_up_to_date(done, inputs=[input_path], outputs=[output_path], config_sha="other")
+    assert not stage_is_up_to_date(
+        done, inputs=[input_path], outputs=[output_path], config_sha="other"
+    )
 
 
 def test_stage_up_to_date_invalidates_on_newer_input(tmp_path: Path) -> None:
@@ -88,11 +90,15 @@ def test_stage_up_to_date_rejects_non_success_and_missing_outputs(tmp_path: Path
         blocking_dependency="dep",
         upstream_stage="upstream",
     )
-    assert not stage_is_up_to_date(done, inputs=[input_path], outputs=[output_path], config_sha=None)
+    assert not stage_is_up_to_date(
+        done, inputs=[input_path], outputs=[output_path], config_sha=None
+    )
 
     write_stage_done(done, inputs=[input_path], outputs=[output_path], status="success")
     output_path.unlink()
-    assert not stage_is_up_to_date(done, inputs=[input_path], outputs=[output_path], config_sha=None)
+    assert not stage_is_up_to_date(
+        done, inputs=[input_path], outputs=[output_path], config_sha=None
+    )
 
 
 def test_write_stage_done_validation_errors(tmp_path: Path) -> None:

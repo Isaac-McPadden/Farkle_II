@@ -12,10 +12,10 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.streaming_loop import run_streaming_shard
 
 _COUNT_SCHEMA: Final = pa.schema(

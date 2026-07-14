@@ -20,11 +20,11 @@ import pyarrow.parquet as pq
 from scipy.stats import kendalltau, norm, spearmanr, t
 
 from farkle.analysis.all_player_metrics import validate_unconditional_all_player_schema
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.random import RandomPurpose, coordinate_rng
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 _INPUT_COLUMNS: Final[tuple[str, ...]] = (
     "root_seed",

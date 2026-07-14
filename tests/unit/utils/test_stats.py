@@ -2,11 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-import numpy as np
 import pytest
 
 import farkle.utils.stats as stats_module
-from farkle.utils.stats import GamesForPowerResult, bh_correct, games_for_power, wilson_ci
+from farkle.utils.stats import GamesForPowerResult, games_for_power, wilson_ci
 
 
 @pytest.mark.parametrize(
@@ -161,12 +160,6 @@ def test_games_for_power_never_log_suppresses_sizing_summary(
     caplog.set_level("INFO")
     games_for_power(n_strategies=6, log_mode="never")
     assert not any("sizing_source=" in message for message in caplog.messages)
-
-
-def test_bh_correct_handles_strings_castable_to_float() -> None:
-    pvals = np.array(["0.01", "0.02", "0.5"], dtype=object)
-    mask = bh_correct(pvals.astype(float), alpha=0.05)
-    assert mask.tolist() == [True, True, False]
 
 
 def test_games_for_power_auto_log_deduplicates_at_info(caplog: pytest.LogCaptureFixture) -> None:

@@ -120,7 +120,7 @@ def test_resolve_stage_layout_keeps_enabled_dependencies_unchanged(tmp_path: Pat
     assert layout.keys() == ["upstream", "downstream"]
 
 
-def test_stage_registry_helpers_and_interseed_layout(tmp_path: Path) -> None:
+def test_stage_registry_helpers_and_root_pair_layout(tmp_path: Path) -> None:
     cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
 
     always_enabled = StageDefinition(key="always", group="unit", disabled_predicate=None)

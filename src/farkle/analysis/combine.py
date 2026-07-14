@@ -1,8 +1,7 @@
 # src/farkle/analysis/combine.py
-"""Combine curated shards into partitioned and compatibility outputs."""
+"""Combine curated shards into canonical by-k and concatenated outputs."""
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Iterable, Iterator
 from pathlib import Path
@@ -12,14 +11,13 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from farkle.analysis.checks import check_post_combine
-from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
     sidecar_path,
-    write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.schema_helpers import expected_schema_for
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.streaming_loop import run_streaming_shard
 
 LOGGER = logging.getLogger(__name__)
@@ -107,63 +105,12 @@ def _concat_ks_output(cfg: AppConfig) -> Path:
     """Return the canonical row-concatenation output path.
 
     Args:
-        cfg: Application config used to resolve preferred and legacy paths.
+        cfg: Application config used to resolve the canonical scope path.
 
     Returns:
-        Canonical concatenated parquet path. Legacy locations are ignored.
+        Canonical concatenated parquet path.
     """
     return cfg.concat_ks_dir("combine") / "all_ingested_rows.parquet"
-
-
-def _legacy_concat_candidates(cfg: AppConfig) -> tuple[Path, ...]:
-    """Return retired concatenation locations without using them as inputs."""
-
-    filename = "all_ingested_rows.parquet"
-    return (
-        cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined" / filename,
-        cfg.combine_stage_dir / "combined" / filename,
-        cfg.combine_stage_dir / filename,
-        cfg.analysis_dir / filename,
-    )
-
-
-def _write_migration_report(cfg: AppConfig, canonical_output: Path) -> Path:
-    """Inventory legacy concatenations that were deliberately ignored."""
-
-    report_path = cfg.diagnostics_dir("combine") / "migration_report.json"
-    ignored = [path for path in _legacy_concat_candidates(cfg) if path.exists()]
-    payload = {
-        "migration_report_version": 1,
-        "stage": "combine",
-        "ignored_legacy_artifacts": [
-            {
-                "path": str(path),
-                "replacement": str(canonical_output),
-                "reason": "legacy scope is not a valid concat_ks input",
-            }
-            for path in ignored
-        ],
-    }
-    sidecar = make_artifact_sidecar(
-        cfg,
-        report_path,
-        producer="combine",
-        scope=ArtifactScope.DIAGNOSTICS,
-        source_scope=ArtifactScope.CONCAT_KS,
-        operation="legacy_artifact_inventory",
-        source_artifacts=ignored,
-        conditioning="not_applicable",
-        seed_scope="single_root",
-    )
-
-    def _write_data(staged_path: Path) -> None:
-        staged_path.write_text(
-            json.dumps(payload, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-
-    write_artifact_with_sidecar_atomic(report_path, sidecar, _write_data)
-    return report_path
 
 
 def _partition_done_path(cfg: AppConfig, n_players: int) -> Path:
@@ -304,21 +251,21 @@ def _write_partitioned_dataset(
     return outputs, manifests
 
 
-def _write_monolithic_compatibility_from_partitions(
+def _write_concatenated_rows_from_partitions(
     cfg: AppConfig,
     out: Path,
     manifest_path: Path,
     partition_outputs: list[Path],
 ) -> int:
-    """Write the compatibility parquet by streaming rows from partitioned outputs.
+    """Write the concatenated parquet by streaming rows from by-k outputs.
 
     Args:
         cfg: Application config used to resolve partition directories and schema.
-        out: Destination parquet path for the monolithic compatibility output.
+        out: Destination path for the row-preserving concatenation.
         manifest_path: Manifest path paired with ``out``.
 
     Returns:
-        Total number of rows written to the compatibility output.
+        Total number of concatenated rows written.
     """
     dataset = ds.dataset([str(path) for path in partition_outputs], format="parquet")
     scanner = dataset.scanner(batch_size=cfg.row_group_size, use_threads=True)
@@ -328,7 +275,7 @@ def _write_monolithic_compatibility_from_partitions(
         """Yield partition batches as tables, dropping partition columns.
 
         Yields:
-            Compatibility tables ready for monolithic streaming output.
+            Tables ready for row-preserving concatenation.
         """
         nonlocal total
         for batch in scanner.to_batches():
@@ -362,7 +309,7 @@ def _write_monolithic_compatibility_from_partitions(
         batch_iter=_iter_tables(),
         row_group_size=cfg.row_group_size,
         compression=cfg.parquet_codec,
-        manifest_extra={"path": out.name, "source": "partitioned_compatibility"},
+        manifest_extra={"path": out.name, "source": "canonical_by_k_partitions"},
         sidecar=sidecar,
     )
     verified_rows = _assert_row_stream_identity(
@@ -379,17 +326,16 @@ def _write_monolithic_compatibility_from_partitions(
 
 
 def run(cfg: AppConfig) -> None:
-    """Combine curated per-player shards into partitioned and compatibility outputs.
+    """Combine curated per-player shards into by-k and concatenated outputs.
 
     Args:
         cfg: Loaded application config providing input directories and output paths.
 
     Returns:
-        ``None``. The function writes partitioned parquet artifacts, a monolithic
-        compatibility parquet file, and corresponding stage metadata.
+        ``None``. The function writes by-k parquet artifacts, their row-preserving
+        concatenation, and corresponding stage metadata.
     """
     out = _concat_ks_output(cfg)
-    migration_report = _write_migration_report(cfg, out)
     files = sorted((cfg.data_dir / "by_k").glob(f"*p/{cfg.curated_rows_name}"))
     if not files:
         LOGGER.info(
@@ -404,10 +350,10 @@ def run(cfg: AppConfig) -> None:
     if stage_is_up_to_date(
         done,
         inputs=files,
-        outputs=[cfg.combine_partitioned_dir, out, manifest_path, migration_report],
+        outputs=[cfg.combine_partitioned_dir, out, manifest_path],
         cfg=cfg,
         stage="combine",
-        sidecar_artifacts=[out, migration_report],
+        sidecar_artifacts=[out],
     ):
         LOGGER.info("Combine: output up-to-date", extra={"stage": "combine", "path": str(out)})
         return
@@ -425,7 +371,7 @@ def run(cfg: AppConfig) -> None:
         )
         return
 
-    monolithic_total = _write_monolithic_compatibility_from_partitions(
+    monolithic_total = _write_concatenated_rows_from_partitions(
         cfg, out, manifest_path, partition_outputs
     )
     pf_out = pq.ParquetFile(out)
@@ -457,9 +403,8 @@ def run(cfg: AppConfig) -> None:
             *partition_manifests,
             out,
             manifest_path,
-            migration_report,
         ],
         cfg=cfg,
         stage="combine",
-        sidecar_artifacts=[*partition_outputs, out, migration_report],
+        sidecar_artifacts=[*partition_outputs, out],
     )
