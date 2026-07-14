@@ -133,7 +133,7 @@ For every statistical claim, review in this order:
   P1-win differences, with unmatched orientations retained as support counts.
 - Tests: `tests/unit/analysis/test_seat_analysis.py`.
 
-## TrueSkill Ratings And Tiers
+## TrueSkill Screening Ratings
 
 - Code: `src/farkle/analysis/trueskill.py`,
   `src/farkle/analysis/run_trueskill.py`.
@@ -142,17 +142,20 @@ For every statistical claim, review in this order:
   with ranks from `P#_rank`, `seat_ranks`, or fallback winner-plus-tied-losers.
 - Hyperparameters: `cfg.trueskill.beta`, `tau`, `draw_probability`.
 - Resume: per-block checkpoints and done stamps.
-- Aggregation: precision weighting using `tau = 1 / sigma^2`; combined `mu` is
-  `sum(tau * mu) / sum(tau)`, combined `sigma = sqrt(1 / sum(tau))`; optional
-  per-k weights affect combined k outputs.
-- Tiers: `utils.stats.build_tiers` groups overlapping confidence tiers from
-  means and sigmas.
+- Canonical model outputs remain per root and k. Model sigma is retained only
+  as TrueSkill state and is not propagated into a formal cross-k uncertainty.
+- Candidate contribution: convert `mu` to a percentile rank independently in
+  every root/k cell, require complete cell support, and average those
+  percentiles with equal cell weight. The contribution contains no sigma.
+- Diagnostics: compare the canonical result with a tau-zero replay and reversed
+  game order; report held-out log loss, Brier score, top-prediction calibration,
+  and their uniform baselines.
 - Tests: `tests/unit/analysis/test_run_trueskill_*.py`,
-  `tests/unit/analysis/test_analytics_trueskill.py`,
-  `tests/unit/analysis/test_run_trueskill_aggregation.py`.
+  `tests/unit/analysis/test_analytics_trueskill.py`, and
+  `tests/unit/analysis/test_trueskill_screening.py`.
 - Review risks: TrueSkill is a sequential rating model, not a classical
-  independent-binomial estimator; game order matters; sigma should not be read
-  as a simple sampling standard error without validating the model assumptions.
+  independent-binomial estimator. Game-order and tau sensitivity remain
+  diagnostics, and sigma is not a sampling standard error.
 
 ## Head-To-Head Simulation And Holm Decisions
 

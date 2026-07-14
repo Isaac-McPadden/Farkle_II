@@ -1385,6 +1385,16 @@ class AppConfig:
 
         return self.metrics_stage_dir / "diagnostics" / "seat_mirrored_games.parquet"
 
+    def trueskill_candidate_contribution_path(self) -> Path:
+        """Complete-support percentile contribution used only for screening."""
+
+        return self.across_k_dir("trueskill") / "candidate_percentile_contribution.parquet"
+
+    def trueskill_screening_diagnostics_path(self) -> Path:
+        """Tau, game-order, and held-out predictive diagnostics."""
+
+        return self.diagnostics_dir("trueskill") / "screening_diagnostics.parquet"
+
     def legacy_metrics_isolated_path(self, k: int) -> Path:
         """Legacy isolated metrics parquet path under ``analysis/data``."""
 

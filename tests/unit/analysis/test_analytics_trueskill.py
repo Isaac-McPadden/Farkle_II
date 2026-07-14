@@ -14,17 +14,17 @@ def _setup(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
     combined = cfg.curated_parquet
     combined.parent.mkdir(parents=True, exist_ok=True)
     combined.write_text("data")
-    tiers = cfg.preferred_tiers_path()
-    tiers.parent.mkdir(parents=True, exist_ok=True)
-    tiers.write_text("{}")
-    return cfg, combined, tiers
+    contribution = cfg.trueskill_candidate_contribution_path()
+    contribution.parent.mkdir(parents=True, exist_ok=True)
+    contribution.write_text("screening")
+    return cfg, combined, contribution
 
 
-def test_run_skips_when_tiers_up_to_date(tmp_path, monkeypatch):
-    cfg, combined, tiers = _setup(tmp_path)
+def test_run_skips_when_screening_contribution_is_up_to_date(tmp_path, monkeypatch):
+    cfg, combined, contribution = _setup(tmp_path)
     now = time.time()
     os.utime(combined, (now, now))
-    os.utime(tiers, (now + 10, now + 10))
+    os.utime(contribution, (now + 10, now + 10))
 
     def boom(cfg):  # noqa: ARG001
         raise AssertionError("should not call run_trueskill.run_trueskill_all_seeds")
@@ -34,10 +34,10 @@ def test_run_skips_when_tiers_up_to_date(tmp_path, monkeypatch):
     trueskill.run(cfg)
 
 
-def test_run_invokes_legacy_when_stale(tmp_path, monkeypatch):
-    cfg, combined, tiers = _setup(tmp_path)
+def test_run_invokes_rating_builder_when_stale(tmp_path, monkeypatch):
+    cfg, combined, contribution = _setup(tmp_path)
     now = time.time()
-    os.utime(tiers, (now, now))
+    os.utime(contribution, (now, now))
     os.utime(combined, (now + 10, now + 10))
 
     called = {}
@@ -52,7 +52,7 @@ def test_run_invokes_legacy_when_stale(tmp_path, monkeypatch):
     assert called["cfg"] is cfg
 
 
-def test_interseed_run_uses_upstream_combine_and_writes_combined_outputs(tmp_path, monkeypatch):
+def test_interseed_run_uses_upstream_rows_and_writes_screening_output(tmp_path, monkeypatch):
     from farkle.orchestration.run_contexts import InterseedRunContext, SeedRunContext
 
     seed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
@@ -75,18 +75,17 @@ def test_interseed_run_uses_upstream_combine_and_writes_combined_outputs(tmp_pat
 
     def fake_run(app_cfg):  # noqa: ANN001
         assert app_cfg.curated_parquet == upstream_curated
-        across_k_dir = app_cfg.trueskill_combined_dir
-        across_k_dir.mkdir(parents=True, exist_ok=True)
         (app_cfg.concat_ks_dir("trueskill") / "ratings_concat_ks.parquet").write_text("concat")
-        (across_k_dir / "ratings_k_weighted.parquet").write_text("combined")
-        (app_cfg.trueskill_stage_dir / "tiers.json").write_text("{}")
+        contribution = app_cfg.trueskill_candidate_contribution_path()
+        contribution.parent.mkdir(parents=True, exist_ok=True)
+        contribution.write_text("screening")
 
     monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill_all_seeds", fake_run)
 
     trueskill.run(cfg)
 
     assert (cfg.concat_ks_dir("trueskill") / "ratings_concat_ks.parquet").exists()
-    assert (cfg.trueskill_combined_dir / "ratings_k_weighted.parquet").exists()
+    assert cfg.trueskill_candidate_contribution_path().exists()
 
 
 def test_run_logs_curated_candidates_when_missing(tmp_path, caplog):

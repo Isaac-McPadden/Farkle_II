@@ -582,9 +582,7 @@ def test_run_trueskill_handles_worker_exception(
         stats, games = per_block[player_count]
         per_player_dir = Path(root_dir) / f"{player_count}p"
         per_player_dir.mkdir(parents=True, exist_ok=True)
-        rt._save_ratings_parquet(
-            per_player_dir / f"ratings_{player_count}{suffix}.parquet", stats
-        )
+        rt._save_ratings_parquet(per_player_dir / f"ratings_{player_count}{suffix}.parquet", stats)
         return player_count, games
 
     monkeypatch.setattr(rt, "write_parquet_atomic", immediate_write)
@@ -593,7 +591,12 @@ def test_run_trueskill_handles_worker_exception(
     monkeypatch.setattr(rt, "_rate_block_worker", fake_rate_block_worker)
     monkeypatch.setattr(rt.LOGGER, "exception", fake_exception)
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=3)
+    rt.run_trueskill(
+        root=analysis_root,
+        dataroot=data_root,
+        workers=3,
+        emit_legacy_combined=True,
+    )
 
     assert exceptions and exceptions[0]["block"] == "3_players"
     assert (analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet").exists()
@@ -630,6 +633,7 @@ def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
 
     ratings_path = analysis_root / "by_k" / "2p" / "ratings_2_seed0.parquet"
     assert ratings_path.exists()
+    assert not (analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet").exists()
 
 
 def test_run_trueskill_rebuilds_outdated_combined(
@@ -700,7 +704,12 @@ def test_run_trueskill_rebuilds_outdated_combined(
         ),
     )
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
+    rt.run_trueskill(
+        root=analysis_root,
+        dataroot=data_root,
+        workers=1,
+        emit_legacy_combined=True,
+    )
 
     assert tier_calls
     assert combined_path.stat().st_mtime > old_time
@@ -1039,7 +1048,9 @@ def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path:
             rt.run_trueskill_all_seeds(cfg)
 
 
-def test_run_trueskill_all_seeds_raises_when_combined_precision_empty(tmp_path: Path) -> None:
+def test_run_trueskill_all_seeds_uses_percentiles_without_sigma_propagation(
+    tmp_path: Path,
+) -> None:
     results_root = tmp_path / "results_seed_4"
     cfg = AppConfig(
         IOConfig(results_dir_prefix=results_root),
@@ -1055,12 +1066,12 @@ def test_run_trueskill_all_seeds_raises_when_combined_precision_empty(tmp_path: 
             root / "by_k" / "2p" / f"ratings_2_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(20.0, 2.0)},
         )
-        rt._save_ratings_parquet(
-            root / "across_k" / f"ratings_k_weighted_seed{output_seed}.parquet",
-            {"alpha": rt.RatingStats(20.0, 0.0)},
-        )
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(rt, "run_trueskill", fake_run_trueskill)
-        with pytest.raises(RuntimeError, match="TrueSkill aggregation produced no results"):
-            rt.run_trueskill_all_seeds(cfg)
+        rt.run_trueskill_all_seeds(cfg)
+
+    contribution = pq.read_table(cfg.trueskill_candidate_contribution_path()).to_pandas()
+    assert contribution["strategy"].tolist() == ["alpha"]
+    assert contribution.loc[0, "mean_percentile_rank"] == pytest.approx(1.0)
+    assert "sigma" not in contribution.columns

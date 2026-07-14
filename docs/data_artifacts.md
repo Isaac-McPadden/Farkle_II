@@ -202,16 +202,19 @@ Common paths:
 
 Typical outputs:
 
-- `ratings_<k>.parquet`
-- `ratings_<k>.json`
-- `ratings_k_weighted.parquet`
-- `ratings_k_weighted.json`
+- `by_k/<k>p/ratings_<k>_seed<root>.parquet`
+- `concat_ks/ratings_concat_ks.parquet`
+- `across_k/candidate_percentile_contribution.parquet`
+- `diagnostics/screening_diagnostics.parquet`
 - `descriptive_screening.parquet`
 - `descriptive_screening.json`
 
-Screening outputs report finite-grid evidence and practical bands. They do not
-emit inferential tiers or equality decisions.
-- `tiers.json`
+TrueSkill ratings remain root/k-specific. The cross-k candidate contribution is
+the complete-support equal mean of within-root/per-k `mu` percentile ranks and
+does not propagate model sigma. Tau-zero, reversed-order, and held-out
+predictive-calibration results are descriptive diagnostics. Screening outputs
+report finite-grid evidence and practical bands; they do not emit inferential
+tiers or equality decisions.
 
 ### Head-to-head and post-processing
 

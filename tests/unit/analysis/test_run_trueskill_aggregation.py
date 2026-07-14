@@ -53,7 +53,9 @@ def test_combined_ratings_are_weighted_mean(tmp_path: Path) -> None:
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        run_trueskill.run_trueskill(root=data_root, workers=1, batch_rows=2)
+        run_trueskill.run_trueskill(
+            root=data_root, workers=1, batch_rows=2, emit_legacy_combined=True
+        )
     finally:
         os.chdir(cwd)
 

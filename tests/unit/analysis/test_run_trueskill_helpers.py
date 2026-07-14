@@ -149,19 +149,15 @@ def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(root=data_root, workers=1, batch_rows=2)
+        rt.run_trueskill(root=data_root, workers=1, batch_rows=2, emit_legacy_combined=True)
     finally:
         os.chdir(cwd)
 
     ratings_dir = data_root
-    ratings_2 = rt._load_ratings_parquet(
-        ratings_dir / "by_k" / "2p" / "ratings_2_seed0.parquet"
-    )
+    ratings_2 = rt._load_ratings_parquet(ratings_dir / "by_k" / "2p" / "ratings_2_seed0.parquet")
     ratings3_path = ratings_dir / "by_k" / "3p" / "ratings_3_seed0.parquet"
     ratings_3 = rt._load_ratings_parquet(ratings3_path) if ratings3_path.exists() else {}
-    combined = rt._load_ratings_parquet(
-        data_root / "across_k" / "ratings_k_weighted_seed0.parquet"
-    )
+    combined = rt._load_ratings_parquet(data_root / "across_k" / "ratings_k_weighted_seed0.parquet")
 
     assert set(ratings_2)
     assert ratings_3 == {}
@@ -179,7 +175,13 @@ def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(output_seed=3, root=data_root, workers=1, batch_rows=2)
+        rt.run_trueskill(
+            output_seed=3,
+            root=data_root,
+            workers=1,
+            batch_rows=2,
+            emit_legacy_combined=True,
+        )
     finally:
         os.chdir(cwd)
 

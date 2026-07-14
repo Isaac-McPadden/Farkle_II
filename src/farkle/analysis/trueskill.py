@@ -11,7 +11,7 @@ LOGGER = logging.getLogger(__name__)
 
 
 def run(cfg: AppConfig) -> None:
-    """Thin wrapper around the legacy script so the new pipeline stays small."""
+    """Build per-root/per-k ratings and their screening-only contribution."""
     stage_log = stage_logger("trueskill", logger=LOGGER)
     stage_log.start()
 
@@ -28,11 +28,8 @@ def run(cfg: AppConfig) -> None:
         stage_log.missing_input("curated parquet missing", **payload)
         return
 
-    out = cfg.preferred_tiers_path()
-    if cfg.interseed_input_dir is not None:
-        # Avoid short-circuiting interseed runs based on upstream seed artifacts.
-        out = cfg.trueskill_stage_dir / "tiers.json"
-    target = cfg.trueskill_stage_dir / "tiers.json"
+    out = cfg.trueskill_candidate_contribution_path()
+    target = out
     if out.exists() and out.stat().st_mtime >= curated_parquet.stat().st_mtime:
         LOGGER.info(
             "TrueSkill results up-to-date",

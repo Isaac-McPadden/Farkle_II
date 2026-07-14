@@ -135,7 +135,7 @@ def test_run_trueskill_aggregation_and_short_circuit(
     monkeypatch.setattr(rt, "build_tiers", fake_build_tiers)
     monkeypatch.setattr(rt.os, "cpu_count", lambda: 2)
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=8)
+    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=8, emit_legacy_combined=True)
 
     assert created_executors and created_executors[0].max_workers == 2
 
@@ -164,7 +164,7 @@ def test_run_trueskill_aggregation_and_short_circuit(
     os.utime(combined_path, (before, before))
     tier_calls.clear()
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=8)
+    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=8, emit_legacy_combined=True)
 
     assert not tier_calls
     assert combined_path.stat().st_mtime == before
@@ -211,9 +211,7 @@ def test_run_trueskill_skips_zero_game_block(
         per_player = Path(root_dir) / "by_k" / f"{player_count}p"
         per_player.mkdir(parents=True, exist_ok=True)
         out_path = per_player / f"ratings_{player_count}{suffix}.parquet"
-        rt._save_ratings_parquet(
-            out_path, {name: stats}
-        )
+        rt._save_ratings_parquet(out_path, {name: stats})
         rt._save_done_stamp(
             analysis_root
             / "by_k"
@@ -231,7 +229,7 @@ def test_run_trueskill_skips_zero_game_block(
     monkeypatch.setattr(rt, "write_parquet_atomic", immediate_write)
     monkeypatch.setattr(rt, "_rate_block_worker", fake_rate_block_worker)
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
+    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1, emit_legacy_combined=True)
 
     combined = rt._load_ratings_parquet(
         analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet"
@@ -288,7 +286,7 @@ def test_run_trueskill_recovers_only_missing_k_shard(
     )
     np.save(block3 / "keepers_3.npy", np.array(["C", "D", "E"]))
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
+    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1, emit_legacy_combined=True)
 
     done_2 = analysis_root / "by_k" / "2p" / "ratings_2_seed0.done.json"
     done_3 = analysis_root / "by_k" / "3p" / "ratings_3_seed0.done.json"
@@ -301,7 +299,7 @@ def test_run_trueskill_recovers_only_missing_k_shard(
     done_3.unlink()
     (analysis_root / "by_k" / "3p" / "ratings_3_seed0.parquet").unlink()
 
-    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
+    rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1, emit_legacy_combined=True)
 
     # Recovery should preserve completed shard outputs and rebuild only missing shard.
     assert two_path.stat().st_mtime == two_mtime

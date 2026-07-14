@@ -1,19 +1,19 @@
 # src/farkle/analysis/run_trueskill.py
 """Compute TrueSkill ratings for Farkle strategies.
 
-The helpers in this module scan a directory of tournament results, update
-ratings with the :mod:`trueskill` package, and write both per-block and combined
-rating files.  Historically this module exposed a standalone command line
-interface; the new configuration-driven CLI calls :func:`run_trueskill`
-directly, so the parsing layer has been removed.
+The helpers scan tournament results, update ratings with :mod:`trueskill`, and
+write canonical per-root/per-k rating files for descriptive screening. Cross-k
+candidate contribution is based on normalized percentile ranks, not propagated
+model sigma. Historically this module exposed a standalone command line
+interface; the configuration-driven CLI now calls :func:`run_trueskill`.
 
 Outputs
 -------
-``ratings_<N>.parquet`` and ``ratings_k_weighted.parquet``
-    Parquet tables with columns ``{strategy, mu, sigma}`` written under
-    ``06_trueskill/<Np>/`` and ``06_trueskill/combined/`` respectively.
-``tiers.json``
-    Consolidated tier report containing TrueSkill and frequentist tiers.
+``by_k/<N>p/ratings_<N>_seed<root>.parquet``
+    Per-root/per-k tables with columns ``{strategy, mu, sigma}``. Sigma is
+    model state for screening diagnostics, not a cross-k sampling uncertainty.
+``across_k/candidate_percentile_contribution.parquet``
+    Complete-support mean of normalized within-root/per-k percentile ranks.
 """
 from __future__ import annotations
 
@@ -47,9 +47,16 @@ import trueskill
 import yaml  # type: ignore[import-untyped]
 from trueskill import Rating
 
-from farkle.config import AppConfig
+from farkle.analysis.trueskill_screening import (
+    ScreeningRatingCell,
+    build_percentile_contribution,
+    build_screening_diagnostics,
+    publish_rating_cell_contract,
+)
+from farkle.config import AppConfig, ArtifactScope
 from farkle.orchestration.seed_utils import resolve_results_dir, split_seeded_results_dir
-from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.artifact_contract import make_artifact_sidecar
+from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_atomic
 from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
@@ -118,7 +125,9 @@ def _coerce_trueskill_env_kwargs(env_kwargs: Mapping[str, object] | None) -> dic
         if isinstance(value, (int, float, str)):
             coerced[key] = float(value)
             continue
-        raise TypeError(f"TrueSkill config value '{key}' must be float-compatible, got {type(value)!r}")
+        raise TypeError(
+            f"TrueSkill config value '{key}' must be float-compatible, got {type(value)!r}"
+        )
     return coerced
 
 
@@ -510,9 +519,7 @@ def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[lis
         winner_col_name = "winner"
     else:
         winner_col_name = None
-    winner_col = (
-        batch.column(winner_col_name) if winner_col_name is not None else None
-    )
+    winner_col = batch.column(winner_col_name) if winner_col_name is not None else None
     winner_list = winner_col.to_pylist() if winner_col is not None else None
     strat_col_names: list[str] = [f"P{i}_strategy" for i in range(1, n + 1)]
     rank_col_names: list[str] = [f"P{i}_rank" for i in range(1, n + 1)]
@@ -757,16 +764,12 @@ def _iter_players_and_ranks(
             ranks_col: pa.Array = batch.column(seat_rank_col_name)
             ranks_list = ranks_col.to_pylist()  # list[list[str]] or None
 
-            strat_cols: list[pa.Array] = [
-                batch.column(name) for name in strategy_column_names
-            ]
+            strat_cols: list[pa.Array] = [batch.column(name) for name in strategy_column_names]
 
             for r, order in enumerate(ranks_list):
                 if not order:
                     continue
-                players = [
-                    strat_cols[int(str(seat)[1:]) - 1][r].as_py() for seat in order
-                ]
+                players = [strat_cols[int(str(seat)[1:]) - 1][r].as_py() for seat in order]
                 if any(p is None for p in players):
                     continue
                 yield [_normalize_strategy_id(p) for p in players], list(range(len(players)))
@@ -783,19 +786,15 @@ def _iter_players_and_ranks(
         *rank_col_names,
         *strategy_column_names,
     ]
-    
+
     for batch in dataset.to_batches(columns=fallback_columns, batch_size=batch_size):
         winner_seats = batch.column(winner_col_name).to_pylist()
 
         rank_cols: list[pa.Array] = [batch.column(name) for name in rank_col_names]
-        fallback_strat_cols: list[pa.Array] = [
-            batch.column(name) for name in strategy_column_names
-        ]
+        fallback_strat_cols: list[pa.Array] = [batch.column(name) for name in strategy_column_names]
 
         ranks = [[col[i].as_py() for col in rank_cols] for i in range(len(batch))]
-        strats = [
-            [col[i].as_py() for col in fallback_strat_cols] for i in range(len(batch))
-        ]
+        strats = [[col[i].as_py() for col in fallback_strat_cols] for i in range(len(batch))]
 
         for winner_seat, seat_ranks, seat_strats in zip(winner_seats, ranks, strats, strict=True):
             # try to build placements from P#_rank if we have ≥2 ranks
@@ -1124,6 +1123,7 @@ def run_trueskill(
     tier_min_gap: float | None = None,
     mp_start_method: str | None = None,
     progress_logging: ProgressLogConfig | None = None,
+    emit_legacy_combined: bool = False,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -1148,15 +1148,9 @@ def run_trueskill(
         Custom filename for curated per-player inputs. When unset, the loader
         searches for ``<n>p_ingested_rows.parquet`` and ``game_rows.parquet``.
 
-    Side Effects
-    ------------
-    ``ratings_<n>[ _seedX ].parquet``
-        Pickle files containing per-block ratings for each strategy.
-    ``ratings_combined[ _seedX ].parquet``
-        A pickle with ratings combined across all blocks using a precision-weighted
-        mean (optionally scaled by per-player-count weights).
-    ``tiers.json``
-        JSON file with league tiers derived from the combined ratings.
+    Production side effects are canonical per-root/per-k ratings. Formal
+    cross-k model-sigma propagation is disabled. ``emit_legacy_combined`` is a
+    temporary migration-test switch and is not used by orchestration.
     """
     if dataroot is None:
         base = Path(root) / "results" if root is not None else DEFAULT_DATAROOT
@@ -1307,6 +1301,18 @@ def run_trueskill(
             continue
         valid_per_player_parquets.append(parquet)
 
+    if not emit_legacy_combined:
+        LOGGER.info(
+            "TrueSkill per-root/per-k ratings complete",
+            extra={
+                "stage": "trueskill",
+                "root": str(root),
+                "rating_cells": len(valid_per_player_parquets),
+                "cross_k_rating_propagation": "disabled",
+            },
+        )
+        return
+
     if combined_parquet.exists():
         newest = max((p.stat().st_mtime for p in valid_per_player_parquets), default=0.0)
         if combined_parquet.stat().st_mtime >= newest:
@@ -1324,7 +1330,11 @@ def run_trueskill(
         if player_count_value is None:
             continue
         done_stamp = _load_done_stamp(_block_done_stamp_path(root, str(player_count_value), suffix))
-        games = int(done_stamp.rows) if done_stamp is not None else per_block_games.get(str(player_count_value), 0)
+        games = (
+            int(done_stamp.rows)
+            if done_stamp is not None
+            else per_block_games.get(str(player_count_value), 0)
+        )
         if games <= 0:
             continue
         weight = k_weights.get(player_count_value, 1.0)
@@ -1580,7 +1590,9 @@ def _write_seed_alignment_summary(
             {k: _json_safe_number(v) if isinstance(v, (float, int)) else v for k, v in row.items()}
             for row in rows
         ]
-        json_corr = {int(seed): _json_safe_number(value) for seed, value in rank_correlations.items()}
+        json_corr = {
+            int(seed): _json_safe_number(value) for seed, value in rank_correlations.items()
+        }
         payload = {
             "seeds": seed_list,
             "strategies": strategies,
@@ -1694,9 +1706,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     default_row_data_dir = cfg.resolve_input_stage_dir("curate")
     if default_row_data_dir is None or not default_row_data_dir.exists():
         fallback_row_data_dir = cfg.data_dir
-        default_row_data_dir = (
-            fallback_row_data_dir if fallback_row_data_dir.exists() else None
-        )
+        default_row_data_dir = fallback_row_data_dir if fallback_row_data_dir.exists() else None
     seed_results_roots = {seed: _resolve_seed_results_root(cfg, seed) for seed in seeds}
     seed_row_data_dirs = {
         seed: _resolve_seed_row_data_dir(cfg, seed_results_roots[seed]) for seed in seeds
@@ -1715,6 +1725,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     per_seed_results: dict[int, Mapping[str, RatingStats]] = {}
     per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
     concat_tables: list[pa.Table] = []
+    screening_cells: list[ScreeningRatingCell] = []
 
     for seed in seeds:
         seed_everything(seed)
@@ -1745,18 +1756,6 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             progress_logging=analysis_cfg.progress_logging,
         )
 
-        combined_path = _ensure_new_location(
-            combined_dir / f"ratings_k_weighted_seed{seed}.parquet",
-            combined_dir / f"ratings_combined_seed{seed}.parquet",
-            analysis_dir / f"ratings_k_weighted_seed{seed}.parquet",
-            analysis_dir / f"ratings_combined_seed{seed}.parquet",
-            legacy_root / f"ratings_k_weighted_seed{seed}.parquet",
-            legacy_root / f"ratings_combined_seed{seed}.parquet",
-        )
-        if not combined_path.exists():
-            raise FileNotFoundError(f"Missing combined ratings for seed {seed}: {combined_path}")
-        per_seed_results[seed] = _load_ratings_parquet(combined_path)
-
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}
         for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}", legacy_root=legacy_root):
             players = _player_count_from_stem(parquet.stem)
@@ -1778,6 +1777,21 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                     }
                 )
             )
+            game_rows_path: Path | None = None
+            if seed_row_data_dir is not None:
+                candidates = (
+                    seed_row_data_dir / "by_k" / f"{players}p" / cfg.curated_rows_name,
+                    seed_row_data_dir / f"{players}p" / cfg.curated_rows_name,
+                )
+                game_rows_path = next((path for path in candidates if path.exists()), None)
+            screening_cell = ScreeningRatingCell(
+                root_seed=seed,
+                k=players,
+                ratings_path=parquet,
+                game_rows_path=game_rows_path,
+            )
+            publish_rating_cell_contract(cfg, screening_cell)
+            screening_cells.append(screening_cell)
 
         if not seed_outputs:
             raise RuntimeError(f"No per-player outputs generated for seed {seed}")
@@ -1788,14 +1802,53 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             extra={
                 "stage": "trueskill",
                 "seed": seed,
-                "combined": str(combined_path),
                 "per_players": sorted(seed_outputs.keys()),
             },
         )
 
     if concat_tables:
         concat_table = pa.concat_tables(concat_tables, promote_options="default")
-        write_parquet_atomic(concat_table, concat_dir / "ratings_concat_ks.parquet")
+        concat_path = concat_dir / "ratings_concat_ks.parquet"
+        concat_sidecar = make_artifact_sidecar(
+            cfg,
+            concat_path,
+            producer="trueskill",
+            scope=ArtifactScope.CONCAT_KS,
+            source_scope=ArtifactScope.BY_K,
+            operation="concatenate",
+            weighted_quantity="trueskill_mu_and_model_sigma",
+            support_count_role="canonical_root_k_rating_cells",
+            uncertainty_method="trueskill_model_sigma_screening_only",
+            replication_unit="root_k_strategy_rating",
+            conditioning="finite_grid_trueskill_screening",
+            consistency_columns=concat_table.schema.names,
+            source_artifacts=[cell.ratings_path for cell in screening_cells],
+            grouping_keys=["seed", "players", "strategy"],
+            player_counts=sorted({cell.k for cell in screening_cells}),
+            required_player_counts=sorted({cell.k for cell in screening_cells}),
+            missing_cell_policy="fail",
+            seed_scope="both_roots_combined" if len(seeds) == 2 else "single_root",
+        )
+        write_parquet_artifact_atomic(
+            concat_table,
+            concat_path,
+            sidecar=concat_sidecar,
+            codec=cfg.parquet_codec,
+        )
+
+    if screening_cells:
+        contribution_path = build_percentile_contribution(cfg, screening_cells)
+        diagnostics_path = build_screening_diagnostics(cfg, screening_cells)
+        LOGGER.info(
+            "TrueSkill screening outputs written",
+            extra={
+                "stage": "trueskill",
+                "candidate_contribution": str(contribution_path),
+                "diagnostics": str(diagnostics_path) if diagnostics_path else None,
+                "rating_cells": len(screening_cells),
+            },
+        )
+        return
 
     if per_seed_outputs:
         per_player_runs: dict[int, list[Mapping[str, RatingStats]]] = {}
@@ -1840,9 +1893,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                 },
             )
 
-    combined_seed_stats: Mapping[str, RatingStats] = _precision_combine(
-        per_seed_results.values()
-    )
+    combined_seed_stats: Mapping[str, RatingStats] = _precision_combine(per_seed_results.values())
     if not combined_seed_stats:
         raise RuntimeError("TrueSkill aggregation produced no results")
     ordered_combined = _ensure_strict_mu_ordering(_sorted_ratings(combined_seed_stats))
