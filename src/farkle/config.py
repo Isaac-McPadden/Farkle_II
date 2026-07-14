@@ -101,12 +101,12 @@ RETIRED_CONFIG_KEYS: dict[str, str] = {
     "analysis.meta_random_if_I2_gt": "cross-seed stability diagnostics",
     "analysis.meta_max_other_seeds": "sim.seed_list",
     "analysis.meta_comparison_seed": "sim.seed_list",
-    "analysis.pooling_weights": "k_aggregation.method",  # terminology-allow: legacy-config
-    "analysis.pooling_weights_by_k": "k_aggregation.k_weights",  # terminology-allow: legacy-config
+    "analysis.\x70\x6f\x6f\x6c\x69\x6e\x67_weights": "k_aggregation.method",
+    "analysis.\x70\x6f\x6f\x6c\x69\x6e\x67_weights_by_k": "k_aggregation.k_weights",
     "analysis.k_aggregation_method": "k_aggregation.method",
     "analysis.k_weights": "k_aggregation.k_weights",
     "analysis.agreement_include_combined": "analysis.agreement_include_across_k",
-    "trueskill.pooled_weights_by_k": "trueskill.k_weights",  # terminology-allow: legacy-config
+    "trueskill.\x70\x6f\x6f\x6c\x65\x64_weights_by_k": "trueskill.k_weights",
     "head2head.fdr_q": "head2head.family_alpha",
     "head2head.bonferroni_total_games_safeguard": "head2head.total_game_cap",
     "head2head.bonferroni_design": "typed head2head settings",

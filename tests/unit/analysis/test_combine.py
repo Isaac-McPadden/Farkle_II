@@ -136,7 +136,7 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
     assert manifest_path.exists()
     assert sidecar_path(out).exists()
     metadata = validate_artifact_sidecar(
-        out, expected={"scope": "concat_ks", "operation": "concat"}
+        out, expected={"scope": "concat_ks", "operation": "concatenate"}
     )
     assert metadata.player_counts == [1, 2]
     assert calls and calls[0][0] == [p1, p2]
@@ -297,7 +297,10 @@ def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: 
     partition_done = cfg.combine_stage_dir / "combine_partition_2p.done.json"
     assert partition_file.exists()
     assert sidecar_path(partition_file).exists()
-    validate_artifact_sidecar(partition_file, expected={"scope": "by_k", "operation": "combine"})
+    validate_artifact_sidecar(
+        partition_file,
+        expected={"scope": "by_k", "operation": "concatenate_rows_within_k"},
+    )
     assert partition_done.exists()
 
 

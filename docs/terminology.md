@@ -1,9 +1,9 @@
 # Repository terminology policy
 
-Project-owned names must describe the operation they perform. The generic
-`pool`, `pooled`, and `pooling` family is prohibited in source identifiers,
-configuration, artifact paths, logs, reports, tests, and ordinary
-documentation because it has several incompatible meanings in this project.
+Project-owned names must describe the operation they perform. The prohibited
+ambiguous word family is not permitted in source identifiers, configuration,
+artifact paths, logs, reports, tests, or ordinary documentation because it has
+several incompatible meanings in this project.
 
 Use one of these terms instead:
 

@@ -31,7 +31,7 @@ def _metadata(path: Path, **changes: object) -> ArtifactSidecar:
         producer="unit_test",
         scope="by_k",
         source_scope="by_k",
-        operation="aggregate",
+        operation="aggregate_test_rows",
         baseline="none",
         weighted_quantity="none",
         k_aggregation_method="none",
@@ -71,7 +71,7 @@ def test_parquet_and_sidecar_are_hash_bound_and_readable(tmp_path: Path) -> None
     assert load_artifact_sidecar(artifact) == written
     assert read_parquet_artifact(
         artifact,
-        expected_sidecar={"scope": "by_k", "operation": "aggregate"},
+        expected_sidecar={"scope": "by_k", "operation": "aggregate_test_rows"},
     ).equals(table)
 
 
@@ -142,7 +142,7 @@ def test_config_factory_records_versions_support_sources_and_manifest_hashes(
         producer="combine",
         scope=ArtifactScope.CONCAT_KS,
         source_scope=ArtifactScope.BY_K,
-        operation="concat",
+        operation="concatenate",
         source_artifacts=[tmp_path / "2p.parquet", tmp_path / "4p.parquet"],
         player_counts=[4, 2],
         required_player_counts=[2, 4],

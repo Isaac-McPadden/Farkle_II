@@ -110,7 +110,7 @@ def _write_inputs(cfg: AppConfig) -> None:
             cfg.performance_by_k_path(k),
             frame,
             scope=ArtifactScope.BY_K,
-            operation="aggregate",
+            operation="aggregate_screening_inputs",
             player_counts=[k],
             uncertainty_method="wilson_and_batch_t_interval",
         )

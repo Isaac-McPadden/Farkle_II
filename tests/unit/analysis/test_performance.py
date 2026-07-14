@@ -61,7 +61,7 @@ def _write_batch_metrics(cfg: AppConfig, k: int, rows: list[dict]) -> None:
         producer="test",
         scope=ArtifactScope.BY_K,
         source_scope=ArtifactScope.BY_K,
-        operation="aggregate",
+        operation="aggregate_player_batch_statistics",
         conditioning="unconditional",
         player_counts=[k],
         required_player_counts=[k],

@@ -92,7 +92,7 @@ def _write_cell(
         producer="test",
         scope=ArtifactScope.BY_K,
         source_scope=ArtifactScope.BY_K,
-        operation="aggregate",
+        operation="aggregate_performance_by_strategy",
         conditioning="unconditional",
         consistency_columns=table.schema.names,
         player_counts=[k],

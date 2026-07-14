@@ -43,7 +43,7 @@ def _write_source(
     k: int,
     rows: list[dict[str, object]],
     *,
-    operation: str = "combine",
+    operation: str = "concatenate_rows_within_k",
 ) -> Path:
     path = cfg.combined_rows_by_k(k)
     table = pa.Table.from_pylist(rows, schema=expected_schema_for(k))

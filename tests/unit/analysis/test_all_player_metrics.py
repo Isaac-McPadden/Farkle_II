@@ -123,7 +123,11 @@ def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> Non
 
     validate_artifact_sidecar(
         output,
-        expected={"scope": "by_k", "operation": "aggregate", "conditioning": "unconditional"},
+        expected={
+            "scope": "by_k",
+            "operation": "aggregate_player_batch_statistics",
+            "conditioning": "unconditional",
+        },
     )
 
 

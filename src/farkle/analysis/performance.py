@@ -478,7 +478,7 @@ def build_canonical_performance(cfg: AppConfig, *, force: bool = False) -> Perfo
             estimates[k],
             path,
             scope=ArtifactScope.BY_K,
-            operation="aggregate",
+            operation="aggregate_performance_by_strategy",
             sources=[cfg.metrics_all_player_batch_path(k)],
             player_counts=[k],
             grouping_keys=["root_seed", "k", "strategy"],

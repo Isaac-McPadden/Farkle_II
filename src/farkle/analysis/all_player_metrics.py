@@ -322,7 +322,7 @@ def build_all_player_batch_metrics(
         producer="metrics",
         scope=ArtifactScope.BY_K,
         source_scope=ArtifactScope.BY_K,
-        operation="aggregate",
+        operation="aggregate_player_batch_statistics",
         source_artifacts=[source],
         consistency_columns=all_player_batch_schema().names,
         grouping_keys=["root_seed", "k", "deterministic_batch_id", "strategy"],

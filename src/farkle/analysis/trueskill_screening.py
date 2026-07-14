@@ -431,7 +431,7 @@ def build_screening_diagnostics(
         producer="trueskill_screening",
         scope=ArtifactScope.DIAGNOSTICS,
         source_scope=ArtifactScope.BY_K,
-        operation="aggregate",
+        operation="aggregate_trueskill_screening_diagnostics",
         weighted_quantity="trueskill_screening_sensitivity",
         support_count_role="ordered_games",
         uncertainty_method="descriptive_replay_and_heldout_prediction",
