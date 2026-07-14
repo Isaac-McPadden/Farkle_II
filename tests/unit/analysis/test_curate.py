@@ -42,9 +42,28 @@ def _canonical_schema_hash(n_players: int) -> str:
     return hashlib.sha256(serialized).hexdigest()
 
 
+def _zero_player_row() -> dict[str, object]:
+    return {
+        "root_seed": 7,
+        "k": 0,
+        "shuffle_index": 0,
+        "game_index": 0,
+        "deterministic_batch_id": 0,
+        "shuffle_seed": 11,
+        "winner_seat": "P1",
+        "winner_strategy": 0,
+        "game_seed": 42,
+        "rng_scheme_version": 1,
+        "rng_purpose_namespace": 102,
+        "seat_ranks": [],
+        "winning_score": 100,
+        "n_rounds": 1,
+    }
+
+
 def test_schema_hash_known_value():
     expected = _canonical_schema_hash(2)
-    assert expected == "81da1a048aa54451b2f1d7a93e945aa6adc061d416261f0ecbe4f29f38ac8902"
+    assert expected == "5178b5a91424fcdd566cb97c47b3443336b98bd94ead8c50bf232c5d5172b635"
     assert _schema_hash(2) == expected
 
 
@@ -81,17 +100,7 @@ def test_already_curated_schema_hash(tmp_path):
     cfg = _make_cfg(tmp_path)
 
     schema0 = expected_schema_for(0)
-    table1 = pa.table(
-        {
-            "winner_seat": ["P1"],
-            "winner_strategy": [0],
-            "game_seed": [42],
-            "seat_ranks": [[]],
-            "winning_score": [100],
-            "n_rounds": [1],
-        },
-        schema=schema0,
-    )
+    table1 = pa.Table.from_pylist([_zero_player_row()], schema=schema0)
     file1 = tmp_path / "file1.parquet"
     pq.write_table(table1, file1)
     manifest = tmp_path / "manifest.json"
@@ -135,17 +144,7 @@ def test_already_curated_manifest_failures(tmp_path):
     cfg = _make_cfg(tmp_path)
     schema = expected_schema_for(0)
 
-    table = pa.table(
-        {
-            "winner_seat": ["P1"],
-            "winner_strategy": [0],
-            "game_seed": [42],
-            "seat_ranks": [[]],
-            "winning_score": [100],
-            "n_rounds": [1],
-        },
-        schema=schema,
-    )
+    table = pa.Table.from_pylist([_zero_player_row()], schema=schema)
     file = tmp_path / "file.parquet"
     pq.write_table(table, file)
     manifest = tmp_path / "manifest.json"

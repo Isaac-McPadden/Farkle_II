@@ -77,22 +77,28 @@ Key files:
 
 ### Combine
 
-Combined combine outputs are resolved through:
+Row-preserving cross-k outputs are resolved through:
 
 - `cfg.curated_parquet`
 - `cfg.curated_dataset`
 - `cfg.combined_manifest_path()`
 
-Current preferred locations are under:
+Canonical outputs are under:
 
 ```text
-cfg.stage_dir("combine") / "combined"
+cfg.stage_dir("combine") / "concat_ks"
 ```
 
 The code supports both:
 
-- A monolithic combined parquet, typically `all_ingested_rows.parquet`
-- A partitioned dataset directory, typically `all_ingested_rows_partitioned`
+- A monolithic concatenated parquet, `all_ingested_rows.parquet`
+- A partitioned concatenated dataset, `all_ingested_rows_partitioned`
+
+Both layouts preserve the typed root, k, shuffle, game, deterministic-batch,
+RNG, and turn-accounting columns from canonical `curate/by_k` rows. Combine
+verifies source/output row identity without loading the dataset into memory.
+Retired locations are ignored and inventoried under
+`combine/diagnostics/migration_report.json`.
 
 ### Metrics
 

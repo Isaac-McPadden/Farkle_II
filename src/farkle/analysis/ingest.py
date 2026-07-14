@@ -186,9 +186,7 @@ def _coerce_strategy_ids(
 ) -> pd.DataFrame:
     """Ensure all strategy columns are normalized to integer IDs."""
     df = df.copy()
-    strategy_cols = [
-        c for c in df.columns if c == "winner_strategy" or _SEAT_RE.match(c)
-    ]
+    strategy_cols = [c for c in df.columns if c == "winner_strategy" or _SEAT_RE.match(c)]
     for col in strategy_cols:
         series = df[col]
         numeric = pd.to_numeric(series, errors="coerce")
@@ -238,9 +236,7 @@ def _coerce_strategy_ids(
 
 def _validate_strategy_dtypes(df: pd.DataFrame) -> None:
     """Validate that strategy columns conform to integer identifier dtype."""
-    strategy_cols = [
-        c for c in df.columns if c == "winner_strategy" or _SEAT_RE.match(c)
-    ]
+    strategy_cols = [c for c in df.columns if c == "winner_strategy" or _SEAT_RE.match(c)]
     for col in strategy_cols:
         if not pd.api.types.is_integer_dtype(df[col].dtype):
             LOGGER.error(
@@ -380,7 +376,15 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
             )
         )
     seat_cols = [c for c in canon.names if c.startswith("P")]
-    wanted = ("winner", "game_seed", "n_rounds", "winning_score", *seat_cols)
+    wanted = tuple(
+        dict.fromkeys(
+            (
+                "winner",
+                *canon.names,
+                *seat_cols,
+            )
+        )
+    )
 
     total = 0
 
@@ -464,6 +468,14 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
             "path": raw_out.name,
             "n_players": n,
             "source_block": block.name,
+            "root_seed": cfg.sim.seed,
+            "coordinate_columns": [
+                "root_seed",
+                "k",
+                "shuffle_index",
+                "game_index",
+                "deterministic_batch_id",
+            ],
         },
     )
     LOGGER.info(
@@ -506,11 +518,7 @@ def run(cfg: AppConfig) -> None:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
     blocks = sorted(
-        (
-            p
-            for p in cfg.results_root.iterdir()
-            if p.is_dir() and _n_from_block(p.name) is not None
-        ),
+        (p for p in cfg.results_root.iterdir() if p.is_dir() and _n_from_block(p.name) is not None),
         key=lambda p: (_n_from_block(p.name) or sys.maxsize, p.name),
     )
 
@@ -545,7 +553,9 @@ def run(cfg: AppConfig) -> None:
         for block in blocks:
             total_rows += _process_block(block, cfg, parent_process_workers=1)
     else:
-        with ProcessPoolExecutor(max_workers=stage_policy.process_workers, mp_context=mp_context) as executor:
+        with ProcessPoolExecutor(
+            max_workers=stage_policy.process_workers, mp_context=mp_context
+        ) as executor:
             futures = [
                 executor.submit(
                     _process_block,

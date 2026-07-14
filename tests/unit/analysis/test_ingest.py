@@ -410,9 +410,7 @@ def test_process_block_zero_rows_without_outputs(tmp_results_dir, monkeypatch):
     block = cfg.results_root / "5_players"
     block.mkdir(parents=True)
 
-    def fake_iter_shards(
-        block_path, cols
-    ) -> Iterator[tuple[pd.DataFrame, Path]]:  # noqa: ARG001
+    def fake_iter_shards(block_path, cols) -> Iterator[tuple[pd.DataFrame, Path]]:  # noqa: ARG001
         yield from ()
 
     monkeypatch.setattr("farkle.analysis.ingest._iter_shards", fake_iter_shards)
@@ -469,12 +467,22 @@ def test_process_block_coerces_types_and_writes_deterministic_schema(tmp_results
     block.mkdir(parents=True)
     pd.DataFrame(
         {
+            "root_seed": [123, 123],
+            "k": [2, 2],
+            "shuffle_index": [4, 4],
+            "game_index": [0, 1],
+            "deterministic_batch_id": [1, 1],
+            "shuffle_seed": [987, 987],
             "winner": ["P2", "P1"],
             "P1_strategy": ["10", "30"],
             "P2_strategy": ["20", "40"],
             "n_rounds": [3, 4],
             "winning_score": [10000, 9000],
             "game_seed": [111, 222],
+            "rng_scheme_version": [1, 1],
+            "rng_purpose_namespace": [102, 102],
+            "P1_n_turns": [3, 4],
+            "P2_n_turns": [2, 4],
         }
     ).to_parquet(block / "2p_rows.parquet", index=False)
 
@@ -489,6 +497,12 @@ def test_process_block_coerces_types_and_writes_deterministic_schema(tmp_results
     assert pd.api.types.is_integer_dtype(result["P2_strategy"].dtype)
     assert pd.api.types.is_integer_dtype(result["winner_strategy"].dtype)
     assert result["winner_strategy"].tolist() == [20, 30]
+    assert result["root_seed"].tolist() == [123, 123]
+    assert result["k"].tolist() == [2, 2]
+    assert result["shuffle_index"].tolist() == [4, 4]
+    assert result["game_index"].tolist() == [0, 1]
+    assert result["deterministic_batch_id"].tolist() == [1, 1]
+    assert result["P1_n_turns"].tolist() == [3, 4]
 
 
 def test_process_block_rejects_malformed_partial_schema_set(
@@ -697,7 +711,6 @@ def test_run_writes_stage_done_when_stage_not_up_to_date(tmp_results_dir, monkey
     assert kwargs["inputs"] == [marker]
 
 
-
 def test_ingest_upstream_inputs_directory_mtime_tracks_child_file_changes(tmp_path):
     results_root = tmp_path / "results"
     block = results_root / "2_players"
@@ -748,6 +761,7 @@ def test_stage_freshness_directory_mtime_invalidates_when_child_file_changes(tmp
         stage_config_sha="ingest-cache",
     )
 
+
 def test_run_emits_logging(tmp_results_dir, caplog):
     cfg = _make_cfg(tmp_results_dir)
     block = cfg.results_root / "2_players"
@@ -760,8 +774,9 @@ def test_run_emits_logging(tmp_results_dir, caplog):
     caplog.set_level(logging.INFO, logger="farkle.analysis.ingest")
     run(cfg)
 
-    assert any("Ingest started" in rec.message and rec.levelname == "INFO" for rec in caplog.records)
     assert any(
-        "Ingest block complete" in rec.message and rec.levelname == "INFO"
-        for rec in caplog.records
+        "Ingest started" in rec.message and rec.levelname == "INFO" for rec in caplog.records
+    )
+    assert any(
+        "Ingest block complete" in rec.message and rec.levelname == "INFO" for rec in caplog.records
     )

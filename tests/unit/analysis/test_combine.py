@@ -27,6 +27,12 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
         schema1,
         [
             {
+                "root_seed": 41,
+                "k": 1,
+                "shuffle_index": 0,
+                "game_index": 0,
+                "deterministic_batch_id": 0,
+                "shuffle_seed": 401,
                 "winner_seat": "P1",
                 "winner_strategy": 11,
                 "game_seed": 101,
@@ -46,6 +52,12 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
         schema2,
         [
             {
+                "root_seed": 41,
+                "k": 2,
+                "shuffle_index": 3,
+                "game_index": 0,
+                "deterministic_batch_id": 1,
+                "shuffle_seed": 402,
                 "winner_seat": "P1",
                 "winner_strategy": 22,
                 "game_seed": 202,
@@ -80,6 +92,37 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
     assert schema.field("winner_strategy").type == pa.int32()
     assert schema.field("P1_strategy").type == pa.int32()
     assert schema.field("n_rounds").type == pa.int16()
+    concatenated = pq.read_table(out).select(
+        [
+            "root_seed",
+            "k",
+            "shuffle_index",
+            "game_index",
+            "deterministic_batch_id",
+            "shuffle_seed",
+            "winner_strategy",
+        ]
+    )
+    assert concatenated.to_pylist() == [
+        {
+            "root_seed": 41,
+            "k": 1,
+            "shuffle_index": 0,
+            "game_index": 0,
+            "deterministic_batch_id": 0,
+            "shuffle_seed": 401,
+            "winner_strategy": 11,
+        },
+        {
+            "root_seed": 41,
+            "k": 2,
+            "shuffle_index": 3,
+            "game_index": 0,
+            "deterministic_batch_id": 1,
+            "shuffle_seed": 402,
+            "winner_strategy": 22,
+        },
+    ]
 
     # Invariants: atomic writer leaves only finalized files.
     assert not list(cfg.combine_combined_dir().glob("*.tmp"))
@@ -254,9 +297,7 @@ def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: 
     partition_done = cfg.combine_stage_dir / "combine_partition_2p.done.json"
     assert partition_file.exists()
     assert sidecar_path(partition_file).exists()
-    validate_artifact_sidecar(
-        partition_file, expected={"scope": "by_k", "operation": "combine"}
-    )
+    validate_artifact_sidecar(partition_file, expected={"scope": "by_k", "operation": "combine"})
     assert partition_done.exists()
 
 
@@ -269,6 +310,12 @@ def test_combine_rerun_replaces_partition_and_combined_manifests(tmp_results_dir
         schema2,
         [
             {
+                "root_seed": 41,
+                "k": 2,
+                "shuffle_index": 3,
+                "game_index": 0,
+                "deterministic_batch_id": 1,
+                "shuffle_seed": 402,
                 "winner_seat": "P1",
                 "winner_strategy": 22,
                 "game_seed": 202,
@@ -289,7 +336,9 @@ def test_combine_rerun_replaces_partition_and_combined_manifests(tmp_results_dir
     cfg.config_sha = "sha-two"
     combine.run(cfg)
 
-    partition_manifest = cfg.combine_stage_dir / "partition_manifests" / "2p_partition.manifest.jsonl"
+    partition_manifest = (
+        cfg.combine_stage_dir / "partition_manifests" / "2p_partition.manifest.jsonl"
+    )
     combined_manifest = cfg.combined_manifest_path()
     partition_lines = partition_manifest.read_text(encoding="utf-8").splitlines()
     combined_lines = combined_manifest.read_text(encoding="utf-8").splitlines()

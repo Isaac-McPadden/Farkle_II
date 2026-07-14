@@ -13,9 +13,17 @@ import pyarrow as pa
 
 # ---------- static pieces -------------------------------------------------
 _BASE_FIELDS: Final[list[pa.Field]] = [
+    pa.field("root_seed", pa.int64()),
+    pa.field("k", pa.int16()),
+    pa.field("shuffle_index", pa.int64()),
+    pa.field("game_index", pa.int32()),
+    pa.field("deterministic_batch_id", pa.int32()),
+    pa.field("shuffle_seed", pa.int64()),
     pa.field("winner_seat", pa.string()),  # P{n} label of the winner
     pa.field("winner_strategy", pa.int32()),  # strategy id of the winner
     pa.field("game_seed", pa.int64()),  # RNG seed for the game
+    pa.field("rng_scheme_version", pa.int16()),
+    pa.field("rng_purpose_namespace", pa.int32()),
     pa.field("seat_ranks", pa.list_(pa.string())),  # ["P7","P1","P3",...]
     pa.field("winning_score", pa.int32()),
     pa.field("n_rounds", pa.int16()),
@@ -34,6 +42,8 @@ _SEAT_TEMPLATE: Final[dict[str, pa.DataType]] = {
     "smart_one_uses": pa.int16(),
     "n_smart_one_dice": pa.int16(),
     "hot_dice": pa.int16(),  # counts of hot-dice used this game
+    "n_turns": pa.int16(),
+    "hit_max_rounds": pa.bool_(),
     # add/remove seat-level cols here once
 }
 

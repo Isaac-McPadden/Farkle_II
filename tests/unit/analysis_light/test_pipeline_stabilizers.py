@@ -76,7 +76,9 @@ def test_ingest_golden_dataset(analysis_config, caplog, golden_dataset):
         .to_dict()
     )
     assert observed_strategies == expected_strategies
-    assert df.apply(lambda row: row["seat_ranks"] == [row["winner_seat"]], axis=1).all()
+    assert [list(value) for value in df["seat_ranks"]] == golden_dataset.dataframe[
+        "seat_ranks"
+    ].tolist()
     expected = golden_dataset.dataframe["winner"].value_counts().to_dict()
     assert df["winner_seat"].value_counts().to_dict() == expected
 
