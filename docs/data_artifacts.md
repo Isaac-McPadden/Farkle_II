@@ -205,6 +205,10 @@ The pre-scheduling two-player family is published under
 - `root_order_counts.parquet`
 - `combined_order_counts.parquet`
 - `pairwise_inference.parquet`
+- `dominance_edges.parquet`
+- `cycle_groups.parquet`
+- `dominance_fronts.parquet`
+- `dominance_summary.json`
 
 The membership table records every canonical win-rate and TrueSkill source
 rank, method-list membership, protected control/diagnostic status, admission
@@ -243,6 +247,18 @@ adjustment, practical threshold, and decision class are all recorded.
 The balanced A-win rate is retained only as an equality-checked point-estimate
 alias for `0.5 + d_AB`. Equivalence is emitted only when an explicit margin is
 configured; nonsignificance otherwise remains unresolved.
+
+Practical and statistical dominance are separate directed graphs. Strongly
+connected groups remain explicit in `cycle_groups.parquet` and are collapsed
+only to construct each condensation DAG. Fronts are repeated zero-indegree
+layers of that DAG; strategies in the same cycle remain separate rows in the
+same front. Within-front order uses round-robin mean, practical wins/losses,
+tournament score, and stable identifier solely for display and adds no
+inferential edge.
+
+`dominance_summary.json` permits a unique-best claim only when one strategy has
+a direct practical-dominance edge to every other frozen finalist. Neither a
+front position nor a path through other strategies satisfies that rule.
 
 ### Coverage and game stats
 

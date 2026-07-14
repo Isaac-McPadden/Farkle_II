@@ -1520,6 +1520,26 @@ class AppConfig:
 
         return self.h2h_2p_dir() / "pairwise_inference.parquet"
 
+    def h2h_dominance_edges_path(self) -> Path:
+        """Practical and statistical directed dominance edges."""
+
+        return self.h2h_2p_dir() / "dominance_edges.parquet"
+
+    def h2h_cycle_groups_path(self) -> Path:
+        """Strongly connected practical and statistical cycle groups."""
+
+        return self.h2h_2p_dir() / "cycle_groups.parquet"
+
+    def h2h_dominance_fronts_path(self) -> Path:
+        """Condensation-DAG fronts with display-only within-front order."""
+
+        return self.h2h_2p_dir() / "dominance_fronts.parquet"
+
+    def h2h_dominance_summary_path(self) -> Path:
+        """Cycle, unresolved, and unique-best claim summary."""
+
+        return self.h2h_2p_dir() / "dominance_summary.json"
+
     def legacy_metrics_isolated_path(self, k: int) -> Path:
         """Legacy isolated metrics parquet path under ``analysis/data``."""
 

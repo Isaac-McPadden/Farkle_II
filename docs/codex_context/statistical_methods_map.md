@@ -226,6 +226,22 @@ For every statistical claim, review in this order:
   null statistic, score interval, raw root combination, alias identity, Holm,
   practical/statistical/unresolved classes, optional equivalence, and balance
   rejection.
+- Dominance code: `src/farkle/analysis/dominance.py`.
+- Graphs: practical edges require simultaneous practical bounds; statistical
+  edges require Holm rejection. Unresolved and equivalent comparisons create no
+  edge in either graph.
+- Cycles and fronts: strongly connected groups remain explicit and are
+  contracted only for condensation-DAG construction. Repeated zero-indegree
+  layers define partial fronts; they do not imply a total inferential order.
+- Display order: round-robin mean, practical wins/losses, tournament score, and
+  stable identifier order rows within a front only. The artifact explicitly
+  marks that order noninferential.
+- Unique best: permitted only for direct practical dominance over every other
+  frozen finalist; paths, front membership, and descriptive scores are
+  insufficient.
+- Tests: `tests/unit/analysis/test_dominance.py` covers cycles, condensation
+  fronts, unresolved comparisons, direct unique-best evidence, complete pair
+  support, and identifier-renaming invariance.
 - Code: `src/farkle/analysis/head2head.py`,
   `src/farkle/analysis/run_bonferroni_head2head.py`,
   `src/farkle/analysis/h2h_analysis.py`.
