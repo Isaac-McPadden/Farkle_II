@@ -121,7 +121,6 @@ def test_resolve_log_file_for_run(tmp_path: Path):
 def test_resolve_log_file_for_two_seed_pipeline(tmp_path: Path):
     cfg = cli_main.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
-    cfg.sim.seed_pair = (3, 7)
     cfg.sim.seed_list = [3, 7]
 
     parser = cli_main.build_parser()

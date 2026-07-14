@@ -1437,6 +1437,13 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                         for k, v in (val or {}).items()
                     }
 
+            if (
+                annotation is not None
+                and get_origin(annotation) is tuple
+                and isinstance(val, (list, tuple))
+            ):
+                val = tuple(val)
+
             # Path coercion (works for nested too because we use type hints)
             if (isinstance(current, Path) or _annotation_contains(annotation, Path)) and isinstance(
                 val, (str, Path)

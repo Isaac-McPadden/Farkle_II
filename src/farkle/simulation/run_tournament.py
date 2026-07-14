@@ -247,7 +247,7 @@ def _play_shuffle(task: ShuffleTask | int) -> Counter[int | str]:
     return wins
 
 
-def _run_chunk(shuffle_tasks: Sequence[ShuffleTask]) -> Counter[int | str]:
+def _run_chunk(shuffle_tasks: Sequence[ShuffleTask | int]) -> Counter[int | str]:
     """Play a batch of shuffles and tally wins.
 
     Parameters
@@ -306,7 +306,7 @@ def _run_chunk_item(
 
 
 def _run_chunk_metrics(
-    shuffle_tasks: Sequence[ShuffleTask],
+    shuffle_tasks: Sequence[ShuffleTask | int],
     *,
     collect_rows: bool = False,
     row_dir: Path | None = None,

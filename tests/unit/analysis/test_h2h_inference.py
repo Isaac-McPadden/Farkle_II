@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any, cast
 
 import pandas as pd
 import pyarrow as pa
@@ -136,17 +137,20 @@ def test_score_interval_contains_observed_difference() -> None:
 
 def test_score_test_and_interval_match_statsmodels_oracles() -> None:
     observed = two_proportion_score_test(73, 120, 51, 115)
-    expected = statsmodels_score_test(
-        73,
-        120,
-        51,
-        115,
-        value=0,
-        method="score",
-        compare="diff",
-        alternative="two-sided",
-        correction=False,
-        return_results=True,
+    expected = cast(
+        Any,
+        statsmodels_score_test(
+            73,
+            120,
+            51,
+            115,
+            value=0,
+            method="score",
+            compare="diff",
+            alternative="two-sided",
+            correction=False,
+            return_results=True,
+        ),
     )
     expected_interval = confint_proportions_2indep(
         73,

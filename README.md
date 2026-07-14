@@ -1,266 +1,152 @@
 # Farkle Mk II
 
-Farkle Mk II is a Monte Carlo simulation and analytics toolkit for large
-Farkle tournaments. It provides a deterministic simulation engine, a unified
-CLI, stage-aware analysis paths, and resumable artifact handling.
+Farkle Mk II is a deterministic Monte Carlo simulation and statistical
+analysis toolkit for comparing Farkle strategies over a finite configured
+strategy grid.
 
-## Highlights
+## Core contracts
 
-- Deterministic single-game and tournament simulation driven by explicit seeds.
-- Unified `farkle` CLI for simulation, benchmarking, watching games, analysis,
-  and two-seed orchestration.
-- Stage-aware `AppConfig` helpers that resolve canonical output paths without
-  hard-coding numbered analysis directories.
-- Streaming-friendly parquet outputs, append-only manifests, and `.done.json`
-  stage stamps for resumable workflows.
-- Config-driven analytics including coverage, game stats, TrueSkill,
-  frequentist tiering, head-to-head analysis, HGB modeling, variance, meta,
-  agreement, and interseed summaries.
+- NumPy `PCG64DXSM` streams are derived from stable experiment coordinates.
+- Simulation and analysis work is resumable and written atomically.
+- Paths come from `AppConfig`; consumers validate canonical scope and sidecars.
+- Large row sets are streamed or partitioned.
+- Chance baselines are `1/k` for k-player games.
+- Cross-k performance requires complete configured support.
+- Screening, H2H inference, dominance, and display ordering remain distinct.
+
+See [configuration](docs/config_reference.md),
+[artifacts](docs/data_artifacts.md), [RNG](docs/rng_contract.md), and
+[turn/row](docs/turn_and_row_contract.md) for the full contracts.
 
 ## Installation
 
-Requires Python 3.12 or newer.
+Python 3.12 or newer is required.
 
-```bash
-pip install farkle
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python -m pip install -e ".[dev]"
 ```
 
-## Unified Configuration
+## Configuration
 
-All CLI workflows load a single YAML document into `farkle.config.AppConfig`.
-The top-level sections are:
+All workflows load YAML into `farkle.config.AppConfig`. Current top-level
+sections are:
 
-- `io`
-- `sim`
-- `analysis`
-- `ingest`
-- `combine`
-- `metrics`
-- `trueskill`
-- `head2head`
-- `hgb`
-- `orchestration`
+`io`, `sim`, `analysis`, `ingest`, `combine`, `trueskill`, `head2head`, `hgb`,
+`orchestration`, `rng`, `screening`, `batching`, `robustness`,
+`artifact_contract`, and `k_aggregation`.
 
-Important seed semantics:
-
-- `sim.seed_list` is the canonical seed container.
-- Single-seed commands expect one seed.
-- Two-seed orchestration expects two seeds.
-- `sim.seed` and `sim.seed_pair` are still supported for compatibility, but
-  `seed_list` is the source of truth when present.
-
-Path semantics:
-
-- `io.results_dir_prefix` is rooted under `data/` unless it is already absolute.
-- Single-seed results are written to `data/<results_dir_prefix>_seed_<seed>`.
-- Analysis stage folders are assigned by `StageLayout` at runtime. Use
-  `AppConfig` helpers such as `cfg.stage_dir("metrics")`,
-  `cfg.metrics_input_path("metrics.parquet")`, and
-  `cfg.head2head_path("bonferroni_pairwise.parquet")` instead of manual string
-  concatenation.
-
-See [docs/config_reference.md](docs/config_reference.md) for a fuller config
-summary.
+Example:
 
 ```yaml
-# configs/fast_config.yaml
-io:
-  results_dir_prefix: results/fast
-
 sim:
-  n_players_list: [5]
-  num_shuffles: 300
-  seed_list: [42]
-  n_jobs: 6
-  expanded_metrics: false
-  row_dir: data/results/fast_seed_42/rows
+  seed_list: [42, 43]
+  n_players_list: [2, 4]
 
-analysis:
-  log_level: INFO
+screening:
+  practical_delta_by_k: {2: 0.03, 4: 0.03}
+  delta_across_k: 0.03
 
-ingest:
-  n_jobs: 4
-  row_group_size: 64000
-
-orchestration:
-  parallel_seeds: false
+k_aggregation:
+  method: equal-k
 ```
 
-Configuration overlays passed with `--config` are merged in order. Inline
-overrides use dotted keys that match the dataclass structure, for example:
+Unknown and retired keys are rejected with migration guidance. Inline
+overrides use current dotted keys:
 
-```bash
-farkle --config configs/fast_config.yaml --set sim.n_jobs=12 --set sim.seed=123 run
+```powershell
+farkle --config configs/fast_config.yaml --set sim.n_jobs=8 run
 ```
 
-## CLI Commands
+## CLI
 
 ```text
 farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
 ```
 
-Global options:
+Commands:
 
-- `--config PATH` loads one YAML overlay.
-- `--set SECTION.OPTION=VALUE` overrides a single config field.
-- `--log-level LEVEL` sets the root logging level.
-- `--seed-a`, `--seed-b`, and `--seed-pair A B` override the active two-seed
-  tuple for orchestration commands.
+- `run`: simulate the configured root and player counts.
+- `time`: benchmark simulation throughput.
+- `watch`: replay one interactive deterministic game.
+- `analyze ingest|curate|combine|metrics|preprocess`: run a focused root stage.
+- `analyze pipeline`: run the complete standalone-root workflow, including its
+  explicitly labelled H2H tail.
+- `analyze analytics`: run the same canonical standalone-root analysis from
+  existing inputs.
+- `two-seed-pipeline`: run both root workflows, then execute the root-pair tail
+  exactly once at the pair analysis root.
 
-### `run`
+Global root overrides are `--seed-a`, `--seed-b`, and `--seed-pair A B`.
+Long workflows accept `--force` where recomputation is supported.
 
-Launch the tournament runner using `cfg.sim`.
+## Workflow ownership
 
-- `--metrics` forces `cfg.sim.expanded_metrics = True`.
-- `--row-dir PATH` writes full per-game rows to that directory.
-- `--force` recomputes even when resumable run artifacts already exist.
+The root workflow is:
 
-```bash
-farkle --config configs/fast_config.yaml \
-  --set sim.seed=123 \
-  --set sim.num_shuffles=200 \
-  run --metrics --row-dir data/results/fast_seed_123/rows
-```
+1. ingest;
+2. curate;
+3. row concatenation;
+4. all-player metrics and performance;
+5. game, seat, RNG, and roll diagnostics;
+6. TrueSkill and HGB;
+7. descriptive screening;
+8. stop.
 
-### `time`
+The root-pair workflow is:
 
-Benchmark simulation throughput.
+1. raw-count root combination and stability;
+2. TrueSkill candidate contribution;
+3. candidate freeze;
+4. H2H power planning and block execution;
+5. seat-adjusted inference;
+6. dominance digestion;
+7. agreement;
+8. reporting.
 
-- `--players INT` sets players per game.
-- `--n-games INT` sets the number of simulated games.
-- `--jobs INT` sets the parallel worker count.
-- `--seed INT` sets the benchmark seed.
+A standalone root appends the same H2H tail under its own `h2h_2p` scope and
+labels outputs `single_root`. A two-root run never executes H2H independently
+inside either root workflow.
 
-### `watch`
+## Artifacts
 
-Interactively watch a single game.
+Canonical derived scopes are `by_k`, `concat_ks`, `across_k`, `cross_seed`,
+`diagnostics`, and `h2h_2p`. Every derived artifact has exactly one adjacent
+hash-bound sidecar. The only lifecycle states are `not_started`,
+`partial_resumable`, `complete_valid`, `complete_stale`, and
+`blocked_by_cap`.
 
-- `--seed INT` locks the RNG for deterministic replays.
-
-### `analyze`
-
-Run analysis helpers against the current `AppConfig`.
-
-Subcommands:
-
-- `ingest`
-- `curate`
-- `combine`
-- `metrics`
-- `variance`
-- `preprocess`
-- `pipeline`
-- `analytics`
-
-Shared analysis flags:
-
-- `metrics`, `preprocess`, and `pipeline` accept
-  `--compute-game-stats`, `--rng-diagnostics`, `--rng-lags`,
-  `--margin-thresholds`, `--rare-event-target`,
-  `--rare-event-margin-quantile`, and `--rare-event-target-rate`.
-- `pipeline` and `analytics` accept `--allow-missing-upstream`.
-- `variance` accepts `--force`.
-
-The current default single-seed stage layout resolves to:
-
-```text
-00_ingest
-01_curate
-02_combine
-03_metrics
-04_coverage_by_k
-05_game_stats
-06_seed_summaries
-07_trueskill
-08_tiering
-09_head2head
-10_seed_symmetry
-11_post_h2h
-12_hgb
-13_variance
-14_meta
-15_h2h_tier_trends
-16_agreement
-17_interseed
-```
-
-Do not hard-code those numbers in scripts. Read `analysis/config.resolved.yaml`
-or resolve paths through `AppConfig`.
-
-```bash
-farkle --config configs/fast_config.yaml analyze pipeline --compute-game-stats
-```
-
-### `two-seed-pipeline`
-
-Run simulations and per-seed analysis for both entries in `sim.seed_list`, then
-run the interseed comparison stages.
-
-- `--force` recomputes even when completion markers exist.
-
-```bash
-farkle --config configs/fast_config.yaml two-seed-pipeline --seed-pair 42 43
-```
-
-Module execution is also available for the orchestration entry point:
-
-```bash
-python -m farkle.orchestration.two_seed_pipeline --config configs/fast_config.yaml
-```
-
-## Pipeline Metadata
-
-The pipeline writes:
-
-- `active_config.yaml` under each results root.
-- `analysis/config.resolved.yaml` for the resolved analysis configuration.
-- Append-only manifest files (`manifest.jsonl` by default).
-- `.done.json` stage stamps carrying `config_sha`, `stage_config_sha`, and
-  `cache_key_version`.
-
-Cache reuse is stage-scoped. Unrelated config edits should not invalidate every
-analysis stage.
-
-## Direct Engine Usage
-
-```python
-from farkle.game.engine import FarkleGame, FarklePlayer
-from farkle.simulation.strategies import ThresholdStrategy
-
-players = [
-    FarklePlayer("P1", ThresholdStrategy()),
-    FarklePlayer("P2", ThresholdStrategy(score_threshold=450)),
-]
-
-game = FarkleGame(players)
-summary = game.play()
-print(summary.game)
-```
-
-## Repository Layout
-
-- `src/farkle` - core package code
-- `configs` - configuration presets
-- `docs` - project documentation
-- `tests` - unit and integration tests
-- `notebooks` - exploratory analysis
-- `data` - sample datasets and generated outputs
+Old on-disk results may remain for inspection. Current consumers ignore them;
+the migration report inventories them without deleting user data.
 
 ## Development
 
-Install dev dependencies and run checks:
+Use the repository virtual environment:
 
-```bash
-pip install -e .[dev]
-ruff .
-black --check .
-mypy
-pytest
+```powershell
+.\.venv\Scripts\python -m pytest
+.\.venv\Scripts\python -m ruff check .
+.\.venv\Scripts\python -m black --check .
+.\.venv\Scripts\python -m mypy src
+.\.venv\Scripts\python -m pyright
+.\.venv\Scripts\python scripts/check_terminology.py
+.\.venv\Scripts\python scripts/check_structure_release.py
 ```
 
-Typing notes: `mypy` is configured to check `src/farkle` only. Tests are not
-part of the strict typing target.
+The interrupted/resumed two-root structural oracle is
+`tests/integration/test_structure_toy_oracle.py`.
+
+## Repository layout
+
+- `src/farkle/game`: rules and game engine
+- `src/farkle/simulation`: workload planning and simulation
+- `src/farkle/analysis`: canonical estimators, diagnostics, H2H, and reports
+- `src/farkle/orchestration`: root and root-pair contexts
+- `src/farkle/utils`: RNG, atomic I/O, sidecars, manifests, and shared helpers
+- `configs`: validated runnable presets
+- `tests`: unit and integration oracles
+- `docs`: contracts and Codex orientation
 
 ## License
 
-This project is licensed under the Apache 2.0 License.
+Apache License 2.0.

@@ -227,17 +227,29 @@ def test_reduce_metric_chunk_payloads_is_deterministic() -> None:
         dict[str, dict[int | str, float]],
         dict[str, dict[int | str, float]],
     ]:
-        sums = {label: defaultdict(float, {"A": value}) for label in rt.METRIC_LABELS}
-        sqs = {label: defaultdict(float, {"A": value * value}) for label in rt.METRIC_LABELS}
+        sums: dict[str, dict[int | str, float]] = {
+            label: defaultdict(float, {"A": value}) for label in rt.METRIC_LABELS
+        }
+        sqs: dict[str, dict[int | str, float]] = {
+            label: defaultdict(float, {"A": value * value}) for label in rt.METRIC_LABELS
+        }
         return sums, sqs
 
     collected_in_completion_order = {2: _chunk_payload(0.1), 1: _chunk_payload(0.2)}
     collected_in_reverse_completion_order = {1: _chunk_payload(0.2), 2: _chunk_payload(0.1)}
 
-    sums_a = {label: defaultdict(float) for label in rt.METRIC_LABELS}
-    sqs_a = {label: defaultdict(float) for label in rt.METRIC_LABELS}
-    sums_b = {label: defaultdict(float) for label in rt.METRIC_LABELS}
-    sqs_b = {label: defaultdict(float) for label in rt.METRIC_LABELS}
+    sums_a: dict[str, dict[int | str, float]] = {
+        label: defaultdict(float) for label in rt.METRIC_LABELS
+    }
+    sqs_a: dict[str, dict[int | str, float]] = {
+        label: defaultdict(float) for label in rt.METRIC_LABELS
+    }
+    sums_b: dict[str, dict[int | str, float]] = {
+        label: defaultdict(float) for label in rt.METRIC_LABELS
+    }
+    sqs_b: dict[str, dict[int | str, float]] = {
+        label: defaultdict(float) for label in rt.METRIC_LABELS
+    }
 
     rt._reduce_metric_chunk_payloads(collected_in_completion_order, sums_a, sqs_a)
     rt._reduce_metric_chunk_payloads(collected_in_reverse_completion_order, sums_b, sqs_b)

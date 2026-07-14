@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -28,8 +29,8 @@ def _cfg(tmp_path: Path) -> AppConfig:
     return cfg
 
 
-def _metric_row(k: int, batch: int, strategy: int, wins: int, exposures: int) -> dict:
-    row = {field.name: 0 for field in all_player_batch_schema()}
+def _metric_row(k: int, batch: int, strategy: int, wins: int, exposures: int) -> dict[str, object]:
+    row: dict[str, object] = {field.name: 0 for field in all_player_batch_schema()}
     row.update(
         {
             "root_seed": 11,
@@ -100,24 +101,24 @@ def test_canonical_performance_estimators_and_support_contract(tmp_path: Path) -
     for k, frame in by_k.items():
         assert frame["chance_baseline"].unique().tolist() == pytest.approx([1 / k])
         assert frame["practical_delta_by_k"].unique().tolist() == pytest.approx([0.03])
-        assert (frame["raw_exposures"] > 0).all()
-        assert (frame["wilson_interval_width"] > 0).all()
+        assert bool((frame["raw_exposures"] > 0).all())
+        assert bool((frame["wilson_interval_width"] > 0).all())
     k2_strategy1 = by_k[2].set_index("strategy").loc[1]
-    assert k2_strategy1["win_rate"] == pytest.approx(0.7)
-    assert k2_strategy1["chance_delta"] == pytest.approx(0.2)
-    assert k2_strategy1["batch_mcse"] == pytest.approx(0.1)
+    assert cast(float, k2_strategy1["win_rate"]) == pytest.approx(0.7)
+    assert cast(float, k2_strategy1["chance_delta"]) == pytest.approx(0.2)
+    assert cast(float, k2_strategy1["batch_mcse"]) == pytest.approx(0.1)
 
     across = pq.read_table(artifacts.across_k).to_pandas().set_index("strategy")
     expected_score = (0.2 + 0.10 + ((27 / 200) - 1 / 12)) / 3
-    assert across.loc[1, "equal_k_score"] == pytest.approx(expected_score)
-    assert across.loc[1, "practical_delta_across_k"] == pytest.approx(0.03)
+    assert cast(float, across.loc[1, "equal_k_score"]) == pytest.approx(expected_score)
+    assert cast(float, across.loc[1, "practical_delta_across_k"]) == pytest.approx(0.03)
     expected_mcse = ((0.1**2 + 0.05**2 + 0.005**2) / 9) ** 0.5
-    assert across.loc[1, "equal_k_mcse"] == pytest.approx(expected_mcse)
-    assert bool(across.loc[1, "pareto_member"])
-    assert bool(across.loc[1, "maximin_leader"])
-    assert across.loc[1, "worst_k"] == 12
-    assert not bool(across.loc[3, "complete_support"])
-    assert pd.isna(across.loc[3, "equal_k_score"])
+    assert cast(float, across.loc[1, "equal_k_mcse"]) == pytest.approx(expected_mcse)
+    assert cast(bool, across.loc[1, "pareto_member"])
+    assert cast(bool, across.loc[1, "maximin_leader"])
+    assert cast(int, across.loc[1, "worst_k"]) == 12
+    assert not cast(bool, across.loc[3, "complete_support"])
+    assert cast(bool, pd.isna(across.loc[3, "equal_k_score"]))
 
     bootstrap = pq.read_table(artifacts.bootstrap).to_pandas().set_index("strategy")
     assert bootstrap.loc[1, "top_n_inclusion_probability"] == pytest.approx(1.0)
@@ -125,7 +126,7 @@ def test_canonical_performance_estimators_and_support_contract(tmp_path: Path) -
     contrasts = pq.read_table(artifacts.control_contrasts).to_pandas()
     observed = contrasts.loc[contrasts["strategy"] == 1].iloc[0]
     assert observed["observed_equal_k_contrast"] == pytest.approx(
-        across.loc[1, "equal_k_score"] - across.loc[2, "equal_k_score"]
+        cast(float, across.loc[1, "equal_k_score"]) - cast(float, across.loc[2, "equal_k_score"])
     )
 
     player_count = pq.read_table(artifacts.player_count_effects).to_pandas()

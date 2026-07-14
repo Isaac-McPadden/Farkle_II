@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+from typing import cast
 
 import numpy as np
 import pandas as pd
+import pyarrow.dataset as ds
 
 from farkle.analysis import rng_diagnostics
+from farkle.utils.progress import ScheduledProgressLogger
 
 
 class _StubProgressLogger:
@@ -63,7 +66,7 @@ def test_iter_prepared_and_melted_batches_skip_empty_batches() -> None:
 
     prepared = list(
         rng_diagnostics._iter_prepared_batches(
-            dataset,
+            cast(ds.Dataset, dataset),
             columns=["game_seed", "n_rounds", "winner_seat", "P1_strategy", "P2_strategy"],
             winner_col="winner_seat",
             strat_cols=["P1_strategy", "P2_strategy"],
@@ -73,7 +76,7 @@ def test_iter_prepared_and_melted_batches_skip_empty_batches() -> None:
     )
     melted = list(
         rng_diagnostics._iter_melted_batches(
-            dataset,
+            cast(ds.Dataset, dataset),
             columns=["game_seed", "n_rounds", "winner_seat", "P1_strategy", "P2_strategy"],
             winner_col="winner_seat",
             strat_cols=["P1_strategy", "P2_strategy"],
@@ -112,7 +115,7 @@ def test_collect_diagnostics_streaming_compact_caps_matchups_and_logs_progress(
             [pd.DataFrame(), batch],
             strat_cols=["P1_strategy", "P2_strategy", "P3_strategy"],
             lags=(1,),
-            progress_logger=progress_logger,
+            progress_logger=cast(ScheduledProgressLogger, progress_logger),
             max_matchup_groups=1,
         )
 
@@ -167,7 +170,7 @@ def test_collect_diagnostics_streaming_matches_batch_implementation() -> None:
     streaming, melted_rows = rng_diagnostics._collect_diagnostics_streaming(
         [melted.iloc[:3].copy(), melted.iloc[3:].copy()],
         lags=(1, 2),
-        progress_logger=progress_logger,
+        progress_logger=cast(ScheduledProgressLogger, progress_logger),
     )
     expected = rng_diagnostics._collect_diagnostics(melted, lags=(1, 2))
 

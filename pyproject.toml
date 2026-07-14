@@ -58,9 +58,12 @@ packages = ["src/farkle"]
 [tool.ruff]
 line-length    = 100
 target-version = "py312"
-extend-select  = ["I", "B", "C4", "SIM", "ARG", "NPY"]
 unsafe-fixes   = true
 src            = ["src"]
+extend-exclude = ["notebooks"]
+
+[tool.ruff.lint]
+extend-select  = ["I", "B", "C4", "SIM", "ARG", "NPY"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["E402", "ARG001", "ARG002", "ARG003", "ARG005"]
@@ -68,6 +71,7 @@ src            = ["src"]
 [tool.black]
 line-length    = 100
 target-version = ["py312"]
+extend-exclude = "notebooks"
 
 [tool.coverage.run]
 branch  = true

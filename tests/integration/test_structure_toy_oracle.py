@@ -17,6 +17,7 @@ from farkle.analysis.candidate_family import freeze_h2h_candidate_family
 from farkle.analysis.dominance import build_dominance_outputs
 from farkle.analysis.h2h_inference import run_h2h_inference
 from farkle.analysis.h2h_schedule import execute_h2h_schedule, plan_h2h_schedule
+from farkle.analysis.release_audit import audit_sidecar_completeness
 from farkle.analysis.root_stability import RootBatchCell, build_two_root_stability
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.analysis.structure_agreement import run as run_structure_agreement
@@ -330,3 +331,4 @@ def test_two_root_multi_k_resume_matches_worker_count_oracle(
         resumed_cfg.migration_report_path(),
     ]
     _assert_one_sidecar(derived)
+    assert audit_sidecar_completeness(resumed_cfg.analysis_dir) == []

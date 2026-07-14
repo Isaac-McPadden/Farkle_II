@@ -1,63 +1,30 @@
 # Codex Context Prompt
 
-Paste the prompt below into a new Codex chat when working on this repository.
-The prompt is intentionally short and tells Codex to use the orientation pack
-as cache, not authority.
-
-## New-Chat Prompt
+Use this prompt in a new Codex conversation for this repository.
 
 ```text
-You are working in the Farkle Mk II repo, a deterministic Monte Carlo
-simulation and statistical analysis project for Farkle strategies.
+You are working in Farkle Mk II, a deterministic Monte Carlo simulation and
+statistical analysis project. Read AGENTS.md and the files under
+docs/codex_context before broad source exploration. Treat those maps as a
+verified orientation cache, then inspect the relevant source before editing.
 
-Before doing broad grep, read these cached orientation docs:
+Preserve these invariants:
+- explicit coordinate-owned PCG64DXSM streams;
+- atomic, idempotent, resumable work;
+- AppConfig-owned paths and only the six canonical artifact scopes;
+- exactly one compatible sidecar for each derived artifact;
+- streaming or partitioned handling for large data;
+- complete root/k support and explicit cross-k weights;
+- separation of descriptive screening, inference, dominance, and display order;
+- current code never reads old on-disk analysis artifacts.
 
-- docs/codex_context/metadata.md
-- docs/codex_context/repo_map.md
-- docs/codex_context/analysis_pipeline_map.md
-- docs/codex_context/statistical_methods_map.md
-- docs/codex_context/testing_and_review_map.md
+Before a statistical change, identify the estimand, conditioning, chance
+baseline, replication unit, uncertainty procedure, multiplicity rule, and
+permitted report claim. Before a recovery change, compare coordinate manifests
+and logical outputs across worker counts and interruption/resume.
 
-Treat those docs as orientation only, not authority. For any code change,
-statistical claim, path behavior, or test conclusion, verify the relevant source
-files directly. Preserve the project invariants from AGENTS.md:
-
-- all randomness is explicit and seeded
-- prefer NumPy/project RNG helpers over hidden ambient randomness
-- stages are idempotent and resumable
-- long writes use atomic helpers and never leave partial outputs
-- output paths are resolved from AppConfig and config, not guessed
-- large data processing should stream or shard rather than materialize
-- reuse helpers in src/farkle/utils before adding ad hoc helpers
-- parallelize when order does not matter
-
-When reviewing statistics, separate:
-
-1. intended statistical method or estimator
-2. implementation fidelity
-3. model assumptions and independence assumptions
-4. artifact/report interpretation
-5. missing tests or hand-check examples
-
-When reviewing tests, distinguish "test passes" from "claim is proven." Prefer
-small hand-checkable examples for statistical code.
-
-Check docs/codex_context/metadata.md for the orientation pack verification
-state, then check git status before editing.
+Check git status before editing and use the repository .venv for validation.
 ```
 
-## Maintenance Rule
-
-Regenerate or update this prompt when any of these change:
-
-- stage registry or stage execution order
-- statistical methods or formulas
-- config seed/path semantics
-- artifact contracts
-- test harness assumptions
-- major source directory ownership
-
-Update `docs/codex_context/metadata.md` whenever this orientation pack is
-regenerated, revalidated against source, or materially corrected after source
-inspection. Do not update the verified commit for ordinary commits unless the
-affected context docs were checked against the relevant source files.
+Update this prompt and `metadata.md` when stage order, statistical contracts,
+path/scope behavior, sidecars, RNG identity, or release gates materially change.

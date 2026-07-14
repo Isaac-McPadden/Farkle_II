@@ -1,146 +1,63 @@
-# Codex Testing And Review Map
+# Codex Testing and Review Map
 
-Generated for Codex orientation. Treat this file as a cache, not authority.
-Always rerun targeted tests or inspect source before accepting conclusions.
+Use `.venv` and distinguish a passing regression test from evidence that a
+statistical claim is valid.
 
-- Sources inspected: `pytest.ini`, `tests/conftest.py`, `tests/FAILURE_NOTES.md`,
-  `tests/helpers`, representative unit/integration test names, existing review
-  checklists
+Exploratory notebooks are archived research records and are excluded from the
+production Ruff and Black gates. Maintained Python source, tests, and scripts
+remain in both gates.
 
-## Test Harness
+## High-value targets
 
-- Pytest config: `pytest.ini`.
-- Test roots: all tests under `tests`.
-- File pattern: `test_*.py`.
-- Markers: `unit`, `integration`.
-- Addopts: `-q -ra`.
-- Strict xfail: enabled.
-- Warning filters suppress selected pandas/numpy FutureWarning and RuntimeWarning
-  noise.
+- Workload/RNG/resume: `tests/unit/simulation/test_workload_planner.py`,
+  `test_run_tournament*.py`, and `tests/unit/utils/test_random.py`.
+- Row/turn arithmetic: `tests/unit/game/test_engine*.py`,
+  `tests/unit/simulation/test_simulation.py`, and
+  `tests/unit/analysis/test_all_player_metrics.py`.
+- Scopes/sidecars/state: `tests/unit/utils/test_artifact_contract.py`,
+  `test_stage_registry.py`, `test_stage_state.py`, and `test_release_audit.py`.
+- Performance/screening: `test_performance.py` and `test_screening.py`.
+- Seat/game/RNG/roll: `test_seat_analysis.py`, `test_game_stats*.py`,
+  `test_rng_diagnostics_branches.py`, and `test_roll_enumeration.py`.
+- TrueSkill/HGB: `test_run_trueskill_*.py`, `test_trueskill_screening.py`, and
+  `test_hgb_feat.py`.
+- Root/H2H/dominance: `test_root_stability.py`, `test_candidate_family.py`,
+  `test_h2h_schedule.py`, `test_h2h_inference.py`, and `test_dominance.py`.
+- Agreement/reporting: `test_structure_agreement.py` and
+  `test_structure_reporting.py`.
+- Full workflow: `tests/integration/test_structure_toy_oracle.py`.
 
-`tests/conftest.py` behavior to remember:
+## Review questions
 
-- Installs compatibility shims for missing optional modules in some cases.
-- Patches numba JIT/NJIT to identity behavior for tests.
-- Provides lightweight scikit-learn stubs if sklearn is absent.
-- Uses freezegun for deterministic timestamps.
-- Autouse seed fixture calls `random.seed(1337)`, creates but does not install a
-  coordinate-owned NumPy generators; production stream identity never depends on Python hashing
-  startup. Do not treat this as seeding ambient `np.random.*` calls or changing
-  hash randomization for the current process.
+For statistical code, verify:
 
-## Useful Test Targets By Task
+1. the declared estimand and conditioning;
+2. formula fidelity on a small hand calculation;
+3. complete root/k support and declared weights;
+4. uncertainty replication unit and dependence assumptions;
+5. multiplicity and decision rule;
+6. sidecar method/scope compatibility;
+7. report language permitted by the evidence.
 
-- Stats helpers: `tests/unit/utils/test_stats.py`,
-  `tests/test_stats_wilson.py`.
-- Descriptive screening: `tests/unit/analysis/test_screening.py`.
-- Meta-analysis: `tests/unit/analysis/test_meta.py`.
-- Variance: `tests/unit/analysis/test_variance.py`,
-  `tests/unit/analysis/test_variance_branch_closure.py`.
-- Head-to-head: `tests/unit/analysis/test_head2head.py`,
-  `tests/unit/analysis/test_run_bonferroni_head2head*.py`,
-  `tests/unit/analysis/test_h2h_analysis.py`.
-- TrueSkill: `tests/unit/analysis/test_run_trueskill_*.py`,
-  `tests/unit/analysis/test_analytics_trueskill.py`.
-- Agreement: `tests/unit/analysis/test_agreement_payload.py`,
-  `tests/unit/analysis/test_agreement_ties.py`.
-- Metrics: `tests/unit/analysis/test_metrics*.py`,
-  `tests/integration/test_metrics_stage.py`,
-  `tests/unit/analysis_light/test_pipeline_stabilizers.py`.
-- Stage/path/cache behavior: `tests/unit/analysis/test_stage_registry.py`,
-  `tests/unit/analysis/test_stage_runner.py`,
-  `tests/unit/analysis/test_stage_state.py`,
-  `tests/unit/analysis/test_artifact_contracts.py`.
-- Simulation and resume: `tests/unit/simulation/test_run_tournament*.py`,
-  `tests/unit/simulation/test_runner*.py`,
-  `tests/unit/simulation/test_workload_planner.py`,
-  `tests/integration/test_run_tournament_integration.py`.
-- Turn accounting and row coordinates: `tests/unit/game/test_engine.py`,
-  `tests/unit/game/test_engine_final_round.py`,
-  `tests/unit/simulation/test_simulation.py`.
-- Game rules: `tests/unit/game/test_scoring*.py`,
-  `tests/unit/game/test_engine*.py`,
-  `tests/integration/test_farkle_integration.py`.
-- Manifests/atomic streaming: `tests/unit/utils/test_manifest*.py`,
-  `tests/unit/utils/test_writer.py`,
-  `tests/unit/utils/test_parallel_files.py`.
+For resumable code, compare coordinate manifests and logical outputs across
+worker counts, interruption, and resume. File byte identity is required where
+the format is deterministic; otherwise compare canonical logical content.
 
-## Evidence Strength
-
-Stronger evidence areas:
-
-- Wilson interval arithmetic has direct expected-value tests.
-- Variance helper arithmetic has explicit small-frame tests.
-- Screening tests include complete-support rejection and explicit checks that
-  no inferential tier columns are emitted.
-- Stage state and registry behavior have focused tests.
-- Manifest and streaming helpers have many edge-case tests.
-
-Qualified evidence areas:
-
-- Many analysis tests assert private helpers and artifact mechanics. They are
-  useful regression tests but not full proof of statistical validity.
-- Integration tests often use synthetic fixtures, patches, or goldens.
-- TrueSkill tests exercise streaming, resume, and aggregation mechanics, but model
-  validity remains a separate review question.
-- Head-to-head tests cover many branches and errors, but final method validity
-  depends on candidate selection, dependence assumptions, and power design.
-
-Known review gaps to check manually:
-
-- Whether every reported uncertainty field has a clearly documented estimator.
-- Whether artifact names using `combined` state the aggregation scope.
-- Whether game-order-dependent TrueSkill outputs are interpreted correctly.
-- Whether head-to-head one-sided simulation p-values and two-sided post-H2H
-  decisions are intentionally distinct.
-- Whether k-player fair baselines use `1/k` rather than `0.5` when appropriate.
-
-## Failure Notes Caveat
-
-`tests/FAILURE_NOTES.md` is dated `2025-11-19T06:47:10Z`. Treat it as historical
-triage, not current truth, until rerunning the suite. It lists old failures in
-CLI, metrics, game engine, simulation metrics, and simulation stats. Verify
-current behavior before relying on it.
-
-## Recommended Review Workflow
-
-For a statistical subsystem:
-
-1. Read the relevant card in `statistical_methods_map.md`.
-2. Read the source files listed in the card.
-3. Extract the intended formula or model assumptions into a short note.
-4. Map each formula term to code.
-5. Build one tiny hand-checkable example.
-6. Run the smallest matching tests.
-7. Decide whether remaining risk is implementation mismatch, model assumption,
-   weak test evidence, or report wording.
-
-For a pipeline/artifact subsystem:
-
-1. Start with `analysis_pipeline_map.md`.
-2. Verify active stage path helpers in `config.py`.
-3. Inspect `.done.json`, manifest, and atomic-write logic.
-4. Run targeted stage-state or artifact-contract tests.
-5. Avoid changing legacy fallback behavior unless the task is explicitly about
-   migration or cleanup.
-
-## Common Commands
-
-Use the repository venv when running locally.
+## Release gates
 
 ```powershell
-.\.venv\Scripts\python -m pytest tests/unit/utils/test_stats.py tests/test_stats_wilson.py
-.\.venv\Scripts\python -m pytest tests/unit/analysis/test_screening.py
-.\.venv\Scripts\python -m pytest tests/unit/analysis/test_meta.py
-.\.venv\Scripts\python -m pytest tests/unit/analysis/test_h2h_analysis.py
-.\.venv\Scripts\python -m pytest tests/unit/analysis/test_run_trueskill_aggregation.py
-.\.venv\Scripts\python -m pytest tests/unit/analysis/test_stage_state.py
-```
-
-For broad checks:
-
-```powershell
+.\.venv\Scripts\python scripts/check_terminology.py
+.\.venv\Scripts\python scripts/check_structure_release.py
+.\.venv\Scripts\python -m pytest tests/integration/test_structure_toy_oracle.py
 .\.venv\Scripts\python -m pytest
 .\.venv\Scripts\python -m ruff check .
-.\.venv\Scripts\python -m mypy
+.\.venv\Scripts\python -m black --check .
+.\.venv\Scripts\python -m mypy src
+.\.venv\Scripts\python -m pyright
 ```
+
+The release audit validates checked-in runnable configs, confirms retired
+source entry points are absent, and checks canonical artifact/sidecar pairing.
+The toy oracle covers two roots, multiple k values, immutable H2H blocks,
+interruption, resume with a different worker count, hashes, decisions, fronts,
+cycles, report claims, and sidecar completeness.

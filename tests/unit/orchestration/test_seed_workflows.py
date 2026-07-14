@@ -10,7 +10,7 @@ import pytest
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, IOConfig, SimConfig, assign_config_sha
 from farkle.orchestration import two_seed_pipeline
-from farkle.orchestration.run_contexts import SeedRunContext
+from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
 
 
 def _context(tmp_path: Path, root: int) -> SeedRunContext:
@@ -112,8 +112,8 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
     )
     _install_root_results(monkeypatch, tmp_path)
-    calls: list[object] = []
-    health: dict[str, object] = {}
+    calls: list[RootPairRunContext] = []
+    health: dict[str, Any] = {}
     monkeypatch.setattr(
         two_seed_pipeline.analysis,
         "run_root_pair_analysis",
@@ -146,7 +146,7 @@ def test_two_seed_pipeline_blocks_pair_tail_after_root_failure(
     )
     _install_root_results(monkeypatch, tmp_path, failed_root=22)
     pair_calls: list[object] = []
-    health: dict[str, object] = {}
+    health: dict[str, Any] = {}
     monkeypatch.setattr(
         two_seed_pipeline.analysis,
         "run_root_pair_analysis",

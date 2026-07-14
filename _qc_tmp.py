@@ -7,19 +7,22 @@ import pyarrow.parquet as pq
 
 from farkle.utils.manifest import iter_manifest
 
-BASE = Path('data/results_seed_pair_4444_4445')
+BASE = Path("data/results_seed_pair_4444_4445")
 issues = []
 summary = {}
+
 
 def log_issue(msg):
     issues.append(msg)
 
+
 def read_json(path):
     try:
-        return json.loads(path.read_text(encoding='utf-8'))
+        return json.loads(path.read_text(encoding="utf-8"))
     except Exception as e:
         log_issue(f"JSON parse failed: {path}: {e}")
         return {}
+
 
 def check_jsonl_run_manifest(path, label):
     if not path.exists():
@@ -31,14 +34,14 @@ def check_jsonl_run_manifest(path, label):
     for rec in iter_manifest(path):
         if not isinstance(rec, dict):
             continue
-        event = rec.get('event')
-        if event == 'run_end':
+        event = rec.get("event")
+        if event == "run_end":
             has_run_end = True
-        if event == 'step_end' and rec.get('ok') is False:
-            bad_steps.append(str(rec.get('step') or rec))
-        if event in {'step_error', 'run_error'}:
-            error_events.append(str(rec.get('step') or rec))
-        if rec.get('ok') is False and event not in {'step_end'}:
+        if event == "step_end" and rec.get("ok") is False:
+            bad_steps.append(str(rec.get("step") or rec))
+        if event in {"step_error", "run_error"}:
+            error_events.append(str(rec.get("step") or rec))
+        if rec.get("ok") is False and event not in {"step_end"}:
             error_events.append(str(rec))
     if not has_run_end:
         log_issue(f"{label} manifest missing run_end event: {path}")
@@ -47,8 +50,10 @@ def check_jsonl_run_manifest(path, label):
     if error_events:
         log_issue(f"{label} manifest has error events: {path}: {error_events[:5]}")
 
+
 def schema_sig(schema):
-    return tuple((name, str(field.type)) for name, field in zip(schema.names, schema))
+    return tuple((name, str(field.type)) for name, field in zip(schema.names, schema, strict=True))
+
 
 def check_parquet(path, label, min_rows=1):
     try:
@@ -61,27 +66,28 @@ def check_parquet(path, label, min_rows=1):
     if min_rows is not None and rows < min_rows:
         log_issue(f"Parquet has too few rows ({label}): {path} rows={rows}")
     return {
-        'rows': rows,
-        'columns': md.num_columns,
-        'schema': schema_sig(pf.schema_arrow),
+        "rows": rows,
+        "columns": md.num_columns,
+        "schema": schema_sig(pf.schema_arrow),
     }
+
 
 def check_rows_dir(row_dir, expected_players):
     result = {
-        'row_dir': str(row_dir),
-        'manifest_entries': 0,
-        'files_on_disk': 0,
-        'manifest_rows': 0,
-        'parquet_rows': 0,
-        'schema_mismatches': 0,
-        'row_mismatches': 0,
-        'missing_files': 0,
-        'extra_files': 0,
-        'dup_paths': 0,
-        'dup_shuffles': 0,
+        "row_dir": str(row_dir),
+        "manifest_entries": 0,
+        "files_on_disk": 0,
+        "manifest_rows": 0,
+        "parquet_rows": 0,
+        "schema_mismatches": 0,
+        "row_mismatches": 0,
+        "missing_files": 0,
+        "extra_files": 0,
+        "dup_paths": 0,
+        "dup_shuffles": 0,
     }
 
-    manifest_path = row_dir / 'manifest.jsonl'
+    manifest_path = row_dir / "manifest.jsonl"
     if not manifest_path.exists():
         log_issue(f"Missing row manifest: {manifest_path}")
         return result
@@ -93,26 +99,26 @@ def check_rows_dir(row_dir, expected_players):
     for rec in iter_manifest(manifest_path):
         if not isinstance(rec, dict):
             continue
-        result['manifest_entries'] += 1
-        path = rec.get('path')
+        result["manifest_entries"] += 1
+        path = rec.get("path")
         if not path:
             log_issue(f"Manifest entry missing path: {manifest_path}: {rec}")
             continue
         if path in manifest_map:
             dup_paths += 1
         manifest_map[path] = rec
-        rows_val = rec.get('rows')
+        rows_val = rec.get("rows")
         if rows_val is not None:
             try:
-                result['manifest_rows'] += int(rows_val)
+                result["manifest_rows"] += int(rows_val)
             except Exception:
                 log_issue(f"Invalid rows value in manifest: {manifest_path}: {rec}")
-        n_players = rec.get('n_players')
+        n_players = rec.get("n_players")
         if n_players is not None and int(n_players) != expected_players:
             log_issue(
                 f"Wrong n_players in manifest {manifest_path}: expected {expected_players}, got {n_players}"
             )
-        shuffle = rec.get('shuffle_seed')
+        shuffle = rec.get("shuffle_seed")
         if shuffle is not None:
             try:
                 shuffle = int(shuffle)
@@ -123,21 +129,21 @@ def check_rows_dir(row_dir, expected_players):
                     dup_shuffles += 1
                 seen_shuffle.add(shuffle)
 
-    result['dup_paths'] = dup_paths
-    result['dup_shuffles'] = dup_shuffles
+    result["dup_paths"] = dup_paths
+    result["dup_shuffles"] = dup_shuffles
 
-    files = [p for p in row_dir.glob('*.parquet') if p.is_file()]
-    result['files_on_disk'] = len(files)
+    files = [p for p in row_dir.glob("*.parquet") if p.is_file()]
+    result["files_on_disk"] = len(files)
     file_set = {p.name for p in files}
 
-    missing_files = [p for p in manifest_map.keys() if p not in file_set]
+    missing_files = [p for p in manifest_map if p not in file_set]
     extra_files = [p for p in file_set if p not in manifest_map]
     if missing_files:
         log_issue(f"Missing parquet files for manifest {manifest_path}: {missing_files[:5]}")
     if extra_files:
         log_issue(f"Extra parquet files not in manifest {manifest_path}: {extra_files[:5]}")
-    result['missing_files'] = len(missing_files)
-    result['extra_files'] = len(extra_files)
+    result["missing_files"] = len(missing_files)
+    result["extra_files"] = len(extra_files)
 
     schema_ref = None
     schema_mismatches = 0
@@ -150,16 +156,16 @@ def check_rows_dir(row_dir, expected_players):
         meta = check_parquet(p, label=f"rows {row_dir.name}", min_rows=1)
         if meta is None:
             continue
-        parquet_rows += int(meta['rows'])
+        parquet_rows += int(meta["rows"])
         if schema_ref is None:
-            schema_ref = meta['schema']
-        elif meta['schema'] != schema_ref:
+            schema_ref = meta["schema"]
+        elif meta["schema"] != schema_ref:
             schema_mismatches += 1
-        exp = manifest_map.get(p.name, {}).get('rows')
+        exp = manifest_map.get(p.name, {}).get("rows")
         if exp is not None:
             try:
                 exp_i = int(exp)
-                if int(meta['rows']) != exp_i:
+                if int(meta["rows"]) != exp_i:
                     row_mismatches += 1
             except Exception:
                 pass
@@ -175,25 +181,25 @@ def check_rows_dir(row_dir, expected_players):
     if small_files:
         log_issue(f"Small row parquet files in {row_dir}: {small_files} files < 1KB")
 
-    result['schema_mismatches'] = schema_mismatches
-    result['row_mismatches'] = row_mismatches
-    result['parquet_rows'] = parquet_rows
+    result["schema_mismatches"] = schema_mismatches
+    result["row_mismatches"] = row_mismatches
+    result["parquet_rows"] = parquet_rows
 
     if size_bytes:
         size_bytes_sorted = sorted(size_bytes)
         med = median(size_bytes_sorted)
-        result['size_min'] = min(size_bytes_sorted)
-        result['size_median'] = int(med)
-        result['size_max'] = max(size_bytes_sorted)
+        result["size_min"] = min(size_bytes_sorted)
+        result["size_median"] = int(med)
+        result["size_max"] = max(size_bytes_sorted)
     return result
 
 
 def check_done_jsons(root):
-    for p in root.rglob('*.done.json'):
+    for p in root.rglob("*.done.json"):
         data = read_json(p)
         if not data:
             continue
-        for key in ('inputs', 'outputs'):
+        for key in ("inputs", "outputs"):
             items = data.get(key)
             if not items:
                 continue
@@ -206,39 +212,42 @@ def check_done_jsons(root):
                 if not path.exists():
                     log_issue(f"Done file references missing {key} path: {p}: {item}")
 
+
 def check_seed(seed_dir, expected_players):
     name = seed_dir.name
     seed_summary = {}
 
-    active_cfg = seed_dir / 'active_config.yaml'
+    active_cfg = seed_dir / "active_config.yaml"
     if not active_cfg.exists():
         log_issue(f"Missing active_config.yaml: {active_cfg}")
 
-    strategy_manifest = seed_dir / 'strategy_manifest.parquet'
+    strategy_manifest = seed_dir / "strategy_manifest.parquet"
     if not strategy_manifest.exists():
         log_issue(f"Missing strategy_manifest.parquet: {strategy_manifest}")
     else:
         meta = check_parquet(strategy_manifest, label=f"{name} strategy_manifest", min_rows=1)
         if meta:
-            cols = [c for c, _ in meta['schema']]
-            if 'strategy_id' not in cols or 'strategy_str' not in cols:
+            cols = [c for c, _ in meta["schema"]]
+            if "strategy_id" not in cols or "strategy_str" not in cols:
                 log_issue(f"Strategy manifest missing required columns: {strategy_manifest}")
 
-    analysis_manifest = seed_dir / 'analysis' / 'manifest.jsonl'
+    analysis_manifest = seed_dir / "analysis" / "manifest.jsonl"
     if analysis_manifest.exists():
         check_jsonl_run_manifest(analysis_manifest, label=f"{name} analysis")
     else:
         log_issue(f"Missing analysis manifest: {analysis_manifest}")
 
-    combine_manifest = seed_dir / 'analysis' / '02_combine' / 'pooled' / 'all_ingested_rows.manifest.jsonl'
-    combine_parquet = seed_dir / 'analysis' / '02_combine' / 'pooled' / 'all_ingested_rows.parquet'
+    combine_manifest = (
+        seed_dir / "analysis" / "02_combine" / "pooled" / "all_ingested_rows.manifest.jsonl"
+    )
+    combine_parquet = seed_dir / "analysis" / "02_combine" / "pooled" / "all_ingested_rows.parquet"
     if combine_parquet.exists() and combine_manifest.exists():
         try:
             manifest_rows = 0
             for rec in iter_manifest(combine_manifest):
                 if not isinstance(rec, dict):
                     continue
-                rows_val = rec.get('rows') or rec.get('row_count')
+                rows_val = rec.get("rows") or rec.get("row_count")
                 if rows_val is None:
                     continue
                 manifest_rows += int(rows_val)
@@ -247,7 +256,7 @@ def check_seed(seed_dir, expected_players):
                 log_issue(
                     f"Combined parquet rows != manifest rows: {combine_parquet} {parquet_rows} != {manifest_rows}"
                 )
-            seed_summary['combined_rows'] = parquet_rows
+            seed_summary["combined_rows"] = parquet_rows
         except Exception as e:
             log_issue(f"Combine manifest check failed: {combine_parquet}: {e}")
     else:
@@ -256,7 +265,7 @@ def check_seed(seed_dir, expected_players):
         if not combine_manifest.exists():
             log_issue(f"Missing combined manifest: {combine_manifest}")
 
-    metrics_parquet = seed_dir / 'analysis' / '03_metrics' / 'pooled' / 'metrics.parquet'
+    metrics_parquet = seed_dir / "analysis" / "03_metrics" / "pooled" / "metrics.parquet"
     if metrics_parquet.exists():
         check_parquet(metrics_parquet, label=f"{name} metrics", min_rows=1)
     else:
@@ -298,33 +307,33 @@ def check_seed(seed_dir, expected_players):
 
 def check_interseed(root):
     check_done_jsons(root)
-    for p in root.rglob('*.json'):
-        if p.name.endswith('.jsonl'):
+    for p in root.rglob("*.json"):
+        if p.name.endswith(".jsonl"):
             continue
         _ = read_json(p)
-    for p in root.rglob('*.parquet'):
-        if any(part.endswith('p_rows') for part in p.parts):
+    for p in root.rglob("*.parquet"):
+        if any(part.endswith("p_rows") for part in p.parts):
             continue
-        check_parquet(p, label='interseed', min_rows=1)
+        check_parquet(p, label="interseed", min_rows=1)
 
 
 if not BASE.exists():
     print(f"Base directory missing: {BASE}")
     sys.exit(1)
 
-check_jsonl_run_manifest(BASE / 'two_seed_pipeline_manifest.jsonl', label='two_seed_pipeline')
+check_jsonl_run_manifest(BASE / "two_seed_pipeline_manifest.jsonl", label="two_seed_pipeline")
 
-for seed in ('results_seed_4444', 'results_seed_4445'):
+for seed in ("results_seed_4444", "results_seed_4445"):
     check_seed(BASE / seed, expected_players=[4, 5])
 
-check_interseed(BASE / 'interseed_analysis')
+check_interseed(BASE / "interseed_analysis")
 
-print('QC summary')
-print('==========')
+print("QC summary")
+print("==========")
 for seed_name, seed_info in summary.items():
     print(f"[{seed_name}]")
     for key, val in seed_info.items():
-        if isinstance(val, dict) and 'row_dir' in val:
+        if isinstance(val, dict) and "row_dir" in val:
             print(
                 f"  {key}: files={val.get('files_on_disk')}, manifest={val.get('manifest_entries')}, "
                 f"parquet_rows={val.get('parquet_rows')}, manifest_rows={val.get('manifest_rows')}, "
@@ -337,11 +346,10 @@ for seed_name, seed_info in summary.items():
             print(f"  {key}: {val}")
 
 if issues:
-    print('\nIssues')
-    print('------')
+    print("\nIssues")
+    print("------")
     for i in issues:
         print(f"- {i}")
     sys.exit(2)
 else:
-    print('\nNo issues found.')
-
+    print("\nNo issues found.")

@@ -3,6 +3,7 @@ from __future__ import annotations
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -126,7 +127,7 @@ def test_global_stats_to_table_fallback_filters_non_integer_player_counts(
     monkeypatch.setattr(game_stats.ds, "dataset", lambda _path: DummyDataset())
     monkeypatch.setattr(game_stats, "n_players_from_schema", lambda _schema: 99)
 
-    result = game_stats._global_stats(pa.scalar("unused"))
+    result = game_stats._global_stats(cast(Path, pa.scalar("unused")))
 
     assert set(result["n_players"].astype(int).tolist()) == {2}
     assert result.loc[result["n_players"] == 2, "observations"].item() == 1

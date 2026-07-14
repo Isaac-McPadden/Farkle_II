@@ -74,8 +74,8 @@ rng:
 screening:
   resolution_delta: 0.03
   interval_confidence: 0.95
-  practical_delta_by_k: null
-  delta_across_k: null
+  practical_delta_by_k: {2: 0.03, 4: 0.03, 5: 0.03}
+  delta_across_k: 0.03
   bootstrap_replicates: 2000
   candidate_contribution_size: 75
   controls: []
@@ -95,7 +95,7 @@ robustness:
   matched_count_fractions: [0.25, 0.50, 0.75, 1.0]
 
 artifact_contract:
-  artifact_contract_version: 1
+  artifact_contract_version: 2
   estimand_version: 1
   schema_version: 1
 

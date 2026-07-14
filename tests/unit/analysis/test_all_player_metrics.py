@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -70,7 +71,7 @@ def _game_row(
         "rng_scheme_version": 1,
         "rng_purpose_namespace": 102,
         "seat_ranks": [winner_seat, "P2" if winner_seat == "P1" else "P1"],
-        "winning_score": max(int(p1["score"]), int(p2["score"])),
+        "winning_score": max(cast(int, p1["score"]), cast(int, p2["score"])),
         "n_rounds": n_rounds,
     }
     for seat, exposure in ((1, p1), (2, p2)):

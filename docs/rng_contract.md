@@ -11,7 +11,7 @@ Purpose namespace integers are permanent:
 
 | Integer | Purpose |
 | ---: | --- |
-| 1 | indexed compatibility seed |
+| 1 | indexed external-boundary seed |
 | 10 | player dice |
 | 11 | strategy generation |
 | 100 | tournament shuffle |
