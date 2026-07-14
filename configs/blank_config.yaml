@@ -98,6 +98,9 @@ batching:
 robustness:
   report_pareto:
   report_maximin:
+  delta_seed_stability:
+  joint_discrepancy_alpha:
+  matched_count_fractions:
 
 artifact_contract:
   artifact_contract_version:

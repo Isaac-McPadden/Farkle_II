@@ -13,6 +13,12 @@ the CLI and orchestration code.
   Wilson-width resolution target, operational shuffle cap, and optional runtime rate.
 - `batching`
   Equal contiguous shuffle-batch construction.
+- `robustness`
+  Finite-grid summaries and two-root reproducibility thresholds.
+- `k_aggregation`
+  Equal-k or explicitly declared player-count weights.
+- `artifact_contract`
+  Versions included in sidecar compatibility and freshness decisions.
 - `analysis`
   Analysis-stage behavior, logging, aggregation, rare-event settings, and optional
   interseed inputs.
@@ -23,7 +29,7 @@ the CLI and orchestration code.
 - `metrics`
   Metric-computation settings such as seat ranges.
 - `trueskill`
-  TrueSkill hyperparameters and combined weighting overrides.
+  TrueSkill screening hyperparameters.
 - `head2head`
   Head-to-head simulation and post-processing settings.
 - `hgb`
@@ -69,6 +75,20 @@ The planner finds the smallest shuffle count meeting the worst-case Wilson-width
 target, then rounds upward to the batch contract. `sim.power_method`,
 `sim.recompute_num_shuffles`, and `sim.power_design` are rejected retired keys.
 
+## Two-root robustness
+
+- `robustness.delta_seed_stability`
+  Positive raw chance-delta threshold used to scale root discrepancies.
+- `robustness.joint_discrepancy_alpha`
+  Family level for the joint maximum-standardized-discrepancy diagnostic.
+- `robustness.matched_count_fractions`
+  Unique increasing cumulative batch fractions in `(0, 1]`; the final value
+  must be `1.0`.
+
+Two-root combination treats roots as independent RNG domains for one fixed
+simulation design. These settings control reproducibility diagnostics, not
+random-effects inference or population intervals over roots.
+
 ## Important `analysis` fields
 
 - `log_level`
@@ -87,9 +107,6 @@ target, then rounds upward to the batch contract. `sim.power_method`,
 - `head2head_tolerance_pct`
 - `head2head_games_per_sec`
 - `head2head_force_calibrate`
-- `meta_random_if_I2_gt`
-- `meta_max_other_seeds`
-- `meta_comparison_seed`
 - `outputs`
 
 Deprecated `analysis.run_*` and `analysis.disable_*` flags are still accepted
@@ -103,7 +120,8 @@ pipeline schedules stages from inputs and preconditions instead.
 - `analysis_subdir`
   Name of the analysis directory under the results root.
 - `meta_analysis_dir`
-  Optional alternate root for meta-analysis artifacts.
+  Legacy path retained until the migration cleanup; canonical two-root outputs
+  use `cfg.cross_seed_dir(...)`.
 - `interseed_input_dir`
   Optional alternate analysis root used to resolve interseed inputs.
 - `interseed_input_layout`

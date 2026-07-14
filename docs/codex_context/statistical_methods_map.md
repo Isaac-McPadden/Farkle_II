@@ -6,8 +6,7 @@ separate implementation fidelity from model validity.
 
 - Sources inspected: `utils/stats.py`, `analysis/metrics.py`,
   `analysis/performance.py`, `analysis/screening.py`, `analysis/seed_summaries.py`,
-  `analysis/meta.py`,
-  `analysis/variance.py`, `analysis/run_trueskill.py`,
+  `analysis/root_stability.py`, `analysis/run_trueskill.py`,
   `analysis/run_bonferroni_head2head.py`, `analysis/h2h_analysis.py`,
   `analysis/agreement.py`
 
@@ -203,37 +202,33 @@ For every statistical claim, review in this order:
   post-H2H decisions; pairwise tests are dependent because strategies share
   tournament context; final graph ranking can be partial or cyclic.
 
-## Meta-Analysis Across Seeds
+## Two-Root Combination And Stability
 
-- Code: `src/farkle/analysis/meta.py`.
-- Inputs: `strategy_summary_{players}p_seed*.parquet` files.
-- Strategy presence: only strategies present in every selected seed summary
-  contribute to the combined estimate.
-- Per-seed variance: `p * (1 - p) / games`, with boundary rates replaced by a
-  Wilson-logit-centered estimate and a minimum variance floor.
-- Fixed effect: inverse-variance weighted mean per strategy.
-- Heterogeneity: sums Q across strategies, computes global I2 and
-  DerSimonian-Laird style tau2. If I2 exceeds `meta_random_if_I2_gt`, uses one
-  shared tau2 for all strategy groups.
-- Output CI: normal approximation `combined_rate +- 1.959963984540054 * se`.
-- Tests: `tests/unit/analysis/test_meta.py`.
-- Review risks: one global tau2 across all strategies, strategy pruning,
-  assumptions that seeds are independent exchangeable runs, and probability
-  scale aggregation near boundaries.
-
-## Cross-Seed Variance
-
-- Code: `src/farkle/analysis/variance.py`.
-- Inputs: metrics parquet and per-seed summaries.
-- Computes sample variance of `win_rate` across seeds by
-  `(strategy_id, players)`, `std`, and `se = std / sqrt(n_seeds)`.
-- Components: separate cross-seed variance summaries for win rate, score mean,
-  and turns mean, with normal-style CIs on component means.
-- Minimum seeds: `MIN_SEEDS = 2`.
-- Tests: `tests/unit/analysis/test_variance.py`,
-  `tests/unit/analysis/test_variance_branch_closure.py`.
-- Review risks: signal-to-noise currently compares against `0.5`, which is not
-  the fair top-1 win rate for k-player games when k is not 2.
+- Code: `src/farkle/analysis/root_stability.py`.
+- Inputs: sidecar-validated unconditional batch sufficient statistics for every
+  configured `(root, k, batch, strategy)` cell, with exactly two roots and
+  complete identical support.
+- Within-k combined estimand: total wins across both roots divided by total
+  player-game exposures across both roots. Root-specific estimates are retained
+  beside the combined estimate.
+- Across-k estimand: the declared weighted mean of `win_rate - 1/k`, calculated
+  only after within-k combination and only over complete configured support.
+  Its MCSE uses the declared independent-k variance sum.
+- Root discrepancy: `root_a chance_delta - root_b chance_delta`, standardized by
+  `sqrt(MCSE_a^2 + MCSE_b^2)` and separately scaled by the configured practical
+  stability threshold.
+- Joint diagnostic: deterministic batch-vector resampling calibrates the maximum
+  absolute standardized discrepancy across all per-k and across-k cells.
+- Descriptive stability: Spearman and Kendall rank correlation, top-10/25/50 and
+  candidate-cutoff overlap, control movement, and practical-shortlist changes.
+- Time stability: recompute at declared matched cumulative batch fractions and
+  compare contiguous first and second halves within each root.
+- Interpretation: the roots are independent RNG domains for one fixed design,
+  not a sampled root population. The module does not use random-effects
+  estimators, root variance components, or two-root population intervals.
+- Tests: `tests/unit/analysis/test_root_stability.py` includes hand-computed raw
+  count combination, batch-MCSE, support, sidecar, and deterministic-bootstrap
+  checks.
 
 ## Agreement Metrics
 

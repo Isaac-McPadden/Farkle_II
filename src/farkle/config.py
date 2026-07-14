@@ -193,6 +193,9 @@ class RobustnessConfig:
 
     report_pareto: bool = True
     report_maximin: bool = True
+    delta_seed_stability: float = 0.03
+    joint_discrepancy_alpha: float = 0.05
+    matched_count_fractions: tuple[float, ...] = (0.25, 0.50, 0.75, 1.0)
 
 
 @dataclass
@@ -1373,6 +1376,56 @@ class AppConfig:
 
         return self.metrics_combined_dir / "performance_control_contrasts.parquet"
 
+    def root_combined_performance_by_k_path(self, k: int) -> Path:
+        """Root-specific and raw-count-combined performance for one k."""
+
+        return self.cross_seed_dir("metrics") / f"performance_root_combination_{int(k)}p.parquet"
+
+    def root_combined_performance_across_k_path(self) -> Path:
+        """Root-specific and combined declared-k performance scores."""
+
+        return self.cross_seed_dir("metrics") / "performance_root_combination_across_k.parquet"
+
+    def root_discrepancies_path(self) -> Path:
+        """Raw, standardized, and threshold-scaled root differences."""
+
+        return self.cross_seed_dir("metrics") / "root_discrepancies.parquet"
+
+    def root_joint_discrepancy_path(self) -> Path:
+        """Joint maximum-discrepancy diagnostic summary."""
+
+        return self.cross_seed_dir("metrics") / "root_joint_discrepancy.parquet"
+
+    def root_rank_stability_path(self) -> Path:
+        """Between-root rank correlation and movement summary."""
+
+        return self.cross_seed_dir("metrics") / "root_rank_stability.parquet"
+
+    def root_top_n_stability_path(self) -> Path:
+        """Between-root top-N overlap diagnostics."""
+
+        return self.cross_seed_dir("metrics") / "root_top_n_stability.parquet"
+
+    def root_control_movement_path(self) -> Path:
+        """Declared-control rank and performance movement."""
+
+        return self.cross_seed_dir("metrics") / "root_control_movement.parquet"
+
+    def root_shortlist_changes_path(self) -> Path:
+        """Root-specific and combined practical-shortlist membership."""
+
+        return self.cross_seed_dir("metrics") / "root_shortlist_changes.parquet"
+
+    def root_matched_count_convergence_path(self) -> Path:
+        """Matched cumulative-batch convergence diagnostics."""
+
+        return self.cross_seed_dir("metrics") / "root_matched_count_convergence.parquet"
+
+    def root_half_drift_path(self) -> Path:
+        """First-half versus second-half within-root drift diagnostics."""
+
+        return self.cross_seed_dir("metrics") / "root_half_drift.parquet"
+
     def seat_batch_counts_path(self, k: int) -> Path:
         """Canonical seat wins and exposures by root, k, batch, strategy, and seat."""
 
@@ -2341,6 +2394,21 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("screening.candidate_contribution_size must be positive")
     if not cfg.robustness.report_pareto or not cfg.robustness.report_maximin:
         raise ValueError("robustness must report both Pareto membership and maximin leadership")
+    if cfg.robustness.delta_seed_stability <= 0.0:
+        raise ValueError("robustness.delta_seed_stability must be positive")
+    if not 0.0 < cfg.robustness.joint_discrepancy_alpha < 1.0:
+        raise ValueError("robustness.joint_discrepancy_alpha must be between 0 and 1")
+    fractions = cfg.robustness.matched_count_fractions
+    if (
+        not fractions
+        or any(not 0.0 < fraction <= 1.0 for fraction in fractions)
+        or tuple(sorted(set(fractions))) != fractions
+        or fractions[-1] != 1.0
+    ):
+        raise ValueError(
+            "robustness.matched_count_fractions must be unique increasing values in "
+            "(0, 1] ending at 1"
+        )
     if (
         cfg.screening.max_shuffles_per_root_k is not None
         and (

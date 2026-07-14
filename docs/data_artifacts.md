@@ -127,6 +127,16 @@ Common files:
 - `diagnostics/seat_exposure_mixture.parquet`
 - `diagnostics/seat_selfplay_p1.parquet`
 - `diagnostics/seat_mirrored_games.parquet`
+- `cross_seed/performance_root_combination_<k>p.parquet`
+- `cross_seed/performance_root_combination_across_k.parquet`
+- `cross_seed/root_discrepancies.parquet`
+- `cross_seed/root_joint_discrepancy.parquet`
+- `cross_seed/root_rank_stability.parquet`
+- `cross_seed/root_top_n_stability.parquet`
+- `cross_seed/root_control_movement.parquet`
+- `cross_seed/root_shortlist_changes.parquet`
+- `cross_seed/root_matched_count_convergence.parquet`
+- `cross_seed/root_half_drift.parquet`
 
 `all_player_batch_metrics.parquet` is the canonical unconditional exposure
 artifact. It contains one row per `(root_seed, k, deterministic_batch_id,
@@ -167,6 +177,20 @@ estimand. It combines raw exposures and uses
 Self-play first-seat effects and paired two-player mirrored-game differences
 are separate diagnostics; the mirrored output also records unpaired games.
 Every canonical seat artifact has a hash-bound sidecar.
+
+Two-root performance first combines raw wins and player-game exposures within
+each k. The combined estimate is therefore exactly
+`sum(root wins) / sum(root exposures)`, not a mean of root rates. The declared
+equal-k or configured-k calculation is applied only after those within-k
+estimates exist. Each output retains the two root-specific estimates beside the
+combined result.
+
+The remaining `cross_seed` artifacts are reproducibility diagnostics for one
+fixed simulation design: raw and MCSE-standardized differences, threshold
+fractions, a joint maximum-discrepancy batch bootstrap, rank and top-N overlap,
+control and shortlist movement, matched-count convergence, and contiguous
+first-half/second-half drift. They do not estimate a population of roots and do
+not publish random-effects heterogeneity or two-root population intervals.
 
 ### Coverage and game stats
 

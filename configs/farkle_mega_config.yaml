@@ -121,6 +121,9 @@ batching:
 robustness:
   report_pareto: true
   report_maximin: true
+  delta_seed_stability: 0.03
+  joint_discrepancy_alpha: 0.05
+  matched_count_fractions: [0.25, 0.50, 0.75, 1.0]
 
 artifact_contract:
   artifact_contract_version: 1
