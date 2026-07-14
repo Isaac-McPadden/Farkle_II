@@ -91,18 +91,18 @@ def run(cfg: AppConfig) -> None:
         )
         summary_rows.append(_flatten_payload(payload))
 
-    if cfg.agreement_include_combined():
-        payload = _build_payload(cfg, players=0, combined_scope=True, stage_log=stage_log)
+    if cfg.agreement_include_across_k():
+        payload = _build_payload(cfg, players=None, combined_scope=True, stage_log=stage_log)
         if payload is not None:
-            payload["players"] = "combined"
-            out_path = cfg.agreement_output_path_combined()
+            payload["scope"] = "across_k"
+            out_path = cfg.agreement_across_k_output_path()
             with atomic_path(str(out_path)) as tmp_path:
                 Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
             LOGGER.info(
                 "Agreement metrics written",
                 extra={
                     "stage": "agreement",
-                    "players": "combined",
+                    "scope": "across_k",
                     "path": str(out_path),
                 },
             )
@@ -127,13 +127,13 @@ def run(cfg: AppConfig) -> None:
 
 
 def _build_payload(
-    cfg: AppConfig, players: int, combined_scope: bool, stage_log: StageLogger
+    cfg: AppConfig, players: int | None, combined_scope: bool, stage_log: StageLogger
 ) -> dict[str, object] | None:
     """Assemble agreement metrics for the requested player count.
 
     Args:
         cfg: Application configuration with analytics output paths.
-        players: Number of players for which to compute agreement (0 when combined).
+        players: Number of players, or ``None`` for declared cross-k agreement.
 
     Returns:
         Dictionary of correlation, stability, and coverage metrics keyed by method.
@@ -220,13 +220,13 @@ def _build_payload(
 
 
 def _load_trueskill(
-    cfg: AppConfig, players: int | str, *, combined_scope: bool = False
+    cfg: AppConfig, players: int | None, *, combined_scope: bool = False
 ) -> MethodData | None:
     """Load TrueSkill ratings and optional tiers for a given player count.
 
     Args:
         cfg: Application configuration used to locate outputs.
-        players: Number of players to filter the ratings to, or combined sentinel.
+        players: Number of players to filter, or ``None`` for cross-k input.
 
     Returns:
         Prepared ``MethodData`` or ``None`` when no ratings are available.
@@ -266,9 +266,9 @@ def _load_trueskill(
     return MethodData(scores=series, tiers=tiers, per_seed_scores=per_seed)
 
 
-def _resolve_trueskill_per_k_path(cfg: AppConfig, players: int | str) -> Path | None:
+def _resolve_trueskill_per_k_path(cfg: AppConfig, players: int | None) -> Path | None:
     """Locate per-player TrueSkill ratings parquet for a given player count."""
-    if AppConfig.is_combined_players(players):
+    if players is None:
         return None
     players_int = int(players)
     stage_dir = cfg.stage_dir_if_active("trueskill")
@@ -289,7 +289,7 @@ def _resolve_trueskill_per_k_path(cfg: AppConfig, players: int | str) -> Path | 
 
 
 def _resolve_trueskill_seed_paths(
-    cfg: AppConfig, players: int | str, *, combined_scope: bool
+    cfg: AppConfig, players: int | None, *, combined_scope: bool
 ) -> list[Path]:
     """Collect candidate TrueSkill seed parquet paths for a scope."""
     seed_candidates: list[Path] = []
@@ -309,7 +309,7 @@ def _resolve_trueskill_seed_paths(
             ),
         )
 
-    if AppConfig.is_combined_players(players):
+    if players is None:
         return []
     players_int = int(players)
     stage_dir = cfg.stage_dir_if_active("trueskill")
@@ -389,12 +389,12 @@ def _trueskill_seed_path_priority(path: Path, players: int) -> int:
     return 3
 
 
-def _load_frequentist(cfg: AppConfig, players: int | str) -> MethodData | None:
+def _load_frequentist(cfg: AppConfig, players: int | None) -> MethodData | None:
     """Load frequentist scoring outputs and optional tiers.
 
     Args:
         cfg: Application configuration used to locate frequentist outputs.
-        players: Number of players to filter the scores to, or combined sentinel.
+        players: Number of players to filter, or ``None`` for cross-k input.
 
     Returns:
         Populated ``MethodData`` or ``None`` when the file is absent or empty.
@@ -476,25 +476,22 @@ def _load_head2head(cfg: AppConfig) -> MethodData | None:
     return MethodData(scores=scores, tiers=tier_map or None, per_seed_scores=[])
 
 
-def _filter_by_players(df: pd.DataFrame, players: int | str) -> pd.DataFrame:
+def _filter_by_players(df: pd.DataFrame, players: int | None) -> pd.DataFrame:
     """Restrict a DataFrame to rows matching the requested player count.
 
     Args:
         df: Source DataFrame containing a players column.
-        players: Expected number of players, or combined sentinel.
+        players: Expected number of players, or ``None`` for cross-k input.
 
     Returns:
         Filtered DataFrame containing only rows that match ``players``.
     """
     if "players" not in df.columns and "n_players" in df.columns:
         df = df.rename(columns={"n_players": "players"})
-    if AppConfig.is_combined_players(players):
+    if players is None:
         if "players" not in df.columns:
             return df
-        mask = df["players"].astype(int) == 0
-        if not mask.any():
-            raise ValueError("combined agreement requested, but no players == 0 rows found")
-        return df.loc[mask]
+        return df
     if "players" in df.columns:
         mask = df["players"].astype(int) == int(players)
         df = df.loc[mask]

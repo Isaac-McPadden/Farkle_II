@@ -302,7 +302,7 @@ def test_migrate_legacy_raw_moves_raw_and_manifest(tmp_results_dir):
 
 def test_n_from_block_valid_and_invalid_names():
     assert _n_from_block("6_players") == 6
-    assert _n_from_block("players_6") == 0
+    assert _n_from_block("players_6") is None
 
 
 # -------------------- _process_block -----------------------------------
@@ -572,9 +572,9 @@ def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatc
     cfg = _make_cfg(tmp_results_dir)
 
     # create two block dirs so run() discovers them
-    block1 = cfg.results_root / "block1_players"
+    block1 = cfg.results_root / "1_players"
     block1.mkdir(parents=True)
-    block2 = cfg.results_root / "block2_players"
+    block2 = cfg.results_root / "2_players"
     block2.mkdir()
 
     calls = []
@@ -587,7 +587,7 @@ def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatc
     monkeypatch.setattr("farkle.analysis.ingest.run_streaming_shard", fake_run_streaming_shard)
 
     def fake_iter_shards(block, cols) -> Iterator[tuple[pd.DataFrame, Path]]:  # noqa: ARG001
-        if block.name.startswith("block1"):
+        if block.name.startswith("1_"):
             df = pd.DataFrame({"winner": ["P1"], "P1_strategy": [1]})
             yield df, block / "good.parquet"
         else:
@@ -606,7 +606,7 @@ def test_run_schema_mismatch_logs_and_closes(tmp_results_dir, caplog, monkeypatc
     assert len(calls) == 1
 
 
-def test_run_process_pool_path(tmp_results_dir, monkeypatch):
+def test_run_process_executor_path(tmp_results_dir, monkeypatch):
     cfg = _make_cfg(tmp_results_dir, ingest_overrides={"n_jobs": 2})
 
     block1 = cfg.results_root / "1_players"
@@ -632,7 +632,7 @@ def test_run_process_pool_path(tmp_results_dir, monkeypatch):
         def result(self):
             return self._value
 
-    class DummyPool:
+    class DummyExecutor:
         def __init__(self, max_workers, **kwargs):
             seen["value"] = max_workers
             seen["mp_context"] = kwargs.get("mp_context")
@@ -646,7 +646,7 @@ def test_run_process_pool_path(tmp_results_dir, monkeypatch):
         def submit(self, fn, *args, **kwargs):
             return DummyFuture(fn(*args, **kwargs))
 
-    monkeypatch.setattr("farkle.analysis.ingest.ProcessPoolExecutor", DummyPool)
+    monkeypatch.setattr("farkle.analysis.ingest.ProcessPoolExecutor", DummyExecutor)
 
     run(cfg)
 

@@ -37,7 +37,7 @@ def test_interseed_context_curated_parquet_uses_upstream_combine(tmp_path: Path)
 
     combine_folder = seed_cfg.stage_layout.require_folder("combine")
     upstream_curated = (
-        seed_context.analysis_root / combine_folder / "combined" / "all_ingested_rows.parquet"
+        seed_context.analysis_root / combine_folder / "concat_ks" / "all_ingested_rows.parquet"
     )
     upstream_curated.parent.mkdir(parents=True, exist_ok=True)
     upstream_curated.write_text("rows")

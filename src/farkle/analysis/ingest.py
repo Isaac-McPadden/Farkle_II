@@ -11,6 +11,7 @@ import argparse
 import logging
 import re
 import shutil
+import sys
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Iterable
@@ -253,18 +254,18 @@ def _validate_strategy_dtypes(df: pd.DataFrame) -> None:
             raise RuntimeError("Strategy column dtype mismatch")
 
 
-def _n_from_block(name: str) -> int:
+def _n_from_block(name: str) -> int | None:
     """Extract the player count from a ``<N>_players`` directory name.
 
     Args:
         name: Directory basename encoded with the player count.
 
     Returns:
-        Parsed number of players, or ``0`` when the name does not follow the
-        expected pattern.
+        Parsed number of players, or ``None`` when the name does not follow
+        the expected pattern.
     """
     m = re.match(r"^(\d+)_players$", name)
-    return int(m.group(1)) if m else 0
+    return int(m.group(1)) if m else None
 
 
 def _ingest_upstream_inputs(results_root: Path) -> list[Path]:
@@ -276,7 +277,7 @@ def _ingest_upstream_inputs(results_root: Path) -> list[Path]:
 
     blocks = sorted(
         (p for p in results_root.iterdir() if p.is_dir() and p.name.endswith("_players")),
-        key=lambda p: (_n_from_block(p.name), p.name),
+        key=lambda p: (_n_from_block(p.name) or sys.maxsize, p.name),
     )
     inputs: list[Path] = []
     allowed_suffixes = {".parquet", ".csv", ".json", ".jsonl", ".txt"}
@@ -319,11 +320,13 @@ def _migrate_legacy_raw(n: int, cfg: AppConfig) -> None:
 def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int = 1) -> int:
     """Process a single ``<N>_players`` block."""
     n = _n_from_block(block.name)
+    if n is None:
+        raise ValueError(f"invalid player-count block name: {block.name}")
     worker_policy = resolve_stage_parallel_policy(
         "ingest",
         cfg.ingest,
         ParallelNestingContext(
-            active_process_pool=parent_process_workers > 1,
+            active_process_executor=parent_process_workers > 1,
             parent_process_workers=max(1, int(parent_process_workers)),
         ),
     )
@@ -503,8 +506,12 @@ def run(cfg: AppConfig) -> None:
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
     blocks = sorted(
-        (p for p in cfg.results_root.iterdir() if p.is_dir() and p.name.endswith("_players")),
-        key=lambda p: (_n_from_block(p.name), p.name),
+        (
+            p
+            for p in cfg.results_root.iterdir()
+            if p.is_dir() and _n_from_block(p.name) is not None
+        ),
+        key=lambda p: (_n_from_block(p.name) or sys.maxsize, p.name),
     )
 
     done = stage_done_path(cfg.ingest_stage_dir, "ingest")
@@ -512,6 +519,8 @@ def run(cfg: AppConfig) -> None:
     manifests = []
     for block in blocks:
         n = _n_from_block(block.name)
+        if n is None:  # pragma: no cover - filtered above
+            continue
         outputs.append(cfg.ingested_rows_raw(n))
         manifests.append(cfg.ingest_manifest(n))
     upstream_inputs = _ingest_upstream_inputs(cfg.results_root)

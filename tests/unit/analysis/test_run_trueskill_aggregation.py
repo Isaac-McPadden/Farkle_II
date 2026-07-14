@@ -58,10 +58,14 @@ def test_combined_ratings_are_weighted_mean(tmp_path: Path) -> None:
         os.chdir(cwd)
 
     ratings_root = tmp_path / "data"
-    r2 = run_trueskill._load_ratings_parquet(ratings_root / "2p" / "ratings_2_seed0.parquet")
-    r3 = run_trueskill._load_ratings_parquet(ratings_root / "3p" / "ratings_3_seed0.parquet")
+    r2 = run_trueskill._load_ratings_parquet(
+        ratings_root / "by_k" / "2p" / "ratings_2_seed0.parquet"
+    )
+    r3 = run_trueskill._load_ratings_parquet(
+        ratings_root / "by_k" / "3p" / "ratings_3_seed0.parquet"
+    )
     combined = run_trueskill._load_ratings_parquet(
-        ratings_root / "combined" / "ratings_k_weighted_seed0.parquet"
+        ratings_root / "across_k" / "ratings_k_weighted_seed0.parquet"
     )
 
     env = run_trueskill.trueskill.TrueSkill()

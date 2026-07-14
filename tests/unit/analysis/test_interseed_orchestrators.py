@@ -268,7 +268,7 @@ def test_interseed_summary_reports_rng_disabled_state(tmp_path: Path) -> None:
 def test_interseed_helper_outputs(tmp_path: Path) -> None:
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path),
-        analysis=AnalysisConfig(agreement_include_combined=True),
+        analysis=AnalysisConfig(agreement_include_across_k=True),
     )
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
     cfg.sim.seed_list = [51, 52]
@@ -308,7 +308,7 @@ def test_interseed_helper_outputs(tmp_path: Path) -> None:
 
     agreement_outputs = interseed_analysis._agreement_outputs(cfg)
     assert cfg.agreement_stage_dir / "agreement_summary.parquet" in agreement_outputs
-    assert cfg.agreement_output_path_combined() in agreement_outputs
+    assert cfg.agreement_across_k_output_path() in agreement_outputs
 
     assert interseed_analysis._rng_outputs(cfg) == [cfg.rng_output_path("rng_diagnostics.parquet")]
     assert interseed_analysis._s_tier_stability_outputs(cfg) == [

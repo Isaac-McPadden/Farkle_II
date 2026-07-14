@@ -21,7 +21,7 @@ def test_read_manifest_seed(tmp_path: Path) -> None:
 
 def test_find_combined_parquet(tmp_path: Path) -> None:
     base = tmp_path / "root1"
-    combined = base / "analysis" / "02_combine" / "combined" / "all_ingested_rows.parquet"
+    combined = base / "analysis" / "02_combine" / "concat_ks" / "all_ingested_rows.parquet"
     combined.parent.mkdir(parents=True, exist_ok=True)
     combined.touch()
     assert rt._find_combined_parquet(base) == combined
@@ -30,13 +30,13 @@ def test_find_combined_parquet(tmp_path: Path) -> None:
     direct = base2 / "data" / "all_n_players_combined" / "all_ingested_rows.parquet"
     direct.parent.mkdir(parents=True, exist_ok=True)
     direct.touch()
-    assert rt._find_combined_parquet(base2) == direct
+    assert rt._find_combined_parquet(base2) is None
 
     base3 = tmp_path / "root3"
     fallback = base3 / "all_ingested_rows.parquet"
     fallback.parent.mkdir(parents=True, exist_ok=True)
     fallback.touch()
-    assert rt._find_combined_parquet(base3) == fallback
+    assert rt._find_combined_parquet(base3) is None
 
 
 def test_rating_artifact_paths_and_ensure_new_location(tmp_path: Path) -> None:
@@ -44,25 +44,26 @@ def test_rating_artifact_paths_and_ensure_new_location(tmp_path: Path) -> None:
     legacy_root = tmp_path / "legacy"
     legacy_root.mkdir(parents=True)
 
-    # create legacy file that should be migrated
+    # A legacy file must not be migrated into the canonical scope.
     legacy_file = legacy_root / "data" / "2p" / "ratings_2_seed3.parquet"
     legacy_file.parent.mkdir(parents=True, exist_ok=True)
     legacy_file.touch()
 
     paths = rt._rating_artifact_paths(root, "2", "_seed3", legacy_root=legacy_root)
-    migrated = rt._ensure_new_location(paths["parquet"], *paths["legacy_parquet"])
+    canonical = rt._ensure_new_location(paths["parquet"], *paths["legacy_parquet"])
 
-    assert migrated == paths["parquet"]
-    assert migrated.exists()
+    assert canonical == paths["parquet"]
+    assert not canonical.exists()
+    assert legacy_file.exists()
 
 
 def test_iter_rating_parquets_deduplicates_filters_and_sorts_stably(tmp_path: Path) -> None:
     root = tmp_path / "root"
     root.mkdir()
-    (root / "2p").mkdir()
-    (root / "2p" / "ratings_2_seed0.parquet").touch()
-    (root / "3p").mkdir()
-    (root / "3p" / "ratings_3_seed0.parquet").touch()
+    (root / "by_k" / "2p").mkdir(parents=True)
+    (root / "by_k" / "2p" / "ratings_2_seed0.parquet").touch()
+    (root / "by_k" / "3p").mkdir()
+    (root / "by_k" / "3p" / "ratings_3_seed0.parquet").touch()
     (root / "ratings_k_weighted_seed0.parquet").touch()
     (root / "data" / "2p").mkdir(parents=True)
     (root / "data" / "2p" / "ratings_2_seed0.parquet").touch()
@@ -74,8 +75,8 @@ def test_iter_rating_parquets_deduplicates_filters_and_sorts_stably(tmp_path: Pa
     (legacy_root / "1p" / "ratings_1_seed0.parquet").touch()
 
     results = rt._iter_rating_parquets(root, "_seed0", legacy_root=legacy_root)
-    assert len(results) == 5
-    assert [rt._player_count_from_stem(path.stem) for path in results] == [1, 2, 2, 2, 3]
+    assert len(results) == 2
+    assert [rt._player_count_from_stem(path.stem) for path in results] == [2, 3]
 
     resolved = [path.resolve().as_posix() for path in results]
     assert resolved == sorted(
@@ -153,10 +154,14 @@ def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
         os.chdir(cwd)
 
     ratings_dir = data_root
-    ratings_2 = rt._load_ratings_parquet(ratings_dir / "2p" / "ratings_2_seed0.parquet")
-    ratings3_path = ratings_dir / "3p" / "ratings_3_seed0.parquet"
+    ratings_2 = rt._load_ratings_parquet(
+        ratings_dir / "by_k" / "2p" / "ratings_2_seed0.parquet"
+    )
+    ratings3_path = ratings_dir / "by_k" / "3p" / "ratings_3_seed0.parquet"
     ratings_3 = rt._load_ratings_parquet(ratings3_path) if ratings3_path.exists() else {}
-    combined = rt._load_ratings_parquet(data_root / "combined" / "ratings_k_weighted_seed0.parquet")
+    combined = rt._load_ratings_parquet(
+        data_root / "across_k" / "ratings_k_weighted_seed0.parquet"
+    )
 
     assert set(ratings_2)
     assert ratings_3 == {}
@@ -178,5 +183,5 @@ def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
     finally:
         os.chdir(cwd)
 
-    assert (data_root / "2p" / "ratings_2_seed3.parquet").exists()
-    assert (data_root / "combined" / "ratings_k_weighted_seed3.parquet").exists()
+    assert (data_root / "by_k" / "2p" / "ratings_2_seed3.parquet").exists()
+    assert (data_root / "across_k" / "ratings_k_weighted_seed3.parquet").exists()

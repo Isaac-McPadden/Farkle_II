@@ -13,6 +13,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field, is_dataclass
+from enum import Enum
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -38,6 +39,23 @@ if TYPE_CHECKING:  # pragma: no cover - used for type checking only
 
 
 LOGGER = logging.getLogger(__name__)
+
+
+class ArtifactScope(str, Enum):
+    """Canonical logical scopes for derived analysis artifacts."""
+
+    BY_K = "by_k"
+    CONCAT_KS = "concat_ks"
+    ACROSS_K = "across_k"
+    CROSS_SEED = "cross_seed"
+    DIAGNOSTICS = "diagnostics"
+    H2H_2P = "h2h_2p"
+
+    @property
+    def requires_player_count(self) -> bool:
+        """Return whether this scope requires a concrete player count."""
+
+        return self is ArtifactScope.BY_K
 
 # Deprecated analysis-stage flags that no longer disable stages.
 DEPRECATED_ANALYSIS_FLAGS = {
@@ -83,6 +101,7 @@ RETIRED_CONFIG_KEYS: dict[str, str] = {
     "analysis.pooling_weights_by_k": "k_aggregation.k_weights",  # terminology-allow: legacy-config
     "analysis.k_aggregation_method": "k_aggregation.method",
     "analysis.k_weights": "k_aggregation.k_weights",
+    "analysis.agreement_include_combined": "analysis.agreement_include_across_k",
     "trueskill.pooled_weights_by_k": "trueskill.k_weights",  # terminology-allow: legacy-config
     "head2head.fdr_q": "head2head.family_alpha",
     "head2head.bonferroni_total_games_safeguard": "head2head.total_game_cap",
@@ -349,8 +368,8 @@ class AnalysisConfig:
     agreement_strategies: tuple[str, ...] | None = None
     """Optional subset of strategies to include when computing agreement metrics."""
 
-    agreement_include_combined: bool = False
-    """Whether agreement analysis should emit a combined (all-k) comparison payload."""
+    agreement_include_across_k: bool = False
+    """Whether agreement analysis should emit a declared cross-k comparison payload."""
 
     run_report: bool = True
     """Emit the final report artifacts (plan step 9)."""
@@ -585,6 +604,12 @@ class AppConfig:
     def set_stage_layout(self, layout: "StageLayout") -> None:
         """Override the resolved stage layout (used by CLI orchestration)."""
 
+        if (
+            self.io.interseed_input_dir is not None
+            and self.io.interseed_input_layout is None
+            and self._stage_layout is not None
+        ):
+            self.io.interseed_input_layout = self._stage_layout
         self._stage_layout = layout
 
     def validate_statistical_contract(self, *, require_two_roots: bool = False) -> None:
@@ -659,10 +684,138 @@ class AppConfig:
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
-    def per_k_subdir(self, stage: str, k: int) -> Path:
-        """Stage helper that returns the ``<k>p`` folder under ``stage``."""
+    def scope_dir(
+        self,
+        stage: str,
+        scope: ArtifactScope | str,
+        *,
+        k: int | None = None,
+        create: bool = True,
+    ) -> Path:
+        """Resolve one canonical logical scope beneath an active stage.
 
-        return self.stage_subdir(stage, f"{k}p")
+        ``by_k`` is the only scope that accepts a player count. Requiring it in
+        the API prevents the former all-k integer sentinel from entering paths.
+        """
+
+        parts = self._scope_parts(scope, k=k)
+        path = self.stage_dir(stage).joinpath(*parts)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @staticmethod
+    def _scope_parts(
+        scope: ArtifactScope | str,
+        *,
+        k: int | None,
+    ) -> tuple[str, ...]:
+        """Return validated path components for one canonical scope."""
+
+        resolved_scope = ArtifactScope(scope)
+        if resolved_scope.requires_player_count:
+            if isinstance(k, bool) or k is None or int(k) < 1:
+                raise ValueError("by_k scope requires a concrete positive player count")
+            return (resolved_scope.value, f"{int(k)}p")
+        else:
+            if k is not None:
+                raise ValueError(f"{resolved_scope.value} scope does not accept a player count")
+            return (resolved_scope.value,)
+
+    def scope_path(
+        self,
+        stage: str,
+        scope: ArtifactScope | str,
+        filename: str | Path,
+        *,
+        k: int | None = None,
+        create_parent: bool = True,
+    ) -> Path:
+        """Resolve an artifact path under a canonical stage scope."""
+
+        relative = Path(filename)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("artifact filename must remain within its canonical scope")
+        path = self.scope_dir(stage, scope, k=k, create=create_parent) / relative
+        if create_parent:
+            path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def input_scope_path(
+        self,
+        stage: str,
+        scope: ArtifactScope | str,
+        filename: str | Path,
+        *,
+        k: int | None = None,
+    ) -> Path:
+        """Resolve one canonical scoped input from the declared input layout."""
+
+        scope_parts = self._scope_parts(scope, k=k)
+        input_scope_root = self._input_stage_path(stage, *scope_parts)
+        if input_scope_root is None:
+            input_scope_root = self.scope_dir(stage, scope, k=k, create=False)
+
+        relative = Path(filename)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("artifact filename must remain within its canonical scope")
+        return input_scope_root / relative
+
+    def require_scope(
+        self,
+        path: Path,
+        *,
+        stage: str,
+        scope: ArtifactScope | str,
+        k: int | None = None,
+    ) -> Path:
+        """Return ``path`` only when it belongs to the declared stage scope."""
+
+        expected_root = self.scope_dir(stage, scope, k=k, create=False)
+        try:
+            path.resolve().relative_to(expected_root.resolve())
+        except ValueError as exc:
+            resolved_scope = ArtifactScope(scope)
+            detail = f"{resolved_scope.value}/{k}p" if k is not None else resolved_scope.value
+            raise ValueError(
+                f"Artifact {path} does not belong to required scope {stage}:{detail}"
+            ) from exc
+        return path
+
+    def by_k_dir(self, stage: str, k: int) -> Path:
+        """Return the canonical per-player-count directory for ``stage``."""
+
+        return self.scope_dir(stage, ArtifactScope.BY_K, k=k)
+
+    def concat_ks_dir(self, stage: str) -> Path:
+        """Return the row-preserving cross-k concatenation directory."""
+
+        return self.scope_dir(stage, ArtifactScope.CONCAT_KS)
+
+    def across_k_dir(self, stage: str) -> Path:
+        """Return the directory for declared common-support cross-k estimates."""
+
+        return self.scope_dir(stage, ArtifactScope.ACROSS_K)
+
+    def cross_seed_dir(self, stage: str) -> Path:
+        """Return the directory for root-combination and stability artifacts."""
+
+        return self.scope_dir(stage, ArtifactScope.CROSS_SEED)
+
+    def diagnostics_dir(self, stage: str) -> Path:
+        """Return the non-estimand diagnostic directory for ``stage``."""
+
+        return self.scope_dir(stage, ArtifactScope.DIAGNOSTICS)
+
+    def h2h_2p_dir(self, stage: str = "head2head") -> Path:
+        """Return the explicitly two-player finalist H2H directory."""
+
+        return self.scope_dir(stage, ArtifactScope.H2H_2P)
+
+    def per_k_subdir(self, stage: str, k: int) -> Path:
+        """Deprecated alias for :meth:`by_k_dir`."""
+
+        return self.by_k_dir(stage, k)
 
     def ingest_block_dir(self, k: int) -> Path:
         """Directory holding ingest artifacts for ``k`` players."""
@@ -680,15 +833,15 @@ class AppConfig:
         return self.curate_block_dir(k)
 
     def combine_combined_dir(self, k: int | None = None) -> Path:  # noqa: ARG002
-        """Directory holding combined combine artifacts (legacy *k* kept for callers)."""
+        """Deprecated alias for the row-preserving concatenation scope."""
 
-        return self.stage_subdir("combine", "combined")
+        return self.concat_ks_dir("combine")
 
     @property
     def combine_partitioned_dir(self) -> Path:
         """Directory holding partitioned combined curated rows."""
 
-        return self.stage_subdir("combine", "combined", "all_ingested_rows_partitioned")
+        return self.concat_ks_dir("combine") / "all_ingested_rows_partitioned"
 
     def metrics_per_k_dir(self, k: int) -> Path:
         """Directory holding metrics artifacts for ``k`` players."""
@@ -698,8 +851,8 @@ class AppConfig:
 
     @property
     def metrics_combined_dir(self) -> Path:
-        """Directory holding combined metrics artifacts."""
-        path = self.stage_subdir("metrics", "combined")
+        """Deprecated alias for cross-k metric estimates."""
+        path = self.across_k_dir("metrics")
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -711,9 +864,9 @@ class AppConfig:
 
     @property
     def game_stats_combined_dir(self) -> Path:
-        """Combined outputs for game-stat analytics."""
+        """Deprecated alias for cross-k game-stat summaries."""
 
-        return self.stage_subdir("game_stats", "combined")
+        return self.across_k_dir("game_stats")
 
     @property
     def rng_stage_dir(self) -> Path:
@@ -723,9 +876,9 @@ class AppConfig:
 
     @property
     def rng_combined_dir(self) -> Path:
-        """Combined outputs for RNG diagnostics."""
+        """Deprecated alias for non-estimand RNG diagnostics."""
 
-        return self.stage_subdir("rng_diagnostics", "combined")
+        return self.diagnostics_dir("rng_diagnostics")
 
     @property
     def seed_summaries_stage_dir(self) -> Path:
@@ -736,7 +889,7 @@ class AppConfig:
     def seed_summaries_dir(self, players: int) -> Path:
         """Directory holding seed summaries for ``players`` count."""
 
-        return self.stage_subdir("seed_summaries", f"{players}p")
+        return self.by_k_dir("seed_summaries", players)
 
     @property
     def variance_stage_dir(self) -> Path:
@@ -746,9 +899,9 @@ class AppConfig:
 
     @property
     def variance_combined_dir(self) -> Path:
-        """Combined outputs for variance analytics."""
+        """Deprecated alias for cross-root variance artifacts."""
 
-        return self.stage_subdir("variance", "combined")
+        return self.cross_seed_dir("variance")
 
     @property
     def meta_stage_dir(self) -> Path:
@@ -759,13 +912,13 @@ class AppConfig:
     def meta_per_k_dir(self, players: int) -> Path:
         """Primary per-player meta-analysis directory."""
 
-        return self.stage_subdir("meta", f"{players}p")
+        return self.by_k_dir("meta", players)
 
     @property
     def meta_combined_dir(self) -> Path:
-        """Legacy combined outputs for meta-analysis."""
+        """Deprecated alias for cross-root meta-analysis artifacts."""
 
-        return self.stage_subdir("meta", "combined")
+        return self.cross_seed_dir("meta")
 
     @property
     def agreement_stage_dir(self) -> Path:
@@ -811,9 +964,9 @@ class AppConfig:
 
     @property
     def trueskill_combined_dir(self) -> Path:
-        """Combined TrueSkill output directory."""
+        """Deprecated alias for descriptive cross-k TrueSkill outputs."""
 
-        return self.stage_subdir("trueskill", "combined")
+        return self.across_k_dir("trueskill")
 
     @property
     def head2head_stage_dir(self) -> Path:
@@ -846,9 +999,9 @@ class AppConfig:
 
     @property
     def hgb_combined_dir(self) -> Path:
-        """Combined HGB output directory."""
+        """Deprecated alias for descriptive cross-k HGB outputs."""
 
-        return self.stage_subdir("hgb", "combined")
+        return self.across_k_dir("hgb")
 
     @property
     def frequentist_stage_dir(self) -> Path:
@@ -1070,16 +1223,9 @@ class AppConfig:
         return path
 
     def game_stats_input_path(self, name: str) -> Path:
-        """Resolve a game-stat artifact with a legacy fallback."""
+        """Resolve a cross-k game-stat artifact without legacy fallback."""
 
-        stage_dir = self._stage_dir_if_active("game_stats", "combined")
-        return self._preferred_stage_path(
-            stage_dir,
-            self.analysis_dir,
-            name,
-            stage_key="game_stats",
-            stage_parts=("combined",),
-        )
+        return self.input_scope_path("game_stats", ArtifactScope.ACROSS_K, name)
 
     def rng_output_path(self, name: str) -> Path:
         """Preferred path for combined RNG diagnostics."""
@@ -1089,16 +1235,9 @@ class AppConfig:
         return path
 
     def rng_input_path(self, name: str) -> Path:
-        """Resolve an RNG diagnostic artifact with a legacy fallback."""
+        """Resolve an RNG diagnostic artifact in its canonical scope."""
 
-        stage_dir = self._stage_dir_if_active("rng_diagnostics", "combined")
-        return self._preferred_stage_path(
-            stage_dir,
-            self.analysis_dir,
-            name,
-            stage_key="rng_diagnostics",
-            stage_parts=("combined",),
-        )
+        return self.input_scope_path("rng_diagnostics", ArtifactScope.DIAGNOSTICS, name)
 
     def variance_output_path(self, name: str) -> Path:
         """Preferred path for combined variance analytics."""
@@ -1108,16 +1247,9 @@ class AppConfig:
         return path
 
     def variance_input_path(self, name: str) -> Path:
-        """Resolve a variance artifact with a legacy fallback."""
+        """Resolve a variance artifact in the cross-root scope."""
 
-        stage_dir = self._stage_dir_if_active("variance", "combined")
-        return self._preferred_stage_path(
-            stage_dir,
-            self.analysis_dir,
-            name,
-            stage_key="variance",
-            stage_parts=("combined",),
-        )
+        return self.input_scope_path("variance", ArtifactScope.CROSS_SEED, name)
 
     def meta_output_path(self, players: int, name: str) -> Path:
         """Preferred path for per-player meta-analysis artifacts."""
@@ -1127,46 +1259,15 @@ class AppConfig:
         return path
 
     def meta_input_path(self, players: int, name: str) -> Path:
-        """Resolve a meta-analysis artifact with a legacy fallback."""
+        """Resolve a per-k meta-analysis artifact without scope fallback."""
 
-        preferred = self.meta_per_k_dir(players) / name
-        if preferred.exists():
-            return preferred
-        interseed_root = self._input_stage_path("meta", f"{players}p")
-        if interseed_root is not None:
-            interseed_path = interseed_root / name
-            if interseed_path.exists():
-                return interseed_path
-
-        for legacy_dir in (self.meta_combined_dir, self.analysis_dir):
-            legacy_path = legacy_dir / name
-            if legacy_path.exists():
-                return legacy_path
-
-        return preferred
+        return self.input_scope_path("meta", ArtifactScope.BY_K, name, k=players)
 
     def metrics_input_path(self, name: str | None = None) -> Path:
-        """Resolve a combined metrics artifact with a legacy fallback."""
+        """Resolve a cross-k metrics artifact without scope fallback."""
 
         filename = str(self.metrics_name if name is None else name)
-        interseed_path: Path | None = None
-        interseed_root = self._input_stage_path("metrics", "combined")
-        if interseed_root is not None:
-            interseed_path = interseed_root / filename
-            if interseed_path.exists():
-                return interseed_path
-
-        stage_path: Path | None = None
-        stage_dir = self._stage_dir_if_active("metrics", "combined")
-        if stage_dir is not None:
-            stage_path = stage_dir / filename
-            if stage_path.exists():
-                return stage_path
-
-        legacy = self.analysis_dir / filename
-        if legacy.exists():
-            return legacy
-        return interseed_path or stage_path or legacy
+        return self.input_scope_path("metrics", ArtifactScope.ACROSS_K, filename)
 
     def metrics_isolated_path(self, k: int) -> Path:
         """Preferred isolated metrics parquet for ``k`` players."""
@@ -1294,17 +1395,6 @@ class AppConfig:
                 return candidate
         return candidates[0]
 
-    @staticmethod
-    def is_combined_players(players: int | str) -> bool:
-        """Return True when ``players`` refers to a combined (unfiltered) run."""
-
-        if isinstance(players, str):
-            return players.strip().lower() == "combined"
-        try:
-            return int(players) == 0
-        except (TypeError, ValueError):
-            return False
-
     def agreement_players(self) -> list[int]:
         """Return normalized numeric player counts for agreement analysis outputs."""
 
@@ -1323,27 +1413,31 @@ class AppConfig:
             normalized.add(value)
         return sorted(normalized)
 
-    def agreement_include_combined(self) -> bool:
-        """Return whether combined agreement output should be generated."""
+    def agreement_include_across_k(self) -> bool:
+        """Return whether cross-k agreement output should be generated."""
 
-        return bool(self.analysis.agreement_include_combined)
+        return bool(self.analysis.agreement_include_across_k)
 
-    def agreement_output_path_combined(self) -> Path:
-        """Preferred path for combined agreement analytics."""
+    def agreement_across_k_output_path(self) -> Path:
+        """Preferred path for cross-k agreement diagnostics."""
 
-        filename = self.canonical_artifact_name("agreement_combined.json")
-        stage_dir = self.stage_subdir("agreement", "combined")
-        return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
+        return self.scope_path(
+            "agreement",
+            ArtifactScope.DIAGNOSTICS,
+            "agreement_across_k.json",
+        )
 
-    def agreement_output_path(self, players: int | str) -> Path:
+    def agreement_output_path(self, players: int) -> Path:
         """Preferred path for agreement analytics for a given player count."""
 
-        if self.is_combined_players(players):
-            return self.agreement_output_path_combined()
         players_int = int(players)
         filename = f"agreement_{players_int}p.json"
-        stage_dir = self.per_k_subdir("agreement", players_int)
-        return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
+        return self.scope_path(
+            "agreement",
+            ArtifactScope.BY_K,
+            filename,
+            k=players_int,
+        )
 
     def trueskill_path(self, filename: str) -> Path:
         """Resolve a TrueSkill artifact path with legacy fallback."""
@@ -1446,24 +1540,14 @@ class AppConfig:
         return self._combine_dataset_candidates()
 
     def _combine_dataset_candidates(self) -> tuple[Path, ...]:
-        """Return ordered candidate directories for partitioned combine outputs."""
+        """Return the declared concatenated-row dataset location."""
 
-        candidates: list[Path] = []
-        input_dir = self._input_stage_path("combine", "combined", "all_ingested_rows_partitioned")
-        if input_dir is not None:
-            candidates.append(input_dir)
-
-        stage_dir = self._stage_dir_if_active("combine", "combined", "all_ingested_rows_partitioned")
-        if stage_dir is not None and stage_dir not in candidates:
-            candidates.append(stage_dir)
-
-        interseed_dir = self._interseed_stage_dir("combine", "combined", "all_ingested_rows_partitioned")
-        if interseed_dir is not None and interseed_dir not in candidates:
-            candidates.append(interseed_dir)
-
-        if self.combine_partitioned_dir not in candidates:
-            candidates.append(self.combine_partitioned_dir)
-        return tuple(candidates)
+        path = self.input_scope_path(
+            "combine",
+            ArtifactScope.CONCAT_KS,
+            "all_ingested_rows_partitioned",
+        )
+        return (path,)
 
     def _resolve_combine_dataset_path(self) -> Path:
         """Resolve preferred combined dataset path with monolithic fallback."""
@@ -1474,56 +1558,14 @@ class AppConfig:
         return self.curated_parquet
 
     def _combine_artifact_candidates(self, filename: str) -> tuple[Path, ...]:
-        """Return ordered candidate paths for a combine-stage combined artifact."""
+        """Return the declared row-preserving concatenation artifact location."""
 
-        canonical = self.canonical_artifact_name(filename)
-        candidate_names = (canonical, *self.legacy_artifact_names(canonical))
-        combine_dir = self.resolve_input_stage_dir("combine") or self.analysis_dir / "combine"
-        legacy_dirs: list[Path] = [
-            combine_dir / f"{self.combine_max_players}p" / "combined",
-            combine_dir / "all_n_players_combined",
-            self.data_dir / "all_n_players_combined",
-            self.analysis_dir / "all_n_players_combined",
-            self.analysis_dir / "data" / "all_n_players_combined",
-        ]
-        interseed_root = self.interseed_input_dir
-        if interseed_root is not None:
-            legacy_dirs.extend(
-                [
-                    interseed_root / "all_n_players_combined",
-                    interseed_root / "data" / "all_n_players_combined",
-                ]
-            )
-        legacy_paths = [legacy_dir / name for legacy_dir in legacy_dirs for name in candidate_names]
-        candidates: list[Path] = []
-        input_dir = self._input_stage_path("combine", "combined")
-        if input_dir is not None:
-            candidates.extend([input_dir / name for name in candidate_names])
-
-        stage_dir = self._stage_dir_if_active("combine", "combined")
-        if stage_dir is not None:
-            for name in candidate_names:
-                stage_candidate = stage_dir / name
-                if stage_candidate not in candidates:
-                    candidates.append(stage_candidate)
-
-        interseed_dir = self._interseed_stage_dir("combine", "combined")
-        if interseed_dir is not None:
-            interseed_candidates = [interseed_dir / name for name in candidate_names]
-            for interseed_candidate in interseed_candidates:
-                if interseed_candidate not in candidates:
-                    candidates.append(interseed_candidate)
-
-        for legacy_path in legacy_paths:
-            if legacy_path not in candidates:
-                candidates.append(legacy_path)
-
-        if not candidates:
-            candidates.append(self.analysis_dir / canonical)
-        return tuple(candidates)
+        return (
+            self.input_scope_path("combine", ArtifactScope.CONCAT_KS, filename),
+        )
 
     def _resolve_combine_artifact_path(self, filename: str) -> Path:
-        """Resolve an artifact from combine combined outputs with legacy fallbacks."""
+        """Resolve an artifact from the canonical row-concatenation scope."""
 
         candidates = self._combine_artifact_candidates(filename)
         for candidate in candidates:
@@ -1544,11 +1586,7 @@ class AppConfig:
     # Per-N helper paths used by ingest/curate/metrics
     def manifest_for(self, n: int) -> Path:
         """Path to the manifest for a specific player count."""
-        preferred = self.curate_block_dir(n) / self.manifest_name
-        legacy = self.analysis_dir / "data" / f"{n}p" / "manifest.jsonl"
-        if preferred.exists() or not legacy.exists():
-            return preferred
-        return legacy
+        return self.curate_block_dir(n) / self.manifest_name
 
     def ingested_rows_raw(self, n: int) -> Path:
         """Path to the raw ingested parquet for ``n`` players."""
@@ -1803,7 +1841,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
     per_n_seed_provided: dict[int, bool] = {}
     per_n_seed_list_provided: dict[int, bool] = {}
     per_n_seed_pair_provided: dict[int, bool] = {}
-    combined_requested = False
     if "sim" in data:
         sim_section_raw = data["sim"]
         if not isinstance(sim_section_raw, Mapping):
@@ -1819,26 +1856,25 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         seed_pair_provided = "seed_pair" in sim_section
         if "n_players" in sim_section and "n_players_list" not in sim_section:
             sim_section["n_players_list"] = [sim_section.pop("n_players")]
-        combined_requested = False
         raw_players = sim_section.get("n_players_list")
         if isinstance(raw_players, list):
             numeric_players: list[int] = []
             for entry in raw_players:
-                is_combined_entry = False
-                if isinstance(entry, str):
-                    is_combined_entry = entry.strip().lower() == "combined"
-                else:
-                    try:
-                        is_combined_entry = int(entry) == 0
-                    except (TypeError, ValueError):
-                        is_combined_entry = False
-                if is_combined_entry:
-                    combined_requested = True
-                    continue
+                if isinstance(entry, str) and entry.strip().lower() == "combined":
+                    raise ValueError(
+                        "sim.n_players_list requires concrete player counts >= 2; "
+                        "select cross-k work with canonical scope settings"
+                    )
                 try:
-                    numeric_players.append(int(entry))
+                    players = int(entry)
                 except (TypeError, ValueError) as exc:
                     raise ValueError(f"invalid n_players_list entry: {entry!r}") from exc
+                if players < 2:
+                    raise ValueError(
+                        "sim.n_players_list requires concrete player counts >= 2; "
+                        "select cross-k work with canonical scope settings"
+                    )
+                numeric_players.append(players)
             sim_section["n_players_list"] = numeric_players
         if (
             "collect_metrics" in sim_section
@@ -1860,13 +1896,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                         per_n_seed_list_provided[per_n_key] = True
                     if "seed_pair" in val:
                         per_n_seed_pair_provided[per_n_key] = True
-    if combined_requested:
-        combined_analysis_section = data.setdefault("analysis", {})
-        if not isinstance(combined_analysis_section, MutableMapping):
-            combined_analysis_section = {}
-            data["analysis"] = combined_analysis_section
-        combined_analysis_section.setdefault("agreement_include_combined", True)
-
     if "analysis" in data:
         analysis_section_raw = data["analysis"]
         if isinstance(analysis_section_raw, Mapping):
@@ -2241,6 +2270,7 @@ def assign_config_sha(cfg: AppConfig) -> str:
 
 
 __all__ = [
+    "ArtifactScope",
     "IOConfig",
     "ProgressLogConfig",
     "SimConfig",

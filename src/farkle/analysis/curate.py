@@ -175,14 +175,8 @@ def run(cfg: AppConfig) -> None:
     """Curate raw parquet files produced by :func:`farkle.ingest.run`."""
     cfg.data_dir.mkdir(parents=True, exist_ok=True)
 
-    _migrate_raw_inputs(cfg)
-    _migrate_curated_outputs(cfg)
-
-    raw_files = sorted(cfg.ingest_stage_dir.glob("*p/*_ingested_rows.raw.parquet"))
-    curated_files = sorted(cfg.curate_stage_dir.glob(f"*p/{cfg.curated_rows_name}"))
-    legacy_curated = sorted(cfg.combine_stage_dir.glob("*p/*_ingested_rows.parquet"))
-    if not curated_files and legacy_curated:
-        curated_files = legacy_curated
+    raw_files = sorted((cfg.ingest_stage_dir / "by_k").glob("*p/*_ingested_rows.raw.parquet"))
+    curated_files = sorted((cfg.curate_stage_dir / "by_k").glob(f"*p/{cfg.curated_rows_name}"))
     manifests = [cfg.manifest_for(int(p.parent.name.removesuffix("p"))) for p in curated_files]
     done = stage_done_path(cfg.curate_stage_dir, "curate")
     if stage_is_up_to_date(
@@ -199,7 +193,7 @@ def run(cfg: AppConfig) -> None:
         return
 
     # Ensure existing curated files always have a manifest
-    for curated in sorted(cfg.curate_stage_dir.glob(f"*p/{cfg.curated_rows_name}")):
+    for curated in sorted((cfg.curate_stage_dir / "by_k").glob(f"*p/{cfg.curated_rows_name}")):
         n = int(curated.parent.name.removesuffix("p"))
         manifest = cfg.manifest_for(n)
         if not manifest.exists():
@@ -245,7 +239,7 @@ def run(cfg: AppConfig) -> None:
                 "rows": finalized_rows,
             },
         )
-        curated_files = sorted(cfg.curate_stage_dir.glob(f"*p/{cfg.curated_rows_name}"))
+        curated_files = sorted((cfg.curate_stage_dir / "by_k").glob(f"*p/{cfg.curated_rows_name}"))
         manifests = [cfg.manifest_for(int(p.parent.name.removesuffix("p"))) for p in curated_files]
         write_stage_done(
             done,

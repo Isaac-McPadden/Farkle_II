@@ -320,7 +320,7 @@ def test_rate_stream_without_keeper_filter(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_rate_block_worker_up_to_date_guard(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "2p"
+    per_player_dir = root / "by_k" / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -349,7 +349,7 @@ def test_rate_block_worker_metadata_failure(
 ) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "2p"
+    per_player_dir = root / "by_k" / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -372,7 +372,7 @@ def test_rate_block_worker_metadata_failure(
 def test_rate_block_worker_without_resume_processes(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "2p"
+    per_player_dir = root / "by_k" / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -394,7 +394,7 @@ def test_rate_block_worker_without_resume_processes(tmp_path: Path) -> None:
 def test_rate_block_worker_resume_with_keepers(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "2p"
+    per_player_dir = root / "by_k" / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -439,7 +439,7 @@ def test_rate_block_worker_preserves_checkpoint_on_failure(
 ) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "2p"
+    per_player_dir = root / "by_k" / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -476,7 +476,7 @@ def test_rate_block_worker_preserves_checkpoint_on_failure(
 def test_rate_block_worker_resume_missing_checkpoint_ratings_file(tmp_path: Path) -> None:
     root = tmp_path / "analysis"
     block = tmp_path / "results" / "2_players"
-    per_player_dir = root / "2p"
+    per_player_dir = root / "by_k" / "2p"
     per_player_dir.mkdir(parents=True, exist_ok=True)
     block.mkdir(parents=True, exist_ok=True)
 
@@ -596,7 +596,7 @@ def test_run_trueskill_handles_worker_exception(
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=3)
 
     assert exceptions and exceptions[0]["block"] == "3_players"
-    assert (analysis_root / "combined" / "ratings_k_weighted_seed0.parquet").exists()
+    assert (analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet").exists()
 
 
 def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
@@ -628,7 +628,7 @@ def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
         batch_rows=10,
     )
 
-    ratings_path = analysis_root / "2p" / "ratings_2_seed0.parquet"
+    ratings_path = analysis_root / "by_k" / "2p" / "ratings_2_seed0.parquet"
     assert ratings_path.exists()
 
 
@@ -666,7 +666,7 @@ def test_run_trueskill_rebuilds_outdated_combined(
         curated_rows_name: str | None = None,
     ) -> tuple[str, int]:
         stats, games = per_block["2"]
-        per_player_dir = Path(root_dir) / "2p"
+        per_player_dir = Path(root_dir) / "by_k" / "2p"
         per_player_dir.mkdir(parents=True, exist_ok=True)
         rt._save_ratings_parquet(per_player_dir / f"ratings_2{suffix}.parquet", stats)
         return "2", games
@@ -679,7 +679,7 @@ def test_run_trueskill_rebuilds_outdated_combined(
         tier_calls.append((means, stdevs))
         return dict.fromkeys(means, 1)
 
-    combined_path = analysis_root / "combined" / "ratings_k_weighted_seed0.parquet"
+    combined_path = analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet"
     combined_path.parent.mkdir(parents=True, exist_ok=True)
     combined_path.touch()
     old_time = combined_path.stat().st_mtime - 200.0
@@ -694,7 +694,7 @@ def test_run_trueskill_rebuilds_outdated_combined(
         "_load_done_stamp",
         lambda _path: rt._ShardDoneStamp(
             shard_key="2",
-            parquet_path=str(analysis_root / "2p" / "ratings_2_seed0.parquet"),
+            parquet_path=str(analysis_root / "by_k" / "2p" / "ratings_2_seed0.parquet"),
             rows=10,
             created_at=0.0,
         ),
@@ -704,7 +704,7 @@ def test_run_trueskill_rebuilds_outdated_combined(
 
     assert tier_calls
     assert combined_path.stat().st_mtime > old_time
-    assert (analysis_root / "combined" / "ratings_k_weighted_seed0.json").exists()
+    assert (analysis_root / "across_k" / "ratings_k_weighted_seed0.json").exists()
     assert (analysis_root / "tiers.json").exists()
 
 
@@ -775,11 +775,11 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
         assert root is not None
         root = Path(root)
         rt._save_ratings_parquet(
-            root / "2p" / f"ratings_2_seed{output_seed}.parquet",
+            root / "by_k" / "2p" / f"ratings_2_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(25.0, 8.0)},
         )
         rt._save_ratings_parquet(
-            root / "combined" / f"ratings_k_weighted_seed{output_seed}.parquet",
+            root / "across_k" / f"ratings_k_weighted_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(25.0, 8.0)},
         )
 
@@ -1029,7 +1029,7 @@ def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path:
         root = Path(cast(Path, kwargs["root"]))
         output_seed = int(cast(int, kwargs["output_seed"]))
         rt._save_ratings_parquet(
-            root / "combined" / f"ratings_k_weighted_seed{output_seed}.parquet",
+            root / "across_k" / f"ratings_k_weighted_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(25.0, 8.0)},
         )
 
@@ -1052,11 +1052,11 @@ def test_run_trueskill_all_seeds_raises_when_combined_precision_empty(tmp_path: 
         root = Path(cast(Path, kwargs["root"]))
         output_seed = int(cast(int, kwargs["output_seed"]))
         rt._save_ratings_parquet(
-            root / "2p" / f"ratings_2_seed{output_seed}.parquet",
+            root / "by_k" / "2p" / f"ratings_2_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(20.0, 2.0)},
         )
         rt._save_ratings_parquet(
-            root / "combined" / f"ratings_k_weighted_seed{output_seed}.parquet",
+            root / "across_k" / f"ratings_k_weighted_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(20.0, 0.0)},
         )
 

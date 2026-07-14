@@ -12,6 +12,7 @@ import yaml
 from farkle.analysis.stage_registry import StageDefinition, StageLayout, StagePlacement
 from farkle.config import (
     AppConfig,
+    ArtifactScope,
     IOConfig,
     SimConfig,
     _annotation_contains,
@@ -492,50 +493,31 @@ def test_interseed_input_dir_resolution_modes(configured: Path, expected: Path) 
     assert cfg.interseed_input_dir == expected
 
 
-def test_metrics_input_path_fallback_ordering(tmp_path: Path) -> None:
+def test_metrics_input_path_requires_canonical_scope(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
     name = "metrics.parquet"
-    stage_path = cfg._stage_dir_if_active("metrics", "combined") / name  # type: ignore[operator]
-    interseed_path = cfg._input_stage_path("metrics", "combined") / name  # type: ignore[operator]
+    canonical = cfg.input_scope_path("metrics", ArtifactScope.ACROSS_K, name)
+    generic_path = cfg._input_stage_path("metrics", "combined") / name  # type: ignore[operator]
     legacy_path = cfg.analysis_dir / name
 
-    interseed_path.parent.mkdir(parents=True, exist_ok=True)
-    interseed_path.write_text("interseed")
-    assert cfg.metrics_input_path(name) == interseed_path
-
-    stage_path.parent.mkdir(parents=True, exist_ok=True)
-    stage_path.write_text("stage")
-    assert cfg.metrics_input_path(name) == interseed_path
-
-    interseed_path.unlink()
-    assert cfg.metrics_input_path(name) == stage_path
-
-    stage_path.unlink()
+    generic_path.parent.mkdir(parents=True, exist_ok=True)
+    generic_path.write_text("generic")
     legacy_path.parent.mkdir(parents=True, exist_ok=True)
     legacy_path.write_text("legacy")
-    assert cfg.metrics_input_path(name) == legacy_path
+    assert cfg.metrics_input_path(name) == canonical
+    assert cfg.metrics_input_path(name) not in {generic_path, legacy_path}
 
 
-def test_meta_input_path_fallback_ordering(tmp_path: Path) -> None:
+def test_meta_input_path_requires_by_k_scope(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
     name = "meta.json"
-    preferred = cfg.meta_per_k_dir(5) / name
-    interseed = cfg._input_stage_path("meta", "5p") / name  # type: ignore[operator]
-    legacy_combined = cfg.meta_combined_dir / name
+    expected = cfg.input_scope_path("meta", ArtifactScope.BY_K, name, k=5)
+    wrong_scope = cfg.input_scope_path("meta", ArtifactScope.CROSS_SEED, name)
+    wrong_scope.parent.mkdir(parents=True, exist_ok=True)
+    wrong_scope.write_text("wrong")
 
-    preferred.parent.mkdir(parents=True, exist_ok=True)
-    preferred.write_text("stage")
-    assert cfg.meta_input_path(5, name) == preferred
-
-    preferred.unlink()
-    interseed.parent.mkdir(parents=True, exist_ok=True)
-    interseed.write_text("interseed")
-    assert cfg.meta_input_path(5, name) == interseed
-
-    interseed.unlink()
-    legacy_combined.parent.mkdir(parents=True, exist_ok=True)
-    legacy_combined.write_text("legacy-combined")
-    assert cfg.meta_input_path(5, name) == legacy_combined
+    assert cfg.meta_input_path(5, name) == expected
+    assert cfg.meta_input_path(5, name) != wrong_scope
 
 
 def test_post_h2h_path_fallback_ordering(tmp_path: Path) -> None:
@@ -634,7 +616,7 @@ def test_curated_parquet_falls_back_without_curate_stage(tmp_path: Path) -> None
 def test_curated_parquet_prefers_interseed_combine_input(tmp_path: Path) -> None:
     upstream_root = tmp_path / "upstream"
     combine_folder = "02_combine"
-    upstream_curated = upstream_root / combine_folder / "combined" / "all_ingested_rows.parquet"
+    upstream_curated = upstream_root / combine_folder / "concat_ks" / "all_ingested_rows.parquet"
     upstream_curated.parent.mkdir(parents=True, exist_ok=True)
     upstream_curated.write_text("rows")
 
@@ -1022,16 +1004,14 @@ def test_preferred_tiers_path_fallback_ordering(tmp_path: Path) -> None:
     assert cfg.preferred_tiers_path() == cfg._resolve_stage_artifact_path("frequentist", "tiers.json")
 
 
-def test_load_app_config_n_players_list_combined_normalization_and_validation(write_yaml) -> None:
-    config = write_yaml(
-        "combined_players.yaml",
-        {"sim": {"n_players_list": ["combined", 0, "5"]}},
-    )
+def test_load_app_config_rejects_all_k_player_sentinels(write_yaml) -> None:
+    text_sentinel = write_yaml("text_sentinel.yaml", {"sim": {"n_players_list": ["combined"]}})
+    numeric_sentinel = write_yaml("numeric_sentinel.yaml", {"sim": {"n_players_list": [0]}})
 
-    cfg = load_app_config(config)
-
-    assert cfg.sim.n_players_list == [5]
-    assert cfg.analysis.agreement_include_combined is True
+    with pytest.raises(ValueError, match="concrete player counts"):
+        load_app_config(text_sentinel)
+    with pytest.raises(ValueError, match="concrete player counts"):
+        load_app_config(numeric_sentinel)
 
     bad_config = write_yaml("bad_players.yaml", {"sim": {"n_players_list": ["abc"]}})
     with pytest.raises(ValueError, match="invalid n_players_list entry"):
@@ -1056,12 +1036,9 @@ def test_load_app_config_rejects_non_sim_bad_section_shape(write_yaml) -> None:
 def test_small_properties_cover_combined_and_trueskill_variants(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
 
-    assert cfg.is_combined_players("combined") is True
-    assert cfg.is_combined_players(0) is True
-    assert cfg.is_combined_players("not-combined") is False
-
-    combined_path = cfg.agreement_output_path("combined")
-    assert combined_path.name in {"agreement_k_weighted.json", "agreement_combined.json"}
+    across_k_path = cfg.agreement_across_k_output_path()
+    assert across_k_path.name == "agreement_across_k.json"
+    assert across_k_path.parent.name == "diagnostics"
     assert cfg.agreement_output_path(5).name == "agreement_5p.json"
 
     combined_trueskill = cfg.trueskill_path("ratings_combined.parquet")
@@ -1076,30 +1053,30 @@ def test_app_config_stage_and_alias_helpers_cover_common_paths(tmp_path: Path) -
     assert cfg.ingest_block_dir(5).name == "5p"
     assert cfg.curate_block_dir(5).name == "5p"
     assert cfg.combine_block_dir(5).name == "5p"
-    assert cfg.combine_combined_dir().name == "combined"
+    assert cfg.combine_combined_dir().name == "concat_ks"
     assert cfg.metrics_per_k_dir(5).name == "5p"
-    assert cfg.metrics_combined_dir.name == "combined"
+    assert cfg.metrics_combined_dir.name == "across_k"
 
     assert cfg.game_stats_stage_dir.parent == cfg.analysis_dir
-    assert cfg.game_stats_combined_dir.name == "combined"
+    assert cfg.game_stats_combined_dir.name == "across_k"
     assert cfg.seed_summaries_stage_dir.parent == cfg.analysis_dir
     assert cfg.seed_summaries_dir(5).name == "5p"
     assert cfg.variance_stage_dir.parent == cfg.analysis_dir
-    assert cfg.variance_combined_dir.name == "combined"
+    assert cfg.variance_combined_dir.name == "cross_seed"
     assert cfg.meta_stage_dir.parent == cfg.analysis_dir
-    assert cfg.meta_combined_dir.name == "combined"
+    assert cfg.meta_combined_dir.name == "cross_seed"
     assert cfg.agreement_stage_dir.parent == cfg.analysis_dir
     assert cfg.interseed_stage_dir.parent == cfg.analysis_dir
     assert cfg.ingest_stage_dir.parent == cfg.analysis_dir
     assert cfg.combine_stage_dir.parent == cfg.analysis_dir
     assert cfg.metrics_stage_dir.parent == cfg.analysis_dir
     assert cfg.trueskill_stage_dir.parent == cfg.analysis_dir
-    assert cfg.trueskill_combined_dir.name == "combined"
+    assert cfg.trueskill_combined_dir.name == "across_k"
     assert cfg.head2head_stage_dir.parent == cfg.analysis_dir
     assert cfg.post_h2h_stage_dir.parent == cfg.analysis_dir
     assert cfg.hgb_stage_dir.parent == cfg.analysis_dir
     assert cfg.hgb_per_k_dir(7).name == "7p"
-    assert cfg.hgb_combined_dir.name == "combined"
+    assert cfg.hgb_combined_dir.name == "across_k"
     assert cfg.frequentist_stage_dir.parent == cfg.analysis_dir
 
     assert cfg.n_dir(5).name == "5_players"
@@ -1132,12 +1109,12 @@ def test_app_config_input_output_helpers_cover_stage_wrappers(tmp_path: Path) ->
 def test_metrics_input_path_defaults_to_interseed_then_stage_when_missing(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
 
-    interseed_default = cfg._input_stage_path("metrics", "combined")
+    interseed_default = cfg._input_stage_path("metrics", "across_k")
     assert interseed_default is not None
     assert cfg.metrics_input_path() == interseed_default / cfg.metrics_name
 
     cfg_no_input = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "local_only"))
-    stage_default = cfg_no_input._stage_dir_if_active("metrics", "combined")
+    stage_default = cfg_no_input._stage_dir_if_active("metrics", "across_k")
     assert stage_default is not None
     assert cfg_no_input.metrics_input_path() == stage_default / cfg_no_input.metrics_name
 
@@ -1172,9 +1149,50 @@ def test_rng_paths_when_rng_stage_registered(tmp_path: Path) -> None:
     out_path = cfg.rng_output_path("rng.json")
     out_path.write_text("rng")
 
-    assert cfg.rng_combined_dir.name == "combined"
+    assert cfg.rng_combined_dir.name == "diagnostics"
     assert cfg.rng_stage_dir.parent == cfg.analysis_dir
     assert cfg.rng_input_path("rng.json") == out_path
+
+
+def test_canonical_scope_helpers_are_disjoint_and_validate_k(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+
+    roots = {
+        cfg.by_k_dir("metrics", 4),
+        cfg.concat_ks_dir("metrics"),
+        cfg.across_k_dir("metrics"),
+        cfg.cross_seed_dir("metrics"),
+        cfg.diagnostics_dir("metrics"),
+        cfg.h2h_2p_dir("metrics"),
+    }
+    assert len(roots) == len(ArtifactScope)
+    assert cfg.by_k_dir("metrics", 4).parts[-2:] == ("by_k", "4p")
+
+    with pytest.raises(ValueError, match="requires a concrete positive player count"):
+        cfg.scope_dir("metrics", ArtifactScope.BY_K)
+    with pytest.raises(ValueError, match="does not accept a player count"):
+        cfg.scope_dir("metrics", ArtifactScope.ACROSS_K, k=4)
+
+
+def test_scope_guard_rejects_stage_scope_and_k_interchange(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    per_k = cfg.scope_path("metrics", ArtifactScope.BY_K, "metrics.parquet", k=4)
+    across_k = cfg.scope_path("metrics", ArtifactScope.ACROSS_K, "metrics.parquet")
+    other_root = cfg.scope_path("trueskill", ArtifactScope.BY_K, "ratings.parquet", k=4)
+
+    assert cfg.require_scope(
+        per_k,
+        stage="metrics",
+        scope=ArtifactScope.BY_K,
+        k=4,
+    ) == per_k
+    for wrong_path, stage, scope, k in (
+        (across_k, "metrics", ArtifactScope.BY_K, 4),
+        (per_k, "metrics", ArtifactScope.BY_K, 2),
+        (other_root, "metrics", ArtifactScope.BY_K, 4),
+    ):
+        with pytest.raises(ValueError, match="does not belong to required scope"):
+            cfg.require_scope(wrong_path, stage=stage, scope=scope, k=k)
 
 
 def test_statistical_contract_accepts_complete_locked_configuration() -> None:

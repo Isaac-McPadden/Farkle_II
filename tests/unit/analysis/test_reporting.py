@@ -61,7 +61,7 @@ def _write_reporting_artifacts(cfg: AppConfig, *, players: int = 2) -> None:
         cfg.analysis_dir,
         "seed_summaries",
         layout=layout,
-        filename=Path(f"{players}p"),
+        filename=Path("by_k") / f"{players}p",
     )[0]
     _write_frame(
         seed_root / f"strategy_summary_{players}p_seed101.parquet",
@@ -386,7 +386,7 @@ def test_reporting_negative_load_and_plot_branches(
         cfg.analysis_dir,
         "seed_summaries",
         layout=cfg.stage_layout,
-        filename=Path("2p"),
+        filename=Path("by_k") / "2p",
     )[0]
     _write_frame(
         seed_root / "strategy_summary_2p_seed101.parquet",
@@ -468,11 +468,11 @@ def test_reporting_loader_fallback_and_seed_h2h_branches(
         cfg.analysis_dir,
         "seed_summaries",
         layout=layout,
-        filename=Path("2p"),
+        filename=Path("by_k") / "2p",
     )[0]
     _write_frame(seed_root / "strategy_summary_2p_seed001.parquet", pd.DataFrame())
     _write_frame(
-        cfg.analysis_dir / "strategy_summary_2p_seed002.parquet",
+        seed_root / "strategy_summary_2p_seed002.parquet",
         pd.DataFrame({"strategy": ["A"], "players": [2], "win_rate": [0.55]}),
     )
     _write_frame(
@@ -481,7 +481,7 @@ def test_reporting_loader_fallback_and_seed_h2h_branches(
     )
 
     seed_paths = reporting._seed_summary_paths(cfg, 2, layout=layout)
-    assert cfg.meta_analysis_dir / "strategy_summary_2p_seed003.parquet" in seed_paths
+    assert cfg.meta_analysis_dir / "strategy_summary_2p_seed003.parquet" not in seed_paths
     assert reporting._load_seed_summaries(cfg, 2, layout=layout).to_dict(orient="records") == [
         {"strategy_id": "A", "seed": 0, "win_rate": 0.55}
     ]

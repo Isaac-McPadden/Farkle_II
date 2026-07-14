@@ -237,8 +237,8 @@ def analyze_agreement(exp_dir: Path) -> None:
     players = _detect_player_counts(analysis_dir)
     cfg.sim.n_players_list = players
     outputs = [cfg.agreement_output_path(p) for p in cfg.agreement_players()]
-    if cfg.agreement_include_combined():
-        outputs.append(cfg.agreement_output_path_combined())
+    if cfg.agreement_include_across_k():
+        outputs.append(cfg.agreement_across_k_output_path())
     done = _done_path(outputs[0])
     inputs = [ratings]
     for candidate in (

@@ -101,13 +101,16 @@ def test_run_trueskill_aggregation_and_short_circuit(
     ) -> tuple[str, int]:
         player_count = Path(block_dir).name.split("_")[0]
         stats, games = per_block[player_count]
-        per_player = Path(root_dir) / f"{player_count}p"
+        per_player = Path(root_dir) / "by_k" / f"{player_count}p"
         per_player.mkdir(parents=True, exist_ok=True)
         out_path = per_player / f"ratings_{player_count}{suffix}.parquet"
         if not out_path.exists():
             rt._save_ratings_parquet(out_path, stats)
         rt._save_done_stamp(
-            analysis_root / f"{player_count}p" / f"ratings_{player_count}{suffix}.done.json",
+            analysis_root
+            / "by_k"
+            / f"{player_count}p"
+            / f"ratings_{player_count}{suffix}.done.json",
             rt._ShardDoneStamp(
                 shard_key=f"k={player_count}",
                 parquet_path=str(out_path),
@@ -136,8 +139,8 @@ def test_run_trueskill_aggregation_and_short_circuit(
 
     assert created_executors and created_executors[0].max_workers == 2
 
-    combined_path = analysis_root / "combined" / "ratings_k_weighted_seed0.parquet"
-    json_path = analysis_root / "combined" / "ratings_k_weighted_seed0.json"
+    combined_path = analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet"
+    json_path = analysis_root / "across_k" / "ratings_k_weighted_seed0.json"
     tiers_path = analysis_root / "tiers.json"
     assert combined_path.exists() and json_path.exists() and tiers_path.exists()
 
@@ -205,14 +208,17 @@ def test_run_trueskill_skips_zero_game_block(
     ) -> tuple[str, int]:
         player_count = Path(block_dir).name.split("_")[0]
         name, stats, games = per_block[player_count]
-        per_player = Path(root_dir) / f"{player_count}p"
+        per_player = Path(root_dir) / "by_k" / f"{player_count}p"
         per_player.mkdir(parents=True, exist_ok=True)
         out_path = per_player / f"ratings_{player_count}{suffix}.parquet"
         rt._save_ratings_parquet(
             out_path, {name: stats}
         )
         rt._save_done_stamp(
-            analysis_root / f"{player_count}p" / f"ratings_{player_count}{suffix}.done.json",
+            analysis_root
+            / "by_k"
+            / f"{player_count}p"
+            / f"ratings_{player_count}{suffix}.done.json",
             rt._ShardDoneStamp(
                 shard_key=f"k={player_count}",
                 parquet_path=str(out_path),
@@ -228,7 +234,7 @@ def test_run_trueskill_skips_zero_game_block(
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
 
     combined = rt._load_ratings_parquet(
-        analysis_root / "combined" / "ratings_k_weighted_seed0.parquet"
+        analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet"
     )
     assert set(combined) == {"A"}
     assert combined["A"].mu == pytest.approx(10.0)
@@ -284,19 +290,19 @@ def test_run_trueskill_recovers_only_missing_k_shard(
 
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
 
-    done_2 = analysis_root / "2p" / "ratings_2_seed0.done.json"
-    done_3 = analysis_root / "3p" / "ratings_3_seed0.done.json"
+    done_2 = analysis_root / "by_k" / "2p" / "ratings_2_seed0.done.json"
+    done_3 = analysis_root / "by_k" / "3p" / "ratings_3_seed0.done.json"
     assert done_2.exists()
     assert done_3.exists()
-    two_path = analysis_root / "2p" / "ratings_2_seed0.parquet"
+    two_path = analysis_root / "by_k" / "2p" / "ratings_2_seed0.parquet"
     two_mtime = two_path.stat().st_mtime
 
     # Simulate interrupted cleanup / missing shard completion by removing 3p outputs.
     done_3.unlink()
-    (analysis_root / "3p" / "ratings_3_seed0.parquet").unlink()
+    (analysis_root / "by_k" / "3p" / "ratings_3_seed0.parquet").unlink()
 
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
 
     # Recovery should preserve completed shard outputs and rebuild only missing shard.
     assert two_path.stat().st_mtime == two_mtime
-    assert (analysis_root / "3p" / "ratings_3_seed0.parquet").exists()
+    assert (analysis_root / "by_k" / "3p" / "ratings_3_seed0.parquet").exists()

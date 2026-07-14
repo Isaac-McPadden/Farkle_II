@@ -13,10 +13,11 @@ SKIP_FILES = {
     Path("scripts/check_terminology.py"),
 }
 SKIP_SUFFIXES = {".pyc", ".parquet", ".png", ".jpg", ".jpeg", ".gif", ".html"}
-FORBIDDEN = re.compile(r"\bpool(?:s|ed|ing)?\b", re.IGNORECASE)
+FORBIDDEN = re.compile(r"pool(?:s|ed|ing)?", re.IGNORECASE)
 EXTERNAL_API_ALLOWLIST = (
     re.compile(r"\bmultiprocessing\.Pool\b"),
     re.compile(r"\b(?:ctx|context|mp)\.Pool\("),
+    re.compile(r"\b(?:Process|Thread)PoolExecutor\b"),
 )
 LEGACY_CONFIG_MARKER = "# terminology-allow: legacy-config"
 

@@ -396,7 +396,7 @@ def test_run_writes_per_scope_payload_and_summary_for_two_seed_combined(tmp_path
     cfg = agreement.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
     cfg.sim.n_players_list = [2]
-    cfg.analysis.agreement_include_combined = True
+    cfg.analysis.agreement_include_across_k = True
     cfg.sim.seed_list = [11, 22]
 
     combined_path = cfg.trueskill_path("ratings_k_weighted.parquet")
@@ -426,11 +426,11 @@ def test_run_writes_per_scope_payload_and_summary_for_two_seed_combined(tmp_path
 
     agreement.run(cfg)
 
-    per_scope_path = cfg.agreement_output_path_combined()
+    per_scope_path = cfg.agreement_across_k_output_path()
     assert per_scope_path.exists()
     summary_path = cfg.agreement_stage_dir / "agreement_summary.parquet"
     assert summary_path.exists()
 
     summary_df = pd.read_parquet(summary_path)
     assert len(summary_df) == 1
-    assert summary_df.iloc[0]["players"] == "combined"
+    assert summary_df.iloc[0]["scope"] == "across_k"

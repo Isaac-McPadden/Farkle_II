@@ -269,7 +269,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "agreement",
         group="analytics",
-        cache_scope=("io", "analysis.agreement_strategies", "analysis.agreement_include_combined", "analysis.n_jobs"),
+        cache_scope=("io", "analysis.agreement_strategies", "analysis.agreement_include_across_k", "analysis.n_jobs"),
     ),
     StageDefinition(
         "interseed",
@@ -340,7 +340,7 @@ _INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "agreement",
         group="analytics",
-        cache_scope=("io", "analysis.agreement_strategies", "analysis.agreement_include_combined", "analysis.n_jobs"),
+        cache_scope=("io", "analysis.agreement_strategies", "analysis.agreement_include_across_k", "analysis.n_jobs"),
     ),
     StageDefinition(
         "interseed",

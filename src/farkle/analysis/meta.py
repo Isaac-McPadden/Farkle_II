@@ -120,7 +120,7 @@ def _ensure_strategy_sets(seed_dfs: list[pd.DataFrame]) -> None:
             )
 
 
-def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.0) -> MetaResult:
+def combine_win_rates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.0) -> MetaResult:
     """Combine per-seed win rates into per-strategy meta estimates."""
 
     cleaned: list[pd.DataFrame] = []
@@ -523,7 +523,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
                 },
             )
 
-        result = pool_winrates(frames, use_random_if_I2_gt=threshold)
+        result = combine_win_rates(frames, use_random_if_I2_gt=threshold)
         if result.combined.empty:
             LOGGER.info(
                 "Meta aggregation skipped: combined frame empty",
@@ -590,4 +590,4 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
         write_stage_done(done, inputs=inputs, outputs=outputs, cfg=cfg, stage="meta")
 
 
-__all__ = ["MetaResult", "pool_winrates", "run"]
+__all__ = ["MetaResult", "combine_win_rates", "run"]

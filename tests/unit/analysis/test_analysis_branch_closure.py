@@ -39,7 +39,7 @@ def test_agreement_select_score_column_raises_without_numeric_column() -> None:
 
 
 def test_checks_pre_metrics_raises_when_no_manifest_present(tmp_path: Path) -> None:
-    combined = tmp_path / "combined" / "all_ingested_rows.parquet"
+    combined = tmp_path / "concat_ks" / "all_ingested_rows.parquet"
     combined.parent.mkdir(parents=True)
     table = pa.table({"winner": ["A"], "wins": [1]})
     pq.write_table(table, combined)
@@ -92,8 +92,8 @@ def test_stage_registry_stage_folder_for_unknown_stage_is_none(tmp_path: Path) -
     assert layout.folder_for("unknown-stage") is None
 
 
-def test_ingest_n_from_block_returns_zero_for_invalid_names() -> None:
-    assert ingest._n_from_block("players_two") == 0
+def test_ingest_n_from_block_returns_none_for_invalid_names() -> None:
+    assert ingest._n_from_block("players_two") is None
 
 
 def test_hgb_feat_unique_players_falls_back_to_hints_when_metrics_missing(tmp_path: Path) -> None:

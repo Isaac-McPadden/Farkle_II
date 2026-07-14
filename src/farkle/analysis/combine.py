@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import shutil
 from pathlib import Path
 
 import pyarrow as pa
@@ -38,33 +37,16 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
     return pa.table(cols, names=target.names)
 
 
-def _migrate_combined_output(cfg: AppConfig) -> Path:
-    """Move legacy combined outputs into the current combined location when needed.
+def _concat_ks_output(cfg: AppConfig) -> Path:
+    """Return the canonical row-concatenation output path.
 
     Args:
         cfg: Application config used to resolve preferred and legacy paths.
 
     Returns:
-        Preferred combined parquet path after any legacy migration.
+        Canonical concatenated parquet path. Legacy locations are ignored.
     """
-    preferred_dir = cfg.combine_combined_dir()
-    preferred_out = preferred_dir / "all_ingested_rows.parquet"
-    legacy_candidates = [
-        cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined" / "all_ingested_rows.parquet",
-        cfg.combine_stage_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
-        cfg.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
-        cfg.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
-    ]
-    for legacy in legacy_candidates:
-        if preferred_out.exists() or not legacy.exists() or legacy == preferred_out:
-            continue
-        preferred_dir.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy), preferred_out)
-        legacy_manifest = legacy.with_suffix(".manifest.jsonl")
-        new_manifest = preferred_out.with_suffix(".manifest.jsonl")
-        if legacy_manifest.exists():
-            shutil.move(str(legacy_manifest), new_manifest)
-    return preferred_out
+    return cfg.concat_ks_dir("combine") / "all_ingested_rows.parquet"
 
 
 def _partition_done_path(cfg: AppConfig, n_players: int) -> Path:
@@ -227,15 +209,13 @@ def run(cfg: AppConfig) -> None:
         ``None``. The function writes partitioned parquet artifacts, a monolithic
         compatibility parquet file, and corresponding stage metadata.
     """
-    preferred = sorted(cfg.data_dir.glob(f"*p/{cfg.curated_rows_name}"))
-    legacy = sorted(cfg.data_dir.glob("*p/*_ingested_rows.parquet"))
-    files: list[Path] = preferred or legacy
+    files = sorted((cfg.data_dir / "by_k").glob(f"*p/{cfg.curated_rows_name}"))
     if not files:
         LOGGER.info("Combine: no inputs discovered", extra={"stage": "combine", "path": str(cfg.data_dir)})
         return
 
     target = expected_schema_for(12)
-    out = _migrate_combined_output(cfg)
+    out = _concat_ks_output(cfg)
     manifest_path = cfg.combined_manifest_path()
     done = stage_done_path(cfg.combine_stage_dir, "combine")
 

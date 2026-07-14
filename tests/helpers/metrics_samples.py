@@ -252,7 +252,7 @@ def _parquet_inputs_exist(root: Path) -> bool:
     """
 
     expected = [
-        root / "analysis" / "02_combine" / "combined" / "all_ingested_rows.parquet",
+        root / "analysis" / "02_combine" / "concat_ks" / "all_ingested_rows.parquet",
         root / "2_players" / "2p_metrics.parquet",
         root / "3_players" / "3p_metrics.parquet",
     ]
@@ -266,7 +266,7 @@ def regenerate_inputs(target_root: Path) -> None:
         shutil.rmtree(target_root, onerror=_clear_readonly)
     analysis_root = target_root / "analysis"
     combine_root = analysis_root / "02_combine"
-    combined_dir = combine_root / "combined"
+    combined_dir = combine_root / "concat_ks"
     combined_dir.mkdir(parents=True, exist_ok=True)
     combined_parquet = combined_dir / "all_ingested_rows.parquet"
     combined_csv = combined_dir / "all_ingested_rows.csv"
@@ -338,7 +338,7 @@ def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
             _write_manifest(root / f"{n}p" / "manifest.jsonl", count)
         _write_manifest(cfg.manifest_for(n), count)
     _write_manifest(
-        workspace / "analysis" / "02_combine" / "combined" / "all_ingested_rows.manifest.jsonl",
+        workspace / "analysis" / "02_combine" / "concat_ks" / "all_ingested_rows.manifest.jsonl",
         len(_COMBINED_ROWS),
     )
 
@@ -361,7 +361,7 @@ def validate_outputs(cfg: AppConfig, *, update_goldens: bool) -> None:
     seat_parquet = cfg.metrics_output_path("seat_advantage.parquet")
     seat_metrics = cfg.metrics_output_path("seat_metrics.parquet")
     seat_metrics_csv = cfg.metrics_output_path("seat_metrics.csv")
-    iso_paths = sorted(cfg.metrics_stage_dir.glob("*p/*_isolated_metrics.parquet"))
+    iso_paths = sorted((cfg.metrics_stage_dir / "by_k").glob("*p/*_isolated_metrics.parquet"))
     metrics_golden = GOLDEN_ROOT / "metrics.csv"
     seat_golden = GOLDEN_ROOT / "seat_advantage.csv"
     seat_metrics_golden = GOLDEN_ROOT / "seat_metrics.csv"

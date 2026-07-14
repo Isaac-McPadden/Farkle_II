@@ -118,7 +118,7 @@ def test_global_stats_to_table_fallback_filters_non_integer_player_counts(
         schema = type("Schema", (), {"names": ["seat_ranks", "n_rounds", "n_players"]})()
 
         @staticmethod
-        def to_table(*args, **kwargs):
+        def to_table(*_args, **kwargs):
             if kwargs:
                 raise TypeError("legacy positional API")
             return table
@@ -216,7 +216,7 @@ def test_run_covers_parallel_empty_output_and_rare_event_detail_paths(
     )
     monkeypatch.setattr(
         game_stats,
-        "_pool_completed_k_game_stats",
+        "_aggregate_completed_k_game_stats",
         lambda **kwargs: combined_calls.append(tuple(kwargs["configured_k_values"])),
     )
     monkeypatch.setattr(
@@ -265,7 +265,7 @@ def test_run_raises_when_rare_event_summary_is_empty(
     monkeypatch.setattr(game_stats, "_resolve_analysis_workers", lambda _cfg: 1)
     monkeypatch.setattr(game_stats, "stage_is_up_to_date", lambda *args, **kwargs: False)
     monkeypatch.setattr(game_stats, "_compute_k_game_stats", lambda **kwargs: None)
-    monkeypatch.setattr(game_stats, "_pool_completed_k_game_stats", lambda **kwargs: None)
+    monkeypatch.setattr(game_stats, "_aggregate_completed_k_game_stats", lambda **kwargs: None)
     monkeypatch.setattr(
         game_stats,
         "_resolve_rare_event_thresholds",
@@ -292,7 +292,7 @@ def test_run_raises_when_rare_event_details_are_empty(
     monkeypatch.setattr(game_stats, "_resolve_analysis_workers", lambda _cfg: 1)
     monkeypatch.setattr(game_stats, "stage_is_up_to_date", lambda *args, **kwargs: False)
     monkeypatch.setattr(game_stats, "_compute_k_game_stats", lambda **kwargs: None)
-    monkeypatch.setattr(game_stats, "_pool_completed_k_game_stats", lambda **kwargs: None)
+    monkeypatch.setattr(game_stats, "_aggregate_completed_k_game_stats", lambda **kwargs: None)
     monkeypatch.setattr(
         game_stats,
         "_resolve_rare_event_thresholds",
@@ -424,12 +424,14 @@ def test_compute_k_game_stats_handles_no_strategy_and_checkpoint_paths(
         cache_key_version=1,
     )
 
-    checkpoint_path = (stage_dir / "2p" / "game_stats.2p.parquet").with_suffix(".checkpoint.json")
+    checkpoint_path = (stage_dir / "by_k" / "2p" / "game_stats.2p.parquet").with_suffix(
+        ".checkpoint.json"
+    )
     assert checkpoint_path.exists()
     assert checkpoint_path.read_text(encoding="utf-8") == '{"batches": 25, "k": 2}'
-    assert artifact_writes == [stage_dir / "2p" / "game_stats.2p.parquet"]
+    assert artifact_writes == [stage_dir / "by_k" / "2p" / "game_stats.2p.parquet"]
     assert legacy_calls == [2, 2]
-    assert stage_done_calls == [stage_dir / "2p" / "game_stats.2p.done.json"]
+    assert stage_done_calls == [stage_dir / "by_k" / "2p" / "game_stats.2p.done.json"]
     assert progress_calls[-1] == 25
 
 

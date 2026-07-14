@@ -416,15 +416,9 @@ def _seed_summary_paths(
         analysis_dir,
         "seed_summaries",
         layout=layout,
-        filename=Path(f"{players}p"),
+        filename=Path("by_k") / f"{players}p",
     )
     search_roots.extend(stage_dirs)
-    search_roots.append(analysis_dir)
-
-    if isinstance(cfg, AppConfig) and cfg.io.meta_analysis_dir is not None:
-        meta_dir = cfg.meta_analysis_dir
-        if meta_dir not in search_roots:
-            search_roots.append(meta_dir)
 
     paths: list[Path] = []
     seen: set[Path] = set()

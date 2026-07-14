@@ -249,8 +249,8 @@ def _agreement_outputs(cfg: AppConfig) -> list[Path]:
         Paths for per-player, combined, and summary agreement outputs.
     """
     outputs = [cfg.agreement_output_path(players) for players in cfg.agreement_players()]
-    if cfg.agreement_include_combined():
-        outputs.append(cfg.agreement_output_path_combined())
+    if cfg.agreement_include_across_k():
+        outputs.append(cfg.agreement_across_k_output_path())
     outputs.append(cfg.agreement_stage_dir / "agreement_summary.parquet")
     return outputs
 

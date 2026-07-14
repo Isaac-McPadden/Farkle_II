@@ -181,7 +181,7 @@ def _apply_fast_patches(monkeypatch: pytest.MonkeyPatch, rt) -> TournamentConfig
 ###############################################################################
 
 
-def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+def test_run_tournament_process_executor(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     # Patch the strategy grid **before** importing the target so its global
     # alias is already the tiny version at import -time.
     monkeypatch.setattr(sim, "generate_strategy_grid", lambda: (_tiny_strategy_grid(), None))
@@ -189,7 +189,7 @@ def test_run_tournament_process_pool(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     rt = importlib.import_module("farkle.simulation.run_tournament")
     cfg = _apply_fast_patches(monkeypatch, rt)
 
-    ckpt = tmp_path / "ppool.pkl"
+    ckpt = tmp_path / "process_executor.pkl"
     kwargs = {
         "global_seed": 123,
         "checkpoint_path": ckpt,

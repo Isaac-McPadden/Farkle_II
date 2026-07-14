@@ -40,7 +40,7 @@ class StageParallelPolicy:
 class ParallelNestingContext:
     """Parallel context inherited by nested work units."""
 
-    active_process_pool: bool = False
+    active_process_executor: bool = False
     parent_process_workers: int = 1
     total_cores: int | None = None
 
@@ -97,15 +97,17 @@ def resolve_stage_parallel_policy(
 
     total_cores = os.cpu_count() or 1
     context_total_cores: int | None = None
-    active_process_pool = False
+    active_process_executor = False
     parent_workers = 1
     if outer_context is not None:
         if isinstance(outer_context, ParallelNestingContext):
-            active_process_pool = bool(outer_context.active_process_pool)
+            active_process_executor = bool(outer_context.active_process_executor)
             parent_workers = max(1, int(outer_context.parent_process_workers))
             context_total_cores = outer_context.total_cores
         else:
-            active_process_pool = bool(outer_context.get("active_process_pool", False))
+            active_process_executor = bool(
+                outer_context.get("active_process_executor", False)
+            )
             parent_workers = max(1, int(outer_context.get("parent_process_workers", 1)))
             total_value = outer_context.get("total_cores")
             context_total_cores = int(total_value) if total_value is not None else None
@@ -115,18 +117,18 @@ def resolve_stage_parallel_policy(
 
     requested_n_jobs = n_jobs_override if n_jobs_override is not None else getattr(cfg, "n_jobs", None)
     process_workers = normalize_n_jobs(requested_n_jobs, cpu_count=total_cores, default=1)
-    if active_process_pool:
+    if active_process_executor:
         process_workers = 1
 
     available_native_threads = (
-        max(1, total_cores // parent_workers) if active_process_pool else total_cores
+        max(1, total_cores // parent_workers) if active_process_executor else total_cores
     )
     native_threads_per_process = max(1, available_native_threads // max(1, process_workers))
     python_threads = native_threads_per_process
 
     requested_arrow_threads = getattr(cfg, "arrow_threads", None)
     if requested_arrow_threads is None:
-        arrow_threads = 1 if active_process_pool else native_threads_per_process
+        arrow_threads = 1 if active_process_executor else native_threads_per_process
     else:
         requested_arrow_threads_i = int(requested_arrow_threads)
         if requested_arrow_threads_i < 0:

@@ -26,9 +26,9 @@ def build_curated_fixture(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
         metrics=MetricsConfig(seat_range=(1, 2)),
     )
 
-    combined_dir = cfg.combine_combined_dir()
+    combined_dir = cfg.concat_ks_dir("combine")
     combined_dir.mkdir(parents=True, exist_ok=True)
-    per_n_dir = cfg.data_dir / "2p"
+    per_n_dir = cfg.curate_block_dir(2)
     per_n_dir.mkdir(parents=True, exist_ok=True)
 
     rows = pd.DataFrame(
@@ -79,10 +79,10 @@ def build_curated_fixture(tmp_path: Path) -> tuple[AppConfig, Path, Path]:
 
     combined_path = combined_dir / "all_ingested_rows.parquet"
     pq.write_table(table, combined_path)
-    per_n_path = per_n_dir / "2p_rows.parquet"
+    per_n_path = per_n_dir / cfg.curated_rows_name
     pq.write_table(table, per_n_path)
 
-    manifest = per_n_dir / "manifest.jsonl"
+    manifest = cfg.manifest_for(2)
     manifest.write_text(json.dumps({"row_count": len(rows)}))
 
     return cfg, combined_path, per_n_path

@@ -84,7 +84,11 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         stage_log.missing_input(interseed_reason)
         return
 
-    data_file = cfg.curated_parquet
+    try:
+        data_file = cfg.curated_parquet
+    except KeyError as exc:
+        stage_log.missing_input(str(exc))
+        return
     out_file = cfg.rng_output_path("rng_diagnostics.parquet")
     stamp_path = stage_done_path(cfg.rng_stage_dir, "rng_diagnostics")
 

@@ -15,7 +15,7 @@ def _write_curated(path: Path, schema: pa.Schema, rows: list[dict[str, object]])
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
 
 
-def test_migrate_combined_output_moves_manifest_when_present(tmp_path: Path) -> None:
+def test_concat_ks_output_does_not_move_legacy_manifest(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined"
     legacy_dir.mkdir(parents=True, exist_ok=True)
@@ -24,15 +24,12 @@ def test_migrate_combined_output_moves_manifest_when_present(tmp_path: Path) -> 
     legacy_file.write_bytes(b"legacy")
     legacy_manifest.write_text('{"path":"legacy"}\n', encoding="utf-8")
 
-    migrated = combine._migrate_combined_output(cfg)
+    canonical = combine._concat_ks_output(cfg)
 
-    assert migrated.read_bytes() == b"legacy"
-    assert (
-        migrated.with_suffix(".manifest.jsonl").read_text(encoding="utf-8")
-        == '{"path":"legacy"}\n'
-    )
-    assert not legacy_file.exists()
-    assert not legacy_manifest.exists()
+    assert canonical == cfg.concat_ks_dir("combine") / "all_ingested_rows.parquet"
+    assert not canonical.exists()
+    assert legacy_file.read_bytes() == b"legacy"
+    assert legacy_manifest.read_text(encoding="utf-8") == '{"path":"legacy"}\n'
 
 
 def test_write_partitioned_dataset_skips_invalid_dirs_and_reuses_uptodate_outputs(

@@ -119,7 +119,7 @@ def test_build_payload_combined_h2h_error_and_missing(tmp_path: Path, monkeypatc
     )
     payload = cast(
         _AgreementPayload,
-        agreement._build_payload(cfg, players=0, combined_scope=True, stage_log=cast(Any, stage_log)),
+        agreement._build_payload(cfg, players=None, combined_scope=True, stage_log=cast(Any, stage_log)),
     )
     assert payload is not None
     assert payload["comparison_scope"]["h2h"] is None
@@ -128,7 +128,7 @@ def test_build_payload_combined_h2h_error_and_missing(tmp_path: Path, monkeypatc
     monkeypatch.setattr(agreement, "_load_head2head", lambda *_args, **_kwargs: None)
     payload = cast(
         _AgreementPayload,
-        agreement._build_payload(cfg, players=0, combined_scope=True, stage_log=cast(Any, stage_log)),
+        agreement._build_payload(cfg, players=None, combined_scope=True, stage_log=cast(Any, stage_log)),
     )
     assert payload is not None
     assert payload["comparison_scope"]["h2h"] is None
@@ -137,7 +137,7 @@ def test_build_payload_combined_h2h_error_and_missing(tmp_path: Path, monkeypatc
 def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
     cfg = _mk_cfg(tmp_path)
     cfg.sim.n_players_list = [2]
-    cfg.analysis.agreement_include_combined = True
+    cfg.analysis.agreement_include_across_k = True
 
     missing_msgs: list[str] = []
 
@@ -177,7 +177,7 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
     assert summary.iloc[0]["players"] == 2
     assert cfg.agreement_output_path(2).exists()
 
-    def _combined_only(_cfg: agreement.AppConfig, players: int, combined_scope: bool, **_kwargs: Any):
+    def _combined_only(_cfg: agreement.AppConfig, players: int | None, combined_scope: bool, **_kwargs: Any):
         if not combined_scope:
             return None
         return {
@@ -196,11 +196,11 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
     agreement.run(cfg)
     summary = pd.read_parquet(cfg.agreement_stage_dir / "agreement_summary.parquet")
     assert len(summary) == 1
-    assert summary.iloc[0]["players"] == "combined"
-    assert cfg.agreement_output_path_combined().exists()
+    assert summary.iloc[0]["scope"] == "across_k"
+    assert cfg.agreement_across_k_output_path().exists()
 
     cfg.sim.n_players_list = [2, 3]
-    cfg.analysis.agreement_include_combined = False
+    cfg.analysis.agreement_include_across_k = False
 
     def _both(_cfg: agreement.AppConfig, players: int, combined_scope: bool, **_kwargs: Any):
         if combined_scope:
@@ -235,7 +235,7 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
 def test_trueskill_resolver_edge_cases(tmp_path: Path) -> None:
     cfg = _mk_cfg(tmp_path)
 
-    assert agreement._resolve_trueskill_per_k_path(cfg, "combined") is None
+    assert agreement._resolve_trueskill_per_k_path(cfg, None) is None
 
     missing_path = agreement._resolve_trueskill_per_k_path(cfg, 4)
     assert missing_path is not None
@@ -259,11 +259,11 @@ def test_trueskill_resolver_edge_cases(tmp_path: Path) -> None:
     )
     (combined_dir / "ratings_k_weighted_seedBAD.parquet").write_text("ignore")
 
-    combined_paths = agreement._resolve_trueskill_seed_paths(cfg, players=0, combined_scope=True)
+    combined_paths = agreement._resolve_trueskill_seed_paths(cfg, players=None, combined_scope=True)
     assert len(combined_paths) == 1
     assert combined_paths[0].parent.name == "combined"
 
-    assert agreement._resolve_trueskill_seed_paths(cfg, players="combined", combined_scope=False) == []
+    assert agreement._resolve_trueskill_seed_paths(cfg, players=None, combined_scope=False) == []
 
 
 def test_tier_and_rank_and_seed_helpers_degenerate_cases() -> None:

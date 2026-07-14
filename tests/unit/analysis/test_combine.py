@@ -186,18 +186,18 @@ def test_pad_to_schema_adds_missing_columns():
     assert padded.column("P2_strategy").null_count == 1
 
 
-def test_migrate_combined_output_moves_legacy(tmp_results_dir: Path) -> None:
+def test_concat_ks_output_ignores_generic_legacy_path(tmp_results_dir: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
     legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined"
     legacy_dir.mkdir(parents=True, exist_ok=True)
     legacy_file = legacy_dir / "all_ingested_rows.parquet"
     legacy_file.write_text("legacy")
 
-    migrated = combine._migrate_combined_output(cfg)
+    canonical = combine._concat_ks_output(cfg)
 
-    assert migrated == cfg.combine_combined_dir() / "all_ingested_rows.parquet"
-    assert migrated.exists()
-    assert not legacy_file.exists()
+    assert canonical == cfg.concat_ks_dir("combine") / "all_ingested_rows.parquet"
+    assert not canonical.exists()
+    assert legacy_file.exists()
 
 
 def test_combine_respects_stage_cache(tmp_results_dir: Path, monkeypatch, capinfo) -> None:

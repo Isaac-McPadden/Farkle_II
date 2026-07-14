@@ -59,7 +59,7 @@ from farkle.utils.analysis_shared import to_int
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.schema_helpers import n_players_from_schema
-from farkle.utils.stage_io import discover_per_k_artifacts, resolve_worker_count
+from farkle.utils.stage_io import resolve_worker_count
 from farkle.utils.types import Compression
 from farkle.utils.writer import ParquetShardWriter, atomic_path
 
@@ -121,12 +121,12 @@ def _resolve_analysis_workers(cfg: AppConfig) -> int:
 
 
 def _per_k_game_stats_paths(stage_dir: Path, k: int) -> tuple[Path, Path]:
-    base_dir = stage_dir / f"{k}p"
+    base_dir = stage_dir / "by_k" / f"{k}p"
     return base_dir / f"game_stats.{k}p.parquet", base_dir / f"game_stats.{k}p.done.json"
 
 
-def _per_k_game_stats_pool_marker(stage_dir: Path) -> Path:
-    return stage_dir / "combined" / "game_stats.aggregate.done.json"
+def _per_k_game_stats_aggregation_marker(stage_dir: Path) -> Path:
+    return stage_dir / "across_k" / "game_stats.aggregate.done.json"
 
 
 def _write_per_k_game_length(
@@ -506,9 +506,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     margin_output = cfg.game_stats_output_path("margin_stats.parquet")
     combined_game_length_output = cfg.game_stats_output_path("game_length_k_weighted.parquet")
     combined_margin_output = cfg.game_stats_output_path("margin_k_weighted.parquet")
-    combined_stamp = _per_k_game_stats_pool_marker(stage_dir)
+    combined_stamp = _per_k_game_stats_aggregation_marker(stage_dir)
 
-    _pool_completed_k_game_stats(
+    _aggregate_completed_k_game_stats(
         configured_k_values=configured_k_values,
         stage_dir=stage_dir,
         game_length_output=game_length_output,
@@ -930,7 +930,7 @@ def _compute_k_game_stats(
     )
 
 
-def _pool_completed_k_game_stats(
+def _aggregate_completed_k_game_stats(
     *,
     configured_k_values: Sequence[int],
     stage_dir: Path,
@@ -1244,7 +1244,7 @@ def _discover_per_n_inputs(cfg: AppConfig) -> list[tuple[int, Path]]:
     """Return discovered per-``n`` curated parquets in ``analysis/data``."""
 
     k_values: list[int] = []
-    for p_dir in sorted(cfg.data_dir.glob("*p")):
+    for p_dir in sorted((cfg.data_dir / "by_k").glob("*p")):
         if not p_dir.is_dir():
             continue
         try:
@@ -1252,12 +1252,11 @@ def _discover_per_n_inputs(cfg: AppConfig) -> list[tuple[int, Path]]:
         except ValueError:
             continue
 
-    discovered = discover_per_k_artifacts(
-        k_values,
-        preferred_path=lambda n: cfg.data_dir / f"{n}p" / cfg.curated_rows_name,
-        legacy_path=lambda n: cfg.data_dir / f"{n}p" / f"{n}p_ingested_rows.parquet",
-    )
-    return [(n_players, selection.path) for n_players, selection in discovered]
+    return [
+        (n_players, cfg.ingested_rows_curated(n_players))
+        for n_players in k_values
+        if cfg.ingested_rows_curated(n_players).exists()
+    ]
 
 
 def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFrame:

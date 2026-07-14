@@ -74,7 +74,7 @@ def test_parse_seed_file_valid_and_invalid_names(name: str, expected: tuple[int,
     assert meta._parse_seed_file(Path(name)) == expected
 
 
-def test_pool_winrates_prefers_fixed_effects_when_I2_low() -> None:
+def test_combine_win_rates_prefers_fixed_effects_when_I2_low() -> None:
     df_seed1 = pd.DataFrame(
         [
             {
@@ -116,7 +116,7 @@ def test_pool_winrates_prefers_fixed_effects_when_I2_low() -> None:
         ]
     )
 
-    result = meta.pool_winrates([df_seed1, df_seed2], use_random_if_I2_gt=80.0)
+    result = meta.combine_win_rates([df_seed1, df_seed2], use_random_if_I2_gt=80.0)
     assert result.method == "fixed"
     assert result.combined.shape[0] == 2
 
@@ -130,12 +130,12 @@ def test_pool_winrates_prefers_fixed_effects_when_I2_low() -> None:
     assert pytest.approx(0.0) == result.I2
 
 
-def test_pool_winrates_returns_empty_for_none_or_empty_inputs() -> None:
+def test_combine_win_rates_returns_empty_for_none_or_empty_inputs() -> None:
     optional_inputs: list[pd.DataFrame | None] = [None, pd.DataFrame()]
     usable_inputs = [df for df in optional_inputs if df is not None]
     assert len(usable_inputs) == 1
 
-    result = meta.pool_winrates(usable_inputs)
+    result = meta.combine_win_rates(usable_inputs)
 
     assert result.combined.empty
     assert result.combined.columns.tolist() == meta.COMBINED_COLUMNS
@@ -143,7 +143,7 @@ def test_pool_winrates_returns_empty_for_none_or_empty_inputs() -> None:
     assert result.tau2 == pytest.approx(0.0)
 
 
-def test_pool_winrates_raises_on_players_mismatch() -> None:
+def test_combine_win_rates_raises_on_players_mismatch() -> None:
     df_a = pd.DataFrame(
         [{"strategy_id": "A", "players": 2, "seed": 1, "games": 10, "wins": 5, "win_rate": 0.5}]
     )
@@ -152,10 +152,10 @@ def test_pool_winrates_raises_on_players_mismatch() -> None:
     )
 
     with pytest.raises(ValueError, match="single player count"):
-        meta.pool_winrates([df_a, df_b])
+        meta.combine_win_rates([df_a, df_b])
 
 
-def test_pool_winrates_raises_on_strategy_set_mismatch() -> None:
+def test_combine_win_rates_raises_on_strategy_set_mismatch() -> None:
     df_a = pd.DataFrame(
         [{"strategy_id": "A", "players": 2, "seed": 1, "games": 10, "wins": 5, "win_rate": 0.5}]
     )
@@ -164,10 +164,10 @@ def test_pool_winrates_raises_on_strategy_set_mismatch() -> None:
     )
 
     with pytest.raises(ValueError, match="Strategy presence mismatch"):
-        meta.pool_winrates([df_a, df_b])
+        meta.combine_win_rates([df_a, df_b])
 
 
-def test_pool_winrates_uses_random_effects_for_high_heterogeneity() -> None:
+def test_combine_win_rates_uses_random_effects_for_high_heterogeneity() -> None:
     df_seed1 = pd.DataFrame(
         [{"strategy_id": "S", "players": 2, "seed": 1, "games": 100, "wins": 1, "win_rate": 0.01}]
     )
@@ -175,13 +175,13 @@ def test_pool_winrates_uses_random_effects_for_high_heterogeneity() -> None:
         [{"strategy_id": "S", "players": 2, "seed": 2, "games": 100, "wins": 99, "win_rate": 0.99}]
     )
 
-    result = meta.pool_winrates([df_seed1, df_seed2], use_random_if_I2_gt=0.0)
+    result = meta.combine_win_rates([df_seed1, df_seed2], use_random_if_I2_gt=0.0)
 
     assert result.method == "random"
     assert result.tau2 > 0.0
 
 
-def test_pool_winrates_skips_strategies_without_usable_observations() -> None:
+def test_combine_win_rates_skips_strategies_without_usable_observations() -> None:
     df_seed1 = pd.DataFrame(
         [{"strategy_id": "S", "players": 2, "seed": 1, "games": 0, "wins": 0, "win_rate": 0.0}]
     )
@@ -189,7 +189,7 @@ def test_pool_winrates_skips_strategies_without_usable_observations() -> None:
         [{"strategy_id": "S", "players": 2, "seed": 2, "games": 0, "wins": 0, "win_rate": 0.0}]
     )
 
-    result = meta.pool_winrates([df_seed1, df_seed2])
+    result = meta.combine_win_rates([df_seed1, df_seed2])
 
     assert result.combined.empty
     assert result.method == "fixed"
@@ -370,7 +370,7 @@ def test_meta_limits_other_seeds_and_respects_override(tmp_path: Path) -> None:
 
     combined = pd.read_parquet(cfg.meta_input_path(2, "strategy_summary_2p_meta.parquet"))
     assert combined["n_seeds"].iloc[0] == 2
-    expected_win_rate = meta.pool_winrates(
+    expected_win_rate = meta.combine_win_rates(
         [frames_by_seed[42], frames_by_seed[99]], use_random_if_I2_gt=90.0
     ).combined["win_rate"].iloc[0]
     assert combined["win_rate"].iloc[0] == pytest.approx(expected_win_rate)
@@ -380,7 +380,7 @@ def test_meta_limits_other_seeds_and_respects_override(tmp_path: Path) -> None:
 
     combined_override = pd.read_parquet(cfg.meta_input_path(2, "strategy_summary_2p_meta.parquet"))
     assert combined_override["n_seeds"].iloc[0] == 2
-    expected_override = meta.pool_winrates(
+    expected_override = meta.combine_win_rates(
         [frames_by_seed[42], frames_by_seed[7]], use_random_if_I2_gt=90.0
     ).combined["win_rate"].iloc[0]
     assert combined_override["win_rate"].iloc[0] == pytest.approx(expected_override)

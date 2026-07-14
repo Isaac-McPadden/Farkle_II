@@ -294,7 +294,7 @@ def test_resolve_stage_parallel_policy_nested_context() -> None:
         n_jobs: int | None = 4
 
     outer = parallel.ParallelNestingContext(
-        active_process_pool=True,
+        active_process_executor=True,
         parent_process_workers=3,
         total_cores=12,
     )
@@ -314,7 +314,7 @@ def test_resolve_stage_parallel_policy_nested_context_with_zero_n_jobs() -> None
         n_jobs: int | None = 0
 
     outer = parallel.ParallelNestingContext(
-        active_process_pool=True,
+        active_process_executor=True,
         parent_process_workers=2,
         total_cores=10,
     )

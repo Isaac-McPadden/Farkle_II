@@ -376,11 +376,11 @@ def test_discover_per_n_inputs_handles_partial_layouts(tmp_path: Path) -> None:
 
     assert game_stats._discover_per_n_inputs(cfg) == []
 
-    valid_dir = cfg.data_dir / "2p"
+    valid_dir = cfg.curate_block_dir(2)
     valid_dir.mkdir(parents=True, exist_ok=True)
-    invalid_dir = cfg.data_dir / "badp"
+    invalid_dir = cfg.data_dir / "by_k" / "badp"
     invalid_dir.mkdir(parents=True, exist_ok=True)
-    missing_file_dir = cfg.data_dir / "3p"
+    missing_file_dir = cfg.curate_block_dir(3)
     missing_file_dir.mkdir(parents=True, exist_ok=True)
 
     rows = pd.DataFrame(

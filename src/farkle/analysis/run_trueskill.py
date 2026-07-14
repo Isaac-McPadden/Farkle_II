@@ -125,19 +125,13 @@ def _coerce_trueskill_env_kwargs(env_kwargs: Mapping[str, object] | None) -> dic
 def _per_player_dir(root: Path, player_count: str) -> Path:
     """Canonical directory for per-player-count artifacts."""
 
-    return root / f"{player_count}p"
+    return root / "by_k" / f"{player_count}p"
 
 
 def _ensure_new_location(dest: Path, *legacy_paths: Path) -> Path:
-    """Return *dest*, migrating a legacy file into place when present."""
+    """Return the canonical destination without interpreting legacy files."""
 
-    if dest.exists():
-        return dest
-    for legacy in legacy_paths:
-        if legacy.is_file():
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            legacy.replace(dest)
-            break
+    _ = legacy_paths
     return dest
 
 
@@ -173,17 +167,10 @@ def _rating_artifact_paths(
 
 
 def _iter_rating_parquets(root: Path, suffix: str, legacy_root: Path | None = None) -> list[Path]:
-    """Discover per-player rating parquet files with legacy fallback."""
+    """Discover canonical per-player rating parquet files."""
 
-    search_roots = [root]
-    if legacy_root is not None and legacy_root != root:
-        search_roots.append(legacy_root)
-
-    per_player: list[Path] = []
-    for base in search_roots:
-        per_player.extend(base.glob(f"*p/ratings_*{suffix}.parquet"))
-        per_player.extend((base / "data").glob(f"*p/ratings_*{suffix}.parquet"))
-        per_player.extend(base.glob(f"ratings_*{suffix}.parquet"))
+    _ = legacy_root
+    per_player = list((root / "by_k").glob(f"*p/ratings_*{suffix}.parquet"))
     out: list[Path] = []
     seen: set[str] = set()
     for path in per_player:
@@ -231,10 +218,7 @@ def _find_combined_parquet(base: Path | None) -> Path | None:
         return None
     base = Path(base)
     candidates = [
-        base / "analysis" / "02_combine" / "combined" / "all_ingested_rows.parquet",
-        base / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
-        base / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
-        base / "all_ingested_rows.parquet",
+        base / "analysis" / "02_combine" / "concat_ks" / "all_ingested_rows.parquet",
     ]
     for c in candidates:
         if c.exists():
@@ -423,8 +407,8 @@ def _block_shard_paths(root: Path, player_count: str, suffix: str) -> tuple[Path
     return shard.with_suffix(".parquet"), shard.with_suffix(".done.json")
 
 
-def _pool_shard_paths(combined_dir: Path, shard_key: str, suffix: str) -> tuple[Path, Path]:
-    """Return parquet and done-stamp paths for a combined shard."""
+def _aggregation_shard_paths(combined_dir: Path, shard_key: str, suffix: str) -> tuple[Path, Path]:
+    """Return parquet and done-stamp paths for an aggregation shard."""
 
     safe_key = shard_key.replace("/", "_")
     base = combined_dir / f"artifact.{safe_key}{suffix}"
@@ -1181,7 +1165,7 @@ def run_trueskill(
 
     root = Path(root) if root is not None else base / "analysis" / "06_trueskill"
     root.mkdir(parents=True, exist_ok=True)
-    combined_dir = root / "combined"
+    combined_dir = root / "across_k"
     combined_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = root.parent
     row_data_path = Path(row_data_dir) if row_data_dir is not None else None
@@ -1373,7 +1357,9 @@ def run_trueskill(
     )
     with atomic_path(str(combined_json_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(combined_json))
-    combined_shard_parquet, combined_shard_done = _pool_shard_paths(combined_dir, "all-k", suffix)
+    combined_shard_parquet, combined_shard_done = _aggregation_shard_paths(
+        combined_dir, "all-k", suffix
+    )
     _save_ratings_parquet(combined_shard_parquet, combined_rating_stats)
     _save_done_stamp(
         combined_shard_done,
@@ -1411,7 +1397,7 @@ def _sorted_ratings(ratings: Mapping[str, RatingStats]) -> Mapping[str, RatingSt
     return dict(sorted(ratings.items(), key=lambda kv: kv[0]))
 
 
-def _precision_pool(runs: Iterable[Mapping[str, RatingStats]]) -> dict[str, RatingStats]:
+def _precision_combine(runs: Iterable[Mapping[str, RatingStats]]) -> dict[str, RatingStats]:
     """Combine multiple rating mappings using precision weighting."""
 
     accum: dict[str, tuple[float, float]] = {}
@@ -1703,6 +1689,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     analysis_dir.mkdir(parents=True, exist_ok=True)
     combined_dir = cfg.trueskill_combined_dir
     combined_dir.mkdir(parents=True, exist_ok=True)
+    concat_dir = cfg.concat_ks_dir("trueskill")
     legacy_root = analysis_dir.parent
     default_row_data_dir = cfg.resolve_input_stage_dir("curate")
     if default_row_data_dir is None or not default_row_data_dir.exists():
@@ -1727,7 +1714,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     per_seed_results: dict[int, Mapping[str, RatingStats]] = {}
     per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
-    long_tables: list[pa.Table] = []
+    concat_tables: list[pa.Table] = []
 
     for seed in seeds:
         seed_everything(seed)
@@ -1780,7 +1767,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             dest = analysis_dir / f"trueskill_{players}p_seed{seed}.parquet"
             _save_ratings_parquet(dest, ordered_stats)
             seed_outputs[f"{players}p"] = ordered_stats  # keyed for logging/debug
-            long_tables.append(
+            concat_tables.append(
                 pa.table(
                     {
                         "strategy": list(ordered_stats.keys()),
@@ -1806,9 +1793,9 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             },
         )
 
-    if long_tables:
-        long_table = pa.concat_tables(long_tables, promote_options="default")
-        write_parquet_atomic(long_table, combined_dir / "ratings_long.parquet")
+    if concat_tables:
+        concat_table = pa.concat_tables(concat_tables, promote_options="default")
+        write_parquet_atomic(concat_table, concat_dir / "ratings_concat_ks.parquet")
 
     if per_seed_outputs:
         per_player_runs: dict[int, list[Mapping[str, RatingStats]]] = {}
@@ -1822,10 +1809,10 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
         for players in sorted(per_player_runs):
             runs = per_player_runs[players]
-            per_player_combined_stats = _precision_pool(runs)
+            per_player_combined_stats = _precision_combine(runs)
             if not per_player_combined_stats:
                 continue
-            dest_dir = analysis_dir / f"{players}p"
+            dest_dir = analysis_dir / "by_k" / f"{players}p"
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = dest_dir / f"ratings_{players}.parquet"
             seed_paths = list(dest_dir.glob(f"ratings_{players}_seed*.parquet"))
@@ -1853,7 +1840,9 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                 },
             )
 
-    combined_seed_stats: Mapping[str, RatingStats] = _precision_pool(per_seed_results.values())
+    combined_seed_stats: Mapping[str, RatingStats] = _precision_combine(
+        per_seed_results.values()
+    )
     if not combined_seed_stats:
         raise RuntimeError("TrueSkill aggregation produced no results")
     ordered_combined = _ensure_strict_mu_ordering(_sorted_ratings(combined_seed_stats))

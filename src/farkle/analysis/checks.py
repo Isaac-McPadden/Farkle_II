@@ -23,16 +23,16 @@ LOGGER = logging.getLogger(__name__)
 
 _ARTIFACT_FAMILY_MATRIX: dict[str, dict[str, tuple[str, ...]]] = {
     "combine": {
-        "combined_concat": ("all_ingested_rows.parquet",),
+        "concat_ks": ("all_ingested_rows.parquet",),
     },
     "metrics": {
-        "per_k": ("{k}p_isolated_metrics.parquet",),
-        "combined_concat": ("metrics.parquet",),
+        "by_k": ("{k}p_isolated_metrics.parquet",),
+        "concat_ks": ("metrics.parquet",),
     },
     "game_stats": {
-        "per_k": ("game_length.parquet", "margin_stats.parquet"),
-        "combined_concat": ("game_length.parquet", "margin_stats.parquet"),
-        "combined_weighted": ("game_length_k_weighted.parquet", "margin_k_weighted.parquet"),
+        "by_k": ("game_length.parquet", "margin_stats.parquet"),
+        "concat_ks": ("game_length.parquet", "margin_stats.parquet"),
+        "across_k": ("game_length_k_weighted.parquet", "margin_k_weighted.parquet"),
     },
 }
 
@@ -49,6 +49,11 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     """
     if not combined_parquet.exists():
         raise RuntimeError(f"check_pre_metrics: missing {combined_parquet}")
+    if combined_parquet.parent.name != "concat_ks":
+        raise RuntimeError(
+            "check_pre_metrics: scope mismatch; expected a concat_ks artifact, "
+            f"got {combined_parquet}"
+        )
 
     dataset = ds.dataset(combined_parquet, format="parquet", partitioning="hive")
     schema = dataset.schema
@@ -68,17 +73,12 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
     if neg_cols:
         raise RuntimeError(f"check_pre_metrics: negative values present in {', '.join(neg_cols)}")
 
-    if combined_parquet.parent.name == "all_n_players_combined":
-        data_dir = combined_parquet.parent.parent
-    elif combined_parquet.parent.name == "combined":
-        analysis_root = combined_parquet.parent.parent.parent
-        candidate = next(
-            (p for p in analysis_root.iterdir() if p.name.endswith("_curate") and p.is_dir()),
-            None,
-        )
-        data_dir = candidate if candidate is not None else analysis_root
-    else:
-        data_dir = combined_parquet.parent
+    analysis_root = combined_parquet.parent.parent.parent
+    candidate = next(
+        (p for p in analysis_root.iterdir() if p.name.endswith("_curate") and p.is_dir()),
+        None,
+    )
+    data_dir = candidate if candidate is not None else analysis_root
     manifest_rows = 0
     seen_manifest = False
 
@@ -120,7 +120,8 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
             raise RuntimeError(f"check_pre_metrics: failed to parse {manifest_path}: {e}") from e
         return rows
 
-    for seat_dir in sorted(p for p in data_dir.glob("*p") if p.is_dir()):
+    by_k_dir = data_dir / "by_k"
+    for seat_dir in sorted(p for p in by_k_dir.glob("*p") if p.is_dir()):
         manifest_candidates = [
             seat_dir / "manifest.jsonl",
             *seat_dir.glob("manifest_*p.json"),
@@ -227,9 +228,9 @@ def check_stage_artifact_families(
         if stage_dir is None or not stage_dir.exists():
             continue
 
-        for pattern in families.get("per_k", ()):
+        for pattern in families.get("by_k", ()):
             for k in k_values:
-                expected = stage_dir / f"{k}p" / pattern.format(k=k)
+                expected = stage_dir / "by_k" / f"{k}p" / pattern.format(k=k)
                 if not expected.exists():
                     failures.append(f"{stage}: missing per-k artifact {expected}")
 
@@ -239,9 +240,9 @@ def check_stage_artifact_families(
                         f"{stage}: layout drift; expected {expected} but found {drift}"
                     )
 
-        for family in ("combined_concat", "combined_weighted"):
+        for family in ("concat_ks", "across_k", "cross_seed", "diagnostics", "h2h_2p"):
             for filename in families.get(family, ()):
-                expected = stage_dir / "combined" / filename
+                expected = stage_dir / family / filename
                 if not expected.exists():
                     failures.append(f"{stage}: missing {family} artifact {expected}")
 
