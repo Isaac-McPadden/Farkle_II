@@ -73,7 +73,7 @@ RETIRED_CONFIG_KEYS: dict[str, str] = {
     "analysis.k_aggregation_method": "k_aggregation.method",
     "analysis.k_weights": "k_aggregation.k_weights",
     "analysis.agreement_include_combined": "analysis.agreement_include_across_k",
-    "trueskill.\x70\x6f\x6f\x6c\x65\x64_weights_by_k": "trueskill.k_weights",
+    "trueskill.\x70\x6f\x6f\x6c\x65\x64_weights_by_k": "canonical root/k TrueSkill ratings",
     "head2head.fdr_q": "head2head.family_alpha",
     "head2head.bonferroni_total_games_safeguard": "head2head.total_game_cap",
     "head2head.bonferroni_design": "typed head2head settings",
@@ -367,8 +367,6 @@ class TrueSkillConfig:
     beta: float = 25.0
     tau: float = 0.1
     draw_probability: float = 0.0
-    k_weights: dict[int, float] | None = None
-    """Optional per-player-count weights for aggregation TrueSkill ratings."""
 
 
 @dataclass

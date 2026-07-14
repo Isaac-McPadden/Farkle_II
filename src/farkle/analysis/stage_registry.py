@@ -216,7 +216,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "analysis.tier_z_star",
             "analysis.tier_min_gap",
             "head2head",
-            "trueskill.k_weights",
+            "k_aggregation",
         ),
     ),
     StageDefinition("seed_symmetry", group="analytics", cache_scope=("io",)),
@@ -230,7 +230,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "head2head.tie_break_seed",
             "head2head.fdr_q",
             "head2head.bonferroni_design",
-            "trueskill.k_weights",
+            "k_aggregation",
         ),
     ),
     StageDefinition(

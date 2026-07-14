@@ -9,24 +9,16 @@ they never add strategies to the current analysis population.
 
 from __future__ import annotations
 
-import json
 import logging
-import re
-import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
-import matplotlib
-
-matplotlib.use("Agg", force=True)
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pyarrow as pa
-import pyarrow.parquet as pq
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
 
@@ -41,10 +33,8 @@ from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
-    write_parquet_atomic,
 )
 from farkle.utils.random import RandomPurpose, coordinate_rng, coordinate_seed
-from farkle.utils.writer import atomic_path
 
 if TYPE_CHECKING:
     from farkle.config import AppConfig
@@ -62,13 +52,6 @@ class PermutationImportanceResult(Protocol):
     importances_std: np.ndarray
 
 
-# ---------------------------------------------------------------------------
-# Constants for file and directory locations used in this module
-# ---------------------------------------------------------------------------
-DEFAULT_ROOT = Path("results_seed_0") / "analysis" / "10_hgb"
-METRICS_NAME = "metrics.parquet"
-RATINGS_NAME = "ratings_k_weighted.parquet"
-MAX_PD_PLOTS = 30
 IMPORTANCE_TEMPLATE = "feature_importance_{players}p.parquet"
 PREDICTIVE_SCORES_TEMPLATE = "heldout_predictive_scores_{players}p.parquet"
 FOLD_METRICS_TEMPLATE = "heldout_fold_metrics_{players}p.parquet"
@@ -92,9 +75,6 @@ FEATURE_SPECS: list[tuple[str, str]] = [
     ("run_up_score", "float32"),
 ]
 
-_SEED_PATTERN = re.compile(r"ratings_(?:k_weighted|combined)_seed(?P<seed>\d+)\.parquet$")
-
-
 LOGGER = logging.getLogger(__name__)
 logger = LOGGER
 
@@ -106,35 +86,6 @@ class HeldoutEvaluation:
     importance: pd.DataFrame
     predictions: pd.DataFrame
     fold_metrics: pd.DataFrame
-
-
-def _select_partial_dependence_features(
-    features: pd.DataFrame, *, tolerance: float = 1e-6
-) -> tuple[list[str], list[str]]:
-    """Return columns eligible for partial dependence plots.
-
-    Columns with constant or near-constant ranges (within ``tolerance``) are
-    skipped to avoid degenerate plots.
-    """
-
-    kept: list[str] = []
-    skipped: list[str] = []
-    for column in features.columns:
-        values = features[column].to_numpy(dtype=np.float32)
-        if values.size == 0:
-            skipped.append(column)
-            continue
-        valid = values[np.isfinite(values)]
-        if valid.size == 0:
-            skipped.append(column)
-            continue
-        spread = float(valid.max() - valid.min())
-        if spread <= tolerance:
-            skipped.append(column)
-            continue
-        kept.append(column)
-
-    return kept, skipped
 
 
 def _parse_strategy_features(
@@ -195,37 +146,11 @@ def _parse_strategy_features(
     return features[[name for name, _dtype in FEATURE_SPECS]]
 
 
-def _load_seed_targets(root: Path) -> pd.DataFrame:
-    """Load per-seed TrueSkill targets used for grouped CV."""
-    frames: list[pd.DataFrame] = []
-    for path in sorted(root.glob("ratings_k_weighted_seed*.parquet")):
-        match = _SEED_PATTERN.match(path.name)
-        if match is None:
-            continue
-        seed_val = int(match.group("seed"))
-        table = pq.read_table(path, columns=["strategy", "mu"])
-        frame = table.to_pandas()
-        frame["strategy"] = coerce_strategy_ids(frame["strategy"])
-        frame["seed"] = seed_val
-        frames.append(frame)
-    if not frames:
-        return pd.DataFrame(columns=["strategy", "mu", "seed"])
-    combined = pd.concat(frames, ignore_index=True)
-    combined["seed"] = combined["seed"].astype(int)
-    return combined
-
-
-def _write_importances(path: Path, frame: pd.DataFrame) -> None:
-    """Write permutation importance results to parquet atomically."""
-    table = pa.Table.from_pandas(frame, preserve_index=False)
-    write_parquet_atomic(table, path)
-
-
 def _write_hgb_frame(
     path: Path,
     frame: pd.DataFrame,
     *,
-    cfg: AppConfig | None,
+    cfg: AppConfig,
     source_artifacts: Sequence[Path],
     players: Sequence[int],
     scope: str,
@@ -233,12 +158,9 @@ def _write_hgb_frame(
     conditioning: str,
     grouping_keys: Sequence[str],
 ) -> None:
-    """Write an HGB artifact with a sidecar in configuration-driven runs."""
+    """Write one canonical HGB artifact with its required sidecar."""
 
     table = pa.Table.from_pandas(frame, preserve_index=False)
-    if cfg is None:
-        write_parquet_atomic(table, path)
-        return
     sidecar = make_artifact_sidecar(
         cfg,
         path,
@@ -553,194 +475,24 @@ def _future_strategy_proposals(
     return pd.DataFrame(rows, columns=columns)
 
 
-def _run_grouped_cv(
-    *,
-    players: int,
-    subset: pd.DataFrame,
-    feature_cols: list[str],
-    seed_targets: pd.DataFrame,
-    random_state: int,
-) -> None:
-    """Run grouped cross-validation when per-seed ratings are available."""
-    feature_limit = 12
-    feature_cols_log = feature_cols[:feature_limit]
-    if len(feature_cols) > feature_limit:
-        feature_cols_log = [
-            *feature_cols_log,
-            f"...(+{len(feature_cols) - feature_limit} more)",
-        ]
-
-    from sklearn.ensemble import HistGradientBoostingRegressor
-    from sklearn.model_selection import GroupKFold
-
-    if seed_targets.empty:
-        LOGGER.info(
-            "Grouped CV skipped: no per-seed ratings",
-            extra={
-                "stage": "hgb",
-                "players": players,
-                "feature_cols": feature_cols_log,
-                "seed_target_rows": len(seed_targets),
-                "overlap_rows": 0,
-                "overlap_strategies": 0,
-            },
-        )
-        return
-
-    cv_frame = seed_targets.merge(subset[["strategy", *feature_cols]], on="strategy", how="inner")
-    cv_frame.dropna(subset=["mu", "seed"], inplace=True)
-    overlap_rows = len(cv_frame)
-    overlap_strategies = cv_frame["strategy"].nunique()
-    if cv_frame.empty:
-        LOGGER.info(
-            "Grouped CV skipped: insufficient overlap",
-            extra={
-                "stage": "hgb",
-                "players": players,
-                "feature_cols": feature_cols_log,
-                "seed_target_rows": len(seed_targets),
-                "seed_target_strategies": seed_targets["strategy"].nunique(),
-                "overlap_rows": overlap_rows,
-                "overlap_strategies": overlap_strategies,
-            },
-        )
-        return
-
-    seeds = pd.Index(cv_frame["seed"].unique())
-    seed_limit = 10
-    seeds_log = seeds.tolist()
-    if len(seeds_log) > seed_limit:
-        seeds_log = [*seeds_log[:seed_limit], f"...(+{len(seeds_log) - seed_limit} more)"]
-    if len(seeds) < 2:
-        LOGGER.info(
-            "Grouped CV skipped: <2 unique seeds",
-            extra={
-                "stage": "hgb",
-                "players": players,
-                "feature_cols": feature_cols_log,
-                "seed_target_rows": len(seed_targets),
-                "seed_target_strategies": seed_targets["strategy"].nunique(),
-                "overlap_rows": overlap_rows,
-                "overlap_strategies": overlap_strategies,
-                "seed_count": len(seeds),
-                "seeds_sample": seeds_log,
-            },
-        )
-        return
-
-    n_splits = min(5, len(seeds))
-    if n_splits < 2:
-        LOGGER.info(
-            "Grouped CV skipped: insufficient splits",
-            extra={
-                "stage": "hgb",
-                "players": players,
-                "feature_cols": feature_cols_log,
-                "seed_target_rows": len(seed_targets),
-                "seed_target_strategies": seed_targets["strategy"].nunique(),
-                "overlap_rows": overlap_rows,
-                "overlap_strategies": overlap_strategies,
-                "seed_count": len(seeds),
-                "seeds_sample": seeds_log,
-            },
-        )
-        return
-
-    groups = cv_frame["seed"].astype(int).to_numpy()
-    X = cv_frame[feature_cols].to_numpy(dtype=np.float32)
-    y = cv_frame["mu"].to_numpy(dtype=np.float32)
-
-    splitter = GroupKFold(n_splits=n_splits)
-    r2_scores: list[float] = []
-    mae_scores: list[float] = []
-    for train_idx, test_idx in splitter.split(X, y, groups):
-        if len(train_idx) == 0 or len(test_idx) == 0:
-            continue
-        model = HistGradientBoostingRegressor(random_state=random_state)
-        model.fit(X[train_idx], y[train_idx])
-        preds = model.predict(X[test_idx])
-        r2_scores.append(_r2(y[test_idx], preds))
-        mae_scores.append(_mae(y[test_idx], preds))
-
-    if not r2_scores:
-        LOGGER.info(
-            "Grouped CV skipped: empty folds",
-            extra={
-                "stage": "hgb",
-                "players": players,
-                "feature_cols": feature_cols_log,
-                "seed_target_rows": len(seed_targets),
-                "seed_target_strategies": seed_targets["strategy"].nunique(),
-                "overlap_rows": overlap_rows,
-                "overlap_strategies": overlap_strategies,
-                "seed_count": len(seeds),
-                "seeds_sample": seeds_log,
-            },
-        )
-        return
-
-    LOGGER.info(
-        "Grouped CV metrics",
-        extra={
-            "stage": "hgb",
-            "players": players,
-            "splits": len(r2_scores),
-            "r2_mean": float(np.mean(r2_scores)),
-            "r2_std": float(np.std(r2_scores)),
-            "mae_mean": float(np.mean(mae_scores)),
-            "mae_std": float(np.std(mae_scores)),
-        },
-    )
-
-
-def plot_partial_dependence(model, X, column: str, out_dir: Path) -> Path:
-    """Return a saved partial dependence plot for ``column``."""
-
-    from sklearn.inspection import PartialDependenceDisplay
-
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    with warnings.catch_warnings():
-        warnings.filterwarnings(
-            "ignore",
-            message="Attempting to set identical low and high ylims",
-        )
-        disp = PartialDependenceDisplay.from_estimator(
-            model,
-            X,
-            features=[column],
-        )
-    out_file = out_dir / f"pd_{column}.png"
-    try:
-        with atomic_path(str(out_file)) as tmp_path:
-            disp.figure_.savefig(tmp_path, format="png")
-    finally:
-        plt.close(disp.figure_)
-    return out_file
-
-
 def run_hgb(
-    seed: int = 0,
-    output_path: Path | None = None,
-    root: Path = DEFAULT_ROOT,
     *,
-    metrics_path: Path | None = None,
-    metrics_paths: Sequence[Path] | None = None,
+    cfg: AppConfig,
+    metrics_paths: Sequence[Path],
     manifest_path: Path | None = None,
-    cfg: AppConfig | None = None,
-    heldout_folds: int = DEFAULT_HELDOUT_FOLDS,
-    permutation_repeats: int = DEFAULT_PERMUTATION_REPEATS,
-    max_depth: int | None = None,
-    max_iter: int = 300,
-    proposal_limit: int = DEFAULT_PROPOSAL_LIMIT,
 ) -> None:
-    """Evaluate HGB on held-out configurations and draft future candidates."""
+    """Evaluate canonical performance cells and draft future-only candidates."""
 
-    root = Path(root)
+    root = cfg.hgb_stage_dir
     root.mkdir(parents=True, exist_ok=True)
-    combined_dir = cfg.across_k_dir("hgb") if cfg is not None else root / "across_k"
+    combined_dir = cfg.across_k_dir("hgb")
     combined_dir.mkdir(parents=True, exist_ok=True)
-    metrics_path = Path(metrics_path) if metrics_path is not None else root / METRICS_NAME
+    seed = cfg.sim.seed
+    heldout_folds = cfg.hgb.heldout_folds
+    permutation_repeats = cfg.hgb.permutation_repeats
+    max_depth = cfg.hgb.max_depth
+    max_iter = cfg.hgb.n_estimators
+    proposal_limit = cfg.hgb.future_proposal_limit
     manifest = None
     if manifest_path is not None and Path(manifest_path).exists():
         manifest = pd.read_parquet(manifest_path)
@@ -751,12 +503,14 @@ def run_hgb(
             "stage": "hgb",
             "root": str(root),
             "seed": seed,
-            "metrics_paths": [str(path) for path in metrics_paths or (metrics_path,)],
+            "metrics_paths": [str(path) for path in metrics_paths],
             "evaluation": "heldout_strategy_configurations",
         },
     )
 
-    source_metrics = [Path(path) for path in metrics_paths or (metrics_path,)]
+    source_metrics = [Path(path) for path in metrics_paths]
+    if not source_metrics:
+        raise ValueError("HGB requires canonical per-k performance artifacts")
     metrics = pd.concat([pd.read_parquet(path) for path in source_metrics], ignore_index=True)
     metrics = metrics.copy()
     if "strategy" in metrics.columns:
@@ -807,63 +561,25 @@ def run_hgb(
     for players in metrics_players:
         subset = data[data["players"] == players].copy()
         subset["strategy"] = coerce_strategy_ids(subset["strategy"])
-        per_player_dir = cfg.hgb_per_k_dir(players) if cfg is not None else root / f"{players}p"
+        per_player_dir = cfg.hgb_per_k_dir(players)
         per_player_dir.mkdir(parents=True, exist_ok=True)
         importance_path = per_player_dir / IMPORTANCE_TEMPLATE.format(players=players)
         predictions_path = per_player_dir / PREDICTIVE_SCORES_TEMPLATE.format(players=players)
         fold_metrics_path = per_player_dir / FOLD_METRICS_TEMPLATE.format(players=players)
 
         if subset.empty:
-            if cfg is not None:
-                raise ValueError(
-                    f"HGB requires finite-grid performance rows for configured k={players}"
-                )
-            LOGGER.info(
-                "No data for player bucket",
-                extra={"stage": "hgb", "players": players},
+            raise ValueError(
+                f"HGB requires finite-grid performance rows for configured k={players}"
             )
-            empty = _empty_heldout_evaluation(players, seed)
-            _write_hgb_frame(
-                importance_path,
-                empty.importance,
-                cfg=cfg,
-                source_artifacts=source_metrics,
-                players=[players],
-                scope="by_k",
-                operation="heldout_permutation_importance",
-                conditioning="finite_grid_predictive_association_not_causal",
-                grouping_keys=["players", "feature"],
-            )
-            importance_summary[f"{players}p"] = {}
-            continue
 
         features = subset[feature_cols].astype(np.float32)
         target = subset["win_rate"].astype(np.float32)
 
         if len(subset) < 2:
-            if cfg is not None:
-                raise ValueError(
-                    "HGB held-out evaluation requires at least two strategy "
-                    f"configurations for k={players}; found {len(subset)}"
-                )
-            LOGGER.warning(
-                "Insufficient rows for training",
-                extra={"stage": "hgb", "players": players, "rows": len(subset)},
+            raise ValueError(
+                "HGB held-out evaluation requires at least two strategy "
+                f"configurations for k={players}; found {len(subset)}"
             )
-            empty = _empty_heldout_evaluation(players, seed)
-            _write_hgb_frame(
-                importance_path,
-                empty.importance,
-                cfg=cfg,
-                source_artifacts=source_metrics,
-                players=[players],
-                scope="by_k",
-                operation="heldout_permutation_importance",
-                conditioning="finite_grid_predictive_association_not_causal",
-                grouping_keys=["players", "feature"],
-            )
-            importance_summary[f"{players}p"] = {}
-            continue
 
         heldout = _heldout_strategy_evaluation(
             players=players,
@@ -940,32 +656,6 @@ def run_hgb(
         if not proposals.empty:
             collected_proposals.append(proposals)
 
-        fig_dir = per_player_dir / "plots"
-        fig_dir.mkdir(parents=True, exist_ok=True)
-        cols = list(feature_cols)
-        pd_cols, skipped_cols = _select_partial_dependence_features(features[cols])
-        if skipped_cols:
-            LOGGER.info(
-                "Skipping near-constant features for partial dependence",
-                extra={
-                    "stage": "hgb",
-                    "players": players,
-                    "skipped_features": skipped_cols,
-                },
-            )
-        if len(pd_cols) > MAX_PD_PLOTS:
-            LOGGER.warning(
-                "Too many features for partial dependence",
-                extra={
-                    "stage": "hgb",
-                    "players": players,
-                    "features": len(pd_cols),
-                    "max_plots": MAX_PD_PLOTS,
-                },
-            )
-        for col in pd_cols[:MAX_PD_PLOTS]:
-            plot_partial_dependence(full_model, features, col, fig_dir)
-
     if collected_frames:
         overall_frame = pd.concat(collected_frames, ignore_index=True)
         grouped = (
@@ -1013,7 +703,7 @@ def run_hgb(
         overall_series = grouped.set_index("feature")["association_importance_mean"]
         importance_summary["overall"] = {str(k): float(v) for k, v in overall_series.items()}
 
-    proposals_path = combined_dir / FUTURE_PROPOSALS_NAME
+    proposals_path = cfg.hgb_future_proposals_path()
     proposal_frame = (
         pd.concat(collected_proposals, ignore_index=True)
         if collected_proposals
@@ -1043,36 +733,31 @@ def run_hgb(
         grouping_keys=["players", "proposal_id"],
     )
 
-    if output_path is None:
-        output_path = combined_dir / "hgb_importance.json"
+    output_path = combined_dir / "hgb_importance.json"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    if cfg is None:
-        with atomic_path(str(output_path)) as tmp_path, Path(tmp_path).open("w") as fh:
-            json.dump(importance_summary, fh, indent=2, sort_keys=True)
-    else:
-        sidecar = make_artifact_sidecar(
-            cfg,
-            output_path,
-            producer="hgb",
-            scope="across_k",
-            source_scope="by_k",
-            operation="equal_k_mean",
-            weighted_quantity="heldout_permutation_association_importance",
-            k_aggregation_method="equal_k",
-            support_count_role="finite_strategy_grid_support",
-            uncertainty_method="heldout_strategy_configuration_folds",
-            replication_unit="strategy_configuration",
-            conditioning="predictive_association_not_causal",
-            consistency_columns=sorted(importance_summary),
-            source_artifacts=source_metrics,
-            grouping_keys=["feature"],
-            player_counts=metrics_players,
-            required_player_counts=metrics_players,
-            missing_cell_policy="fail",
-            seed_scope="single_root",
-        )
-        write_json_artifact_atomic(importance_summary, output_path, sidecar=sidecar)
+    sidecar = make_artifact_sidecar(
+        cfg,
+        output_path,
+        producer="hgb",
+        scope="across_k",
+        source_scope="by_k",
+        operation="equal_k_mean",
+        weighted_quantity="heldout_permutation_association_importance",
+        k_aggregation_method="equal_k",
+        support_count_role="finite_strategy_grid_support",
+        uncertainty_method="heldout_strategy_configuration_folds",
+        replication_unit="strategy_configuration",
+        conditioning="predictive_association_not_causal",
+        consistency_columns=sorted(importance_summary),
+        source_artifacts=source_metrics,
+        grouping_keys=["feature"],
+        player_counts=metrics_players,
+        required_player_counts=metrics_players,
+        missing_cell_policy="fail",
+        seed_scope="single_root",
+    )
+    write_json_artifact_atomic(importance_summary, output_path, sidecar=sidecar)
 
     LOGGER.info(
         "HGB regression complete",

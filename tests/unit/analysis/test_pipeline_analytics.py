@@ -95,12 +95,13 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
         fake_h2h,
     )
 
-    def fake_hgb(*, root, output_path, **kwargs):  # noqa: ARG001
+    def fake_hgb(run_cfg: AppConfig) -> None:
         # Write a tiny valid JSON file (the real code expects JSON here)
+        output_path = run_cfg.across_k_dir("hgb") / "hgb_importance.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("{}")
 
-    monkeypatch.setattr("farkle.analysis.run_hgb.run_hgb", fake_hgb, raising=True)
+    monkeypatch.setattr("farkle.analysis.hgb_feat.run", fake_hgb, raising=True)
 
     # first run: executes stages
     buf = io.StringIO()

@@ -189,7 +189,6 @@ def analyze_hgb(exp_dir: Path) -> None:
 
     exp_dir = Path(exp_dir)
     cfg = _config_for_results_dir(exp_dir)
-    analysis_dir = cfg.hgb_stage_dir
     out = cfg.across_k_dir("hgb") / "hgb_importance.json"
     done = _done_path(out)
     metrics = [cfg.performance_by_k_path(k) for k in cfg.sim.n_players_list]
@@ -198,21 +197,9 @@ def analyze_hgb(exp_dir: Path) -> None:
         print("SKIP hgb (up to date)")
         return
 
-    analysis_dir.mkdir(parents=True, exist_ok=True)
-    from farkle.analysis import run_hgb as _hgb
+    from farkle.analysis import hgb_feat
 
-    _hgb.run_hgb(
-        root=analysis_dir,
-        output_path=out,
-        metrics_paths=metrics,
-        cfg=cfg,
-        seed=cfg.sim.seed,
-        heldout_folds=cfg.hgb.heldout_folds,
-        permutation_repeats=cfg.hgb.permutation_repeats,
-        max_depth=cfg.hgb.max_depth,
-        max_iter=cfg.hgb.n_estimators,
-        proposal_limit=cfg.hgb.future_proposal_limit,
-    )
+    hgb_feat.run(cfg)
     write_done(done, inputs, [out], "farkle.analytics.hgb")
     print("hgb")
 

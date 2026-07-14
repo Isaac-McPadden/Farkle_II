@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -595,11 +594,10 @@ def test_run_trueskill_handles_worker_exception(
         root=analysis_root,
         dataroot=data_root,
         workers=3,
-        emit_legacy_combined=True,
     )
 
     assert exceptions and exceptions[0]["block"] == "3_players"
-    assert (analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet").exists()
+    assert not (analysis_root / "across_k").exists()
 
 
 def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
@@ -636,87 +634,6 @@ def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
     assert not (analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet").exists()
 
 
-def test_run_trueskill_rebuilds_outdated_combined(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    data_root = tmp_path / "results"
-    block = data_root / "2_players"
-    block.mkdir(parents=True, exist_ok=True)
-    (data_root / "manifest.yaml").write_text("seed: 0\n")
-
-    analysis_root = tmp_path / "analysis"
-    analysis_root.mkdir(parents=True, exist_ok=True)
-
-    per_block = {"2": ({"A": rt.RatingStats(12.0, 1.5)}, 10)}
-
-    def immediate_write(
-        table: pa.Table, path: Path | str, *, codec: Compression = "snappy"
-    ) -> None:
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(table, path, compression=normalize_compression(codec))
-
-    def fake_rate_block_worker(
-        block_dir: str,
-        root_dir: str,
-        suffix: str,
-        batch_rows: int,
-        *,
-        resume: bool,
-        checkpoint_every_batches: int,
-        progress_logging: object | None = None,
-        env_kwargs: dict | None,
-        row_data_dir: str | None = None,
-        curated_rows_name: str | None = None,
-    ) -> tuple[str, int]:
-        stats, games = per_block["2"]
-        per_player_dir = Path(root_dir) / "by_k" / "2p"
-        per_player_dir.mkdir(parents=True, exist_ok=True)
-        rt._save_ratings_parquet(per_player_dir / f"ratings_2{suffix}.parquet", stats)
-        return "2", games
-
-    tier_calls: list[tuple[dict[str, float], dict[str, float]]] = []
-
-    def fake_build_tiers(
-        means: dict[str, float], stdevs: dict[str, float], **_: object
-    ) -> dict[str, int]:
-        tier_calls.append((means, stdevs))
-        return dict.fromkeys(means, 1)
-
-    combined_path = analysis_root / "across_k" / "ratings_k_weighted_seed0.parquet"
-    combined_path.parent.mkdir(parents=True, exist_ok=True)
-    combined_path.touch()
-    old_time = combined_path.stat().st_mtime - 200.0
-    os.utime(combined_path, (old_time, old_time))
-
-    monkeypatch.setattr(rt, "write_parquet_atomic", immediate_write)
-    monkeypatch.setattr(rt, "_rate_block_worker", fake_rate_block_worker)
-    monkeypatch.setattr(rt, "build_tiers", fake_build_tiers)
-    monkeypatch.setattr(rt.os, "cpu_count", lambda: 2)
-    monkeypatch.setattr(
-        rt,
-        "_load_done_stamp",
-        lambda _path: rt._ShardDoneStamp(
-            shard_key="2",
-            parquet_path=str(analysis_root / "by_k" / "2p" / "ratings_2_seed0.parquet"),
-            rows=10,
-            created_at=0.0,
-        ),
-    )
-
-    rt.run_trueskill(
-        root=analysis_root,
-        dataroot=data_root,
-        workers=1,
-        emit_legacy_combined=True,
-    )
-
-    assert tier_calls
-    assert combined_path.stat().st_mtime > old_time
-    assert (analysis_root / "across_k" / "ratings_k_weighted_seed0.json").exists()
-    assert (analysis_root / "tiers.json").exists()
-
-
 def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -736,7 +653,7 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
             interseed_input_dir=seed12_analysis,
             interseed_input_layout={"curate": "01_curate"},
         ),
-        SimConfig(seed=12, n_players_list=[2], seed_list=[12, 13], seed_pair=(12, 13)),
+        SimConfig(seed=12, n_players_list=[2], seed_list=[12, 13]),
     )
     cfg.analysis.frequentist_seeds = [12, 13]
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
@@ -754,9 +671,6 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
         resume_per_n: bool = True,
         checkpoint_every_batches: int = 500,
         env_kwargs: Mapping[str, float] | rt.TrueSkillInitKwargs | None = None,
-        k_weights: Mapping[int, float] | None = None,
-        tier_z: float | None = None,
-        tier_min_gap: float | None = None,
         mp_start_method: str | None = None,
         progress_logging: object | None = None,
     ) -> None:
@@ -768,9 +682,6 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
             resume_per_n,
             checkpoint_every_batches,
             env_kwargs,
-            k_weights,
-            tier_z,
-            tier_min_gap,
             mp_start_method,
             progress_logging,
         )
@@ -787,11 +698,6 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
             root / "by_k" / "2p" / f"ratings_2_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(25.0, 8.0)},
         )
-        rt._save_ratings_parquet(
-            root / "across_k" / f"ratings_k_weighted_seed{output_seed}.parquet",
-            {"alpha": rt.RatingStats(25.0, 8.0)},
-        )
-
     monkeypatch.setattr(rt, "run_trueskill", fake_run_trueskill)
     rt.run_trueskill_all_seeds(cfg)
 
@@ -925,69 +831,15 @@ def test_checkpoint_loaders_reconstruct_valid_payload(tmp_path: Path) -> None:
     assert rt._load_block_ckpt(block_path) == rt._BlockCkpt(**block_payload)
 
 
-def test_ordering_and_json_safe_helpers() -> None:
-    ordered = rt._ensure_strict_mu_ordering(
+def test_sorted_ratings_materializes_stable_strategy_order() -> None:
+    ordered = rt._sorted_ratings(
         {
             "zeta": rt.RatingStats(11.0, 1.0),
-            "alpha": rt.RatingStats(11.0, 1.2),
-            "beta": rt.RatingStats(10.0, 1.1),
+            "alpha": rt.RatingStats(9.0, 1.2),
         }
     )
-    assert list(ordered) == ["alpha", "zeta", "beta"]
 
-    assert rt._json_safe_number(1.25) == 1.25
-    assert rt._json_safe_number(4) == 4
-    assert rt._json_safe_number(math.nan) is None
-    assert rt._json_safe_number(math.inf) is None
-    assert rt._json_safe_number(-math.inf) is None
-
-
-def test_rank_correlations_vs_combined_nan_branches(monkeypatch: pytest.MonkeyPatch) -> None:
-    combined = {
-        "A": rt.RatingStats(10.0, 1.0),
-        "B": rt.RatingStats(9.0, 1.0),
-    }
-    lt_two_common = rt._rank_correlations_vs_combined(
-        {1: {"A": rt.RatingStats(11.0, 1.0)}},
-        combined,
-    )
-    assert math.isnan(lt_two_common[1])
-
-    np_array = np.array
-    monkeypatch.setattr(rt.np, "array", lambda *args, **kwargs: np_array([1.0, 1.0]))
-    denom_zero = rt._rank_correlations_vs_combined(
-        {2: {"A": rt.RatingStats(11.0, 1.0), "B": rt.RatingStats(10.0, 1.0)}},
-        {"A": rt.RatingStats(10.0, 1.0), "B": rt.RatingStats(9.0, 1.0)},
-    )
-    assert math.isnan(denom_zero[2])
-
-
-def test_write_seed_alignment_summary_writes_csv_json_and_missing_seed_values(
-    tmp_path: Path,
-) -> None:
-    summary_paths = rt._write_seed_alignment_summary(
-        tmp_path,
-        seeds=[101, 102],
-        per_seed_results={
-            101: {
-                "alpha": rt.RatingStats(10.0, 1.0),
-                "beta": rt.RatingStats(11.0, 1.0),
-            },
-            102: {"alpha": rt.RatingStats(12.0, 1.0)},
-        },
-        combined={"alpha": rt.RatingStats(11.0, 0.5), "beta": rt.RatingStats(11.0, 0.5)},
-        write_csv=True,
-        write_json=True,
-    )
-
-    assert summary_paths["csv"] is not None and cast(Path, summary_paths["csv"]).exists()
-    assert summary_paths["json"] is not None and cast(Path, summary_paths["json"]).exists()
-
-    payload = json.loads(cast(Path, summary_paths["json"]).read_text())
-    assert "rank_correlation_vs_combined" in payload
-    beta_row = next(row for row in payload["alignment"] if row["strategy"] == "beta")
-    assert beta_row["seeds_missing"] == 1
-    assert beta_row["seed_102_mu"] is None
+    assert list(ordered) == ["alpha", "zeta"]
 
 
 def test_resolve_seed_results_and_row_data_fallbacks(
@@ -1029,7 +881,7 @@ def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path:
     results_root = tmp_path / "results_seed_1"
     cfg = AppConfig(
         IOConfig(results_dir_prefix=results_root),
-        SimConfig(seed=1, seed_pair=(1, 2)),
+        SimConfig(seed=1, seed_list=[1]),
     )
     cfg.analysis.frequentist_seeds = [1]
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))
@@ -1054,7 +906,7 @@ def test_run_trueskill_all_seeds_uses_percentiles_without_sigma_propagation(
     results_root = tmp_path / "results_seed_4"
     cfg = AppConfig(
         IOConfig(results_dir_prefix=results_root),
-        SimConfig(seed=4, seed_pair=(4, 5)),
+        SimConfig(seed=4, seed_list=[4]),
     )
     cfg.analysis.frequentist_seeds = [4]
     cfg.set_stage_layout(resolve_interseed_stage_layout(cfg))

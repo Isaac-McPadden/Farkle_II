@@ -738,7 +738,7 @@ def _build_candidate_selection_metadata(
         "source_path": str(union_path) if union_path is not None else None,
         "fallback_used": fallback_used,
         "weights": {
-            "ratings_k_weights": dict(cfg.trueskill.k_weights or {}),
+            "ratings_k_weights": dict(cfg.k_aggregation.k_weights or {}),
             "frequentist_k_weights": None,
         },
     }

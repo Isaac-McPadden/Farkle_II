@@ -6,9 +6,6 @@ import logging
 from pathlib import Path
 from typing import Iterable
 
-import pyarrow as pa
-import pyarrow.parquet as pq
-
 from farkle.analysis import run_hgb as _hgb
 from farkle.analysis import stage_logger
 from farkle.config import AppConfig
@@ -19,32 +16,6 @@ from farkle.utils.artifact_contract import (
 )
 
 LOGGER = logging.getLogger(__name__)
-
-
-def _unique_players(metrics_path: Path, hints: Iterable[int]) -> list[int]:
-    """Infer player counts from metric parquet data and provided hints.
-
-    Args:
-        metrics_path: Path to the isolated metrics parquet file.
-        hints: Player counts expected from configuration.
-
-    Returns:
-        Sorted list of distinct player counts discovered.
-    """
-    players: set[int] = {int(p) for p in hints}
-    if not metrics_path.exists():
-        return sorted(players)
-
-    for column in ("n_players", "players"):
-        try:
-            table = pq.read_table(metrics_path, columns=[column])
-        except (pa.ArrowInvalid, KeyError, FileNotFoundError):
-            continue
-        except Exception:  # noqa: BLE001 - best effort read
-            continue
-        arr = table.column(0)
-        players.update(int(v) for v in arr.to_pylist() if v is not None)
-    return sorted(players)
 
 
 def _latest_mtime(paths: Iterable[Path]) -> float:
@@ -127,17 +98,9 @@ def run(cfg: AppConfig) -> None:
         },
     )
     _hgb.run_hgb(
-        root=analysis_dir,
-        output_path=json_out,
+        cfg=cfg,
         metrics_paths=metrics_paths,
         manifest_path=manifest_path,
-        cfg=cfg,
-        seed=cfg.sim.seed,
-        heldout_folds=cfg.hgb.heldout_folds,
-        permutation_repeats=cfg.hgb.permutation_repeats,
-        max_depth=cfg.hgb.max_depth,
-        max_iter=cfg.hgb.n_estimators,
-        proposal_limit=cfg.hgb.future_proposal_limit,
     )
     LOGGER.info(
         "HGB feature importance complete",

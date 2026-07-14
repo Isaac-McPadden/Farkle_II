@@ -18,7 +18,6 @@ Outputs
 from __future__ import annotations
 
 import concurrent.futures as cf
-import csv
 import json
 import logging
 import math
@@ -32,7 +31,6 @@ from typing import (
     Iterator,
     Mapping,
     Optional,
-    Sequence,
     Tuple,
     TypedDict,
     Union,
@@ -61,8 +59,6 @@ from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
 from farkle.utils.schema_helpers import n_players_from_schema
-from farkle.utils.stats import build_tiers
-from farkle.utils.tiers import write_tier_payload
 from farkle.utils.writer import atomic_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
@@ -175,16 +171,13 @@ def _rating_artifact_paths(
     }
 
 
-def _iter_rating_parquets(root: Path, suffix: str, legacy_root: Path | None = None) -> list[Path]:
+def _iter_rating_parquets(root: Path, suffix: str) -> list[Path]:
     """Discover canonical per-player rating parquet files."""
 
-    _ = legacy_root
     per_player = list((root / "by_k").glob(f"*p/ratings_*{suffix}.parquet"))
     out: list[Path] = []
     seen: set[str] = set()
     for path in per_player:
-        if path.stem.startswith("ratings_combined") or path.stem.startswith("ratings_k_weighted"):
-            continue
         key = path.resolve().as_posix()
         if key in seen:
             continue
@@ -298,7 +291,6 @@ def _load_ckpt(path: Path) -> Optional[_TSCheckpoint]:
         ratings_path=payload_any["ratings_path"],
         version=version_value,
     )
-
 
 def _ratings_to_table(
     mapping: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float], float]],
@@ -1118,12 +1110,8 @@ def run_trueskill(
     resume_per_n: bool = True,
     checkpoint_every_batches: int = 500,
     env_kwargs: Mapping[str, float] | TrueSkillInitKwargs | None = None,
-    k_weights: Mapping[int, float] | None = None,
-    tier_z: float | None = None,
-    tier_min_gap: float | None = None,
     mp_start_method: str | None = None,
     progress_logging: ProgressLogConfig | None = None,
-    emit_legacy_combined: bool = False,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -1148,9 +1136,8 @@ def run_trueskill(
         Custom filename for curated per-player inputs. When unset, the loader
         searches for ``<n>p_ingested_rows.parquet`` and ``game_rows.parquet``.
 
-    Production side effects are canonical per-root/per-k ratings. Formal
-    cross-k model-sigma propagation is disabled. ``emit_legacy_combined`` is a
-    temporary migration-test switch and is not used by orchestration.
+    Production side effects are canonical per-root/per-k ratings only. Formal
+    cross-k model-sigma propagation is unavailable.
     """
     if dataroot is None:
         base = Path(root) / "results" if root is not None else DEFAULT_DATAROOT
@@ -1159,8 +1146,6 @@ def run_trueskill(
 
     root = Path(root) if root is not None else base / "analysis" / "06_trueskill"
     root.mkdir(parents=True, exist_ok=True)
-    combined_dir = root / "across_k"
-    combined_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = root.parent
     row_data_path = Path(row_data_dir) if row_data_dir is not None else None
     if row_data_path is None:
@@ -1195,9 +1180,6 @@ def run_trueskill(
 
     mp_context = resolve_mp_context(mp_start_method)
 
-    combined: dict[str, tuple[float, float]] = {}
-    per_block_games: dict[str, int] = {}
-    k_weights = dict(k_weights or {})
     env_kwargs_float = _coerce_trueskill_env_kwargs(env_kwargs)
 
     blocks = sorted(base.glob("*_players"))
@@ -1245,7 +1227,7 @@ def run_trueskill(
                         extra={"stage": "trueskill", "block": bad.name, "error": str(e)},
                     )
                     continue
-                per_block_games[player_count] = block_games
+                del player_count, block_games
     else:
         for block in blocks:
             player_count, block_games = _rate_block_worker(
@@ -1260,18 +1242,9 @@ def run_trueskill(
                 row_data_dir=str(row_data_path) if row_data_path else None,
                 curated_rows_name=curated_rows_name,
             )
-            per_block_games[player_count] = block_games
+            del player_count, block_games
 
-    # Combine per-N ratings into combined stats
-    combined_parquet = _ensure_new_location(
-        combined_dir / f"ratings_k_weighted{suffix}.parquet",
-        combined_dir / f"ratings_combined{suffix}.parquet",
-        root / f"ratings_k_weighted{suffix}.parquet",
-        root / f"ratings_combined{suffix}.parquet",
-        legacy_root / f"ratings_k_weighted{suffix}.parquet",
-        legacy_root / f"ratings_combined{suffix}.parquet",
-    )
-    per_player_parquets = _iter_rating_parquets(root, suffix, legacy_root=legacy_root)
+    per_player_parquets = _iter_rating_parquets(root, suffix)
     valid_per_player_parquets: list[Path] = []
     for parquet in per_player_parquets:
         player_count_value = _player_count_from_stem(parquet.stem)
@@ -1301,102 +1274,14 @@ def run_trueskill(
             continue
         valid_per_player_parquets.append(parquet)
 
-    if not emit_legacy_combined:
-        LOGGER.info(
-            "TrueSkill per-root/per-k ratings complete",
-            extra={
-                "stage": "trueskill",
-                "root": str(root),
-                "rating_cells": len(valid_per_player_parquets),
-                "cross_k_rating_propagation": "disabled",
-            },
-        )
-        return
-
-    if combined_parquet.exists():
-        newest = max((p.stat().st_mtime for p in valid_per_player_parquets), default=0.0)
-        if combined_parquet.stat().st_mtime >= newest:
-            LOGGER.info(
-                "TrueSkill combined outputs up-to-date",
-                extra={"stage": "trueskill", "path": str(combined_parquet)},
-            )
-            return
-
-    for parquet in valid_per_player_parquets:
-        stem = parquet.stem[len("ratings_") :]
-        if suffix:
-            stem = stem[: -len(suffix)]
-        player_count_value = _player_count_from_stem(parquet.stem)
-        if player_count_value is None:
-            continue
-        done_stamp = _load_done_stamp(_block_done_stamp_path(root, str(player_count_value), suffix))
-        games = (
-            int(done_stamp.rows)
-            if done_stamp is not None
-            else per_block_games.get(str(player_count_value), 0)
-        )
-        if games <= 0:
-            continue
-        weight = k_weights.get(player_count_value, 1.0)
-        with parquet.open("rb"):
-            ratings = _load_ratings_parquet(parquet)
-        for k, v in ratings.items():
-            tau = 1.0 / (v.sigma**2) if v.sigma > 0 else 0.0
-            s_mu, s_tau = combined.get(k, (0.0, 0.0))
-            s_mu += weight * tau * v.mu
-            s_tau += weight * tau
-            combined[k] = (s_mu, s_tau)
-
-    # Precision-weighted aggregation → (sum weight*tau*mu, sum weight*tau) → (mu, sigma)
-    combined_rating_stats = {
-        k: RatingStats(mu=(s_mu / s_tau), sigma=(s_tau**-0.5))
-        for k, (s_mu, s_tau) in combined.items()
-        if s_tau > 0
-    }
-    # Atomic writes for combined outputs
-    # Save combined ratings as Parquet
-    _save_ratings_parquet(combined_parquet, combined_rating_stats)
-    combined_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in combined_rating_stats.items()}
-    combined_json_path = _ensure_new_location(
-        combined_dir / f"ratings_k_weighted{suffix}.json",
-        combined_dir / f"ratings_combined{suffix}.json",
-        root / f"ratings_k_weighted{suffix}.json",
-        root / f"ratings_combined{suffix}.json",
-        legacy_root / f"ratings_k_weighted{suffix}.json",
-        legacy_root / f"ratings_combined{suffix}.json",
-    )
-    with atomic_path(str(combined_json_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(combined_json))
-    combined_shard_parquet, combined_shard_done = _aggregation_shard_paths(
-        combined_dir, "all-k", suffix
-    )
-    _save_ratings_parquet(combined_shard_parquet, combined_rating_stats)
-    _save_done_stamp(
-        combined_shard_done,
-        _ShardDoneStamp(
-            shard_key="all-k",
-            parquet_path=str(combined_shard_parquet),
-            rows=len(combined_rating_stats),
-            created_at=time.time(),
-        ),
-    )
-    tiers = build_tiers(
-        means={k: v.mu for k, v in combined_rating_stats.items()},
-        stdevs={k: v.sigma for k, v in combined_rating_stats.items()},
-        z=float(tier_z or 1.645),
-        min_gap=tier_min_gap,
-    )
-    tiers_path = _write_conservative_tiers(
-        root, tiers, float(tier_z or 1.645), tier_min_gap, legacy_root=legacy_root
-    )
     LOGGER.info(
-        "TrueSkill run complete",
+        "TrueSkill per-root/per-k ratings complete",
         extra={
             "stage": "trueskill",
             "root": str(root),
             "blocks": len(blocks),
-            "combined_parquet": str(combined_parquet),
-            "tiers_path": str(tiers_path),
+            "rating_cells": len(valid_per_player_parquets),
+            "cross_k_rating_propagation": "unavailable",
         },
     )
 
@@ -1405,245 +1290,6 @@ def _sorted_ratings(ratings: Mapping[str, RatingStats]) -> Mapping[str, RatingSt
     """Return ratings ordered by strategy for stable materialisation."""
 
     return dict(sorted(ratings.items(), key=lambda kv: kv[0]))
-
-
-def _precision_combine(runs: Iterable[Mapping[str, RatingStats]]) -> dict[str, RatingStats]:
-    """Combine multiple rating mappings using precision weighting."""
-
-    accum: dict[str, tuple[float, float]] = {}
-    for mapping in runs:
-        for strategy, stats in mapping.items():
-            tau = 1.0 / (stats.sigma**2) if stats.sigma > 0 else 0.0
-            if tau <= 0:
-                continue
-            sum_mu_tau, sum_tau = accum.get(strategy, (0.0, 0.0))
-            sum_mu_tau += tau * stats.mu
-            sum_tau += tau
-            accum[strategy] = (sum_mu_tau, sum_tau)
-
-    combined: dict[str, RatingStats] = {}
-    for strategy, (sum_mu_tau, sum_tau) in accum.items():
-        if sum_tau <= 0:
-            continue
-        combined[strategy] = RatingStats(mu=sum_mu_tau / sum_tau, sigma=math.sqrt(1.0 / sum_tau))
-    return combined
-
-
-def _ensure_strict_mu_ordering(
-    ratings: Mapping[str, RatingStats],
-) -> Mapping[str, RatingStats]:
-    """Log combined TrueSkill ties and return deterministically ordered ratings."""
-
-    sorted_by_mu = sorted(ratings.items(), key=lambda kv: kv[1].mu, reverse=True)
-    tie_groups: list[list[str]] = []
-    prev_mu: float | None = None
-    current_group: list[str] = []
-
-    for name, stats in sorted_by_mu:
-        if prev_mu is not None and math.isclose(prev_mu, stats.mu, rel_tol=0.0, abs_tol=1e-12):
-            current_group.append(name)
-        else:
-            if len(current_group) > 1:
-                tie_groups.append(sorted(current_group))
-            current_group = [name]
-            prev_mu = stats.mu
-
-    if len(current_group) > 1:
-        tie_groups.append(sorted(current_group))
-
-    if tie_groups:
-        LOGGER.warning(
-            "Ties detected in combined TrueSkill means; ordering deterministically",
-            extra={
-                "stage": "trueskill",
-                "tie_groups": tie_groups,
-                "tie_count": sum(len(group) for group in tie_groups),
-            },
-        )
-
-    ordered = sorted(sorted_by_mu, key=lambda kv: (-kv[1].mu, kv[0]))
-    return dict(ordered)
-
-
-def _json_safe_number(value: float | int) -> float | int | None:
-    """Convert NaN/inf values to ``None`` for JSON serialization."""
-
-    if isinstance(value, float) and not math.isfinite(value):
-        return None
-    return value
-
-
-def _rank_correlations_vs_combined(
-    per_seed_results: Mapping[int, Mapping[str, RatingStats]],
-    combined: Mapping[str, RatingStats],
-) -> dict[int, float]:
-    """Compute Spearman-style rank correlations against combined ordering."""
-
-    combined_order = sorted(combined.items(), key=lambda kv: (-kv[1].mu, kv[0]))
-    combined_rank = {name: idx for idx, (name, _) in enumerate(combined_order, start=1)}
-    correlations: dict[int, float] = {}
-
-    for seed, stats in per_seed_results.items():
-        seed_order = sorted(stats.items(), key=lambda kv: (-kv[1].mu, kv[0]))
-        seed_rank = {name: idx for idx, (name, _) in enumerate(seed_order, start=1)}
-        common = [name for name in combined_rank if name in seed_rank]
-        if len(common) < 2:
-            correlations[seed] = math.nan
-            continue
-
-        combined_vec = np.array([combined_rank[name] for name in common], dtype=float)
-        seed_vec = np.array([seed_rank[name] for name in common], dtype=float)
-        denom = combined_vec.std(ddof=0) * seed_vec.std(ddof=0)
-        if denom == 0:
-            correlations[seed] = math.nan
-            continue
-        corr = float(np.corrcoef(combined_vec, seed_vec)[0, 1])
-        correlations[seed] = corr
-
-    return correlations
-
-
-def _write_seed_alignment_summary(
-    dest_dir: Path,
-    seeds: Sequence[int],
-    per_seed_results: Mapping[int, Mapping[str, RatingStats]],
-    combined: Mapping[str, RatingStats],
-    *,
-    write_csv: bool = False,
-    write_json: bool = False,
-) -> dict[str, Path | None]:
-    """Align per-seed means by strategy and persist summary statistics."""
-
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    seed_list = [int(s) for s in sorted(seeds)]
-    strategies = sorted({name for stats in per_seed_results.values() for name in stats})
-
-    base_cols = [
-        "strategy",
-        "combined_mu",
-        "mean_mu",
-        "std_mu",
-        "min_mu",
-        "max_mu",
-        "range_mu",
-        "max_abs_delta",
-        "seeds_present",
-        "seeds_missing",
-    ]
-    table_columns: dict[str, list[float | int | str]] = {col: [] for col in base_cols}
-    for seed in seed_list:
-        table_columns[f"seed_{seed}_mu"] = []
-
-    rows: list[dict[str, float | int | str]] = []
-    for strategy in strategies:
-        seed_mus: list[float] = []
-        row: dict[str, float | int | str] = {"strategy": strategy}
-        for seed in seed_list:
-            mu_val = per_seed_results.get(seed, {}).get(strategy)
-            mu = float(mu_val.mu) if mu_val is not None else math.nan
-            row[f"seed_{seed}_mu"] = mu
-            seed_mus.append(mu)
-
-        combined_mu = float(combined.get(strategy, RatingStats(math.nan, math.nan)).mu)
-        valid_mus = [m for m in seed_mus if math.isfinite(m)]
-        deltas = [m - combined_mu for m in valid_mus if math.isfinite(combined_mu)]
-
-        row.update(
-            {
-                "combined_mu": combined_mu,
-                "mean_mu": float(np.nanmean(seed_mus)) if seed_mus else math.nan,
-                "std_mu": float(np.nanstd(seed_mus)) if seed_mus else math.nan,
-                "min_mu": min(valid_mus) if valid_mus else math.nan,
-                "max_mu": max(valid_mus) if valid_mus else math.nan,
-                "range_mu": (max(valid_mus) - min(valid_mus)) if len(valid_mus) > 1 else math.nan,
-                "max_abs_delta": max(abs(delta) for delta in deltas) if deltas else math.nan,
-                "seeds_present": len(valid_mus),
-                "seeds_missing": len(seed_list) - len(valid_mus),
-            }
-        )
-
-        for col in table_columns:
-            table_columns[col].append(row.get(col, math.nan))
-        rows.append(row)
-
-    alignment_table = pa.table(table_columns)
-    parquet_path = dest_dir / "seed_mu_alignment.parquet"
-    write_parquet_atomic(alignment_table, parquet_path)
-
-    rank_correlations = _rank_correlations_vs_combined(per_seed_results, combined)
-    csv_path: Path | None = None
-    if write_csv:
-        csv_path = dest_dir / "seed_mu_alignment.csv"
-        fieldnames = base_cols + [f"seed_{seed}_mu" for seed in seed_list]
-        with atomic_path(str(csv_path)) as tmp_path, open(tmp_path, "w", newline="") as csv_file:
-            writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-            writer.writeheader()
-            writer.writerows(
-                {k: ("" if (isinstance(v, float) and math.isnan(v)) else v) for k, v in row.items()}
-                for row in rows
-            )
-
-    json_path: Path | None = None
-    if write_json:
-        json_path = dest_dir / "seed_mu_alignment.json"
-        json_rows = [
-            {k: _json_safe_number(v) if isinstance(v, (float, int)) else v for k, v in row.items()}
-            for row in rows
-        ]
-        json_corr = {
-            int(seed): _json_safe_number(value) for seed, value in rank_correlations.items()
-        }
-        payload = {
-            "seeds": seed_list,
-            "strategies": strategies,
-            "alignment": json_rows,
-            "rank_correlation_vs_combined": json_corr,
-        }
-        with atomic_path(str(json_path)) as tmp_path:
-            Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
-
-    corr_values = [v for v in rank_correlations.values() if math.isfinite(v)]
-    LOGGER.info(
-        "TrueSkill seed alignment summary complete",
-        extra={
-            "stage": "trueskill",
-            "strategies": len(strategies),
-            "seeds": seed_list,
-            "alignment_parquet": str(parquet_path),
-            "alignment_csv": str(csv_path) if csv_path else None,
-            "alignment_json": str(json_path) if json_path else None,
-            "rank_corr_min": min(corr_values) if corr_values else None,
-            "rank_corr_max": max(corr_values) if corr_values else None,
-        },
-    )
-
-    return {
-        "parquet": parquet_path,
-        "csv": csv_path,
-        "json": json_path,
-    }
-
-
-def _write_conservative_tiers(
-    root: Path,
-    tiers: Mapping[str, int],
-    z: float,
-    min_gap: float | None,
-    *,
-    legacy_root: Path | None = None,
-) -> Path:
-    """Write consolidated TrueSkill tiers to ``tiers.json``."""
-
-    payload = {
-        "tiers": dict(tiers),
-        "z": float(z),
-    }
-    if min_gap is not None:
-        payload["min_gap"] = float(min_gap)
-
-    tiers_path = _ensure_new_location(root / "tiers.json", (legacy_root or root) / "tiers.json")
-    write_tier_payload(tiers_path, trueskill=payload, active="trueskill")
-    return tiers_path
 
 
 def _resolve_seed_results_root(cfg: AppConfig, seed: int) -> Path:
@@ -1682,11 +1328,10 @@ def _resolve_seed_row_data_dir(cfg: AppConfig, seed_results_root: Path) -> Path 
 
 
 def run_trueskill_all_seeds(cfg: AppConfig) -> None:
-    """Run TrueSkill for each configured seed and combine the results."""
+    """Publish canonical root/k ratings and percentile screening artifacts."""
 
     analysis_cfg = cfg.analysis
-    outputs_cfg = analysis_cfg.outputs or {}
-    seeds_cfg = analysis_cfg.frequentist_seeds or [cfg.sim.seed]
+    seeds_cfg = cfg.sim.seed_list or [cfg.sim.seed]
     deduped: list[int] = []
     seen: set[int] = set()
     for raw in seeds_cfg:
@@ -1699,14 +1344,10 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     analysis_dir = cfg.trueskill_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    combined_dir = cfg.across_k_dir("trueskill")
-    combined_dir.mkdir(parents=True, exist_ok=True)
     concat_dir = cfg.concat_ks_dir("trueskill")
-    legacy_root = analysis_dir.parent
     default_row_data_dir = cfg.resolve_input_stage_dir("curate")
-    if default_row_data_dir is None or not default_row_data_dir.exists():
-        fallback_row_data_dir = cfg.data_dir
-        default_row_data_dir = fallback_row_data_dir if fallback_row_data_dir.exists() else None
+    if default_row_data_dir is not None and not default_row_data_dir.exists():
+        default_row_data_dir = None
     seed_results_roots = {seed: _resolve_seed_results_root(cfg, seed) for seed in seeds}
     seed_row_data_dirs = {
         seed: _resolve_seed_row_data_dir(cfg, seed_results_roots[seed]) for seed in seeds
@@ -1719,11 +1360,6 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             "draw_probability": cfg.trueskill.draw_probability,
         }
     )
-    tier_z = float(analysis_cfg.tier_z_star or 1.645)
-    tier_min_gap = analysis_cfg.tier_min_gap
-
-    per_seed_results: dict[int, Mapping[str, RatingStats]] = {}
-    per_seed_outputs: dict[int, Mapping[str, Mapping[str, RatingStats]]] = {}
     concat_tables: list[pa.Table] = []
     screening_cells: list[ScreeningRatingCell] = []
 
@@ -1749,22 +1385,17 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             curated_rows_name=cfg.curated_rows_name,
             workers=analysis_cfg.n_jobs or None,
             env_kwargs=env_kwargs,
-            k_weights=cfg.trueskill.k_weights,
-            tier_z=tier_z,
-            tier_min_gap=tier_min_gap,
             mp_start_method=analysis_cfg.mp_start_method,
             progress_logging=analysis_cfg.progress_logging,
         )
 
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}
-        for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}", legacy_root=legacy_root):
+        for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}"):
             players = _player_count_from_stem(parquet.stem)
             if players is None:
                 continue
             stats = _load_ratings_parquet(parquet)
             ordered_stats = _sorted_ratings(stats)
-            dest = analysis_dir / f"trueskill_{players}p_seed{seed}.parquet"
-            _save_ratings_parquet(dest, ordered_stats)
             seed_outputs[f"{players}p"] = ordered_stats  # keyed for logging/debug
             concat_tables.append(
                 pa.table(
@@ -1795,8 +1426,6 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
         if not seed_outputs:
             raise RuntimeError(f"No per-player outputs generated for seed {seed}")
-        per_seed_outputs[seed] = seed_outputs
-
         LOGGER.info(
             "TrueSkill seed run complete",
             extra={
@@ -1836,120 +1465,16 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             codec=cfg.parquet_codec,
         )
 
-    if screening_cells:
-        contribution_path = build_percentile_contribution(cfg, screening_cells)
-        diagnostics_path = build_screening_diagnostics(cfg, screening_cells)
-        LOGGER.info(
-            "TrueSkill screening outputs written",
-            extra={
-                "stage": "trueskill",
-                "candidate_contribution": str(contribution_path),
-                "diagnostics": str(diagnostics_path) if diagnostics_path else None,
-                "rating_cells": len(screening_cells),
-            },
-        )
-        return
-
-    if per_seed_outputs:
-        per_player_runs: dict[int, list[Mapping[str, RatingStats]]] = {}
-        for seed_player_outputs in per_seed_outputs.values():
-            for key, player_stats in seed_player_outputs.items():
-                try:
-                    players = int(str(key).removesuffix("p"))
-                except ValueError:
-                    continue
-                per_player_runs.setdefault(players, []).append(player_stats)
-
-        for players in sorted(per_player_runs):
-            runs = per_player_runs[players]
-            per_player_combined_stats = _precision_combine(runs)
-            if not per_player_combined_stats:
-                continue
-            dest_dir = analysis_dir / "by_k" / f"{players}p"
-            dest_dir.mkdir(parents=True, exist_ok=True)
-            dest = dest_dir / f"ratings_{players}.parquet"
-            seed_paths = list(dest_dir.glob(f"ratings_{players}_seed*.parquet"))
-            seed_paths.extend(list(analysis_dir.glob(f"trueskill_{players}p_seed*.parquet")))
-            newest_seed = max((p.stat().st_mtime for p in seed_paths if p.exists()), default=0.0)
-            if dest.exists() and dest.stat().st_mtime >= newest_seed:
-                LOGGER.info(
-                    "TrueSkill per-player combined outputs up-to-date",
-                    extra={
-                        "stage": "trueskill",
-                        "players": players,
-                        "path": str(dest),
-                        "seeds": len(runs),
-                    },
-                )
-                continue
-            _save_ratings_parquet(dest, _sorted_ratings(per_player_combined_stats))
-            LOGGER.info(
-                "TrueSkill per-player combined outputs written",
-                extra={
-                    "stage": "trueskill",
-                    "players": players,
-                    "path": str(dest),
-                    "seeds": len(runs),
-                },
-            )
-
-    combined_seed_stats: Mapping[str, RatingStats] = _precision_combine(per_seed_results.values())
-    if not combined_seed_stats:
-        raise RuntimeError("TrueSkill aggregation produced no results")
-    ordered_combined = _ensure_strict_mu_ordering(_sorted_ratings(combined_seed_stats))
-
-    combined_parquet = _ensure_new_location(
-        combined_dir / "ratings_k_weighted.parquet",
-        combined_dir / "ratings_combined.parquet",
-        analysis_dir / "ratings_k_weighted.parquet",
-        analysis_dir / "ratings_combined.parquet",
-        legacy_root / "ratings_k_weighted.parquet",
-        legacy_root / "ratings_combined.parquet",
-    )
-    _save_ratings_parquet(combined_parquet, ordered_combined)
-
-    combined_json_path = _ensure_new_location(
-        combined_dir / "ratings_k_weighted.json",
-        combined_dir / "ratings_combined.json",
-        analysis_dir / "ratings_k_weighted.json",
-        analysis_dir / "ratings_combined.json",
-        legacy_root / "ratings_k_weighted.json",
-        legacy_root / "ratings_combined.json",
-    )
-    with atomic_path(str(combined_json_path)) as tmp_path:
-        Path(tmp_path).write_text(
-            json.dumps(
-                {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ordered_combined.items()},
-                indent=2,
-                sort_keys=True,
-            )
-        )
-
-    _write_seed_alignment_summary(
-        combined_dir,
-        seeds,
-        per_seed_results,
-        ordered_combined,
-        write_csv=bool(outputs_cfg.get("trueskill_alignment_csv", False)),
-        write_json=bool(outputs_cfg.get("trueskill_alignment_json", False)),
-    )
-
-    tiers = build_tiers(
-        means={k: v.mu for k, v in ordered_combined.items()},
-        stdevs={k: v.sigma for k, v in ordered_combined.items()},
-        z=tier_z,
-        min_gap=tier_min_gap,
-    )
-    tiers_path = _write_conservative_tiers(
-        analysis_dir, tiers, tier_z, tier_min_gap, legacy_root=legacy_root
-    )
-
+    if not screening_cells:
+        raise RuntimeError("TrueSkill produced no canonical root/k rating cells")
+    contribution_path = build_percentile_contribution(cfg, screening_cells)
+    diagnostics_path = build_screening_diagnostics(cfg, screening_cells)
     LOGGER.info(
-        "TrueSkill combined results complete",
+        "TrueSkill screening outputs written",
         extra={
             "stage": "trueskill",
-            "seeds": seeds,
-            "combined_parquet": str(combined_parquet),
-            "tiers_path": str(tiers_path),
+            "candidate_contribution": str(contribution_path),
+            "diagnostics": str(diagnostics_path) if diagnostics_path else None,
+            "rating_cells": len(screening_cells),
         },
     )

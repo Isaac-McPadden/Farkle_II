@@ -10,7 +10,6 @@ from farkle.analysis import (
     meta,
     metrics,
     reporting,
-    run_hgb,
     run_trueskill,
     seed_summaries,
     variance,
@@ -160,12 +159,10 @@ def test_seed_summary_artifacts_match_meta_variance_and_reporting_readers(tmp_pa
     assert set(combined["n_seeds"]) == {2}
 
 
-def test_trueskill_artifacts_match_agreement_and_hgb_readers(tmp_path) -> None:
+def test_trueskill_root_k_artifacts_match_agreement_reader(tmp_path) -> None:
     cfg = make_test_app_config(results_dir_prefix=tmp_path / "results")
     per_k_dir = cfg.trueskill_stage_dir / "2p"
-    combined_dir = cfg.trueskill_combined_dir
     per_k_dir.mkdir(parents=True, exist_ok=True)
-    combined_dir.mkdir(parents=True, exist_ok=True)
 
     run_trueskill._save_ratings_parquet(
         per_k_dir / "ratings_2.parquet",
@@ -179,25 +176,10 @@ def test_trueskill_artifacts_match_agreement_and_hgb_readers(tmp_path) -> None:
         per_k_dir / "ratings_2_seed202.parquet",
         {"1": (29.0, 3.1), "2": (28.0, 3.4)},
     )
-    run_trueskill._save_ratings_parquet(
-        combined_dir / "ratings_k_weighted_seed101.parquet",
-        {"1": (31.0, 3.0), "2": (27.0, 3.5)},
-    )
-    run_trueskill._save_ratings_parquet(
-        combined_dir / "ratings_k_weighted_seed202.parquet",
-        {"1": (29.0, 3.1), "2": (28.0, 3.4)},
-    )
-
     trueskill_data = agreement._load_trueskill(cfg, 2, combined_scope=False)
-    seed_targets = run_hgb._load_seed_targets(combined_dir)
 
     assert trueskill_data is not None
     assert trueskill_data.scores.index.tolist() == ["1", "2"]
     assert trueskill_data.scores.tolist() == [30.0, 27.5]
     assert len(trueskill_data.per_seed_scores) == 2
     assert all(series.index.tolist() == ["1", "2"] for series in trueskill_data.per_seed_scores)
-
-    assert seed_targets.columns.tolist() == ["strategy", "mu", "seed"]
-    assert {str(value) for value in seed_targets["strategy"]} == {"1", "2"}
-    assert set(seed_targets["seed"]) == {101, 202}
-    assert len(seed_targets) == 4

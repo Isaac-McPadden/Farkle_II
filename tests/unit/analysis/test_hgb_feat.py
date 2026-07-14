@@ -5,7 +5,6 @@ import pandas as pd
 import pyarrow as pa
 import pytest
 
-pytest.importorskip("matplotlib")
 pytest.importorskip("sklearn")
 
 from farkle.analysis import hgb_feat
@@ -52,10 +51,10 @@ def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
 
 def _publish_output_placeholders(cfg: AppConfig, *, mtime: float) -> None:
     outputs = [
-        cfg.hgb_combined_dir / "hgb_importance.json",
+        cfg.across_k_dir("hgb") / "hgb_importance.json",
         cfg.hgb_future_proposals_path(),
-        cfg.hgb_combined_dir / hgb_feat._hgb.LONG_IMPORTANCE_NAME,
-        cfg.hgb_combined_dir / hgb_feat._hgb.OVERALL_IMPORTANCE_NAME,
+        cfg.across_k_dir("hgb") / hgb_feat._hgb.LONG_IMPORTANCE_NAME,
+        cfg.across_k_dir("hgb") / hgb_feat._hgb.OVERALL_IMPORTANCE_NAME,
         cfg.hgb_importance_path(2),
         cfg.hgb_predictive_scores_path(2),
         cfg.hgb_fold_metrics_path(2),
@@ -94,7 +93,7 @@ def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, metrics = _setup_cfg(tmp_path)
-    json_out = cfg.hgb_combined_dir / "hgb_importance.json"
+    json_out = cfg.across_k_dir("hgb") / "hgb_importance.json"
     _publish_output_placeholders(cfg, mtime=900)
     os.utime(metrics, (1020, 1020))
 
@@ -102,18 +101,14 @@ def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyP
 
     def fake_run(
         *,
-        root: Path,
-        output_path: Path,
+        cfg: AppConfig,
         metrics_paths: list[Path],
         manifest_path: Path | None,
-        **kwargs: object,
     ) -> None:
-        assert root == cfg.hgb_stage_dir
-        assert output_path == json_out
+        assert cfg is not None
         assert metrics_paths == [cfg.performance_by_k_path(2)]
         assert manifest_path == cfg.strategy_manifest_root_path()
-        assert kwargs["heldout_folds"] == cfg.hgb.heldout_folds
-        called["root"] = root
+        called["output"] = json_out
 
     monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
     hgb_feat.run(cfg)
@@ -194,8 +189,6 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
         missing_cell_policy="fail",
     )
     write_parquet_artifact_atomic(table, source, sidecar=source_sidecar)
-    monkeypatch.setattr(hgb_feat._hgb, "plot_partial_dependence", lambda *args, **kwargs: None)
-
     hgb_feat.run(cfg)
 
     outputs = [
@@ -203,9 +196,9 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
         cfg.hgb_predictive_scores_path(2),
         cfg.hgb_fold_metrics_path(2),
         cfg.hgb_future_proposals_path(),
-        cfg.hgb_combined_dir / hgb_feat._hgb.LONG_IMPORTANCE_NAME,
-        cfg.hgb_combined_dir / hgb_feat._hgb.OVERALL_IMPORTANCE_NAME,
-        cfg.hgb_combined_dir / "hgb_importance.json",
+        cfg.across_k_dir("hgb") / hgb_feat._hgb.LONG_IMPORTANCE_NAME,
+        cfg.across_k_dir("hgb") / hgb_feat._hgb.OVERALL_IMPORTANCE_NAME,
+        cfg.across_k_dir("hgb") / "hgb_importance.json",
     ]
     for output in outputs:
         validate_artifact_sidecar(output)
@@ -216,33 +209,6 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
     if not proposals.empty:
         assert proposals["included_in_current_analysis"].eq(False).all()
         assert proposals["strategy_id"].isna().all()
-
-
-def test_unique_players_uses_players_fallback_column(tmp_path: Path) -> None:
-    metrics_path = tmp_path / "metrics.parquet"
-    pd.DataFrame({"players": [4, 2, 4, 5]}).to_parquet(metrics_path, index=False)
-
-    players = hgb_feat._unique_players(metrics_path, hints=[3, 2, 3])
-
-    assert players == [2, 3, 4, 5]
-
-
-def test_unique_players_gracefully_handles_read_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    metrics_path = tmp_path / "metrics.parquet"
-    metrics_path.touch()
-
-    def raise_read_error(path: Path, columns: list[str]):
-        if columns == ["n_players"]:
-            raise pa.ArrowInvalid("missing n_players")
-        raise KeyError("missing players")
-
-    monkeypatch.setattr(hgb_feat.pq, "read_table", raise_read_error)
-
-    players = hgb_feat._unique_players(metrics_path, hints=[6, 2, 6])
-
-    assert players == [2, 6]
 
 
 def test_latest_mtime_returns_zero_for_missing_paths(tmp_path: Path) -> None:

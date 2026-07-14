@@ -74,7 +74,7 @@ def test_iter_rating_parquets_deduplicates_filters_and_sorts_stably(tmp_path: Pa
     (legacy_root / "1p").mkdir(parents=True)
     (legacy_root / "1p" / "ratings_1_seed0.parquet").touch()
 
-    results = rt._iter_rating_parquets(root, "_seed0", legacy_root=legacy_root)
+    results = rt._iter_rating_parquets(root, "_seed0")
     assert len(results) == 2
     assert [rt._player_count_from_stem(path.stem) for path in results] == [2, 3]
 
@@ -149,7 +149,7 @@ def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
     cwd = os.getcwd()
     os.chdir(tmp_path)
     try:
-        rt.run_trueskill(root=data_root, workers=1, batch_rows=2, emit_legacy_combined=True)
+        rt.run_trueskill(root=data_root, workers=1, batch_rows=2)
     finally:
         os.chdir(cwd)
 
@@ -157,11 +157,9 @@ def test_run_trueskill_skips_empty_blocks(tmp_path: Path) -> None:
     ratings_2 = rt._load_ratings_parquet(ratings_dir / "by_k" / "2p" / "ratings_2_seed0.parquet")
     ratings3_path = ratings_dir / "by_k" / "3p" / "ratings_3_seed0.parquet"
     ratings_3 = rt._load_ratings_parquet(ratings3_path) if ratings3_path.exists() else {}
-    combined = rt._load_ratings_parquet(data_root / "across_k" / "ratings_k_weighted_seed0.parquet")
-
     assert set(ratings_2)
     assert ratings_3 == {}
-    assert set(combined) == set(ratings_2)
+    assert not (data_root / "across_k").exists()
 
 
 def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
@@ -180,10 +178,9 @@ def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
             root=data_root,
             workers=1,
             batch_rows=2,
-            emit_legacy_combined=True,
         )
     finally:
         os.chdir(cwd)
 
     assert (data_root / "by_k" / "2p" / "ratings_2_seed3.parquet").exists()
-    assert (data_root / "across_k" / "ratings_k_weighted_seed3.parquet").exists()
+    assert not (data_root / "across_k").exists()

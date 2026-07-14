@@ -229,22 +229,20 @@ def test_analyze_hgb_uses_canonical_per_k_performance_without_ratings(
 
     called: dict[str, object] = {}
 
-    def fake_hgb(
-        *, root: Path, output_path: Path, metrics_paths: list[Path], **kwargs: object
-    ) -> None:
-        called["root"] = root
-        called["metrics_paths"] = metrics_paths
-        called["kwargs"] = kwargs
+    def fake_hgb(run_cfg: AppConfig) -> None:
+        called["cfg"] = run_cfg
+        called["metrics_paths"] = [
+            run_cfg.performance_by_k_path(k) for k in run_cfg.sim.n_players_list
+        ]
+        output_path = run_cfg.across_k_dir("hgb") / "hgb_importance.json"
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("{}")
 
-    monkeypatch.setattr("farkle.analysis.run_hgb.run_hgb", fake_hgb, raising=True)
+    monkeypatch.setattr("farkle.analysis.hgb_feat.run", fake_hgb, raising=True)
 
     analyze_hgb(exp_dir)
     assert called["metrics_paths"] == metrics
-    kwargs = called["kwargs"]
-    assert isinstance(kwargs, dict)
-    assert "ratings_path" not in kwargs
+    assert isinstance(called["cfg"], AppConfig)
 
 
 def test_analyze_agreement_autodetects_players_without_optional_inputs(
