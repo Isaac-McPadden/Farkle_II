@@ -116,6 +116,8 @@ and the cap cannot be smaller than the protected family.
   `0.03`.
 - `head2head.sensitivity_deltas`: includes the target effect and `0.04`.
 - `head2head.seat1_advantage_scenarios`: locked to `0`, `0.03`, and `0.06`.
+- `head2head.delta_equivalence`: optional equivalence margin; `null` disables
+  equivalence decisions.
 - `head2head.total_game_cap`: operational cap checked before block scheduling.
 - `head2head.allow_single_root`: permits explicitly labelled single-root H2H.
 

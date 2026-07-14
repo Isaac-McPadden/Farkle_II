@@ -1510,6 +1510,16 @@ class AppConfig:
 
         return self.h2h_2p_dir() / "root_order_counts.parquet"
 
+    def h2h_combined_order_counts_path(self) -> Path:
+        """Raw H2H counts combined across roots within each seat order."""
+
+        return self.h2h_2p_dir() / "combined_order_counts.parquet"
+
+    def h2h_pairwise_inference_path(self) -> Path:
+        """Seat-adjusted score inference and multiplicity decisions."""
+
+        return self.h2h_2p_dir() / "pairwise_inference.parquet"
+
     def legacy_metrics_isolated_path(self, k: int) -> Path:
         """Legacy isolated metrics parquet path under ``analysis/data``."""
 
@@ -2509,6 +2519,8 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("head2head.target_power must be between 0 and 1")
     if h2h.practical_delta <= 0.0:
         raise ValueError("head2head.practical_delta must be positive")
+    if h2h.delta_equivalence is not None and not 0.0 < h2h.delta_equivalence < 1.0:
+        raise ValueError("head2head.delta_equivalence must be between 0 and 1 when configured")
     sensitivity = tuple(float(delta) for delta in h2h.sensitivity_deltas)
     if (
         not sensitivity

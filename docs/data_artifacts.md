@@ -203,6 +203,8 @@ The pre-scheduling two-player family is published under
 - `block_manifest.parquet`
 - `blocks/pair_<id>_root_<root>_order_<order>.parquet`
 - `root_order_counts.parquet`
+- `combined_order_counts.parquet`
+- `pairwise_inference.parquet`
 
 The membership table records every canonical win-rate and TrueSkill source
 rank, method-list membership, protected control/diagnostic status, admission
@@ -230,6 +232,17 @@ orders. Each immutable block records the family hash and its exact
 atomically with sidecars; interruption and worker-count changes therefore skip
 valid blocks without changing any stream. `root_order_counts.parquet` is the
 row-preserving union consumed by seat-adjusted inference.
+
+Inference first combines raw wins and games across roots separately within
+`a_b` and `b_a`; it never mixes the seat orders before estimating their rates.
+For each pair, `q_AB` is A's seat-1 win rate in `a_b`, `q_BA` is B's seat-1 win
+rate in `b_a`, and `d_AB = 0.5 * (q_AB - q_BA)`. The score-test null estimate,
+ordinary score-inversion interval, Bonferroni simultaneous interval, Holm
+adjustment, practical threshold, and decision class are all recorded.
+
+The balanced A-win rate is retained only as an equality-checked point-estimate
+alias for `0.5 + d_AB`. Equivalence is emitted only when an explicit margin is
+configured; nonsignificance otherwise remains unresolved.
 
 ### Coverage and game stats
 

@@ -24,6 +24,7 @@ dependencies = [
     "numba>=0.59",   # JIT for the scoring engine & lookup tables
     "PyYAML>=6",     # CLI & manifest parsing
     "scipy>=1.11",   # stats helpers
+    "statsmodels>=0.14",  # two-proportion score intervals
     "matplotlib>=3.10",  # headless report and HGB plot generation
     "scikit-learn>=1.8",  # agreement metrics and HGB analytics
     "trueskill>=0.4",

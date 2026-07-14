@@ -208,16 +208,32 @@ For every statistical claim, review in this order:
 - Tests: `tests/unit/analysis/test_h2h_schedule.py` covers minimum power,
   root/order equality, cap stop/resume, coordinate separation, single-root
   labelling, and block-level resume.
+- Inference code: `src/farkle/analysis/h2h_inference.py`.
+- Estimand: `d_AB = 0.5 * (q_AB - q_BA)`, where each rate is the seat-1 win
+  rate in its independent ordering after raw counts combine across roots within
+  that order.
+- Test and intervals: equality uses the constrained-null two-proportion score
+  statistic. Ordinary and Bonferroni simultaneous limits invert that same score
+  procedure and are divided by two to report the `d_AB` scale.
+- Multiplicity and decisions: Holm adjusted p-values determine statistical-only
+  advantages; simultaneous bounds determine practical dominance. Equivalence
+  requires an explicit configured margin and simultaneous containment;
+  everything else is unresolved.
+- Checked alias: exact order balance makes the combined A-win rate equal to
+  `0.5 + d_AB`; it is retained only as a verified point estimate, not as a
+  one-sample test.
+- Tests: `tests/unit/analysis/test_h2h_inference.py` verifies the constrained
+  null statistic, score interval, raw root combination, alias identity, Holm,
+  practical/statistical/unresolved classes, optional equivalence, and balance
+  rejection.
 - Code: `src/farkle/analysis/head2head.py`,
   `src/farkle/analysis/run_bonferroni_head2head.py`,
   `src/farkle/analysis/h2h_analysis.py`.
 - Simulation: each pair is split across both seat orders (`a_b` and `b_a`) and
   writes pairwise, ordered-pairwise, and self-play symmetry artifacts.
-- Initial p-value: `run_bonferroni_head2head.py` stores
-  `pval_one_sided = binomtest(wins_a, games, alternative="greater").pvalue`.
-- Post-processing: `h2h_analysis.py` aggregates canonical unordered pairs,
-  recomputes two-sided binomial p-values, applies Holm-Bonferroni adjusted
-  p-values, builds a significant directed graph, then derives tiers/rankings.
+- Legacy note: the older runner and post-processor still contain one-sample
+  binomial artifacts pending migration cleanup. They are not canonical inputs
+  to `h2h_inference.py` and cannot satisfy its sidecar contract.
 - Tie policies: `neutral_edge` marks ties non-significant; `simulate_game`
   gives deterministic non-significant tie-break direction from a seeded RNG.
 - Tests: `tests/unit/analysis/test_run_bonferroni_head2head*.py`,
