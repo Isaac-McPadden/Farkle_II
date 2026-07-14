@@ -2,10 +2,9 @@
 """RNG diagnostics for curated rows ordered by ``game_seed``.
 
 Computes lagged autocorrelation for win indicators and game lengths at both
-strategy and matchup-strategy levels. Outputs are written to
-``00_rng/combined/rng_diagnostics.parquet`` with approximate confidence intervals
-and "expected ~0" reminders. When inputs or required columns are missing, the
-module logs a skip instead of raising.
+strategy and matchup-strategy levels. Approximate reference bands are diagnostic
+only and do not establish independence. When inputs or required columns are
+missing, the module logs a skip instead of raising.
 """
 from __future__ import annotations
 
@@ -26,14 +25,19 @@ import pyarrow.dataset as ds
 
 from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
-from farkle.config import AppConfig
-from farkle.utils.artifacts import write_parquet_atomic
+from farkle.config import AppConfig, ArtifactScope
+from farkle.utils.artifact_contract import make_artifact_sidecar
+from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.parallel import apply_native_thread_limits, resolve_stage_parallel_policy
 from farkle.utils.progress import ScheduledProgressLogger
 
 LOGGER = logging.getLogger(__name__)
 
-_EXPECTED_NOTE = "Expected ~0 under IID seeds"
+_EXPECTED_NOTE = (
+    "Approximate autocorrelation reference band only; values inside the band do not "
+    "establish independence"
+)
+_BAND_METHOD = "approximate_1.96_over_sqrt_n_autocorrelation_reference_band"
 _SEAT_STRATEGY_RE = re.compile(r"^P(\d+)_strategy$")
 _STREAM_BATCH_SIZE = 100_000
 _DEFAULT_MAX_MATCHUP_GROUPS = 100_000
@@ -110,6 +114,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         stage="rng_diagnostics",
         stage_config_sha=stage_config_sha,
         cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
+        sidecar_artifacts=[out_file],
     ):
         LOGGER.info(
             "rng-diagnostics: up-to-date",
@@ -175,7 +180,25 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         return
 
     table_out = pa.Table.from_pandas(diagnostics, preserve_index=False)
-    write_parquet_atomic(table_out, out_file, codec=cfg.parquet_codec)
+    sidecar = make_artifact_sidecar(
+        cfg,
+        out_file,
+        producer="rng_diagnostics",
+        scope=ArtifactScope.DIAGNOSTICS,
+        source_scope=ArtifactScope.CONCAT_KS,
+        operation="diagnostic_band",
+        uncertainty_method=_BAND_METHOD,
+        support_count_role="ordered_group_observations",
+        replication_unit="lagged_observation_pair",
+        conditioning="diagnostic_only_no_independence_claim",
+        consistency_columns=table_out.schema.names,
+        source_artifacts=[data_file],
+        grouping_keys=["summary_level", "strategy", "matchup", "n_players", "lag", "metric"],
+        player_counts=cfg.sim.n_players_list,
+        required_player_counts=cfg.sim.n_players_list,
+        missing_cell_policy="not_applicable",
+    )
+    write_parquet_artifact_atomic(table_out, out_file, sidecar=sidecar, codec=cfg.parquet_codec)
     write_stage_done(
         stamp_path,
         inputs=[data_file],
@@ -184,6 +207,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         stage="rng_diagnostics",
         stage_config_sha=stage_config_sha,
         cache_key_version=cfg.stage_cache_key_version("rng_diagnostics"),
+        sidecar_artifacts=[out_file],
     )
     LOGGER.info(
         "rng-diagnostics: written",
@@ -732,8 +756,8 @@ def _rows_from_group_state(
                     "lag": lag,
                     "metric": metric,
                     "autocorr": autocorr,
-                    "ci_lower": autocorr - 1.96 * stderr,
-                    "ci_upper": autocorr + 1.96 * stderr,
+                    "diagnostic_band_lower": autocorr - 1.96 * stderr,
+                    "diagnostic_band_upper": autocorr + 1.96 * stderr,
                     "note": _EXPECTED_NOTE,
                 }
             )
@@ -958,8 +982,8 @@ def _group_diagnostics(
             if pd.isna(autocorr):
                 continue
             stderr = 1.0 / n_obs**0.5
-            ci_lower = autocorr - 1.96 * stderr
-            ci_upper = autocorr + 1.96 * stderr
+            diagnostic_band_lower = autocorr - 1.96 * stderr
+            diagnostic_band_upper = autocorr + 1.96 * stderr
             rows.append(
                 pd.Series(
                     {
@@ -971,8 +995,8 @@ def _group_diagnostics(
                         "lag": lag,
                         "metric": metric,
                         "autocorr": autocorr,
-                        "ci_lower": ci_lower,
-                        "ci_upper": ci_upper,
+                        "diagnostic_band_lower": diagnostic_band_lower,
+                        "diagnostic_band_upper": diagnostic_band_upper,
                         "note": _EXPECTED_NOTE,
                     }
                 )

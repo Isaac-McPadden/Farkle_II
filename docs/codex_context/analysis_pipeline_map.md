@@ -77,7 +77,8 @@ Interseed-specific registry order:
   explicitly winner-conditioned isolated metrics while legacy consumers are
   migrated.
 - Coverage and game stats: report missing strategy/seed/player-count coverage,
-  game length, margins, rare events, and related summaries.
+  game-level lengths, score configurations, margins, close games, rare events,
+  matchup ecology, and exact ordered-roll scoring diagnostics.
 - Seed summaries, variance, meta: produce seed-aware summaries and cross-seed
   uncertainty/aggregation artifacts.
 - TrueSkill, screening, head-to-head, post-H2H: produce rating diagnostics,

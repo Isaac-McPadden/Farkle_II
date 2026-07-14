@@ -33,7 +33,10 @@ _ARTIFACT_FAMILY_MATRIX: dict[str, dict[str, tuple[str, ...]]] = {
     "game_stats": {
         "by_k": ("game_length.parquet", "margin_stats.parquet"),
         "concat_ks": ("game_length.parquet", "margin_stats.parquet"),
-        "across_k": ("game_length_k_weighted.parquet", "margin_k_weighted.parquet"),
+        "across_k": (
+            "game_length_strategy_conditioned_equal_k_mean.parquet",
+            "margin_strategy_conditioned_equal_k_mean.parquet",
+        ),
     },
 }
 

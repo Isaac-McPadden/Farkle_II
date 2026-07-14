@@ -230,10 +230,26 @@ For every statistical claim, review in this order:
 - Code: `src/farkle/analysis/rng_diagnostics.py`.
 - Intended use: optional interseed diagnostics over game seeds, win indicators,
   and game length to flag ordering artifacts.
+- Output fields are `diagnostic_band_lower` and `diagnostic_band_upper`. The
+  sidecar records the `1.96/sqrt(n)` approximation and explicitly states that
+  inclusion within a reference band does not establish independence.
 - Tests: `tests/unit/analysis/test_rng_diagnostics.py`,
   `tests/unit/analysis/test_rng_diagnostics_branches.py`.
 - Review risks: diagnostics can flag suspicious patterns but cannot prove RNG
   independence or simulation validity by themselves.
+
+## Exact Roll Enumeration
+
+- Code: `src/farkle/analysis/roll_enumeration.py`.
+- Method: enumerate every one of the `6**d` ordered outcomes for each dice count
+  from one through six and evaluate it with the production scoring engine.
+- Selection rule: `production_max_immediate_score_v1`, with zero score for a
+  farkle. Outputs include the exact score/scoring-dice distribution, farkle and
+  hot-dice probabilities, expected immediate score, score quantiles, and
+  expected scoring dice.
+- No RNG or sampling interval is involved; sidecars label the finite
+  enumeration and ordered-outcome denominator.
+- Tests: `tests/unit/analysis/test_roll_enumeration.py`.
 
 ## High-Value Missing Hand Checks
 

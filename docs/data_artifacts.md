@@ -178,12 +178,18 @@ Common stage roots:
 Typical outputs:
 
 - `coverage_by_k.parquet`
-- `game_length_k_weighted.parquet`
-- `margin_k_weighted.parquet`
+- `game_length_strategy_conditioned_equal_k_mean.parquet`
+- `margin_strategy_conditioned_equal_k_mean.parquet`
+- `diagnostics/roll_outcome_distribution_exact.parquet`
+- `diagnostics/roll_summary_exact.parquet`
 - `rare_events.parquet`
 
-Game-stat helpers also support legacy filenames through `AppConfig`
-canonicalization and fallback logic.
+The two across-k game summaries are descriptive, strategy-conditioned equal-k
+means over complete configured support. Their sidecars distinguish them from
+the row-preserving `concat_ks/game_length.parquet` and
+`concat_ks/margin_stats.parquet` artifacts. Exact roll outputs use the named
+production scoring-selection rule and finite ordered-outcome counts; they are
+not Monte Carlo estimates.
 
 ### TrueSkill and descriptive screening
 

@@ -10,6 +10,7 @@ from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import game_stats
 from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.utils.artifact_contract import validate_artifact_sidecar
 
 
 def test_rare_event_flags_cover_game_and_strategy_levels(tmp_path):
@@ -93,8 +94,8 @@ def test_run_generates_all_outputs(tmp_path: Path):
 
     game_stats.run(cfg, force=True)
 
-    game_length = cfg.game_stats_output_path("game_length.parquet")
-    margin_path = cfg.game_stats_output_path("margin_stats.parquet")
+    game_length = cfg.game_stats_concat_path("game_length.parquet")
+    margin_path = cfg.game_stats_concat_path("margin_stats.parquet")
     rare_events_path = cfg.game_stats_output_path("rare_events.parquet")
 
     assert game_length.exists()
@@ -139,8 +140,8 @@ def test_run_requires_inputs(tmp_path: Path):
 
     game_stats.run(cfg)
 
-    assert not cfg.game_stats_output_path("game_length.parquet").exists()
-    assert not cfg.game_stats_output_path("margin_stats.parquet").exists()
+    assert not cfg.game_stats_concat_path("game_length.parquet").exists()
+    assert not cfg.game_stats_concat_path("margin_stats.parquet").exists()
     assert not cfg.game_stats_output_path("rare_events.parquet").exists()
 
 
@@ -283,8 +284,8 @@ def test_run_writes_per_k_outputs_and_is_idempotent_for_multi_k(tmp_path: Path) 
     game_stats.run(cfg)
 
     combined_targets = {
-        "game_length.parquet": cfg.game_stats_output_path("game_length.parquet"),
-        "margin_stats.parquet": cfg.game_stats_output_path("margin_stats.parquet"),
+        "game_length.parquet": cfg.game_stats_concat_path("game_length.parquet"),
+        "margin_stats.parquet": cfg.game_stats_concat_path("margin_stats.parquet"),
     }
     for output_path in combined_targets.values():
         assert output_path.exists()
@@ -338,8 +339,10 @@ def test_run_generates_margin_summary_columns_and_histogram_inputs(tmp_path: Pat
 
     game_stats.run(cfg, force=True)
 
-    margin_df = pd.read_parquet(cfg.game_stats_output_path("margin_stats.parquet"))
-    combined_margin_df = pd.read_parquet(cfg.game_stats_output_path("margin_k_weighted.parquet"))
+    margin_df = pd.read_parquet(cfg.game_stats_concat_path("margin_stats.parquet"))
+    combined_margin_df = pd.read_parquet(
+        cfg.game_stats_output_path("margin_strategy_conditioned_equal_k_mean.parquet")
+    )
     rare_df = pd.read_parquet(cfg.game_stats_output_path("rare_events.parquet"))
 
     for threshold in (25, 175):
@@ -359,8 +362,25 @@ def test_run_accepts_aggregation_method_aliases(tmp_path: Path) -> None:
 
     game_stats.run(cfg, force=True)
 
-    assert cfg.game_stats_output_path("game_length_k_weighted.parquet").exists()
-    assert cfg.game_stats_output_path("margin_k_weighted.parquet").exists()
+    assert cfg.game_stats_output_path(
+        "game_length_strategy_conditioned_equal_k_mean.parquet"
+    ).exists()
+    assert cfg.game_stats_output_path("margin_strategy_conditioned_equal_k_mean.parquet").exists()
+    assert not (cfg.game_stats_combined_dir / "game_length_k_weighted.parquet").exists()
+    assert not (cfg.game_stats_combined_dir / "margin_k_weighted.parquet").exists()
+    validate_artifact_sidecar(
+        cfg.game_stats_output_path("game_length_strategy_conditioned_equal_k_mean.parquet"),
+        expected={
+            "scope": "across_k",
+            "operation": "equal_k_mean",
+            "conditioning": "strategy_conditioned_game_length",
+            "missing_cell_policy": "declared_common_support",
+        },
+    )
+    validate_artifact_sidecar(
+        cfg.game_stats_concat_path("game_length.parquet"),
+        expected={"scope": "concat_ks", "operation": "concatenate"},
+    )
 
 
 def test_run_raises_for_invalid_aggregation_method(tmp_path: Path) -> None:
@@ -401,8 +421,8 @@ def test_run_force_and_uptodate_paths_and_partial_per_k(tmp_path: Path) -> None:
 
     game_stats.run(cfg, force=True)
 
-    game_length = cfg.game_stats_output_path("game_length.parquet")
-    margin = cfg.game_stats_output_path("margin_stats.parquet")
+    game_length = cfg.game_stats_concat_path("game_length.parquet")
+    margin = cfg.game_stats_concat_path("margin_stats.parquet")
     per_k_2_game = cfg.per_k_subdir("game_stats", 2) / "game_length.parquet"
     per_k_3_game = cfg.per_k_subdir("game_stats", 3) / "game_length.parquet"
 
@@ -478,7 +498,9 @@ def test_run_aggregation_alias_and_invalid_via_run(tmp_path: Path) -> None:
 
     cfg.analysis.k_aggregation_method = "count"
     game_stats.run(cfg, force=True)
-    assert cfg.game_stats_output_path("game_length_k_weighted.parquet").exists()
+    assert cfg.game_stats_output_path(
+        "game_length_strategy_conditioned_equal_k_mean.parquet"
+    ).exists()
 
     cfg.analysis.k_aggregation_method = "definitely-bad"
     with pytest.raises(ValueError, match="Unknown aggregation scheme"):

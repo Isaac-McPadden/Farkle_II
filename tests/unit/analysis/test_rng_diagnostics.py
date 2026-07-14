@@ -11,6 +11,7 @@ from tests.helpers.diagnostic_fixtures import build_curated_fixture
 from farkle.analysis import rng_diagnostics
 from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 from farkle.config import AppConfig, IOConfig, assign_config_sha
+from farkle.utils.artifact_contract import validate_artifact_sidecar
 from farkle.utils.types import Compression
 
 
@@ -49,8 +50,12 @@ def test_collect_diagnostics_all_modes_deterministic_statistics():
                 & (result["lag"] == lag)
             ].iloc[0]
             assert row["autocorr"] == pytest.approx(expected, abs=1e-12)
-            assert row["ci_lower"] == pytest.approx(expected - 1.96 * stderr, abs=1e-12)
-            assert row["ci_upper"] == pytest.approx(expected + 1.96 * stderr, abs=1e-12)
+            assert row["diagnostic_band_lower"] == pytest.approx(
+                expected - 1.96 * stderr, abs=1e-12
+            )
+            assert row["diagnostic_band_upper"] == pytest.approx(
+                expected + 1.96 * stderr, abs=1e-12
+            )
 
         rounds = result[
             (result["summary_level"] == summary_level)
@@ -110,6 +115,21 @@ def test_run_emits_artifact_for_winner_modes(tmp_path, winner_mode):
     diagnostics = pq.read_table(out).to_pandas()
     assert set(diagnostics["summary_level"].unique()) == {"strategy", "matchup_strategy"}
     assert set(diagnostics["metric"].unique()) == {"win_indicator", "n_rounds"}
+    assert "ci_lower" not in diagnostics
+    assert "ci_upper" not in diagnostics
+    assert {
+        "diagnostic_band_lower",
+        "diagnostic_band_upper",
+    }.issubset(diagnostics.columns)
+    assert diagnostics["note"].str.contains("do not establish independence").all()
+    validate_artifact_sidecar(
+        out,
+        expected={
+            "scope": "diagnostics",
+            "operation": "diagnostic_band",
+            "conditioning": "diagnostic_only_no_independence_claim",
+        },
+    )
 
 
 def test_run_missing_curated_file_logs_and_emits_no_artifact(tmp_path, caplog):

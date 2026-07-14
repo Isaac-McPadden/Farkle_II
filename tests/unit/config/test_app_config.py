@@ -1143,10 +1143,10 @@ def test_app_config_input_output_helpers_cover_stage_wrappers(tmp_path: Path) ->
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
 
     assert cfg.metrics_output_path("m.parquet").name == "m.parquet"
-    assert cfg.game_stats_output_path("margin_combined.parquet").name in {
-        "margin_combined.parquet",
-        "margin_k_weighted.parquet",
-    }
+    assert (
+        cfg.game_stats_output_path("margin_combined.parquet").name
+        == "margin_strategy_conditioned_equal_k_mean.parquet"
+    )
     assert cfg.game_stats_input_path("stats.parquet").name == "stats.parquet"
     assert cfg.variance_output_path("variance.json").name == "variance.json"
     assert cfg.variance_input_path("variance.json").name == "variance.json"

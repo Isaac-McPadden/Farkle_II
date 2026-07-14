@@ -1,20 +1,17 @@
 # src/farkle/analysis/game_stats.py
-"""Compute descriptive statistics for game lengths and victory margins.
+"""Descriptive game-level lengths, score margins, close games, and rare events.
 
-Reads curated row-level parquet files (per-``n`` shards and the combined
-superset) and aggregates the ``n_rounds`` column. Outputs both per-strategy
-statistics and a small global summary grouped by ``n_players``.
+Per-k summaries are concatenated without changing their values. Descriptive
+cross-k strategy-conditioned summaries require complete configured support and
+use an explicitly named equal-k mean; their sidecars state this conditioning.
+The module also publishes exact ordered-roll diagnostics from the production
+scoring engine. None of these human-interest outputs feed performance inference.
 
-The module also flags close margins and multi-target games, emitting combined
-artifacts under ``04_game_stats/combined`` with per-game records plus aggregated
-frequencies per strategy and player-count cohort.
-
-The module also derives per-game ``margin_runner_up`` and ``score_spread`` from
-seat-level scores and writes ``04_game_stats/combined/margin_stats.parquet`` with
-per-``(strategy, n_players)`` summaries. Margin schema:
+Margin schema:
 
 ``summary_level``
-    Literal "strategy" for compatibility with ``game_length.parquet``.
+    Literal ``strategy`` for per-k rows and an operation-specific label for an
+    across-k summary.
 ``strategy``
     Strategy ID taken from ``P#_strategy`` columns.
 ``n_players``
@@ -52,11 +49,13 @@ from pandas._libs.missing import NAType
 from pandas._typing import Scalar
 
 from farkle.analysis import stage_logger
+from farkle.analysis.roll_enumeration import build_exact_roll_enumeration
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
-from farkle.config import AppConfig
+from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.aggregation import normalize_k_aggregation_method
 from farkle.utils.analysis_shared import to_int
-from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.artifact_contract import make_artifact_sidecar
+from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_atomic
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.stage_io import resolve_worker_count
@@ -413,6 +412,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     stage_log = stage_logger("game_stats", logger=LOGGER)
     stage_log.start()
+    roll_artifacts = build_exact_roll_enumeration(cfg, force=force)
 
     stage_dir = cfg.game_stats_stage_dir
     configured_k_values = cfg.agreement_players()
@@ -502,13 +502,18 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 ]
                 _run_per_k_fanout(futures)
 
-    game_length_output = cfg.game_stats_output_path("game_length.parquet")
-    margin_output = cfg.game_stats_output_path("margin_stats.parquet")
-    combined_game_length_output = cfg.game_stats_output_path("game_length_k_weighted.parquet")
-    combined_margin_output = cfg.game_stats_output_path("margin_k_weighted.parquet")
+    game_length_output = cfg.game_stats_concat_path("game_length.parquet")
+    margin_output = cfg.game_stats_concat_path("margin_stats.parquet")
+    combined_game_length_output = cfg.game_stats_output_path(
+        "game_length_strategy_conditioned_equal_k_mean.parquet"
+    )
+    combined_margin_output = cfg.game_stats_output_path(
+        "margin_strategy_conditioned_equal_k_mean.parquet"
+    )
     combined_stamp = _per_k_game_stats_aggregation_marker(stage_dir)
 
     _aggregate_completed_k_game_stats(
+        cfg=cfg,
         configured_k_values=configured_k_values,
         stage_dir=stage_dir,
         game_length_output=game_length_output,
@@ -516,7 +521,6 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         combined_game_length_output=combined_game_length_output,
         combined_margin_output=combined_margin_output,
         combined_stamp=combined_stamp,
-        codec=cfg.parquet_codec,
         config_sha=cfg.config_sha,
         stage_config_sha=stage_config_sha,
         cache_key_version=cache_key_version,
@@ -616,9 +620,17 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 for k in configured_k_values
             ],
             *([rare_events_details_output] if write_details else []),
+            *roll_artifacts.all_paths,
         ],
         cfg=cfg,
         stage="game_stats",
+        sidecar_artifacts=[
+            game_length_output,
+            margin_output,
+            combined_game_length_output,
+            combined_margin_output,
+            *roll_artifacts.all_paths,
+        ],
     )
 
 
@@ -930,8 +942,54 @@ def _compute_k_game_stats(
     )
 
 
+def _write_scoped_game_stats(
+    cfg: AppConfig,
+    frame: pd.DataFrame,
+    path: Path,
+    *,
+    scope: ArtifactScope,
+    operation: str,
+    conditioning: str,
+    weighted_quantity: str,
+    sources: Sequence[Path],
+    player_counts: Sequence[int],
+    k_aggregation_method: str = "none",
+) -> None:
+    """Write a game-level summary with its exact scope and operation sidecar."""
+
+    table = pa.Table.from_pandas(frame, preserve_index=False)
+    sidecar = make_artifact_sidecar(
+        cfg,
+        path,
+        producer="game_stats",
+        scope=scope,
+        source_scope=ArtifactScope.BY_K,
+        operation=operation,
+        weighted_quantity=weighted_quantity,
+        k_aggregation_method=k_aggregation_method,
+        support_count_role="raw_game_observations",
+        uncertainty_method="descriptive",
+        replication_unit="game",
+        conditioning=conditioning,
+        consistency_columns=table.schema.names,
+        source_artifacts=sources,
+        grouping_keys=[
+            column
+            for column in ("summary_level", "strategy", "n_players")
+            if column in table.schema.names
+        ],
+        player_counts=player_counts,
+        required_player_counts=player_counts,
+        missing_cell_policy=(
+            "declared_common_support" if scope is ArtifactScope.ACROSS_K else "not_applicable"
+        ),
+    )
+    write_parquet_artifact_atomic(table, path, sidecar=sidecar, codec=cfg.parquet_codec)
+
+
 def _aggregate_completed_k_game_stats(
     *,
+    cfg: AppConfig,
     configured_k_values: Sequence[int],
     stage_dir: Path,
     game_length_output: Path,
@@ -939,7 +997,6 @@ def _aggregate_completed_k_game_stats(
     combined_game_length_output: Path,
     combined_margin_output: Path,
     combined_stamp: Path,
-    codec: Compression,
     config_sha: str | None,
     stage_config_sha: str,
     cache_key_version: int,
@@ -955,7 +1012,6 @@ def _aggregate_completed_k_game_stats(
         combined_game_length_output: Combined-by-strategy game-length output.
         combined_margin_output: Combined-by-strategy margin output.
         combined_stamp: Done-stamp tracking combined outputs.
-        codec: Compression codec for parquet outputs.
         config_sha: Optional configuration fingerprint for stage tracking.
         stage_config_sha: Stage-specific cache fingerprint.
         cache_key_version: Version tag for the done-stamp payload.
@@ -984,6 +1040,7 @@ def _aggregate_completed_k_game_stats(
         stage="game_stats",
         stage_config_sha=stage_config_sha,
         cache_key_version=cache_key_version,
+        sidecar_artifacts=outputs,
     ):
         return
 
@@ -1031,15 +1088,39 @@ def _aggregate_completed_k_game_stats(
         )
     if "summary_level" in margin_df.columns:
         margin_df = margin_df.loc[margin_df["summary_level"] == "strategy"].copy()
-    write_parquet_atomic(
-        pa.Table.from_pandas(game_df, preserve_index=False), game_length_output, codec=codec
+    _write_scoped_game_stats(
+        cfg,
+        game_df,
+        game_length_output,
+        scope=ArtifactScope.CONCAT_KS,
+        operation="concatenate",
+        conditioning="strategy_and_population_game_level",
+        weighted_quantity="game_length_descriptives",
+        sources=completed_paths,
+        player_counts=configured_k_values,
     )
-    write_parquet_atomic(
-        pa.Table.from_pandas(margin_df, preserve_index=False), margin_output, codec=codec
+    _write_scoped_game_stats(
+        cfg,
+        margin_df,
+        margin_output,
+        scope=ArtifactScope.CONCAT_KS,
+        operation="concatenate",
+        conditioning="strategy_conditioned_game_level",
+        weighted_quantity="victory_margin_descriptives",
+        sources=completed_paths,
+        player_counts=configured_k_values,
     )
 
+    strategy_game = game_df.loc[game_df["summary_level"] == "strategy"].copy()
+    complete_game_strategies = strategy_game.groupby("strategy", observed=True)[
+        "n_players"
+    ].nunique()
+    complete_game_ids = complete_game_strategies.loc[
+        complete_game_strategies == len(configured_k_values)
+    ].index
+    strategy_game = strategy_game.loc[strategy_game["strategy"].isin(complete_game_ids)]
     combined_game = (
-        game_df.groupby("strategy", observed=True, sort=False)
+        strategy_game.groupby("strategy", observed=True, sort=False)
         .agg(
             observations=("observations", "sum"),
             mean_rounds=("mean_rounds", "mean"),
@@ -1054,14 +1135,28 @@ def _aggregate_completed_k_game_stats(
         )
         .reset_index()
     )
-    combined_game.insert(0, "summary_level", "combined")
-    write_parquet_atomic(
-        pa.Table.from_pandas(combined_game, preserve_index=False),
+    combined_game.insert(0, "summary_level", "strategy_conditioned_equal_k_mean")
+    _write_scoped_game_stats(
+        cfg,
+        combined_game,
         combined_game_length_output,
-        codec=codec,
+        scope=ArtifactScope.ACROSS_K,
+        operation="equal_k_mean",
+        conditioning="strategy_conditioned_game_length",
+        weighted_quantity="game_length_descriptives",
+        sources=completed_paths,
+        player_counts=configured_k_values,
+        k_aggregation_method="equal_k",
     )
 
     if not margin_df.empty:
+        complete_margin_strategies = margin_df.groupby("strategy", observed=True)[
+            "n_players"
+        ].nunique()
+        complete_margin_ids = complete_margin_strategies.loc[
+            complete_margin_strategies == len(configured_k_values)
+        ].index
+        margin_df = margin_df.loc[margin_df["strategy"].isin(complete_margin_ids)]
         margin_metric_cols = [
             c
             for c in margin_df.columns
@@ -1071,11 +1166,20 @@ def _aggregate_completed_k_game_stats(
         combined_margin = (
             margin_df.groupby("strategy", observed=True, sort=False).agg(agg_map).reset_index()
         )
-        combined_margin.insert(0, "summary_level", "combined")
+        combined_margin.insert(0, "summary_level", "strategy_conditioned_equal_k_mean")
     else:
         combined_margin = pd.DataFrame(columns=["summary_level", "strategy", "observations"])
-    write_parquet_atomic(
-        pa.Table.from_pandas(combined_margin, preserve_index=False), combined_margin_output, codec=codec
+    _write_scoped_game_stats(
+        cfg,
+        combined_margin,
+        combined_margin_output,
+        scope=ArtifactScope.ACROSS_K,
+        operation="equal_k_mean",
+        conditioning="strategy_conditioned_game_margin",
+        weighted_quantity="victory_margin_descriptives",
+        sources=completed_paths,
+        player_counts=configured_k_values,
+        k_aggregation_method="equal_k",
     )
 
     write_stage_done(
@@ -1086,6 +1190,7 @@ def _aggregate_completed_k_game_stats(
         stage="game_stats",
         stage_config_sha=stage_config_sha,
         cache_key_version=cache_key_version,
+        sidecar_artifacts=outputs,
     )
 
 

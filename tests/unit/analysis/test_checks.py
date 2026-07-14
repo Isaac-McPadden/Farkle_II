@@ -370,8 +370,8 @@ def test_check_stage_artifact_families_passes_expected_matrix(tmp_path: Path) ->
     combined_margin.touch()
     across_k = stage_dirs["game_stats"] / "across_k"
     across_k.mkdir(parents=True, exist_ok=True)
-    (across_k / "game_length_k_weighted.parquet").touch()
-    (across_k / "margin_k_weighted.parquet").touch()
+    (across_k / "game_length_strategy_conditioned_equal_k_mean.parquet").touch()
+    (across_k / "margin_strategy_conditioned_equal_k_mean.parquet").touch()
     for k in k_values:
         per_k_game_length = stage_dirs["game_stats"] / "by_k" / f"{k}p" / "game_length.parquet"
         per_k_game_length.parent.mkdir(parents=True, exist_ok=True)

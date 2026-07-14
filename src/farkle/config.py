@@ -81,8 +81,10 @@ DEPRECATED_ANALYSIS_FLAGS = {
 _CANONICAL_ARTIFACT_NAMES: dict[str, str] = {
     "ratings_combined.parquet": "ratings_k_weighted.parquet",
     "ratings_combined.json": "ratings_k_weighted.json",
-    "game_length_combined.parquet": "game_length_k_weighted.parquet",
-    "margin_combined.parquet": "margin_k_weighted.parquet",
+    "game_length_combined.parquet": "game_length_strategy_conditioned_equal_k_mean.parquet",
+    "game_length_k_weighted.parquet": "game_length_strategy_conditioned_equal_k_mean.parquet",
+    "margin_combined.parquet": "margin_strategy_conditioned_equal_k_mean.parquet",
+    "margin_k_weighted.parquet": "margin_strategy_conditioned_equal_k_mean.parquet",
     "frequentist_scores.parquet": "frequentist_scores_k_weighted.parquet",
     "frequentist_combined_provenance.json": "frequentist_k_weighted_provenance.json",
     "agreement_combined.json": "agreement_k_weighted.json",
@@ -1247,12 +1249,29 @@ class AppConfig:
         return path
 
     def game_stats_output_path(self, name: str) -> Path:
-        """Preferred path for combined game-stat outputs."""
+        """Preferred path for across-k game-stat estimates."""
 
         canonical_name = self.canonical_artifact_name(name)
         path = self.game_stats_combined_dir / canonical_name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
+
+    def game_stats_concat_path(self, name: str) -> Path:
+        """Path for row-preserving concatenated per-k game-stat summaries."""
+
+        path = self.concat_ks_dir("game_stats") / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def exact_roll_distribution_path(self) -> Path:
+        """Exact ordered-roll distribution diagnostic for one through six dice."""
+
+        return self.game_stats_stage_dir / "diagnostics" / "roll_outcome_distribution_exact.parquet"
+
+    def exact_roll_summary_path(self) -> Path:
+        """Exact ordered-roll summary diagnostic for one through six dice."""
+
+        return self.game_stats_stage_dir / "diagnostics" / "roll_summary_exact.parquet"
 
     def game_stats_input_path(self, name: str) -> Path:
         """Resolve a cross-k game-stat artifact without legacy fallback."""
