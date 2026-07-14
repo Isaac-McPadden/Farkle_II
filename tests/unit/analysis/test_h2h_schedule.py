@@ -131,6 +131,19 @@ def test_implemented_score_power_matches_brute_force_small_case() -> None:
     assert observed == pytest.approx(expected, rel=1e-12, abs=1e-14)
 
 
+def test_identical_strategy_family_error_respects_bonferroni_bound() -> None:
+    comparisons = 6
+    family_alpha = 0.02
+    single_comparison_error = implemented_score_test_power(
+        40,
+        0.5,
+        0.5,
+        family_alpha / comparisons,
+    )
+
+    assert comparisons * single_comparison_error <= family_alpha
+
+
 def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg)
