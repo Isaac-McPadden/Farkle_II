@@ -61,8 +61,8 @@ analysis:
   frequentist_weights_by_k: null  # dict[int,float]|None: optional weights for player counts
   h2h_tier_trends_seed_s_tier_paths: null  # list[Path|str]|None: explicit per-seed 11_post_h2h/h2h_s_tiers.json inputs
   h2h_tier_trends_interseed_s_tier_path: null  # Path|str|None: explicit interseed-combined S-tier JSON input (mutually exclusive with per-seed paths)
-  meta_max_other_seeds: null # int|None: cap on non-primary seeds used in meta pooling
-  meta_comparison_seed: null # int|None: fixed comparison seed when limiting meta pooling
+  meta_max_other_seeds: null # int|None: cap on non-primary seeds used in meta aggregation
+  meta_comparison_seed: null # int|None: fixed comparison seed when limiting meta aggregation
   outputs: {}               # dict[str, Any]: optional custom output filenames
 
 ingest:
@@ -81,7 +81,7 @@ trueskill:
   beta: 25.0                # float: performance variability parameter
   tau: 0.1                  # float: dynamics factor between runs
   draw_probability: 0.0     # float: draw probability
-  pooled_weights_by_k:      # dict[int, float]|None: optional weights per player count for pooling
+  k_weights:      # dict[int, float]|None: optional weights per player count for aggregation
 
 head2head:
   n_jobs: 4                 # int: parallel workers for head-to-head stage

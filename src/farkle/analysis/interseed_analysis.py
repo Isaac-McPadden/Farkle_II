@@ -227,14 +227,14 @@ def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
         cfg: Application config used to resolve TrueSkill output directories.
 
     Returns:
-        Paths for pooled ratings, tiers, and per-seed rating artifacts.
+        Paths for combined ratings, tiers, and per-seed rating artifacts.
     """
     outputs = [
         cfg.trueskill_path("ratings_k_weighted.parquet"),
         cfg.trueskill_path("ratings_k_weighted.json"),
         cfg.trueskill_stage_dir / "tiers.json",
     ]
-    outputs.extend(sorted(cfg.trueskill_pooled_dir.glob("ratings_k_weighted_seed*.parquet")))
+    outputs.extend(sorted(cfg.trueskill_combined_dir.glob("ratings_k_weighted_seed*.parquet")))
     outputs.extend(sorted(cfg.trueskill_stage_dir.glob("ratings_k_weighted_seed*.parquet")))
     return outputs
 
@@ -246,11 +246,11 @@ def _agreement_outputs(cfg: AppConfig) -> list[Path]:
         cfg: Application config used to resolve agreement output directories.
 
     Returns:
-        Paths for per-player, pooled, and summary agreement outputs.
+        Paths for per-player, combined, and summary agreement outputs.
     """
     outputs = [cfg.agreement_output_path(players) for players in cfg.agreement_players()]
-    if cfg.agreement_include_pooled():
-        outputs.append(cfg.agreement_output_path_pooled())
+    if cfg.agreement_include_combined():
+        outputs.append(cfg.agreement_output_path_combined())
     outputs.append(cfg.agreement_stage_dir / "agreement_summary.parquet")
     return outputs
 

@@ -78,7 +78,7 @@ def run(cfg: AppConfig) -> None:
     if not ratings_path.exists():
         stage_log.missing_input("TrueSkill ratings missing", path=str(ratings_path))
         return
-    json_out = cfg.hgb_pooled_dir / "hgb_importance.json"
+    json_out = cfg.hgb_combined_dir / "hgb_importance.json"
 
     players = _unique_players(metrics_path, cfg.sim.n_players_list)
     importance_paths = [cfg.hgb_per_k_dir(p) / _hgb.IMPORTANCE_TEMPLATE.format(players=p) for p in players]

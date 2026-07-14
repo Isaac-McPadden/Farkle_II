@@ -679,12 +679,12 @@ def _load_union_candidates(
 
 
 def _infer_h2h_input_metadata(pairwise_path: Path | None) -> dict[str, object]:
-    """Infer whether head-to-head inputs are k-stratified or pooled."""
+    """Infer whether head-to-head inputs are k-stratified or combined."""
     metadata: dict[str, object] = {
         "pairwise_path": str(pairwise_path) if pairwise_path is not None else None,
-        "pooling_mode": "unknown",
+        "aggregation_mode": "unknown",
         "k_values": [],
-        "pooled_implied_k": None,
+        "combined_implied_k": None,
     }
     if pairwise_path is None or not pairwise_path.exists():
         return metadata
@@ -693,21 +693,21 @@ def _infer_h2h_input_metadata(pairwise_path: Path | None) -> dict[str, object]:
     except Exception:  # noqa: BLE001
         return metadata
     if "players" not in schema.names:
-        metadata["pooling_mode"] = "pooled"
-        metadata["pooled_implied_k"] = 2
+        metadata["aggregation_mode"] = "combined"
+        metadata["combined_implied_k"] = 2
         return metadata
     try:
         players_df = pd.read_parquet(pairwise_path, columns=["players"])
     except Exception:  # noqa: BLE001
-        metadata["pooling_mode"] = "k_stratified"
+        metadata["aggregation_mode"] = "k_stratified"
         return metadata
     if players_df.empty or "players" not in players_df.columns:
-        metadata["pooling_mode"] = "k_stratified"
+        metadata["aggregation_mode"] = "k_stratified"
         return metadata
     k_values = sorted(
         {int(value) for value in players_df["players"].dropna().astype(int).tolist()}
     )
-    metadata["pooling_mode"] = "k_stratified"
+    metadata["aggregation_mode"] = "k_stratified"
     metadata["k_values"] = k_values
     return metadata
 
@@ -726,8 +726,8 @@ def _build_candidate_selection_metadata(
         "source_path": str(union_path) if union_path is not None else None,
         "fallback_used": fallback_used,
         "weights": {
-            "ratings_pooling_weights_by_k": dict(cfg.trueskill.pooled_weights_by_k or {}),
-            "frequentist_pooling_weights_by_k": None,
+            "ratings_k_weights": dict(cfg.trueskill.k_weights or {}),
+            "frequentist_k_weights": None,
         },
     }
     if union_meta is None:

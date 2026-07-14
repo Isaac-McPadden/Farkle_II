@@ -439,8 +439,8 @@ def simulate_many_games(
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]
     else:
-        with mp.Pool(processes=n_jobs) as pool:
-            rows = pool.starmap(_play_game, args)
+        with mp.Pool(processes=n_jobs) as executor:
+            rows = executor.starmap(_play_game, args)
     return pd.DataFrame(rows)
 
 
@@ -462,7 +462,7 @@ def simulate_many_games_from_seeds(
     target_score : int, optional
         Score required to trigger the final round; defaults to ``10_000``.
     n_jobs : int, optional
-        Number of worker processes to use. ``1`` executes serially; larger values spawn a pool.
+        Number of worker processes to use. ``1`` executes serially; larger values use an executor.
 
     Returns
     -------
@@ -474,8 +474,8 @@ def simulate_many_games_from_seeds(
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]
     else:
-        with mp.Pool(processes=n_jobs) as pool:
-            rows = pool.starmap(_play_game, args)
+        with mp.Pool(processes=n_jobs) as executor:
+            rows = executor.starmap(_play_game, args)
     return pd.DataFrame(rows)
 
 

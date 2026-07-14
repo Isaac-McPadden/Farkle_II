@@ -1,17 +1,17 @@
 # src/farkle/analysis/meta.py
-"""Pool per-seed strategy summaries into per-player meta estimates.
+"""Combine per-seed strategy summaries into per-player meta estimates.
 
 This module aggregates the ``strategy_summary_{players}p_seed*.parquet`` files
-into a pooled win-rate estimate for every strategy.  The meta-analysis uses
+into a combined win-rate estimate for every strategy.  The meta-analysis uses
 inverse-variance weights under a fixed-effects model and can switch to a single
 DerSimonian–Laird random-effects variance component whenever the aggregated
 I^2 exceeds the configured threshold.
 
 Strategy presence rule
 ----------------------
-A strategy contributes to the pooled estimate **only** if it appears in every
+A strategy contributes to the combined estimate **only** if it appears in every
 seed summary being combined for the corresponding player count.  The rule is
-documented here and enforced before pooling: strategies missing from one or
+documented here and enforced before aggregation: strategies missing from one or
 more seeds are deterministically excluded, which guarantees resumable and
 idempotent outputs.
 """
@@ -46,14 +46,14 @@ META_JSON_TEMPLATE = "meta_{players}p.json"
 Z_975 = 1.959963984540054
 MIN_PROPORTION = 1e-9
 MIN_VARIANCE = 1e-12
-POOLED_COLUMNS = ["strategy_id", "players", "win_rate", "se", "ci_lo", "ci_hi", "n_seeds"]
+COMBINED_COLUMNS = ["strategy_id", "players", "win_rate", "se", "ci_lo", "ci_hi", "n_seeds"]
 
 
 @dataclass
 class MetaResult:
-    """Meta-analysis outputs paired with pooling diagnostics."""
+    """Meta-analysis outputs paired with aggregation diagnostics."""
 
-    pooled: pd.DataFrame
+    combined: pd.DataFrame
     Q: float
     I2: float
     tau2: float
@@ -88,7 +88,7 @@ def _wilson_logit_center(wins: float, games: float) -> float:
 def _estimate_rate_and_variance(
     wins: float, games: float, win_rate: float | None
 ) -> tuple[float, float]:
-    """Convert raw counts into a rate and variance suitable for pooling."""
+    """Convert raw counts into a rate and variance suitable for aggregation."""
 
     if games <= 0:
         return float("nan"), float("inf")
@@ -121,7 +121,7 @@ def _ensure_strategy_sets(seed_dfs: list[pd.DataFrame]) -> None:
 
 
 def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.0) -> MetaResult:
-    """Pool per-seed win rates into per-strategy meta estimates."""
+    """Combine per-seed win rates into per-strategy meta estimates."""
 
     cleaned: list[pd.DataFrame] = []
     for df in seed_dfs:
@@ -132,7 +132,7 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
             normalized["strategy_id"] = normalized["strategy_id"].astype(str)
         cleaned.append(normalized)
     if not cleaned:
-        empty = pd.DataFrame(columns=POOLED_COLUMNS)
+        empty = pd.DataFrame(columns=COMBINED_COLUMNS)
         return MetaResult(empty, Q=0.0, I2=0.0, tau2=0.0, method="fixed")
 
     _ensure_strategy_sets(cleaned)
@@ -185,7 +185,7 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
         total_w_sq += sum_w_sq
 
     if not per_strategy_obs:
-        empty = pd.DataFrame(columns=POOLED_COLUMNS)
+        empty = pd.DataFrame(columns=COMBINED_COLUMNS)
         return MetaResult(empty, Q=0.0, I2=0.0, tau2=0.0, method="fixed")
 
     tau2 = 0.0
@@ -202,7 +202,7 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
         else:
             tau2 = 0.0
 
-    pooled_rows: list[dict[str, float | int]] = []
+    combined_rows: list[dict[str, float | int]] = []
     for strategy in strategy_ids:
         obs = per_strategy_obs.get(strategy, [])
         if not obs:
@@ -213,17 +213,17 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
         denom = sum(adjusted_weights)
         if denom <= 0.0:
             continue
-        pooled_rate = (
+        combined_rate = (
             sum(w * rate for w, (rate, _) in zip(adjusted_weights, obs, strict=False)) / denom
         )
         se = math.sqrt(1.0 / denom)
-        ci_lo = max(0.0, pooled_rate - Z_975 * se)
-        ci_hi = min(1.0, pooled_rate + Z_975 * se)
-        pooled_rows.append(
+        ci_lo = max(0.0, combined_rate - Z_975 * se)
+        ci_hi = min(1.0, combined_rate + Z_975 * se)
+        combined_rows.append(
             {
                 "strategy_id": strategy,
                 "players": players,
-                "win_rate": float(pooled_rate),
+                "win_rate": float(combined_rate),
                 "se": float(se),
                 "ci_lo": float(ci_lo),
                 "ci_hi": float(ci_hi),
@@ -231,10 +231,10 @@ def pool_winrates(seed_dfs: list[pd.DataFrame], use_random_if_I2_gt: float = 25.
             }
         )
 
-    pooled_df = pd.DataFrame(pooled_rows, columns=POOLED_COLUMNS)
-    pooled_df.sort_values("strategy_id", inplace=True, kind="mergesort")
-    pooled_df.reset_index(drop=True, inplace=True)
-    return MetaResult(pooled_df, Q=float(total_Q), I2=float(I2), tau2=float(tau2), method=method)
+    combined_df = pd.DataFrame(combined_rows, columns=COMBINED_COLUMNS)
+    combined_df.sort_values("strategy_id", inplace=True, kind="mergesort")
+    combined_df.reset_index(drop=True, inplace=True)
+    return MetaResult(combined_df, Q=float(total_Q), I2=float(I2), tau2=float(tau2), method=method)
 
 
 def _parse_seed_file(path: Path) -> tuple[int, int] | None:
@@ -363,7 +363,7 @@ def _select_seed_entries(
     max_other_seeds: int | None,
     comparison_seed: int | None,
 ) -> list[tuple[int, Path]]:
-    """Select which seed files participate in pooling.
+    """Select which seed files participate in aggregation.
 
     Always prefers the primary seed when present, then either a fixed comparison
     seed or a deterministic random subset of the remaining seeds.
@@ -419,7 +419,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
         for players in eligible_players
     ] + [cfg.meta_output_path(players, META_JSON_TEMPLATE.format(players=players)) for players in eligible_players]
     if eligible_players:
-        expected_outputs.append(cfg.meta_pooled_dir / "meta_long.parquet")
+        expected_outputs.append(cfg.meta_combined_dir / "meta_long.parquet")
 
     if not force and inputs and expected_outputs and stage_is_up_to_date(
         done,
@@ -432,7 +432,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
         return
 
     outputs: list[Path] = []
-    pooled_frames: list[pd.DataFrame] = []
+    combined_frames: list[pd.DataFrame] = []
 
     for players, entries in sorted(files_by_players.items()):
         selected_entries = _select_seed_entries(
@@ -458,7 +458,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
             )
         if len(selected_entries) <= 1:
             LOGGER.info(
-                "Meta pooling skipped: requires multiple seeds",
+                "Meta aggregation skipped: requires multiple seeds",
                 extra={
                     "stage": "meta",
                     "players": players,
@@ -488,7 +488,7 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
                     }
                 )
             LOGGER.debug(
-                "Meta pooling strategy sets",
+                "Meta aggregation strategy sets",
                 extra={
                     "stage": "meta",
                     "players": players,
@@ -498,14 +498,14 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
         frames, missing = _apply_strategy_presence(frames)
         if not frames or frames[0].empty:
             LOGGER.info(
-                "Meta pooling skipped: no common strategies",
+                "Meta aggregation skipped: no common strategies",
                 extra={"stage": "meta", "players": players},
             )
             continue
         if LOGGER.isEnabledFor(logging.DEBUG):
             common_ids = sorted(frames[0]["strategy_id"].astype(str).unique().tolist())
             LOGGER.debug(
-                "Meta pooling common strategies",
+                "Meta aggregation common strategies",
                 extra={
                     "stage": "meta",
                     "players": players,
@@ -524,18 +524,18 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
             )
 
         result = pool_winrates(frames, use_random_if_I2_gt=threshold)
-        if result.pooled.empty:
+        if result.combined.empty:
             LOGGER.info(
-                "Meta pooling skipped: pooled frame empty",
+                "Meta aggregation skipped: combined frame empty",
                 extra={"stage": "meta", "players": players},
             )
             continue
-        pooled_frames.append(result.pooled.copy())
+        combined_frames.append(result.combined.copy())
 
         parquet_path = cfg.meta_output_path(players, META_TEMPLATE.format(players=players))
         outputs.append(parquet_path)
-        if force or not _parquet_matches(parquet_path, result.pooled):
-            table = pa.Table.from_pandas(result.pooled, preserve_index=False)
+        if force or not _parquet_matches(parquet_path, result.combined):
+            table = pa.Table.from_pandas(result.combined, preserve_index=False)
             write_parquet_atomic(table, parquet_path)
         else:
             LOGGER.info(
@@ -563,19 +563,19 @@ def run(cfg: AppConfig, *, force: bool = False, use_random_if_I2_gt: float | Non
                     _write_json_atomic(json_payload, json_path)
 
         LOGGER.info(
-            "Meta pooling complete",
+            "Meta aggregation complete",
             extra={
                 "stage": "meta",
                 "players": players,
-                "strategies": len(result.pooled),
+                "strategies": len(result.combined),
                 "method": result.method,
             },
         )
 
-    if pooled_frames:
-        meta_long = pd.concat(pooled_frames, ignore_index=True)
+    if combined_frames:
+        meta_long = pd.concat(combined_frames, ignore_index=True)
         meta_long = _normalize_meta_frame(meta_long)
-        meta_long_path = cfg.meta_pooled_dir / "meta_long.parquet"
+        meta_long_path = cfg.meta_combined_dir / "meta_long.parquet"
         outputs.append(meta_long_path)
         if force or not _parquet_matches(meta_long_path, meta_long):
             table = pa.Table.from_pandas(meta_long, preserve_index=False)

@@ -69,13 +69,13 @@ Interseed-specific registry order:
   parquet shards and manifests.
 - Curate: normalizes ingested rows into current schemas and canonical curated
   parquet files.
-- Combine: merges per-player-count curated outputs into pooled combined data.
+- Combine: merges per-player-count curated outputs into combined combined data.
 - Metrics: computes per-strategy wins, games, win rates, expected scores, seat
-  advantage, seat metrics, isolated metrics, and weighted pooled metrics.
+  advantage, seat metrics, isolated metrics, and weighted combined metrics.
 - Coverage and game stats: report missing strategy/seed/player-count coverage,
   game length, margins, rare events, and related summaries.
 - Seed summaries, variance, meta: produce seed-aware summaries and cross-seed
-  uncertainty/pooling artifacts.
+  uncertainty/aggregation artifacts.
 - TrueSkill, frequentist, head-to-head, post-H2H: produce ranking, tiering, and
   pairwise-comparison outputs.
 - HGB: model-based strategy-feature importance and partial-dependence artifacts.
@@ -119,7 +119,7 @@ canonical helpers, not legacy flat `analysis/` paths.
 - Interseed input paths can use an alternate root and alternate layout, so path
   resolution must go through config helpers.
 - `metrics`, `seed_summaries`, `variance`, and `meta` use related but not
-  identical pooling and uncertainty conventions.
+  identical aggregation and uncertainty conventions.
 - Head-to-head creates several artifacts with different statistical meanings:
   pairwise simulation results, ordered seat-balance rows, self-play symmetry,
   Holm-adjusted decisions, graph outputs, and S-tier JSON.

@@ -188,7 +188,7 @@ def test_run_bonferroni_head2head_uses_legacy_ratings_path_and_records_inputs(
 
     assert observed["ratings_path"] == fallback_ratings
     assert observed["frequentist_path"] == frequentist_path
-    assert any("Using legacy pooled ratings path" in rec.message for rec in caplog.records)
+    assert any("Using legacy combined ratings path" in rec.message for rec in caplog.records)
 
     done = read_stage_done(stage_done_path(cfg.head2head_stage_dir, "bonferroni_head2head"))
     inputs = {Path(p) for p in done["inputs"]}  # type: ignore[arg-type]

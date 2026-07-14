@@ -25,9 +25,9 @@ def test_interseed_context_maps_combine_to_seed_stage(tmp_path: Path) -> None:
     )
 
     combine_folder = seed_cfg.stage_layout.require_folder("combine")
-    expected_input = seed_context.analysis_root / combine_folder / "pooled"
+    expected_input = seed_context.analysis_root / combine_folder / "combined"
 
-    assert interseed.config.resolve_input_stage_dir("combine", "pooled") == expected_input
+    assert interseed.config.resolve_input_stage_dir("combine", "combined") == expected_input
 
 
 def test_interseed_context_curated_parquet_uses_upstream_combine(tmp_path: Path) -> None:
@@ -37,7 +37,7 @@ def test_interseed_context_curated_parquet_uses_upstream_combine(tmp_path: Path)
 
     combine_folder = seed_cfg.stage_layout.require_folder("combine")
     upstream_curated = (
-        seed_context.analysis_root / combine_folder / "pooled" / "all_ingested_rows.parquet"
+        seed_context.analysis_root / combine_folder / "combined" / "all_ingested_rows.parquet"
     )
     upstream_curated.parent.mkdir(parents=True, exist_ok=True)
     upstream_curated.write_text("rows")

@@ -73,7 +73,7 @@ def prepare_cell_means(
     It does *not* recompute the grouped win-rate as ``sum(wins) / sum(games)``.
     If future callers pass multiple rows per cell with materially different
     game counts, the resulting ``winrate`` column will be an arithmetic mean of
-    row-level rates rather than a game-weighted pooled rate.
+    row-level rates rather than a game-weighted combined rate.
     """
     df = df.copy()
     df["__winrate__"] = _ensure_winrate(
@@ -144,7 +144,7 @@ def estimate_tau2_sxk(
     ``theta_hat_s = sum_k w_k * p_hat_sk``.
 
     Under a random-effects view where the true player-count-specific effects
-    vary around a strategy-level mean with variance ``tau2_sxk``, the pooled
+    vary around a strategy-level mean with variance ``tau2_sxk``, the combined
     score inherits a heterogeneity term ``tau2_sxk * sum_k w_k^2``.
 
     This helper estimates ``tau2_sxk`` by matching the expected weighted

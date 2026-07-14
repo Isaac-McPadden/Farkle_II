@@ -39,7 +39,7 @@ def test_agreement_select_score_column_raises_without_numeric_column() -> None:
 
 
 def test_checks_pre_metrics_raises_when_no_manifest_present(tmp_path: Path) -> None:
-    combined = tmp_path / "pooled" / "all_ingested_rows.parquet"
+    combined = tmp_path / "combined" / "all_ingested_rows.parquet"
     combined.parent.mkdir(parents=True)
     table = pa.table({"winner": ["A"], "wins": [1]})
     pq.write_table(table, combined)

@@ -23,16 +23,16 @@ LOGGER = logging.getLogger(__name__)
 
 _ARTIFACT_FAMILY_MATRIX: dict[str, dict[str, tuple[str, ...]]] = {
     "combine": {
-        "pooled_concat": ("all_ingested_rows.parquet",),
+        "combined_concat": ("all_ingested_rows.parquet",),
     },
     "metrics": {
         "per_k": ("{k}p_isolated_metrics.parquet",),
-        "pooled_concat": ("metrics.parquet",),
+        "combined_concat": ("metrics.parquet",),
     },
     "game_stats": {
         "per_k": ("game_length.parquet", "margin_stats.parquet"),
-        "pooled_concat": ("game_length.parquet", "margin_stats.parquet"),
-        "pooled_weighted": ("game_length_k_weighted.parquet", "margin_k_weighted.parquet"),
+        "combined_concat": ("game_length.parquet", "margin_stats.parquet"),
+        "combined_weighted": ("game_length_k_weighted.parquet", "margin_k_weighted.parquet"),
     },
 }
 
@@ -70,7 +70,7 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
 
     if combined_parquet.parent.name == "all_n_players_combined":
         data_dir = combined_parquet.parent.parent
-    elif combined_parquet.parent.name == "pooled":
+    elif combined_parquet.parent.name == "combined":
         analysis_root = combined_parquet.parent.parent.parent
         candidate = next(
             (p for p in analysis_root.iterdir() if p.name.endswith("_curate") and p.is_dir()),
@@ -239,9 +239,9 @@ def check_stage_artifact_families(
                         f"{stage}: layout drift; expected {expected} but found {drift}"
                     )
 
-        for family in ("pooled_concat", "pooled_weighted"):
+        for family in ("combined_concat", "combined_weighted"):
             for filename in families.get(family, ()):
-                expected = stage_dir / "pooled" / filename
+                expected = stage_dir / "combined" / filename
                 if not expected.exists():
                     failures.append(f"{stage}: missing {family} artifact {expected}")
 

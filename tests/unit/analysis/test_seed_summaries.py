@@ -329,12 +329,12 @@ def test_seed_summaries_handles_mixed_schema_across_seeds_and_orders_rows(tmp_pa
     assert seed19_long["turns_mean"].isna().all()
 
 
-def test_seed_summaries_zero_game_seed_logs_pooling_warning_and_persists_outputs(
+def test_seed_summaries_zero_game_seed_logs_aggregation_warning_and_persists_outputs(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
     cfg = _make_cfg(tmp_path)
-    cfg.analysis.pooling_weights = "config"
-    cfg.analysis.pooling_weights_by_k = {2: 1.0}
+    cfg.analysis.k_aggregation_method = "config"
+    cfg.analysis.k_weights = {2: 1.0}
     metrics = pd.DataFrame(
         [
             {
@@ -361,7 +361,7 @@ def test_seed_summaries_zero_game_seed_logs_pooling_warning_and_persists_outputs
         seed_summaries.run(cfg)
 
     warning_records = [
-        rec for rec in caplog.records if "Missing pooling weights for player counts" in rec.message
+        rec for rec in caplog.records if "Missing aggregation weights for player counts" in rec.message
     ]
     assert len(warning_records) == 1
     assert cast(Any, warning_records[0]).missing == [3]
@@ -374,7 +374,7 @@ def test_seed_summaries_zero_game_seed_logs_pooling_warning_and_persists_outputs
 
     weighted = pd.read_parquet(cfg.seed_summaries_stage_dir / "seed_31_summary_weighted.parquet")
     assert weighted["strategy_id"].tolist() == [10, 11]
-    assert weighted["pooling_weight_sum"].tolist() == pytest.approx([0.0, 0.0])
+    assert weighted["aggregation_weight_sum"].tolist() == pytest.approx([0.0, 0.0])
 
 
 def test_load_metrics_frame_validates_inputs(tmp_path: Path) -> None:
@@ -429,45 +429,45 @@ def test_load_metrics_frame_raises_on_invalid_inputs(tmp_path: Path) -> None:
         ("custom", "config"),
     ],
 )
-def test_normalize_pooling_scheme_aliases(raw: str, expected: str) -> None:
-    assert seed_summaries._normalize_pooling_scheme(raw) == expected
+def test_normalize_k_aggregation_method_aliases(raw: str, expected: str) -> None:
+    assert seed_summaries._normalize_k_aggregation_method(raw) == expected
 
 
-def test_normalize_pooling_scheme_rejects_unknown_value() -> None:
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
-        seed_summaries._normalize_pooling_scheme("mystery")
+def test_normalize_k_aggregation_method_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
+        seed_summaries._normalize_k_aggregation_method("mystery")
 
 
-def test_pooling_weights_for_seed_summary_schemes() -> None:
+def test_k_aggregation_method_for_seed_summary_schemes() -> None:
     frame = pd.DataFrame(
         {
             "players": [2, 2, 3],
             "games": [4, 6, 10],
         }
     )
-    game_count = seed_summaries._pooling_weights_for_seed_summary(
-        frame, pooling_scheme="game-count", weights_by_k={}
+    game_count = seed_summaries._k_aggregation_method_for_seed_summary(
+        frame, aggregation_method="game-count", weights_by_k={}
     )
     assert game_count.tolist() == pytest.approx([4.0, 6.0, 10.0])
 
-    equal_k = seed_summaries._pooling_weights_for_seed_summary(
-        frame, pooling_scheme="equal-k", weights_by_k={}
+    equal_k = seed_summaries._k_aggregation_method_for_seed_summary(
+        frame, aggregation_method="equal-k", weights_by_k={}
     )
     assert equal_k.tolist() == pytest.approx([0.4, 0.6, 1.0])
 
-    config = seed_summaries._pooling_weights_for_seed_summary(
+    config = seed_summaries._k_aggregation_method_for_seed_summary(
         frame,
-        pooling_scheme="config",
+        aggregation_method="config",
         weights_by_k={2: 0.5, 3: 0.25},
     )
     assert config.tolist() == pytest.approx([0.2, 0.3, 0.25])
 
 
-def test_pooling_weights_for_seed_summary_rejects_unknown_scheme() -> None:
+def test_k_aggregation_method_for_seed_summary_rejects_unknown_scheme() -> None:
     frame = pd.DataFrame({"players": [2], "games": [1]})
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
-        seed_summaries._pooling_weights_for_seed_summary(
-            frame, pooling_scheme="unknown", weights_by_k={}
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
+        seed_summaries._k_aggregation_method_for_seed_summary(
+            frame, aggregation_method="unknown", weights_by_k={}
         )
 
 
@@ -501,9 +501,9 @@ def test_weighted_means_helpers_ignore_nan_and_zero_weights() -> None:
         ["mean_score"],
         pd.Series([1.0, 0.0, 0.0, 0.0]),
     )
-    assert weighted.loc[1, "pooling_weight_sum"] == pytest.approx(1.0)
+    assert weighted.loc[1, "aggregation_weight_sum"] == pytest.approx(1.0)
     assert weighted.loc[1, "mean_score"] == pytest.approx(2.0)
-    assert weighted.loc[2, "pooling_weight_sum"] == pytest.approx(0.0)
+    assert weighted.loc[2, "aggregation_weight_sum"] == pytest.approx(0.0)
     assert is_na(weighted.loc[2, "mean_score"])
 
 
@@ -595,13 +595,13 @@ def test_run_returns_early_for_missing_and_empty_metrics(tmp_path: Path) -> None
     assert not done.exists()
 
 
-def test_run_raises_for_config_pooling_without_weights(tmp_path: Path) -> None:
+def test_run_raises_for_config_aggregation_without_weights(tmp_path: Path) -> None:
     cfg = _make_cfg(tmp_path)
-    cfg.analysis.pooling_weights = "config"
-    cfg.analysis.pooling_weights_by_k = {}
+    cfg.analysis.k_aggregation_method = "config"
+    cfg.analysis.k_weights = {}
     _write_metrics(cfg, pd.DataFrame([{"strategy": "1", "n_players": 2, "games": 1, "wins": 1}]))
 
-    with pytest.raises(ValueError, match="pooling_weights_by_k must be set"):
+    with pytest.raises(ValueError, match="k_weights must be set"):
         seed_summaries.run(cfg)
 
 

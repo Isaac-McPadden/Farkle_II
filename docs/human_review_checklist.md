@@ -39,7 +39,7 @@ Recommended order for a full human-in-the-loop review:
 
 5. `Careful Examination` of statistical validity
    Estimate: 2-5 hours.
-   Goal: confirm that uncertainty, pooling, power sizing, corrections, and agreement metrics match the documented design rather than merely producing files.
+   Goal: confirm that uncertainty, aggregation, power sizing, corrections, and agreement metrics match the documented design rather than merely producing files.
    Evidence to collect:
    the formula or code path used, a tiny worked example or hand-check, and the artifact fields where the result appears.
 
@@ -174,11 +174,11 @@ If the main question is "does it do what we say it does?", bias time toward game
 - [ ] `ingest` correctly normalizes winner columns, seat columns, legacy strategy identifiers, and missing-column schemas.
 - [ ] `curate` preserves the intended schema, writes matching manifests, and migrates legacy artifacts only when safe.
 - [ ] `combine` pads and casts schemas correctly, and the partitioned dataset plus monolithic compatibility parquet represent the same data.
-- [ ] `metrics` produces internally consistent `games`, `wins`, `win_rate`, uncertainty, `expected_score`, and pooled-weight outputs.
+- [ ] `metrics` produces internally consistent `games`, `wins`, `win_rate`, uncertainty, `expected_score`, and combined-weight outputs.
 - [ ] `coverage_by_k` correctly reports missing strategies, missing seeds, and coverage gaps rather than masking them with padding.
 - [ ] `game_stats` writes the exact counts and means it claims to write, and any approximate quantile logic is clearly bounded and documented.
-- [ ] `seed_summaries`, `variance`, and `meta` respect per-seed boundaries and use the documented inclusion and pooling rules.
-- [ ] `trueskill` and `run_trueskill` read the right rows, update ratings in the intended order, checkpoint safely, and write per-`k` plus pooled outputs that match the docs.
+- [ ] `seed_summaries`, `variance`, and `meta` respect per-seed boundaries and use the documented inclusion and aggregation rules.
+- [ ] `trueskill` and `run_trueskill` read the right rows, update ratings in the intended order, checkpoint safely, and write per-`k` plus combined outputs that match the docs.
 - [ ] `head2head` and `run_bonferroni_head2head` select candidate strategies, size experiments, simulate pairings, and compute p-values and correction targets exactly as claimed.
 - [ ] `h2h_analysis` applies the intended post-processing and produces tiers and rankings that are traceable back to the pairwise artifacts.
 - [ ] `frequentist_ranking` combines cross-`k` frequentist scores and weights the way the docs claim.
@@ -191,8 +191,8 @@ If the main question is "does it do what we say it does?", bias time toward game
 - [ ] Confidence intervals, standard errors, and variance formulas use the documented estimators and consistent denominator conventions throughout the project.
 - [ ] Meta-analysis fixed-vs-random switching, I^2 thresholding, and seed-selection behavior match the documented design.
 - [ ] Multiple-comparison correction and power calculations in the head-to-head pipeline match the stated Bonferroni and Holm logic and runtime heuristics.
-- [ ] Agreement metrics, pooled weights, and tier-boundary rules are reproducible from saved artifacts without hidden state.
-- [ ] Any artifact labeled "pooled" clearly means what the docs imply: pooled across player counts, pooled across seeds, or both.
+- [ ] Agreement metrics, combined weights, and tier-boundary rules are reproducible from saved artifacts without hidden state.
+- [ ] Any artifact labeled "combined" clearly means what the docs imply: combined across player counts, combined across seeds, or both.
 
 ### Two-Seed Orchestration and Provenance
 

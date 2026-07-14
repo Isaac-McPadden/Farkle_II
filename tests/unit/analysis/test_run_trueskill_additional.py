@@ -596,7 +596,7 @@ def test_run_trueskill_handles_worker_exception(
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=3)
 
     assert exceptions and exceptions[0]["block"] == "3_players"
-    assert (analysis_root / "pooled" / "ratings_k_weighted_seed0.parquet").exists()
+    assert (analysis_root / "combined" / "ratings_k_weighted_seed0.parquet").exists()
 
 
 def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
@@ -632,7 +632,7 @@ def test_run_trueskill_reads_rows_from_data_dir(tmp_path: Path) -> None:
     assert ratings_path.exists()
 
 
-def test_run_trueskill_rebuilds_outdated_pooled(
+def test_run_trueskill_rebuilds_outdated_combined(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     data_root = tmp_path / "results"
@@ -679,11 +679,11 @@ def test_run_trueskill_rebuilds_outdated_pooled(
         tier_calls.append((means, stdevs))
         return dict.fromkeys(means, 1)
 
-    pooled_path = analysis_root / "pooled" / "ratings_k_weighted_seed0.parquet"
-    pooled_path.parent.mkdir(parents=True, exist_ok=True)
-    pooled_path.touch()
-    old_time = pooled_path.stat().st_mtime - 200.0
-    os.utime(pooled_path, (old_time, old_time))
+    combined_path = analysis_root / "combined" / "ratings_k_weighted_seed0.parquet"
+    combined_path.parent.mkdir(parents=True, exist_ok=True)
+    combined_path.touch()
+    old_time = combined_path.stat().st_mtime - 200.0
+    os.utime(combined_path, (old_time, old_time))
 
     monkeypatch.setattr(rt, "write_parquet_atomic", immediate_write)
     monkeypatch.setattr(rt, "_rate_block_worker", fake_rate_block_worker)
@@ -703,8 +703,8 @@ def test_run_trueskill_rebuilds_outdated_pooled(
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
 
     assert tier_calls
-    assert pooled_path.stat().st_mtime > old_time
-    assert (analysis_root / "pooled" / "ratings_k_weighted_seed0.json").exists()
+    assert combined_path.stat().st_mtime > old_time
+    assert (analysis_root / "combined" / "ratings_k_weighted_seed0.json").exists()
     assert (analysis_root / "tiers.json").exists()
 
 
@@ -745,7 +745,7 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
         resume_per_n: bool = True,
         checkpoint_every_batches: int = 500,
         env_kwargs: Mapping[str, float] | rt.TrueSkillInitKwargs | None = None,
-        pooled_weights_by_k: Mapping[int, float] | None = None,
+        k_weights: Mapping[int, float] | None = None,
         tier_z: float | None = None,
         tier_min_gap: float | None = None,
         mp_start_method: str | None = None,
@@ -759,7 +759,7 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
             resume_per_n,
             checkpoint_every_batches,
             env_kwargs,
-            pooled_weights_by_k,
+            k_weights,
             tier_z,
             tier_min_gap,
             mp_start_method,
@@ -779,7 +779,7 @@ def test_run_trueskill_all_seeds_resolves_per_seed_inputs(
             {"alpha": rt.RatingStats(25.0, 8.0)},
         )
         rt._save_ratings_parquet(
-            root / "pooled" / f"ratings_k_weighted_seed{output_seed}.parquet",
+            root / "combined" / f"ratings_k_weighted_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(25.0, 8.0)},
         )
 
@@ -933,20 +933,20 @@ def test_ordering_and_json_safe_helpers() -> None:
     assert rt._json_safe_number(-math.inf) is None
 
 
-def test_rank_correlations_vs_pooled_nan_branches(monkeypatch: pytest.MonkeyPatch) -> None:
-    pooled = {
+def test_rank_correlations_vs_combined_nan_branches(monkeypatch: pytest.MonkeyPatch) -> None:
+    combined = {
         "A": rt.RatingStats(10.0, 1.0),
         "B": rt.RatingStats(9.0, 1.0),
     }
-    lt_two_common = rt._rank_correlations_vs_pooled(
+    lt_two_common = rt._rank_correlations_vs_combined(
         {1: {"A": rt.RatingStats(11.0, 1.0)}},
-        pooled,
+        combined,
     )
     assert math.isnan(lt_two_common[1])
 
     np_array = np.array
     monkeypatch.setattr(rt.np, "array", lambda *args, **kwargs: np_array([1.0, 1.0]))
-    denom_zero = rt._rank_correlations_vs_pooled(
+    denom_zero = rt._rank_correlations_vs_combined(
         {2: {"A": rt.RatingStats(11.0, 1.0), "B": rt.RatingStats(10.0, 1.0)}},
         {"A": rt.RatingStats(10.0, 1.0), "B": rt.RatingStats(9.0, 1.0)},
     )
@@ -966,7 +966,7 @@ def test_write_seed_alignment_summary_writes_csv_json_and_missing_seed_values(
             },
             102: {"alpha": rt.RatingStats(12.0, 1.0)},
         },
-        pooled={"alpha": rt.RatingStats(11.0, 0.5), "beta": rt.RatingStats(11.0, 0.5)},
+        combined={"alpha": rt.RatingStats(11.0, 0.5), "beta": rt.RatingStats(11.0, 0.5)},
         write_csv=True,
         write_json=True,
     )
@@ -975,7 +975,7 @@ def test_write_seed_alignment_summary_writes_csv_json_and_missing_seed_values(
     assert summary_paths["json"] is not None and cast(Path, summary_paths["json"]).exists()
 
     payload = json.loads(cast(Path, summary_paths["json"]).read_text())
-    assert "rank_correlation_vs_pooled" in payload
+    assert "rank_correlation_vs_combined" in payload
     beta_row = next(row for row in payload["alignment"] if row["strategy"] == "beta")
     assert beta_row["seeds_missing"] == 1
     assert beta_row["seed_102_mu"] is None
@@ -1029,7 +1029,7 @@ def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path:
         root = Path(cast(Path, kwargs["root"]))
         output_seed = int(cast(int, kwargs["output_seed"]))
         rt._save_ratings_parquet(
-            root / "pooled" / f"ratings_k_weighted_seed{output_seed}.parquet",
+            root / "combined" / f"ratings_k_weighted_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(25.0, 8.0)},
         )
 
@@ -1039,7 +1039,7 @@ def test_run_trueskill_all_seeds_raises_for_missing_per_player_outputs(tmp_path:
             rt.run_trueskill_all_seeds(cfg)
 
 
-def test_run_trueskill_all_seeds_raises_when_pooled_precision_empty(tmp_path: Path) -> None:
+def test_run_trueskill_all_seeds_raises_when_combined_precision_empty(tmp_path: Path) -> None:
     results_root = tmp_path / "results_seed_4"
     cfg = AppConfig(
         IOConfig(results_dir_prefix=results_root),
@@ -1056,11 +1056,11 @@ def test_run_trueskill_all_seeds_raises_when_pooled_precision_empty(tmp_path: Pa
             {"alpha": rt.RatingStats(20.0, 2.0)},
         )
         rt._save_ratings_parquet(
-            root / "pooled" / f"ratings_k_weighted_seed{output_seed}.parquet",
+            root / "combined" / f"ratings_k_weighted_seed{output_seed}.parquet",
             {"alpha": rt.RatingStats(20.0, 0.0)},
         )
 
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(rt, "run_trueskill", fake_run_trueskill)
-        with pytest.raises(RuntimeError, match="TrueSkill pooling produced no results"):
+        with pytest.raises(RuntimeError, match="TrueSkill aggregation produced no results"):
             rt.run_trueskill_all_seeds(cfg)

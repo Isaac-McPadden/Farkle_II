@@ -50,12 +50,12 @@ For every statistical claim, review in this order:
   summaries; zero-game handling leaves CI equal to win rate; verify denominator
   is games for the intended Bernoulli unit.
 
-## Pooling Across Player Counts
+## Aggregation Across Player Counts
 
 - Code: `analysis/metrics.py::_compute_weighted_metrics`,
-  `analysis/seed_summaries.py::_build_pooled_seed_summary`,
-  `utils/pooling.py`.
-- Pooling modes: `game-count`, `equal-k`, and `config`.
+  `analysis/seed_summaries.py::_build_combined_seed_summary`,
+  `utils/aggregation.py`.
+- Aggregation modes: `game-count`, `equal-k`, and `config`.
 - Game-count: row weights are game counts.
 - Equal-k: each player count contributes equal total mass by scaling rows by
   `games / total_games_for_k`.
@@ -63,9 +63,9 @@ For every statistical claim, review in this order:
   missing k weights are treated as zero after warning.
 - Tests: `tests/unit/analysis/test_metrics*.py`,
   `tests/unit/analysis/test_seed_summaries.py`,
-  `tests/unit/utils/test_stage_io_and_pooling.py`.
-- Review risks: pooled rows can mean "across k" rather than "across seeds";
-  artifact names with `pooled` need scope-specific interpretation.
+  `tests/unit/utils/test_stage_io_and_aggregation.py`.
+- Review risks: combined rows can mean "across k" rather than "across seeds";
+  artifact names with `combined` need scope-specific interpretation.
 
 ## Frequentist MDD And Tiers
 
@@ -85,7 +85,7 @@ For every statistical claim, review in this order:
   identity documented in `mdd_helpers.py`.
 - MDD formula: `mdd = z_star * sqrt(2 * var_theta)`, where
   `var_theta = sum(w_k^2 * binom_k / R) + tau2_seed / R + tau2_sxk * sum(w_k^2)`.
-- Frequentist tiers: sort pooled win rates descending; start a new tier when
+- Frequentist tiers: sort combined win rates descending; start a new tier when
   the next rate falls below the current threshold by more than MDD.
 - Tests: `tests/unit/utils/test_mdd.py`,
   `tests/unit/analysis/test_frequentist_ranking.py`.
@@ -120,14 +120,14 @@ For every statistical claim, review in this order:
   with ranks from `P#_rank`, `seat_ranks`, or fallback winner-plus-tied-losers.
 - Hyperparameters: `cfg.trueskill.beta`, `tau`, `draw_probability`.
 - Resume: per-block checkpoints and done stamps.
-- Pooling: precision weighting using `tau = 1 / sigma^2`; pooled `mu` is
-  `sum(tau * mu) / sum(tau)`, pooled `sigma = sqrt(1 / sum(tau))`; optional
-  per-k weights affect pooled k outputs.
+- Aggregation: precision weighting using `tau = 1 / sigma^2`; combined `mu` is
+  `sum(tau * mu) / sum(tau)`, combined `sigma = sqrt(1 / sum(tau))`; optional
+  per-k weights affect combined k outputs.
 - Tiers: `utils.stats.build_tiers` groups overlapping confidence tiers from
   means and sigmas.
 - Tests: `tests/unit/analysis/test_run_trueskill_*.py`,
   `tests/unit/analysis/test_analytics_trueskill.py`,
-  `tests/unit/analysis/test_run_trueskill_pooling.py`.
+  `tests/unit/analysis/test_run_trueskill_aggregation.py`.
 - Review risks: TrueSkill is a sequential rating model, not a classical
   independent-binomial estimator; game order matters; sigma should not be read
   as a simple sampling standard error without validating the model assumptions.
@@ -137,8 +137,8 @@ For every statistical claim, review in this order:
 - Code: `src/farkle/analysis/head2head.py`,
   `src/farkle/analysis/run_bonferroni_head2head.py`,
   `src/farkle/analysis/h2h_analysis.py`.
-- Candidate selection: union of top pooled TrueSkill ratings and frequentist
-  scores; `use_tier_elites` is currently logged as ignored in favor of pooled
+- Candidate selection: union of top combined TrueSkill ratings and frequentist
+  scores; `use_tier_elites` is currently logged as ignored in favor of combined
   score artifacts.
 - Simulation: each pair is split across both seat orders (`a_b` and `b_a`) and
   writes pairwise, ordered-pairwise, and self-play symmetry artifacts.
@@ -162,18 +162,18 @@ For every statistical claim, review in this order:
 - Code: `src/farkle/analysis/meta.py`.
 - Inputs: `strategy_summary_{players}p_seed*.parquet` files.
 - Strategy presence: only strategies present in every selected seed summary
-  contribute to the pooled estimate.
+  contribute to the combined estimate.
 - Per-seed variance: `p * (1 - p) / games`, with boundary rates replaced by a
   Wilson-logit-centered estimate and a minimum variance floor.
 - Fixed effect: inverse-variance weighted mean per strategy.
 - Heterogeneity: sums Q across strategies, computes global I2 and
   DerSimonian-Laird style tau2. If I2 exceeds `meta_random_if_I2_gt`, uses one
   shared tau2 for all strategy pools.
-- Output CI: normal approximation `pooled_rate +- 1.959963984540054 * se`.
+- Output CI: normal approximation `combined_rate +- 1.959963984540054 * se`.
 - Tests: `tests/unit/analysis/test_meta.py`.
 - Review risks: one global tau2 across all strategies, strategy pruning,
   assumptions that seeds are independent exchangeable runs, and probability
-  scale pooling near boundaries.
+  scale aggregation near boundaries.
 
 ## Cross-Seed Variance
 
@@ -192,7 +192,7 @@ For every statistical claim, review in this order:
 ## Agreement Metrics
 
 - Code: `src/farkle/analysis/agreement.py`.
-- Methods compared: TrueSkill, frequentist, and pooled head-to-head when
+- Methods compared: TrueSkill, frequentist, and combined head-to-head when
   available.
 - Rank metrics: Spearman and Kendall on common strategy sets.
 - Tier metrics: adjusted Rand index and normalized mutual information on common
@@ -220,6 +220,6 @@ For every statistical claim, review in this order:
 - Head-to-head: three pairs with known p-values and Holm adjusted p-values,
   including one tie and one reversed direction.
 - TrueSkill: tiny deterministic ordered game stream confirming rank extraction,
-  checkpoint resume equivalence, and precision-pooling arithmetic.
+  checkpoint resume equivalence, and precision-aggregation arithmetic.
 - Metrics vs seed summaries: same wins/games through normal CI and Wilson CI to
   document intentional interval differences.

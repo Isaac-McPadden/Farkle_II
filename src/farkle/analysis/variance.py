@@ -7,11 +7,11 @@ stage along with the per-seed strategy summaries.  For every
 across seeds, the corresponding standard error, and a simple signal-to-noise
 heuristic (distance from a fair coin scaled by the cross-seed standard error).
 
-The outputs are written to ``11_variance/pooled/variance.parquet`` and a compact
+The outputs are written to ``11_variance/combined/variance.parquet`` and a compact
 summary aggregated by ``n_players`` is written to
-``11_variance/pooled/variance_summary.parquet``. The module also derives
+``11_variance/combined/variance_summary.parquet``. The module also derives
 seed-level variance components for win rate, total score, and game length and
-writes them to ``11_variance/pooled/variance_components.parquet``. All outputs
+writes them to ``11_variance/combined/variance_components.parquet``. All outputs
 share a done-stamp that captures input/output freshness so that the module can
 be skipped when rerun unless ``force`` is requested.
 """
@@ -274,7 +274,7 @@ def _discover_seed_summaries(cfg: AppConfig) -> list[Path]:
 
 
 def _load_metrics(path: Path) -> pd.DataFrame:
-    """Load and normalize the pooled metrics parquet used for variance joins.
+    """Load and normalize the combined metrics parquet used for variance joins.
 
     Args:
         path: Metrics parquet path to read.
@@ -491,10 +491,10 @@ def _compute_variance_components(
 
 
 def _merge_metrics(metrics_frame: pd.DataFrame, variance_frame: pd.DataFrame) -> pd.DataFrame:
-    """Join pooled metrics with cross-seed variance outputs and derive diagnostics.
+    """Join combined metrics with cross-seed variance outputs and derive diagnostics.
 
     Args:
-        metrics_frame: Pooled metrics frame keyed by strategy and player count.
+        metrics_frame: Combined metrics frame keyed by strategy and player count.
         variance_frame: Cross-seed variance frame keyed by strategy and player count.
 
     Returns:
@@ -531,7 +531,7 @@ def _merge_metrics(metrics_frame: pd.DataFrame, variance_frame: pd.DataFrame) ->
     merged["win_rate_mean"] = merged["win_rate"].combine_first(mean_seed_win_rate)
 
     def _signal_to_noise(row: pd.Series) -> float:
-        """Compute signal-to-noise ratio from pooled win rate and seed-level error.
+        """Compute signal-to-noise ratio from combined win rate and seed-level error.
 
         Args:
             row: Joined metrics/variance row.

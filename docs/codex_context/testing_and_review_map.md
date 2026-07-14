@@ -78,7 +78,7 @@ Qualified evidence areas:
 - Many analysis tests assert private helpers and artifact mechanics. They are
   useful regression tests but not full proof of statistical validity.
 - Integration tests often use synthetic fixtures, patches, or goldens.
-- TrueSkill tests exercise streaming, resume, and pooling mechanics, but model
+- TrueSkill tests exercise streaming, resume, and aggregation mechanics, but model
   validity remains a separate review question.
 - Head-to-head tests cover many branches and errors, but final method validity
   depends on candidate selection, dependence assumptions, and power design.
@@ -86,7 +86,7 @@ Qualified evidence areas:
 Known review gaps to check manually:
 
 - Whether every reported uncertainty field has a clearly documented estimator.
-- Whether artifact names using `pooled` state the pooling scope.
+- Whether artifact names using `combined` state the aggregation scope.
 - Whether game-order-dependent TrueSkill outputs are interpreted correctly.
 - Whether head-to-head one-sided simulation p-values and two-sided post-H2H
   decisions are intentionally distinct.
@@ -130,7 +130,7 @@ Use the repository venv when running locally.
 .\.venv\Scripts\python -m pytest tests/unit/utils/test_mdd.py
 .\.venv\Scripts\python -m pytest tests/unit/analysis/test_meta.py
 .\.venv\Scripts\python -m pytest tests/unit/analysis/test_h2h_analysis.py
-.\.venv\Scripts\python -m pytest tests/unit/analysis/test_run_trueskill_pooling.py
+.\.venv\Scripts\python -m pytest tests/unit/analysis/test_run_trueskill_aggregation.py
 .\.venv\Scripts\python -m pytest tests/unit/analysis/test_stage_state.py
 ```
 

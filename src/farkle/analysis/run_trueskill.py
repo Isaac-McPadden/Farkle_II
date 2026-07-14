@@ -2,7 +2,7 @@
 """Compute TrueSkill ratings for Farkle strategies.
 
 The helpers in this module scan a directory of tournament results, update
-ratings with the :mod:`trueskill` package, and write both per-block and pooled
+ratings with the :mod:`trueskill` package, and write both per-block and combined
 rating files.  Historically this module exposed a standalone command line
 interface; the new configuration-driven CLI calls :func:`run_trueskill`
 directly, so the parsing layer has been removed.
@@ -11,7 +11,7 @@ Outputs
 -------
 ``ratings_<N>.parquet`` and ``ratings_k_weighted.parquet``
     Parquet tables with columns ``{strategy, mu, sigma}`` written under
-    ``06_trueskill/<Np>/`` and ``06_trueskill/pooled/`` respectively.
+    ``06_trueskill/<Np>/`` and ``06_trueskill/combined/`` respectively.
 ``tiers.json``
     Consolidated tier report containing TrueSkill and frequentist tiers.
 """
@@ -187,7 +187,7 @@ def _iter_rating_parquets(root: Path, suffix: str, legacy_root: Path | None = No
     out: list[Path] = []
     seen: set[str] = set()
     for path in per_player:
-        if path.stem.startswith("ratings_pooled") or path.stem.startswith("ratings_k_weighted"):
+        if path.stem.startswith("ratings_combined") or path.stem.startswith("ratings_k_weighted"):
             continue
         key = path.resolve().as_posix()
         if key in seen:
@@ -231,7 +231,7 @@ def _find_combined_parquet(base: Path | None) -> Path | None:
         return None
     base = Path(base)
     candidates = [
-        base / "analysis" / "02_combine" / "pooled" / "all_ingested_rows.parquet",
+        base / "analysis" / "02_combine" / "combined" / "all_ingested_rows.parquet",
         base / "analysis" / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
         base / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",
         base / "all_ingested_rows.parquet",
@@ -423,11 +423,11 @@ def _block_shard_paths(root: Path, player_count: str, suffix: str) -> tuple[Path
     return shard.with_suffix(".parquet"), shard.with_suffix(".done.json")
 
 
-def _pool_shard_paths(pooled_dir: Path, shard_key: str, suffix: str) -> tuple[Path, Path]:
-    """Return parquet and done-stamp paths for a pooled shard."""
+def _pool_shard_paths(combined_dir: Path, shard_key: str, suffix: str) -> tuple[Path, Path]:
+    """Return parquet and done-stamp paths for a combined shard."""
 
     safe_key = shard_key.replace("/", "_")
-    base = pooled_dir / f"artifact.{safe_key}{suffix}"
+    base = combined_dir / f"artifact.{safe_key}{suffix}"
     return base.with_suffix(".parquet"), base.with_suffix(".done.json")
 
 
@@ -1135,7 +1135,7 @@ def run_trueskill(
     resume_per_n: bool = True,
     checkpoint_every_batches: int = 500,
     env_kwargs: Mapping[str, float] | TrueSkillInitKwargs | None = None,
-    pooled_weights_by_k: Mapping[int, float] | None = None,
+    k_weights: Mapping[int, float] | None = None,
     tier_z: float | None = None,
     tier_min_gap: float | None = None,
     mp_start_method: str | None = None,
@@ -1168,11 +1168,11 @@ def run_trueskill(
     ------------
     ``ratings_<n>[ _seedX ].parquet``
         Pickle files containing per-block ratings for each strategy.
-    ``ratings_pooled[ _seedX ].parquet``
-        A pickle with ratings pooled across all blocks using a precision-weighted
+    ``ratings_combined[ _seedX ].parquet``
+        A pickle with ratings combined across all blocks using a precision-weighted
         mean (optionally scaled by per-player-count weights).
     ``tiers.json``
-        JSON file with league tiers derived from the pooled ratings.
+        JSON file with league tiers derived from the combined ratings.
     """
     if dataroot is None:
         base = Path(root) / "results" if root is not None else DEFAULT_DATAROOT
@@ -1181,8 +1181,8 @@ def run_trueskill(
 
     root = Path(root) if root is not None else base / "analysis" / "06_trueskill"
     root.mkdir(parents=True, exist_ok=True)
-    pooled_dir = root / "pooled"
-    pooled_dir.mkdir(parents=True, exist_ok=True)
+    combined_dir = root / "combined"
+    combined_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = root.parent
     row_data_path = Path(row_data_dir) if row_data_dir is not None else None
     if row_data_path is None:
@@ -1217,9 +1217,9 @@ def run_trueskill(
 
     mp_context = resolve_mp_context(mp_start_method)
 
-    pooled: dict[str, tuple[float, float]] = {}
+    combined: dict[str, tuple[float, float]] = {}
     per_block_games: dict[str, int] = {}
-    pooled_weights_by_k = dict(pooled_weights_by_k or {})
+    k_weights = dict(k_weights or {})
     env_kwargs_float = _coerce_trueskill_env_kwargs(env_kwargs)
 
     blocks = sorted(base.glob("*_players"))
@@ -1284,14 +1284,14 @@ def run_trueskill(
             )
             per_block_games[player_count] = block_games
 
-    # Combine per-N ratings into pooled stats
-    pooled_parquet = _ensure_new_location(
-        pooled_dir / f"ratings_k_weighted{suffix}.parquet",
-        pooled_dir / f"ratings_pooled{suffix}.parquet",
+    # Combine per-N ratings into combined stats
+    combined_parquet = _ensure_new_location(
+        combined_dir / f"ratings_k_weighted{suffix}.parquet",
+        combined_dir / f"ratings_combined{suffix}.parquet",
         root / f"ratings_k_weighted{suffix}.parquet",
-        root / f"ratings_pooled{suffix}.parquet",
+        root / f"ratings_combined{suffix}.parquet",
         legacy_root / f"ratings_k_weighted{suffix}.parquet",
-        legacy_root / f"ratings_pooled{suffix}.parquet",
+        legacy_root / f"ratings_combined{suffix}.parquet",
     )
     per_player_parquets = _iter_rating_parquets(root, suffix, legacy_root=legacy_root)
     valid_per_player_parquets: list[Path] = []
@@ -1323,12 +1323,12 @@ def run_trueskill(
             continue
         valid_per_player_parquets.append(parquet)
 
-    if pooled_parquet.exists():
+    if combined_parquet.exists():
         newest = max((p.stat().st_mtime for p in valid_per_player_parquets), default=0.0)
-        if pooled_parquet.stat().st_mtime >= newest:
+        if combined_parquet.stat().st_mtime >= newest:
             LOGGER.info(
-                "TrueSkill pooled outputs up-to-date",
-                extra={"stage": "trueskill", "path": str(pooled_parquet)},
+                "TrueSkill combined outputs up-to-date",
+                extra={"stage": "trueskill", "path": str(combined_parquet)},
             )
             return
 
@@ -1343,50 +1343,50 @@ def run_trueskill(
         games = int(done_stamp.rows) if done_stamp is not None else per_block_games.get(str(player_count_value), 0)
         if games <= 0:
             continue
-        weight = pooled_weights_by_k.get(player_count_value, 1.0)
+        weight = k_weights.get(player_count_value, 1.0)
         with parquet.open("rb"):
             ratings = _load_ratings_parquet(parquet)
         for k, v in ratings.items():
             tau = 1.0 / (v.sigma**2) if v.sigma > 0 else 0.0
-            s_mu, s_tau = pooled.get(k, (0.0, 0.0))
+            s_mu, s_tau = combined.get(k, (0.0, 0.0))
             s_mu += weight * tau * v.mu
             s_tau += weight * tau
-            pooled[k] = (s_mu, s_tau)
+            combined[k] = (s_mu, s_tau)
 
-    # Precision-weighted pooling → (sum weight*tau*mu, sum weight*tau) → (mu, sigma)
-    pooled_rating_stats = {
+    # Precision-weighted aggregation → (sum weight*tau*mu, sum weight*tau) → (mu, sigma)
+    combined_rating_stats = {
         k: RatingStats(mu=(s_mu / s_tau), sigma=(s_tau**-0.5))
-        for k, (s_mu, s_tau) in pooled.items()
+        for k, (s_mu, s_tau) in combined.items()
         if s_tau > 0
     }
-    # Atomic writes for pooled outputs
-    # Save pooled ratings as Parquet
-    _save_ratings_parquet(pooled_parquet, pooled_rating_stats)
-    pooled_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in pooled_rating_stats.items()}
-    pooled_json_path = _ensure_new_location(
-        pooled_dir / f"ratings_k_weighted{suffix}.json",
-        pooled_dir / f"ratings_pooled{suffix}.json",
+    # Atomic writes for combined outputs
+    # Save combined ratings as Parquet
+    _save_ratings_parquet(combined_parquet, combined_rating_stats)
+    combined_json = {k: {"mu": v.mu, "sigma": v.sigma} for k, v in combined_rating_stats.items()}
+    combined_json_path = _ensure_new_location(
+        combined_dir / f"ratings_k_weighted{suffix}.json",
+        combined_dir / f"ratings_combined{suffix}.json",
         root / f"ratings_k_weighted{suffix}.json",
-        root / f"ratings_pooled{suffix}.json",
+        root / f"ratings_combined{suffix}.json",
         legacy_root / f"ratings_k_weighted{suffix}.json",
-        legacy_root / f"ratings_pooled{suffix}.json",
+        legacy_root / f"ratings_combined{suffix}.json",
     )
-    with atomic_path(str(pooled_json_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(pooled_json))
-    pooled_shard_parquet, pooled_shard_done = _pool_shard_paths(pooled_dir, "all-k", suffix)
-    _save_ratings_parquet(pooled_shard_parquet, pooled_rating_stats)
+    with atomic_path(str(combined_json_path)) as tmp_path:
+        Path(tmp_path).write_text(json.dumps(combined_json))
+    combined_shard_parquet, combined_shard_done = _pool_shard_paths(combined_dir, "all-k", suffix)
+    _save_ratings_parquet(combined_shard_parquet, combined_rating_stats)
     _save_done_stamp(
-        pooled_shard_done,
+        combined_shard_done,
         _ShardDoneStamp(
             shard_key="all-k",
-            parquet_path=str(pooled_shard_parquet),
-            rows=len(pooled_rating_stats),
+            parquet_path=str(combined_shard_parquet),
+            rows=len(combined_rating_stats),
             created_at=time.time(),
         ),
     )
     tiers = build_tiers(
-        means={k: v.mu for k, v in pooled_rating_stats.items()},
-        stdevs={k: v.sigma for k, v in pooled_rating_stats.items()},
+        means={k: v.mu for k, v in combined_rating_stats.items()},
+        stdevs={k: v.sigma for k, v in combined_rating_stats.items()},
         z=float(tier_z or 1.645),
         min_gap=tier_min_gap,
     )
@@ -1399,7 +1399,7 @@ def run_trueskill(
             "stage": "trueskill",
             "root": str(root),
             "blocks": len(blocks),
-            "pooled_parquet": str(pooled_parquet),
+            "combined_parquet": str(combined_parquet),
             "tiers_path": str(tiers_path),
         },
     )
@@ -1425,18 +1425,18 @@ def _precision_pool(runs: Iterable[Mapping[str, RatingStats]]) -> dict[str, Rati
             sum_tau += tau
             accum[strategy] = (sum_mu_tau, sum_tau)
 
-    pooled: dict[str, RatingStats] = {}
+    combined: dict[str, RatingStats] = {}
     for strategy, (sum_mu_tau, sum_tau) in accum.items():
         if sum_tau <= 0:
             continue
-        pooled[strategy] = RatingStats(mu=sum_mu_tau / sum_tau, sigma=math.sqrt(1.0 / sum_tau))
-    return pooled
+        combined[strategy] = RatingStats(mu=sum_mu_tau / sum_tau, sigma=math.sqrt(1.0 / sum_tau))
+    return combined
 
 
 def _ensure_strict_mu_ordering(
     ratings: Mapping[str, RatingStats],
 ) -> Mapping[str, RatingStats]:
-    """Log pooled TrueSkill ties and return deterministically ordered ratings."""
+    """Log combined TrueSkill ties and return deterministically ordered ratings."""
 
     sorted_by_mu = sorted(ratings.items(), key=lambda kv: kv[1].mu, reverse=True)
     tie_groups: list[list[str]] = []
@@ -1457,7 +1457,7 @@ def _ensure_strict_mu_ordering(
 
     if tie_groups:
         LOGGER.warning(
-            "Ties detected in pooled TrueSkill means; ordering deterministically",
+            "Ties detected in combined TrueSkill means; ordering deterministically",
             extra={
                 "stage": "trueskill",
                 "tie_groups": tie_groups,
@@ -1477,31 +1477,31 @@ def _json_safe_number(value: float | int) -> float | int | None:
     return value
 
 
-def _rank_correlations_vs_pooled(
+def _rank_correlations_vs_combined(
     per_seed_results: Mapping[int, Mapping[str, RatingStats]],
-    pooled: Mapping[str, RatingStats],
+    combined: Mapping[str, RatingStats],
 ) -> dict[int, float]:
-    """Compute Spearman-style rank correlations against pooled ordering."""
+    """Compute Spearman-style rank correlations against combined ordering."""
 
-    pooled_order = sorted(pooled.items(), key=lambda kv: (-kv[1].mu, kv[0]))
-    pooled_rank = {name: idx for idx, (name, _) in enumerate(pooled_order, start=1)}
+    combined_order = sorted(combined.items(), key=lambda kv: (-kv[1].mu, kv[0]))
+    combined_rank = {name: idx for idx, (name, _) in enumerate(combined_order, start=1)}
     correlations: dict[int, float] = {}
 
     for seed, stats in per_seed_results.items():
         seed_order = sorted(stats.items(), key=lambda kv: (-kv[1].mu, kv[0]))
         seed_rank = {name: idx for idx, (name, _) in enumerate(seed_order, start=1)}
-        common = [name for name in pooled_rank if name in seed_rank]
+        common = [name for name in combined_rank if name in seed_rank]
         if len(common) < 2:
             correlations[seed] = math.nan
             continue
 
-        pooled_vec = np.array([pooled_rank[name] for name in common], dtype=float)
+        combined_vec = np.array([combined_rank[name] for name in common], dtype=float)
         seed_vec = np.array([seed_rank[name] for name in common], dtype=float)
-        denom = pooled_vec.std(ddof=0) * seed_vec.std(ddof=0)
+        denom = combined_vec.std(ddof=0) * seed_vec.std(ddof=0)
         if denom == 0:
             correlations[seed] = math.nan
             continue
-        corr = float(np.corrcoef(pooled_vec, seed_vec)[0, 1])
+        corr = float(np.corrcoef(combined_vec, seed_vec)[0, 1])
         correlations[seed] = corr
 
     return correlations
@@ -1511,7 +1511,7 @@ def _write_seed_alignment_summary(
     dest_dir: Path,
     seeds: Sequence[int],
     per_seed_results: Mapping[int, Mapping[str, RatingStats]],
-    pooled: Mapping[str, RatingStats],
+    combined: Mapping[str, RatingStats],
     *,
     write_csv: bool = False,
     write_json: bool = False,
@@ -1524,7 +1524,7 @@ def _write_seed_alignment_summary(
 
     base_cols = [
         "strategy",
-        "pooled_mu",
+        "combined_mu",
         "mean_mu",
         "std_mu",
         "min_mu",
@@ -1548,13 +1548,13 @@ def _write_seed_alignment_summary(
             row[f"seed_{seed}_mu"] = mu
             seed_mus.append(mu)
 
-        pooled_mu = float(pooled.get(strategy, RatingStats(math.nan, math.nan)).mu)
+        combined_mu = float(combined.get(strategy, RatingStats(math.nan, math.nan)).mu)
         valid_mus = [m for m in seed_mus if math.isfinite(m)]
-        deltas = [m - pooled_mu for m in valid_mus if math.isfinite(pooled_mu)]
+        deltas = [m - combined_mu for m in valid_mus if math.isfinite(combined_mu)]
 
         row.update(
             {
-                "pooled_mu": pooled_mu,
+                "combined_mu": combined_mu,
                 "mean_mu": float(np.nanmean(seed_mus)) if seed_mus else math.nan,
                 "std_mu": float(np.nanstd(seed_mus)) if seed_mus else math.nan,
                 "min_mu": min(valid_mus) if valid_mus else math.nan,
@@ -1574,7 +1574,7 @@ def _write_seed_alignment_summary(
     parquet_path = dest_dir / "seed_mu_alignment.parquet"
     write_parquet_atomic(alignment_table, parquet_path)
 
-    rank_correlations = _rank_correlations_vs_pooled(per_seed_results, pooled)
+    rank_correlations = _rank_correlations_vs_combined(per_seed_results, combined)
     csv_path: Path | None = None
     if write_csv:
         csv_path = dest_dir / "seed_mu_alignment.csv"
@@ -1599,7 +1599,7 @@ def _write_seed_alignment_summary(
             "seeds": seed_list,
             "strategies": strategies,
             "alignment": json_rows,
-            "rank_correlation_vs_pooled": json_corr,
+            "rank_correlation_vs_combined": json_corr,
         }
         with atomic_path(str(json_path)) as tmp_path:
             Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
@@ -1684,7 +1684,7 @@ def _resolve_seed_row_data_dir(cfg: AppConfig, seed_results_root: Path) -> Path 
 
 
 def run_trueskill_all_seeds(cfg: AppConfig) -> None:
-    """Run TrueSkill for each configured seed and pool the results."""
+    """Run TrueSkill for each configured seed and combine the results."""
 
     analysis_cfg = cfg.analysis
     outputs_cfg = analysis_cfg.outputs or {}
@@ -1701,8 +1701,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     analysis_dir = cfg.trueskill_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    pooled_dir = cfg.trueskill_pooled_dir
-    pooled_dir.mkdir(parents=True, exist_ok=True)
+    combined_dir = cfg.trueskill_combined_dir
+    combined_dir.mkdir(parents=True, exist_ok=True)
     legacy_root = analysis_dir.parent
     default_row_data_dir = cfg.resolve_input_stage_dir("curate")
     if default_row_data_dir is None or not default_row_data_dir.exists():
@@ -1751,24 +1751,24 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             curated_rows_name=cfg.curated_rows_name,
             workers=analysis_cfg.n_jobs or None,
             env_kwargs=env_kwargs,
-            pooled_weights_by_k=cfg.trueskill.pooled_weights_by_k,
+            k_weights=cfg.trueskill.k_weights,
             tier_z=tier_z,
             tier_min_gap=tier_min_gap,
             mp_start_method=analysis_cfg.mp_start_method,
             progress_logging=analysis_cfg.progress_logging,
         )
 
-        pooled_path = _ensure_new_location(
-            pooled_dir / f"ratings_k_weighted_seed{seed}.parquet",
-            pooled_dir / f"ratings_pooled_seed{seed}.parquet",
+        combined_path = _ensure_new_location(
+            combined_dir / f"ratings_k_weighted_seed{seed}.parquet",
+            combined_dir / f"ratings_combined_seed{seed}.parquet",
             analysis_dir / f"ratings_k_weighted_seed{seed}.parquet",
-            analysis_dir / f"ratings_pooled_seed{seed}.parquet",
+            analysis_dir / f"ratings_combined_seed{seed}.parquet",
             legacy_root / f"ratings_k_weighted_seed{seed}.parquet",
-            legacy_root / f"ratings_pooled_seed{seed}.parquet",
+            legacy_root / f"ratings_combined_seed{seed}.parquet",
         )
-        if not pooled_path.exists():
-            raise FileNotFoundError(f"Missing pooled ratings for seed {seed}: {pooled_path}")
-        per_seed_results[seed] = _load_ratings_parquet(pooled_path)
+        if not combined_path.exists():
+            raise FileNotFoundError(f"Missing combined ratings for seed {seed}: {combined_path}")
+        per_seed_results[seed] = _load_ratings_parquet(combined_path)
 
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}
         for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}", legacy_root=legacy_root):
@@ -1801,14 +1801,14 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             extra={
                 "stage": "trueskill",
                 "seed": seed,
-                "pooled": str(pooled_path),
+                "combined": str(combined_path),
                 "per_players": sorted(seed_outputs.keys()),
             },
         )
 
     if long_tables:
         long_table = pa.concat_tables(long_tables, promote_options="default")
-        write_parquet_atomic(long_table, pooled_dir / "ratings_long.parquet")
+        write_parquet_atomic(long_table, combined_dir / "ratings_long.parquet")
 
     if per_seed_outputs:
         per_player_runs: dict[int, list[Mapping[str, RatingStats]]] = {}
@@ -1822,8 +1822,8 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
         for players in sorted(per_player_runs):
             runs = per_player_runs[players]
-            per_player_pooled_stats = _precision_pool(runs)
-            if not per_player_pooled_stats:
+            per_player_combined_stats = _precision_pool(runs)
+            if not per_player_combined_stats:
                 continue
             dest_dir = analysis_dir / f"{players}p"
             dest_dir.mkdir(parents=True, exist_ok=True)
@@ -1833,7 +1833,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
             newest_seed = max((p.stat().st_mtime for p in seed_paths if p.exists()), default=0.0)
             if dest.exists() and dest.stat().st_mtime >= newest_seed:
                 LOGGER.info(
-                    "TrueSkill per-player pooled outputs up-to-date",
+                    "TrueSkill per-player combined outputs up-to-date",
                     extra={
                         "stage": "trueskill",
                         "players": players,
@@ -1842,9 +1842,9 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                     },
                 )
                 continue
-            _save_ratings_parquet(dest, _sorted_ratings(per_player_pooled_stats))
+            _save_ratings_parquet(dest, _sorted_ratings(per_player_combined_stats))
             LOGGER.info(
-                "TrueSkill per-player pooled outputs written",
+                "TrueSkill per-player combined outputs written",
                 extra={
                     "stage": "trueskill",
                     "players": players,
@@ -1853,50 +1853,50 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
                 },
             )
 
-    pooled_seed_stats: Mapping[str, RatingStats] = _precision_pool(per_seed_results.values())
-    if not pooled_seed_stats:
-        raise RuntimeError("TrueSkill pooling produced no results")
-    ordered_pooled = _ensure_strict_mu_ordering(_sorted_ratings(pooled_seed_stats))
+    combined_seed_stats: Mapping[str, RatingStats] = _precision_pool(per_seed_results.values())
+    if not combined_seed_stats:
+        raise RuntimeError("TrueSkill aggregation produced no results")
+    ordered_combined = _ensure_strict_mu_ordering(_sorted_ratings(combined_seed_stats))
 
-    pooled_parquet = _ensure_new_location(
-        pooled_dir / "ratings_k_weighted.parquet",
-        pooled_dir / "ratings_pooled.parquet",
+    combined_parquet = _ensure_new_location(
+        combined_dir / "ratings_k_weighted.parquet",
+        combined_dir / "ratings_combined.parquet",
         analysis_dir / "ratings_k_weighted.parquet",
-        analysis_dir / "ratings_pooled.parquet",
+        analysis_dir / "ratings_combined.parquet",
         legacy_root / "ratings_k_weighted.parquet",
-        legacy_root / "ratings_pooled.parquet",
+        legacy_root / "ratings_combined.parquet",
     )
-    _save_ratings_parquet(pooled_parquet, ordered_pooled)
+    _save_ratings_parquet(combined_parquet, ordered_combined)
 
-    pooled_json_path = _ensure_new_location(
-        pooled_dir / "ratings_k_weighted.json",
-        pooled_dir / "ratings_pooled.json",
+    combined_json_path = _ensure_new_location(
+        combined_dir / "ratings_k_weighted.json",
+        combined_dir / "ratings_combined.json",
         analysis_dir / "ratings_k_weighted.json",
-        analysis_dir / "ratings_pooled.json",
+        analysis_dir / "ratings_combined.json",
         legacy_root / "ratings_k_weighted.json",
-        legacy_root / "ratings_pooled.json",
+        legacy_root / "ratings_combined.json",
     )
-    with atomic_path(str(pooled_json_path)) as tmp_path:
+    with atomic_path(str(combined_json_path)) as tmp_path:
         Path(tmp_path).write_text(
             json.dumps(
-                {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ordered_pooled.items()},
+                {k: {"mu": v.mu, "sigma": v.sigma} for k, v in ordered_combined.items()},
                 indent=2,
                 sort_keys=True,
             )
         )
 
     _write_seed_alignment_summary(
-        pooled_dir,
+        combined_dir,
         seeds,
         per_seed_results,
-        ordered_pooled,
+        ordered_combined,
         write_csv=bool(outputs_cfg.get("trueskill_alignment_csv", False)),
         write_json=bool(outputs_cfg.get("trueskill_alignment_json", False)),
     )
 
     tiers = build_tiers(
-        means={k: v.mu for k, v in ordered_pooled.items()},
-        stdevs={k: v.sigma for k, v in ordered_pooled.items()},
+        means={k: v.mu for k, v in ordered_combined.items()},
+        stdevs={k: v.sigma for k, v in ordered_combined.items()},
         z=tier_z,
         min_gap=tier_min_gap,
     )
@@ -1905,11 +1905,11 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
     )
 
     LOGGER.info(
-        "TrueSkill pooled results complete",
+        "TrueSkill combined results complete",
         extra={
             "stage": "trueskill",
             "seeds": seeds,
-            "pooled_parquet": str(pooled_parquet),
+            "combined_parquet": str(combined_parquet),
             "tiers_path": str(tiers_path),
         },
     )

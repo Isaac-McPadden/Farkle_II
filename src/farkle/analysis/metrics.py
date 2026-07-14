@@ -26,8 +26,8 @@ from farkle.analysis.seat_stats import (
 )
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
+from farkle.utils.aggregation import normalize_k_aggregation_method
 from farkle.utils.artifacts import write_csv_atomic, write_parquet_atomic
-from farkle.utils.pooling import normalize_pooling_scheme
 from farkle.utils.stage_io import resolve_worker_count, select_preferred_or_legacy
 from farkle.utils.writer import atomic_path
 
@@ -41,24 +41,24 @@ else:  # pragma: no cover - fallback for older pandas
 LOGGER = logging.getLogger(__name__)
 
 
-class _AnalysisPoolingConfig(Protocol):
+class _AnalysisAggregationConfig(Protocol):
     @property
-    def pooling_weights(self) -> str: ...
+    def k_aggregation_method(self) -> str: ...
 
     @property
-    def pooling_weights_by_k(self) -> dict[int, float] | None: ...
+    def k_weights(self) -> dict[int, float] | None: ...
 
 
-class _MetricsPoolingConfig(Protocol):
+class _MetricsAggregationConfig(Protocol):
     @property
-    def analysis(self) -> _AnalysisPoolingConfig: ...
+    def analysis(self) -> _AnalysisAggregationConfig: ...
 
 
 def run(cfg: AppConfig) -> None:
     """Compute per-strategy metrics and seat-advantage tables."""
 
     analysis_dir = cfg.analysis_dir
-    metrics_dir = cfg.metrics_pooled_dir
+    metrics_dir = cfg.metrics_combined_dir
     data_file = cfg.curated_dataset
     out_metrics = cfg.metrics_output_path()
     out_metrics_weighted = cfg.metrics_output_path("metrics_weighted.parquet")
@@ -549,19 +549,19 @@ def _downcast_metric_counters(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def _normalize_pooling_scheme(pooling_scheme: str) -> str:
-    """Backward-compatible module-local alias for pooling normalization."""
+def _normalize_k_aggregation_method(aggregation_method: str) -> str:
+    """Backward-compatible module-local alias for aggregation normalization."""
 
-    return normalize_pooling_scheme(pooling_scheme)
+    return normalize_k_aggregation_method(aggregation_method)
 
 
-def _pooling_weights_for_metrics(
+def _k_aggregation_method_for_metrics(
     df: pd.DataFrame,
     *,
-    pooling_scheme: str,
+    aggregation_method: str,
     weights_by_k: dict[int, float],
 ) -> pd.Series:
-    """Return per-row weights for pooled metric aggregation."""
+    """Return per-row weights for combined metric aggregation."""
 
     games = pd.to_numeric(df["games"], errors="coerce").fillna(0.0)
     n_players = df["n_players"].astype(np.int16)
@@ -572,29 +572,29 @@ def _pooling_weights_for_metrics(
         k_int = int(k)
         totals_map[k_int] = float(v)
 
-    if pooling_scheme == "game-count":
+    if aggregation_method == "game-count":
         return games.astype(float)
 
-    if pooling_scheme == "equal-k":
+    if aggregation_method == "equal-k":
 
         def _equal_factor(k: int | np.integer) -> float:
-            """Resolve the equal-``k`` pooling factor for one player count."""
+            """Resolve the equal-``k`` aggregation factor for one player count."""
             total = totals_map.get(int(k), 0.0)
             return 1.0 / total if total > 0 else 0.0
 
         factors = n_players.map(_equal_factor)
         return games * factors
 
-    if pooling_scheme == "config":
+    if aggregation_method == "config":
         missing = sorted(set(totals_map) - set(weights_by_k))
         if missing:
             LOGGER.warning(
-                "Missing pooling weights for player counts; treating as zero",
+                "Missing aggregation weights for player counts; treating as zero",
                 extra={"stage": "metrics", "missing": missing},
             )
 
         def _config_factor(k: int | np.integer) -> float:
-            """Resolve the config-driven pooling factor for one player count."""
+            """Resolve the config-driven aggregation factor for one player count."""
             total = totals_map.get(int(k), 0.0)
             if total <= 0:
                 return 0.0
@@ -603,11 +603,11 @@ def _pooling_weights_for_metrics(
         factors = n_players.map(_config_factor)
         return games * factors
 
-    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+    raise ValueError(f"Unknown aggregation scheme: {aggregation_method!r}")
 
 
-def _pooled_value_columns(df: pd.DataFrame) -> list[str]:
-    """Return numeric metric columns that should participate in pooled aggregation.
+def _combined_value_columns(df: pd.DataFrame) -> list[str]:
+    """Return numeric metric columns that should participate in combined aggregation.
 
     Args:
         df: Metrics frame to inspect.
@@ -655,8 +655,8 @@ def _weighted_mean(values: pd.Series, weights: np.ndarray) -> float:
     return float(np.average(numeric[mask], weights=subset_weights))
 
 
-def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: _MetricsPoolingConfig) -> pd.DataFrame:
-    """Compute pooled weighted metrics across player counts."""
+def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: _MetricsAggregationConfig) -> pd.DataFrame:
+    """Compute combined weighted metrics across player counts."""
 
     columns = [
         "strategy",
@@ -665,25 +665,25 @@ def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: _MetricsPoolingConf
         "win_rate",
         "win_prob",
         "expected_score",
-        "pooling_scheme",
-        "pooling_weights",
+        "aggregation_method",
+        "k_aggregation_method",
     ]
     if metrics_df.empty:
         return pd.DataFrame(columns=columns)
 
-    pooling_scheme = normalize_pooling_scheme(cfg.analysis.pooling_weights)
-    weights_by_k = dict(cfg.analysis.pooling_weights_by_k or {})
-    if pooling_scheme == "config" and not weights_by_k:
-        raise ValueError("analysis.pooling_weights_by_k must be set for config pooling")
+    aggregation_method = normalize_k_aggregation_method(cfg.analysis.k_aggregation_method)
+    weights_by_k = dict(cfg.analysis.k_weights or {})
+    if aggregation_method == "config" and not weights_by_k:
+        raise ValueError("analysis.k_weights must be set for config aggregation")
 
-    weights = _pooling_weights_for_metrics(
+    weights = _k_aggregation_method_for_metrics(
         metrics_df,
-        pooling_scheme=pooling_scheme,
+        aggregation_method=aggregation_method,
         weights_by_k=weights_by_k,
     )
-    value_cols = _pooled_value_columns(metrics_df)
+    value_cols = _combined_value_columns(metrics_df)
 
-    pooled_rows: list[dict[str, Scalar]] = []
+    combined_rows: list[dict[str, Scalar]] = []
     for strategy, group in metrics_df.groupby("strategy", sort=False):
         group_weights = weights.loc[group.index].to_numpy(dtype=float)
         if not np.isfinite(group_weights).any() or group_weights.sum() <= 0:
@@ -695,15 +695,15 @@ def _compute_weighted_metrics(metrics_df: pd.DataFrame, cfg: _MetricsPoolingConf
         }
         for col in value_cols:
             row[col] = _weighted_mean(group[col], group_weights)
-        pooled_rows.append(row)
+        combined_rows.append(row)
 
-    pooled_df = pd.DataFrame(pooled_rows)
-    pooling_weights = json.dumps(weights_by_k, sort_keys=True) if weights_by_k else "{}"
-    pooled_df["pooling_scheme"] = pooling_scheme
-    pooled_df["pooling_weights"] = pooling_weights
-    ordered = [c for c in columns if c in pooled_df.columns]
-    remainder = [c for c in pooled_df.columns if c not in ordered]
-    return pooled_df[ordered + remainder]
+    combined_df = pd.DataFrame(combined_rows)
+    k_aggregation_method = json.dumps(weights_by_k, sort_keys=True) if weights_by_k else "{}"
+    combined_df["aggregation_method"] = aggregation_method
+    combined_df["k_aggregation_method"] = k_aggregation_method
+    ordered = [c for c in columns if c in combined_df.columns]
+    remainder = [c for c in combined_df.columns if c not in ordered]
+    return combined_df[ordered + remainder]
 
 
 def _compute_seat_advantage(cfg: AppConfig, combined: Path) -> pd.DataFrame:

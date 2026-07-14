@@ -13,7 +13,7 @@ import farkle.analysis.run_trueskill as rt
 from farkle.utils.types import Compression, normalize_compression
 
 
-def test_run_trueskill_pooling_and_short_circuit(
+def test_run_trueskill_aggregation_and_short_circuit(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data_root = tmp_path / "results"
@@ -136,35 +136,35 @@ def test_run_trueskill_pooling_and_short_circuit(
 
     assert created_executors and created_executors[0].max_workers == 2
 
-    pooled_path = analysis_root / "pooled" / "ratings_k_weighted_seed0.parquet"
-    json_path = analysis_root / "pooled" / "ratings_k_weighted_seed0.json"
+    combined_path = analysis_root / "combined" / "ratings_k_weighted_seed0.parquet"
+    json_path = analysis_root / "combined" / "ratings_k_weighted_seed0.json"
     tiers_path = analysis_root / "tiers.json"
-    assert pooled_path.exists() and json_path.exists() and tiers_path.exists()
+    assert combined_path.exists() and json_path.exists() and tiers_path.exists()
 
-    pooled = rt._load_ratings_parquet(pooled_path)
-    assert pooled.keys() == {"A", "B", "C"}
-    assert pooled["A"].mu == pytest.approx(24.0)
-    assert pooled["A"].sigma == pytest.approx(math.sqrt(16.0 / 5.0))
-    assert pooled["B"].mu == pytest.approx(15.0)
-    assert pooled["B"].sigma == pytest.approx(1.5)
-    assert pooled["C"].mu == pytest.approx(30.0)
-    assert pooled["C"].sigma == pytest.approx(3.0)
+    combined = rt._load_ratings_parquet(combined_path)
+    assert combined.keys() == {"A", "B", "C"}
+    assert combined["A"].mu == pytest.approx(24.0)
+    assert combined["A"].sigma == pytest.approx(math.sqrt(16.0 / 5.0))
+    assert combined["B"].mu == pytest.approx(15.0)
+    assert combined["B"].sigma == pytest.approx(1.5)
+    assert combined["C"].mu == pytest.approx(30.0)
+    assert combined["C"].sigma == pytest.approx(3.0)
 
-    pooled_json = json.loads(json_path.read_text())
-    for key, stats in pooled.items():
-        assert pooled_json[key]["mu"] == pytest.approx(stats.mu)
-        assert pooled_json[key]["sigma"] == pytest.approx(stats.sigma)
+    combined_json = json.loads(json_path.read_text())
+    for key, stats in combined.items():
+        assert combined_json[key]["mu"] == pytest.approx(stats.mu)
+        assert combined_json[key]["sigma"] == pytest.approx(stats.sigma)
 
     assert tier_calls and tiers_path.read_text()
 
-    before = pooled_path.stat().st_mtime + 10.0
-    os.utime(pooled_path, (before, before))
+    before = combined_path.stat().st_mtime + 10.0
+    os.utime(combined_path, (before, before))
     tier_calls.clear()
 
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=8)
 
     assert not tier_calls
-    assert pooled_path.stat().st_mtime == before
+    assert combined_path.stat().st_mtime == before
 
 
 def test_run_trueskill_skips_zero_game_block(
@@ -227,11 +227,11 @@ def test_run_trueskill_skips_zero_game_block(
 
     rt.run_trueskill(root=analysis_root, dataroot=data_root, workers=1)
 
-    pooled = rt._load_ratings_parquet(
-        analysis_root / "pooled" / "ratings_k_weighted_seed0.parquet"
+    combined = rt._load_ratings_parquet(
+        analysis_root / "combined" / "ratings_k_weighted_seed0.parquet"
     )
-    assert set(pooled) == {"A"}
-    assert pooled["A"].mu == pytest.approx(10.0)
+    assert set(combined) == {"A"}
+    assert combined["A"].mu == pytest.approx(10.0)
 
 
 def test_run_trueskill_recovers_only_missing_k_shard(

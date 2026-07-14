@@ -36,7 +36,7 @@ def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
 
 def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, curated = _setup_cfg(tmp_path)
-    json_out = cfg.hgb_pooled_dir / "hgb_importance.json"
+    json_out = cfg.hgb_combined_dir / "hgb_importance.json"
     parquet_out = cfg.hgb_per_k_dir(2) / hgb_feat._hgb.IMPORTANCE_TEMPLATE.format(players=2)
     json_out.parent.mkdir(parents=True, exist_ok=True)
     parquet_out.parent.mkdir(parents=True, exist_ok=True)
@@ -57,7 +57,7 @@ def test_hgb_feat_skips_when_up_to_date(tmp_path: Path, monkeypatch: pytest.Monk
 
 def test_hgb_feat_runs_when_outdated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cfg, curated = _setup_cfg(tmp_path)
-    json_out = cfg.hgb_pooled_dir / "hgb_importance.json"
+    json_out = cfg.hgb_combined_dir / "hgb_importance.json"
     parquet_out = cfg.hgb_per_k_dir(2) / hgb_feat._hgb.IMPORTANCE_TEMPLATE.format(players=2)
     json_out.parent.mkdir(parents=True, exist_ok=True)
     parquet_out.parent.mkdir(parents=True, exist_ok=True)

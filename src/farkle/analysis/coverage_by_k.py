@@ -161,10 +161,10 @@ def _coverage_inputs(cfg: AppConfig, metrics_path: Path) -> list[Path]:
 
     Args:
         cfg: Application config used to resolve isolated metrics paths.
-        metrics_path: Primary pooled metrics parquet path.
+        metrics_path: Primary combined metrics parquet path.
 
     Returns:
-        Existing pooled and isolated metrics paths relevant to coverage output.
+        Existing combined and isolated metrics paths relevant to coverage output.
     """
     inputs = [metrics_path]
     player_counts = _player_counts_from_config(cfg)
@@ -225,7 +225,7 @@ def _build_coverage(
 
     Args:
         cfg: Application config used to resolve defaults and isolated artifacts.
-        metrics_path: Primary pooled metrics parquet path.
+        metrics_path: Primary combined metrics parquet path.
         coverage_inputs: Input artifacts considered for invalidation and expectations.
         policy: Optional parallel policy used to size Arrow threading.
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from concurrent.futures import Future
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -196,7 +196,7 @@ def test_run_covers_parallel_empty_output_and_rare_event_detail_paths(
 
     compute_calls: list[int] = []
     empty_output_calls: list[int] = []
-    pooled_calls: list[tuple[int, ...]] = []
+    combined_calls: list[tuple[int, ...]] = []
     rare_calls: list[tuple[str, int | None]] = []
     done_calls: list[Path] = []
 
@@ -217,7 +217,7 @@ def test_run_covers_parallel_empty_output_and_rare_event_detail_paths(
     monkeypatch.setattr(
         game_stats,
         "_pool_completed_k_game_stats",
-        lambda **kwargs: pooled_calls.append(tuple(kwargs["configured_k_values"])),
+        lambda **kwargs: combined_calls.append(tuple(kwargs["configured_k_values"])),
     )
     monkeypatch.setattr(
         game_stats,
@@ -245,7 +245,7 @@ def test_run_covers_parallel_empty_output_and_rare_event_detail_paths(
     assert stage_log.started is True
     assert empty_output_calls == [3]
     assert compute_calls == [2]
-    assert pooled_calls == [tuple(cfg.agreement_players())]
+    assert combined_calls == [tuple(cfg.agreement_players())]
     assert rare_calls == [("summary", 2), ("details", None)]
     assert len(done_calls) == 3
 
@@ -486,8 +486,8 @@ def test_low_level_stat_helper_edge_case_branches() -> None:
     assert np.isnan(game_stats._probability_le_from_binned(binned, float("nan")))
 
     assert (
-        game_stats._pooling_row_weight(
-            pooling_scheme="game-count",
+        game_stats._aggregation_row_weight(
+            aggregation_method="game-count",
             n_players=2,
             row_count=0,
             weights_by_k={},
@@ -495,8 +495,8 @@ def test_low_level_stat_helper_edge_case_branches() -> None:
         == 0.0
     )
     assert (
-        game_stats._pooling_row_weight(
-            pooling_scheme="game-count",
+        game_stats._aggregation_row_weight(
+            aggregation_method="game-count",
             n_players=2,
             row_count=3,
             weights_by_k={},
@@ -504,8 +504,8 @@ def test_low_level_stat_helper_edge_case_branches() -> None:
         == 1.0
     )
     assert (
-        game_stats._pooling_row_weight(
-            pooling_scheme="equal-k",
+        game_stats._aggregation_row_weight(
+            aggregation_method="equal-k",
             n_players=2,
             row_count=4,
             weights_by_k={},
@@ -513,17 +513,17 @@ def test_low_level_stat_helper_edge_case_branches() -> None:
         == 0.25
     )
     assert (
-        game_stats._pooling_row_weight(
-            pooling_scheme="config",
+        game_stats._aggregation_row_weight(
+            aggregation_method="config",
             n_players=3,
             row_count=2,
             weights_by_k={3: 0.6},
         )
         == pytest.approx(0.3)
     )
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
-        game_stats._pooling_row_weight(
-            pooling_scheme="bad",
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
+        game_stats._aggregation_row_weight(
+            aggregation_method="bad",
             n_players=2,
             row_count=1,
             weights_by_k={},

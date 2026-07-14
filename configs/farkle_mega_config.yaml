@@ -88,9 +88,9 @@ analysis:
   tier_min_gap: null              # float|None: minimum gap required to split tiers
   frequentist_weights_by_k: null  # dict[int,float]|None: optional weights for player counts
 
-  # Meta-analysis controls (seed-to-seed pooling / comparison)
-  meta_max_other_seeds: null      # int|None: cap on non-primary seeds used in meta pooling
-  meta_comparison_seed: null      # int|None: fixed comparison seed when limiting meta pooling
+  # Meta-analysis controls (seed-to-seed aggregation / comparison)
+  meta_max_other_seeds: null      # int|None: cap on non-primary seeds used in meta aggregation
+  meta_comparison_seed: null      # int|None: fixed comparison seed when limiting meta aggregation
 
   # Optional custom output filenames / aliases
   outputs: {}                     # dict[str, Any]: e.g. override metrics/parquet names if desired
@@ -111,7 +111,7 @@ trueskill:
   beta: 4.166667                  # 25/6 (tighter prior than default_config)
   tau: 0.1
   draw_probability: 0.0
-  pooled_weights_by_k: null
+  k_weights: null
 
 head2head:
   n_jobs: 0

@@ -222,7 +222,7 @@ def _seed_input_paths(
     Args:
         seeds: Candidate seed-analysis directory bundles to inspect.
         cfg: Application config used to resolve the game-stats stage folder.
-        candidates: Ordered candidate filenames to check within each pooled stage dir.
+        candidates: Ordered candidate filenames to check within each combined stage dir.
 
     Returns:
         ``(seed, path)`` pairs for the first existing candidate in each seed directory.
@@ -241,7 +241,7 @@ def _seed_input_paths(
         return []
     input_paths: list[tuple[int, Path]] = []
     for entry in seeds:
-        stage_root = entry.analysis_dir / stage_folder / "pooled"
+        stage_root = entry.analysis_dir / stage_folder / "combined"
         for name in candidates:
             path = stage_root / name
             if path.exists():

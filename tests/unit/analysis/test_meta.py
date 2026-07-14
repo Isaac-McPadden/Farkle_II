@@ -118,9 +118,9 @@ def test_pool_winrates_prefers_fixed_effects_when_I2_low() -> None:
 
     result = meta.pool_winrates([df_seed1, df_seed2], use_random_if_I2_gt=80.0)
     assert result.method == "fixed"
-    assert result.pooled.shape[0] == 2
+    assert result.combined.shape[0] == 2
 
-    s1 = result.pooled.loc[result.pooled["strategy_id"] == "S1"].iloc[0]
+    s1 = result.combined.loc[result.combined["strategy_id"] == "S1"].iloc[0]
     weight_a = 1.0 / (0.5 * 0.5 / 50.0)
     weight_b = 1.0 / (0.52 * 0.48 / 50.0)
     expected = (weight_a * 0.50 + weight_b * 0.52) / (weight_a + weight_b)
@@ -137,8 +137,8 @@ def test_pool_winrates_returns_empty_for_none_or_empty_inputs() -> None:
 
     result = meta.pool_winrates(usable_inputs)
 
-    assert result.pooled.empty
-    assert result.pooled.columns.tolist() == meta.POOLED_COLUMNS
+    assert result.combined.empty
+    assert result.combined.columns.tolist() == meta.COMBINED_COLUMNS
     assert result.method == "fixed"
     assert result.tau2 == pytest.approx(0.0)
 
@@ -191,7 +191,7 @@ def test_pool_winrates_skips_strategies_without_usable_observations() -> None:
 
     result = meta.pool_winrates([df_seed1, df_seed2])
 
-    assert result.pooled.empty
+    assert result.combined.empty
     assert result.method == "fixed"
 
 
@@ -256,7 +256,7 @@ def test_select_seed_entries_with_no_limit_includes_all_remaining() -> None:
     assert selected == sorted(entries)
 
 
-def test_meta_run_writes_pooled_outputs(tmp_path: Path) -> None:
+def test_meta_run_writes_combined_outputs(tmp_path: Path) -> None:
     cfg = _make_cfg(tmp_path)
 
     df_seed1 = pd.DataFrame(
@@ -304,9 +304,9 @@ def test_meta_run_writes_pooled_outputs(tmp_path: Path) -> None:
     assert parquet_path.exists()
     assert json_path.exists()
 
-    pooled = pd.read_parquet(cfg.meta_input_path(2, parquet_name))
-    assert pooled.columns.tolist() == meta.POOLED_COLUMNS
-    assert pooled["strategy_id"].tolist() == ["Keep"]
+    combined = pd.read_parquet(cfg.meta_input_path(2, parquet_name))
+    assert combined.columns.tolist() == meta.COMBINED_COLUMNS
+    assert combined["strategy_id"].tolist() == ["Keep"]
 
     stats = json.loads(cfg.meta_input_path(2, json_name).read_text())
     assert stats["method"] == "fixed"
@@ -368,22 +368,22 @@ def test_meta_limits_other_seeds_and_respects_override(tmp_path: Path) -> None:
 
     meta.run(cfg, use_random_if_I2_gt=90.0)
 
-    pooled = pd.read_parquet(cfg.meta_input_path(2, "strategy_summary_2p_meta.parquet"))
-    assert pooled["n_seeds"].iloc[0] == 2
+    combined = pd.read_parquet(cfg.meta_input_path(2, "strategy_summary_2p_meta.parquet"))
+    assert combined["n_seeds"].iloc[0] == 2
     expected_win_rate = meta.pool_winrates(
         [frames_by_seed[42], frames_by_seed[99]], use_random_if_I2_gt=90.0
-    ).pooled["win_rate"].iloc[0]
-    assert pooled["win_rate"].iloc[0] == pytest.approx(expected_win_rate)
+    ).combined["win_rate"].iloc[0]
+    assert combined["win_rate"].iloc[0] == pytest.approx(expected_win_rate)
 
     cfg.analysis.meta_comparison_seed = 7
     meta.run(cfg, force=True, use_random_if_I2_gt=90.0)
 
-    pooled_override = pd.read_parquet(cfg.meta_input_path(2, "strategy_summary_2p_meta.parquet"))
-    assert pooled_override["n_seeds"].iloc[0] == 2
+    combined_override = pd.read_parquet(cfg.meta_input_path(2, "strategy_summary_2p_meta.parquet"))
+    assert combined_override["n_seeds"].iloc[0] == 2
     expected_override = meta.pool_winrates(
         [frames_by_seed[42], frames_by_seed[7]], use_random_if_I2_gt=90.0
-    ).pooled["win_rate"].iloc[0]
-    assert pooled_override["win_rate"].iloc[0] == pytest.approx(expected_override)
+    ).combined["win_rate"].iloc[0]
+    assert combined_override["win_rate"].iloc[0] == pytest.approx(expected_override)
 
 
 def test_apply_strategy_presence_filters_and_reports_missing():
@@ -504,7 +504,7 @@ def test_meta_run_idempotent_skip_and_force_rewrite(tmp_path: Path) -> None:
     meta.run(cfg, use_random_if_I2_gt=90.0)
     per_k_parquet = cfg.meta_output_path(2, "strategy_summary_2p_meta.parquet")
     per_k_json = cfg.meta_output_path(2, "meta_2p.json")
-    long_path = cfg.meta_pooled_dir / "meta_long.parquet"
+    long_path = cfg.meta_combined_dir / "meta_long.parquet"
     assert per_k_parquet.exists()
     assert per_k_json.exists()
     assert long_path.exists()
@@ -686,4 +686,4 @@ def test_meta_run_skips_zero_row_inputs(tmp_path: Path) -> None:
 
     assert not cfg.meta_output_path(2, "strategy_summary_2p_meta.parquet").exists()
     assert not cfg.meta_output_path(2, "meta_2p.json").exists()
-    assert not (cfg.meta_pooled_dir / "meta_long.parquet").exists()
+    assert not (cfg.meta_combined_dir / "meta_long.parquet").exists()

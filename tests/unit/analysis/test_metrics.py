@@ -242,14 +242,14 @@ def test_compute_weighted_metrics_grouping_order_and_nan_handling():
         }
     )
     cfg = make_test_app_config()
-    cfg.analysis.pooling_weights = "equal-k"
-    cfg.analysis.pooling_weights_by_k = {}
+    cfg.analysis.k_aggregation_method = "equal-k"
+    cfg.analysis.k_weights = {}
 
     out = metrics._compute_weighted_metrics(frame, cfg)
 
     assert out["strategy"].tolist() == ["B", "A"]
     assert isinstance(out.index, pd.RangeIndex)
-    assert out["pooling_scheme"].unique().tolist() == ["equal-k"]
+    assert out["aggregation_method"].unique().tolist() == ["equal-k"]
     assert out.loc[out["strategy"] == "B", "win_rate"].item() == pytest.approx(0.4545454545)
     assert out.loc[out["strategy"] == "A", "win_rate"].item() == pytest.approx(0.6)
     assert out.loc[out["strategy"] == "A", "games"].item() == 30

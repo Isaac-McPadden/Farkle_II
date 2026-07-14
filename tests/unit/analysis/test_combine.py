@@ -67,7 +67,7 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
 
     # run combine
     combine.run(cfg)
-    out = cfg.combine_pooled_dir() / "all_ingested_rows.parquet"
+    out = cfg.combine_combined_dir() / "all_ingested_rows.parquet"
     pf = pq.ParquetFile(out)
     schema = pq.read_schema(out)
 
@@ -81,8 +81,8 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
     assert schema.field("n_rounds").type == pa.int16()
 
     # Invariants: atomic writer leaves only finalized files.
-    assert not list(cfg.combine_pooled_dir().glob("*.tmp"))
-    assert not list(cfg.combine_pooled_dir().glob("*.partial"))
+    assert not list(cfg.combine_combined_dir().glob("*.tmp"))
+    assert not list(cfg.combine_combined_dir().glob("*.partial"))
 
     log = next(rec for rec in capinfo.records if rec.message == "Combine: parquet written")
     assert getattr(log, "stage", None) == "combine"
@@ -128,7 +128,7 @@ def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeyp
     input_path = cfg.ingested_rows_curated(1)
     _write_curated(input_path, schema, [{"winner": "P1"}])
 
-    out_dir = cfg.combine_pooled_dir()
+    out_dir = cfg.combine_combined_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
     pq.write_table(pa.Table.from_pylist([{"winner": "P1"}], schema=schema), out)
@@ -156,7 +156,7 @@ def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeyp
     input_path = cfg.ingested_rows_curated(1)
     _write_curated(input_path, schema, [])
 
-    out_dir = cfg.combine_pooled_dir()
+    out_dir = cfg.combine_combined_dir()
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "all_ingested_rows.parquet"
     out.write_text("stale")
@@ -188,14 +188,14 @@ def test_pad_to_schema_adds_missing_columns():
 
 def test_migrate_combined_output_moves_legacy(tmp_results_dir: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
-    legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "pooled"
+    legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined"
     legacy_dir.mkdir(parents=True, exist_ok=True)
     legacy_file = legacy_dir / "all_ingested_rows.parquet"
     legacy_file.write_text("legacy")
 
     migrated = combine._migrate_combined_output(cfg)
 
-    assert migrated == cfg.combine_pooled_dir() / "all_ingested_rows.parquet"
+    assert migrated == cfg.combine_combined_dir() / "all_ingested_rows.parquet"
     assert migrated.exists()
     assert not legacy_file.exists()
 
@@ -250,7 +250,7 @@ def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: 
     assert partition_done.exists()
 
 
-def test_combine_rerun_replaces_partition_and_pooled_manifests(tmp_results_dir: Path) -> None:
+def test_combine_rerun_replaces_partition_and_combined_manifests(tmp_results_dir: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
     p2 = cfg.ingested_rows_curated(2)
     schema2 = expected_schema_for(2)
@@ -280,10 +280,10 @@ def test_combine_rerun_replaces_partition_and_pooled_manifests(tmp_results_dir: 
     combine.run(cfg)
 
     partition_manifest = cfg.combine_stage_dir / "partition_manifests" / "2p_partition.manifest.jsonl"
-    pooled_manifest = cfg.combined_manifest_path()
+    combined_manifest = cfg.combined_manifest_path()
     partition_lines = partition_manifest.read_text(encoding="utf-8").splitlines()
-    pooled_lines = pooled_manifest.read_text(encoding="utf-8").splitlines()
+    combined_lines = combined_manifest.read_text(encoding="utf-8").splitlines()
 
     assert len([line for line in partition_lines if line.strip()]) == 1
-    assert len([line for line in pooled_lines if line.strip()]) == 1
+    assert len([line for line in combined_lines if line.strip()]) == 1
     check_pre_metrics(cfg.curated_dataset, winner_col="winner_seat")

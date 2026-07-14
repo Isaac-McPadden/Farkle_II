@@ -1,5 +1,5 @@
 # src/farkle/analysis/h2h_tier_trends.py
-"""Join head-to-head S tiers with pooled win-rate trends across player counts."""
+"""Join head-to-head S tiers with combined win-rate trends across player counts."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def run(
 
     meta_paths = _collect_meta_paths(cfg)
     if not meta_paths:
-        stage_log.missing_input("meta pooled summaries missing")
+        stage_log.missing_input("meta combined summaries missing")
         return
 
     stage_dir = cfg.stage_dir("h2h_tier_trends")
@@ -81,7 +81,7 @@ def run(
 
     meta_frame = _load_meta_frames(meta_paths)
     if meta_frame.empty:
-        stage_log.missing_input("meta pooled summaries empty")
+        stage_log.missing_input("meta combined summaries empty")
         return
 
     s_tier_df = pd.DataFrame(
@@ -92,12 +92,12 @@ def run(
         stage_log.missing_input("no overlapping strategies between S tiers and meta")
         return
 
-    pooled_stats = _pooled_across_k(joined)
-    joined = joined.merge(pooled_stats, on="strategy_id", how="left")
+    combined_stats = _combined_across_k(joined)
+    joined = joined.merge(combined_stats, on="strategy_id", how="left")
 
     joined["baseline_rate"] = 1.0 / joined["players"].astype(float)
     joined["delta_vs_baseline"] = joined["win_rate"] - joined["baseline_rate"]
-    joined["delta_vs_pooled"] = joined["win_rate"] - joined["pooled_win_rate"]
+    joined["delta_vs_combined"] = joined["win_rate"] - joined["combined_win_rate"]
 
     ordered = [
         "strategy_id",
@@ -109,11 +109,11 @@ def run(
         "ci_hi",
         "baseline_rate",
         "delta_vs_baseline",
-        "pooled_win_rate",
-        "pooled_se",
-        "pooled_ci_lo",
-        "pooled_ci_hi",
-        "delta_vs_pooled",
+        "combined_win_rate",
+        "combined_se",
+        "combined_ci_lo",
+        "combined_ci_hi",
+        "delta_vs_combined",
         "k_count",
         "Q",
         "I2",
@@ -378,14 +378,14 @@ def _players_from_path(path: Path) -> int:
     return 0
 
 
-def _pooled_across_k(frame: pd.DataFrame) -> pd.DataFrame:
-    """Pool per-``k`` meta win-rate estimates into one row per strategy.
+def _combined_across_k(frame: pd.DataFrame) -> pd.DataFrame:
+    """Combine per-``k`` meta win-rate estimates into one row per strategy.
 
     Args:
         frame: Meta-analysis frame containing per-``k`` win-rate estimates.
 
     Returns:
-        Pooled per-strategy win-rate summary with heterogeneity statistics.
+        Combined per-strategy win-rate summary with heterogeneity statistics.
     """
     rows: list[dict[str, float | int | str]] = []
     for strategy_id, group in frame.groupby("strategy_id", sort=False):
@@ -394,26 +394,26 @@ def _pooled_across_k(frame: pd.DataFrame) -> pd.DataFrame:
         weights = 1.0 / variances
         sum_w = float(weights.sum())
         if sum_w <= 0.0:
-            pooled_rate = float("nan")
-            pooled_se = float("nan")
+            combined_rate = float("nan")
+            combined_se = float("nan")
         else:
-            pooled_rate = float((weights * win_rates).sum() / sum_w)
-            pooled_se = float(math.sqrt(1.0 / sum_w))
+            combined_rate = float((weights * win_rates).sum() / sum_w)
+            combined_se = float(math.sqrt(1.0 / sum_w))
 
-        pooled_ci_lo = max(0.0, pooled_rate - Z_975 * pooled_se)
-        pooled_ci_hi = min(1.0, pooled_rate + Z_975 * pooled_se)
+        combined_ci_lo = max(0.0, combined_rate - Z_975 * combined_se)
+        combined_ci_hi = min(1.0, combined_rate + Z_975 * combined_se)
 
-        Q = float((weights * ((win_rates - pooled_rate) ** 2)).sum())
+        Q = float((weights * ((win_rates - combined_rate) ** 2)).sum())
         df = max(len(win_rates) - 1, 0)
         I2 = max(0.0, (Q - df) / Q) * 100.0 if Q > 0.0 and df > 0 else 0.0
 
         rows.append(
             {
                 "strategy_id": str(strategy_id),
-                "pooled_win_rate": pooled_rate,
-                "pooled_se": pooled_se,
-                "pooled_ci_lo": pooled_ci_lo,
-                "pooled_ci_hi": pooled_ci_hi,
+                "combined_win_rate": combined_rate,
+                "combined_se": combined_se,
+                "combined_ci_lo": combined_ci_lo,
+                "combined_ci_hi": combined_ci_hi,
                 "k_count": int(len(win_rates)),
                 "Q": Q,
                 "I2": I2,

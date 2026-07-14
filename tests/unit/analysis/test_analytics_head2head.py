@@ -610,14 +610,14 @@ def test_maybe_autotune_tiers_handles_missing_and_empty_ratings(
     cfg.analysis.head2head_target_hours = 1.0
     with caplog.at_level("WARNING"):
         head2head._maybe_autotune_tiers(cfg, {})
-    assert "missing pooled ratings" in caplog.text
+    assert "missing combined ratings" in caplog.text
 
     ratings_path = cfg.trueskill_path("ratings_k_weighted.parquet")
     ratings_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(columns=["strategy", "mu", "sigma"]).to_parquet(ratings_path)
     with caplog.at_level("WARNING"):
         head2head._maybe_autotune_tiers(cfg, {})
-    assert "pooled ratings empty" in caplog.text
+    assert "combined ratings empty" in caplog.text
 
 
 def test_maybe_autotune_tiers_uses_configured_throughput_and_candidate_none(
@@ -1032,12 +1032,12 @@ def test_infer_h2h_input_metadata_branches(tmp_path: Path, monkeypatch: pytest.M
         lambda *_: (_ for _ in ()).throw(RuntimeError("boom")),
     )
     meta = h2h_analysis._infer_h2h_input_metadata(pairwise_path)
-    assert meta["pooling_mode"] == "unknown"
+    assert meta["aggregation_mode"] == "unknown"
 
     monkeypatch.undo()
-    pooled_meta = h2h_analysis._infer_h2h_input_metadata(pairwise_path)
-    assert pooled_meta["pooling_mode"] == "pooled"
-    assert pooled_meta["pooled_implied_k"] == 2
+    combined_meta = h2h_analysis._infer_h2h_input_metadata(pairwise_path)
+    assert combined_meta["aggregation_mode"] == "combined"
+    assert combined_meta["combined_implied_k"] == 2
 
     players_path = tmp_path / "players.parquet"
     pd.DataFrame([{"players": 2}, {"players": 4}]).to_parquet(players_path)
@@ -1047,13 +1047,13 @@ def test_infer_h2h_input_metadata_branches(tmp_path: Path, monkeypatch: pytest.M
         lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad read")),
     )
     read_fail_meta = h2h_analysis._infer_h2h_input_metadata(players_path)
-    assert read_fail_meta["pooling_mode"] == "k_stratified"
+    assert read_fail_meta["aggregation_mode"] == "k_stratified"
 
     monkeypatch.undo()
     empty_players_path = tmp_path / "empty_players.parquet"
     pd.DataFrame({"players": []}).to_parquet(empty_players_path)
     empty_meta = h2h_analysis._infer_h2h_input_metadata(empty_players_path)
-    assert empty_meta["pooling_mode"] == "k_stratified"
+    assert empty_meta["aggregation_mode"] == "k_stratified"
     assert empty_meta["k_values"] == []
 
 

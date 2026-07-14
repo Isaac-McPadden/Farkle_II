@@ -110,7 +110,7 @@ def test_load_frequentist_and_trueskill(tmp_path):
     cfg.io.results_dir_prefix = tmp_path / "results"
     players = 2
 
-    assert agreement._load_trueskill(cfg, players, pooled_scope=False) is None
+    assert agreement._load_trueskill(cfg, players, combined_scope=False) is None
     assert agreement._load_frequentist(cfg, players) is None
 
     trueskill_path = cfg.trueskill_stage_dir / f"{players}p" / f"ratings_{players}.parquet"
@@ -142,7 +142,7 @@ def test_load_frequentist_and_trueskill(tmp_path):
     ).to_parquet(freq_path)
     freq_path.with_suffix(".manifest.jsonl").write_text("{}\n")
 
-    trueskill = agreement._load_trueskill(cfg, players, pooled_scope=False)
+    trueskill = agreement._load_trueskill(cfg, players, combined_scope=False)
     frequentist = agreement._load_frequentist(cfg, players)
 
     assert trueskill is not None and frequentist is not None
@@ -180,7 +180,7 @@ def test_load_frequentist_and_trueskill(tmp_path):
         ValueError,
         match="ratings_k_weighted.parquet missing 'strategy' column",
     ):
-        agreement._load_trueskill(cfg, players, pooled_scope=False)
+        agreement._load_trueskill(cfg, players, combined_scope=False)
 
     freq_path.unlink()
     pd.DataFrame({"win_rate": [0.1], "players": [players]}).to_parquet(freq_path)
@@ -229,7 +229,7 @@ def test_resolve_trueskill_seed_paths_deduplicates_alias_outputs(tmp_path: Path)
     payload.to_parquet(stage_dir / "trueskill_2p_seed12.parquet")
     payload.to_parquet(stage_dir / "trueskill_2p_seed13.parquet")
 
-    seed_paths = agreement._resolve_trueskill_seed_paths(cfg, players=2, pooled_scope=False)
+    seed_paths = agreement._resolve_trueskill_seed_paths(cfg, players=2, combined_scope=False)
 
     assert [path.name for path in seed_paths] == [
         "ratings_2_seed12.parquet",
@@ -275,7 +275,7 @@ def test_load_trueskill_mixed_seed_paths_prefers_per_k_and_filters_players(tmp_p
     ).to_parquet(fallback_seed)
     pd.DataFrame({"strategy": ["a"], "players": [players]}).to_parquet(ignored_seed)
 
-    loaded = agreement._load_trueskill(cfg, players, pooled_scope=False)
+    loaded = agreement._load_trueskill(cfg, players, combined_scope=False)
 
     assert loaded is not None
     assert loaded.scores.index.tolist() == ["a", "b"]
@@ -380,38 +380,38 @@ def test_summarize_seed_stability_branch_cases_and_flatten_payload_nested_values
     assert agreement._summarize_seed_stability(disjoint) is None
 
     payload = {
-        "players": "pooled",
-        "comparison_scope": {"mode": "pooled", "meta": {"version": 1}},
+        "players": "combined",
+        "comparison_scope": {"mode": "combined", "meta": {"version": 1}},
         "methods": ["trueskill", "frequentist"],
     }
     flat = agreement._flatten_payload(payload)
 
-    assert flat["players"] == "pooled"
-    assert flat["comparison_scope_mode"] == "pooled"
+    assert flat["players"] == "combined"
+    assert flat["comparison_scope_mode"] == "combined"
     assert flat["comparison_scope_meta_version"] == 1
     assert flat["methods"] == '["trueskill", "frequentist"]'
 
 
-def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, monkeypatch):
+def test_run_writes_per_scope_payload_and_summary_for_two_seed_combined(tmp_path, monkeypatch):
     cfg = agreement.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
     cfg.sim.n_players_list = [2]
-    cfg.analysis.agreement_include_pooled = True
+    cfg.analysis.agreement_include_combined = True
     cfg.sim.seed_list = [11, 22]
 
-    pooled_path = cfg.trueskill_path("ratings_k_weighted.parquet")
-    pooled_path.parent.mkdir(parents=True, exist_ok=True)
+    combined_path = cfg.trueskill_path("ratings_k_weighted.parquet")
+    combined_path.parent.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(
         {
             "strategy": ["a", "b"],
             "mu": [5.0, 4.0],
             "sigma": [1.0, 1.0],
         }
-    ).to_parquet(pooled_path)
+    ).to_parquet(combined_path)
 
     tiers_path = cfg.preferred_tiers_path()
     tiers_path.parent.mkdir(parents=True, exist_ok=True)
-    tiers_path.write_text(json.dumps({"pooled": {"tiers": {"a": 1, "b": 2}}}))
+    tiers_path.write_text(json.dumps({"combined": {"tiers": {"a": 1, "b": 2}}}))
 
     freq_path = cfg.frequentist_path("frequentist_scores_k_weighted.parquet")
     freq_path.parent.mkdir(parents=True, exist_ok=True)
@@ -426,11 +426,11 @@ def test_run_writes_per_scope_payload_and_summary_for_two_seed_pooled(tmp_path, 
 
     agreement.run(cfg)
 
-    per_scope_path = cfg.agreement_output_path_pooled()
+    per_scope_path = cfg.agreement_output_path_combined()
     assert per_scope_path.exists()
     summary_path = cfg.agreement_stage_dir / "agreement_summary.parquet"
     assert summary_path.exists()
 
     summary_df = pd.read_parquet(summary_path)
     assert len(summary_df) == 1
-    assert summary_df.iloc[0]["players"] == "pooled"
+    assert summary_df.iloc[0]["players"] == "combined"

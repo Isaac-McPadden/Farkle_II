@@ -40,7 +40,7 @@ processing, and reuse of helpers under `src/farkle/utils`.
 - `src/farkle/orchestration`: seed-specific config preparation and two-seed
   pipeline coordination.
 - `src/farkle/utils`: atomic writes, manifests, RNG helpers, stats helpers,
-  pooling, schema helpers, streaming loops, logging, stage I/O.
+  aggregation, schema helpers, streaming loops, logging, stage I/O.
 - `tests`: unit and integration tests, with broad coverage but varying evidence
   strength. See `docs/codex_context/testing_and_review_map.md`.
 

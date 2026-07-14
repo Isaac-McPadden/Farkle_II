@@ -93,14 +93,14 @@ def _seed_long_summary_path(cfg: AppConfig, *, seed: int) -> Path:
 
 
 def _seed_weighted_summary_path(cfg: AppConfig, *, seed: int) -> Path:
-    """Resolve the pooled per-seed summary parquet path.
+    """Resolve the combined per-seed summary parquet path.
 
     Args:
         cfg: Application config used to resolve the seed-summaries stage directory.
-        seed: Seed identifier represented by the pooled summary.
+        seed: Seed identifier represented by the combined summary.
 
     Returns:
-        Output path for the pooled per-seed summary parquet.
+        Output path for the combined per-seed summary parquet.
     """
     stage_dir = cfg.seed_summaries_stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
@@ -259,31 +259,31 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             mirrored_path = _sync_meta_summary(cfg, seed_summary, seed_output_path)
             if mirrored_path is not None:
                 mirrored_outputs.append(mirrored_path)
-            pooled_summary = _build_pooled_seed_summary(cfg, seed_summary, seed=int(seed))
-            pooled_output_path = _seed_weighted_summary_path(cfg, seed=int(seed))
-            outputs.append(pooled_output_path)
-            if not pooled_summary.empty:
-                if not force and _existing_summary_matches(pooled_output_path, pooled_summary):
+            combined_summary = _build_combined_seed_summary(cfg, seed_summary, seed=int(seed))
+            combined_output_path = _seed_weighted_summary_path(cfg, seed=int(seed))
+            outputs.append(combined_output_path)
+            if not combined_summary.empty:
+                if not force and _existing_summary_matches(combined_output_path, combined_summary):
                     LOGGER.info(
-                        "Seed pooled summary already up-to-date",
+                        "Seed combined summary already up-to-date",
                         extra={
                             "stage": "seed_summaries",
                             "seed": seed,
-                            "path": str(pooled_output_path),
+                            "path": str(combined_output_path),
                         },
                     )
                 else:
-                    _write_summary(pooled_summary, pooled_output_path)
+                    _write_summary(combined_summary, combined_output_path)
                     LOGGER.info(
-                        "Seed pooled summary written",
+                        "Seed combined summary written",
                         extra={
                             "stage": "seed_summaries",
                             "seed": seed,
-                            "rows": len(pooled_summary),
-                            "path": str(pooled_output_path),
+                            "rows": len(combined_summary),
+                            "path": str(combined_output_path),
                         },
                     )
-                mirrored_path = _sync_meta_summary(cfg, pooled_summary, pooled_output_path)
+                mirrored_path = _sync_meta_summary(cfg, combined_summary, combined_output_path)
                 if mirrored_path is not None:
                     mirrored_outputs.append(mirrored_path)
 
@@ -404,25 +404,25 @@ def _stack_seed_summaries(frames: list[pd.DataFrame], *, seed: int) -> pd.DataFr
     return combined.reset_index(drop=True)
 
 
-def _normalize_pooling_scheme(pooling_scheme: str) -> str:
-    """Normalize pooling scheme names for pooled seed summaries."""
-    normalized = pooling_scheme.strip().lower().replace("_", "-")
+def _normalize_k_aggregation_method(aggregation_method: str) -> str:
+    """Normalize aggregation scheme names for combined seed summaries."""
+    normalized = aggregation_method.strip().lower().replace("_", "-")
     if normalized in {"game-count", "gamecount", "count"}:
         return "game-count"
     if normalized in {"equal-k", "equalk", "equal"}:
         return "equal-k"
     if normalized in {"config", "config-provided", "custom"}:
         return "config"
-    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+    raise ValueError(f"Unknown aggregation scheme: {aggregation_method!r}")
 
 
-def _pooling_weights_for_seed_summary(
+def _k_aggregation_method_for_seed_summary(
     df: pd.DataFrame,
     *,
-    pooling_scheme: str,
+    aggregation_method: str,
     weights_by_k: dict[int, float],
 ) -> pd.Series:
-    """Return per-row weights for pooled seed summaries."""
+    """Return per-row weights for combined seed summaries."""
     games = pd.to_numeric(df["games"], errors="coerce").fillna(0.0)
     players_numeric = pd.to_numeric(df["players"], errors="raise")
     if not np.all(players_numeric.to_numpy(dtype=float) % 1 == 0):
@@ -436,12 +436,12 @@ def _pooling_weights_for_seed_summary(
         k_int = int(k)
         totals_map[k_int] = float(v)
 
-    if pooling_scheme == "game-count":
+    if aggregation_method == "game-count":
         return games.astype(float)
 
-    if pooling_scheme == "equal-k":
+    if aggregation_method == "equal-k":
         def _equal_factor(k: object) -> float:
-            """Resolve the per-row equal-``k`` pooling factor for one player count.
+            """Resolve the per-row equal-``k`` aggregation factor for one player count.
 
             Args:
                 k: Player count key from the grouped summary rows.
@@ -458,16 +458,16 @@ def _pooling_weights_for_seed_summary(
         factors = players.map(_equal_factor)
         return games * factors
 
-    if pooling_scheme == "config":
+    if aggregation_method == "config":
         missing = sorted(set(totals_map) - set(weights_by_k))
         if missing:
             LOGGER.warning(
-                "Missing pooling weights for player counts; treating as zero",
+                "Missing aggregation weights for player counts; treating as zero",
                 extra={"stage": "seed_summaries", "missing": missing},
             )
 
         def _config_factor(k: object) -> float:
-            """Resolve the per-row config pooling factor for one player count.
+            """Resolve the per-row config aggregation factor for one player count.
 
             Args:
                 k: Player count key from the grouped summary rows.
@@ -486,7 +486,7 @@ def _pooling_weights_for_seed_summary(
         factors = players.map(_config_factor)
         return games * factors
 
-    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+    raise ValueError(f"Unknown aggregation scheme: {aggregation_method!r}")
 
 
 def _weighted_means_with_weights(
@@ -499,10 +499,10 @@ def _weighted_means_with_weights(
     weight_values = weights.astype(float)
     positive_weights = weight_values > 0
     weighted_terms: dict[str, pd.Series] = {
-        "pooling_weight_sum": weight_values.where(positive_weights, 0.0)
+        "aggregation_weight_sum": weight_values.where(positive_weights, 0.0)
     }
     aggregation: dict[str, tuple[str, str]] = {
-        "pooling_weight_sum": ("pooling_weight_sum", "sum")
+        "aggregation_weight_sum": ("aggregation_weight_sum", "sum")
     }
     for column in columns:
         values = working_frame[column].astype(float)
@@ -531,13 +531,13 @@ def _weighted_means_with_weights(
     return grouped
 
 
-def _build_pooled_seed_summary(
+def _build_combined_seed_summary(
     cfg: AppConfig,
     frame: pd.DataFrame,
     *,
     seed: int,
 ) -> pd.DataFrame:
-    """Aggregate per-player summaries into pooled rows for a seed."""
+    """Aggregate per-player summaries into combined rows for a seed."""
     if frame.empty:
         return pd.DataFrame(
             columns=[
@@ -548,15 +548,15 @@ def _build_pooled_seed_summary(
                 "win_rate",
                 "ci_lo",
                 "ci_hi",
-                "pooling_scheme",
-                "pooling_weights",
-                "pooling_weight_sum",
+                "aggregation_method",
+                "k_aggregation_method",
+                "aggregation_weight_sum",
             ]
         )
-    pooling_scheme = _normalize_pooling_scheme(cfg.analysis.pooling_weights)
-    weights_by_k = dict(cfg.analysis.pooling_weights_by_k or {})
-    if pooling_scheme == "config" and not weights_by_k:
-        raise ValueError("analysis.pooling_weights_by_k must be set for config pooling")
+    aggregation_method = _normalize_k_aggregation_method(cfg.analysis.k_aggregation_method)
+    weights_by_k = dict(cfg.analysis.k_weights or {})
+    if aggregation_method == "config" and not weights_by_k:
+        raise ValueError("analysis.k_weights must be set for config aggregation")
 
     mean_columns = [c for c in frame.columns if c.endswith("_mean")]
     totals = (
@@ -564,15 +564,15 @@ def _build_pooled_seed_summary(
         .agg({"games": "sum", "wins": "sum"})
         .reset_index()
     )
-    weights = _pooling_weights_for_seed_summary(
+    weights = _k_aggregation_method_for_seed_summary(
         frame,
-        pooling_scheme=pooling_scheme,
+        aggregation_method=aggregation_method,
         weights_by_k=weights_by_k,
     )
     weight_sums = (
         weights.groupby(frame["strategy_id"])
         .sum()
-        .rename("pooling_weight_sum")
+        .rename("aggregation_weight_sum")
         .reset_index()
     )
     if mean_columns:
@@ -580,12 +580,12 @@ def _build_pooled_seed_summary(
         summary = totals.merge(weighted, on="strategy_id", how="left")
     else:
         summary = totals
-    if "pooling_weight_sum" not in summary.columns:
+    if "aggregation_weight_sum" not in summary.columns:
         summary = summary.merge(weight_sums, on="strategy_id", how="left")
 
     summary["seed"] = seed
-    summary["pooling_scheme"] = pooling_scheme
-    summary["pooling_weights"] = (
+    summary["aggregation_method"] = aggregation_method
+    summary["k_aggregation_method"] = (
         "{}" if not weights_by_k else json.dumps(weights_by_k, sort_keys=True)
     )
 
@@ -609,9 +609,9 @@ def _build_pooled_seed_summary(
         "win_rate",
         "ci_lo",
         "ci_hi",
-        "pooling_scheme",
-        "pooling_weights",
-        "pooling_weight_sum",
+        "aggregation_method",
+        "k_aggregation_method",
+        "aggregation_weight_sum",
     ]
     extra_cols = [c for c in summary.columns if c not in ordered]
     return summary[ordered + sorted(extra_cols)]

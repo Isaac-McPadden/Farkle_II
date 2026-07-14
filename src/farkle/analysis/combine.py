@@ -39,7 +39,7 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
 
 
 def _migrate_combined_output(cfg: AppConfig) -> Path:
-    """Move legacy combined outputs into the current pooled location when needed.
+    """Move legacy combined outputs into the current combined location when needed.
 
     Args:
         cfg: Application config used to resolve preferred and legacy paths.
@@ -47,10 +47,10 @@ def _migrate_combined_output(cfg: AppConfig) -> Path:
     Returns:
         Preferred combined parquet path after any legacy migration.
     """
-    preferred_dir = cfg.combine_pooled_dir()
+    preferred_dir = cfg.combine_combined_dir()
     preferred_out = preferred_dir / "all_ingested_rows.parquet"
     legacy_candidates = [
-        cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "pooled" / "all_ingested_rows.parquet",
+        cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined" / "all_ingested_rows.parquet",
         cfg.combine_stage_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
         cfg.analysis_dir / "all_n_players_combined" / "all_ingested_rows.parquet",
         cfg.analysis_dir / "data" / "all_n_players_combined" / "all_ingested_rows.parquet",

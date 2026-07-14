@@ -283,7 +283,7 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
     tiers_path = cfg.preferred_tiers_path()
     if not ratings_path.exists():
         LOGGER.warning(
-            "Tier auto-tune skipped: missing pooled ratings",
+            "Tier auto-tune skipped: missing combined ratings",
             extra={"stage": "head2head", "path": str(ratings_path)},
         )
         return
@@ -291,7 +291,7 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
     df = pd.read_parquet(ratings_path, columns=["strategy", "mu", "sigma"])
     if df.empty:
         LOGGER.warning(
-            "Tier auto-tune skipped: pooled ratings empty",
+            "Tier auto-tune skipped: combined ratings empty",
             extra={"stage": "head2head"},
         )
         return
@@ -401,7 +401,7 @@ def _search_candidate(
     """Search for a z-threshold that meets the runtime budget.
 
     Args:
-        means: Strategy means from pooled ratings.
+        means: Strategy means from combined ratings.
         stdevs: Strategy standard deviations.
         target_hours: Desired runtime budget for head-to-head matches.
         tolerance_pct: Allowed deviation from the runtime target.
@@ -526,7 +526,7 @@ def _calibrate_h2h_games_per_sec(
     """Measure head-to-head throughput using a small sample of games.
 
     Args:
-        ratings_df: Pooled ratings including strategy and mu columns.
+        ratings_df: Combined ratings including strategy and mu columns.
         seed: Seed used to create reproducible game seeds.
         n_jobs: Number of worker processes for simulation.
         sample_games: Number of games to simulate for calibration.

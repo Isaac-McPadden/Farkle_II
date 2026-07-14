@@ -77,7 +77,7 @@ Key files:
 
 ### Combine
 
-Pooled combine outputs are resolved through:
+Combined combine outputs are resolved through:
 
 - `cfg.curated_parquet`
 - `cfg.curated_dataset`
@@ -86,7 +86,7 @@ Pooled combine outputs are resolved through:
 Current preferred locations are under:
 
 ```text
-cfg.stage_dir("combine") / "pooled"
+cfg.stage_dir("combine") / "combined"
 ```
 
 The code supports both:
@@ -104,9 +104,9 @@ Metrics outputs are resolved through:
 
 Common files:
 
-- `pooled/metrics.parquet`
-- `pooled/seat_advantage.csv`
-- `pooled/seat_advantage.parquet`
+- `combined/metrics.parquet`
+- `combined/seat_advantage.csv`
+- `combined/seat_advantage.parquet`
 - `<k>p/<k>p_isolated_metrics.parquet`
 
 ### Coverage and game stats
@@ -131,7 +131,7 @@ canonicalization and fallback logic.
 Common paths:
 
 - `cfg.trueskill_stage_dir`
-- `cfg.trueskill_pooled_dir`
+- `cfg.trueskill_combined_dir`
 - `cfg.frequentist_stage_dir`
 - `cfg.preferred_tiers_path()`
 
@@ -170,7 +170,7 @@ Typical outputs:
 Common paths:
 
 - `cfg.hgb_stage_dir`
-- `cfg.hgb_pooled_dir`
+- `cfg.hgb_combined_dir`
 
 Typical outputs:
 
@@ -193,7 +193,7 @@ Typical outputs include:
 - variance summaries
 - interseed game-stat summaries
 - meta-analysis outputs
-- pooled/interseed TrueSkill outputs
+- combined/interseed TrueSkill outputs
 - agreement outputs
 - `interseed_summary.json`
 

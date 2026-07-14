@@ -22,7 +22,7 @@ Log: `tmp/test_audit.log`
 | Test(s) | Symptom | Owner |
 | --- | --- | --- |
 | `tests/integration/test_metrics_stage.py::test_metrics_run_creates_outputs_and_stamp`, `tests/unit/analysis_light/test_pipeline_stabilizers.py::test_metrics_golden_dataset` | RuntimeError: "metrics: no isolated metric files generated" | Metrics Pipeline |
-| `tests/unit/analysis/test_analytics_run_all.py::*` | Either `FileNotFoundError` for pooled ratings parquet, or logging `extra` uses reserved `module` key causing `KeyError` | Analysis Orchestration |
+| `tests/unit/analysis/test_analytics_run_all.py::*` | Either `FileNotFoundError` for combined ratings parquet, or logging `extra` uses reserved `module` key causing `KeyError` | Analysis Orchestration |
 | `tests/unit/game/test_engine.py::test_smart_discard_counters_non_negative` | Smart discard counter underflows | Game Engine |
 | `tests/unit/game/test_numba_modifications.py::test_decide_final_round_ignores_other_flags` | `decide_final_round` returns `True` unexpectedly | Game Engine / Numba |
 | `tests/unit/simulation/test_run_tournament_metrics.py::*` | Metric chunk counts, checkpoint cadence, and wins-only checkpoints all off from expectations | Simulation Metrics |

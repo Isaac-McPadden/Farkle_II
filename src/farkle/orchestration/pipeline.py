@@ -190,10 +190,10 @@ def analyze_hgb(exp_dir: Path) -> None:
     exp_dir = Path(exp_dir)
     cfg = _config_for_results_dir(exp_dir)
     analysis_dir = cfg.hgb_stage_dir
-    out = cfg.hgb_pooled_dir / "hgb_importance.json"
+    out = cfg.hgb_combined_dir / "hgb_importance.json"
     done = _done_path(out)
     metrics = cfg.metrics_input_path("metrics.parquet")
-    ratings = cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet"
+    ratings = cfg.trueskill_combined_dir / "ratings_k_weighted.parquet"
     if not ratings.exists():
         ratings = cfg.trueskill_stage_dir / "ratings_k_weighted.parquet"
     inputs = [metrics, ratings]
@@ -222,10 +222,10 @@ def analyze_agreement(exp_dir: Path) -> None:
     analysis_dir = cfg.analysis_dir
     ratings = _first_existing(
         [
-            cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet",
+            cfg.trueskill_combined_dir / "ratings_k_weighted.parquet",
             cfg.trueskill_stage_dir / "ratings_k_weighted.parquet",
             analysis_dir / "ratings_k_weighted.parquet",
-            *analysis_dir.glob("*_trueskill/pooled/ratings_k_weighted.parquet"),
+            *analysis_dir.glob("*_trueskill/combined/ratings_k_weighted.parquet"),
             *analysis_dir.glob("*_trueskill/ratings_k_weighted.parquet"),
         ]
     )
@@ -237,8 +237,8 @@ def analyze_agreement(exp_dir: Path) -> None:
     players = _detect_player_counts(analysis_dir)
     cfg.sim.n_players_list = players
     outputs = [cfg.agreement_output_path(p) for p in cfg.agreement_players()]
-    if cfg.agreement_include_pooled():
-        outputs.append(cfg.agreement_output_path_pooled())
+    if cfg.agreement_include_combined():
+        outputs.append(cfg.agreement_output_path_combined())
     done = _done_path(outputs[0])
     inputs = [ratings]
     for candidate in (
@@ -276,7 +276,7 @@ def analyze_agreement(exp_dir: Path) -> None:
 def _detect_player_counts(analysis_dir: Path) -> list[int]:
     """Infer available player counts from existing metrics outputs."""
     metrics_candidates = [
-        *analysis_dir.glob("*_metrics/pooled/metrics.parquet"),
+        *analysis_dir.glob("*_metrics/combined/metrics.parquet"),
         *analysis_dir.glob("*_metrics/metrics.parquet"),
         analysis_dir / "metrics.parquet",
     ]

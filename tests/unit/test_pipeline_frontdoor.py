@@ -215,7 +215,7 @@ def test_analyze_h2h_runs_with_preferred_tiers(tmp_path: Path, monkeypatch: pyte
     assert _done_path(out).exists()
 
 
-def test_analyze_hgb_falls_back_to_stage_ratings_when_pooled_missing(
+def test_analyze_hgb_falls_back_to_stage_ratings_when_combined_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     exp_dir = tmp_path / "exp"
@@ -252,7 +252,7 @@ def test_analyze_agreement_autodetects_players_without_optional_inputs(
     exp_dir.mkdir()
     cfg = AppConfig(io=IOConfig(results_dir_prefix=exp_dir))
 
-    ratings = cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet"
+    ratings = cfg.trueskill_combined_dir / "ratings_k_weighted.parquet"
     ratings.parent.mkdir(parents=True, exist_ok=True)
     ratings.write_text("ratings")
 

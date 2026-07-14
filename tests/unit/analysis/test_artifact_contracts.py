@@ -7,13 +7,13 @@ from tests.helpers.config_factory import make_test_app_config
 from farkle.analysis import (
     agreement,
     coverage_by_k,
+    frequentist_ranking,
     meta,
     metrics,
     reporting,
     run_hgb,
     run_trueskill,
     seed_summaries,
-    frequentist_ranking,
     variance,
 )
 
@@ -144,10 +144,10 @@ def test_seed_summary_artifacts_match_meta_variance_and_reporting_readers(tmp_pa
     meta.run(cfg)
 
     meta_path = cfg.meta_output_path(2, "strategy_summary_2p_meta.parquet")
-    pooled = pd.read_parquet(meta_path)
+    combined = pd.read_parquet(meta_path)
 
     assert meta_path.exists()
-    assert set(pooled.columns) == {
+    assert set(combined.columns) == {
         "strategy_id",
         "players",
         "win_rate",
@@ -156,17 +156,17 @@ def test_seed_summary_artifacts_match_meta_variance_and_reporting_readers(tmp_pa
         "ci_hi",
         "n_seeds",
     }
-    assert set(pooled["strategy_id"]) == {"1", "2"}
-    assert set(pooled["players"]) == {2}
-    assert set(pooled["n_seeds"]) == {2}
+    assert set(combined["strategy_id"]) == {"1", "2"}
+    assert set(combined["players"]) == {2}
+    assert set(combined["n_seeds"]) == {2}
 
 
 def test_trueskill_artifacts_match_agreement_and_hgb_readers(tmp_path) -> None:
     cfg = make_test_app_config(results_dir_prefix=tmp_path / "results")
     per_k_dir = cfg.trueskill_stage_dir / "2p"
-    pooled_dir = cfg.trueskill_pooled_dir
+    combined_dir = cfg.trueskill_combined_dir
     per_k_dir.mkdir(parents=True, exist_ok=True)
-    pooled_dir.mkdir(parents=True, exist_ok=True)
+    combined_dir.mkdir(parents=True, exist_ok=True)
 
     run_trueskill._save_ratings_parquet(
         per_k_dir / "ratings_2.parquet",
@@ -181,16 +181,16 @@ def test_trueskill_artifacts_match_agreement_and_hgb_readers(tmp_path) -> None:
         {"1": (29.0, 3.1), "2": (28.0, 3.4)},
     )
     run_trueskill._save_ratings_parquet(
-        pooled_dir / "ratings_k_weighted_seed101.parquet",
+        combined_dir / "ratings_k_weighted_seed101.parquet",
         {"1": (31.0, 3.0), "2": (27.0, 3.5)},
     )
     run_trueskill._save_ratings_parquet(
-        pooled_dir / "ratings_k_weighted_seed202.parquet",
+        combined_dir / "ratings_k_weighted_seed202.parquet",
         {"1": (29.0, 3.1), "2": (28.0, 3.4)},
     )
 
-    trueskill_data = agreement._load_trueskill(cfg, 2, pooled_scope=False)
-    seed_targets = run_hgb._load_seed_targets(pooled_dir)
+    trueskill_data = agreement._load_trueskill(cfg, 2, combined_scope=False)
+    seed_targets = run_hgb._load_seed_targets(combined_dir)
 
     assert trueskill_data is not None
     assert trueskill_data.scores.index.tolist() == ["1", "2"]
@@ -212,7 +212,7 @@ def test_frequentist_scores_artifact_matches_agreement_reader(tmp_path) -> None:
             {"strategy": 2, "win_rate": 0.38, "mdd_tier": 2},
         ]
     )
-    pooled_winrates = pd.Series({1: 0.62, 2: 0.38}, name="weighted")
+    combined_winrates = pd.Series({1: 0.62, 2: 0.38}, name="weighted")
     winrates_by_players = pd.DataFrame(
         [
             {"strategy": 1, "n_players": 2, "games": 10.0, "win_rate": 0.60},
@@ -225,13 +225,13 @@ def test_frequentist_scores_artifact_matches_agreement_reader(tmp_path) -> None:
     frequentist_ranking._write_frequentist_scores(
         cfg,
         frequentist_tiers,
-        pooled_winrates,
+        combined_winrates,
         winrates_by_players,
         weights_by_k={2: 0.5, 3: 0.5},
     )
 
     players_data = agreement._load_frequentist(cfg, 2)
-    pooled_data = agreement._load_frequentist(cfg, 0)
+    combined_data = agreement._load_frequentist(cfg, 0)
 
     assert players_data is not None
     assert players_data.scores.index.tolist() == ["1", "2"]
@@ -239,7 +239,7 @@ def test_frequentist_scores_artifact_matches_agreement_reader(tmp_path) -> None:
     assert players_data.tiers == {"1": 1, "2": 2}
     assert players_data.per_seed_scores == []
 
-    assert pooled_data is not None
-    assert pooled_data.scores.index.tolist() == ["1", "2"]
-    assert pooled_data.scores.tolist() == [0.62, 0.38]
-    assert pooled_data.tiers == {"1": 1, "2": 2}
+    assert combined_data is not None
+    assert combined_data.scores.index.tolist() == ["1", "2"]
+    assert combined_data.scores.tolist() == [0.62, 0.38]
+    assert combined_data.tiers == {"1": 1, "2": 2}

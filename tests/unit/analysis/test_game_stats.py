@@ -282,16 +282,16 @@ def test_run_writes_per_k_outputs_and_is_idempotent_for_multi_k(tmp_path: Path) 
 
     game_stats.run(cfg)
 
-    pooled_targets = {
+    combined_targets = {
         "game_length.parquet": cfg.game_stats_output_path("game_length.parquet"),
         "margin_stats.parquet": cfg.game_stats_output_path("margin_stats.parquet"),
     }
-    for output_path in pooled_targets.values():
+    for output_path in combined_targets.values():
         assert output_path.exists()
 
     expected_per_k_paths: list[Path] = []
     for k in k_values:
-        for filename in pooled_targets:
+        for filename in combined_targets:
             path = cfg.per_k_subdir("game_stats", k) / filename
             assert path.exists()
             expected_per_k_paths.append(path)
@@ -299,11 +299,11 @@ def test_run_writes_per_k_outputs_and_is_idempotent_for_multi_k(tmp_path: Path) 
             per_k_df = pd.read_parquet(path)
             assert set(per_k_df["n_players"].dropna().astype(int).unique()) <= {k}
 
-            pooled_df = pd.read_parquet(pooled_targets[filename])
-            expected = pooled_df.loc[pooled_df["n_players"] == k].reset_index(drop=True)
+            combined_df = pd.read_parquet(combined_targets[filename])
+            expected = combined_df.loc[combined_df["n_players"] == k].reset_index(drop=True)
             pd.testing.assert_frame_equal(per_k_df.reset_index(drop=True), expected)
 
-    tracked_paths = list(pooled_targets.values()) + expected_per_k_paths
+    tracked_paths = list(combined_targets.values()) + expected_per_k_paths
     before = {path: (path.stat().st_mtime_ns, _hash_file(path)) for path in tracked_paths}
 
     game_stats.run(cfg)
@@ -339,23 +339,23 @@ def test_run_generates_margin_summary_columns_and_histogram_inputs(tmp_path: Pat
     game_stats.run(cfg, force=True)
 
     margin_df = pd.read_parquet(cfg.game_stats_output_path("margin_stats.parquet"))
-    pooled_margin_df = pd.read_parquet(cfg.game_stats_output_path("margin_k_weighted.parquet"))
+    combined_margin_df = pd.read_parquet(cfg.game_stats_output_path("margin_k_weighted.parquet"))
     rare_df = pd.read_parquet(cfg.game_stats_output_path("rare_events.parquet"))
 
     for threshold in (25, 175):
         assert f"prob_margin_runner_up_le_{threshold}" in margin_df.columns
         assert f"prob_score_spread_le_{threshold}" in margin_df.columns
-        assert f"prob_margin_runner_up_le_{threshold}" in pooled_margin_df.columns
-        assert f"prob_score_spread_le_{threshold}" in pooled_margin_df.columns
+        assert f"prob_margin_runner_up_le_{threshold}" in combined_margin_df.columns
+        assert f"prob_score_spread_le_{threshold}" in combined_margin_df.columns
 
     derived_margin_cols = [c for c in rare_df.columns if c.startswith("margin_le_")]
     assert derived_margin_cols == ["margin_le_200"]
 
 
-def test_run_accepts_pooling_scheme_aliases(tmp_path: Path) -> None:
+def test_run_accepts_aggregation_method_aliases(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
     _build_parquet(tmp_path, cfg)
-    cfg.analysis.pooling_weights = "equal_k"
+    cfg.analysis.k_aggregation_method = "equal_k"
 
     game_stats.run(cfg, force=True)
 
@@ -363,12 +363,12 @@ def test_run_accepts_pooling_scheme_aliases(tmp_path: Path) -> None:
     assert cfg.game_stats_output_path("margin_k_weighted.parquet").exists()
 
 
-def test_run_raises_for_invalid_pooling_scheme(tmp_path: Path) -> None:
+def test_run_raises_for_invalid_aggregation_method(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
     _build_parquet(tmp_path, cfg)
-    cfg.analysis.pooling_weights = "invalid-scheme"
+    cfg.analysis.k_aggregation_method = "invalid-scheme"
 
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
         game_stats.run(cfg, force=True)
 
 def test_discover_per_n_inputs_handles_partial_layouts(tmp_path: Path) -> None:
@@ -472,16 +472,16 @@ def test_run_raises_when_per_k_fanout_writer_fails(tmp_path: Path, monkeypatch: 
     assert healthy_stamp.read_text() == healthy_stamp_before
 
 
-def test_run_pooling_alias_and_invalid_via_run(tmp_path: Path) -> None:
+def test_run_aggregation_alias_and_invalid_via_run(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
     _build_parquet(tmp_path, cfg)
 
-    cfg.analysis.pooling_weights = "count"
+    cfg.analysis.k_aggregation_method = "count"
     game_stats.run(cfg, force=True)
     assert cfg.game_stats_output_path("game_length_k_weighted.parquet").exists()
 
-    cfg.analysis.pooling_weights = "definitely-bad"
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
+    cfg.analysis.k_aggregation_method = "definitely-bad"
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
         game_stats.run(cfg, force=True)
 
 

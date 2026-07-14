@@ -3,7 +3,7 @@
 
 Computes lagged autocorrelation for win indicators and game lengths at both
 strategy and matchup-strategy levels. Outputs are written to
-``00_rng/pooled/rng_diagnostics.parquet`` with approximate confidence intervals
+``00_rng/combined/rng_diagnostics.parquet`` with approximate confidence intervals
 and "expected ~0" reminders. When inputs or required columns are missing, the
 module logs a skip instead of raising.
 """

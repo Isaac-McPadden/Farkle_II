@@ -495,8 +495,8 @@ def test_interseed_input_dir_resolution_modes(configured: Path, expected: Path) 
 def test_metrics_input_path_fallback_ordering(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
     name = "metrics.parquet"
-    stage_path = cfg._stage_dir_if_active("metrics", "pooled") / name  # type: ignore[operator]
-    interseed_path = cfg._input_stage_path("metrics", "pooled") / name  # type: ignore[operator]
+    stage_path = cfg._stage_dir_if_active("metrics", "combined") / name  # type: ignore[operator]
+    interseed_path = cfg._input_stage_path("metrics", "combined") / name  # type: ignore[operator]
     legacy_path = cfg.analysis_dir / name
 
     interseed_path.parent.mkdir(parents=True, exist_ok=True)
@@ -521,7 +521,7 @@ def test_meta_input_path_fallback_ordering(tmp_path: Path) -> None:
     name = "meta.json"
     preferred = cfg.meta_per_k_dir(5) / name
     interseed = cfg._input_stage_path("meta", "5p") / name  # type: ignore[operator]
-    legacy_pooled = cfg.meta_pooled_dir / name
+    legacy_combined = cfg.meta_combined_dir / name
 
     preferred.parent.mkdir(parents=True, exist_ok=True)
     preferred.write_text("stage")
@@ -533,14 +533,14 @@ def test_meta_input_path_fallback_ordering(tmp_path: Path) -> None:
     assert cfg.meta_input_path(5, name) == interseed
 
     interseed.unlink()
-    legacy_pooled.parent.mkdir(parents=True, exist_ok=True)
-    legacy_pooled.write_text("legacy-pooled")
-    assert cfg.meta_input_path(5, name) == legacy_pooled
+    legacy_combined.parent.mkdir(parents=True, exist_ok=True)
+    legacy_combined.write_text("legacy-combined")
+    assert cfg.meta_input_path(5, name) == legacy_combined
 
 
 def test_post_h2h_path_fallback_ordering(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    filename = "ratings_pooled.parquet"
+    filename = "ratings_combined.parquet"
     canonical = cfg.canonical_artifact_name(filename)
     post_h2h_stage = cfg._stage_dir_if_active("post_h2h") / canonical  # type: ignore[operator]
     head2head_stage = cfg._stage_dir_if_active("head2head") / canonical  # type: ignore[operator]
@@ -634,7 +634,7 @@ def test_curated_parquet_falls_back_without_curate_stage(tmp_path: Path) -> None
 def test_curated_parquet_prefers_interseed_combine_input(tmp_path: Path) -> None:
     upstream_root = tmp_path / "upstream"
     combine_folder = "02_combine"
-    upstream_curated = upstream_root / combine_folder / "pooled" / "all_ingested_rows.parquet"
+    upstream_curated = upstream_root / combine_folder / "combined" / "all_ingested_rows.parquet"
     upstream_curated.parent.mkdir(parents=True, exist_ok=True)
     upstream_curated.write_text("rows")
 
@@ -718,7 +718,7 @@ def test_results_dir_normalization_via_load_and_overrides(
     [
         ("analysis", "log_level", "NOT_A_LEVEL"),
         ("ingest", "parquet_codec", "zipper"),
-        ("analysis", "pooling_weights", "mystery-weight"),
+        ("analysis", "k_aggregation_method", "mystery-weight"),
     ],
 )
 def test_invalid_enum_codec_and_compression_values(write_yaml, section, key, value) -> None:
@@ -889,14 +889,14 @@ def test_resolve_input_stage_dir_prefers_input_root_then_stage_then_none(tmp_pat
     cfg = AppConfig(
         io=IOConfig(interseed_input_dir=tmp_path / "upstream", interseed_input_layout={"combine": "02_combine"})
     )
-    assert cfg.resolve_input_stage_dir("combine", "pooled") == tmp_path / "upstream" / "02_combine" / "pooled"
+    assert cfg.resolve_input_stage_dir("combine", "combined") == tmp_path / "upstream" / "02_combine" / "combined"
 
     local_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    local_path = local_cfg.resolve_input_stage_dir("combine", "pooled")
+    local_path = local_cfg.resolve_input_stage_dir("combine", "combined")
     assert local_path is not None
     combine_folder = local_cfg.stage_layout.folder_for("combine")
     assert combine_folder is not None
-    assert local_path == local_cfg.analysis_dir / combine_folder / "pooled"
+    assert local_path == local_cfg.analysis_dir / combine_folder / "combined"
 
     assert local_cfg.resolve_input_stage_dir("not_a_stage") is None
 
@@ -921,8 +921,8 @@ def test_interseed_input_candidate_relative_and_fallback(tmp_path: Path) -> None
     combine_folder = cfg.stage_layout.folder_for("combine")
     assert combine_folder is not None
 
-    inside_stage = cfg.analysis_dir / combine_folder / "pooled"
-    assert cfg._interseed_input_candidate(inside_stage, "rows.parquet") == tmp_path / "upstream" / "02_combine" / "pooled" / "rows.parquet"
+    inside_stage = cfg.analysis_dir / combine_folder / "combined"
+    assert cfg._interseed_input_candidate(inside_stage, "rows.parquet") == tmp_path / "upstream" / "02_combine" / "combined" / "rows.parquet"
 
     external = tmp_path / "external"
     assert cfg._interseed_input_candidate(external, "rows.parquet") == tmp_path / "upstream" / "rows.parquet"
@@ -970,15 +970,15 @@ def test_resolve_stage_artifact_path_ordering_for_combine_and_non_combine(tmp_pa
         )
     )
 
-    combine_stage = cfg._stage_dir_if_active("combine", "pooled")
+    combine_stage = cfg._stage_dir_if_active("combine", "combined")
     assert combine_stage is not None
     combine_local = combine_stage / "all_ingested_rows.parquet"
     combine_local.parent.mkdir(parents=True, exist_ok=True)
     combine_local.write_text("local")
-    combine_input = tmp_path / "upstream" / "01_combine" / "pooled" / "all_ingested_rows.parquet"
+    combine_input = tmp_path / "upstream" / "01_combine" / "combined" / "all_ingested_rows.parquet"
     combine_input.parent.mkdir(parents=True, exist_ok=True)
     combine_input.write_text("input")
-    assert cfg._resolve_stage_artifact_path("combine", "all_ingested_rows.parquet", "pooled") == combine_input
+    assert cfg._resolve_stage_artifact_path("combine", "all_ingested_rows.parquet", "combined") == combine_input
 
     frequentist_stage = cfg._stage_dir_if_active("frequentist")
     assert frequentist_stage is not None
@@ -1022,16 +1022,16 @@ def test_preferred_tiers_path_fallback_ordering(tmp_path: Path) -> None:
     assert cfg.preferred_tiers_path() == cfg._resolve_stage_artifact_path("frequentist", "tiers.json")
 
 
-def test_load_app_config_n_players_list_pooled_normalization_and_validation(write_yaml) -> None:
+def test_load_app_config_n_players_list_combined_normalization_and_validation(write_yaml) -> None:
     config = write_yaml(
-        "pooled_players.yaml",
-        {"sim": {"n_players_list": ["pooled", 0, "5"]}},
+        "combined_players.yaml",
+        {"sim": {"n_players_list": ["combined", 0, "5"]}},
     )
 
     cfg = load_app_config(config)
 
     assert cfg.sim.n_players_list == [5]
-    assert cfg.analysis.agreement_include_pooled is True
+    assert cfg.analysis.agreement_include_combined is True
 
     bad_config = write_yaml("bad_players.yaml", {"sim": {"n_players_list": ["abc"]}})
     with pytest.raises(ValueError, match="invalid n_players_list entry"):
@@ -1053,21 +1053,21 @@ def test_load_app_config_rejects_non_sim_bad_section_shape(write_yaml) -> None:
         load_app_config(config)
 
 
-def test_small_properties_cover_pooled_and_trueskill_variants(tmp_path: Path) -> None:
+def test_small_properties_cover_combined_and_trueskill_variants(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
 
-    assert cfg.is_pooled_players("pooled") is True
-    assert cfg.is_pooled_players(0) is True
-    assert cfg.is_pooled_players("not-pooled") is False
+    assert cfg.is_combined_players("combined") is True
+    assert cfg.is_combined_players(0) is True
+    assert cfg.is_combined_players("not-combined") is False
 
-    pooled_path = cfg.agreement_output_path("pooled")
-    assert pooled_path.name in {"agreement_k_weighted.json", "agreement_pooled.json"}
+    combined_path = cfg.agreement_output_path("combined")
+    assert combined_path.name in {"agreement_k_weighted.json", "agreement_combined.json"}
     assert cfg.agreement_output_path(5).name == "agreement_5p.json"
 
-    pooled_trueskill = cfg.trueskill_path("ratings_pooled.parquet")
-    assert pooled_trueskill.name in {"ratings_k_weighted.parquet", "ratings_pooled.parquet"}
-    non_pooled = cfg.trueskill_path("tiers.json")
-    assert non_pooled.name == "tiers.json"
+    combined_trueskill = cfg.trueskill_path("ratings_combined.parquet")
+    assert combined_trueskill.name in {"ratings_k_weighted.parquet", "ratings_combined.parquet"}
+    non_combined = cfg.trueskill_path("tiers.json")
+    assert non_combined.name == "tiers.json"
 
 
 def test_app_config_stage_and_alias_helpers_cover_common_paths(tmp_path: Path) -> None:
@@ -1076,30 +1076,30 @@ def test_app_config_stage_and_alias_helpers_cover_common_paths(tmp_path: Path) -
     assert cfg.ingest_block_dir(5).name == "5p"
     assert cfg.curate_block_dir(5).name == "5p"
     assert cfg.combine_block_dir(5).name == "5p"
-    assert cfg.combine_pooled_dir().name == "pooled"
+    assert cfg.combine_combined_dir().name == "combined"
     assert cfg.metrics_per_k_dir(5).name == "5p"
-    assert cfg.metrics_pooled_dir.name == "pooled"
+    assert cfg.metrics_combined_dir.name == "combined"
 
     assert cfg.game_stats_stage_dir.parent == cfg.analysis_dir
-    assert cfg.game_stats_pooled_dir.name == "pooled"
+    assert cfg.game_stats_combined_dir.name == "combined"
     assert cfg.seed_summaries_stage_dir.parent == cfg.analysis_dir
     assert cfg.seed_summaries_dir(5).name == "5p"
     assert cfg.variance_stage_dir.parent == cfg.analysis_dir
-    assert cfg.variance_pooled_dir.name == "pooled"
+    assert cfg.variance_combined_dir.name == "combined"
     assert cfg.meta_stage_dir.parent == cfg.analysis_dir
-    assert cfg.meta_pooled_dir.name == "pooled"
+    assert cfg.meta_combined_dir.name == "combined"
     assert cfg.agreement_stage_dir.parent == cfg.analysis_dir
     assert cfg.interseed_stage_dir.parent == cfg.analysis_dir
     assert cfg.ingest_stage_dir.parent == cfg.analysis_dir
     assert cfg.combine_stage_dir.parent == cfg.analysis_dir
     assert cfg.metrics_stage_dir.parent == cfg.analysis_dir
     assert cfg.trueskill_stage_dir.parent == cfg.analysis_dir
-    assert cfg.trueskill_pooled_dir.name == "pooled"
+    assert cfg.trueskill_combined_dir.name == "combined"
     assert cfg.head2head_stage_dir.parent == cfg.analysis_dir
     assert cfg.post_h2h_stage_dir.parent == cfg.analysis_dir
     assert cfg.hgb_stage_dir.parent == cfg.analysis_dir
     assert cfg.hgb_per_k_dir(7).name == "7p"
-    assert cfg.hgb_pooled_dir.name == "pooled"
+    assert cfg.hgb_combined_dir.name == "combined"
     assert cfg.frequentist_stage_dir.parent == cfg.analysis_dir
 
     assert cfg.n_dir(5).name == "5_players"
@@ -1119,8 +1119,8 @@ def test_app_config_input_output_helpers_cover_stage_wrappers(tmp_path: Path) ->
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
 
     assert cfg.metrics_output_path("m.parquet").name == "m.parquet"
-    assert cfg.game_stats_output_path("margin_pooled.parquet").name in {
-        "margin_pooled.parquet",
+    assert cfg.game_stats_output_path("margin_combined.parquet").name in {
+        "margin_combined.parquet",
         "margin_k_weighted.parquet",
     }
     assert cfg.game_stats_input_path("stats.parquet").name == "stats.parquet"
@@ -1132,12 +1132,12 @@ def test_app_config_input_output_helpers_cover_stage_wrappers(tmp_path: Path) ->
 def test_metrics_input_path_defaults_to_interseed_then_stage_when_missing(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
 
-    interseed_default = cfg._input_stage_path("metrics", "pooled")
+    interseed_default = cfg._input_stage_path("metrics", "combined")
     assert interseed_default is not None
     assert cfg.metrics_input_path() == interseed_default / cfg.metrics_name
 
     cfg_no_input = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "local_only"))
-    stage_default = cfg_no_input._stage_dir_if_active("metrics", "pooled")
+    stage_default = cfg_no_input._stage_dir_if_active("metrics", "combined")
     assert stage_default is not None
     assert cfg_no_input.metrics_input_path() == stage_default / cfg_no_input.metrics_name
 
@@ -1172,6 +1172,6 @@ def test_rng_paths_when_rng_stage_registered(tmp_path: Path) -> None:
     out_path = cfg.rng_output_path("rng.json")
     out_path.write_text("rng")
 
-    assert cfg.rng_pooled_dir.name == "pooled"
+    assert cfg.rng_combined_dir.name == "combined"
     assert cfg.rng_stage_dir.parent == cfg.analysis_dir
     assert cfg.rng_input_path("rng.json") == out_path

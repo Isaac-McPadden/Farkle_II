@@ -354,17 +354,17 @@ def build_interseed_analysis_plan(
         ts_mod.run(inner_cfg)
 
     def _agreement(inner_cfg: AppConfig) -> None:
-        """Run interseed agreement analysis once pooled ratings are present.
+        """Run interseed agreement analysis once combined ratings are present.
 
         Args:
             inner_cfg: Interseed config passed by the stage runner.
         """
-        ratings_pooled_path = inner_cfg.trueskill_path("ratings_k_weighted.parquet")
-        if not ratings_pooled_path.exists() or ratings_pooled_path.stat().st_size <= 0:
+        ratings_combined_path = inner_cfg.trueskill_path("ratings_k_weighted.parquet")
+        if not ratings_combined_path.exists() or ratings_combined_path.stat().st_size <= 0:
             stage_logger("agreement", logger=LOGGER).missing_input(
-                "missing required TrueSkill pooled ratings input",
+                "missing required TrueSkill combined ratings input",
                 dependency="trueskill.ratings_k_weighted.parquet",
-                path=str(ratings_pooled_path),
+                path=str(ratings_combined_path),
             )
             return
         stage_log = stage_logger("agreement", logger=LOGGER)

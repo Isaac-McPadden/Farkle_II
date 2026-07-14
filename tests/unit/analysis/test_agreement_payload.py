@@ -53,15 +53,15 @@ def test_build_payload_trueskill_errors_and_missing_inputs(tmp_path: Path, monke
     stage_log = _StubStageLog()
 
     monkeypatch.setattr(agreement, "_load_trueskill", lambda *_args, **_kwargs: (_ for _ in ()).throw(FileNotFoundError("not found")))
-    assert agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=cast(Any, stage_log)) is None
+    assert agreement._build_payload(cfg, players=2, combined_scope=False, stage_log=cast(Any, stage_log)) is None
     assert stage_log.missing_calls[-1][0] == "not found"
 
     monkeypatch.setattr(agreement, "_load_trueskill", lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("bad ts")))
-    assert agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=cast(Any, stage_log)) is None
+    assert agreement._build_payload(cfg, players=2, combined_scope=False, stage_log=cast(Any, stage_log)) is None
     assert stage_log.missing_calls[-1][0] == "bad ts"
 
     monkeypatch.setattr(agreement, "_load_trueskill", lambda *_args, **_kwargs: None)
-    assert agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=cast(Any, stage_log)) is None
+    assert agreement._build_payload(cfg, players=2, combined_scope=False, stage_log=cast(Any, stage_log)) is None
     assert stage_log.missing_calls[-1][0] == "missing TrueSkill ratings"
 
 
@@ -88,7 +88,7 @@ def test_build_payload_with_frequentist_error_and_strategy_filtering(tmp_path: P
 
     payload = cast(
         _AgreementPayload,
-        agreement._build_payload(cfg, players=2, pooled_scope=False, stage_log=cast(Any, stage_log)),
+        agreement._build_payload(cfg, players=2, combined_scope=False, stage_log=cast(Any, stage_log)),
     )
 
     assert payload is not None
@@ -101,7 +101,7 @@ def test_build_payload_with_frequentist_error_and_strategy_filtering(tmp_path: P
     assert stage_log.missing_calls[-1][0] == "freq bad"
 
 
-def test_build_payload_pooled_h2h_error_and_missing(tmp_path: Path, monkeypatch) -> None:
+def test_build_payload_combined_h2h_error_and_missing(tmp_path: Path, monkeypatch) -> None:
     cfg = _mk_cfg(tmp_path)
     stage_log = _StubStageLog()
     trueskill_data = MethodData(
@@ -119,7 +119,7 @@ def test_build_payload_pooled_h2h_error_and_missing(tmp_path: Path, monkeypatch)
     )
     payload = cast(
         _AgreementPayload,
-        agreement._build_payload(cfg, players=0, pooled_scope=True, stage_log=cast(Any, stage_log)),
+        agreement._build_payload(cfg, players=0, combined_scope=True, stage_log=cast(Any, stage_log)),
     )
     assert payload is not None
     assert payload["comparison_scope"]["h2h"] is None
@@ -128,7 +128,7 @@ def test_build_payload_pooled_h2h_error_and_missing(tmp_path: Path, monkeypatch)
     monkeypatch.setattr(agreement, "_load_head2head", lambda *_args, **_kwargs: None)
     payload = cast(
         _AgreementPayload,
-        agreement._build_payload(cfg, players=0, pooled_scope=True, stage_log=cast(Any, stage_log)),
+        agreement._build_payload(cfg, players=0, combined_scope=True, stage_log=cast(Any, stage_log)),
     )
     assert payload is not None
     assert payload["comparison_scope"]["h2h"] is None
@@ -137,7 +137,7 @@ def test_build_payload_pooled_h2h_error_and_missing(tmp_path: Path, monkeypatch)
 def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
     cfg = _mk_cfg(tmp_path)
     cfg.sim.n_players_list = [2]
-    cfg.analysis.agreement_include_pooled = True
+    cfg.analysis.agreement_include_combined = True
 
     missing_msgs: list[str] = []
 
@@ -155,8 +155,8 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
     assert missing_msgs[-1] == "no agreement payloads generated"
     assert not (cfg.agreement_stage_dir / "agreement_summary.parquet").exists()
 
-    def _per_k_only(_cfg: agreement.AppConfig, players: int, pooled_scope: bool, **_kwargs: Any):
-        if pooled_scope:
+    def _per_k_only(_cfg: agreement.AppConfig, players: int, combined_scope: bool, **_kwargs: Any):
+        if combined_scope:
             return None
         return {
             "methods": ["trueskill"],
@@ -177,12 +177,12 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
     assert summary.iloc[0]["players"] == 2
     assert cfg.agreement_output_path(2).exists()
 
-    def _pooled_only(_cfg: agreement.AppConfig, players: int, pooled_scope: bool, **_kwargs: Any):
-        if not pooled_scope:
+    def _combined_only(_cfg: agreement.AppConfig, players: int, combined_scope: bool, **_kwargs: Any):
+        if not combined_scope:
             return None
         return {
             "methods": ["trueskill", "h2h"],
-            "comparison_scope": {"mode": "pooled", "h2h": "pooled"},
+            "comparison_scope": {"mode": "combined", "h2h": "combined"},
             "strategy_counts": {"trueskill": 3, "h2h": 3},
             "coverage": {"h2h_vs_trueskill": {"common": 3}},
             "spearman": {"h2h_vs_trueskill": 1.0},
@@ -192,18 +192,18 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
             "seed_stability": {"trueskill": None, "h2h": None},
         }
 
-    monkeypatch.setattr(agreement, "_build_payload", _pooled_only)
+    monkeypatch.setattr(agreement, "_build_payload", _combined_only)
     agreement.run(cfg)
     summary = pd.read_parquet(cfg.agreement_stage_dir / "agreement_summary.parquet")
     assert len(summary) == 1
-    assert summary.iloc[0]["players"] == "pooled"
-    assert cfg.agreement_output_path_pooled().exists()
+    assert summary.iloc[0]["players"] == "combined"
+    assert cfg.agreement_output_path_combined().exists()
 
     cfg.sim.n_players_list = [2, 3]
-    cfg.analysis.agreement_include_pooled = False
+    cfg.analysis.agreement_include_combined = False
 
-    def _both(_cfg: agreement.AppConfig, players: int, pooled_scope: bool, **_kwargs: Any):
-        if pooled_scope:
+    def _both(_cfg: agreement.AppConfig, players: int, combined_scope: bool, **_kwargs: Any):
+        if combined_scope:
             return None
         return {
             "methods": ["trueskill"],
@@ -235,14 +235,14 @@ def test_run_control_flow_variants(tmp_path: Path, monkeypatch) -> None:
 def test_trueskill_resolver_edge_cases(tmp_path: Path) -> None:
     cfg = _mk_cfg(tmp_path)
 
-    assert agreement._resolve_trueskill_per_k_path(cfg, "pooled") is None
+    assert agreement._resolve_trueskill_per_k_path(cfg, "combined") is None
 
     missing_path = agreement._resolve_trueskill_per_k_path(cfg, 4)
     assert missing_path is not None
     assert missing_path.name == "ratings_4.parquet"
 
-    pooled_dir = cfg.trueskill_stage_dir / "pooled"
-    pooled_dir.mkdir(parents=True, exist_ok=True)
+    combined_dir = cfg.trueskill_stage_dir / "combined"
+    combined_dir.mkdir(parents=True, exist_ok=True)
     stage_dir = cfg.trueskill_stage_dir
     stage_dir.mkdir(parents=True, exist_ok=True)
     analysis_dir = cfg.analysis_dir
@@ -255,15 +255,15 @@ def test_trueskill_resolver_edge_cases(tmp_path: Path) -> None:
         stage_dir / "ratings_k_weighted_seed7.parquet"
     )
     pd.DataFrame({"strategy": ["a"], "mu": [3.0]}).to_parquet(
-        pooled_dir / "ratings_k_weighted_seed7.parquet"
+        combined_dir / "ratings_k_weighted_seed7.parquet"
     )
-    (pooled_dir / "ratings_k_weighted_seedBAD.parquet").write_text("ignore")
+    (combined_dir / "ratings_k_weighted_seedBAD.parquet").write_text("ignore")
 
-    pooled_paths = agreement._resolve_trueskill_seed_paths(cfg, players=0, pooled_scope=True)
-    assert len(pooled_paths) == 1
-    assert pooled_paths[0].parent.name == "pooled"
+    combined_paths = agreement._resolve_trueskill_seed_paths(cfg, players=0, combined_scope=True)
+    assert len(combined_paths) == 1
+    assert combined_paths[0].parent.name == "combined"
 
-    assert agreement._resolve_trueskill_seed_paths(cfg, players="pooled", pooled_scope=False) == []
+    assert agreement._resolve_trueskill_seed_paths(cfg, players="combined", combined_scope=False) == []
 
 
 def test_tier_and_rank_and_seed_helpers_degenerate_cases() -> None:

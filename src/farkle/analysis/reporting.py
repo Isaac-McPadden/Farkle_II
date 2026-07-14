@@ -119,7 +119,7 @@ def _meta_artifact_path(cfg: AnalysisConfig | AppConfig, players: int, filename:
             analysis_dir, "meta", layout=layout, filename=Path(f"{players}p") / filename
         ),
         *_stage_candidates(
-            analysis_dir, "meta", layout=layout, filename=Path("pooled") / filename
+            analysis_dir, "meta", layout=layout, filename=Path("combined") / filename
         ),
         analysis_dir / filename,
     ]
@@ -147,14 +147,14 @@ def _tier_path(analysis_dir: Path, layout: StageLayout | None = None) -> Path:
 
 
 def _ratings_path(analysis_dir: Path, layout: StageLayout | None = None) -> Path:
-    """Resolve pooled TrueSkill ratings with stage-aware fallbacks."""
+    """Resolve combined TrueSkill ratings with stage-aware fallbacks."""
 
     candidates = [
         *_stage_candidates(
             analysis_dir,
             "trueskill",
             layout=layout,
-            filename=Path("pooled") / "ratings_k_weighted.parquet",
+            filename=Path("combined") / "ratings_k_weighted.parquet",
         ),
         *_stage_candidates(
             analysis_dir,
@@ -162,7 +162,7 @@ def _ratings_path(analysis_dir: Path, layout: StageLayout | None = None) -> Path
             layout=layout,
             filename=Path("ratings_k_weighted.parquet"),
         ),
-        analysis_dir / "pooled" / "ratings_k_weighted.parquet",
+        analysis_dir / "combined" / "ratings_k_weighted.parquet",
         analysis_dir / "ratings_k_weighted.parquet",
     ]
     return _first_existing(candidates)
@@ -306,7 +306,7 @@ def _extract_scalar(value: object, *, label: str) -> object:
 def _load_ratings(
     analysis_dir: Path, players: int, *, layout: StageLayout | None = None
 ) -> pd.DataFrame:
-    """Load pooled TrueSkill ratings filtered for the requested player count.
+    """Load combined TrueSkill ratings filtered for the requested player count.
 
     Args:
         analysis_dir: Root directory containing analysis outputs.
@@ -345,7 +345,7 @@ def _load_ratings(
 
 
 def _load_meta_summary(cfg: AnalysisConfig | AppConfig, players: int) -> pd.DataFrame:
-    """Load pooled win-rate meta summary if available for ``players``."""
+    """Load combined win-rate meta summary if available for ``players``."""
 
     path = _meta_artifact_path(cfg, players, f"strategy_summary_{players}p_meta.parquet")
     if not path.exists():

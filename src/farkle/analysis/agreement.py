@@ -61,7 +61,7 @@ def run(cfg: AppConfig) -> None:
                     _build_payload,
                     cfg,
                     players=players,
-                    pooled_scope=False,
+                    combined_scope=False,
                     stage_log=stage_log,
                 ): players
                 for players in player_counts
@@ -91,18 +91,18 @@ def run(cfg: AppConfig) -> None:
         )
         summary_rows.append(_flatten_payload(payload))
 
-    if cfg.agreement_include_pooled():
-        payload = _build_payload(cfg, players=0, pooled_scope=True, stage_log=stage_log)
+    if cfg.agreement_include_combined():
+        payload = _build_payload(cfg, players=0, combined_scope=True, stage_log=stage_log)
         if payload is not None:
-            payload["players"] = "pooled"
-            out_path = cfg.agreement_output_path_pooled()
+            payload["players"] = "combined"
+            out_path = cfg.agreement_output_path_combined()
             with atomic_path(str(out_path)) as tmp_path:
                 Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
             LOGGER.info(
                 "Agreement metrics written",
                 extra={
                     "stage": "agreement",
-                    "players": "pooled",
+                    "players": "combined",
                     "path": str(out_path),
                 },
             )
@@ -127,13 +127,13 @@ def run(cfg: AppConfig) -> None:
 
 
 def _build_payload(
-    cfg: AppConfig, players: int, pooled_scope: bool, stage_log: StageLogger
+    cfg: AppConfig, players: int, combined_scope: bool, stage_log: StageLogger
 ) -> dict[str, object] | None:
     """Assemble agreement metrics for the requested player count.
 
     Args:
         cfg: Application configuration with analytics output paths.
-        players: Number of players for which to compute agreement (0 when pooled).
+        players: Number of players for which to compute agreement (0 when combined).
 
     Returns:
         Dictionary of correlation, stability, and coverage metrics keyed by method.
@@ -143,10 +143,10 @@ def _build_payload(
         account for them; ties are only logged for visibility.
     """
     methods: dict[str, MethodData] = {}
-    comparison_scope = "pooled" if pooled_scope else "per_k"
+    comparison_scope = "combined" if combined_scope else "per_k"
 
     try:
-        ts = _load_trueskill(cfg, players, pooled_scope=pooled_scope)
+        ts = _load_trueskill(cfg, players, combined_scope=combined_scope)
     except (FileNotFoundError, ValueError) as exc:
         stage_log.missing_input(str(exc), players=players)
         return None
@@ -156,7 +156,7 @@ def _build_payload(
             players=players,
             path=(
                 str(cfg.trueskill_path("ratings_k_weighted.parquet"))
-                if pooled_scope
+                if combined_scope
                 else f"{players}p ratings parquet"
             ),
         )
@@ -171,7 +171,7 @@ def _build_payload(
         if freq is not None:
             methods["frequentist"] = freq
 
-    if pooled_scope:
+    if combined_scope:
         try:
             h2h = _load_head2head(cfg)
         except ValueError as exc:
@@ -205,9 +205,9 @@ def _build_payload(
         "methods": sorted(methods),
         "comparison_scope": {
             "mode": comparison_scope,
-            "trueskill": "pooled" if pooled_scope else f"{players}p",
-            "frequentist": "pooled" if pooled_scope else f"{players}p",
-            "h2h": "pooled" if pooled_scope and "h2h" in methods else None,
+            "trueskill": "combined" if combined_scope else f"{players}p",
+            "frequentist": "combined" if combined_scope else f"{players}p",
+            "h2h": "combined" if combined_scope and "h2h" in methods else None,
         },
         "strategy_counts": {name: int(len(data.scores)) for name, data in methods.items()},
         "coverage": coverage or None,
@@ -220,20 +220,20 @@ def _build_payload(
 
 
 def _load_trueskill(
-    cfg: AppConfig, players: int | str, *, pooled_scope: bool = False
+    cfg: AppConfig, players: int | str, *, combined_scope: bool = False
 ) -> MethodData | None:
     """Load TrueSkill ratings and optional tiers for a given player count.
 
     Args:
         cfg: Application configuration used to locate outputs.
-        players: Number of players to filter the ratings to, or pooled sentinel.
+        players: Number of players to filter the ratings to, or combined sentinel.
 
     Returns:
         Prepared ``MethodData`` or ``None`` when no ratings are available.
     """
     path = (
         cfg.trueskill_path("ratings_k_weighted.parquet")
-        if pooled_scope
+        if combined_scope
         else _resolve_trueskill_per_k_path(cfg, players)
     )
     if path is None or not path.exists():
@@ -253,7 +253,7 @@ def _load_trueskill(
     tiers = tier_mapping_from_payload(tiers_payload, prefer=str(players)) or None
 
     per_seed: list[pd.Series] = []
-    seed_candidates = _resolve_trueskill_seed_paths(cfg, players, pooled_scope=pooled_scope)
+    seed_candidates = _resolve_trueskill_seed_paths(cfg, players, combined_scope=combined_scope)
     for seed_path in sorted(seed_candidates):
         seed_df = pd.read_parquet(seed_path)
         seed_df = _filter_by_players(seed_df, players)
@@ -268,7 +268,7 @@ def _load_trueskill(
 
 def _resolve_trueskill_per_k_path(cfg: AppConfig, players: int | str) -> Path | None:
     """Locate per-player TrueSkill ratings parquet for a given player count."""
-    if AppConfig.is_pooled_players(players):
+    if AppConfig.is_combined_players(players):
         return None
     players_int = int(players)
     stage_dir = cfg.stage_dir_if_active("trueskill")
@@ -289,27 +289,27 @@ def _resolve_trueskill_per_k_path(cfg: AppConfig, players: int | str) -> Path | 
 
 
 def _resolve_trueskill_seed_paths(
-    cfg: AppConfig, players: int | str, *, pooled_scope: bool
+    cfg: AppConfig, players: int | str, *, combined_scope: bool
 ) -> list[Path]:
     """Collect candidate TrueSkill seed parquet paths for a scope."""
     seed_candidates: list[Path] = []
-    if pooled_scope:
+    if combined_scope:
         seed_candidates.extend(cfg.analysis_dir.glob("ratings_k_weighted_seed*.parquet"))
-        trueskill_pooled_dir = cfg.stage_dir_if_active("trueskill", "pooled")
-        if trueskill_pooled_dir is not None:
-            seed_candidates.extend(trueskill_pooled_dir.glob("ratings_k_weighted_seed*.parquet"))
+        trueskill_combined_dir = cfg.stage_dir_if_active("trueskill", "combined")
+        if trueskill_combined_dir is not None:
+            seed_candidates.extend(trueskill_combined_dir.glob("ratings_k_weighted_seed*.parquet"))
         trueskill_stage_dir = cfg.stage_dir_if_active("trueskill")
         if trueskill_stage_dir is not None:
             seed_candidates.extend(trueskill_stage_dir.glob("ratings_k_weighted_seed*.parquet"))
         return _select_seed_paths(
             seed_candidates,
             key_fn=lambda path: (
-                0 if path.parent.name == "pooled" else 1,
+                0 if path.parent.name == "combined" else 1,
                 str(path),
             ),
         )
 
-    if AppConfig.is_pooled_players(players):
+    if AppConfig.is_combined_players(players):
         return []
     players_int = int(players)
     stage_dir = cfg.stage_dir_if_active("trueskill")
@@ -394,7 +394,7 @@ def _load_frequentist(cfg: AppConfig, players: int | str) -> MethodData | None:
 
     Args:
         cfg: Application configuration used to locate frequentist outputs.
-        players: Number of players to filter the scores to, or pooled sentinel.
+        players: Number of players to filter the scores to, or combined sentinel.
 
     Returns:
         Populated ``MethodData`` or ``None`` when the file is absent or empty.
@@ -481,19 +481,19 @@ def _filter_by_players(df: pd.DataFrame, players: int | str) -> pd.DataFrame:
 
     Args:
         df: Source DataFrame containing a players column.
-        players: Expected number of players, or pooled sentinel.
+        players: Expected number of players, or combined sentinel.
 
     Returns:
         Filtered DataFrame containing only rows that match ``players``.
     """
     if "players" not in df.columns and "n_players" in df.columns:
         df = df.rename(columns={"n_players": "players"})
-    if AppConfig.is_pooled_players(players):
+    if AppConfig.is_combined_players(players):
         if "players" not in df.columns:
             return df
         mask = df["players"].astype(int) == 0
         if not mask.any():
-            raise ValueError("pooled agreement requested, but no players == 0 rows found")
+            raise ValueError("combined agreement requested, but no players == 0 rows found")
         return df.loc[mask]
     if "players" in df.columns:
         mask = df["players"].astype(int) == int(players)

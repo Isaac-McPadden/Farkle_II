@@ -17,7 +17,7 @@ def _write_curated(path: Path, schema: pa.Schema, rows: list[dict[str, object]])
 
 def test_migrate_combined_output_moves_manifest_when_present(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "pooled"
+    legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined"
     legacy_dir.mkdir(parents=True, exist_ok=True)
     legacy_file = legacy_dir / "all_ingested_rows.parquet"
     legacy_manifest = legacy_file.with_suffix(".manifest.jsonl")

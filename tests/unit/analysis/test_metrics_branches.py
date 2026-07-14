@@ -199,16 +199,16 @@ def test_run_stage_up_to_date_permutations(tmp_path, monkeypatch):
     assert "compute_seat_metrics" in calls
 
 
-def test_normalize_pooling_scheme_aliases_and_invalid():
-    assert metrics._normalize_pooling_scheme(" game_count ") == "game-count"
-    assert metrics._normalize_pooling_scheme("EQUAL") == "equal-k"
-    assert metrics._normalize_pooling_scheme("config-provided") == "config"
+def test_normalize_k_aggregation_method_aliases_and_invalid():
+    assert metrics._normalize_k_aggregation_method(" game_count ") == "game-count"
+    assert metrics._normalize_k_aggregation_method("EQUAL") == "equal-k"
+    assert metrics._normalize_k_aggregation_method("config-provided") == "config"
 
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
-        metrics._normalize_pooling_scheme("mystery")
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
+        metrics._normalize_k_aggregation_method("mystery")
 
 
-def test_pooling_weights_for_metrics_variants_and_warning(caplog):
+def test_k_aggregation_method_for_metrics_variants_and_warning(caplog):
     frame = pd.DataFrame(
         {
             "n_players": [2, 2, 3],
@@ -216,30 +216,30 @@ def test_pooling_weights_for_metrics_variants_and_warning(caplog):
         }
     )
 
-    game_count = metrics._pooling_weights_for_metrics(
-        frame, pooling_scheme="game-count", weights_by_k={}
+    game_count = metrics._k_aggregation_method_for_metrics(
+        frame, aggregation_method="game-count", weights_by_k={}
     )
     assert game_count.tolist() == [10.0, 30.0, 5.0]
 
-    equal_k = metrics._pooling_weights_for_metrics(frame, pooling_scheme="equal-k", weights_by_k={})
+    equal_k = metrics._k_aggregation_method_for_metrics(frame, aggregation_method="equal-k", weights_by_k={})
     assert equal_k.tolist() == [0.25, 0.75, 1.0]
 
     with caplog.at_level("WARNING"):
-        config_weights = metrics._pooling_weights_for_metrics(
-            frame, pooling_scheme="config", weights_by_k={2: 2.0}
+        config_weights = metrics._k_aggregation_method_for_metrics(
+            frame, aggregation_method="config", weights_by_k={2: 2.0}
         )
-    assert "Missing pooling weights" in caplog.text
+    assert "Missing aggregation weights" in caplog.text
     assert config_weights.tolist() == [0.5, 1.5, 0.0]
 
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
-        metrics._pooling_weights_for_metrics(frame, pooling_scheme="invalid", weights_by_k={})
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
+        metrics._k_aggregation_method_for_metrics(frame, aggregation_method="invalid", weights_by_k={})
 
 
 def test_compute_weighted_metrics_empty_missing_config_and_zero_weight_rows():
     cfg_config = make_test_app_config()
-    cfg_config.analysis.pooling_weights = "config"
-    cfg_config.analysis.pooling_weights_by_k = None
-    with pytest.raises(ValueError, match="pooling_weights_by_k must be set"):
+    cfg_config.analysis.k_aggregation_method = "config"
+    cfg_config.analysis.k_weights = None
+    with pytest.raises(ValueError, match="k_weights must be set"):
         metrics._compute_weighted_metrics(
             pd.DataFrame(
                 {
@@ -258,7 +258,7 @@ def test_compute_weighted_metrics_empty_missing_config_and_zero_weight_rows():
     out_empty = metrics._compute_weighted_metrics(
         pd.DataFrame(),
         make_test_app_config(
-            analysis=AnalysisConfig(pooling_weights="equal-k", pooling_weights_by_k={})
+            analysis=AnalysisConfig(k_aggregation_method="equal-k", k_weights={})
         ),
     )
     assert out_empty.empty
@@ -277,7 +277,7 @@ def test_compute_weighted_metrics_empty_missing_config_and_zero_weight_rows():
     out = metrics._compute_weighted_metrics(
         frame,
         make_test_app_config(
-            analysis=AnalysisConfig(pooling_weights="game-count", pooling_weights_by_k={})
+            analysis=AnalysisConfig(k_aggregation_method="game-count", k_weights={})
         ),
     )
     assert out["strategy"].tolist() == ["B"]
@@ -293,7 +293,7 @@ def test_weighted_mean_masks_non_finite_and_returns_nan_for_no_valid_samples():
     assert np.isnan(no_valid)
 
 
-def test_pooled_value_columns_excludes_non_numeric_and_counters():
+def test_combined_value_columns_excludes_non_numeric_and_counters():
     frame = pd.DataFrame(
         {
             "strategy": ["A"],
@@ -309,7 +309,7 @@ def test_pooled_value_columns_excludes_non_numeric_and_counters():
         }
     )
 
-    cols = metrics._pooled_value_columns(frame)
+    cols = metrics._combined_value_columns(frame)
     assert "expected_score" in cols
     assert "win_rate" in cols
     assert "custom_metric" in cols

@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from farkle.utils.pooling import normalize_pooling_scheme
+from farkle.utils.aggregation import normalize_k_aggregation_method
 from farkle.utils.stage_io import (
     discover_per_k_artifacts,
     resolve_worker_count,
@@ -12,13 +12,13 @@ from farkle.utils.stage_io import (
 )
 
 
-def test_normalize_pooling_scheme_aliases_and_invalid() -> None:
-    assert normalize_pooling_scheme("game-count") == "game-count"
-    assert normalize_pooling_scheme("GameCount") == "game-count"
-    assert normalize_pooling_scheme("equal_k") == "equal-k"
-    assert normalize_pooling_scheme("custom") == "config"
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
-        normalize_pooling_scheme("mystery")
+def test_normalize_k_aggregation_method_aliases_and_invalid() -> None:
+    assert normalize_k_aggregation_method("game-count") == "game-count"
+    assert normalize_k_aggregation_method("GameCount") == "game-count"
+    assert normalize_k_aggregation_method("equal_k") == "equal-k"
+    assert normalize_k_aggregation_method("custom") == "config"
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
+        normalize_k_aggregation_method("mystery")
 
 
 def test_resolve_worker_count_bounds_to_item_count(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -81,7 +81,7 @@ def test_metric_helpers_handle_edge_cases():
 
 
 def test_load_seed_targets_collects_seed_metadata(tmp_path):
-    seeds_dir = tmp_path / "pooled"
+    seeds_dir = tmp_path / "combined"
     seeds_dir.mkdir()
 
     for seed in (1, 2):
@@ -95,7 +95,7 @@ def test_load_seed_targets_collects_seed_metadata(tmp_path):
 
 
 def test_load_seed_targets_returns_empty_when_missing_or_nonmatching(tmp_path):
-    seeds_dir = tmp_path / "pooled"
+    seeds_dir = tmp_path / "combined"
     seeds_dir.mkdir()
     pd.DataFrame({"strategy": ["A"], "mu": [1.0]}).to_parquet(
         seeds_dir / "ratings_k_weighted.parquet"

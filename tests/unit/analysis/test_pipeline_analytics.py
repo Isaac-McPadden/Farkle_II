@@ -37,7 +37,7 @@ def _setup(tmp_path: Path) -> tuple[Path, AppConfig]:
     metrics_path = cfg.metrics_output_path("metrics.parquet")
     metrics_df.to_parquet(metrics_path)
     ratings_df = pd.DataFrame({"strategy": ["A", "B"], "mu": [1.0, 0.5], "sigma": [1.0, 1.0]})
-    ratings_path = cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet"
+    ratings_path = cfg.trueskill_combined_dir / "ratings_k_weighted.parquet"
     ratings_path.parent.mkdir(parents=True, exist_ok=True)
     ratings_df.to_parquet(ratings_path)
     tiers = cfg.preferred_tiers_path()
@@ -147,6 +147,6 @@ def test_interseed_agreement_logs_missing_trueskill_dependency(
         record
         for record in caplog.records
         if getattr(record, "stage", None) == "agreement"
-        and getattr(record, "reason", None) == "missing required TrueSkill pooled ratings input"
+        and getattr(record, "reason", None) == "missing required TrueSkill combined ratings input"
     ]
     assert matching

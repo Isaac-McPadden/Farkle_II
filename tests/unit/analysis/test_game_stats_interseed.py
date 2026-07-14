@@ -142,7 +142,7 @@ def test_seed_input_paths_resolves_preferred_and_legacy_stage_folder(
         )
 
     seed_dir = tmp_path / "seed_analysis"
-    target = seed_dir / stage_folder / "pooled" / "game_length_stats.parquet"
+    target = seed_dir / stage_folder / "combined" / "game_length_stats.parquet"
     target.parent.mkdir(parents=True)
     target.write_text("marker")
 

@@ -212,7 +212,7 @@ def test_clean_variances_handles_nan_and_nonpositive_values() -> None:
     assert cleaned[-1] == pytest.approx(0.2)
 
 
-def test_pooled_across_k_zero_weight_and_heterogeneity_metrics() -> None:
+def test_combined_across_k_zero_weight_and_heterogeneity_metrics() -> None:
     frame = pd.DataFrame(
         [
             {"strategy_id": "nanw", "players": 2, "win_rate": 0.3, "se": math.inf},
@@ -222,16 +222,16 @@ def test_pooled_across_k_zero_weight_and_heterogeneity_metrics() -> None:
         ]
     )
 
-    pooled = h2h_tier_trends._pooled_across_k(frame).set_index("strategy_id")
+    combined = h2h_tier_trends._combined_across_k(frame).set_index("strategy_id")
 
-    assert is_na(pooled.loc["nanw", "pooled_win_rate"])
-    assert is_na(pooled.loc["nanw", "pooled_se"])
+    assert is_na(combined.loc["nanw", "combined_win_rate"])
+    assert is_na(combined.loc["nanw", "combined_se"])
 
-    assert pooled.loc["het", "Q"] == 18.0
-    assert pooled.loc["het", "I2"] == ((18.0 - 1.0) / 18.0) * 100.0
+    assert combined.loc["het", "Q"] == 18.0
+    assert combined.loc["het", "I2"] == ((18.0 - 1.0) / 18.0) * 100.0
 
 
-def test_pooled_across_k_i2_falls_back_to_zero_when_df_or_q_zero() -> None:
+def test_combined_across_k_i2_falls_back_to_zero_when_df_or_q_zero() -> None:
     frame = pd.DataFrame(
         [
             {"strategy_id": "single", "players": 2, "win_rate": 0.6, "se": 0.1},
@@ -239,23 +239,23 @@ def test_pooled_across_k_i2_falls_back_to_zero_when_df_or_q_zero() -> None:
             {"strategy_id": "flat", "players": 3, "win_rate": 0.4, "se": 0.1},
         ]
     )
-    pooled = h2h_tier_trends._pooled_across_k(frame).set_index("strategy_id")
+    combined = h2h_tier_trends._combined_across_k(frame).set_index("strategy_id")
 
-    assert pooled.loc["single", "I2"] == 0.0
-    assert pooled.loc["flat", "Q"] == pytest.approx(0.0)
-    assert pooled.loc["flat", "I2"] == 0.0
+    assert combined.loc["single", "I2"] == 0.0
+    assert combined.loc["flat", "Q"] == pytest.approx(0.0)
+    assert combined.loc["flat", "I2"] == 0.0
 
 
 @pytest.mark.parametrize(
     ("s_tiers", "meta_paths", "meta_frame", "expected_reason"),
     [
         ({}, [Path("unused.parquet")], pd.DataFrame([{"strategy_id": "1", "players": 2, "win_rate": 0.5}]), "h2h_s_tiers.json empty"),
-        ({"1": "S"}, [], pd.DataFrame([{"strategy_id": "1", "players": 2, "win_rate": 0.5}]), "meta pooled summaries missing"),
+        ({"1": "S"}, [], pd.DataFrame([{"strategy_id": "1", "players": 2, "win_rate": 0.5}]), "meta combined summaries missing"),
         (
             {"1": "S"},
             [Path("meta.parquet")],
             pd.DataFrame(columns=["strategy_id", "players", "win_rate", "se", "ci_lo", "ci_hi"]),
-            "meta pooled summaries empty",
+            "meta combined summaries empty",
         ),
         (
             {"9": "S"},

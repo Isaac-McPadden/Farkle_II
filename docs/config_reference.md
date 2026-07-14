@@ -11,16 +11,16 @@ the CLI and orchestration code.
   Simulation seeds, player counts, strategy grid, worker counts, and progress
   settings.
 - `analysis`
-  Analysis-stage behavior, logging, pooling, rare-event settings, and optional
+  Analysis-stage behavior, logging, aggregation, rare-event settings, and optional
   interseed inputs.
 - `ingest`
   Streaming parquet write settings for ingestion.
 - `combine`
-  Settings for pooled combined row outputs.
+  Settings for combined combined row outputs.
 - `metrics`
   Metric-computation settings such as seat ranges.
 - `trueskill`
-  TrueSkill hyperparameters and pooled weighting overrides.
+  TrueSkill hyperparameters and combined weighting overrides.
 - `head2head`
   Head-to-head simulation and post-processing settings.
 - `hgb`
@@ -59,10 +59,10 @@ the CLI and orchestration code.
 - `n_jobs`
 - `disable_rng_diagnostics`
 - `agreement_strategies`
-- `agreement_include_pooled`
+- `agreement_include_combined`
 - `game_stats_margin_thresholds`
-- `pooling_weights`
-- `pooling_weights_by_k`
+- `k_aggregation_method`
+- `k_weights`
 - `rare_event_target_score`
 - `rare_event_margin_quantile`
 - `rare_event_target_rate`

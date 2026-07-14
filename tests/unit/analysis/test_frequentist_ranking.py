@@ -437,7 +437,7 @@ def test_frequentist_ranking_helper_branch_coverage_and_run_happy_path(
     assert prepared.weights_by_k is not None
     assert prepared.weights_by_k == {2: pytest.approx(2 / 3), 4: pytest.approx(1 / 3)}
 
-    # _prepare_inputs: zero-sum weights should disable weighted pooling.
+    # _prepare_inputs: zero-sum weights should disable weighted aggregation.
     cfg.analysis.frequentist_weights_by_k = {2: 0.0, 4: 0.0}
     prepared_zero = frequentist_ranking._prepare_inputs(cfg)
     assert prepared_zero.weights_by_k is None

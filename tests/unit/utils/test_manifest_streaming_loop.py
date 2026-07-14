@@ -435,7 +435,7 @@ def test_run_streaming_shard_manifest_outside_dir_uses_absolute(tmp_path, monkey
 def test_run_streaming_shard_manifest_sibling_relative_path_is_preserved(tmp_path, monkeypatch):
     table = pa.table({"value": [1]})
     schema = table.schema
-    out_path = tmp_path / "pooled" / "10p_part-00000.parquet"
+    out_path = tmp_path / "combined" / "10p_part-00000.parquet"
     manifest_path = tmp_path / "partition_manifests" / "10p_partition.manifest.ndjson"
 
     class DummyWriter:
@@ -459,7 +459,7 @@ def test_run_streaming_shard_manifest_sibling_relative_path_is_preserved(tmp_pat
 
     def fake_relpath(path, start=os.curdir) -> str:
         del path, start
-        return r"..\pooled\10p_part-00000.parquet"
+        return r"..\combined\10p_part-00000.parquet"
 
     monkeypatch.setattr(os.path, "relpath", fake_relpath)
 
@@ -478,7 +478,7 @@ def test_run_streaming_shard_manifest_sibling_relative_path_is_preserved(tmp_pat
     )
 
     assert manifest_calls
-    assert manifest_calls[0][1]["path"] == "../pooled/10p_part-00000.parquet"
+    assert manifest_calls[0][1]["path"] == "../combined/10p_part-00000.parquet"
 
 def test_writer_thread_stops_on_first_sentinel(monkeypatch):
     table = pa.table({"value": [1]})

@@ -5,12 +5,12 @@ Reads curated row-level parquet files (per-``n`` shards and the combined
 superset) and aggregates the ``n_rounds`` column. Outputs both per-strategy
 statistics and a small global summary grouped by ``n_players``.
 
-The module also flags close margins and multi-target games, emitting pooled
-artifacts under ``04_game_stats/pooled`` with per-game records plus aggregated
+The module also flags close margins and multi-target games, emitting combined
+artifacts under ``04_game_stats/combined`` with per-game records plus aggregated
 frequencies per strategy and player-count cohort.
 
 The module also derives per-game ``margin_runner_up`` and ``score_spread`` from
-seat-level scores and writes ``04_game_stats/pooled/margin_stats.parquet`` with
+seat-level scores and writes ``04_game_stats/combined/margin_stats.parquet`` with
 per-``(strategy, n_players)`` summaries. Margin schema:
 
 ``summary_level``
@@ -54,9 +54,9 @@ from pandas._typing import Scalar
 from farkle.analysis import stage_logger
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.config import AppConfig
+from farkle.utils.aggregation import normalize_k_aggregation_method
 from farkle.utils.analysis_shared import to_int
 from farkle.utils.artifacts import write_parquet_atomic
-from farkle.utils.pooling import normalize_pooling_scheme
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.stage_io import discover_per_k_artifacts, resolve_worker_count
@@ -92,7 +92,7 @@ class _UnweightedAccumulator:
 
 @dataclass(slots=True)
 class _WeightedAccumulator:
-    """Track weighted sums and histogram mass for pooled strategy metrics."""
+    """Track weighted sums and histogram mass for combined strategy metrics."""
 
     count: int = 0
     weight_total: float = 0.0
@@ -126,7 +126,7 @@ def _per_k_game_stats_paths(stage_dir: Path, k: int) -> tuple[Path, Path]:
 
 
 def _per_k_game_stats_pool_marker(stage_dir: Path) -> Path:
-    return stage_dir / "pooled" / "game_stats.pool.done.json"
+    return stage_dir / "combined" / "game_stats.aggregate.done.json"
 
 
 def _write_per_k_game_length(
@@ -432,7 +432,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     workers = min(max(1, _resolve_analysis_workers(cfg)), max(1, len(configured_k_values)))
     stage_config_sha = cfg.stage_config_sha("game_stats")
     cache_key_version = cfg.stage_cache_key_version("game_stats")
-    _normalize_pooling_scheme(cfg.analysis.pooling_weights)
+    _normalize_k_aggregation_method(cfg.analysis.k_aggregation_method)
     stale_ks: list[int] = []
     for k in configured_k_values:
         artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
@@ -504,18 +504,18 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     game_length_output = cfg.game_stats_output_path("game_length.parquet")
     margin_output = cfg.game_stats_output_path("margin_stats.parquet")
-    pooled_game_length_output = cfg.game_stats_output_path("game_length_k_weighted.parquet")
-    pooled_margin_output = cfg.game_stats_output_path("margin_k_weighted.parquet")
-    pooled_stamp = _per_k_game_stats_pool_marker(stage_dir)
+    combined_game_length_output = cfg.game_stats_output_path("game_length_k_weighted.parquet")
+    combined_margin_output = cfg.game_stats_output_path("margin_k_weighted.parquet")
+    combined_stamp = _per_k_game_stats_pool_marker(stage_dir)
 
     _pool_completed_k_game_stats(
         configured_k_values=configured_k_values,
         stage_dir=stage_dir,
         game_length_output=game_length_output,
         margin_output=margin_output,
-        pooled_game_length_output=pooled_game_length_output,
-        pooled_margin_output=pooled_margin_output,
-        pooled_stamp=pooled_stamp,
+        combined_game_length_output=combined_game_length_output,
+        combined_margin_output=combined_margin_output,
+        combined_stamp=combined_stamp,
         codec=cfg.parquet_codec,
         config_sha=cfg.config_sha,
         stage_config_sha=stage_config_sha,
@@ -604,8 +604,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         outputs=[
             game_length_output,
             margin_output,
-            pooled_game_length_output,
-            pooled_margin_output,
+            combined_game_length_output,
+            combined_margin_output,
             rare_events_output,
             *[
                 cfg.per_k_subdir("game_stats", k) / "game_length.parquet"
@@ -936,30 +936,30 @@ def _pool_completed_k_game_stats(
     stage_dir: Path,
     game_length_output: Path,
     margin_output: Path,
-    pooled_game_length_output: Path,
-    pooled_margin_output: Path,
-    pooled_stamp: Path,
+    combined_game_length_output: Path,
+    combined_margin_output: Path,
+    combined_stamp: Path,
     codec: Compression,
     config_sha: str | None,
     stage_config_sha: str,
     cache_key_version: int,
     force: bool,
 ) -> None:
-    """Pool completed per-``k`` stats files into aggregate compatibility outputs.
+    """Combine completed per-``k`` stats files into aggregate compatibility outputs.
 
     Args:
-        configured_k_values: Player counts expected for pooling.
+        configured_k_values: Player counts expected for aggregation.
         stage_dir: Stage root containing per-``k`` artifacts.
         game_length_output: Combined game-length parquet output.
         margin_output: Combined margin parquet output.
-        pooled_game_length_output: Pooled-by-strategy game-length output.
-        pooled_margin_output: Pooled-by-strategy margin output.
-        pooled_stamp: Done-stamp tracking pooled outputs.
+        combined_game_length_output: Combined-by-strategy game-length output.
+        combined_margin_output: Combined-by-strategy margin output.
+        combined_stamp: Done-stamp tracking combined outputs.
         codec: Compression codec for parquet outputs.
         config_sha: Optional configuration fingerprint for stage tracking.
         stage_config_sha: Stage-specific cache fingerprint.
         cache_key_version: Version tag for the done-stamp payload.
-        force: Recompute even when pooled outputs appear current.
+        force: Recompute even when combined outputs appear current.
     """
     completed_paths: list[Path] = []
     for k in configured_k_values:
@@ -976,9 +976,9 @@ def _pool_completed_k_game_stats(
     if not completed_paths:
         return
 
-    outputs = [game_length_output, margin_output, pooled_game_length_output, pooled_margin_output]
+    outputs = [game_length_output, margin_output, combined_game_length_output, combined_margin_output]
     if (not force) and stage_is_up_to_date(
-        pooled_stamp,
+        combined_stamp,
         inputs=completed_paths,
         outputs=outputs,
         stage="game_stats",
@@ -1038,7 +1038,7 @@ def _pool_completed_k_game_stats(
         pa.Table.from_pandas(margin_df, preserve_index=False), margin_output, codec=codec
     )
 
-    pooled_game = (
+    combined_game = (
         game_df.groupby("strategy", observed=True, sort=False)
         .agg(
             observations=("observations", "sum"),
@@ -1054,10 +1054,10 @@ def _pool_completed_k_game_stats(
         )
         .reset_index()
     )
-    pooled_game.insert(0, "summary_level", "pooled")
+    combined_game.insert(0, "summary_level", "combined")
     write_parquet_atomic(
-        pa.Table.from_pandas(pooled_game, preserve_index=False),
-        pooled_game_length_output,
+        pa.Table.from_pandas(combined_game, preserve_index=False),
+        combined_game_length_output,
         codec=codec,
     )
 
@@ -1068,18 +1068,18 @@ def _pool_completed_k_game_stats(
             if c not in {"summary_level", "strategy", "n_players", "observations"}
         ]
         agg_map = {"observations": "sum", **dict.fromkeys(margin_metric_cols, "mean")}
-        pooled_margin = (
+        combined_margin = (
             margin_df.groupby("strategy", observed=True, sort=False).agg(agg_map).reset_index()
         )
-        pooled_margin.insert(0, "summary_level", "pooled")
+        combined_margin.insert(0, "summary_level", "combined")
     else:
-        pooled_margin = pd.DataFrame(columns=["summary_level", "strategy", "observations"])
+        combined_margin = pd.DataFrame(columns=["summary_level", "strategy", "observations"])
     write_parquet_atomic(
-        pa.Table.from_pandas(pooled_margin, preserve_index=False), pooled_margin_output, codec=codec
+        pa.Table.from_pandas(combined_margin, preserve_index=False), combined_margin_output, codec=codec
     )
 
     write_stage_done(
-        pooled_stamp,
+        combined_stamp,
         inputs=completed_paths,
         outputs=outputs,
         config_sha=config_sha,
@@ -1383,37 +1383,37 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
     ]
 
 
-def _normalize_pooling_scheme(pooling_scheme: str) -> str:
-    """Backward-compatible module-local alias for pooling normalization."""
+def _normalize_k_aggregation_method(aggregation_method: str) -> str:
+    """Backward-compatible module-local alias for aggregation normalization."""
 
-    return normalize_pooling_scheme(pooling_scheme)
+    return normalize_k_aggregation_method(aggregation_method)
 
 
-def _pooling_weights_for_rows(
+def _k_aggregation_method_for_rows(
     n_players: pd.Series,
     *,
-    pooling_scheme: str,
+    aggregation_method: str,
     weights_by_k: dict[int, float],
 ) -> pd.Series:
-    """Return per-row weights based on pooling scheme and player count."""
+    """Return per-row weights based on aggregation scheme and player count."""
 
     counts = n_players.value_counts().to_dict()
-    if pooling_scheme == "game-count":
+    if aggregation_method == "game-count":
         return pd.Series(1.0, index=n_players.index)
 
-    if pooling_scheme == "equal-k":
+    if aggregation_method == "equal-k":
         return n_players.map(lambda k: 1.0 / counts.get(k, 1))
 
-    if pooling_scheme == "config":
+    if aggregation_method == "config":
         missing = sorted({to_int(k) for k in counts} - set(weights_by_k))
         if missing:
             LOGGER.warning(
-                "Missing pooling weights for player counts; treating as zero",
+                "Missing aggregation weights for player counts; treating as zero",
                 extra={"stage": "game_stats", "missing": missing},
             )
         return n_players.map(lambda k: float(weights_by_k.get(to_int(k), 0.0)) / counts.get(k, 1))
 
-    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+    raise ValueError(f"Unknown aggregation scheme: {aggregation_method!r}")
 
 
 def _weighted_quantile(values: np.ndarray, weights: np.ndarray, quantile: float) -> float:
@@ -1767,49 +1767,49 @@ def _mean_std_from_weighted(acc: _WeightedAccumulator) -> tuple[float, float]:
     return float(mean), float(math.sqrt(variance))
 
 
-def _pooling_row_weight(
+def _aggregation_row_weight(
     *,
-    pooling_scheme: str,
+    aggregation_method: str,
     n_players: int,
     row_count: int,
     weights_by_k: dict[int, float],
 ) -> float:
-    """Resolve the per-row weight implied by the configured pooling scheme.
+    """Resolve the per-row weight implied by the configured aggregation scheme.
 
     Args:
-        pooling_scheme: Named pooling mode such as ``game-count`` or ``config``.
+        aggregation_method: Named aggregation mode such as ``game-count`` or ``config``.
         n_players: Player count for the row being weighted.
         row_count: Number of source rows contributing to the group.
-        weights_by_k: Configured per-``k`` weights for ``config`` pooling.
+        weights_by_k: Configured per-``k`` weights for ``config`` aggregation.
 
     Returns:
         Weight to apply to each row in the grouped contribution.
     """
     if row_count <= 0:
         return 0.0
-    if pooling_scheme == "game-count":
+    if aggregation_method == "game-count":
         return 1.0
-    if pooling_scheme == "equal-k":
+    if aggregation_method == "equal-k":
         return 1.0 / row_count
-    if pooling_scheme == "config":
+    if aggregation_method == "config":
         return float(weights_by_k.get(int(n_players), 0.0)) / row_count
-    raise ValueError(f"Unknown pooling scheme: {pooling_scheme!r}")
+    raise ValueError(f"Unknown aggregation scheme: {aggregation_method!r}")
 
 
-def _pooled_strategy_stats(
+def _combined_strategy_stats(
     per_n_inputs: Sequence[tuple[int, Path]],
     *,
-    pooling_scheme: str,
+    aggregation_method: str,
     weights_by_k: dict[int, float],
 ) -> pd.DataFrame:
-    """Compute pooled game-length statistics across player counts."""
+    """Compute combined game-length statistics across player counts."""
 
     grouped_values: dict[Scalar, _WeightedAccumulator] = {}
-    if pooling_scheme == "config":
+    if aggregation_method == "config":
         missing = sorted({n for n, _ in per_n_inputs} - set(weights_by_k))
         if missing:
             LOGGER.warning(
-                "Missing pooling weights for player counts; treating as zero",
+                "Missing aggregation weights for player counts; treating as zero",
                 extra={"stage": "game_stats", "missing": missing},
             )
     for n_players, path in per_n_inputs:
@@ -1844,8 +1844,8 @@ def _pooled_strategy_stats(
                 total_rows += _strategy_key_to_int(valid.sum(), field="row_count")
             if total_rows <= 0:
                 continue
-            row_weight = _pooling_row_weight(
-                pooling_scheme=pooling_scheme,
+            row_weight = _aggregation_row_weight(
+                aggregation_method=aggregation_method,
                 n_players=n_players,
                 row_count=total_rows,
                 weights_by_k=weights_by_k,
@@ -1870,7 +1870,7 @@ def _pooled_strategy_stats(
                     )
             if batch_idx % 50 == 0:
                 LOGGER.info(
-                    "Pooled game-length progress",
+                    "Combined game-length progress",
                     extra={
                         "stage": "game_stats",
                         "n_players": n_players,
@@ -1897,14 +1897,14 @@ def _pooled_strategy_stats(
                 "prob_rounds_ge_20",
             ]
         )
-    pooled_rows: list[dict[str, StatValue]] = []
+    combined_rows: list[dict[str, StatValue]] = []
     for strategy, acc in grouped_values.items():
         if not math.isfinite(acc.weight_total) or acc.weight_total <= 0:
             continue
         mean_rounds, std_rounds = _mean_std_from_weighted(acc)
-        pooled_rows.append(
+        combined_rows.append(
             {
-                "summary_level": "pooled",
+                "summary_level": "combined",
                 "strategy": _strategy_stat_value(strategy),
                 "observations": _strategy_key_to_int(acc.count, field="observations"),
                 "mean_rounds": mean_rounds,
@@ -1934,8 +1934,8 @@ def _pooled_strategy_stats(
             }
         )
 
-    pooled_df = pd.DataFrame(
-        pooled_rows,
+    combined_df = pd.DataFrame(
+        combined_rows,
         columns=[
             "summary_level",
             "strategy",
@@ -1951,25 +1951,25 @@ def _pooled_strategy_stats(
             "prob_rounds_ge_20",
         ],
     )
-    return pooled_df
+    return combined_df
 
 
-def _pooled_margin_stats(
+def _combined_margin_stats(
     per_n_inputs: Sequence[tuple[int, Path]],
     *,
     thresholds: Sequence[int],
-    pooling_scheme: str,
+    aggregation_method: str,
     weights_by_k: dict[int, float],
 ) -> pd.DataFrame:
-    """Compute pooled victory-margin statistics across player counts."""
+    """Compute combined victory-margin statistics across player counts."""
 
     grouped_runner: dict[Scalar, _WeightedAccumulator] = {}
     grouped_spread: dict[Scalar, _WeightedAccumulator] = {}
-    if pooling_scheme == "config":
+    if aggregation_method == "config":
         missing = sorted({n for n, _ in per_n_inputs} - set(weights_by_k))
         if missing:
             LOGGER.warning(
-                "Missing pooling weights for player counts; treating as zero",
+                "Missing aggregation weights for player counts; treating as zero",
                 extra={"stage": "game_stats", "missing": missing},
             )
     for n_players, path in per_n_inputs:
@@ -2019,8 +2019,8 @@ def _pooled_margin_stats(
             if total_rows <= 0:
                 continue
 
-            row_weight = _pooling_row_weight(
-                pooling_scheme=pooling_scheme,
+            row_weight = _aggregation_row_weight(
+                aggregation_method=aggregation_method,
                 n_players=n_players,
                 row_count=total_rows,
                 weights_by_k=weights_by_k,
@@ -2052,7 +2052,7 @@ def _pooled_margin_stats(
                     )
             if batch_idx % 50 == 0:
                 LOGGER.info(
-                    "Pooled margin progress",
+                    "Combined margin progress",
                     extra={
                         "stage": "game_stats",
                         "n_players": n_players,
@@ -2078,7 +2078,7 @@ def _pooled_margin_stats(
         ]
         return pd.DataFrame(columns=columns)
 
-    pooled_rows: list[dict[str, StatValue]] = []
+    combined_rows: list[dict[str, StatValue]] = []
     for strategy, runner_acc in grouped_runner.items():
         spread_acc_opt = grouped_spread.get(strategy)
         if spread_acc_opt is None:
@@ -2094,8 +2094,8 @@ def _pooled_margin_stats(
 
         mean_runner, std_runner = _mean_std_from_weighted(runner_acc)
         mean_spread, std_spread = _mean_std_from_weighted(spread_acc)
-        pooled_row: dict[str, StatValue] = {
-            "summary_level": "pooled",
+        combined_row: dict[str, StatValue] = {
+            "summary_level": "combined",
             "strategy": _strategy_stat_value(strategy),
             "observations": _strategy_key_to_int(runner_acc.count, field="observations"),
             "mean_margin_runner_up": mean_runner,
@@ -2110,13 +2110,13 @@ def _pooled_margin_stats(
             "std_score_spread": std_spread,
         }
         for thr in thresholds:
-            pooled_row[f"prob_margin_runner_up_le_{thr}"] = _weighted_probability_le_from_hist(
+            combined_row[f"prob_margin_runner_up_le_{thr}"] = _weighted_probability_le_from_hist(
                 runner_acc.hist, weight_total=runner_acc.weight_total, threshold=float(thr)
             )
-            pooled_row[f"prob_score_spread_le_{thr}"] = _weighted_probability_le_from_hist(
+            combined_row[f"prob_score_spread_le_{thr}"] = _weighted_probability_le_from_hist(
                 spread_acc.hist, weight_total=spread_acc.weight_total, threshold=float(thr)
             )
-        pooled_rows.append(pooled_row)
+        combined_rows.append(combined_row)
 
     ordered_cols = [
         "summary_level",
@@ -2131,7 +2131,7 @@ def _pooled_margin_stats(
         "std_score_spread",
         *[f"prob_score_spread_le_{thr}" for thr in thresholds],
     ]
-    return pd.DataFrame(pooled_rows, columns=ordered_cols)
+    return pd.DataFrame(combined_rows, columns=ordered_cols)
 
 
 def _per_strategy_margin_stats(

@@ -341,7 +341,7 @@ def test_run_hgb_default_output(tmp_path, monkeypatch):
     monkeypatch.setattr(run_hgb, "_run_grouped_cv", lambda *args, **kwargs: None)
 
     run_hgb.run_hgb(root=data_dir)
-    assert (data_dir / "pooled" / "hgb_importance.json").exists()
+    assert (data_dir / "combined" / "hgb_importance.json").exists()
     parquet_path = (
         data_dir
         / f"{2}p"
@@ -424,7 +424,7 @@ def test_run_hgb_reads_manifest_and_writes_deterministic_output(tmp_path, monkey
     run_hgb.run_hgb(root=data_dir, manifest_path=manifest_path)
 
     assert captured_manifest["manifest"].equals(manifest)
-    expected_output = data_dir / "pooled" / "hgb_importance.json"
+    expected_output = data_dir / "combined" / "hgb_importance.json"
     assert expected_output.exists()
     payload = json.loads(expected_output.read_text())
     assert "2p" in payload
@@ -448,7 +448,7 @@ def test_run_hgb_skips_when_no_features_or_join_rows(tmp_path, monkeypatch):
         lambda strategies, *, manifest=None: pd.DataFrame(index=pd.Index([], name="strategy")),  # noqa: ARG005
     )
     run_hgb.run_hgb(root=data_dir)
-    assert not (data_dir / "pooled" / "hgb_importance.json").exists()
+    assert not (data_dir / "combined" / "hgb_importance.json").exists()
 
     def wrong_index(strategies, *, manifest=None):
         _ = strategies, manifest
@@ -457,7 +457,7 @@ def test_run_hgb_skips_when_no_features_or_join_rows(tmp_path, monkeypatch):
 
     monkeypatch.setattr(run_hgb, "_parse_strategy_features", wrong_index)
     run_hgb.run_hgb(root=data_dir)
-    assert not (data_dir / "pooled" / "hgb_importance.json").exists()
+    assert not (data_dir / "combined" / "hgb_importance.json").exists()
 
 
 def test_run_hgb_propagates_model_fit_failure(tmp_path, monkeypatch):
@@ -550,7 +550,7 @@ def test_run_hgb_handles_empty_and_insufficient_player_buckets(tmp_path, monkeyp
     assert four_p.empty
 
 
-def test_run_hgb_players_only_schema_and_manifest_fallback_and_pooled_artifacts(tmp_path, monkeypatch):
+def test_run_hgb_players_only_schema_and_manifest_fallback_and_combined_artifacts(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     strategies = [
@@ -627,11 +627,11 @@ def test_run_hgb_players_only_schema_and_manifest_fallback_and_pooled_artifacts(
 
     assert captured_manifest["manifest"] is None
 
-    pooled_long = pd.read_parquet(data_dir / "pooled" / run_hgb.LONG_IMPORTANCE_NAME)
-    pooled_overall = pd.read_parquet(data_dir / "pooled" / run_hgb.OVERALL_IMPORTANCE_NAME)
-    assert set(pooled_long["players"]) == {2, 4}
-    assert set(pooled_overall["players"]) == {"overall"}
+    combined_long = pd.read_parquet(data_dir / "combined" / run_hgb.LONG_IMPORTANCE_NAME)
+    combined_overall = pd.read_parquet(data_dir / "combined" / run_hgb.OVERALL_IMPORTANCE_NAME)
+    assert set(combined_long["players"]) == {2, 4}
+    assert set(combined_overall["players"]) == {"overall"}
 
-    payload = json.loads((data_dir / "pooled" / "hgb_importance.json").read_text())
+    payload = json.loads((data_dir / "combined" / "hgb_importance.json").read_text())
     assert list(payload) == ["2p", "4p", "overall"]
     assert set(payload["overall"]) == {name for name, _dtype in run_hgb.FEATURE_SPECS}

@@ -185,13 +185,13 @@ def process_map(
         initializer=initializer,
         initargs=tuple(initargs),
         mp_context=mp_context,
-    ) as pool:
+    ) as executor:
         it = iter(items)
         futs = []
         # prefill the window
         for _ in range(window):
             try:
-                futs.append(pool.submit(fn, next(it)))
+                futs.append(executor.submit(fn, next(it)))
             except StopIteration:
                 break
         while futs:
@@ -199,7 +199,7 @@ def process_map(
             futs.remove(done)
             yield done.result()
             with contextlib.suppress(StopIteration):
-                futs.append(pool.submit(fn, next(it)))
+                futs.append(executor.submit(fn, next(it)))
 
 
 __all__ = [

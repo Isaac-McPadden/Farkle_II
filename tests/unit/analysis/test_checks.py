@@ -19,7 +19,7 @@ from farkle.utils.schema_helpers import expected_schema_for
 def _combined_path(tmp_path: Path) -> tuple[Path, Path]:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
     data_dir = cfg.stage_dir("curate")
-    combined_dir = cfg.stage_subdir("combine", "pooled")
+    combined_dir = cfg.stage_subdir("combine", "combined")
     return data_dir, combined_dir / "all_ingested_rows.parquet"
 
 
@@ -243,12 +243,12 @@ def test_check_pre_metrics_all_n_players_combined_parent_resolution(
     assert "check_pre_metrics passed" in caplog.text
 
 
-def test_check_pre_metrics_pooled_without_curate_falls_back_to_analysis_root(
+def test_check_pre_metrics_combined_without_curate_falls_back_to_analysis_root(
     tmp_path: Path,
     caplog,
 ) -> None:
     analysis_root = tmp_path / "analysis"
-    combined = analysis_root / "02_combine" / "pooled" / "all_ingested_rows.parquet"
+    combined = analysis_root / "02_combine" / "combined" / "all_ingested_rows.parquet"
     schema = pa.schema([("winner", pa.string())])
     _write_table(combined, schema, [{"winner": "P1"}])
     _write_manifest(analysis_root, 1, {"row_count": 1})
@@ -359,23 +359,23 @@ def test_check_stage_artifact_families_passes_expected_matrix(tmp_path: Path) ->
     }
     k_values = (2, 3)
 
-    combine_out = stage_dirs["combine"] / "pooled" / "all_ingested_rows.parquet"
+    combine_out = stage_dirs["combine"] / "combined" / "all_ingested_rows.parquet"
     combine_out.parent.mkdir(parents=True, exist_ok=True)
     combine_out.touch()
-    metrics_out = stage_dirs["metrics"] / "pooled" / "metrics.parquet"
+    metrics_out = stage_dirs["metrics"] / "combined" / "metrics.parquet"
     metrics_out.parent.mkdir(parents=True, exist_ok=True)
     metrics_out.touch()
     for k in k_values:
         metrics_per_k = stage_dirs["metrics"] / f"{k}p" / f"{k}p_isolated_metrics.parquet"
         metrics_per_k.parent.mkdir(parents=True, exist_ok=True)
         metrics_per_k.touch()
-    pooled_game_length = stage_dirs["game_stats"] / "pooled" / "game_length.parquet"
-    pooled_game_length.parent.mkdir(parents=True, exist_ok=True)
-    pooled_game_length.touch()
-    pooled_margin = stage_dirs["game_stats"] / "pooled" / "margin_stats.parquet"
-    pooled_margin.touch()
-    (stage_dirs["game_stats"] / "pooled" / "game_length_k_weighted.parquet").touch()
-    (stage_dirs["game_stats"] / "pooled" / "margin_k_weighted.parquet").touch()
+    combined_game_length = stage_dirs["game_stats"] / "combined" / "game_length.parquet"
+    combined_game_length.parent.mkdir(parents=True, exist_ok=True)
+    combined_game_length.touch()
+    combined_margin = stage_dirs["game_stats"] / "combined" / "margin_stats.parquet"
+    combined_margin.touch()
+    (stage_dirs["game_stats"] / "combined" / "game_length_k_weighted.parquet").touch()
+    (stage_dirs["game_stats"] / "combined" / "margin_k_weighted.parquet").touch()
     for k in k_values:
         per_k_game_length = stage_dirs["game_stats"] / f"{k}p" / "game_length.parquet"
         per_k_game_length.parent.mkdir(parents=True, exist_ok=True)
@@ -390,7 +390,7 @@ def test_check_stage_artifact_families_flags_missing_and_layout_drift(tmp_path: 
     stage_dir = cfg.stage_dir("game_stats")
     stage_dirs = {"game_stats": stage_dir}
 
-    # Drift: pooled aggregate written to stage root instead of pooled/.
+    # Drift: combined aggregate written to stage root instead of combined/.
     drift = stage_dir / "game_length.parquet"
     drift.parent.mkdir(parents=True, exist_ok=True)
     drift.touch()
@@ -405,14 +405,14 @@ def test_check_stage_artifact_families_flags_missing_and_layout_drift(tmp_path: 
         f" - game_stats: layout drift; expected {stage_dir / '2p' / 'game_length.parquet'} "
         f"but found {stage_dir / 'game_length.parquet'}\n"
         f" - game_stats: missing per-k artifact {stage_dir / '2p' / 'margin_stats.parquet'}\n"
-        f" - game_stats: missing pooled_concat artifact {stage_dir / 'pooled' / 'game_length.parquet'}\n"
-        f" - game_stats: layout drift; expected {stage_dir / 'pooled' / 'game_length.parquet'} "
+        f" - game_stats: missing combined_concat artifact {stage_dir / 'combined' / 'game_length.parquet'}\n"
+        f" - game_stats: layout drift; expected {stage_dir / 'combined' / 'game_length.parquet'} "
         f"but found {stage_dir / 'game_length.parquet'}\n"
-        f" - game_stats: missing pooled_concat artifact {stage_dir / 'pooled' / 'margin_stats.parquet'}\n"
-        f" - game_stats: missing pooled_weighted artifact "
-        f"{stage_dir / 'pooled' / 'game_length_k_weighted.parquet'}\n"
-        f" - game_stats: missing pooled_weighted artifact "
-        f"{stage_dir / 'pooled' / 'margin_k_weighted.parquet'}"
+        f" - game_stats: missing combined_concat artifact {stage_dir / 'combined' / 'margin_stats.parquet'}\n"
+        f" - game_stats: missing combined_weighted artifact "
+        f"{stage_dir / 'combined' / 'game_length_k_weighted.parquet'}\n"
+        f" - game_stats: missing combined_weighted artifact "
+        f"{stage_dir / 'combined' / 'margin_k_weighted.parquet'}"
     )
     assert str(excinfo.value) == expected
 
@@ -424,12 +424,12 @@ def test_check_stage_artifact_families_flags_duplicate_and_mismatched_family_out
     stage_dir = cfg.stage_dir("metrics")
     stage_dirs = {"metrics": stage_dir}
 
-    pooled = stage_dir / "pooled"
-    pooled.mkdir(parents=True, exist_ok=True)
-    # Mismatched-family output: per-k artifact written in pooled/.
-    misplaced_per_k = pooled / "2p_isolated_metrics.parquet"
+    combined = stage_dir / "combined"
+    combined.mkdir(parents=True, exist_ok=True)
+    # Mismatched-family output: per-k artifact written in combined/.
+    misplaced_per_k = combined / "2p_isolated_metrics.parquet"
     misplaced_per_k.touch()
-    # Duplicate output: pooled artifact also exists at stage root.
+    # Duplicate output: combined artifact also exists at stage root.
     root_duplicate = stage_dir / "metrics.parquet"
     root_duplicate.touch()
 
@@ -439,8 +439,8 @@ def test_check_stage_artifact_families_flags_duplicate_and_mismatched_family_out
     expected = (
         f"check_stage_artifact_families failed under {cfg.analysis_dir}:\n"
         f" - metrics: missing per-k artifact {stage_dir / '2p' / '2p_isolated_metrics.parquet'}\n"
-        f" - metrics: missing pooled_concat artifact {pooled / 'metrics.parquet'}\n"
-        f" - metrics: layout drift; expected {pooled / 'metrics.parquet'} but found {root_duplicate}"
+        f" - metrics: missing combined_concat artifact {combined / 'metrics.parquet'}\n"
+        f" - metrics: layout drift; expected {combined / 'metrics.parquet'} but found {root_duplicate}"
     )
     assert str(excinfo.value) == expected
 
@@ -459,7 +459,7 @@ def test_check_stage_artifact_families_skips_nonexistent_stage_dir(tmp_path: Pat
 def test_check_stage_artifact_families_honors_custom_matrix_success(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
     stage_dir = cfg.stage_dir("metrics")
-    expected = stage_dir / "pooled" / "only_here.parquet"
+    expected = stage_dir / "combined" / "only_here.parquet"
     expected.parent.mkdir(parents=True, exist_ok=True)
     expected.touch()
 
@@ -467,7 +467,7 @@ def test_check_stage_artifact_families_honors_custom_matrix_success(tmp_path: Pa
         cfg.analysis_dir,
         {"metrics": stage_dir},
         (2,),
-        matrix={"metrics": {"pooled_concat": ("only_here.parquet",)}},
+        matrix={"metrics": {"combined_concat": ("only_here.parquet",)}},
     )
 
 
@@ -480,11 +480,11 @@ def test_check_stage_artifact_families_honors_custom_matrix_failure(tmp_path: Pa
             cfg.analysis_dir,
             {"metrics": stage_dir},
             (2,),
-            matrix={"metrics": {"pooled_concat": ("required.parquet",)}},
+            matrix={"metrics": {"combined_concat": ("required.parquet",)}},
         )
 
     expected = (
         f"check_stage_artifact_families failed under {cfg.analysis_dir}:\n"
-        f" - metrics: missing pooled_concat artifact {stage_dir / 'pooled' / 'required.parquet'}"
+        f" - metrics: missing combined_concat artifact {stage_dir / 'combined' / 'required.parquet'}"
     )
     assert str(excinfo.value) == expected

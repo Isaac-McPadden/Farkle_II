@@ -82,7 +82,7 @@ def test_strategy_conversion_helpers(tmp_path: Path) -> None:
     assert pd.isna(coerced.loc[2, "strategy"])
 
 
-def test_pooling_helpers_and_weighted_stats() -> None:
+def test_aggregation_helpers_and_weighted_stats() -> None:
     aliases = {
         "game-count": "game-count",
         "GameCount": "game-count",
@@ -93,27 +93,27 @@ def test_pooling_helpers_and_weighted_stats() -> None:
         "custom": "config",
     }
     for raw, expected in aliases.items():
-        assert game_stats._normalize_pooling_scheme(raw) == expected
+        assert game_stats._normalize_k_aggregation_method(raw) == expected
 
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
-        game_stats._normalize_pooling_scheme("bad")
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
+        game_stats._normalize_k_aggregation_method("bad")
 
     players = pd.Series([2, 2, 3], dtype="int64")
-    w_count = game_stats._pooling_weights_for_rows(players, pooling_scheme="game-count", weights_by_k={})
+    w_count = game_stats._k_aggregation_method_for_rows(players, aggregation_method="game-count", weights_by_k={})
     assert w_count.tolist() == [1.0, 1.0, 1.0]
 
-    w_equal = game_stats._pooling_weights_for_rows(players, pooling_scheme="equal-k", weights_by_k={})
+    w_equal = game_stats._k_aggregation_method_for_rows(players, aggregation_method="equal-k", weights_by_k={})
     assert w_equal.tolist() == [0.5, 0.5, 1.0]
 
-    w_config = game_stats._pooling_weights_for_rows(
+    w_config = game_stats._k_aggregation_method_for_rows(
         players,
-        pooling_scheme="config",
+        aggregation_method="config",
         weights_by_k={2: 0.4, 3: 0.6},
     )
     assert w_config.tolist() == [0.2, 0.2, 0.6]
 
-    with pytest.raises(ValueError, match="Unknown pooling scheme"):
-        game_stats._pooling_weights_for_rows(players, pooling_scheme="oops", weights_by_k={})
+    with pytest.raises(ValueError, match="Unknown aggregation scheme"):
+        game_stats._k_aggregation_method_for_rows(players, aggregation_method="oops", weights_by_k={})
 
     assert np.isnan(game_stats._weighted_quantile(np.array([]), np.array([]), 0.5))
     assert game_stats._weighted_quantile(np.array([7.0]), np.array([1.0]), 0.5) == 7.0
@@ -387,13 +387,13 @@ def test_additional_branch_coverage_paths(caplog: pytest.LogCaptureFixture, tmp_
     no_col = pd.DataFrame({"x": [1]})
     pd.testing.assert_frame_equal(game_stats._coerce_strategy_dtype(no_col, pa.int64()), no_col)
 
-    # pooling config missing keys warning
+    # aggregation config missing keys warning
     with caplog.at_level("WARNING"):
-        weights = game_stats._pooling_weights_for_rows(
-            pd.Series([2, 4]), pooling_scheme="config", weights_by_k={2: 1.0}
+        weights = game_stats._k_aggregation_method_for_rows(
+            pd.Series([2, 4]), aggregation_method="config", weights_by_k={2: 1.0}
         )
     assert weights.tolist() == [1.0, 0.0]
-    assert "Missing pooling weights" in caplog.text
+    assert "Missing aggregation weights" in caplog.text
 
     assert game_stats._weighted_quantile(np.array([3.0, 6.0]), np.array([1.0, 1.0]), 0.0) == 3.0
     assert game_stats._weighted_quantile(np.array([3.0, 6.0]), np.array([1.0, 1.0]), 1.0) == 6.0
@@ -403,16 +403,16 @@ def test_additional_branch_coverage_paths(caplog: pytest.LogCaptureFixture, tmp_
     per_n = cfg.ingested_rows_curated(2)
     _write_rows(per_n, rows)
 
-    pooled = game_stats._pooled_strategy_stats([(2, per_n)], pooling_scheme="equal-k", weights_by_k={})
-    assert not pooled.empty
-    pooled_margin = game_stats._pooled_margin_stats(
-        [(2, per_n)], thresholds=(10, 100), pooling_scheme="equal-k", weights_by_k={}
+    combined = game_stats._combined_strategy_stats([(2, per_n)], aggregation_method="equal-k", weights_by_k={})
+    assert not combined.empty
+    combined_margin = game_stats._combined_margin_stats(
+        [(2, per_n)], thresholds=(10, 100), aggregation_method="equal-k", weights_by_k={}
     )
-    assert not pooled_margin.empty
+    assert not combined_margin.empty
 
     # weights zero -> rows filtered out (weight_total <= 0)
-    pooled_zero = game_stats._pooled_strategy_stats([(2, per_n)], pooling_scheme="config", weights_by_k={})
-    assert pooled_zero.empty
+    combined_zero = game_stats._combined_strategy_stats([(2, per_n)], aggregation_method="config", weights_by_k={})
+    assert combined_zero.empty
 
     with caplog.at_level("WARNING"):
         assert game_stats._per_strategy_stats([(2, no_strategy)]).empty
@@ -477,7 +477,7 @@ def test_low_level_numeric_edge_branches(monkeypatch: pytest.MonkeyPatch) -> Non
     assert not out.empty
     assert set(out["n_players"].astype(int).tolist()) == {1, 2}
 
-def test_margin_pooling_and_strategy_empty_paths(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
+def test_margin_aggregation_and_strategy_empty_paths(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
     AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
 
     no_strategy = tmp_path / "m_no_strategy.parquet"
@@ -498,22 +498,22 @@ def test_margin_pooling_and_strategy_empty_paths(caplog: pytest.LogCaptureFixtur
     )
 
     with caplog.at_level("WARNING"):
-        pooled_missing_strategy = game_stats._pooled_margin_stats(
-            [(2, no_strategy)], thresholds=(10,), pooling_scheme="equal-k", weights_by_k={}
+        combined_missing_strategy = game_stats._combined_margin_stats(
+            [(2, no_strategy)], thresholds=(10,), aggregation_method="equal-k", weights_by_k={}
         )
-        pooled_missing_score = game_stats._pooled_margin_stats(
-            [(2, no_score)], thresholds=(10,), pooling_scheme="equal-k", weights_by_k={}
+        combined_missing_score = game_stats._combined_margin_stats(
+            [(2, no_score)], thresholds=(10,), aggregation_method="equal-k", weights_by_k={}
         )
-    assert pooled_missing_strategy.empty
-    assert pooled_missing_score.empty
+    assert combined_missing_strategy.empty
+    assert combined_missing_score.empty
 
     with pytest.warns(RuntimeWarning, match="All-NaN slice encountered"):
-        pooled_nan = game_stats._pooled_margin_stats(
-            [(2, nan_scores)], thresholds=(10,), pooling_scheme="equal-k", weights_by_k={}
+        combined_nan = game_stats._combined_margin_stats(
+            [(2, nan_scores)], thresholds=(10,), aggregation_method="equal-k", weights_by_k={}
         )
     with pytest.warns(RuntimeWarning, match="All-NaN slice encountered"):
         per_strategy_nan = game_stats._per_strategy_margin_stats([(2, nan_scores)], thresholds=(10,))
-    assert pooled_nan.empty
+    assert combined_nan.empty
     assert per_strategy_nan.empty
 
 

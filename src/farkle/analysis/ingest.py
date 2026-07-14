@@ -536,9 +536,9 @@ def run(cfg: AppConfig) -> None:
         for block in blocks:
             total_rows += _process_block(block, cfg, parent_process_workers=1)
     else:
-        with ProcessPoolExecutor(max_workers=stage_policy.process_workers, mp_context=mp_context) as pool:
+        with ProcessPoolExecutor(max_workers=stage_policy.process_workers, mp_context=mp_context) as executor:
             futures = [
-                pool.submit(
+                executor.submit(
                     _process_block,
                     block,
                     cfg,

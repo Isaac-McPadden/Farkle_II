@@ -52,7 +52,7 @@ def test_run_invokes_legacy_when_stale(tmp_path, monkeypatch):
     assert called["cfg"] is cfg
 
 
-def test_interseed_run_uses_upstream_combine_and_writes_pooled_outputs(tmp_path, monkeypatch):
+def test_interseed_run_uses_upstream_combine_and_writes_combined_outputs(tmp_path, monkeypatch):
     from farkle.orchestration.run_contexts import InterseedRunContext, SeedRunContext
 
     seed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
@@ -61,7 +61,7 @@ def test_interseed_run_uses_upstream_combine_and_writes_pooled_outputs(tmp_path,
 
     combine_folder = seed_cfg.stage_layout.require_folder("combine")
     upstream_curated = (
-        seed_context.analysis_root / combine_folder / "pooled" / "all_ingested_rows.parquet"
+        seed_context.analysis_root / combine_folder / "combined" / "all_ingested_rows.parquet"
     )
     upstream_curated.parent.mkdir(parents=True, exist_ok=True)
     upstream_curated.write_text("rows")
@@ -75,19 +75,19 @@ def test_interseed_run_uses_upstream_combine_and_writes_pooled_outputs(tmp_path,
 
     def fake_run(app_cfg):  # noqa: ANN001
         assert app_cfg.curated_parquet == upstream_curated
-        pooled_dir = app_cfg.trueskill_pooled_dir
-        pooled_dir.mkdir(parents=True, exist_ok=True)
-        (pooled_dir / "ratings_long.parquet").write_text("long")
-        (pooled_dir / "ratings_k_weighted.parquet").write_text("pooled")
+        combined_dir = app_cfg.trueskill_combined_dir
+        combined_dir.mkdir(parents=True, exist_ok=True)
+        (combined_dir / "ratings_long.parquet").write_text("long")
+        (combined_dir / "ratings_k_weighted.parquet").write_text("combined")
         (app_cfg.trueskill_stage_dir / "tiers.json").write_text("{}")
 
     monkeypatch.setattr(trueskill.run_trueskill, "run_trueskill_all_seeds", fake_run)
 
     trueskill.run(cfg)
 
-    pooled_dir = cfg.trueskill_pooled_dir
-    assert (pooled_dir / "ratings_long.parquet").exists()
-    assert (pooled_dir / "ratings_k_weighted.parquet").exists()
+    combined_dir = cfg.trueskill_combined_dir
+    assert (combined_dir / "ratings_long.parquet").exists()
+    assert (combined_dir / "ratings_k_weighted.parquet").exists()
 
 
 def test_run_logs_curated_candidates_when_missing(tmp_path, caplog):

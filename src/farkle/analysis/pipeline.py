@@ -139,7 +139,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         dest="run_interseed",
         action="store_false",
         default=None,
-        help="Skip cross-seed analytics stages like variance, meta, and pooled TrueSkill",
+        help="Skip cross-seed analytics stages like variance, meta, and combined TrueSkill",
     )
     parser.add_argument(
         "--margin-thresholds",

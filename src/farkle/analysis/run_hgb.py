@@ -1,7 +1,7 @@
 # src/farkle/analysis/run_hgb.py
 """Train histogram gradient boosting models for strategy feature analysis.
 
-This module joins the curated metrics with pooled TrueSkill ratings, derives a
+This module joins the curated metrics with combined TrueSkill ratings, derives a
 feature matrix from serialized strategy literals, and fits a
 ``HistGradientBoostingRegressor`` for each player-count bucket. Deterministic
 permutation importances are written to ``feature_importance_<Np>.parquet`` files
@@ -75,7 +75,7 @@ FEATURE_SPECS: list[tuple[str, str]] = [
     ("run_up_score", "float32"),
 ]
 
-_SEED_PATTERN = re.compile(r"ratings_(?:k_weighted|pooled)_seed(?P<seed>\d+)\.parquet$")
+_SEED_PATTERN = re.compile(r"ratings_(?:k_weighted|combined)_seed(?P<seed>\d+)\.parquet$")
 
 
 LOGGER = logging.getLogger(__name__)
@@ -392,8 +392,8 @@ def run_hgb(
 
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    pooled_dir = root / "pooled"
-    pooled_dir.mkdir(parents=True, exist_ok=True)
+    combined_dir = root / "combined"
+    combined_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = Path(metrics_path) if metrics_path is not None else root / METRICS_NAME
     ratings_path = Path(ratings_path) if ratings_path is not None else root / RATINGS_NAME
     manifest = None
@@ -576,7 +576,7 @@ def run_hgb(
 
     if collected_frames:
         overall_frame = pd.concat(collected_frames, ignore_index=True)
-        _write_importances(pooled_dir / LONG_IMPORTANCE_NAME, overall_frame)
+        _write_importances(combined_dir / LONG_IMPORTANCE_NAME, overall_frame)
         grouped = (
             overall_frame.groupby("feature", as_index=False)
             .agg(
@@ -588,14 +588,14 @@ def run_hgb(
         grouped = grouped.astype(
             {"importance_mean": "float", "importance_std": "float"}
         )
-        _write_importances(pooled_dir / OVERALL_IMPORTANCE_NAME, grouped)
+        _write_importances(combined_dir / OVERALL_IMPORTANCE_NAME, grouped)
         overall_series = grouped.set_index("feature")["importance_mean"]
         importance_summary["overall"] = {
             str(k): float(v) for k, v in overall_series.items()
         }
 
     if output_path is None:
-        output_path = pooled_dir / "hgb_importance.json"
+        output_path = combined_dir / "hgb_importance.json"
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(output_path)) as tmp_path, Path(tmp_path).open("w") as fh:

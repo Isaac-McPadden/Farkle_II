@@ -10,7 +10,7 @@ import yaml
 from farkle.analysis import run_trueskill
 
 
-def test_pooled_ratings_are_weighted_mean(tmp_path: Path) -> None:
+def test_combined_ratings_are_weighted_mean(tmp_path: Path) -> None:
     data_root = tmp_path / "data"
     res_root = data_root / "results"
 
@@ -60,8 +60,8 @@ def test_pooled_ratings_are_weighted_mean(tmp_path: Path) -> None:
     ratings_root = tmp_path / "data"
     r2 = run_trueskill._load_ratings_parquet(ratings_root / "2p" / "ratings_2_seed0.parquet")
     r3 = run_trueskill._load_ratings_parquet(ratings_root / "3p" / "ratings_3_seed0.parquet")
-    pooled = run_trueskill._load_ratings_parquet(
-        ratings_root / "pooled" / "ratings_k_weighted_seed0.parquet"
+    combined = run_trueskill._load_ratings_parquet(
+        ratings_root / "combined" / "ratings_k_weighted_seed0.parquet"
     )
 
     env = run_trueskill.trueskill.TrueSkill()
@@ -70,8 +70,8 @@ def test_pooled_ratings_are_weighted_mean(tmp_path: Path) -> None:
     expected2 = run_trueskill._update_ratings(g2, ["A", "B"], env)
     expected3 = run_trueskill._update_ratings(g3, ["A", "B"], env)
 
-    pooled_expect: dict[str, run_trueskill.RatingStats] = {}
-    for key in pooled:
+    combined_expect: dict[str, run_trueskill.RatingStats] = {}
+    for key in combined:
         s_mu, s_tau = 0.0, 0.0
         stats2 = expected2.get(key)
         if stats2 is not None:
@@ -84,11 +84,11 @@ def test_pooled_ratings_are_weighted_mean(tmp_path: Path) -> None:
             s_mu += tau3 * stats3.mu
             s_tau += tau3
         if s_tau > 0:
-            pooled_expect[key] = run_trueskill.RatingStats(s_mu / s_tau, s_tau**-0.5)
+            combined_expect[key] = run_trueskill.RatingStats(s_mu / s_tau, s_tau**-0.5)
 
     assert r2 == expected2
     assert r3 == {k: expected3[k] for k in ("A", "B")}
-    for key, expected_stats in pooled_expect.items():
-        actual = pooled[key]
+    for key, expected_stats in combined_expect.items():
+        actual = combined[key]
         assert actual.mu == pytest.approx(expected_stats.mu, rel=1e-6, abs=1e-8)
         assert actual.sigma == pytest.approx(expected_stats.sigma, rel=1e-6, abs=1e-8)

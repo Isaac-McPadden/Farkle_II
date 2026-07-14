@@ -60,13 +60,13 @@ DEPRECATED_ANALYSIS_FLAGS = {
 }
 
 _CANONICAL_ARTIFACT_NAMES: dict[str, str] = {
-    "ratings_pooled.parquet": "ratings_k_weighted.parquet",
-    "ratings_pooled.json": "ratings_k_weighted.json",
-    "game_length_pooled.parquet": "game_length_k_weighted.parquet",
-    "margin_pooled.parquet": "margin_k_weighted.parquet",
+    "ratings_combined.parquet": "ratings_k_weighted.parquet",
+    "ratings_combined.json": "ratings_k_weighted.json",
+    "game_length_combined.parquet": "game_length_k_weighted.parquet",
+    "margin_combined.parquet": "margin_k_weighted.parquet",
     "frequentist_scores.parquet": "frequentist_scores_k_weighted.parquet",
-    "frequentist_pooled_provenance.json": "frequentist_k_weighted_provenance.json",
-    "agreement_pooled.json": "agreement_k_weighted.json",
+    "frequentist_combined_provenance.json": "frequentist_k_weighted_provenance.json",
+    "agreement_combined.json": "agreement_k_weighted.json",
 }
 
 _LEGACY_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
@@ -274,8 +274,8 @@ class AnalysisConfig:
     agreement_strategies: tuple[str, ...] | None = None
     """Optional subset of strategies to include when computing agreement metrics."""
 
-    agreement_include_pooled: bool = False
-    """Whether agreement analysis should emit a pooled (all-k) comparison payload."""
+    agreement_include_combined: bool = False
+    """Whether agreement analysis should emit a combined (all-k) comparison payload."""
 
     run_report: bool = True
     """Emit the final report artifacts (plan step 9)."""
@@ -288,7 +288,7 @@ class AnalysisConfig:
     log_level: str = "INFO"
     results_glob: str = "*_players"
     meta_random_if_I2_gt: float = 25.0
-    """Switch to random-effects pooling once I^2 crosses this threshold."""
+    """Switch to random-effects aggregation once I^2 crosses this threshold."""
     meta_max_other_seeds: int | None = None
     """Optional cap on comparison seeds (excluding the current sim.seed)."""
     meta_comparison_seed: int | None = None
@@ -310,7 +310,7 @@ class AnalysisConfig:
     tier_min_gap: float | None = None
     """Optional minimum absolute gap required to split adjacent tiers."""
     frequentist_weights_by_k: dict[int, float] | None = None
-    """Optional per-player-count weights for pooled frequentist scores."""
+    """Optional per-player-count weights for combined frequentist scores."""
     # Optional outputs block may be provided in YAML
     # outputs:
     #   curated_rows_name: "game_rows.parquet"
@@ -319,10 +319,10 @@ class AnalysisConfig:
     outputs: dict[str, Any] = field(default_factory=dict)
     game_stats_margin_thresholds: tuple[int, ...] = (500, 1000)
     """Victory-margin thresholds used by game stats and rare-event summaries."""
-    pooling_weights: str = "game-count"
-    """Weighting scheme for pooled game stats across player counts."""
-    pooling_weights_by_k: dict[int, float] | None = None
-    """Optional per-player-count weights for pooled game-stat summaries."""
+    k_aggregation_method: str = "game-count"
+    """Weighting scheme for combined game stats across player counts."""
+    k_weights: dict[int, float] | None = None
+    """Optional per-player-count weights for combined game-stat summaries."""
     rare_event_target_score: int = 10_000
     """Score threshold used to flag games where multiple players crossed the target."""
     rare_event_write_details: bool = False
@@ -372,8 +372,8 @@ class TrueSkillConfig:
     beta: float = 25.0
     tau: float = 0.1
     draw_probability: float = 0.0
-    pooled_weights_by_k: dict[int, float] | None = None
-    """Optional per-player-count weights for pooling TrueSkill ratings."""
+    k_weights: dict[int, float] | None = None
+    """Optional per-player-count weights for aggregation TrueSkill ratings."""
 
 
 @dataclass
@@ -395,7 +395,7 @@ class Head2HeadConfig:
     """Optional RNG seed for deterministic tie-break simulation (defaults to sim.seed)."""
 
     use_tier_elites: bool = False
-    """Deprecated compatibility flag; H2H always uses the pooled ratings/frequentist union."""
+    """Deprecated compatibility flag; H2H always uses the combined ratings/frequentist union."""
 
 
 @dataclass
@@ -580,16 +580,16 @@ class AppConfig:
 
         return self.curate_block_dir(k)
 
-    def combine_pooled_dir(self, k: int | None = None) -> Path:  # noqa: ARG002
-        """Directory holding pooled combine artifacts (legacy *k* kept for callers)."""
+    def combine_combined_dir(self, k: int | None = None) -> Path:  # noqa: ARG002
+        """Directory holding combined combine artifacts (legacy *k* kept for callers)."""
 
-        return self.stage_subdir("combine", "pooled")
+        return self.stage_subdir("combine", "combined")
 
     @property
     def combine_partitioned_dir(self) -> Path:
         """Directory holding partitioned combined curated rows."""
 
-        return self.stage_subdir("combine", "pooled", "all_ingested_rows_partitioned")
+        return self.stage_subdir("combine", "combined", "all_ingested_rows_partitioned")
 
     def metrics_per_k_dir(self, k: int) -> Path:
         """Directory holding metrics artifacts for ``k`` players."""
@@ -598,9 +598,9 @@ class AppConfig:
         return path
 
     @property
-    def metrics_pooled_dir(self) -> Path:
-        """Directory holding pooled metrics artifacts."""
-        path = self.stage_subdir("metrics", "pooled")
+    def metrics_combined_dir(self) -> Path:
+        """Directory holding combined metrics artifacts."""
+        path = self.stage_subdir("metrics", "combined")
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -611,10 +611,10 @@ class AppConfig:
         return self.stage_subdir("game_stats")
 
     @property
-    def game_stats_pooled_dir(self) -> Path:
-        """Pooled outputs for game-stat analytics."""
+    def game_stats_combined_dir(self) -> Path:
+        """Combined outputs for game-stat analytics."""
 
-        return self.stage_subdir("game_stats", "pooled")
+        return self.stage_subdir("game_stats", "combined")
 
     @property
     def rng_stage_dir(self) -> Path:
@@ -623,10 +623,10 @@ class AppConfig:
         return self.stage_subdir("rng_diagnostics")
 
     @property
-    def rng_pooled_dir(self) -> Path:
-        """Pooled outputs for RNG diagnostics."""
+    def rng_combined_dir(self) -> Path:
+        """Combined outputs for RNG diagnostics."""
 
-        return self.stage_subdir("rng_diagnostics", "pooled")
+        return self.stage_subdir("rng_diagnostics", "combined")
 
     @property
     def seed_summaries_stage_dir(self) -> Path:
@@ -646,10 +646,10 @@ class AppConfig:
         return self.stage_subdir("variance")
 
     @property
-    def variance_pooled_dir(self) -> Path:
-        """Pooled outputs for variance analytics."""
+    def variance_combined_dir(self) -> Path:
+        """Combined outputs for variance analytics."""
 
-        return self.stage_subdir("variance", "pooled")
+        return self.stage_subdir("variance", "combined")
 
     @property
     def meta_stage_dir(self) -> Path:
@@ -663,10 +663,10 @@ class AppConfig:
         return self.stage_subdir("meta", f"{players}p")
 
     @property
-    def meta_pooled_dir(self) -> Path:
-        """Legacy pooled outputs for meta-analysis."""
+    def meta_combined_dir(self) -> Path:
+        """Legacy combined outputs for meta-analysis."""
 
-        return self.stage_subdir("meta", "pooled")
+        return self.stage_subdir("meta", "combined")
 
     @property
     def agreement_stage_dir(self) -> Path:
@@ -711,10 +711,10 @@ class AppConfig:
         return self.stage_subdir("trueskill")
 
     @property
-    def trueskill_pooled_dir(self) -> Path:
-        """Pooled TrueSkill output directory."""
+    def trueskill_combined_dir(self) -> Path:
+        """Combined TrueSkill output directory."""
 
-        return self.stage_subdir("trueskill", "pooled")
+        return self.stage_subdir("trueskill", "combined")
 
     @property
     def head2head_stage_dir(self) -> Path:
@@ -746,10 +746,10 @@ class AppConfig:
         return self.per_k_subdir("hgb", k)
 
     @property
-    def hgb_pooled_dir(self) -> Path:
-        """Pooled HGB output directory."""
+    def hgb_combined_dir(self) -> Path:
+        """Combined HGB output directory."""
 
-        return self.stage_subdir("hgb", "pooled")
+        return self.stage_subdir("hgb", "combined")
 
     @property
     def frequentist_stage_dir(self) -> Path:
@@ -759,7 +759,7 @@ class AppConfig:
 
     @property
     def meta_analysis_dir(self) -> Path:
-        """Directory containing per-seed summaries pooled across runs."""
+        """Directory containing per-seed summaries combined across runs."""
 
         configured = self.io.meta_analysis_dir
         if configured is None:
@@ -955,69 +955,69 @@ class AppConfig:
         return str(outputs.get("metrics_name", "metrics.parquet"))
 
     def metrics_output_path(self, name: str | None = None) -> Path:
-        """Preferred path for pooled metrics artifacts under the metrics stage."""
+        """Preferred path for combined metrics artifacts under the metrics stage."""
 
         filename = str(self.metrics_name if name is None else name)
-        path = self.metrics_pooled_dir / filename
+        path = self.metrics_combined_dir / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
     def game_stats_output_path(self, name: str) -> Path:
-        """Preferred path for pooled game-stat outputs."""
+        """Preferred path for combined game-stat outputs."""
 
         canonical_name = self.canonical_artifact_name(name)
-        path = self.game_stats_pooled_dir / canonical_name
+        path = self.game_stats_combined_dir / canonical_name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
     def game_stats_input_path(self, name: str) -> Path:
         """Resolve a game-stat artifact with a legacy fallback."""
 
-        stage_dir = self._stage_dir_if_active("game_stats", "pooled")
+        stage_dir = self._stage_dir_if_active("game_stats", "combined")
         return self._preferred_stage_path(
             stage_dir,
             self.analysis_dir,
             name,
             stage_key="game_stats",
-            stage_parts=("pooled",),
+            stage_parts=("combined",),
         )
 
     def rng_output_path(self, name: str) -> Path:
-        """Preferred path for pooled RNG diagnostics."""
+        """Preferred path for combined RNG diagnostics."""
 
-        path = self.rng_pooled_dir / name
+        path = self.rng_combined_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
     def rng_input_path(self, name: str) -> Path:
         """Resolve an RNG diagnostic artifact with a legacy fallback."""
 
-        stage_dir = self._stage_dir_if_active("rng_diagnostics", "pooled")
+        stage_dir = self._stage_dir_if_active("rng_diagnostics", "combined")
         return self._preferred_stage_path(
             stage_dir,
             self.analysis_dir,
             name,
             stage_key="rng_diagnostics",
-            stage_parts=("pooled",),
+            stage_parts=("combined",),
         )
 
     def variance_output_path(self, name: str) -> Path:
-        """Preferred path for pooled variance analytics."""
+        """Preferred path for combined variance analytics."""
 
-        path = self.variance_pooled_dir / name
+        path = self.variance_combined_dir / name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
     def variance_input_path(self, name: str) -> Path:
         """Resolve a variance artifact with a legacy fallback."""
 
-        stage_dir = self._stage_dir_if_active("variance", "pooled")
+        stage_dir = self._stage_dir_if_active("variance", "combined")
         return self._preferred_stage_path(
             stage_dir,
             self.analysis_dir,
             name,
             stage_key="variance",
-            stage_parts=("pooled",),
+            stage_parts=("combined",),
         )
 
     def meta_output_path(self, players: int, name: str) -> Path:
@@ -1039,7 +1039,7 @@ class AppConfig:
             if interseed_path.exists():
                 return interseed_path
 
-        for legacy_dir in (self.meta_pooled_dir, self.analysis_dir):
+        for legacy_dir in (self.meta_combined_dir, self.analysis_dir):
             legacy_path = legacy_dir / name
             if legacy_path.exists():
                 return legacy_path
@@ -1047,18 +1047,18 @@ class AppConfig:
         return preferred
 
     def metrics_input_path(self, name: str | None = None) -> Path:
-        """Resolve a pooled metrics artifact with a legacy fallback."""
+        """Resolve a combined metrics artifact with a legacy fallback."""
 
         filename = str(self.metrics_name if name is None else name)
         interseed_path: Path | None = None
-        interseed_root = self._input_stage_path("metrics", "pooled")
+        interseed_root = self._input_stage_path("metrics", "combined")
         if interseed_root is not None:
             interseed_path = interseed_root / filename
             if interseed_path.exists():
                 return interseed_path
 
         stage_path: Path | None = None
-        stage_dir = self._stage_dir_if_active("metrics", "pooled")
+        stage_dir = self._stage_dir_if_active("metrics", "combined")
         if stage_dir is not None:
             stage_path = stage_dir / filename
             if stage_path.exists():
@@ -1196,11 +1196,11 @@ class AppConfig:
         return candidates[0]
 
     @staticmethod
-    def is_pooled_players(players: int | str) -> bool:
-        """Return True when ``players`` refers to a pooled (unfiltered) run."""
+    def is_combined_players(players: int | str) -> bool:
+        """Return True when ``players`` refers to a combined (unfiltered) run."""
 
         if isinstance(players, str):
-            return players.strip().lower() == "pooled"
+            return players.strip().lower() == "combined"
         try:
             return int(players) == 0
         except (TypeError, ValueError):
@@ -1224,23 +1224,23 @@ class AppConfig:
             normalized.add(value)
         return sorted(normalized)
 
-    def agreement_include_pooled(self) -> bool:
-        """Return whether pooled agreement output should be generated."""
+    def agreement_include_combined(self) -> bool:
+        """Return whether combined agreement output should be generated."""
 
-        return bool(self.analysis.agreement_include_pooled)
+        return bool(self.analysis.agreement_include_combined)
 
-    def agreement_output_path_pooled(self) -> Path:
-        """Preferred path for pooled agreement analytics."""
+    def agreement_output_path_combined(self) -> Path:
+        """Preferred path for combined agreement analytics."""
 
-        filename = self.canonical_artifact_name("agreement_pooled.json")
-        stage_dir = self.stage_subdir("agreement", "pooled")
+        filename = self.canonical_artifact_name("agreement_combined.json")
+        stage_dir = self.stage_subdir("agreement", "combined")
         return self._preferred_stage_path(stage_dir, self.analysis_dir, filename)
 
     def agreement_output_path(self, players: int | str) -> Path:
         """Preferred path for agreement analytics for a given player count."""
 
-        if self.is_pooled_players(players):
-            return self.agreement_output_path_pooled()
+        if self.is_combined_players(players):
+            return self.agreement_output_path_combined()
         players_int = int(players)
         filename = f"agreement_{players_int}p.json"
         stage_dir = self.per_k_subdir("agreement", players_int)
@@ -1249,8 +1249,8 @@ class AppConfig:
     def trueskill_path(self, filename: str) -> Path:
         """Resolve a TrueSkill artifact path with legacy fallback."""
         filename = self.canonical_artifact_name(filename)
-        pooled = filename.startswith("ratings_pooled") or filename.startswith("ratings_k_weighted")
-        parts = ("pooled",) if pooled else ()
+        combined = filename.startswith("ratings_combined") or filename.startswith("ratings_k_weighted")
+        parts = ("combined",) if combined else ()
         stage_dir = self._stage_dir_if_active("trueskill", *parts)
         return self._preferred_stage_path(
             stage_dir,
@@ -1350,15 +1350,15 @@ class AppConfig:
         """Return ordered candidate directories for partitioned combine outputs."""
 
         candidates: list[Path] = []
-        input_dir = self._input_stage_path("combine", "pooled", "all_ingested_rows_partitioned")
+        input_dir = self._input_stage_path("combine", "combined", "all_ingested_rows_partitioned")
         if input_dir is not None:
             candidates.append(input_dir)
 
-        stage_dir = self._stage_dir_if_active("combine", "pooled", "all_ingested_rows_partitioned")
+        stage_dir = self._stage_dir_if_active("combine", "combined", "all_ingested_rows_partitioned")
         if stage_dir is not None and stage_dir not in candidates:
             candidates.append(stage_dir)
 
-        interseed_dir = self._interseed_stage_dir("combine", "pooled", "all_ingested_rows_partitioned")
+        interseed_dir = self._interseed_stage_dir("combine", "combined", "all_ingested_rows_partitioned")
         if interseed_dir is not None and interseed_dir not in candidates:
             candidates.append(interseed_dir)
 
@@ -1375,13 +1375,13 @@ class AppConfig:
         return self.curated_parquet
 
     def _combine_artifact_candidates(self, filename: str) -> tuple[Path, ...]:
-        """Return ordered candidate paths for a combine-stage pooled artifact."""
+        """Return ordered candidate paths for a combine-stage combined artifact."""
 
         canonical = self.canonical_artifact_name(filename)
         candidate_names = (canonical, *self.legacy_artifact_names(canonical))
         combine_dir = self.resolve_input_stage_dir("combine") or self.analysis_dir / "combine"
         legacy_dirs: list[Path] = [
-            combine_dir / f"{self.combine_max_players}p" / "pooled",
+            combine_dir / f"{self.combine_max_players}p" / "combined",
             combine_dir / "all_n_players_combined",
             self.data_dir / "all_n_players_combined",
             self.analysis_dir / "all_n_players_combined",
@@ -1397,18 +1397,18 @@ class AppConfig:
             )
         legacy_paths = [legacy_dir / name for legacy_dir in legacy_dirs for name in candidate_names]
         candidates: list[Path] = []
-        input_dir = self._input_stage_path("combine", "pooled")
+        input_dir = self._input_stage_path("combine", "combined")
         if input_dir is not None:
             candidates.extend([input_dir / name for name in candidate_names])
 
-        stage_dir = self._stage_dir_if_active("combine", "pooled")
+        stage_dir = self._stage_dir_if_active("combine", "combined")
         if stage_dir is not None:
             for name in candidate_names:
                 stage_candidate = stage_dir / name
                 if stage_candidate not in candidates:
                     candidates.append(stage_candidate)
 
-        interseed_dir = self._interseed_stage_dir("combine", "pooled")
+        interseed_dir = self._interseed_stage_dir("combine", "combined")
         if interseed_dir is not None:
             interseed_candidates = [interseed_dir / name for name in candidate_names]
             for interseed_candidate in interseed_candidates:
@@ -1424,7 +1424,7 @@ class AppConfig:
         return tuple(candidates)
 
     def _resolve_combine_artifact_path(self, filename: str) -> Path:
-        """Resolve an artifact from combine pooled outputs with legacy fallbacks."""
+        """Resolve an artifact from combine combined outputs with legacy fallbacks."""
 
         candidates = self._combine_artifact_candidates(filename)
         for candidate in candidates:
@@ -1689,7 +1689,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
     per_n_seed_provided: dict[int, bool] = {}
     per_n_seed_list_provided: dict[int, bool] = {}
     per_n_seed_pair_provided: dict[int, bool] = {}
-    pooled_requested = False
+    combined_requested = False
     if "sim" in data:
         sim_section_raw = data["sim"]
         if not isinstance(sim_section_raw, Mapping):
@@ -1705,21 +1705,21 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         seed_pair_provided = "seed_pair" in sim_section
         if "n_players" in sim_section and "n_players_list" not in sim_section:
             sim_section["n_players_list"] = [sim_section.pop("n_players")]
-        pooled_requested = False
+        combined_requested = False
         raw_players = sim_section.get("n_players_list")
         if isinstance(raw_players, list):
             numeric_players: list[int] = []
             for entry in raw_players:
-                is_pooled_entry = False
+                is_combined_entry = False
                 if isinstance(entry, str):
-                    is_pooled_entry = entry.strip().lower() == "pooled"
+                    is_combined_entry = entry.strip().lower() == "combined"
                 else:
                     try:
-                        is_pooled_entry = int(entry) == 0
+                        is_combined_entry = int(entry) == 0
                     except (TypeError, ValueError):
-                        is_pooled_entry = False
-                if is_pooled_entry:
-                    pooled_requested = True
+                        is_combined_entry = False
+                if is_combined_entry:
+                    combined_requested = True
                     continue
                 try:
                     numeric_players.append(int(entry))
@@ -1746,12 +1746,12 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                         per_n_seed_list_provided[per_n_key] = True
                     if "seed_pair" in val:
                         per_n_seed_pair_provided[per_n_key] = True
-    if pooled_requested:
-        pooled_analysis_section = data.setdefault("analysis", {})
-        if not isinstance(pooled_analysis_section, MutableMapping):
-            pooled_analysis_section = {}
-            data["analysis"] = pooled_analysis_section
-        pooled_analysis_section.setdefault("agreement_include_pooled", True)
+    if combined_requested:
+        combined_analysis_section = data.setdefault("analysis", {})
+        if not isinstance(combined_analysis_section, MutableMapping):
+            combined_analysis_section = {}
+            data["analysis"] = combined_analysis_section
+        combined_analysis_section.setdefault("agreement_include_combined", True)
 
     if "analysis" in data:
         analysis_section_raw = data["analysis"]

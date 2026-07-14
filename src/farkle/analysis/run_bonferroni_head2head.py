@@ -1,5 +1,5 @@
 # src/farkle/analysis/run_bonferroni_head2head.py
-"""Bonferroni-corrected head-to-head comparison of top pooled-score strategies."""
+"""Bonferroni-corrected head-to-head comparison of top combined-score strategies."""
 
 from __future__ import annotations
 
@@ -125,7 +125,7 @@ def _load_top_strategies(
     ratings_limit: int = 100,
     frequentist_limit: int = 100,
 ) -> tuple[list[str], dict[str, Any]]:
-    """Collect top strategies from pooled ratings and frequentist score tables.
+    """Collect top strategies from combined ratings and frequentist score tables.
 
     Strategies are sorted by their respective performance indicators and trimmed to
     the provided limits before being combined into a de-duplicated list. Ordering is
@@ -660,7 +660,7 @@ def run_bonferroni_head2head(
     shard_size: int = 25,
     progress_schedule: Sequence[float] | None = None,
 ) -> None:
-    """Run pairwise games between top pooled-score strategies using Bonferroni tests.
+    """Run pairwise games between top combined-score strategies using Bonferroni tests.
 
     Parameters
     ----------
@@ -677,7 +677,7 @@ def run_bonferroni_head2head(
         Number of worker processes; when greater than one, games are simulated in
         parallel and queued in batches so multiple pairs advance concurrently.
 
-    The function unions the top pooled TrueSkill strategies with the top pooled
+    The function unions the top combined TrueSkill strategies with the top combined
     frequentist strategies, derives a per-pair game budget from
     :func:`~farkle.utils.stats.games_for_power` using the configured design tail
     for power sizing, and writes ``analysis/bonferroni_pairwise.parquet``. The
@@ -763,12 +763,12 @@ def run_bonferroni_head2head(
                 "Tier artifact could not be loaded for diagnostic comparison",
                 extra={"stage": "head2head", "tiers_path": str(tiers_path), "error": str(exc)},
             )
-    ratings_path = cfg.trueskill_pooled_dir / "ratings_k_weighted.parquet"
+    ratings_path = cfg.trueskill_combined_dir / "ratings_k_weighted.parquet"
     if not ratings_path.exists():
         fallback = cfg.trueskill_stage_dir / "ratings_k_weighted.parquet"
         if fallback.exists():
             LOGGER.warning(
-                "Using legacy pooled ratings path; prefer stage-aware pooled directory",
+                "Using legacy combined ratings path; prefer stage-aware combined directory",
                 extra={"stage": "head2head", "legacy_path": str(fallback), "preferred": str(ratings_path)},
             )
             ratings_path = fallback
@@ -794,7 +794,7 @@ def run_bonferroni_head2head(
     use_tier_elites = bool(getattr(cfg.head2head, "use_tier_elites", False))
     if use_tier_elites:
         LOGGER.warning(
-            "use_tier_elites is ignored; head-to-head candidates come from pooled score artifacts",
+            "use_tier_elites is ignored; head-to-head candidates come from combined score artifacts",
             extra={"stage": "head2head"},
         )
     debug_summary_path = cfg.head2head_stage_dir / "head2head.debug_summary.json"

@@ -331,7 +331,7 @@ def _write_frequentist_scores(
     with atomic_path(str(scores_path)) as tmp_path:
         scores.to_parquet(tmp_path, index=False)
 
-    pooled_provenance_path = _frequentist_artifact(cfg, "frequentist_k_weighted_provenance.json")
+    combined_provenance_path = _frequentist_artifact(cfg, "frequentist_k_weighted_provenance.json")
     if weights_by_k:
         weight_source = "config:frequentist_weights_by_k"
         normalized_weights: dict[int, float] = {}
@@ -358,12 +358,12 @@ def _write_frequentist_scores(
             effective_games[k_norm] = float(games)
 
     provenance = {
-        "pooling_rule": "weighted_mean_by_k",
+        "aggregation_rule": "weighted_mean_by_k",
         "weight_source": weight_source,
         "normalized_weights_by_k": normalized_weights,
         "effective_sample_sizes_games_by_k": effective_games,
     }
-    with atomic_path(str(pooled_provenance_path)) as tmp_path:
+    with atomic_path(str(combined_provenance_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(provenance, indent=2))
 
     LOGGER.info(
