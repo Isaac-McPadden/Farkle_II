@@ -105,8 +105,6 @@ def test_resolve_seed_pair_rejects_invalid_combinations(argv):
     assert excinfo.value.code == 2
 
 
-
-
 def test_resolve_log_file_for_run(tmp_path: Path):
     cfg = cli_main.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
@@ -160,9 +158,7 @@ def test_analyze_metrics_ignores_rng_flags(monkeypatch, preserve_root_logger):
         lambda cfg, **kwargs: calls.append("run_all"),
     )
 
-    cli_main.main(
-        ["analyze", "metrics", "--rng-diagnostics", "--rng-lags", "2", "1", "2"]
-    )
+    cli_main.main(["analyze", "metrics", "--rng-diagnostics", "--rng-lags", "2", "1", "2"])
 
     assert calls == ["metrics"]
 
@@ -219,15 +215,13 @@ def _write_cfg(tmp_path: Path) -> Path:
     return path
 
 
-def test_analyze_variance_dispatch(monkeypatch, tmp_path: Path, preserve_root_logger):
-    called: dict[str, object] = {}
-
-    monkeypatch.setattr(cli_main.analysis_pkg, "run_variance", lambda cfg, *, force=False: called.update(force=force))
-
+def test_analyze_variance_command_is_removed(tmp_path: Path, preserve_root_logger):
     cfg_path = _write_cfg(tmp_path)
-    cli_main.main(["--config", str(cfg_path), "analyze", "variance", "--force"])
 
-    assert called == {"force": True}
+    with pytest.raises(SystemExit) as excinfo:
+        cli_main.main(["--config", str(cfg_path), "analyze", "variance"])
+
+    assert excinfo.value.code == 2
 
 
 def test_analyze_pipeline_dispatches_preprocess_and_analytics(
@@ -251,7 +245,7 @@ def test_analyze_pipeline_dispatches_preprocess_and_analytics(
 
     assert calls == [
         ("analyze:pipeline", False),
-        ("analyze:analytics", {"run_rng_diagnostics": False, "rng_lags": None, "allow_missing_upstream": False}),
+        ("analyze:analytics", {"run_rng_diagnostics": False, "rng_lags": None}),
     ]
 
 
@@ -332,7 +326,6 @@ def test_analyze_pipeline_sorts_and_deduplicates_rng_lags(
     assert captured["rng_lags"] == (1, 2, 4)
 
 
-
 @pytest.mark.parametrize(
     "argv",
     [
@@ -341,9 +334,7 @@ def test_analyze_pipeline_sorts_and_deduplicates_rng_lags(
         ["--seed-pair", "1"],
     ],
 )
-def test_main_rejects_missing_required_args_with_exit_code_2(
-    preserve_root_logger, argv
-):
+def test_main_rejects_missing_required_args_with_exit_code_2(preserve_root_logger, argv):
     with pytest.raises(SystemExit) as excinfo:
         cli_main.main(argv)
 
@@ -496,7 +487,6 @@ def test_two_seed_pipeline_top_level_passes_force_and_seed_pair(
     [
         (["run"], "runner", "run_single_n"),
         (["analyze", "ingest"], "ingest", "run"),
-        (["analyze", "variance"], "analysis_pkg", "run_variance"),
         (["--seed-pair", "3", "4", "two-seed-pipeline"], "two_seed_pipeline", "run_pipeline"),
     ],
 )
@@ -603,11 +593,6 @@ def test_main_dispatches_each_simulation_and_analysis_stage(
         lambda cfg, **kwargs: stage_calls.append("analyze:analytics"),
     )
     monkeypatch.setattr(
-        cli_main.analysis_pkg,
-        "run_variance",
-        lambda cfg, **kwargs: stage_calls.append("analyze:variance"),
-    )
-    monkeypatch.setattr(
         cli_main,
         "_run_preprocess",
         lambda cfg, **kwargs: stage_calls.append("analyze:preprocess"),
@@ -629,7 +614,6 @@ def test_main_dispatches_each_simulation_and_analysis_stage(
         ["--config", str(cfg_single), "analyze", "metrics"],
         ["--config", str(cfg_single), "analyze", "preprocess"],
         ["--config", str(cfg_single), "analyze", "analytics"],
-        ["--config", str(cfg_single), "analyze", "variance"],
         ["--config", str(cfg_single), "analyze", "pipeline"],
         ["--config", str(cfg_pair), "two-seed-pipeline"],
     ]
@@ -647,7 +631,6 @@ def test_main_dispatches_each_simulation_and_analysis_stage(
         "analyze:metrics",
         "analyze:preprocess",
         "analyze:analytics",
-        "analyze:variance",
         "analyze:preprocess",
         "analyze:analytics",
         "two-seed-pipeline",

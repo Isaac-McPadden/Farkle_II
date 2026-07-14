@@ -83,11 +83,6 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         },
     )
 
-    interseed_ready, interseed_reason = cfg.interseed_ready()
-    if not interseed_ready:
-        stage_log.missing_input(interseed_reason)
-        return
-
     try:
         data_file = cfg.curated_parquet
     except KeyError as exc:
@@ -313,7 +308,9 @@ def _collect_diagnostics_streaming_compact(
                 state = strategy_states.setdefault(key, _GroupStreamAccumulator(normalized_lags))
                 state.extend(group)
 
-            grouped_matchup = seat.groupby(["matchup", "strategy", "n_players"], observed=True, sort=False)
+            grouped_matchup = seat.groupby(
+                ["matchup", "strategy", "n_players"], observed=True, sort=False
+            )
             for (matchup, strategy, n_players), group in grouped_matchup:
                 matchup_key = None if _is_missing_scalar(matchup) else str(matchup)
                 matchup_state_key = (matchup_key, str(strategy), int(cast(int, n_players)))
@@ -446,7 +443,9 @@ def _seat_strategy_columns(cfg: AppConfig, schema_names: Sequence[str]) -> list[
         name for name in schema_names if _SEAT_STRATEGY_RE.match(name) and name != "winner_strategy"
     ]
     merged_candidates = set(configured_candidates) | set(fallback_candidates)
-    present = [name for name in merged_candidates if name in schema_set and name != "winner_strategy"]
+    present = [
+        name for name in merged_candidates if name in schema_set and name != "winner_strategy"
+    ]
 
     return sorted(present, key=_seat_number_from_strategy_column)
 
@@ -461,7 +460,9 @@ def _build_matchup_labels(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.Ser
     Returns:
         String series aligned to ``df.index`` with matchup labels per game row.
     """
-    valid_seat_cols = [col for col in strat_cols if col in df.columns and _SEAT_STRATEGY_RE.match(col)]
+    valid_seat_cols = [
+        col for col in strat_cols if col in df.columns and _SEAT_STRATEGY_RE.match(col)
+    ]
     if not valid_seat_cols:
         return pd.Series(index=df.index, dtype="string")
 
@@ -479,9 +480,7 @@ def _build_matchup_labels(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.Ser
     return cast(pd.Series, matchups.reindex(df.index).astype("string"))
 
 
-def _winner_strategies(
-    df: pd.DataFrame, winner_col: str, strat_cols: Sequence[str]
-) -> pd.Series:
+def _winner_strategies(df: pd.DataFrame, winner_col: str, strat_cols: Sequence[str]) -> pd.Series:
     """Resolve winner strategies even when the source stores winning seats.
 
     Args:
@@ -805,7 +804,9 @@ def _collect_diagnostics_streaming(
             ordered = group.sort_values("game_seed", kind="mergesort")
             state.extend(ordered)
 
-        grouped_matchup = batch.groupby(["matchup", "strategy", "n_players"], observed=True, sort=False)
+        grouped_matchup = batch.groupby(
+            ["matchup", "strategy", "n_players"], observed=True, sort=False
+        )
         for (matchup, strategy, n_players), group in grouped_matchup:
             matchup_key = None if _is_missing_scalar(matchup) else str(matchup)
             matchup_state_key = (matchup_key, str(strategy), int(cast(int, n_players)))
@@ -916,9 +917,7 @@ def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataF
     # Each grouped call yields an iterable of pd.Series diagnostics.
     rows.extend(chain.from_iterable(strategy_diagnostics))
 
-    grouped_matchup = data.groupby(
-        ["matchup", "strategy", "n_players"], observed=True, sort=False
-    )
+    grouped_matchup = data.groupby(["matchup", "strategy", "n_players"], observed=True, sort=False)
     matchup_diagnostics = (
         _group_diagnostics(
             group,
@@ -939,7 +938,9 @@ def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataF
     if not flattened:
         return pd.DataFrame()
     diagnostics = pd.DataFrame(flattened)
-    diagnostics = diagnostics.sort_values(["summary_level", "strategy", "n_players", "lag", "metric"])
+    diagnostics = diagnostics.sort_values(
+        ["summary_level", "strategy", "n_players", "lag", "metric"]
+    )
     return diagnostics
 
 

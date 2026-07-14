@@ -11,10 +11,10 @@ from farkle.analysis.stage_registry import (
     StageDefinition,
     StageLayout,
     StagePlacement,
-    resolve_interseed_stage_layout,
+    resolve_root_pair_stage_layout,
     resolve_stage_layout,
 )
-from farkle.config import AnalysisConfig, AppConfig, IOConfig, SimConfig
+from farkle.config import AppConfig, IOConfig
 
 
 def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
@@ -31,47 +31,40 @@ def test_resolve_stage_layout_default_numbering(tmp_path: Path) -> None:
     ]
 
     ordered_keys = [placement.definition.key for placement in layout.placements]
-    head2head_idx = ordered_keys.index("head2head")
-    seed_symmetry_idx = ordered_keys.index("seed_symmetry")
-    post_h2h_idx = ordered_keys.index("post_h2h")
-
-    assert seed_symmetry_idx == head2head_idx + 1
-    assert post_h2h_idx == seed_symmetry_idx + 1
-    assert layout.placements[seed_symmetry_idx].folder_name.endswith("_seed_symmetry")
-
-
-def test_resolve_stage_layout_cli_overrides(tmp_path: Path) -> None:
-    cfg = AppConfig(
-        IOConfig(results_dir_prefix=tmp_path),
-        SimConfig(),
-        AnalysisConfig(
-            disable_game_stats=True,
-            disable_rng_diagnostics=False,
-            disable_trueskill=True,
-            disable_head2head=True,
-            disable_frequentist=True,
-            disable_agreement=True,
-        ),
-    )
-
-    base_layout = resolve_stage_layout(AppConfig(IOConfig(results_dir_prefix=tmp_path)))
-    layout = resolve_stage_layout(cfg)
-
-    assert [placement.definition.key for placement in layout.placements] == [
-        placement.definition.key for placement in base_layout.placements
+    assert ordered_keys[:9] == [
+        "ingest",
+        "curate",
+        "combine",
+        "metrics",
+        "game_stats",
+        "rng_diagnostics",
+        "trueskill",
+        "hgb",
+        "screening",
     ]
-    assert [placement.folder_name for placement in layout.placements] == [
-        placement.folder_name for placement in base_layout.placements
-    ]
+    assert not {"variance", "meta", "post_h2h", "seed_symmetry"}.intersection(ordered_keys)
+
+
+def test_resolve_stage_layout_has_no_retired_stage_switches(tmp_path: Path) -> None:
+    layout = resolve_stage_layout(AppConfig(IOConfig(results_dir_prefix=tmp_path)))
+
+    assert not {
+        "variance",
+        "meta",
+        "frequentist",
+        "post_h2h",
+        "seed_symmetry",
+        "h2h_tier_trends",
+    }.intersection(layout.keys())
 
 
 def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
     cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
 
-    base_layout = resolve_interseed_stage_layout(cfg)
+    base_layout = resolve_stage_layout(cfg)
     cfg.analysis.disable_rng_diagnostics = True
 
-    layout = resolve_interseed_stage_layout(cfg)
+    layout = resolve_stage_layout(cfg)
 
     assert "rng_diagnostics" in [placement.definition.key for placement in base_layout.placements]
     assert "rng_diagnostics" not in [placement.definition.key for placement in layout.placements]
@@ -175,9 +168,19 @@ def test_stage_registry_helpers_and_interseed_layout(tmp_path: Path) -> None:
     except KeyError as exc:
         assert "is not active in the resolved layout" in str(exc)
 
-    interseed_layout = resolve_interseed_stage_layout(cfg)
-    assert interseed_layout.placements[0].definition.key == "rng_diagnostics"
-    assert interseed_layout.placements[0].folder_name.endswith("_rng")
-    assert [placement.index for placement in interseed_layout.placements] == list(
-        range(len(interseed_layout.placements))
+    pair_layout = resolve_root_pair_stage_layout(cfg)
+    assert pair_layout.keys() == [
+        "cross_seed",
+        "trueskill",
+        "candidate_freeze",
+        "head2head",
+        "h2h_power",
+        "h2h_execute",
+        "h2h_inference",
+        "h2h_digest",
+        "agreement",
+        "reporting",
+    ]
+    assert [placement.index for placement in pair_layout.placements] == list(
+        range(len(pair_layout.placements))
     )

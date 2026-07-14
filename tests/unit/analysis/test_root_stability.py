@@ -14,6 +14,7 @@ from farkle.analysis.root_stability import (
     _ratio_mcse,
     build_two_root_stability,
 )
+from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
@@ -37,6 +38,7 @@ def _cfg(tmp_path: Path) -> AppConfig:
     cfg.screening.bootstrap_replicates = 20
     cfg.screening.candidate_contribution_size = 2
     cfg.screening.controls = [2]
+    cfg.set_stage_layout(resolve_root_pair_stage_layout(cfg))
     return cfg
 
 

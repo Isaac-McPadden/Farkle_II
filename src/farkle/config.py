@@ -1178,57 +1178,57 @@ class AppConfig:
     def root_combined_performance_by_k_path(self, k: int) -> Path:
         """Root-specific and raw-count-combined performance for one k."""
 
-        return self.cross_seed_dir("metrics") / f"performance_root_combination_{int(k)}p.parquet"
+        return self.cross_seed_dir("cross_seed") / f"performance_root_combination_{int(k)}p.parquet"
 
     def root_combined_performance_across_k_path(self) -> Path:
         """Root-specific and combined declared-k performance scores."""
 
-        return self.cross_seed_dir("metrics") / "performance_root_combination_across_k.parquet"
+        return self.cross_seed_dir("cross_seed") / "performance_root_combination_across_k.parquet"
 
     def root_discrepancies_path(self) -> Path:
         """Raw, standardized, and threshold-scaled root differences."""
 
-        return self.cross_seed_dir("metrics") / "root_discrepancies.parquet"
+        return self.cross_seed_dir("cross_seed") / "root_discrepancies.parquet"
 
     def root_joint_discrepancy_path(self) -> Path:
         """Joint maximum-discrepancy diagnostic summary."""
 
-        return self.cross_seed_dir("metrics") / "root_joint_discrepancy.parquet"
+        return self.cross_seed_dir("cross_seed") / "root_joint_discrepancy.parquet"
 
     def root_rank_stability_path(self) -> Path:
         """Between-root rank correlation and movement summary."""
 
-        return self.cross_seed_dir("metrics") / "root_rank_stability.parquet"
+        return self.cross_seed_dir("cross_seed") / "root_rank_stability.parquet"
 
     def root_top_n_stability_path(self) -> Path:
         """Between-root top-N overlap diagnostics."""
 
-        return self.cross_seed_dir("metrics") / "root_top_n_stability.parquet"
+        return self.cross_seed_dir("cross_seed") / "root_top_n_stability.parquet"
 
     def root_bootstrap_top_n_inclusion_path(self) -> Path:
         """Root-specific bootstrap top-N inclusion probabilities."""
 
-        return self.cross_seed_dir("metrics") / "root_bootstrap_top_n_inclusion.parquet"
+        return self.cross_seed_dir("cross_seed") / "root_bootstrap_top_n_inclusion.parquet"
 
     def root_control_movement_path(self) -> Path:
         """Declared-control rank and performance movement."""
 
-        return self.cross_seed_dir("metrics") / "root_control_movement.parquet"
+        return self.cross_seed_dir("cross_seed") / "root_control_movement.parquet"
 
     def root_shortlist_changes_path(self) -> Path:
         """Root-specific and combined practical-shortlist membership."""
 
-        return self.cross_seed_dir("metrics") / "root_shortlist_changes.parquet"
+        return self.cross_seed_dir("cross_seed") / "root_shortlist_changes.parquet"
 
     def root_matched_count_convergence_path(self) -> Path:
         """Matched cumulative-batch convergence diagnostics."""
 
-        return self.cross_seed_dir("metrics") / "root_matched_count_convergence.parquet"
+        return self.cross_seed_dir("cross_seed") / "root_matched_count_convergence.parquet"
 
     def root_half_drift_path(self) -> Path:
         """First-half versus second-half within-root drift diagnostics."""
 
-        return self.cross_seed_dir("metrics") / "root_half_drift.parquet"
+        return self.cross_seed_dir("cross_seed") / "root_half_drift.parquet"
 
     def seat_batch_counts_path(self, k: int) -> Path:
         """Canonical seat wins and exposures by root, k, batch, strategy, and seat."""

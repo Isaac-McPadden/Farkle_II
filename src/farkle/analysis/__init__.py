@@ -1,5 +1,4 @@
-# src/farkle/analysis/__init__.py
-"""Lightweight orchestrator for downstream statistical analyses."""
+"""Canonical root and root-pair statistical workflow orchestration."""
 
 from __future__ import annotations
 
@@ -8,414 +7,269 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Callable, Sequence
+from typing import Any, Sequence
 
-from farkle.analysis.stage_registry import resolve_interseed_stage_layout
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.config import AppConfig
+from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
 
 LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
 class StageLogger:
-    """Standardized logging helper for analytics stages."""
+    """Standardized logging helper for analysis stages."""
 
     stage: str
     logger: logging.Logger = LOGGER
 
     def start(self, **extra: object) -> None:
-        """Log that a stage started running."""
-
-        self.logger.info(
-            "Analytics stage start",
-            extra={"stage": self.stage, **extra},
-        )
+        self.logger.info("Analysis stage start", extra={"stage": self.stage, **extra})
 
     def missing_dependency(self, dependency: str, *, error: str | None = None) -> None:
-        """Log that a dependency is missing for a stage."""
-
         payload = {"stage": self.stage, "missing_module": dependency, "status": "SKIPPED"}
         if error:
             payload["missing"] = error
-        self.logger.info(
-            "Analytics module skipped due to missing dependency",
-            extra=payload,
-        )
+        self.logger.info("Analysis module unavailable", extra=payload)
 
     def missing_input(self, reason: str, **extra: object) -> None:
-        """Log that a stage skipped due to missing or invalid inputs."""
-
         self.logger.info(
-            "Analytics: skipping %s",
+            "Analysis stage skipped: %s",
             self.stage,
             extra={"stage": self.stage, "reason": reason, "status": "SKIPPED", **extra},
         )
 
 
 def stage_logger(stage: str, *, logger: logging.Logger | None = None) -> StageLogger:
-    """Construct a :class:`StageLogger` for the given stage name."""
+    """Construct a stage logger."""
 
     return StageLogger(stage=stage, logger=logger or LOGGER)
 
 
 def _optional_import(module: str, *, stage_log: StageLogger | None = None) -> ModuleType | None:
-    """Attempt to import an analytics module while tolerating missing deps.
+    """Import an optional closeout module and report only a missing module."""
 
-    Args:
-        module: Fully qualified module path to import.
-        stage_log: Helper used to report missing dependencies.
-
-    Returns:
-        Imported module object, or ``None`` when the dependency is absent.
-    """
     try:
         return importlib.import_module(module)
-    except ModuleNotFoundError as exc:  # pragma: no cover - exercised in tests
+    except ModuleNotFoundError as exc:
         (stage_log or stage_logger("analysis")).missing_dependency(module, error=str(exc))
         return None
 
 
-def run_seed_summaries(cfg: AppConfig, *, force: bool = False) -> None:
-    """Wrapper around :mod:`farkle.analysis.seed_summaries`."""
-    from farkle.analysis import seed_summaries
-
-    seed_summaries.run(cfg, force=force)
-
-
-def run_coverage_by_k(cfg: AppConfig, *, force: bool = False) -> None:
-    """Wrapper around :mod:`farkle.analysis.coverage_by_k`."""
-    from farkle.analysis import coverage_by_k
-
-    coverage_by_k.run(cfg, force=force)
+def _manifest_metadata(cfg: AppConfig, *, execution_scope: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "results_dir": str(cfg.results_root),
+        "analysis_dir": str(cfg.analysis_dir),
+        "execution_scope": execution_scope,
+    }
+    if cfg.config_sha:
+        payload["config_sha"] = cfg.config_sha
+    return payload
 
 
-def run_meta(cfg: AppConfig, *, force: bool = False) -> None:
-    """Wrapper around :mod:`farkle.analysis.meta`."""
-    from farkle.analysis import meta
-
-    meta.run(cfg, force=force)
-
-
-def run_variance(cfg: AppConfig, *, force: bool = False) -> None:
-    """Wrapper around :mod:`farkle.analysis.variance`."""
-    from farkle.analysis import variance
-
-    variance.run(cfg, force=force)
-
-
-def run_h2h_tier_trends(
+def build_root_stage_plan(
     cfg: AppConfig,
     *,
     force: bool = False,
-    seed_s_tier_paths: Sequence[Path] | None = None,
-    interseed_s_tier_path: Path | None = None,
-) -> None:
-    """Wrapper around :mod:`farkle.analysis.h2h_tier_trends`."""
-    from farkle.analysis import h2h_tier_trends
-
-    h2h_tier_trends.run(
-        cfg,
-        force=force,
-        seed_s_tier_paths=seed_s_tier_paths,
-        interseed_s_tier_path=interseed_s_tier_path,
-    )
-
-
-def run_seed_symmetry(
-    cfg: AppConfig,
-    *,
-    force: bool = False,
-    allow_missing_upstream: bool = False,
-) -> None:
-    """Wrapper around :mod:`farkle.analysis.seed_symmetry`."""
-    from farkle.analysis import seed_symmetry
-
-    seed_symmetry.run(
-        cfg,
-        force=force,
-        allow_missing_upstream=allow_missing_upstream,
-    )
-
-
-def build_single_seed_analysis_plan(
-    cfg: AppConfig,
-    *,
-    force: bool = False,
-    allow_missing_upstream: bool = False,
+    rng_lags: Sequence[int] | None = None,
+    run_rng_diagnostics: bool | None = None,
 ) -> list[StagePlanItem]:
-    """Return the canonical per-seed analytics tail."""
+    """Build the root-local workflow, which ends after descriptive screening."""
 
-    def _seed_summaries(inner_cfg: AppConfig) -> None:
-        run_seed_summaries(inner_cfg, force=force)
+    from farkle.analysis import (
+        combine,
+        curate,
+        game_stats,
+        hgb_feat,
+        ingest,
+        metrics,
+        screening,
+        trueskill,
+    )
+    from farkle.analysis import rng_diagnostics as rng_module
 
-    def _trueskill(inner_cfg: AppConfig) -> None:
-        """Run the per-seed TrueSkill stage when the module is available.
-
-        Args:
-            inner_cfg: Per-seed config passed by the stage runner.
-        """
-        stage_log = stage_logger("trueskill", logger=LOGGER)
-        ts_mod = _optional_import("farkle.analysis.trueskill", stage_log=stage_log)
-        if ts_mod is None:
-            return
-        ts_mod.run(inner_cfg)
-
-    def _screening(inner_cfg: AppConfig) -> None:
-        """Run descriptive performance screening when the module is available.
-
-        Args:
-            inner_cfg: Per-seed config passed by the stage runner.
-        """
-        stage_log = stage_logger("screening", logger=LOGGER)
-        screening_mod = _optional_import("farkle.analysis.screening", stage_log=stage_log)
-        if screening_mod is None:
-            return
-        screening_mod.run(inner_cfg)
-
-    def _head2head(inner_cfg: AppConfig) -> None:
-        """Run the head-to-head stage when the module is available.
-
-        Args:
-            inner_cfg: Per-seed config passed by the stage runner.
-        """
-        stage_log = stage_logger("head2head", logger=LOGGER)
-        h2h_mod = _optional_import("farkle.analysis.head2head", stage_log=stage_log)
-        if h2h_mod is None:
-            return
-        h2h_mod.run(inner_cfg)
-
-    def _seed_symmetry(inner_cfg: AppConfig) -> None:
-        run_seed_symmetry(
-            inner_cfg,
-            force=force,
-            allow_missing_upstream=allow_missing_upstream,
-        )
-
-    def _post_h2h(inner_cfg: AppConfig) -> None:
-        """Run the post-head-to-head analysis stage when the module is available.
-
-        Args:
-            inner_cfg: Per-seed config passed by the stage runner.
-        """
-        stage_log = stage_logger("post_h2h", logger=LOGGER)
-        post_h2h_mod = _optional_import("farkle.analysis.h2h_analysis", stage_log=stage_log)
-        if post_h2h_mod is None:
-            return
-        post_h2h_mod.run_post_h2h(inner_cfg)
-
-    def _hgb(inner_cfg: AppConfig) -> None:
-        """Run the HGB feature analysis stage when the module is available.
-
-        Args:
-            inner_cfg: Per-seed config passed by the stage runner.
-        """
-        stage_log = stage_logger("hgb", logger=LOGGER)
-        hgb_mod = _optional_import("farkle.analysis.hgb_feat", stage_log=stage_log)
-        if hgb_mod is None:
-            return
-        hgb_mod.run(inner_cfg)
-
-    return [
-        StagePlanItem("seed_summaries", _seed_summaries),
-        StagePlanItem("trueskill", _trueskill),
-        StagePlanItem("screening", _screening),
-        StagePlanItem(
-            "head2head",
-            _head2head,
-            required_outputs=(
-                cfg.head2head_stage_dir / "bonferroni_pairwise.parquet",
-                cfg.head2head_stage_dir / "bonferroni_pairwise_ordered.parquet",
-                cfg.head2head_stage_dir / "bonferroni_selfplay_symmetry.parquet",
-                cfg.head2head_stage_dir / "bonferroni_head2head.done.json",
-            ),
-        ),
-        StagePlanItem("seed_symmetry", _seed_symmetry),
-        StagePlanItem("post_h2h", _post_h2h),
-        StagePlanItem("hgb", _hgb),
-    ]
-
-
-def build_per_seed_stage_plan(
-    cfg: AppConfig,
-    *,
-    force: bool = False,
-    allow_missing_upstream: bool = False,
-) -> list[StagePlanItem]:
-    """Return the canonical per-seed stage plan."""
-
-    from farkle.analysis import combine, coverage_by_k, curate, game_stats, ingest, metrics
-
-    return [
+    use_rng = (
+        not cfg.analysis.disable_rng_diagnostics
+        if run_rng_diagnostics is None
+        else bool(run_rng_diagnostics)
+    )
+    plan = [
         StagePlanItem("ingest", ingest.run),
         StagePlanItem("curate", curate.run),
         StagePlanItem("combine", combine.run),
         StagePlanItem("metrics", metrics.run),
-        StagePlanItem("coverage_by_k", lambda inner_cfg: coverage_by_k.run(inner_cfg, force=force)),
-        StagePlanItem("game_stats", lambda inner_cfg: game_stats.run(inner_cfg, force=force)),
-        *build_single_seed_analysis_plan(
-            cfg,
-            force=force,
-            allow_missing_upstream=allow_missing_upstream,
-        ),
+        StagePlanItem("game_stats", lambda inner: game_stats.run(inner, force=force)),
     ]
-
-
-def build_interseed_analysis_plan(
-    cfg: AppConfig,
-    *,
-    force: bool = False,
-    rng_lags: Sequence[int] | None = None,
-    run_rng_diagnostics: bool | None = None,
-) -> list[StagePlanItem]:
-    """Return the canonical interseed analytics plan."""
-
-    resolved_rng_diagnostics = (
-        run_rng_diagnostics
-        if run_rng_diagnostics is not None
-        else not cfg.analysis.disable_rng_diagnostics
+    if use_rng:
+        plan.append(
+            StagePlanItem(
+                "rng_diagnostics",
+                lambda inner: rng_module.run(inner, lags=rng_lags, force=force),
+            )
+        )
+    plan.extend(
+        [
+            StagePlanItem("trueskill", trueskill.run),
+            StagePlanItem("hgb", hgb_feat.run),
+            StagePlanItem("screening", lambda inner: screening.run(inner, force=force)),
+        ]
     )
+    return plan
 
-    def _require_interseed_inputs(
-        stage: str, runner: Callable[[AppConfig], None]
-    ) -> Callable[[AppConfig], None]:
-        """Wrap an interseed stage so it skips cleanly when prerequisites are missing.
 
-        Args:
-            stage: Stage name used for structured skip logging.
-            runner: Stage function to invoke when inputs are available.
+def _h2h_tail_plan(
+    *,
+    force: bool,
+    execution_scope: str,
+) -> list[StagePlanItem]:
+    """Build the common single-root or root-pair H2H tail."""
 
-        Returns:
-            Callable suitable for a :class:`StagePlanItem`.
-        """
-        def _wrapped(inner_cfg: AppConfig) -> None:
-            """Run the wrapped interseed stage only when shared inputs are ready.
+    from farkle.analysis.candidate_family import freeze_h2h_candidate_family
+    from farkle.analysis.dominance import build_dominance_outputs
+    from farkle.analysis.h2h_inference import run_h2h_inference
+    from farkle.analysis.h2h_schedule import execute_h2h_schedule, plan_h2h_schedule
 
-            Args:
-                inner_cfg: Interseed config passed by the stage runner.
-            """
-            ready, reason = inner_cfg.interseed_ready()
-            if not ready:
-                stage_logger(stage, logger=LOGGER).missing_input(reason)
-                return
-            runner(inner_cfg)
+    def _candidate_freeze(inner: AppConfig) -> None:
+        freeze_h2h_candidate_family(inner, force=force)
 
-        return _wrapped
+    def _power(inner: AppConfig) -> None:
+        plan_h2h_schedule(inner, force=force)
 
-    def _rng_diagnostics(inner_cfg: AppConfig) -> None:
-        """Run the interseed RNG diagnostics stage when enabled.
+    def _execute(inner: AppConfig) -> None:
+        execute_h2h_schedule(inner, n_jobs=inner.analysis.n_jobs)
 
-        Args:
-            inner_cfg: Interseed config passed by the stage runner.
-        """
-        if not resolved_rng_diagnostics:
-            reason = (
-                "disabled by CLI flag"
-                if run_rng_diagnostics is False
-                else "disabled by config"
-            )
-            stage_logger("rng_diagnostics", logger=LOGGER).missing_input(reason)
-            return
-        from farkle.analysis import rng_diagnostics
+    def _inference(inner: AppConfig) -> None:
+        run_h2h_inference(inner, force=force)
 
-        rng_diagnostics.run(inner_cfg, lags=rng_lags, force=force)
+    def _digest(inner: AppConfig) -> None:
+        build_dominance_outputs(inner, force=force)
 
-    def _variance(inner_cfg: AppConfig) -> None:
-        run_variance(inner_cfg, force=force)
-
-    def _interseed_game_stats(inner_cfg: AppConfig) -> None:
-        """Run interseed game-stat aggregation when the module is available.
-
-        Args:
-            inner_cfg: Interseed config passed by the stage runner.
-        """
-        stage_log = stage_logger("interseed_game_stats", logger=LOGGER)
-        stats_mod = _optional_import(
-            "farkle.analysis.game_stats_interseed",
-            stage_log=stage_log,
+    def _agreement(inner: AppConfig) -> None:
+        module = _optional_import(
+            "farkle.analysis.structure_agreement",
+            stage_log=stage_logger("agreement"),
         )
-        if stats_mod is None:
-            return
-        stats_mod.run(inner_cfg, force=force)
+        if module is not None:
+            module.run(inner, force=force, execution_scope=execution_scope)
 
-    def _meta(inner_cfg: AppConfig) -> None:
-        run_meta(inner_cfg, force=force)
-
-    def _trueskill(inner_cfg: AppConfig) -> None:
-        """Run interseed TrueSkill analysis when the module is available.
-
-        Args:
-            inner_cfg: Interseed config passed by the stage runner.
-        """
-        stage_log = stage_logger("trueskill", logger=LOGGER)
-        ts_mod = _optional_import("farkle.analysis.trueskill", stage_log=stage_log)
-        if ts_mod is None:
-            return
-        ts_mod.run(inner_cfg)
-
-    def _agreement(inner_cfg: AppConfig) -> None:
-        """Run interseed agreement analysis once combined ratings are present.
-
-        Args:
-            inner_cfg: Interseed config passed by the stage runner.
-        """
-        ratings_combined_path = (
-            inner_cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet"
+    def _reporting(inner: AppConfig) -> None:
+        module = _optional_import(
+            "farkle.analysis.structure_reporting",
+            stage_log=stage_logger("reporting"),
         )
-        if not ratings_combined_path.exists() or ratings_combined_path.stat().st_size <= 0:
-            stage_logger("agreement", logger=LOGGER).missing_input(
-                "missing required TrueSkill combined ratings input",
-                dependency="trueskill.ratings_k_weighted.parquet",
-                path=str(ratings_combined_path),
-            )
-            return
-        stage_log = stage_logger("agreement", logger=LOGGER)
-        agreement_mod = _optional_import("farkle.analysis.agreement", stage_log=stage_log)
-        if agreement_mod is None:
-            return
-        agreement_mod.run(inner_cfg)
-
-    def _interseed_summary(inner_cfg: AppConfig) -> None:
-        """Write the final interseed summary artifact when the module is available.
-
-        Args:
-            inner_cfg: Interseed config passed by the stage runner.
-        """
-        stage_log = stage_logger("interseed", logger=LOGGER)
-        interseed_mod = _optional_import(
-            "farkle.analysis.interseed_analysis",
-            stage_log=stage_log,
-        )
-        if interseed_mod is None:
-            return
-        interseed_mod.run(
-            inner_cfg,
-            force=force,
-            run_stages=False,
-            run_rng_diagnostics=run_rng_diagnostics,
-        )
+        if module is not None:
+            module.run(inner, force=force, execution_scope=execution_scope)
 
     return [
         StagePlanItem(
-            "rng_diagnostics",
-            _require_interseed_inputs("rng_diagnostics", _rng_diagnostics),
+            "candidate_freeze",
+            _candidate_freeze,
+            metadata={"execution_scope": execution_scope},
         ),
-        StagePlanItem("variance", _require_interseed_inputs("variance", _variance)),
         StagePlanItem(
-            "interseed_game_stats",
-            _require_interseed_inputs("interseed_game_stats", _interseed_game_stats),
+            "h2h_power",
+            _power,
+            metadata={"execution_scope": execution_scope},
         ),
-        StagePlanItem("meta", _require_interseed_inputs("meta", _meta)),
-        StagePlanItem("trueskill", _require_interseed_inputs("trueskill", _trueskill)),
-        StagePlanItem("agreement", _require_interseed_inputs("agreement", _agreement)),
         StagePlanItem(
-            "interseed",
-            _require_interseed_inputs("interseed", _interseed_summary),
+            "h2h_execute",
+            _execute,
+            metadata={"execution_scope": execution_scope},
         ),
+        StagePlanItem(
+            "h2h_inference",
+            _inference,
+            metadata={"execution_scope": execution_scope},
+        ),
+        StagePlanItem(
+            "h2h_digest",
+            _digest,
+            metadata={"execution_scope": execution_scope},
+        ),
+        StagePlanItem("agreement", _agreement, metadata={"execution_scope": execution_scope}),
+        StagePlanItem("reporting", _reporting, metadata={"execution_scope": execution_scope}),
     ]
 
 
-def run_interseed_analysis(
+def build_single_root_h2h_tail_plan(
+    cfg: AppConfig,
+    *,
+    force: bool = False,
+) -> list[StagePlanItem]:
+    """Build an explicitly labelled H2H tail for a standalone root run."""
+
+    roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
+    if roots != (int(cfg.sim.seed),):
+        raise ValueError(f"single-root H2H requires one configured root, found {roots}")
+    return _h2h_tail_plan(force=force, execution_scope="single_root")
+
+
+def build_root_pair_stage_plan(
+    context: RootPairRunContext,
+    *,
+    force: bool = False,
+) -> list[StagePlanItem]:
+    """Build the one-time pair workflow from root combination through reporting."""
+
+    from farkle.analysis import trueskill
+    from farkle.analysis.root_stability import RootBatchCell, build_two_root_stability
+
+    cfg = context.config
+    required_k = tuple(sorted({int(k) for k in cfg.sim.n_players_list}))
+    cells = [
+        RootBatchCell(
+            root_seed=root_context.seed,
+            k=k,
+            path=root_context.config.metrics_all_player_batch_path(k),
+        )
+        for root_context in context.root_contexts
+        for k in required_k
+    ]
+
+    def _cross_seed(inner: AppConfig) -> None:
+        build_two_root_stability(inner, cells, force=force)
+
+    return [
+        StagePlanItem(
+            "cross_seed",
+            _cross_seed,
+            metadata={"root_pair": list(context.root_pair)},
+        ),
+        StagePlanItem(
+            "trueskill",
+            trueskill.run,
+            metadata={"root_pair": list(context.root_pair), "role": "candidate_contribution"},
+        ),
+        *_h2h_tail_plan(force=force, execution_scope="root_pair"),
+    ]
+
+
+def _run_plan(
+    cfg: AppConfig,
+    plan: Sequence[StagePlanItem],
+    *,
+    run_label: str,
+    execution_scope: str,
+    manifest_path: Path | None = None,
+) -> None:
+    path = manifest_path or (cfg.analysis_dir / cfg.manifest_name)
+    metadata = _manifest_metadata(cfg, execution_scope=execution_scope)
+    StageRunner.run(
+        plan,
+        StageRunContext(
+            config=cfg,
+            manifest_path=path,
+            run_label=run_label,
+            run_metadata=metadata,
+            run_end_metadata=metadata,
+            continue_on_error=False,
+            logger=LOGGER,
+        ),
+        raise_on_failure=True,
+    )
+
+
+def run_root_analysis(
     cfg: AppConfig,
     *,
     force: bool = False,
@@ -423,85 +277,63 @@ def run_interseed_analysis(
     rng_lags: Sequence[int] | None = None,
     run_rng_diagnostics: bool | None = None,
 ) -> None:
-    """Run interseed analytics in order (rng → variance → meta → trueskill → agreement → summary)."""
-    previous_layout = cfg._stage_layout
-    resolved_rng_diagnostics = (
-        run_rng_diagnostics
-        if run_rng_diagnostics is not None
-        else not cfg.analysis.disable_rng_diagnostics
-    )
-    cfg.set_stage_layout(
-        resolve_interseed_stage_layout(cfg, run_rng_diagnostics=resolved_rng_diagnostics)
-    )
-    plan = build_interseed_analysis_plan(
+    """Run one root through screening and diagnostics, then stop."""
+
+    _run_plan(
         cfg,
-        force=force,
-        rng_lags=rng_lags,
-        run_rng_diagnostics=resolved_rng_diagnostics,
-    )
-    manifest_path = manifest_path or (cfg.analysis_dir / cfg.manifest_name)
-    context = StageRunContext(
-        config=cfg,
+        build_root_stage_plan(
+            cfg,
+            force=force,
+            rng_lags=rng_lags,
+            run_rng_diagnostics=run_rng_diagnostics,
+        ),
+        run_label=f"root_workflow_{cfg.sim.seed}",
+        execution_scope="root",
         manifest_path=manifest_path,
-        run_label="interseed_analysis",
-        run_metadata=_run_manifest_metadata(cfg),
-        run_end_metadata=_run_manifest_metadata(cfg),
-        continue_on_error=False,
-        logger=LOGGER,
     )
-    try:
-        StageRunner.run(plan, context, raise_on_failure=True)
-    finally:
-        cfg._stage_layout = previous_layout
 
 
-def _run_manifest_metadata(cfg: AppConfig) -> dict[str, Any]:
-    """Build common run metadata for stage-runner manifest events.
-
-    Args:
-        cfg: Application config supplying results and analysis directories.
-
-    Returns:
-        Manifest metadata payload including resolved paths and config SHA when set.
-    """
-    payload = {
-        "results_dir": str(cfg.results_root),
-        "analysis_dir": str(cfg.analysis_dir),
-    }
-    config_sha = getattr(cfg, "config_sha", None)
-    if config_sha:
-        payload["config_sha"] = config_sha
-    return payload
-
-
-def run_single_seed_analysis(
+def run_single_root_analysis(
     cfg: AppConfig,
     *,
     force: bool = False,
     manifest_path: Path | None = None,
-    allow_missing_upstream: bool = False,
+    rng_lags: Sequence[int] | None = None,
+    run_rng_diagnostics: bool | None = None,
 ) -> None:
-    """Run per-seed analytics in order.
+    """Run a standalone root and append its explicitly labelled H2H tail."""
 
-    Order: seed summaries -> coverage_by_k -> trueskill -> descriptive screening
-    -> head2head -> seed_symmetry -> post_h2h -> hgb.
-    """
-    plan = build_single_seed_analysis_plan(
+    run_root_analysis(
         cfg,
         force=force,
-        allow_missing_upstream=allow_missing_upstream,
-    )
-    manifest_path = manifest_path or (cfg.analysis_dir / cfg.manifest_name)
-    context = StageRunContext(
-        config=cfg,
         manifest_path=manifest_path,
-        run_label="single_seed_analysis",
-        run_metadata=_run_manifest_metadata(cfg),
-        run_end_metadata=_run_manifest_metadata(cfg),
-        continue_on_error=False,
-        logger=LOGGER,
+        rng_lags=rng_lags,
+        run_rng_diagnostics=run_rng_diagnostics,
     )
-    StageRunner.run(plan, context, raise_on_failure=True)
+    _run_plan(
+        cfg,
+        build_single_root_h2h_tail_plan(cfg, force=force),
+        run_label=f"single_root_h2h_{cfg.sim.seed}",
+        execution_scope="single_root",
+        manifest_path=manifest_path,
+    )
+
+
+def run_root_pair_analysis(
+    context: RootPairRunContext,
+    *,
+    force: bool = False,
+    manifest_path: Path | None = None,
+) -> None:
+    """Run the root-pair workflow exactly once at the pair analysis root."""
+
+    _run_plan(
+        context.config,
+        build_root_pair_stage_plan(context, force=force),
+        run_label=f"root_pair_workflow_{context.root_pair[0]}_{context.root_pair[1]}",
+        execution_scope="root_pair",
+        manifest_path=manifest_path,
+    )
 
 
 def run_all(
@@ -511,13 +343,30 @@ def run_all(
     rng_lags: Sequence[int] | None = None,
     allow_missing_upstream: bool = False,
 ) -> None:
-    """Run single-seed analytics first, then interseed analytics if enabled."""
-    LOGGER.info("Analytics: starting all modules", extra={"stage": "analysis"})
-    run_single_seed_analysis(cfg, allow_missing_upstream=allow_missing_upstream)
-    run_interseed_analysis(
+    """Run the public single-root analytics workflow and labelled H2H tail."""
+
+    if allow_missing_upstream:
+        raise ValueError("canonical workflows do not permit missing upstream artifacts")
+    roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
+    if len(roots) != 1:
+        raise ValueError("two-root analysis must use the two-seed-pipeline command")
+    run_single_root_analysis(
         cfg,
-        run_rng_diagnostics=run_rng_diagnostics,
         rng_lags=rng_lags,
+        run_rng_diagnostics=run_rng_diagnostics,
     )
-    run_h2h_tier_trends(cfg)
-    LOGGER.info("Analytics: all modules finished", extra={"stage": "analysis"})
+
+
+__all__ = [
+    "RootPairRunContext",
+    "SeedRunContext",
+    "StageLogger",
+    "build_root_pair_stage_plan",
+    "build_root_stage_plan",
+    "build_single_root_h2h_tail_plan",
+    "run_all",
+    "run_root_analysis",
+    "run_root_pair_analysis",
+    "run_single_root_analysis",
+    "stage_logger",
+]

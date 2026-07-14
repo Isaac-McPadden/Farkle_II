@@ -154,15 +154,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Target rate for multi-target rare events (e.g., 1e-4)",
     )
 
-    variance_parser = analyze_sub.add_parser(
-        "variance", help="Compute cross-seed win-rate variance"
-    )
-    variance_parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Recompute even when the done-stamp appears fresh",
-    )
-
     preprocess_parser = analyze_sub.add_parser(
         "preprocess", help="Run ingest, curate, combine, and metrics"
     )
@@ -244,16 +235,9 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Target rate for multi-target rare events (e.g., 1e-4)",
     )
-    pipeline_parser.add_argument(
-        "--allow-missing-upstream",
-        action="store_true",
-        help="Allow analytics stages to skip when mandatory upstream artifacts are missing (manual debugging only)",
-    )
-    analytics_parser = analyze_sub.add_parser("analytics", help="Run analytics modules (TrueSkill, head-to-head, HGB)")
-    analytics_parser.add_argument(
-        "--allow-missing-upstream",
-        action="store_true",
-        help="Allow analytics stages to skip when mandatory upstream artifacts are missing (manual debugging only)",
+    analyze_sub.add_parser(
+        "analytics",
+        help="Run the canonical root analytics workflow and labelled single-root H2H tail",
     )
     # two-seed-pipeline (top-level)
     two_seed_top = sub.add_parser(
@@ -342,9 +326,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.command in {"run", "analyze", "two-seed-pipeline"}:
         overlays: list[Path] = [args.config] if args.config is not None else []
         cfg = (
-            load_app_config(*overlays, seed_list_len=expected_seed_len)
-            if overlays
-            else AppConfig()
+            load_app_config(*overlays, seed_list_len=expected_seed_len) if overlays else AppConfig()
         )
         cfg = apply_dot_overrides(cfg, list(args.overrides or []))
         if seed_pair_override is not None:
@@ -469,10 +451,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                 cfg,
                 run_rng_diagnostics=compute_rng_diagnostics,
                 rng_lags=rng_lags,
-                allow_missing_upstream=getattr(args, "allow_missing_upstream", False),
             )
-        elif args.an_cmd == "variance":
-            analysis_pkg.run_variance(cfg, force=getattr(args, "force", False))
         elif args.an_cmd == "pipeline":
             _run_preprocess(
                 cfg,
@@ -482,7 +461,6 @@ def main(argv: Sequence[str] | None = None) -> None:
                 cfg,
                 run_rng_diagnostics=compute_rng_diagnostics,
                 rng_lags=rng_lags,
-                allow_missing_upstream=getattr(args, "allow_missing_upstream", False),
             )
         if args.an_cmd == "metrics" and compute_game_stats:
             from farkle.analysis import game_stats

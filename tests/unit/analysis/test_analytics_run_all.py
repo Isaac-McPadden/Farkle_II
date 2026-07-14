@@ -1,161 +1,120 @@
-import itertools
-import logging
-from typing import Any
+"""Structural tests for canonical root and root-pair plans."""
+
+from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 
-from farkle.config import AppConfig
-
-LEGACY_FLAG_NAMES = (
-    "run_trueskill",
-    "run_head2head",
-    "run_hgb",
-    "run_frequentist",
-    "run_post_h2h_analysis",
-    "run_agreement",
-)
+import farkle.analysis as analysis_mod
+from farkle.analysis.stage_registry import resolve_stage_layout
+from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
 
 
-@pytest.mark.parametrize(
-    "legacy_values",
-    list(itertools.product((True, False), repeat=len(LEGACY_FLAG_NAMES))),
-)
-def test_run_all_uses_current_stage_order_for_all_legacy_flag_combinations(
-    legacy_values: tuple[bool, ...],
-    monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    import farkle.analysis as analysis_mod
-
-    calls: list[str] = []
-
-    def _single_seed(
-        cfg: AppConfig, *, force: bool = False, allow_missing_upstream: bool = False
-    ) -> None:  # noqa: ARG001
-        assert force is False
-        assert allow_missing_upstream is False
-        calls.append("single_seed")
-
-    def _interseed(
-        cfg: AppConfig,  # noqa: ARG001
-        *,
-        force: bool = False,
-        manifest_path: Any = None,
-        rng_lags: list[int] | None = None,
-        run_rng_diagnostics: bool | None = None,
-    ) -> None:
-        assert force is False
-        assert manifest_path is None
-        assert rng_lags == [1, 3]
-        assert run_rng_diagnostics is False
-        calls.append("interseed")
-
-    def _h2h_tier_trends(cfg: AppConfig, *, force: bool = False) -> None:  # noqa: ARG001
-        assert force is False
-        calls.append("h2h_tier_trends")
-
-    monkeypatch.setattr(analysis_mod, "run_single_seed_analysis", _single_seed)
-    monkeypatch.setattr(analysis_mod, "run_interseed_analysis", _interseed)
-    monkeypatch.setattr(analysis_mod, "run_h2h_tier_trends", _h2h_tier_trends)
-
-    # Legacy direct module hooks removed from run_all should not be called.
-    monkeypatch.setattr(
-        analysis_mod,
-        "run_seed_summaries",
-        lambda cfg, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected call")),
+def _root_context(tmp_path: Path, root: int) -> SeedRunContext:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / f"root_{root}"),
+        sim=SimConfig(seed=root, seed_list=[root], n_players_list=[2, 4]),
     )
-    monkeypatch.setattr(
-        analysis_mod,
-        "run_variance",
-        lambda cfg, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected call")),
-    )
-    monkeypatch.setattr(
-        analysis_mod,
-        "run_meta",
-        lambda cfg, **kwargs: (_ for _ in ()).throw(AssertionError("unexpected call")),
+    cfg.set_stage_layout(resolve_stage_layout(cfg))
+    return SeedRunContext.from_config(cfg)
+
+
+def test_root_plan_stops_after_screening_and_diagnostics(tmp_path: Path) -> None:
+    cfg = _root_context(tmp_path, 11).config
+
+    names = [item.name for item in analysis_mod.build_root_stage_plan(cfg)]
+
+    assert names == [
+        "ingest",
+        "curate",
+        "combine",
+        "metrics",
+        "game_stats",
+        "rng_diagnostics",
+        "trueskill",
+        "hgb",
+        "screening",
+    ]
+    assert not {"candidate_freeze", "h2h_power", "h2h_execute", "h2h_digest"}.intersection(names)
+
+
+def test_single_root_tail_is_explicitly_labelled(tmp_path: Path) -> None:
+    cfg = _root_context(tmp_path, 11).config
+
+    plan = analysis_mod.build_single_root_h2h_tail_plan(cfg)
+
+    assert [item.name for item in plan] == [
+        "candidate_freeze",
+        "h2h_power",
+        "h2h_execute",
+        "h2h_inference",
+        "h2h_digest",
+        "agreement",
+        "reporting",
+    ]
+    assert {item.metadata["execution_scope"] for item in plan} == {"single_root"}
+
+
+def test_root_pair_plan_runs_one_canonical_tail(tmp_path: Path) -> None:
+    first = _root_context(tmp_path, 11)
+    second = _root_context(tmp_path, 22)
+    context = RootPairRunContext.from_root_contexts(
+        (first, second),
+        pair_root=tmp_path / "pair",
     )
 
-    cfg = AppConfig()
-    for name, value in zip(LEGACY_FLAG_NAMES, legacy_values, strict=False):
-        setattr(cfg.analysis, name, value)
+    plan = analysis_mod.build_root_pair_stage_plan(context)
 
-    with caplog.at_level(logging.INFO):
-        analysis_mod.run_all(cfg, run_rng_diagnostics=False, rng_lags=[1, 3])
+    assert [item.name for item in plan] == [
+        "cross_seed",
+        "trueskill",
+        "candidate_freeze",
+        "h2h_power",
+        "h2h_execute",
+        "h2h_inference",
+        "h2h_digest",
+        "agreement",
+        "reporting",
+    ]
+    assert [item.name for item in plan].count("h2h_execute") == 1
+    assert all(item.metadata.get("execution_scope") == "root_pair" for item in plan[2:])
 
-    assert calls == ["single_seed", "interseed", "h2h_tier_trends"]
-    assert "Analytics: starting all modules" in caplog.text
-    assert "Analytics: all modules finished" in caplog.text
 
-
-def test_run_all_does_not_invoke_removed_direct_module_hooks(
+def test_run_all_dispatches_only_standalone_root(
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import farkle.analysis as analysis_mod
-
-    called: list[str] = []
-
+    cfg = _root_context(tmp_path, 11).config
+    calls: list[tuple[int, tuple[int, ...]]] = []
     monkeypatch.setattr(
         analysis_mod,
-        "run_single_seed_analysis",
-        lambda cfg, **kwargs: called.append("single_seed"),
-    )
-    monkeypatch.setattr(
-        analysis_mod,
-        "run_interseed_analysis",
-        lambda cfg, **kwargs: called.append("interseed"),
-    )
-    monkeypatch.setattr(
-        analysis_mod,
-        "run_h2h_tier_trends",
-        lambda cfg, **kwargs: called.append("h2h_tier_trends"),
+        "run_single_root_analysis",
+        lambda inner, **_: calls.append(
+            (inner.sim.seed, tuple(inner.sim.seed_list or [inner.sim.seed]))
+        ),
     )
 
-    for removed_hook in ("run_seed_summaries", "run_variance", "run_meta"):
-        monkeypatch.setattr(
-            analysis_mod,
-            removed_hook,
-            lambda cfg, _hook=removed_hook, **kwargs: called.append(_hook),
-        )
+    analysis_mod.run_all(cfg)
 
-    analysis_mod.run_all(AppConfig())
-
-    assert called == ["single_seed", "interseed", "h2h_tier_trends"]
+    assert calls == [(11, (11,))]
 
 
-def test_run_all_respects_idempotent_short_circuit_when_outputs_are_fresh(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    import farkle.analysis as analysis_mod
+def test_run_all_rejects_pair_and_missing_upstream_mode(tmp_path: Path) -> None:
+    cfg = _root_context(tmp_path, 11).config
+    cfg.sim.seed_list = [11, 22]
 
-    expensive_work: list[str] = []
-
-    def _fresh_stage(_: AppConfig, *, force: bool = False, **kwargs: object) -> None:
-        if force:
-            expensive_work.append("recompute")
-
-    monkeypatch.setattr(analysis_mod, "run_single_seed_analysis", _fresh_stage)
-    monkeypatch.setattr(analysis_mod, "run_interseed_analysis", _fresh_stage)
-    monkeypatch.setattr(analysis_mod, "run_h2h_tier_trends", _fresh_stage)
-
-    analysis_mod.run_all(AppConfig())
-
-    assert expensive_work == []
+    with pytest.raises(ValueError, match="two-seed-pipeline"):
+        analysis_mod.run_all(cfg)
+    cfg.sim.seed_list = [11]
+    with pytest.raises(ValueError, match="do not permit missing"):
+        analysis_mod.run_all(cfg, allow_missing_upstream=True)
 
 
 def test_optional_import_logs_missing(caplog: pytest.LogCaptureFixture) -> None:
-    import farkle.analysis as analysis_mod
-
-    with caplog.at_level(logging.INFO):
+    with caplog.at_level("INFO"):
         result = analysis_mod._optional_import("not_a_real_module")
 
     assert result is None
-    assert "Analytics module skipped due to missing dependency" in caplog.text
-
-
-def test_stage_logger_missing_input_logs(caplog: pytest.LogCaptureFixture) -> None:
-    import farkle.analysis as analysis_mod
-
-    with caplog.at_level(logging.INFO):
-        analysis_mod.stage_logger("demo").missing_input("testing")
-
-    assert "Analytics: skipping demo" in caplog.text
+    assert "Analysis module unavailable" in caplog.text

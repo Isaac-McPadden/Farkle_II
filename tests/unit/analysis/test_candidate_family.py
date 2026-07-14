@@ -10,6 +10,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from farkle.analysis.candidate_family import freeze_h2h_candidate_family
+from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
@@ -32,6 +33,7 @@ def _cfg(tmp_path: Path, *, cap: int | None = 5) -> AppConfig:
     cfg.screening.controls = [8]
     cfg.screening.mandatory_diagnostics = [7]
     cfg.head2head.candidate_cap = cap
+    cfg.set_stage_layout(resolve_root_pair_stage_layout(cfg))
     return cfg
 
 

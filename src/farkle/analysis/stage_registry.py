@@ -13,7 +13,7 @@ __all__ = [
     "StageLayout",
     "StagePlacement",
     "resolve_stage_definition",
-    "resolve_interseed_stage_layout",
+    "resolve_root_pair_stage_layout",
     "resolve_stage_layout",
 ]
 
@@ -94,7 +94,7 @@ class StageLayout:
         ]
 
 
-# Ordered registry describing every possible stage.
+# Ordered root workflow. It deliberately ends at descriptive screening.
 _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "ingest",
@@ -131,28 +131,6 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         ),
     ),
     StageDefinition(
-        "coverage_by_k",
-        group="analytics",
-        cache_scope=(
-            "io",
-            "sim.seed",
-            "sim.seed_list",
-            "sim.n_players_list",
-            "sim.score_thresholds",
-            "sim.dice_thresholds",
-            "sim.smart_five_opts",
-            "sim.smart_one_opts",
-            "sim.consider_score_opts",
-            "sim.consider_dice_opts",
-            "sim.auto_hot_dice_opts",
-            "sim.run_up_score_opts",
-            "sim.include_stop_at",
-            "sim.include_stop_at_heuristic",
-            "analysis.outputs",
-            "analysis.n_jobs",
-        ),
-    ),
-    StageDefinition(
         "game_stats",
         group="analytics",
         cache_scope=(
@@ -170,14 +148,11 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         ),
     ),
     StageDefinition(
-        "seed_summaries",
-        group="analytics",
-        cache_scope=(
-            "io",
-            "sim.seed",
-            "analysis.k_aggregation_method",
-            "analysis.k_weights",
-        ),
+        "rng_diagnostics",
+        group="diagnostics",
+        folder_stub="rng",
+        cache_scope=("io", "sim.seed", "sim.n_players_list", "rng", "analysis.n_jobs"),
+        disabled_predicate=lambda cfg: cfg.analysis.disable_rng_diagnostics,
     ),
     StageDefinition(
         "trueskill",
@@ -190,6 +165,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "trueskill",
         ),
     ),
+    StageDefinition("hgb", group="analytics", cache_scope=("io", "hgb")),
     StageDefinition(
         "screening",
         group="analytics",
@@ -201,6 +177,13 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "robustness",
             "artifact_contract",
         ),
+    ),
+    # The single-root H2H tail is present in the layout but is never part of
+    # the root workflow used by a two-root run.
+    StageDefinition(
+        "candidate_freeze",
+        group="single_root_tail",
+        cache_scope=("screening", "head2head"),
     ),
     StageDefinition(
         "head2head",
@@ -219,136 +202,33 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "k_aggregation",
         ),
     ),
-    StageDefinition("seed_symmetry", group="analytics", cache_scope=("io",)),
+    StageDefinition("h2h_power", group="single_root_tail", cache_scope=("head2head",)),
     StageDefinition(
-        "post_h2h",
-        group="analytics",
-        cache_scope=(
-            "io",
-            "sim.seed",
-            "head2head.tie_break_policy",
-            "head2head.tie_break_seed",
-            "head2head.fdr_q",
-            "head2head.bonferroni_design",
-            "k_aggregation",
-        ),
+        "h2h_execute",
+        group="single_root_tail",
+        cache_scope=("head2head", "rng"),
     ),
-    StageDefinition(
-        "hgb",
-        group="analytics",
-        cache_scope=("io", "hgb"),
-    ),
-    StageDefinition("variance", group="analytics", cache_scope=("io",)),
-    StageDefinition(
-        "meta",
-        group="analytics",
-        cache_scope=(
-            "io",
-            "sim.seed",
-            "sim.seed_list",
-            "robustness",
-        ),
-    ),
-    StageDefinition(
-        "h2h_tier_trends",
-        group="analytics",
-        cache_scope=(
-            "io",
-            "sim.n_players_list",
-            "analysis.h2h_tier_trends_seed_s_tier_paths",
-            "analysis.h2h_tier_trends_interseed_s_tier_path",
-        ),
-    ),
-    StageDefinition(
-        "agreement",
-        group="analytics",
-        cache_scope=("io", "analysis.agreement_strategies", "analysis.agreement_include_across_k", "analysis.n_jobs"),
-    ),
-    StageDefinition(
-        "interseed",
-        group="analytics",
-        cache_scope=("io", "sim.seed_list", "analysis.disable_rng_diagnostics"),
-    ),
+    StageDefinition("h2h_inference", group="single_root_tail", cache_scope=("head2head",)),
+    StageDefinition("h2h_digest", group="single_root_tail", cache_scope=("head2head",)),
+    StageDefinition("agreement", group="single_root_tail", cache_scope=("artifact_contract",)),
+    StageDefinition("reporting", group="single_root_tail", cache_scope=("artifact_contract",)),
 )
 
-_INTERSEED_REGISTRY: tuple[StageDefinition, ...] = (
-    StageDefinition(
-        "rng_diagnostics",
-        group="analytics",
-        folder_stub="rng",
-        cache_scope=(
-            "io",
-            "sim.n_players_list",
-            "analysis.disable_rng_diagnostics",
-            "analysis.rng_max_matchup_groups",
-            "analysis.n_jobs",
-        ),
-        disabled_predicate=lambda cfg: cfg.analysis.disable_rng_diagnostics,
-    ),
-    StageDefinition("variance", group="analytics", cache_scope=("io",)),
-    StageDefinition(
-        "interseed_game_stats",
-        group="analytics",
-        folder_stub="interseed_game_stats",
-        cache_scope=(
-            "io",
-            "sim.seed",
-            "sim.seed_list",
-            "sim.n_players_list",
-            "k_aggregation",
-            "analysis.k_weights",
-            "analysis.rare_event_target_score",
-            "analysis.rare_event_write_details",
-            "analysis.rare_event_margin_quantile",
-            "analysis.rare_event_target_rate",
-            "analysis.n_jobs",
-        ),
-    ),
-    StageDefinition(
-        "meta",
-        group="analytics",
-        cache_scope=(
-            "io",
-            "sim.seed",
-            "sim.seed_list",
-            "robustness",
-        ),
-    ),
-    StageDefinition(
-        "trueskill",
-        group="analytics",
-        cache_scope=(
-            "io",
-            "sim.seed",
-            "sim.seed_list",
-            "sim.n_players_list",
-            "trueskill",
-        ),
-    ),
-    StageDefinition(
-        "agreement",
-        group="analytics",
-        cache_scope=("io", "analysis.agreement_strategies", "analysis.agreement_include_across_k", "analysis.n_jobs"),
-    ),
-    StageDefinition(
-        "interseed",
-        group="analytics",
-        cache_scope=("io", "sim.seed_list", "analysis.disable_rng_diagnostics"),
-    ),
-    StageDefinition(
-        "h2h_tier_trends",
-        group="analytics",
-        cache_scope=(
-            "io",
-            "sim.n_players_list",
-            "analysis.h2h_tier_trends_seed_s_tier_paths",
-            "analysis.h2h_tier_trends_interseed_s_tier_path",
-        ),
-    ),
+_ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
+    StageDefinition("cross_seed", group="root_pair", cache_scope=("sim.seed_list", "robustness")),
+    StageDefinition("trueskill", group="root_pair", cache_scope=("sim.seed_list", "trueskill")),
+    StageDefinition("candidate_freeze", group="root_pair", cache_scope=("screening", "head2head")),
+    StageDefinition("head2head", group="root_pair", cache_scope=("head2head", "rng")),
+    StageDefinition("h2h_power", group="root_pair", cache_scope=("head2head",)),
+    StageDefinition("h2h_execute", group="root_pair", cache_scope=("head2head", "rng")),
+    StageDefinition("h2h_inference", group="root_pair", cache_scope=("head2head",)),
+    StageDefinition("h2h_digest", group="root_pair", cache_scope=("head2head",)),
+    StageDefinition("agreement", group="root_pair", cache_scope=("artifact_contract",)),
+    StageDefinition("reporting", group="root_pair", cache_scope=("artifact_contract",)),
 )
 
 _DEFINITION_LOOKUP: dict[str, StageDefinition] = {
-    definition.key: definition for definition in (*_REGISTRY, *_INTERSEED_REGISTRY)
+    definition.key: definition for definition in (*_REGISTRY, *_ROOT_PAIR_REGISTRY)
 }
 
 
@@ -372,7 +252,9 @@ def resolve_stage_layout(
     enabled_keys = {definition.key for definition in enabled_definitions}
 
     for definition in enabled_definitions:
-        missing_dependencies = tuple(dep for dep in definition.depends_on if dep not in enabled_keys)
+        missing_dependencies = tuple(
+            dep for dep in definition.depends_on if dep not in enabled_keys
+        )
         if missing_dependencies:
             raise ValueError(
                 "Enabled stage "
@@ -392,17 +274,12 @@ def resolve_stage_layout(
     return StageLayout(placements=placements)
 
 
-def resolve_interseed_stage_layout(
+def resolve_root_pair_stage_layout(
     cfg: AppConfig,
-    *,
-    run_rng_diagnostics: bool | None = None,
 ) -> StageLayout:
-    """Resolve a stage layout containing only interseed-relevant stages."""
+    """Resolve the one-time root-pair workflow layout."""
 
-    overrides = None
-    if run_rng_diagnostics is not None:
-        overrides = {"rng_diagnostics": run_rng_diagnostics}
-    return resolve_stage_layout(cfg, registry=_INTERSEED_REGISTRY, enabled_overrides=overrides)
+    return resolve_stage_layout(cfg, registry=_ROOT_PAIR_REGISTRY)
 
 
 def resolve_stage_definition(key: str) -> StageDefinition:

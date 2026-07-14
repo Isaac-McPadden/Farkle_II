@@ -1,14 +1,14 @@
 # src/farkle/orchestration/run_contexts.py
-"""Run-context helpers for seed and interseed orchestration workflows."""
+"""Run-context helpers for root and root-pair orchestration workflows."""
 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import cast
 
-from farkle.analysis.stage_registry import StageLayout, resolve_interseed_stage_layout
+from farkle.analysis.stage_registry import StageLayout, resolve_root_pair_stage_layout
 from farkle.config import AppConfig
 
 
@@ -38,7 +38,9 @@ class SeedRunContext:
             config=cfg,
             results_root=cfg.results_root,
             analysis_root=cfg.analysis_dir,
-            meta_analysis_dir=cfg.meta_analysis_dir if cfg.io.meta_analysis_dir is not None else None,
+            meta_analysis_dir=(
+                cfg.meta_analysis_dir if cfg.io.meta_analysis_dir is not None else None
+            ),
             active_config_path=cfg.results_root / "active_config.yaml",
         )
 
@@ -75,17 +77,10 @@ class RunContextConfig(AppConfig):
         Returns:
             A config instance that preserves the base settings while applying overrides.
         """
-        run_cfg = cls(
-            io=base.io,
-            sim=base.sim,
-            analysis=base.analysis,
-            ingest=base.ingest,
-            combine=base.combine,
-            metrics=base.metrics,
-            trueskill=base.trueskill,
-            head2head=base.head2head,
-            hgb=base.hgb,
-        )
+        init_values = {
+            item.name: getattr(base, item.name) for item in fields(AppConfig) if item.init
+        }
+        run_cfg = cls(**init_values)
         run_cfg.config_sha = base.config_sha
         run_cfg._stage_layout = base._stage_layout
         run_cfg._analysis_root_override = analysis_root
@@ -140,61 +135,56 @@ class RunContextConfig(AppConfig):
 
 
 @dataclass(frozen=True)
-class InterseedRunContext:
-    """Resolved paths and config for the interseed analysis run."""
+class RootPairRunContext:
+    """Resolved paths and config for the one-time root-pair analysis run."""
 
-    seed_pair: tuple[int, int]
-    seed: int
+    root_pair: tuple[int, int]
+    root_contexts: tuple[SeedRunContext, SeedRunContext]
+    pair_root: Path
     analysis_root: Path
-    input_root: Path
-    input_layout: StageLayout
     config: RunContextConfig
-    active_config_path: Path
 
     @classmethod
-    def from_seed_context(
+    def from_root_contexts(
         cls,
-        seed_context: SeedRunContext,
+        root_contexts: tuple[SeedRunContext, SeedRunContext],
         *,
-        seed_pair: tuple[int, int],
-        analysis_root: Path,
-    ) -> "InterseedRunContext":
-        """Build the interseed context derived from a completed seed run.
+        pair_root: Path,
+    ) -> "RootPairRunContext":
+        """Build the pair context from exactly two completed root contexts."""
 
-        Args:
-            seed_context: Per-seed context supplying the base config and input paths.
-            seed_pair: Seed tuple being analyzed together.
-            analysis_root: Directory where interseed outputs should be written.
-
-        Returns:
-            Interseed context with resolved input layout and overridden config paths.
-        """
-        input_layout = cast(StageLayout, seed_context.config.stage_layout)
+        root_pair = (root_contexts[0].seed, root_contexts[1].seed)
+        if len(set(root_pair)) != 2:
+            raise ValueError(f"root-pair context requires two distinct roots, found {root_pair}")
+        first = root_contexts[0]
+        input_layout = cast(StageLayout, first.config.stage_layout)
         combine_folder = input_layout.folder_for("combine")
         if combine_folder is None:
-            raise KeyError("Seed-stage layout must include 'combine' for interseed inputs")
+            raise KeyError("Root-stage layout must include 'combine' for pair inputs")
         input_layout_override: dict[str, str] = {
-            placement.definition.key: placement.folder_name
-            for placement in input_layout.placements
+            placement.definition.key: placement.folder_name for placement in input_layout.placements
         }
-        input_layout_override["combine"] = combine_folder
-
+        pair_analysis_root = pair_root / first.config.io.analysis_subdir
+        pair_sim = replace(
+            first.config.sim,
+            seed=root_pair[0],
+            seed_list=list(root_pair),
+        )
+        pair_base = replace(first.config, sim=pair_sim)
         run_cfg = RunContextConfig.from_base(
-            seed_context.config,
-            analysis_root=analysis_root,
-            interseed_input_dir=seed_context.analysis_root,
+            pair_base,
+            analysis_root=pair_analysis_root,
+            interseed_input_dir=first.analysis_root,
             interseed_input_layout=input_layout_override,
-            stage_layout=resolve_interseed_stage_layout(seed_context.config),
+            stage_layout=resolve_root_pair_stage_layout(pair_base),
         )
         return cls(
-            seed_pair=seed_pair,
-            seed=seed_context.seed,
-            analysis_root=analysis_root,
-            input_root=seed_context.analysis_root,
-            input_layout=seed_context.config.stage_layout,
+            root_pair=root_pair,
+            root_contexts=root_contexts,
+            pair_root=pair_root,
+            analysis_root=pair_analysis_root,
             config=run_cfg,
-            active_config_path=seed_context.active_config_path,
         )
 
 
-__all__ = ["InterseedRunContext", "RunContextConfig", "SeedRunContext"]
+__all__ = ["RootPairRunContext", "RunContextConfig", "SeedRunContext"]

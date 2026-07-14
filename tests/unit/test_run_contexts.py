@@ -1,118 +1,73 @@
-"""Tests for two-seed run-context path wiring."""
+"""Tests for root and root-pair run-context path wiring."""
 
 from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 
 from farkle.analysis.stage_registry import resolve_stage_layout
-from farkle.config import AppConfig, IOConfig
-from farkle.orchestration.run_contexts import InterseedRunContext, RunContextConfig, SeedRunContext
+from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.orchestration.run_contexts import RootPairRunContext, RunContextConfig, SeedRunContext
 
 
-def test_interseed_context_maps_combine_to_seed_stage(tmp_path: Path) -> None:
-    seed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
-    seed_cfg.set_stage_layout(resolve_stage_layout(seed_cfg))
-    seed_context = SeedRunContext.from_config(seed_cfg)
+def _root_context(tmp_path: Path, root: int) -> SeedRunContext:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / f"root_{root}"),
+        sim=SimConfig(seed=root, seed_list=[root], n_players_list=[2, 4]),
+    )
+    cfg.set_stage_layout(resolve_stage_layout(cfg))
+    return SeedRunContext.from_config(cfg)
 
-    interseed = InterseedRunContext.from_seed_context(
-        seed_context,
-        seed_pair=(11, 22),
-        analysis_root=tmp_path / "pair" / "interseed_analysis",
+
+def test_root_pair_context_uses_pair_analysis_root_and_both_roots(tmp_path: Path) -> None:
+    first = _root_context(tmp_path, 11)
+    second = _root_context(tmp_path, 22)
+    pair_root = tmp_path / "pair"
+
+    context = RootPairRunContext.from_root_contexts((first, second), pair_root=pair_root)
+
+    assert context.root_pair == (11, 22)
+    assert context.analysis_root == pair_root / first.config.io.analysis_subdir
+    assert context.config.analysis_dir == context.analysis_root
+    assert context.config.sim.seed_list == [11, 22]
+    assert context.config.stage_layout.keys()[0] == "cross_seed"
+
+
+def test_root_pair_context_maps_first_root_inputs_without_changing_outputs(tmp_path: Path) -> None:
+    first = _root_context(tmp_path, 7)
+    second = _root_context(tmp_path, 8)
+    context = RootPairRunContext.from_root_contexts(
+        (first, second),
+        pair_root=tmp_path / "pair",
     )
 
-    combine_folder = seed_cfg.stage_layout.require_folder("combine")
-    expected_input = seed_context.analysis_root / combine_folder / "combined"
-
-    assert interseed.config.resolve_input_stage_dir("combine", "combined") == expected_input
-
-
-def test_interseed_context_curated_parquet_uses_upstream_combine(tmp_path: Path) -> None:
-    seed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
-    seed_cfg.set_stage_layout(resolve_stage_layout(seed_cfg))
-    seed_context = SeedRunContext.from_config(seed_cfg)
-
-    combine_folder = seed_cfg.stage_layout.require_folder("combine")
-    upstream_curated = (
-        seed_context.analysis_root / combine_folder / "concat_ks" / "all_ingested_rows.parquet"
+    combine_folder = first.config.stage_layout.require_folder("combine")
+    assert context.config.resolve_input_stage_dir("combine", "concat_ks") == (
+        first.analysis_root / combine_folder / "concat_ks"
     )
-    upstream_curated.parent.mkdir(parents=True, exist_ok=True)
-    upstream_curated.write_text("rows")
-
-    interseed = InterseedRunContext.from_seed_context(
-        seed_context,
-        seed_pair=(7, 8),
-        analysis_root=tmp_path / "pair" / "interseed_analysis",
-    )
-
-    assert interseed.config.curated_parquet == upstream_curated
+    assert context.config.cross_seed_dir("cross_seed").is_relative_to(context.analysis_root)
 
 
+def test_root_pair_context_rejects_duplicate_roots(tmp_path: Path) -> None:
+    first = _root_context(tmp_path, 7)
 
-def test_interseed_context_raises_when_combine_missing(tmp_path: Path, monkeypatch) -> None:
-    seed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
-    seed_cfg.set_stage_layout(resolve_stage_layout(seed_cfg))
-    seed_context = SeedRunContext.from_config(seed_cfg)
-
-    monkeypatch.setattr(
-        "farkle.analysis.stage_registry.StageLayout.folder_for",
-        lambda _self, key: None if key == "combine" else "x",
-    )
-
-    with pytest.raises(KeyError, match="combine"):
-        InterseedRunContext.from_seed_context(
-            seed_context,
-            seed_pair=(1, 2),
-            analysis_root=tmp_path / "pair" / "interseed_analysis",
-        )
+    with pytest.raises(ValueError, match="distinct roots"):
+        RootPairRunContext.from_root_contexts((first, first), pair_root=tmp_path / "pair")
 
 
-def test_interseed_context_preserves_existing_frequentist_seeds(tmp_path: Path) -> None:
-    seed_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
-    seed_cfg = replace(seed_cfg, analysis=replace(seed_cfg.analysis, frequentist_seeds=[99]))
-    seed_cfg.set_stage_layout(resolve_stage_layout(seed_cfg))
-    seed_context = SeedRunContext.from_config(seed_cfg)
+def test_run_context_config_preserves_all_typed_settings(tmp_path: Path) -> None:
+    base = _root_context(tmp_path, 11).config
+    base = replace(base, screening=replace(base.screening, resolution_delta=0.021))
 
-    interseed = InterseedRunContext.from_seed_context(
-        seed_context,
-        seed_pair=(3, 4),
-        analysis_root=tmp_path / "pair" / "interseed_analysis",
-    )
+    run_cfg = RunContextConfig.from_base(base, analysis_root=tmp_path / "pair" / "analysis")
 
-    assert interseed.config.analysis.frequentist_seeds == [99]
-
-
-def test_run_context_config_interseed_folder_unknown_layout_returns_none(tmp_path: Path) -> None:
-    base_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
-    run_cfg = RunContextConfig.from_base(base_cfg)
-    run_cfg._interseed_input_layout_override = cast(Any, object())
-
-    assert run_cfg._interseed_input_folder("combine") is None
-
+    assert run_cfg.screening.resolution_delta == pytest.approx(0.021)
+    assert run_cfg.analysis_dir == tmp_path / "pair" / "analysis"
 
 
 def test_run_context_config_analysis_dir_falls_back_to_base(tmp_path: Path) -> None:
-    base_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
-    run_cfg = RunContextConfig.from_base(base_cfg)
+    base = _root_context(tmp_path, 11).config
 
-    assert run_cfg.analysis_dir == base_cfg.analysis_dir
-
-
-def test_run_context_config_interseed_input_dir_override(tmp_path: Path) -> None:
-    base_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
-    override = tmp_path / "input"
-    run_cfg = RunContextConfig.from_base(base_cfg, interseed_input_dir=override)
-
-    assert run_cfg.interseed_input_dir == override
-
-
-def test_run_context_config_interseed_folder_mapping_missing_key(tmp_path: Path) -> None:
-    base_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "seed_results"))
-    run_cfg = RunContextConfig.from_base(base_cfg)
-    run_cfg._interseed_input_layout_override = {"metrics": "metrics_dir"}
-
-    assert run_cfg._interseed_input_folder("combine") is None
-    assert run_cfg._interseed_input_folder(None) is None
+    assert RunContextConfig.from_base(base).analysis_dir == base.analysis_dir

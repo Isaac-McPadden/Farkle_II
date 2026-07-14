@@ -12,13 +12,14 @@ import pytest
 from farkle.analysis.dominance import build_dominance_outputs
 from farkle.analysis.h2h_inference import run_h2h_inference
 from farkle.analysis.h2h_schedule import SCORE_TEST_ID
+from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
-    return AppConfig(
+    cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(
             seed=11,
@@ -26,6 +27,8 @@ def _cfg(tmp_path: Path) -> AppConfig:
             n_players_list=[2],
         ),
     )
+    cfg.set_stage_layout(resolve_root_pair_stage_layout(cfg))
+    return cfg
 
 
 def _decision_row(

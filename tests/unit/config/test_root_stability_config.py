@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.config import AppConfig, IOConfig, SimConfig
 
 
@@ -18,12 +19,13 @@ def _valid_cfg(tmp_path: Path) -> AppConfig:
     )
     cfg.screening.practical_delta_by_k = {2: 0.03, 4: 0.02}
     cfg.screening.delta_across_k = 0.03
+    cfg.set_stage_layout(resolve_root_pair_stage_layout(cfg))
     return cfg
 
 
 def test_root_stability_paths_are_cross_seed_metric_artifacts(tmp_path: Path) -> None:
     cfg = _valid_cfg(tmp_path)
-    base = cfg.cross_seed_dir("metrics")
+    base = cfg.cross_seed_dir("cross_seed")
 
     assert cfg.root_combined_performance_by_k_path(4).parent == base
     assert cfg.root_combined_performance_across_k_path().parent == base
