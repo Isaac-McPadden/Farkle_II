@@ -118,6 +118,7 @@ def build_root_stage_plan(
 
 
 def _h2h_tail_plan(
+    cfg: AppConfig,
     *,
     force: bool,
     execution_scope: str,
@@ -128,6 +129,8 @@ def _h2h_tail_plan(
     from farkle.analysis.dominance import build_dominance_outputs
     from farkle.analysis.h2h_inference import run_h2h_inference
     from farkle.analysis.h2h_schedule import execute_h2h_schedule, plan_h2h_schedule
+    from farkle.analysis.structure_agreement import run as run_structure_agreement
+    from farkle.analysis.structure_reporting import run as run_structure_reporting
 
     def _candidate_freeze(inner: AppConfig) -> None:
         freeze_h2h_candidate_family(inner, force=force)
@@ -145,20 +148,10 @@ def _h2h_tail_plan(
         build_dominance_outputs(inner, force=force)
 
     def _agreement(inner: AppConfig) -> None:
-        module = _optional_import(
-            "farkle.analysis.structure_agreement",
-            stage_log=stage_logger("agreement"),
-        )
-        if module is not None:
-            module.run(inner, force=force, execution_scope=execution_scope)
+        run_structure_agreement(inner, force=force, execution_scope=execution_scope)
 
     def _reporting(inner: AppConfig) -> None:
-        module = _optional_import(
-            "farkle.analysis.structure_reporting",
-            stage_log=stage_logger("reporting"),
-        )
-        if module is not None:
-            module.run(inner, force=force, execution_scope=execution_scope)
+        run_structure_reporting(inner, force=force, execution_scope=execution_scope)
 
     return [
         StagePlanItem(
@@ -186,8 +179,25 @@ def _h2h_tail_plan(
             _digest,
             metadata={"execution_scope": execution_scope},
         ),
-        StagePlanItem("agreement", _agreement, metadata={"execution_scope": execution_scope}),
-        StagePlanItem("reporting", _reporting, metadata={"execution_scope": execution_scope}),
+        StagePlanItem(
+            "agreement",
+            _agreement,
+            metadata={"execution_scope": execution_scope},
+            required_outputs=(
+                cfg.structure_agreement_pairs_path(),
+                cfg.structure_agreement_summary_path(),
+            ),
+        ),
+        StagePlanItem(
+            "reporting",
+            _reporting,
+            metadata={"execution_scope": execution_scope},
+            required_outputs=(
+                cfg.structure_report_json_path(),
+                cfg.structure_report_markdown_path(),
+                cfg.structure_report_plot_path(),
+            ),
+        ),
     ]
 
 
@@ -201,7 +211,7 @@ def build_single_root_h2h_tail_plan(
     roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
     if roots != (int(cfg.sim.seed),):
         raise ValueError(f"single-root H2H requires one configured root, found {roots}")
-    return _h2h_tail_plan(force=force, execution_scope="single_root")
+    return _h2h_tail_plan(cfg, force=force, execution_scope="single_root")
 
 
 def build_root_pair_stage_plan(
@@ -240,7 +250,7 @@ def build_root_pair_stage_plan(
             trueskill.run,
             metadata={"root_pair": list(context.root_pair), "role": "candidate_contribution"},
         ),
-        *_h2h_tail_plan(force=force, execution_scope="root_pair"),
+        *_h2h_tail_plan(cfg, force=force, execution_scope="root_pair"),
     ]
 
 

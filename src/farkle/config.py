@@ -57,6 +57,7 @@ class ArtifactScope(str, Enum):
 
         return self is ArtifactScope.BY_K
 
+
 RETIRED_CONFIG_KEYS: dict[str, str] = {
     "sim.num_shuffles": "screening.resolution_delta and batching settings",
     "sim.power_method": "screening.resolution_delta",
@@ -335,6 +336,7 @@ class AnalysisConfig:
     rng_max_matchup_groups: int | None = 100_000
     """Cap matchup-strategy group states in RNG diagnostics to bound memory use."""
 
+
 @dataclass
 class IngestConfig:
     """Ingestion tuning for streaming parquet writes."""
@@ -387,7 +389,6 @@ class Head2HeadConfig:
     allow_single_root: bool = True
 
 
-
 @dataclass
 class HGBConfig:
     """Finite-grid predictive-association settings for HGB exploration."""
@@ -433,9 +434,7 @@ class AppConfig:
     k_aggregation: KAggregationConfig = field(default_factory=KAggregationConfig)
     # Computed at runtime; not part of user-provided YAML
     config_sha: str | None = field(default=None, init=False, repr=False, compare=False)
-    _stage_layout: "StageLayout | None" = field(
-        default=None, init=False, repr=False, compare=False
-    )
+    _stage_layout: "StageLayout | None" = field(default=None, init=False, repr=False, compare=False)
 
     # —— Paths ——
     @property
@@ -542,9 +541,7 @@ class AppConfig:
         folder = self.stage_layout.folder_for(key)
         if folder is None:
             requirement = f" required by {required_by}" if required_by else ""
-            raise KeyError(
-                f"Stage {key!r} is not registered in the resolved layout{requirement}."
-            )
+            raise KeyError(f"Stage {key!r} is not registered in the resolved layout{requirement}.")
         stage_root = self.analysis_dir / folder
         stage_root.mkdir(parents=True, exist_ok=True)
         return stage_root
@@ -1354,6 +1351,31 @@ class AppConfig:
 
         return self.h2h_2p_dir() / "dominance_summary.json"
 
+    def structure_agreement_pairs_path(self) -> Path:
+        """Selection-conditioned pair-level method agreement."""
+
+        return self.h2h_2p_dir("agreement") / "selection_conditioned_pairs.parquet"
+
+    def structure_agreement_summary_path(self) -> Path:
+        """Canonical win-rate, TrueSkill, H2H, and root-stability agreement."""
+
+        return self.h2h_2p_dir("agreement") / "agreement_summary.json"
+
+    def structure_report_json_path(self) -> Path:
+        """Machine-readable canonical structure report."""
+
+        return self.diagnostics_dir("reporting") / "structure_report.json"
+
+    def structure_report_markdown_path(self) -> Path:
+        """Human-readable canonical structure report."""
+
+        return self.diagnostics_dir("reporting") / "structure_report.md"
+
+    def structure_report_plot_path(self) -> Path:
+        """Display-only tournament screening score plot."""
+
+        return self.diagnostics_dir("reporting") / "tournament_screening_scores.png"
+
     def legacy_metrics_isolated_path(self, k: int) -> Path:
         """Legacy isolated metrics parquet path under ``analysis/data``."""
 
@@ -1570,9 +1592,7 @@ def _validate_config_keys(data: Mapping[str, Any]) -> None:
         unknown_keys = set(section) - allowed_keys
         if unknown_keys:
             formatted = ", ".join(_format_unknown_keys(unknown_keys, allowed_keys))
-            raise ValueError(
-                f"Unknown key(s) in config section {section_name!r}: {formatted}"
-            )
+            raise ValueError(f"Unknown key(s) in config section {section_name!r}: {formatted}")
         if section_name == "sim" and "per_n" in section:
             per_n_section = section.get("per_n")
             if not isinstance(per_n_section, Mapping):
@@ -1584,8 +1604,7 @@ def _validate_config_keys(data: Mapping[str, Any]) -> None:
                 if per_n_unknown:
                     formatted = ", ".join(_format_unknown_keys(per_n_unknown, allowed_keys))
                     raise ValueError(
-                        "Unknown key(s) in config section "
-                        f"sim.per_n[{key!r}]: {formatted}"
+                        "Unknown key(s) in config section " f"sim.per_n[{key!r}]: {formatted}"
                     )
 
 
@@ -1763,9 +1782,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         screening=build(ScreeningConfig, data.get("screening", {})),
         batching=build(BatchingConfig, data.get("batching", {})),
         robustness=build(RobustnessConfig, data.get("robustness", {})),
-        artifact_contract=build(
-            ArtifactContractConfig, data.get("artifact_contract", {})
-        ),
+        artifact_contract=build(ArtifactContractConfig, data.get("artifact_contract", {})),
         k_aggregation=build(KAggregationConfig, data.get("k_aggregation", {})),
     )
     _normalize_seed_list(cfg.sim)
@@ -1830,9 +1847,7 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         retired_key = f"{section_name}.{option}"
         if retired_key in RETIRED_CONFIG_KEYS:
             replacement = RETIRED_CONFIG_KEYS[retired_key]
-            raise ValueError(
-                f"Retired config key {retired_key!r}; use {replacement!r} instead"
-            )
+            raise ValueError(f"Retired config key {retired_key!r}; use {replacement!r} instead")
         section = getattr(cfg, section_name)
         if not hasattr(section, option):
             raise AttributeError(f"Unknown option {option!r} in section {section_name!r}")
@@ -1927,7 +1942,9 @@ def _extract_scope_value(payload: Mapping[str, Any], path: str) -> tuple[bool, A
     return True, cursor
 
 
-def _project_effective_config(payload: Mapping[str, Any], scope_paths: Sequence[str]) -> dict[str, Any]:
+def _project_effective_config(
+    payload: Mapping[str, Any], scope_paths: Sequence[str]
+) -> dict[str, Any]:
     """Project a config payload down to the dotted paths used by a stage cache scope."""
 
     projected: dict[str, Any] = {}
@@ -1978,21 +1995,15 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
             "robustness.matched_count_fractions must be unique increasing values in "
             "(0, 1] ending at 1"
         )
-    if (
-        cfg.screening.max_shuffles_per_root_k is not None
-        and (
-            isinstance(cfg.screening.max_shuffles_per_root_k, bool)
-            or not isinstance(cfg.screening.max_shuffles_per_root_k, int)
-            or cfg.screening.max_shuffles_per_root_k < 1
-        )
+    if cfg.screening.max_shuffles_per_root_k is not None and (
+        isinstance(cfg.screening.max_shuffles_per_root_k, bool)
+        or not isinstance(cfg.screening.max_shuffles_per_root_k, int)
+        or cfg.screening.max_shuffles_per_root_k < 1
     ):
         raise ValueError("screening.max_shuffles_per_root_k must be positive when configured")
-    if (
-        cfg.screening.projected_games_per_second is not None
-        and (
-            not math.isfinite(cfg.screening.projected_games_per_second)
-            or cfg.screening.projected_games_per_second <= 0.0
-        )
+    if cfg.screening.projected_games_per_second is not None and (
+        not math.isfinite(cfg.screening.projected_games_per_second)
+        or cfg.screening.projected_games_per_second <= 0.0
     ):
         raise ValueError("screening.projected_games_per_second must be positive when configured")
     if cfg.batching.target_batches != 100 or cfg.batching.min_shuffles_per_batch < 30:

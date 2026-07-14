@@ -55,6 +55,16 @@ def test_single_root_tail_is_explicitly_labelled(tmp_path: Path) -> None:
         "reporting",
     ]
     assert {item.metadata["execution_scope"] for item in plan} == {"single_root"}
+    by_name = {item.name: item for item in plan}
+    assert tuple(by_name["agreement"].required_outputs) == (
+        cfg.structure_agreement_pairs_path(),
+        cfg.structure_agreement_summary_path(),
+    )
+    assert tuple(by_name["reporting"].required_outputs) == (
+        cfg.structure_report_json_path(),
+        cfg.structure_report_markdown_path(),
+        cfg.structure_report_plot_path(),
+    )
 
 
 def test_root_pair_plan_runs_one_canonical_tail(tmp_path: Path) -> None:
