@@ -296,9 +296,10 @@ def _run_chunk_item(
     item: Tuple[int, Sequence[ShuffleTask]],
     *,
     chunk_fn: Callable[[Sequence[ShuffleTask]], object],
-) -> Tuple[int, object]:
+) -> Tuple[int, tuple[ShuffleTask, ...], object]:
     chunk_index, seeds = item
-    return chunk_index, chunk_fn(seeds)
+    tasks = tuple(seeds)
+    return chunk_index, tasks, chunk_fn(tasks)
 
 
 # Rich metrics variant -------------------------------------------------------
@@ -796,6 +797,8 @@ def run_tournament(
     cfg.n_strategies = len(strategies)
     if cfg.n_strategies % cfg.n_players != 0:
         raise ValueError(f"n_players must divide {cfg.n_strategies:,}")
+    if cfg.deterministic_batch_size < 1:
+        raise ValueError("deterministic_batch_size must be positive")
 
     checkpoint_meta = {
         "n_players": cfg.n_players,
@@ -804,6 +807,8 @@ def run_tournament(
         "n_strategies": cfg.n_strategies,
         "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
         "rng_bit_generator": "PCG64DXSM",
+        "coordinate_contract_version": 1,
+        "deterministic_batch_size": cfg.deterministic_batch_size,
     }
     if checkpoint_metadata:
         checkpoint_meta.update(checkpoint_metadata)
@@ -825,8 +830,11 @@ def run_tournament(
             workload_plan.k != cfg.n_players
             or workload_plan.strategy_count != cfg.n_strategies
             or workload_plan.required_shuffles != cfg.num_shuffles
+            or workload_plan.shuffles_per_batch != cfg.deterministic_batch_size
         ):
-            raise ValueError("Tournament workload plan does not match the resolved run configuration")
+            raise ValueError(
+                "Tournament workload plan does not match the resolved run configuration"
+            )
         workload_plan = workload_plan.with_games_per_second(games_per_sec)
         if workload_plan_path is not None:
             write_workload_plan(workload_plan_path, workload_plan)
@@ -836,17 +844,15 @@ def run_tournament(
         )
         if workload_plan.cap_exceeded:
             raise WorkloadCapExceeded(workload_plan)
-    shuffles_per_chunk = max(
-        1,
-        int(cfg.desired_sec_per_chunk * games_per_sec // cfg.games_per_shuffle),
-    )
+    shuffles_per_chunk = cfg.deterministic_batch_size
     LOGGER.debug(
-        "Derived chunk sizing",
+        "Resolved immutable process-block sizing",
         extra={
             "stage": "simulation",
             "n_players": cfg.n_players,
             "games_per_shuffle": cfg.games_per_shuffle,
-            "shuffles_per_chunk": shuffles_per_chunk,
+            "shuffles_per_process_block": shuffles_per_chunk,
+            "projected_games_per_second": games_per_sec,
         },
     )
 
@@ -880,20 +886,32 @@ def run_tournament(
 
     if collect_metrics or collect_rows:
         metric_sums = _coerce_metric_sums(payload.get("metric_sums") if payload else None)
-        metric_sq_sums = _coerce_metric_sums(
-            payload.get("metric_square_sums")
-            if payload
-            else None
-        )
+        metric_sq_sums = _coerce_metric_sums(payload.get("metric_square_sums") if payload else None)
         if metric_sq_sums is None and payload:
             metric_sq_sums = _coerce_metric_sums(payload.get("metric_sq_sums"))
     else:
         metric_sums = None
         metric_sq_sums = None
 
-    completed_shuffles: set[int] = set()
+    checkpoint_payload_meta = payload.get("meta", {}) if isinstance(payload, Mapping) else {}
+    if not isinstance(checkpoint_payload_meta, Mapping):
+        checkpoint_payload_meta = {}
+    completed_shuffle_indices = {
+        int(value) for value in checkpoint_payload_meta.get("completed_shuffle_indices", [])
+    }
+    completed_shuffles: set[int] = {
+        urandom.coordinate_seed(
+            urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
+            root_seed=global_seed,
+            k=cfg.n_players,
+            shuffle_index=index,
+            dtype=np.uint32,
+        )
+        for index in completed_shuffle_indices
+    }
     if can_resume_from_artifacts and row_manifest_path is not None and row_manifest_path.exists():
-        completed_shuffles = _manifest_int_set(row_manifest_path, "shuffle_seed")
+        completed_shuffles |= _manifest_int_set(row_manifest_path, "shuffle_seed")
+        completed_shuffle_indices |= _manifest_int_set(row_manifest_path, "shuffle_index")
         if completed_shuffles:
             LOGGER.info(
                 "Recovered completed shuffle seeds from row manifest",
@@ -905,13 +923,16 @@ def run_tournament(
                 },
             )
 
-    completed_chunk_indices: set[int] = set()
+    completed_chunk_indices = {
+        int(value) for value in checkpoint_payload_meta.get("completed_process_block_indices", [])
+    }
     if (
         can_resume_from_artifacts
         and metrics_manifest_path is not None
         and metrics_manifest_path.exists()
     ):
-        completed_chunk_indices = _manifest_int_set(metrics_manifest_path, "chunk_index")
+        completed_chunk_indices |= _manifest_int_set(metrics_manifest_path, "process_block_index")
+        completed_chunk_indices |= _manifest_int_set(metrics_manifest_path, "chunk_index")
         if completed_chunk_indices:
             total_chunks = (cfg.num_shuffles + shuffles_per_chunk - 1) // shuffles_per_chunk
             LOGGER.info(
@@ -923,6 +944,9 @@ def run_tournament(
                     "manifest_path": str(metrics_manifest_path),
                 },
             )
+
+    checkpoint_meta["completed_shuffle_indices"] = sorted(completed_shuffle_indices)
+    checkpoint_meta["completed_process_block_indices"] = sorted(completed_chunk_indices)
 
     recovered_metric_state = False
     if can_resume_from_artifacts and row_manifest_path is not None and row_manifest_path.exists():
@@ -1051,7 +1075,7 @@ def run_tournament(
     chunk_wrapper = partial(_run_chunk_item, chunk_fn=chunk_fn)
 
     try:
-        for chunk_index, result in parallel.process_map(
+        for chunk_index, block_tasks, result in parallel.process_map(
             chunk_wrapper,
             chunk_items,
             n_jobs=resolved_n_jobs,
@@ -1097,7 +1121,16 @@ def run_tournament(
                         manifest_extra={
                             "path": chunk_path.name,
                             "chunk_index": chunk_index,
+                            "process_block_index": chunk_index,
+                            "root_seed": global_seed,
                             "n_players": cfg.n_players,
+                            "deterministic_batch_id": block_tasks[0].deterministic_batch_id,
+                            "shuffle_index_start": block_tasks[0].shuffle_index,
+                            "shuffle_index_end": block_tasks[-1].shuffle_index,
+                            "shuffle_count": len(block_tasks),
+                            "shuffle_indices": [task.shuffle_index for task in block_tasks],
+                            "shuffle_seeds": [task.shuffle_seed for task in block_tasks],
+                            "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
                         },
                     )
                     LOGGER.info(
@@ -1134,6 +1167,11 @@ def run_tournament(
                     },
                 )
 
+            completed_shuffle_indices.update(task.shuffle_index for task in block_tasks)
+            completed_shuffles.update(task.shuffle_seed for task in block_tasks)
+            completed_chunk_indices.add(chunk_index)
+            checkpoint_meta["completed_shuffle_indices"] = sorted(completed_shuffle_indices)
+            checkpoint_meta["completed_process_block_indices"] = sorted(completed_chunk_indices)
             now = time.perf_counter()
             if now - last_ckpt >= cfg.ckpt_every_sec:
                 _save_checkpoint(
@@ -1157,7 +1195,11 @@ def run_tournament(
                 )
                 last_ckpt = now
 
-        if (collect_metrics or collect_rows) and metric_sums is not None and metric_sq_sums is not None:
+        if (
+            (collect_metrics or collect_rows)
+            and metric_sums is not None
+            and metric_sq_sums is not None
+        ):
             _reduce_metric_chunk_payloads(collected_metric_chunks, metric_sums, metric_sq_sums)
 
         if (

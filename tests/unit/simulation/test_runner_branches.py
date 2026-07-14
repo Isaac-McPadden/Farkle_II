@@ -49,7 +49,9 @@ def _workload_meta(cfg: AppConfig, manifest: pd.DataFrame | None = None) -> dict
     return runner._workload_checkpoint_metadata(plan)
 
 
-def test_filter_player_counts_invalid_vs_grid(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_filter_player_counts_invalid_vs_grid(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     cfg = _cfg(tmp_path)
     monkeypatch.setattr(runner, "experiment_size", lambda **_: 6)
 
@@ -89,6 +91,7 @@ def test_output_dir_and_done_helpers(tmp_path: Path) -> None:
         cfg,
         2,
         num_shuffles=3,
+        shuffles_per_batch=1,
         n_strategies=8,
         outputs=[cfg.results_root / "2_players" / "2p_checkpoint.pkl"],
     )
@@ -96,24 +99,37 @@ def test_output_dir_and_done_helpers(tmp_path: Path) -> None:
     assert runner.simulation_is_complete(cfg, 2) is True
     payload = json.loads(done_path.read_text())
     assert payload["n_players"] == 2
+    assert payload["root_seed"] == cfg.sim.seed
+    assert payload["k"] == 2
     assert payload["num_shuffles"] == 3
+    assert payload["shuffle_index_start"] == 0
+    assert payload["shuffle_index_end"] == 2
+    assert payload["deterministic_batch_count"] == 3
+    assert payload["shuffles_per_batch"] == 1
+    assert payload["rng_scheme_version"] == runner.urandom.RNG_SCHEME_VERSION
 
 
 def test_manifest_digest_and_validate_mismatch(tmp_path: Path) -> None:
     manifest = _manifest_df()
     manifest_path = tmp_path / "manifest.parquet"
-    runner.write_parquet_atomic(runner.pa.Table.from_pandas(manifest, preserve_index=False), manifest_path)
+    runner.write_parquet_atomic(
+        runner.pa.Table.from_pandas(manifest, preserve_index=False), manifest_path
+    )
 
     digest_1 = runner._strategy_manifest_digest(manifest)
     digest_2 = runner._strategy_manifest_digest(manifest.iloc[::-1].reset_index(drop=True))
     assert digest_1 != digest_2
 
     bad_schema = manifest.rename(columns={"strategy_id": "id"})
-    runner.write_parquet_atomic(runner.pa.Table.from_pandas(bad_schema, preserve_index=False), manifest_path)
+    runner.write_parquet_atomic(
+        runner.pa.Table.from_pandas(bad_schema, preserve_index=False), manifest_path
+    )
     with pytest.raises(ValueError, match="schema mismatch"):
         runner._validate_manifest_matches(manifest, manifest_path, label="Strategy")
 
-    runner.write_parquet_atomic(runner.pa.Table.from_pandas(manifest.iloc[::-1], preserve_index=False), manifest_path)
+    runner.write_parquet_atomic(
+        runner.pa.Table.from_pandas(manifest.iloc[::-1], preserve_index=False), manifest_path
+    )
     with pytest.raises(ValueError, match="manifest mismatch"):
         runner._validate_manifest_matches(manifest, manifest_path, label="Strategy")
 
@@ -263,7 +279,9 @@ def test_run_single_n_branch_table(
     stale_done.write_text('{"stale": true}')
 
     strategies = [ThresholdStrategy(300, 3), ThresholdStrategy(500, 2)]
-    monkeypatch.setattr(runner, "_resolve_strategies", lambda cfg, strategies: (strategies or [], 2, True))
+    monkeypatch.setattr(
+        runner, "_resolve_strategies", lambda cfg, strategies: (strategies or [], 2, True)
+    )
     monkeypatch.setattr(runner, "build_strategy_manifest", lambda _strategies: _manifest_df())
 
     calls: dict[str, int] = {"worker": 0}
@@ -302,7 +320,9 @@ def test_run_single_n_branch_table(
             runner.run_single_n(cfg, n_players, strategies=strategies, force=force)
         assert calls["worker"] == 0
     else:
-        assert runner.run_single_n(cfg, n_players, strategies=strategies, force=force) == expect_games
+        assert (
+            runner.run_single_n(cfg, n_players, strategies=strategies, force=force) == expect_games
+        )
         assert calls["worker"] == 1
         assert runner.simulation_is_complete(cfg, n_players)
 
@@ -311,7 +331,9 @@ def test_run_single_n_branch_table(
     assert validate_mock.call_count == (1 if (not force and existing_outputs) else 0), case
 
 
-def test_run_single_n_cleanup_purges_done_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_single_n_cleanup_purges_done_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cfg = _cfg(tmp_path, row_dir=Path("rows"), metric_chunk_dir=Path("metrics"), num_shuffles=1)
     _patch_tournament_writer(monkeypatch)
 
@@ -345,7 +367,9 @@ def test_run_single_n_cap_blocks_before_force_cleanup(tmp_path: Path) -> None:
     assert plan["shuffle_cap"] == 1
 
 
-def test_run_single_n_resume_invalid_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_single_n_resume_invalid_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cfg = _cfg(tmp_path, row_dir=Path("rows"), num_shuffles=1)
     _patch_tournament_writer(monkeypatch)
 
@@ -597,9 +621,46 @@ def test_has_existing_outputs_negative_case(tmp_path: Path) -> None:
     )
 
 
-def _write_manifest_lines(path: Path, lines: list[dict[str, int]]) -> None:
+def _write_manifest_lines(path: Path, lines: list[dict[str, object]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(json.dumps(line) for line in lines) + "\n")
+
+
+def _row_manifest_record(
+    cfg: AppConfig,
+    shuffle_index: int,
+    *,
+    shuffle_seed: int | None = None,
+    n_players: int = 2,
+) -> dict[str, object]:
+    return {
+        "root_seed": cfg.sim.seed,
+        "n_players": n_players,
+        "shuffle_index": shuffle_index,
+        "shuffle_seed": shuffle_index + 1 if shuffle_seed is None else shuffle_seed,
+        "deterministic_batch_id": shuffle_index,
+        "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+    }
+
+
+def _metric_manifest_record(
+    cfg: AppConfig,
+    deterministic_batch_id: int,
+    *,
+    n_players: int = 2,
+) -> dict[str, object]:
+    return {
+        "root_seed": cfg.sim.seed,
+        "n_players": n_players,
+        "process_block_index": deterministic_batch_id + 1,
+        "deterministic_batch_id": deterministic_batch_id,
+        "shuffle_index_start": deterministic_batch_id,
+        "shuffle_index_end": deterministic_batch_id,
+        "shuffle_count": 1,
+        "shuffle_indices": [deterministic_batch_id],
+        "shuffle_seeds": [deterministic_batch_id + 1],
+        "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+    }
 
 
 def test_validate_resume_outputs_promotes_legacy_manifest(tmp_path: Path) -> None:
@@ -609,7 +670,9 @@ def test_validate_resume_outputs_promotes_legacy_manifest(tmp_path: Path) -> Non
     ckpt_path = n_dir / "2p_checkpoint.pkl"
     manifest = _manifest_df()
     legacy_manifest = n_dir / runner.STRATEGY_MANIFEST_NAME
-    runner.write_parquet_atomic(runner.pa.Table.from_pandas(manifest, preserve_index=False), legacy_manifest)
+    runner.write_parquet_atomic(
+        runner.pa.Table.from_pandas(manifest, preserve_index=False), legacy_manifest
+    )
     ckpt_path.write_bytes(
         pickle.dumps(
             {
@@ -733,23 +796,29 @@ def test_validate_resume_outputs_no_checkpoint_and_no_valid_manifest_raises(tmp_
 
 
 @pytest.mark.parametrize(
-    "rows,match",
+    "case,match",
     [
-        ([{"shuffle_seed": 1, "n_players": 2}, {"shuffle_seed": 1, "n_players": 2}], "Duplicate shuffle"),
-        ([{"shuffle_seed": 999, "n_players": 2}], "Row manifest mismatch"),
-        ([{"shuffle_seed": 1, "n_players": 9}], "Row manifest mismatch"),
+        ("duplicate", "Duplicate shuffle"),
+        ("seed", "Row manifest mismatch"),
+        ("players", "Row manifest mismatch"),
     ],
 )
 def test_validate_resume_outputs_row_manifest_invalid(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    rows: list[dict[str, int]],
+    case: str,
     match: str,
 ) -> None:
     cfg = _cfg(tmp_path)
     n_dir = cfg.results_root / "2_players"
     row_dir = n_dir / "rows"
     row_dir.mkdir(parents=True, exist_ok=True)
+    valid = _row_manifest_record(cfg, 0)
+    rows = {
+        "duplicate": [valid, valid],
+        "seed": [_row_manifest_record(cfg, 0, shuffle_seed=999)],
+        "players": [_row_manifest_record(cfg, 0, n_players=9)],
+    }[case]
     _write_manifest_lines(row_dir / "manifest.jsonl", rows)
     monkeypatch.setattr(
         runner.urandom,
@@ -770,21 +839,26 @@ def test_validate_resume_outputs_row_manifest_invalid(
 
 
 @pytest.mark.parametrize(
-    "rows,match",
+    "case,match",
     [
-        ([{"chunk_index": 0, "n_players": 2}, {"chunk_index": 0, "n_players": 2}], "Duplicate chunk"),
-        ([{"chunk_index": 0, "n_players": 9}], "Metrics manifest mismatch"),
+        ("duplicate", "Duplicate process-block"),
+        ("players", "Metrics manifest mismatch"),
     ],
 )
 def test_validate_resume_outputs_metrics_manifest_invalid(
     tmp_path: Path,
-    rows: list[dict[str, int]],
+    case: str,
     match: str,
 ) -> None:
     cfg = _cfg(tmp_path)
     n_dir = cfg.results_root / "2_players"
     metric_dir = n_dir / "metrics"
     metric_dir.mkdir(parents=True, exist_ok=True)
+    valid = _metric_manifest_record(cfg, 0)
+    rows = {
+        "duplicate": [valid, valid],
+        "players": [_metric_manifest_record(cfg, 0, n_players=9)],
+    }[case]
     _write_manifest_lines(metric_dir / "metrics_manifest.jsonl", rows)
 
     with pytest.raises(ValueError, match=match):
@@ -810,11 +884,11 @@ def test_validate_resume_outputs_row_and_metrics_manifests_pass(
     metric_dir.mkdir(parents=True, exist_ok=True)
     _write_manifest_lines(
         row_dir / "manifest.jsonl",
-        [{"shuffle_seed": 1, "n_players": 2}, {"shuffle_seed": 2, "n_players": 2}],
+        [_row_manifest_record(cfg, 0), _row_manifest_record(cfg, 1)],
     )
     _write_manifest_lines(
         metric_dir / "metrics_manifest.jsonl",
-        [{"chunk_index": 0, "n_players": 2}, {"chunk_index": 1, "n_players": 2}],
+        [_metric_manifest_record(cfg, 0), _metric_manifest_record(cfg, 1)],
     )
     monkeypatch.setattr(
         runner.urandom,
@@ -841,12 +915,16 @@ def test_run_tournament_dispatch_error_and_multi_paths(
         runner.run_tournament(cfg_empty)
 
     cfg_invalid = _cfg(tmp_path, n_players_list=[7, 9])
-    monkeypatch.setattr(runner, "_filter_player_counts", lambda *_: ([], [7, 9], 6, "experiment_size"))
+    monkeypatch.setattr(
+        runner, "_filter_player_counts", lambda *_: ([], [7, 9], 6, "experiment_size")
+    )
     with pytest.raises(ValueError, match="No valid player counts remain"):
         runner.run_tournament(cfg_invalid)
 
     cfg_multi = _cfg(tmp_path, n_players_list=[2, 4])
-    monkeypatch.setattr(runner, "_filter_player_counts", lambda *_: ([2, 4], [], 8, "experiment_size"))
+    monkeypatch.setattr(
+        runner, "_filter_player_counts", lambda *_: ([2, 4], [], 8, "experiment_size")
+    )
     monkeypatch.setattr(runner, "run_multi", lambda cfg, player_counts, force=False: {2: 4, 4: 8})
     assert runner.run_tournament(cfg_multi, force=True) == 12
 
@@ -897,7 +975,15 @@ def test_run_single_n_empty_rows_and_legacy_sq_sum_outputs(
 
     captured_outputs: list[list[Path]] = []
 
-    def fake_done(cfg: AppConfig, n_players: int, *, num_shuffles: int, n_strategies: int, outputs: list[Path]) -> Path:
+    def fake_done(
+        cfg: AppConfig,
+        n_players: int,
+        *,
+        num_shuffles: int,
+        shuffles_per_batch: int,
+        n_strategies: int,
+        outputs: list[Path],
+    ) -> Path:
         captured_outputs.append(outputs)
         return runner.simulation_done_path(cfg, n_players)
 

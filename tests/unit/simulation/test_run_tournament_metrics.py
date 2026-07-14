@@ -74,9 +74,7 @@ def silence_logging(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _fake_play_one_shuffle(
-    task: rt.ShuffleTask | int, *, collect_rows: bool = False
-) -> tuple[
+def _fake_play_one_shuffle(task: rt.ShuffleTask | int, *, collect_rows: bool = False) -> tuple[
     Counter[int | str],
     dict[str, dict[int | str, float]],
     dict[str, dict[int | str, float]],
@@ -135,8 +133,7 @@ def _setup_serial_run(monkeypatch: pytest.MonkeyPatch) -> list[ThresholdStrategy
     monkeypatch.setattr(
         rt.urandom,
         "coordinate_seed",
-        lambda _purpose, *, root_seed, shuffle_index=0, **_kwargs: root_seed
-        + shuffle_index,
+        lambda _purpose, *, root_seed, shuffle_index=0, **_kwargs: root_seed + shuffle_index,
         raising=True,
     )
     _install_serial_process_map(monkeypatch)
@@ -225,8 +222,6 @@ def test_run_chunk_metrics_accumulates(monkeypatch):
         assert sqs[label][2] == 4
 
 
-
-
 def test_reduce_metric_chunk_payloads_is_deterministic() -> None:
     def _chunk_payload(value: float) -> tuple[
         dict[str, dict[int | str, float]],
@@ -249,6 +244,7 @@ def test_reduce_metric_chunk_payloads_is_deterministic() -> None:
 
     assert sums_a == sums_b
     assert sqs_a == sqs_b
+
 
 def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
@@ -311,7 +307,9 @@ def test_run_chunk_metrics_row_logging_with_worker_state(monkeypatch, tmp_path):
 
     rt._init_worker(_mini_strategies(4), rt.TournamentConfig(n_players=2))
 
-    rt._run_chunk_metrics([5], collect_rows=True, row_dir=tmp_path, manifest_path=tmp_path / "m.jsonl")
+    rt._run_chunk_metrics(
+        [5], collect_rows=True, row_dir=tmp_path, manifest_path=tmp_path / "m.jsonl"
+    )
 
     assert recorded["extra"]["n_players"] == 2
 
@@ -376,8 +374,14 @@ def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch
     metric_records = list(manifest.iter_manifest(metrics_manifest))
     assert len(metric_records) == 1
     assert {record["path"] for record in metric_records} == {f.name for f in chunk_files}
-    assert metric_records[0]["chunk_index"] == 1
-    assert metric_records[0]["n_players"] == config.n_players
+    metric_record = metric_records[0]
+    assert metric_record["process_block_index"] == 1
+    assert metric_record["root_seed"] == 0
+    assert metric_record["n_players"] == config.n_players
+    assert metric_record["deterministic_batch_id"] == 0
+    assert metric_record["shuffle_indices"] == [0, 1, 2]
+    assert metric_record["shuffle_seeds"] == [0, 1, 2]
+    assert metric_record["rng_scheme_version"] == rt.urandom.RNG_SCHEME_VERSION
 
     row_files = list(row_dir.glob("rows_*.parquet"))
     assert len(row_files) == config.num_shuffles
@@ -387,6 +391,12 @@ def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch
     assert all(record.get("rows") == 1 for record in row_records)
     assert {record["shuffle_seed"] for record in row_records} == {0, 1, 2}
     assert all(record["n_players"] == config.n_players for record in row_records)
+    assert {record["shuffle_index"] for record in row_records} == {0, 1, 2}
+    assert all(record["root_seed"] == 0 for record in row_records)
+    assert all(record["deterministic_batch_id"] == 0 for record in row_records)
+    assert all(
+        record["rng_scheme_version"] == rt.urandom.RNG_SCHEME_VERSION for record in row_records
+    )
 
     metrics_path = checkpoint_path.with_name("2p_metrics.parquet")
     table = pq.read_table(metrics_path)
@@ -571,7 +581,6 @@ def test_run_tournament_no_metrics_wins_only_checkpoint(
         assert extra["wins"] == 2
 
 
-
 def test_run_tournament_metrics_chunk_execution(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     _setup_serial_run(monkeypatch)
     monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
@@ -588,8 +597,12 @@ def test_run_tournament_metrics_chunk_execution(monkeypatch: pytest.MonkeyPatch,
     monkeypatch.setattr(rt.parallel, "process_map", fake_process_map)
     monkeypatch.setattr(rt, "_measure_throughput", lambda sample_strategies: 6.0, raising=True)
 
-
-    config = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
+    config = rt.TournamentConfig(
+        n_players=2,
+        desired_sec_per_chunk=1,
+        ckpt_every_sec=9999,
+        deterministic_batch_size=2,
+    )
     rt.run_tournament(
         config=config,
         global_seed=0,
@@ -627,7 +640,12 @@ def test_run_tournament_resume_preserves_original_chunk_boundaries(
     for seed in (0, 2, 3):
         _write_row_shard(row_dir, seed)
 
-    config = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
+    config = rt.TournamentConfig(
+        n_players=2,
+        desired_sec_per_chunk=1,
+        ckpt_every_sec=9999,
+        deterministic_batch_size=2,
+    )
     rt.run_tournament(
         config=config,
         global_seed=0,
@@ -657,7 +675,12 @@ def test_run_tournament_resume_recovers_win_totals_from_metric_chunks(
     metrics_dir = tmp_path / "metrics"
     _write_metric_chunk(metrics_dir, chunk_index=1, strategy=0)
 
-    config = rt.TournamentConfig(n_players=2, desired_sec_per_chunk=1, ckpt_every_sec=9999)
+    config = rt.TournamentConfig(
+        n_players=2,
+        desired_sec_per_chunk=1,
+        ckpt_every_sec=9999,
+        deterministic_batch_size=1,
+    )
     rt.run_tournament(
         config=config,
         global_seed=0,

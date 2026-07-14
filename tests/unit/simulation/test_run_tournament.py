@@ -169,8 +169,7 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
     monkeypatch.setattr(
         rt.urandom,
         "coordinate_seed",
-        lambda _purpose, *, root_seed, shuffle_index=0, **_kwargs: root_seed
-        + shuffle_index,
+        lambda _purpose, *, root_seed, shuffle_index=0, **_kwargs: root_seed + shuffle_index,
         raising=True,
     )
 
@@ -191,7 +190,13 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
         raising=True,
     )
 
-    cfg = rt.TournamentConfig(n_players=2, num_shuffles=5, desired_sec_per_chunk=1, ckpt_every_sec=999)
+    cfg = rt.TournamentConfig(
+        n_players=2,
+        num_shuffles=5,
+        desired_sec_per_chunk=1,
+        ckpt_every_sec=999,
+        deterministic_batch_size=1,
+    )
     ckpt = tmp_path / "checkpoint.pkl"
     plan_path = tmp_path / "workload.json"
     workload_plan = plan_tournament_workload(
@@ -212,8 +217,7 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
         workload_plan_path=plan_path,
     )
 
-    # shuffles_per_chunk = max(1, int(1 * 8.0 // (4 // 2))) = 4 for this fixture.
-    assert chunk_calls == [[0, 1, 2, 3], [4]]
+    assert chunk_calls == [[0], [1], [2], [3], [4]]
     payload = pickle.loads(ckpt.read_bytes())
     assert payload["win_totals"] == Counter({"W0": 1, "W1": 1, "W2": 1, "W3": 1, "W4": 1})
     plan_payload = json.loads(plan_path.read_text(encoding="utf-8"))
@@ -229,6 +233,77 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
             n_jobs=1,
             collect_metrics=False,
         )
+
+
+def test_checkpoint_coordinates_resume_without_row_or_metric_artifacts(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    strats = _mini_strats(4)
+    monkeypatch.setattr(rt, "generate_strategy_grid", lambda *a, **k: (strats, None))
+    monkeypatch.setattr(rt, "_measure_throughput", lambda sample: 8.0)
+    monkeypatch.setattr(
+        rt.urandom,
+        "coordinate_seed",
+        lambda _purpose, *, root_seed, shuffle_index=0, **_kwargs: root_seed + shuffle_index,
+    )
+    monkeypatch.setattr(
+        rt,
+        "_play_shuffle",
+        lambda task: Counter({f"W{task.shuffle_index}": 1}),
+    )
+
+    cfg = rt.TournamentConfig(
+        n_players=2,
+        num_shuffles=3,
+        ckpt_every_sec=0,
+        deterministic_batch_size=1,
+    )
+    ckpt = tmp_path / "checkpoint.pkl"
+
+    def interrupt_after_first(func, iterable, *, initializer=None, initargs=(), **kwargs):
+        if initializer is not None:
+            initializer(*initargs)
+        for position, item in enumerate(iterable):
+            if position == 1:
+                raise KeyboardInterrupt
+            yield func(item)
+
+    monkeypatch.setattr(rt.parallel, "process_map", interrupt_after_first)
+    with pytest.raises(KeyboardInterrupt):
+        rt.run_tournament(
+            config=cfg,
+            num_shuffles=cfg.num_shuffles,
+            checkpoint_path=ckpt,
+            n_jobs=1,
+        )
+
+    interrupted = pickle.loads(ckpt.read_bytes())
+    assert interrupted["win_totals"] == Counter({"W0": 1})
+    assert interrupted["meta"]["completed_shuffle_indices"] == [0]
+    assert interrupted["meta"]["completed_process_block_indices"] == [1]
+
+    resumed_blocks: list[list[int]] = []
+
+    def resume_map(func, iterable, *, initializer=None, initargs=(), **kwargs):
+        if initializer is not None:
+            initializer(*initargs)
+        for item in iterable:
+            resumed_blocks.append([task.shuffle_index for task in item[1]])
+            yield func(item)
+
+    monkeypatch.setattr(rt.parallel, "process_map", resume_map)
+    rt.run_tournament(
+        config=cfg,
+        num_shuffles=cfg.num_shuffles,
+        checkpoint_path=ckpt,
+        n_jobs=1,
+    )
+
+    completed = pickle.loads(ckpt.read_bytes())
+    assert resumed_blocks == [[1], [2]]
+    assert completed["win_totals"] == Counter({"W0": 1, "W1": 1, "W2": 1})
+    assert completed["meta"]["completed_shuffle_indices"] == [0, 1, 2]
+    assert completed["meta"]["completed_process_block_indices"] == [1, 2, 3]
 
 
 def test_shuffle_rows_preserve_turns_and_rng_coordinates() -> None:

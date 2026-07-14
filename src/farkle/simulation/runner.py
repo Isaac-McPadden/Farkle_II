@@ -209,6 +209,8 @@ def _workload_checkpoint_metadata(plan: TournamentWorkloadPlan) -> dict[str, obj
         "batch_count": plan.batch_count,
         "shuffles_per_batch": plan.shuffles_per_batch,
         "batch_construction": plan.batch_construction,
+        "coordinate_contract_version": 1,
+        "deterministic_batch_size": plan.shuffles_per_batch,
     }
 
 
@@ -242,6 +244,7 @@ def write_simulation_done(
     n_players: int,
     *,
     num_shuffles: int,
+    shuffles_per_batch: int,
     n_strategies: int,
     outputs: Sequence[Path],
 ) -> Path:
@@ -250,7 +253,16 @@ def write_simulation_done(
     payload = {
         "n_players": n_players,
         "seed": cfg.sim.seed,
+        "root_seed": cfg.sim.seed,
+        "k": n_players,
         "num_shuffles": num_shuffles,
+        "shuffle_index_start": 0,
+        "shuffle_index_end": num_shuffles - 1,
+        "deterministic_batch_count": (
+            (num_shuffles + shuffles_per_batch - 1) // shuffles_per_batch
+        ),
+        "shuffles_per_batch": shuffles_per_batch,
+        "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
         "n_strategies": n_strategies,
         "outputs": [str(p) for p in outputs],
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -336,9 +348,7 @@ def _validate_manifest_matches(manifest: pd.DataFrame, path: Path, *, label: str
         )
     existing = existing[manifest.columns]
     if not existing.equals(manifest):
-        raise ValueError(
-            f"{label} manifest mismatch at {path}; re-run with --force to regenerate."
-        )
+        raise ValueError(f"{label} manifest mismatch at {path}; re-run with --force to regenerate.")
 
 
 def _handle_remove_error(func: RemovePathCallable, path: str, exc_info: RemoveErrorInfo) -> None:
@@ -482,6 +492,11 @@ def _validate_resume_outputs(
         row_dir: Optional row-shard directory to validate.
         metric_chunk_dir: Optional metric-chunk directory to validate.
     """
+    workload_plan = _plan_workload_from_config(
+        cfg,
+        n_strategies=len(strategies_manifest),
+        n_players=n_players,
+    )
     expected_meta = {
         "n_players": n_players,
         "num_shuffles": n_shuffles,
@@ -490,29 +505,19 @@ def _validate_resume_outputs(
         "strategy_manifest_sha": _strategy_manifest_digest(strategies_manifest),
         "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
         "rng_bit_generator": "PCG64DXSM",
-        **_workload_checkpoint_metadata(
-            _plan_workload_from_config(
-                cfg,
-                n_strategies=len(strategies_manifest),
-                n_players=n_players,
-            )
-        ),
+        **_workload_checkpoint_metadata(workload_plan),
     }
     root_manifest_path = cfg.strategy_manifest_root_path()
     legacy_manifest_paths = [ckpt_path.parent / STRATEGY_MANIFEST_NAME]
     if row_dir is not None:
         legacy_manifest_paths.append(row_dir / STRATEGY_MANIFEST_NAME)
     if root_manifest_path.exists():
-        _validate_manifest_matches(
-            strategies_manifest, root_manifest_path, label="Strategy"
-        )
+        _validate_manifest_matches(strategies_manifest, root_manifest_path, label="Strategy")
     else:
         legacy_match = None
         for legacy_path in legacy_manifest_paths:
             if legacy_path.exists():
-                _validate_manifest_matches(
-                    strategies_manifest, legacy_path, label="Strategy"
-                )
+                _validate_manifest_matches(strategies_manifest, legacy_path, label="Strategy")
                 legacy_match = legacy_path
                 break
         if legacy_match is not None:
@@ -531,9 +536,7 @@ def _validate_resume_outputs(
         payload = pickle.loads(ckpt_path.read_bytes())
         meta = payload.get("meta")
         if not isinstance(meta, Mapping):
-            raise ValueError(
-                f"Checkpoint metadata missing at {ckpt_path}; rerun with --force."
-            )
+            raise ValueError(f"Checkpoint metadata missing at {ckpt_path}; rerun with --force.")
         for key, expected in expected_meta.items():
             if meta.get(key) != expected:
                 raise ValueError(
@@ -551,8 +554,8 @@ def _validate_resume_outputs(
     if row_dir is not None:
         manifest_path = row_dir / "manifest.jsonl"
         if manifest_path.exists():
-            expected_seeds = {
-                urandom.coordinate_seed(
+            expected_seed_by_index = {
+                index: urandom.coordinate_seed(
                     urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
                     root_seed=cfg.sim.seed,
                     k=n_players,
@@ -561,58 +564,125 @@ def _validate_resume_outputs(
                 )
                 for index in range(n_shuffles)
             }
+            expected_seeds = set(expected_seed_by_index.values())
             seen: set[int] = set()
+            seen_indices: set[int] = set()
             duplicates = 0
             unexpected = 0
-            wrong_n = 0
+            coordinate_errors = 0
             for record in iter_manifest(manifest_path):
                 seed_val = record.get("shuffle_seed")
-                if seed_val is not None:
-                    try:
-                        seed_int = int(seed_val)
-                    except (TypeError, ValueError):
-                        continue
-                    if seed_int in seen:
-                        duplicates += 1
-                    seen.add(seed_int)
-                    if expected_seeds is not None and seed_int not in expected_seeds:
-                        unexpected += 1
-                n_val = record.get("n_players")
-                if n_val is not None and int(n_val) != n_players:
-                    wrong_n += 1
+                index_val = record.get("shuffle_index")
+                if seed_val is None or index_val is None:
+                    coordinate_errors += 1
+                    continue
+                try:
+                    seed_int = int(seed_val)
+                    index_int = int(index_val)
+                except (TypeError, ValueError):
+                    coordinate_errors += 1
+                    continue
+                if seed_int in seen or index_int in seen_indices:
+                    duplicates += 1
+                seen.add(seed_int)
+                seen_indices.add(index_int)
+                if (
+                    seed_int not in expected_seeds
+                    or expected_seed_by_index.get(index_int) != seed_int
+                ):
+                    unexpected += 1
+                expected_batch = index_int // workload_plan.shuffles_per_batch
+                if (
+                    record.get("root_seed") != cfg.sim.seed
+                    or record.get("n_players") != n_players
+                    or record.get("deterministic_batch_id") != expected_batch
+                    or record.get("rng_scheme_version") != urandom.RNG_SCHEME_VERSION
+                ):
+                    coordinate_errors += 1
             if duplicates:
                 raise ValueError(
                     f"Duplicate shuffle entries detected in {manifest_path}; rerun with --force."
                 )
-            if unexpected or wrong_n:
-                raise ValueError(
-                    f"Row manifest mismatch at {manifest_path}; rerun with --force."
-                )
+            if unexpected or coordinate_errors:
+                raise ValueError(f"Row manifest mismatch at {manifest_path}; rerun with --force.")
 
     if metric_chunk_dir is not None:
         metrics_manifest = metric_chunk_dir / "metrics_manifest.jsonl"
         if metrics_manifest.exists():
-            wrong_n = 0
-            seen_chunks: set[int] = set()
+            coordinate_errors = 0
+            seen_batches: set[int] = set()
+            seen_shuffle_indices: set[int] = set()
             duplicates = 0
             for record in iter_manifest(metrics_manifest):
-                n_val = record.get("n_players")
-                if n_val is not None and int(n_val) != n_players:
-                    wrong_n += 1
-                chunk_val = record.get("chunk_index")
-                if chunk_val is not None:
-                    try:
-                        chunk_int = int(chunk_val)
-                    except (TypeError, ValueError):
-                        continue
-                    if chunk_int in seen_chunks:
-                        duplicates += 1
-                    seen_chunks.add(chunk_int)
+                batch_value = record.get("deterministic_batch_id")
+                block_value = record.get("process_block_index")
+                start_value = record.get("shuffle_index_start")
+                end_value = record.get("shuffle_index_end")
+                count_value = record.get("shuffle_count")
+                indices_value = record.get("shuffle_indices")
+                seeds_value = record.get("shuffle_seeds")
+                if (
+                    batch_value is None
+                    or block_value is None
+                    or start_value is None
+                    or end_value is None
+                    or count_value is None
+                    or not isinstance(indices_value, list)
+                    or not isinstance(seeds_value, list)
+                ):
+                    coordinate_errors += 1
+                    continue
+                try:
+                    batch_id = int(batch_value)
+                    process_block_index = int(block_value)
+                    start = int(start_value)
+                    end = int(end_value)
+                    count = int(count_value)
+                    shuffle_indices = [int(value) for value in indices_value]
+                    shuffle_seeds = [int(value) for value in seeds_value]
+                except (TypeError, ValueError):
+                    coordinate_errors += 1
+                    continue
+                if batch_id in seen_batches:
+                    duplicates += 1
+                seen_batches.add(batch_id)
+                if seen_shuffle_indices.intersection(shuffle_indices):
+                    duplicates += 1
+                seen_shuffle_indices.update(shuffle_indices)
+                expected_seeds_for_indices = [
+                    urandom.coordinate_seed(
+                        urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
+                        root_seed=cfg.sim.seed,
+                        k=n_players,
+                        shuffle_index=index,
+                        dtype=np.uint32,
+                    )
+                    for index in shuffle_indices
+                ]
+                if (
+                    record.get("root_seed") != cfg.sim.seed
+                    or record.get("n_players") != n_players
+                    or record.get("rng_scheme_version") != urandom.RNG_SCHEME_VERSION
+                    or process_block_index != batch_id + 1
+                    or not shuffle_indices
+                    or shuffle_indices != sorted(shuffle_indices)
+                    or start != shuffle_indices[0]
+                    or end != shuffle_indices[-1]
+                    or count != len(shuffle_indices)
+                    or any(index < 0 or index >= n_shuffles for index in shuffle_indices)
+                    or any(
+                        index // workload_plan.shuffles_per_batch != batch_id
+                        for index in shuffle_indices
+                    )
+                    or shuffle_seeds != expected_seeds_for_indices
+                ):
+                    coordinate_errors += 1
             if duplicates:
                 raise ValueError(
-                    f"Duplicate chunk entries detected in {metrics_manifest}; rerun with --force."
+                    f"Duplicate process-block entries detected in {metrics_manifest}; "
+                    "rerun with --force."
                 )
-            if wrong_n:
+            if coordinate_errors:
                 raise ValueError(
                     f"Metrics manifest mismatch at {metrics_manifest}; rerun with --force."
                 )
@@ -897,6 +967,7 @@ def run_single_n(
         cfg,
         n,
         num_shuffles=n_shuffles,
+        shuffles_per_batch=workload_plan.shuffles_per_batch,
         n_strategies=grid_size,
         outputs=outputs,
     )

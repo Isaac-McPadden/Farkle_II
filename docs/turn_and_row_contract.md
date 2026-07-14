@@ -17,5 +17,15 @@ Tournament rows carry the stable simulation coordinates used to produce them:
 - `rng_scheme_version` and `rng_purpose_namespace`
 
 The deterministic batch identifier is `shuffle_index // shuffles_per_batch`.
-Production screening plans use 100 equal contiguous batches, so coordinate
-identity is independent of process-executor chunking and worker assignment.
+Production screening plans use 100 equal contiguous batches. Those batches are
+also immutable process-recovery blocks; measured throughput is used only for
+runtime projection and cannot change their boundaries.
+
+Checkpoints own completed zero-based shuffle indices and one-based process-block
+indices even when row and metric outputs are disabled. Row manifests own one
+shuffle coordinate apiece. Metric manifests own an explicit ordered list of
+shuffle indices and their coordinate-derived seeds, allowing an interrupted
+row-producing block to resume from its unfinished suffix. Completion markers
+record the full shuffle range, batch count, batch size, root, k, and RNG scheme.
+Changing process-executor worker counts, interrupting, or resuming therefore
+does not change coordinate identity or regenerate checkpointed work.
