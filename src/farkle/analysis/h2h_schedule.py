@@ -9,14 +9,17 @@ import os
 from collections.abc import Callable, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass
+from functools import lru_cache
 from itertools import combinations
 from pathlib import Path
 from typing import Any, Final, cast
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-from scipy.stats import norm
+from scipy.signal import fftconvolve
+from scipy.stats import binom, nchypergeom_fisher, norm
 
 from farkle.analysis.stage_state import (
     CompletionState,
@@ -39,7 +42,7 @@ from farkle.utils.artifacts import (
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_seed
 
 SCORE_TEST_ID: Final = "independent_two_proportion_score_v1"
-POWER_METHOD_ID: Final = "normal_power_for_independent_two_proportion_score_v1"
+POWER_METHOD_ID: Final = "conditional_exact_power_for_score_rejection_v1"
 
 
 @dataclass(frozen=True)
@@ -84,6 +87,146 @@ def independent_score_planning_power(
     return min(1.0, max(0.0, upper + lower))
 
 
+@lru_cache(maxsize=32)
+def _score_critical_value(alpha: float) -> float:
+    return float(norm.isf(alpha / 2.0))
+
+
+def _score_rejects(count1: int, nobs: int, count2: int, alpha: float) -> bool:
+    """Apply the same two-sided score rejection rule used by H2H inference."""
+
+    total = count1 + count2
+    common = total / (2.0 * nobs)
+    difference = (count1 - count2) / nobs
+    variance = common * (1.0 - common) * (2.0 / nobs)
+    if variance > 0.0:
+        statistic = difference / math.sqrt(variance)
+        return abs(statistic) > _score_critical_value(alpha)
+    return difference != 0.0
+
+
+def _rejection_boundaries(total: int, nobs: int, alpha: float) -> tuple[int, int]:
+    """Return the largest lower and smallest upper rejecting allocations."""
+
+    support_low = max(0, total - nobs)
+    support_high = min(nobs, total)
+    if support_low > support_high or total in {0, 2 * nobs}:
+        return support_low - 1, support_high + 1
+    common = total / (2.0 * nobs)
+    critical = _score_critical_value(alpha)
+    threshold = nobs * critical * math.sqrt(common * (1.0 - common) * (2.0 / nobs))
+    lower = min(support_high, math.ceil((total - threshold) / 2.0) - 1)
+    upper = max(support_low, math.floor((total + threshold) / 2.0) + 1)
+    while lower >= support_low and not _score_rejects(lower, nobs, total - lower, alpha):
+        lower -= 1
+    while lower + 1 <= support_high and _score_rejects(
+        lower + 1, nobs, total - lower - 1, alpha
+    ):
+        lower += 1
+    while upper <= support_high and not _score_rejects(upper, nobs, total - upper, alpha):
+        upper += 1
+    while upper - 1 >= support_low and _score_rejects(
+        upper - 1, nobs, total - upper + 1, alpha
+    ):
+        upper -= 1
+    return lower, upper
+
+
+def _fixed_first_count_boundaries(count1: int, nobs: int, alpha: float) -> tuple[int, int]:
+    """Return rejecting lower and upper second-sample count boundaries."""
+
+    lower = -1
+    if count1 > 0 and _score_rejects(count1, nobs, 0, alpha):
+        left = 0
+        right = count1
+        while left + 1 < right:
+            midpoint = (left + right) // 2
+            if _score_rejects(count1, nobs, midpoint, alpha):
+                left = midpoint
+            else:
+                right = midpoint
+        lower = left
+    upper = nobs + 1
+    if count1 < nobs and _score_rejects(count1, nobs, nobs, alpha):
+        left = count1
+        right = nobs
+        while left + 1 < right:
+            midpoint = (left + right) // 2
+            if _score_rejects(count1, nobs, midpoint, alpha):
+                right = midpoint
+            else:
+                left = midpoint
+        upper = right
+    return lower, upper
+
+
+def _conditional_fisher_power(
+    total_pmf: np.ndarray,
+    nobs: int,
+    q_ab: float,
+    q_ba: float,
+    alpha: float,
+) -> float:
+    """Sum score-rejection tails under the conditional Fisher allocation law."""
+
+    totals = np.arange(2 * nobs + 1, dtype=np.int64)
+    lower = np.empty_like(totals)
+    upper = np.empty_like(totals)
+    for index, total in enumerate(totals.tolist()):
+        lower[index], upper[index] = _rejection_boundaries(total, nobs, alpha)
+    odds = (q_ab / (1.0 - q_ab)) / (q_ba / (1.0 - q_ba))
+    conditional_rejection = np.nan_to_num(
+        nchypergeom_fisher.cdf(lower, 2 * nobs, nobs, totals, odds)
+        + nchypergeom_fisher.sf(upper - 1, 2 * nobs, nobs, totals, odds),
+        nan=0.0,
+        posinf=0.0,
+        neginf=0.0,
+    )
+    return float(np.dot(total_pmf, np.clip(conditional_rejection, 0.0, 1.0)))
+
+
+@lru_cache(maxsize=512)
+def implemented_score_test_power(
+    games_per_order: int,
+    q_ab: float,
+    q_ba: float,
+    alpha: float,
+) -> float:
+    """Calculate power of the implemented score rejection rule deterministically."""
+
+    if games_per_order < 1:
+        raise ValueError("games_per_order must be positive")
+    if not 0.0 < q_ab < 1.0 or not 0.0 < q_ba < 1.0:
+        raise ValueError("planning probabilities must be strictly between zero and one")
+    if not 0.0 < alpha < 1.0:
+        raise ValueError("alpha must be between zero and one")
+    nobs = int(games_per_order)
+    support = np.arange(nobs + 1, dtype=np.int64)
+    first_pmf = binom.pmf(support, nobs, q_ab)
+    second_pmf = binom.pmf(support, nobs, q_ba)
+    total_pmf = np.maximum(fftconvolve(first_pmf, second_pmf), 0.0)
+    total_mass = float(total_pmf.sum())
+    if not math.isfinite(total_mass) or total_mass <= 0.0:
+        raise RuntimeError("score-test power calculation produced invalid probability mass")
+    total_pmf /= total_mass
+
+    lower = np.empty(nobs + 1, dtype=np.int64)
+    upper = np.empty(nobs + 1, dtype=np.int64)
+    for count1 in support.tolist():
+        lower[count1], upper[count1] = _fixed_first_count_boundaries(count1, nobs, alpha)
+    rejection_given_first = binom.cdf(lower, nobs, q_ba) + binom.sf(
+        upper - 1,
+        nobs,
+        q_ba,
+    )
+    power = float(np.dot(first_pmf, rejection_given_first))
+    if nobs <= 64:
+        conditional_power = _conditional_fisher_power(total_pmf, nobs, q_ab, q_ba, alpha)
+        if not math.isclose(power, conditional_power, rel_tol=1e-11, abs_tol=1e-13):
+            raise RuntimeError("conditional Fisher and joint-binomial power sums disagree")
+    return min(1.0, max(0.0, power))
+
+
 def _scenario_probabilities(effect: float, seat1_advantage: float) -> tuple[float, float]:
     """Map the reported half-difference and common seat effect to order probabilities."""
 
@@ -98,6 +241,25 @@ def _scenario_probabilities(effect: float, seat1_advantage: float) -> tuple[floa
 
 
 def _worst_scenario_power(
+    *,
+    games_per_root_order_block: int,
+    root_count: int,
+    effect: float,
+    scenarios: tuple[float, ...],
+    alpha_per_pair: float,
+) -> float:
+    games_per_order = games_per_root_order_block * root_count
+    return min(
+        implemented_score_test_power(
+            games_per_order,
+            *_scenario_probabilities(effect, advantage),
+            alpha_per_pair,
+        )
+        for advantage in scenarios
+    )
+
+
+def _asymptotic_worst_scenario_power(
     *,
     games_per_root_order_block: int,
     root_count: int,
@@ -126,9 +288,9 @@ def _minimum_block_games(
 ) -> int:
     """Find the smallest equal root/order block size satisfying worst-case power."""
 
-    def sufficient(block_games: int) -> bool:
+    def asymptotically_sufficient(block_games: int) -> bool:
         return (
-            _worst_scenario_power(
+            _asymptotic_worst_scenario_power(
                 games_per_root_order_block=block_games,
                 root_count=root_count,
                 effect=effect,
@@ -136,21 +298,51 @@ def _minimum_block_games(
                 alpha_per_pair=alpha_per_pair,
             )
             >= target_power
-        )
+    )
 
     upper = 1
-    while not sufficient(upper):
+    while not asymptotically_sufficient(upper):
         upper *= 2
         if upper > 2**50:
             raise RuntimeError("H2H power search failed to find a finite allocation")
     lower = 0
     while lower + 1 < upper:
         midpoint = (lower + upper) // 2
-        if sufficient(midpoint):
+        if asymptotically_sufficient(midpoint):
             upper = midpoint
         else:
             lower = midpoint
-    return upper
+    exact_upper = upper
+    while (
+        _worst_scenario_power(
+            games_per_root_order_block=exact_upper,
+            root_count=root_count,
+            effect=effect,
+            scenarios=scenarios,
+            alpha_per_pair=alpha_per_pair,
+        )
+        < target_power
+    ):
+        exact_upper *= 2
+        if exact_upper > 2**50:
+            raise RuntimeError("H2H exact power search failed to find a finite allocation")
+    exact_lower = 0
+    while exact_lower + 1 < exact_upper:
+        midpoint = (exact_lower + exact_upper) // 2
+        if (
+            _worst_scenario_power(
+                games_per_root_order_block=midpoint,
+                root_count=root_count,
+                effect=effect,
+                scenarios=scenarios,
+                alpha_per_pair=alpha_per_pair,
+            )
+            >= target_power
+        ):
+            exact_upper = midpoint
+        else:
+            exact_lower = midpoint
+    return exact_upper
 
 
 def _load_frozen_family(cfg: AppConfig) -> tuple[dict[str, Any], pd.DataFrame]:
@@ -218,7 +410,7 @@ def _power_grid(
                     "q_ab": q_ab,
                     "q_ba": q_ba,
                     "games_per_order": games_per_order,
-                    "achieved_power": independent_score_planning_power(
+                    "achieved_power": implemented_score_test_power(
                         games_per_order,
                         q_ab,
                         q_ba,
@@ -229,8 +421,40 @@ def _power_grid(
     return rows
 
 
-def _block_id(family_hash: str, pair_id: int, root_seed: int, order: int) -> str:
-    value = f"{family_hash}:{pair_id}:{root_seed}:{order}".encode("utf-8")
+def _schedule_hash(
+    *,
+    family_hash: str,
+    roots: tuple[int, ...],
+    effect: float,
+    family_alpha: float,
+    alpha_per_pair: float,
+    target_power: float,
+    scenarios: tuple[float, ...],
+    block_games: int,
+) -> str:
+    """Hash the immutable statistical schedule contract, excluding operational caps."""
+
+    contract = {
+        "family_hash": family_hash,
+        "root_seeds": list(roots),
+        "seat_orders": [0, 1],
+        "target_effect": effect,
+        "family_alpha": family_alpha,
+        "alpha_per_pair": alpha_per_pair,
+        "target_power": target_power,
+        "seat1_advantage_scenarios": list(scenarios),
+        "games_per_root_order_block": block_games,
+        "rng_scheme_version": RNG_SCHEME_VERSION,
+        "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
+        "score_test_id": SCORE_TEST_ID,
+        "power_method_id": POWER_METHOD_ID,
+    }
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _block_id(schedule_hash: str, pair_id: int, root_seed: int, order: int) -> str:
+    value = f"{schedule_hash}:{pair_id}:{root_seed}:{order}".encode("utf-8")
     return hashlib.sha256(value).hexdigest()[:24]
 
 
@@ -238,6 +462,7 @@ def _schedule_frame(
     *,
     candidates: list[str],
     family_hash: str,
+    schedule_hash: str,
     roots: tuple[int, ...],
     block_games: int,
     alpha_per_pair: float,
@@ -253,6 +478,7 @@ def _schedule_frame(
                 rows.append(
                     {
                         "family_hash": family_hash,
+                        "schedule_hash": schedule_hash,
                         "pair_id": pair_id,
                         "strategy_a": strategy_a,
                         "strategy_b": strategy_b,
@@ -271,7 +497,7 @@ def _schedule_frame(
                         "alpha_per_pair": alpha_per_pair,
                         "target_power": target_power,
                         "worst_scenario_achieved_power": worst_power,
-                        "block_id": _block_id(family_hash, pair_id, root_seed, order),
+                        "block_id": _block_id(schedule_hash, pair_id, root_seed, order),
                     }
                 )
     return pd.DataFrame(rows)
@@ -344,6 +570,17 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     )
     games_per_pair = block_games * len(roots) * 2
     total_games = games_per_pair * pair_count
+    schedule_hash = _schedule_hash(
+        family_hash=family_hash,
+        roots=roots,
+        effect=cfg.head2head.practical_delta,
+        family_alpha=cfg.head2head.family_alpha,
+        alpha_per_pair=alpha_per_pair,
+        target_power=cfg.head2head.target_power,
+        scenarios=scenarios,
+        block_games=block_games,
+    )
+    total_blocks = pair_count * len(roots) * 2
     cap = cfg.head2head.total_game_cap
     blocked = cap is not None and total_games > cap
     planning_state = CompletionState.COMPLETE_VALID
@@ -358,6 +595,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     )
     plan: dict[str, Any] = {
         "family_hash": family_hash,
+        "schedule_hash": schedule_hash,
         "candidate_count": len(candidates),
         "unordered_pair_count": pair_count,
         "root_seeds": list(roots),
@@ -378,6 +616,8 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         "total_game_cap": cap,
         "planning_state": planning_state.value,
         "execution_state": execution_state.value,
+        "completed_block_count": 0,
+        "total_block_count": total_blocks,
         "worst_scenario_achieved_power": worst_power,
         "previous_equal_block_size_worst_power": previous_power,
         "seat_order_rng_contract": "independent_coordinate_streams",
@@ -443,6 +683,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     schedule = _schedule_frame(
         candidates=candidates,
         family_hash=family_hash,
+        schedule_hash=schedule_hash,
         roots=roots,
         block_games=block_games,
         alpha_per_pair=alpha_per_pair,
@@ -479,11 +720,21 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     )
 
 
-def _write_execution_state(plan_path: Path, state: CompletionState) -> dict[str, Any]:
+def _write_execution_state(
+    plan_path: Path,
+    state: CompletionState,
+    *,
+    completed_block_count: int | None = None,
+) -> dict[str, Any]:
     """Atomically update the execution lifecycle while retaining the plan contract."""
 
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     plan["execution_state"] = state.value
+    if completed_block_count is not None:
+        total = int(plan["total_block_count"])
+        if not 0 <= completed_block_count <= total:
+            raise ValueError("completed H2H block count lies outside the frozen schedule")
+        plan["completed_block_count"] = completed_block_count
     metadata = load_artifact_sidecar(plan_path)
     write_json_artifact_atomic(plan, plan_path, sidecar=metadata)
     return plan
@@ -576,7 +827,7 @@ def _valid_existing_block(path: Path, block: Mapping[str, Any]) -> bool:
     )
     frame = pq.read_table(
         path,
-        columns=["block_id", "family_hash", "games_completed"],
+        columns=["block_id", "family_hash", "schedule_hash", "games_completed"],
     ).to_pandas()
     if len(frame) != 1:
         raise ValueError(f"H2H block checkpoint must contain one row: {path}")
@@ -584,6 +835,7 @@ def _valid_existing_block(path: Path, block: Mapping[str, Any]) -> bool:
     if (
         str(row["block_id"]) != str(block["block_id"])
         or str(row["family_hash"]) != str(block["family_hash"])
+        or str(row["schedule_hash"]) != str(block["schedule_hash"])
         or int(cast(int, row["games_completed"])) != int(block["games_required"])
     ):
         raise ValueError(f"immutable H2H block checkpoint conflicts with schedule: {path}")
@@ -668,6 +920,9 @@ def execute_h2h_schedule(
         .to_pandas()
         .sort_values(["pair_id", "root_index", "order"], kind="mergesort")
     )
+    schedule_hashes = set(schedule["schedule_hash"].astype(str))
+    if schedule_hashes != {str(plan.get("schedule_hash"))}:
+        raise ValueError("H2H block manifest does not match the power-plan schedule hash")
     roots = tuple(int(value) for value in plan["root_seeds"])
     records = cast(list[dict[str, Any]], schedule.to_dict(orient="records"))
     block_paths = tuple(_block_path(cfg, record) for record in records)
@@ -676,8 +931,13 @@ def execute_h2h_schedule(
         for record, path in zip(records, block_paths, strict=True)
         if not _valid_existing_block(path, record)
     ]
+    completed_block_count = len(records) - len(pending)
     if pending:
-        plan = _write_execution_state(plan_path, CompletionState.PARTIAL_RESUMABLE)
+        plan = _write_execution_state(
+            plan_path,
+            CompletionState.PARTIAL_RESUMABLE,
+            completed_block_count=completed_block_count,
+        )
     manifest_path = cfg.strategy_manifest_root_path()
     if pending and not manifest_path.exists():
         raise FileNotFoundError(f"strategy manifest is required for H2H execution: {manifest_path}")
@@ -695,6 +955,12 @@ def execute_h2h_schedule(
                 block_runner(block, manifest_path, chunk_games),
                 schedule_path=schedule_path,
                 roots=roots,
+            )
+            completed_block_count += 1
+            _write_execution_state(
+                plan_path,
+                CompletionState.PARTIAL_RESUMABLE,
+                completed_block_count=completed_block_count,
             )
     elif pending:
         with ProcessPoolExecutor(max_workers=min(worker_count, len(pending))) as executor:
@@ -721,6 +987,12 @@ def execute_h2h_schedule(
                         future.result(),
                         schedule_path=schedule_path,
                         roots=roots,
+                    )
+                    completed_block_count += 1
+                    _write_execution_state(
+                        plan_path,
+                        CompletionState.PARTIAL_RESUMABLE,
+                        completed_block_count=completed_block_count,
                     )
                     submit_one()
 
@@ -771,7 +1043,11 @@ def execute_h2h_schedule(
         stage="head2head",
         sidecar_artifacts=[output],
     )
-    _write_execution_state(plan_path, CompletionState.COMPLETE_VALID)
+    _write_execution_state(
+        plan_path,
+        CompletionState.COMPLETE_VALID,
+        completed_block_count=len(records),
+    )
     return H2HExecutionArtifacts(order_counts=output, block_paths=block_paths)
 
 
@@ -781,6 +1057,7 @@ __all__ = [
     "POWER_METHOD_ID",
     "SCORE_TEST_ID",
     "execute_h2h_schedule",
+    "implemented_score_test_power",
     "independent_score_planning_power",
     "plan_h2h_schedule",
 ]

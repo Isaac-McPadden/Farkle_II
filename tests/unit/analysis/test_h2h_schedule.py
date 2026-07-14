@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from typing import Any
 
@@ -8,10 +9,12 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from scipy.stats import norm
 
 from farkle.analysis.h2h_schedule import (
     SCORE_TEST_ID,
     execute_h2h_schedule,
+    implemented_score_test_power,
     independent_score_planning_power,
     plan_h2h_schedule,
 )
@@ -103,6 +106,35 @@ def test_score_power_is_monotone_in_games_and_effect() -> None:
     assert larger_effect > low_games
 
 
+def test_implemented_score_power_matches_brute_force_small_case() -> None:
+    nobs = 5
+    q_ab = 0.68
+    q_ba = 0.34
+    alpha = 0.12
+    expected = 0.0
+    for count1 in range(nobs + 1):
+        probability1 = math.comb(nobs, count1) * q_ab**count1 * (1.0 - q_ab) ** (
+            nobs - count1
+        )
+        for count2 in range(nobs + 1):
+            probability2 = math.comb(nobs, count2) * q_ba**count2 * (1.0 - q_ba) ** (
+                nobs - count2
+            )
+            common = (count1 + count2) / (2.0 * nobs)
+            variance = common * (1.0 - common) * (2.0 / nobs)
+            difference = (count1 - count2) / nobs
+            if variance > 0.0:
+                p_value = 2.0 * norm.sf(abs(difference / math.sqrt(variance)))
+            else:
+                p_value = 0.0 if difference else 1.0
+            if p_value < alpha:
+                expected += probability1 * probability2
+
+    observed = implemented_score_test_power(nobs, q_ab, q_ba, alpha)
+
+    assert observed == pytest.approx(expected, rel=1e-12, abs=1e-14)
+
+
 def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg)
@@ -114,6 +146,7 @@ def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     assert artifacts.block_manifest is not None
     plan = json.loads(artifacts.power_plan.read_text(encoding="utf-8"))
     assert plan["score_test_id"] == SCORE_TEST_ID
+    assert len(plan["schedule_hash"]) == 64
     assert plan["alpha_per_pair"] == pytest.approx(0.02 / 3)
     assert plan["games_per_pair"] % 4 == 0
     assert plan["worst_scenario_achieved_power"] >= 0.80
@@ -130,6 +163,7 @@ def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     assert set(schedule["order"]) == {0, 1}
     assert schedule.groupby("pair_id")["games_required"].nunique().eq(1).all()
     assert schedule["block_id"].is_unique
+    assert set(schedule["schedule_hash"]) == {plan["schedule_hash"]}
     first_pair = schedule.loc[schedule["pair_id"].eq(0)]
     assert len(first_pair) == 4
     assert first_pair["games_required"].sum() == plan["games_per_pair"]
@@ -170,6 +204,7 @@ def test_power_plan_stops_before_schedule_when_cap_is_too_small(tmp_path: Path) 
 
     artifacts = plan_h2h_schedule(cfg)
     plan = json.loads(artifacts.power_plan.read_text(encoding="utf-8"))
+    blocked_schedule_hash = plan["schedule_hash"]
 
     assert artifacts.planning_state is CompletionState.COMPLETE_VALID
     assert artifacts.execution_state is CompletionState.BLOCKED_BY_CAP
@@ -183,6 +218,8 @@ def test_power_plan_stops_before_schedule_when_cap_is_too_small(tmp_path: Path) 
     assert resumed.planning_state is CompletionState.COMPLETE_VALID
     assert resumed.execution_state is CompletionState.NOT_STARTED
     assert resumed.block_manifest is not None
+    resumed_plan = json.loads(resumed.power_plan.read_text(encoding="utf-8"))
+    assert resumed_plan["schedule_hash"] == blocked_schedule_hash
 
 
 def test_single_root_plan_is_explicit_and_even_by_order(tmp_path: Path) -> None:
@@ -243,9 +280,12 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
     calls: list[str] = []
+    completed_counts_seen_by_runner: list[int] = []
 
     def fake_runner(block: dict[str, Any], _manifest: Path, _chunk: int) -> dict[str, Any]:
         calls.append(str(block["block_id"]))
+        state = json.loads(cfg.h2h_power_plan_path().read_text(encoding="utf-8"))
+        completed_counts_seen_by_runner.append(int(state["completed_block_count"]))
         games = int(block["games_required"])
         return {
             **block,
@@ -257,6 +297,7 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     completed = execute_h2h_schedule(cfg, n_jobs=1, block_runner=fake_runner)
 
     assert len(calls) == 4
+    assert completed_counts_seen_by_runner == [0, 1, 2, 3]
     counts = pq.read_table(completed.order_counts).to_pandas()
     assert len(counts) == 4
     assert (counts["games_completed"] == counts["games_required"]).all()
@@ -264,6 +305,7 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     state_payload = json.loads(cfg.h2h_power_plan_path().read_text(encoding="utf-8"))
     assert state_payload["planning_state"] == CompletionState.COMPLETE_VALID.value
     assert state_payload["execution_state"] == CompletionState.COMPLETE_VALID.value
+    assert state_payload["completed_block_count"] == state_payload["total_block_count"] == 4
     resumed_plan = plan_h2h_schedule(cfg)
     assert resumed_plan.execution_state is CompletionState.COMPLETE_VALID
 
