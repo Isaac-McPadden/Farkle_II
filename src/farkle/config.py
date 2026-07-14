@@ -1305,6 +1305,26 @@ class AppConfig:
 
         return self.metrics_per_k_dir(k) / "all_player_batch_metrics.parquet"
 
+    def performance_by_k_path(self, k: int) -> Path:
+        """Canonical chance-adjusted performance estimates for ``k`` players."""
+
+        return self.metrics_per_k_dir(k) / "performance.parquet"
+
+    def performance_across_k_path(self) -> Path:
+        """Canonical complete-support equal-k performance estimates."""
+
+        return self.metrics_combined_dir / "performance_equal_k.parquet"
+
+    def performance_bootstrap_path(self) -> Path:
+        """Joint batch-resampling summaries for equal-k performance."""
+
+        return self.metrics_combined_dir / "performance_bootstrap.parquet"
+
+    def performance_control_contrasts_path(self) -> Path:
+        """Across-k contrasts against declared control strategies."""
+
+        return self.metrics_combined_dir / "performance_control_contrasts.parquet"
+
     def legacy_metrics_isolated_path(self, k: int) -> Path:
         """Legacy isolated metrics parquet path under ``analysis/data``."""
 
@@ -2210,6 +2230,12 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("screening.resolution_delta must be between 0 and 1")
     if cfg.screening.interval_confidence != 0.95:
         raise ValueError("screening.interval_confidence is locked at 0.95")
+    if cfg.screening.bootstrap_replicates < 1:
+        raise ValueError("screening.bootstrap_replicates must be positive")
+    if cfg.screening.candidate_contribution_size < 1:
+        raise ValueError("screening.candidate_contribution_size must be positive")
+    if not cfg.robustness.report_pareto or not cfg.robustness.report_maximin:
+        raise ValueError("robustness must report both Pareto membership and maximin leadership")
     if (
         cfg.screening.max_shuffles_per_root_k is not None
         and (

@@ -10,6 +10,10 @@ before making code changes or accepting statistical claims.
 - Verification scope: `repo_map.md`, `analysis_pipeline_map.md`,
   `statistical_methods_map.md`, `testing_and_review_map.md`, and
   `context_prompt.md`
+- Incremental correction: `2026-07-13`, based on source commit `209a3f2`,
+  verified the metrics-stage description and canonical performance formulas
+  against `all_player_metrics.py`, `performance.py`, their path helpers, and
+  their hand-computed tests. Other sections retain the verification state above.
 
 ## Update Rule
 

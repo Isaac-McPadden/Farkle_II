@@ -127,6 +127,9 @@ def test_curate_golden_dataset(analysis_config, caplog, golden_dataset):
 
 def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched_strategy_grid):
     cfg = analysis_config()
+    cfg.screening.practical_delta_by_k = {3: 0.03}
+    cfg.screening.delta_across_k = 0.03
+    cfg.screening.bootstrap_replicates = 20
     cfg_proto = cast(_CfgProto, cfg)
     golden_dataset.copy_into(cfg_proto.results_root)
     golden_dataset.write_metrics(cfg_proto.results_root)
@@ -138,11 +141,13 @@ def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched
     metrics.run(cfg)
 
     metrics_path = cfg_proto.metrics_output_path()
+    performance_path = cfg.performance_across_k_path()
     seat_csv = cfg_proto.metrics_output_path("seat_advantage.csv")
     seat_parquet = cfg_proto.metrics_output_path("seat_advantage.parquet")
     stamp_path = cfg_proto.metrics_output_path("metrics.done.json")
 
     assert metrics_path.exists()
+    assert performance_path.exists()
     assert seat_csv.exists()
     assert seat_parquet.exists()
     assert stamp_path.exists()
@@ -151,6 +156,9 @@ def test_metrics_golden_dataset(analysis_config, caplog, golden_dataset, patched
     # definitions or output schema change; deterministic seed=0 fixtures should
     # keep values stable across routine code cleanup.
     metrics_df = pq.read_table(metrics_path).to_pandas()
+    performance_df = pq.read_table(performance_path).to_pandas()
+    assert performance_df["complete_support"].all()
+    assert performance_df["support_k_count"].eq(1).all()
     stamp = json.loads(stamp_path.read_text())
     expected_input = str(cfg_proto.curated_dataset)
     assert expected_input in stamp.get("inputs", {})

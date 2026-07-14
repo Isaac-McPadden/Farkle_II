@@ -116,6 +116,10 @@ Common files:
 - `combined/seat_advantage.parquet`
 - `<k>p/<k>p_isolated_metrics.parquet`
 - `<k>p/all_player_batch_metrics.parquet`
+- `<k>p/performance.parquet`
+- `across_k/performance_equal_k.parquet`
+- `across_k/performance_bootstrap.parquet`
+- `across_k/performance_control_contrasts.parquet`
 
 `all_player_batch_metrics.parquet` is the canonical unconditional exposure
 artifact. It contains one row per `(root_seed, k, deterministic_batch_id,
@@ -131,6 +135,18 @@ exposures. Its sufficient statistics support these distinct estimands:
 The artifact sidecar declares `conditioning=unconditional`. Its schema rejects
 `win_conditioned_*` columns. Winner-only isolated metrics use the explicit
 `win_conditioned_*` prefix and cannot satisfy this consumer contract.
+
+Canonical performance uses raw wins and exposures from those batch rows.
+Per-k outputs include the exact `1/k` chance baseline, chance delta, Wilson
+resolution check, and batch MCSE. Across-k scores require every configured k
+and use the equal-k mean of `win_rate - 1/k`; their variance is the sum of the
+independent-k variance contributions with equal weights. The output also keeps
+Pareto membership and the maximin descriptive leader separate.
+
+Bootstrap summaries resample complete batch vectors, so all strategies in a k
+share the same selected batch indices within each replicate. They report rank,
+top-N, practical-shortlist, and declared-control contrast stability. Every
+performance artifact is hash-bound to an adjacent sidecar.
 
 ### Coverage and game stats
 

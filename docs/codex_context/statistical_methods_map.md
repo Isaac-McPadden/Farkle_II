@@ -5,7 +5,8 @@ For any statistical review, verify the listed source files directly and
 separate implementation fidelity from model validity.
 
 - Sources inspected: `utils/stats.py`, `utils/mdd_helpers.py`, `analysis/mdd.py`,
-  `analysis/metrics.py`, `analysis/seed_summaries.py`, `analysis/meta.py`,
+  `analysis/metrics.py`, `analysis/performance.py`, `analysis/seed_summaries.py`,
+  `analysis/meta.py`,
   `analysis/variance.py`, `analysis/run_trueskill.py`,
   `analysis/run_bonferroni_head2head.py`, `analysis/h2h_analysis.py`,
   `analysis/frequentist_ranking.py`, `analysis/agreement.py`
@@ -49,6 +50,27 @@ For every statistical claim, review in this order:
 - Review risks: normal approximation differs from Wilson intervals in seed
   summaries; zero-game handling leaves CI equal to win rate; verify denominator
   is games for the intended Bernoulli unit.
+
+## Canonical Performance Estimators
+
+- Code: `src/farkle/analysis/all_player_metrics.py` and
+  `src/farkle/analysis/performance.py`.
+- Per-k estimand: raw wins divided by raw player-game exposures, with chance
+  baseline `1/k` and `chance_delta = win_rate - 1/k`.
+- Per-k uncertainty: full-sample Wilson interval plus batch
+  `MCSE = sample_sd(batch win rates) / sqrt(number of batches)` and a t interval.
+- Across-k estimand: equal-k mean of chance delta over complete configured
+  support only. Its analytic variance is the sum of squared equal weights times
+  the independent-k batch-MCSE variances.
+- Robustness: exact finite-grid Pareto membership and a separately identified
+  maximin descriptive leader.
+- Resampling: each replicate selects complete deterministic-batch vectors, so
+  all strategies share the same selected batches within k. Outputs summarize
+  ranks, top-N membership, practical-shortlist inclusion, and declared-control
+  contrasts.
+- Tests: `tests/unit/analysis/test_all_player_metrics.py` and
+  `tests/unit/analysis/test_performance.py` contain hand-computed return,
+  baseline, MCSE, equal-k variance, support, and determinism checks.
 
 ## Aggregation Across Player Counts
 

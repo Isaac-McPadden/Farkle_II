@@ -70,8 +70,9 @@ Interseed-specific registry order:
 - Curate: normalizes ingested rows into current schemas and canonical curated
   parquet files.
 - Combine: merges per-player-count curated outputs into combined combined data.
-- Metrics: computes per-strategy wins, games, win rates, expected scores, seat
-  advantage, seat metrics, isolated metrics, and weighted combined metrics.
+- Metrics: streams unconditional all-player batch statistics, computes canonical
+  per-k and complete-support equal-k performance, and retains explicitly
+  winner-conditioned isolated metrics while legacy consumers are migrated.
 - Coverage and game stats: report missing strategy/seed/player-count coverage,
   game length, margins, rare events, and related summaries.
 - Seed summaries, variance, meta: produce seed-aware summaries and cross-seed
