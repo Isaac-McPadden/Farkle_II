@@ -130,7 +130,7 @@ def test_run_per_seed_analysis_invokes_stage_runner(monkeypatch: pytest.MonkeyPa
         "game_stats",
         "seed_summaries",
         "trueskill",
-        "frequentist",
+        "screening",
         "head2head",
         "seed_symmetry",
         "post_h2h",

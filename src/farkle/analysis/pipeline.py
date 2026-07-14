@@ -69,11 +69,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="Disable the histogram-based gradient boosting analytics stage",
     )
     parser.add_argument(
-        "--disable-frequentist",
-        dest="disable_frequentist",
+        "--disable-screening",
+        dest="disable_screening",
         action="store_true",
         default=None,
-        help="Disable the frequentist ranking analytics stage",
+        help="Deprecated: descriptive screening runs when its inputs exist",
     )
     parser.add_argument(
         "--disable-agreement",
@@ -217,7 +217,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "disable_trueskill": bool(args.disable_trueskill),
         "disable_head2head": bool(args.disable_head2head),
         "disable_hgb": bool(args.disable_hgb),
-        "disable_frequentist": bool(args.disable_frequentist),
+        "disable_screening": bool(args.disable_screening),
         "disable_agreement": bool(args.disable_agreement),
         "disable_game_stats": bool(args.disable_game_stats),
     }
@@ -349,7 +349,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "seed_symmetry": analysis.run_seed_symmetry,
         "post_h2h": _post_h2h_only,
         "hgb": _optional_stage("farkle.analysis.hgb_feat", "hgb"),
-        "frequentist": _optional_stage("farkle.analysis.frequentist_ranking", "frequentist"),
+        "screening": _optional_stage("farkle.analysis.screening", "screening"),
         "agreement": _optional_stage("farkle.analysis.agreement", "agreement"),
         "interseed": _interseed_summary,
     }

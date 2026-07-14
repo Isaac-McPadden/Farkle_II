@@ -96,7 +96,11 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
         return [item.action(context.config) for item in plan]
 
     monkeypatch.setattr("farkle.analysis.StageRunner.run", _run_plan, raising=True)
-    monkeypatch.setattr("farkle.analysis.run_seed_summaries", lambda app_cfg, force=False: calls.append(f"seed:{force}"), raising=True)
+    monkeypatch.setattr(
+        "farkle.analysis.run_seed_summaries",
+        lambda app_cfg, force=False: calls.append(f"seed:{force}"),
+        raising=True,
+    )
     monkeypatch.setattr(
         "farkle.analysis.run_seed_symmetry",
         lambda app_cfg, force=False, allow_missing_upstream=False: calls.append(
@@ -107,9 +111,11 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
 
     enabled_modules = {
         "farkle.analysis.trueskill": SimpleNamespace(run=lambda app_cfg: calls.append("trueskill")),
-        "farkle.analysis.frequentist_ranking": SimpleNamespace(run=lambda app_cfg: calls.append("frequentist")),
+        "farkle.analysis.screening": SimpleNamespace(run=lambda app_cfg: calls.append("screening")),
         "farkle.analysis.head2head": SimpleNamespace(run=lambda app_cfg: calls.append("head2head")),
-        "farkle.analysis.h2h_analysis": SimpleNamespace(run_post_h2h=lambda app_cfg: calls.append("post_h2h")),
+        "farkle.analysis.h2h_analysis": SimpleNamespace(
+            run_post_h2h=lambda app_cfg: calls.append("post_h2h")
+        ),
     }
 
     def _optional(module: str, *, stage_log=None):  # noqa: ANN001
@@ -124,7 +130,7 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
     assert plan_names == [
         "seed_summaries",
         "trueskill",
-        "frequentist",
+        "screening",
         "head2head",
         "seed_symmetry",
         "post_h2h",
@@ -134,7 +140,7 @@ def test_run_single_seed_analysis_stage_matrix_and_force(
     assert calls == [
         "seed:True",
         "trueskill",
-        "frequentist",
+        "screening",
         "head2head",
         "seed_symmetry:True:False",
         "post_h2h",
@@ -162,7 +168,11 @@ def test_run_all_forwards_flags_and_runs_all_enabled_stages(
         ),
         raising=True,
     )
-    monkeypatch.setattr("farkle.analysis.run_h2h_tier_trends", lambda app_cfg: calls.append("h2h_tier_trends"), raising=True)
+    monkeypatch.setattr(
+        "farkle.analysis.run_h2h_tier_trends",
+        lambda app_cfg: calls.append("h2h_tier_trends"),
+        raising=True,
+    )
 
     analysis_mod.run_all(cfg, run_rng_diagnostics=False, rng_lags=(2, 4))
 
@@ -195,12 +205,14 @@ def test_run_single_seed_analysis_stops_when_head2head_misses_required_outputs(
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
     calls: list[str] = []
 
-    monkeypatch.setattr("farkle.analysis.run_seed_summaries", lambda app_cfg, force=False: calls.append("seed"), raising=True)
+    monkeypatch.setattr(
+        "farkle.analysis.run_seed_summaries",
+        lambda app_cfg, force=False: calls.append("seed"),
+        raising=True,
+    )
     monkeypatch.setattr(
         "farkle.analysis.run_seed_symmetry",
-        lambda app_cfg, force=False, allow_missing_upstream=False: calls.append(
-            "seed_symmetry"
-        ),
+        lambda app_cfg, force=False, allow_missing_upstream=False: calls.append("seed_symmetry"),
         raising=True,
     )
 
@@ -209,9 +221,11 @@ def test_run_single_seed_analysis_stops_when_head2head_misses_required_outputs(
 
     enabled_modules = {
         "farkle.analysis.trueskill": SimpleNamespace(run=lambda app_cfg: calls.append("trueskill")),
-        "farkle.analysis.frequentist_ranking": SimpleNamespace(run=lambda app_cfg: calls.append("frequentist")),
+        "farkle.analysis.screening": SimpleNamespace(run=lambda app_cfg: calls.append("screening")),
         "farkle.analysis.head2head": SimpleNamespace(run=_head2head),
-        "farkle.analysis.h2h_analysis": SimpleNamespace(run_post_h2h=lambda app_cfg: calls.append("post_h2h")),
+        "farkle.analysis.h2h_analysis": SimpleNamespace(
+            run_post_h2h=lambda app_cfg: calls.append("post_h2h")
+        ),
     }
 
     def _optional(module: str, *, stage_log=None):  # noqa: ANN001
@@ -224,4 +238,4 @@ def test_run_single_seed_analysis_stops_when_head2head_misses_required_outputs(
     with pytest.raises(StageValidationError, match="missing required outputs"):
         analysis_mod.run_single_seed_analysis(cfg, force=False)
 
-    assert calls == ["seed", "trueskill", "frequentist", "head2head"]
+    assert calls == ["seed", "trueskill", "screening", "head2head"]

@@ -4,12 +4,12 @@ Generated for Codex orientation. Treat this file as a cache, not authority.
 For any statistical review, verify the listed source files directly and
 separate implementation fidelity from model validity.
 
-- Sources inspected: `utils/stats.py`, `utils/mdd_helpers.py`, `analysis/mdd.py`,
-  `analysis/metrics.py`, `analysis/performance.py`, `analysis/seed_summaries.py`,
+- Sources inspected: `utils/stats.py`, `analysis/metrics.py`,
+  `analysis/performance.py`, `analysis/screening.py`, `analysis/seed_summaries.py`,
   `analysis/meta.py`,
   `analysis/variance.py`, `analysis/run_trueskill.py`,
   `analysis/run_bonferroni_head2head.py`, `analysis/h2h_analysis.py`,
-  `analysis/frequentist_ranking.py`, `analysis/agreement.py`
+  `analysis/agreement.py`
 
 ## Review Frame
 
@@ -89,31 +89,18 @@ For every statistical claim, review in this order:
 - Review risks: combined rows can mean "across k" rather than "across seeds";
   artifact names with `combined` need scope-specific interpretation.
 
-## Frequentist MDD And Tiers
+## Descriptive Performance Screening
 
-- Code: `src/farkle/utils/mdd_helpers.py`,
-  `src/farkle/analysis/mdd.py`,
-  `src/farkle/analysis/frequentist_ranking.py`.
-- Inputs: isolated metrics by strategy, player count, seed, wins, games, and
-  optional `weights_by_k`.
-- `prepare_cell_means`: computes per-row win rate, then averages row-level
-  rates within `(strategy, k, seed)` and sums games. It does not recompute
-  grouped rate as `sum(wins) / sum(games)` when multiple rows exist per cell.
-- Default smoothing: Jeffreys-style `(wins + 0.5) / (games + 1)` when using
-  wins/games rather than an existing win-rate column.
-- `tau2_seed`: across-seed variance by `(strategy, k)` minus binomial variance,
-  clipped at zero, aggregated robustly by median by default.
-- `tau2_sxk`: weighted across-k dispersion identity; implementation matches the
-  identity documented in `mdd_helpers.py`.
-- MDD formula: `mdd = z_star * sqrt(2 * var_theta)`, where
-  `var_theta = sum(w_k^2 * binom_k / R) + tau2_seed / R + tau2_sxk * sum(w_k^2)`.
-- Frequentist tiers: sort combined win rates descending; start a new tier when
-  the next rate falls below the current threshold by more than MDD.
-- Tests: `tests/unit/utils/test_mdd.py`,
-  `tests/unit/analysis/test_frequentist_ranking.py`.
-- Review risks: cell averaging convention, Jeffreys smoothing interaction with
-  supplied `win_rate`, missing k coverage, whether MDD is interpreted as
-  pairwise detectable difference rather than a confidence interval.
+- Code: `src/farkle/analysis/screening.py`.
+- Inputs: validated per-k performance, complete-support equal-k performance,
+  and joint deterministic-batch resampling summaries.
+- Evidence retained: root and per-k chance deltas, equal-k score order,
+  bootstrap top-N and shortlist inclusion, declared controls and mandatory
+  diagnostics, Pareto membership, and the separate maximin leader.
+- Practical bands compare observed scores with explicitly configured
+  thresholds. They are descriptive and are not tests of equality, final tiers,
+  or unique-best decisions.
+- Tests: `tests/unit/analysis/test_screening.py`.
 
 ## Screening Workload Planning
 

@@ -7,7 +7,6 @@ from tests.helpers.config_factory import make_test_app_config
 from farkle.analysis import (
     agreement,
     coverage_by_k,
-    frequentist_ranking,
     meta,
     metrics,
     reporting,
@@ -202,44 +201,3 @@ def test_trueskill_artifacts_match_agreement_and_hgb_readers(tmp_path) -> None:
     assert {str(value) for value in seed_targets["strategy"]} == {"1", "2"}
     assert set(seed_targets["seed"]) == {101, 202}
     assert len(seed_targets) == 4
-
-
-def test_frequentist_scores_artifact_matches_agreement_reader(tmp_path) -> None:
-    cfg = make_test_app_config(results_dir_prefix=tmp_path / "results")
-    frequentist_tiers = pd.DataFrame(
-        [
-            {"strategy": 1, "win_rate": 0.62, "mdd_tier": 1},
-            {"strategy": 2, "win_rate": 0.38, "mdd_tier": 2},
-        ]
-    )
-    combined_winrates = pd.Series({1: 0.62, 2: 0.38}, name="weighted")
-    winrates_by_players = pd.DataFrame(
-        [
-            {"strategy": 1, "n_players": 2, "games": 10.0, "win_rate": 0.60},
-            {"strategy": 2, "n_players": 2, "games": 10.0, "win_rate": 0.40},
-            {"strategy": 1, "n_players": 3, "games": 12.0, "win_rate": 0.64},
-            {"strategy": 2, "n_players": 3, "games": 12.0, "win_rate": 0.36},
-        ]
-    )
-
-    frequentist_ranking._write_frequentist_scores(
-        cfg,
-        frequentist_tiers,
-        combined_winrates,
-        winrates_by_players,
-        weights_by_k={2: 0.5, 3: 0.5},
-    )
-
-    players_data = agreement._load_frequentist(cfg, 2)
-    combined_data = agreement._load_frequentist(cfg, 0)
-
-    assert players_data is not None
-    assert players_data.scores.index.tolist() == ["1", "2"]
-    assert players_data.scores.tolist() == [0.60, 0.40]
-    assert players_data.tiers == {"1": 1, "2": 2}
-    assert players_data.per_seed_scores == []
-
-    assert combined_data is not None
-    assert combined_data.scores.index.tolist() == ["1", "2"]
-    assert combined_data.scores.tolist() == [0.62, 0.38]
-    assert combined_data.tiers == {"1": 1, "2": 2}

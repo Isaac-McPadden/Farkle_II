@@ -294,6 +294,7 @@ def test_apply_dot_overrides_list_coercion_edge_case_raises_value_error() -> Non
     with pytest.raises(ValueError, match=r"invalid literal for int\(\)"):
         apply_dot_overrides(cfg, ["sim.seed_list=1,2"])
 
+
 def test_deep_merge_recursively_overrides_only_overlay_keys() -> None:
     merged = _deep_merge(
         {"sim": {"seed": 1, "per_n": {5: {"num_shuffles": 10}}}, "analysis": {"log_level": "INFO"}},
@@ -313,13 +314,10 @@ def test_deep_merge_recursively_overrides_only_overlay_keys() -> None:
         ("11", 0, int, 11),
         ("5.5", 0.0, float, 5.5),
         ("tmp/results", Path("results"), Path, Path("tmp/results")),
-        
     ],
 )
 def test_coerce_type_behavior(value, current, annotation, expected) -> None:
     assert _coerce(value, current, annotation) == expected
-
-
 
 
 def test_coerce_list_annotation_edge_case_raises_value_error() -> None:
@@ -428,7 +426,9 @@ def test_load_app_config_seed_list_len_two_autopopulates_seed_pair(write_yaml) -
     assert cfg.sim.seed_pair == (31, 47)
 
 
-def test_load_app_config_logs_legacy_seed_precedence_warning(write_yaml, caplog: pytest.LogCaptureFixture) -> None:
+def test_load_app_config_logs_legacy_seed_precedence_warning(
+    write_yaml, caplog: pytest.LogCaptureFixture
+) -> None:
     config = write_yaml(
         "seed_precedence_warning.yaml",
         {"sim": {"seed": 11, "seed_pair": [11, 12], "seed_list": [11, 12]}},
@@ -438,7 +438,10 @@ def test_load_app_config_logs_legacy_seed_precedence_warning(write_yaml, caplog:
         cfg = load_app_config(config)
 
     assert cfg.sim.seed == 11
-    assert any("sim.seed_list overrides legacy sim.seed/seed_pair settings" in rec.message for rec in caplog.records)
+    assert any(
+        "sim.seed_list overrides legacy sim.seed/seed_pair settings" in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_load_app_config_per_n_seed_override_tracking_valid_int_key(write_yaml) -> None:
@@ -494,7 +497,11 @@ def test_interseed_input_dir_resolution_modes(configured: Path, expected: Path) 
 
 
 def test_metrics_input_path_requires_canonical_scope(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
+    cfg = AppConfig(
+        io=IOConfig(
+            results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"
+        )
+    )
     name = "metrics.parquet"
     canonical = cfg.input_scope_path("metrics", ArtifactScope.ACROSS_K, name)
     generic_path = cfg._input_stage_path("metrics", "combined") / name  # type: ignore[operator]
@@ -509,7 +516,11 @@ def test_metrics_input_path_requires_canonical_scope(tmp_path: Path) -> None:
 
 
 def test_meta_input_path_requires_by_k_scope(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
+    cfg = AppConfig(
+        io=IOConfig(
+            results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"
+        )
+    )
     name = "meta.json"
     expected = cfg.input_scope_path("meta", ArtifactScope.BY_K, name, k=5)
     wrong_scope = cfg.input_scope_path("meta", ArtifactScope.CROSS_SEED, name)
@@ -546,14 +557,21 @@ def test_post_h2h_path_fallback_ordering(tmp_path: Path) -> None:
 # --- override coercion + warnings ---
 
 
-def test_apply_dot_overrides_alias_remap_and_deprecated_flag_warning(caplog: pytest.LogCaptureFixture) -> None:
+def test_apply_dot_overrides_alias_remap_and_deprecated_flag_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     cfg = AppConfig()
 
     with caplog.at_level("WARNING"):
-        apply_dot_overrides(cfg, ["io.results_dir=/tmp/remapped_seed_9", "analysis.run_report=true"])
+        apply_dot_overrides(
+            cfg, ["io.results_dir=/tmp/remapped_seed_9", "analysis.run_report=true"]
+        )
 
     assert cfg.io.results_dir_prefix == Path("/tmp/remapped")
-    assert any("Deprecated analysis flag override provided; stages ignore it" in rec.message for rec in caplog.records)
+    assert any(
+        "Deprecated analysis flag override provided; stages ignore it" in rec.message
+        for rec in caplog.records
+    )
 
 
 def test_apply_dot_overrides_invalid_bool_raises() -> None:
@@ -633,6 +651,7 @@ def test_curated_parquet_prefers_interseed_combine_input(tmp_path: Path) -> None
 
     assert curated == upstream_curated
     assert cfg.curated_parquet_candidates()[0] == upstream_curated
+
 
 def test_curate_stage_dir_prefers_layout_folder(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
@@ -777,7 +796,9 @@ def test_normalize_compression_rejects_invalid_codec() -> None:
         ("unknown", None, None),
     ],
 )
-def test_expected_seed_list_length(command: str, subcommand: str | None, expected: int | None) -> None:
+def test_expected_seed_list_length(
+    command: str, subcommand: str | None, expected: int | None
+) -> None:
     assert expected_seed_list_length(command, subcommand=subcommand) == expected
 
 
@@ -870,9 +891,15 @@ def test_interseed_input_folder_supports_none_mapping_and_stage_layout() -> None
 
 def test_resolve_input_stage_dir_prefers_input_root_then_stage_then_none(tmp_path: Path) -> None:
     cfg = AppConfig(
-        io=IOConfig(interseed_input_dir=tmp_path / "upstream", interseed_input_layout={"combine": "02_combine"})
+        io=IOConfig(
+            interseed_input_dir=tmp_path / "upstream",
+            interseed_input_layout={"combine": "02_combine"},
+        )
     )
-    assert cfg.resolve_input_stage_dir("combine", "combined") == tmp_path / "upstream" / "02_combine" / "combined"
+    assert (
+        cfg.resolve_input_stage_dir("combine", "combined")
+        == tmp_path / "upstream" / "02_combine" / "combined"
+    )
 
     local_cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     local_path = local_cfg.resolve_input_stage_dir("combine", "combined")
@@ -905,10 +932,16 @@ def test_interseed_input_candidate_relative_and_fallback(tmp_path: Path) -> None
     assert combine_folder is not None
 
     inside_stage = cfg.analysis_dir / combine_folder / "combined"
-    assert cfg._interseed_input_candidate(inside_stage, "rows.parquet") == tmp_path / "upstream" / "02_combine" / "combined" / "rows.parquet"
+    assert (
+        cfg._interseed_input_candidate(inside_stage, "rows.parquet")
+        == tmp_path / "upstream" / "02_combine" / "combined" / "rows.parquet"
+    )
 
     external = tmp_path / "external"
-    assert cfg._interseed_input_candidate(external, "rows.parquet") == tmp_path / "upstream" / "rows.parquet"
+    assert (
+        cfg._interseed_input_candidate(external, "rows.parquet")
+        == tmp_path / "upstream" / "rows.parquet"
+    )
 
 
 def test_preferred_stage_path_candidate_ordering(tmp_path: Path) -> None:
@@ -949,7 +982,7 @@ def test_resolve_stage_artifact_path_ordering_for_combine_and_non_combine(tmp_pa
         io=IOConfig(
             results_dir_prefix=tmp_path / "results",
             interseed_input_dir=tmp_path / "upstream",
-            interseed_input_layout={"combine": "01_combine", "frequentist": "08_frequentist"},
+            interseed_input_layout={"combine": "01_combine", "screening": "08_screening"},
         )
     )
 
@@ -961,24 +994,35 @@ def test_resolve_stage_artifact_path_ordering_for_combine_and_non_combine(tmp_pa
     combine_input = tmp_path / "upstream" / "01_combine" / "combined" / "all_ingested_rows.parquet"
     combine_input.parent.mkdir(parents=True, exist_ok=True)
     combine_input.write_text("input")
-    assert cfg._resolve_stage_artifact_path("combine", "all_ingested_rows.parquet", "combined") == combine_input
+    assert (
+        cfg._resolve_stage_artifact_path("combine", "all_ingested_rows.parquet", "combined")
+        == combine_input
+    )
 
-    frequentist_stage = cfg._stage_dir_if_active("frequentist")
-    assert frequentist_stage is not None
-    frequentist_local = frequentist_stage / "tiers.json"
-    frequentist_local.parent.mkdir(parents=True, exist_ok=True)
-    frequentist_local.write_text("local")
-    frequentist_input = tmp_path / "upstream" / "08_frequentist" / "tiers.json"
-    frequentist_input.parent.mkdir(parents=True, exist_ok=True)
-    frequentist_input.write_text("input")
-    assert cfg._resolve_stage_artifact_path("frequentist", "tiers.json") == frequentist_local
+    screening_stage = cfg._stage_dir_if_active("screening")
+    assert screening_stage is not None
+    screening_local = screening_stage / "descriptive_screening.json"
+    screening_local.parent.mkdir(parents=True, exist_ok=True)
+    screening_local.write_text("local")
+    screening_input = tmp_path / "upstream" / "08_screening" / "descriptive_screening.json"
+    screening_input.parent.mkdir(parents=True, exist_ok=True)
+    screening_input.write_text("input")
+    assert (
+        cfg._resolve_stage_artifact_path("screening", "descriptive_screening.json")
+        == screening_local
+    )
 
-    frequentist_local.unlink()
-    frequentist_input.unlink()
-    legacy = cfg.analysis_dir / "legacy_tiers.json"
+    screening_local.unlink()
+    screening_input.unlink()
+    legacy = cfg.analysis_dir / "legacy_screening.json"
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("legacy")
-    assert cfg._resolve_stage_artifact_path("frequentist", "tiers.json", legacy_paths=(legacy,)) == legacy
+    assert (
+        cfg._resolve_stage_artifact_path(
+            "screening", "descriptive_screening.json", legacy_paths=(legacy,)
+        )
+        == legacy
+    )
 
 
 def test_preferred_tiers_path_fallback_ordering(tmp_path: Path) -> None:
@@ -1002,7 +1046,9 @@ def test_preferred_tiers_path_fallback_ordering(tmp_path: Path) -> None:
     assert cfg.preferred_tiers_path() == analysis_path
 
     analysis_path.unlink()
-    assert cfg.preferred_tiers_path() == cfg._resolve_stage_artifact_path("frequentist", "tiers.json")
+    assert cfg.preferred_tiers_path() == cfg._resolve_stage_artifact_path(
+        "frequentist", "tiers.json"
+    )
 
 
 def test_load_app_config_rejects_all_k_player_sentinels(write_yaml) -> None:
@@ -1108,7 +1154,11 @@ def test_app_config_input_output_helpers_cover_stage_wrappers(tmp_path: Path) ->
 
 
 def test_metrics_input_path_defaults_to_interseed_then_stage_when_missing(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"))
+    cfg = AppConfig(
+        io=IOConfig(
+            results_dir_prefix=tmp_path / "results", interseed_input_dir=tmp_path / "upstream"
+        )
+    )
 
     interseed_default = cfg._input_stage_path("metrics", "across_k")
     assert interseed_default is not None
@@ -1181,12 +1231,15 @@ def test_scope_guard_rejects_stage_scope_and_k_interchange(tmp_path: Path) -> No
     across_k = cfg.scope_path("metrics", ArtifactScope.ACROSS_K, "metrics.parquet")
     other_root = cfg.scope_path("trueskill", ArtifactScope.BY_K, "ratings.parquet", k=4)
 
-    assert cfg.require_scope(
-        per_k,
-        stage="metrics",
-        scope=ArtifactScope.BY_K,
-        k=4,
-    ) == per_k
+    assert (
+        cfg.require_scope(
+            per_k,
+            stage="metrics",
+            scope=ArtifactScope.BY_K,
+            k=4,
+        )
+        == per_k
+    )
     for wrong_path, stage, scope, k in (
         (across_k, "metrics", ArtifactScope.BY_K, 4),
         (per_k, "metrics", ArtifactScope.BY_K, 2),

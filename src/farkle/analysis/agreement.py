@@ -413,7 +413,7 @@ def _load_frequentist(cfg: AppConfig, players: int | None) -> MethodData | None:
     score_col = _select_score_column(df, ["win_rate", "score", "estimate", "value"])
     series = df.set_index(df["strategy"].astype(str))[score_col].astype(float).sort_index()
 
-    tier_cols = [c for c in ("tier", "tier_label", "mdd_tier") if c in df.columns]
+    tier_cols = [c for c in ("tier", "tier_label") if c in df.columns]
     tiers = None
     if tier_cols:
         tier_series = df.set_index(df["strategy"].astype(str))[tier_cols[0]].dropna().astype(float)

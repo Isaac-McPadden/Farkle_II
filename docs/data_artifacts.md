@@ -165,13 +165,13 @@ Typical outputs:
 Game-stat helpers also support legacy filenames through `AppConfig`
 canonicalization and fallback logic.
 
-### TrueSkill and frequentist ranking
+### TrueSkill and descriptive screening
 
 Common paths:
 
 - `cfg.trueskill_stage_dir`
 - `cfg.trueskill_combined_dir`
-- `cfg.frequentist_stage_dir`
+- `cfg.screening_stage_dir`
 - `cfg.preferred_tiers_path()`
 
 Typical outputs:
@@ -180,10 +180,11 @@ Typical outputs:
 - `ratings_<k>.json`
 - `ratings_k_weighted.parquet`
 - `ratings_k_weighted.json`
-- `frequentist_scores_k_weighted.parquet`
-- `frequentist_k_weighted_provenance.json`
-- `frequentist_report.csv`
-- `frequentist_report.json`
+- `descriptive_screening.parquet`
+- `descriptive_screening.json`
+
+Screening outputs report finite-grid evidence and practical bands. They do not
+emit inferential tiers or equality decisions.
 - `tiers.json`
 
 ### Head-to-head and post-processing

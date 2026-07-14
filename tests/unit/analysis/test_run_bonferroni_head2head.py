@@ -620,7 +620,7 @@ def test_tiers_path_fallback_and_no_existing_candidates(tmp_path: Path, caplog) 
 
     legacy.unlink()
     missing = rb._tiers_path(cfg)
-    assert missing == cfg.frequentist_stage_dir / "tiers.json"
+    assert missing == cfg.trueskill_stage_dir / "tiers.json"
     assert not missing.exists()
 
 

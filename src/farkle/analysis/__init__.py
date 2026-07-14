@@ -161,20 +161,20 @@ def build_single_seed_analysis_plan(
             return
         ts_mod.run(inner_cfg)
 
-    def _frequentist(inner_cfg: AppConfig) -> None:
-        """Run the frequentist ranking/report stage when the module is available.
+    def _screening(inner_cfg: AppConfig) -> None:
+        """Run descriptive performance screening when the module is available.
 
         Args:
             inner_cfg: Per-seed config passed by the stage runner.
         """
-        stage_log = stage_logger("frequentist", logger=LOGGER)
-        freq_mod = _optional_import("farkle.analysis.frequentist_ranking", stage_log=stage_log)
-        if freq_mod is None:
+        stage_log = stage_logger("screening", logger=LOGGER)
+        screening_mod = _optional_import("farkle.analysis.screening", stage_log=stage_log)
+        if screening_mod is None:
             return
-        freq_mod.run(inner_cfg)
+        screening_mod.run(inner_cfg)
 
     def _head2head(inner_cfg: AppConfig) -> None:
-        """Run the frequentist head-to-head stage when the module is available.
+        """Run the head-to-head stage when the module is available.
 
         Args:
             inner_cfg: Per-seed config passed by the stage runner.
@@ -219,7 +219,7 @@ def build_single_seed_analysis_plan(
     return [
         StagePlanItem("seed_summaries", _seed_summaries),
         StagePlanItem("trueskill", _trueskill),
-        StagePlanItem("frequentist", _frequentist),
+        StagePlanItem("screening", _screening),
         StagePlanItem(
             "head2head",
             _head2head,
@@ -481,7 +481,7 @@ def run_single_seed_analysis(
 ) -> None:
     """Run per-seed analytics in order.
 
-    Order: seed summaries -> coverage_by_k -> trueskill -> frequentist ranking
+    Order: seed summaries -> coverage_by_k -> trueskill -> descriptive screening
     -> head2head -> seed_symmetry -> post_h2h -> hgb.
     """
     plan = build_single_seed_analysis_plan(

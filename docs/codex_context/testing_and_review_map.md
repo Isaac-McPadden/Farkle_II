@@ -33,8 +33,7 @@ Always rerun targeted tests or inspect source before accepting conclusions.
 
 - Stats helpers: `tests/unit/utils/test_stats.py`,
   `tests/test_stats_wilson.py`.
-- MDD/frequentist: `tests/unit/utils/test_mdd.py`,
-  `tests/unit/analysis/test_frequentist_ranking.py`.
+- Descriptive screening: `tests/unit/analysis/test_screening.py`.
 - Meta-analysis: `tests/unit/analysis/test_meta.py`.
 - Variance: `tests/unit/analysis/test_variance.py`,
   `tests/unit/analysis/test_variance_branch_closure.py`.
@@ -72,8 +71,8 @@ Stronger evidence areas:
 
 - Wilson interval arithmetic has direct expected-value tests.
 - Variance helper arithmetic has explicit small-frame tests.
-- MDD helper tests include a weighted-dispersion identity check in current
-  source.
+- Screening tests include complete-support rejection and explicit checks that
+  no inferential tier columns are emitted.
 - Stage state and registry behavior have focused tests.
 - Manifest and streaming helpers have many edge-case tests.
 
@@ -131,7 +130,7 @@ Use the repository venv when running locally.
 
 ```powershell
 .\.venv\Scripts\python -m pytest tests/unit/utils/test_stats.py tests/test_stats_wilson.py
-.\.venv\Scripts\python -m pytest tests/unit/utils/test_mdd.py
+.\.venv\Scripts\python -m pytest tests/unit/analysis/test_screening.py
 .\.venv\Scripts\python -m pytest tests/unit/analysis/test_meta.py
 .\.venv\Scripts\python -m pytest tests/unit/analysis/test_h2h_analysis.py
 .\.venv\Scripts\python -m pytest tests/unit/analysis/test_run_trueskill_aggregation.py

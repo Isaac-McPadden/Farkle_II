@@ -58,7 +58,7 @@ def _patch_pipeline_stage_stubs(
             "farkle.analysis.head2head": types.SimpleNamespace(run=_record("head2head")),
             "farkle.analysis.h2h_analysis": types.SimpleNamespace(run_post_h2h=_record("post_h2h")),
             "farkle.analysis.hgb_feat": types.SimpleNamespace(run=_record("hgb")),
-            "farkle.analysis.frequentist_ranking": types.SimpleNamespace(run=_record("frequentist")),
+            "farkle.analysis.screening": types.SimpleNamespace(run=_record("screening")),
             "farkle.analysis.agreement": types.SimpleNamespace(run=_record("agreement")),
             "farkle.analysis.interseed_analysis": types.SimpleNamespace(run=_record("interseed")),
         }

@@ -22,7 +22,7 @@ Current default registry order:
 6. `game_stats`
 7. `seed_summaries`
 8. `trueskill`
-9. `frequentist`
+9. `screening`
 10. `head2head`
 11. `seed_symmetry`
 12. `post_h2h`
@@ -57,7 +57,7 @@ Interseed-specific registry order:
   through `StageRunner`.
 - `analysis.__init__.build_per_seed_stage_plan(...)` builds the per-seed plan
   used by orchestration: ingest, curate, combine, metrics, coverage, game stats,
-  seed summaries, TrueSkill, frequentist, head-to-head, seed symmetry,
+  seed summaries, TrueSkill, screening, head-to-head, seed symmetry,
   post-H2H, and HGB.
 - `analysis.__init__.build_interseed_analysis_plan(...)` builds the interseed
   plan with readiness checks against `cfg.interseed_ready()`.
@@ -77,8 +77,8 @@ Interseed-specific registry order:
   game length, margins, rare events, and related summaries.
 - Seed summaries, variance, meta: produce seed-aware summaries and cross-seed
   uncertainty/aggregation artifacts.
-- TrueSkill, frequentist, head-to-head, post-H2H: produce ranking, tiering, and
-  pairwise-comparison outputs.
+- TrueSkill, screening, head-to-head, post-H2H: produce rating diagnostics,
+  descriptive finite-grid evidence, and pairwise-comparison outputs.
 - HGB: model-based strategy-feature importance and partial-dependence artifacts.
 - Agreement: compares ranking/tiering outputs across methods.
 - Interseed: summarizes paired-seed comparisons and optional RNG diagnostics.
@@ -92,7 +92,7 @@ Use `AppConfig` helpers:
 - Core paths: `cfg.results_root`, `cfg.analysis_dir`, `cfg.curated_dataset`,
   `cfg.metrics_input_path(...)`, `cfg.metrics_output_path(...)`.
 - Statistical outputs: `cfg.trueskill_path(...)`, `cfg.head2head_path(...)`,
-  `cfg.post_h2h_path(...)`, `cfg.frequentist_path(...)`,
+  `cfg.post_h2h_path(...)`, `cfg.screening_path(...)`,
   `cfg.meta_output_path(...)`, `cfg.variance_output_path(...)`,
   `cfg.agreement_output_path(...)`.
 - Tiers: `cfg.preferred_tiers_path()`.

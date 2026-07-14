@@ -146,7 +146,7 @@ def test_load_frequentist_and_trueskill(tmp_path):
     frequentist = agreement._load_frequentist(cfg, players)
 
     assert trueskill is not None and frequentist is not None
-    assert trueskill.tiers is not None
+    assert trueskill.tiers is None
     assert frequentist.tiers is not None
     trueskill_strategy_ids = [str(strategy_id) for strategy_id in trueskill.scores.index]
     frequentist_strategy_ids = [str(strategy_id) for strategy_id in frequentist.scores.index]
@@ -154,7 +154,6 @@ def test_load_frequentist_and_trueskill(tmp_path):
         {
             "strategy": trueskill_strategy_ids,
             "score": trueskill.scores.to_numpy(),
-            "tier": [trueskill.tiers[strategy_id] for strategy_id in trueskill_strategy_ids],
         }
     )
     freq_norm = pd.DataFrame(
@@ -164,13 +163,12 @@ def test_load_frequentist_and_trueskill(tmp_path):
             "tier": [frequentist.tiers[strategy_id] for strategy_id in frequentist_strategy_ids],
         }
     )
-    assert trueskill_norm.columns.tolist() == ["strategy", "score", "tier"]
+    assert trueskill_norm.columns.tolist() == ["strategy", "score"]
     assert freq_norm.columns.tolist() == ["strategy", "score", "tier"]
     assert trueskill_norm["strategy"].tolist() == ["a", "b"]
     assert freq_norm["strategy"].tolist() == ["a", "b"]
     assert trueskill_norm["score"].dtype == "float64"
     assert freq_norm["score"].dtype == "float64"
-    assert trueskill_norm["tier"].dtype == "int64"
     assert freq_norm["tier"].dtype == "int64"
     assert frequentist.per_seed_scores == []
 
@@ -328,12 +326,14 @@ def test_load_frequentist_mixed_seed_paths_and_per_k_filtering(tmp_path: Path) -
     assert loaded.scores.index.tolist() == ["a", "b"]
     assert loaded.scores.tolist() == [0.6, 0.5]
     assert loaded.tiers == {"a": 1, "b": 2}
-    assert len(loaded.per_seed_scores) == 2
+    assert len(loaded.per_seed_scores) == 1
     per_seed_vectors = sorted(series.tolist() for series in loaded.per_seed_scores)
-    assert per_seed_vectors == [[0.65, 0.45], [0.7, 0.4]]
+    assert per_seed_vectors == [[0.7, 0.4]]
 
 
-def test_load_head2head_returns_none_for_empty_and_builds_scores_for_valid_graph(tmp_path: Path) -> None:
+def test_load_head2head_returns_none_for_empty_and_builds_scores_for_valid_graph(
+    tmp_path: Path,
+) -> None:
     cfg = agreement.AppConfig()
     cfg.io.results_dir_prefix = tmp_path / "results"
 

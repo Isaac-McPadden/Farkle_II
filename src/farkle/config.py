@@ -1031,9 +1031,15 @@ class AppConfig:
 
     @property
     def frequentist_stage_dir(self) -> Path:
-        """Stage root for frequentist ranking outputs."""
+        """Deprecated alias for descriptive screening outputs."""
 
-        return self.stage_subdir("frequentist")
+        return self.screening_stage_dir
+
+    @property
+    def screening_stage_dir(self) -> Path:
+        """Stage root for descriptive performance screening outputs."""
+
+        return self.stage_subdir("screening")
 
     @property
     def meta_analysis_dir(self) -> Path:
@@ -1540,15 +1546,15 @@ class AppConfig:
         return candidates[0]
 
     def frequentist_path(self, filename: str) -> Path:
-        """Resolve a frequentist-stage artifact path with legacy fallback."""
+        """Deprecated path alias retained until candidate consumers migrate."""
 
         canonical = self.canonical_artifact_name(filename)
-        stage_dir = self._stage_dir_if_active("frequentist")
+        stage_dir = self._stage_dir_if_active("screening")
         return self._preferred_stage_path(
             stage_dir,
             self.analysis_dir,
             canonical,
-            stage_key="frequentist",
+            stage_key="screening",
         )
 
     def preferred_tiers_path(self) -> Path:
@@ -1614,6 +1620,13 @@ class AppConfig:
         return (
             self.input_scope_path("combine", ArtifactScope.CONCAT_KS, filename),
         )
+
+    def screening_path(self, filename: str = "descriptive_screening.parquet") -> Path:
+        """Return a canonical descriptive-screening artifact path."""
+
+        path = self.screening_stage_dir / filename
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path
 
     def _resolve_combine_artifact_path(self, filename: str) -> Path:
         """Resolve an artifact from the canonical row-concatenation scope."""

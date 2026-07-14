@@ -83,9 +83,6 @@ target, then rounds upward to the batch contract. `sim.power_method`,
 - `rare_event_margin_quantile`
 - `rare_event_target_rate`
 - `rng_max_matchup_groups`
-- `frequentist_seeds`
-- `tier_z_star`
-- `tier_min_gap`
 - `head2head_target_hours`
 - `head2head_tolerance_pct`
 - `head2head_games_per_sec`

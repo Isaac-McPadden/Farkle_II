@@ -194,16 +194,15 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         ),
     ),
     StageDefinition(
-        "frequentist",
+        "screening",
         group="analytics",
         cache_scope=(
             "io",
             "sim.seed",
             "sim.n_players_list",
-            "analysis.frequentist_seeds",
-            "analysis.tier_z_star",
-            "analysis.tier_min_gap",
-            "analysis.frequentist_weights_by_k",
+            "screening",
+            "robustness",
+            "artifact_contract",
         ),
     ),
     StageDefinition(
