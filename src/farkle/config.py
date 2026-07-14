@@ -1331,6 +1331,41 @@ class AppConfig:
 
         return self.metrics_combined_dir / "performance_control_contrasts.parquet"
 
+    def seat_batch_counts_path(self, k: int) -> Path:
+        """Canonical seat wins and exposures by root, k, batch, strategy, and seat."""
+
+        return self.metrics_per_k_dir(k) / "seat_batch_counts.parquet"
+
+    def seat_effects_by_k_path(self, k: int) -> Path:
+        """Canonical strategy-specific within-k seat effects."""
+
+        return self.metrics_per_k_dir(k) / "seat_effects.parquet"
+
+    def seat_population_by_k_path(self, k: int) -> Path:
+        """Canonical population-wide within-k seat effects."""
+
+        return self.metrics_per_k_dir(k) / "seat_population_effects.parquet"
+
+    def seat_standardized_across_k_path(self) -> Path:
+        """Declared-weight seat effects over identical common k support."""
+
+        return self.metrics_combined_dir / "seat_effects_standardized_across_k.parquet"
+
+    def seat_exposure_mixture_diagnostic_path(self) -> Path:
+        """Secondary exposure-weighted cross-k seat diagnostic."""
+
+        return self.metrics_stage_dir / "diagnostics" / "seat_exposure_mixture.parquet"
+
+    def seat_selfplay_diagnostic_path(self) -> Path:
+        """Self-play first-seat diagnostic path."""
+
+        return self.metrics_stage_dir / "diagnostics" / "seat_selfplay_p1.parquet"
+
+    def seat_mirrored_diagnostic_path(self) -> Path:
+        """Paired mirrored-game diagnostic path."""
+
+        return self.metrics_stage_dir / "diagnostics" / "seat_mirrored_games.parquet"
+
     def legacy_metrics_isolated_path(self, k: int) -> Path:
         """Legacy isolated metrics parquet path under ``analysis/data``."""
 
@@ -1664,6 +1699,11 @@ class AppConfig:
     def ingested_rows_curated(self, n: int) -> Path:
         """Path to the curated ingested parquet for ``n`` players."""
         return self.curate_block_dir(n) / self.curated_rows_name
+
+    def combined_rows_by_k(self, n: int) -> Path:
+        """Canonical normalized row partition for one player count."""
+
+        return self.combine_partitioned_dir / f"{int(n)}p_part-00000.parquet"
 
     def combined_manifest_path(self) -> Path:
         """Path to the manifest accompanying ``curated_parquet``."""

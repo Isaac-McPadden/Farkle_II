@@ -21,6 +21,7 @@ from farkle.analysis.all_player_metrics import build_all_player_batch_metrics
 from farkle.analysis.checks import check_pre_metrics
 from farkle.analysis.isolated_metrics import build_isolated_metrics
 from farkle.analysis.performance import PerformanceArtifacts, build_canonical_performance
+from farkle.analysis.seat_analysis import SeatAnalysisArtifacts, build_canonical_seat_analysis
 from farkle.analysis.seat_stats import (
     SeatMetricConfig,
     compute_seat_advantage,
@@ -107,6 +108,22 @@ def run(cfg: AppConfig) -> None:
         if performance_enabled
         else []
     )
+    seat_inputs = [
+        cfg.combined_rows_by_k(n) for n in player_counts if cfg.combined_rows_by_k(n).exists()
+    ]
+    seat_targets = (
+        [
+            *(cfg.seat_batch_counts_path(n) for n in player_counts),
+            *(cfg.seat_effects_by_k_path(n) for n in player_counts),
+            *(cfg.seat_population_by_k_path(n) for n in player_counts),
+            cfg.seat_standardized_across_k_path(),
+            cfg.seat_exposure_mixture_diagnostic_path(),
+            cfg.seat_selfplay_diagnostic_path(),
+            cfg.seat_mirrored_diagnostic_path(),
+        ]
+        if len(seat_inputs) == len(player_counts)
+        else []
+    )
     available_raw_inputs = [path for path in raw_metric_inputs if path.exists()]
     iso_targets = []
     for n in player_counts:
@@ -131,15 +148,16 @@ def run(cfg: AppConfig) -> None:
         *iso_targets,
         *all_player_targets,
         *performance_targets,
+        *seat_targets,
     ]
-    stage_inputs = [data_file, *raw_metric_inputs, *all_player_inputs]
+    stage_inputs = [data_file, *raw_metric_inputs, *all_player_inputs, *seat_inputs]
     if stage_is_up_to_date(
         done,
         inputs=stage_inputs,
         outputs=outputs,
         cfg=cfg,
         stage="metrics",
-        sidecar_artifacts=performance_targets,
+        sidecar_artifacts=[*performance_targets, *seat_targets],
     ):
         LOGGER.info(
             "Metrics stage up-to-date",
@@ -166,6 +184,7 @@ def run(cfg: AppConfig) -> None:
 
     all_player_paths = _ensure_all_player_metrics(cfg, player_counts)
     performance_paths = _ensure_canonical_performance(cfg, all_player_paths, player_counts)
+    seat_paths = _ensure_canonical_seat_analysis(cfg, seat_inputs, player_counts)
 
     if stage_is_up_to_date(
         done_isolated,
@@ -201,6 +220,7 @@ def run(cfg: AppConfig) -> None:
         *iso_paths,
         *all_player_paths,
         *performance_paths,
+        *seat_paths,
     ]
 
     if stage_is_up_to_date(
@@ -359,6 +379,7 @@ def run(cfg: AppConfig) -> None:
             *iso_paths,
             *all_player_paths,
             *performance_paths,
+            *seat_paths,
         ],
     )
     complete_extra = {
@@ -372,6 +393,7 @@ def run(cfg: AppConfig) -> None:
         "seat_metrics": str(out_seat_metrics),
         "all_player_batch_metrics": [str(path) for path in all_player_paths],
         "canonical_performance": [str(path) for path in performance_paths],
+        "canonical_seat_analysis": [str(path) for path in seat_paths],
     }
     LOGGER.info(
         "Metrics stage complete",
@@ -383,7 +405,7 @@ def run(cfg: AppConfig) -> None:
         outputs=outputs,
         cfg=cfg,
         stage="metrics",
-        sidecar_artifacts=performance_paths,
+        sidecar_artifacts=[*performance_paths, *seat_paths],
     )
 
 
@@ -527,6 +549,23 @@ def _ensure_canonical_performance(
         )
         return []
     artifacts: PerformanceArtifacts = build_canonical_performance(cfg)
+    return list(artifacts.all_paths)
+
+
+def _ensure_canonical_seat_analysis(
+    cfg: AppConfig,
+    seat_inputs: Sequence[Path],
+    player_counts: Sequence[int],
+) -> list[Path]:
+    """Build canonical seat outputs when every normalized by-k input exists."""
+
+    if len(seat_inputs) != len(player_counts):
+        LOGGER.warning(
+            "Canonical seat analysis skipped: normalized by-k rows are incomplete",
+            extra={"stage": "metrics", "player_counts": list(player_counts)},
+        )
+        return []
+    artifacts: SeatAnalysisArtifacts = build_canonical_seat_analysis(cfg)
     return list(artifacts.all_paths)
 
 

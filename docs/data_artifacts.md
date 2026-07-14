@@ -117,9 +117,16 @@ Common files:
 - `<k>p/<k>p_isolated_metrics.parquet`
 - `<k>p/all_player_batch_metrics.parquet`
 - `<k>p/performance.parquet`
+- `<k>p/seat_batch_counts.parquet`
+- `<k>p/seat_effects.parquet`
+- `<k>p/seat_population_effects.parquet`
 - `across_k/performance_equal_k.parquet`
 - `across_k/performance_bootstrap.parquet`
 - `across_k/performance_control_contrasts.parquet`
+- `across_k/seat_effects_standardized_across_k.parquet`
+- `diagnostics/seat_exposure_mixture.parquet`
+- `diagnostics/seat_selfplay_p1.parquet`
+- `diagnostics/seat_mirrored_games.parquet`
 
 `all_player_batch_metrics.parquet` is the canonical unconditional exposure
 artifact. It contains one row per `(root_seed, k, deterministic_batch_id,
@@ -147,6 +154,19 @@ Bootstrap summaries resample complete batch vectors, so all strategies in a k
 share the same selected batch indices within each replicate. They report rank,
 top-N, practical-shortlist, and declared-control contrast stability. Every
 performance artifact is hash-bound to an adjacent sidecar.
+
+Canonical seat counts contain one row per `(root_seed, k,
+deterministic_batch_id, strategy, seat)` with raw wins and player-game
+exposures. Strategy-specific and population-wide effects are computed within k
+as `seat win rate - 1/k`. The across-k artifact includes only identical common
+k support and uses the configured equal-k or declared-k weights.
+
+`seat_exposure_mixture.parquet` is a secondary diagnostic, not the standardized
+estimand. It combines raw exposures and uses
+`sum(exposures_k / k) / sum(exposures_k)` as its corresponding chance baseline.
+Self-play first-seat effects and paired two-player mirrored-game differences
+are separate diagnostics; the mirrored output also records unpaired games.
+Every canonical seat artifact has a hash-bound sidecar.
 
 ### Coverage and game stats
 

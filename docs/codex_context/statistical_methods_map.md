@@ -115,6 +115,24 @@ For every statistical claim, review in this order:
   `tests/unit/simulation/test_runner_wrapper.py`.
 - H2H power remains a distinct procedure and must match the final H2H test.
 
+## Canonical Seat Effects
+
+- Code: `src/farkle/analysis/seat_analysis.py`.
+- Inputs: validated normalized per-k row partitions with one root and complete
+  configured k support.
+- Canonical counts: raw wins and player-game exposures for every
+  `(root, k, deterministic batch, strategy, seat)` cell.
+- Within-k estimands: strategy-specific and population-wide seat win rates
+  minus the exact `1/k` chance baseline.
+- Across-k estimand: equal-k or declared-k weighted effects only for identical
+  common k support. Missing strategy/k/seat cells are not silently reweighted.
+- Secondary diagnostic: the exposure-weighted cross-k mixture reports its own
+  exposure-weighted chance baseline and is not interchangeable with the
+  standardized estimand.
+- Additional diagnostics: self-play P1 effects and paired mirrored two-player
+  P1-win differences, with unmatched orientations retained as support counts.
+- Tests: `tests/unit/analysis/test_seat_analysis.py`.
+
 ## TrueSkill Ratings And Tiers
 
 - Code: `src/farkle/analysis/trueskill.py`,

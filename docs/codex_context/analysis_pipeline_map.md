@@ -69,10 +69,13 @@ Interseed-specific registry order:
   parquet shards and manifests.
 - Curate: normalizes ingested rows into current schemas and canonical curated
   parquet files.
-- Combine: merges per-player-count curated outputs into combined combined data.
+- Combine: normalizes per-player-count partitions and writes a row-preserving
+  concatenated dataset.
 - Metrics: streams unconditional all-player batch statistics, computes canonical
-  per-k and complete-support equal-k performance, and retains explicitly
-  winner-conditioned isolated metrics while legacy consumers are migrated.
+  per-k and complete-support equal-k performance, emits within-k and
+  common-support seat effects plus separate seat diagnostics, and retains
+  explicitly winner-conditioned isolated metrics while legacy consumers are
+  migrated.
 - Coverage and game stats: report missing strategy/seed/player-count coverage,
   game length, margins, rare events, and related summaries.
 - Seed summaries, variance, meta: produce seed-aware summaries and cross-seed
