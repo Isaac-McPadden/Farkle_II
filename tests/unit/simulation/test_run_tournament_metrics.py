@@ -75,7 +75,7 @@ def silence_logging(monkeypatch):
 
 
 def _fake_play_one_shuffle(
-    seed: int, *, collect_rows: bool = False
+    task: rt.ShuffleTask | int, *, collect_rows: bool = False
 ) -> tuple[
     Counter[int | str],
     dict[str, dict[int | str, float]],
@@ -83,6 +83,7 @@ def _fake_play_one_shuffle(
     list[dict[str, object]],
 ]:
     """Return simple deterministic aggregates based on the seed."""
+    seed = task.shuffle_seed if isinstance(task, rt.ShuffleTask) else task
     winner = seed
     wins: Counter[int | str] = Counter({winner: 1})
     sums: dict[str, dict[int | str, float]] = {
@@ -286,8 +287,12 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     assert recorded["batches"] and isinstance(recorded["batches"][0], pa.Table)
     assert recorded["extra"] == {
         "path": "rows_42_3.parquet",
-        "n_players": None,
+        "root_seed": 3,
+        "n_players": 0,
+        "shuffle_index": 0,
         "shuffle_seed": 3,
+        "deterministic_batch_id": 0,
+        "rng_scheme_version": 1,
         "pid": 42,
     }
 
@@ -521,8 +526,8 @@ def test_run_tournament_no_metrics_wins_only_checkpoint(
 ):
     _setup_serial_run(monkeypatch)
 
-    def fake_play_shuffle(seed: int) -> Counter[int | str]:
-        return Counter({f"S{seed}": 1})
+    def fake_play_shuffle(task: rt.ShuffleTask) -> Counter[int | str]:
+        return Counter({f"S{task.shuffle_seed}": 1})
 
     monkeypatch.setattr(rt, "_play_shuffle", fake_play_shuffle, raising=True)
 
@@ -577,7 +582,7 @@ def test_run_tournament_metrics_chunk_execution(monkeypatch: pytest.MonkeyPatch,
         if initializer is not None:
             initializer(*initargs)
         for item in iterable:
-            chunk_calls.append(list(item[1]))
+            chunk_calls.append([task.shuffle_seed for task in item[1]])
             yield func(item)
 
     monkeypatch.setattr(rt.parallel, "process_map", fake_process_map)
@@ -610,7 +615,7 @@ def test_run_tournament_resume_preserves_original_chunk_boundaries(
         if initializer is not None:
             initializer(*initargs)
         for item in iterable:
-            chunk_calls.append((item[0], list(item[1])))
+            chunk_calls.append((item[0], [task.shuffle_seed for task in item[1]]))
             yield func(item)
 
     monkeypatch.setattr(rt.parallel, "process_map", fake_process_map)

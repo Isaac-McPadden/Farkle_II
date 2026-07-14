@@ -775,6 +775,7 @@ def run_single_n(
         progress_logging=cfg.sim.progress_logging,
         n_strategies=grid_size,
         mp_start_method=cfg.sim.mp_start_method,
+        deterministic_batch_size=workload_plan.shuffles_per_batch,
     )
     tournament_mod.run_tournament(
         n_players=n,

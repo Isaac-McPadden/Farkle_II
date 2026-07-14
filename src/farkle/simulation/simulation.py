@@ -28,7 +28,7 @@ from farkle.simulation.strategies import (
     iter_strategy_combos,
     strategy_tuple,
 )
-from farkle.utils.random import RandomPurpose, coordinate_rng, spawn_seeds
+from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_rng, spawn_seeds
 
 __all__: list[str] = [
     "generate_strategy_grid",
@@ -362,6 +362,7 @@ def _play_game(
     seed: int,
     strategies: Sequence[ThresholdStrategy],
     target_score: int = 10_000,
+    provenance: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any]:
     """Play a single game and return flattened metrics.
 
@@ -382,7 +383,7 @@ def _play_game(
     """
     # give every player an *independent* PRNG, but reproducible
     players = _make_players(strategies, seed)
-    gm = FarkleGame(players, target_score=target_score).play()
+    gm = FarkleGame(players, target_score=target_score, table_seed=seed).play()
     # Check for only one winner
     winners = [name for name, ps in gm.players.items() if ps.rank == 1]
     if len(winners) != 1:
@@ -395,7 +396,17 @@ def _play_game(
         "winner": winner,
         "winning_score": gm.players[winner].score,
         "n_rounds": gm.game.n_rounds,
+        "root_seed": seed,
+        "k": len(strategies),
+        "shuffle_index": None,
+        "game_index": None,
+        "deterministic_batch_id": None,
+        "game_seed": seed,
+        "rng_scheme_version": RNG_SCHEME_VERSION,
+        "rng_purpose_namespace": int(RandomPurpose.INDEXED_SEED),
     }
+    if provenance is not None:
+        flat.update(provenance)
     # Per-player metrics
     for pname, stats in gm.players.items():
         for k, v in asdict(stats).items():
@@ -435,7 +446,24 @@ def simulate_many_games(
     if seed is None:
         raise ValueError("simulate_many_games requires an explicit seed")
     seeds = spawn_seeds(n_games, seed=seed)
-    args = [(int(s), strategies, target_score) for s in list(seeds)]
+    args = [
+        (
+            int(game_seed),
+            strategies,
+            target_score,
+            {
+                "root_seed": seed,
+                "k": len(strategies),
+                "shuffle_index": None,
+                "game_index": game_index,
+                "deterministic_batch_id": None,
+                "game_seed": int(game_seed),
+                "rng_scheme_version": RNG_SCHEME_VERSION,
+                "rng_purpose_namespace": int(RandomPurpose.INDEXED_SEED),
+            },
+        )
+        for game_index, game_seed in enumerate(seeds)
+    ]
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]
     else:
@@ -450,6 +478,7 @@ def simulate_many_games_from_seeds(
     strategies: Sequence[ThresholdStrategy],
     target_score: int = 10_000,
     n_jobs: int = 1,
+    root_seed: int | None = None,
 ) -> pd.DataFrame:
     """Run games for a predetermined list of seeds.
 
@@ -470,7 +499,24 @@ def simulate_many_games_from_seeds(
         One row per simulated game, identical in shape to the output of
         :func:`simulate_many_games`.
     """
-    args = [(s, strategies, target_score) for s in seeds]
+    args = [
+        (
+            int(game_seed),
+            strategies,
+            target_score,
+            {
+                "root_seed": int(game_seed) if root_seed is None else root_seed,
+                "k": len(strategies),
+                "shuffle_index": None,
+                "game_index": game_index,
+                "deterministic_batch_id": None,
+                "game_seed": int(game_seed),
+                "rng_scheme_version": RNG_SCHEME_VERSION,
+                "rng_purpose_namespace": int(RandomPurpose.INDEXED_SEED),
+            },
+        )
+        for game_index, game_seed in enumerate(seeds)
+    ]
     if n_jobs == 1:
         rows = [_play_game(*a) for a in args]
     else:

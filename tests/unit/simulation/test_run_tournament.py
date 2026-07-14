@@ -35,8 +35,9 @@ def _mini_strats(n: int = 6):
     return [ThresholdStrategy(50 + 50 * i, i % 3, True, True) for i in range(n)]
 
 
-def fake_play_shuffle(seed: int) -> Counter[str]:
+def fake_play_shuffle(task: rt.ShuffleTask | int) -> Counter[str]:
     # pretend player at index (seed % len(strats)) always wins
+    seed = task.shuffle_seed if isinstance(task, rt.ShuffleTask) else task
     strats = _mini_strats(12)
     return Counter({str(strats[seed % len(strats)]): 1})
 
@@ -179,11 +180,16 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
         if initializer is not None:
             initializer(*initargs)
         for item in iterable:
-            chunk_calls.append(list(item[1]))
+            chunk_calls.append([task.shuffle_seed for task in item[1]])
             yield func(item)
 
     monkeypatch.setattr(rt.parallel, "process_map", fake_process_map)
-    monkeypatch.setattr(rt, "_play_shuffle", lambda seed: Counter({f"W{seed}": 1}), raising=True)
+    monkeypatch.setattr(
+        rt,
+        "_play_shuffle",
+        lambda task: Counter({f"W{task.shuffle_seed}": 1}),
+        raising=True,
+    )
 
     cfg = rt.TournamentConfig(n_players=2, num_shuffles=5, desired_sec_per_chunk=1, ckpt_every_sec=999)
     ckpt = tmp_path / "checkpoint.pkl"
@@ -223,3 +229,31 @@ def test_run_tournament_non_metrics_chunk_execution_and_corrupt_checkpoint(
             n_jobs=1,
             collect_metrics=False,
         )
+
+
+def test_shuffle_rows_preserve_turns_and_rng_coordinates() -> None:
+    strategies = _mini_strats(4)
+    config = rt.TournamentConfig(n_players=2, n_strategies=4)
+    rt._init_worker(strategies, config)
+    task = rt.ShuffleTask(
+        root_seed=91,
+        k=2,
+        shuffle_index=7,
+        shuffle_seed=1234,
+        deterministic_batch_id=2,
+    )
+
+    _, _, _, rows = rt._play_one_shuffle(task, collect_rows=True)
+
+    assert len(rows) == 2
+    assert [row["game_index"] for row in rows] == [0, 1]
+    for row in rows:
+        assert row["root_seed"] == 91
+        assert row["k"] == 2
+        assert row["shuffle_index"] == 7
+        assert row["deterministic_batch_id"] == 2
+        assert row["shuffle_seed"] == 1234
+        assert row["rng_scheme_version"] == 1
+        assert row["rng_purpose_namespace"] == 102
+        assert row["P1_n_turns"] >= 1
+        assert row["P2_n_turns"] >= 1

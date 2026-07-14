@@ -44,6 +44,18 @@ def test_play_helpers_consistency():
     gm = simulate_one_game(strategies=[s1, s2], target_score=1_000, seed=123)
     winner = max(gm.players, key=lambda n: gm.players[n].score)
     assert stats_dict["winner"] == winner
+    assert stats_dict["P1_n_turns"] == gm.players["P1"].n_turns
+    assert stats_dict["P2_n_turns"] == gm.players["P2"].n_turns
+    assert {
+        "root_seed",
+        "k",
+        "shuffle_index",
+        "game_index",
+        "deterministic_batch_id",
+        "game_seed",
+        "rng_scheme_version",
+        "rng_purpose_namespace",
+    } <= set(stats_dict)
     # simulate_many_games should aggregate identical winners when n_games=1
     df = simulate_many_games(n_games=1, strategies=[s1, s2], target_score=1_000, seed=999, n_jobs=1)
     assert len(df) == 1
@@ -116,6 +128,7 @@ def test_play_game_checks_single_winner(monkeypatch):
             score=100,
             farkles=0,
             rolls=1,
+            n_turns=1,
             highest_turn=100,
             strategy="S",
             rank=1,
@@ -162,7 +175,12 @@ def test_simulate_many_games_from_seeds_matches():
     rng_seed = 42
     n_games = 5
     seeds = spawn_seeds(n_games, seed=rng_seed).tolist()
-    df1 = simulate_many_games_from_seeds(seeds=seeds, strategies=strats, n_jobs=1)
+    df1 = simulate_many_games_from_seeds(
+        seeds=seeds,
+        strategies=strats,
+        n_jobs=1,
+        root_seed=rng_seed,
+    )
     df2 = simulate_many_games(n_games=n_games, strategies=strats, seed=rng_seed, n_jobs=1)
     pd.testing.assert_frame_equal(df1, df2)
 

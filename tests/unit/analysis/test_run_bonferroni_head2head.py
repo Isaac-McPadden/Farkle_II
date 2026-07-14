@@ -61,7 +61,7 @@ def _mock_sizing_result(
 
 
 def test_simulate_many_games_from_seeds(monkeypatch):
-    def fake_play(seed, strategies, target_score=10_000):  # noqa: ARG001
+    def fake_play(seed, strategies, target_score=10_000, provenance=None):  # noqa: ARG001
         return {
             "winner": f"P{seed}",
             "winning_score": seed,

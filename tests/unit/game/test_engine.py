@@ -54,6 +54,7 @@ def test_take_turn_success():
     p = FarklePlayer("P", strat, rng=fixed_rng(seq))
     p.take_turn(target_score=10000)
     assert p.score == 600
+    assert p.n_turns == 1
     assert p.n_rolls == 1
     assert p.has_scored
     assert p.highest_turn == 600
@@ -323,6 +324,7 @@ def test_take_turn_roll_limit(monkeypatch):
     with pytest.raises(RuntimeError):
         p.take_turn(target_score=10_000)
 
+    assert p.n_turns == 1
     assert p.n_rolls == ROLL_LIMIT + 1
 
 
@@ -342,3 +344,4 @@ def test_game_stops_at_default_max_rounds(monkeypatch):
     gm = FarkleGame(players, target_score=10_000).play()
 
     assert gm.game.n_rounds == 200
+    assert [gm.players[name].n_turns for name in ("A", "B")] == [200, 200]

@@ -69,11 +69,23 @@ class TournamentConfig:
     progress_logging: ProgressLogConfig = field(default_factory=ProgressLogConfig)
     n_strategies: int = 7_140  # overridden when strategies are provided
     mp_start_method: str | None = None
+    deterministic_batch_size: int = 30
 
     @property
     def games_per_shuffle(self) -> int:
         """Number of unique games produced for a full shuffle of strategies."""
         return self.n_strategies // self.n_players
+
+
+@dataclass(frozen=True, slots=True)
+class ShuffleTask:
+    """Stable coordinate identity for one complete tournament shuffle."""
+
+    root_seed: int
+    k: int
+    shuffle_index: int
+    shuffle_seed: int
+    deterministic_batch_id: int
 
 
 # metric fields tracked per winning strategy
@@ -143,7 +155,23 @@ def _init_worker(
 # ---------------------------------------------------------------------------
 
 
-def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
+def _coerce_shuffle_task(task: ShuffleTask | int) -> ShuffleTask:
+    """Support direct low-level calls while production uses complete coordinates."""
+
+    if isinstance(task, ShuffleTask):
+        return task
+    state = _STATE
+    k = state.cfg.n_players if state is not None else 0
+    return ShuffleTask(
+        root_seed=int(task),
+        k=k,
+        shuffle_index=0,
+        shuffle_seed=int(task),
+        deterministic_batch_id=0,
+    )
+
+
+def _play_one_shuffle(task: ShuffleTask | int, *, collect_rows: bool = False) -> Tuple[
     Counter[int | str],
     Dict[str, Dict[int | str, float]],
     Dict[str, Dict[int | str, float]],
@@ -152,18 +180,21 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
     """Play all games for one shuffle and aggregate the results."""
 
     state = _STATE
+    work = _coerce_shuffle_task(task)
 
     rng = urandom.coordinate_rng(
         urandom.RandomPurpose.SHUFFLE_PERMUTATION,
-        root_seed=seed,
-        k=state.cfg.n_players,  # type: ignore[union-attr]
+        root_seed=work.root_seed,
+        k=work.k,
+        shuffle_index=work.shuffle_index,
     )
     perm = rng.permutation(len(state.strats))  # type: ignore
     game_seeds = [
         urandom.coordinate_seed(
             urandom.RandomPurpose.TOURNAMENT_GAME,
-            root_seed=seed,
-            k=state.cfg.n_players,  # type: ignore[union-attr]
+            root_seed=work.root_seed,
+            k=work.k,
+            shuffle_index=work.shuffle_index,
             game_index=game_index,
             dtype=np.uint32,
         )
@@ -176,11 +207,25 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
     rows: List[Dict[str, Any]] = []
 
     offset = 0
-    for gseed in game_seeds:
+    for game_index, gseed in enumerate(game_seeds):
         idxs = perm[offset : offset + state.cfg.n_players].tolist()  # type: ignore
         offset += state.cfg.n_players  # type: ignore
 
-        row = _play_game(int(gseed), [state.strats[i] for i in idxs])  # type: ignore
+        row = _play_game(  # type: ignore[union-attr]
+            int(gseed),
+            [state.strats[i] for i in idxs],  # type: ignore[union-attr]
+            provenance={
+                "root_seed": work.root_seed,
+                "k": work.k,
+                "shuffle_index": work.shuffle_index,
+                "game_index": game_index,
+                "deterministic_batch_id": work.deterministic_batch_id,
+                "shuffle_seed": work.shuffle_seed,
+                "game_seed": int(gseed),
+                "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+                "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_GAME),
+            },
+        )
         winner = row.get("winner_seat") or row.get("winner")
         strat_repr = row[f"{winner}_strategy"]
         winner = cast(str, winner)
@@ -190,19 +235,19 @@ def _play_one_shuffle(seed: int, *, collect_rows: bool = False) -> Tuple[
             sums[label][strat_repr] += value
             sq_sums[label][strat_repr] += value * value
         if collect_rows:
-            rows.append({"game_seed": int(gseed), **row})
+            rows.append(dict(row))
 
     return wins, sums, sq_sums, rows
 
 
-def _play_shuffle(seed: int) -> Counter[int | str]:
+def _play_shuffle(task: ShuffleTask | int) -> Counter[int | str]:
     """Compatibility wrapper returning only win counts for one shuffle."""
 
-    wins, _, _, _ = _play_one_shuffle(seed, collect_rows=False)
+    wins, _, _, _ = _play_one_shuffle(task, collect_rows=False)
     return wins
 
 
-def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[int | str]:
+def _run_chunk(shuffle_tasks: Sequence[ShuffleTask]) -> Counter[int | str]:
     """Play a batch of shuffles and tally wins.
 
     Parameters
@@ -216,25 +261,30 @@ def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[int | str]:
         Mapping of strategy strings to win counts for the batch.
     """
 
+    tasks = [_coerce_shuffle_task(task) for task in shuffle_tasks]
     total: Counter[int | str] = Counter()
-    batch_size = len(shuffle_seed_batch)
+    batch_size = len(tasks)
     if LOGGER.isEnabledFor(logging.DEBUG):
         LOGGER.debug(
             "Processing shuffle batch",
             extra={
                 "stage": "simulation",
                 "batch_size": batch_size,
-                "first_seed": int(shuffle_seed_batch[0]) if batch_size else None,
-                "last_seed": int(shuffle_seed_batch[-1]) if batch_size else None,
+                "first_seed": tasks[0].shuffle_seed if batch_size else None,
+                "last_seed": tasks[-1].shuffle_seed if batch_size else None,
             },
         )
-    for sd in shuffle_seed_batch:
+    for task in tasks:
         try:
-            result = _play_shuffle(int(sd))
+            result = _play_shuffle(task)
         except Exception:
             LOGGER.exception(
                 "Shuffle failed",
-                extra={"stage": "simulation", "shuffle_seed": int(sd)},
+                extra={
+                    "stage": "simulation",
+                    "shuffle_seed": task.shuffle_seed,
+                    "shuffle_index": task.shuffle_index,
+                },
             )
             raise
         else:
@@ -243,9 +293,9 @@ def _run_chunk(shuffle_seed_batch: Sequence[int]) -> Counter[int | str]:
 
 
 def _run_chunk_item(
-    item: Tuple[int, Sequence[int]],
+    item: Tuple[int, Sequence[ShuffleTask]],
     *,
-    chunk_fn: Callable[[Sequence[int]], object],
+    chunk_fn: Callable[[Sequence[ShuffleTask]], object],
 ) -> Tuple[int, object]:
     chunk_index, seeds = item
     return chunk_index, chunk_fn(seeds)
@@ -255,7 +305,7 @@ def _run_chunk_item(
 
 
 def _run_chunk_metrics(
-    shuffle_seed_batch: Sequence[int],
+    shuffle_tasks: Sequence[ShuffleTask],
     *,
     collect_rows: bool = False,
     row_dir: Path | None = None,
@@ -269,8 +319,8 @@ def _run_chunk_metrics(
 
     Parameters
     ----------
-    shuffle_seed_batch : Sequence[int]
-        RNG seeds for each shuffle in this batch.
+    shuffle_tasks : Sequence[ShuffleTask]
+        Stable coordinate tasks for each shuffle in this process-executor batch.
     collect_rows : bool, default False
         If ``True`` return and optionally persist full per-game rows.
     row_dir : Path | None, default None
@@ -285,23 +335,24 @@ def _run_chunk_metrics(
         respective values over the batch.
     """
 
+    tasks = [_coerce_shuffle_task(task) for task in shuffle_tasks]
     wins_total: Counter[int | str] = Counter()
     sums_total: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
     sq_total: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
 
-    batch_size = len(shuffle_seed_batch)
+    batch_size = len(tasks)
     if LOGGER.isEnabledFor(logging.DEBUG):
         LOGGER.debug(
             "Processing metrics shuffle batch",
             extra={
                 "stage": "simulation",
                 "batch_size": batch_size,
-                "first_seed": int(shuffle_seed_batch[0]) if batch_size else None,
-                "last_seed": int(shuffle_seed_batch[-1]) if batch_size else None,
+                "first_seed": tasks[0].shuffle_seed if batch_size else None,
+                "last_seed": tasks[-1].shuffle_seed if batch_size else None,
             },
         )
-    for seed in shuffle_seed_batch:
-        wins, sums, sqs, rows = _play_one_shuffle(int(seed), collect_rows=collect_rows)
+    for task in tasks:
+        wins, sums, sqs, rows = _play_one_shuffle(task, collect_rows=collect_rows)
         wins_total.update(wins)
         for label in METRIC_LABELS:
             for k, v in sums[label].items():
@@ -310,7 +361,7 @@ def _run_chunk_metrics(
                 sq_total[label][k] += v
 
         if row_dir is not None and collect_rows:
-            out = row_dir / f"rows_{getpid()}_{seed}.parquet"
+            out = row_dir / f"rows_{getpid()}_{task.shuffle_seed}.parquet"
             tbl = pa.Table.from_pylist(rows)
             manifest_file = manifest_path or (row_dir / "manifest.jsonl")
             run_streaming_shard(
@@ -320,8 +371,12 @@ def _run_chunk_metrics(
                 batch_iter=(tbl,),
                 manifest_extra={
                     "path": out.name,
-                    "n_players": _STATE.cfg.n_players if _STATE else None,
-                    "shuffle_seed": int(seed),
+                    "root_seed": task.root_seed,
+                    "n_players": task.k,
+                    "shuffle_index": task.shuffle_index,
+                    "shuffle_seed": task.shuffle_seed,
+                    "deterministic_batch_id": task.deterministic_batch_id,
+                    "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
                     "pid": getpid(),
                 },
             )
@@ -329,7 +384,8 @@ def _run_chunk_metrics(
                 "Row shard written",
                 extra={
                     "stage": "simulation",
-                    "shuffle_seed": int(seed),
+                    "shuffle_seed": task.shuffle_seed,
+                    "shuffle_index": task.shuffle_index,
                     "rows": len(rows),
                     "path": str(out),
                 },
@@ -561,7 +617,8 @@ def _iter_original_chunk_items(
     shuffles_per_chunk: int,
     global_seed: int,
     k: int = 0,
-) -> Iterator[Tuple[int, List[int]]]:
+    deterministic_batch_size: int = 30,
+) -> Iterator[Tuple[int, List[ShuffleTask]]]:
     """Yield deterministic shuffle-seed chunks in original chunk order.
 
     Args:
@@ -572,19 +629,25 @@ def _iter_original_chunk_items(
     Yields:
         ``(chunk_index, chunk_seeds)`` pairs in original execution order.
     """
-    seed_iter = iter(
-        urandom.coordinate_seed(
-            urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
+    task_iter = iter(
+        ShuffleTask(
             root_seed=global_seed,
             k=k,
             shuffle_index=shuffle_index,
-            dtype=np.uint32,
+            shuffle_seed=urandom.coordinate_seed(
+                urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
+                root_seed=global_seed,
+                k=k,
+                shuffle_index=shuffle_index,
+                dtype=np.uint32,
+            ),
+            deterministic_batch_id=shuffle_index // deterministic_batch_size,
         )
         for shuffle_index in range(num_shuffles)
     )
     chunk_index = 0
     while True:
-        chunk = list(islice(seed_iter, shuffles_per_chunk))
+        chunk = list(islice(task_iter, shuffles_per_chunk))
         if not chunk:
             return
         chunk_index += 1
@@ -597,9 +660,10 @@ def _iter_pending_chunk_items(
     shuffles_per_chunk: int,
     global_seed: int,
     k: int = 0,
+    deterministic_batch_size: int = 30,
     completed_shuffles: set[int],
     completed_chunk_indices: set[int],
-) -> Iterator[Tuple[int, List[int]]]:
+) -> Iterator[Tuple[int, List[ShuffleTask]]]:
     """Yield only the unfinished shuffle chunks needed for a resumed run.
 
     Args:
@@ -617,10 +681,11 @@ def _iter_pending_chunk_items(
         shuffles_per_chunk=shuffles_per_chunk,
         global_seed=global_seed,
         k=k,
+        deterministic_batch_size=deterministic_batch_size,
     ):
         if chunk_index in completed_chunk_indices:
             continue
-        pending = [seed for seed in chunk if seed not in completed_shuffles]
+        pending = [task for task in chunk if task.shuffle_seed not in completed_shuffles]
         if pending:
             yield chunk_index, pending
 
@@ -921,6 +986,7 @@ def run_tournament(
         shuffles_per_chunk=shuffles_per_chunk,
         global_seed=global_seed,
         k=cfg.n_players,
+        deterministic_batch_size=cfg.deterministic_batch_size,
         completed_shuffles=completed_shuffles,
         completed_chunk_indices=completed_chunk_indices,
     )
@@ -931,6 +997,7 @@ def run_tournament(
             shuffles_per_chunk=shuffles_per_chunk,
             global_seed=global_seed,
             k=cfg.n_players,
+            deterministic_batch_size=cfg.deterministic_batch_size,
             completed_shuffles=completed_shuffles,
             completed_chunk_indices=completed_chunk_indices,
         )
@@ -965,7 +1032,7 @@ def run_tournament(
 
     if collect_metrics or collect_rows:
         manifest_path = row_manifest_path
-        chunk_fn: Callable[[Sequence[int]], object] = partial(
+        chunk_fn: Callable[[Sequence[ShuffleTask]], object] = partial(
             _run_chunk_metrics,
             collect_rows=collect_rows,
             row_dir=row_output_directory,

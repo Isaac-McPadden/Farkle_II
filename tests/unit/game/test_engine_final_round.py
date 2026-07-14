@@ -102,3 +102,34 @@ def test_final_round_respects_score_to_beat_and_reruns():
     assert metrics.game.total_rolls == 3
     assert metrics.game.total_farkles == 1
     assert metrics.game.margin == 2000
+    assert [metrics.players[name].n_turns for name in ("opener", "bust", "closer")] == [1, 1, 1]
+
+
+@pytest.mark.parametrize("trigger_seat", [0, 1, 2])
+def test_turn_counts_follow_final_round_trigger_position(trigger_seat: int) -> None:
+    """Earlier seats receive a normal turn plus one closing turn after a later trigger."""
+
+    players: list[FarklePlayer] = []
+    for seat in range(3):
+        if seat == trigger_seat:
+            script = [[1, 1, 1, 2, 2, 2]]
+        elif seat < trigger_seat:
+            script = [
+                [5, 5, 5, 2, 3, 4],
+                [2, 3, 4, 6, 2, 4],
+            ]
+        else:
+            script = [[2, 3, 4, 6, 2, 4]]
+        players.append(
+            FarklePlayer(
+                name=f"P{seat + 1}",
+                strategy=_QuietStrategy(),
+                rng=cast(np.random.Generator, ScriptedRNG(script)),
+            )
+        )
+
+    metrics = FarkleGame(players, target_score=2_000).play(max_rounds=5)
+
+    assert [metrics.players[f"P{seat + 1}"].n_turns for seat in range(3)] == [
+        1 if seat >= trigger_seat else 2 for seat in range(3)
+    ]

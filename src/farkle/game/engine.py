@@ -51,6 +51,7 @@ class FarklePlayer:
     has_scored: bool = False  # entered game (≥500) flag
 
     # counters
+    n_turns: int = 0
     n_farkles: int = 0
     n_rolls: int = 0
     highest_turn: int = 0
@@ -224,6 +225,7 @@ class FarklePlayer:
         RuntimeError
             If the number of rolls in this turn exceeds ``ROLL_LIMIT``.
         """
+        self.n_turns += 1
         dice = 6
         turn_score = 0
         rolls_this_turn = 0
@@ -369,6 +371,8 @@ class PlayerStats:
         Number of times the player farkled.
     rolls
         Dice rolls taken across all turns.
+    n_turns
+        Number of calls to :meth:`FarklePlayer.take_turn`, including zero-point turns.
     highest_turn
         Highest single-turn score.
     strategy
@@ -390,6 +394,7 @@ class PlayerStats:
     score: int
     farkles: int
     rolls: int
+    n_turns: int
     highest_turn: int
     strategy: int | str
     rank: int  # 1 = winner
@@ -479,6 +484,7 @@ class FarkleGame:
                 score=player.score,
                 farkles=player.n_farkles,
                 rolls=player.n_rolls,
+                n_turns=player.n_turns,
                 highest_turn=player.highest_turn,
                 strategy=strategy_id if strategy_id is not None else str(player.strategy),
                 rank=ranks[player.name],

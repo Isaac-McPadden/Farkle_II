@@ -10,6 +10,7 @@ def test_players_dict_and_per_player_alias():
             score=10,
             farkles=1,
             rolls=2,
+            n_turns=1,
             highest_turn=5,
             strategy="x",
             rank=1,

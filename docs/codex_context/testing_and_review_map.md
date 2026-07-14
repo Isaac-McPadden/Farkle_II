@@ -56,6 +56,9 @@ Always rerun targeted tests or inspect source before accepting conclusions.
   `tests/unit/simulation/test_runner*.py`,
   `tests/unit/simulation/test_workload_planner.py`,
   `tests/integration/test_run_tournament_integration.py`.
+- Turn accounting and row coordinates: `tests/unit/game/test_engine.py`,
+  `tests/unit/game/test_engine_final_round.py`,
+  `tests/unit/simulation/test_simulation.py`.
 - Game rules: `tests/unit/game/test_scoring*.py`,
   `tests/unit/game/test_engine*.py`,
   `tests/integration/test_farkle_integration.py`.
