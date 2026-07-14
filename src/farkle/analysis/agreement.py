@@ -155,7 +155,7 @@ def _build_payload(
             "missing TrueSkill ratings",
             players=players,
             path=(
-                str(cfg.trueskill_path("ratings_k_weighted.parquet"))
+                str(cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet")
                 if combined_scope
                 else f"{players}p ratings parquet"
             ),
@@ -232,7 +232,7 @@ def _load_trueskill(
         Prepared ``MethodData`` or ``None`` when no ratings are available.
     """
     path = (
-        cfg.trueskill_path("ratings_k_weighted.parquet")
+        cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet"
         if combined_scope
         else _resolve_trueskill_per_k_path(cfg, players)
     )
@@ -248,7 +248,7 @@ def _load_trueskill(
 
     series = df.set_index(df["strategy"].astype(str))["mu"].astype(float).sort_index()
 
-    tiers_path = cfg.preferred_tiers_path()
+    tiers_path = cfg.screening_path("tiers.json")
     tiers_payload = load_tier_payload(tiers_path)
     tiers = tier_mapping_from_payload(tiers_payload, prefer=str(players)) or None
 
@@ -399,7 +399,7 @@ def _load_frequentist(cfg: AppConfig, players: int | None) -> MethodData | None:
     Returns:
         Populated ``MethodData`` or ``None`` when the file is absent or empty.
     """
-    path = cfg.frequentist_path("frequentist_scores_k_weighted.parquet")
+    path = cfg.screening_path("frequentist_scores_k_weighted.parquet")
     if not path.exists():
         return None
 
@@ -446,7 +446,7 @@ def _load_head2head(cfg: AppConfig) -> MethodData | None:
     Returns:
         ``MethodData`` when ranking information can be derived, otherwise ``None``.
     """
-    path = cfg.post_h2h_path("bonferroni_decisions.parquet")
+    path = cfg.h2h_2p_dir() / "bonferroni_decisions.parquet"
     if not path.exists():
         return None
 

@@ -188,8 +188,8 @@ def run(cfg: AppConfig) -> None:
     except Exception as exc:  # noqa: BLE001
         inputs = {
             "curated_parquet": cfg.curated_parquet,
-            "ratings": cfg.trueskill_path("ratings_k_weighted.parquet"),
-            "frequentist_scores": cfg.frequentist_path("frequentist_scores_k_weighted.parquet"),
+            "ratings": cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet",
+            "frequentist_scores": cfg.screening_path("frequentist_scores_k_weighted.parquet"),
         }
         error_path = _write_error_artifact(
             cfg,
@@ -279,8 +279,8 @@ def _maybe_autotune_tiers(cfg: AppConfig, design_kwargs: dict[str, Any]) -> None
     if not target_hours or target_hours <= 0:
         return
 
-    ratings_path = cfg.trueskill_path("ratings_k_weighted.parquet")
-    tiers_path = cfg.preferred_tiers_path()
+    ratings_path = cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet"
+    tiers_path = cfg.screening_path("tiers.json")
     if not ratings_path.exists():
         LOGGER.warning(
             "Tier auto-tune skipped: missing combined ratings",

@@ -87,8 +87,6 @@ def _configured_roots(cfg: AppConfig) -> tuple[int, ...]:
 
     if cfg.sim.seed_list is not None:
         roots = tuple(int(root) for root in cfg.sim.seed_list)
-    elif cfg.sim.seed_pair is not None:
-        roots = tuple(int(root) for root in cfg.sim.seed_pair)
     else:
         roots = (int(cfg.sim.seed),)
     if len(roots) not in {1, 2} or len(set(roots)) != len(roots):

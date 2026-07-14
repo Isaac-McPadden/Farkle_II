@@ -553,8 +553,8 @@ def _build_combined_seed_summary(
                 "aggregation_weight_sum",
             ]
         )
-    aggregation_method = _normalize_k_aggregation_method(cfg.analysis.k_aggregation_method)
-    weights_by_k = dict(cfg.analysis.k_weights or {})
+    aggregation_method = _normalize_k_aggregation_method(cfg.k_aggregation.method)
+    weights_by_k = dict(cfg.k_aggregation.k_weights or {})
     if aggregation_method == "config" and not weights_by_k:
         raise ValueError("analysis.k_weights must be set for config aggregation")
 

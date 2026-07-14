@@ -432,7 +432,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     workers = min(max(1, _resolve_analysis_workers(cfg)), max(1, len(configured_k_values)))
     stage_config_sha = cfg.stage_config_sha("game_stats")
     cache_key_version = cfg.stage_cache_key_version("game_stats")
-    _normalize_k_aggregation_method(cfg.analysis.k_aggregation_method)
+    _normalize_k_aggregation_method(cfg.k_aggregation.method)
     stale_ks: list[int] = []
     for k in configured_k_values:
         artifact_path, done_path = _per_k_game_stats_paths(stage_dir, k)
@@ -454,8 +454,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         if force:
             stale_ks.append(k)
             continue
-        legacy_game = cfg.per_k_subdir("game_stats", k) / "game_length.parquet"
-        legacy_margin = cfg.per_k_subdir("game_stats", k) / "margin_stats.parquet"
+        legacy_game = cfg.by_k_dir("game_stats", k) / "game_length.parquet"
+        legacy_margin = cfg.by_k_dir("game_stats", k) / "margin_stats.parquet"
         if not stage_is_up_to_date(
             done_path,
             inputs=[input_path],
@@ -612,11 +612,11 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             combined_margin_output,
             rare_events_output,
             *[
-                cfg.per_k_subdir("game_stats", k) / "game_length.parquet"
+                cfg.by_k_dir("game_stats", k) / "game_length.parquet"
                 for k in configured_k_values
             ],
             *[
-                cfg.per_k_subdir("game_stats", k) / "margin_stats.parquet"
+                cfg.by_k_dir("game_stats", k) / "margin_stats.parquet"
                 for k in configured_k_values
             ],
             *([rare_events_details_output] if write_details else []),

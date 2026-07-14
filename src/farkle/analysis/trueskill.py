@@ -17,7 +17,7 @@ def run(cfg: AppConfig) -> None:
 
     curated_parquet = cfg.curated_parquet
     if not curated_parquet.exists():
-        candidates = [str(path) for path in cfg.curated_parquet_candidates()]
+        candidates = [str(cfg.curated_parquet)]
         payload = {
             "path": str(curated_parquet),
             "candidate_paths": candidates,

@@ -1699,7 +1699,7 @@ def run_trueskill_all_seeds(cfg: AppConfig) -> None:
 
     analysis_dir = cfg.trueskill_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
-    combined_dir = cfg.trueskill_combined_dir
+    combined_dir = cfg.across_k_dir("trueskill")
     combined_dir.mkdir(parents=True, exist_ok=True)
     concat_dir = cfg.concat_ks_dir("trueskill")
     legacy_root = analysis_dir.parent

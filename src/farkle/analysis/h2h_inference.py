@@ -18,6 +18,7 @@ from statsmodels.stats.proportion import confint_proportions_2indep
 
 from farkle.analysis.h2h_schedule import SCORE_TEST_ID
 from farkle.analysis.stage_state import (
+    CompletionState,
     stage_done_path,
     stage_is_up_to_date,
     write_stage_done,
@@ -145,8 +146,10 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
         },
     )
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    if plan.get("schedule_state") != "ready":
-        raise RuntimeError("seat-adjusted inference requires a ready H2H power plan")
+    if plan.get("planning_state") != CompletionState.COMPLETE_VALID.value:
+        raise RuntimeError("seat-adjusted inference requires a complete valid H2H power plan")
+    if plan.get("execution_state") != CompletionState.COMPLETE_VALID.value:
+        raise RuntimeError("seat-adjusted inference requires complete valid H2H execution")
     required = {
         "family_hash",
         "pair_id",

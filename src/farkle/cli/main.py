@@ -349,7 +349,6 @@ def main(argv: Sequence[str] | None = None) -> None:
         cfg = apply_dot_overrides(cfg, list(args.overrides or []))
         if seed_pair_override is not None:
             cfg.sim.seed_list = list(seed_pair_override)
-            cfg.sim.seed_pair = seed_pair_override
         if expected_seed_len is not None:
             cfg.sim.populate_seed_list(expected_seed_len)
         assign_config_sha(cfg)

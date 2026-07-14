@@ -196,7 +196,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     app_cfg = load_app_config(Path(args.config))
     if seed_pair_override is not None:
         app_cfg.sim.seed_list = list(seed_pair_override)
-        app_cfg.sim.seed_pair = seed_pair_override
     if args.margin_thresholds:
         app_cfg.analysis.game_stats_margin_thresholds = tuple(args.margin_thresholds)
     if args.rare_event_target is not None:

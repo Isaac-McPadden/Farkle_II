@@ -15,7 +15,7 @@ import tempfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Literal, NotRequired, TypeAlias, TypedDict
 
 from farkle.config import ArtifactScope, compute_config_sha
 
@@ -23,6 +23,7 @@ if TYPE_CHECKING:
     from farkle.config import AppConfig
 
 SIDECAR_SUFFIX: Final = ".sidecar.json"
+ARTIFACT_CONTRACT_VERSION: Final = 2
 _SHA256_LENGTH: Final = 64
 _K_AGGREGATION_METHODS: Final = {"equal_k", "declared_mapping", "none"}
 _MISSING_CELL_POLICIES: Final = {"fail", "declared_common_support", "not_applicable"}
@@ -38,6 +39,83 @@ class ArtifactContractError(RuntimeError):
     """Raised when an artifact and its sidecar do not satisfy the contract."""
 
 
+class OperationMethodContract(TypedDict):
+    """Contract for a precisely named transformation without extra semantics."""
+
+    kind: Literal["operation"]
+    procedure: str
+    parameters: NotRequired[dict[str, Any]]
+
+
+class H2HMethodContract(TypedDict):
+    """Contract for H2H planning, execution, inference, or digestion."""
+
+    kind: Literal["h2h"]
+    procedure: str
+    parameters: NotRequired[dict[str, Any]]
+
+
+class TrueSkillMethodContract(TypedDict):
+    """Contract for finite-grid TrueSkill screening calculations."""
+
+    kind: Literal["trueskill"]
+    procedure: str
+    parameters: NotRequired[dict[str, Any]]
+
+
+class DiagnosticBandMethodContract(TypedDict):
+    """Contract for dependence-aware descriptive diagnostic bands."""
+
+    kind: Literal["diagnostic_band"]
+    procedure: str
+    parameters: NotRequired[dict[str, Any]]
+
+
+class ConditionalMetricsMethodContract(TypedDict):
+    """Contract for outputs whose denominator is conditionally selected."""
+
+    kind: Literal["conditional_metrics"]
+    procedure: str
+    parameters: NotRequired[dict[str, Any]]
+
+
+class TurnMetricsMethodContract(TypedDict):
+    """Contract for exact turn-denominated player metrics."""
+
+    kind: Literal["turn_metrics"]
+    procedure: str
+    parameters: NotRequired[dict[str, Any]]
+
+
+class RootCombinationMethodContract(TypedDict):
+    """Contract for raw-count root combination and stability diagnostics."""
+
+    kind: Literal["root_combination"]
+    procedure: str
+    parameters: NotRequired[dict[str, Any]]
+
+
+MethodContract: TypeAlias = (
+    OperationMethodContract
+    | H2HMethodContract
+    | TrueSkillMethodContract
+    | DiagnosticBandMethodContract
+    | ConditionalMetricsMethodContract
+    | TurnMetricsMethodContract
+    | RootCombinationMethodContract
+)
+
+_METHOD_KINDS: Final = {
+    "operation",
+    "h2h",
+    "trueskill",
+    "diagnostic_band",
+    "conditional_metrics",
+    "turn_metrics",
+    "root_combination",
+}
+
+
 @dataclass(frozen=True)
 class ArtifactSidecar:
     """Minimum metadata required beside every derived analysis artifact."""
@@ -50,6 +128,7 @@ class ArtifactSidecar:
     scope: str
     source_scope: str
     operation: str
+    method_contract: MethodContract
     baseline: str
     weighted_quantity: str
     k_aggregation_method: str
@@ -131,6 +210,7 @@ def make_artifact_sidecar(
     seed_scope: str = "single_root",
     input_manifests: Sequence[Path | str] = (),
     code_revision: str = "unknown",
+    method_contract: MethodContract | None = None,
 ) -> ArtifactSidecar:
     """Build minimum contract metadata from the active application config."""
 
@@ -138,6 +218,11 @@ def make_artifact_sidecar(
     normalized_scope = scope.value if isinstance(scope, ArtifactScope) else str(scope)
     normalized_source_scope = (
         source_scope.value if isinstance(source_scope, ArtifactScope) else str(source_scope)
+    )
+    resolved_method_contract = method_contract or _default_method_contract(
+        producer=producer,
+        operation=operation,
+        conditioning=conditioning,
     )
     return ArtifactSidecar(
         artifact_contract_version=contract.artifact_contract_version,
@@ -148,6 +233,7 @@ def make_artifact_sidecar(
         scope=normalized_scope,
         source_scope=normalized_source_scope,
         operation=operation,
+        method_contract=resolved_method_contract,
         baseline=baseline,
         weighted_quantity=weighted_quantity,
         k_aggregation_method=k_aggregation_method,
@@ -170,6 +256,30 @@ def make_artifact_sidecar(
     )
 
 
+def _default_method_contract(
+    *, producer: str, operation: str, conditioning: str
+) -> MethodContract:
+    """Return the narrow tagged method contract implied by canonical metadata."""
+
+    normalized_producer = producer.lower()
+    normalized_operation = operation.lower()
+    if "h2h" in normalized_producer or normalized_producer in {"candidate_family", "dominance"}:
+        kind = "h2h"
+    elif "trueskill" in normalized_producer:
+        kind = "trueskill"
+    elif normalized_operation == "diagnostic_band":
+        kind = "diagnostic_band"
+    elif normalized_producer == "all_player_metrics":
+        kind = "turn_metrics"
+    elif normalized_producer == "root_stability" or "combine_roots" in normalized_operation:
+        kind = "root_combination"
+    elif conditioning != "unconditional":
+        kind = "conditional_metrics"
+    else:
+        kind = "operation"
+    return {"kind": kind, "procedure": operation}  # type: ignore[return-value]
+
+
 def _is_sha256(value: str) -> bool:
     return len(value) == _SHA256_LENGTH and all(char in "0123456789abcdef" for char in value)
 
@@ -186,6 +296,11 @@ def _validate_sidecar_fields(metadata: ArtifactSidecar) -> None:
     invalid_versions = [name for name, value in positive_versions.items() if value < 1]
     if invalid_versions:
         raise ArtifactContractError(f"sidecar versions must be positive: {invalid_versions}")
+    if metadata.artifact_contract_version != ARTIFACT_CONTRACT_VERSION:
+        raise ArtifactContractError(
+            "sidecar artifact contract is stale or unsupported: "
+            f"{metadata.artifact_contract_version}; expected {ARTIFACT_CONTRACT_VERSION}"
+        )
 
     required_text = {
         "artifact_name": metadata.artifact_name,
@@ -219,6 +334,23 @@ def _validate_sidecar_fields(metadata: ArtifactSidecar) -> None:
         )
     if metadata.seed_scope not in _SEED_SCOPES:
         raise ArtifactContractError(f"unsupported seed_scope: {metadata.seed_scope!r}")
+    method_contract = metadata.method_contract
+    if not isinstance(method_contract, dict):
+        raise ArtifactContractError("method_contract must be a tagged object")
+    if method_contract.get("kind") not in _METHOD_KINDS:
+        raise ArtifactContractError(
+            f"unsupported method_contract kind: {method_contract.get('kind')!r}"
+        )
+    procedure = method_contract.get("procedure")
+    if not isinstance(procedure, str) or not procedure.strip():
+        raise ArtifactContractError("method_contract procedure must be non-blank")
+    if procedure != metadata.operation:
+        raise ArtifactContractError(
+            "method_contract procedure must equal the sidecar operation identifier"
+        )
+    parameters = method_contract.get("parameters")
+    if parameters is not None and not isinstance(parameters, dict):
+        raise ArtifactContractError("method_contract parameters must be an object when present")
 
     if metadata.k_aggregation_method == "declared_mapping":
         if not metadata.k_weights:
@@ -364,7 +496,9 @@ def validate_artifact_sidecar(
 
 __all__ = [
     "ArtifactContractError",
+    "ARTIFACT_CONTRACT_VERSION",
     "ArtifactSidecar",
+    "MethodContract",
     "SIDECAR_SUFFIX",
     "load_artifact_sidecar",
     "make_artifact_sidecar",

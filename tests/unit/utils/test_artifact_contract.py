@@ -24,7 +24,7 @@ from farkle.utils.stage_completion import stage_is_up_to_date, write_stage_done
 
 def _metadata(path: Path, **changes: object) -> ArtifactSidecar:
     metadata = ArtifactSidecar(
-        artifact_contract_version=1,
+        artifact_contract_version=2,
         estimand_version=1,
         schema_version=1,
         artifact_name=path.name,
@@ -32,6 +32,7 @@ def _metadata(path: Path, **changes: object) -> ArtifactSidecar:
         scope="by_k",
         source_scope="by_k",
         operation="aggregate_test_rows",
+        method_contract={"kind": "operation", "procedure": "aggregate_test_rows"},
         baseline="none",
         weighted_quantity="none",
         k_aggregation_method="none",
@@ -96,7 +97,7 @@ def test_unknown_or_missing_sidecar_fields_fail_closed(tmp_path: Path) -> None:
     artifact = tmp_path / "summary.parquet"
     artifact.write_bytes(b"data")
     payload = _metadata(artifact).__dict__.copy()
-    payload.pop("conditioning")
+    payload.pop("method_contract")
     sidecar_path(artifact).write_text(json.dumps(payload), encoding="utf-8")
 
     with pytest.raises(ArtifactContractError, match="invalid sidecar"):
@@ -111,6 +112,16 @@ def test_unknown_or_missing_sidecar_fields_fail_closed(tmp_path: Path) -> None:
         ({"k_weights": {"2": 1.0}}, "requires k_weights to be null"),
         ({"player_counts": [4, 2]}, "sorted unique"),
         ({"player_counts": [2], "required_player_counts": [2, 4]}, "support is incomplete"),
+        ({"artifact_contract_version": 1}, "contract is stale or unsupported"),
+        (
+            {
+                "method_contract": {
+                    "kind": "operation",
+                    "procedure": "a_different_operation",
+                }
+            },
+            "procedure must equal",
+        ),
     ],
 )
 def test_semantically_invalid_metadata_is_rejected(
@@ -155,6 +166,10 @@ def test_config_factory_records_versions_support_sources_and_manifest_hashes(
     assert metadata.player_counts == [2, 4]
     assert metadata.input_manifest_hashes == [sha256_file(manifest)]
     assert metadata.config_hash == cfg.config_sha
+    assert metadata.method_contract == {
+        "kind": "operation",
+        "procedure": "concatenate",
+    }
 
 
 def test_completion_is_not_written_until_all_sidecars_validate(tmp_path: Path) -> None:

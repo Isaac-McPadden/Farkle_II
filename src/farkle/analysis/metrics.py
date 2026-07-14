@@ -61,7 +61,7 @@ def run(cfg: AppConfig) -> None:
     """Compute per-strategy metrics and seat-advantage tables."""
 
     analysis_dir = cfg.analysis_dir
-    metrics_dir = cfg.metrics_combined_dir
+    metrics_dir = cfg.across_k_dir("metrics")
     data_file = cfg.curated_dataset
     out_metrics = cfg.metrics_output_path()
     out_metrics_weighted = cfg.metrics_output_path("metrics_weighted.parquet")
@@ -792,8 +792,8 @@ def _compute_weighted_metrics(
     if metrics_df.empty:
         return pd.DataFrame(columns=columns)
 
-    aggregation_method = normalize_k_aggregation_method(cfg.analysis.k_aggregation_method)
-    weights_by_k = dict(cfg.analysis.k_weights or {})
+    aggregation_method = normalize_k_aggregation_method(cfg.k_aggregation.method)
+    weights_by_k = dict(cfg.k_aggregation.k_weights or {})
     if aggregation_method == "config" and not weights_by_k:
         raise ValueError("analysis.k_weights must be set for config aggregation")
 

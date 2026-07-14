@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 from scipy.stats import norm
 
 from farkle.analysis.stage_state import (
+    CompletionState,
     stage_done_path,
     stage_is_up_to_date,
     write_stage_done,
@@ -26,7 +27,11 @@ from farkle.analysis.stage_state import (
 from farkle.config import AppConfig, ArtifactScope
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy_for_df, parse_strategy_identifier
-from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
+from farkle.utils.artifact_contract import (
+    load_artifact_sidecar,
+    make_artifact_sidecar,
+    validate_artifact_sidecar,
+)
 from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
@@ -39,11 +44,12 @@ POWER_METHOD_ID: Final = "normal_power_for_independent_two_proportion_score_v1"
 
 @dataclass(frozen=True)
 class H2HScheduleArtifacts:
-    """Power plan and optional ready-to-execute block manifest."""
+    """Power plan, optional block manifest, and canonical lifecycle states."""
 
     power_plan: Path
     block_manifest: Path | None
-    schedule_state: str
+    planning_state: CompletionState
+    execution_state: CompletionState
 
 
 @dataclass(frozen=True)
@@ -190,8 +196,6 @@ def _roots_from_manifest(manifest: Mapping[str, Any]) -> tuple[int, ...]:
 def _configured_roots(cfg: AppConfig) -> tuple[int, ...]:
     if cfg.sim.seed_list is not None:
         return tuple(int(value) for value in cfg.sim.seed_list)
-    if cfg.sim.seed_pair is not None:
-        return tuple(int(value) for value in cfg.sim.seed_pair)
     return (int(cfg.sim.seed),)
 
 
@@ -342,7 +346,10 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     total_games = games_per_pair * pair_count
     cap = cfg.head2head.total_game_cap
     blocked = cap is not None and total_games > cap
-    state = "blocked_by_cap" if blocked else "ready"
+    planning_state = CompletionState.COMPLETE_VALID
+    execution_state = (
+        CompletionState.BLOCKED_BY_CAP if blocked else CompletionState.NOT_STARTED
+    )
     power_grid = _power_grid(
         cfg,
         block_games=block_games,
@@ -369,7 +376,8 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         "games_per_pair": games_per_pair,
         "projected_total_games": total_games,
         "total_game_cap": cap,
-        "schedule_state": state,
+        "planning_state": planning_state.value,
+        "execution_state": execution_state.value,
         "worst_scenario_achieved_power": worst_power,
         "previous_equal_block_size_worst_power": previous_power,
         "seat_order_rng_contract": "independent_coordinate_streams",
@@ -396,10 +404,12 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         stage="head2head",
         sidecar_artifacts=expected_outputs,
     ):
+        existing_plan = json.loads(power_path.read_text(encoding="utf-8"))
         return H2HScheduleArtifacts(
             power_plan=power_path,
             block_manifest=None if blocked else schedule_path,
-            schedule_state=state,
+            planning_state=CompletionState(str(existing_plan["planning_state"])),
+            execution_state=CompletionState(str(existing_plan["execution_state"])),
         )
 
     common = _planning_sidecar_common(sources=family_sources, roots=roots)
@@ -426,7 +436,8 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         return H2HScheduleArtifacts(
             power_plan=power_path,
             block_manifest=None,
-            schedule_state=state,
+            planning_state=planning_state,
+            execution_state=execution_state,
         )
 
     schedule = _schedule_frame(
@@ -463,8 +474,19 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     return H2HScheduleArtifacts(
         power_plan=power_path,
         block_manifest=schedule_path,
-        schedule_state=state,
+        planning_state=planning_state,
+        execution_state=execution_state,
     )
+
+
+def _write_execution_state(plan_path: Path, state: CompletionState) -> dict[str, Any]:
+    """Atomically update the execution lifecycle while retaining the plan contract."""
+
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    plan["execution_state"] = state.value
+    metadata = load_artifact_sidecar(plan_path)
+    write_json_artifact_atomic(plan, plan_path, sidecar=metadata)
+    return plan
 
 
 def _winner_seat_counts(frame: pd.DataFrame) -> tuple[int, int]:
@@ -628,7 +650,9 @@ def execute_h2h_schedule(
         expected={"scope": ArtifactScope.H2H_2P.value, "operation": "score_test_power_plan"},
     )
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
-    if plan.get("schedule_state") != "ready":
+    if plan.get("planning_state") != CompletionState.COMPLETE_VALID.value:
+        raise RuntimeError("H2H execution requires a complete valid power plan")
+    if plan.get("execution_state") == CompletionState.BLOCKED_BY_CAP.value:
         raise RuntimeError(
             "H2H execution is blocked; raise head2head.total_game_cap to the planned workload"
         )
@@ -652,6 +676,8 @@ def execute_h2h_schedule(
         for record, path in zip(records, block_paths, strict=True)
         if not _valid_existing_block(path, record)
     ]
+    if pending:
+        plan = _write_execution_state(plan_path, CompletionState.PARTIAL_RESUMABLE)
     manifest_path = cfg.strategy_manifest_root_path()
     if pending and not manifest_path.exists():
         raise FileNotFoundError(f"strategy manifest is required for H2H execution: {manifest_path}")
@@ -745,6 +771,7 @@ def execute_h2h_schedule(
         stage="head2head",
         sidecar_artifacts=[output],
     )
+    _write_execution_state(plan_path, CompletionState.COMPLETE_VALID)
     return H2HExecutionArtifacts(order_counts=output, block_paths=block_paths)
 
 

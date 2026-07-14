@@ -81,7 +81,7 @@ def run(cfg: AppConfig) -> None:
         return
     for path in metrics_paths:
         validate_artifact_sidecar(path, expected={"scope": "by_k"})
-    json_out = cfg.hgb_combined_dir / "hgb_importance.json"
+    json_out = cfg.across_k_dir("hgb") / "hgb_importance.json"
 
     importance_paths = [cfg.hgb_importance_path(k) for k in players]
     predictive_paths = [cfg.hgb_predictive_scores_path(k) for k in players]
@@ -95,8 +95,8 @@ def run(cfg: AppConfig) -> None:
     outputs = [
         json_out,
         cfg.hgb_future_proposals_path(),
-        cfg.hgb_combined_dir / _hgb.LONG_IMPORTANCE_NAME,
-        cfg.hgb_combined_dir / _hgb.OVERALL_IMPORTANCE_NAME,
+        cfg.across_k_dir("hgb") / _hgb.LONG_IMPORTANCE_NAME,
+        cfg.across_k_dir("hgb") / _hgb.OVERALL_IMPORTANCE_NAME,
         *importance_paths,
         *predictive_paths,
         *fold_paths,

@@ -359,7 +359,9 @@ def build_interseed_analysis_plan(
         Args:
             inner_cfg: Interseed config passed by the stage runner.
         """
-        ratings_combined_path = inner_cfg.trueskill_path("ratings_k_weighted.parquet")
+        ratings_combined_path = (
+            inner_cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet"
+        )
         if not ratings_combined_path.exists() or ratings_combined_path.stat().st_size <= 0:
             stage_logger("agreement", logger=LOGGER).missing_input(
                 "missing required TrueSkill combined ratings input",

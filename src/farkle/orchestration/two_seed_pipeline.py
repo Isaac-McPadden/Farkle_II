@@ -1102,7 +1102,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     seed_pair = resolve_seed_pair_args(args, parser)
     if seed_pair is not None:
         cfg.sim.seed_list = list(seed_pair)
-        cfg.sim.seed_pair = seed_pair
     resolved_seeds = cfg.sim.populate_seed_list(2)
     assign_config_sha(cfg)
     seed_pair = (resolved_seeds[0], resolved_seeds[1])

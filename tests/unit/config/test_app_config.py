@@ -19,7 +19,6 @@ from farkle.config import (
     _coerce,
     _deep_merge,
     _normalize_seed_list,
-    _normalize_seed_pair,
     apply_dot_overrides,
     expected_seed_list_length,
     load_app_config,
@@ -66,49 +65,21 @@ def test_load_app_config_merges_overlays(write_yaml) -> None:
     assert cfg.analysis_dir == Path("data") / "results_seed_0" / "custom"
 
 
-def test_load_app_config_applies_analysis_controls(write_yaml) -> None:
+def test_load_app_config_rejects_retired_analysis_controls(write_yaml) -> None:
     config = write_yaml(
         "analysis_fields.yaml",
         {
             "analysis": {
-                "run_post_h2h_analysis": True,
                 "run_frequentist": True,
-                "run_agreement": True,
-                "run_report": False,
-                "head2head_target_hours": 4.5,
-                "head2head_tolerance_pct": 2.5,
-                "head2head_games_per_sec": 11.0,
-                "frequentist_seeds": [3, 7],
             }
         },
     )
 
-    cfg = load_app_config(config)
-
-    assert cfg.analysis.run_post_h2h_analysis is True
-    assert cfg.analysis.run_frequentist is True
-    assert cfg.analysis.run_agreement is True
-    assert cfg.analysis.run_report is False
-    assert cfg.analysis.head2head_target_hours == pytest.approx(4.5)
-    assert cfg.analysis.head2head_tolerance_pct == pytest.approx(2.5)
-    assert cfg.analysis.head2head_games_per_sec == pytest.approx(11.0)
-    assert cfg.analysis.frequentist_seeds == [3, 7]
-
-    apply_dot_overrides(
-        cfg,
-        [
-            "analysis.head2head_target_hours=1.25",
-            "analysis.run_report=true",
-            "analysis.run_agreement=false",
-        ],
-    )
-
-    assert cfg.analysis.head2head_target_hours == pytest.approx(1.25)
-    assert cfg.analysis.run_report is True
-    assert cfg.analysis.run_agreement is False
+    with pytest.raises(ValueError, match="Retired config key 'analysis.run_frequentist'"):
+        load_app_config(config)
 
 
-def test_load_app_config_normalizes_legacy_keys(write_yaml) -> None:
+def test_load_app_config_rejects_legacy_keys(write_yaml) -> None:
     legacy = write_yaml(
         "legacy.yaml",
         {
@@ -117,16 +88,13 @@ def test_load_app_config_normalizes_legacy_keys(write_yaml) -> None:
         },
     )
 
-    cfg = load_app_config(legacy)
-
-    assert cfg.io.analysis_subdir == "analysis"
-    assert cfg.sim.n_players_list == [5]
-    assert cfg.sim.expanded_metrics is True
+    with pytest.raises(ValueError, match="Retired config key 'io.analysis_dir'"):
+        load_app_config(legacy)
 
 
 
 
-def test_load_app_config_normalizes_legacy_keys_from_read_only_mappings(
+def test_load_app_config_rejects_legacy_keys_from_read_only_mappings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "legacy_read_only.yaml"
@@ -142,16 +110,11 @@ def test_load_app_config_normalizes_legacy_keys_from_read_only_mappings(
 
     monkeypatch.setattr("farkle.config.expand_dotted_keys", lambda _payload: overlay)
 
-    cfg = load_app_config(config)
-
-    assert cfg.io.analysis_subdir == "analysis"
-    assert cfg.io.results_dir_prefix == Path("custom")
-    assert cfg.sim.n_players_list == [5]
-    assert cfg.sim.expanded_metrics is True
-    assert cfg.analysis.run_frequentist is True
+    with pytest.raises(ValueError, match="Retired config key 'io.analysis_dir'"):
+        load_app_config(config)
 
 
-def test_load_app_config_handles_read_only_sim_without_mutating_source(
+def test_load_app_config_rejects_read_only_legacy_sim_without_mutating_source(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     config = tmp_path / "sim_read_only.yaml"
@@ -160,11 +123,10 @@ def test_load_app_config_handles_read_only_sim_without_mutating_source(
 
     monkeypatch.setattr("farkle.config.expand_dotted_keys", lambda _payload: {"sim": sim_payload})
 
-    cfg = load_app_config(config)
+    with pytest.raises(ValueError, match="Retired config key 'sim.n_players'"):
+        load_app_config(config)
 
     assert sim_payload == {"n_players": 7, "collect_metrics": True}
-    assert cfg.sim.n_players_list == [7]
-    assert cfg.sim.expanded_metrics is True
 
 def test_load_app_config_keeps_results_dir(write_yaml) -> None:
     config = write_yaml(
@@ -271,9 +233,17 @@ def test_apply_dot_overrides_unknown_option() -> None:
 @pytest.mark.parametrize(
     ("override", "attribute", "expected"),
     [
-        ("analysis.run_report=ON", ("analysis", "run_report"), True),
+        (
+            "analysis.disable_rng_diagnostics=ON",
+            ("analysis", "disable_rng_diagnostics"),
+            True,
+        ),
         ("sim.seed=42", ("sim", "seed"), 42),
-        ("io.results_dir_prefix=tmp/output_seed_9", ("io", "results_dir_prefix"), Path("tmp/output")),
+        (
+            "io.results_dir_prefix=tmp/output_seed_9",
+            ("io", "results_dir_prefix"),
+            Path("tmp/output_seed_9"),
+        ),
         
     ],
 )
@@ -346,16 +316,6 @@ def test_annotation_contains(annotation, target, expected: bool) -> None:
     ("payload", "seed_list_len", "message"),
     [
         (
-            {"sim": {"seed": 9, "seed_pair": [8, 9]}},
-            None,
-            "sim.seed must match seed_pair\\[0\\] when both are set",
-        ),
-        (
-            {"sim": {"seed_list": [1, 2], "seed_pair": [1, 3]}},
-            None,
-            "load_app_config: sim.seed_list and sim.seed_pair must match when both are set",
-        ),
-        (
             {"sim": {"seed_list": [1, 2]}},
             1,
             "load_app_config: sim.seed_list must contain exactly 1 seeds, got \\[1, 2\\]",
@@ -376,7 +336,6 @@ def test_load_app_config_seed_list_normalization(write_yaml) -> None:
 
     assert cfg.sim.seed_list == [8, 9]
     assert cfg.sim.seed == 8
-    assert cfg.sim.seed_pair == (8, 9)
 
 
 # --- seed validation + normalization branches ---
@@ -396,34 +355,18 @@ def test_normalize_seed_list_rejects_invalid_shapes(seed_list, error, message: s
         _normalize_seed_list(sim)
 
 
-@pytest.mark.parametrize(
-    ("seed_pair", "seed_provided", "error", "message"),
-    [
-        (123, False, TypeError, "sim.seed_pair must be a tuple/list of two integers"),
-        ([1], False, ValueError, "sim.seed_pair must contain exactly two seeds"),
-    ],
-)
-def test_normalize_seed_pair_rejects_invalid_shapes(
-    seed_pair, seed_provided: bool, error, message: str
-) -> None:
-    sim = SimConfig(seed_pair=seed_pair)
-
-    with pytest.raises(error, match=message):
-        _normalize_seed_pair(sim, seed_provided=seed_provided)
-
-
-def test_normalize_seed_pair_autosyncs_seed_when_seed_not_explicitly_provided() -> None:
-    sim = SimConfig(seed=999, seed_pair=(12, 34))
-
-    _normalize_seed_pair(sim, seed_provided=False)
-
-    assert sim.seed == 12
-
-
-def test_load_app_config_seed_list_len_two_autopopulates_seed_pair(write_yaml) -> None:
+def test_load_app_config_seed_list_len_two_remains_canonical(write_yaml) -> None:
     cfg = load_app_config(write_yaml("seed_pair_autopop.yaml", {"sim": {"seed_list": [31, 47]}}))
 
-    assert cfg.sim.seed_pair == (31, 47)
+    assert cfg.sim.seed_list == [31, 47]
+    assert not hasattr(cfg.sim, "seed_pair")
+
+
+def test_load_app_config_rejects_retired_seed_pair(write_yaml) -> None:
+    config = write_yaml("retired_roots.yaml", {"sim": {"seed_pair": [11, 12]}})
+
+    with pytest.raises(ValueError, match="Retired config key 'sim.seed_pair'"):
+        load_app_config(config)
 
 
 def test_load_app_config_logs_legacy_seed_precedence_warning(
@@ -431,7 +374,7 @@ def test_load_app_config_logs_legacy_seed_precedence_warning(
 ) -> None:
     config = write_yaml(
         "seed_precedence_warning.yaml",
-        {"sim": {"seed": 11, "seed_pair": [11, 12], "seed_list": [11, 12]}},
+        {"sim": {"seed": 11, "seed_list": [11, 12]}},
     )
 
     with caplog.at_level("WARNING"):
@@ -439,7 +382,7 @@ def test_load_app_config_logs_legacy_seed_precedence_warning(
 
     assert cfg.sim.seed == 11
     assert any(
-        "sim.seed_list overrides legacy sim.seed/seed_pair settings" in rec.message
+        "sim.seed_list overrides sim.seed" in rec.message
         for rec in caplog.records
     )
 
@@ -454,7 +397,6 @@ def test_load_app_config_per_n_seed_override_tracking_valid_int_key(write_yaml) 
 
     assert cfg.sim.per_n[5].seed_list == [7, 8]
     assert cfg.sim.per_n[5].seed == 7
-    assert cfg.sim.per_n[5].seed_pair == (7, 8)
 
 
 def test_load_app_config_per_n_non_int_key_raises_gracefully(write_yaml) -> None:
@@ -531,54 +473,34 @@ def test_meta_input_path_requires_by_k_scope(tmp_path: Path) -> None:
     assert cfg.meta_input_path(5, name) != wrong_scope
 
 
-def test_post_h2h_path_fallback_ordering(tmp_path: Path) -> None:
+def test_retired_artifact_path_helpers_are_absent(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    filename = "ratings_combined.parquet"
-    canonical = cfg.canonical_artifact_name(filename)
-    post_h2h_stage = cfg._stage_dir_if_active("post_h2h") / canonical  # type: ignore[operator]
-    head2head_stage = cfg._stage_dir_if_active("head2head") / canonical  # type: ignore[operator]
-    legacy = cfg.analysis_dir / canonical
-
-    post_h2h_stage.parent.mkdir(parents=True, exist_ok=True)
-    post_h2h_stage.write_text("post_h2h")
-    assert cfg.post_h2h_path(filename) == post_h2h_stage
-
-    post_h2h_stage.unlink()
-    head2head_stage.parent.mkdir(parents=True, exist_ok=True)
-    head2head_stage.write_text("head2head")
-    assert cfg.post_h2h_path(filename) == head2head_stage
-
-    head2head_stage.unlink()
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text("legacy")
-    assert cfg.post_h2h_path(filename) == legacy
+    for name in (
+        "canonical_artifact_name",
+        "post_h2h_path",
+        "trueskill_path",
+        "frequentist_path",
+    ):
+        assert not hasattr(cfg, name)
 
 
 # --- override coercion + warnings ---
 
 
-def test_apply_dot_overrides_alias_remap_and_deprecated_flag_warning(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
+def test_apply_dot_overrides_rejects_retired_aliases_and_flags() -> None:
     cfg = AppConfig()
 
-    with caplog.at_level("WARNING"):
-        apply_dot_overrides(
-            cfg, ["io.results_dir=/tmp/remapped_seed_9", "analysis.run_report=true"]
-        )
-
-    assert cfg.io.results_dir_prefix == Path("/tmp/remapped")
-    assert any(
-        "Deprecated analysis flag override provided; stages ignore it" in rec.message
-        for rec in caplog.records
-    )
+    with pytest.raises(ValueError, match="Retired config key 'io.results_dir'"):
+        apply_dot_overrides(cfg, ["io.results_dir=/tmp/remapped_seed_9"])
+    with pytest.raises(ValueError, match="Retired config key 'analysis.run_report'"):
+        apply_dot_overrides(cfg, ["analysis.run_report=true"])
 
 
 def test_apply_dot_overrides_invalid_bool_raises() -> None:
     cfg = AppConfig()
 
     with pytest.raises(ValueError, match="Cannot parse boolean value"):
-        apply_dot_overrides(cfg, ["analysis.run_report=definitely-not-bool"])
+        apply_dot_overrides(cfg, ["analysis.disable_rng_diagnostics=definitely-not-bool"])
 
 
 def test_load_app_config_overlay_and_dot_override_round_trip_is_deterministic(write_yaml) -> None:
@@ -587,7 +509,7 @@ def test_load_app_config_overlay_and_dot_override_round_trip_is_deterministic(wr
         {
             "io": {"results_dir_prefix": "results"},
             "sim": {"seed": 3, "n_players_list": [5, 7]},
-            "analysis": {"log_level": "INFO", "run_report": False},
+            "analysis": {"log_level": "INFO"},
         },
     )
     overlay = write_yaml(
@@ -596,13 +518,13 @@ def test_load_app_config_overlay_and_dot_override_round_trip_is_deterministic(wr
             "io.analysis_subdir": "custom",
             "sim": {"seed_list": [3]},
             "screening": {"resolution_delta": 0.04},
-            "analysis": {"run_report": True},
+            "analysis": {"disable_rng_diagnostics": True},
         },
     )
     overrides = [
         "analysis.log_level=DEBUG",
         "sim.seed=3",
-        "io.results_dir_prefix=data/results_seed_3",
+        "io.results_dir_prefix=results",
     ]
 
     cfg_a = apply_dot_overrides(load_app_config(base, overlay), overrides)
@@ -612,7 +534,7 @@ def test_load_app_config_overlay_and_dot_override_round_trip_is_deterministic(wr
     assert cfg_a.analysis_dir == Path("data") / "results_seed_3" / "custom"
 
 
-def test_curated_parquet_falls_back_without_curate_stage(tmp_path: Path) -> None:
+def test_canonical_stage_helpers_do_not_fall_back(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
     cfg.set_stage_layout(
         StageLayout(
@@ -629,7 +551,8 @@ def test_curated_parquet_falls_back_without_curate_stage(tmp_path: Path) -> None
     curated = cfg.curated_parquet
 
     assert curated.name == "all_ingested_rows.parquet"
-    assert cfg.data_dir == cfg.analysis_dir / "curate"
+    with pytest.raises(KeyError, match="curate"):
+        _ = cfg.data_dir
 
 
 def test_curated_parquet_prefers_interseed_combine_input(tmp_path: Path) -> None:
@@ -650,7 +573,7 @@ def test_curated_parquet_prefers_interseed_combine_input(tmp_path: Path) -> None
     curated = cfg.curated_parquet
 
     assert curated == upstream_curated
-    assert cfg.curated_parquet_candidates()[0] == upstream_curated
+    assert not hasattr(cfg, "curated_parquet_candidates")
 
 
 def test_curate_stage_dir_prefers_layout_folder(tmp_path: Path) -> None:
@@ -675,8 +598,8 @@ def test_curate_stage_dir_prefers_layout_folder(tmp_path: Path) -> None:
         (
             {
                 "io": {
-                    "results_dir": "data/custom_seed_4",
-                    "analysis_dir": "alt_analysis",
+                    "results_dir_prefix": "custom",
+                    "analysis_subdir": "alt_analysis",
                 }
             },
             Path("data") / "custom_seed_0",
@@ -698,15 +621,17 @@ def test_load_app_config_defaults_and_overrides(
 @pytest.mark.parametrize(
     ("input_prefix", "expected_prefix"),
     [
-        ("data/results_seed_10", Path("results")),
-        ("nested/output_seed_2", Path("nested/output")),
+        ("data/results_seed_10", Path("data/results_seed_10")),
+        ("nested/output_seed_2", Path("nested/output_seed_2")),
         (Path("already_normal"), Path("already_normal")),
     ],
 )
 def test_results_dir_normalization_via_load_and_overrides(
     write_yaml, input_prefix, expected_prefix
 ) -> None:
-    config = write_yaml("norm.yaml", {"io": {"results_dir": str(input_prefix)}})
+    config = write_yaml(
+        "norm.yaml", {"io": {"results_dir_prefix": str(input_prefix)}}
+    )
 
     cfg = load_app_config(config)
     assert cfg.io.results_dir_prefix == expected_prefix
@@ -780,7 +705,7 @@ def test_stage_layout_edge_case_resolve_stage_dir_without_folder(tmp_path: Path)
     with pytest.raises(KeyError):
         cfg.stage_dir("curate")
 
-    assert cfg.resolve_stage_dir("curate", allow_missing=True) == cfg.analysis_dir / "curate"
+    assert not hasattr(cfg, "resolve_stage_dir")
 
 
 def test_normalize_compression_rejects_invalid_codec() -> None:
@@ -818,20 +743,14 @@ def test_sim_config_resolve_seed_list_uses_seed_fallback_for_single_seed() -> No
     assert SimConfig(seed=17).resolve_seed_list(1) == [17]
 
 
-def test_sim_config_resolve_seed_list_uses_seed_pair_fallback_for_two_seed() -> None:
-    assert SimConfig(seed_pair=(17, 23)).resolve_seed_list(2) == [17, 23]
+def test_sim_config_resolve_seed_list_requires_explicit_two_root_list() -> None:
+    with pytest.raises(ValueError, match="sim.seed_list must be set"):
+        SimConfig().resolve_seed_list(2)
 
 
 def test_sim_config_resolve_seed_list_rejects_unsupported_length() -> None:
-    with pytest.raises(ValueError, match="Unsupported expected seed length 3"):
+    with pytest.raises(ValueError, match="sim.seed_list must be set"):
         SimConfig().resolve_seed_list(3)
-
-
-def test_sim_config_populate_seed_list_rejects_conflicting_sources() -> None:
-    sim = SimConfig(seed_list=[1, 2], seed_pair=(1, 3))
-
-    with pytest.raises(ValueError, match="sim.seed_list and sim.seed_pair must match"):
-        sim.populate_seed_list(2)
 
 
 def test_sim_config_populate_seed_list_expected_len_1_updates_seed() -> None:
@@ -844,13 +763,13 @@ def test_sim_config_populate_seed_list_expected_len_1_updates_seed() -> None:
     assert sim.seed_list == [13]
 
 
-def test_sim_config_populate_seed_list_expected_len_2_sets_seed_pair_and_syncs_seed() -> None:
+def test_sim_config_populate_seed_list_expected_len_2_syncs_primary_seed() -> None:
     sim = SimConfig(seed=5, seed_list=[13, 21])
 
     seeds = sim.populate_seed_list(2)
 
     assert seeds == [13, 21]
-    assert sim.seed_pair == (13, 21)
+    assert sim.seed_list == [13, 21]
     assert sim.seed == 13
 
 
@@ -859,14 +778,13 @@ def test_sim_config_require_seed_pair_rejects_invalid_seed_list_length() -> None
         SimConfig(seed_list=[1]).require_seed_pair()
 
 
-def test_sim_config_require_seed_pair_rejects_missing_seed_pair() -> None:
-    with pytest.raises(ValueError, match="sim.seed_pair must be set"):
+def test_sim_config_require_seed_pair_rejects_missing_seed_list() -> None:
+    with pytest.raises(ValueError, match="sim.seed_list must contain exactly two seeds"):
         SimConfig().require_seed_pair()
 
 
-def test_sim_config_require_seed_pair_accepts_seed_list_or_seed_pair() -> None:
+def test_sim_config_require_seed_pair_accepts_seed_list() -> None:
     assert SimConfig(seed_list=[4, 9]).require_seed_pair() == (4, 9)
-    assert SimConfig(seed_pair=(11, 12)).require_seed_pair() == (11, 12)
 
 
 def test_interseed_input_folder_supports_none_mapping_and_stage_layout() -> None:
@@ -944,40 +862,7 @@ def test_interseed_input_candidate_relative_and_fallback(tmp_path: Path) -> None
     )
 
 
-def test_preferred_stage_path_candidate_ordering(tmp_path: Path) -> None:
-    cfg = AppConfig(
-        io=IOConfig(
-            results_dir_prefix=tmp_path / "results",
-            interseed_input_dir=tmp_path / "upstream",
-            interseed_input_layout={"trueskill": "05_trueskill"},
-        )
-    )
-    stage_dir = cfg.analysis_dir / (cfg.stage_layout.folder_for("trueskill") or "trueskill")
-    legacy_dir = cfg.analysis_dir
-    stage_dir.mkdir(parents=True, exist_ok=True)
-    filename = "ratings_k_weighted.parquet"
-
-    stage_path = stage_dir / filename
-    stage_path.write_text("stage")
-    assert cfg._preferred_stage_path(stage_dir, legacy_dir, filename) == stage_path
-
-    stage_path.unlink()
-    interseed_path = tmp_path / "upstream" / "05_trueskill" / filename
-    interseed_path.parent.mkdir(parents=True, exist_ok=True)
-    interseed_path.write_text("input")
-    assert cfg._preferred_stage_path(stage_dir, legacy_dir, filename) == interseed_path
-
-    interseed_path.unlink()
-    legacy_path = legacy_dir / filename
-    legacy_path.parent.mkdir(parents=True, exist_ok=True)
-    legacy_path.write_text("legacy")
-    assert cfg._preferred_stage_path(stage_dir, legacy_dir, filename) == legacy_path
-
-    legacy_path.unlink()
-    assert cfg._preferred_stage_path(stage_dir, legacy_dir, filename) == stage_path
-
-
-def test_resolve_stage_artifact_path_ordering_for_combine_and_non_combine(tmp_path: Path) -> None:
+def test_removed_fallback_resolvers_cannot_be_called(tmp_path: Path) -> None:
     cfg = AppConfig(
         io=IOConfig(
             results_dir_prefix=tmp_path / "results",
@@ -985,70 +870,9 @@ def test_resolve_stage_artifact_path_ordering_for_combine_and_non_combine(tmp_pa
             interseed_input_layout={"combine": "01_combine", "screening": "08_screening"},
         )
     )
-
-    combine_stage = cfg._stage_dir_if_active("combine", "combined")
-    assert combine_stage is not None
-    combine_local = combine_stage / "all_ingested_rows.parquet"
-    combine_local.parent.mkdir(parents=True, exist_ok=True)
-    combine_local.write_text("local")
-    combine_input = tmp_path / "upstream" / "01_combine" / "combined" / "all_ingested_rows.parquet"
-    combine_input.parent.mkdir(parents=True, exist_ok=True)
-    combine_input.write_text("input")
-    assert (
-        cfg._resolve_stage_artifact_path("combine", "all_ingested_rows.parquet", "combined")
-        == combine_input
-    )
-
-    screening_stage = cfg._stage_dir_if_active("screening")
-    assert screening_stage is not None
-    screening_local = screening_stage / "descriptive_screening.json"
-    screening_local.parent.mkdir(parents=True, exist_ok=True)
-    screening_local.write_text("local")
-    screening_input = tmp_path / "upstream" / "08_screening" / "descriptive_screening.json"
-    screening_input.parent.mkdir(parents=True, exist_ok=True)
-    screening_input.write_text("input")
-    assert (
-        cfg._resolve_stage_artifact_path("screening", "descriptive_screening.json")
-        == screening_local
-    )
-
-    screening_local.unlink()
-    screening_input.unlink()
-    legacy = cfg.analysis_dir / "legacy_screening.json"
-    legacy.parent.mkdir(parents=True, exist_ok=True)
-    legacy.write_text("legacy")
-    assert (
-        cfg._resolve_stage_artifact_path(
-            "screening", "descriptive_screening.json", legacy_paths=(legacy,)
-        )
-        == legacy
-    )
-
-
-def test_preferred_tiers_path_fallback_ordering(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-
-    frequentist_path = cfg._resolve_stage_artifact_path("frequentist", "tiers.json")
-    frequentist_path.parent.mkdir(parents=True, exist_ok=True)
-    frequentist_path.write_text("frequentist")
-    assert cfg.preferred_tiers_path() == frequentist_path
-
-    frequentist_path.unlink()
-    trueskill_path = cfg._resolve_stage_artifact_path("trueskill", "tiers.json")
-    trueskill_path.parent.mkdir(parents=True, exist_ok=True)
-    trueskill_path.write_text("trueskill")
-    assert cfg.preferred_tiers_path() == trueskill_path
-
-    trueskill_path.unlink()
-    analysis_path = cfg.analysis_dir / "tiers.json"
-    analysis_path.parent.mkdir(parents=True, exist_ok=True)
-    analysis_path.write_text("analysis")
-    assert cfg.preferred_tiers_path() == analysis_path
-
-    analysis_path.unlink()
-    assert cfg.preferred_tiers_path() == cfg._resolve_stage_artifact_path(
-        "frequentist", "tiers.json"
-    )
+    assert not hasattr(cfg, "_preferred_stage_path")
+    assert not hasattr(cfg, "_resolve_stage_artifact_path")
+    assert not hasattr(cfg, "preferred_tiers_path")
 
 
 def test_load_app_config_rejects_all_k_player_sentinels(write_yaml) -> None:
@@ -1065,12 +889,11 @@ def test_load_app_config_rejects_all_k_player_sentinels(write_yaml) -> None:
         load_app_config(bad_config)
 
 
-def test_load_app_config_reads_run_frequentist(write_yaml) -> None:
+def test_load_app_config_rejects_run_frequentist(write_yaml) -> None:
     config = write_yaml("freq_flag.yaml", {"analysis": {"run_frequentist": False}})
 
-    cfg = load_app_config(config)
-
-    assert cfg.analysis.run_frequentist is False
+    with pytest.raises(ValueError, match="Retired config key 'analysis.run_frequentist'"):
+        load_app_config(config)
 
 
 def test_load_app_config_rejects_non_sim_bad_section_shape(write_yaml) -> None:
@@ -1080,7 +903,7 @@ def test_load_app_config_rejects_non_sim_bad_section_shape(write_yaml) -> None:
         load_app_config(config)
 
 
-def test_small_properties_cover_combined_and_trueskill_variants(tmp_path: Path) -> None:
+def test_small_properties_cover_canonical_agreement_paths(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
 
     across_k_path = cfg.agreement_across_k_output_path()
@@ -1088,47 +911,46 @@ def test_small_properties_cover_combined_and_trueskill_variants(tmp_path: Path) 
     assert across_k_path.parent.name == "diagnostics"
     assert cfg.agreement_output_path(5).name == "agreement_5p.json"
 
-    combined_trueskill = cfg.trueskill_path("ratings_combined.parquet")
-    assert combined_trueskill.name in {"ratings_k_weighted.parquet", "ratings_combined.parquet"}
-    non_combined = cfg.trueskill_path("tiers.json")
-    assert non_combined.name == "tiers.json"
+    assert not hasattr(cfg, "trueskill_path")
+    assert (cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet").parent.name == (
+        "across_k"
+    )
 
 
-def test_app_config_stage_and_alias_helpers_cover_common_paths(tmp_path: Path) -> None:
+def test_app_config_stage_and_canonical_scope_helpers_cover_common_paths(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
 
     assert cfg.ingest_block_dir(5).name == "5p"
     assert cfg.curate_block_dir(5).name == "5p"
-    assert cfg.combine_block_dir(5).name == "5p"
-    assert cfg.combine_combined_dir().name == "concat_ks"
+    assert cfg.concat_ks_dir("combine").name == "concat_ks"
     assert cfg.metrics_per_k_dir(5).name == "5p"
-    assert cfg.metrics_combined_dir.name == "across_k"
+    assert cfg.across_k_dir("metrics").name == "across_k"
 
     assert cfg.game_stats_stage_dir.parent == cfg.analysis_dir
-    assert cfg.game_stats_combined_dir.name == "across_k"
+    assert cfg.across_k_dir("game_stats").name == "across_k"
     assert cfg.seed_summaries_stage_dir.parent == cfg.analysis_dir
     assert cfg.seed_summaries_dir(5).name == "5p"
     assert cfg.variance_stage_dir.parent == cfg.analysis_dir
-    assert cfg.variance_combined_dir.name == "cross_seed"
+    assert cfg.cross_seed_dir("variance").name == "cross_seed"
     assert cfg.meta_stage_dir.parent == cfg.analysis_dir
-    assert cfg.meta_combined_dir.name == "cross_seed"
+    assert cfg.cross_seed_dir("meta").name == "cross_seed"
     assert cfg.agreement_stage_dir.parent == cfg.analysis_dir
     assert cfg.interseed_stage_dir.parent == cfg.analysis_dir
     assert cfg.ingest_stage_dir.parent == cfg.analysis_dir
     assert cfg.combine_stage_dir.parent == cfg.analysis_dir
     assert cfg.metrics_stage_dir.parent == cfg.analysis_dir
     assert cfg.trueskill_stage_dir.parent == cfg.analysis_dir
-    assert cfg.trueskill_combined_dir.name == "across_k"
+    assert cfg.across_k_dir("trueskill").name == "across_k"
     assert cfg.head2head_stage_dir.parent == cfg.analysis_dir
     assert cfg.post_h2h_stage_dir.parent == cfg.analysis_dir
     assert cfg.hgb_stage_dir.parent == cfg.analysis_dir
     assert cfg.hgb_per_k_dir(7).name == "7p"
-    assert cfg.hgb_combined_dir.name == "across_k"
+    assert cfg.across_k_dir("hgb").name == "across_k"
     assert cfg.hgb_importance_path(7).name == "feature_importance_7p.parquet"
     assert cfg.hgb_predictive_scores_path(7).name == "heldout_predictive_scores_7p.parquet"
     assert cfg.hgb_fold_metrics_path(7).name == "heldout_fold_metrics_7p.parquet"
     assert cfg.hgb_future_proposals_path().name == "future_simulation_proposals.parquet"
-    assert cfg.frequentist_stage_dir.parent == cfg.analysis_dir
+    assert cfg.screening_stage_dir.parent == cfg.analysis_dir
 
     assert cfg.n_dir(5).name == "5_players"
     assert cfg.checkpoint_path(5).name == "5p_checkpoint.pkl"
@@ -1147,9 +969,8 @@ def test_app_config_input_output_helpers_cover_stage_wrappers(tmp_path: Path) ->
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
 
     assert cfg.metrics_output_path("m.parquet").name == "m.parquet"
-    assert (
-        cfg.game_stats_output_path("margin_combined.parquet").name
-        == "margin_strategy_conditioned_equal_k_mean.parquet"
+    assert cfg.game_stats_output_path("margin_equal_k_mean.parquet").name == (
+        "margin_equal_k_mean.parquet"
     )
     assert cfg.game_stats_input_path("stats.parquet").name == "stats.parquet"
     assert cfg.variance_output_path("variance.json").name == "variance.json"
@@ -1204,7 +1025,7 @@ def test_rng_paths_when_rng_stage_registered(tmp_path: Path) -> None:
     out_path = cfg.rng_output_path("rng.json")
     out_path.write_text("rng")
 
-    assert cfg.rng_combined_dir.name == "diagnostics"
+    assert cfg.diagnostics_dir("rng_diagnostics").name == "diagnostics"
     assert cfg.rng_stage_dir.parent == cfg.analysis_dir
     assert cfg.rng_input_path("rng.json") == out_path
 
@@ -1339,7 +1160,7 @@ def test_freshness_key_covers_every_locked_statistical_dimension() -> None:
     freshness = cfg.freshness_key()
 
     assert freshness == {
-        "artifact_contract_version": 1,
+        "artifact_contract_version": 2,
         "estimand_version": 1,
         "schema_version": 1,
         "rng_scheme_version": 1,
@@ -1376,7 +1197,11 @@ def test_stage_freshness_hash_changes_for_each_contract_version(version_field: s
     cfg = AppConfig(sim=SimConfig(n_players_list=[2, 4]))
     before = cfg.stage_config_sha("metrics")
 
-    setattr(cfg.artifact_contract, version_field, 2)
+    setattr(
+        cfg.artifact_contract,
+        version_field,
+        getattr(cfg.artifact_contract, version_field) + 1,
+    )
 
     assert cfg.stage_config_sha("metrics") != before
 

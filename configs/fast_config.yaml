@@ -44,12 +44,6 @@ analysis:
   n_jobs: 4
   mp_start_method: null
   log_level: "INFO"
-  head2head_target_hours: 1.0
-  head2head_tolerance_pct: 5.0
-  head2head_games_per_sec: null
-  frequentist_seeds: null
-  h2h_tier_trends_seed_s_tier_paths: null
-  h2h_tier_trends_interseed_s_tier_path: null
 
 ingest:
   row_group_size: 64000           # parquet/arrow row group target

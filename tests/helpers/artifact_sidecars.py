@@ -14,7 +14,7 @@ def sidecar_metadata(path: Path, *, scope: str = "concat_ks") -> ArtifactSidecar
     """Return minimal valid metadata for a test artifact."""
 
     return ArtifactSidecar(
-        artifact_contract_version=1,
+        artifact_contract_version=2,
         estimand_version=1,
         schema_version=1,
         artifact_name=path.name,
@@ -22,6 +22,7 @@ def sidecar_metadata(path: Path, *, scope: str = "concat_ks") -> ArtifactSidecar
         scope=scope,
         source_scope="by_k",
         operation="concatenate",
+        method_contract={"kind": "operation", "procedure": "concatenate"},
         baseline="none",
         weighted_quantity="none",
         k_aggregation_method="none",

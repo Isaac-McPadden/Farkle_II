@@ -25,7 +25,6 @@ def _cfg(tmp_path: Path, *, cap: int | None = 5) -> AppConfig:
         sim=SimConfig(
             seed=11,
             seed_list=[11, 22],
-            seed_pair=(11, 22),
             n_players_list=[2, 4],
         ),
     )

@@ -43,7 +43,7 @@ def test_seed_analysis_dirs_dedups_and_filters_nonexistent(tmp_path: Path) -> No
     (tmp_path / "sim_results_seed_3" / "analysis").mkdir(parents=True)
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=prefix),
-        sim=SimConfig(seed=1, seed_pair=(3, 3)),
+        sim=SimConfig(seed=1, seed_list=[3, 3]),
     )
 
     resolved = game_stats_interseed._seed_analysis_dirs(cfg)

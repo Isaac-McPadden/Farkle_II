@@ -28,7 +28,6 @@ def _cfg(tmp_path: Path) -> AppConfig:
         sim=SimConfig(
             seed=11,
             seed_list=[11, 22],
-            seed_pair=(11, 22),
             n_players_list=[2],
         ),
     )
@@ -86,7 +85,8 @@ def _publish_inputs(
 
     plan = {
         "family_hash": family_hash,
-        "schedule_state": "ready",
+        "planning_state": "complete_valid",
+        "execution_state": "complete_valid",
         "root_seeds": [11, 22],
         "unordered_pair_count": len(pairs),
         "target_power": 0.80,

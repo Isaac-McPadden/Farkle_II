@@ -168,9 +168,9 @@ def analyze_h2h(exp_dir: Path) -> None:
     exp_dir = Path(exp_dir)
     cfg = _config_for_results_dir(exp_dir)
     analysis_dir = cfg.analysis_dir
-    out = cfg.head2head_path("bonferroni_pairwise.parquet")
+    out = cfg.h2h_2p_dir() / "bonferroni_pairwise.parquet"
     done = _done_path(out)
-    tiers = cfg.preferred_tiers_path()
+    tiers = cfg.screening_path("tiers.json")
     inputs = [tiers]
     if is_up_to_date(done, inputs, [out]):
         print("SKIP h2h (up to date)")
@@ -190,7 +190,7 @@ def analyze_hgb(exp_dir: Path) -> None:
     exp_dir = Path(exp_dir)
     cfg = _config_for_results_dir(exp_dir)
     analysis_dir = cfg.hgb_stage_dir
-    out = cfg.hgb_combined_dir / "hgb_importance.json"
+    out = cfg.across_k_dir("hgb") / "hgb_importance.json"
     done = _done_path(out)
     metrics = [cfg.performance_by_k_path(k) for k in cfg.sim.n_players_list]
     inputs = list(metrics)
@@ -225,7 +225,7 @@ def analyze_agreement(exp_dir: Path) -> None:
     analysis_dir = cfg.analysis_dir
     ratings = _first_existing(
         [
-            cfg.trueskill_combined_dir / "ratings_k_weighted.parquet",
+            cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet",
             cfg.trueskill_stage_dir / "ratings_k_weighted.parquet",
             analysis_dir / "ratings_k_weighted.parquet",
             *analysis_dir.glob("*_trueskill/combined/ratings_k_weighted.parquet"),
@@ -247,7 +247,7 @@ def analyze_agreement(exp_dir: Path) -> None:
     for candidate in (
         _first_existing(
             [
-                cfg.frequentist_stage_dir / "frequentist_scores_k_weighted.parquet",
+                cfg.screening_stage_dir / "frequentist_scores_k_weighted.parquet",
                 analysis_dir / "frequentist_scores_k_weighted.parquet",
                 *analysis_dir.glob("*_frequentist/frequentist_scores_k_weighted.parquet"),
             ]

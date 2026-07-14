@@ -38,7 +38,7 @@ def run(
 ) -> None:
     """Compute deterministic seed-symmetry diagnostics from head-to-head self-play."""
 
-    source = cfg.head2head_path("bonferroni_selfplay_symmetry.parquet")
+    source = cfg.h2h_2p_dir() / "bonferroni_selfplay_symmetry.parquet"
     stage_dir = cfg.seed_symmetry_stage_dir
     done = stage_done_path(stage_dir, "seed_symmetry")
     out_seed = stage_dir / "seed_symmetry_checks.parquet"

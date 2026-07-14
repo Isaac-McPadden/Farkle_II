@@ -36,12 +36,6 @@ analysis:
   mp_start_method: null     # str|None: multiprocessing start method for analysis executors
   log_level: "INFO"         # str: logger level during analysis
   results_glob: "*_players" # str: glob selecting per-N result folders
-  head2head_target_hours: 8.0         # float: target runtime window for Bonferroni H2H (<=0 disables)
-  head2head_tolerance_pct: 5.0        # float: acceptable +/- percent around target hours
-  head2head_games_per_sec: null       # float|None: measured H2H throughput (games per second)
-  frequentist_seeds: null       # list[int]|None: seeds to include in frequentist ranking (default current seed)
-  h2h_tier_trends_seed_s_tier_paths: null  # list[Path|str]|None: explicit per-seed 11_post_h2h/h2h_s_tiers.json inputs
-  h2h_tier_trends_interseed_s_tier_path: null  # Path|str|None: explicit interseed-combined S-tier JSON input (mutually exclusive with per-seed paths)
   outputs: {}               # dict[str, Any]: optional custom output filenames
 
 ingest:

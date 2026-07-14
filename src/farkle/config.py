@@ -12,7 +12,6 @@ import hashlib
 import json
 import logging
 import math
-import re
 from dataclasses import dataclass, field, is_dataclass
 from enum import Enum
 from pathlib import Path
@@ -58,38 +57,6 @@ class ArtifactScope(str, Enum):
 
         return self is ArtifactScope.BY_K
 
-# Deprecated analysis-stage flags that no longer disable stages.
-DEPRECATED_ANALYSIS_FLAGS = {
-    "run_interseed",
-    "disable_game_stats",
-    "disable_trueskill",
-    "disable_head2head",
-    "disable_hgb",
-    "disable_frequentist",
-    "disable_agreement",
-    "run_trueskill",
-    "run_head2head",
-    "run_rng",
-    "run_game_stats",
-    "run_hgb",
-    "run_frequentist",
-    "run_post_h2h_analysis",
-    "run_agreement",
-    "run_report",
-}
-
-_CANONICAL_ARTIFACT_NAMES: dict[str, str] = {
-    "ratings_combined.parquet": "ratings_k_weighted.parquet",
-    "ratings_combined.json": "ratings_k_weighted.json",
-    "game_length_combined.parquet": "game_length_strategy_conditioned_equal_k_mean.parquet",
-    "game_length_k_weighted.parquet": "game_length_strategy_conditioned_equal_k_mean.parquet",
-    "margin_combined.parquet": "margin_strategy_conditioned_equal_k_mean.parquet",
-    "margin_k_weighted.parquet": "margin_strategy_conditioned_equal_k_mean.parquet",
-    "frequentist_scores.parquet": "frequentist_scores_k_weighted.parquet",
-    "frequentist_combined_provenance.json": "frequentist_k_weighted_provenance.json",
-    "agreement_combined.json": "agreement_k_weighted.json",
-}
-
 RETIRED_CONFIG_KEYS: dict[str, str] = {
     "sim.num_shuffles": "screening.resolution_delta and batching settings",
     "sim.power_method": "screening.resolution_delta",
@@ -110,11 +77,39 @@ RETIRED_CONFIG_KEYS: dict[str, str] = {
     "head2head.fdr_q": "head2head.family_alpha",
     "head2head.bonferroni_total_games_safeguard": "head2head.total_game_cap",
     "head2head.bonferroni_design": "typed head2head settings",
+    "head2head.games_per_pair": "head2head target power and practical effect",
+    "head2head.tie_break_policy": "dominance front display rules",
+    "head2head.tie_break_seed": "stable strategy identifier display ordering",
+    "head2head.use_tier_elites": "the frozen canonical candidate family",
+    "io.analysis_dir": "io.analysis_subdir",
+    "io.results_dir": "io.results_dir_prefix",
+    "sim.n_players": "sim.n_players_list",
+    "sim.collect_metrics": "sim.expanded_metrics",
+    "sim.seed_pair": "sim.seed_list",
 }
-
-_LEGACY_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
-    canonical: (legacy,) for legacy, canonical in _CANONICAL_ARTIFACT_NAMES.items()
-}
+RETIRED_CONFIG_KEYS.update(
+    {
+        f"analysis.{key}": "stage preconditions and canonical orchestration"
+        for key in (
+            "run_interseed",
+            "disable_game_stats",
+            "disable_trueskill",
+            "disable_head2head",
+            "disable_hgb",
+            "disable_frequentist",
+            "disable_agreement",
+            "run_trueskill",
+            "run_head2head",
+            "run_rng",
+            "run_game_stats",
+            "run_hgb",
+            "run_frequentist",
+            "run_post_h2h_analysis",
+            "run_agreement",
+            "run_report",
+        )
+    }
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Dataclasses (schema)
@@ -202,7 +197,7 @@ class RobustnessConfig:
 class ArtifactContractConfig:
     """Versions participating in artifact validation and cache freshness."""
 
-    artifact_contract_version: int = 1
+    artifact_contract_version: int = 2
     estimand_version: int = 1
     schema_version: int = 1
     baseline_version: int = 1
@@ -228,16 +223,13 @@ class SimConfig:
     ``seed_list`` is the canonical seed container. Single-seed commands (run,
     analyze, pipeline) require exactly one seed; two-seed orchestration requires
     exactly two seeds. ``seed`` remains the legacy primary seed for single-seed
-    workflows and for naming seed-suffixed results directories. ``seed_pair`` is
-    retained for compatibility with two-seed orchestration configs.
+    workflows and for naming seed-suffixed results directories.
     """
 
     n_players_list: list[int] = field(default_factory=lambda: [5])
     seed: int = 0
     seed_list: list[int] | None = None
     """Explicit seed list (len 1 for single-seed, len 2 for two-seed)."""
-    seed_pair: tuple[int, int] | None = None
-    """Legacy two-seed tuple for dual-seed orchestration (validated on load)."""
     expanded_metrics: bool = False
     row_dir: Path | None = None
     metric_chunk_dir: Path | None = None
@@ -266,8 +258,6 @@ class SimConfig:
         """Return the two seeds used for interseed analysis, if configured."""
         if self.seed_list is not None:
             return list(self.seed_list) if len(self.seed_list) == 2 else None
-        if self.seed_pair is not None:
-            return list(self.seed_pair)
         return None
 
     def resolve_seed_list(self, expected_len: int) -> list[int]:
@@ -283,89 +273,41 @@ class SimConfig:
             return list(self.seed_list)
         if expected_len == 1:
             return [self.seed]
-        if expected_len == 2:
-            if self.seed_pair is None:
-                raise ValueError(
-                    "sim.seed_list or sim.seed_pair must be set for two-seed orchestration"
-                )
-            return list(self.seed_pair)
-        raise ValueError(f"Unsupported expected seed length {expected_len}")
+        raise ValueError(
+            f"sim.seed_list must be set for orchestration requiring {expected_len} seeds"
+        )
 
     def populate_seed_list(self, expected_len: int) -> list[int]:
         """Populate ``seed_list`` based on current config and return it."""
-        if self.seed_list is not None and self.seed_pair is not None and list(self.seed_pair) != list(self.seed_list):
-            raise ValueError(
-                "sim.seed_list and sim.seed_pair must match when both are set"
-            )
         seeds = self.resolve_seed_list(expected_len)
         self.seed_list = list(seeds)
-        if expected_len == 1:
+        if expected_len in {1, 2}:
             self.seed = seeds[0]
-        elif expected_len == 2:
-            if self.seed_pair is None:
-                self.seed_pair = (seeds[0], seeds[1])
-            if self.seed != seeds[0]:
-                self.seed = seeds[0]
         return seeds
 
     def require_seed_pair(self) -> tuple[int, int]:
-        """Return ``seed_pair`` or raise if two-seed orchestration is requested."""
+        """Return the two canonical roots or raise when support is incomplete."""
         if self.seed_list is not None:
             if len(self.seed_list) != 2:
                 raise ValueError(
                     f"sim.seed_list must contain exactly two seeds, got {self.seed_list!r}"
                 )
             return (self.seed_list[0], self.seed_list[1])
-        if self.seed_pair is None:
-            raise ValueError("sim.seed_pair must be set for two-seed orchestration")
-        return self.seed_pair
+        raise ValueError("sim.seed_list must contain exactly two seeds")
 
 
 @dataclass
 class AnalysisConfig:
-    """Analysis-stage parameters controlling downstream analytics.
-
-    Deprecated ``run_*`` and ``disable_*`` toggles are retained for legacy configs,
-    but no longer disable stages (except ``disable_rng_diagnostics``). Stages now
-    run (or skip) based on inputs and preconditions instead of manual toggles.
-    """
-
-    run_interseed: bool = True
-    """Deprecated: interseed stages are scheduled based on available inputs."""
-
-    # Deprecated disable_* flags ignored in favor of precondition checks.
-    disable_game_stats: bool = False
-    disable_trueskill: bool = False
-    disable_head2head: bool = False
-    disable_hgb: bool = False
-    disable_frequentist: bool = False
-    disable_agreement: bool = False
+    """Analysis-stage parameters that remain outside typed method settings."""
 
     disable_rng_diagnostics: bool = False
     """Disable RNG diagnostics even when interseed analytics run by default."""
-
-    # Deprecated run_* toggles retained for legacy configs (ignored).
-    run_trueskill: bool = True
-    run_head2head: bool = True
-    run_rng: bool = True
-    run_game_stats: bool = True
-    run_hgb: bool = True
-    run_frequentist: bool = True
-    """Plan step 6: per-seed frequentist ranking and tier reporting."""
-    run_post_h2h_analysis: bool = True
-    """Execute the post head-to-head clean-up pass (plan step 5)."""
-
-    run_agreement: bool = True
-    """Generate the agreement analysis between model outputs (plan step 8)."""
 
     agreement_strategies: tuple[str, ...] | None = None
     """Optional subset of strategies to include when computing agreement metrics."""
 
     agreement_include_across_k: bool = False
     """Whether agreement analysis should emit a declared cross-k comparison payload."""
-
-    run_report: bool = True
-    """Emit the final report artifacts (plan step 9)."""
 
     n_jobs: int = 1
     """Parallel worker setting (`0` => os.cpu_count(), `>0` => explicit)."""
@@ -374,30 +316,6 @@ class AnalysisConfig:
     progress_logging: ProgressLogConfig = field(default_factory=ProgressLogConfig)
     log_level: str = "INFO"
     results_glob: str = "*_players"
-    meta_random_if_I2_gt: float = 25.0
-    """Switch to random-effects aggregation once I^2 crosses this threshold."""
-    meta_max_other_seeds: int | None = None
-    """Optional cap on comparison seeds (excluding the current sim.seed)."""
-    meta_comparison_seed: int | None = None
-    """Optional fixed comparison seed when limiting meta analysis partners."""
-    head2head_target_hours: float = 8.0
-    """Target runtime (in hours) for head-to-head autotuning; <=0 disables the feature."""
-
-    head2head_tolerance_pct: float = 5.0
-    """Allowed +/- percent variance when computing the target head-to-head runtime."""
-
-    head2head_games_per_sec: float | None = None
-    """Measured throughput override for head-to-head simulations (games/second)."""
-    head2head_force_calibrate: bool = False
-    frequentist_seeds: list[int] | None = None
-    """Explicit seeds to use when running the frequentist ranking stage."""
-
-    tier_z_star: float = 1.645
-    """Z-threshold used when building human-readable tier bands."""
-    tier_min_gap: float | None = None
-    """Optional minimum absolute gap required to split adjacent tiers."""
-    frequentist_weights_by_k: dict[int, float] | None = None
-    """Optional per-player-count weights for combined frequentist scores."""
     # Optional outputs block may be provided in YAML
     # outputs:
     #   curated_rows_name: "game_rows.parquet"
@@ -406,10 +324,6 @@ class AnalysisConfig:
     outputs: dict[str, Any] = field(default_factory=dict)
     game_stats_margin_thresholds: tuple[int, ...] = (500, 1000)
     """Victory-margin thresholds used by game stats and rare-event summaries."""
-    k_aggregation_method: str = "game-count"
-    """Weighting scheme for combined game stats across player counts."""
-    k_weights: dict[int, float] | None = None
-    """Optional per-player-count weights for combined game-stat summaries."""
     rare_event_target_score: int = 10_000
     """Score threshold used to flag games where multiple players crossed the target."""
     rare_event_write_details: bool = False
@@ -420,12 +334,6 @@ class AnalysisConfig:
     """Optional target rate for multi-target rare-event thresholds."""
     rng_max_matchup_groups: int | None = 100_000
     """Cap matchup-strategy group states in RNG diagnostics to bound memory use."""
-
-    h2h_tier_trends_seed_s_tier_paths: list[Path] | None = None
-    """Optional explicit per-seed S-tier JSON paths for h2h tier trends."""
-
-    h2h_tier_trends_interseed_s_tier_path: Path | None = None
-    """Optional interseed-combined S-tier JSON path for h2h tier trends."""
 
 @dataclass
 class IngestConfig:
@@ -480,22 +388,6 @@ class Head2HeadConfig:
     total_game_cap: int | None = 100_000_000
     allow_single_root: bool = True
 
-    # Transitional implementation fields. Config files may not set these;
-    # the owning stages remove them when their replacements land.
-    games_per_pair: int = 10_000
-    fdr_q: float = 0.02
-    bonferroni_total_games_safeguard: int | None = 100_000_000
-    """Skip Bonferroni H2H when estimated total games exceed this (<=0 disables)."""
-    # If you ever add a nested design block here, it will still parse:
-    bonferroni_design: dict[str, Any] = field(default_factory=dict)
-    tie_break_policy: str = "neutral_edge"
-    """Strategy for handling tied win counts in post head-to-head analysis."""
-
-    tie_break_seed: int | None = None
-    """Optional RNG seed for deterministic tie-break simulation (defaults to sim.seed)."""
-
-    use_tier_elites: bool = False
-    """Deprecated compatibility flag; H2H always uses the combined ratings/frequentist union."""
 
 
 @dataclass
@@ -558,11 +450,6 @@ class AppConfig:
         if base.name.endswith(seed_suffix):
             return base
         return base.parent / f"{base.name}{seed_suffix}"
-
-    @property
-    def results_dir(self) -> Path:
-        """Deprecated alias for :meth:`results_root`."""
-        return self.results_root
 
     @property
     def analysis_dir(self) -> Path:
@@ -650,32 +537,6 @@ class AppConfig:
         """Validate locked production settings before expensive work is scheduled."""
 
         _validate_statistical_contract(self, require_two_roots=require_two_roots)
-
-    def resolve_stage_dir(
-        self,
-        key: str,
-        *,
-        allow_missing: bool = False,
-        required_by: str | None = "analysis pipeline",
-        create: bool = True,
-    ) -> Path:
-        """Return the resolved stage directory for ``key`` with optional fallback."""
-
-        folder = self.stage_layout.folder_for(key)
-        if folder is None:
-            if not allow_missing:
-                requirement = f" required by {required_by}" if required_by else ""
-                raise KeyError(
-                    f"Stage {key!r} is not active in the resolved layout{requirement}."
-                )
-            stage_root = self.analysis_dir / key
-            if create and not allow_missing:
-                stage_root.mkdir(parents=True, exist_ok=True)
-        else:
-            stage_root = self.analysis_dir / folder
-            if create:
-                stage_root.mkdir(parents=True, exist_ok=True)
-        return stage_root
 
     def stage_dir(self, key: str, *, required_by: str | None = "analysis pipeline") -> Path:
         """Return the resolved stage directory for ``key`` and create it."""
@@ -846,30 +707,15 @@ class AppConfig:
 
         return self.scope_dir(stage, ArtifactScope.H2H_2P)
 
-    def per_k_subdir(self, stage: str, k: int) -> Path:
-        """Deprecated alias for :meth:`by_k_dir`."""
-
-        return self.by_k_dir(stage, k)
-
     def ingest_block_dir(self, k: int) -> Path:
         """Directory holding ingest artifacts for ``k`` players."""
 
-        return self.per_k_subdir("ingest", k)
+        return self.by_k_dir("ingest", k)
 
     def curate_block_dir(self, k: int) -> Path:
         """Directory holding curated artifacts for ``k`` players."""
 
-        return self.per_k_subdir("curate", k)
-
-    def combine_block_dir(self, k: int) -> Path:
-        """Deprecated alias for :meth:`curate_block_dir`."""
-
-        return self.curate_block_dir(k)
-
-    def combine_combined_dir(self, k: int | None = None) -> Path:  # noqa: ARG002
-        """Deprecated alias for the row-preserving concatenation scope."""
-
-        return self.concat_ks_dir("combine")
+        return self.by_k_dir("curate", k)
 
     @property
     def combine_partitioned_dir(self) -> Path:
@@ -879,14 +725,7 @@ class AppConfig:
 
     def metrics_per_k_dir(self, k: int) -> Path:
         """Directory holding metrics artifacts for ``k`` players."""
-        path = self.per_k_subdir("metrics", k)
-        path.mkdir(parents=True, exist_ok=True)
-        return path
-
-    @property
-    def metrics_combined_dir(self) -> Path:
-        """Deprecated alias for cross-k metric estimates."""
-        path = self.across_k_dir("metrics")
+        path = self.by_k_dir("metrics", k)
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -897,22 +736,10 @@ class AppConfig:
         return self.stage_subdir("game_stats")
 
     @property
-    def game_stats_combined_dir(self) -> Path:
-        """Deprecated alias for cross-k game-stat summaries."""
-
-        return self.across_k_dir("game_stats")
-
-    @property
     def rng_stage_dir(self) -> Path:
         """Stage directory for RNG diagnostics."""
 
         return self.stage_subdir("rng_diagnostics")
-
-    @property
-    def rng_combined_dir(self) -> Path:
-        """Deprecated alias for non-estimand RNG diagnostics."""
-
-        return self.diagnostics_dir("rng_diagnostics")
 
     @property
     def seed_summaries_stage_dir(self) -> Path:
@@ -932,12 +759,6 @@ class AppConfig:
         return self.stage_subdir("variance")
 
     @property
-    def variance_combined_dir(self) -> Path:
-        """Deprecated alias for cross-root variance artifacts."""
-
-        return self.cross_seed_dir("variance")
-
-    @property
     def meta_stage_dir(self) -> Path:
         """Stage directory for meta-analysis outputs."""
 
@@ -947,12 +768,6 @@ class AppConfig:
         """Primary per-player meta-analysis directory."""
 
         return self.by_k_dir("meta", players)
-
-    @property
-    def meta_combined_dir(self) -> Path:
-        """Deprecated alias for cross-root meta-analysis artifacts."""
-
-        return self.cross_seed_dir("meta")
 
     @property
     def agreement_stage_dir(self) -> Path:
@@ -976,7 +791,7 @@ class AppConfig:
     def curate_stage_dir(self) -> Path:
         """Stage root for curated row outputs."""
 
-        return self.resolve_stage_dir("curate", allow_missing=True)
+        return self.stage_subdir("curate")
 
     @property
     def combine_stage_dir(self) -> Path:
@@ -995,12 +810,6 @@ class AppConfig:
         """Stage root for per-seed TrueSkill outputs."""
 
         return self.stage_subdir("trueskill")
-
-    @property
-    def trueskill_combined_dir(self) -> Path:
-        """Deprecated alias for descriptive cross-k TrueSkill outputs."""
-
-        return self.across_k_dir("trueskill")
 
     @property
     def head2head_stage_dir(self) -> Path:
@@ -1029,13 +838,7 @@ class AppConfig:
     def hgb_per_k_dir(self, k: int) -> Path:
         """Per-player-count HGB output directory."""
 
-        return self.per_k_subdir("hgb", k)
-
-    @property
-    def hgb_combined_dir(self) -> Path:
-        """Deprecated alias for descriptive cross-k HGB outputs."""
-
-        return self.across_k_dir("hgb")
+        return self.by_k_dir("hgb", k)
 
     def hgb_importance_path(self, k: int) -> Path:
         """Held-out permutation associations for one player count."""
@@ -1055,13 +858,7 @@ class AppConfig:
     def hgb_future_proposals_path(self) -> Path:
         """Candidate manifest reserved for a future simulation run."""
 
-        return self.hgb_combined_dir / "future_simulation_proposals.parquet"
-
-    @property
-    def frequentist_stage_dir(self) -> Path:
-        """Deprecated alias for descriptive screening outputs."""
-
-        return self.screening_stage_dir
+        return self.across_k_dir("hgb") / "future_simulation_proposals.parquet"
 
     @property
     def screening_stage_dir(self) -> Path:
@@ -1194,7 +991,7 @@ class AppConfig:
     def data_dir(self) -> Path:
         """Root directory for curated data under the curate stage."""
 
-        return self.resolve_stage_dir("curate", allow_missing=True)
+        return self.stage_subdir("curate")
 
     def n_dir(self, n: int) -> Path:
         """Convenience accessor for a specific ``<n>_players`` directory."""
@@ -1270,15 +1067,14 @@ class AppConfig:
         """Preferred path for combined metrics artifacts under the metrics stage."""
 
         filename = str(self.metrics_name if name is None else name)
-        path = self.metrics_combined_dir / filename
+        path = self.across_k_dir("metrics") / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
     def game_stats_output_path(self, name: str) -> Path:
         """Preferred path for across-k game-stat estimates."""
 
-        canonical_name = self.canonical_artifact_name(name)
-        path = self.game_stats_combined_dir / canonical_name
+        path = self.across_k_dir("game_stats") / name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -1307,7 +1103,7 @@ class AppConfig:
     def rng_output_path(self, name: str) -> Path:
         """Preferred path for combined RNG diagnostics."""
 
-        path = self.rng_combined_dir / name
+        path = self.diagnostics_dir("rng_diagnostics") / name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -1319,7 +1115,7 @@ class AppConfig:
     def variance_output_path(self, name: str) -> Path:
         """Preferred path for combined variance analytics."""
 
-        path = self.variance_combined_dir / name
+        path = self.cross_seed_dir("variance") / name
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -1364,17 +1160,17 @@ class AppConfig:
     def performance_across_k_path(self) -> Path:
         """Canonical complete-support equal-k performance estimates."""
 
-        return self.metrics_combined_dir / "performance_equal_k.parquet"
+        return self.across_k_dir("metrics") / "performance_equal_k.parquet"
 
     def performance_bootstrap_path(self) -> Path:
         """Joint batch-resampling summaries for equal-k performance."""
 
-        return self.metrics_combined_dir / "performance_bootstrap.parquet"
+        return self.across_k_dir("metrics") / "performance_bootstrap.parquet"
 
     def performance_control_contrasts_path(self) -> Path:
         """Across-k contrasts against declared control strategies."""
 
-        return self.metrics_combined_dir / "performance_control_contrasts.parquet"
+        return self.across_k_dir("metrics") / "performance_control_contrasts.parquet"
 
     def root_combined_performance_by_k_path(self, k: int) -> Path:
         """Root-specific and raw-count-combined performance for one k."""
@@ -1444,7 +1240,7 @@ class AppConfig:
     def seat_standardized_across_k_path(self) -> Path:
         """Declared-weight seat effects over identical common k support."""
 
-        return self.metrics_combined_dir / "seat_effects_standardized_across_k.parquet"
+        return self.across_k_dir("metrics") / "seat_effects_standardized_across_k.parquet"
 
     def seat_exposure_mixture_diagnostic_path(self) -> Path:
         """Secondary exposure-weighted cross-k seat diagnostic."""
@@ -1557,110 +1353,6 @@ class AppConfig:
         outputs = self.analysis.outputs or {}
         return str(outputs.get("manifest_name", "manifest.jsonl"))
 
-    def canonical_artifact_name(self, filename: str) -> str:
-        """Return the canonical filename for a possibly legacy artifact name."""
-
-        return _CANONICAL_ARTIFACT_NAMES.get(filename, filename)
-
-    def legacy_artifact_names(self, filename: str) -> tuple[str, ...]:
-        """Return legacy aliases for a canonical artifact filename."""
-
-        return _LEGACY_ARTIFACT_NAMES.get(filename, ())
-
-    def _preferred_stage_path(
-        self,
-        stage_dir: Path | None,
-        legacy_dir: Path,
-        filename: str,
-        *,
-        stage_key: str | None = None,
-        stage_parts: Iterable[str | Path] = (),
-    ) -> Path:
-        """Return *filename* within the stage dir, falling back to legacy when absent."""
-
-        canonical = self.canonical_artifact_name(filename)
-        legacy_names = self.legacy_artifact_names(canonical)
-        stage_candidate_names = (canonical, *legacy_names)
-
-        legacy_paths = [legacy_dir / candidate for candidate in stage_candidate_names]
-        if stage_dir is not None:
-            stage_dir.mkdir(parents=True, exist_ok=True)
-            stage_paths = [stage_dir / candidate for candidate in stage_candidate_names]
-            for stage_path in stage_paths:
-                if stage_path.exists():
-                    return stage_path
-            for candidate in stage_candidate_names:
-                interseed_input_path = self._interseed_input_candidate(stage_dir, candidate)
-                if interseed_input_path is not None and interseed_input_path.exists():
-                    return interseed_input_path
-            for legacy_path in legacy_paths:
-                if legacy_path.exists():
-                    return legacy_path
-            return stage_paths[0]
-
-        interseed_path: Path | None = None
-        if stage_key is not None:
-            interseed_dir = self._interseed_stage_dir(stage_key, *stage_parts)
-            if interseed_dir is not None:
-                for candidate in stage_candidate_names:
-                    interseed_path = interseed_dir / candidate
-                    if interseed_path.exists():
-                        return interseed_path
-        for legacy_path in legacy_paths:
-            if legacy_path.exists():
-                return legacy_path
-        if interseed_path is not None:
-            return interseed_path
-        return legacy_paths[0]
-
-    def _resolve_stage_artifact_path(
-        self,
-        stage_key: str,
-        filename: str,
-        *parts: str | Path,
-        legacy_paths: Iterable[Path] = (),
-    ) -> Path:
-        """Resolve a stage artifact without creating directories."""
-
-        canonical = self.canonical_artifact_name(filename)
-        candidate_names = (canonical, *self.legacy_artifact_names(canonical))
-
-        candidates: list[Path] = []
-        input_dir = self._input_stage_path(stage_key, *parts)
-        stage_dir = self._stage_dir_if_active(stage_key, *parts)
-
-        # Interseed analysis reads combine artifacts produced by an upstream
-        # seed run; prefer that input root deterministically when configured.
-        if stage_key == "combine":
-            if input_dir is not None:
-                candidates.extend([input_dir / name for name in candidate_names])
-            if stage_dir is not None:
-                candidates.extend([stage_dir / name for name in candidate_names])
-        else:
-            if stage_dir is not None:
-                candidates.extend([stage_dir / name for name in candidate_names])
-            if input_dir is not None:
-                candidates.extend([input_dir / name for name in candidate_names])
-
-        interseed_dir = self._interseed_stage_dir(stage_key, *parts)
-        if interseed_dir is not None:
-            interseed_candidates = [interseed_dir / name for name in candidate_names]
-            for interseed_candidate in interseed_candidates:
-                if interseed_candidate not in candidates:
-                    candidates.append(interseed_candidate)
-
-        for legacy_path in legacy_paths:
-            if legacy_path not in candidates:
-                candidates.append(legacy_path)
-
-        if not candidates:
-            candidates.append(self.analysis_dir / canonical)
-
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return candidates[0]
-
     def agreement_players(self) -> list[int]:
         """Return normalized numeric player counts for agreement analysis outputs."""
 
@@ -1705,129 +1397,22 @@ class AppConfig:
             k=players_int,
         )
 
-    def trueskill_path(self, filename: str) -> Path:
-        """Resolve a TrueSkill artifact path with legacy fallback."""
-        filename = self.canonical_artifact_name(filename)
-        combined = filename.startswith("ratings_combined") or filename.startswith("ratings_k_weighted")
-        parts = ("combined",) if combined else ()
-        stage_dir = self._stage_dir_if_active("trueskill", *parts)
-        return self._preferred_stage_path(
-            stage_dir,
-            self.analysis_dir,
-            filename,
-            stage_key="trueskill",
-            stage_parts=parts,
-        )
-
-    def head2head_path(self, filename: str) -> Path:
-        """Resolve a head-to-head artifact path with legacy fallback."""
-
-        stage_dir = self._stage_dir_if_active("head2head")
-        return self._preferred_stage_path(
-            stage_dir,
-            self.analysis_dir,
-            filename,
-            stage_key="head2head",
-        )
-
-    def post_h2h_path(self, filename: str) -> Path:
-        """Resolve a post head-to-head artifact path with legacy fallback."""
-
-        canonical = self.canonical_artifact_name(filename)
-        candidate_names = (canonical, *self.legacy_artifact_names(canonical))
-        candidates: list[Path] = []
-        post_h2h_dir = self._stage_dir_if_active("post_h2h")
-        if post_h2h_dir is not None:
-            candidates.extend(post_h2h_dir / name for name in candidate_names)
-        head2head_dir = self._stage_dir_if_active("head2head")
-        if head2head_dir is not None:
-            for name in candidate_names:
-                candidate = head2head_dir / name
-                if candidate not in candidates:
-                    candidates.append(candidate)
-        for name in candidate_names:
-            candidate = self.analysis_dir / name
-            if candidate not in candidates:
-                candidates.append(candidate)
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return candidates[0]
-
-    def frequentist_path(self, filename: str) -> Path:
-        """Deprecated path alias retained until candidate consumers migrate."""
-
-        canonical = self.canonical_artifact_name(filename)
-        stage_dir = self._stage_dir_if_active("screening")
-        return self._preferred_stage_path(
-            stage_dir,
-            self.analysis_dir,
-            canonical,
-            stage_key="screening",
-        )
-
-    def preferred_tiers_path(self) -> Path:
-        """Locate ``tiers.json`` across frequentist and TrueSkill stages."""
-
-        analysis_path = self.analysis_dir / "tiers.json"
-
-        frequentist_path = self._resolve_stage_artifact_path("frequentist", "tiers.json")
-        if frequentist_path.exists() and frequentist_path != analysis_path:
-            return frequentist_path
-
-        trueskill_path = self._resolve_stage_artifact_path("trueskill", "tiers.json")
-        if trueskill_path.exists():
-            return trueskill_path
-
-        if analysis_path.exists():
-            return analysis_path
-        return frequentist_path
-
     @property
     def curated_parquet(self) -> Path:
-        """Location of the combined curated parquet spanning all player counts."""
+        """Canonical row-preserving cross-k curated parquet."""
 
-        return self._resolve_combine_artifact_path("all_ingested_rows.parquet")
-
-    def curated_parquet_candidates(self) -> tuple[Path, ...]:
-        """Ordered candidate paths considered when resolving ``curated_parquet``."""
-
-        return self._combine_artifact_candidates("all_ingested_rows.parquet")
+        return self.input_scope_path(
+            "combine", ArtifactScope.CONCAT_KS, "all_ingested_rows.parquet"
+        )
 
     @property
     def curated_dataset(self) -> Path:
-        """Path to the preferred dataset layout for combined curated rows."""
+        """Canonical partitioned row-preserving cross-k curated dataset."""
 
-        return self._resolve_combine_dataset_path()
-
-    def curated_dataset_candidates(self) -> tuple[Path, ...]:
-        """Ordered candidate paths considered when resolving ``curated_dataset``."""
-
-        return self._combine_dataset_candidates()
-
-    def _combine_dataset_candidates(self) -> tuple[Path, ...]:
-        """Return the declared concatenated-row dataset location."""
-
-        path = self.input_scope_path(
+        return self.input_scope_path(
             "combine",
             ArtifactScope.CONCAT_KS,
             "all_ingested_rows_partitioned",
-        )
-        return (path,)
-
-    def _resolve_combine_dataset_path(self) -> Path:
-        """Resolve preferred combined dataset path with monolithic fallback."""
-
-        for candidate in self._combine_dataset_candidates():
-            if candidate.exists():
-                return candidate
-        return self.curated_parquet
-
-    def _combine_artifact_candidates(self, filename: str) -> tuple[Path, ...]:
-        """Return the declared row-preserving concatenation artifact location."""
-
-        return (
-            self.input_scope_path("combine", ArtifactScope.CONCAT_KS, filename),
         )
 
     def screening_path(self, filename: str = "descriptive_screening.parquet") -> Path:
@@ -1836,15 +1421,6 @@ class AppConfig:
         path = self.screening_stage_dir / filename
         path.parent.mkdir(parents=True, exist_ok=True)
         return path
-
-    def _resolve_combine_artifact_path(self, filename: str) -> Path:
-        """Resolve an artifact from the canonical row-concatenation scope."""
-
-        candidates = self._combine_artifact_candidates(filename)
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-        return candidates[0]
 
     @property
     def game_stats_margin_thresholds(self) -> tuple[int, ...]:
@@ -1882,7 +1458,9 @@ class AppConfig:
     def combined_manifest_path(self) -> Path:
         """Path to the manifest accompanying ``curated_parquet``."""
 
-        return self._resolve_combine_artifact_path("all_ingested_rows.manifest.jsonl")
+        return self.input_scope_path(
+            "combine", ArtifactScope.CONCAT_KS, "all_ingested_rows.manifest.jsonl"
+        )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1913,17 +1491,6 @@ def _annotation_contains(annotation: Any, target: type) -> bool:
     return any(_annotation_contains(arg, target) for arg in get_args(annotation))
 
 
-def _normalize_results_dir_prefix(value: str | Path) -> Path:
-    """Normalize results_dir_prefix values from legacy results_dir inputs."""
-    path = Path(value)
-    match = re.match(r"^(?P<base>.+)_seed_\d+$", path.name)
-    if match:
-        path = path.with_name(match.group("base"))
-    if not path.is_absolute() and path.parts and path.parts[0] == "data" and len(path.parts) > 1:
-        path = Path(*path.parts[1:])
-    return path
-
-
 def _normalize_seed_list(sim: SimConfig) -> None:
     """Normalize and validate ``seed_list`` for a :class:`SimConfig` instance."""
     if sim.seed_list is None:
@@ -1935,26 +1502,6 @@ def _normalize_seed_list(sim: SimConfig) -> None:
     if not seed_list:
         raise ValueError("sim.seed_list must contain at least one seed")
     sim.seed_list = seed_list
-
-
-def _normalize_seed_pair(sim: SimConfig, *, seed_provided: bool) -> None:
-    """Normalize and validate ``seed_pair`` for a :class:`SimConfig` instance."""
-    if sim.seed_pair is None:
-        return
-    if isinstance(sim.seed_pair, (list, tuple)):
-        seed_pair = tuple(int(s) for s in sim.seed_pair)
-    else:
-        raise TypeError("sim.seed_pair must be a tuple/list of two integers")
-    if len(seed_pair) != 2:
-        raise ValueError(f"sim.seed_pair must contain exactly two seeds, got {seed_pair!r}")
-    sim.seed_pair = seed_pair
-    if seed_provided and sim.seed != seed_pair[0]:
-        raise ValueError(
-            "sim.seed must match seed_pair[0] when both are set "
-            f"(seed={sim.seed}, seed_pair={seed_pair})"
-        )
-    if not seed_provided:
-        sim.seed = seed_pair[0]
 
 
 def _format_unknown_keys(unknown: Iterable[str], candidates: Iterable[str]) -> list[str]:
@@ -2029,7 +1576,6 @@ def _validate_seed_sources(
     *,
     seed_provided: bool,
     seed_list_provided: bool,
-    seed_pair_provided: bool,
     expected_seed_len: int | None,
     context: str,
 ) -> None:
@@ -2040,15 +1586,14 @@ def _validate_seed_sources(
                 f"{context}: sim.seed_list must contain exactly {expected_seed_len} seeds, "
                 f"got {sim.seed_list!r}"
             )
-        if seed_list_provided and (seed_provided or seed_pair_provided):
+        if seed_list_provided and seed_provided:
             LOGGER.warning(
-                "%s: sim.seed_list overrides legacy sim.seed/seed_pair settings",
+                "%s: sim.seed_list overrides sim.seed for deterministic root naming",
                 context,
                 extra={
                     "stage": "config",
                     "seed_list": list(sim.seed_list),
                     "seed": sim.seed,
-                    "seed_pair": list(sim.seed_pair) if sim.seed_pair is not None else None,
                 },
             )
         if sim.seed != sim.seed_list[0] and seed_provided:
@@ -2063,13 +1608,6 @@ def _validate_seed_sources(
             )
         if sim.seed != sim.seed_list[0]:
             sim.seed = sim.seed_list[0]
-        if sim.seed_pair is not None and list(sim.seed_pair) != list(sim.seed_list):
-            raise ValueError(
-                f"{context}: sim.seed_list and sim.seed_pair must match when both are set "
-                f"(seed_list={sim.seed_list!r}, seed_pair={sim.seed_pair!r})"
-            )
-        if sim.seed_pair is None and len(sim.seed_list) == 2:
-            sim.seed_pair = (sim.seed_list[0], sim.seed_list[1])
 
 
 def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppConfig:
@@ -2097,28 +1635,10 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                 "Legacy statistical settings are not reinterpreted."
             )
 
-    # Light compatibility if someone uses old keys
-    if "io" in data:
-        io_section_raw = data["io"]
-        if isinstance(io_section_raw, Mapping):
-            io_section: MutableMapping[str, Any]
-            if isinstance(io_section_raw, MutableMapping):
-                io_section = io_section_raw
-            else:
-                io_section = dict(io_section_raw)
-                data["io"] = io_section
-            if "analysis_dir" in io_section and "analysis_subdir" not in io_section:
-                io_section["analysis_subdir"] = io_section.pop("analysis_dir")
-            if "results_dir" in io_section and "results_dir_prefix" not in io_section:
-                io_section["results_dir_prefix"] = _normalize_results_dir_prefix(
-                    io_section.pop("results_dir")
-                )
     seed_provided = False
     seed_list_provided = False
-    seed_pair_provided = False
     per_n_seed_provided: dict[int, bool] = {}
     per_n_seed_list_provided: dict[int, bool] = {}
-    per_n_seed_pair_provided: dict[int, bool] = {}
     if "sim" in data:
         sim_section_raw = data["sim"]
         if not isinstance(sim_section_raw, Mapping):
@@ -2131,9 +1651,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
             data["sim"] = sim_section
         seed_provided = "seed" in sim_section
         seed_list_provided = "seed_list" in sim_section
-        seed_pair_provided = "seed_pair" in sim_section
-        if "n_players" in sim_section and "n_players_list" not in sim_section:
-            sim_section["n_players_list"] = [sim_section.pop("n_players")]
         raw_players = sim_section.get("n_players_list")
         if isinstance(raw_players, list):
             numeric_players: list[int] = []
@@ -2154,12 +1671,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                     )
                 numeric_players.append(players)
             sim_section["n_players_list"] = numeric_players
-        if (
-            "collect_metrics" in sim_section
-            and "expanded_metrics" not in sim_section
-            and sim_section.pop("collect_metrics")
-        ):
-            sim_section["expanded_metrics"] = True
         per_n_section = sim_section.get("per_n")
         if isinstance(per_n_section, Mapping):
             for key, val in per_n_section.items():
@@ -2172,26 +1683,6 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                         per_n_seed_provided[per_n_key] = True
                     if "seed_list" in val:
                         per_n_seed_list_provided[per_n_key] = True
-                    if "seed_pair" in val:
-                        per_n_seed_pair_provided[per_n_key] = True
-    if "analysis" in data:
-        analysis_section_raw = data["analysis"]
-        if isinstance(analysis_section_raw, Mapping):
-            analysis_section_map: MutableMapping[str, Any]
-            if isinstance(analysis_section_raw, MutableMapping):
-                analysis_section_map = analysis_section_raw
-            else:
-                analysis_section_map = dict(analysis_section_raw)
-                data["analysis"] = analysis_section_map
-            deprecated = sorted(
-                key for key in analysis_section_map if key in DEPRECATED_ANALYSIS_FLAGS
-            )
-            if deprecated:
-                LOGGER.warning(
-                    "Deprecated analysis flags no longer disable stages; flags ignored",
-                    extra={"stage": "config", "flags": deprecated},
-                )
-
     _validate_config_keys(data)
 
     def build(cls, section: Mapping[str, Any]) -> Any:
@@ -2260,12 +1751,10 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         k_aggregation=build(KAggregationConfig, data.get("k_aggregation", {})),
     )
     _normalize_seed_list(cfg.sim)
-    _normalize_seed_pair(cfg.sim, seed_provided=seed_provided)
     _validate_seed_sources(
         cfg.sim,
         seed_provided=seed_provided,
         seed_list_provided=seed_list_provided,
-        seed_pair_provided=seed_pair_provided,
         expected_seed_len=seed_list_len,
         context="load_app_config",
     )
@@ -2273,12 +1762,10 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         for key, sim_cfg in cfg.sim.per_n.items():
             key_int = int(key)
             _normalize_seed_list(sim_cfg)
-            _normalize_seed_pair(sim_cfg, seed_provided=per_n_seed_provided.get(key_int, False))
             _validate_seed_sources(
                 sim_cfg,
                 seed_provided=per_n_seed_provided.get(key_int, False),
                 seed_list_provided=per_n_seed_list_provided.get(key_int, False),
-                seed_pair_provided=per_n_seed_pair_provided.get(key_int, False),
                 expected_seed_len=None,
                 context=f"load_app_config(sim.per_n[{key_int}])",
             )
@@ -2322,17 +1809,16 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         if "." not in key:
             raise ValueError(f"Invalid override {pair!r}")
         section_name, option = key.split(".", 1)
-        if section_name == "io" and option == "results_dir":
-            option = "results_dir_prefix"
+        retired_key = f"{section_name}.{option}"
+        if retired_key in RETIRED_CONFIG_KEYS:
+            replacement = RETIRED_CONFIG_KEYS[retired_key]
+            raise ValueError(
+                f"Retired config key {retired_key!r}; use {replacement!r} instead"
+            )
         section = getattr(cfg, section_name)
         if not hasattr(section, option):
             raise AttributeError(f"Unknown option {option!r} in section {section_name!r}")
         current = getattr(section, option)
-        if section_name == "analysis" and option in DEPRECATED_ANALYSIS_FLAGS:
-            LOGGER.warning(
-                "Deprecated analysis flag override provided; stages ignore it",
-                extra={"stage": "config", "flag": option},
-            )
         typing_ns = globals().copy()
         if "StageLayout" not in typing_ns:
             stage_layout_cls: type[Any] | None
@@ -2346,12 +1832,6 @@ def apply_dot_overrides(cfg: AppConfig, pairs: list[str]) -> AppConfig:
         type_hints = get_type_hints(type(section), globalns=typing_ns)
         annotation = type_hints.get(option)
         new_value = _coerce(raw, current, annotation)
-        if (
-            section_name == "io"
-            and option == "results_dir_prefix"
-            and isinstance(new_value, (str, Path))
-        ):
-            new_value = _normalize_results_dir_prefix(new_value)
         setattr(section, option, new_value)
     return cfg
 
@@ -2453,6 +1933,8 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
     contract_versions = dataclasses.asdict(cfg.artifact_contract)
     if any(int(value) < 1 for value in contract_versions.values()):
         raise ValueError("artifact_contract versions must all be positive integers")
+    if cfg.artifact_contract.artifact_contract_version != 2:
+        raise ValueError("artifact_contract.artifact_contract_version is locked at 2")
     if not 0.0 < cfg.screening.resolution_delta < 1.0:
         raise ValueError("screening.resolution_delta must be between 0 and 1")
     if cfg.screening.interval_confidence != 0.95:

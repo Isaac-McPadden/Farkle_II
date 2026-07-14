@@ -13,7 +13,6 @@ def _valid_cfg(tmp_path: Path) -> AppConfig:
         sim=SimConfig(
             seed=101,
             seed_list=[101, 202],
-            seed_pair=(101, 202),
             n_players_list=[2, 4],
         ),
     )

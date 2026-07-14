@@ -731,9 +731,9 @@ def run_bonferroni_head2head(
     sub_root = cfg.head2head_stage_dir
     tiers_path = _tiers_path(cfg)
 
-    pairwise_parquet = cfg.head2head_path("bonferroni_pairwise.parquet")
-    pairwise_ordered_parquet = cfg.head2head_path("bonferroni_pairwise_ordered.parquet")
-    selfplay_parquet = cfg.head2head_path("bonferroni_selfplay_symmetry.parquet")
+    pairwise_parquet = cfg.h2h_2p_dir() / "bonferroni_pairwise.parquet"
+    pairwise_ordered_parquet = cfg.h2h_2p_dir() / "bonferroni_pairwise_ordered.parquet"
+    selfplay_parquet = cfg.h2h_2p_dir() / "bonferroni_selfplay_symmetry.parquet"
     default_shards = sub_root / "bonferroni_pairwise_shards"
     legacy_shards = analysis_root / "bonferroni_pairwise_shards"
     default_ordered_shards = sub_root / "bonferroni_pairwise_ordered_shards"
@@ -763,7 +763,7 @@ def run_bonferroni_head2head(
                 "Tier artifact could not be loaded for diagnostic comparison",
                 extra={"stage": "head2head", "tiers_path": str(tiers_path), "error": str(exc)},
             )
-    ratings_path = cfg.trueskill_combined_dir / "ratings_k_weighted.parquet"
+    ratings_path = cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet"
     if not ratings_path.exists():
         fallback = cfg.trueskill_stage_dir / "ratings_k_weighted.parquet"
         if fallback.exists():
@@ -772,7 +772,7 @@ def run_bonferroni_head2head(
                 extra={"stage": "head2head", "legacy_path": str(fallback), "preferred": str(ratings_path)},
             )
             ratings_path = fallback
-    frequentist_path = cfg.frequentist_path("frequentist_scores_k_weighted.parquet")
+    frequentist_path = cfg.screening_path("frequentist_scores_k_weighted.parquet")
     union_strategies, union_info = _load_top_strategies(
         ratings_path=ratings_path,
         frequentist_path=frequentist_path,

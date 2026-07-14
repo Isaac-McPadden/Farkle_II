@@ -230,11 +230,11 @@ def _trueskill_outputs(cfg: AppConfig) -> list[Path]:
         Paths for combined ratings, tiers, and per-seed rating artifacts.
     """
     outputs = [
-        cfg.trueskill_path("ratings_k_weighted.parquet"),
-        cfg.trueskill_path("ratings_k_weighted.json"),
+        cfg.across_k_dir("trueskill") / "ratings_k_weighted.parquet",
+        cfg.across_k_dir("trueskill") / "ratings_k_weighted.json",
         cfg.trueskill_stage_dir / "tiers.json",
     ]
-    outputs.extend(sorted(cfg.trueskill_combined_dir.glob("ratings_k_weighted_seed*.parquet")))
+    outputs.extend(sorted(cfg.across_k_dir("trueskill").glob("ratings_k_weighted_seed*.parquet")))
     outputs.extend(sorted(cfg.trueskill_stage_dir.glob("ratings_k_weighted_seed*.parquet")))
     return outputs
 

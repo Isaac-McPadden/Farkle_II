@@ -738,7 +738,7 @@ def run_hgb(
 
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
-    combined_dir = cfg.hgb_combined_dir if cfg is not None else root / "combined"
+    combined_dir = cfg.across_k_dir("hgb") if cfg is not None else root / "across_k"
     combined_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = Path(metrics_path) if metrics_path is not None else root / METRICS_NAME
     manifest = None

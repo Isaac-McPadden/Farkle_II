@@ -15,6 +15,7 @@ from farkle.analysis.h2h_schedule import (
     independent_score_planning_power,
     plan_h2h_schedule,
 )
+from farkle.analysis.stage_state import CompletionState
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import (
@@ -28,7 +29,6 @@ def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
     sim = SimConfig(
         seed=roots[0],
         seed_list=list(roots),
-        seed_pair=roots if len(roots) == 2 else None,
         n_players_list=[2, 4],
     )
     cfg = AppConfig(
@@ -109,7 +109,8 @@ def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
 
     artifacts = plan_h2h_schedule(cfg)
 
-    assert artifacts.schedule_state == "ready"
+    assert artifacts.planning_state is CompletionState.COMPLETE_VALID
+    assert artifacts.execution_state is CompletionState.NOT_STARTED
     assert artifacts.block_manifest is not None
     plan = json.loads(artifacts.power_plan.read_text(encoding="utf-8"))
     assert plan["score_test_id"] == SCORE_TEST_ID
@@ -170,7 +171,8 @@ def test_power_plan_stops_before_schedule_when_cap_is_too_small(tmp_path: Path) 
     artifacts = plan_h2h_schedule(cfg)
     plan = json.loads(artifacts.power_plan.read_text(encoding="utf-8"))
 
-    assert artifacts.schedule_state == "blocked_by_cap"
+    assert artifacts.planning_state is CompletionState.COMPLETE_VALID
+    assert artifacts.execution_state is CompletionState.BLOCKED_BY_CAP
     assert artifacts.block_manifest is None
     assert not cfg.h2h_block_manifest_path().exists()
     assert plan["projected_total_games"] > 1
@@ -178,7 +180,8 @@ def test_power_plan_stops_before_schedule_when_cap_is_too_small(tmp_path: Path) 
 
     cfg.head2head.total_game_cap = plan["projected_total_games"]
     resumed = plan_h2h_schedule(cfg)
-    assert resumed.schedule_state == "ready"
+    assert resumed.planning_state is CompletionState.COMPLETE_VALID
+    assert resumed.execution_state is CompletionState.NOT_STARTED
     assert resumed.block_manifest is not None
 
 
@@ -258,6 +261,11 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     assert len(counts) == 4
     assert (counts["games_completed"] == counts["games_required"]).all()
     assert all(path.exists() for path in completed.block_paths)
+    state_payload = json.loads(cfg.h2h_power_plan_path().read_text(encoding="utf-8"))
+    assert state_payload["planning_state"] == CompletionState.COMPLETE_VALID.value
+    assert state_payload["execution_state"] == CompletionState.COMPLETE_VALID.value
+    resumed_plan = plan_h2h_schedule(cfg)
+    assert resumed_plan.execution_state is CompletionState.COMPLETE_VALID
 
     def fail_if_called(
         _block: dict[str, Any], _manifest: Path, _chunk: int

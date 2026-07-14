@@ -5,19 +5,15 @@ from __future__ import annotations
 
 from typing import Literal
 
-KAggregationMethod = Literal["game-count", "equal-k", "config"]
+KAggregationMethod = Literal["equal-k", "declared-mapping"]
 
 
 def normalize_k_aggregation_method(aggregation_method: str) -> KAggregationMethod:
-    """Normalize user-provided aggregation aliases into canonical values."""
+    """Validate and return an exact canonical player-count method name."""
 
-    normalized = aggregation_method.strip().lower().replace("_", "-")
-    if normalized in {"game-count", "gamecount", "count"}:
-        return "game-count"
-    if normalized in {"equal-k", "equalk", "equal"}:
-        return "equal-k"
-    if normalized in {"config", "config-provided", "custom"}:
-        return "config"
+    normalized = aggregation_method.strip().lower()
+    if normalized in {"equal-k", "declared-mapping"}:
+        return normalized  # type: ignore[return-value]
     raise ValueError(f"Unknown aggregation scheme: {aggregation_method!r}")
 
 
