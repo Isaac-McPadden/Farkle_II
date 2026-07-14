@@ -69,6 +69,26 @@ _CANONICAL_ARTIFACT_NAMES: dict[str, str] = {
     "agreement_combined.json": "agreement_k_weighted.json",
 }
 
+RETIRED_CONFIG_KEYS: dict[str, str] = {
+    "sim.power_method": "screening.resolution_delta",
+    "sim.recompute_num_shuffles": "screening.resolution_delta",
+    "sim.power_design": "screening and head2head settings",
+    "analysis.tier_z_star": "screening bootstrap summaries",
+    "analysis.tier_min_gap": "screening practical_delta_by_k",
+    "analysis.frequentist_weights_by_k": "k_aggregation.k_weights",
+    "analysis.meta_random_if_I2_gt": "cross-seed stability diagnostics",
+    "analysis.meta_max_other_seeds": "sim.seed_list",
+    "analysis.meta_comparison_seed": "sim.seed_list",
+    "analysis.pooling_weights": "k_aggregation.method",  # terminology-allow: legacy-config
+    "analysis.pooling_weights_by_k": "k_aggregation.k_weights",  # terminology-allow: legacy-config
+    "analysis.k_aggregation_method": "k_aggregation.method",
+    "analysis.k_weights": "k_aggregation.k_weights",
+    "trueskill.pooled_weights_by_k": "trueskill.k_weights",  # terminology-allow: legacy-config
+    "head2head.fdr_q": "head2head.family_alpha",
+    "head2head.bonferroni_total_games_safeguard": "head2head.total_game_cap",
+    "head2head.bonferroni_design": "typed head2head settings",
+}
+
 _LEGACY_ARTIFACT_NAMES: dict[str, tuple[str, ...]] = {
     canonical: (legacy,) for legacy, canonical in _CANONICAL_ARTIFACT_NAMES.items()
 }
@@ -131,6 +151,61 @@ class PowerDesign:
 
 
 @dataclass
+class RNGConfig:
+    """Versioned deterministic random-stream contract."""
+
+    scheme_version: int = 1
+    bit_generator: str = "PCG64DXSM"
+
+
+@dataclass
+class ScreeningConfig:
+    """Broad tournament resolution and candidate-screening settings."""
+
+    resolution_delta: float = 0.03
+    interval_confidence: float = 0.95
+    practical_delta_by_k: dict[int, float] | None = None
+    delta_across_k: float | None = None
+    bootstrap_replicates: int = 2_000
+    candidate_contribution_size: int = 75
+    controls: list[int] = field(default_factory=list)
+    mandatory_diagnostics: list[int] = field(default_factory=list)
+
+
+@dataclass
+class BatchingConfig:
+    """Deterministic shuffle-batch construction settings."""
+
+    target_batches: int = 100
+    min_shuffles_per_batch: int = 30
+
+
+@dataclass
+class RobustnessConfig:
+    """Finite-grid robustness summaries to emit."""
+
+    report_pareto: bool = True
+    report_maximin: bool = True
+
+
+@dataclass
+class ArtifactContractConfig:
+    """Versions participating in artifact validation and cache freshness."""
+
+    artifact_contract_version: int = 1
+    estimand_version: int = 1
+    schema_version: int = 1
+
+
+@dataclass
+class KAggregationConfig:
+    """Declared player-count aggregation contract."""
+
+    method: str = "equal-k"
+    k_weights: dict[int, float] | None = None
+
+
+@dataclass
 class SimConfig:
     """Simulation parameters.
 
@@ -158,7 +233,7 @@ class SimConfig:
     n_jobs: int | None = None
     """Parallel worker setting (`None` => 1, `0` => os.cpu_count(), `>0` => explicit)."""
     mp_start_method: str | None = None
-    """Multiprocessing start method for simulation pools (default uses platform default)."""
+    """Multiprocessing start method for simulation executors."""
     desired_sec_per_chunk: int = 10
     ckpt_every_sec: int = 30
     progress_logging: ProgressLogConfig = field(default_factory=ProgressLogConfig)
@@ -283,7 +358,7 @@ class AnalysisConfig:
     n_jobs: int = 1
     """Parallel worker setting (`0` => os.cpu_count(), `>0` => explicit)."""
     mp_start_method: str | None = None
-    """Multiprocessing start method for analysis pools (default uses platform default)."""
+    """Multiprocessing start method for analysis executors."""
     progress_logging: ProgressLogConfig = field(default_factory=ProgressLogConfig)
     log_level: str = "INFO"
     results_glob: str = "*_players"
@@ -382,6 +457,19 @@ class Head2HeadConfig:
 
     n_jobs: int = 4
     """Parallel worker setting (`0` => os.cpu_count(), `>0` => explicit)."""
+    family_alpha: float = 0.02
+    target_power: float = 0.80
+    practical_delta: float = 0.03
+    sensitivity_deltas: tuple[float, ...] = (0.03, 0.04)
+    seat1_advantage_scenarios: tuple[float, ...] = (0.0, 0.03, 0.06)
+    delta_equivalence: float | None = None
+    candidate_cap: int | None = None
+    candidate_cap_policy: str = "balanced-tail"
+    total_game_cap: int | None = 100_000_000
+    allow_single_root: bool = True
+
+    # Transitional implementation fields. Config files may not set these;
+    # the owning stages remove them when their replacements land.
     games_per_pair: int = 10_000
     fdr_q: float = 0.02
     bonferroni_total_games_safeguard: int | None = 100_000_000
@@ -432,6 +520,12 @@ class AppConfig:
     head2head: Head2HeadConfig = field(default_factory=Head2HeadConfig)
     hgb: HGBConfig = field(default_factory=HGBConfig)
     orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
+    rng: RNGConfig = field(default_factory=RNGConfig)
+    screening: ScreeningConfig = field(default_factory=ScreeningConfig)
+    batching: BatchingConfig = field(default_factory=BatchingConfig)
+    robustness: RobustnessConfig = field(default_factory=RobustnessConfig)
+    artifact_contract: ArtifactContractConfig = field(default_factory=ArtifactContractConfig)
+    k_aggregation: KAggregationConfig = field(default_factory=KAggregationConfig)
     # Computed at runtime; not part of user-provided YAML
     config_sha: str | None = field(default=None, init=False, repr=False, compare=False)
     _stage_layout: "StageLayout | None" = field(
@@ -492,6 +586,11 @@ class AppConfig:
         """Override the resolved stage layout (used by CLI orchestration)."""
 
         self._stage_layout = layout
+
+    def validate_statistical_contract(self, *, require_two_roots: bool = False) -> None:
+        """Validate locked production settings before expensive work is scheduled."""
+
+        _validate_statistical_contract(self, require_two_roots=require_two_roots)
 
     def resolve_stage_dir(
         self,
@@ -1568,6 +1667,12 @@ def _validate_config_keys(data: Mapping[str, Any]) -> None:
         "head2head": Head2HeadConfig,
         "hgb": HGBConfig,
         "orchestration": OrchestrationConfig,
+        "rng": RNGConfig,
+        "screening": ScreeningConfig,
+        "batching": BatchingConfig,
+        "robustness": RobustnessConfig,
+        "artifact_contract": ArtifactContractConfig,
+        "k_aggregation": KAggregationConfig,
     }
     unknown_sections = set(data) - set(top_level_sections)
     if unknown_sections:
@@ -1666,6 +1771,15 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
             raise TypeError(f"Config file {path} must contain a mapping")
         expanded = expand_dotted_keys(overlay)
         data = _deep_merge(data, expanded)
+
+    for dotted_key, replacement in RETIRED_CONFIG_KEYS.items():
+        section_name, option = dotted_key.split(".", 1)
+        section = data.get(section_name)
+        if isinstance(section, Mapping) and option in section:
+            raise ValueError(
+                f"Retired config key {dotted_key!r}; use {replacement!r}. "
+                "Legacy statistical settings are not reinterpreted."
+            )
 
     # Light compatibility if someone uses old keys
     if "io" in data:
@@ -1829,6 +1943,14 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         head2head=build(Head2HeadConfig, data.get("head2head", {})),
         hgb=build(HGBConfig, data.get("hgb", {})),
         orchestration=build(OrchestrationConfig, data.get("orchestration", {})),
+        rng=build(RNGConfig, data.get("rng", {})),
+        screening=build(ScreeningConfig, data.get("screening", {})),
+        batching=build(BatchingConfig, data.get("batching", {})),
+        robustness=build(RobustnessConfig, data.get("robustness", {})),
+        artifact_contract=build(
+            ArtifactContractConfig, data.get("artifact_contract", {})
+        ),
+        k_aggregation=build(KAggregationConfig, data.get("k_aggregation", {})),
     )
     _normalize_seed_list(cfg.sim)
     _normalize_seed_pair(cfg.sim, seed_provided=seed_provided)
@@ -2011,6 +2133,70 @@ def _project_effective_config(payload: Mapping[str, Any], scope_paths: Sequence[
     return projected
 
 
+def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -> None:
+    """Validate the locked statistical configuration contract."""
+
+    player_counts = [int(k) for k in cfg.sim.n_players_list]
+    if not player_counts or any(k < 2 for k in player_counts):
+        raise ValueError("sim.n_players_list must contain player counts >= 2")
+    if len(set(player_counts)) != len(player_counts):
+        raise ValueError("sim.n_players_list must not contain duplicate player counts")
+    if cfg.rng.scheme_version != 1 or cfg.rng.bit_generator != "PCG64DXSM":
+        raise ValueError("rng must use scheme_version=1 and bit_generator='PCG64DXSM'")
+    if not 0.0 < cfg.screening.resolution_delta < 1.0:
+        raise ValueError("screening.resolution_delta must be between 0 and 1")
+    if not 0.0 < cfg.screening.interval_confidence < 1.0:
+        raise ValueError("screening.interval_confidence must be between 0 and 1")
+    if cfg.batching.target_batches < 2 or cfg.batching.min_shuffles_per_batch < 1:
+        raise ValueError("batching requires at least two batches and one shuffle per batch")
+
+    practical = cfg.screening.practical_delta_by_k
+    if practical is None:
+        raise ValueError(
+            "screening.practical_delta_by_k must explicitly cover every configured player count"
+        )
+    normalized_practical = {int(k): float(value) for k, value in practical.items()}
+    if set(normalized_practical) != set(player_counts):
+        raise ValueError("screening.practical_delta_by_k keys must match sim.n_players_list")
+    if any(value <= 0.0 for value in normalized_practical.values()):
+        raise ValueError("screening practical thresholds must be positive")
+    if cfg.screening.delta_across_k is None or cfg.screening.delta_across_k <= 0.0:
+        raise ValueError("screening.delta_across_k must be explicitly configured and positive")
+
+    if cfg.k_aggregation.method not in {"equal-k", "declared-mapping"}:
+        raise ValueError("k_aggregation.method must be 'equal-k' or 'declared-mapping'")
+    if cfg.k_aggregation.method == "equal-k" and cfg.k_aggregation.k_weights is not None:
+        raise ValueError("equal-k aggregation must not provide k_aggregation.k_weights")
+    if cfg.k_aggregation.method == "declared-mapping":
+        weights = cfg.k_aggregation.k_weights
+        if weights is None or {int(k) for k in weights} != set(player_counts):
+            raise ValueError("declared-mapping weights must cover configured player counts")
+        if any(float(value) <= 0.0 for value in weights.values()):
+            raise ValueError("declared player-count weights must be positive")
+        if abs(sum(float(value) for value in weights.values()) - 1.0) > 1e-12:
+            raise ValueError("declared player-count weights must sum to 1")
+
+    roots = cfg.sim.seed_list or [cfg.sim.seed]
+    if require_two_roots and len(roots) != 2:
+        raise ValueError("the combined-root production workflow requires exactly two root seeds")
+    if len({int(seed) for seed in roots}) != len(roots):
+        raise ValueError("root seeds must be distinct")
+
+    h2h = cfg.head2head
+    if not 0.0 < h2h.family_alpha < 1.0:
+        raise ValueError("head2head.family_alpha must be between 0 and 1")
+    if not 0.0 < h2h.target_power < 1.0:
+        raise ValueError("head2head.target_power must be between 0 and 1")
+    if h2h.practical_delta <= 0.0:
+        raise ValueError("head2head.practical_delta must be positive")
+    if h2h.candidate_cap is not None and h2h.candidate_cap < 2:
+        raise ValueError("head2head.candidate_cap must be at least 2")
+    if h2h.candidate_cap_policy != "balanced-tail":
+        raise ValueError("head2head.candidate_cap_policy must be 'balanced-tail'")
+    if h2h.total_game_cap is not None and h2h.total_game_cap <= 0:
+        raise ValueError("head2head.total_game_cap must be positive when configured")
+
+
 def compute_config_sha(cfg: AppConfig) -> str:
     """Return a deterministic sha256 over the effective configuration payload."""
 
@@ -2020,6 +2206,7 @@ def compute_config_sha(cfg: AppConfig) -> str:
         separators=(",", ":"),
         ensure_ascii=False,
     )
+
     return hashlib.sha256(canonical_json.encode("utf-8")).hexdigest()
 
 
@@ -2065,6 +2252,12 @@ __all__ = [
     "Head2HeadConfig",
     "HGBConfig",
     "PowerDesign",
+    "RNGConfig",
+    "ScreeningConfig",
+    "BatchingConfig",
+    "RobustnessConfig",
+    "ArtifactContractConfig",
+    "KAggregationConfig",
     "AppConfig",
     "expected_seed_list_length",
     "load_app_config",

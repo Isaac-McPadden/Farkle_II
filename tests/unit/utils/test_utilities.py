@@ -39,7 +39,6 @@ def test_cli_run(tmp_path, monkeypatch, capsys) -> None:
             "seed": 42,
             "n_players_list": [2],
             "num_shuffles": 1,
-            "recompute_num_shuffles": False,
         },
     }
     cfg_path = tmp_path / "cfg.yml"

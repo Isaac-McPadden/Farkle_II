@@ -46,25 +46,6 @@ sim:
     # "12":
     #   num_shuffles: 200         # example: heavier schedule for 12-player games
 
-  # Games and shuffles calculations
-  power_method: bh                # "bh" or "bonferroni"
-  recompute_num_shuffles: true    # true => derive per-N num_shuffles from targets
-
-  # Benjamini–Hochberg or Bonferroni design
-  power_design:
-    power: 0.95
-    control: 0.02                 # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
-    detectable_lift: 0.03         # absolute lift in win-rate
-    baseline_rate: null           # None -> 1/n_players
-    full_pairwise: false          # hypotheses = n*(n-1)/2 if true else n-1
-    tail: "two_sided"             # "one_sided" | "two_sided"
-    min_games_floor: null          # per-strategy games (num_shuffles); no adjustment to hit total-games caps
-    max_games_cap: null            # per-strategy cap; totals derive from n_strategies/k without rebalancing
-    use_BY: false                 # if true and using BH, use q/H_m (more conservative)
-    bh_target_rank: null          # Only use one of bh_target_rank and bh_target_frac
-    bh_target_frac: 0.03          # and set the other to null
-    endpoint: "top1"              # "pairwise" or "top1"
-
 analysis:
   n_jobs: 16                      # parallel workers for analysis
   mp_start_method: null            # start method: default|null|spawn|fork|forkserver
@@ -82,15 +63,8 @@ analysis:
   head2head_tolerance_pct: 5.0    # acceptable +/- percent around target hours
   head2head_games_per_sec: null   # measured H2H throughput (games per second), or null to calibrate
 
-  # Tiering / frequentist controls
   frequentist_seeds: null         # list[int]|None: seeds to include in frequentist ranking
-  tier_z_star: 1.645              # z* threshold used when building tier bands
-  tier_min_gap: null              # float|None: minimum gap required to split tiers
-  frequentist_weights_by_k: null  # dict[int,float]|None: optional weights for player counts
 
-  # Meta-analysis controls (seed-to-seed aggregation / comparison)
-  meta_max_other_seeds: null      # int|None: cap on non-primary seeds used in meta aggregation
-  meta_comparison_seed: null      # int|None: fixed comparison seed when limiting meta aggregation
 
   # Optional custom output filenames / aliases
   outputs: {}                     # dict[str, Any]: e.g. override metrics/parquet names if desired
@@ -115,22 +89,46 @@ trueskill:
 
 head2head:
   n_jobs: 0
-  games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
-  fdr_q: 0.02                     # FDR control threshold for BH H2H design (if/where used)
-  bonferroni_total_games_safeguard: 250000000 # skip Bonferroni H2H when estimated total games exceed this
+  family_alpha: 0.02
+  target_power: 0.80
+  practical_delta: 0.03
+  sensitivity_deltas: [0.03, 0.04]
+  seat1_advantage_scenarios: [0.0, 0.03, 0.06]
+  delta_equivalence: null
+  candidate_cap: null
+  candidate_cap_policy: "balanced-tail"
+  total_game_cap: 100000000
+  allow_single_root: true
 
-  # Bonferroni design for H2H only
-  bonferroni_design:
-    power: 0.95
-    control: 0.02               # alpha (Bonferroni - FWER)
-    detectable_lift: 0.03
-    baseline_rate: 0.50
-    full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
-    tail: "two_sided"             # must be "one_sided" for H2H
-    min_games_floor: null         # per-strategy games before deriving games-per-pair (ceil applied)
-    max_games_cap: null           # per-strategy cap; games-per-pair totals may round up if not divisible
-    use_BY: null                  # unused here; present for PowerDesign compatibility
+rng:
+  scheme_version: 1
+  bit_generator: "PCG64DXSM"
 
+screening:
+  resolution_delta: 0.03
+  interval_confidence: 0.95
+  practical_delta_by_k: null
+  delta_across_k: null
+  bootstrap_replicates: 2000
+  candidate_contribution_size: 75
+  controls: []
+  mandatory_diagnostics: []
+
+batching:
+  target_batches: 100
+  min_shuffles_per_batch: 30
+
+robustness:
+  report_pareto: true
+  report_maximin: true
+
+artifact_contract:
+  artifact_contract_version: 1
+  estimand_version: 1
+  schema_version: 1
+
+k_aggregation:
+  method: "equal-k"
 hgb:
   max_depth: 6
   n_estimators: 300

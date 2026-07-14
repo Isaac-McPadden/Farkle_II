@@ -718,7 +718,7 @@ def test_results_dir_normalization_via_load_and_overrides(
     [
         ("analysis", "log_level", "NOT_A_LEVEL"),
         ("ingest", "parquet_codec", "zipper"),
-        ("analysis", "k_aggregation_method", "mystery-weight"),
+        ("k_aggregation", "method", "mystery-weight"),
     ],
 )
 def test_invalid_enum_codec_and_compression_values(write_yaml, section, key, value) -> None:
@@ -1175,3 +1175,58 @@ def test_rng_paths_when_rng_stage_registered(tmp_path: Path) -> None:
     assert cfg.rng_combined_dir.name == "combined"
     assert cfg.rng_stage_dir.parent == cfg.analysis_dir
     assert cfg.rng_input_path("rng.json") == out_path
+
+
+def test_statistical_contract_accepts_complete_locked_configuration() -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[2, 4], seed_list=[101, 202]))
+    cfg.screening.practical_delta_by_k = {2: 0.03, 4: 0.015}
+    cfg.screening.delta_across_k = 0.02
+
+    cfg.validate_statistical_contract(require_two_roots=True)
+
+
+def test_statistical_contract_requires_declared_practical_thresholds() -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[2, 4], seed_list=[101, 202]))
+
+    with pytest.raises(ValueError, match="practical_delta_by_k"):
+        cfg.validate_statistical_contract(require_two_roots=True)
+
+
+def test_statistical_contract_validates_declared_k_weights() -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[2, 4], seed_list=[101, 202]))
+    cfg.screening.practical_delta_by_k = {2: 0.03, 4: 0.015}
+    cfg.screening.delta_across_k = 0.02
+    cfg.k_aggregation.method = "declared-mapping"
+    cfg.k_aggregation.k_weights = {2: 0.25, 4: 0.50}
+
+    with pytest.raises(ValueError, match="sum to 1"):
+        cfg.validate_statistical_contract(require_two_roots=True)
+
+
+def test_load_rejects_retired_statistical_key(write_yaml) -> None:
+    path = write_yaml("retired.yaml", {"head2head": {"fdr_q": 0.05}})
+
+    with pytest.raises(ValueError, match="Retired config key 'head2head.fdr_q'"):
+        load_app_config(path)
+
+
+def test_load_builds_new_statistical_sections(write_yaml) -> None:
+    path = write_yaml(
+        "contract.yaml",
+        {
+            "sim": {"n_players_list": [2], "seed_list": [101]},
+            "screening": {
+                "practical_delta_by_k": {2: 0.03},
+                "delta_across_k": 0.03,
+            },
+            "head2head": {"family_alpha": 0.02, "target_power": 0.8},
+            "k_aggregation": {"method": "equal-k", "k_weights": None},
+        },
+    )
+
+    cfg = load_app_config(path, seed_list_len=1)
+
+    assert cfg.rng.bit_generator == "PCG64DXSM"
+    assert cfg.screening.practical_delta_by_k == {2: 0.03}
+    assert cfg.head2head.family_alpha == pytest.approx(0.02)
+    cfg.validate_statistical_contract()

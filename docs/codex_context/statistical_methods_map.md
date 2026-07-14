@@ -168,7 +168,7 @@ For every statistical claim, review in this order:
 - Fixed effect: inverse-variance weighted mean per strategy.
 - Heterogeneity: sums Q across strategies, computes global I2 and
   DerSimonian-Laird style tau2. If I2 exceeds `meta_random_if_I2_gt`, uses one
-  shared tau2 for all strategy pools.
+  shared tau2 for all strategy groups.
 - Output CI: normal approximation `combined_rate +- 1.959963984540054 * se`.
 - Tests: `tests/unit/analysis/test_meta.py`.
 - Review risks: one global tau2 across all strategies, strategy pruning,

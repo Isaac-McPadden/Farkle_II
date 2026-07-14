@@ -42,26 +42,6 @@ sim:
     # "12":
       # num_shuffles: 200           # example: heavier schedule for 12-player games
   
-  # Games and Shuffles Calculations
-
-  power_method: bh                  # or bonferroni
-  recompute_num_shuffles: true      # true => derive per-N num_shuffles from targets
-
-  # Benjamini–Hochberg or Bonferroni design
-  power_design:
-    power: 0.95
-    control: 0.02                 # fdr_q (BH - FDR) or alpha (Bonferroni - FWER)
-    detectable_lift: 0.03         # absolute lift in win-rate
-    baseline_rate: null           # None -> 1/n_players
-    full_pairwise: false          # num_hypotheses is n*(n-1)/2 if true else n-1
-    tail: "two_sided"             # "one_sided" | "two_sided"
-    min_games_floor: 2000          # per-strategy games (num_shuffles); no adjustment to hit total-games caps
-    max_games_cap: null            # per-strategy cap; totals derive from n_strategies/k without rebalancing
-    use_BY: false                 # if true and using BH, use q/H_m (more conservative)
-    bh_target_rank: null          # Only use one of bh_target_rank and bh_target_frac /
-    bh_target_frac: 0.03          # and set the other to null
-    endpoint: "top1"
-
 analysis:
   n_jobs: 12
   log_level: "INFO"
@@ -69,9 +49,6 @@ analysis:
   head2head_tolerance_pct: 5.0
   head2head_games_per_sec: null
   frequentist_seeds: null
-  tier_z_star: 1.645
-  tier_min_gap: null
-  frequentist_weights_by_k: null
   h2h_tier_trends_seed_s_tier_paths: null
   h2h_tier_trends_interseed_s_tier_path: null
 
@@ -93,22 +70,47 @@ trueskill:
   k_weights: null
 
 head2head:
-  n_jobs: 4
-  games_per_pair: 10000           # default; may be overridden by bonferroni_design if enabled
-  bonferroni_total_games_safeguard: 100000000 # skip Bonferroni H2H when estimated total games exceed this
+  n_jobs: 0
+  family_alpha: 0.02
+  target_power: 0.80
+  practical_delta: 0.03
+  sensitivity_deltas: [0.03, 0.04]
+  seat1_advantage_scenarios: [0.0, 0.03, 0.06]
+  delta_equivalence: null
+  candidate_cap: null
+  candidate_cap_policy: "balanced-tail"
+  total_game_cap: 100000000
+  allow_single_root: true
 
-  # Bonferroni design for H2H only
-  bonferroni_design:
-    power: 0.95
-    control: 0.02                 # alpha (Bonferroni - FWER)
-    detectable_lift: 0.03
-    baseline_rate: 0.50
-    full_pairwise: true           # num_hypotheses is n*(n-1)/2 if true else n-1
-    tail: "two_sided"
-    min_games_floor: 2000         # per-strategy games before deriving games-per-pair (ceil applied)
-    max_games_cap: null           # per-strategy cap; games-per-pair totals may round up if not divisible
-    use_BY: null                  # unused, here for the PowerDesign class
+rng:
+  scheme_version: 1
+  bit_generator: "PCG64DXSM"
 
+screening:
+  resolution_delta: 0.03
+  interval_confidence: 0.95
+  practical_delta_by_k: null
+  delta_across_k: null
+  bootstrap_replicates: 2000
+  candidate_contribution_size: 75
+  controls: []
+  mandatory_diagnostics: []
+
+batching:
+  target_batches: 100
+  min_shuffles_per_batch: 30
+
+robustness:
+  report_pareto: true
+  report_maximin: true
+
+artifact_contract:
+  artifact_contract_version: 1
+  estimand_version: 1
+  schema_version: 1
+
+k_aggregation:
+  method: "equal-k"
 hgb:
   max_depth: 6
   n_estimators: 300

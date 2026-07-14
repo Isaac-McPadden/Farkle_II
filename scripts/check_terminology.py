@@ -13,11 +13,12 @@ SKIP_FILES = {
     Path("scripts/check_terminology.py"),
 }
 SKIP_SUFFIXES = {".pyc", ".parquet", ".png", ".jpg", ".jpeg", ".gif", ".html"}
-FORBIDDEN = re.compile(r"\bpool(?:ed|ing)?\b", re.IGNORECASE)
+FORBIDDEN = re.compile(r"\bpool(?:s|ed|ing)?\b", re.IGNORECASE)
 EXTERNAL_API_ALLOWLIST = (
     re.compile(r"\bmultiprocessing\.Pool\b"),
     re.compile(r"\b(?:ctx|context|mp)\.Pool\("),
 )
+LEGACY_CONFIG_MARKER = "# terminology-allow: legacy-config"
 
 
 def _is_allowed_external_api(line: str) -> bool:
@@ -41,7 +42,11 @@ def find_violations() -> list[str]:
             except UnicodeDecodeError:
                 continue
             for line_number, line in enumerate(lines, start=1):
-                if FORBIDDEN.search(line) and not _is_allowed_external_api(line):
+                if (
+                    FORBIDDEN.search(line)
+                    and LEGACY_CONFIG_MARKER not in line
+                    and not _is_allowed_external_api(line)
+                ):
                     violations.append(f"{relative}:{line_number}: {line.strip()}")
     return violations
 

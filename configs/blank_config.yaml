@@ -18,23 +18,8 @@ sim:
   expanded_metrics:    # bool: write expanded metrics parquet
   row_dir:    # Path|str|None: relative folder for row dumps; blank skips write
   per_n:    # dict[int, SimConfig]: per-table overrides mirroring sim options
-  power_method:    # str: 'bh' or 'bonferroni' for scheduling strategy
-  recompute_num_shuffles:    # bool: derive per-N shuffles from power design
-  power_design:
-    power:    # float: target statistical power
-    control:    # float: FDR q (BH) or alpha (Bonferroni)
-    detectable_lift:    # float: minimum absolute lift to detect
-    baseline_rate:    # float: assumed baseline win rate
-    tail:    # str: 'one_sided' or 'two_sided'
-    full_pairwise:    # bool: compare all pairs vs top-1
-    endpoint:    # str: 'pairwise' or 'top1'
-    min_games_floor:    # int: minimum games per strategy (num_shuffles); no adjustment to hit total-games caps
-    max_games_cap:    # int|None: cap per strategy; totals derive from n_strategies/k without rebalancing
-    use_BY:    # bool: enable Benjamini-Yekutieli correction for BH
-    bh_target_rank:    # int|None: target BH order statistic i*
-    bh_target_frac:    # float|None: target discovery fraction for BH
   n_jobs:    # int|None: parallel workers for simulation
-  mp_start_method:    # str|None: multiprocessing start method for simulation pools (default|null|spawn|fork|forkserver)
+  mp_start_method:    # str|None: multiprocessing start method for simulation executors
   desired_sec_per_chunk:    # int: target seconds per work chunk
   ckpt_every_sec:    # int: checkpoint interval in seconds
   score_thresholds:    # list[int]|None: custom threshold grid for scoring
@@ -50,7 +35,7 @@ sim:
 
 analysis:
   n_jobs:    # int: parallel workers for analysis
-  mp_start_method:    # str|None: multiprocessing start method for analysis pools (default|null|spawn|fork|forkserver)
+  mp_start_method:    # str|None: multiprocessing start method for analysis executors
   log_level:    # str: logger level during analysis
   results_glob:    # str: glob selecting per-N result folders
   h2h_tier_trends_seed_s_tier_paths:    # list[Path|str]|None: explicit per-seed 11_post_h2h/h2h_s_tiers.json paths; required for two-seed trend runs unless interseed file is provided
@@ -79,23 +64,48 @@ trueskill:
   k_weights:    # dict[int, float]|None: optional weights per player count for aggregation
 
 head2head:
-  n_jobs:    # int: parallel workers for head-to-head stage
-  games_per_pair:    # int: baseline games scheduled per pair
-  fdr_q:    # float: FDR control threshold for BH
-  bonferroni_total_games_safeguard:    # int|None: skip Bonferroni H2H when estimated total games exceed this
-  bonferroni_design:
-    power:    # float: target statistical power
-    control:    # float: family-wise error rate (alpha)
-    detectable_lift:    # float: minimum lift considered meaningful
-    baseline_rate:    # float: assumed baseline win rate
-    full_pairwise:    # bool: compare all pairs vs top-1
-    tail:    # str: 'one_sided' or 'two_sided'
-    min_games_floor:    # int: minimum games per strategy before deriving games-per-pair (ceil applied)
-    max_games_cap:    # int|None: cap per strategy; games-per-pair totals may round up if not divisible
-    use_BY:    # bool|None: optional Benjamini-Yekutieli toggle
-  tie_break_policy:    # str: 'neutral_edge' (default) or 'simulate_game'
-  tie_break_seed:    # int|None: overrides sim.seed for tie-break RNG
+  n_jobs:
+  family_alpha:
+  target_power:
+  practical_delta:
+  sensitivity_deltas:
+  seat1_advantage_scenarios:
+  delta_equivalence: null
+  candidate_cap: null
+  candidate_cap_policy:
+  total_game_cap:
+  allow_single_root:
 
+rng:
+  scheme_version:
+  bit_generator:
+
+screening:
+  resolution_delta:
+  interval_confidence:
+  practical_delta_by_k: null
+  delta_across_k: null
+  bootstrap_replicates:
+  candidate_contribution_size:
+  controls:
+  mandatory_diagnostics:
+
+batching:
+  target_batches:
+  min_shuffles_per_batch:
+
+robustness:
+  report_pareto:
+  report_maximin:
+
+artifact_contract:
+  artifact_contract_version:
+  estimand_version:
+  schema_version:
+
+k_aggregation:
+  method:
+  k_weights: null
 hgb:
   max_depth:    # int: maximum tree depth
   n_estimators:    # int: boosting iterations

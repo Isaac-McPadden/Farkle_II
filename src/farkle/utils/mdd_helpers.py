@@ -139,7 +139,7 @@ def estimate_tau2_sxk(
 ) -> float:
     """Estimate strategy-by-player-count heterogeneity.
 
-    The frequentist ranking stage pools player-count-specific win-rates as
+    The frequentist ranking stage combines player-count-specific win-rates as
 
     ``theta_hat_s = sum_k w_k * p_hat_sk``.
 
