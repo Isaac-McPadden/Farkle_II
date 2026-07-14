@@ -240,10 +240,23 @@ Common paths:
 
 - `cfg.hgb_stage_dir`
 - `cfg.hgb_combined_dir`
+- `cfg.hgb_importance_path(k)`
+- `cfg.hgb_predictive_scores_path(k)`
+- `cfg.hgb_fold_metrics_path(k)`
+- `cfg.hgb_future_proposals_path()`
 
-Typical outputs:
+Canonical outputs:
 
-- `hgb_importance.json`
+- per-k held-out predictive scores and fold metrics;
+- per-k permutation associations calculated only on held-out strategy
+  configurations, including between-fold variability and finite-grid support;
+- an equal-k descriptive association summary in `hgb_importance.json`;
+- `future_simulation_proposals.parquet`, whose rows have
+  `included_in_current_analysis=false` and no current-run strategy ID.
+
+HGB output describes predictive associations over the configured finite grid.
+It is exploratory, does not identify causal option effects, and cannot add a
+proposed strategy to the analysis that generated the proposal.
 
 ### Interseed analytics
 

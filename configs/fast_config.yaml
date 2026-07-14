@@ -114,3 +114,6 @@ k_aggregation:
 hgb:
   max_depth: 6
   n_estimators: 300
+  heldout_folds: 5
+  permutation_repeats: 10
+  future_proposal_limit: 25

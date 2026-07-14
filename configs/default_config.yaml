@@ -111,3 +111,6 @@ k_aggregation:
 hgb:
   max_depth: 6              # int: maximum tree depth
   n_estimators: 300         # int: boosting iterations
+  heldout_folds: 5          # int: deterministic strategy-configuration folds
+  permutation_repeats: 10   # int: held-out permutation repeats per fold
+  future_proposal_limit: 100 # int: candidates reserved for a future simulation

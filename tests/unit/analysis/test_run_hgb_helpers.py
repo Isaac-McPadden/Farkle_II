@@ -29,9 +29,7 @@ def test_plot_partial_dependence(tmp_path):
 
 
 def test_select_partial_dependence_features_filters_constants():
-    features = pd.DataFrame(
-        {"a": [1, 1, 1], "b": [0.0, 0.5, 1.0], "c": [np.nan, np.nan, np.nan]}
-    )
+    features = pd.DataFrame({"a": [1, 1, 1], "b": [0.0, 0.5, 1.0], "c": [np.nan, np.nan, np.nan]})
 
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
@@ -279,3 +277,86 @@ def test_run_grouped_cv_logs_skip_reasons_and_success(monkeypatch):
     )
     assert logged[-1][0] == "Grouped CV metrics"
     assert logged[-1][1]["splits"] == 2
+
+
+def test_heldout_strategy_evaluation_never_scores_training_configurations(monkeypatch):
+    feature_cols = [name for name, _dtype in run_hgb.FEATURE_SPECS]
+    subset = pd.DataFrame(
+        {
+            "strategy": [f"s{index}" for index in range(6)],
+            "win_rate": np.linspace(0.2, 0.7, 6),
+            **{
+                name: np.arange(6, dtype=np.float32) + offset
+                for offset, name in enumerate(feature_cols)
+            },
+        }
+    )
+    fitted_and_scored: list[tuple[set[float], set[float]]] = []
+
+    class RecordingModel:
+        def __init__(self, **_kwargs: object) -> None:
+            self.training: set[float] = set()
+
+        def fit(self, X, _y):
+            self.training = set(X.iloc[:, 0].astype(float))
+            return self
+
+        def predict(self, X):
+            scored = set(X.iloc[:, 0].astype(float))
+            fitted_and_scored.append((self.training, scored))
+            return np.full(len(X), 0.5)
+
+    monkeypatch.setattr(run_hgb, "HistGradientBoostingRegressor", RecordingModel)
+    monkeypatch.setattr(
+        run_hgb,
+        "permutation_importance",
+        lambda model, X, y, **kwargs: types.SimpleNamespace(  # noqa: ARG005
+            importances_mean=np.zeros(X.shape[1]),
+            importances_std=np.zeros(X.shape[1]),
+        ),
+    )
+
+    result = run_hgb._heldout_strategy_evaluation(
+        players=4,
+        subset=subset,
+        feature_cols=feature_cols,
+        root_seed=17,
+        requested_folds=3,
+    )
+
+    assert set(result.predictions["strategy"]) == set(subset["strategy"])
+    assert len(result.fold_metrics) == 3
+    assert result.importance["finite_grid_support"].eq(6).all()
+    assert result.importance["interpretation"].eq("predictive_association_not_causal").all()
+    assert all(training.isdisjoint(scored) for training, scored in fitted_and_scored)
+
+
+def test_future_proposals_are_separate_from_current_grid():
+    feature_cols = [name for name, _dtype in run_hgb.FEATURE_SPECS]
+    features = pd.DataFrame(
+        [
+            [300, 1, 1, 1, 1, 0, 1, 0, 0, 0],
+            [600, 3, 1, 1, 1, 0, 1, 0, 0, 1],
+        ],
+        columns=feature_cols,
+        dtype=np.float32,
+    )
+
+    class ProposalModel:
+        def predict(self, X):
+            return X["score_threshold"].to_numpy(dtype=float) / 1000.0
+
+    proposals = run_hgb._future_strategy_proposals(
+        players=2,
+        features=features,
+        model=ProposalModel(),  # type: ignore[arg-type]
+        limit=10,
+    )
+
+    observed = {tuple(row) for row in features.to_numpy(dtype=float)}
+    proposed = {tuple(row) for row in proposals[feature_cols].to_numpy(dtype=float)}
+    assert proposed
+    assert proposed.isdisjoint(observed)
+    assert proposals["included_in_current_analysis"].eq(False).all()
+    assert proposals["proposal_status"].eq("future_simulation_only").all()
+    assert proposals["strategy_id"].isna().all()

@@ -83,7 +83,9 @@ Interseed-specific registry order:
   uncertainty/aggregation artifacts.
 - TrueSkill, screening, head-to-head, post-H2H: produce rating diagnostics,
   descriptive finite-grid evidence, and pairwise-comparison outputs.
-- HGB: model-based strategy-feature importance and partial-dependence artifacts.
+- HGB: held-out-configuration predictive associations, fold diagnostics,
+  finite-grid support, exploratory response plots, and a separate future-run
+  proposal manifest.
 - Agreement: compares ranking/tiering outputs across methods.
 - Interseed: summarizes paired-seed comparisons and optional RNG diagnostics.
 

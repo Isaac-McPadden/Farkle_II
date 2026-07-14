@@ -215,34 +215,36 @@ def test_analyze_h2h_runs_with_preferred_tiers(tmp_path: Path, monkeypatch: pyte
     assert _done_path(out).exists()
 
 
-def test_analyze_hgb_falls_back_to_stage_ratings_when_combined_missing(
+def test_analyze_hgb_uses_canonical_per_k_performance_without_ratings(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     exp_dir = tmp_path / "exp"
     exp_dir.mkdir()
     cfg = AppConfig(io=IOConfig(results_dir_prefix=exp_dir))
 
-    metrics = cfg.metrics_input_path("metrics.parquet")
-    metrics.parent.mkdir(parents=True, exist_ok=True)
-    metrics.write_text("metrics")
-    stage_ratings = cfg.trueskill_stage_dir / "ratings_k_weighted.parquet"
-    stage_ratings.parent.mkdir(parents=True, exist_ok=True)
-    stage_ratings.write_text("ratings")
+    metrics = [cfg.performance_by_k_path(k) for k in cfg.sim.n_players_list]
+    for path in metrics:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("performance")
 
-    called: dict[str, Path] = {}
+    called: dict[str, object] = {}
 
-    def fake_hgb(*, root: Path, output_path: Path, metrics_path: Path, ratings_path: Path) -> None:
+    def fake_hgb(
+        *, root: Path, output_path: Path, metrics_paths: list[Path], **kwargs: object
+    ) -> None:
         called["root"] = root
-        called["metrics_path"] = metrics_path
-        called["ratings_path"] = ratings_path
+        called["metrics_paths"] = metrics_paths
+        called["kwargs"] = kwargs
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("{}")
 
     monkeypatch.setattr("farkle.analysis.run_hgb.run_hgb", fake_hgb, raising=True)
 
     analyze_hgb(exp_dir)
-    assert called["metrics_path"] == metrics
-    assert called["ratings_path"] == stage_ratings
+    assert called["metrics_paths"] == metrics
+    kwargs = called["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert "ratings_path" not in kwargs
 
 
 def test_analyze_agreement_autodetects_players_without_optional_inputs(

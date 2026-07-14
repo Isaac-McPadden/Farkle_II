@@ -110,3 +110,6 @@ k_aggregation:
 hgb:
   max_depth:    # int: maximum tree depth
   n_estimators:    # int: boosting iterations
+  heldout_folds:    # int >=2: held-out strategy-configuration folds
+  permutation_repeats:    # int >=1: held-out permutation repeats per fold
+  future_proposal_limit:    # int >=0: future-run candidate cap

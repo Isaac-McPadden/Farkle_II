@@ -382,7 +382,13 @@ def _load_feature_importance(analysis_dir: Path, players: int) -> pd.DataFrame:
     if feature_column is None:
         return pd.DataFrame()
     value_column = None
-    for column in ("importance", "value", "gain", "weight"):
+    for column in (
+        "association_importance_mean",
+        "importance",
+        "value",
+        "gain",
+        "weight",
+    ):
         if column in df.columns:
             value_column = column
             break
@@ -809,8 +815,8 @@ def plot_feature_importance_for_players(
     ax.barh(positions, top["importance"], color="#2ca02c")
     ax.set_yticks(positions)
     ax.set_yticklabels(top["feature"].tolist())
-    ax.set_xlabel("Relative importance")
-    ax.set_title(f"Feature importance ({players}-player HGB)")
+    ax.set_xlabel("Held-out predictive association importance")
+    ax.set_title(f"HGB option associations ({players}-player finite grid)")
     ax.grid(axis="x", linestyle="--", linewidth=0.5, alpha=0.5)
     fig.tight_layout()
 

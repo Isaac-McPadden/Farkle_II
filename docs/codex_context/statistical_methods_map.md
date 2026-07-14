@@ -157,6 +157,27 @@ For every statistical claim, review in this order:
   independent-binomial estimator. Game-order and tau sensitivity remain
   diagnostics, and sigma is not a sampling standard error.
 
+## HGB Predictive Associations
+
+- Code: `src/farkle/analysis/run_hgb.py` and
+  `src/farkle/analysis/hgb_feat.py`.
+- Inputs: canonical per-k performance estimates and the immutable current-run
+  strategy manifest. TrueSkill ratings are not an HGB dependency.
+- Evaluation: assign strategy configurations to deterministic coordinate-RNG
+  folds, fit on the remaining configurations, and calculate predictions and
+  permutation importance only on the held-out configurations.
+- Output: per-fold MAE/R2, per-strategy out-of-sample predictions, mean
+  association importance, between-fold variability, permutation-repeat
+  variability, and exact finite-grid support.
+- Interpretation: option and interaction results are predictive associations
+  on the simulated finite grid, never causal effects.
+- Candidate generation: a full-grid exploratory fit may draft valid one-option
+  mutations in `future_simulation_proposals.parquet`. Drafts have no current
+  strategy ID and are excluded from every current-run analysis; they require a
+  new simulation manifest and direct simulation.
+- Tests: `tests/unit/analysis/test_run_hgb_functionality.py`,
+  `test_run_hgb_helpers.py`, and `test_hgb_feat.py`.
+
 ## Head-To-Head Simulation And Holm Decisions
 
 - Code: `src/farkle/analysis/head2head.py`,

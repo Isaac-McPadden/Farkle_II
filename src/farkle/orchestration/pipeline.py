@@ -185,18 +185,15 @@ def analyze_h2h(exp_dir: Path) -> None:
 
 
 def analyze_hgb(exp_dir: Path) -> None:
-    """Run hist gradient boosting feature importance analysis."""
+    """Run held-out HGB predictive-association analysis."""
 
     exp_dir = Path(exp_dir)
     cfg = _config_for_results_dir(exp_dir)
     analysis_dir = cfg.hgb_stage_dir
     out = cfg.hgb_combined_dir / "hgb_importance.json"
     done = _done_path(out)
-    metrics = cfg.metrics_input_path("metrics.parquet")
-    ratings = cfg.trueskill_combined_dir / "ratings_k_weighted.parquet"
-    if not ratings.exists():
-        ratings = cfg.trueskill_stage_dir / "ratings_k_weighted.parquet"
-    inputs = [metrics, ratings]
+    metrics = [cfg.performance_by_k_path(k) for k in cfg.sim.n_players_list]
+    inputs = list(metrics)
     if is_up_to_date(done, inputs, [out]):
         print("SKIP hgb (up to date)")
         return
@@ -207,8 +204,14 @@ def analyze_hgb(exp_dir: Path) -> None:
     _hgb.run_hgb(
         root=analysis_dir,
         output_path=out,
-        metrics_path=metrics,
-        ratings_path=ratings,
+        metrics_paths=metrics,
+        cfg=cfg,
+        seed=cfg.sim.seed,
+        heldout_folds=cfg.hgb.heldout_folds,
+        permutation_repeats=cfg.hgb.permutation_repeats,
+        max_depth=cfg.hgb.max_depth,
+        max_iter=cfg.hgb.n_estimators,
+        proposal_limit=cfg.hgb.future_proposal_limit,
     )
     write_done(done, inputs, [out], "farkle.analytics.hgb")
     print("hgb")

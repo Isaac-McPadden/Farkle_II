@@ -36,6 +36,9 @@ def _setup(tmp_path: Path) -> tuple[Path, AppConfig]:
     )
     metrics_path = cfg.metrics_output_path("metrics.parquet")
     metrics_df.to_parquet(metrics_path)
+    for players in cfg.sim.n_players_list:
+        performance = metrics_df.assign(k=players).drop(columns="n_players")
+        performance.to_parquet(cfg.performance_by_k_path(players))
     ratings_df = pd.DataFrame({"strategy": ["A", "B"], "mu": [1.0, 0.5], "sigma": [1.0, 1.0]})
     ratings_path = cfg.trueskill_combined_dir / "ratings_k_weighted.parquet"
     ratings_path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,7 +95,7 @@ def test_analyze_all_skips_when_up_to_date(tmp_path, monkeypatch):
         fake_h2h,
     )
 
-    def fake_hgb(*, root, output_path, seed=0, metrics_path=None, ratings_path=None):  # noqa: ARG001
+    def fake_hgb(*, root, output_path, **kwargs):  # noqa: ARG001
         # Write a tiny valid JSON file (the real code expects JSON here)
         output_path.parent.mkdir(parents=True, exist_ok=True)
         output_path.write_text("{}")
@@ -129,6 +132,7 @@ def test_interseed_agreement_logs_missing_trueskill_dependency(
 
     def fake_optional_import(module: str, *, stage_log=None):  # noqa: ANN001
         if module == "farkle.analysis.agreement":
+
             def _run(_cfg):  # noqa: ANN001
                 ran_modules.append("agreement")
 

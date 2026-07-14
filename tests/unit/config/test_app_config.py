@@ -1124,6 +1124,10 @@ def test_app_config_stage_and_alias_helpers_cover_common_paths(tmp_path: Path) -
     assert cfg.hgb_stage_dir.parent == cfg.analysis_dir
     assert cfg.hgb_per_k_dir(7).name == "7p"
     assert cfg.hgb_combined_dir.name == "across_k"
+    assert cfg.hgb_importance_path(7).name == "feature_importance_7p.parquet"
+    assert cfg.hgb_predictive_scores_path(7).name == "heldout_predictive_scores_7p.parquet"
+    assert cfg.hgb_fold_metrics_path(7).name == "heldout_fold_metrics_7p.parquet"
+    assert cfg.hgb_future_proposals_path().name == "future_simulation_proposals.parquet"
     assert cfg.frequentist_stage_dir.parent == cfg.analysis_dir
 
     assert cfg.n_dir(5).name == "5_players"
@@ -1255,6 +1259,26 @@ def test_statistical_contract_accepts_complete_locked_configuration() -> None:
     cfg.screening.delta_across_k = 0.02
 
     cfg.validate_statistical_contract(require_two_roots=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("heldout_folds", 1, "heldout_folds"),
+        ("permutation_repeats", 0, "permutation_repeats"),
+        ("future_proposal_limit", -1, "future_proposal_limit"),
+    ],
+)
+def test_statistical_contract_validates_hgb_out_of_sample_settings(
+    field: str, value: int, message: str
+) -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[2], seed_list=[101]))
+    cfg.screening.practical_delta_by_k = {2: 0.03}
+    cfg.screening.delta_across_k = 0.03
+    setattr(cfg.hgb, field, value)
+
+    with pytest.raises(ValueError, match=message):
+        cfg.validate_statistical_contract()
 
 
 @pytest.mark.parametrize(

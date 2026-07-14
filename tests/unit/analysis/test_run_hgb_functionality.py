@@ -88,7 +88,7 @@ def test_run_hgb_custom_output_path(tmp_path):
         monkeypatch.setattr(
             run_hgb,
             "permutation_importance",
-            lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+            lambda model, X, y, n_repeats=5, random_state=None, **_kwargs: _perm_result(  # noqa: ARG005
                 np.zeros(X.shape[1])
             ),
         )
@@ -97,11 +97,7 @@ def test_run_hgb_custom_output_path(tmp_path):
         os.chdir(cwd)
         monkeypatch.undo()
     assert out_file.exists()
-    parquet_path = (
-        data_dir
-        / f"{2}p"
-        / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
-    )
+    parquet_path = data_dir / f"{2}p" / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
     assert parquet_path.exists()
     assert not (data_dir / "hgb_importance.json").exists()
 
@@ -109,7 +105,7 @@ def test_run_hgb_custom_output_path(tmp_path):
 def test_run_hgb_importance_length_check(tmp_path, monkeypatch):
     data_dir = _setup_data(tmp_path)
 
-    def fake_perm_importance(_model, _X, _y, n_repeats=5, random_state=None):
+    def fake_perm_importance(_model, _X, _y, n_repeats=5, random_state=None, **_kwargs):
         _ = n_repeats, random_state
         return _perm_result([0.1, 0.2])
 
@@ -144,15 +140,18 @@ def test_win_rate_is_regression_target(tmp_path, monkeypatch):
             captured["y"] = list(y)
             return self
 
+        def predict(self, X):
+            return np.full(len(X), 0.5)
+
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),  # noqa: ARG005
+        lambda **_kwargs: DummyModel(),
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+        lambda model, X, y, n_repeats=5, random_state=None, **_kwargs: _perm_result(  # noqa: ARG005
             np.zeros(X.shape[1])
         ),
     )
@@ -186,15 +185,18 @@ def test_partial_dependence_warning_and_limit(tmp_path, monkeypatch, caplog):
         def fit(self, _X, _y):
             return self
 
+        def predict(self, X):
+            return np.full(len(X), 0.5)
+
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),  # noqa: ARG005
+        lambda **_kwargs: DummyModel(),
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+        lambda model, X, y, n_repeats=5, random_state=None, **_kwargs: _perm_result(  # noqa: ARG005
             np.zeros(X.shape[1])
         ),
     )
@@ -282,15 +284,18 @@ def test_partial_dependence_skips_constant_features(tmp_path, monkeypatch, caplo
         def fit(self, _X, _y):
             return self
 
+        def predict(self, X):
+            return np.full(len(X), 0.5)
+
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),  # noqa: ARG005
+        lambda **_kwargs: DummyModel(),
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+        lambda model, X, y, n_repeats=5, random_state=None, **_kwargs: _perm_result(  # noqa: ARG005
             np.zeros(X.shape[1])
         ),
     )
@@ -321,15 +326,18 @@ def test_run_hgb_default_output(tmp_path, monkeypatch):
         def fit(self, _X, _y):
             return self
 
+        def predict(self, X):
+            return np.full(len(X), 0.5)
+
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),  # noqa: ARG005
+        lambda **_kwargs: DummyModel(),
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+        lambda model, X, y, n_repeats=5, random_state=None, **_kwargs: _perm_result(  # noqa: ARG005
             np.zeros(X.shape[1])
         ),
     )
@@ -342,11 +350,7 @@ def test_run_hgb_default_output(tmp_path, monkeypatch):
 
     run_hgb.run_hgb(root=data_dir)
     assert (data_dir / "combined" / "hgb_importance.json").exists()
-    parquet_path = (
-        data_dir
-        / f"{2}p"
-        / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
-    )
+    parquet_path = data_dir / f"{2}p" / run_hgb.IMPORTANCE_TEMPLATE.format(players=2)
     assert parquet_path.exists()
 
 
@@ -360,11 +364,14 @@ def test_run_hgb_passes_seed_to_model_and_permutation(tmp_path, monkeypatch, see
         def fit(self, _X, _y):
             return self
 
-    def fake_model(*, random_state=None):
+        def predict(self, X):
+            return np.full(len(X), 0.5)
+
+    def fake_model(*, random_state=None, **_kwargs):
         model_random_states.append(random_state)
         return DummyModel()
 
-    def fake_perm(model, X, y, n_repeats=5, random_state=None):
+    def fake_perm(model, X, y, n_repeats=5, random_state=None, **_kwargs):
         _ = model, y
         perm_calls.append((n_repeats, random_state))
         return _perm_result(np.zeros(X.shape[1]))
@@ -380,8 +387,15 @@ def test_run_hgb_passes_seed_to_model_and_permutation(tmp_path, monkeypatch, see
 
     run_hgb.run_hgb(seed=seed, root=data_dir)
 
-    assert model_random_states == [seed]
-    assert perm_calls == [(10, seed)]
+    assert model_random_states == [
+        run_hgb._model_seed(seed, 2, 1),
+        run_hgb._model_seed(seed, 2, 2),
+        run_hgb._model_seed(seed, 2, 0),
+    ]
+    assert perm_calls == [
+        (10, run_hgb._model_seed(seed, 2, 3)),
+        (10, run_hgb._model_seed(seed, 2, 4)),
+    ]
 
 
 def test_run_hgb_reads_manifest_and_writes_deterministic_output(tmp_path, monkeypatch):
@@ -401,16 +415,19 @@ def test_run_hgb_reads_manifest_and_writes_deterministic_output(tmp_path, monkey
         def fit(self, _X, _y):
             return self
 
+        def predict(self, X):
+            return np.full(len(X), 0.5)
+
     monkeypatch.setattr(run_hgb, "_parse_strategy_features", fake_parse)
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),  # noqa: ARG005
+        lambda **_kwargs: DummyModel(),
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+        lambda model, X, y, n_repeats=5, random_state=None, **_kwargs: _perm_result(  # noqa: ARG005
             np.zeros(X.shape[1])
         ),
     )
@@ -445,7 +462,9 @@ def test_run_hgb_skips_when_no_features_or_join_rows(tmp_path, monkeypatch):
     monkeypatch.setattr(
         run_hgb,
         "_parse_strategy_features",
-        lambda strategies, *, manifest=None: pd.DataFrame(index=pd.Index([], name="strategy")),  # noqa: ARG005
+        lambda strategies, *, manifest=None: pd.DataFrame(
+            index=pd.Index([], name="strategy")
+        ),  # noqa: ARG005
     )
     run_hgb.run_hgb(root=data_dir)
     assert not (data_dir / "combined" / "hgb_importance.json").exists()
@@ -470,7 +489,7 @@ def test_run_hgb_propagates_model_fit_failure(tmp_path, monkeypatch):
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: BoomModel(),  # noqa: ARG005
+        lambda **_kwargs: BoomModel(),
     )
 
     with pytest.raises(RuntimeError, match="fit failed"):
@@ -497,7 +516,6 @@ def test_run_hgb_schema_mismatch_feature_columns_raises(tmp_path, monkeypatch):
         run_hgb.run_hgb(root=data_dir)
 
 
-
 def test_run_hgb_handles_empty_and_insufficient_player_buckets(tmp_path, monkeypatch):
     data_dir = _setup_data(tmp_path)
     metrics = pd.read_parquet(data_dir / "metrics.parquet")
@@ -521,15 +539,18 @@ def test_run_hgb_handles_empty_and_insufficient_player_buckets(tmp_path, monkeyp
         def fit(self, _X, _y):
             return self
 
+        def predict(self, X):
+            return np.full(len(X), 0.5)
+
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),  # noqa: ARG005
+        lambda **_kwargs: DummyModel(),
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=5, random_state=None: _perm_result(  # noqa: ARG005
+        lambda model, X, y, n_repeats=5, random_state=None, **_kwargs: _perm_result(  # noqa: ARG005
             np.arange(X.shape[1], dtype=float)
         ),
     )
@@ -544,13 +565,25 @@ def test_run_hgb_handles_empty_and_insufficient_player_buckets(tmp_path, monkeyp
 
     three_p = pd.read_parquet(data_dir / "3p" / run_hgb.IMPORTANCE_TEMPLATE.format(players=3))
     assert three_p.empty
-    assert list(three_p.columns) == ["feature", "importance_mean", "importance_std", "players"]
+    assert list(three_p.columns) == [
+        "feature",
+        "association_importance_mean",
+        "association_importance_fold_std",
+        "association_importance_repeat_std_mean",
+        "players",
+        "root_seed",
+        "heldout_folds",
+        "finite_grid_support",
+        "interpretation",
+    ]
 
     four_p = pd.read_parquet(data_dir / "4p" / run_hgb.IMPORTANCE_TEMPLATE.format(players=4))
     assert four_p.empty
 
 
-def test_run_hgb_players_only_schema_and_manifest_fallback_and_combined_artifacts(tmp_path, monkeypatch):
+def test_run_hgb_players_only_schema_and_manifest_fallback_and_combined_artifacts(
+    tmp_path, monkeypatch
+):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     strategies = [
@@ -603,16 +636,19 @@ def test_run_hgb_players_only_schema_and_manifest_fallback_and_combined_artifact
         def fit(self, _X, _y):
             return self
 
+        def predict(self, X):
+            return np.full(len(X), 0.5)
+
     monkeypatch.setattr(run_hgb, "_parse_strategy_features", fake_parse)
     monkeypatch.setattr(
         run_hgb,
         "HistGradientBoostingRegressor",
-        lambda random_state=None: DummyModel(),  # noqa: ARG005
+        lambda **_kwargs: DummyModel(),
     )
     monkeypatch.setattr(
         run_hgb,
         "permutation_importance",
-        lambda model, X, y, n_repeats=10, random_state=None: _perm_result(  # noqa: ARG005
+        lambda model, X, y, n_repeats=10, random_state=None, **_kwargs: _perm_result(  # noqa: ARG005
             np.linspace(0.0, 1.0, X.shape[1])
         ),
     )

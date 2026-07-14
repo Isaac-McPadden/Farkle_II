@@ -497,10 +497,13 @@ class Head2HeadConfig:
 
 @dataclass
 class HGBConfig:
-    """Hyperparameters for histogram-based gradient boosting models."""
+    """Finite-grid predictive-association settings for HGB exploration."""
 
     max_depth: int = 6
     n_estimators: int = 300
+    heldout_folds: int = 5
+    permutation_repeats: int = 10
+    future_proposal_limit: int = 100
 
 
 @dataclass
@@ -1030,6 +1033,26 @@ class AppConfig:
         """Deprecated alias for descriptive cross-k HGB outputs."""
 
         return self.across_k_dir("hgb")
+
+    def hgb_importance_path(self, k: int) -> Path:
+        """Held-out permutation associations for one player count."""
+
+        return self.hgb_per_k_dir(k) / f"feature_importance_{k}p.parquet"
+
+    def hgb_predictive_scores_path(self, k: int) -> Path:
+        """Out-of-sample predictions for held-out strategy configurations."""
+
+        return self.hgb_per_k_dir(k) / f"heldout_predictive_scores_{k}p.parquet"
+
+    def hgb_fold_metrics_path(self, k: int) -> Path:
+        """Per-fold HGB predictive scores and finite-grid support."""
+
+        return self.hgb_per_k_dir(k) / f"heldout_fold_metrics_{k}p.parquet"
+
+    def hgb_future_proposals_path(self) -> Path:
+        """Candidate manifest reserved for a future simulation run."""
+
+        return self.hgb_combined_dir / "future_simulation_proposals.parquet"
 
     @property
     def frequentist_stage_dir(self) -> Path:
@@ -2385,6 +2408,15 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("head2head.candidate_cap_policy must be 'balanced-tail'")
     if h2h.total_game_cap is not None and h2h.total_game_cap <= 0:
         raise ValueError("head2head.total_game_cap must be positive when configured")
+
+    if cfg.hgb.heldout_folds < 2:
+        raise ValueError("hgb.heldout_folds must be at least 2")
+    if cfg.hgb.permutation_repeats < 1:
+        raise ValueError("hgb.permutation_repeats must be positive")
+    if cfg.hgb.future_proposal_limit < 0:
+        raise ValueError("hgb.future_proposal_limit must not be negative")
+    if cfg.hgb.max_depth < 1 or cfg.hgb.n_estimators < 1:
+        raise ValueError("hgb model depth and iteration count must be positive")
 
 
 def compute_config_sha(cfg: AppConfig) -> str:

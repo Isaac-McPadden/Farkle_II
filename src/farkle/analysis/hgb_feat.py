@@ -1,9 +1,5 @@
 # src/farkle/analysis/hgb_feat.py
-"""Feature selection wrapper for histogram gradient boosting models.
-
-Loads isolated metrics, infers player counts, and delegates to the shared
-``run_hgb`` routines to train feature-importance models for strategy rankings.
-"""
+"""Configuration wrapper for held-out HGB association exploration."""
 from __future__ import annotations
 
 import logging
@@ -16,6 +12,11 @@ import pyarrow.parquet as pq
 from farkle.analysis import run_hgb as _hgb
 from farkle.analysis import stage_logger
 from farkle.config import AppConfig
+from farkle.utils.artifact_contract import (
+    ArtifactContractError,
+    sidecar_path,
+    validate_artifact_sidecar,
+)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -69,26 +70,49 @@ def run(cfg: AppConfig) -> None:
     stage_log.start()
 
     analysis_dir = cfg.hgb_stage_dir
-    metrics_path = cfg.metrics_input_path()
-    ratings_path = cfg.trueskill_path(_hgb.RATINGS_NAME)
-
-    if not metrics_path.exists():
-        stage_log.missing_input("metrics parquet missing", path=str(metrics_path))
+    players = sorted({int(k) for k in cfg.sim.n_players_list})
+    metrics_paths = [cfg.performance_by_k_path(k) for k in players]
+    missing = [path for path in metrics_paths if not path.exists()]
+    if missing:
+        stage_log.missing_input(
+            "canonical per-k performance artifact missing",
+            paths=[str(path) for path in missing],
+        )
         return
-    if not ratings_path.exists():
-        stage_log.missing_input("TrueSkill ratings missing", path=str(ratings_path))
-        return
+    for path in metrics_paths:
+        validate_artifact_sidecar(path, expected={"scope": "by_k"})
     json_out = cfg.hgb_combined_dir / "hgb_importance.json"
 
-    players = _unique_players(metrics_path, cfg.sim.n_players_list)
-    importance_paths = [cfg.hgb_per_k_dir(p) / _hgb.IMPORTANCE_TEMPLATE.format(players=p) for p in players]
+    importance_paths = [cfg.hgb_importance_path(k) for k in players]
+    predictive_paths = [cfg.hgb_predictive_scores_path(k) for k in players]
+    fold_paths = [cfg.hgb_fold_metrics_path(k) for k in players]
     manifest_path = cfg.strategy_manifest_root_path() if players else None
 
-    inputs = [cfg.curated_parquet, metrics_path, ratings_path]
+    inputs = [*metrics_paths]
+    if manifest_path is not None and manifest_path.exists():
+        inputs.append(manifest_path)
     latest_input = _latest_mtime(inputs)
-    outputs = [json_out, *importance_paths]
+    outputs = [
+        json_out,
+        cfg.hgb_future_proposals_path(),
+        cfg.hgb_combined_dir / _hgb.LONG_IMPORTANCE_NAME,
+        cfg.hgb_combined_dir / _hgb.OVERALL_IMPORTANCE_NAME,
+        *importance_paths,
+        *predictive_paths,
+        *fold_paths,
+    ]
 
-    if outputs and all(p.exists() and p.stat().st_mtime >= latest_input for p in outputs):
+    outputs_look_fresh = outputs and all(
+        p.exists() and sidecar_path(p).exists() and p.stat().st_mtime >= latest_input
+        for p in outputs
+    )
+    if outputs_look_fresh:
+        try:
+            for path in outputs:
+                validate_artifact_sidecar(path)
+        except ArtifactContractError:
+            outputs_look_fresh = False
+    if outputs_look_fresh:
         LOGGER.info(
             "HGB feature importance up-to-date",
             extra={"stage": "hgb", "path": str(json_out)},
@@ -105,9 +129,15 @@ def run(cfg: AppConfig) -> None:
     _hgb.run_hgb(
         root=analysis_dir,
         output_path=json_out,
-        metrics_path=metrics_path,
-        ratings_path=ratings_path,
+        metrics_paths=metrics_paths,
         manifest_path=manifest_path,
+        cfg=cfg,
+        seed=cfg.sim.seed,
+        heldout_folds=cfg.hgb.heldout_folds,
+        permutation_repeats=cfg.hgb.permutation_repeats,
+        max_depth=cfg.hgb.max_depth,
+        max_iter=cfg.hgb.n_estimators,
+        proposal_limit=cfg.hgb.future_proposal_limit,
     )
     LOGGER.info(
         "HGB feature importance complete",

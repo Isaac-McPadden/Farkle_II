@@ -119,6 +119,20 @@ pipeline schedules stages from inputs and preconditions instead.
 
 If you need a path, prefer `AppConfig` helpers over manual filename assembly.
 
+## `hgb`
+
+- `max_depth`: maximum HGB tree depth.
+- `n_estimators`: boosting iteration count (`max_iter` in sklearn).
+- `heldout_folds`: deterministic strategy-configuration folds; must be at
+  least 2.
+- `permutation_repeats`: permutation repeats within each held-out fold; must be
+  positive.
+- `future_proposal_limit`: maximum draft candidates for a future simulation;
+  zero disables proposal generation.
+
+HGB evaluation is configuration-held-out. These settings do not authorize
+insertion of proposed configurations into the current analysis.
+
 ## Common override examples
 
 ```bash
