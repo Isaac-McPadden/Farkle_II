@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Any, Iterable
 
+from farkle.utils.artifact_contract import validate_artifact_sidecar
 from farkle.utils.writer import atomic_path
 
 __all__ = ["read_stage_done", "stage_done_path", "stage_is_up_to_date", "write_stage_done"]
@@ -75,6 +76,7 @@ def stage_is_up_to_date(
     cache_key_version: int = _DEFAULT_CACHE_KEY_VERSION,
     stage: str | None = None,
     cfg: Any | None = None,
+    sidecar_artifacts: Iterable[Path] = (),
 ) -> bool:
     """Return ``True`` when *done_path* is newer than *inputs* and outputs exist."""
 
@@ -109,7 +111,14 @@ def stage_is_up_to_date(
     for inp in _coerce_paths(inputs):
         if not inp.exists() or inp.stat().st_mtime > done_mtime:
             return False
-    return all(Path(out).exists() for out in outputs)
+    if not all(Path(out).exists() for out in outputs):
+        return False
+    try:
+        for artifact in _coerce_paths(sidecar_artifacts):
+            validate_artifact_sidecar(artifact)
+    except RuntimeError:
+        return False
+    return True
 
 
 def write_stage_done(
@@ -126,8 +135,9 @@ def write_stage_done(
     reason: str | None = None,
     blocking_dependency: str | None = None,
     upstream_stage: str | None = None,
+    sidecar_artifacts: Iterable[Path] = (),
 ) -> None:
-    """Persist a minimal completion stamp for a stage."""
+    """Persist completion only after declared artifact sidecars validate."""
 
     if status not in _ALLOWED_STATUSES:
         raise ValueError(
@@ -143,6 +153,9 @@ def write_stage_done(
         if stage_config_sha is None:
             stage_config_sha = cfg.stage_config_sha(stage)
         cache_key_version = int(cfg.stage_cache_key_version(stage))
+
+    for artifact in _coerce_paths(sidecar_artifacts):
+        validate_artifact_sidecar(artifact)
 
     payload = {
         "schema_version": _SCHEMA_VERSION,

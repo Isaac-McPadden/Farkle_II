@@ -136,6 +136,7 @@ def test_write_monolithic_compatibility_skips_empty_batches_and_drops_n_players(
         cfg,
         tmp_path / "combined.parquet",
         tmp_path / "combined.manifest.jsonl",
+        [tmp_path / "2p_part-00000.parquet"],
     )
 
     assert total == 1

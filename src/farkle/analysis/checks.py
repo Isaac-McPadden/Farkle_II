@@ -15,6 +15,7 @@ import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
+from farkle.utils.artifact_contract import validate_artifact_sidecar
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.schema_helpers import expected_schema_for
 
@@ -55,7 +56,24 @@ def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> Non
             f"got {combined_parquet}"
         )
 
-    dataset = ds.dataset(combined_parquet, format="parquet", partitioning="hive")
+    is_partitioned = combined_parquet.is_dir()
+    data_files = (
+        sorted(combined_parquet.rglob("*.parquet"))
+        if is_partitioned
+        else [combined_parquet]
+    )
+    if not data_files:
+        raise RuntimeError(f"check_pre_metrics: no parquet artifacts found in {combined_parquet}")
+    expected_scope = "by_k" if is_partitioned else "concat_ks"
+    for data_file in data_files:
+        validate_artifact_sidecar(data_file, expected={"scope": expected_scope})
+
+    dataset = ds.dataset(
+        combined_parquet,
+        format="parquet",
+        partitioning="hive",
+        exclude_invalid_files=True,
+    )
     schema = dataset.schema
     if winner_col not in schema.names:
         raise RuntimeError(

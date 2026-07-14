@@ -4,8 +4,8 @@ import json
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import write_parquet_test_artifact
 
 from farkle.analysis.checks import (
     check_post_combine,
@@ -26,7 +26,7 @@ def _combined_path(tmp_path: Path) -> tuple[Path, Path]:
 def _write_table(path: Path, schema: pa.Schema, rows: list[dict]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pylist(rows, schema=schema)
-    pq.write_table(table, path)
+    write_parquet_test_artifact(table, path)
 
 
 def _write_manifest(data_dir: Path, n_players: int, payload: dict[str, object] | str) -> Path:

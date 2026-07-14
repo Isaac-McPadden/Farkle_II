@@ -15,6 +15,7 @@ import pyarrow.parquet as pq
 from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.utils.schema_helpers import expected_schema_for
 
+from .artifact_sidecars import write_parquet_test_artifact
 from .golden_utils import assert_csv_golden, assert_parquet_golden, assert_stamp_has_paths
 
 DATA_ROOT = Path(__file__).resolve().parents[1] / "data" / "metrics_stage_v2"
@@ -329,6 +330,8 @@ def stage_sample_run(tmp_path: Path, *, refresh_inputs: bool) -> AppConfig:
     shutil.copytree(inputs_root, workspace, dirs_exist_ok=True)
 
     cfg = build_config(workspace)
+    combined_artifact = cfg.concat_ks_dir("combine") / "all_ingested_rows.parquet"
+    write_parquet_test_artifact(pq.read_table(combined_artifact), combined_artifact)
 
     # Ensure manifests accompany the curated/isolated parquet inputs so pre-metrics
     # checks can verify row counts in both the copied directories and near the

@@ -11,7 +11,8 @@ import pyarrow.parquet as pq
 
 from farkle.analysis.checks import check_post_combine
 from farkle.analysis.stage_state import stage_done_path, stage_is_up_to_date, write_stage_done
-from farkle.config import AppConfig
+from farkle.config import AppConfig, ArtifactScope
+from farkle.utils.artifact_contract import make_artifact_sidecar, sidecar_path
 from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.streaming_loop import run_streaming_shard
 
@@ -103,6 +104,7 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
             outputs=[out_file, manifest_path],
             cfg=cfg,
             stage="combine",
+            sidecar_artifacts=[out_file],
         ):
             outputs.append(out_file)
             manifests.append(manifest_path)
@@ -112,6 +114,7 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
         if pf.metadata.num_rows == 0:
             if out_file.exists():
                 out_file.unlink()
+            sidecar_path(out_file).unlink(missing_ok=True)
             if manifest_path.exists():
                 manifest_path.unlink()
             continue
@@ -134,6 +137,19 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
                 yield table
 
         _reset_output_manifest(manifest_path)
+        sidecar = make_artifact_sidecar(
+            cfg,
+            out_file,
+            producer="combine",
+            scope=ArtifactScope.BY_K,
+            source_scope=ArtifactScope.BY_K,
+            operation="combine",
+            source_artifacts=[src],
+            consistency_columns=target.names,
+            player_counts=[n_players],
+            required_player_counts=[n_players],
+            missing_cell_policy="fail",
+        )
         run_streaming_shard(
             out_path=str(out_file),
             manifest_path=str(manifest_path),
@@ -142,6 +158,7 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
             row_group_size=cfg.row_group_size,
             compression=cfg.parquet_codec,
             manifest_extra={"path": str(out_file), "n_players": int(n_players), "source_file": str(src)},
+            sidecar=sidecar,
         )
         outputs.append(out_file)
         manifests.append(manifest_path)
@@ -151,11 +168,17 @@ def _write_partitioned_dataset(cfg: AppConfig, files: list[Path], target: pa.Sch
             outputs=[out_file, manifest_path],
             cfg=cfg,
             stage="combine",
+            sidecar_artifacts=[out_file],
         )
     return outputs, manifests
 
 
-def _write_monolithic_compatibility_from_partitions(cfg: AppConfig, out: Path, manifest_path: Path) -> int:
+def _write_monolithic_compatibility_from_partitions(
+    cfg: AppConfig,
+    out: Path,
+    manifest_path: Path,
+    partition_outputs: list[Path],
+) -> int:
     """Write the compatibility parquet by streaming rows from partitioned outputs.
 
     Args:
@@ -166,7 +189,7 @@ def _write_monolithic_compatibility_from_partitions(cfg: AppConfig, out: Path, m
     Returns:
         Total number of rows written to the compatibility output.
     """
-    dataset = ds.dataset(cfg.combine_partitioned_dir, format="parquet", partitioning="hive")
+    dataset = ds.dataset([str(path) for path in partition_outputs], format="parquet")
     scanner = dataset.scanner(batch_size=cfg.row_group_size, use_threads=True)
     total = 0
 
@@ -187,6 +210,22 @@ def _write_monolithic_compatibility_from_partitions(cfg: AppConfig, out: Path, m
             yield table
 
     _reset_output_manifest(manifest_path)
+    player_counts = sorted(
+        int(path.name.split("p_", maxsplit=1)[0]) for path in partition_outputs
+    )
+    sidecar = make_artifact_sidecar(
+        cfg,
+        out,
+        producer="combine",
+        scope=ArtifactScope.CONCAT_KS,
+        source_scope=ArtifactScope.BY_K,
+        operation="concat",
+        source_artifacts=partition_outputs,
+        consistency_columns=expected_schema_for(12).names,
+        player_counts=player_counts,
+        required_player_counts=player_counts,
+        missing_cell_policy="not_applicable",
+    )
     run_streaming_shard(
         out_path=str(out),
         manifest_path=str(manifest_path),
@@ -195,6 +234,7 @@ def _write_monolithic_compatibility_from_partitions(cfg: AppConfig, out: Path, m
         row_group_size=cfg.row_group_size,
         compression=cfg.parquet_codec,
         manifest_extra={"path": out.name, "source": "partitioned_compatibility"},
+        sidecar=sidecar,
     )
     return total
 
@@ -225,6 +265,7 @@ def run(cfg: AppConfig) -> None:
         outputs=[cfg.combine_partitioned_dir, out, manifest_path],
         cfg=cfg,
         stage="combine",
+        sidecar_artifacts=[out],
     ):
         LOGGER.info("Combine: output up-to-date", extra={"stage": "combine", "path": str(out)})
         return
@@ -233,12 +274,15 @@ def run(cfg: AppConfig) -> None:
     if not partition_outputs:
         if out.exists():
             out.unlink()
+        sidecar_path(out).unlink(missing_ok=True)
         if manifest_path.exists():
             manifest_path.unlink()
         LOGGER.info("Combine: inputs produced zero rows", extra={"stage": "combine", "path": str(cfg.data_dir)})
         return
 
-    monolithic_total = _write_monolithic_compatibility_from_partitions(cfg, out, manifest_path)
+    monolithic_total = _write_monolithic_compatibility_from_partitions(
+        cfg, out, manifest_path, partition_outputs
+    )
     pf_out = pq.ParquetFile(out)
     if pf_out.metadata.num_rows != monolithic_total:
         raise RuntimeError(f"combine: row-count mismatch {pf_out.metadata.num_rows} != {monolithic_total}")
@@ -263,4 +307,5 @@ def run(cfg: AppConfig) -> None:
         outputs=[cfg.combine_partitioned_dir, *partition_outputs, *partition_manifests, out, manifest_path],
         cfg=cfg,
         stage="combine",
+        sidecar_artifacts=[*partition_outputs, out],
     )

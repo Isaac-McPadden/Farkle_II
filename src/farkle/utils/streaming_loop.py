@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, Iterable
 
 import pyarrow as pa
 
+from .artifact_contract import ArtifactSidecar
 from .manifest import append_manifest_line
 from .types import Compression
 from .writer import ParquetShardWriter
@@ -31,12 +32,19 @@ def run_streaming_shard(
     row_group_size: int = 200_000,
     compression: Compression = "snappy",
     manifest_extra: Dict[str, Any] | None = None,
+    sidecar: ArtifactSidecar | None = None,
 ):
     """Stream batches to parquet and append a manifest entry on success."""
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    with ParquetShardWriter(
-        out_path=out_path, schema=schema, compression=compression, row_group_size=row_group_size
-    ) as w:
+    writer_kwargs: dict[str, Any] = {
+        "out_path": out_path,
+        "schema": schema,
+        "compression": compression,
+        "row_group_size": row_group_size,
+    }
+    if sidecar is not None:
+        writer_kwargs["sidecar"] = sidecar
+    with ParquetShardWriter(**writer_kwargs) as w:
         w.write_batches(batch_iter)
     rows = getattr(w, "rows_written", None)
     if not _output_ready(out_path, manifest_path, manifest_extra):

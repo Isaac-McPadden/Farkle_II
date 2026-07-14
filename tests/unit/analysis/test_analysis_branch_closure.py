@@ -6,6 +6,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import write_parquet_test_artifact
 
 from farkle.analysis import agreement, checks, hgb_feat, ingest, isolated_metrics, stage_registry
 from farkle.config import AppConfig, IOConfig
@@ -42,7 +43,7 @@ def test_checks_pre_metrics_raises_when_no_manifest_present(tmp_path: Path) -> N
     combined = tmp_path / "concat_ks" / "all_ingested_rows.parquet"
     combined.parent.mkdir(parents=True)
     table = pa.table({"winner": ["A"], "wins": [1]})
-    pq.write_table(table, combined)
+    write_parquet_test_artifact(table, combined)
 
     with pytest.raises(RuntimeError, match="no manifest files found"):
         checks.check_pre_metrics(combined)

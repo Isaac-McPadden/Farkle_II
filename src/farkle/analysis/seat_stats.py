@@ -101,7 +101,12 @@ def compute_seat_metrics(
         scores, farkles, and rounds.
     """
 
-    ds_in = ds.dataset(combined, format="parquet", partitioning="hive")
+    ds_in = ds.dataset(
+        combined,
+        format="parquet",
+        partitioning="hive",
+        exclude_invalid_files=True,
+    )
     schema = ds_in.schema
     n_players_fallback = n_players_from_schema(schema)
 
@@ -341,7 +346,12 @@ def compute_seat_advantage(
         i: sum(_rows_for_n(n) for n in range(i, 13) if n in selected_players)
         for i in seats
     }
-    ds_all = ds.dataset(combined, format="parquet", partitioning="hive")
+    ds_all = ds.dataset(
+        combined,
+        format="parquet",
+        partitioning="hive",
+        exclude_invalid_files=True,
+    )
     players_filter = None
     if include_players and "n_players" in ds_all.schema.names:
         selected = sorted(int(v) for v in include_players)
@@ -378,7 +388,7 @@ def compute_seat_advantage(
 def compute_symmetry_checks(curated_rows: Path, seat_config: SeatMetricConfig) -> pd.DataFrame:
     """Compare P1 vs P2 stats for symmetric two-player matchups."""
 
-    ds_in = ds.dataset(curated_rows)
+    ds_in = ds.dataset(curated_rows, exclude_invalid_files=True)
     required = {"P1_strategy", "P2_strategy", "P1_farkles", "P2_farkles", "P1_rounds", "P2_rounds"}
     if not required.issubset(ds_in.schema.names):
         available_columns = sorted(ds_in.schema.names)

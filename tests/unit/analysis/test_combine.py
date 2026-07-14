@@ -7,6 +7,7 @@ import pyarrow.parquet as pq
 from farkle.analysis import combine
 from farkle.analysis.checks import check_pre_metrics
 from farkle.config import AppConfig, IOConfig
+from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
 from farkle.utils.schema_helpers import expected_schema_for
 
 
@@ -90,6 +91,11 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
     assert getattr(log, "rows", None) == 2
     manifest_path = out.with_suffix(".manifest.jsonl")
     assert manifest_path.exists()
+    assert sidecar_path(out).exists()
+    metadata = validate_artifact_sidecar(
+        out, expected={"scope": "concat_ks", "operation": "concat"}
+    )
+    assert metadata.player_counts == [1, 2]
     assert calls and calls[0][0] == [p1, p2]
     assert calls[0][1] == out
     assert calls[0][2] == 12
@@ -247,6 +253,10 @@ def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: 
     partition_file = cfg.combine_partitioned_dir / "2p_part-00000.parquet"
     partition_done = cfg.combine_stage_dir / "combine_partition_2p.done.json"
     assert partition_file.exists()
+    assert sidecar_path(partition_file).exists()
+    validate_artifact_sidecar(
+        partition_file, expected={"scope": "by_k", "operation": "combine"}
+    )
     assert partition_done.exists()
 
 

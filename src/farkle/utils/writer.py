@@ -15,6 +15,7 @@ from typing import Iterable, Iterator, Optional
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from .artifact_contract import ArtifactSidecar, publish_staged_artifact_with_sidecar
 from .types import Compression, normalize_compression
 
 
@@ -40,6 +41,7 @@ class ParquetShardWriter:
     schema: pa.Schema | None = None
     compression: Compression = "snappy"
     row_group_size: int = 200_000
+    sidecar: ArtifactSidecar | None = None
 
     _writer: Optional[pq.ParquetWriter] = None
     _tmp_path: str = ""
@@ -99,7 +101,14 @@ class ParquetShardWriter:
                 self._writer = None
                 raise
         if success:
-            os.replace(self._tmp_path, self.out_path)
+            if self.sidecar is None:
+                os.replace(self._tmp_path, self.out_path)
+            else:
+                publish_staged_artifact_with_sidecar(
+                    self._tmp_path,
+                    self.out_path,
+                    self.sidecar,
+                )
         else:
             with suppress(FileNotFoundError):
                 os.remove(self._tmp_path)
