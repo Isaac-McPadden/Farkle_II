@@ -1471,6 +1471,16 @@ class AppConfig:
 
         return self.diagnostics_dir("trueskill") / "screening_diagnostics.parquet"
 
+    def h2h_candidate_family_path(self) -> Path:
+        """Frozen H2H candidate membership and admission provenance."""
+
+        return self.h2h_2p_dir() / "candidate_family.parquet"
+
+    def h2h_candidate_family_manifest_path(self) -> Path:
+        """Immutable candidate-family identity and workload summary."""
+
+        return self.h2h_2p_dir() / "candidate_family.json"
+
     def legacy_metrics_isolated_path(self, k: int) -> Path:
         """Legacy isolated metrics parquet path under ``analysis/data``."""
 

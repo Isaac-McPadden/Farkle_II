@@ -192,6 +192,27 @@ control and shortlist movement, matched-count convergence, and contiguous
 first-half/second-half drift. They do not estimate a population of roots and do
 not publish random-effects heterogeneity or two-root population intervals.
 
+### H2H candidate freeze
+
+The pre-scheduling two-player family is published under
+`cfg.h2h_2p_dir("head2head")`:
+
+- `candidate_family.parquet`
+- `candidate_family.json`
+
+The membership table records every canonical win-rate and TrueSkill source
+rank, method-list membership, protected control/diagnostic status, admission
+reasons, simultaneous cutoff round, cap removal, and the family hash. The JSON
+manifest records the initial and final method cutoffs, every contraction round,
+overlap statistics, admission counts, content hashes, and projected unordered
+pair/root/order block counts.
+
+The default contribution is the top 75 from each canonical method ranking. An
+optional candidate cap reduces both nonprotected method cutoffs together until
+their union plus protected entries fits. No cap retains the complete declared
+union. A single-root family is supported but explicitly labelled in the
+manifest and sidecars.
+
 ### Coverage and game stats
 
 Common stage roots:

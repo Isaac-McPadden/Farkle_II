@@ -179,12 +179,23 @@ For every statistical claim, review in this order:
 
 ## Head-To-Head Simulation And Holm Decisions
 
+- Candidate freeze code: `src/farkle/analysis/candidate_family.py`.
+- Canonical candidate inputs: the combined-root complete-support across-k
+  win-rate contribution and the complete root/k TrueSkill percentile
+  contribution. Explicitly labelled single-root counterparts are also accepted.
+- Default family: top 75 from each method plus configured controls and mandatory
+  diagnostics. With no cap, retain the complete union. With a cap, reduce both
+  nonprotected method cutoffs simultaneously until the family fits; never spend
+  the remaining slots according to incomparable cross-method score scales.
+- Provenance: every source rank, shared membership, admission reason, cutoff
+  round, removed tail, overlap statistic, family content hash, and projected
+  pair/root/order workload is written before scheduling.
+- Tests: `tests/unit/analysis/test_candidate_family.py` covers balanced-tail
+  contraction, protected candidates, no-cap behavior, sidecar scope, family-hash
+  replay, and explicit single-root labelling.
 - Code: `src/farkle/analysis/head2head.py`,
   `src/farkle/analysis/run_bonferroni_head2head.py`,
   `src/farkle/analysis/h2h_analysis.py`.
-- Candidate selection: union of top combined TrueSkill ratings and frequentist
-  scores; `use_tier_elites` is currently logged as ignored in favor of combined
-  score artifacts.
 - Simulation: each pair is split across both seat orders (`a_b` and `b_a`) and
   writes pairwise, ordered-pairwise, and self-play symmetry artifacts.
 - Initial p-value: `run_bonferroni_head2head.py` stores

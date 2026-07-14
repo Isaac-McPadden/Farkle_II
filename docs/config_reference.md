@@ -89,6 +89,24 @@ Two-root combination treats roots as independent RNG domains for one fixed
 simulation design. These settings control reproducibility diagnostics, not
 random-effects inference or population intervals over roots.
 
+## Candidate-family freeze
+
+- `screening.candidate_contribution_size`
+  Number of entries contributed by each canonical method ranking; default `75`.
+- `screening.controls`
+  Strategy identifiers protected as declared controls.
+- `screening.mandatory_diagnostics`
+  Strategy identifiers protected for prespecified diagnostics.
+- `head2head.candidate_cap`
+  Optional maximum family size. When absent, the complete declared union is
+  retained.
+- `head2head.candidate_cap_policy`
+  Locked to `balanced-tail`: both nonprotected method cutoffs decrease by one in
+  every contraction round. The result may be smaller than the cap.
+
+Every protected strategy must occur in at least one canonical contribution,
+and the cap cannot be smaller than the protected family.
+
 ## Important `analysis` fields
 
 - `log_level`
