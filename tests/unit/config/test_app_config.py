@@ -1221,6 +1221,81 @@ def test_statistical_contract_validates_declared_k_weights() -> None:
         cfg.validate_statistical_contract(require_two_roots=True)
 
 
+def test_freshness_key_covers_every_locked_statistical_dimension() -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[4, 2]))
+
+    freshness = cfg.freshness_key()
+
+    assert freshness == {
+        "artifact_contract_version": 1,
+        "estimand_version": 1,
+        "schema_version": 1,
+        "rng_scheme_version": 1,
+        "baseline_version": 1,
+        "k_support_version": 1,
+        "weighting_version": 1,
+        "conditioning_version": 1,
+        "multiplicity_version": 1,
+        "candidate_family_version": 1,
+        "baseline": "chance_rate_by_k",
+        "required_player_counts": [2, 4],
+        "k_aggregation_method": "equal-k",
+        "k_weights": None,
+        "conditioning": "unconditional_default",
+        "multiplicity": "holm_h2h",
+    }
+
+
+@pytest.mark.parametrize(
+    "version_field",
+    [
+        "artifact_contract_version",
+        "estimand_version",
+        "schema_version",
+        "baseline_version",
+        "k_support_version",
+        "weighting_version",
+        "conditioning_version",
+        "multiplicity_version",
+        "candidate_family_version",
+    ],
+)
+def test_stage_freshness_hash_changes_for_each_contract_version(version_field: str) -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[2, 4]))
+    before = cfg.stage_config_sha("metrics")
+
+    setattr(cfg.artifact_contract, version_field, 2)
+
+    assert cfg.stage_config_sha("metrics") != before
+
+
+def test_statistical_contract_rejects_nonpositive_freshness_version() -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[2]))
+    cfg.screening.practical_delta_by_k = {2: 0.03}
+    cfg.screening.delta_across_k = 0.03
+    cfg.artifact_contract.conditioning_version = 0
+
+    with pytest.raises(ValueError, match="versions must all be positive"):
+        cfg.validate_statistical_contract()
+
+
+def test_stage_freshness_hash_changes_for_rng_support_and_declared_weights() -> None:
+    cfg = AppConfig(sim=SimConfig(n_players_list=[2, 4]))
+    baseline = cfg.stage_config_sha("combine")
+
+    cfg.rng.scheme_version = 2
+    assert cfg.stage_config_sha("combine") != baseline
+    cfg.rng.scheme_version = 1
+
+    cfg.sim.n_players_list = [2, 4, 12]
+    assert cfg.stage_config_sha("combine") != baseline
+    cfg.sim.n_players_list = [2, 4]
+
+    cfg.k_aggregation.method = "declared-mapping"
+    cfg.k_aggregation.k_weights = {2: 0.25, 4: 0.75}
+    assert cfg.stage_config_sha("combine") != baseline
+
+
 def test_load_rejects_retired_statistical_key(write_yaml) -> None:
     path = write_yaml("retired.yaml", {"head2head": {"fdr_q": 0.05}})
 

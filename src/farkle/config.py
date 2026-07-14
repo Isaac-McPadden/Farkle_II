@@ -214,6 +214,12 @@ class ArtifactContractConfig:
     artifact_contract_version: int = 1
     estimand_version: int = 1
     schema_version: int = 1
+    baseline_version: int = 1
+    k_support_version: int = 1
+    weighting_version: int = 1
+    conditioning_version: int = 1
+    multiplicity_version: int = 1
+    candidate_family_version: int = 1
 
 
 @dataclass
@@ -600,6 +606,44 @@ class AppConfig:
         """Return ``(stage_config_sha, cache_key_version)`` for ``stage_key``."""
 
         return (self.stage_config_sha(stage_key), self.stage_cache_key_version(stage_key))
+
+    def freshness_key(self) -> dict[str, Any]:
+        """Return the versioned statistical contract used by completion stamps."""
+
+        contract = self.artifact_contract
+        weights = self.k_aggregation.k_weights
+        normalized_counts: set[int | str] = set()
+        for value in self.sim.n_players_list:
+            try:
+                normalized_counts.add(int(value))
+            except (TypeError, ValueError):
+                normalized_counts.add(str(value))
+        ordered_counts = sorted(
+            normalized_counts,
+            key=lambda value: (isinstance(value, str), str(value)),
+        )
+        return {
+            "artifact_contract_version": contract.artifact_contract_version,
+            "estimand_version": contract.estimand_version,
+            "schema_version": contract.schema_version,
+            "rng_scheme_version": self.rng.scheme_version,
+            "baseline_version": contract.baseline_version,
+            "k_support_version": contract.k_support_version,
+            "weighting_version": contract.weighting_version,
+            "conditioning_version": contract.conditioning_version,
+            "multiplicity_version": contract.multiplicity_version,
+            "candidate_family_version": contract.candidate_family_version,
+            "baseline": "chance_rate_by_k",
+            "required_player_counts": ordered_counts,
+            "k_aggregation_method": self.k_aggregation.method,
+            "k_weights": (
+                None
+                if weights is None
+                else {str(k): float(value) for k, value in sorted(weights.items())}
+            ),
+            "conditioning": "unconditional_default",
+            "multiplicity": "holm_h2h",
+        }
 
     def set_stage_layout(self, layout: "StageLayout") -> None:
         """Override the resolved stage layout (used by CLI orchestration)."""
@@ -2172,6 +2216,9 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("sim.n_players_list must not contain duplicate player counts")
     if cfg.rng.scheme_version != 1 or cfg.rng.bit_generator != "PCG64DXSM":
         raise ValueError("rng must use scheme_version=1 and bit_generator='PCG64DXSM'")
+    contract_versions = dataclasses.asdict(cfg.artifact_contract)
+    if any(int(value) < 1 for value in contract_versions.values()):
+        raise ValueError("artifact_contract versions must all be positive integers")
     if not 0.0 < cfg.screening.resolution_delta < 1.0:
         raise ValueError("screening.resolution_delta must be between 0 and 1")
     if not 0.0 < cfg.screening.interval_confidence < 1.0:
@@ -2253,6 +2300,7 @@ def compute_stage_config_sha(cfg: AppConfig, stage_key: str) -> str:
         {
             "stage": stage_key,
             "cache_key_version": definition.cache_key_version,
+            "freshness": cfg.freshness_key(),
             "config": stage_scope,
         },
         sort_keys=True,

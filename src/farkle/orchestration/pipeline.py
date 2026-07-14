@@ -81,7 +81,7 @@ def write_done(done_path: Path, inputs: list[Path], outputs: list[Path], tool: s
         outputs=outputs,
         stage=tool,
         stage_config_sha=digest,
-        cache_key_version=2,
+        cache_key_version=3,
     )
 
 
@@ -97,7 +97,7 @@ def is_up_to_date(done_path: Path, inputs: list[Path], outputs: list[Path]) -> b
         inputs=inputs,
         outputs=outputs,
         stage_config_sha=digest,
-        cache_key_version=2,
+        cache_key_version=3,
     )
 
 

@@ -93,7 +93,7 @@ def test_run_up_to_date_skip(cfg: AppConfig) -> None:
         seed=1,
         rows=[_seed_rows("A", win_rate=0.5, score=100.0, turns=8.0)],
     )
-    _write_seed_summary(
+    second_seed_path = _write_seed_summary(
         cfg,
         players=2,
         seed=2,
@@ -106,7 +106,7 @@ def test_run_up_to_date_skip(cfg: AppConfig) -> None:
         pd.DataFrame({"x": [1]}).to_parquet(out, index=False)
 
     detail_stamp, summary_stamp, components_stamp, _ = _variance_stamps(cfg)
-    inputs = [metrics_path, seed_path]
+    inputs = [metrics_path, seed_path, second_seed_path]
     write_stage_done(detail_stamp, inputs=inputs, outputs=[variance_path], cfg=cfg, stage="variance")
     write_stage_done(summary_stamp, inputs=inputs, outputs=[summary_path], cfg=cfg, stage="variance")
     write_stage_done(components_stamp, inputs=inputs, outputs=[components_path], cfg=cfg, stage="variance")

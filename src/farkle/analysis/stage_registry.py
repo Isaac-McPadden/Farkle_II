@@ -27,7 +27,7 @@ class StageDefinition:
     folder_stub: str | None = None
     depends_on: tuple[str, ...] = ()
     cache_scope: tuple[str, ...] = ()
-    cache_key_version: int = 2
+    cache_key_version: int = 3
     disabled_predicate: Callable[[AppConfig], bool] | None = None
 
     def folder_name(self, index: int) -> str:
