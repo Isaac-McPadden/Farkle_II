@@ -125,7 +125,7 @@ def test_measure_throughput_uses_spawned_seeds(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(
         rt,
         "_play_game",
-        lambda seed, strategies: observed.append(seed) or {"winner": "p0"},
+        lambda seed, strategies: observed.append(seed) or {"winner_seat": "p0"},
         raising=True,
     )
 

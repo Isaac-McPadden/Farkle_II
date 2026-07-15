@@ -216,7 +216,7 @@ def _workload_checkpoint_metadata(plan: TournamentWorkloadPlan) -> dict[str, obj
 
 def _resolve_row_output_dir(cfg: AppConfig, n_players: int) -> Path | None:
     """Return the per-N row output directory or ``None`` if rows are disabled."""
-    return _resolve_per_n_output_dir(cfg, cfg.sim.row_dir, n_players)
+    return cfg.simulation_row_dir(n_players)
 
 
 def _resolve_metric_chunk_dir(cfg: AppConfig, n_players: int) -> Path | None:

@@ -770,6 +770,25 @@ class AppConfig:
         """Convenience accessor for a specific ``<n>_players`` directory."""
         return self.results_root / f"{n}_players"
 
+    def simulation_row_dir(self, n: int) -> Path | None:
+        """Return the canonical simulation row-shard directory for player count ``n``."""
+
+        raw_value = self.sim.row_dir
+        if raw_value is None:
+            return None
+        raw_text = str(raw_value)
+        placeholders = {"n": n, "n_players": n, "p": f"{n}p"}
+        try:
+            formatted = raw_text.format(**placeholders)
+        except KeyError as exc:
+            raise ValueError(f"unknown simulation row-dir placeholder: {exc.args[0]}") from exc
+        path = Path(formatted)
+        if formatted == raw_text and path.name and not path.name.startswith(f"{n}p"):
+            path = path.parent / f"{n}p_{path.name}"
+        if path.is_absolute():
+            return path
+        return self.n_dir(n) / path
+
     def checkpoint_path(self, n: int) -> Path:
         """Path to a head-to-head checkpoint for ``n`` players."""
         return self.n_dir(n) / f"{n}p_checkpoint.pkl"

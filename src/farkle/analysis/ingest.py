@@ -8,6 +8,7 @@ metrics stages.
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import sys
@@ -20,6 +21,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.config import AppConfig, load_app_config
+from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
     ParallelNestingContext,
     apply_native_thread_limits,
@@ -34,7 +36,83 @@ from farkle.utils.streaming_loop import run_streaming_shard
 LOGGER = logging.getLogger(__name__)
 
 
-def _iter_shards(block: Path, cols: tuple[str, ...]):
+def _canonical_row_shards(
+    block: Path,
+    cfg: AppConfig,
+    n_players: int,
+) -> tuple[Path, list[tuple[Path, int]]]:
+    """Validate and return manifest-ordered canonical simulation row shards."""
+
+    row_dir = cfg.simulation_row_dir(n_players)
+    if row_dir is None:
+        raise FileNotFoundError(
+            f"ingest requires sim.row_dir for {n_players}-player canonical rows"
+        )
+    manifest_path = row_dir / "manifest.jsonl"
+    completion_path = block / "simulation.done.json"
+    if not manifest_path.is_file() or not completion_path.is_file():
+        raise FileNotFoundError(
+            "ingest requires a completed canonical row-shard directory with "
+            f"manifest.jsonl: {row_dir}"
+        )
+    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    try:
+        start = int(completion["shuffle_index_start"])
+        end = int(completion["shuffle_index_end"])
+        shuffles_per_batch = int(completion["shuffles_per_batch"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(f"invalid simulation completion contract: {completion_path}") from exc
+    if (
+        int(completion.get("root_seed", -1)) != int(cfg.sim.seed)
+        or int(completion.get("n_players", -1)) != n_players
+        or int(completion.get("rng_scheme_version", -1)) != int(cfg.rng.scheme_version)
+        or start < 0
+        or end < start
+        or shuffles_per_batch < 1
+    ):
+        raise ValueError(f"simulation completion mismatch: {completion_path}")
+
+    records_by_index: dict[int, tuple[Path, int]] = {}
+    seen_paths: set[Path] = set()
+    for record in iter_manifest(manifest_path):
+        raw_name = record.get("path")
+        if not isinstance(raw_name, str):
+            raise ValueError(f"row manifest entry missing path: {manifest_path}")
+        relative = Path(raw_name)
+        if relative.is_absolute() or relative.name != raw_name or not raw_name.startswith("rows_"):
+            raise ValueError(f"invalid row manifest path {raw_name!r}: {manifest_path}")
+        try:
+            shuffle_index = int(record["shuffle_index"])
+            expected_rows = int(record["rows"])
+            batch_id = int(record["deterministic_batch_id"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"invalid row manifest coordinate: {manifest_path}") from exc
+        shard_path = row_dir / relative
+        if (
+            shuffle_index in records_by_index
+            or shard_path in seen_paths
+            or expected_rows < 1
+            or int(record.get("root_seed", -1)) != int(cfg.sim.seed)
+            or int(record.get("n_players", -1)) != n_players
+            or int(record.get("rng_scheme_version", -1)) != int(cfg.rng.scheme_version)
+            or batch_id != shuffle_index // shuffles_per_batch
+        ):
+            raise ValueError(f"row manifest support mismatch: {manifest_path}")
+        records_by_index[shuffle_index] = (shard_path, expected_rows)
+        seen_paths.add(shard_path)
+
+    expected_indices = set(range(start, end + 1))
+    if set(records_by_index) != expected_indices:
+        raise ValueError(
+            f"row manifest does not cover completed shuffle support {start}..{end}: {manifest_path}"
+        )
+    disk_paths = set(row_dir.glob("rows_*.parquet"))
+    if disk_paths != seen_paths:
+        raise ValueError(f"row manifest and shard directory disagree: {row_dir}")
+    return manifest_path, [records_by_index[index] for index in range(start, end + 1)]
+
+
+def _iter_shards(shards: list[tuple[Path, int]], cols: tuple[str, ...]):
     """
     Yield one ``(DataFrame, source_path)`` per shard, selecting only the
     *intersection* of *cols* with the shard’s schema.
@@ -45,17 +123,21 @@ def _iter_shards(block: Path, cols: tuple[str, ...]):
     table rectangular.
     """
 
-    row_files = sorted(block.glob("*p_rows.parquet"))
-    if len(row_files) != 1:
-        raise FileNotFoundError(
-            f"ingest requires exactly one canonical '*p_rows.parquet' in {block}; "
-            f"found {len(row_files)}"
-        )
-    row_file = row_files[0]
-    parquet = pq.ParquetFile(row_file)
-    present = [column for column in cols if column in parquet.schema_arrow.names]
-    for row_group in range(parquet.num_row_groups):
-        yield parquet.read_row_group(row_group, columns=present).to_pandas(), row_file
+    for row_file, expected_rows in shards:
+        if not row_file.is_file():
+            raise FileNotFoundError(f"row manifest references missing shard: {row_file}")
+        parquet = pq.ParquetFile(row_file)
+        unexpected = sorted(set(parquet.schema_arrow.names).difference(cols))
+        if unexpected:
+            raise ValueError(f"row shard contains noncanonical columns {unexpected}: {row_file}")
+        if parquet.metadata.num_rows != expected_rows:
+            raise ValueError(
+                f"row manifest count mismatch for {row_file}: "
+                f"expected {expected_rows}, found {parquet.metadata.num_rows}"
+            )
+        present = [column for column in cols if column in parquet.schema_arrow.names]
+        for row_group in range(parquet.num_row_groups):
+            yield parquet.read_row_group(row_group, columns=present).to_pandas(), row_file
 
 
 # Regex once, reuse
@@ -231,12 +313,8 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
     )
 
     raw_out = cfg.ingested_rows_raw(n)
-    row_files = sorted(block.glob("*p_rows.parquet"))
-    if len(row_files) != 1:
-        raise FileNotFoundError(
-            f"ingest requires one canonical row artifact in {block}; found {len(row_files)}"
-        )
-    src_mtime = row_files[0].stat().st_mtime
+    source_manifest, row_shards = _canonical_row_shards(block, cfg, n)
+    src_mtime = source_manifest.stat().st_mtime
     if raw_out.exists() and src_mtime and raw_out.stat().st_mtime >= src_mtime:
         LOGGER.info(
             "Ingest block up-to-date",
@@ -265,7 +343,7 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
             expected schema for the current player count.
         """
         nonlocal total
-        for shard_df, shard_path in _iter_shards(block, tuple(wanted)):
+        for shard_df, shard_path in _iter_shards(row_shards, tuple(wanted)):
             if shard_df.empty:
                 LOGGER.debug(
                     "Empty shard skipped",

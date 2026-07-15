@@ -226,7 +226,9 @@ def _play_one_shuffle(task: ShuffleTask | int, *, collect_rows: bool = False) ->
                 "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_GAME),
             },
         )
-        winner = row.get("winner_seat") or row.get("winner")
+        winner = row.get("winner_seat")
+        if winner is None:
+            raise ValueError("Simulation row missing canonical winner_seat")
         strat_repr = row[f"{winner}_strategy"]
         winner = cast(str, winner)
         metrics = _extract_winner_metrics(row, winner)  # pyright: ignore[reportArgumentType]
@@ -552,11 +554,11 @@ def _load_row_manifest_aggregates(
         parquet_file = pq.ParquetFile(row_path)
         for batch in parquet_file.iter_batches():
             for row in batch.to_pylist():
-                winner = row.get("winner_seat") or row.get("winner")
+                winner = row.get("winner_seat")
                 if winner is None:
-                    raise ValueError(f"Row shard missing winner column: {row_path}")
+                    raise ValueError(f"Row shard missing canonical winner_seat: {row_path}")
                 winner_name = cast(str, winner)
-                strategy = row.get(f"{winner_name}_strategy", row.get("winner_strategy"))
+                strategy = row.get(f"{winner_name}_strategy")
                 if strategy is None:
                     raise ValueError(
                         f"Row shard missing winner strategy for {winner_name!r}: {row_path}"

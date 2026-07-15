@@ -391,7 +391,7 @@ def _play_game(
     # Determine the winner from the PlayerStats block
     winner = next(name for name, ps in gm.players.items() if ps.rank == 1)
     flat: dict[str, Any] = {
-        "winner": winner,
+        "winner_seat": winner,
         "winning_score": gm.players[winner].score,
         "n_rounds": gm.game.n_rounds,
         "root_seed": seed,
@@ -571,5 +571,5 @@ def aggregate_metrics(df: pd.DataFrame) -> Mapping[str, Any]:
     return {
         "games": len(df),
         "avg_rounds": df["n_rounds"].mean(),
-        "winner_freq": df["winner"].value_counts().to_dict(),
+        "winner_freq": df["winner_seat"].value_counts().to_dict(),
     }

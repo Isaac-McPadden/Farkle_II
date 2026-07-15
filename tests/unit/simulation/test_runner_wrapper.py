@@ -145,6 +145,8 @@ def test_resolve_row_output_dir_formats_and_prefixes(tmp_path):
     formatted = runner._resolve_row_output_dir(cfg, 3)
     assert formatted == cfg.results_root / "3_players" / "3_rows"
 
+    assert cfg.simulation_row_dir(3) == formatted
+
 
 def test_filter_player_counts_reports_invalid(monkeypatch):
     cfg = AppConfig(

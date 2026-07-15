@@ -43,7 +43,7 @@ def test_play_helpers_consistency():
     stats_dict = _play_game(seed=123, strategies=[s1, s2], target_score=1_000)
     gm = simulate_one_game(strategies=[s1, s2], target_score=1_000, seed=123)
     winner = max(gm.players, key=lambda n: gm.players[n].score)
-    assert stats_dict["winner"] == winner
+    assert stats_dict["winner_seat"] == winner
     assert stats_dict["P1_n_turns"] == gm.players["P1"].n_turns
     assert stats_dict["P2_n_turns"] == gm.players["P2"].n_turns
     assert {
@@ -59,7 +59,7 @@ def test_play_helpers_consistency():
     # simulate_many_games should aggregate identical winners when n_games=1
     df = simulate_many_games(n_games=1, strategies=[s1, s2], target_score=1_000, seed=999, n_jobs=1)
     assert len(df) == 1
-    assert df.iloc[0]["winner"] in {"P1", "P2"}
+    assert df.iloc[0]["winner_seat"] in {"P1", "P2"}
 
 
 def test_custom_grid_size():
@@ -113,7 +113,7 @@ def test_parallel_simulation():
         n_jobs=2,
     )
     assert len(df) == 2
-    assert set(df["winner"]) <= {"P1", "P2"}
+    assert set(df["winner_seat"]) <= {"P1", "P2"}
 
 
 def test_play_game_checks_single_winner(monkeypatch):
@@ -194,7 +194,7 @@ def test_simulate_many_games_deterministic_counts():
         seed=123,
         n_jobs=1,
     )
-    counts = df["winner"].value_counts().to_dict()
+    counts = df["winner_seat"].value_counts().to_dict()
     assert counts == {"P3": 5, "P2": 4, "P1": 1}
 
 

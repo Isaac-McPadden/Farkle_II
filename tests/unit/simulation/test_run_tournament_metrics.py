@@ -143,7 +143,7 @@ def _setup_serial_run(monkeypatch: pytest.MonkeyPatch) -> list[ThresholdStrategy
 def _row_record(seed: int) -> dict[str, object]:
     row = {
         "game_seed": seed,
-        "winner": "p1",
+        "winner_seat": "p1",
         "winning_score": seed,
         "n_rounds": seed,
         "p1_strategy": seed,
