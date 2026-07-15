@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from farkle.analysis import stage_registry
+from farkle.analysis.ingest import _process_block
 from farkle.analysis.stage_registry import (
     StageDefinition,
     StageLayout,
@@ -68,6 +71,26 @@ def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
 
     assert "rng_diagnostics" in [placement.definition.key for placement in base_layout.placements]
     assert "rng_diagnostics" not in [placement.definition.key for placement in layout.placements]
+
+
+def test_resolved_app_config_crosses_spawn_process_boundary(tmp_path: Path) -> None:
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
+    expected_keys = cfg.stage_layout.keys()
+
+    with ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=multiprocessing.get_context("spawn"),
+    ) as executor:
+        future = executor.submit(
+            _process_block,
+            tmp_path / "invalid_block",
+            cfg,
+            parent_process_workers=2,
+        )
+        with pytest.raises(ValueError, match="invalid player-count block name"):
+            future.result(timeout=30)
+
+    assert cfg.stage_layout.keys() == expected_keys
 
 
 def test_resolve_stage_layout_excludes_disabled_stages_before_numbering(tmp_path: Path) -> None:

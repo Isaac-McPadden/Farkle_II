@@ -18,6 +18,12 @@ __all__ = [
 ]
 
 
+def _rng_diagnostics_disabled(cfg: AppConfig) -> bool:
+    """Return whether the root-local RNG diagnostic stage is disabled."""
+
+    return cfg.analysis.disable_rng_diagnostics
+
+
 @dataclass(frozen=True, slots=True)
 class StageDefinition:
     """Declarative description of a pipeline or analytics stage."""
@@ -152,7 +158,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         group="diagnostics",
         folder_stub="rng",
         cache_scope=("io", "sim.seed", "sim.n_players_list", "rng", "analysis.n_jobs"),
-        disabled_predicate=lambda cfg: cfg.analysis.disable_rng_diagnostics,
+        disabled_predicate=_rng_diagnostics_disabled,
     ),
     StageDefinition(
         "trueskill",
