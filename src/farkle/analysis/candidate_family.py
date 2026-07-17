@@ -448,13 +448,13 @@ def freeze_h2h_candidate_family(
         membership=cfg.h2h_candidate_family_path(),
         manifest=cfg.h2h_candidate_family_manifest_path(),
     )
-    done = stage_done_path(cfg.h2h_2p_dir(), "candidate_family_freeze")
+    done = stage_done_path(cfg.stage_dir("candidate_freeze"), "candidate_freeze")
     if not force and stage_is_up_to_date(
         done,
         inputs=sources,
         outputs=list(artifacts.all_paths),
         cfg=cfg,
-        stage="head2head",
+        stage="candidate_freeze",
         sidecar_artifacts=list(artifacts.all_paths),
     ):
         return artifacts
@@ -601,7 +601,7 @@ def freeze_h2h_candidate_family(
         inputs=sources,
         outputs=list(artifacts.all_paths),
         cfg=cfg,
-        stage="head2head",
+        stage="candidate_freeze",
         sidecar_artifacts=list(artifacts.all_paths),
     )
     return artifacts

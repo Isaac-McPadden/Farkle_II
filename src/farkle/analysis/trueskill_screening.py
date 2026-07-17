@@ -102,6 +102,8 @@ def _load_rating_frame(cell: ScreeningRatingCell) -> pd.DataFrame:
 def build_percentile_contribution(
     cfg: AppConfig,
     cells: Sequence[ScreeningRatingCell],
+    *,
+    force: bool = False,
 ) -> Path:
     """Average within-cell percentile ranks over complete root/k support."""
 
@@ -113,7 +115,7 @@ def build_percentile_contribution(
     output = cfg.trueskill_candidate_contribution_path()
     done = stage_done_path(cfg.trueskill_stage_dir, "trueskill_percentile_contribution")
     inputs = [cell.ratings_path for cell in cells]
-    if stage_is_up_to_date(
+    if not force and stage_is_up_to_date(
         done,
         inputs=inputs,
         outputs=[output],

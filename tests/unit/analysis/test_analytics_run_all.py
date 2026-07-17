@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import farkle.analysis as analysis_mod
+from farkle.analysis import trueskill as trueskill_stage
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
@@ -79,7 +80,7 @@ def test_root_pair_plan_runs_one_canonical_tail(tmp_path: Path) -> None:
     plan = analysis_mod.build_root_pair_stage_plan(context)
 
     assert [item.name for item in plan] == [
-        "cross_seed",
+        "root_stability",
         "trueskill",
         "candidate_freeze",
         "h2h_power",
@@ -91,6 +92,34 @@ def test_root_pair_plan_runs_one_canonical_tail(tmp_path: Path) -> None:
     ]
     assert [item.name for item in plan].count("h2h_execute") == 1
     assert all(item.metadata.get("execution_scope") == "root_pair" for item in plan[2:])
+    assert all(item.completion_stamp is not None for item in plan)
+    assert not context.analysis_root.exists()
+
+
+def test_root_pair_plan_dispatches_pair_trueskill_contexts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _root_context(tmp_path, 11)
+    second = _root_context(tmp_path, 22)
+    context = RootPairRunContext.from_root_contexts(
+        (first, second),
+        pair_root=tmp_path / "pair",
+    )
+    calls: list[tuple[AppConfig, object, bool]] = []
+    monkeypatch.setattr(
+        trueskill_stage,
+        "run_root_pair",
+        lambda cfg, roots, *, force: calls.append((cfg, roots, force)),
+    )
+
+    plan = analysis_mod.build_root_pair_stage_plan(context, force=True)
+    plan[1].action(context.config)
+
+    assert calls == [(context.config, context.root_contexts, True)]
+    assert tuple(plan[1].required_outputs) == (
+        context.config.trueskill_candidate_contribution_path(),
+    )
 
 
 def test_run_all_dispatches_only_standalone_root(

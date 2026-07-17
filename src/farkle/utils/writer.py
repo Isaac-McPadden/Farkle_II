@@ -15,7 +15,11 @@ from typing import Iterable, Iterator, Optional
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from .artifact_contract import ArtifactSidecar, publish_staged_artifact_with_sidecar
+from .artifact_contract import (
+    ArtifactSidecar,
+    publish_staged_artifact_with_sidecar,
+    replace_file_atomic,
+)
 from .types import Compression, normalize_compression
 
 
@@ -27,7 +31,7 @@ def atomic_path(final_path: str) -> Iterator[str]:
     os.close(fd)
     try:
         yield tmp
-        os.replace(tmp, final_path)  # atomic on same filesystem
+        replace_file_atomic(tmp, final_path)
     finally:
         with suppress(FileNotFoundError):
             os.remove(tmp)
@@ -102,7 +106,7 @@ class ParquetShardWriter:
                 raise
         if success:
             if self.sidecar is None:
-                os.replace(self._tmp_path, self.out_path)
+                replace_file_atomic(self._tmp_path, self.out_path)
             else:
                 publish_staged_artifact_with_sidecar(
                     self._tmp_path,

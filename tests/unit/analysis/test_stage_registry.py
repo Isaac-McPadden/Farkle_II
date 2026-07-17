@@ -193,10 +193,9 @@ def test_stage_registry_helpers_and_root_pair_layout(tmp_path: Path) -> None:
 
     pair_layout = resolve_root_pair_stage_layout(cfg)
     assert pair_layout.keys() == [
-        "cross_seed",
+        "root_stability",
         "trueskill",
         "candidate_freeze",
-        "head2head",
         "h2h_power",
         "h2h_execute",
         "h2h_inference",
@@ -207,3 +206,40 @@ def test_stage_registry_helpers_and_root_pair_layout(tmp_path: Path) -> None:
     assert [placement.index for placement in pair_layout.placements] == list(
         range(len(pair_layout.placements))
     )
+    assert [placement.folder_name for placement in pair_layout.placements] == [
+        "00_root_stability",
+        "01_trueskill",
+        "02_candidate_freeze",
+        "03_h2h_power",
+        "04_h2h_execute",
+        "05_h2h_inference",
+        "06_h2h_digest",
+        "07_agreement",
+        "08_reporting",
+    ]
+
+
+def test_pair_artifact_paths_are_owned_by_their_pipeline_stage(tmp_path: Path) -> None:
+    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path))
+    cfg.set_stage_layout(resolve_root_pair_stage_layout(cfg))
+
+    expected = {
+        cfg.h2h_candidate_family_path(): "candidate_freeze",
+        cfg.h2h_candidate_family_manifest_path(): "candidate_freeze",
+        cfg.h2h_power_plan_path(): "h2h_power",
+        cfg.h2h_block_manifest_path(): "h2h_power",
+        cfg.h2h_execution_state_path(): "h2h_execute",
+        cfg.h2h_order_counts_path(): "h2h_execute",
+        cfg.h2h_combined_order_counts_path(): "h2h_inference",
+        cfg.h2h_pairwise_inference_path(): "h2h_inference",
+        cfg.h2h_root_pairwise_diagnostics_path(): "h2h_inference",
+        cfg.h2h_root_agreement_path(): "h2h_inference",
+        cfg.h2h_dominance_edges_path(): "h2h_digest",
+        cfg.h2h_cycle_groups_path(): "h2h_digest",
+        cfg.h2h_dominance_fronts_path(): "h2h_digest",
+        cfg.h2h_dominance_summary_path(): "h2h_digest",
+    }
+
+    for path, stage in expected.items():
+        assert path.parent == cfg.h2h_2p_dir(stage)
+    assert not cfg.analysis_dir.exists()

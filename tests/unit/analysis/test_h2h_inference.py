@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import json
+import math
 from pathlib import Path
 from typing import Any, cast
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -93,10 +96,12 @@ def _publish_inputs(
 
     plan = {
         "family_hash": family_hash,
+        "schedule_hash": "c" * 64,
         "planning_state": "complete_valid",
-        "execution_state": "complete_valid",
+        "execution_authorization": "ready",
         "root_seeds": roots,
         "unordered_pair_count": len(pairs),
+        "total_block_count": len(rows),
         "target_power": 0.80,
         "worst_scenario_achieved_power": 0.81,
     }
@@ -116,6 +121,52 @@ def _publish_inputs(
     )
     write_json_artifact_atomic(plan, plan_path, sidecar=plan_sidecar)
 
+    execution = {
+        "family_hash": family_hash,
+        "schedule_hash": plan["schedule_hash"],
+        "execution_state": "complete_valid",
+        "completed_block_count": len(rows),
+        "total_block_count": len(rows),
+    }
+    state_path = cfg.h2h_execution_state_path()
+    state_sidecar = make_artifact_sidecar(
+        cfg,
+        state_path,
+        producer="test",
+        scope=ArtifactScope.H2H_2P,
+        source_scope=ArtifactScope.H2H_2P,
+        operation="h2h_execution_state",
+        uncertainty_method=SCORE_TEST_ID,
+        consistency_columns=list(execution),
+        player_counts=[2],
+        required_player_counts=[2],
+        missing_cell_policy="fail",
+        seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
+    )
+    write_json_artifact_atomic(execution, state_path, sidecar=state_sidecar)
+
+
+def _rewrite_execution_state(cfg: AppConfig, **updates: object) -> None:
+    path = cfg.h2h_execution_state_path()
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.update(updates)
+    roots = cfg.sim.seed_list or [cfg.sim.seed]
+    sidecar = make_artifact_sidecar(
+        cfg,
+        path,
+        producer="test",
+        scope=ArtifactScope.H2H_2P,
+        source_scope=ArtifactScope.H2H_2P,
+        operation="h2h_execution_state",
+        uncertainty_method=SCORE_TEST_ID,
+        consistency_columns=list(payload),
+        player_counts=[2],
+        required_player_counts=[2],
+        missing_cell_policy="fail",
+        seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
+    )
+    write_json_artifact_atomic(payload, path, sidecar=sidecar)
+
 
 def test_score_test_uses_constrained_null_proportion() -> None:
     result = two_proportion_score_test(60, 100, 40, 100)
@@ -125,6 +176,24 @@ def test_score_test_uses_constrained_null_proportion() -> None:
     assert result.null_proportion == pytest.approx(0.5)
     assert result.statistic == pytest.approx(expected_z)
     assert result.p_value == pytest.approx(2 * norm.sf(abs(expected_z)))
+
+
+def test_inference_rejects_partial_execution_state(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _publish_inputs(cfg, [("1", "2", 100, 55, 45)])
+    _rewrite_execution_state(cfg, execution_state="partial_resumable")
+
+    with pytest.raises(RuntimeError, match="complete valid H2H execution"):
+        run_h2h_inference(cfg)
+
+
+def test_inference_rejects_execution_schedule_mismatch(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _publish_inputs(cfg, [("1", "2", 100, 55, 45)])
+    _rewrite_execution_state(cfg, schedule_hash="e" * 64)
+
+    with pytest.raises(ValueError, match="power-plan schedule_hash"):
+        run_h2h_inference(cfg)
 
 
 def test_score_interval_contains_observed_difference() -> None:
@@ -168,6 +237,51 @@ def test_score_test_and_interval_match_statsmodels_oracles() -> None:
     assert score_difference_interval(73, 120, 51, 115, alpha=0.02) == pytest.approx(
         expected_interval
     )
+
+
+def test_score_interval_completes_boundary_outcomes_symmetrically() -> None:
+    negative = score_difference_interval(0, 100, 100, 100, alpha=0.05)
+    positive = score_difference_interval(100, 100, 0, 100, alpha=0.05)
+    all_success = score_difference_interval(100, 100, 100, 100, alpha=0.05)
+    all_failure = score_difference_interval(0, 100, 0, 100, alpha=0.05)
+
+    assert negative[0] == -1.0
+    assert -1.0 < negative[1] < 0.0
+    assert positive == pytest.approx((-negative[1], -negative[0]))
+    assert all_success[0] == pytest.approx(-all_success[1])
+    assert all_failure[0] == pytest.approx(-all_failure[1])
+    assert all_success == pytest.approx(all_failure)
+
+
+def test_score_interval_rebrackets_tiny_alpha_without_changing_the_test() -> None:
+    alpha = 0.05 / 2_926
+    observed = 2_209 / 3_966 - 2_019 / 3_966
+
+    low, high = score_difference_interval(2_209, 3_966, 2_019, 3_966, alpha=alpha)
+
+    assert math.isfinite(low)
+    assert math.isfinite(high)
+    assert low < observed < high
+
+
+def test_h2h_inference_accepts_complete_boundary_counts(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _publish_inputs(
+        cfg,
+        [
+            ("1", "2", 100, 0, 100),
+            ("1", "3", 100, 100, 100),
+        ],
+    )
+
+    artifacts = run_h2h_inference(cfg)
+
+    inference = pq.read_table(artifacts.pairwise_inference).to_pandas()
+    diagnostics = pq.read_table(artifacts.root_pairwise_diagnostics).to_pandas()
+    assert len(inference) == 2
+    assert len(diagnostics) == 4
+    assert np.isfinite(inference[["ordinary_d_low", "ordinary_d_high"]]).all().all()
+    assert np.isfinite(diagnostics[["ordinary_d_low", "ordinary_d_high"]]).all().all()
 
 
 def test_seat_adjusted_inference_holm_and_decision_classes(tmp_path: Path) -> None:

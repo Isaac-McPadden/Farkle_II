@@ -3,12 +3,13 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-07-14`
-- Source baseline: SCP-11 commit `eee9fbb`
+- Reconciled date: `2026-07-17`
+- Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
   estimators, root/pair orchestration, H2H, dominance, reporting, migration,
-  release audits, and the structural toy oracle.
+  release audits, the structural toy oracle, stage-owned pair artifacts,
+  non-mutating path resolution, and the immutable power/execution-state split.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

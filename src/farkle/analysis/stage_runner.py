@@ -18,7 +18,7 @@ from farkle.utils.manifest import (
     make_run_id,
     validate_manifest_contract,
 )
-from farkle.utils.stage_completion import read_stage_done, stage_done_path
+from farkle.utils.stage_completion import CompletionState, read_stage_done, resolve_stage_state
 
 LOGGER = logging.getLogger(__name__)
 
@@ -31,6 +31,7 @@ class StagePlanItem:
     action: Callable[[AppConfig], None]
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     required_outputs: Sequence[Path] = dataclasses.field(default_factory=tuple)
+    completion_stamp: Path | None = None
 
 
 class StageValidationError(RuntimeError):
@@ -41,6 +42,18 @@ class StageValidationError(RuntimeError):
         self.missing_outputs = tuple(missing_outputs)
         missing_text = ", ".join(str(path) for path in self.missing_outputs)
         super().__init__(f"Stage {stage!r} missing required outputs: {missing_text}")
+
+
+class StageCompletionError(RuntimeError):
+    """Raised when a stage's declared completion contract is not successful."""
+
+    def __init__(self, stage: str, stamp: Path, status: str, reason: object = None):
+        self.stage = stage
+        self.stamp = stamp
+        self.status = status
+        self.reason = reason
+        detail = f": {reason}" if reason else ""
+        super().__init__(f"Stage {stage!r} completion stamp {stamp} has status {status!r}{detail}")
 
 
 @dataclasses.dataclass(frozen=True)
@@ -140,21 +153,31 @@ class StageRunner:
                 missing_outputs = [path for path in item.required_outputs if not path.exists()]
                 if missing_outputs:
                     raise StageValidationError(item.name, missing_outputs)
-                try:
-                    done_path = stage_done_path(context.config.stage_dir(item.name), item.name)
-                except Exception:  # noqa: BLE001
-                    done_path = None
                 stage_done = (
-                    read_stage_done(done_path) if done_path is not None else {"status": "success"}
+                    read_stage_done(item.completion_stamp)
+                    if item.completion_stamp is not None
+                    else {"status": "success"}
                 )
                 stage_status = str(stage_done.get("status", "success"))
+                if item.completion_stamp is not None:
+                    completion_state = resolve_stage_state(
+                        item.completion_stamp,
+                        inputs=[],
+                        outputs=item.required_outputs,
+                        cfg=context.config,
+                        stage=item.name,
+                    )
+                    if completion_state is not CompletionState.COMPLETE_VALID:
+                        failure_status = (
+                            completion_state.value if stage_status == "success" else stage_status
+                        )
+                        raise StageCompletionError(
+                            item.name,
+                            item.completion_stamp,
+                            failure_status,
+                            stage_done.get("reason"),
+                        )
                 stage_health = "healthy"
-                if stage_status == "skipped":
-                    stage_health = "degraded"
-                    degraded_steps.append(item.name)
-                elif stage_status == "failed":
-                    stage_health = "unhealthy"
-                    degraded_steps.append(item.name)
                 stage_health_states[item.name] = stage_health
                 append_manifest_event(
                     manifest_path,
@@ -198,6 +221,14 @@ class StageRunner:
                                 "missing_outputs": [str(path) for path in exc.missing_outputs],
                             }
                             if isinstance(exc, StageValidationError)
+                            else {}
+                        ),
+                        **(
+                            {
+                                "completion_stamp": str(exc.stamp),
+                                "completion_status": exc.status,
+                            }
+                            if isinstance(exc, StageCompletionError)
                             else {}
                         ),
                     },

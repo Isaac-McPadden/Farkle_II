@@ -16,7 +16,11 @@ Preserve these invariants:
 - streaming or partitioned handling for large data;
 - complete root/k support and explicit cross-k weights;
 - separation of descriptive screening, inference, dominance, and display order;
-- current code never reads old on-disk analysis artifacts.
+- current code never reads old on-disk analysis artifacts;
+- pair analysis lives under `results_seed_pair_X_Y/seed_pair_analysis`, path
+  lookup is non-mutating, and every H2H phase owns its artifacts;
+- the H2H power plan is immutable after publication and execution progress is
+  a separate resumable artifact.
 
 Before a statistical change, identify the estimand, conditioning, chance
 baseline, replication unit, uncertainty procedure, multiplicity rule, and

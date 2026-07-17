@@ -9,7 +9,12 @@ import pytest
 
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, IOConfig, SimConfig
-from farkle.orchestration.run_contexts import RootPairRunContext, RunContextConfig, SeedRunContext
+from farkle.orchestration.run_contexts import (
+    SEED_PAIR_ANALYSIS_DIRNAME,
+    RootPairRunContext,
+    RunContextConfig,
+    SeedRunContext,
+)
 
 
 def _root_context(tmp_path: Path, root: int) -> SeedRunContext:
@@ -29,10 +34,11 @@ def test_root_pair_context_uses_pair_analysis_root_and_both_roots(tmp_path: Path
     context = RootPairRunContext.from_root_contexts((first, second), pair_root=pair_root)
 
     assert context.root_pair == (11, 22)
-    assert context.analysis_root == pair_root / first.config.io.analysis_subdir
+    assert context.analysis_root == pair_root / SEED_PAIR_ANALYSIS_DIRNAME
     assert context.config.analysis_dir == context.analysis_root
     assert context.config.sim.seed_list == [11, 22]
-    assert context.config.stage_layout.keys()[0] == "cross_seed"
+    assert context.config.stage_layout.keys()[0] == "root_stability"
+    assert not context.analysis_root.exists()
 
 
 def test_root_pair_context_maps_first_root_inputs_without_changing_outputs(tmp_path: Path) -> None:
@@ -45,7 +51,7 @@ def test_root_pair_context_maps_first_root_inputs_without_changing_outputs(tmp_p
 
     combine_folder = first.config.stage_layout.require_folder("combine")
     assert context.config.root_input_stage_folder("combine") == combine_folder
-    assert context.config.cross_seed_dir("cross_seed").is_relative_to(context.analysis_root)
+    assert context.config.cross_seed_dir("root_stability").is_relative_to(context.analysis_root)
 
 
 def test_root_pair_context_rejects_duplicate_roots(tmp_path: Path) -> None:

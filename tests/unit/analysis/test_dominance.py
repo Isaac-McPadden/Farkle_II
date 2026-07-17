@@ -189,10 +189,12 @@ def _publish_execution_inputs(
     )
     plan = {
         "family_hash": "c" * 64,
+        "schedule_hash": "d" * 64,
         "planning_state": "complete_valid",
-        "execution_state": "complete_valid",
+        "execution_authorization": "ready",
         "root_seeds": roots,
         "unordered_pair_count": len(pairs),
+        "total_block_count": len(rows),
         "target_power": 0.80,
         "worst_scenario_achieved_power": 0.81,
     }
@@ -211,6 +213,29 @@ def _publish_execution_inputs(
         seed_scope="both_roots_combined",
     )
     write_json_artifact_atomic(plan, plan_path, sidecar=plan_sidecar)
+    execution = {
+        "family_hash": plan["family_hash"],
+        "schedule_hash": plan["schedule_hash"],
+        "execution_state": "complete_valid",
+        "completed_block_count": len(rows),
+        "total_block_count": len(rows),
+    }
+    state_path = cfg.h2h_execution_state_path()
+    state_sidecar = make_artifact_sidecar(
+        cfg,
+        state_path,
+        producer="test",
+        scope=ArtifactScope.H2H_2P,
+        source_scope=ArtifactScope.H2H_2P,
+        operation="h2h_execution_state",
+        uncertainty_method=SCORE_TEST_ID,
+        consistency_columns=list(execution),
+        player_counts=[2],
+        required_player_counts=[2],
+        missing_cell_policy="fail",
+        seed_scope="both_roots_combined",
+    )
+    write_json_artifact_atomic(execution, state_path, sidecar=state_sidecar)
 
 
 def _cycle_decisions(strategies: tuple[str, str, str, str]) -> dict[tuple[str, str], str]:

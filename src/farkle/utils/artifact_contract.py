@@ -12,6 +12,7 @@ import hashlib
 import json
 import os
 import tempfile
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -33,10 +34,30 @@ _SEED_SCOPES: Final = {
     "root_pair_stability",
     "not_applicable",
 }
+_ATOMIC_REPLACE_RETRY_DELAYS: Final = (0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.5, 2.0, 2.0, 2.0)
+_WINDOWS_RETRYABLE_REPLACE_ERRORS: Final = {5, 32, 33}
 
 
 class ArtifactContractError(RuntimeError):
     """Raised when an artifact and its sidecar do not satisfy the contract."""
+
+
+def replace_file_atomic(source: Path | str, destination: Path | str) -> None:
+    """Atomically replace one file, retrying transient Windows/OneDrive locks."""
+
+    source_path = Path(source)
+    destination_path = Path(destination)
+    for attempt in range(len(_ATOMIC_REPLACE_RETRY_DELAYS) + 1):
+        try:
+            os.replace(source_path, destination_path)
+            return
+        except OSError as exc:
+            retryable = isinstance(exc, PermissionError) or (
+                getattr(exc, "winerror", None) in _WINDOWS_RETRYABLE_REPLACE_ERRORS
+            )
+            if not retryable or attempt == len(_ATOMIC_REPLACE_RETRY_DELAYS):
+                raise
+            time.sleep(_ATOMIC_REPLACE_RETRY_DELAYS[attempt])
 
 
 class OperationMethodContract(TypedDict):
@@ -439,8 +460,8 @@ def publish_staged_artifact_with_sidecar(
         staged_sidecar.write_text(_canonical_json(bound), encoding="utf-8")
 
         final_sidecar.unlink(missing_ok=True)
-        os.replace(staged_path, final_path)
-        os.replace(staged_sidecar, final_sidecar)
+        replace_file_atomic(staged_path, final_path)
+        replace_file_atomic(staged_sidecar, final_sidecar)
         validate_artifact_sidecar(final_path)
         return bound
     finally:
@@ -511,4 +532,5 @@ __all__ = [
     "sidecar_path",
     "validate_artifact_sidecar",
     "write_artifact_with_sidecar_atomic",
+    "replace_file_atomic",
 ]

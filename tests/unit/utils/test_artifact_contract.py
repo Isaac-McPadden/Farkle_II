@@ -223,3 +223,32 @@ def test_interruption_between_data_and_sidecar_fails_closed(
     assert not metadata_path.exists()
     with pytest.raises(ArtifactContractError, match="missing sidecar"):
         validate_artifact_sidecar(artifact)
+
+
+def test_atomic_publication_retries_transient_permission_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "summary.parquet"
+    real_replace = contract_module.os.replace
+    replace_attempts = 0
+    delays: list[float] = []
+
+    def transient_replace(source: str | Path, destination: str | Path) -> None:
+        nonlocal replace_attempts
+        if Path(destination) == artifact and replace_attempts < 2:
+            replace_attempts += 1
+            raise PermissionError("simulated OneDrive lock")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(contract_module.os, "replace", transient_replace)
+    monkeypatch.setattr(contract_module.time, "sleep", delays.append)
+
+    write_parquet_artifact_atomic(
+        pa.table({"value": [1]}),
+        artifact,
+        sidecar=_metadata(artifact),
+    )
+
+    assert replace_attempts == 2
+    assert delays == [0.05, 0.1]
+    validate_artifact_sidecar(artifact)

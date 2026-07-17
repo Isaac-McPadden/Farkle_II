@@ -50,13 +50,12 @@ def run(cfg: AppConfig) -> None:
     if cfg.screening.delta_across_k is None:
         raise ValueError("metrics: screening.delta_across_k must be explicitly configured")
 
-    concatenated_rows = cfg.curated_dataset
+    concatenated_rows = cfg.curated_parquet
     per_k_curated = [cfg.ingested_rows_curated(k) for k in player_counts]
     per_k_combined = [cfg.combined_rows_by_k(k) for k in player_counts]
     _require_paths([concatenated_rows], label="concat_ks")
     _require_paths(per_k_curated, label="curated by_k")
     _require_paths(per_k_combined, label="combined by_k")
-    check_pre_metrics(concatenated_rows, winner_col="winner_seat")
 
     all_player_outputs = [cfg.metrics_all_player_batch_path(k) for k in player_counts]
     performance_outputs = [
@@ -89,6 +88,7 @@ def run(cfg: AppConfig) -> None:
         LOGGER.info("Metrics stage up-to-date", extra={"stage": "metrics", "path": str(done)})
         return
 
+    check_pre_metrics(concatenated_rows, winner_col="winner_seat")
     all_player_paths = _all_player_metrics(cfg, player_counts)
     performance: PerformanceArtifacts = build_canonical_performance(cfg, force=True)
     seats: SeatAnalysisArtifacts = build_canonical_seat_analysis(cfg, force=True)

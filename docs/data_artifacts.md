@@ -137,6 +137,16 @@ hash, and projected workload.
 The power plan binds the family, effects, alpha, target power, seat scenarios,
 allocation, RNG version, and score procedure in a schedule hash. Immutable
 pair/root/order blocks carry that hash and coordinate-owned RNG identity.
+The power plan remains immutable after publication. The execution stage owns a
+separate `execution_state.json` containing the family and schedule hashes,
+lifecycle state, completed block count, and total block count. Inference
+requires this artifact to be `complete_valid` and to match the power plan.
+
+Pair outputs are grouped by their owning stages under
+`results_seed_pair_X_Y/seed_pair_analysis`: root stability, TrueSkill,
+candidate freeze, H2H power, H2H execution, H2H inference, H2H digest,
+agreement, and reporting. Canonical scope directories remain beneath those
+stages.
 
 Inference reports root-combined and labelled root-specific `q_AB`, `q_BA`, and
 `d_AB = 0.5(q_AB - q_BA)`, score-inversion intervals, Holm decisions,

@@ -590,14 +590,14 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         fronts=cfg.h2h_dominance_fronts_path(),
         summary=cfg.h2h_dominance_summary_path(),
     )
-    done = stage_done_path(cfg.h2h_2p_dir(), "h2h_dominance_fronts")
+    done = stage_done_path(cfg.stage_dir("h2h_digest"), "h2h_digest")
     tournament_score_source = _tournament_screening_score_path(cfg)
     if not force and stage_is_up_to_date(
         done,
         inputs=[source, tournament_score_source],
         outputs=list(artifacts.all_paths),
         cfg=cfg,
-        stage="head2head",
+        stage="h2h_digest",
         sidecar_artifacts=list(artifacts.all_paths),
     ):
         return artifacts
@@ -707,7 +707,7 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         inputs=sources,
         outputs=list(artifacts.all_paths),
         cfg=cfg,
-        stage="head2head",
+        stage="h2h_digest",
         sidecar_artifacts=list(artifacts.all_paths),
     )
     return artifacts

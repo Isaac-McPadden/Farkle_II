@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import warnings
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
+from scipy.optimize import brentq
 from scipy.stats import norm
 from statsmodels.stats.proportion import confint_proportions_2indep
 
@@ -103,17 +105,170 @@ def score_difference_interval(
 
     if not 0.0 < alpha < 1.0:
         raise ValueError("score interval alpha must be between zero and one")
-    low, high = confint_proportions_2indep(
+    if nobs1 <= 0 or nobs2 <= 0:
+        raise ValueError("score intervals require positive sample sizes")
+    if not 0 <= count1 <= nobs1 or not 0 <= count2 <= nobs2:
+        raise ValueError("score interval counts must lie within their sample sizes")
+    try:
+        # Statsmodels uses a fast closed-form constrained estimate, but its
+        # endpoint evaluations and guessed Brent brackets are undefined for
+        # valid 0/1 outcomes. Keep its established results whenever available.
+        with warnings.catch_warnings(), np.errstate(divide="ignore", invalid="ignore"):
+            warnings.simplefilter("ignore", RuntimeWarning)
+            low, high = confint_proportions_2indep(
+                count1,
+                nobs1,
+                count2,
+                nobs2,
+                method="score",
+                compare="diff",
+                alpha=alpha,
+                correction=False,
+            )
+        observed = count1 / nobs1 - count2 / nobs2
+        if math.isfinite(low) and math.isfinite(high) and low <= observed <= high:
+            return max(-1.0, float(low)), min(1.0, float(high))
+    except ValueError:
+        pass
+    return _score_difference_interval_fallback(count1, nobs1, count2, nobs2, alpha=alpha)
+
+
+def _score_statistic_at_difference(
+    count1: int,
+    nobs1: int,
+    count2: int,
+    nobs2: int,
+    difference: float,
+) -> float:
+    """Evaluate Statsmodels' uncorrected constrained score statistic robustly."""
+
+    observed = count1 / nobs1 - count2 / nobs2
+    if difference <= -1.0:
+        null_prop1, null_prop2 = 0.0, 1.0
+    elif difference >= 1.0:
+        null_prop1, null_prop2 = 1.0, 0.0
+    elif difference == 0.0:
+        constrained_null_rate = (count1 + count2) / (nobs1 + nobs2)
+        null_prop1 = null_prop2 = constrained_null_rate
+    else:
+        total_n = nobs1 + nobs2
+        total_count = count1 + count2
+        cubic_2 = (nobs1 + 2 * nobs2) * difference - total_n - total_count
+        cubic_1 = (count2 * difference - total_n - 2 * count2) * difference + total_count
+        cubic_0 = count2 * difference * (1.0 - difference)
+        q_value = (
+            (cubic_2 / (3 * total_n)) ** 3
+            - cubic_1 * cubic_2 / (6 * total_n**2)
+            + cubic_0 / (2 * total_n)
+        )
+        radicand = (cubic_2 / (3 * total_n)) ** 2 - cubic_1 / (3 * total_n)
+        cubic_p = math.copysign(math.sqrt(max(0.0, radicand)), q_value) if q_value != 0.0 else 0.0
+        if cubic_p == 0.0:
+            null_prop2 = -cubic_2 / (3 * total_n)
+        else:
+            cosine_argument = max(-1.0, min(1.0, q_value / cubic_p**3))
+            angle = (math.pi + math.acos(cosine_argument)) / 3.0
+            null_prop2 = 2.0 * cubic_p * math.cos(angle) - cubic_2 / (3 * total_n)
+        null_prop1 = null_prop2 + difference
+        null_prop1 = max(0.0, min(1.0, null_prop1))
+        null_prop2 = max(0.0, min(1.0, null_prop2))
+
+    variance = null_prop1 * (1.0 - null_prop1) / nobs1 + null_prop2 * (1.0 - null_prop2) / nobs2
+    numerator = observed - difference
+    if variance > 0.0:
+        return numerator / math.sqrt(variance)
+    if numerator == 0.0:
+        return 0.0
+    return math.copysign(math.inf, numerator)
+
+
+def _score_interval_bound(
+    count1: int,
+    nobs1: int,
+    count2: int,
+    nobs2: int,
+    *,
+    observed: float,
+    endpoint: float,
+    critical_value: float,
+) -> float:
+    """Find the first score-test rejection moving outward from the estimate."""
+
+    if observed == endpoint:
+        return endpoint
+
+    def objective(difference: float) -> float:
+        statistic = _score_statistic_at_difference(count1, nobs1, count2, nobs2, difference)
+        if math.isnan(statistic):
+            raise RuntimeError("score interval fallback produced an undefined statistic")
+        if math.isinf(statistic):
+            return 1.0
+        return abs(statistic) - critical_value
+
+    previous = observed
+    span = endpoint - observed
+    for exponent in range(52, -1, -1):
+        candidate = observed + span * 2.0**-exponent
+        if candidate == previous:
+            continue
+        if objective(candidate) >= 0.0:
+            return float(
+                brentq(
+                    objective,
+                    min(previous, candidate),
+                    max(previous, candidate),
+                    xtol=1e-12,
+                    rtol=1e-14,
+                )
+            )
+        previous = candidate
+    raise RuntimeError("score interval fallback could not bracket a confidence bound")
+
+
+def _score_difference_interval_fallback(
+    count1: int,
+    nobs1: int,
+    count2: int,
+    nobs2: int,
+    *,
+    alpha: float,
+) -> tuple[float, float]:
+    """Complete score inversion for boundary outcomes and failed library brackets."""
+
+    observed = count1 / nobs1 - count2 / nobs2
+    if observed > 0.0:
+        swapped_low, swapped_high = _score_difference_interval_fallback(
+            count2,
+            nobs2,
+            count1,
+            nobs1,
+            alpha=alpha,
+        )
+        return -swapped_high, -swapped_low
+
+    critical_value = float(norm.isf(alpha / 2.0))
+    low = _score_interval_bound(
         count1,
         nobs1,
         count2,
         nobs2,
-        method="score",
-        compare="diff",
-        alpha=alpha,
-        correction=False,
+        observed=observed,
+        endpoint=-1.0,
+        critical_value=critical_value,
     )
-    return max(-1.0, float(low)), min(1.0, float(high))
+    high = _score_interval_bound(
+        count1,
+        nobs1,
+        count2,
+        nobs2,
+        observed=observed,
+        endpoint=1.0,
+        critical_value=critical_value,
+    )
+    if count1 == count2 and nobs1 == nobs2:
+        symmetric = max(abs(low), abs(high))
+        return -symmetric, symmetric
+    return low, high
 
 
 def _holm_adjust(p_values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -137,6 +292,7 @@ def _holm_adjust(p_values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
     counts_path = cfg.h2h_order_counts_path()
     plan_path = cfg.h2h_power_plan_path()
+    state_path = cfg.h2h_execution_state_path()
     validate_artifact_sidecar(
         counts_path,
         expected={
@@ -152,11 +308,24 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
             "operation": "score_test_power_plan",
         },
     )
+    validate_artifact_sidecar(
+        state_path,
+        expected={
+            "scope": ArtifactScope.H2H_2P.value,
+            "operation": "h2h_execution_state",
+        },
+    )
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    execution = json.loads(state_path.read_text(encoding="utf-8"))
     if plan.get("planning_state") != CompletionState.COMPLETE_VALID.value:
         raise RuntimeError("seat-adjusted inference requires a complete valid H2H power plan")
-    if plan.get("execution_state") != CompletionState.COMPLETE_VALID.value:
+    if execution.get("execution_state") != CompletionState.COMPLETE_VALID.value:
         raise RuntimeError("seat-adjusted inference requires complete valid H2H execution")
+    for field in ("family_hash", "schedule_hash", "total_block_count"):
+        if execution.get(field) != plan.get(field):
+            raise ValueError(f"H2H execution state does not match power-plan {field}")
+    if execution.get("completed_block_count") != execution.get("total_block_count"):
+        raise RuntimeError("H2H execution state does not cover every scheduled block")
     required = {
         "family_hash",
         "pair_id",
@@ -518,20 +687,21 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
 
     counts_path = cfg.h2h_order_counts_path()
     plan_path = cfg.h2h_power_plan_path()
-    sources = [counts_path, plan_path]
+    state_path = cfg.h2h_execution_state_path()
+    sources = [counts_path, plan_path, state_path]
     artifacts = H2HInferenceArtifacts(
         combined_order_counts=cfg.h2h_combined_order_counts_path(),
         pairwise_inference=cfg.h2h_pairwise_inference_path(),
         root_pairwise_diagnostics=cfg.h2h_root_pairwise_diagnostics_path(),
         root_agreement=cfg.h2h_root_agreement_path(),
     )
-    done = stage_done_path(cfg.h2h_2p_dir(), "h2h_seat_adjusted_inference")
+    done = stage_done_path(cfg.stage_dir("h2h_inference"), "h2h_inference")
     if not force and stage_is_up_to_date(
         done,
         inputs=sources,
         outputs=list(artifacts.all_paths),
         cfg=cfg,
-        stage="head2head",
+        stage="h2h_inference",
         sidecar_artifacts=list(artifacts.all_paths),
     ):
         return artifacts
@@ -554,7 +724,7 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
         inference,
         artifacts.pairwise_inference,
         operation="seat_adjusted_score_inference",
-        sources=[artifacts.combined_order_counts, plan_path],
+        sources=[artifacts.combined_order_counts, plan_path, state_path],
         grouping_keys=["pair_id"],
         roots=roots,
     )
@@ -563,7 +733,7 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
         root_diagnostics,
         artifacts.root_pairwise_diagnostics,
         operation="root_specific_score_diagnostic",
-        sources=[counts_path, plan_path],
+        sources=[counts_path, plan_path, state_path],
         grouping_keys=["root_seed", "pair_id"],
         roots=roots,
     )
@@ -583,7 +753,7 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
         inputs=sources,
         outputs=list(artifacts.all_paths),
         cfg=cfg,
-        stage="head2head",
+        stage="h2h_inference",
         sidecar_artifacts=list(artifacts.all_paths),
     )
     return artifacts

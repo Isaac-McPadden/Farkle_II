@@ -770,7 +770,7 @@ def run_trueskill(
                         "TrueSkill block failed",
                         extra={"stage": "trueskill", "block": bad.name, "error": str(e)},
                     )
-                    continue
+                    raise RuntimeError(f"TrueSkill block failed for {bad.name}: {e}") from e
                 del player_count, block_games
     else:
         for block in blocks:
@@ -899,6 +899,20 @@ def run_trueskill_root(cfg: AppConfig) -> None:
             players = _player_count_from_stem(parquet.stem)
             if players is None:
                 continue
+            done_path = _block_done_stamp_path(analysis_dir, str(players), f"_seed{seed}")
+            done_stamp = _load_done_stamp(done_path)
+            if done_stamp is None or Path(done_stamp.parquet_path) != parquet:
+                LOGGER.warning(
+                    "Ignoring incomplete TrueSkill rating cell",
+                    extra={
+                        "stage": "trueskill",
+                        "seed": seed,
+                        "players": players,
+                        "parquet": str(parquet),
+                        "done": str(done_path),
+                    },
+                )
+                continue
             stats = _load_ratings_parquet(parquet)
             ordered_stats = _sorted_ratings(stats)
             seed_outputs[f"{players}p"] = ordered_stats  # keyed for logging/debug
@@ -928,6 +942,15 @@ def run_trueskill_root(cfg: AppConfig) -> None:
 
     if not screening_cells:
         raise RuntimeError("TrueSkill produced no canonical root/k rating cells")
+    expected_cells = {(roots[0], int(k)) for k in cfg.sim.n_players_list}
+    observed_cells = {(cell.root_seed, cell.k) for cell in screening_cells}
+    if observed_cells != expected_cells or len(screening_cells) != len(expected_cells):
+        missing = sorted(expected_cells.difference(observed_cells))
+        extra = sorted(observed_cells.difference(expected_cells))
+        raise RuntimeError(
+            "TrueSkill must produce exactly every configured root/k cell; "
+            f"missing={missing}, extra={extra}"
+        )
     contribution_path = build_percentile_contribution(cfg, screening_cells)
     diagnostics_path = build_screening_diagnostics(cfg, screening_cells)
     LOGGER.info(

@@ -12,6 +12,7 @@ from typing import Any, Sequence
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.config import AppConfig
 from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+from farkle.utils.stage_completion import stage_done_path
 
 LOGGER = logging.getLogger(__name__)
 
@@ -158,26 +159,52 @@ def _h2h_tail_plan(
             "candidate_freeze",
             _candidate_freeze,
             metadata={"execution_scope": execution_scope},
+            required_outputs=(
+                cfg.h2h_candidate_family_path(),
+                cfg.h2h_candidate_family_manifest_path(),
+            ),
+            completion_stamp=stage_done_path(cfg.stage_dir("candidate_freeze"), "candidate_freeze"),
         ),
         StagePlanItem(
             "h2h_power",
             _power,
             metadata={"execution_scope": execution_scope},
+            required_outputs=(cfg.h2h_power_plan_path(),),
+            completion_stamp=stage_done_path(cfg.stage_dir("h2h_power"), "h2h_power"),
         ),
         StagePlanItem(
             "h2h_execute",
             _execute,
             metadata={"execution_scope": execution_scope},
+            required_outputs=(
+                cfg.h2h_execution_state_path(),
+                cfg.h2h_order_counts_path(),
+            ),
+            completion_stamp=stage_done_path(cfg.stage_dir("h2h_execute"), "h2h_execute"),
         ),
         StagePlanItem(
             "h2h_inference",
             _inference,
             metadata={"execution_scope": execution_scope},
+            required_outputs=(
+                cfg.h2h_combined_order_counts_path(),
+                cfg.h2h_pairwise_inference_path(),
+                cfg.h2h_root_pairwise_diagnostics_path(),
+                cfg.h2h_root_agreement_path(),
+            ),
+            completion_stamp=stage_done_path(cfg.stage_dir("h2h_inference"), "h2h_inference"),
         ),
         StagePlanItem(
             "h2h_digest",
             _digest,
             metadata={"execution_scope": execution_scope},
+            required_outputs=(
+                cfg.h2h_dominance_edges_path(),
+                cfg.h2h_cycle_groups_path(),
+                cfg.h2h_dominance_fronts_path(),
+                cfg.h2h_dominance_summary_path(),
+            ),
+            completion_stamp=stage_done_path(cfg.stage_dir("h2h_digest"), "h2h_digest"),
         ),
         StagePlanItem(
             "agreement",
@@ -187,6 +214,7 @@ def _h2h_tail_plan(
                 cfg.structure_agreement_pairs_path(),
                 cfg.structure_agreement_summary_path(),
             ),
+            completion_stamp=stage_done_path(cfg.stage_dir("agreement"), "structure_agreement"),
         ),
         StagePlanItem(
             "reporting",
@@ -198,6 +226,7 @@ def _h2h_tail_plan(
                 cfg.structure_report_plot_path(),
                 cfg.migration_report_path(),
             ),
+            completion_stamp=stage_done_path(cfg.stage_dir("reporting"), "structure_reporting"),
         ),
     ]
 
@@ -237,19 +266,42 @@ def build_root_pair_stage_plan(
         for k in required_k
     ]
 
-    def _cross_seed(inner: AppConfig) -> None:
+    def _root_stability(inner: AppConfig) -> None:
         build_two_root_stability(inner, cells, force=force)
+
+    def _pair_trueskill(inner: AppConfig) -> None:
+        trueskill.run_root_pair(inner, context.root_contexts, force=force)
+
+    root_stability_outputs = (
+        *(cfg.root_combined_performance_by_k_path(k) for k in required_k),
+        cfg.root_combined_performance_across_k_path(),
+        cfg.root_discrepancies_path(),
+        cfg.root_joint_discrepancy_path(),
+        cfg.root_rank_stability_path(),
+        cfg.root_top_n_stability_path(),
+        cfg.root_bootstrap_top_n_inclusion_path(),
+        cfg.root_control_movement_path(),
+        cfg.root_shortlist_changes_path(),
+        cfg.root_matched_count_convergence_path(),
+        cfg.root_half_drift_path(),
+    )
 
     return [
         StagePlanItem(
-            "cross_seed",
-            _cross_seed,
+            "root_stability",
+            _root_stability,
             metadata={"root_pair": list(context.root_pair)},
+            required_outputs=root_stability_outputs,
+            completion_stamp=stage_done_path(cfg.stage_dir("root_stability"), "root_stability"),
         ),
         StagePlanItem(
             "trueskill",
-            trueskill.run,
+            _pair_trueskill,
             metadata={"root_pair": list(context.root_pair), "role": "candidate_contribution"},
+            required_outputs=(cfg.trueskill_candidate_contribution_path(),),
+            completion_stamp=stage_done_path(
+                cfg.stage_dir("trueskill"), "trueskill_percentile_contribution"
+            ),
         ),
         *_h2h_tail_plan(cfg, force=force, execution_scope="root_pair"),
     ]

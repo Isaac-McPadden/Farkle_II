@@ -501,26 +501,36 @@ class AppConfig:
 
         _validate_statistical_contract(self, require_two_roots=require_two_roots)
 
-    def stage_dir(self, key: str, *, required_by: str | None = "analysis pipeline") -> Path:
-        """Return the resolved stage directory for ``key`` and create it."""
+    def stage_dir(
+        self,
+        key: str,
+        *,
+        required_by: str | None = "analysis pipeline",
+        create: bool = False,
+    ) -> Path:
+        """Return the resolved stage directory for ``key`` without implicit I/O."""
 
         folder = self.stage_layout.folder_for(key)
         if folder is None:
             requirement = f" required by {required_by}" if required_by else ""
             raise KeyError(f"Stage {key!r} is not registered in the resolved layout{requirement}.")
         stage_root = self.analysis_dir / folder
-        stage_root.mkdir(parents=True, exist_ok=True)
+        if create:
+            stage_root.mkdir(parents=True, exist_ok=True)
         return stage_root
 
-    def stage_subdir(self, key: str, *parts: str | Path) -> Path:
-        """Resolve a stage root or nested subdirectory under ``analysis_dir``.
+    def stage_subdir(
+        self,
+        key: str,
+        *parts: str | Path,
+        create: bool = False,
+    ) -> Path:
+        """Resolve a stage root or nested subdirectory under ``analysis_dir``."""
 
-        Directories are created on access to keep downstream callers simple.
-        """
-
-        stage_root = self.stage_dir(key)
+        stage_root = self.stage_dir(key, create=create)
         path = stage_root.joinpath(*map(Path, parts)) if parts else stage_root
-        path.parent.mkdir(parents=True, exist_ok=True)
+        if create:
+            path.mkdir(parents=True, exist_ok=True)
         return path
 
     def scope_dir(
@@ -529,7 +539,7 @@ class AppConfig:
         scope: ArtifactScope | str,
         *,
         k: int | None = None,
-        create: bool = True,
+        create: bool = False,
     ) -> Path:
         """Resolve one canonical logical scope beneath an active stage.
 
@@ -538,7 +548,7 @@ class AppConfig:
         """
 
         parts = self._scope_parts(scope, k=k)
-        path = self.stage_dir(stage).joinpath(*parts)
+        path = self.stage_dir(stage, create=create).joinpath(*parts)
         if create:
             path.mkdir(parents=True, exist_ok=True)
         return path
@@ -568,7 +578,7 @@ class AppConfig:
         filename: str | Path,
         *,
         k: int | None = None,
-        create_parent: bool = True,
+        create_parent: bool = False,
     ) -> Path:
         """Resolve an artifact path under a canonical stage scope."""
 
@@ -618,35 +628,35 @@ class AppConfig:
             ) from exc
         return path
 
-    def by_k_dir(self, stage: str, k: int) -> Path:
+    def by_k_dir(self, stage: str, k: int, *, create: bool = False) -> Path:
         """Return the canonical per-player-count directory for ``stage``."""
 
-        return self.scope_dir(stage, ArtifactScope.BY_K, k=k)
+        return self.scope_dir(stage, ArtifactScope.BY_K, k=k, create=create)
 
-    def concat_ks_dir(self, stage: str) -> Path:
+    def concat_ks_dir(self, stage: str, *, create: bool = False) -> Path:
         """Return the row-preserving cross-k concatenation directory."""
 
-        return self.scope_dir(stage, ArtifactScope.CONCAT_KS)
+        return self.scope_dir(stage, ArtifactScope.CONCAT_KS, create=create)
 
-    def across_k_dir(self, stage: str) -> Path:
+    def across_k_dir(self, stage: str, *, create: bool = False) -> Path:
         """Return the directory for declared common-support cross-k estimates."""
 
-        return self.scope_dir(stage, ArtifactScope.ACROSS_K)
+        return self.scope_dir(stage, ArtifactScope.ACROSS_K, create=create)
 
-    def cross_seed_dir(self, stage: str) -> Path:
+    def cross_seed_dir(self, stage: str, *, create: bool = False) -> Path:
         """Return the directory for root-combination and stability artifacts."""
 
-        return self.scope_dir(stage, ArtifactScope.CROSS_SEED)
+        return self.scope_dir(stage, ArtifactScope.CROSS_SEED, create=create)
 
-    def diagnostics_dir(self, stage: str) -> Path:
+    def diagnostics_dir(self, stage: str, *, create: bool = False) -> Path:
         """Return the non-estimand diagnostic directory for ``stage``."""
 
-        return self.scope_dir(stage, ArtifactScope.DIAGNOSTICS)
+        return self.scope_dir(stage, ArtifactScope.DIAGNOSTICS, create=create)
 
-    def h2h_2p_dir(self, stage: str = "head2head") -> Path:
+    def h2h_2p_dir(self, stage: str, *, create: bool = False) -> Path:
         """Return the explicitly two-player finalist H2H directory."""
 
-        return self.scope_dir(stage, ArtifactScope.H2H_2P)
+        return self.scope_dir(stage, ArtifactScope.H2H_2P, create=create)
 
     def ingest_block_dir(self, k: int) -> Path:
         """Directory holding ingest artifacts for ``k`` players."""
@@ -667,7 +677,6 @@ class AppConfig:
     def metrics_per_k_dir(self, k: int) -> Path:
         """Directory holding metrics artifacts for ``k`` players."""
         path = self.by_k_dir("metrics", k)
-        path.mkdir(parents=True, exist_ok=True)
         return path
 
     @property
@@ -711,12 +720,6 @@ class AppConfig:
         """Stage root for per-seed TrueSkill outputs."""
 
         return self.stage_subdir("trueskill")
-
-    @property
-    def head2head_stage_dir(self) -> Path:
-        """Stage root for head-to-head analysis outputs."""
-
-        return self.stage_subdir("head2head")
 
     @property
     def hgb_stage_dir(self) -> Path:
@@ -912,57 +915,62 @@ class AppConfig:
     def root_combined_performance_by_k_path(self, k: int) -> Path:
         """Root-specific and raw-count-combined performance for one k."""
 
-        return self.cross_seed_dir("cross_seed") / f"performance_root_combination_{int(k)}p.parquet"
+        return (
+            self.cross_seed_dir("root_stability")
+            / f"performance_root_combination_{int(k)}p.parquet"
+        )
 
     def root_combined_performance_across_k_path(self) -> Path:
         """Root-specific and combined declared-k performance scores."""
 
-        return self.cross_seed_dir("cross_seed") / "performance_root_combination_across_k.parquet"
+        return (
+            self.cross_seed_dir("root_stability") / "performance_root_combination_across_k.parquet"
+        )
 
     def root_discrepancies_path(self) -> Path:
         """Raw, standardized, and threshold-scaled root differences."""
 
-        return self.cross_seed_dir("cross_seed") / "root_discrepancies.parquet"
+        return self.cross_seed_dir("root_stability") / "root_discrepancies.parquet"
 
     def root_joint_discrepancy_path(self) -> Path:
         """Joint maximum-discrepancy diagnostic summary."""
 
-        return self.cross_seed_dir("cross_seed") / "root_joint_discrepancy.parquet"
+        return self.cross_seed_dir("root_stability") / "root_joint_discrepancy.parquet"
 
     def root_rank_stability_path(self) -> Path:
         """Between-root rank correlation and movement summary."""
 
-        return self.cross_seed_dir("cross_seed") / "root_rank_stability.parquet"
+        return self.cross_seed_dir("root_stability") / "root_rank_stability.parquet"
 
     def root_top_n_stability_path(self) -> Path:
         """Between-root top-N overlap diagnostics."""
 
-        return self.cross_seed_dir("cross_seed") / "root_top_n_stability.parquet"
+        return self.cross_seed_dir("root_stability") / "root_top_n_stability.parquet"
 
     def root_bootstrap_top_n_inclusion_path(self) -> Path:
         """Root-specific bootstrap top-N inclusion probabilities."""
 
-        return self.cross_seed_dir("cross_seed") / "root_bootstrap_top_n_inclusion.parquet"
+        return self.cross_seed_dir("root_stability") / "root_bootstrap_top_n_inclusion.parquet"
 
     def root_control_movement_path(self) -> Path:
         """Declared-control rank and performance movement."""
 
-        return self.cross_seed_dir("cross_seed") / "root_control_movement.parquet"
+        return self.cross_seed_dir("root_stability") / "root_control_movement.parquet"
 
     def root_shortlist_changes_path(self) -> Path:
         """Root-specific and combined practical-shortlist membership."""
 
-        return self.cross_seed_dir("cross_seed") / "root_shortlist_changes.parquet"
+        return self.cross_seed_dir("root_stability") / "root_shortlist_changes.parquet"
 
     def root_matched_count_convergence_path(self) -> Path:
         """Matched cumulative-batch convergence diagnostics."""
 
-        return self.cross_seed_dir("cross_seed") / "root_matched_count_convergence.parquet"
+        return self.cross_seed_dir("root_stability") / "root_matched_count_convergence.parquet"
 
     def root_half_drift_path(self) -> Path:
         """First-half versus second-half within-root drift diagnostics."""
 
-        return self.cross_seed_dir("cross_seed") / "root_half_drift.parquet"
+        return self.cross_seed_dir("root_stability") / "root_half_drift.parquet"
 
     def seat_batch_counts_path(self, k: int) -> Path:
         """Canonical seat wins and exposures by root, k, batch, strategy, and seat."""
@@ -1004,6 +1012,12 @@ class AppConfig:
 
         return self.across_k_dir("trueskill") / "candidate_percentile_contribution.parquet"
 
+    def trueskill_rating_path(self, k: int, *, root_seed: int | None = None) -> Path:
+        """Canonical sequential-rating artifact for one root/player-count cell."""
+
+        seed = int(self.sim.seed if root_seed is None else root_seed)
+        return self.by_k_dir("trueskill", int(k)) / f"ratings_{int(k)}_seed{seed}.parquet"
+
     def trueskill_screening_diagnostics_path(self) -> Path:
         """Tau, game-order, and held-out predictive diagnostics."""
 
@@ -1012,29 +1026,32 @@ class AppConfig:
     def h2h_candidate_family_path(self) -> Path:
         """Frozen H2H candidate membership and admission provenance."""
 
-        return self.h2h_2p_dir() / "candidate_family.parquet"
+        return self.h2h_2p_dir("candidate_freeze") / "candidate_family.parquet"
 
     def h2h_candidate_family_manifest_path(self) -> Path:
         """Immutable candidate-family identity and workload summary."""
 
-        return self.h2h_2p_dir() / "candidate_family.json"
+        return self.h2h_2p_dir("candidate_freeze") / "candidate_family.json"
 
     def h2h_power_plan_path(self) -> Path:
         """Score-test power and root/order allocation plan."""
 
-        return self.h2h_2p_dir() / "power_plan.json"
+        return self.h2h_2p_dir("h2h_power") / "power_plan.json"
 
     def h2h_block_manifest_path(self) -> Path:
         """Immutable pair/root/order simulation block manifest."""
 
-        return self.h2h_2p_dir() / "block_manifest.parquet"
+        return self.h2h_2p_dir("h2h_power") / "block_manifest.parquet"
+
+    def h2h_execution_state_path(self) -> Path:
+        """Resumable H2H execution lifecycle independent of the power plan."""
+
+        return self.h2h_2p_dir("h2h_execute") / "execution_state.json"
 
     def h2h_block_results_dir(self) -> Path:
         """Directory of atomic pair/root/order block checkpoints."""
 
-        path = self.h2h_2p_dir() / "blocks"
-        path.mkdir(parents=True, exist_ok=True)
-        return path
+        return self.h2h_2p_dir("h2h_execute") / "blocks"
 
     def h2h_block_result_path(self, pair_id: int, root_seed: int, order: int) -> Path:
         """One immutable H2H pair/root/order checkpoint path."""
@@ -1046,47 +1063,47 @@ class AppConfig:
     def h2h_order_counts_path(self) -> Path:
         """Validated row-preserving union of completed H2H blocks."""
 
-        return self.h2h_2p_dir() / "root_order_counts.parquet"
+        return self.h2h_2p_dir("h2h_execute") / "root_order_counts.parquet"
 
     def h2h_combined_order_counts_path(self) -> Path:
         """Raw H2H counts combined across roots within each seat order."""
 
-        return self.h2h_2p_dir() / "combined_order_counts.parquet"
+        return self.h2h_2p_dir("h2h_inference") / "combined_order_counts.parquet"
 
     def h2h_pairwise_inference_path(self) -> Path:
         """Seat-adjusted score inference and multiplicity decisions."""
 
-        return self.h2h_2p_dir() / "pairwise_inference.parquet"
+        return self.h2h_2p_dir("h2h_inference") / "pairwise_inference.parquet"
 
     def h2h_root_pairwise_diagnostics_path(self) -> Path:
         """Root-specific seat-adjusted score diagnostics."""
 
-        return self.h2h_2p_dir() / "root_pairwise_diagnostics.parquet"
+        return self.h2h_2p_dir("h2h_inference") / "root_pairwise_diagnostics.parquet"
 
     def h2h_root_agreement_path(self) -> Path:
         """Fixed-root H2H effect discrepancy and decision agreement."""
 
-        return self.h2h_2p_dir() / "root_decision_agreement.parquet"
+        return self.h2h_2p_dir("h2h_inference") / "root_decision_agreement.parquet"
 
     def h2h_dominance_edges_path(self) -> Path:
         """Practical and statistical directed dominance edges."""
 
-        return self.h2h_2p_dir() / "dominance_edges.parquet"
+        return self.h2h_2p_dir("h2h_digest") / "dominance_edges.parquet"
 
     def h2h_cycle_groups_path(self) -> Path:
         """Strongly connected practical and statistical cycle groups."""
 
-        return self.h2h_2p_dir() / "cycle_groups.parquet"
+        return self.h2h_2p_dir("h2h_digest") / "cycle_groups.parquet"
 
     def h2h_dominance_fronts_path(self) -> Path:
         """Condensation-DAG fronts with display-only within-front order."""
 
-        return self.h2h_2p_dir() / "dominance_fronts.parquet"
+        return self.h2h_2p_dir("h2h_digest") / "dominance_fronts.parquet"
 
     def h2h_dominance_summary_path(self) -> Path:
         """Cycle, unresolved, and unique-best claim summary."""
 
-        return self.h2h_2p_dir() / "dominance_summary.json"
+        return self.h2h_2p_dir("h2h_digest") / "dominance_summary.json"
 
     def structure_agreement_pairs_path(self) -> Path:
         """Selection-conditioned pair-level method agreement."""

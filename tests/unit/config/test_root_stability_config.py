@@ -25,7 +25,7 @@ def _valid_cfg(tmp_path: Path) -> AppConfig:
 
 def test_root_stability_paths_are_cross_seed_metric_artifacts(tmp_path: Path) -> None:
     cfg = _valid_cfg(tmp_path)
-    base = cfg.cross_seed_dir("cross_seed")
+    base = cfg.cross_seed_dir("root_stability")
 
     assert cfg.root_combined_performance_by_k_path(4).parent == base
     assert cfg.root_combined_performance_across_k_path().parent == base

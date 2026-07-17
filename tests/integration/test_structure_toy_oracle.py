@@ -22,7 +22,9 @@ from farkle.analysis.root_stability import RootBatchCell, build_two_root_stabili
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.analysis.structure_agreement import run as run_structure_agreement
 from farkle.analysis.structure_reporting import run as run_structure_reporting
+from farkle.analysis.trueskill_screening import ScreeningRatingCell, build_percentile_contribution
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
+from farkle.orchestration.run_contexts import SEED_PAIR_ANALYSIS_DIRNAME, RunContextConfig
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
     sidecar_path,
@@ -55,20 +57,24 @@ def _toy_block_runner(
 
 
 def _cfg(root: Path) -> AppConfig:
-    cfg = AppConfig(
+    base = AppConfig(
         io=IOConfig(results_dir_prefix=root / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2, 4]),
     )
-    cfg.screening.practical_delta_by_k = {2: 0.03, 4: 0.03}
-    cfg.screening.delta_across_k = 0.03
-    cfg.screening.bootstrap_replicates = 20
-    cfg.screening.candidate_contribution_size = 3
-    cfg.screening.controls = []
-    cfg.screening.mandatory_diagnostics = []
-    cfg.head2head.candidate_cap = None
-    cfg.head2head.total_game_cap = None
-    cfg.set_stage_layout(resolve_root_pair_stage_layout(cfg))
-    return cfg
+    base.screening.practical_delta_by_k = {2: 0.03, 4: 0.03}
+    base.screening.delta_across_k = 0.03
+    base.screening.bootstrap_replicates = 20
+    base.screening.candidate_contribution_size = 3
+    base.screening.controls = []
+    base.screening.mandatory_diagnostics = []
+    base.head2head.candidate_cap = None
+    base.head2head.total_game_cap = None
+    pair_root = root / "results_seed_pair_11_22"
+    return RunContextConfig.from_base(
+        base,
+        analysis_root=pair_root / SEED_PAIR_ANALYSIS_DIRNAME,
+        stage_layout=resolve_root_pair_stage_layout(base),
+    )
 
 
 def _metric_row(
@@ -144,38 +150,48 @@ def _write_root_cells(cfg: AppConfig, root: Path) -> list[RootBatchCell]:
     return cells
 
 
-def _write_trueskill_contribution(cfg: AppConfig) -> Path:
-    frame = pd.DataFrame(
-        {
-            "strategy": [1, 2, 3],
-            "mean_percentile_rank": [1.0, 0.5, 0.0],
-            "candidate_contribution_rank": [1, 2, 3],
-            "complete_support": [True, True, True],
-        }
-    )
-    path = cfg.trueskill_candidate_contribution_path()
-    table = pa.Table.from_pandas(frame, preserve_index=False)
-    sidecar = make_artifact_sidecar(
-        cfg,
-        path,
-        producer="toy_oracle",
-        scope=ArtifactScope.ACROSS_K,
-        source_scope=ArtifactScope.BY_K,
-        operation="equal_root_k_percentile_mean",
-        conditioning="finite_strategy_grid_screening_only",
-        consistency_columns=table.schema.names,
-        player_counts=[2, 4],
-        required_player_counts=[2, 4],
-        missing_cell_policy="fail",
-        seed_scope="both_roots_combined",
-    )
-    write_parquet_artifact_atomic(table, path, sidecar=sidecar)
-    return path
+def _write_trueskill_contribution(cfg: AppConfig, root: Path) -> Path:
+    cells: list[ScreeningRatingCell] = []
+    for root_seed in (11, 22):
+        for k in (2, 4):
+            path = (
+                root
+                / "inputs"
+                / "toy_root_ratings"
+                / f"root_{root_seed}"
+                / f"{k}p"
+                / f"ratings_{k}_seed{root_seed}.parquet"
+            )
+            table = pa.table(
+                {
+                    "strategy": [1, 2, 3],
+                    "mu": [30.0 + root_seed / 100, 25.0 + k / 100, 20.0],
+                    "sigma": [2.0, 2.5, 3.0],
+                }
+            )
+            sidecar = make_artifact_sidecar(
+                cfg,
+                path,
+                producer="toy_oracle",
+                scope=ArtifactScope.BY_K,
+                source_scope=ArtifactScope.BY_K,
+                operation="sequential_rating",
+                conditioning="finite_grid_trueskill_screening",
+                consistency_columns=table.schema.names,
+                grouping_keys=["strategy"],
+                player_counts=[k],
+                required_player_counts=[k],
+                missing_cell_policy="fail",
+                seed_scope="single_root",
+            )
+            write_parquet_artifact_atomic(table, path, sidecar=sidecar)
+            cells.append(ScreeningRatingCell(root_seed, k, path))
+    return build_percentile_contribution(cfg, cells)
 
 
 def _prepare(cfg: AppConfig, root: Path) -> tuple[Any, Any, Any]:
     stability = build_two_root_stability(cfg, _write_root_cells(cfg, root))
-    _write_trueskill_contribution(cfg)
+    _write_trueskill_contribution(cfg, root)
     family = freeze_h2h_candidate_family(cfg)
     schedule = plan_h2h_schedule(cfg)
     manifest_path = cfg.strategy_manifest_root_path()
@@ -249,9 +265,12 @@ def test_two_root_multi_k_resume_matches_worker_count_oracle(
             n_jobs=1,
             block_runner=interrupting_runner,
         )
-    interrupted_plan = json.loads(resumed_cfg.h2h_power_plan_path().read_text(encoding="utf-8"))
-    assert interrupted_plan["execution_state"] == CompletionState.PARTIAL_RESUMABLE.value
-    assert interrupted_plan["completed_block_count"] == 2
+    interrupted_state = json.loads(
+        resumed_cfg.h2h_execution_state_path().read_text(encoding="utf-8")
+    )
+    assert interrupted_state["execution_state"] == CompletionState.PARTIAL_RESUMABLE.value
+    assert interrupted_state["completed_block_count"] == 2
+    immutable_resumed_plan = resumed_cfg.h2h_power_plan_path().read_bytes()
 
     resumed_execution = execute_h2h_schedule(
         resumed_cfg,
@@ -266,7 +285,9 @@ def test_two_root_multi_k_resume_matches_worker_count_oracle(
     resumed_plan = json.loads(resumed_schedule.power_plan.read_text(encoding="utf-8"))
     assert baseline_family_payload["family_hash"] == resumed_family_payload["family_hash"]
     assert baseline_plan["schedule_hash"] == resumed_plan["schedule_hash"]
-    assert resumed_plan["execution_state"] == CompletionState.COMPLETE_VALID.value
+    assert resumed_cfg.h2h_power_plan_path().read_bytes() == immutable_resumed_plan
+    resumed_state = json.loads(resumed_execution.execution_state.read_text(encoding="utf-8"))
+    assert resumed_state["execution_state"] == CompletionState.COMPLETE_VALID.value
 
     coordinate_columns = [
         "pair_id",
@@ -319,6 +340,7 @@ def test_two_root_multi_k_resume_matches_worker_count_oracle(
         *resumed_family.all_paths,
         resumed_schedule.power_plan,
         resumed_schedule.block_manifest,
+        resumed_execution.execution_state,
         resumed_execution.order_counts,
         *resumed_execution.block_paths,
         *resumed_inference.all_paths,
@@ -332,3 +354,19 @@ def test_two_root_multi_k_resume_matches_worker_count_oracle(
     ]
     _assert_one_sidecar(derived)
     assert audit_sidecar_completeness(resumed_cfg.analysis_dir) == []
+    expected_stage_dirs = [
+        "00_root_stability",
+        "01_trueskill",
+        "02_candidate_freeze",
+        "03_h2h_power",
+        "04_h2h_execute",
+        "05_h2h_inference",
+        "06_h2h_digest",
+        "07_agreement",
+        "08_reporting",
+    ]
+    observed_stage_dirs = sorted(
+        path.name for path in resumed_cfg.analysis_dir.iterdir() if path.is_dir()
+    )
+    assert observed_stage_dirs == expected_stage_dirs
+    assert all(any(path.iterdir()) for path in resumed_cfg.analysis_dir.iterdir() if path.is_dir())

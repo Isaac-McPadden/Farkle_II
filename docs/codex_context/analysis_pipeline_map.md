@@ -22,10 +22,11 @@ It then stops. In a two-root run, H2H never executes inside either root.
 
 ## Root-pair workflow
 
-`RootPairRunContext` owns a pair analysis root and validated links to the two
-root layouts. `build_root_pair_stage_plan` executes once:
+`RootPairRunContext` owns `results_seed_pair_X_Y/seed_pair_analysis` and
+validated links to the two root layouts. `build_root_pair_stage_plan` executes
+once:
 
-1. `cross_seed`
+1. `root_stability`
 2. root/k TrueSkill candidate contribution
 3. `candidate_freeze`
 4. `h2h_power`
@@ -41,9 +42,13 @@ Standalone analysis runs the root workflow and appends the same H2H tail with
 ## Path and state rules
 
 - Stage numbers are resolved at runtime; never hard-code them.
+- Stage and scope path lookup is non-mutating. Writers and completion publishers
+  create directories only when a stage actually materializes work.
 - Use only `by_k`, `concat_ks`, `across_k`, `cross_seed`, `diagnostics`, and
   `h2h_2p`.
-- A root-pair config writes under its own pair root.
+- Pair phases own their outputs. H2H execution state and checkpoints never
+  modify the immutable power-plan artifact.
+- A root-pair config writes under its dedicated `seed_pair_analysis` directory.
 - Every canonical derived artifact requires a compatible adjacent sidecar.
 - A completion stamp is valid only when inputs, output identities, stage hash,
   freshness key, and sidecars validate.

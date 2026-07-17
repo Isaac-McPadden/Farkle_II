@@ -1065,13 +1065,13 @@ def build_two_root_stability(
     cell_map = {(cell.root_seed, cell.k): cell for cell in cells}
     sources = [cell_map[key].path for key in sorted(cell_map)]
     artifacts = _artifact_paths(cfg, required_k)
-    done = stage_done_path(cfg.cross_seed_dir("cross_seed"), "two_root_stability")
+    done = stage_done_path(cfg.stage_dir("root_stability"), "root_stability")
     if not force and stage_is_up_to_date(
         done,
         inputs=sources,
         outputs=list(artifacts.all_paths),
         cfg=cfg,
-        stage="metrics",
+        stage="root_stability",
         sidecar_artifacts=list(artifacts.all_paths),
     ):
         return artifacts
@@ -1218,7 +1218,7 @@ def build_two_root_stability(
         inputs=sources,
         outputs=list(artifacts.all_paths),
         cfg=cfg,
-        stage="metrics",
+        stage="root_stability",
         sidecar_artifacts=list(artifacts.all_paths),
     )
     return artifacts

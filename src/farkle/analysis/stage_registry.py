@@ -191,17 +191,6 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         group="single_root_tail",
         cache_scope=("screening", "head2head"),
     ),
-    StageDefinition(
-        "head2head",
-        group="analytics",
-        cache_scope=(
-            "io",
-            "sim.seed",
-            "sim.n_players_list",
-            "head2head",
-            "k_aggregation",
-        ),
-    ),
     StageDefinition("h2h_power", group="single_root_tail", cache_scope=("head2head",)),
     StageDefinition(
         "h2h_execute",
@@ -215,10 +204,19 @@ _REGISTRY: tuple[StageDefinition, ...] = (
 )
 
 _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
-    StageDefinition("cross_seed", group="root_pair", cache_scope=("sim.seed_list", "robustness")),
+    StageDefinition(
+        "root_stability",
+        group="root_pair",
+        cache_scope=(
+            "sim.seed_list",
+            "sim.n_players_list",
+            "screening",
+            "robustness",
+            "k_aggregation",
+        ),
+    ),
     StageDefinition("trueskill", group="root_pair", cache_scope=("sim.seed_list", "trueskill")),
     StageDefinition("candidate_freeze", group="root_pair", cache_scope=("screening", "head2head")),
-    StageDefinition("head2head", group="root_pair", cache_scope=("head2head", "rng")),
     StageDefinition("h2h_power", group="root_pair", cache_scope=("head2head",)),
     StageDefinition("h2h_execute", group="root_pair", cache_scope=("head2head", "rng")),
     StageDefinition("h2h_inference", group="root_pair", cache_scope=("head2head",)),

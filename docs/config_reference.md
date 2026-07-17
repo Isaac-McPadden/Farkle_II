@@ -113,6 +113,14 @@ Do not assemble analysis paths manually. Use:
 - `cfg.h2h_2p_dir(stage)`
 - the artifact-specific helpers on `AppConfig`
 
+These helpers resolve paths without creating directories. Artifact writers,
+checkpoint publishers, and completion-stamp writers create parents only when
+the active stage publishes work. `h2h_2p_dir` always requires its owning stage.
+
+Two-seed orchestration keeps the individual roots under `results_seed_X` and
+`results_seed_Y`; pair-owned outputs live under the sibling
+`seed_pair_analysis` directory.
+
 The only scopes are `by_k`, `concat_ks`, `across_k`, `cross_seed`,
 `diagnostics`, and `h2h_2p`. Scope-mismatched paths fail validation.
 

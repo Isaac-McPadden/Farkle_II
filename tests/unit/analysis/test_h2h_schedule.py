@@ -151,11 +151,14 @@ def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     artifacts = plan_h2h_schedule(cfg)
 
     assert artifacts.planning_state is CompletionState.COMPLETE_VALID
-    assert artifacts.execution_state is CompletionState.NOT_STARTED
+    assert artifacts.execution_blocked is False
     assert artifacts.block_manifest is not None
     plan = json.loads(artifacts.power_plan.read_text(encoding="utf-8"))
     assert plan["score_test_id"] == SCORE_TEST_ID
     assert len(plan["schedule_hash"]) == 64
+    assert plan["execution_authorization"] == "ready"
+    assert "execution_state" not in plan
+    assert "completed_block_count" not in plan
     assert plan["alpha_per_pair"] == pytest.approx(0.02 / 3)
     assert plan["games_per_pair"] % 4 == 0
     assert plan["worst_scenario_achieved_power"] >= 0.80
@@ -216,16 +219,17 @@ def test_power_plan_stops_before_schedule_when_cap_is_too_small(tmp_path: Path) 
     blocked_schedule_hash = plan["schedule_hash"]
 
     assert artifacts.planning_state is CompletionState.COMPLETE_VALID
-    assert artifacts.execution_state is CompletionState.BLOCKED_BY_CAP
+    assert artifacts.execution_blocked is True
     assert artifacts.block_manifest is None
     assert not cfg.h2h_block_manifest_path().exists()
     assert plan["projected_total_games"] > 1
+    assert plan["execution_authorization"] == "blocked_by_cap"
     assert "head2head.total_game_cap" in plan["cap_guidance"]
 
     cfg.head2head.total_game_cap = plan["projected_total_games"]
     resumed = plan_h2h_schedule(cfg)
     assert resumed.planning_state is CompletionState.COMPLETE_VALID
-    assert resumed.execution_state is CompletionState.NOT_STARTED
+    assert resumed.execution_blocked is False
     assert resumed.block_manifest is not None
     resumed_plan = json.loads(resumed.power_plan.read_text(encoding="utf-8"))
     assert resumed_plan["schedule_hash"] == blocked_schedule_hash
@@ -290,10 +294,11 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
     calls: list[str] = []
     completed_counts_seen_by_runner: list[int] = []
+    immutable_plan = cfg.h2h_power_plan_path().read_bytes()
 
     def fake_runner(block: dict[str, Any], _manifest: Path, _chunk: int) -> dict[str, Any]:
         calls.append(str(block["block_id"]))
-        state = json.loads(cfg.h2h_power_plan_path().read_text(encoding="utf-8"))
+        state = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
         completed_counts_seen_by_runner.append(int(state["completed_block_count"]))
         games = int(block["games_required"])
         return {
@@ -311,12 +316,12 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     assert len(counts) == 4
     assert (counts["games_completed"] == counts["games_required"]).all()
     assert all(path.exists() for path in completed.block_paths)
-    state_payload = json.loads(cfg.h2h_power_plan_path().read_text(encoding="utf-8"))
-    assert state_payload["planning_state"] == CompletionState.COMPLETE_VALID.value
+    state_payload = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
     assert state_payload["execution_state"] == CompletionState.COMPLETE_VALID.value
     assert state_payload["completed_block_count"] == state_payload["total_block_count"] == 4
+    assert cfg.h2h_power_plan_path().read_bytes() == immutable_plan
     resumed_plan = plan_h2h_schedule(cfg)
-    assert resumed_plan.execution_state is CompletionState.COMPLETE_VALID
+    assert resumed_plan.execution_blocked is False
 
     def fail_if_called(
         _block: dict[str, Any], _manifest: Path, _chunk: int
@@ -328,3 +333,33 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
         pq.read_table(completed.order_counts).to_pandas(),
         pq.read_table(replay.order_counts).to_pandas(),
     )
+
+
+def test_large_h2h_execution_throttles_execution_state_rewrites(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_frozen_family(cfg, strategies=tuple(str(value) for value in range(8)))
+    plan_h2h_schedule(cfg)
+    manifest_path = cfg.strategy_manifest_root_path()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+    completed_counts_seen_by_runner: list[int] = []
+
+    def fake_runner(block: dict[str, Any], _manifest: Path, _chunk: int) -> dict[str, Any]:
+        state = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
+        completed_counts_seen_by_runner.append(int(state["completed_block_count"]))
+        games = int(block["games_required"])
+        return {
+            **block,
+            "games_completed": games,
+            "wins_seat1": games // 2,
+            "wins_seat2": games - games // 2,
+        }
+
+    completed = execute_h2h_schedule(cfg, n_jobs=1, block_runner=fake_runner)
+
+    assert len(completed.block_paths) == 112
+    observed_checkpoints = sorted(set(completed_counts_seen_by_runner))
+    assert observed_checkpoints == list(range(0, 111, 11))
+    state = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
+    assert state["execution_state"] == CompletionState.COMPLETE_VALID.value
+    assert state["completed_block_count"] == 112

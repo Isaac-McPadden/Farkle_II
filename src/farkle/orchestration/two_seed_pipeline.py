@@ -13,7 +13,11 @@ from typing import Any, Sequence, cast
 from farkle import analysis
 from farkle.analysis.stage_runner import StageRunContext, StageRunner
 from farkle.config import AppConfig, apply_dot_overrides, assign_config_sha, load_app_config
-from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+from farkle.orchestration.run_contexts import (
+    SEED_PAIR_ANALYSIS_DIRNAME,
+    RootPairRunContext,
+    SeedRunContext,
+)
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
     resolve_seed_pair_args,
@@ -265,7 +269,7 @@ def run_pipeline(
             "event": EVENT_RUN_START,
             "seed_pair": list(seed_pair),
             "results_dir": str(pair_root),
-            "pair_analysis_dir": str(pair_root / cfg.io.analysis_subdir),
+            "pair_analysis_dir": str(pair_root / SEED_PAIR_ANALYSIS_DIRNAME),
             "resolved_policy": policy_bundle.as_metadata(),
         },
         run_id=run_id,

@@ -11,6 +11,8 @@ from typing import cast
 from farkle.analysis.stage_registry import StageLayout, resolve_root_pair_stage_layout
 from farkle.config import AppConfig
 
+SEED_PAIR_ANALYSIS_DIRNAME = "seed_pair_analysis"
+
 
 @dataclass(frozen=True)
 class SeedRunContext:
@@ -143,7 +145,7 @@ class RootPairRunContext:
         input_layout_override: dict[str, str] = {
             placement.definition.key: placement.folder_name for placement in input_layout.placements
         }
-        pair_analysis_root = pair_root / first.config.io.analysis_subdir
+        pair_analysis_root = pair_root / SEED_PAIR_ANALYSIS_DIRNAME
         pair_sim = replace(
             first.config.sim,
             seed=root_pair[0],
@@ -165,4 +167,9 @@ class RootPairRunContext:
         )
 
 
-__all__ = ["RootPairRunContext", "RunContextConfig", "SeedRunContext"]
+__all__ = [
+    "SEED_PAIR_ANALYSIS_DIRNAME",
+    "RootPairRunContext",
+    "RunContextConfig",
+    "SeedRunContext",
+]

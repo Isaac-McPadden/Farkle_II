@@ -10,7 +10,11 @@ import pytest
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import AppConfig, IOConfig, SimConfig, assign_config_sha
 from farkle.orchestration import two_seed_pipeline
-from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+from farkle.orchestration.run_contexts import (
+    SEED_PAIR_ANALYSIS_DIRNAME,
+    RootPairRunContext,
+    SeedRunContext,
+)
 
 
 def _context(tmp_path: Path, root: int) -> SeedRunContext:
@@ -131,7 +135,7 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     context = calls[0]
     pair_root = two_seed_pipeline.seed_pair_root(cfg, (11, 22))
     assert context.root_pair == (11, 22)
-    assert context.analysis_root == pair_root / cfg.io.analysis_subdir
+    assert context.analysis_root == pair_root / SEED_PAIR_ANALYSIS_DIRNAME
     assert health["status"] == "complete_success"
     assert health["pair_workflow"]["analysis_root"] == str(context.analysis_root)
 
