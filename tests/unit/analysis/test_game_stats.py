@@ -10,6 +10,7 @@ from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import game_stats
 from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
 
 
 def test_rare_event_flags_cover_game_and_strategy_levels(tmp_path):
@@ -125,6 +126,18 @@ def test_run_generates_all_outputs(tmp_path: Path):
     assert stamp.exists()
     stamp_meta = json.loads(stamp.read_text())
     assert str(per_k_stats) in stamp_meta["outputs"]
+
+    shard_path, stats_path, _done_path = game_stats._rare_event_shard_paths(rare_events_path, 2)
+    for path in (rare_events_path, shard_path, stats_path):
+        validate_artifact_sidecar(path)
+
+    original = rare_events_path.read_bytes()
+    for path in (rare_events_path, shard_path, stats_path):
+        sidecar_path(path).unlink()
+    game_stats.run(cfg)
+    assert rare_events_path.read_bytes() == original
+    for path in (rare_events_path, shard_path, stats_path):
+        validate_artifact_sidecar(path)
 
 
 def test_run_requires_inputs(tmp_path: Path):

@@ -10,6 +10,10 @@ from farkle.utils.artifact_contract import SIDECAR_SUFFIX, sidecar_path, validat
 
 _DERIVED_SUFFIXES: Final = {".json", ".md", ".parquet", ".png"}
 _STATE_SUFFIXES: Final = (".checkpoint.json", ".done.json")
+_SCREENING_STAGE_ARTIFACTS: Final = {
+    "descriptive_screening.json",
+    "descriptive_screening.parquet",
+}
 _RETIRED_ENTRY_POINTS: Final = (
     "src/farkle/analysis/agreement.py",
     "src/farkle/analysis/coverage_by_k.py",
@@ -47,11 +51,15 @@ def audit_retired_entry_points(repository_root: Path) -> list[str]:
 
 def _is_canonical_derived_artifact(path: Path, audit_root: Path) -> bool:
     relative = path.relative_to(audit_root)
-    if not _CANONICAL_SCOPE_PARTS.intersection(relative.parts):
-        return False
     if path.name.endswith(SIDECAR_SUFFIX) or path.name.endswith(_STATE_SUFFIXES):
         return False
-    return path.suffix.lower() in _DERIVED_SUFFIXES
+    if path.suffix.lower() not in _DERIVED_SUFFIXES:
+        return False
+    in_scope_directory = bool(_CANONICAL_SCOPE_PARTS.intersection(relative.parts))
+    in_screening_stage = path.name in _SCREENING_STAGE_ARTIFACTS and any(
+        part.endswith("_screening") and part[:2].isdigit() for part in relative.parts[:-1]
+    )
+    return in_scope_directory or in_screening_stage
 
 
 def audit_sidecar_completeness(audit_root: Path) -> list[str]:

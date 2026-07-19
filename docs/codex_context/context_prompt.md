@@ -20,7 +20,9 @@ Preserve these invariants:
 - pair analysis lives under `results_seed_pair_X_Y/seed_pair_analysis`, path
   lookup is non-mutating, and every H2H phase owns its artifacts;
 - the H2H power plan is immutable after publication and execution progress is
-  a separate resumable artifact.
+  a separate resumable artifact;
+- transient artifact I/O uses bounded, provider-neutral retries, and completed
+  H2H execution can finalize a missing stamp without replaying block data.
 
 Before a statistical change, identify the estimand, conditioning, chance
 baseline, replication unit, uncertainty procedure, multiplicity rule, and

@@ -8,6 +8,7 @@ can never leave a new data file that validates against stale metadata.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -16,7 +17,17 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final, Literal, NotRequired, TypeAlias, TypedDict, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Final,
+    Literal,
+    NotRequired,
+    TypeAlias,
+    TypedDict,
+    TypeVar,
+    cast,
+)
 
 from farkle.config import ArtifactScope, compute_config_sha
 
@@ -34,30 +45,82 @@ _SEED_SCOPES: Final = {
     "root_pair_stability",
     "not_applicable",
 }
-_ATOMIC_REPLACE_RETRY_DELAYS: Final = (0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.5, 2.0, 2.0, 2.0)
-_WINDOWS_RETRYABLE_REPLACE_ERRORS: Final = {5, 32, 33}
+_IO_RETRY_DELAYS: Final = (0.05, 0.1, 0.2, 0.4, 0.8, 1.0, 1.5, 2.0, 2.0, 2.0)
+_JSON_VIEW_RETRY_DELAYS: Final = (0.05, 0.1, 0.2)
+_RETRYABLE_ERRNOS: Final = {
+    errno.EACCES,
+    errno.EAGAIN,
+    errno.EBUSY,
+    errno.EINTR,
+    errno.EIO,
+    errno.ETIMEDOUT,
+    getattr(errno, "ESTALE", -1),
+    getattr(errno, "ENETDOWN", -1),
+    getattr(errno, "ENETRESET", -1),
+    getattr(errno, "ENETUNREACH", -1),
+    getattr(errno, "ECONNABORTED", -1),
+    getattr(errno, "ECONNRESET", -1),
+    getattr(errno, "EHOSTDOWN", -1),
+    getattr(errno, "EHOSTUNREACH", -1),
+}
+_RETRYABLE_NATIVE_ERRORS: Final = {5, 32, 33, 53, 64, 121, 1236}
+_T = TypeVar("_T")
 
 
 class ArtifactContractError(RuntimeError):
     """Raised when an artifact and its sidecar do not satisfy the contract."""
 
 
+def _is_retryable_io_error(exc: OSError) -> bool:
+    """Return whether an OS/filesystem error can plausibly be transient."""
+
+    return (
+        isinstance(exc, (PermissionError, BlockingIOError, InterruptedError, TimeoutError))
+        or exc.errno in _RETRYABLE_ERRNOS
+        or getattr(exc, "winerror", None) in _RETRYABLE_NATIVE_ERRORS
+    )
+
+
+def retry_transient_io(action: Callable[[], _T]) -> _T:
+    """Run one filesystem operation with bounded provider-neutral retries."""
+
+    for attempt in range(len(_IO_RETRY_DELAYS) + 1):
+        try:
+            return action()
+        except OSError as exc:
+            if not _is_retryable_io_error(exc) or attempt == len(_IO_RETRY_DELAYS):
+                raise
+            time.sleep(_IO_RETRY_DELAYS[attempt])
+    raise AssertionError("unreachable transient I/O retry state")
+
+
+def read_json_file_with_retry(path: Path | str) -> Any:
+    """Read JSON while tolerating transient access and non-atomic remote views."""
+
+    source = Path(path)
+    io_attempt = 0
+    json_view_attempt = 0
+    while True:
+        try:
+            return json.loads(source.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            if json_view_attempt == len(_JSON_VIEW_RETRY_DELAYS):
+                raise
+            time.sleep(_JSON_VIEW_RETRY_DELAYS[json_view_attempt])
+            json_view_attempt += 1
+        except OSError as exc:
+            if not _is_retryable_io_error(exc) or io_attempt == len(_IO_RETRY_DELAYS):
+                raise
+            time.sleep(_IO_RETRY_DELAYS[io_attempt])
+            io_attempt += 1
+
+
 def replace_file_atomic(source: Path | str, destination: Path | str) -> None:
-    """Atomically replace one file, retrying transient Windows/OneDrive locks."""
+    """Atomically replace one file, retrying transient filesystem locks."""
 
     source_path = Path(source)
     destination_path = Path(destination)
-    for attempt in range(len(_ATOMIC_REPLACE_RETRY_DELAYS) + 1):
-        try:
-            os.replace(source_path, destination_path)
-            return
-        except OSError as exc:
-            retryable = isinstance(exc, PermissionError) or (
-                getattr(exc, "winerror", None) in _WINDOWS_RETRYABLE_REPLACE_ERRORS
-            )
-            if not retryable or attempt == len(_ATOMIC_REPLACE_RETRY_DELAYS):
-                raise
-            time.sleep(_ATOMIC_REPLACE_RETRY_DELAYS[attempt])
+    retry_transient_io(lambda: os.replace(source_path, destination_path))
 
 
 class OperationMethodContract(TypedDict):
@@ -468,18 +531,53 @@ def publish_staged_artifact_with_sidecar(
         staged_sidecar.unlink(missing_ok=True)
 
 
+def ensure_artifact_sidecar_atomic(
+    artifact_path: Path | str,
+    metadata: ArtifactSidecar,
+    *,
+    expected: Mapping[str, Any] | None = None,
+) -> ArtifactSidecar:
+    """Publish a missing sidecar for an already-complete immutable artifact.
+
+    Existing sidecars are validated rather than replaced, so this helper cannot
+    silently bless changed artifact bytes or incompatible metadata. It is
+    intended for resumable writers whose data publication completed before
+    sidecar publication was introduced or interrupted.
+    """
+
+    final_path = Path(artifact_path)
+    final_sidecar = sidecar_path(final_path)
+    if final_sidecar.exists():
+        return validate_artifact_sidecar(final_path, expected=expected)
+    if not final_path.is_file() or final_path.stat().st_size == 0:
+        raise ArtifactContractError(f"artifact does not exist or is empty: {final_path}")
+
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_fd, sidecar_name = tempfile.mkstemp(prefix="._sidecar_", dir=final_path.parent)
+    os.close(sidecar_fd)
+    staged_sidecar = Path(sidecar_name)
+    try:
+        bound = replace(metadata.with_artifact_identity(final_path), artifact_name=final_path.name)
+        _validate_sidecar_fields(bound)
+        staged_sidecar.write_text(_canonical_json(bound), encoding="utf-8")
+        replace_file_atomic(staged_sidecar, final_sidecar)
+        return validate_artifact_sidecar(final_path, expected=expected)
+    finally:
+        staged_sidecar.unlink(missing_ok=True)
+
+
 def load_artifact_sidecar(artifact_path: Path | str) -> ArtifactSidecar:
     """Load and structurally validate an artifact sidecar."""
 
     path = Path(artifact_path)
     metadata_path = sidecar_path(path)
-    if not metadata_path.is_file():
+    try:
+        payload = read_json_file_with_retry(metadata_path)
+        metadata = ArtifactSidecar(**payload)
+    except FileNotFoundError as exc:
         raise ArtifactContractError(
             f"missing sidecar for {path}; expected adjacent {metadata_path.name}"
-        )
-    try:
-        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
-        metadata = ArtifactSidecar(**payload)
+        ) from exc
     except (OSError, json.JSONDecodeError, TypeError) as exc:
         raise ArtifactContractError(f"invalid sidecar {metadata_path}: {exc}") from exc
     _validate_sidecar_fields(metadata)
@@ -494,16 +592,19 @@ def validate_artifact_sidecar(
     """Validate the sidecar, byte identity, and optional consumer expectations."""
 
     path = Path(artifact_path)
-    if not path.is_file():
-        raise ArtifactContractError(f"artifact does not exist: {path}")
     metadata = load_artifact_sidecar(path)
+    try:
+        artifact_size, digest = retry_transient_io(lambda: (path.stat().st_size, sha256_file(path)))
+    except (FileNotFoundError, IsADirectoryError, NotADirectoryError) as exc:
+        raise ArtifactContractError(f"artifact does not exist: {path}") from exc
+    except OSError as exc:
+        raise ArtifactContractError(f"artifact cannot be read: {path}: {exc}") from exc
     if metadata.artifact_name != path.name:
         raise ArtifactContractError(
             f"sidecar artifact_name {metadata.artifact_name!r} does not match {path.name!r}"
         )
-    if metadata.artifact_size_bytes != path.stat().st_size:
+    if metadata.artifact_size_bytes != artifact_size:
         raise ArtifactContractError(f"artifact size does not match sidecar: {path}")
-    digest = sha256_file(path)
     if metadata.artifact_sha256 != digest:
         raise ArtifactContractError(f"artifact content hash does not match sidecar: {path}")
 
@@ -522,6 +623,7 @@ __all__ = [
     "ArtifactContractError",
     "ARTIFACT_CONTRACT_VERSION",
     "ArtifactSidecar",
+    "ensure_artifact_sidecar_atomic",
     "MethodContract",
     "SIDECAR_SUFFIX",
     "load_artifact_sidecar",

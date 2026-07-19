@@ -25,10 +25,12 @@ from farkle.config import AppConfig, ArtifactScope
 from farkle.simulation.simulation import simulate_many_games_from_seeds
 from farkle.simulation.strategies import parse_strategy_identifier
 from farkle.utils.artifact_contract import (
+    ArtifactContractError,
     make_artifact_sidecar,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import (
+    read_json_artifact,
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
 )
@@ -905,6 +907,68 @@ def _write_block(
 BlockRunner = Callable[[dict[str, Any], Path, int], dict[str, Any]]
 
 
+def _completed_execution_is_recoverable(
+    plan: Mapping[str, Any],
+    *,
+    state_path: Path,
+    output: Path,
+    block_paths: tuple[Path, ...],
+) -> bool:
+    """Validate completed immutable work after a missing final stage stamp."""
+
+    if not state_path.exists() or not output.exists():
+        return False
+    try:
+        execution = cast(
+            dict[str, Any],
+            read_json_artifact(
+                state_path,
+                expected_sidecar={
+                    "scope": ArtifactScope.H2H_2P.value,
+                    "operation": "h2h_execution_state",
+                },
+            ),
+        )
+        output_sidecar = validate_artifact_sidecar(
+            output,
+            expected={
+                "scope": ArtifactScope.H2H_2P.value,
+                "operation": "concatenate_root_order_blocks",
+            },
+        )
+    except ArtifactContractError:
+        return False
+    if execution.get("execution_state") != CompletionState.COMPLETE_VALID.value:
+        return False
+    expected_identity = {
+        "family_hash": str(plan["family_hash"]),
+        "schedule_hash": str(plan["schedule_hash"]),
+        "completed_block_count": len(block_paths),
+        "total_block_count": len(block_paths),
+    }
+    mismatched = {
+        key: (execution.get(key), value)
+        for key, value in expected_identity.items()
+        if execution.get(key) != value
+    }
+    if mismatched:
+        raise ValueError(
+            f"completed H2H execution state conflicts with the power plan: {mismatched}"
+        )
+    expected_sources = [str(path) for path in block_paths]
+    if output_sidecar.source_artifacts != expected_sources:
+        raise ValueError("completed H2H aggregate does not reference the frozen block set")
+    for path in block_paths:
+        validate_artifact_sidecar(
+            path,
+            expected={
+                "scope": ArtifactScope.H2H_2P.value,
+                "operation": "simulate_root_order_block",
+            },
+        )
+    return True
+
+
 def execute_h2h_schedule(
     cfg: AppConfig,
     *,
@@ -961,6 +1025,25 @@ def execute_h2h_schedule(
         stage="h2h_execute",
         sidecar_artifacts=stage_outputs,
     ):
+        return H2HExecutionArtifacts(
+            execution_state=state_path,
+            order_counts=output,
+            block_paths=block_paths,
+        )
+    if _completed_execution_is_recoverable(
+        plan,
+        state_path=state_path,
+        output=output,
+        block_paths=block_paths,
+    ):
+        write_stage_done(
+            done,
+            inputs=[plan_path, schedule_path],
+            outputs=stage_outputs,
+            cfg=cfg,
+            stage="h2h_execute",
+            sidecar_artifacts=[state_path, output],
+        )
         return H2HExecutionArtifacts(
             execution_state=state_path,
             order_counts=output,
@@ -1097,7 +1180,7 @@ def execute_h2h_schedule(
         outputs=stage_outputs,
         cfg=cfg,
         stage="h2h_execute",
-        sidecar_artifacts=stage_outputs,
+        sidecar_artifacts=[state_path, output],
     )
     return H2HExecutionArtifacts(
         execution_state=state_path,

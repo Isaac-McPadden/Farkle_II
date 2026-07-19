@@ -5,6 +5,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 import farkle.utils.artifact_contract as contract_module
@@ -252,3 +253,98 @@ def test_atomic_publication_retries_transient_permission_errors(
     assert replace_attempts == 2
     assert delays == [0.05, 0.1]
     validate_artifact_sidecar(artifact)
+
+
+def test_validation_retries_transient_sidecar_and_artifact_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "summary.parquet"
+    write_parquet_artifact_atomic(
+        pa.table({"value": [1]}),
+        artifact,
+        sidecar=_metadata(artifact),
+    )
+    metadata_path = sidecar_path(artifact)
+    real_read_text = Path.read_text
+    real_sha256_file = contract_module.sha256_file
+    sidecar_attempts = 0
+    artifact_attempts = 0
+    delays: list[float] = []
+
+    def transient_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        nonlocal sidecar_attempts
+        if path == metadata_path and sidecar_attempts < 2:
+            sidecar_attempts += 1
+            raise PermissionError("simulated synchronized-storage read lock")
+        return real_read_text(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    def transient_sha256_file(path: Path | str) -> str:
+        nonlocal artifact_attempts
+        if Path(path) == artifact and artifact_attempts < 2:
+            artifact_attempts += 1
+            raise PermissionError("simulated network-filesystem read lock")
+        return real_sha256_file(path)
+
+    monkeypatch.setattr(Path, "read_text", transient_read_text)
+    monkeypatch.setattr(contract_module, "sha256_file", transient_sha256_file)
+    monkeypatch.setattr(contract_module.time, "sleep", delays.append)
+
+    validate_artifact_sidecar(artifact)
+
+    assert sidecar_attempts == 2
+    assert artifact_attempts == 2
+    assert delays == [0.05, 0.1, 0.05, 0.1]
+
+
+def test_validation_retries_a_temporarily_incomplete_sidecar_view(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    artifact = tmp_path / "summary.parquet"
+    write_parquet_artifact_atomic(
+        pa.table({"value": [1]}),
+        artifact,
+        sidecar=_metadata(artifact),
+    )
+    metadata_path = sidecar_path(artifact)
+    real_read_text = Path.read_text
+    incomplete_views = 0
+    delays: list[float] = []
+
+    def transient_read_text(path: Path, *args: object, **kwargs: object) -> str:
+        nonlocal incomplete_views
+        if path == metadata_path and incomplete_views < 2:
+            incomplete_views += 1
+            return '{"artifact_name":'
+        return real_read_text(path, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_text", transient_read_text)
+    monkeypatch.setattr(contract_module.time, "sleep", delays.append)
+
+    validate_artifact_sidecar(artifact)
+
+    assert incomplete_views == 2
+    assert delays == [0.05, 0.1]
+
+
+def test_missing_sidecar_can_be_backfilled_but_existing_metadata_is_not_replaced(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "summary.parquet"
+    pq.write_table(pa.table({"value": [1]}), artifact)
+    metadata = _metadata(artifact)
+
+    contract_module.ensure_artifact_sidecar_atomic(
+        artifact,
+        metadata,
+        expected={"operation": "aggregate_test_rows"},
+    )
+    original_sidecar = sidecar_path(artifact).read_bytes()
+
+    incompatible = _metadata(artifact, operation="different_operation")
+    with pytest.raises(ArtifactContractError, match="incompatible sidecar"):
+        contract_module.ensure_artifact_sidecar_atomic(
+            artifact,
+            incompatible,
+            expected={"operation": "different_operation"},
+        )
+    assert sidecar_path(artifact).read_bytes() == original_sidecar

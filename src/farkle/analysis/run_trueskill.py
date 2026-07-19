@@ -48,7 +48,13 @@ from farkle.analysis.trueskill_screening import (
     build_screening_diagnostics,
     publish_rating_cell_contract,
 )
-from farkle.config import AppConfig
+from farkle.config import AppConfig, ArtifactScope
+from farkle.utils.artifact_contract import (
+    ArtifactSidecar,
+    ensure_artifact_sidecar_atomic,
+    make_artifact_sidecar,
+    sidecar_path,
+)
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
@@ -217,6 +223,78 @@ def _load_ratings_parquet(path: Path) -> dict[str, "RatingStats"]:
     for s, mu, sg in zip(data["strategy"], data["mu"], data["sigma"], strict=True):
         out[str(s)] = RatingStats(float(mu), float(sg))
     return out
+
+
+def _ensure_auxiliary_rating_sidecars(
+    cfg: AppConfig,
+    *,
+    cell: ScreeningRatingCell,
+    suffix: str,
+) -> None:
+    """Bind auxiliary root/k rating exports produced by the streaming worker."""
+
+    player_count = str(cell.k)
+    paths = _rating_artifact_paths(cfg.trueskill_stage_dir, player_count, suffix)
+    json_path = paths["json"]
+    shard_path, _shard_done = _block_shard_paths(cfg.trueskill_stage_dir, player_count, suffix)
+
+    def _sidecar(path: Path, *, operation: str, columns: list[str]) -> ArtifactSidecar:
+        return make_artifact_sidecar(
+            cfg,
+            path,
+            producer="trueskill",
+            scope=ArtifactScope.BY_K,
+            source_scope=ArtifactScope.BY_K,
+            operation=operation,
+            weighted_quantity="trueskill_mu_and_sigma",
+            support_count_role="ordered_games",
+            uncertainty_method="trueskill_model_sigma_screening_only",
+            replication_unit="ordered_game",
+            conditioning="finite_grid_trueskill_screening",
+            consistency_columns=columns,
+            source_artifacts=[cell.ratings_path],
+            grouping_keys=["strategy"],
+            player_counts=[cell.k],
+            required_player_counts=[cell.k],
+            missing_cell_policy="fail",
+            seed_scope="single_root",
+        )
+
+    json_payload = json.loads(json_path.read_text(encoding="utf-8"))
+    if not isinstance(json_payload, dict):
+        raise ValueError(f"TrueSkill JSON export must be an object: {json_path}")
+    json_sidecar = _sidecar(
+        json_path,
+        operation="export_sequential_ratings_json",
+        columns=["strategy", "mu", "sigma"],
+    )
+    ensure_artifact_sidecar_atomic(
+        json_path,
+        json_sidecar,
+        expected={
+            "scope": ArtifactScope.BY_K.value,
+            "operation": "export_sequential_ratings_json",
+            "player_counts": [cell.k],
+        },
+    )
+    if len(json_payload) != pq.read_metadata(cell.ratings_path).num_rows:
+        raise ValueError(f"TrueSkill JSON export disagrees with canonical ratings: {json_path}")
+
+    shard_schema = pq.read_schema(shard_path)
+    shard_sidecar = _sidecar(
+        shard_path,
+        operation="snapshot_sequential_rating_cell",
+        columns=shard_schema.names,
+    )
+    ensure_artifact_sidecar_atomic(
+        shard_path,
+        shard_sidecar,
+        expected={
+            "scope": ArtifactScope.BY_K.value,
+            "operation": "snapshot_sequential_rating_cell",
+            "player_counts": [cell.k],
+        },
+    )
 
 
 # ---------- Per-N checkpointing ----------
@@ -617,6 +695,7 @@ def _rate_block_worker(
         _save_ratings_parquet(parquet_path, ratings_stats)
 
         json_path = paths["json"]
+        sidecar_path(json_path).unlink(missing_ok=True)
         with atomic_path(str(json_path)) as tmp_path:
             Path(tmp_path).write_text(
                 json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
@@ -630,6 +709,7 @@ def _rate_block_worker(
                 created_at=time.time(),
             ),
         )
+        sidecar_path(shard_parquet).unlink(missing_ok=True)
         _save_ratings_parquet(shard_parquet, ratings_stats)
         _save_done_stamp(
             shard_done_path,
@@ -950,6 +1030,12 @@ def run_trueskill_root(cfg: AppConfig) -> None:
         raise RuntimeError(
             "TrueSkill must produce exactly every configured root/k cell; "
             f"missing={missing}, extra={extra}"
+        )
+    for cell in screening_cells:
+        _ensure_auxiliary_rating_sidecars(
+            cfg,
+            cell=cell,
+            suffix=f"_seed{cell.root_seed}",
         )
     contribution_path = build_percentile_contribution(cfg, screening_cells)
     diagnostics_path = build_screening_diagnostics(cfg, screening_cells)

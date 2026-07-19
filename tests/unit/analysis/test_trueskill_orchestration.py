@@ -194,3 +194,31 @@ def test_parallel_trueskill_block_failure_propagates(
             curated_rows_name="game_rows.parquet",
             workers=2,
         )
+
+
+def test_auxiliary_trueskill_exports_receive_sidecars(tmp_path: Path) -> None:
+    context = _root_context(tmp_path, 11, ks=(2,))
+    rating = _write_rating_cell(context, 2)
+    suffix = "_seed11"
+    paths = run_trueskill_module._rating_artifact_paths(
+        context.config.trueskill_stage_dir, "2", suffix
+    )
+    paths["json"].write_text(
+        '{"A":{"mu":30.112,"sigma":2.0},"B":{"mu":20.0,"sigma":3.0}}',
+        encoding="utf-8",
+    )
+    shard, _done = run_trueskill_module._block_shard_paths(
+        context.config.trueskill_stage_dir, "2", suffix
+    )
+    pq.write_table(pq.read_table(rating), shard)
+
+    run_trueskill_module._ensure_auxiliary_rating_sidecars(
+        context.config,
+        cell=ScreeningRatingCell(root_seed=11, k=2, ratings_path=rating),
+        suffix=suffix,
+    )
+
+    validate_artifact_sidecar(
+        paths["json"], expected={"operation": "export_sequential_ratings_json"}
+    )
+    validate_artifact_sidecar(shard, expected={"operation": "snapshot_sequential_rating_cell"})

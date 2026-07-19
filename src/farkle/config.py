@@ -1168,9 +1168,7 @@ class AppConfig:
     def screening_path(self, filename: str = "descriptive_screening.parquet") -> Path:
         """Return a canonical descriptive-screening artifact path."""
 
-        path = self.screening_stage_dir / filename
-        path.parent.mkdir(parents=True, exist_ok=True)
-        return path
+        return self.screening_stage_dir / filename
 
     @property
     def game_stats_margin_thresholds(self) -> tuple[int, ...]:

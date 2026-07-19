@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 from scipy.stats import norm
 
+from farkle.analysis import h2h_schedule as h2h_schedule_module
 from farkle.analysis.h2h_schedule import (
     SCORE_TEST_ID,
     execute_h2h_schedule,
@@ -363,3 +364,49 @@ def test_large_h2h_execution_throttles_execution_state_rewrites(tmp_path: Path) 
     state = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
     assert state["execution_state"] == CompletionState.COMPLETE_VALID.value
     assert state["completed_block_count"] == 112
+
+
+def test_complete_execution_without_stamp_fast_finalizes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    _write_frozen_family(cfg, strategies=("1", "2"))
+    plan_h2h_schedule(cfg)
+    manifest_path = cfg.strategy_manifest_root_path()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+
+    completed = execute_h2h_schedule(
+        cfg,
+        n_jobs=1,
+        block_runner=lambda block, _manifest, _chunk: {
+            **block,
+            "games_completed": int(block["games_required"]),
+            "wins_seat1": int(block["games_required"]) // 2,
+            "wins_seat2": int(block["games_required"]) - int(block["games_required"]) // 2,
+        },
+    )
+    done = cfg.stage_dir("h2h_execute") / "h2h_execute.done.json"
+    done.unlink()
+    original_output = completed.order_counts.read_bytes()
+    original_state = completed.execution_state.read_bytes()
+    real_read_table = h2h_schedule_module.pq.read_table
+
+    def reject_block_parquet_reads(path: Path | str, *args: object, **kwargs: object) -> pa.Table:
+        if Path(path).parent.name == "blocks":
+            raise AssertionError("fast finalization reread an immutable block parquet")
+        return real_read_table(path, *args, **kwargs)  # type: ignore[call-overload]
+
+    monkeypatch.setattr(h2h_schedule_module.pq, "read_table", reject_block_parquet_reads)
+
+    recovered = execute_h2h_schedule(
+        cfg,
+        n_jobs=1,
+        block_runner=lambda *_args: (_ for _ in ()).throw(
+            AssertionError("fast finalization reran a completed H2H block")
+        ),
+    )
+
+    assert done.exists()
+    assert recovered.order_counts.read_bytes() == original_output
+    assert recovered.execution_state.read_bytes() == original_state

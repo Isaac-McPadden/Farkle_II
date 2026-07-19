@@ -34,6 +34,18 @@ publish the sidecar, and write completion state last. The sidecar binds:
 - uncertainty method and replication unit;
 - source artifacts, manifest hashes, config hash, and code revision.
 
+Artifact publication, sidecar validation, hashing, and canonical artifact reads
+use bounded retries for transient filesystem failures. Retry classification is
+based on portable exception and error semantics rather than operating-system or
+sync-provider names, so local disks, network filesystems, and synchronized
+storage follow the same contract. Persistent errors still fail closed.
+
+Streamed ingest rows, row-preserving curated files, rare-event shards and
+counter checkpoints, and auxiliary per-k TrueSkill exports receive the same
+adjacent hash-bound sidecars as final summaries. A no-force resume may publish
+a genuinely missing sidecar for bytes already covered by a valid completion
+stamp; it validates rather than replaces any sidecar that already exists.
+
 Method tags are `operation`, `h2h`, `trueskill`, `diagnostic_band`,
 `conditional_metrics`, `turn_metrics`, and `root_combination`. The method
 procedure must exactly equal the sidecar operation identifier.
@@ -141,6 +153,9 @@ The power plan remains immutable after publication. The execution stage owns a
 separate `execution_state.json` containing the family and schedule hashes,
 lifecycle state, completed block count, and total block count. Inference
 requires this artifact to be `complete_valid` and to match the power plan.
+If final completion-stamp publication is interrupted, a no-force resume
+authenticates the frozen block set and canonical execution outputs, then writes
+only the missing stamp; it does not replay blocks or rebuild the aggregate.
 
 Pair outputs are grouped by their owning stages under
 `results_seed_pair_X_Y/seed_pair_analysis`: root stability, TrueSkill,

@@ -13,6 +13,7 @@ from farkle.analysis import ingest
 from farkle.config import AppConfig, IngestConfig, IOConfig, SimConfig
 from farkle.simulation.simulation import _play_game
 from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
 from farkle.utils.manifest import append_manifest_line
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 
@@ -101,6 +102,20 @@ def test_ingest_reads_manifest_backed_row_directory_through_spawn_worker(tmp_pat
     assert output.loc[0, "shuffle_index"] == 0
     assert output.loc[0, "winner_seat"] in {"P1", "P2"}
     assert "winner" not in output.columns
+    validate_artifact_sidecar(
+        cfg.ingested_rows_raw(2),
+        expected={
+            "scope": "by_k",
+            "operation": "ingest_simulation_rows",
+            "player_counts": [2],
+        },
+    )
+
+    original = cfg.ingested_rows_raw(2).read_bytes()
+    sidecar_path(cfg.ingested_rows_raw(2)).unlink()
+    ingest.run(cfg)
+    assert cfg.ingested_rows_raw(2).read_bytes() == original
+    validate_artifact_sidecar(cfg.ingested_rows_raw(2))
 
 
 def test_ingest_rejects_retired_winner_field_in_new_row_shard(tmp_path: Path) -> None:

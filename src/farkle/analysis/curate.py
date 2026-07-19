@@ -13,12 +13,79 @@ from typing import Any
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.config import AppConfig
+from farkle.config import AppConfig, ArtifactScope
+from farkle.utils.artifact_contract import (
+    ArtifactSidecar,
+    ensure_artifact_sidecar_atomic,
+    make_artifact_sidecar,
+    write_artifact_with_sidecar_atomic,
+)
 from farkle.utils.schema_helpers import expected_schema_for, n_players_from_schema
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _curated_rows_sidecar(
+    cfg: AppConfig,
+    *,
+    raw: Path,
+    output: Path,
+    ingest_manifest: Path,
+    n_players: int,
+    schema: pa.Schema,
+) -> ArtifactSidecar:
+    """Build the contract for one row-preserving curated by-k artifact."""
+
+    return make_artifact_sidecar(
+        cfg,
+        output,
+        producer="curate",
+        scope=ArtifactScope.BY_K,
+        source_scope=ArtifactScope.BY_K,
+        operation="curate_game_rows",
+        weighted_quantity="canonical_game_rows",
+        support_count_role="raw_games",
+        uncertainty_method="none",
+        replication_unit="game",
+        conditioning="unconditional",
+        consistency_columns=schema.names,
+        source_artifacts=[raw, ingest_manifest],
+        grouping_keys=["root_seed", "k", "shuffle_index", "game_index"],
+        player_counts=[n_players],
+        required_player_counts=[n_players],
+        missing_cell_policy="fail",
+        seed_scope="single_root",
+        input_manifests=[ingest_manifest],
+    )
+
+
+def _ensure_curated_rows_sidecar(
+    cfg: AppConfig,
+    *,
+    raw: Path,
+    output: Path,
+    ingest_manifest: Path,
+    n_players: int,
+) -> None:
+    schema = pq.read_schema(output)
+    ensure_artifact_sidecar_atomic(
+        output,
+        _curated_rows_sidecar(
+            cfg,
+            raw=raw,
+            output=output,
+            ingest_manifest=ingest_manifest,
+            n_players=n_players,
+            schema=schema,
+        ),
+        expected={
+            "scope": ArtifactScope.BY_K.value,
+            "operation": "curate_game_rows",
+            "player_counts": [n_players],
+        },
+    )
 
 
 def _schema_hash(n_players: int) -> str:
@@ -69,8 +136,35 @@ def run(cfg: AppConfig) -> None:
         outputs=[*curated_files, *manifests],
         cfg=cfg,
         stage="curate",
+        sidecar_artifacts=curated_files,
     ):
         LOGGER.info("Curate up-to-date", extra={"stage": "curate", "path": str(done)})
+        return
+
+    if stage_is_up_to_date(
+        done,
+        inputs=raw_files,
+        outputs=[*curated_files, *manifests],
+        cfg=cfg,
+        stage="curate",
+    ):
+        for n_players, raw, output in zip(player_counts, raw_files, curated_files, strict=True):
+            _ensure_curated_rows_sidecar(
+                cfg,
+                raw=raw,
+                output=output,
+                ingest_manifest=cfg.ingest_manifest(n_players),
+                n_players=n_players,
+            )
+        write_stage_done(
+            done,
+            inputs=raw_files,
+            outputs=[*curated_files, *manifests],
+            cfg=cfg,
+            stage="curate",
+            sidecar_artifacts=curated_files,
+        )
+        LOGGER.info("Curate sidecars backfilled", extra={"stage": "curate"})
         return
 
     missing = [path for path in raw_files if not path.exists()]
@@ -81,15 +175,27 @@ def run(cfg: AppConfig) -> None:
         )
 
     total_rows = 0
-    for raw, output, manifest in zip(raw_files, curated_files, manifests, strict=True):
+    for n_players, raw, output, manifest in zip(
+        player_counts, raw_files, curated_files, manifests, strict=True
+    ):
         metadata = pq.read_metadata(raw)
         schema = metadata.schema.to_arrow_schema()
         expected = expected_schema_for(n_players_from_schema(schema))
         if schema.names != expected.names:
             raise ValueError(f"curate: incompatible schema for {raw}")
-        output.parent.mkdir(parents=True, exist_ok=True)
-        with atomic_path(str(output)) as staged:
-            shutil.copy2(raw, staged)
+        sidecar = _curated_rows_sidecar(
+            cfg,
+            raw=raw,
+            output=output,
+            ingest_manifest=cfg.ingest_manifest(n_players),
+            n_players=n_players,
+            schema=schema,
+        )
+
+        def _copy(staged: Path, *, source: Path = raw) -> None:
+            shutil.copy2(source, staged)
+
+        write_artifact_with_sidecar_atomic(output, sidecar, _copy)
         _write_manifest(manifest, rows=metadata.num_rows, schema=schema, cfg=cfg)
         total_rows += metadata.num_rows
 
@@ -99,6 +205,7 @@ def run(cfg: AppConfig) -> None:
         outputs=[*curated_files, *manifests],
         cfg=cfg,
         stage="curate",
+        sidecar_artifacts=curated_files,
     )
     LOGGER.info(
         "Curate complete",

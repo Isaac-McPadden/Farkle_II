@@ -52,3 +52,24 @@ artifact_contract:
 
     sidecar_path(path).unlink()
     assert audit_sidecar_completeness(cfg.analysis_dir) == [f"missing sidecar: {path}"]
+
+
+def test_release_audit_validates_stage_root_artifacts_with_sidecars(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    path = cfg.screening_stage_dir / "descriptive_screening.parquet"
+    table = pa.table({"value": [1]})
+    sidecar = make_artifact_sidecar(
+        cfg,
+        path,
+        producer="screening",
+        scope=ArtifactScope.ACROSS_K,
+        source_scope=ArtifactScope.BY_K,
+        operation="equal_k_mean",
+        consistency_columns=table.schema.names,
+    )
+    write_parquet_artifact_atomic(table, path, sidecar=sidecar)
+
+    assert audit_sidecar_completeness(cfg.analysis_dir) == []
+    assert cfg.screening_path().parent == cfg.screening_stage_dir
+    sidecar_path(path).unlink()
+    assert audit_sidecar_completeness(cfg.analysis_dir) == [f"missing sidecar: {path}"]

@@ -17,6 +17,8 @@ import pyarrow.parquet as pq
 
 from .artifact_contract import (
     ArtifactSidecar,
+    read_json_file_with_retry,
+    retry_transient_io,
     validate_artifact_sidecar,
     write_artifact_with_sidecar_atomic,
 )
@@ -100,7 +102,7 @@ def read_parquet_artifact(
     """Validate a Parquet artifact's sidecar before reading its table."""
 
     validate_artifact_sidecar(path, expected=expected_sidecar)
-    return pq.read_table(path)
+    return retry_transient_io(lambda: pq.read_table(path))
 
 
 def read_csv_artifact(
@@ -109,7 +111,7 @@ def read_csv_artifact(
     """Validate a CSV artifact's sidecar before reading its frame."""
 
     validate_artifact_sidecar(path, expected=expected_sidecar)
-    return pd.read_csv(path)
+    return retry_transient_io(lambda: pd.read_csv(path))
 
 
 def read_json_artifact(
@@ -118,4 +120,4 @@ def read_json_artifact(
     """Validate a JSON artifact's sidecar before parsing its payload."""
 
     validate_artifact_sidecar(path, expected=expected_sidecar)
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    return read_json_file_with_retry(path)

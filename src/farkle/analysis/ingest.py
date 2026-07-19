@@ -20,7 +20,12 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from farkle.config import AppConfig, load_app_config
+from farkle.config import AppConfig, ArtifactScope, load_app_config
+from farkle.utils.artifact_contract import (
+    ArtifactSidecar,
+    ensure_artifact_sidecar_atomic,
+    make_artifact_sidecar,
+)
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
     ParallelNestingContext,
@@ -34,6 +39,68 @@ from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, 
 from farkle.utils.streaming_loop import run_streaming_shard
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _ingested_rows_sidecar(
+    cfg: AppConfig,
+    *,
+    block: Path,
+    n_players: int,
+    source_manifest: Path,
+    schema: pa.Schema,
+) -> ArtifactSidecar:
+    """Build the contract for a completed streamed ingest artifact."""
+    output = cfg.ingested_rows_raw(n_players)
+    completion = block / "simulation.done.json"
+    return make_artifact_sidecar(
+        cfg,
+        output,
+        producer="ingest",
+        scope=ArtifactScope.BY_K,
+        source_scope=ArtifactScope.BY_K,
+        operation="ingest_simulation_rows",
+        weighted_quantity="canonical_game_rows",
+        support_count_role="raw_games",
+        uncertainty_method="none",
+        replication_unit="game",
+        conditioning="unconditional",
+        consistency_columns=schema.names,
+        source_artifacts=[source_manifest, completion],
+        grouping_keys=["root_seed", "k", "shuffle_index", "game_index"],
+        player_counts=[n_players],
+        required_player_counts=[n_players],
+        missing_cell_policy="fail",
+        seed_scope="single_root",
+        input_manifests=[source_manifest],
+    )
+
+
+def _ensure_ingested_rows_sidecar(
+    cfg: AppConfig,
+    *,
+    block: Path,
+    n_players: int,
+    source_manifest: Path,
+) -> None:
+    """Bind an existing complete ingest artifact without rewriting its bytes."""
+
+    output = cfg.ingested_rows_raw(n_players)
+    sidecar = _ingested_rows_sidecar(
+        cfg,
+        block=block,
+        n_players=n_players,
+        source_manifest=source_manifest,
+        schema=pq.read_schema(output),
+    )
+    ensure_artifact_sidecar_atomic(
+        output,
+        sidecar,
+        expected={
+            "scope": ArtifactScope.BY_K.value,
+            "operation": "ingest_simulation_rows",
+            "player_counts": [n_players],
+        },
+    )
 
 
 def _canonical_row_shards(
@@ -314,13 +381,6 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
 
     raw_out = cfg.ingested_rows_raw(n)
     source_manifest, row_shards = _canonical_row_shards(block, cfg, n)
-    src_mtime = source_manifest.stat().st_mtime
-    if raw_out.exists() and src_mtime and raw_out.stat().st_mtime >= src_mtime:
-        LOGGER.info(
-            "Ingest block up-to-date",
-            extra={"stage": "ingest", "n_players": n, "path": str(raw_out)},
-        )
-        return 0
 
     canon = expected_schema_for(n)
     seat_cols = [c for c in canon.names if c.startswith("P")]
@@ -404,6 +464,13 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
         yield from batches
 
     manifest_path = cfg.ingest_manifest(n)
+    sidecar = _ingested_rows_sidecar(
+        cfg,
+        block=block,
+        n_players=n,
+        source_manifest=source_manifest,
+        schema=canon,
+    )
     run_streaming_shard(
         out_path=str(raw_out),
         manifest_path=str(manifest_path),
@@ -411,6 +478,7 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
         batch_iter=_all_batches(),
         row_group_size=cfg.row_group_size,
         compression=cfg.parquet_codec,
+        sidecar=sidecar,
         manifest_extra={
             "path": raw_out.name,
             "n_players": n,
@@ -424,6 +492,12 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
                 "deterministic_batch_id",
             ],
         },
+    )
+    _ensure_ingested_rows_sidecar(
+        cfg,
+        block=block,
+        n_players=n,
+        source_manifest=source_manifest,
     )
     LOGGER.info(
         "Ingest block complete",
@@ -486,11 +560,41 @@ def run(cfg: AppConfig) -> None:
         outputs=[*outputs, *manifests],
         cfg=cfg,
         stage="ingest",
+        sidecar_artifacts=outputs,
     ):
         LOGGER.info(
             "Ingest up-to-date",
             extra={"stage": "ingest", "path": str(done)},
         )
+        return
+
+    if stage_is_up_to_date(
+        done,
+        inputs=upstream_inputs,
+        outputs=[*outputs, *manifests],
+        cfg=cfg,
+        stage="ingest",
+    ):
+        for block in blocks:
+            n = _n_from_block(block.name)
+            if n is None:  # pragma: no cover - filtered above
+                continue
+            source_manifest, _row_shards = _canonical_row_shards(block, cfg, n)
+            _ensure_ingested_rows_sidecar(
+                cfg,
+                block=block,
+                n_players=n,
+                source_manifest=source_manifest,
+            )
+        write_stage_done(
+            done,
+            inputs=upstream_inputs,
+            outputs=[*outputs, *manifests],
+            cfg=cfg,
+            stage="ingest",
+            sidecar_artifacts=outputs,
+        )
+        LOGGER.info("Ingest sidecars backfilled", extra={"stage": "ingest"})
         return
 
     mp_context = resolve_mp_context(cfg.analysis.mp_start_method)
@@ -529,6 +633,7 @@ def run(cfg: AppConfig) -> None:
         outputs=[*outputs, *manifests],
         cfg=cfg,
         stage="ingest",
+        sidecar_artifacts=outputs,
     )
 
 

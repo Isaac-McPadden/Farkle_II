@@ -45,6 +45,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pyarrow.dataset as ds
+import pyarrow.parquet as pq
 from pandas._libs.missing import NAType
 from pandas._typing import Scalar
 
@@ -53,7 +54,11 @@ from farkle.analysis.roll_enumeration import build_exact_roll_enumeration
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.aggregation import normalize_k_aggregation_method
 from farkle.utils.analysis_shared import to_int
-from farkle.utils.artifact_contract import make_artifact_sidecar
+from farkle.utils.artifact_contract import (
+    ensure_artifact_sidecar_atomic,
+    make_artifact_sidecar,
+    sidecar_path,
+)
 from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_atomic
 from farkle.utils.parallel import normalize_n_jobs, resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
@@ -435,26 +440,49 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     rare_events_details_stamp = stage_done_path(stage_dir, "game_stats.rare_events_details")
     write_details = cfg.analysis.rare_event_write_details
 
-    rare_events_summary_up_to_date = (not force) and stage_is_up_to_date(
+    rare_events_summary_data_up_to_date = (not force) and stage_is_up_to_date(
         rare_events_summary_stamp,
         inputs=input_paths,
         outputs=[rare_events_output],
         cfg=cfg,
         stage="game_stats",
     )
-    rare_events_details_up_to_date = True
+    rare_events_summary_contract_up_to_date = (
+        rare_events_summary_data_up_to_date
+        and stage_is_up_to_date(
+            rare_events_summary_stamp,
+            inputs=input_paths,
+            outputs=[rare_events_output],
+            cfg=cfg,
+            stage="game_stats",
+            sidecar_artifacts=[rare_events_output],
+        )
+    )
+    rare_events_details_data_up_to_date = True
+    rare_events_details_contract_up_to_date = True
     if write_details:
-        rare_events_details_up_to_date = (not force) and stage_is_up_to_date(
+        rare_events_details_data_up_to_date = (not force) and stage_is_up_to_date(
             rare_events_details_stamp,
             inputs=input_paths,
             outputs=[rare_events_details_output],
             cfg=cfg,
             stage="game_stats",
         )
+        rare_events_details_contract_up_to_date = (
+            rare_events_details_data_up_to_date
+            and stage_is_up_to_date(
+                rare_events_details_stamp,
+                inputs=input_paths,
+                outputs=[rare_events_details_output],
+                cfg=cfg,
+                stage="game_stats",
+                sidecar_artifacts=[rare_events_details_output],
+            )
+        )
 
     stamp_path = stage_done_path(stage_dir, "game_stats")
 
-    if not (rare_events_summary_up_to_date and rare_events_details_up_to_date):
+    if not (rare_events_summary_data_up_to_date and rare_events_details_data_up_to_date):
         resolved_thresholds, resolved_target_score = _resolve_rare_event_thresholds(
             per_n_inputs,
             thresholds=cfg.game_stats_margin_thresholds,
@@ -462,7 +490,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             margin_quantile=cfg.analysis.rare_event_margin_quantile,
             target_rate=cfg.analysis.rare_event_target_rate,
         )
-        if not rare_events_summary_up_to_date:
+        if not rare_events_summary_data_up_to_date:
+            sidecar_path(rare_events_output).unlink(missing_ok=True)
             rare_event_rows = _rare_event_flags(
                 per_n_inputs,
                 thresholds=resolved_thresholds,
@@ -477,15 +506,9 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             )
             if rare_event_rows == 0:
                 raise RuntimeError("game-stats: no rare events available to summarize")
-            write_stage_done(
-                rare_events_summary_stamp,
-                inputs=input_paths,
-                outputs=[rare_events_output],
-                cfg=cfg,
-                stage="game_stats",
-            )
 
-        if write_details and not rare_events_details_up_to_date:
+        if write_details and not rare_events_details_data_up_to_date:
+            sidecar_path(rare_events_details_output).unlink(missing_ok=True)
             rare_event_rows = _rare_event_details(
                 per_n_inputs,
                 thresholds=resolved_thresholds,
@@ -496,13 +519,31 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             )
             if rare_event_rows == 0:
                 raise RuntimeError("game-stats: no rare events available to detail")
-            write_stage_done(
-                rare_events_details_stamp,
-                inputs=input_paths,
-                outputs=[rare_events_details_output],
-                cfg=cfg,
-                stage="game_stats",
-            )
+
+    rare_event_artifacts = _ensure_rare_event_sidecars(
+        cfg,
+        per_n_inputs=per_n_inputs,
+        output_path=rare_events_output,
+        details_path=rare_events_details_output if write_details else None,
+    )
+    if not rare_events_summary_contract_up_to_date:
+        write_stage_done(
+            rare_events_summary_stamp,
+            inputs=input_paths,
+            outputs=[rare_events_output],
+            cfg=cfg,
+            stage="game_stats",
+            sidecar_artifacts=[rare_events_output],
+        )
+    if write_details and not rare_events_details_contract_up_to_date:
+        write_stage_done(
+            rare_events_details_stamp,
+            inputs=input_paths,
+            outputs=[rare_events_details_output],
+            cfg=cfg,
+            stage="game_stats",
+            sidecar_artifacts=[rare_events_details_output],
+        )
 
     write_stage_done(
         stamp_path,
@@ -512,9 +553,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             margin_output,
             combined_game_length_output,
             combined_margin_output,
-            rare_events_output,
             *[_per_k_game_stats_paths(stage_dir, k)[0] for k in configured_k_values],
-            *([rare_events_details_output] if write_details else []),
+            *rare_event_artifacts,
             *roll_artifacts.all_paths,
         ],
         cfg=cfg,
@@ -524,6 +564,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             margin_output,
             combined_game_length_output,
             combined_margin_output,
+            *rare_event_artifacts,
             *[_per_k_game_stats_paths(stage_dir, k)[0] for k in configured_k_values],
             *roll_artifacts.all_paths,
         ],
@@ -1680,6 +1721,9 @@ def _rare_event_flags(
                 "total_shards": len(per_n_inputs),
             },
         )
+        for _n_players, _path, shard_path, stats_path, _done_path in stale_inputs:
+            sidecar_path(shard_path).unlink(missing_ok=True)
+            sidecar_path(stats_path).unlink(missing_ok=True)
         worker_count = max(1, min(len(stale_inputs), max(1, n_workers)))
         if worker_count == 1:
             for n_players, path, shard_path, stats_path, done_path in stale_inputs:
@@ -1837,6 +1881,163 @@ def _rare_event_shard_paths(output_path: Path, n_players: int) -> tuple[Path, Pa
     stats_path = shard_dir / f"{n_players}p.stats.json"
     done_path = shard_dir / f"{n_players}p.done.json"
     return shard_path, stats_path, done_path
+
+
+def _ensure_rare_event_sidecars(
+    cfg: AppConfig,
+    *,
+    per_n_inputs: Sequence[tuple[int, Path]],
+    output_path: Path,
+    details_path: Path | None,
+) -> list[Path]:
+    """Publish missing contracts for resumable rare-event artifacts."""
+
+    player_counts = sorted(n_players for n_players, _path in per_n_inputs)
+    shard_paths: list[Path] = []
+    stats_paths: list[Path] = []
+    for n_players, input_path in per_n_inputs:
+        shard_path, stats_path, done_path = _rare_event_shard_paths(output_path, n_players)
+        shard_schema = pq.read_schema(shard_path)
+        shard_sidecar = make_artifact_sidecar(
+            cfg,
+            shard_path,
+            producer="game_stats",
+            scope=ArtifactScope.BY_K,
+            source_scope=ArtifactScope.BY_K,
+            operation="summarize_rare_events_by_k",
+            weighted_quantity="rare_event_game_rows",
+            support_count_role="raw_game_observations",
+            uncertainty_method="descriptive",
+            replication_unit="game",
+            conditioning="rare_event_threshold_flags",
+            consistency_columns=shard_schema.names,
+            source_artifacts=[input_path],
+            grouping_keys=["summary_level", "strategy", "n_players"],
+            player_counts=[n_players],
+            required_player_counts=[n_players],
+            missing_cell_policy="fail",
+        )
+        ensure_artifact_sidecar_atomic(
+            shard_path,
+            shard_sidecar,
+            expected={
+                "scope": ArtifactScope.BY_K.value,
+                "operation": "summarize_rare_events_by_k",
+                "player_counts": [n_players],
+            },
+        )
+
+        stats_payload = json.loads(stats_path.read_text(encoding="utf-8"))
+        stats_sidecar = make_artifact_sidecar(
+            cfg,
+            stats_path,
+            producer="game_stats",
+            scope=ArtifactScope.BY_K,
+            source_scope=ArtifactScope.BY_K,
+            operation="checkpoint_rare_event_counts_by_k",
+            weighted_quantity="rare_event_integer_counts",
+            support_count_role="raw_game_observations",
+            uncertainty_method="descriptive",
+            replication_unit="game",
+            conditioning="rare_event_threshold_flags",
+            consistency_columns=sorted(stats_payload),
+            source_artifacts=[input_path, shard_path],
+            grouping_keys=["strategy", "n_players"],
+            player_counts=[n_players],
+            required_player_counts=[n_players],
+            missing_cell_policy="fail",
+        )
+        ensure_artifact_sidecar_atomic(
+            stats_path,
+            stats_sidecar,
+            expected={
+                "scope": ArtifactScope.BY_K.value,
+                "operation": "checkpoint_rare_event_counts_by_k",
+                "player_counts": [n_players],
+            },
+        )
+        if not stage_is_up_to_date(
+            done_path,
+            inputs=[input_path],
+            outputs=[shard_path, stats_path],
+            cfg=cfg,
+            stage="game_stats",
+            sidecar_artifacts=[shard_path, stats_path],
+        ):
+            write_stage_done(
+                done_path,
+                inputs=[input_path],
+                outputs=[shard_path, stats_path],
+                cfg=cfg,
+                stage="game_stats",
+                sidecar_artifacts=[shard_path, stats_path],
+            )
+        shard_paths.append(shard_path)
+        stats_paths.append(stats_path)
+
+    output_schema = pq.read_schema(output_path)
+    output_sidecar = make_artifact_sidecar(
+        cfg,
+        output_path,
+        producer="game_stats",
+        scope=ArtifactScope.ACROSS_K,
+        source_scope=ArtifactScope.BY_K,
+        operation="combine_rare_event_shards",
+        weighted_quantity="rare_event_game_and_strategy_summaries",
+        support_count_role="raw_game_observations",
+        uncertainty_method="descriptive",
+        replication_unit="game",
+        conditioning="rare_event_threshold_flags",
+        consistency_columns=output_schema.names,
+        source_artifacts=[*shard_paths, *stats_paths],
+        grouping_keys=["summary_level", "strategy", "n_players"],
+        player_counts=player_counts,
+        required_player_counts=player_counts,
+        missing_cell_policy="fail",
+    )
+    ensure_artifact_sidecar_atomic(
+        output_path,
+        output_sidecar,
+        expected={
+            "scope": ArtifactScope.ACROSS_K.value,
+            "operation": "combine_rare_event_shards",
+            "player_counts": player_counts,
+        },
+    )
+
+    artifacts = [output_path, *shard_paths, *stats_paths]
+    if details_path is not None:
+        details_schema = pq.read_schema(details_path)
+        details_sidecar = make_artifact_sidecar(
+            cfg,
+            details_path,
+            producer="game_stats",
+            scope=ArtifactScope.ACROSS_K,
+            source_scope=ArtifactScope.BY_K,
+            operation="enumerate_rare_event_details",
+            weighted_quantity="rare_event_game_rows",
+            support_count_role="raw_game_observations",
+            uncertainty_method="descriptive",
+            replication_unit="game",
+            conditioning="rare_event_threshold_flags",
+            consistency_columns=details_schema.names,
+            source_artifacts=[path for _n_players, path in per_n_inputs],
+            grouping_keys=["summary_level", "strategy", "n_players"],
+            player_counts=player_counts,
+            required_player_counts=player_counts,
+            missing_cell_policy="fail",
+        )
+        ensure_artifact_sidecar_atomic(
+            details_path,
+            details_sidecar,
+            expected={
+                "scope": ArtifactScope.ACROSS_K.value,
+                "operation": "enumerate_rare_event_details",
+                "player_counts": player_counts,
+            },
+        )
+        artifacts.append(details_path)
+    return artifacts
 
 
 def _rare_event_schema(
