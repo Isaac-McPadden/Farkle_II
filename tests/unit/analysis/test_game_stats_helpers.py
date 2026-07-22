@@ -20,6 +20,7 @@ def _fixture_rows_two_players() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P1", "P2"],
                 "n_rounds": 4,
                 "P1_strategy": 1,
@@ -28,6 +29,7 @@ def _fixture_rows_two_players() -> pd.DataFrame:
                 "P2_score": 110,
             },
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P2", "P1"],
                 "n_rounds": 8,
                 "P1_strategy": 1,
@@ -36,6 +38,7 @@ def _fixture_rows_two_players() -> pd.DataFrame:
                 "P2_score": 200,
             },
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P1", "P2"],
                 "n_rounds": 12,
                 "P1_strategy": 1,
@@ -448,8 +451,9 @@ def test_strategy_margin_empty_paths(caplog: pytest.LogCaptureFixture, tmp_path:
     _write_rows(
         nan_scores,
         pd.DataFrame(
-            {
-                "P1_strategy": [1, 1],
+                {
+                    "termination_status": ["completed", "completed"],
+                    "P1_strategy": [1, 1],
                 "P2_strategy": [2, 2],
                 "P1_score": [np.nan, np.nan],
                 "P2_score": [np.nan, np.nan],

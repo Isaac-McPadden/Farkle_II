@@ -19,7 +19,6 @@ import os
 import pickle
 import shutil
 import stat
-from collections import Counter
 from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -48,6 +47,7 @@ from farkle.simulation.workload_planner import (
 from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.manifest import iter_manifest
+from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.writer import atomic_path
 
 # ---------------------------------------------------------------------------
@@ -235,8 +235,19 @@ def simulation_done_path(cfg: AppConfig, n_players: int) -> Path:
 
 
 def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
-    """Return ``True`` when the per-N simulation completion marker exists."""
-    return simulation_done_path(cfg, n_players).exists()
+    """Return whether the per-N marker has the current outcome/method identity."""
+
+    done_path = simulation_done_path(cfg, n_players)
+    if not done_path.is_file():
+        return False
+    try:
+        payload = json.loads(done_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return False
+    return (
+        payload.get("outcome_schema_version") == OUTCOME_SCHEMA_VERSION
+        and payload.get("tournament_method_version") == TOURNAMENT_METHOD_VERSION
+    )
 
 
 def write_simulation_done(
@@ -263,6 +274,8 @@ def write_simulation_done(
         ),
         "shuffles_per_batch": shuffles_per_batch,
         "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+        "tournament_method_version": TOURNAMENT_METHOD_VERSION,
         "n_strategies": n_strategies,
         "outputs": [str(p) for p in outputs],
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -504,6 +517,8 @@ def _validate_resume_outputs(
         "n_strategies": len(strategies_manifest),
         "strategy_manifest_sha": _strategy_manifest_digest(strategies_manifest),
         "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+        "tournament_method_version": TOURNAMENT_METHOD_VERSION,
         "rng_bit_generator": "PCG64DXSM",
         **_workload_checkpoint_metadata(workload_plan),
     }
@@ -584,6 +599,8 @@ def _validate_resume_outputs(
                     or record.get("n_players") != n_players
                     or record.get("deterministic_batch_id") != expected_batch
                     or record.get("rng_scheme_version") != urandom.RNG_SCHEME_VERSION
+                    or record.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION
+                    or record.get("tournament_method_version") != TOURNAMENT_METHOD_VERSION
                 ):
                     coordinate_errors += 1
             if duplicates:
@@ -650,6 +667,8 @@ def _validate_resume_outputs(
                     record.get("root_seed") != cfg.sim.seed
                     or record.get("n_players") != n_players
                     or record.get("rng_scheme_version") != urandom.RNG_SCHEME_VERSION
+                    or record.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION
+                    or record.get("tournament_method_version") != TOURNAMENT_METHOD_VERSION
                     or process_block_index != batch_id + 1
                     or not shuffle_indices
                     or shuffle_indices != sorted(shuffle_indices)
@@ -848,6 +867,8 @@ def run_single_n(
         checkpoint_metadata={
             "strategy_manifest_sha": _strategy_manifest_digest(manifest),
             "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+            "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+            "tournament_method_version": TOURNAMENT_METHOD_VERSION,
             "rng_bit_generator": "PCG64DXSM",
             **_workload_checkpoint_metadata(workload_plan),
         },
@@ -858,14 +879,10 @@ def run_single_n(
     # --- Final checkpoint post-processing ---
     payload = pickle.loads(ckpt_path.read_bytes())
     raw_counts = payload.get("win_totals", payload)
-    if isinstance(raw_counts, Counter):
-        win_totals = Counter(raw_counts)
-    elif isinstance(raw_counts, Mapping):
-        win_totals = Counter(
-            {int(k) if str(k).isdigit() else k: int(v) for k, v in raw_counts.items()}
-        )
-    else:
-        raise TypeError(f"Unexpected win_totals payload type: {type(raw_counts)}")
+    outcome_payload = payload.get("outcome_counts")
+    win_totals = tournament_mod._coerce_counter(
+        raw_counts, outcome_payload if isinstance(outcome_payload, Mapping) else None
+    )
 
     metric_sums: dict[str, dict[int | str, float]] = payload.get("metric_sums", {})
     metric_sq_sums: dict[str, dict[int | str, float]] = payload.get(
@@ -875,15 +892,24 @@ def run_single_n(
 
     # (A) Summary parquet
     summary_rows: list[dict[str, float | str]] = []
-    for strat, wins in win_totals.items():
-        wins = int(wins)
-        if wins < 0:
+    for strat in sorted(win_totals.attempted_exposures, key=str):
+        wins = int(win_totals.get(strat, 0))
+        attempted = int(win_totals.attempted_exposures[strat])
+        if attempted <= 0:
             continue
-        total_games_strat = max(n_shuffles, 1)
+        completed = int(win_totals.completed_exposures[strat])
+        safety_limit = int(win_totals.safety_limit_exposures[strat])
         row: dict[str, float | str] = {
             "strategy": strat,
             "wins": float(wins),
-            "win_rate": wins / total_games_strat,
+            "attempted_exposures": attempted,
+            "completed_exposures": completed,
+            "safety_limit_exposures": safety_limit,
+            "losses": attempted - wins,
+            "win_rate_per_attempt": wins / attempted,
+            "win_rate": wins / attempted,
+            "win_rate_given_completion": wins / completed if completed else float("nan"),
+            "safety_limit_exposure_rate": safety_limit / attempted,
         }
         if metric_sums:
             for label in METRIC_LABELS:
@@ -899,16 +925,25 @@ def run_single_n(
     # (B) Expanded metrics parquet
     if cfg.sim.expanded_metrics:
         metrics_rows: list[dict[str, float | str]] = []
-        for strat, wins in win_totals.items():
-            wins = int(wins)
-            if wins < 0:
+        for strat in sorted(win_totals.attempted_exposures, key=str):
+            wins = int(win_totals.get(strat, 0))
+            attempted = int(win_totals.attempted_exposures[strat])
+            if attempted <= 0:
                 continue
-            total_games_strat = max(n_shuffles, 1)
+            completed = int(win_totals.completed_exposures[strat])
+            safety_limit = int(win_totals.safety_limit_exposures[strat])
             base: dict[str, float | str] = {
                 "strategy": strat,
                 "wins": wins,
-                "total_games_strat": total_games_strat,
-                "win_rate": wins / total_games_strat,
+                "total_games_strat": attempted,
+                "attempted_exposures": attempted,
+                "completed_exposures": completed,
+                "safety_limit_exposures": safety_limit,
+                "losses": attempted - wins,
+                "win_rate_per_attempt": wins / attempted,
+                "win_rate": wins / attempted,
+                "win_rate_given_completion": wins / completed if completed else float("nan"),
+                "safety_limit_exposure_rate": safety_limit / attempted,
             }
             for label in METRIC_LABELS:
                 sums_for_label = metric_sums.get(label, {})
@@ -928,7 +963,7 @@ def run_single_n(
             ws = metric_sums.get("winning_score", {}).get(
                 strat, metric_sums.get("winning_score", {}).get(str(strat), 0.0)
             )
-            base["expected_score"] = (ws / total_games_strat) if total_games_strat > 0 else 0.0
+            base["expected_score"] = (ws / attempted) if attempted > 0 else 0.0
             metrics_rows.append(base)
 
         if metrics_rows:

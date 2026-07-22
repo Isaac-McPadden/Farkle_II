@@ -11,16 +11,18 @@ modules and use hand-checkable tests before accepting a claim.
 - `utils/random.py`: scheme-1 `SeedSequence` namespaces and explicit
   `PCG64DXSM`; streams depend on stable coordinates, never worker order or draw
   history.
-- `simulation/run_tournament.py`: immutable root/k/shuffle ownership and
-  block-level recovery.
+- `simulation/run_tournament.py`: immutable root/k/shuffle ownership,
+  block-level recovery, and explicit attempted/completed/safety-limit counters.
 
 ## Returns and performance
 
-- `analysis/all_player_metrics.py`: unconditional player exposures, exact
-  turn- and game-denominated returns, rounds proxy, mismatch prevalence, and
-  maximum-round abort exposures.
-- `analysis/performance.py`: per-k win rates relative to `1/k`, Wilson checks,
-  batch MCSE `s_batch/sqrt(B)`, complete-support equal-k performance, declared
+- `analysis/all_player_metrics.py`: all attempted player-game exposures, with a
+  safety-limit attempt counted as a loss for every participant; explicit
+  completed/safety-limit support; exact turn- and game-denominated returns;
+  rounds proxy, mismatch prevalence, and maximum-round abort exposures.
+- `analysis/performance.py`: primary per-attempt win rates relative to `1/k`, a
+  labelled completed-only diagnostic, per-attempt Wilson checks and batch MCSE
+  `s_batch/sqrt(B)`, complete-support equal-k performance, declared
   alternatives, controls, Pareto, maximin, and joint batch-vector resampling.
 - Player-count diagnostics include finite chance-relative log odds, pairwise k
   contrasts, within-k spread, and cross-k Spearman/Kendall agreement. Boundary
@@ -30,11 +32,13 @@ modules and use hand-checkable tests before accepting a claim.
 
 ## Seat, game, and RNG diagnostics
 
-- `analysis/seat_analysis.py`: raw wins/exposures by root, batch, strategy, k,
-  and seat; within-k effects relative to `1/k`; common-support cross-k
-  standardization; separate exposure mixture, self-play, and mirrored outputs.
-- `analysis/game_stats.py`: game-level lengths, configurations, margins, close
-  games, rare events, and matchup ecology.
+- `analysis/seat_analysis.py`: attempted/completed/safety-limit exposures and
+  wins by root, batch, strategy, k, and seat; per-attempt within-k effects
+  relative to `1/k`; common-support cross-k standardization; separate exposure
+  mixture and self-play outputs; completed-only mirrored effects.
+- `analysis/game_stats.py`: attempted-game lengths and multi-target events,
+  completed-only winner/margin products, and explicit observational units.
+  Strategy-conditioned counts use only canonical `P<seat>_strategy` columns.
 - `analysis/rng_diagnostics.py`: descriptive `diagnostic_band_*` references;
   no independence conclusion.
 - `analysis/roll_enumeration.py`: exact enumeration of all `6**d` ordered
@@ -88,6 +92,7 @@ modules and use hand-checkable tests before accepting a claim.
 ## Primary oracles
 
 - `tests/unit/analysis/test_performance.py`
+- `tests/unit/analysis/test_safety_limit_root_analysis.py`
 - `tests/unit/analysis/test_root_stability.py`
 - `tests/unit/analysis/test_h2h_schedule.py`
 - `tests/unit/analysis/test_h2h_inference.py`

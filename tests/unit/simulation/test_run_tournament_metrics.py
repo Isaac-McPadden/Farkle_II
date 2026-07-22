@@ -74,7 +74,9 @@ def silence_logging(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _fake_play_one_shuffle(task: rt.ShuffleTask | int, *, collect_rows: bool = False) -> tuple[
+def _fake_play_one_shuffle(
+    task: rt.ShuffleTask | int, *, collect_rows: bool = False
+) -> tuple[
     Counter[int | str],
     dict[str, dict[int | str, float]],
     dict[str, dict[int | str, float]],
@@ -90,9 +92,48 @@ def _fake_play_one_shuffle(task: rt.ShuffleTask | int, *, collect_rows: bool = F
     sq: dict[str, dict[int | str, float]] = {
         label: defaultdict(float, {winner: float(seed * seed)}) for label in rt.METRIC_LABELS
     }
-    rows: list[dict[str, object]] = (
-        [{"game_seed": seed, "winner_strategy": winner}] if collect_rows else []
-    )
+    n_players = rt._STATE.cfg.n_players if rt._STATE is not None else 2
+    row: dict[str, object] = {
+        "root_seed": seed,
+        "k": n_players,
+        "shuffle_index": seed,
+        "game_index": 0,
+        "deterministic_batch_id": 0,
+        "shuffle_seed": seed,
+        "termination_status": "completed",
+        "hit_safety_limit": False,
+        "outcome_schema_version": 2,
+        "winner_seat": "P1",
+        "winner_strategy": winner,
+        "game_seed": seed,
+        "rng_scheme_version": 1,
+        "rng_purpose_namespace": 102,
+        "seat_ranks": [f"P{seat}" for seat in range(1, n_players + 1)],
+        "winning_score": seed,
+        "victory_margin": 0,
+        "n_rounds": seed,
+    }
+    for seat in range(1, n_players + 1):
+        prefix = f"P{seat}_"
+        row.update(
+            {
+                f"{prefix}score": seed,
+                f"{prefix}farkles": seed,
+                f"{prefix}rolls": seed,
+                f"{prefix}highest_turn": seed,
+                f"{prefix}strategy": winner if seat == 1 else seed + seat,
+                f"{prefix}rank": seat,
+                f"{prefix}loss_margin": 0,
+                f"{prefix}smart_five_uses": seed,
+                f"{prefix}n_smart_five_dice": seed,
+                f"{prefix}smart_one_uses": seed,
+                f"{prefix}n_smart_one_dice": seed,
+                f"{prefix}hot_dice": seed,
+                f"{prefix}n_turns": seed,
+                f"{prefix}hit_max_rounds": False,
+            }
+        )
+    rows = [row] if collect_rows else []
     return wins, sums, sq, rows
 
 
@@ -123,9 +164,7 @@ def _setup_serial_run(monkeypatch: pytest.MonkeyPatch) -> list[ThresholdStrategy
         rt, "generate_strategy_grid", lambda *a, **kw: (strategies, None), raising=True
     )
 
-    def fake_measure(
-        sample_strategies, sample_games: int = 2_000, seed: int = 0
-    ) -> float:  # noqa: ARG001
+    def fake_measure(sample_strategies, sample_games: int = 2_000, seed: int = 0) -> float:  # noqa: ARG001
         n_players = max(1, len(sample_strategies))
         return 8_160 / n_players
 
@@ -142,11 +181,16 @@ def _setup_serial_run(monkeypatch: pytest.MonkeyPatch) -> list[ThresholdStrategy
 
 def _row_record(seed: int) -> dict[str, object]:
     row = {
+        "k": 2,
         "game_seed": seed,
-        "winner_seat": "p1",
+        "termination_status": "completed",
+        "outcome_schema_version": 2,
+        "winner_seat": "P1",
+        "winner_strategy": seed,
         "winning_score": seed,
         "n_rounds": seed,
-        "p1_strategy": seed,
+        "P1_strategy": seed,
+        "P2_strategy": seed + 1,
     }
     for suffix in (
         "farkles",
@@ -159,7 +203,7 @@ def _row_record(seed: int) -> dict[str, object]:
         "hot_dice",
         "hit_max_rounds",
     ):
-        row[f"p1_{suffix}"] = seed
+        row[f"P1_{suffix}"] = seed
     return row
 
 
@@ -223,7 +267,9 @@ def test_run_chunk_metrics_accumulates(monkeypatch):
 
 
 def test_reduce_metric_chunk_payloads_is_deterministic() -> None:
-    def _chunk_payload(value: float) -> tuple[
+    def _chunk_payload(
+        value: float,
+    ) -> tuple[
         dict[str, dict[int | str, float]],
         dict[str, dict[int | str, float]],
     ]:
@@ -262,6 +308,7 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     monkeypatch.setattr(rt, "_play_one_shuffle", _fake_play_one_shuffle, raising=True)
     monkeypatch.setattr(rt, "getpid", lambda: 42)
     monkeypatch.setattr(rt, "_STATE", None)
+    rt._init_worker(_mini_strategies(4), rt.TournamentConfig(n_players=2))
 
     recorded: dict[str, Any] = {}
 
@@ -286,21 +333,26 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
         [3], collect_rows=True, row_dir=tmp_path, manifest_path=manifest
     )
 
-    assert recorded["rows"] == [{"game_seed": 3, "winner_strategy": 3}]
+    assert recorded["rows"][0]["game_seed"] == 3
+    assert recorded["rows"][0]["winner_strategy"] == 3
+    assert recorded["rows"][0]["termination_status"] == "completed"
     assert recorded["out_path"] == tmp_path / "rows_42_3.parquet"
     assert recorded["manifest_path"] == manifest
-    assert recorded["schema"] == pa.schema(
-        [("game_seed", pa.int64()), ("winner_strategy", pa.int64())]
+    assert recorded["schema"].field("winner_strategy") == pa.field(
+        "winner_strategy", pa.int32(), nullable=True
     )
+    assert recorded["schema"].field("P1_rank") == pa.field("P1_rank", pa.int8(), nullable=True)
     assert recorded["batches"] and isinstance(recorded["batches"][0], pa.Table)
     assert recorded["extra"] == {
         "path": "rows_42_3.parquet",
         "root_seed": 3,
-        "n_players": 0,
+        "n_players": 2,
         "shuffle_index": 0,
         "shuffle_seed": 3,
         "deterministic_batch_id": 0,
         "rng_scheme_version": 1,
+        "outcome_schema_version": 2,
+        "tournament_method_version": 2,
         "pid": 42,
     }
 
@@ -356,6 +408,29 @@ def test_save_checkpoint_wins_only(tmp_path):
     payload = pickle.loads(ckpt.read_bytes())
 
     assert payload == {"win_totals": wins}
+
+
+def test_save_checkpoint_persists_explicit_mixed_outcome_counts(tmp_path: Path) -> None:
+    wins = rt.OutcomeCounter({"A": 1})
+    wins.attempted_exposures.update({"A": 2, "B": 2})
+    wins.completed_exposures.update({"A": 1, "B": 1})
+    wins.safety_limit_exposures.update({"A": 1, "B": 1})
+    wins.games_attempted = 2
+    wins.games_completed = 1
+    wins.games_safety_limit = 1
+    checkpoint = tmp_path / "mixed.pkl"
+
+    rt._save_checkpoint(checkpoint, wins, None, None)
+
+    payload = pickle.loads(checkpoint.read_bytes())
+    assert payload["outcome_counts"] == {
+        "games_attempted": 2,
+        "games_completed": 1,
+        "games_safety_limit": 1,
+        "attempted_exposures": {"A": 2, "B": 2},
+        "completed_exposures": {"A": 1, "B": 1},
+        "safety_limit_exposures": {"A": 1, "B": 1},
+    }
 
 
 def test_run_tournament_metric_chunks_round_trip(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

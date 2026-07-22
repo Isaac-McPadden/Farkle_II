@@ -67,8 +67,18 @@ family identity. Old completion stamps cannot validate replacement outputs.
 ## Simulation and row artifacts
 
 Simulation outputs are rooted at `cfg.results_root`. The runner owns immutable
-`(root, k, shuffle_index)` coordinates. Rows carry root, k, shuffle index, game
-index, deterministic batch ID, RNG provenance, and exact `n_turns`.
+`(root, k, shuffle_index)` coordinates. Outcome-schema-v2 rows carry root, k,
+shuffle index, game index, deterministic batch ID, RNG provenance, exact
+`n_turns`, and an explicit `termination_status`. A `safety_limit` row is an
+attempted game with no winner, winning score, victory margin, or player ranks;
+all nullable winner/rank fields remain null rather than crediting P1.
+
+Tournament checkpoints and resumable metric chunks use tournament-method-v2.
+They conserve `attempted_games = completed_games + safety_limit_games` and
+`total_wins = completed_games`, with attempted, completed, and safety-limit
+exposure counters by strategy. Both version identifiers participate explicitly
+in freshness identity, so winner-only predecessor artifacts cannot resume into
+this contract.
 
 Ingest and curate operate by k and preserve those identifiers. The combine
 stage writes a row-preserving `concat_ks` union. It verifies source/output row
@@ -77,8 +87,10 @@ identity and total count without changing values or keys.
 ## All-player metrics and performance
 
 `cfg.metrics_all_player_batch_path(k)` contains one row per
-`(root, k, batch, strategy)`. It includes every player exposure, including
-losses, zero-point turns, and maximum-round abort exposure counts. Exact
+`(root, k, batch, strategy)`. It includes every attempted player-game exposure,
+including all safety-limit participants as losses, zero-point turns, and
+maximum-round abort exposure counts. It publishes attempted, completed,
+safety-limit, win, and loss counts plus safety-limit exposure rates. Exact
 estimators include:
 
 - turn-weighted return: total final score / total turns;
@@ -89,12 +101,16 @@ estimators include:
 Winner-only outputs use `win_conditioned_*` fields and cannot satisfy the
 unconditional schema.
 
-Per-k performance includes wins, exposures, `1/k` chance baseline, win rate,
-chance delta, Wilson-width check, batch MCSE, interval, and support. Across-k
-canonical performance is the complete-support equal-k mean of
-`win_rate - 1/k`; its variance is the declared independent-k weighted variance
-sum. Joint batch-vector resampling supplies rank, top-N, contrast, and
-shortlist diagnostics.
+Per-k performance uses `win_rate_per_attempt = wins / attempted exposures` as
+the primary rate. Its chance delta remains `win_rate_per_attempt - 1/k`, so a
+safety-limit attempt intentionally penalizes every participant. Wilson checks
+and batch MCSE use that same per-attempt denominator. The completed-only
+`win_rate_given_completion` is a labelled diagnostic and is accompanied by its
+completed exposure count. Across-k canonical performance is the
+complete-support equal-k mean of the per-attempt chance delta; raw attempted,
+completed, safety-limit, win, and loss counts remain reconstructible. Joint
+batch-vector resampling supplies rank, top-N, contrast, and shortlist
+diagnostics.
 
 Separate outputs report Pareto membership, maximin descriptive leadership,
 controls, finite chance-relative log odds, pairwise k contrasts, per-k spread,
@@ -102,15 +118,23 @@ and cross-k Spearman/Kendall agreement. Boundary logits are unavailable.
 
 ## Seat, game, RNG, and roll diagnostics
 
-Seat counts are canonical at
-`(root, batch, strategy, k, seat)`. Strategy and population effects are formed
-within k relative to `1/k`. Cross-k standardization requires identical common
-support and declared weights. Exposure-weighted cross-k mixtures are separate
-diagnostics. Self-play P1 and paired mirrored-game outputs retain their exact
-conditioning.
+Seat counts are canonical at `(root, batch, strategy, k, seat)` and separately
+record attempted, completed, and safety-limit exposures. Strategy and
+population effects use the per-attempt win indicator within k relative to
+`1/k`; a safety-limit attempt gives no seat a win. Cross-k standardization
+requires identical common support and declared weights. Exposure-weighted
+cross-k mixtures are separate diagnostics. Self-play reports a primary
+per-attempt P1 rate and a labelled completed-only diagnostic. Paired mirrored
+effects are winner-conditioned products and therefore exclude safety-limit
+attempts while reporting their excluded counts.
 
-Game statistics remain game-level: lengths, score configurations, margins,
-close games, rare events, and matchup ecology. RNG reference fields use
+Game-length and multi-target game summaries use attempted games; their
+strategy-conditioned counterparts use one seated-strategy exposure per seat
+per attempted game. Winner/margin/close-game products use completed games or
+completed seated-strategy exposures only. Every game-stat output states its
+observational unit and its completed/safety-limit support. Canonical seat
+strategy columns match `P<seat>_strategy`; `winner_strategy` is never treated
+as another exposure. RNG reference fields use
 `diagnostic_band_*`; they do not assert independence. Roll diagnostics exactly
 enumerate all ordered outcomes for one through six dice.
 
@@ -180,7 +204,9 @@ Canonical Markdown, JSON, and plot outputs require sidecar-validated inputs.
 Reports state roots, k support, weights, controls, conditioning, candidate
 provenance, intervals, unresolved evidence, cycles, and the decision rule for
 each meaning of “best.” Outside two-player analyses, H2H is labelled as an
-external finalist diagnostic.
+external finalist diagnostic. Report-contract-v2 also states the primary
+per-attempt tournament rate and publishes attempted/completed/safety-limit
+games by root and k plus strategy exposure counts and rates.
 
 The migration report inventories ignored old on-disk artifacts and identifies
 their canonical replacements. It never deletes user results, and current code

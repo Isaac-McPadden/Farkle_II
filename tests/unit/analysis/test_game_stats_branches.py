@@ -309,6 +309,7 @@ def test_compute_k_game_stats_handles_no_strategy_and_checkpoint_paths(
             DummyBatch(
                 pd.DataFrame(
                     {
+                        "termination_status": ["completed"],
                         "n_rounds": [3],
                         "P1_strategy": [1],
                         "P2_strategy": [2],
@@ -321,7 +322,14 @@ def test_compute_k_game_stats_handles_no_strategy_and_checkpoint_paths(
         ]
     )
     populated_ds = DummyDataset(
-        ["n_rounds", "P1_strategy", "P2_strategy", "P1_score", "P2_score"],
+        [
+            "termination_status",
+            "n_rounds",
+            "P1_strategy",
+            "P2_strategy",
+            "P1_score",
+            "P2_score",
+        ],
         populated_batches,
         total_rows=25,
     )

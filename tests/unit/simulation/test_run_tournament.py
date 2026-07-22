@@ -246,11 +246,17 @@ def test_checkpoint_coordinates_resume_without_row_or_metric_artifacts(
         "coordinate_seed",
         lambda _purpose, *, root_seed, shuffle_index=0, **_kwargs: root_seed + shuffle_index,
     )
-    monkeypatch.setattr(
-        rt,
-        "_play_shuffle",
-        lambda task: Counter({f"W{task.shuffle_index}": 1}),
-    )
+    def completed_shuffle(task: rt.ShuffleTask) -> rt.OutcomeCounter:
+        winner = f"W{task.shuffle_index}"
+        loser = f"L{task.shuffle_index}"
+        counts = rt.OutcomeCounter({winner: 1})
+        counts.attempted_exposures.update({winner: 1, loser: 1})
+        counts.completed_exposures.update({winner: 1, loser: 1})
+        counts.games_attempted = 1
+        counts.games_completed = 1
+        return counts
+
+    monkeypatch.setattr(rt, "_play_shuffle", completed_shuffle)
 
     cfg = rt.TournamentConfig(
         n_players=2,

@@ -67,6 +67,8 @@ def _game_row(
         "shuffle_seed": 100 + shuffle_index,
         "winner_seat": winner_seat,
         "winner_strategy": p1["strategy"] if winner_seat == "P1" else p2["strategy"],
+        "termination_status": "completed",
+        "outcome_schema_version": 2,
         "game_seed": 200 + shuffle_index,
         "rng_scheme_version": 1,
         "rng_purpose_namespace": 102,
@@ -96,7 +98,7 @@ def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> Non
                 winner_seat="P1",
                 n_rounds=2,
                 p1=_exposure_values(10, 100, 2, 1),
-                p2=_exposure_values(20, 50, 3, 2, hit_max_rounds=True),
+                p2=_exposure_values(20, 50, 3, 2),
             ),
             _game_row(
                 shuffle_index=1,
@@ -129,7 +131,7 @@ def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> Non
     assert strategy_20["turn_round_mismatch_prevalence"] == pytest.approx(0.5)
     assert strategy_20["raw_rank_observations"] == 2
     assert strategy_20["raw_rank_sum"] == pytest.approx(3)
-    assert strategy_20["raw_max_round_abort_exposures"] == 1
+    assert strategy_20["raw_max_round_abort_exposures"] == 0
     assert strategy_10["raw_max_round_abort_exposures"] == 0
 
     validate_artifact_sidecar(
@@ -137,13 +139,16 @@ def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> Non
         expected={
             "scope": "by_k",
             "operation": "aggregate_player_batch_statistics",
-            "conditioning": "unconditional",
+            "conditioning": "all_attempted_player_game_exposures_safety_limit_is_loss",
             "method_contract": {
                 "kind": "turn_metrics",
                 "procedure": "aggregate_player_batch_statistics",
-                "parameters": {
-                    "exposure_denominator": "player_game_exposure",
-                    "abort_numerator": "player_game_exposure_with_maximum_round_abort",
+                    "parameters": {
+                        "exposure_denominator": "player_game_exposure",
+                        "completed_diagnostic_denominator": "completed_player_game_exposure",
+                        "safety_limit_numerator": "safety_limit_player_game_exposure",
+                        "outcome_schema_version": 2,
+                        "tournament_method_version": 2,
                 },
             },
         },

@@ -25,7 +25,12 @@ import numpy as np
 import pyarrow as pa
 from pyarrow import parquet as pq
 
-from farkle.simulation.simulation import _play_game, generate_strategy_grid
+from farkle.game.engine import TerminationStatus
+from farkle.simulation.simulation import (
+    _play_game,
+    generate_strategy_grid,
+    simulation_rows_to_table,
+)
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.simulation.workload_planner import (
     TournamentWorkloadPlan,
@@ -37,6 +42,7 @@ from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
+from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.streaming_loop import run_streaming_shard
 from farkle.utils.writer import atomic_path
 
@@ -122,6 +128,92 @@ def _extract_winner_metrics(row: Mapping[str, Any], winner: str) -> List[int]:
     ]
 
 
+def _require_outcome(row: Mapping[str, Any], *, source: str) -> TerminationStatus:
+    """Validate and return one explicit attempted-game outcome."""
+
+    status = row.get("termination_status")
+    version = row.get("outcome_schema_version")
+    if version != OUTCOME_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"{source} is not outcome-schema-v{OUTCOME_SCHEMA_VERSION} compatible; "
+            "explicit-outcome tournament aggregation is disabled for this row"
+        )
+    if status not in {member.value for member in TerminationStatus}:
+        raise RuntimeError(f"{source} has unsupported termination_status={status!r}")
+    outcome = TerminationStatus(status)
+    winner_seat = row.get("winner_seat")
+    winner_strategy = row.get("winner_strategy")
+    if outcome is TerminationStatus.SAFETY_LIMIT:
+        if winner_seat is not None or winner_strategy is not None:
+            raise RuntimeError(f"{source} fabricates a winner for a safety-limit attempt")
+    elif winner_seat is None or winner_strategy is None:
+        raise RuntimeError(f"{source} is completed but has no canonical winner")
+    return outcome
+
+
+class OutcomeCounter(Counter[int | str]):
+    """Win counter carrying additive attempted/completed exposure conservation."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.attempted_exposures: Counter[int | str] = Counter()
+        self.completed_exposures: Counter[int | str] = Counter()
+        self.safety_limit_exposures: Counter[int | str] = Counter()
+        self.games_attempted = 0
+        self.games_completed = 0
+        self.games_safety_limit = 0
+        super().__init__(*args, **kwargs)
+
+    def record_row(self, row: Mapping[str, Any], *, k: int, source: str) -> TerminationStatus:
+        """Record one validated row without fabricating a winner."""
+
+        status = _require_outcome(row, source=source)
+        for seat in range(1, k + 1):
+            strategy = row.get(f"P{seat}_strategy")
+            if strategy is None:
+                raise ValueError(f"{source} is missing strategy exposure for P{seat}")
+            self.attempted_exposures[strategy] += 1
+            if status is TerminationStatus.COMPLETED:
+                self.completed_exposures[strategy] += 1
+            else:
+                self.safety_limit_exposures[strategy] += 1
+        self.games_attempted += 1
+        if status is TerminationStatus.COMPLETED:
+            self.games_completed += 1
+        else:
+            self.games_safety_limit += 1
+        return status
+
+    def absorb(self, other: Counter[int | str]) -> None:
+        """Add a worker counter, accepting legacy test doubles as completed games."""
+
+        super().update(other)
+        if isinstance(other, OutcomeCounter):
+            self.attempted_exposures.update(other.attempted_exposures)
+            self.completed_exposures.update(other.completed_exposures)
+            self.safety_limit_exposures.update(other.safety_limit_exposures)
+            self.games_attempted += other.games_attempted
+            self.games_completed += other.games_completed
+            self.games_safety_limit += other.games_safety_limit
+            return
+        completed = int(sum(other.values()))
+        self.attempted_exposures.update(other)
+        self.completed_exposures.update(other)
+        self.games_attempted += completed
+        self.games_completed += completed
+
+    def outcome_payload(self) -> dict[str, Any]:
+        """Return explicit checkpoint/report counts."""
+
+        return {
+            "games_attempted": self.games_attempted,
+            "games_completed": self.games_completed,
+            "games_safety_limit": self.games_safety_limit,
+            "attempted_exposures": dict(self.attempted_exposures),
+            "completed_exposures": dict(self.completed_exposures),
+            "safety_limit_exposures": dict(self.safety_limit_exposures),
+        }
+
+
 # ---------------------------------------------------------------------------
 # Worker state and helpers
 # ---------------------------------------------------------------------------
@@ -171,7 +263,9 @@ def _coerce_shuffle_task(task: ShuffleTask | int) -> ShuffleTask:
     )
 
 
-def _play_one_shuffle(task: ShuffleTask | int, *, collect_rows: bool = False) -> Tuple[
+def _play_one_shuffle(
+    task: ShuffleTask | int, *, collect_rows: bool = False
+) -> Tuple[
     Counter[int | str],
     Dict[str, Dict[int | str, float]],
     Dict[str, Dict[int | str, float]],
@@ -201,7 +295,7 @@ def _play_one_shuffle(task: ShuffleTask | int, *, collect_rows: bool = False) ->
         for game_index in range(state.cfg.games_per_shuffle)  # type: ignore[union-attr]
     ]
 
-    wins: Counter[int | str] = Counter()
+    wins = OutcomeCounter()
     sums: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
     sq_sums: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
     rows: List[Dict[str, Any]] = []
@@ -226,6 +320,11 @@ def _play_one_shuffle(task: ShuffleTask | int, *, collect_rows: bool = False) ->
                 "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_GAME),
             },
         )
+        status = wins.record_row(row, k=work.k, source="Simulation row")
+        if status is TerminationStatus.SAFETY_LIMIT:
+            if collect_rows:
+                rows.append(dict(row))
+            continue
         winner = row.get("winner_seat")
         if winner is None:
             raise ValueError("Simulation row missing canonical winner_seat")
@@ -264,7 +363,7 @@ def _run_chunk(shuffle_tasks: Sequence[ShuffleTask | int]) -> Counter[int | str]
     """
 
     tasks = [_coerce_shuffle_task(task) for task in shuffle_tasks]
-    total: Counter[int | str] = Counter()
+    total = OutcomeCounter()
     batch_size = len(tasks)
     if LOGGER.isEnabledFor(logging.DEBUG):
         LOGGER.debug(
@@ -290,7 +389,7 @@ def _run_chunk(shuffle_tasks: Sequence[ShuffleTask | int]) -> Counter[int | str]
             )
             raise
         else:
-            total.update(result)
+            total.absorb(result)
     return total
 
 
@@ -339,7 +438,7 @@ def _run_chunk_metrics(
     """
 
     tasks = [_coerce_shuffle_task(task) for task in shuffle_tasks]
-    wins_total: Counter[int | str] = Counter()
+    wins_total = OutcomeCounter()
     sums_total: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
     sq_total: Dict[str, Dict[int | str, float]] = {m: defaultdict(float) for m in METRIC_LABELS}
 
@@ -356,7 +455,7 @@ def _run_chunk_metrics(
         )
     for task in tasks:
         wins, sums, sqs, rows = _play_one_shuffle(task, collect_rows=collect_rows)
-        wins_total.update(wins)
+        wins_total.absorb(wins)
         for label in METRIC_LABELS:
             for k, v in sums[label].items():
                 sums_total[label][k] += v
@@ -365,7 +464,7 @@ def _run_chunk_metrics(
 
         if row_dir is not None and collect_rows:
             out = row_dir / f"rows_{getpid()}_{task.shuffle_seed}.parquet"
-            tbl = pa.Table.from_pylist(rows)
+            tbl = simulation_rows_to_table(rows, task.k)
             manifest_file = manifest_path or (row_dir / "manifest.jsonl")
             run_streaming_shard(
                 out_path=str(out),
@@ -380,6 +479,8 @@ def _run_chunk_metrics(
                     "shuffle_seed": task.shuffle_seed,
                     "deterministic_batch_id": task.deterministic_batch_id,
                     "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+                    "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                    "tournament_method_version": TOURNAMENT_METHOD_VERSION,
                     "pid": getpid(),
                 },
             )
@@ -430,6 +531,8 @@ def _save_checkpoint(
     """Pickle the current aggregates to path."""
 
     payload: Dict[str, Any] = {"win_totals": wins}
+    if isinstance(wins, OutcomeCounter):
+        payload["outcome_counts"] = wins.outcome_payload()
     if sums is not None and sq_sums is not None:
         payload["metric_sums"] = sums
         payload["metric_square_sums"] = sq_sums
@@ -440,7 +543,9 @@ def _save_checkpoint(
         Path(tmp_path).write_bytes(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
 
 
-def _coerce_counter(raw: object) -> Counter[int | str]:
+def _coerce_counter(
+    raw: object, outcome_counts: Mapping[str, Any] | None = None
+) -> OutcomeCounter:
     """Coerce checkpointed win totals into a normalized ``Counter``.
 
     Args:
@@ -449,11 +554,86 @@ def _coerce_counter(raw: object) -> Counter[int | str]:
     Returns:
         Counter keyed by normalized strategy identifiers.
     """
+    normalized = OutcomeCounter()
     if isinstance(raw, Counter):
-        return Counter(raw)
-    if isinstance(raw, Mapping):
-        return Counter({int(k) if str(k).isdigit() else k: int(v) for k, v in raw.items()})
-    raise TypeError(f"Unexpected win_totals payload type: {type(raw)}")
+        Counter.update(normalized, raw)
+    elif isinstance(raw, Mapping):
+        Counter.update(
+            normalized,
+            {int(k) if str(k).isdigit() else k: int(v) for k, v in raw.items()},
+        )
+    else:
+        raise TypeError(f"Unexpected win_totals payload type: {type(raw)}")
+    if isinstance(raw, OutcomeCounter) and outcome_counts is None:
+        normalized.attempted_exposures.update(raw.attempted_exposures)
+        normalized.completed_exposures.update(raw.completed_exposures)
+        normalized.safety_limit_exposures.update(raw.safety_limit_exposures)
+        normalized.games_attempted = raw.games_attempted
+        normalized.games_completed = raw.games_completed
+        normalized.games_safety_limit = raw.games_safety_limit
+        return normalized
+    if outcome_counts is None:
+        normalized.attempted_exposures.update(normalized)
+        normalized.completed_exposures.update(normalized)
+        normalized.games_completed = int(sum(normalized.values()))
+        normalized.games_attempted = normalized.games_completed
+        return normalized
+    for name, target in (
+        ("attempted_exposures", normalized.attempted_exposures),
+        ("completed_exposures", normalized.completed_exposures),
+        ("safety_limit_exposures", normalized.safety_limit_exposures),
+    ):
+        values = outcome_counts.get(name, {})
+        if not isinstance(values, Mapping):
+            raise TypeError(f"Unexpected {name} payload type: {type(values)}")
+        target.update({int(k) if str(k).isdigit() else k: int(v) for k, v in values.items()})
+    normalized.games_attempted = int(outcome_counts.get("games_attempted", 0))
+    normalized.games_completed = int(outcome_counts.get("games_completed", sum(normalized.values())))
+    normalized.games_safety_limit = int(outcome_counts.get("games_safety_limit", 0))
+    if min(
+        (
+            normalized.games_attempted,
+            normalized.games_completed,
+            normalized.games_safety_limit,
+        )
+    ) < 0 or any(value < 0 for value in normalized.values()):
+        raise ValueError("checkpoint win counts must be nonnegative")
+    strategies = (
+        set(normalized)
+        | set(normalized.attempted_exposures)
+        | set(normalized.completed_exposures)
+        | set(normalized.safety_limit_exposures)
+    )
+    for strategy in strategies:
+        attempted = normalized.attempted_exposures[strategy]
+        completed = normalized.completed_exposures[strategy]
+        safety_limit = normalized.safety_limit_exposures[strategy]
+        if min(attempted, completed, safety_limit) < 0:
+            raise ValueError("checkpoint exposure counts must be nonnegative")
+        if attempted != completed + safety_limit or normalized[strategy] > completed:
+            raise ValueError("checkpoint strategy exposure conservation failed")
+    if normalized.games_attempted != normalized.games_completed + normalized.games_safety_limit:
+        raise ValueError("checkpoint outcome counts violate attempted = completed + safety_limit")
+    if sum(normalized.values()) != normalized.games_completed:
+        raise ValueError("checkpoint wins must equal completed games")
+    if normalized.games_attempted:
+        attempted_exposures = sum(normalized.attempted_exposures.values())
+        if attempted_exposures % normalized.games_attempted:
+            raise ValueError("checkpoint attempted exposures do not identify an integer k")
+        k = attempted_exposures // normalized.games_attempted
+        if k < 2 or sum(normalized.completed_exposures.values()) != k * normalized.games_completed:
+            raise ValueError("checkpoint completed exposure conservation failed")
+        if sum(normalized.safety_limit_exposures.values()) != k * normalized.games_safety_limit:
+            raise ValueError("checkpoint safety-limit exposure conservation failed")
+    elif any(
+        (
+            normalized.games_completed,
+            normalized.games_safety_limit,
+            sum(normalized.attempted_exposures.values()),
+        )
+    ):
+        raise ValueError("zero attempted games require zero outcome counts")
+    return normalized
 
 
 def _coerce_metric_sums(
@@ -532,7 +712,7 @@ def _resolve_manifest_record_path(manifest_path: Path, record: Mapping[str, Any]
 def _load_row_manifest_aggregates(
     manifest_path: Path,
 ) -> Tuple[
-    Counter[int | str],
+    OutcomeCounter,
     Dict[str, Dict[int | str, float]],
     Dict[str, Dict[int | str, float]],
 ]:
@@ -544,7 +724,7 @@ def _load_row_manifest_aggregates(
     Returns:
         Tuple of win totals, metric sums, and metric squared sums.
     """
-    win_totals: Counter[int | str] = Counter()
+    win_totals = OutcomeCounter()
     metric_sums, metric_sq_sums = _empty_metric_aggregates()
 
     for record in iter_manifest(manifest_path):
@@ -554,6 +734,11 @@ def _load_row_manifest_aggregates(
         parquet_file = pq.ParquetFile(row_path)
         for batch in parquet_file.iter_batches():
             for row in batch.to_pylist():
+                status = win_totals.record_row(
+                    row, k=int(row["k"]), source=f"Row shard {row_path}"
+                )
+                if status is TerminationStatus.SAFETY_LIMIT:
+                    continue
                 winner = row.get("winner_seat")
                 if winner is None:
                     raise ValueError(f"Row shard missing canonical winner_seat: {row_path}")
@@ -575,7 +760,7 @@ def _load_row_manifest_aggregates(
 def _load_metric_chunk_aggregates(
     manifest_path: Path,
 ) -> Tuple[
-    Counter[int | str] | None,
+    OutcomeCounter | None,
     Dict[str, Dict[int | str, float]],
     Dict[str, Dict[int | str, float]],
 ]:
@@ -587,9 +772,10 @@ def _load_metric_chunk_aggregates(
     Returns:
         Tuple of optional win totals, metric sums, and metric squared sums.
     """
-    win_totals: Counter[int | str] = Counter()
+    win_totals = OutcomeCounter()
     metric_sums, metric_sq_sums = _empty_metric_aggregates()
     wins_available = True
+    outcomes_available = True
 
     for record in iter_manifest(manifest_path):
         chunk_path = _resolve_manifest_record_path(manifest_path, record)
@@ -602,6 +788,15 @@ def _load_metric_chunk_aggregates(
         columns = ["metric", "strategy", "sum", "square_sum"]
         if file_has_wins:
             columns.append("wins")
+        outcome_columns = [
+            "attempted_exposures",
+            "completed_exposures",
+            "safety_limit_exposures",
+        ]
+        file_has_outcomes = set(outcome_columns).issubset(column_names)
+        outcomes_available = outcomes_available and file_has_outcomes
+        if file_has_outcomes:
+            columns.extend(outcome_columns)
         for batch in parquet_file.iter_batches(columns=columns):
             for row in batch.to_pylist():
                 label = row["metric"]
@@ -610,6 +805,36 @@ def _load_metric_chunk_aggregates(
                 metric_sq_sums[label][strategy] += float(row["square_sum"])
                 if wins_available and file_has_wins and label == METRIC_LABELS[0]:
                     win_totals[strategy] += int(row["wins"])
+                    if file_has_outcomes:
+                        win_totals.attempted_exposures[strategy] += int(
+                            row["attempted_exposures"]
+                        )
+                        win_totals.completed_exposures[strategy] += int(
+                            row["completed_exposures"]
+                        )
+                        win_totals.safety_limit_exposures[strategy] += int(
+                            row["safety_limit_exposures"]
+                        )
+                    else:
+                        wins = int(row["wins"])
+                        win_totals.attempted_exposures[strategy] += wins
+                        win_totals.completed_exposures[strategy] += wins
+
+    if wins_available:
+        win_totals.games_completed = int(sum(win_totals.values()))
+        win_totals.games_attempted = int(sum(win_totals.attempted_exposures.values()))
+        if outcomes_available and win_totals.games_attempted:
+            # Every game contributes exactly k exposures; manifests own one k.
+            player_counts = _manifest_int_set(manifest_path, "n_players")
+            if len(player_counts) != 1:
+                raise ValueError(f"Metric manifest must identify one player count: {player_counts}")
+            k = next(iter(player_counts))
+            win_totals.games_attempted //= k
+            win_totals.games_safety_limit = (
+                int(sum(win_totals.safety_limit_exposures.values())) // k
+            )
+        elif not outcomes_available:
+            win_totals.games_attempted = win_totals.games_completed
 
     return (win_totals if wins_available else None), metric_sums, metric_sq_sums
 
@@ -802,6 +1027,8 @@ def run_tournament(
         "global_seed": global_seed,
         "n_strategies": cfg.n_strategies,
         "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+        "tournament_method_version": TOURNAMENT_METHOD_VERSION,
         "rng_bit_generator": "PCG64DXSM",
         "coordinate_contract_version": 1,
         "deterministic_batch_size": cfg.deterministic_batch_size,
@@ -852,7 +1079,7 @@ def run_tournament(
         },
     )
 
-    win_totals: Counter[int | str] = Counter()
+    win_totals = OutcomeCounter()
     games_completed = 0
     metric_sums: Dict[str, Dict[int | str, float]] | None
     metric_sq_sums: Dict[str, Dict[int | str, float]] | None
@@ -865,8 +1092,11 @@ def run_tournament(
         payload = pickle.loads(ckpt_path.read_bytes())
         assert payload is not None
         raw_counts = payload.get("win_totals", payload)
-        win_totals = _coerce_counter(raw_counts)
-        games_completed = int(sum(win_totals.values()))
+        outcome_counts = payload.get("outcome_counts")
+        win_totals = _coerce_counter(
+            raw_counts, outcome_counts if isinstance(outcome_counts, Mapping) else None
+        )
+        games_completed = win_totals.games_completed
     can_resume_from_artifacts = resume and payload is not None
 
     collect_rows = row_output_directory is not None
@@ -947,7 +1177,7 @@ def run_tournament(
     recovered_metric_state = False
     if can_resume_from_artifacts and row_manifest_path is not None and row_manifest_path.exists():
         win_totals, metric_sums, metric_sq_sums = _load_row_manifest_aggregates(row_manifest_path)
-        games_completed = int(sum(win_totals.values()))
+        games_completed = win_totals.games_completed
         recovered_metric_state = collect_metrics or collect_rows
         LOGGER.info(
             "Recovered aggregates from row shards",
@@ -970,7 +1200,7 @@ def run_tournament(
         recovered_metric_state = collect_metrics or collect_rows
         if recovered_wins is not None:
             win_totals = recovered_wins
-            games_completed = int(sum(win_totals.values()))
+            games_completed = win_totals.games_completed
         else:
             LOGGER.warning(
                 "Metric chunk recovery could not rebuild win totals; falling back to checkpoint counts",
@@ -1089,9 +1319,9 @@ def run_tournament(
                     ],
                     result,
                 )
-                win_totals.update(wins)
-                chunk_games = int(sum(wins.values()))
-                games_completed += chunk_games
+                win_totals.absorb(wins)
+                chunk_games = wins.games_completed if isinstance(wins, OutcomeCounter) else int(sum(wins.values()))
+                games_completed = win_totals.games_completed
                 if metric_chunk_directory is not None:
                     chunk_path = metric_chunk_directory / f"metrics_{chunk_index:06d}.parquet"
                     rows = [
@@ -1103,8 +1333,30 @@ def run_tournament(
                             "wins": int(wins.get(strat, 0)),
                         }
                         for label in METRIC_LABELS
-                        for strat, val in sums[label].items()
+                        for strat in sorted(
+                            set(sums[label])
+                            | set(wins.attempted_exposures if isinstance(wins, OutcomeCounter) else wins),
+                            key=str,
+                        )
+                        for val in [sums[label].get(strat, 0.0)]
                     ]
+                    for row in rows:
+                        strategy = cast(int | str, row["strategy"])
+                        row["attempted_exposures"] = int(
+                            wins.attempted_exposures.get(strategy, 0)
+                            if isinstance(wins, OutcomeCounter)
+                            else wins.get(strategy, 0)
+                        )
+                        row["completed_exposures"] = int(
+                            wins.completed_exposures.get(strategy, 0)
+                            if isinstance(wins, OutcomeCounter)
+                            else wins.get(strategy, 0)
+                        )
+                        row["safety_limit_exposures"] = int(
+                            wins.safety_limit_exposures.get(strategy, 0)
+                            if isinstance(wins, OutcomeCounter)
+                            else 0
+                        )
                     tbl = pa.Table.from_pylist(rows)
                     manifest_file = metrics_manifest_path or (
                         metric_chunk_directory / "metrics_manifest.jsonl"
@@ -1127,6 +1379,8 @@ def run_tournament(
                             "shuffle_indices": [task.shuffle_index for task in block_tasks],
                             "shuffle_seeds": [task.shuffle_seed for task in block_tasks],
                             "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+                            "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                            "tournament_method_version": TOURNAMENT_METHOD_VERSION,
                         },
                     )
                     LOGGER.info(
@@ -1151,9 +1405,9 @@ def run_tournament(
                 )
             else:
                 chunk_wins = cast(Counter[int | str], result)
-                win_totals.update(chunk_wins)
+                win_totals.absorb(chunk_wins)
                 chunk_games = int(sum(chunk_wins.values()))
-                games_completed += chunk_games
+                games_completed = win_totals.games_completed
                 LOGGER.debug(
                     "Chunk processed",
                     extra={
@@ -1178,7 +1432,7 @@ def run_tournament(
                     meta=checkpoint_meta,
                 )
                 checkpoint_progress.maybe_log(
-                    games_completed,
+                    win_totals.games_attempted,
                     detail=f"chunk {chunk_index + 1}/{remaining_chunk_count}, checkpoint {ckpt_path.name}",
                     extra={
                         "stage": "simulation",
@@ -1186,6 +1440,8 @@ def run_tournament(
                         "chunks_total": remaining_chunk_count,
                         "games": games_completed,
                         "games_completed": games_completed,
+                        "games_attempted": win_totals.games_attempted,
+                        "games_safety_limit": win_totals.games_safety_limit,
                         "path": str(ckpt_path),
                     },
                 )
@@ -1212,7 +1468,7 @@ def run_tournament(
             )
             if recovered_wins is not None:
                 win_totals = recovered_wins
-                games_completed = int(sum(win_totals.values()))
+                games_completed = win_totals.games_completed
 
     finally:
         # no central writer to tear down
@@ -1262,12 +1518,14 @@ def run_tournament(
             },
         )
     LOGGER.info(
-        "Tournament run complete after %d games",
-        games_completed,
+        "Tournament run complete after %d attempted games",
+        win_totals.games_attempted,
         extra={
             "stage": "simulation",
-            "games": games_completed,
+            "games": win_totals.games_attempted,
+            "games_attempted": win_totals.games_attempted,
             "games_completed": games_completed,
+            "games_safety_limit": win_totals.games_safety_limit,
             "n_players": cfg.n_players,
             "chunks": remaining_chunk_count,
             "checkpoint_path": str(ckpt_path),

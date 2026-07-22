@@ -38,7 +38,10 @@ def _metric_row(k: int, batch: int, strategy: int, wins: int, exposures: int) ->
             "deterministic_batch_id": batch,
             "strategy": strategy,
             "raw_player_game_exposures": exposures,
+            "raw_completed_player_game_exposures": exposures,
+            "raw_safety_limit_player_game_exposures": 0,
             "raw_wins": wins,
+            "raw_losses": exposures - wins,
         }
     )
     for name in (
@@ -63,7 +66,7 @@ def _write_batch_metrics(cfg: AppConfig, k: int, rows: list[dict]) -> None:
         scope=ArtifactScope.BY_K,
         source_scope=ArtifactScope.BY_K,
         operation="aggregate_player_batch_statistics",
-        conditioning="unconditional",
+        conditioning="all_attempted_player_game_exposures_safety_limit_is_loss",
         player_counts=[k],
         required_player_counts=[k],
         missing_cell_policy="fail",

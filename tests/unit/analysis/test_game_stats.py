@@ -32,8 +32,8 @@ def test_rare_event_flags_cover_game_and_strategy_levels(tmp_path):
     assert {"game", "strategy", "n_players"} <= set(flags["summary_level"].unique())
 
     aggro = flags[(flags["strategy"] == 1) & (flags["summary_level"] == "strategy")].iloc[0]
-    assert aggro["observations"] == 5
-    assert aggro["multi_reached_target"] == pytest.approx(0.6)
+    assert aggro["observations"] == 3
+    assert aggro["multi_reached_target"] == pytest.approx(2 / 3)
     assert aggro[f"margin_le_{thresholds[1]}"] == pytest.approx(1.0)
 
 
@@ -51,6 +51,7 @@ def _build_parquet(tmp_path: Path, cfg):
     rows = pd.DataFrame(
         [
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P1", "P2"],
                 "n_rounds": 4,
                 "P1_strategy": 1,
@@ -59,6 +60,7 @@ def _build_parquet(tmp_path: Path, cfg):
                 "P2_score": 110,
             },
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P2", "P1"],
                 "n_rounds": 8,
                 "P1_strategy": 1,
@@ -67,6 +69,7 @@ def _build_parquet(tmp_path: Path, cfg):
                 "P2_score": 200,
             },
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P1", "P2"],
                 "n_rounds": 12,
                 "P1_strategy": 1,
@@ -223,6 +226,7 @@ def _write_multi_k_curated_inputs(cfg: AppConfig) -> None:
     rows_2p = pd.DataFrame(
         [
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P1", "P2"],
                 "n_rounds": 5,
                 "P1_strategy": 1,
@@ -231,6 +235,7 @@ def _write_multi_k_curated_inputs(cfg: AppConfig) -> None:
                 "P2_score": 100,
             },
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P2", "P1"],
                 "n_rounds": 7,
                 "P1_strategy": 1,
@@ -243,6 +248,7 @@ def _write_multi_k_curated_inputs(cfg: AppConfig) -> None:
     rows_3p = pd.DataFrame(
         [
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P1", "P2", "P3"],
                 "n_rounds": 6,
                 "P1_strategy": 1,
@@ -253,6 +259,7 @@ def _write_multi_k_curated_inputs(cfg: AppConfig) -> None:
                 "P3_score": 120,
             },
             {
+                "termination_status": "completed",
                 "seat_ranks": ["P3", "P1", "P2"],
                 "n_rounds": 10,
                 "P1_strategy": 1,

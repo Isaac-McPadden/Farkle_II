@@ -58,7 +58,10 @@ def _metric_row(
             "deterministic_batch_id": batch,
             "strategy": strategy,
             "raw_player_game_exposures": exposures,
+            "raw_completed_player_game_exposures": exposures,
+            "raw_safety_limit_player_game_exposures": 0,
             "raw_wins": wins,
+            "raw_losses": exposures - wins,
         }
     )
     for name in (
@@ -94,7 +97,7 @@ def _write_cell(
         scope=ArtifactScope.BY_K,
         source_scope=ArtifactScope.BY_K,
         operation="aggregate_performance_by_strategy",
-        conditioning="unconditional",
+        conditioning="all_attempted_player_game_exposures_safety_limit_is_loss",
         consistency_columns=table.schema.names,
         player_counts=[k],
         required_player_counts=[k],
@@ -212,7 +215,7 @@ def test_two_root_combination_rejects_scope_mismatched_input(tmp_path: Path) -> 
         scope=ArtifactScope.CONCAT_KS,
         source_scope=ArtifactScope.BY_K,
         operation="concatenate",
-        conditioning="unconditional",
+        conditioning="all_attempted_player_game_exposures_safety_limit_is_loss",
         consistency_columns=table.schema.names,
         player_counts=[invalid.k],
         required_player_counts=[invalid.k],

@@ -15,6 +15,11 @@ Preserve these invariants:
 - exactly one compatible sidecar for each derived artifact;
 - streaming or partitioned handling for large data;
 - complete root/k support and explicit cross-k weights;
+- explicit outcome-schema-v2 termination status: a safety-limit attempt has no
+  winner or ranks, counts as a loss for every tournament participant, and is
+  excluded from winner-conditioned products;
+- tournament primary rates and batch MCSE use all attempted player-game
+  exposures; completed-only rates are labelled diagnostics;
 - separation of descriptive screening, inference, dominance, and display order;
 - current code never reads old on-disk analysis artifacts;
 - pair analysis lives under `results_seed_pair_X_Y/seed_pair_analysis`, path

@@ -60,6 +60,8 @@ def _write_completed_row_run(cfg: AppConfig, *, retired_winner_field: bool = Fal
             "shuffle_seed": 456,
             "deterministic_batch_id": 0,
             "rng_scheme_version": RNG_SCHEME_VERSION,
+            "outcome_schema_version": 2,
+            "tournament_method_version": 2,
         },
     )
     (block / "simulation.done.json").write_text(
@@ -68,6 +70,8 @@ def _write_completed_row_run(cfg: AppConfig, *, retired_winner_field: bool = Fal
                 "root_seed": cfg.sim.seed,
                 "n_players": 2,
                 "rng_scheme_version": RNG_SCHEME_VERSION,
+                "outcome_schema_version": 2,
+                "tournament_method_version": 2,
                 "shuffle_index_start": 0,
                 "shuffle_index_end": 0,
                 "shuffles_per_batch": 1,

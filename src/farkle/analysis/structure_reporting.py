@@ -80,9 +80,10 @@ def _by_k_vectors(
     cfg: AppConfig,
     roots: tuple[int, ...],
     player_counts: list[int],
-) -> tuple[dict[str, list[float]], list[Path]]:
+) -> tuple[dict[str, list[float]], list[Path], list[dict[str, Any]]]:
     values: dict[str, list[float]] = {}
     sources: list[Path] = []
+    safety_cells: list[dict[str, Any]] = []
     for k in player_counts:
         path = (
             cfg.root_combined_performance_by_k_path(k)
@@ -96,6 +97,39 @@ def _by_k_vectors(
         )
         frame, _sidecar = _read_frame(path, operation=expected_operation)
         sources.append(path)
+        safety_source = frame.copy()
+        if "estimate_scope" not in safety_source:
+            safety_source["estimate_scope"] = f"root_{int(safety_source['root_seed'].iloc[0])}"
+        for (scope, root_seed), cell in safety_source.groupby(
+            ["estimate_scope", "root_seed"], dropna=False, sort=True
+        ):
+            root_seed_raw = cast(Any, root_seed)
+            attempted_exposures = int(cell["raw_attempted_exposures"].sum())
+            completed_exposures = int(cell["raw_completed_exposures"].sum())
+            safety_exposures = int(cell["raw_safety_limit_exposures"].sum())
+            if any(value % k for value in (attempted_exposures, completed_exposures, safety_exposures)):
+                raise ValueError(f"root/k safety exposure counts are not divisible by k={k}")
+            games_attempted = attempted_exposures // k
+            games_completed = completed_exposures // k
+            games_safety_limit = safety_exposures // k
+            if games_attempted != games_completed + games_safety_limit:
+                raise ValueError("report safety counts violate attempted-game conservation")
+            safety_cells.append(
+                {
+                    "estimate_scope": str(scope),
+                    "root_seed": None if pd.isna(root_seed_raw) else int(root_seed_raw),
+                    "k": k,
+                    "games_attempted": games_attempted,
+                    "games_completed": games_completed,
+                    "games_safety_limit": games_safety_limit,
+                    "completion_game_rate": (
+                        games_completed / games_attempted if games_attempted else None
+                    ),
+                    "safety_limit_game_rate": (
+                        games_safety_limit / games_attempted if games_attempted else None
+                    ),
+                }
+            )
         if len(roots) == 2:
             frame = frame.loc[frame["estimate_scope"].eq("combined_roots")].copy()
         frame["strategy"] = frame["strategy"].astype(str)
@@ -112,7 +146,7 @@ def _by_k_vectors(
     }
     if incomplete:
         raise ValueError(f"per-k report evidence lacks complete support: {incomplete}")
-    return values, sources
+    return values, sources, safety_cells
 
 
 def _robustness(vectors: dict[str, list[float]]) -> dict[str, Any]:
@@ -251,6 +285,12 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Controls: `{family['controls']}`",
         f"- H2H role: `{h2h['role']}`",
         "- Tournament performance is unconditional; H2H is conditioned on frozen finalist selection.",
+        (
+            "- Tournament safety-limit games: "
+            f"`{report.get('safety_limits', {}).get('games_safety_limit', 'unavailable')}` of "
+            f"`{report.get('safety_limits', {}).get('games_attempted', 'unavailable')}` "
+            "attempted games."
+        ),
         "",
         "## Distinct evidence summaries",
         "",
@@ -378,7 +418,7 @@ def run(
     if tuple(int(root) for root in family["root_seeds"]) != roots:
         raise ValueError("report candidate roots do not match configured roots")
     player_counts = list(performance_sidecar.required_player_counts)
-    vectors, per_k_sources = _by_k_vectors(cfg, roots, player_counts)
+    vectors, per_k_sources, safety_cells = _by_k_vectors(cfg, roots, player_counts)
     sources = [
         family_manifest_path,
         family_membership_path,
@@ -462,7 +502,7 @@ def run(
         ],
     )
     report: dict[str, Any] = {
-        "report_contract_version": 1,
+        "report_contract_version": 2,
         "execution_scope": execution_scope,
         "roots": list(roots),
         "finite_grid_conditionality": True,
@@ -492,6 +532,40 @@ def run(
             "screening_score_leaders": screening_leaders,
             "leader_score": best_score,
             "interpretation": "descriptive_complete_support_tournament_screening",
+            "primary_rate": "win_rate_per_attempt",
+            "chance_delta": "win_rate_per_attempt - 1/k",
+            "completed_only_rate_role": "diagnostic",
+            "strategy_safety_limit_exposures": _records(
+                performance,
+                [
+                    "strategy",
+                    "raw_attempted_exposures",
+                    "raw_completed_exposures",
+                    "raw_safety_limit_exposures",
+                    "safety_limit_exposure_rate",
+                ],
+            ),
+        },
+        "safety_limits": {
+            "by_root_k": safety_cells,
+            "games_attempted": sum(
+                cell["games_attempted"]
+                for cell in safety_cells
+                if cell["estimate_scope"] == "combined_roots"
+                or (len(roots) == 1 and cell["estimate_scope"].startswith("root_"))
+            ),
+            "games_completed": sum(
+                cell["games_completed"]
+                for cell in safety_cells
+                if cell["estimate_scope"] == "combined_roots"
+                or (len(roots) == 1 and cell["estimate_scope"].startswith("root_"))
+            ),
+            "games_safety_limit": sum(
+                cell["games_safety_limit"]
+                for cell in safety_cells
+                if cell["estimate_scope"] == "combined_roots"
+                or (len(roots) == 1 and cell["estimate_scope"].startswith("root_"))
+            ),
         },
         "robustness": _robustness(vectors),
         "agreement": agreement,

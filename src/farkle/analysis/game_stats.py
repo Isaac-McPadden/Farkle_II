@@ -16,8 +16,14 @@ Margin schema:
     Strategy ID taken from ``P#_strategy`` columns.
 ``n_players``
     Player count inferred from the shard path.
+``observational_unit``
+    ``attempted_game`` for population game-length rows,
+    ``seated_strategy_exposure_per_attempted_game`` for strategy game-length
+    rows, and ``seated_strategy_exposure_per_completed_game`` for margins.
 ``observations``
-    Number of games with at least two valid seat scores.
+    Count of the stated observational unit. Margin observations exclude
+    safety-limit attempts; attempted/completed/safety-limit support is retained
+    separately where applicable.
 ``mean_margin_runner_up`` / ``median_margin_runner_up`` / ``std_margin_runner_up``
     Descriptive statistics over ``margin_runner_up``.
 ``prob_margin_runner_up_le_500`` / ``prob_margin_runner_up_le_1000``
@@ -34,6 +40,7 @@ import hashlib
 import json
 import logging
 import math
+import re
 from collections.abc import Iterable, Sequence
 from concurrent.futures import FIRST_EXCEPTION, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
@@ -82,6 +89,17 @@ StrategyPandasDtype: TypeAlias = (
 )
 
 LOGGER = logging.getLogger(__name__)
+_SEAT_STRATEGY_RE = re.compile(r"^P[1-9][0-9]*_strategy$")
+_COMPLETED_CONDITIONING = 'termination_status == "completed"'
+_ATTEMPTED_STRATEGY_UNIT = "seated_strategy_exposure_per_attempted_game"
+_ATTEMPTED_GAME_UNIT = "attempted_game"
+
+
+def _seat_strategy_columns(names: Iterable[str]) -> list[str]:
+    """Return only canonical seat strategy columns in seat-number order."""
+
+    columns = [name for name in names if _SEAT_STRATEGY_RE.fullmatch(name)]
+    return sorted(columns, key=lambda name: int(name[1 : name.index("_")]))
 
 
 @dataclass(slots=True)
@@ -156,7 +174,7 @@ def _strategy_arrow_type(per_n_inputs: Sequence[tuple[int, Path]]) -> pa.DataTyp
     for _, path in per_n_inputs:
         ds_in = ds.dataset(path)
         for name in ds_in.schema.names:
-            if name.endswith("_strategy"):
+            if _SEAT_STRATEGY_RE.fullmatch(name):
                 dtype = ds_in.schema.field(name).type
                 if pa.types.is_integer(dtype):
                     return dtype
@@ -599,7 +617,7 @@ def _compute_k_game_stats(
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     temp_state_path = artifact_path.with_suffix(".checkpoint.json")
     ds_in = ds.dataset(input_path)
-    strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+    strategy_cols = _seat_strategy_columns(ds_in.schema.names)
     score_cols = [
         name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
     ]
@@ -610,8 +628,11 @@ def _compute_k_game_stats(
     runner_by_strategy: dict[Scalar, _BinnedAccumulator] = {}
     spread_by_strategy: dict[Scalar, _BinnedAccumulator] = {}
     global_rounds = _UnweightedAccumulator()
+    outcome_counts: dict[Scalar, list[int]] = {}
+    global_completed = 0
+    global_safety_limit = 0
 
-    scanner_cols = ["n_rounds", *strategy_cols]
+    scanner_cols = ["n_rounds", "termination_status", *strategy_cols]
     if score_cols:
         scanner_cols.extend(score_cols)
     total_rows = int(ds_in.count_rows())
@@ -640,9 +661,26 @@ def _compute_k_game_stats(
                 global_rounds, rounds.loc[valid_rounds_global].to_numpy(dtype=float, copy=False)
             )
         margin_cols = _compute_margin_columns(df, score_cols) if score_cols else None
+        completed = df["termination_status"].eq("completed")
+        safety_limit = df["termination_status"].eq("safety_limit")
+        if not bool((completed | safety_limit).all()):
+            raise ValueError(f"{input_path} contains an invalid termination_status")
+        global_completed += int(completed.sum())
+        global_safety_limit += int(safety_limit.sum())
 
         for strategy_col in strategy_cols:
             strategies = df[strategy_col]
+            for strategy, group in pd.DataFrame(
+                {
+                    "strategy": strategies,
+                    "completed": completed,
+                    "safety_limit": safety_limit,
+                }
+            ).dropna(subset=["strategy"]).groupby("strategy", observed=True, sort=False):
+                counts = outcome_counts.setdefault(strategy, [0, 0, 0])
+                counts[0] += int(group.shape[0])
+                counts[1] += int(group["completed"].sum())
+                counts[2] += int(group["safety_limit"].sum())
             rounds_valid = rounds.notna() & strategies.notna()
             if bool(rounds_valid.any()):
                 grouped = pd.DataFrame(
@@ -655,7 +693,7 @@ def _compute_k_game_stats(
             if margin_cols is not None:
                 runner = pd.to_numeric(margin_cols["margin_runner_up"], errors="coerce")
                 spread = pd.to_numeric(margin_cols["score_spread"], errors="coerce")
-                margin_valid = runner.notna() & strategies.notna()
+                margin_valid = completed & runner.notna() & strategies.notna()
                 if bool(margin_valid.any()):
                     grouped_margin = pd.DataFrame(
                         {
@@ -703,11 +741,18 @@ def _compute_k_game_stats(
         if rounds_acc.count <= 0:
             continue
         mean_rounds, std_rounds = _mean_std_from_unweighted(rounds_acc)
+        attempted, completed_count, safety_count = outcome_counts[strategy]
+        if attempted != rounds_acc.count or attempted != completed_count + safety_count:
+            raise ValueError("strategy game-stat exposure conservation failed")
         row: dict[str, StatValue] = {
             "summary_level": "strategy",
+            "observational_unit": _ATTEMPTED_STRATEGY_UNIT,
             "strategy": _strategy_stat_value(strategy),
             "n_players": k,
-            "observations": rounds_acc.count,
+            "observations": attempted,
+            "completed_observations": completed_count,
+            "safety_limit_observations": safety_count,
+            "safety_limit_observation_rate": safety_count / attempted,
             "mean_rounds": mean_rounds,
             "median_rounds": _quantile_linear_from_hist(
                 rounds_acc.hist, count=rounds_acc.count, quantile=0.5
@@ -744,6 +789,7 @@ def _compute_k_game_stats(
             mean_spread, std_spread = _mean_std_from_binned(spread_acc)
             row.update(
                 {
+                    "margin_observations": runner_acc.count,
                     "mean_margin_runner_up": mean_runner,
                     "median_margin_runner_up": _quantile_from_binned(runner_acc, 0.5),
                     "std_margin_runner_up": std_runner,
@@ -766,9 +812,13 @@ def _compute_k_game_stats(
         rows.append(
             {
                 "summary_level": "n_players",
+                "observational_unit": _ATTEMPTED_GAME_UNIT,
                 "strategy": pd.NA,
                 "n_players": k,
                 "observations": global_rounds.count,
+                "completed_observations": global_completed,
+                "safety_limit_observations": global_safety_limit,
+                "safety_limit_observation_rate": global_safety_limit / global_rounds.count,
                 "mean_rounds": g_mean,
                 "median_rounds": _quantile_linear_from_hist(
                     global_rounds.hist, count=global_rounds.count, quantile=0.5
@@ -804,7 +854,10 @@ def _compute_k_game_stats(
         artifact_path,
         scope=ArtifactScope.BY_K,
         operation="summarize_game_level_by_k",
-        conditioning="strategy_specific_and_population_wide_within_k",
+        conditioning=(
+            "game_length_all_attempted_games_and_strategy_exposures; "
+            f"winner_margin_fields_conditioned_on_{_COMPLETED_CONDITIONING}"
+        ),
         weighted_quantity="game_level_lengths_margins_and_close_game_rates",
         sources=[input_path],
         player_counts=[k],
@@ -847,9 +900,9 @@ def _write_scoped_game_stats(
         operation=operation,
         weighted_quantity=weighted_quantity,
         k_aggregation_method=k_aggregation_method,
-        support_count_role="raw_game_observations",
+        support_count_role="observations_with_explicit_observational_unit",
         uncertainty_method="descriptive",
-        replication_unit="game",
+        replication_unit="declared_in_observational_unit_column",
         conditioning=conditioning,
         consistency_columns=table.schema.names,
         source_artifacts=sources,
@@ -936,9 +989,13 @@ def _aggregate_completed_k_game_stats(
 
     game_cols = [
         "summary_level",
+        "observational_unit",
         "strategy",
         "n_players",
         "observations",
+        "completed_observations",
+        "safety_limit_observations",
+        "safety_limit_observation_rate",
         "mean_rounds",
         "median_rounds",
         "std_rounds",
@@ -951,9 +1008,14 @@ def _aggregate_completed_k_game_stats(
     ]
     margin_cols = [
         "summary_level",
+        "observational_unit",
         "strategy",
         "n_players",
+        "margin_observations",
         "observations",
+        "completed_observations",
+        "safety_limit_observations",
+        "safety_limit_observation_rate",
         "mean_margin_runner_up",
         "median_margin_runner_up",
         "std_margin_runner_up",
@@ -973,13 +1035,25 @@ def _aggregate_completed_k_game_stats(
         )
     if "summary_level" in margin_df.columns:
         margin_df = margin_df.loc[margin_df["summary_level"] == "strategy"].copy()
+    if "margin_observations" in margin_df.columns:
+        margin_df = margin_df.loc[
+            pd.to_numeric(margin_df["margin_observations"], errors="coerce").fillna(0) > 0
+        ].copy()
+        margin_df["attempted_observations"] = margin_df["observations"]
+        margin_df["observations"] = margin_df["margin_observations"]
+        margin_df = margin_df.drop(columns=["margin_observations"])
+        margin_df["observational_unit"] = (
+            "seated_strategy_exposure_per_completed_game"
+        )
+    else:
+        margin_df = margin_df.iloc[0:0].copy()
     _write_scoped_game_stats(
         cfg,
         game_df,
         game_length_output,
         scope=ArtifactScope.CONCAT_KS,
         operation="concatenate",
-        conditioning="strategy_and_population_game_level",
+        conditioning="all_attempted_games_and_seated_strategy_exposures",
         weighted_quantity="game_length_descriptives",
         sources=completed_paths,
         player_counts=configured_k_values,
@@ -990,7 +1064,7 @@ def _aggregate_completed_k_game_stats(
         margin_output,
         scope=ArtifactScope.CONCAT_KS,
         operation="concatenate",
-        conditioning="strategy_conditioned_game_level",
+        conditioning=_COMPLETED_CONDITIONING,
         weighted_quantity="victory_margin_descriptives",
         sources=completed_paths,
         player_counts=configured_k_values,
@@ -1008,6 +1082,8 @@ def _aggregate_completed_k_game_stats(
         strategy_game.groupby("strategy", observed=True, sort=False)
         .agg(
             observations=("observations", "sum"),
+            completed_observations=("completed_observations", "sum"),
+            safety_limit_observations=("safety_limit_observations", "sum"),
             mean_rounds=("mean_rounds", "mean"),
             median_rounds=("median_rounds", "mean"),
             std_rounds=("std_rounds", "mean"),
@@ -1021,13 +1097,17 @@ def _aggregate_completed_k_game_stats(
         .reset_index()
     )
     combined_game.insert(0, "summary_level", "strategy_conditioned_equal_k_mean")
+    combined_game.insert(1, "observational_unit", _ATTEMPTED_STRATEGY_UNIT)
+    combined_game["safety_limit_observation_rate"] = (
+        combined_game["safety_limit_observations"] / combined_game["observations"]
+    )
     _write_scoped_game_stats(
         cfg,
         combined_game,
         combined_game_length_output,
         scope=ArtifactScope.ACROSS_K,
         operation="equal_k_mean",
-        conditioning="strategy_conditioned_game_length",
+        conditioning="all_attempted_seated_strategy_exposures",
         weighted_quantity="game_length_descriptives",
         sources=completed_paths,
         player_counts=configured_k_values,
@@ -1045,13 +1125,37 @@ def _aggregate_completed_k_game_stats(
         margin_metric_cols = [
             c
             for c in margin_df.columns
-            if c not in {"summary_level", "strategy", "n_players", "observations"}
+            if c
+            not in {
+                "summary_level",
+                "observational_unit",
+                "strategy",
+                "n_players",
+                "observations",
+                "attempted_observations",
+                "completed_observations",
+                "safety_limit_observations",
+                "safety_limit_observation_rate",
+            }
         ]
-        agg_map = {"observations": "sum", **dict.fromkeys(margin_metric_cols, "mean")}
+        agg_map = {
+            "observations": "sum",
+            "attempted_observations": "sum",
+            "completed_observations": "sum",
+            "safety_limit_observations": "sum",
+            **dict.fromkeys(margin_metric_cols, "mean"),
+        }
         combined_margin = (
             margin_df.groupby("strategy", observed=True, sort=False).agg(agg_map).reset_index()
         )
         combined_margin.insert(0, "summary_level", "strategy_conditioned_equal_k_mean")
+        combined_margin.insert(
+            1, "observational_unit", "seated_strategy_exposure_per_completed_game"
+        )
+        combined_margin["safety_limit_observation_rate"] = (
+            combined_margin["safety_limit_observations"]
+            / combined_margin["attempted_observations"]
+        )
     else:
         combined_margin = pd.DataFrame(columns=["summary_level", "strategy", "observations"])
     _write_scoped_game_stats(
@@ -1060,7 +1164,7 @@ def _aggregate_completed_k_game_stats(
         combined_margin_output,
         scope=ArtifactScope.ACROSS_K,
         operation="equal_k_mean",
-        conditioning="strategy_conditioned_game_margin",
+        conditioning=_COMPLETED_CONDITIONING,
         weighted_quantity="victory_margin_descriptives",
         sources=completed_paths,
         player_counts=configured_k_values,
@@ -1104,7 +1208,7 @@ def _per_strategy_stats(per_n_inputs: Sequence[tuple[int, Path]]) -> pd.DataFram
     grouped_rounds: dict[tuple[Scalar, int], _UnweightedAccumulator] = {}
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
-        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+        strategy_cols = _seat_strategy_columns(ds_in.schema.names)
         if not strategy_cols:
             LOGGER.warning(
                 "Per-N parquet missing strategy columns",
@@ -1436,7 +1540,7 @@ def _per_strategy_margin_stats(
     grouped_spread: dict[tuple[Scalar, int], _UnweightedAccumulator] = {}
     for n_players, path in per_n_inputs:
         ds_in = ds.dataset(path)
-        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+        strategy_cols = _seat_strategy_columns(ds_in.schema.names)
         score_cols = [
             name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
         ]
@@ -1455,7 +1559,9 @@ def _per_strategy_margin_stats(
             )
             continue
 
-        scanner = ds_in.scanner(columns=[*score_cols, *strategy_cols], batch_size=65_536)
+        scanner = ds_in.scanner(
+            columns=["termination_status", *score_cols, *strategy_cols], batch_size=65_536
+        )
         batch_idx = 0
         for batch in scanner.to_batches():
             batch_idx += 1
@@ -1465,7 +1571,7 @@ def _per_strategy_margin_stats(
             margin_cols = _compute_margin_columns(df, score_cols)
             runner = pd.to_numeric(margin_cols["margin_runner_up"], errors="coerce")
             spread = pd.to_numeric(margin_cols["score_spread"], errors="coerce")
-            valid_runner = runner.notna()
+            valid_runner = runner.notna() & df["termination_status"].eq("completed")
             if not bool(valid_runner.any()):
                 continue
             for strategy_col in strategy_cols:
@@ -1585,12 +1691,16 @@ def _rare_event_summary(
     flags = ["multi_reached_target", *[f"margin_le_{thr}" for thr in thresholds]]
     column_order = [
         "summary_level",
+        "observational_unit",
         "strategy",
         "n_players",
+        "termination_status",
         "margin_runner_up",
         "score_spread",
         "multi_reached_target",
         "observations",
+        "completed_observations",
+        "safety_limit_observations",
         *[f"margin_le_{thr}" for thr in thresholds],
     ]
     (
@@ -1611,27 +1721,26 @@ def _rare_event_summary(
     strategy_arrow = _strategy_arrow_type(per_n_inputs)
     flag_arrow = pa.float64()
     obs_dtype, obs_arrow = _select_int_dtype(max_observations)
-    fields: list[pa.Field] = [
-        pa.field("summary_level", pa.string()),
-        pa.field("strategy", strategy_arrow),
-        pa.field("n_players", pa.int32()),
-        pa.field("margin_runner_up", pa.float64()),
-        pa.field("score_spread", pa.float64()),
-        pa.field("multi_reached_target", flag_arrow),
-        pa.field("observations", obs_arrow),
-        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
-    ]
-    schema = pa.schema(fields)
+    schema = _rare_event_schema(
+        thresholds=thresholds,
+        strategy_arrow=strategy_arrow,
+        flag_arrow=flag_arrow,
+        observations_arrow=obs_arrow,
+    )
     strategy_rows: list[dict[str, object]] = []
     for (strategy, players), sums in strategy_sums.items():
         observations = sums["observations"]
         summary_row: dict[str, object] = {
             "summary_level": "strategy",
+            "observational_unit": _ATTEMPTED_STRATEGY_UNIT,
             "strategy": _strategy_stat_value(strategy),
             "n_players": players,
+            "termination_status": pd.NA,
             "margin_runner_up": pd.NA,
             "score_spread": pd.NA,
             "observations": observations,
+            "completed_observations": sums["completed_observations"],
+            "safety_limit_observations": sums["safety_limit_observations"],
         }
         for flag in flags:
             summary_row[flag] = sums[flag]
@@ -1643,11 +1752,15 @@ def _rare_event_summary(
         observations = sums["observations"]
         summary_row = {
             "summary_level": "n_players",
+            "observational_unit": _ATTEMPTED_GAME_UNIT,
             "strategy": pd.NA,
             "n_players": players,
+            "termination_status": pd.NA,
             "margin_runner_up": pd.NA,
             "score_spread": pd.NA,
             "observations": observations,
+            "completed_observations": sums["completed_observations"],
+            "safety_limit_observations": sums["safety_limit_observations"],
         }
         for flag in flags:
             summary_row[flag] = sums[flag]
@@ -1656,7 +1769,16 @@ def _rare_event_summary(
 
     summary_df = pd.concat([strategy_summary, global_summary], ignore_index=True)
     summary_df["strategy"] = summary_df["strategy"].astype("Int64").array
-    summary_df = _downcast_integer_stats(summary_df, columns=("n_players", "observations", *flags))
+    summary_df = _downcast_integer_stats(
+        summary_df,
+        columns=(
+            "n_players",
+            "observations",
+            "completed_observations",
+            "safety_limit_observations",
+            *flags,
+        ),
+    )
     summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
     write_parquet_atomic(summary_table, output_path, codec=codec)
     return summary_table.num_rows
@@ -1819,45 +1941,81 @@ def _rare_event_flags(
             observations = _strategy_key_to_int(sums["observations"], field="observations")
             summary_row: dict[str, object] = {
                 "summary_level": "strategy",
+                "observational_unit": _ATTEMPTED_STRATEGY_UNIT,
                 "strategy": _strategy_stat_value(strategy),
                 "n_players": players,
+                "termination_status": pd.NA,
                 "margin_runner_up": pd.NA,
                 "score_spread": pd.NA,
                 "observations": observations,
+                "completed_observations": sums["completed_observations"],
+                "safety_limit_observations": sums["safety_limit_observations"],
             }
-            for flag in flags:
-                summary_row[flag] = sums[flag] / observations if observations else float("nan")
+            summary_row["multi_reached_target"] = (
+                sums["multi_reached_target"] / observations if observations else float("nan")
+            )
+            completed_observations = sums["completed_observations"]
+            for flag in flags[1:]:
+                summary_row[flag] = (
+                    sums[flag] / completed_observations
+                    if completed_observations
+                    else float("nan")
+                )
             summary_rows.append(summary_row)
 
         for players, sums in sorted(global_sums.items()):
             observations = _strategy_key_to_int(sums["observations"], field="observations")
             summary_row = {
                 "summary_level": "n_players",
+                "observational_unit": _ATTEMPTED_GAME_UNIT,
                 "strategy": pd.NA,
                 "n_players": players,
+                "termination_status": pd.NA,
                 "margin_runner_up": pd.NA,
                 "score_spread": pd.NA,
                 "observations": observations,
+                "completed_observations": sums["completed_observations"],
+                "safety_limit_observations": sums["safety_limit_observations"],
             }
-            for flag in flags:
-                summary_row[flag] = sums[flag] / observations if observations else float("nan")
+            summary_row["multi_reached_target"] = (
+                sums["multi_reached_target"] / observations if observations else float("nan")
+            )
+            completed_observations = sums["completed_observations"]
+            for flag in flags[1:]:
+                summary_row[flag] = (
+                    sums[flag] / completed_observations
+                    if completed_observations
+                    else float("nan")
+                )
             summary_rows.append(summary_row)
 
         summary_df = pd.DataFrame(
             summary_rows,
             columns=[
                 "summary_level",
+                "observational_unit",
                 "strategy",
                 "n_players",
+                "termination_status",
                 "margin_runner_up",
                 "score_spread",
                 "multi_reached_target",
                 "observations",
+                "completed_observations",
+                "safety_limit_observations",
                 *[f"margin_le_{thr}" for thr in thresholds],
             ],
         )
         summary_df["strategy"] = summary_df["strategy"].astype("Int64").array
-        summary_df = _downcast_integer_stats(summary_df, columns=("n_players", "observations"))
+        summary_df = _downcast_integer_stats(
+            summary_df,
+            columns=(
+                "n_players",
+                "observations",
+                "completed_observations",
+                "safety_limit_observations",
+            ),
+        )
         summary_table = pa.Table.from_pandas(summary_df, preserve_index=False, schema=schema)
         writer.write_batch(summary_table)
         rows_written += summary_table.num_rows
@@ -1906,10 +2064,13 @@ def _ensure_rare_event_sidecars(
             source_scope=ArtifactScope.BY_K,
             operation="summarize_rare_events_by_k",
             weighted_quantity="rare_event_game_rows",
-            support_count_role="raw_game_observations",
+            support_count_role="observations_with_explicit_observational_unit",
             uncertainty_method="descriptive",
-            replication_unit="game",
-            conditioning="rare_event_threshold_flags",
+            replication_unit="declared_in_observational_unit_column",
+            conditioning=(
+                "multi_target_on_all_attempts; margin_flags_conditioned_on_"
+                f"{_COMPLETED_CONDITIONING}"
+            ),
             consistency_columns=shard_schema.names,
             source_artifacts=[input_path],
             grouping_keys=["summary_level", "strategy", "n_players"],
@@ -1936,10 +2097,13 @@ def _ensure_rare_event_sidecars(
             source_scope=ArtifactScope.BY_K,
             operation="checkpoint_rare_event_counts_by_k",
             weighted_quantity="rare_event_integer_counts",
-            support_count_role="raw_game_observations",
+            support_count_role="observations_with_explicit_observational_unit",
             uncertainty_method="descriptive",
-            replication_unit="game",
-            conditioning="rare_event_threshold_flags",
+            replication_unit="declared_in_observational_unit_column",
+            conditioning=(
+                "multi_target_on_all_attempts; margin_flags_conditioned_on_"
+                f"{_COMPLETED_CONDITIONING}"
+            ),
             consistency_columns=sorted(stats_payload),
             source_artifacts=[input_path, shard_path],
             grouping_keys=["strategy", "n_players"],
@@ -1984,10 +2148,13 @@ def _ensure_rare_event_sidecars(
         source_scope=ArtifactScope.BY_K,
         operation="combine_rare_event_shards",
         weighted_quantity="rare_event_game_and_strategy_summaries",
-        support_count_role="raw_game_observations",
+        support_count_role="observations_with_explicit_observational_unit",
         uncertainty_method="descriptive",
-        replication_unit="game",
-        conditioning="rare_event_threshold_flags",
+        replication_unit="declared_in_observational_unit_column",
+        conditioning=(
+            "multi_target_on_all_attempts; margin_flags_conditioned_on_"
+            f"{_COMPLETED_CONDITIONING}"
+        ),
         consistency_columns=output_schema.names,
         source_artifacts=[*shard_paths, *stats_paths],
         grouping_keys=["summary_level", "strategy", "n_players"],
@@ -2016,10 +2183,13 @@ def _ensure_rare_event_sidecars(
             source_scope=ArtifactScope.BY_K,
             operation="enumerate_rare_event_details",
             weighted_quantity="rare_event_game_rows",
-            support_count_role="raw_game_observations",
+            support_count_role="observations_with_explicit_observational_unit",
             uncertainty_method="descriptive",
-            replication_unit="game",
-            conditioning="rare_event_threshold_flags",
+            replication_unit="declared_in_observational_unit_column",
+            conditioning=(
+                "multi_target_on_all_attempts; margin_flags_conditioned_on_"
+                f"{_COMPLETED_CONDITIONING}"
+            ),
             consistency_columns=details_schema.names,
             source_artifacts=[path for _n_players, path in per_n_inputs],
             grouping_keys=["summary_level", "strategy", "n_players"],
@@ -2060,12 +2230,16 @@ def _rare_event_schema(
     """
     fields: list[pa.Field] = [
         pa.field("summary_level", pa.string()),
+        pa.field("observational_unit", pa.string()),
         pa.field("strategy", strategy_arrow),
         pa.field("n_players", pa.int32()),
+        pa.field("termination_status", pa.string()),
         pa.field("margin_runner_up", pa.float64()),
         pa.field("score_spread", pa.float64()),
         pa.field("multi_reached_target", flag_arrow),
         pa.field("observations", observations_arrow),
+        pa.field("completed_observations", observations_arrow),
+        pa.field("safety_limit_observations", observations_arrow),
         *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
     ]
     return pa.schema(fields)
@@ -2100,13 +2274,23 @@ def _load_rare_event_summary_shard_stats(
             raise ValueError(
                 f"invalid strategy key in rare-event shard stats: {strategy_key!r}"
             ) from err
-        sums: dict[str, int] = {"observations": 0, **dict.fromkeys(flags, 0)}
+        sums: dict[str, int] = {
+            "observations": 0,
+            "completed_observations": 0,
+            "safety_limit_observations": 0,
+            **dict.fromkeys(flags, 0),
+        }
         for key in sums:
             sums[key] = _strategy_key_to_int(dict(raw_sums).get(key, 0), field=key)
         strategy_sums[strategy_int] = sums
 
     global_raw = dict(payload.get("global_sums") or {})
-    global_sums: dict[str, int] = {"observations": 0, **dict.fromkeys(flags, 0)}
+    global_sums: dict[str, int] = {
+        "observations": 0,
+        "completed_observations": 0,
+        "safety_limit_observations": 0,
+        **dict.fromkeys(flags, 0),
+    }
     for key in global_sums:
         global_sums[key] = _strategy_key_to_int(global_raw.get(key, 0), field=key)
     return shard_rows, strategy_sums, global_sums
@@ -2159,13 +2343,18 @@ def _build_rare_event_summary_shard(
 
     shard_path.parent.mkdir(parents=True, exist_ok=True)
     strategy_sums: dict[int, dict[str, int]] = {}
-    global_sums: dict[str, int] = {"observations": 0, **dict.fromkeys(flags, 0)}
+    global_sums: dict[str, int] = {
+        "observations": 0,
+        "completed_observations": 0,
+        "safety_limit_observations": 0,
+        **dict.fromkeys(flags, 0),
+    }
     rows_written = 0
 
     writer = ParquetShardWriter(str(shard_path), schema=schema, compression=codec)
     try:
         ds_in = ds.dataset(input_path)
-        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+        strategy_cols = _seat_strategy_columns(ds_in.schema.names)
         score_cols = [
             name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
         ]
@@ -2194,7 +2383,9 @@ def _build_rare_event_summary_shard(
                 else None
             )
             processed_rows = 0
-            scanner = ds_in.scanner(columns=[*strategy_cols, *score_cols], batch_size=65_536)
+            scanner = ds_in.scanner(
+                columns=["termination_status", *strategy_cols, *score_cols], batch_size=65_536
+            )
             for batch_idx, batch in enumerate(scanner.to_batches(), start=1):
                 df = batch.to_pandas(categories=strategy_cols)
                 if df.empty:
@@ -2204,9 +2395,57 @@ def _build_rare_event_summary_shard(
                 margin_cols = _compute_margin_columns(df, score_cols)
                 scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
                 multi_target = (scores >= target_score).sum(axis=1) >= 2
+                completed = df["termination_status"].eq("completed")
+                safety_limit = df["termination_status"].eq("safety_limit")
+                if not bool((completed | safety_limit).all()):
+                    raise ValueError(f"{input_path} contains invalid termination status")
+                margin_cols.loc[~completed, ["margin_runner_up", "score_spread"]] = np.nan
                 flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
                 for thr in thresholds:
-                    flag_series[f"margin_le_{thr}"] = margin_cols["margin_runner_up"] <= thr
+                    flag_series[f"margin_le_{thr}"] = completed & (
+                        margin_cols["margin_runner_up"] <= thr
+                    )
+
+                global_sums["observations"] += int(df.shape[0])
+                global_sums["completed_observations"] += int(completed.sum())
+                global_sums["safety_limit_observations"] += int(safety_limit.sum())
+                global_sums["multi_reached_target"] += int(multi_target.sum())
+                for thr in thresholds:
+                    global_sums[f"margin_le_{thr}"] += int(
+                        flag_series[f"margin_le_{thr}"].sum()
+                    )
+
+                exposure_base = df[strategy_cols].copy()
+                exposure_base["completed_observations"] = completed.astype(np.uint8)
+                exposure_base["safety_limit_observations"] = safety_limit.astype(np.uint8)
+                for flag, values in flag_series.items():
+                    exposure_base[flag] = values
+                exposure_melted = exposure_base.melt(
+                    id_vars=[
+                        "completed_observations",
+                        "safety_limit_observations",
+                        *flags,
+                    ],
+                    value_vars=strategy_cols,
+                    var_name="seat",
+                    value_name="strategy",
+                ).dropna(subset=["strategy"])
+                for strategy, group in exposure_melted.groupby(
+                    "strategy", observed=True, sort=False
+                ):
+                    strategy_value = _strategy_key_to_int(strategy)
+                    entry = strategy_sums.setdefault(
+                        strategy_value,
+                        {
+                            "observations": 0,
+                            "completed_observations": 0,
+                            "safety_limit_observations": 0,
+                            **dict.fromkeys(flags, 0),
+                        },
+                    )
+                    entry["observations"] += int(group.shape[0])
+                    for field in ("completed_observations", "safety_limit_observations", *flags):
+                        entry[field] += int(group[field].sum())
 
                 any_flag = flag_series["multi_reached_target"].copy()
                 for thr in thresholds:
@@ -2218,6 +2457,7 @@ def _build_rare_event_summary_shard(
                 base["margin_runner_up"] = margin_cols["margin_runner_up"][any_flag]
                 base["score_spread"] = margin_cols["score_spread"][any_flag]
                 base["multi_reached_target"] = flag_series["multi_reached_target"][any_flag]
+                base["termination_status"] = df.loc[any_flag, "termination_status"]
                 for thr in thresholds:
                     base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"][any_flag]
                 base["n_players"] = n_players
@@ -2227,6 +2467,7 @@ def _build_rare_event_summary_shard(
                         "margin_runner_up",
                         "score_spread",
                         "multi_reached_target",
+                        "termination_status",
                         "n_players",
                         *[f"margin_le_{thr}" for thr in thresholds],
                     ],
@@ -2249,14 +2490,23 @@ def _build_rare_event_summary_shard(
 
                 per_game_data: dict[str, ArrowColumnData] = {
                     "summary_level": np.full(count, "game", dtype=object),
+                    "observational_unit": np.full(
+                        count, _ATTEMPTED_STRATEGY_UNIT, dtype=object
+                    ),
                     "strategy": strategy_values,
                     "n_players": np.full(count, n_players, dtype=player_dtype),
+                    "termination_status": melted["termination_status"].astype(str).to_numpy(),
                     "margin_runner_up": melted["margin_runner_up"].to_numpy(dtype=float),
                     "score_spread": melted["score_spread"].to_numpy(dtype=float),
                     "multi_reached_target": melted["multi_reached_target"].to_numpy(
                         dtype=flag_dtype
                     ),
                     "observations": np.ones(count, dtype=obs_dtype),
+                    "completed_observations": melted["termination_status"].eq("completed").to_numpy(
+                    ).astype(obs_dtype, copy=False),
+                    "safety_limit_observations": melted["termination_status"].eq(
+                        "safety_limit"
+                    ).to_numpy().astype(obs_dtype, copy=False),
                 }
                 for thr in thresholds:
                     flag_name = f"margin_le_{thr}"
@@ -2264,39 +2514,6 @@ def _build_rare_event_summary_shard(
 
                 writer.write_batch(pa.Table.from_pydict(per_game_data, schema=schema))
                 rows_written += count
-                global_sums["observations"] += count
-
-                global_multi_target_sum = _strategy_key_to_int(
-                    melted["multi_reached_target"].to_numpy(copy=False).sum(),
-                    field="multi_reached_target",
-                )
-                global_sums["multi_reached_target"] += global_multi_target_sum
-                for thr in thresholds:
-                    flag_name = f"margin_le_{thr}"
-                    global_sums[flag_name] += _strategy_key_to_int(
-                        melted[flag_name].to_numpy(copy=False).sum(),
-                        field=flag_name,
-                    )
-
-                grouped = melted.groupby(strategy_values, sort=False)
-                for strategy, group in grouped:
-                    strategy_scalar = _require_scalar(strategy, field="strategy")
-                    group_count = _strategy_key_to_int(group.shape[0], field="observations")
-                    strategy_value = _strategy_key_to_int(strategy_scalar)
-                    strategy_entry = strategy_sums.setdefault(
-                        strategy_value, {"observations": 0, **dict.fromkeys(flags, 0)}
-                    )
-                    strategy_entry["observations"] += group_count
-                    strategy_entry["multi_reached_target"] += _strategy_key_to_int(
-                        group["multi_reached_target"].to_numpy(copy=False).sum(),
-                        field="multi_reached_target",
-                    )
-                    for thr in thresholds:
-                        flag_name = f"margin_le_{thr}"
-                        strategy_entry[flag_name] += _strategy_key_to_int(
-                            group[flag_name].to_numpy(copy=False).sum(),
-                            field=flag_name,
-                        )
 
                 if progress_logger is not None:
                     progress_logger.maybe_log(
@@ -2353,24 +2570,19 @@ def _rare_event_details(
     flag_dtype, flag_arrow = _select_int_dtype(1)
     obs_dtype, obs_arrow = _select_int_dtype(1)
     player_dtype = np.int32
-    fields: list[pa.Field] = [
-        pa.field("summary_level", pa.string()),
-        pa.field("strategy", strategy_arrow),
-        pa.field("n_players", pa.int32()),
-        pa.field("margin_runner_up", pa.float64()),
-        pa.field("score_spread", pa.float64()),
-        pa.field("multi_reached_target", flag_arrow),
-        pa.field("observations", obs_arrow),
-        *[pa.field(f"margin_le_{thr}", flag_arrow) for thr in thresholds],
-    ]
-    schema = pa.schema(fields)
+    schema = _rare_event_schema(
+        thresholds=thresholds,
+        strategy_arrow=strategy_arrow,
+        flag_arrow=flag_arrow,
+        observations_arrow=obs_arrow,
+    )
 
     rows_written = 0
     writer = ParquetShardWriter(str(output_path), schema=schema, compression=codec)
     try:
         for n_players, path in per_n_inputs:
             ds_in = ds.dataset(path)
-            strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+            strategy_cols = _seat_strategy_columns(ds_in.schema.names)
             score_cols = [
                 name
                 for name in ds_in.schema.names
@@ -2391,7 +2603,7 @@ def _rare_event_details(
                 )
                 continue
 
-            columns = [*strategy_cols, *score_cols]
+            columns = ["termination_status", *strategy_cols, *score_cols]
             total_rows = int(ds_in.count_rows())
             progress_logger = (
                 ScheduledProgressLogger(
@@ -2415,9 +2627,16 @@ def _rare_event_details(
                 margin_cols = _compute_margin_columns(df, score_cols)
                 scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
                 multi_target = (scores >= target_score).sum(axis=1) >= 2
+                completed = df["termination_status"].eq("completed")
+                safety_limit = df["termination_status"].eq("safety_limit")
+                if not bool((completed | safety_limit).all()):
+                    raise ValueError(f"{path} contains invalid termination status")
+                margin_cols.loc[~completed, ["margin_runner_up", "score_spread"]] = np.nan
                 flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
                 for thr in thresholds:
-                    flag_series[f"margin_le_{thr}"] = margin_cols["margin_runner_up"] <= thr
+                    flag_series[f"margin_le_{thr}"] = completed & (
+                        margin_cols["margin_runner_up"] <= thr
+                    )
                 any_flag = flag_series["multi_reached_target"].copy()
                 for thr in thresholds:
                     any_flag |= flag_series[f"margin_le_{thr}"]
@@ -2427,6 +2646,7 @@ def _rare_event_details(
                 base["margin_runner_up"] = margin_cols["margin_runner_up"][any_flag]
                 base["score_spread"] = margin_cols["score_spread"][any_flag]
                 base["multi_reached_target"] = flag_series["multi_reached_target"][any_flag]
+                base["termination_status"] = df.loc[any_flag, "termination_status"]
                 for thr in thresholds:
                     base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"][any_flag]
                 base["n_players"] = n_players
@@ -2435,6 +2655,7 @@ def _rare_event_details(
                         "margin_runner_up",
                         "score_spread",
                         "multi_reached_target",
+                        "termination_status",
                         "n_players",
                         *[f"margin_le_{thr}" for thr in thresholds],
                     ],
@@ -2456,14 +2677,25 @@ def _rare_event_details(
                 count = _strategy_key_to_int(melted.shape[0], field="observations")
                 per_game_data: dict[str, ArrowColumnData] = {
                     "summary_level": np.full(count, "game", dtype=object),
+                    "observational_unit": np.full(
+                        count, _ATTEMPTED_STRATEGY_UNIT, dtype=object
+                    ),
                     "strategy": strategy_values,
                     "n_players": np.full(count, n_players, dtype=player_dtype),
+                    "termination_status": melted["termination_status"].astype(str).to_numpy(),
                     "margin_runner_up": melted["margin_runner_up"].to_numpy(dtype=float),
                     "score_spread": melted["score_spread"].to_numpy(dtype=float),
                     "multi_reached_target": melted["multi_reached_target"].to_numpy(
                         dtype=flag_dtype
                     ),
                     "observations": np.ones(count, dtype=obs_dtype),
+                    "completed_observations": melted["termination_status"]
+                    .eq("completed")
+                    .to_numpy()
+                    .astype(obs_dtype, copy=False),
+                    "safety_limit_observations": melted["termination_status"].eq(
+                        "safety_limit"
+                    ).to_numpy().astype(obs_dtype, copy=False),
                 }
                 for thr in thresholds:
                     per_game_data[f"margin_le_{thr}"] = melted[f"margin_le_{thr}"].to_numpy(
@@ -2507,7 +2739,7 @@ def _collect_rare_event_counts(
     for n_players, path in per_n_inputs:
         n_players_int = _strategy_key_to_int(n_players, field="n_players")
         ds_in = ds.dataset(path)
-        strategy_cols = [name for name in ds_in.schema.names if name.endswith("_strategy")]
+        strategy_cols = _seat_strategy_columns(ds_in.schema.names)
         score_cols = [
             name for name in ds_in.schema.names if name.startswith("P") and name.endswith("_score")
         ]
@@ -2515,7 +2747,7 @@ def _collect_rare_event_counts(
         if not strategy_cols or not score_cols:
             continue
 
-        columns = [*strategy_cols, *score_cols]
+        columns = ["termination_status", *strategy_cols, *score_cols]
         scanner = ds_in.scanner(columns=columns, batch_size=65_536)
         batch_idx = 0
         for batch in scanner.to_batches():
@@ -2526,10 +2758,18 @@ def _collect_rare_event_counts(
             margin_cols = _compute_margin_columns(df, score_cols)
             scores = df[score_cols].apply(pd.to_numeric, errors="coerce")
             multi_target = (scores >= target_score).sum(axis=1) >= 2
+            completed = df["termination_status"].eq("completed")
+            safety_limit = df["termination_status"].eq("safety_limit")
+            if not bool((completed | safety_limit).all()):
+                raise ValueError(f"{path} contains invalid termination status")
             flag_series: dict[str, pd.Series] = {"multi_reached_target": multi_target}
             for thr in thresholds:
-                flag_series[f"margin_le_{thr}"] = margin_cols["margin_runner_up"] <= thr
+                flag_series[f"margin_le_{thr}"] = completed & (
+                    margin_cols["margin_runner_up"] <= thr
+                )
             base = df[strategy_cols].copy()
+            base["completed_observations"] = completed.astype(np.uint8)
+            base["safety_limit_observations"] = safety_limit.astype(np.uint8)
             base["multi_reached_target"] = flag_series["multi_reached_target"]
             for thr in thresholds:
                 base[f"margin_le_{thr}"] = flag_series[f"margin_le_{thr}"]
@@ -2537,6 +2777,8 @@ def _collect_rare_event_counts(
             melted = base.melt(
                 id_vars=[
                     "multi_reached_target",
+                    "completed_observations",
+                    "safety_limit_observations",
                     "n_players",
                     *[f"margin_le_{thr}" for thr in thresholds],
                 ],
@@ -2552,7 +2794,8 @@ def _collect_rare_event_counts(
             observations = grouped.size()
             if observations.empty:
                 continue
-            flag_sums = grouped[flags].sum()
+            sum_fields = ["completed_observations", "safety_limit_observations", *flags]
+            flag_sums = grouped[sum_fields].sum()
             batch_observations = _strategy_key_to_int(
                 observations.to_numpy(copy=False).sum(),
                 field="observations",
@@ -2560,14 +2803,20 @@ def _collect_rare_event_counts(
             rows_available += batch_observations
 
             global_entry = global_sums.setdefault(
-                n_players_int, {"observations": 0, **dict.fromkeys(flags, 0)}
+                n_players_int,
+                {
+                    "observations": 0,
+                    "completed_observations": 0,
+                    "safety_limit_observations": 0,
+                    **dict.fromkeys(flags, 0),
+                },
             )
-            global_entry["observations"] += batch_observations
-            for flag in flags:
-                global_entry[flag] += _strategy_key_to_int(
-                    flag_sums[flag].to_numpy(copy=False).sum(),
-                    field=flag,
-                )
+            global_entry["observations"] += int(df.shape[0])
+            global_entry["completed_observations"] += int(completed.sum())
+            global_entry["safety_limit_observations"] += int(safety_limit.sum())
+            global_entry["multi_reached_target"] += int(multi_target.sum())
+            for flag in flags[1:]:
+                global_entry[flag] += int(flag_series[flag].sum())
 
             for strategy, count in observations.items():
                 strategy_scalar = _require_scalar(strategy, field="strategy")
@@ -2577,14 +2826,19 @@ def _collect_rare_event_counts(
                 )
                 strategy_entry = strategy_sums.setdefault(
                     norm_key,
-                    {"observations": 0, **dict.fromkeys(flags, 0)},
+                    {
+                        "observations": 0,
+                        "completed_observations": 0,
+                        "safety_limit_observations": 0,
+                        **dict.fromkeys(flags, 0),
+                    },
                 )
                 strategy_entry["observations"] += _strategy_key_to_int(
                     count,
                     field="observations",
                 )
                 row = cast(pd.Series, flag_sums.loc[strategy_scalar])
-                for flag in flags:
+                for flag in sum_fields:
                     strategy_entry[flag] += _strategy_key_to_int(row[flag], field=flag)
 
             if batch_idx % 50 == 0:
@@ -2674,14 +2928,18 @@ def _collect_rare_event_histograms(
         ]
         if not score_cols:
             continue
-        scanner = ds_in.scanner(columns=score_cols, batch_size=65_536)
+        columns = [*score_cols]
+        if need_margins:
+            columns.insert(0, "termination_status")
+        scanner = ds_in.scanner(columns=columns, batch_size=65_536)
         for batch in scanner.to_batches():
             df = batch.to_pandas()
             if df.empty:
                 continue
             scores = df[score_cols].apply(pd.to_numeric, errors="coerce").to_numpy(dtype=float)
             if need_margins:
-                margin_runner_up, _score_spread = _compute_margin_arrays(scores)
+                completed = df["termination_status"].eq("completed").to_numpy(dtype=bool)
+                margin_runner_up, _score_spread = _compute_margin_arrays(scores[completed])
                 _update_int_histogram(margin_counts, margin_runner_up)
             if need_targets:
                 second_scores = _second_highest(scores)

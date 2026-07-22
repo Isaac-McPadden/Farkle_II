@@ -456,6 +456,11 @@ class AppConfig:
     def freshness_key(self) -> dict[str, Any]:
         """Return the versioned statistical contract used by completion stamps."""
 
+        from farkle.utils.schema_helpers import (
+            OUTCOME_SCHEMA_VERSION,
+            TOURNAMENT_METHOD_VERSION,
+        )
+
         contract = self.artifact_contract
         weights = self.k_aggregation.k_weights
         normalized_counts: set[int | str] = set()
@@ -473,6 +478,8 @@ class AppConfig:
             "estimand_version": contract.estimand_version,
             "schema_version": contract.schema_version,
             "rng_scheme_version": self.rng.scheme_version,
+            "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+            "tournament_method_version": TOURNAMENT_METHOD_VERSION,
             "baseline_version": contract.baseline_version,
             "k_support_version": contract.k_support_version,
             "weighting_version": contract.weighting_version,

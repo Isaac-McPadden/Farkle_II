@@ -86,6 +86,9 @@ def test_output_dir_and_done_helpers(tmp_path: Path) -> None:
     done_path = runner.simulation_done_path(cfg, 2)
     assert done_path == cfg.results_root / "2_players" / "simulation.done.json"
     assert runner.simulation_is_complete(cfg, 2) is False
+    done_path.parent.mkdir(parents=True, exist_ok=True)
+    done_path.write_text('{"outcome_schema_version": 1, "tournament_method_version": 1}')
+    assert runner.simulation_is_complete(cfg, 2) is False
 
     marker = runner.write_simulation_done(
         cfg,
@@ -157,6 +160,8 @@ def test_purge_existing_and_resume_output_validation(tmp_path: Path) -> None:
             "n_strategies": len(_manifest_df()),
             "strategy_manifest_sha": runner._strategy_manifest_digest(_manifest_df()),
             "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+            "outcome_schema_version": runner.OUTCOME_SCHEMA_VERSION,
+            "tournament_method_version": runner.TOURNAMENT_METHOD_VERSION,
             "rng_bit_generator": "PCG64DXSM",
             **_workload_meta(cfg),
         }
@@ -211,6 +216,14 @@ def _patch_tournament_writer(monkeypatch: pytest.MonkeyPatch, *, wrong_meta: boo
         assert isinstance(metadata, dict)
         payload = {
             "win_totals": {"s0": 1},
+            "outcome_counts": {
+                "games_attempted": 1,
+                "games_completed": 1,
+                "games_safety_limit": 0,
+                "attempted_exposures": {"s0": 1, "s1": 1},
+                "completed_exposures": {"s0": 1, "s1": 1},
+                "safety_limit_exposures": {},
+            },
             "meta": {
                 "n_players": kwargs["config"].n_players,
                 "num_shuffles": kwargs["num_shuffles"],
@@ -295,6 +308,14 @@ def test_run_single_n_branch_table(
             pickle.dumps(
                 {
                     "win_totals": {"s0": 1, "s1": 0},
+                    "outcome_counts": {
+                        "games_attempted": 1,
+                        "games_completed": 1,
+                        "games_safety_limit": 0,
+                        "attempted_exposures": {"s0": 1, "s1": 1},
+                        "completed_exposures": {"s0": 1, "s1": 1},
+                        "safety_limit_exposures": {},
+                    },
                     "meta": {
                         "n_players": kwargs["config"].n_players,
                         "num_shuffles": kwargs["num_shuffles"],
@@ -646,6 +667,8 @@ def _row_manifest_record(
         "shuffle_seed": shuffle_index + 1 if shuffle_seed is None else shuffle_seed,
         "deterministic_batch_id": shuffle_index,
         "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+        "outcome_schema_version": runner.OUTCOME_SCHEMA_VERSION,
+        "tournament_method_version": runner.TOURNAMENT_METHOD_VERSION,
     }
 
 
@@ -666,6 +689,8 @@ def _metric_manifest_record(
         "shuffle_indices": [deterministic_batch_id],
         "shuffle_seeds": [deterministic_batch_id + 1],
         "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+        "outcome_schema_version": runner.OUTCOME_SCHEMA_VERSION,
+        "tournament_method_version": runner.TOURNAMENT_METHOD_VERSION,
     }
 
 
@@ -741,6 +766,8 @@ def test_validate_resume_outputs_checkpoint_meta_missing_or_non_mapping(
         ("n_strategies", 999),
         ("strategy_manifest_sha", "wrong"),
         ("rng_scheme_version", 999),
+        ("outcome_schema_version", 999),
+        ("tournament_method_version", 999),
         ("rng_bit_generator", "wrong"),
         ("workload_plan_version", 999),
     ],
@@ -763,6 +790,8 @@ def test_validate_resume_outputs_checkpoint_meta_mismatch_keys(
         "n_strategies": len(manifest),
         "strategy_manifest_sha": runner._strategy_manifest_digest(manifest),
         "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+        "outcome_schema_version": runner.OUTCOME_SCHEMA_VERSION,
+        "tournament_method_version": runner.TOURNAMENT_METHOD_VERSION,
         "rng_bit_generator": "PCG64DXSM",
         **_workload_meta(cfg, manifest),
     }
@@ -807,6 +836,7 @@ def test_validate_resume_outputs_accepts_canonical_manifest_without_checkpoint(
         ("duplicate", "Duplicate shuffle"),
         ("seed", "Row manifest mismatch"),
         ("players", "Row manifest mismatch"),
+        ("outcome", "Row manifest mismatch"),
     ],
 )
 def test_validate_resume_outputs_row_manifest_invalid(
@@ -825,6 +855,7 @@ def test_validate_resume_outputs_row_manifest_invalid(
         "duplicate": [valid, valid],
         "seed": [_row_manifest_record(cfg, 0, shuffle_seed=999)],
         "players": [_row_manifest_record(cfg, 0, n_players=9)],
+        "outcome": [{**valid, "outcome_schema_version": 1}],
     }[case]
     _write_manifest_lines(row_dir / "manifest.jsonl", rows)
     monkeypatch.setattr(
@@ -850,6 +881,7 @@ def test_validate_resume_outputs_row_manifest_invalid(
     [
         ("duplicate", "Duplicate process-block"),
         ("players", "Metrics manifest mismatch"),
+        ("method", "Metrics manifest mismatch"),
     ],
 )
 def test_validate_resume_outputs_metrics_manifest_invalid(
@@ -866,6 +898,7 @@ def test_validate_resume_outputs_metrics_manifest_invalid(
     rows = {
         "duplicate": [valid, valid],
         "players": [_metric_manifest_record(cfg, 0, n_players=9)],
+        "method": [{**valid, "tournament_method_version": 1}],
     }[case]
     _write_manifest_lines(metric_dir / "metrics_manifest.jsonl", rows)
 
@@ -962,6 +995,14 @@ def test_run_single_n_empty_rows_and_metric_sq_sum_outputs(
         {"win_totals": {"s0": -1}, "meta": {}},
         {
             "win_totals": {"s0": 2},
+            "outcome_counts": {
+                "games_attempted": 2,
+                "games_completed": 2,
+                "games_safety_limit": 0,
+                "attempted_exposures": {"s0": 2, "s1": 2},
+                "completed_exposures": {"s0": 2, "s1": 2},
+                "safety_limit_exposures": {},
+            },
             "metric_sums": {"winning_score": {"s0": 8.0}},
             "metric_sq_sums": {"winning_score": {"s0": 40.0}},
             "meta": {},

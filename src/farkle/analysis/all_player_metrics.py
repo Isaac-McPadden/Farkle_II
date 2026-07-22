@@ -11,10 +11,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.config import AppConfig, ArtifactScope
+from farkle.game.engine import TerminationStatus
 from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.manifest import iter_manifest
+from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.streaming_loop import run_streaming_shard
+
+ATTEMPT_CONDITIONING: Final[str] = "all_attempted_player_game_exposures_safety_limit_is_loss"
 
 _BEHAVIOR_SUFFIXES: Final[tuple[str, ...]] = (
     "rank",
@@ -37,7 +41,10 @@ _IDENTITY_FIELDS: Final[list[pa.Field]] = [
 ]
 _CORE_COUNT_FIELDS: Final[tuple[str, ...]] = (
     "raw_player_game_exposures",
+    "raw_completed_player_game_exposures",
+    "raw_safety_limit_player_game_exposures",
     "raw_wins",
+    "raw_losses",
     "raw_turn_round_mismatch_count",
     "raw_max_round_abort_exposures",
 )
@@ -60,6 +67,9 @@ _DERIVED_FIELDS: Final[tuple[str, ...]] = (
     "round_proxy_gap",
     "round_proxy_relative_gap",
     "turn_round_mismatch_prevalence",
+    "win_rate_per_attempt",
+    "win_rate_given_completion",
+    "safety_limit_exposure_rate",
 )
 
 
@@ -118,6 +128,8 @@ def _required_source_columns(k: int) -> list[str]:
         "k",
         "deterministic_batch_id",
         "winner_seat",
+        "termination_status",
+        "outcome_schema_version",
         "n_rounds",
     ]
     for seat in range(1, k + 1):
@@ -174,8 +186,25 @@ def _update_exposure(
             "rerun simulation and curation under the turn row contract"
         )
 
+    if row.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION:
+        raise ValueError(f"{source} is not outcome-schema-v{OUTCOME_SCHEMA_VERSION} compatible")
+    try:
+        status = TerminationStatus(row["termination_status"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"{source} contains an invalid termination_status") from exc
+    won = row.get("winner_seat") == f"P{seat}"
+    if status is TerminationStatus.SAFETY_LIMIT and row.get("winner_seat") is not None:
+        raise ValueError(f"{source} fabricates a winner for a safety-limit attempt")
+
     accumulator["raw_player_game_exposures"] += 1
-    accumulator["raw_wins"] += int(row.get("winner_seat") == f"P{seat}")
+    accumulator["raw_completed_player_game_exposures"] += int(
+        status is TerminationStatus.COMPLETED
+    )
+    accumulator["raw_safety_limit_player_game_exposures"] += int(
+        status is TerminationStatus.SAFETY_LIMIT
+    )
+    accumulator["raw_wins"] += int(won)
+    accumulator["raw_losses"] += int(not won)
     accumulator["raw_final_score_sum"] += score
     accumulator["raw_final_score_square_sum"] += score * score
     accumulator["raw_n_turns_sum"] += n_turns
@@ -207,6 +236,16 @@ def _finish_row(
     values: Mapping[str, float],
 ) -> dict[str, int | float | None]:
     exposures = int(values["raw_player_game_exposures"])
+    completed_exposures = int(values["raw_completed_player_game_exposures"])
+    safety_exposures = int(values["raw_safety_limit_player_game_exposures"])
+    wins = int(values["raw_wins"])
+    losses = int(values["raw_losses"])
+    if exposures != completed_exposures + safety_exposures:
+        raise ValueError("attempted exposures must equal completed plus safety-limit exposures")
+    if losses != exposures - wins or wins > completed_exposures:
+        raise ValueError("win/loss exposure conservation failed")
+    if int(values["raw_max_round_abort_exposures"]) != safety_exposures:
+        raise ValueError("maximum-round exposure count disagrees with termination status")
     turns = values["raw_n_turns_sum"]
     turn_weighted = values["raw_final_score_sum"] / turns if turns else None
     game_exact = (
@@ -230,6 +269,9 @@ def _finish_row(
         "turn_round_mismatch_prevalence": (
             values["raw_turn_round_mismatch_count"] / exposures if exposures else None
         ),
+        "win_rate_per_attempt": wins / exposures if exposures else None,
+        "win_rate_given_completion": wins / completed_exposures if completed_exposures else None,
+        "safety_limit_exposure_rate": safety_exposures / exposures if exposures else None,
     }
     for suffix in _BEHAVIOR_SUFFIXES:
         row[f"raw_{suffix}_observations"] = int(values[f"raw_{suffix}_observations"])
@@ -337,7 +379,10 @@ def build_all_player_batch_metrics(
             "procedure": "aggregate_player_batch_statistics",
             "parameters": {
                 "exposure_denominator": "player_game_exposure",
-                "abort_numerator": "player_game_exposure_with_maximum_round_abort",
+                "completed_diagnostic_denominator": "completed_player_game_exposure",
+                "safety_limit_numerator": "safety_limit_player_game_exposure",
+                "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                "tournament_method_version": TOURNAMENT_METHOD_VERSION,
             },
         },
         source_artifacts=[source],
@@ -347,7 +392,7 @@ def build_all_player_batch_metrics(
         required_player_counts=[k],
         missing_cell_policy="fail",
         replication_unit="deterministic_shuffle_batch",
-        conditioning="unconditional",
+        conditioning=ATTEMPT_CONDITIONING,
     )
     run_streaming_shard(
         out_path=str(output),
@@ -383,6 +428,7 @@ def build_all_player_batch_metrics(
 
 __all__ = [
     "all_player_batch_schema",
+    "ATTEMPT_CONDITIONING",
     "build_all_player_batch_metrics",
     "validate_unconditional_all_player_schema",
 ]

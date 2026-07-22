@@ -13,7 +13,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from scipy.stats import kendalltau, norm, spearmanr, t
 
-from farkle.analysis.all_player_metrics import validate_unconditional_all_player_schema
+from farkle.analysis.all_player_metrics import (
+    ATTEMPT_CONDITIONING,
+    validate_unconditional_all_player_schema,
+)
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
@@ -31,6 +34,9 @@ _INPUT_COLUMNS: Final[tuple[str, ...]] = (
     "strategy",
     "raw_wins",
     "raw_player_game_exposures",
+    "raw_completed_player_game_exposures",
+    "raw_safety_limit_player_game_exposures",
+    "raw_losses",
 )
 
 
@@ -62,7 +68,7 @@ def _read_batch_metrics(path: Path, k: int) -> pd.DataFrame:
         path,
         expected={
             "scope": ArtifactScope.BY_K.value,
-            "conditioning": "unconditional",
+            "conditioning": ATTEMPT_CONDITIONING,
         },
     )
     schema = pq.read_schema(path)
@@ -82,9 +88,19 @@ def _read_batch_metrics(path: Path, k: int) -> pd.DataFrame:
     if (frame["raw_player_game_exposures"] <= 0).any():
         raise ValueError(f"{path} contains nonpositive exposure support")
     if (frame["raw_wins"] < 0).any() or (
-        frame["raw_wins"] > frame["raw_player_game_exposures"]
+        frame["raw_wins"] > frame["raw_completed_player_game_exposures"]
     ).any():
         raise ValueError(f"{path} contains impossible win counts")
+    if not (
+        frame["raw_player_game_exposures"]
+        == frame["raw_completed_player_game_exposures"]
+        + frame["raw_safety_limit_player_game_exposures"]
+    ).all():
+        raise ValueError(f"{path} violates attempted exposure conservation")
+    if not (
+        frame["raw_losses"] == frame["raw_player_game_exposures"] - frame["raw_wins"]
+    ).all():
+        raise ValueError(f"{path} violates all-participant loss conservation")
     return frame
 
 
@@ -100,6 +116,9 @@ def _estimate_one_k(
     for strategy, group in frame.groupby("strategy", sort=True):
         wins = int(group["raw_wins"].sum())
         exposures = int(group["raw_player_game_exposures"].sum())
+        completed_exposures = int(group["raw_completed_player_game_exposures"].sum())
+        safety_exposures = int(group["raw_safety_limit_player_game_exposures"].sum())
+        losses = int(group["raw_losses"].sum())
         batches = int(group["deterministic_batch_id"].nunique())
         rate = wins / exposures
         batch_rates = group["raw_wins"].to_numpy(dtype=float) / group[
@@ -124,8 +143,17 @@ def _estimate_one_k(
                 "chance_baseline": chance,
                 "raw_wins": wins,
                 "raw_exposures": exposures,
+                "raw_attempted_exposures": exposures,
+                "raw_completed_exposures": completed_exposures,
+                "raw_safety_limit_exposures": safety_exposures,
+                "raw_losses": losses,
                 "raw_batches": batches,
+                "win_rate_per_attempt": rate,
                 "win_rate": rate,
+                "win_rate_given_completion": (
+                    wins / completed_exposures if completed_exposures else None
+                ),
+                "safety_limit_exposure_rate": safety_exposures / exposures,
                 "chance_delta": rate - chance,
                 "wilson_interval_low": wilson_low,
                 "wilson_interval_high": wilson_high,
@@ -199,6 +227,20 @@ def _across_k_estimates(
         )
         for k, frame in by_k.items()
     }
+    count_columns = (
+        "raw_wins",
+        "raw_attempted_exposures",
+        "raw_completed_exposures",
+        "raw_safety_limit_exposures",
+        "raw_losses",
+    )
+    count_maps = {
+        column: {
+            k: frame.set_index("strategy")[column].astype(int).to_dict()
+            for k, frame in by_k.items()
+        }
+        for column in count_columns
+    }
     for strategy in all_strategies:
         support = [k for k in required_k if strategy in delta_maps[k]]
         complete = support == required_k
@@ -208,6 +250,8 @@ def _across_k_estimates(
             "required_k_count": len(required_k),
             "support_k_count": len(support),
             "complete_support": complete,
+            **dict.fromkeys(count_columns),
+            "safety_limit_exposure_rate": None,
             "practical_delta_across_k": practical_delta,
             "equal_k_score": None,
             "equal_k_mcse": None,
@@ -231,6 +275,10 @@ def _across_k_estimates(
             minimum = float(deltas[worst_index])
             row.update(
                 {
+                    **{
+                        column: sum(count_maps[column][k][strategy] for k in required_k)
+                        for column in count_columns
+                    },
                     "equal_k_score": score,
                     "equal_k_mcse": mcse,
                     "equal_k_interval_low": score - critical * mcse,
@@ -240,6 +288,9 @@ def _across_k_estimates(
                     "maximin_value": minimum,
                 }
             )
+            attempted = int(cast(int, row["raw_attempted_exposures"]))
+            safety = int(cast(int, row["raw_safety_limit_exposures"]))
+            row["safety_limit_exposure_rate"] = safety / attempted
             complete_strategies.append(strategy)
             complete_vectors.append(deltas.tolist())
         rows.append(row)
@@ -604,7 +655,7 @@ def _write_frame(
         support_count_role="raw_player_game_exposures",
         uncertainty_method=uncertainty_method,
         replication_unit="deterministic_shuffle_batch",
-        conditioning="unconditional",
+        conditioning=ATTEMPT_CONDITIONING,
         consistency_columns=frame.columns.tolist(),
         source_artifacts=sources,
         grouping_keys=grouping_keys,

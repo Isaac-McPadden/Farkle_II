@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections import defaultdict, deque
+from collections import Counter, defaultdict, deque
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,7 +12,9 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from farkle.analysis.all_player_metrics import ATTEMPT_CONDITIONING
 from farkle.config import AppConfig, ArtifactScope
+from farkle.game.engine import TerminationStatus
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
@@ -27,6 +29,8 @@ _COUNT_SCHEMA: Final = pa.schema(
         pa.field("seat", pa.int16(), nullable=False),
         pa.field("raw_wins", pa.int64(), nullable=False),
         pa.field("raw_exposures", pa.int64(), nullable=False),
+        pa.field("raw_completed_exposures", pa.int64(), nullable=False),
+        pa.field("raw_safety_limit_exposures", pa.int64(), nullable=False),
     ]
 )
 
@@ -46,6 +50,8 @@ _MIXTURE_COLUMNS: Final = [
     "common_k_support",
     "raw_wins",
     "raw_exposures",
+    "raw_completed_exposures",
+    "raw_safety_limit_exposures",
     "exposure_weighted_baseline",
     "exposure_weighted_seat_effect",
 ]
@@ -54,8 +60,11 @@ _SELFPLAY_COLUMNS: Final = [
     "k",
     "strategy",
     "p1_wins",
-    "selfplay_games",
-    "p1_win_rate",
+    "games_attempted",
+    "games_completed",
+    "games_safety_limit",
+    "p1_win_rate_per_attempt",
+    "p1_win_rate_given_completion",
     "p1_effect_vs_chance",
 ]
 _MIRRORED_COLUMNS: Final = [
@@ -64,6 +73,9 @@ _MIRRORED_COLUMNS: Final = [
     "strategy_a",
     "strategy_b",
     "paired_mirrored_games",
+    "games_attempted",
+    "games_completed",
+    "games_safety_limit",
     "unpaired_forward_games",
     "unpaired_reverse_games",
     "mean_p1_win_difference",
@@ -103,6 +115,7 @@ def _source_columns(k: int) -> list[str]:
         "shuffle_index",
         "game_index",
         "winner_seat",
+        "termination_status",
         *(f"P{seat}_strategy" for seat in range(1, k + 1)),
     ]
 
@@ -114,7 +127,7 @@ def _iter_seat_count_tables(source: Path, k: int) -> Iterator[pa.Table]:
     if missing:
         raise ValueError(f"{source} lacks canonical seat-analysis columns: {missing}")
     coordinate: tuple[int, int, int] | None = None
-    counts: defaultdict[tuple[int, int], list[int]] = defaultdict(lambda: [0, 0])
+    counts: defaultdict[tuple[int, int], list[int]] = defaultdict(lambda: [0, 0, 0, 0])
 
     def _flush() -> pa.Table | None:
         if coordinate is None or not counts:
@@ -129,6 +142,8 @@ def _iter_seat_count_tables(source: Path, k: int) -> Iterator[pa.Table]:
                 "seat": seat,
                 "raw_wins": values[0],
                 "raw_exposures": values[1],
+                "raw_completed_exposures": values[2],
+                "raw_safety_limit_exposures": values[3],
             }
             for (strategy, seat), values in sorted(counts.items())
         ]
@@ -149,9 +164,15 @@ def _iter_seat_count_tables(source: Path, k: int) -> Iterator[pa.Table]:
                 table = _flush()
                 if table is not None:
                     yield table
-                counts = defaultdict(lambda: [0, 0])
+                counts = defaultdict(lambda: [0, 0, 0, 0])
             coordinate = current
-            winner = str(row["winner_seat"])
+            try:
+                status = TerminationStatus(row["termination_status"])
+            except (KeyError, ValueError) as exc:
+                raise ValueError(f"{source} contains invalid termination status") from exc
+            winner = row["winner_seat"]
+            if status is TerminationStatus.SAFETY_LIMIT and winner is not None:
+                raise ValueError(f"{source} credits a safety-limit winner")
             for seat in range(1, k + 1):
                 strategy_value = row[f"P{seat}_strategy"]
                 if strategy_value is None:
@@ -159,6 +180,8 @@ def _iter_seat_count_tables(source: Path, k: int) -> Iterator[pa.Table]:
                 cell = counts[(int(strategy_value), seat)]
                 cell[0] += int(winner == f"P{seat}")
                 cell[1] += 1
+                cell[2] += int(status is TerminationStatus.COMPLETED)
+                cell[3] += int(status is TerminationStatus.SAFETY_LIMIT)
     table = _flush()
     if table is not None:
         yield table
@@ -178,7 +201,7 @@ def _write_batch_counts(cfg: AppConfig, k: int, source: Path, output: Path) -> N
         weighted_quantity="seat_win_indicator",
         support_count_role="raw_player_game_exposures",
         replication_unit="deterministic_shuffle_batch",
-        conditioning="unconditional",
+        conditioning=ATTEMPT_CONDITIONING,
         consistency_columns=_COUNT_SCHEMA.names,
         source_artifacts=[source],
         grouping_keys=["root_seed", "k", "deterministic_batch_id", "strategy", "seat"],
@@ -235,21 +258,54 @@ def _validate_source(path: Path, k: int) -> int:
 
 
 def _within_k_frames(counts: pd.DataFrame, k: int) -> tuple[pd.DataFrame, pd.DataFrame]:
+    if not (
+        counts["raw_exposures"]
+        == counts["raw_completed_exposures"] + counts["raw_safety_limit_exposures"]
+    ).all():
+        raise ValueError("seat counts violate attempted exposure conservation")
+    if (counts["raw_wins"] > counts["raw_completed_exposures"]).any():
+        raise ValueError("seat counts credit a win outside completed exposure support")
     grouped = (
         counts.groupby(["root_seed", "k", "strategy", "seat"], as_index=False)
-        .agg(raw_wins=("raw_wins", "sum"), raw_exposures=("raw_exposures", "sum"))
+        .agg(
+            raw_wins=("raw_wins", "sum"),
+            raw_exposures=("raw_exposures", "sum"),
+            raw_completed_exposures=("raw_completed_exposures", "sum"),
+            raw_safety_limit_exposures=("raw_safety_limit_exposures", "sum"),
+        )
         .sort_values(["strategy", "seat"])
     )
     grouped["chance_baseline"] = 1.0 / k
     grouped["win_rate"] = grouped["raw_wins"] / grouped["raw_exposures"]
+    grouped["win_rate_per_attempt"] = grouped["win_rate"]
+    grouped["win_rate_given_completion"] = grouped["raw_wins"].div(
+        grouped["raw_completed_exposures"].replace(0, pd.NA)
+    )
+    grouped["safety_limit_exposure_rate"] = (
+        grouped["raw_safety_limit_exposures"] / grouped["raw_exposures"]
+    )
+    grouped["raw_losses"] = grouped["raw_exposures"] - grouped["raw_wins"]
     grouped["seat_effect"] = grouped["win_rate"] - grouped["chance_baseline"]
     population = (
         counts.groupby(["root_seed", "k", "seat"], as_index=False)
-        .agg(raw_wins=("raw_wins", "sum"), raw_exposures=("raw_exposures", "sum"))
+        .agg(
+            raw_wins=("raw_wins", "sum"),
+            raw_exposures=("raw_exposures", "sum"),
+            raw_completed_exposures=("raw_completed_exposures", "sum"),
+            raw_safety_limit_exposures=("raw_safety_limit_exposures", "sum"),
+        )
         .sort_values("seat")
     )
     population["chance_baseline"] = 1.0 / k
     population["win_rate"] = population["raw_wins"] / population["raw_exposures"]
+    population["win_rate_per_attempt"] = population["win_rate"]
+    population["win_rate_given_completion"] = population["raw_wins"].div(
+        population["raw_completed_exposures"].replace(0, pd.NA)
+    )
+    population["safety_limit_exposure_rate"] = (
+        population["raw_safety_limit_exposures"] / population["raw_exposures"]
+    )
+    population["raw_losses"] = population["raw_exposures"] - population["raw_wins"]
     population["seat_effect"] = population["win_rate"] - population["chance_baseline"]
     return grouped, population
 
@@ -295,6 +351,12 @@ def _standardized_frames(
             )
             wins = sum(int(cell.iloc[0]["raw_wins"]) for cell in cells)
             exposures = sum(int(cell.iloc[0]["raw_exposures"]) for cell in cells)
+            completed_exposures = sum(
+                int(cell.iloc[0]["raw_completed_exposures"]) for cell in cells
+            )
+            safety_exposures = sum(
+                int(cell.iloc[0]["raw_safety_limit_exposures"]) for cell in cells
+            )
             baseline_mass = sum(
                 int(cell.iloc[0]["raw_exposures"]) / k for k, cell in zip(ks, cells, strict=True)
             )
@@ -317,6 +379,8 @@ def _standardized_frames(
                     "common_k_support": ks,
                     "raw_wins": wins,
                     "raw_exposures": exposures,
+                    "raw_completed_exposures": completed_exposures,
+                    "raw_safety_limit_exposures": safety_exposures,
                     "exposure_weighted_baseline": baseline_mass / exposures,
                     "exposure_weighted_seat_effect": wins / exposures - baseline_mass / exposures,
                 }
@@ -340,6 +404,12 @@ def _standardized_frames(
         )
         wins = sum(int(cell.iloc[0]["raw_wins"]) for cell in cells)
         exposures = sum(int(cell.iloc[0]["raw_exposures"]) for cell in cells)
+        completed_exposures = sum(
+            int(cell.iloc[0]["raw_completed_exposures"]) for cell in cells
+        )
+        safety_exposures = sum(
+            int(cell.iloc[0]["raw_safety_limit_exposures"]) for cell in cells
+        )
         baseline_mass = sum(
             int(cell.iloc[0]["raw_exposures"]) / k for k, cell in zip(ks, cells, strict=True)
         )
@@ -352,6 +422,8 @@ def _standardized_frames(
                 "common_k_support": ks,
                 "raw_wins": wins,
                 "raw_exposures": exposures,
+                "raw_completed_exposures": completed_exposures,
+                "raw_safety_limit_exposures": safety_exposures,
                 "exposure_weighted_baseline": baseline_mass / exposures,
                 "exposure_weighted_seat_effect": wins / exposures - baseline_mass / exposures,
             }
@@ -366,9 +438,10 @@ def _standardized_frames(
 
 
 def _game_diagnostics(sources: dict[int, Path]) -> tuple[pd.DataFrame, pd.DataFrame]:
-    selfplay: defaultdict[tuple[int, int, int], list[int]] = defaultdict(lambda: [0, 0])
+    selfplay: defaultdict[tuple[int, int, int], list[int]] = defaultdict(lambda: [0, 0, 0])
     mirrored: defaultdict[tuple[int, int, int], list[int]] = defaultdict(lambda: [0, 0])
     unmatched: defaultdict[tuple[int, int, int], list[int]] = defaultdict(lambda: [0, 0])
+    safety: Counter[tuple[int, int, int]] = Counter()
     for k, source in sources.items():
         columns = _source_columns(k)
         pending: defaultdict[tuple[int, int, int, int], dict[int, deque[int]]] = defaultdict(
@@ -378,14 +451,21 @@ def _game_diagnostics(sources: dict[int, Path]) -> tuple[pd.DataFrame, pd.DataFr
             for row in batch.to_pylist():
                 root = int(row["root_seed"])
                 strategies = tuple(int(row[f"P{seat}_strategy"]) for seat in range(1, k + 1))
+                status = TerminationStatus(row["termination_status"])
+                if status is TerminationStatus.SAFETY_LIMIT and row["winner_seat"] is not None:
+                    raise ValueError(f"{source} credits a safety-limit winner")
                 p1_win = int(row["winner_seat"] == "P1")
                 if len(set(strategies)) == 1:
                     cell = selfplay[(root, k, strategies[0])]
                     cell[0] += p1_win
                     cell[1] += 1
+                    cell[2] += int(status is TerminationStatus.SAFETY_LIMIT)
                 if k != 2 or strategies[0] == strategies[1]:
                     continue
                 a, b = sorted(strategies)
+                if status is TerminationStatus.SAFETY_LIMIT:
+                    safety[(root, a, b)] += 1
+                    continue
                 orientation = int(strategies == (b, a))
                 key = (root, int(row["deterministic_batch_id"]), a, b)
                 opposite = 1 - orientation
@@ -407,8 +487,13 @@ def _game_diagnostics(sources: dict[int, Path]) -> tuple[pd.DataFrame, pd.DataFr
             "k": k,
             "strategy": strategy,
             "p1_wins": values[0],
-            "selfplay_games": values[1],
-            "p1_win_rate": values[0] / values[1],
+            "games_attempted": values[1],
+            "games_completed": values[1] - values[2],
+            "games_safety_limit": values[2],
+            "p1_win_rate_per_attempt": values[0] / values[1],
+            "p1_win_rate_given_completion": (
+                values[0] / (values[1] - values[2]) if values[1] > values[2] else None
+            ),
             "p1_effect_vs_chance": values[0] / values[1] - 1.0 / k,
         }
         for (root, k, strategy), values in sorted(selfplay.items())
@@ -420,6 +505,16 @@ def _game_diagnostics(sources: dict[int, Path]) -> tuple[pd.DataFrame, pd.DataFr
             "strategy_a": a,
             "strategy_b": b,
             "paired_mirrored_games": values[1],
+            "games_attempted": (
+                2 * values[1]
+                + unmatched[(root, a, b)][0]
+                + unmatched[(root, a, b)][1]
+                + safety[(root, a, b)]
+            ),
+            "games_completed": (
+                2 * values[1] + unmatched[(root, a, b)][0] + unmatched[(root, a, b)][1]
+            ),
+            "games_safety_limit": safety[(root, a, b)],
             "unpaired_forward_games": unmatched[(root, a, b)][0],
             "unpaired_reverse_games": unmatched[(root, a, b)][1],
             "mean_p1_win_difference": values[0] / values[1],
@@ -437,8 +532,29 @@ def _game_diagnostics(sources: dict[int, Path]) -> tuple[pd.DataFrame, pd.DataFr
                 "strategy_a": a,
                 "strategy_b": b,
                 "paired_mirrored_games": 0,
+                "games_attempted": values[0] + values[1] + safety[(root, a, b)],
+                "games_completed": values[0] + values[1],
+                "games_safety_limit": safety[(root, a, b)],
                 "unpaired_forward_games": values[0],
                 "unpaired_reverse_games": values[1],
+                "mean_p1_win_difference": None,
+            }
+        )
+    for (root, a, b), safety_games in sorted(safety.items()):
+        if (root, a, b) in mirrored or (root, a, b) in unmatched:
+            continue
+        mirrored_rows.append(
+            {
+                "root_seed": root,
+                "k": 2,
+                "strategy_a": a,
+                "strategy_b": b,
+                "paired_mirrored_games": 0,
+                "games_attempted": safety_games,
+                "games_completed": 0,
+                "games_safety_limit": safety_games,
+                "unpaired_forward_games": 0,
+                "unpaired_reverse_games": 0,
                 "mean_p1_win_difference": None,
             }
         )
@@ -461,6 +577,7 @@ def _write_frame(
     k_method: str = "none",
     k_weights: dict[int, float] | None = None,
     missing_cell_policy: str = "fail",
+    conditioning: str = ATTEMPT_CONDITIONING,
 ) -> None:
     sidecar = make_artifact_sidecar(
         cfg,
@@ -476,7 +593,7 @@ def _write_frame(
         support_count_role="raw_player_game_exposures",
         uncertainty_method="descriptive",
         replication_unit="deterministic_shuffle_batch",
-        conditioning="unconditional",
+        conditioning=conditioning,
         consistency_columns=frame.columns.tolist(),
         source_artifacts=sources,
         grouping_keys=grouping_keys,
@@ -604,6 +721,7 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
         sources=list(sources.values()),
         ks=ks,
         grouping_keys=["root_seed", "strategy_a", "strategy_b"],
+        conditioning='termination_status == "completed"',
     )
     write_stage_done(
         done,

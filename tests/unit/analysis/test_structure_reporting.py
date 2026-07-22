@@ -213,6 +213,10 @@ def _publish_inputs(cfg: AppConfig) -> None:
             "strategy": ["1", "2"],
             "complete_support": [True, True],
             "equal_k_score": [0.1, 0.0],
+            "raw_attempted_exposures": [10, 10],
+            "raw_completed_exposures": [10, 10],
+            "raw_safety_limit_exposures": [0, 0],
+            "safety_limit_exposure_rate": [0.0, 0.0],
         }
     )
     _write_frame(
@@ -225,8 +229,12 @@ def _publish_inputs(cfg: AppConfig) -> None:
     )
     by_k = pd.DataFrame(
         {
+            "root_seed": [11, 11],
             "strategy": ["1", "2"],
             "chance_delta": [0.1, 0.0],
+            "raw_attempted_exposures": [10, 10],
+            "raw_completed_exposures": [10, 10],
+            "raw_safety_limit_exposures": [0, 0],
         }
     )
     _write_frame(
@@ -248,6 +256,11 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     markdown = cfg.structure_report_markdown_path().read_text(encoding="utf-8")
     assert report["support"]["player_counts"] == [2]
     assert report["support"]["k_weights"] == {"2": 1.0}
+    assert report["report_contract_version"] == 2
+    assert report["performance"]["primary_rate"] == "win_rate_per_attempt"
+    assert report["safety_limits"]["games_attempted"] == 10
+    assert report["safety_limits"]["games_completed"] == 10
+    assert report["safety_limits"]["games_safety_limit"] == 0
     assert report["h2h"]["role"] == "primary_two_player_finalist_inference"
     assert report["h2h"]["unique_best_claim_permitted"] is True
     assert report["robustness"]["pareto_members"] == ["1"]

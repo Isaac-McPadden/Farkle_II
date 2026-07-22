@@ -16,6 +16,7 @@ layer.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import StrEnum
 from typing import Dict, List, Sequence
 
 from farkle.game.scoring import DiceRoll, default_score
@@ -28,10 +29,18 @@ __all__ = [
     "GameStats",
     "GameMetrics",
     "FarkleGame",
+    "TerminationStatus",
 ]
 
 # Maximum number of rolls permitted in a single turn before aborting
 ROLL_LIMIT: int = 1000
+
+
+class TerminationStatus(StrEnum):
+    """Closed set of successfully persisted game outcomes."""
+
+    COMPLETED = "completed"
+    SAFETY_LIMIT = "safety_limit"
 
 
 # ---------------------------------------------------------------------------
@@ -286,7 +295,10 @@ class GameStats:
     total_farkles
         Total number of Farkles rolled.
     margin
-        Points separating first and second place.
+        Points separating first and second place, or ``None`` when the safety
+        limit prevented normal completion.
+    termination_status
+        Whether normal rules completed the game or the safety limit ended it.
     """
 
     n_players: int
@@ -294,8 +306,15 @@ class GameStats:
     n_rounds: int
     total_rolls: int
     total_farkles: int
-    margin: int
+    margin: int | None
+    termination_status: TerminationStatus = TerminationStatus.COMPLETED
     # per player and winner pulled into separate class, PlayerStats
+
+    @property
+    def hit_safety_limit(self) -> bool:
+        """Return whether the game ended at the configured safety limit."""
+
+        return self.termination_status is TerminationStatus.SAFETY_LIMIT
 
 
 @dataclass(slots=True)
@@ -315,14 +334,22 @@ class GameMetrics:
 
     # Frequently used scalar views over the canonical nested statistics.
     @property
-    def winner(self) -> str:
-        """Return the name of the player with the highest score."""
-        return max(self.players.items(), key=lambda p: p[1].score)[0]
+    def winner(self) -> str | None:
+        """Return the unique normal-game winner, or ``None`` at the safety limit."""
+
+        if self.game.termination_status is TerminationStatus.SAFETY_LIMIT:
+            return None
+        winners = [name for name, stats in self.players.items() if stats.rank == 1]
+        if len(winners) != 1:
+            raise ValueError(f"Completed game must have exactly one rank-1 player; got {winners}")
+        return winners[0]
 
     @property
-    def winning_score(self) -> int:
-        """Final score achieved by the winner."""
-        return self.players[self.winner].score
+    def winning_score(self) -> int | None:
+        """Final score achieved by the winner, or ``None`` at the safety limit."""
+
+        winner = self.winner
+        return None if winner is None else self.players[winner].score
 
     @property
     def n_rounds(self) -> int:
@@ -349,9 +376,10 @@ class PlayerStats:
     strategy
         Integer strategy identifier when available, otherwise a string representation.
     rank
-        Finishing position (1 for the winner).
+        Finishing position (1 for the winner), or ``None`` at the safety limit.
     loss_margin
-        Point difference from the winner (``0`` if they won).
+        Point difference from the winner (``0`` if they won), or ``None`` at
+        the safety limit.
     smart_five_uses, n_smart_five_dice
         Counts for Smart-5 heuristic usage and dice removed.
     smart_one_uses, n_smart_one_dice
@@ -368,14 +396,14 @@ class PlayerStats:
     n_turns: int
     highest_turn: int
     strategy: int | str
-    rank: int  # 1 = winner
-    loss_margin: int  # 0 for winner, > 0 otherwise
+    rank: int | None  # 1 = winner; None when normal completion did not occur
+    loss_margin: int | None  # 0 for winner, > 0 otherwise; None at safety limit
     smart_five_uses: int = 0
     n_smart_five_dice: int = 0
     smart_one_uses: int = 0
     n_smart_one_dice: int = 0
     hot_dice: int = 0
-    hit_max_rounds: int = 0
+    hit_max_rounds: bool = False
 
 
 class FarkleGame:
@@ -443,13 +471,25 @@ class FarkleGame:
 
         self.max_rounds_hit = (not final_round) and rounds >= max_rounds
 
+        termination_status = (
+            TerminationStatus.SAFETY_LIMIT if self.max_rounds_hit else TerminationStatus.COMPLETED
+        )
         sorted_players = sorted(self.players, key=lambda pl: pl.score, reverse=True)
-        winner = sorted_players[0]
-        runner = sorted_players[1] if len(sorted_players) > 1 else None
-        ranks = {player.name: rk for rk, player in enumerate(sorted_players, start=1)}
+        if termination_status is TerminationStatus.COMPLETED:
+            winner = sorted_players[0]
+            runner = sorted_players[1] if len(sorted_players) > 1 else None
+            ranks: dict[str, int | None] = {
+                player.name: rank for rank, player in enumerate(sorted_players, start=1)
+            }
+            players_for_stats = sorted_players
+        else:
+            winner = None
+            runner = None
+            ranks = {player.name: None for player in self.players}
+            players_for_stats = self.players
 
         players_block: Dict[str, PlayerStats] = {}
-        for player in sorted_players:
+        for player in players_for_stats:
             strategy_id = getattr(player.strategy, "strategy_id", None)
             players_block[player.name] = PlayerStats(
                 score=player.score,
@@ -459,13 +499,13 @@ class FarkleGame:
                 highest_turn=player.highest_turn,
                 strategy=strategy_id if strategy_id is not None else str(player.strategy),
                 rank=ranks[player.name],
-                loss_margin=winner.score - player.score,
+                loss_margin=None if winner is None else winner.score - player.score,
                 smart_five_uses=player.smart_five_uses,
                 n_smart_five_dice=player.n_smart_five_dice,
                 smart_one_uses=player.smart_one_uses,
                 n_smart_one_dice=player.n_smart_one_dice,
                 hot_dice=player.n_hot_dice,
-                hit_max_rounds=int(self.max_rounds_hit),
+                hit_max_rounds=self.max_rounds_hit,
             )
 
         game_block = GameStats(
@@ -474,7 +514,8 @@ class FarkleGame:
             n_rounds=rounds,
             total_rolls=sum(player.n_rolls for player in self.players),
             total_farkles=sum(player.n_farkles for player in self.players),
-            margin=winner.score - (runner.score if runner else 0),
+            margin=None if winner is None else winner.score - (runner.score if runner else 0),
+            termination_status=termination_status,
         )
 
         return GameMetrics(players_block, game_block)

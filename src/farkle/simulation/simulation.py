@@ -16,8 +16,9 @@ from dataclasses import asdict
 from typing import Any, Iterable, List, Mapping, Sequence, Tuple
 
 import pandas as pd
+import pyarrow as pa
 
-from farkle.game.engine import FarkleGame, FarklePlayer
+from farkle.game.engine import FarkleGame, FarklePlayer, TerminationStatus
 from farkle.simulation.strategies import (
     STOP_AT_THRESHOLDS,
     StrategyGridOptions,
@@ -29,6 +30,7 @@ from farkle.simulation.strategies import (
     strategy_tuple,
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_rng, spawn_seeds
+from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, raw_simulation_schema_for
 
 __all__: list[str] = [
     "generate_strategy_grid",
@@ -37,6 +39,8 @@ __all__: list[str] = [
     "simulate_many_games",
     "simulate_many_games_from_seeds",
     "aggregate_metrics",
+    "simulation_rows_to_table",
+    "validate_simulation_row",
 ]
 
 
@@ -343,7 +347,7 @@ def _make_players(
 
     return [
         FarklePlayer(
-            name=f"P{i+1}",
+            name=f"P{i + 1}",
             strategy=s,
             rng=coordinate_rng(
                 RandomPurpose.PLAYER,
@@ -356,11 +360,83 @@ def _make_players(
     ]
 
 
+def validate_simulation_row(row: Mapping[str, Any]) -> None:
+    """Validate the closed outcome invariants for one flattened game row."""
+
+    try:
+        n_players = int(row["k"])
+        status = TerminationStatus(row["termination_status"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("Simulation row has invalid k or termination_status") from exc
+    if n_players < 1:
+        raise ValueError("Simulation row k must be positive")
+    if row.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION:
+        raise ValueError(f"Simulation row must use outcome_schema_version={OUTCOME_SCHEMA_VERSION}")
+
+    seats = [f"P{index}" for index in range(1, n_players + 1)]
+    missing_ranks = [seat for seat in seats if f"{seat}_rank" not in row]
+    if missing_ranks:
+        raise ValueError(f"Simulation row missing participant ranks for {missing_ranks}")
+    ranks = [row[f"{seat}_rank"] for seat in seats]
+    winner_seat = row.get("winner_seat")
+    winner_strategy = row.get("winner_strategy")
+
+    if status is TerminationStatus.COMPLETED:
+        rank_one_seats = [seat for seat, rank in zip(seats, ranks, strict=True) if rank == 1]
+        if len(rank_one_seats) != 1 or winner_seat != rank_one_seats[0]:
+            raise ValueError(
+                "Completed simulation row must have exactly one winner matching its rank-1 seat"
+            )
+        if any(rank is None for rank in ranks) or sorted(ranks) != list(range(1, n_players + 1)):
+            raise ValueError("Completed simulation row ranks must be the permutation 1..k")
+        if winner_strategy is None or winner_strategy != row.get(f"{winner_seat}_strategy"):
+            raise ValueError("Completed simulation row must identify the winning strategy")
+        if row.get("winning_score") is None or row.get("victory_margin") is None:
+            raise ValueError("Completed simulation row must retain winner-conditioned fields")
+        if row.get("hit_safety_limit") is not False:
+            raise ValueError("Completed simulation row cannot hit the safety limit")
+        expected_seat_ranks = [
+            seat for _, seat in sorted(zip(ranks, seats, strict=True), key=lambda item: item[0])
+        ]
+        if row.get("seat_ranks") != expected_seat_ranks:
+            raise ValueError("Completed simulation row has inconsistent seat_ranks")
+        return
+
+    if row.get("hit_safety_limit") is not True:
+        raise ValueError("Safety-limit simulation row must set hit_safety_limit=true")
+    winner_conditioned = {
+        "winner_seat": winner_seat,
+        "winner_strategy": winner_strategy,
+        "winning_score": row.get("winning_score"),
+        "victory_margin": row.get("victory_margin"),
+    }
+    present = [name for name, value in winner_conditioned.items() if value is not None]
+    if present:
+        raise ValueError(f"Safety-limit simulation row cannot claim a winner: {present}")
+    if any(rank is not None for rank in ranks):
+        raise ValueError("Safety-limit simulation row cannot assign participant ranks")
+    if row.get("seat_ranks") != [None] * n_players:
+        raise ValueError("Safety-limit simulation row must retain k null seat-rank entries")
+    if any(row.get(f"{seat}_loss_margin") is not None for seat in seats):
+        raise ValueError("Safety-limit simulation row cannot assign loss margins")
+
+
+def simulation_rows_to_table(rows: Sequence[Mapping[str, Any]], n_players: int) -> pa.Table:
+    """Validate and materialize raw rows with deliberate Arrow nullability."""
+
+    for row in rows:
+        validate_simulation_row(row)
+        if int(row["k"]) != n_players:
+            raise ValueError(f"Simulation row k={row['k']} does not match schema k={n_players}")
+    return pa.Table.from_pylist(list(rows), schema=raw_simulation_schema_for(n_players))
+
+
 def _play_game(
     seed: int,
     strategies: Sequence[ThresholdStrategy],
     target_score: int = 10_000,
     provenance: Mapping[str, Any] | None = None,
+    max_rounds: int = 200,
 ) -> Mapping[str, Any]:
     """Play a single game and return flattened metrics.
 
@@ -372,6 +448,8 @@ def _play_game(
         ``ThresholdStrategy`` objects in seating order.
     target_score
         Score required to trigger the final round.
+    max_rounds
+        Safety cap on complete table rounds.
 
     Returns
     -------
@@ -381,18 +459,38 @@ def _play_game(
     """
     # give every player an *independent* PRNG, but reproducible
     players = _make_players(strategies, seed)
-    gm = FarkleGame(players, target_score=target_score, table_seed=seed).play()
-    # Check for only one winner
+    game = FarkleGame(players, target_score=target_score, table_seed=seed)
+    gm = game.play() if max_rounds == 200 else game.play(max_rounds=max_rounds)
     winners = [name for name, ps in gm.players.items() if ps.rank == 1]
-    if len(winners) != 1:
+    status = gm.game.termination_status
+    if status is TerminationStatus.COMPLETED and len(winners) != 1:
         raise ValueError(
-            "Expected exactly one player with rank == 1, " f"got {len(winners)}: {winners}"
+            "Completed game must have exactly one player with rank == 1, "
+            f"got {len(winners)}: {winners}"
         )
-    # Determine the winner from the PlayerStats block
-    winner = next(name for name, ps in gm.players.items() if ps.rank == 1)
+    if status is TerminationStatus.SAFETY_LIMIT and winners:
+        raise ValueError(f"Safety-limit game cannot have rank-1 players: {winners}")
+    winner = winners[0] if winners else None
+    seat_ranks: list[str | None]
+    if winner is None:
+        seat_ranks = [None] * len(strategies)
+    else:
+        seat_ranks = [
+            name
+            for name, _ in sorted(
+                gm.players.items(),
+                key=lambda item: item[1].rank if item[1].rank is not None else len(strategies) + 1,
+            )
+        ]
     flat: dict[str, Any] = {
+        "termination_status": status.value,
+        "hit_safety_limit": gm.game.hit_safety_limit,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
         "winner_seat": winner,
-        "winning_score": gm.players[winner].score,
+        "winner_strategy": None if winner is None else gm.players[winner].strategy,
+        "seat_ranks": seat_ranks,
+        "winning_score": None if winner is None else gm.players[winner].score,
+        "victory_margin": gm.game.margin,
         "n_rounds": gm.game.n_rounds,
         "root_seed": seed,
         "k": len(strategies),
@@ -410,6 +508,7 @@ def _play_game(
         for k, v in asdict(stats).items():
             flat[f"{pname}_{k}"] = v
 
+    validate_simulation_row(flat)
     return flat
 
 

@@ -34,7 +34,11 @@ from farkle.utils.parallel import (
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
-from farkle.utils.schema_helpers import expected_schema_for
+from farkle.utils.schema_helpers import (
+    OUTCOME_SCHEMA_VERSION,
+    TOURNAMENT_METHOD_VERSION,
+    expected_schema_for,
+)
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.streaming_loop import run_streaming_shard
 
@@ -133,6 +137,8 @@ def _canonical_row_shards(
         int(completion.get("root_seed", -1)) != int(cfg.sim.seed)
         or int(completion.get("n_players", -1)) != n_players
         or int(completion.get("rng_scheme_version", -1)) != int(cfg.rng.scheme_version)
+        or int(completion.get("outcome_schema_version", -1)) != OUTCOME_SCHEMA_VERSION
+        or int(completion.get("tournament_method_version", -1)) != TOURNAMENT_METHOD_VERSION
         or start < 0
         or end < start
         or shuffles_per_batch < 1
@@ -162,6 +168,8 @@ def _canonical_row_shards(
             or int(record.get("root_seed", -1)) != int(cfg.sim.seed)
             or int(record.get("n_players", -1)) != n_players
             or int(record.get("rng_scheme_version", -1)) != int(cfg.rng.scheme_version)
+            or int(record.get("outcome_schema_version", -1)) != OUTCOME_SCHEMA_VERSION
+            or int(record.get("tournament_method_version", -1)) != TOURNAMENT_METHOD_VERSION
             or batch_id != shuffle_index // shuffles_per_batch
         ):
             raise ValueError(f"row manifest support mismatch: {manifest_path}")

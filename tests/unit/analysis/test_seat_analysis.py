@@ -33,6 +33,8 @@ def _row(k: int, game: int, strategies: list[int], winner_seat: int) -> dict[str
         "deterministic_batch_id": 0,
         "winner_seat": f"P{winner_seat}",
         "winner_strategy": strategies[winner_seat - 1],
+        "termination_status": "completed",
+        "outcome_schema_version": 2,
     }
     row.update({f"P{seat}_strategy": strategy for seat, strategy in enumerate(strategies, 1)})
     return row
