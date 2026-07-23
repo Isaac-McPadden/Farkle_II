@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
@@ -12,7 +11,7 @@ from typing import Any, Sequence, cast
 
 from farkle import analysis
 from farkle.analysis.stage_runner import StageRunContext, StageRunner
-from farkle.config import AppConfig, apply_dot_overrides, assign_config_sha, load_app_config
+from farkle.config import AppConfig, assign_config_sha
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
@@ -21,7 +20,6 @@ from farkle.orchestration.run_contexts import (
 )
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
-    resolve_seed_pair_args,
     seed_has_completion_markers,
     seed_pair_root,
     seed_pair_seed_root,
@@ -34,7 +32,6 @@ from farkle.utils.authenticated_contract import (
     CodeIdentityPolicy,
     resolve_code_identity,
 )
-from farkle.utils.logging import setup_info_logging
 from farkle.utils.manifest import (
     EVENT_RUN_END,
     EVENT_RUN_START,
@@ -446,9 +443,9 @@ def run_pipeline(
         root_health[str(seed)]["stage_states"] = current_states
         if current_lifecycle is None:
             root_health[str(seed)]["analysis"] = "failed"
-            root_health[str(seed)]["error"] = (
-                "root workflow became stale before final health publication"
-            )
+            root_health[str(seed)][
+                "error"
+            ] = "root workflow became stale before final health publication"
     root_failures = [
         f"root {seed}: {status['error']}"
         for seed, status in root_health.items()
@@ -488,33 +485,4 @@ def run_pipeline(
         raise RuntimeError(pair_error or root_failures[0])
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="farkle two-seed-pipeline")
-    parser.add_argument("--config", type=Path, default=Path("configs/fast_config.yaml"))
-    parser.add_argument("--set", dest="overrides", action="append", default=[])
-    parser.add_argument("--seed-a", type=int)
-    parser.add_argument("--seed-b", type=int)
-    parser.add_argument("--seed-pair", type=int, nargs=2, metavar=("A", "B"))
-    parser.add_argument("--force", action="store_true")
-    parser.add_argument("--parallel-seeds", action="store_true")
-    return parser
-
-
-def main(argv: Sequence[str] | None = None) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
-    setup_info_logging()
-    cfg = load_app_config(Path(args.config), seed_list_len=2)
-    cfg = apply_dot_overrides(cfg, list(args.overrides or []))
-    if args.parallel_seeds:
-        cfg.orchestration.parallel_seeds = True
-    override_pair = resolve_seed_pair_args(args, parser)
-    if override_pair is not None:
-        cfg.sim.seed_list = list(override_pair)
-    roots = cfg.sim.populate_seed_list(2)
-    assign_config_sha(cfg)
-    run_pipeline(cfg, seed_pair=(roots[0], roots[1]), force=args.force)
-    return 0
-
-
-__all__ = ["main", "run_pipeline"]
+__all__ = ["run_pipeline"]

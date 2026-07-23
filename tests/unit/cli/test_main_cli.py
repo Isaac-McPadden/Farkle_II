@@ -68,21 +68,21 @@ def test_parse_level_unknown_string_defaults_to_info():
 
 def test_resolve_seed_pair_prefers_seed_pair_form():
     parser = cli_main.build_parser()
-    args, _ = parser.parse_known_args(["--seed-pair", "10", "20", "run"])
+    args = parser.parse_args(["two-seed-pipeline", "--seed-pair", "10", "20"])
 
     assert seed_utils.resolve_seed_pair_args(args, parser) == (10, 20)
 
 
 def test_resolve_seed_pair_accepts_seed_a_seed_b_form():
     parser = cli_main.build_parser()
-    args, _ = parser.parse_known_args(["--seed-a", "10", "--seed-b", "20", "run"])
+    args = parser.parse_args(["two-seed-pipeline", "--seed-a", "10", "--seed-b", "20"])
 
     assert seed_utils.resolve_seed_pair_args(args, parser) == (10, 20)
 
 
 def test_resolve_seed_pair_returns_none_when_unset():
     parser = cli_main.build_parser()
-    args, _ = parser.parse_known_args(["run"])
+    args = parser.parse_args(["two-seed-pipeline"])
 
     assert seed_utils.resolve_seed_pair_args(args, parser) is None
 
@@ -90,14 +90,23 @@ def test_resolve_seed_pair_returns_none_when_unset():
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--seed-pair", "1", "2", "--seed-a", "3", "--seed-b", "4", "run"],
-        ["--seed-a", "1", "run"],
-        ["--seed-b", "2", "run"],
+        [
+            "two-seed-pipeline",
+            "--seed-pair",
+            "1",
+            "2",
+            "--seed-a",
+            "3",
+            "--seed-b",
+            "4",
+        ],
+        ["two-seed-pipeline", "--seed-a", "1"],
+        ["two-seed-pipeline", "--seed-b", "2"],
     ],
 )
 def test_resolve_seed_pair_rejects_invalid_combinations(argv):
     parser = cli_main.build_parser()
-    args, _ = parser.parse_known_args(argv)
+    args = parser.parse_args(argv)
 
     with pytest.raises(SystemExit) as excinfo:
         seed_utils.resolve_seed_pair_args(args, parser)
@@ -111,7 +120,7 @@ def test_resolve_log_file_for_run(tmp_path: Path):
     cfg.sim.seed = 11
 
     parser = cli_main.build_parser()
-    args, _ = parser.parse_known_args(["run"])
+    args = parser.parse_args(["run"])
 
     log_file = cli_main._resolve_log_file(args, cfg)
 
@@ -124,7 +133,7 @@ def test_resolve_log_file_for_two_seed_pipeline(tmp_path: Path):
     cfg.sim.seed_list = [3, 7]
 
     parser = cli_main.build_parser()
-    args, _ = parser.parse_known_args(["two-seed-pipeline"])
+    args = parser.parse_args(["two-seed-pipeline"])
 
     log_file = cli_main._resolve_log_file(args, cfg)
 
@@ -329,8 +338,7 @@ def test_analyze_pipeline_sorts_and_deduplicates_rng_lags(
     "argv",
     [
         ["analyze"],
-        ["--seed-pair", "1", "2"],
-        ["--seed-pair", "1"],
+        ["two-seed-pipeline", "--seed-pair", "1"],
     ],
 )
 def test_main_rejects_missing_required_args_with_exit_code_2(preserve_root_logger, argv):
@@ -371,9 +379,18 @@ def test_analyze_subcommands_dispatch(monkeypatch, preserve_root_logger, argv, e
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--seed-pair", "1", "2", "--seed-a", "1", "--seed-b", "2", "run"],
-        ["--seed-a", "1", "run"],
-        ["--seed-b", "2", "run"],
+        [
+            "two-seed-pipeline",
+            "--seed-pair",
+            "1",
+            "2",
+            "--seed-a",
+            "1",
+            "--seed-b",
+            "2",
+        ],
+        ["two-seed-pipeline", "--seed-a", "1"],
+        ["two-seed-pipeline", "--seed-b", "2"],
     ],
 )
 def test_main_rejects_conflicting_seed_flags(preserve_root_logger, argv):
@@ -470,10 +487,10 @@ def test_two_seed_pipeline_top_level_passes_force_and_seed_pair(
         [
             "--config",
             str(cfg_path),
+            "two-seed-pipeline",
             "--seed-pair",
             "9",
             "11",
-            "two-seed-pipeline",
             "--force",
         ]
     )
@@ -486,7 +503,7 @@ def test_two_seed_pipeline_top_level_passes_force_and_seed_pair(
     [
         (["run"], "runner", "run_single_n"),
         (["analyze", "ingest"], "ingest", "run"),
-        (["--seed-pair", "3", "4", "two-seed-pipeline"], "two_seed_pipeline", "run_pipeline"),
+        (["two-seed-pipeline", "--seed-pair", "3", "4"], "two_seed_pipeline", "run_pipeline"),
     ],
 )
 def test_main_propagates_delegated_failure_codes(

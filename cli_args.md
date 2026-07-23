@@ -20,11 +20,6 @@ farkle [GLOBAL OPTIONS] <command> [COMMAND OPTIONS]
   Override one loaded config value. The flag may be repeated.
 - `--log-level LEVEL`
   Set the root logging level before dispatch.
-- `--seed-a INT` / `--seed-b INT`
-  Override the two-seed tuple used for orchestration commands.
-- `--seed-pair A B`
-  Override the two-seed tuple in one flag. This is mutually exclusive with
-  `--seed-a` and `--seed-b`.
 
 ## Commands
 
@@ -135,6 +130,11 @@ Options:
 
 - `--force`
   Recompute even when completion markers exist.
+- `--seed-a INT` / `--seed-b INT`
+  Override the two roots. Both options must be provided together.
+- `--seed-pair A B`
+  Override the two roots in one flag. This is mutually exclusive with
+  `--seed-a` and `--seed-b`.
 
 Example:
 

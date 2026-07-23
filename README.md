@@ -77,7 +77,8 @@ Commands:
 - `two-seed-pipeline`: run both root workflows, then execute the root-pair tail
   exactly once at the pair analysis root.
 
-Global root overrides are `--seed-a`, `--seed-b`, and `--seed-pair A B`.
+Root overrides for `two-seed-pipeline` are `--seed-a`, `--seed-b`, and
+`--seed-pair A B`; place them after the subcommand.
 Long workflows accept `--force` where recomputation is supported.
 
 ## Workflow ownership

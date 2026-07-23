@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 from farkle import analysis as analysis_pkg
 from farkle.analysis import combine, curate, ingest, metrics
@@ -37,9 +37,17 @@ LOGGER = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+class _StrictArgumentParser(argparse.ArgumentParser):
+    """Argument parser that never treats option prefixes as valid options."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Construct the top-level CLI parser for simulation and analysis tasks."""
-    parser = argparse.ArgumentParser(prog="farkle")
+    parser = _StrictArgumentParser(prog="farkle")
     parser.add_argument("--config", type=Path, help="Path to YAML configuration")
     parser.add_argument(
         "--set",
@@ -54,24 +62,6 @@ def build_parser() -> argparse.ArgumentParser:
         default="INFO",
         help="Root logging level",
     )
-    parser.add_argument(
-        "--seed-a",
-        type=int,
-        help="Override the first seed for dual-seed orchestration",
-    )
-    parser.add_argument(
-        "--seed-b",
-        type=int,
-        help="Override the second seed for dual-seed orchestration",
-    )
-    parser.add_argument(
-        "--seed-pair",
-        type=int,
-        nargs=2,
-        metavar=("A", "B"),
-        help="Override the dual-seed tuple (A B)",
-    )
-
     sub = parser.add_subparsers(dest="command", required=True)
 
     # run
@@ -249,6 +239,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Recompute even when completion markers exist",
     )
+    two_seed_top.add_argument(
+        "--seed-a",
+        type=int,
+        help="Override the first seed for dual-seed orchestration",
+    )
+    two_seed_top.add_argument(
+        "--seed-b",
+        type=int,
+        help="Override the second seed for dual-seed orchestration",
+    )
+    two_seed_top.add_argument(
+        "--seed-pair",
+        type=int,
+        nargs=2,
+        metavar=("A", "B"),
+        help="Override the dual-seed tuple (A B)",
+    )
 
     return parser
 
@@ -298,8 +305,10 @@ def _resolve_log_file(args: argparse.Namespace, cfg: AppConfig | None) -> Path |
 def main(argv: Sequence[str] | None = None) -> None:
     """Entry point for the ``farkle`` CLI dispatcher."""
     parser = build_parser()
-    args, _ = parser.parse_known_args(argv)
-    seed_pair_override = resolve_seed_pair_args(args, parser)
+    args = parser.parse_args(argv)
+    seed_pair_override = (
+        resolve_seed_pair_args(args, parser) if args.command == "two-seed-pipeline" else None
+    )
     expected_seed_len = expected_seed_list_length(args.command)
 
     setup_info_logging()
