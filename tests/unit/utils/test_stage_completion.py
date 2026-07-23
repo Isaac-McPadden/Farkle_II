@@ -164,7 +164,7 @@ def test_freshness_digest_is_canonical_and_stamp_records_contract(tmp_path: Path
     assert metadata["freshness_sha256"] == freshness_sha256(first)
 
 
-def test_stage_hash_may_bind_freshness_for_streaming_substage_stamps(tmp_path: Path) -> None:
+def test_freshness_payload_is_required_even_when_legacy_stage_hash_matches(tmp_path: Path) -> None:
     done = tmp_path / "substage.done.json"
     output = tmp_path / "output"
     output.write_text("done", encoding="utf-8")
@@ -183,5 +183,5 @@ def test_stage_hash_may_bind_freshness_for_streaming_substage_stamps(tmp_path: P
             stage_config_sha="hash-includes-freshness",
             freshness_key={"estimand_version": 1},
         )
-        is CompletionState.COMPLETE_VALID
+        is CompletionState.COMPLETE_STALE
     )

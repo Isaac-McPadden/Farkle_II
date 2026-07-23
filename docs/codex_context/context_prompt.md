@@ -24,6 +24,15 @@ Preserve these invariants:
 - current code never reads old on-disk analysis artifacts;
 - pair analysis lives under `results_seed_pair_X_Y/seed_pair_analysis`, path
   lookup is non-mutating, and every H2H phase owns its artifacts;
+- simulation and shared root/pair completion use exact-byte, code-, config-,
+  lineage-, input-, output-, and sidecar-authenticated lifecycle stamps; old
+  completion schemas are stale and v2 bytes cannot be promoted or re-sidecarred;
+- TrueSkill root/k completion binds ordered row bytes and rating sidecars, and
+  HGB completion binds target/features, whole-strategy folds, model/RNG method,
+  outputs, and sidecars; HGB per-k row unions live in `concat_ks`;
+- active configs contain only reloadable public fields; resolved paths, layouts,
+  parent lifecycle roots, code identity, and execution controls live in the
+  separately authenticated `run_context.json`;
 - the H2H power plan is immutable after publication and execution progress is
   a separate resumable artifact;
 - transient artifact I/O uses bounded, provider-neutral retries, and completed

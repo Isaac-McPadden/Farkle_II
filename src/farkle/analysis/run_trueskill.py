@@ -15,6 +15,7 @@ Outputs
 ``across_k/candidate_percentile_contribution.parquet``
     Complete-support mean of normalized within-root/per-k percentile ranks.
 """
+
 from __future__ import annotations
 
 import concurrent.futures as cf
@@ -24,7 +25,7 @@ import math
 import os
 import re
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import (
     Iterable,
@@ -50,15 +51,21 @@ from farkle.analysis.trueskill_screening import (
 )
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
+    ArtifactContractError,
     ArtifactSidecar,
     ensure_artifact_sidecar_atomic,
     make_artifact_sidecar,
+    sha256_file,
     sidecar_path,
 )
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code_identity
 from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
+from farkle.utils.stage_completion import (
+    freshness_sha256,
+)
 from farkle.utils.writer import atomic_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
@@ -68,6 +75,7 @@ DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results"
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
+TRUESKILL_CELL_METHOD_VERSION = 2
 
 
 class RatingArtifactPaths(TypedDict):
@@ -230,6 +238,7 @@ def _ensure_auxiliary_rating_sidecars(
     *,
     cell: ScreeningRatingCell,
     suffix: str,
+    code_revision: str | None = None,
 ) -> None:
     """Bind auxiliary root/k rating exports produced by the streaming worker."""
 
@@ -258,6 +267,7 @@ def _ensure_auxiliary_rating_sidecars(
             required_player_counts=[cell.k],
             missing_cell_policy="fail",
             seed_scope="single_root",
+            code_revision=code_revision or _trueskill_code_revision(cfg),
         )
 
     json_payload = json.loads(json_path.read_text(encoding="utf-8"))
@@ -318,7 +328,15 @@ class _ShardDoneStamp:
     parquet_path: str
     rows: int
     created_at: float
-    version: int = 1
+    root_seed: int
+    player_count: int
+    method_version: int
+    source_sha256: str
+    source_sidecar_sha256: str | None
+    parquet_sha256: str
+    freshness_sha256: str
+    sidecar_sha256: str | None
+    version: int = 3
 
 
 def _save_done_stamp(path: Path, stamp: _ShardDoneStamp) -> None:
@@ -346,10 +364,65 @@ def _load_done_stamp(path: Path) -> _ShardDoneStamp | None:
             parquet_path=str(payload["parquet_path"]),
             rows=int(payload["rows"]),
             created_at=float(payload["created_at"]),
-            version=int(payload.get("version", 1)),
+            root_seed=int(payload["root_seed"]),
+            player_count=int(payload["player_count"]),
+            method_version=int(payload["method_version"]),
+            source_sha256=str(payload["source_sha256"]),
+            source_sidecar_sha256=(
+                None
+                if payload["source_sidecar_sha256"] is None
+                else str(payload["source_sidecar_sha256"])
+            ),
+            parquet_sha256=str(payload["parquet_sha256"]),
+            freshness_sha256=str(payload["freshness_sha256"]),
+            sidecar_sha256=(
+                None if payload["sidecar_sha256"] is None else str(payload["sidecar_sha256"])
+            ),
+            version=int(payload["version"]),
         )
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _done_stamp_matches(
+    stamp: _ShardDoneStamp | None,
+    *,
+    parquet_path: Path,
+    source_path: Path,
+    freshness: str,
+    root_seed: int,
+    player_count: int,
+    require_sidecar: bool = True,
+) -> bool:
+    """Return whether a cell stamp authenticates its current source and output."""
+
+    return bool(
+        stamp is not None
+        and stamp.version == 3
+        and stamp.root_seed == root_seed
+        and stamp.player_count == player_count
+        and stamp.method_version == TRUESKILL_CELL_METHOD_VERSION
+        and Path(stamp.parquet_path) == parquet_path
+        and parquet_path.is_file()
+        and source_path.is_file()
+        and stamp.source_sha256 == sha256_file(source_path)
+        and stamp.source_sidecar_sha256
+        == (
+            sha256_file(sidecar_path(source_path))
+            if sidecar_path(source_path).is_file()
+            else None
+        )
+        and stamp.parquet_sha256 == sha256_file(parquet_path)
+        and stamp.freshness_sha256 == freshness
+        and (
+            not require_sidecar
+            or (
+                stamp.sidecar_sha256 is not None
+                and sidecar_path(parquet_path).is_file()
+                and stamp.sidecar_sha256 == sha256_file(sidecar_path(parquet_path))
+            )
+        )
+    )
 
 
 def _block_done_stamp_path(root: Path, player_count: str, suffix: str) -> Path:
@@ -528,6 +601,8 @@ def _rate_block_worker(
     env_kwargs: Mapping[str, float] | TrueSkillInitKwargs | None = None,
     row_data_dir: str | None = None,
     curated_rows_name: str | None = None,
+    cell_freshness_sha256: str | None = None,
+    root_seed: int = 0,
 ) -> tuple[str, int]:
     """
     Process one <N>_players block with optional checkpointing.
@@ -536,6 +611,11 @@ def _rate_block_worker(
     block = Path(block_dir)
     root = Path(root_dir)
     row_data_path = Path(row_data_dir) if row_data_dir else None
+    if (
+        cell_freshness_sha256 is None
+        or re.fullmatch(r"[0-9a-f]{64}", cell_freshness_sha256) is None
+    ):
+        raise ValueError("TrueSkill cell freshness must be an authenticated SHA-256 digest")
 
     player_count = block.name.split("_")[0]
     per_player_dir = _per_player_dir(root, player_count)
@@ -565,37 +645,26 @@ def _rate_block_worker(
     shard_parquet, shard_done_path = _block_shard_paths(root, player_count, suffix)
 
     done_stamp = _load_done_stamp(done_path)
-    if done_stamp is not None:
-        stamped_parquet = Path(done_stamp.parquet_path)
-        if stamped_parquet.exists() and parquet_path.exists() and stamped_parquet == parquet_path:
-            LOGGER.info(
-                "TrueSkill block shard done stamp found; skipping",
-                extra={
-                    "stage": "trueskill",
-                    "block": player_count,
-                    "row_file": str(row_file),
-                    "parquet": str(parquet_path),
-                    "done": str(done_path),
-                },
-            )
-            return player_count, max(0, int(done_stamp.rows))
-
-    if parquet_path.exists() and parquet_path.stat().st_mtime >= row_file.stat().st_mtime:
-        try:
-            md = pq.read_metadata(row_file)
-            n_rows = md.num_rows
-        except Exception:
-            n_rows = 0
+    if resume and _done_stamp_matches(
+        done_stamp,
+        parquet_path=parquet_path,
+        source_path=row_file,
+        freshness=cell_freshness_sha256,
+        root_seed=root_seed,
+        player_count=n,
+    ):
+        assert done_stamp is not None
         LOGGER.info(
-            "TrueSkill block up-to-date",
+            "Authenticated TrueSkill block stamp found; skipping",
             extra={
                 "stage": "trueskill",
                 "block": player_count,
                 "row_file": str(row_file),
                 "parquet": str(parquet_path),
+                "done": str(done_path),
             },
         )
-        return player_count, n_rows
+        return player_count, max(0, int(done_stamp.rows))
 
     env = trueskill.TrueSkill(**_coerce_trueskill_env_kwargs(env_kwargs))
 
@@ -674,8 +743,7 @@ def _rate_block_worker(
                     progress_logger.maybe_log(
                         n_games,
                         detail=(
-                            f"row group {rg + 1}, batch {bi + 1}, "
-                            f"{len(ratings):,} ratings tracked"
+                            f"row group {rg + 1}, batch {bi + 1}, {len(ratings):,} ratings tracked"
                         ),
                         extra={
                             "stage": "trueskill",
@@ -692,6 +760,7 @@ def _rate_block_worker(
         ratings_stats = {k: RatingStats(v.mu, v.sigma) for k, v in ratings.items()}
         # Atomic writes for per-N outputs
         # Write per-N ratings as Parquet (strategy, mu, sigma)
+        sidecar_path(parquet_path).unlink(missing_ok=True)
         _save_ratings_parquet(parquet_path, ratings_stats)
 
         json_path = paths["json"]
@@ -707,6 +776,18 @@ def _rate_block_worker(
                 parquet_path=str(parquet_path),
                 rows=int(n_games),
                 created_at=time.time(),
+                root_seed=root_seed,
+                player_count=n,
+                method_version=TRUESKILL_CELL_METHOD_VERSION,
+                source_sha256=sha256_file(row_file),
+                source_sidecar_sha256=(
+                    sha256_file(sidecar_path(row_file))
+                    if sidecar_path(row_file).is_file()
+                    else None
+                ),
+                parquet_sha256=sha256_file(parquet_path),
+                freshness_sha256=cell_freshness_sha256,
+                sidecar_sha256=None,
             ),
         )
         sidecar_path(shard_parquet).unlink(missing_ok=True)
@@ -718,6 +799,18 @@ def _rate_block_worker(
                 parquet_path=str(shard_parquet),
                 rows=int(n_games),
                 created_at=time.time(),
+                root_seed=root_seed,
+                player_count=n,
+                method_version=TRUESKILL_CELL_METHOD_VERSION,
+                source_sha256=sha256_file(row_file),
+                source_sidecar_sha256=(
+                    sha256_file(sidecar_path(row_file))
+                    if sidecar_path(row_file).is_file()
+                    else None
+                ),
+                parquet_sha256=sha256_file(shard_parquet),
+                freshness_sha256=cell_freshness_sha256,
+                sidecar_sha256=None,
             ),
         )
 
@@ -748,6 +841,7 @@ def run_trueskill(
     env_kwargs: Mapping[str, float] | TrueSkillInitKwargs | None = None,
     mp_start_method: str | None = None,
     progress_logging: ProgressLogConfig | None = None,
+    cell_freshness_sha256: str | None = None,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -771,6 +865,11 @@ def run_trueskill(
     Production side effects are canonical per-root/per-k ratings only. Formal
     cross-k model-sigma propagation is unavailable.
     """
+    if (
+        cell_freshness_sha256 is None
+        or re.fullmatch(r"[0-9a-f]{64}", cell_freshness_sha256) is None
+    ):
+        raise ValueError("TrueSkill cell freshness must be an authenticated SHA-256 digest")
     if dataroot is None:
         base = Path(root) / "results" if root is not None else DEFAULT_DATAROOT
     else:
@@ -838,6 +937,8 @@ def run_trueskill(
                     env_kwargs=env_kwargs_float,
                     row_data_dir=str(row_data_path) if row_data_path else None,
                     curated_rows_name=curated_rows_name,
+                    cell_freshness_sha256=cell_freshness_sha256,
+                    root_seed=output_seed,
                 ): b
                 for b in blocks
             }
@@ -865,6 +966,8 @@ def run_trueskill(
                 env_kwargs=env_kwargs_float,
                 row_data_dir=str(row_data_path) if row_data_path else None,
                 curated_rows_name=curated_rows_name,
+                cell_freshness_sha256=cell_freshness_sha256,
+                root_seed=output_seed,
             )
             del player_count, block_games
 
@@ -876,23 +979,22 @@ def run_trueskill(
             continue
         done_path = _block_done_stamp_path(root, str(player_count_value), suffix)
         done_stamp = _load_done_stamp(done_path)
-        if done_stamp is None:
+        source_path = row_data_path / "by_k" / f"{player_count_value}p" / curated_rows_name
+        if not _done_stamp_matches(
+            done_stamp,
+            parquet_path=parquet,
+            source_path=source_path,
+            freshness=cell_freshness_sha256,
+            root_seed=output_seed,
+            player_count=player_count_value,
+            require_sidecar=False,
+        ):
             LOGGER.info(
-                "Skipping per-k parquet without done stamp",
+                "Skipping per-k parquet without a valid authenticated stamp",
                 extra={
                     "stage": "trueskill",
                     "parquet": str(parquet),
                     "done": str(done_path),
-                },
-            )
-            continue
-        if Path(done_stamp.parquet_path) != parquet:
-            LOGGER.info(
-                "Skipping per-k parquet with mismatched done stamp",
-                extra={
-                    "stage": "trueskill",
-                    "parquet": str(parquet),
-                    "stamped_parquet": done_stamp.parquet_path,
                 },
             )
             continue
@@ -926,8 +1028,87 @@ def _resolve_root_row_data_dir(cfg: AppConfig) -> Path | None:
     return candidate if candidate.exists() else None
 
 
-def run_trueskill_root(cfg: AppConfig) -> None:
+def _trueskill_cell_freshness(cfg: AppConfig) -> str:
+    """Bind resumable cells to the same scoped method, code, and run lineage."""
+
+    code_identity = cfg._code_identity or resolve_code_identity(
+        _REPO_ROOT.parent,
+        policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
+    )
+    return freshness_sha256(
+        {
+            "stage": "trueskill_cell",
+            "stage_config_sha": cfg.stage_config_sha("trueskill"),
+            "cache_key_version": cfg.stage_cache_key_version("trueskill"),
+            "freshness_key": cfg.freshness_key(),
+            "trueskill_cell_method_version": TRUESKILL_CELL_METHOD_VERSION,
+            "hyperparameters": {
+                "beta": cfg.trueskill.beta,
+                "tau": cfg.trueskill.tau,
+                "draw_probability": cfg.trueskill.draw_probability,
+            },
+            "ordered_input_contract": "exact_parquet_bytes_in_declared_row_order",
+            "code_identity": asdict(code_identity),
+            "run_lineage_sha256": cfg._run_lineage_sha256,
+        }
+    )
+
+
+def _trueskill_code_revision(cfg: AppConfig) -> str:
+    """Return the full code identity recorded by rating sidecars."""
+
+    code_identity = cfg._code_identity or resolve_code_identity(
+        _REPO_ROOT.parent,
+        policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
+    )
+    if code_identity.dirty_fingerprint_sha256 is None:
+        return code_identity.commit
+    return (
+        f"{code_identity.commit}:development_dirty:"
+        f"{code_identity.dirty_fingerprint_sha256}"
+    )
+
+
+def _seal_rating_cell_completion(
+    cfg: AppConfig,
+    *,
+    cell: ScreeningRatingCell,
+    done_path: Path,
+    stamp: _ShardDoneStamp,
+    source_path: Path,
+    freshness: str,
+) -> _ShardDoneStamp:
+    """Publish/recover the sidecar, then seal its exact bytes into the stamp."""
+
+    if not _done_stamp_matches(
+        stamp,
+        parquet_path=cell.ratings_path,
+        source_path=source_path,
+        freshness=freshness,
+        root_seed=cell.root_seed,
+        player_count=cell.k,
+        require_sidecar=False,
+    ):
+        raise ArtifactContractError("TrueSkill cell completion does not bind current bytes")
+    publish_rating_cell_contract(
+        cfg,
+        cell,
+        completed_artifact_sha256=stamp.parquet_sha256,
+        expected_sidecar_sha256=stamp.sidecar_sha256,
+        code_revision=_trueskill_code_revision(cfg),
+    )
+    sealed = replace(
+        stamp,
+        sidecar_sha256=sha256_file(sidecar_path(cell.ratings_path)),
+    )
+    _save_done_stamp(done_path, sealed)
+    return sealed
+
+
+def run_trueskill_root(cfg: AppConfig, *, force: bool = False) -> None:
     """Publish canonical root/k ratings and percentile screening artifacts."""
+
+    cell_freshness = _trueskill_cell_freshness(cfg)
 
     analysis_cfg = cfg.analysis
     roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
@@ -947,6 +1128,39 @@ def run_trueskill_root(cfg: AppConfig) -> None:
         }
     )
     screening_cells: list[ScreeningRatingCell] = []
+
+    # Sidecar recovery runs before workers only when a prior independent cell
+    # completion already binds both the unchanged rating and sidecar bytes.
+    if not force and root_row_data_dir is not None:
+        for players in sorted({int(k) for k in cfg.sim.n_players_list}):
+            suffix = f"_seed{roots[0]}"
+            paths = _rating_artifact_paths(analysis_dir, str(players), suffix)
+            done_path = _block_done_stamp_path(analysis_dir, str(players), suffix)
+            stamp = _load_done_stamp(done_path)
+            source_path = (
+                root_row_data_dir / "by_k" / f"{players}p" / cfg.curated_rows_name
+            )
+            if stamp is None or stamp.sidecar_sha256 is None:
+                continue
+            try:
+                _seal_rating_cell_completion(
+                    cfg,
+                    cell=ScreeningRatingCell(
+                        root_seed=roots[0],
+                        k=players,
+                        ratings_path=paths["parquet"],
+                        game_rows_path=source_path,
+                    ),
+                    done_path=done_path,
+                    stamp=stamp,
+                    source_path=source_path,
+                    freshness=cell_freshness,
+                )
+            except ArtifactContractError:
+                LOGGER.info(
+                    "TrueSkill sidecar recovery identity did not validate; cell will replay",
+                    extra={"stage": "trueskill", "seed": roots[0], "players": players},
+                )
 
     for seed in seeds:
         seed_everything(seed)
@@ -969,25 +1183,42 @@ def run_trueskill_root(cfg: AppConfig) -> None:
             row_data_dir=seed_row_data_dir,
             curated_rows_name=cfg.curated_rows_name,
             workers=analysis_cfg.n_jobs or None,
+            resume_per_n=not force,
             env_kwargs=env_kwargs,
             mp_start_method=analysis_cfg.mp_start_method,
             progress_logging=analysis_cfg.progress_logging,
+            cell_freshness_sha256=cell_freshness,
         )
 
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}
         for parquet in _iter_rating_parquets(analysis_dir, f"_seed{seed}"):
-            players = _player_count_from_stem(parquet.stem)
-            if players is None:
+            player_count = _player_count_from_stem(parquet.stem)
+            if player_count is None:
                 continue
-            done_path = _block_done_stamp_path(analysis_dir, str(players), f"_seed{seed}")
+            done_path = _block_done_stamp_path(
+                analysis_dir, str(player_count), f"_seed{seed}"
+            )
             done_stamp = _load_done_stamp(done_path)
-            if done_stamp is None or Path(done_stamp.parquet_path) != parquet:
+            game_rows_path = (
+                seed_row_data_dir / "by_k" / f"{player_count}p" / cfg.curated_rows_name
+                if seed_row_data_dir is not None
+                else None
+            )
+            if game_rows_path is None or not _done_stamp_matches(
+                done_stamp,
+                parquet_path=parquet,
+                source_path=game_rows_path,
+                freshness=cell_freshness,
+                root_seed=seed,
+                player_count=player_count,
+                require_sidecar=False,
+            ):
                 LOGGER.warning(
                     "Ignoring incomplete TrueSkill rating cell",
                     extra={
                         "stage": "trueskill",
                         "seed": seed,
-                        "players": players,
+                        "players": player_count,
                         "parquet": str(parquet),
                         "done": str(done_path),
                     },
@@ -995,18 +1226,31 @@ def run_trueskill_root(cfg: AppConfig) -> None:
                 continue
             stats = _load_ratings_parquet(parquet)
             ordered_stats = _sorted_ratings(stats)
-            seed_outputs[f"{players}p"] = ordered_stats  # keyed for logging/debug
-            game_rows_path: Path | None = None
-            if seed_row_data_dir is not None:
-                candidate = seed_row_data_dir / "by_k" / f"{players}p" / cfg.curated_rows_name
-                game_rows_path = candidate if candidate.exists() else None
+            seed_outputs[f"{player_count}p"] = ordered_stats  # keyed for logging/debug
             screening_cell = ScreeningRatingCell(
                 root_seed=seed,
-                k=players,
+                k=player_count,
                 ratings_path=parquet,
                 game_rows_path=game_rows_path,
             )
-            publish_rating_cell_contract(cfg, screening_cell)
+            assert done_stamp is not None
+            done_stamp = _seal_rating_cell_completion(
+                cfg,
+                cell=screening_cell,
+                done_path=done_path,
+                stamp=done_stamp,
+                source_path=game_rows_path,
+                freshness=cell_freshness,
+            )
+            if not _done_stamp_matches(
+                done_stamp,
+                parquet_path=parquet,
+                source_path=game_rows_path,
+                freshness=cell_freshness,
+                root_seed=seed,
+                player_count=player_count,
+            ):
+                raise ArtifactContractError("TrueSkill cell failed authenticated sealing")
             screening_cells.append(screening_cell)
 
         if not seed_outputs:
@@ -1036,9 +1280,10 @@ def run_trueskill_root(cfg: AppConfig) -> None:
             cfg,
             cell=cell,
             suffix=f"_seed{cell.root_seed}",
+            code_revision=_trueskill_code_revision(cfg),
         )
-    contribution_path = build_percentile_contribution(cfg, screening_cells)
-    diagnostics_path = build_screening_diagnostics(cfg, screening_cells)
+    contribution_path = build_percentile_contribution(cfg, screening_cells, force=force)
+    diagnostics_path = build_screening_diagnostics(cfg, screening_cells, force=force)
     LOGGER.info(
         "TrueSkill screening outputs written",
         extra={

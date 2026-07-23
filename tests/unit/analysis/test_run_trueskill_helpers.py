@@ -109,6 +109,7 @@ def test_run_trueskill_writes_only_root_k_ratings(tmp_path: Path) -> None:
             curated_rows_name="game_rows.parquet",
             workers=1,
             batch_rows=2,
+            cell_freshness_sha256="a" * 64,
         )
     finally:
         os.chdir(cwd)
@@ -141,6 +142,7 @@ def test_run_trueskill_with_seed_suffix(tmp_path: Path) -> None:
             curated_rows_name="game_rows.parquet",
             workers=1,
             batch_rows=2,
+            cell_freshness_sha256="a" * 64,
         )
     finally:
         os.chdir(cwd)

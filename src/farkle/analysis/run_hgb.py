@@ -33,6 +33,10 @@ from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
 )
+from farkle.utils.authenticated_contract import (
+    CodeIdentityPolicy,
+    resolve_code_identity,
+)
 from farkle.utils.random import RandomPurpose, coordinate_rng, coordinate_seed_sequence
 
 if TYPE_CHECKING:
@@ -55,7 +59,7 @@ IMPORTANCE_TEMPLATE = "feature_importance_{players}p.parquet"
 PREDICTIVE_SCORES_TEMPLATE = "heldout_predictive_scores_{players}p.parquet"
 FOLD_METRICS_TEMPLATE = "heldout_fold_metrics_{players}p.parquet"
 OVERALL_IMPORTANCE_NAME = "feature_importance_overall.parquet"
-LONG_IMPORTANCE_NAME = "feature_importance_long.parquet"
+LONG_IMPORTANCE_NAME = "heldout_feature_importance_concat.parquet"
 FUTURE_PROPOSALS_NAME = "future_simulation_proposals.parquet"
 DEFAULT_HELDOUT_FOLDS = 5
 DEFAULT_PERMUTATION_REPEATS = 10
@@ -149,6 +153,8 @@ def _write_hgb_frame(
     operation: str,
     conditioning: str,
     grouping_keys: Sequence[str],
+    weighted_quantity: str,
+    code_revision: str,
 ) -> None:
     """Write one canonical HGB artifact with its required sidecar."""
 
@@ -158,9 +164,9 @@ def _write_hgb_frame(
         path,
         producer="hgb",
         scope=scope,
-        source_scope="by_k",
+        source_scope="by_k_and_single_root",
         operation=operation,
-        weighted_quantity="win_rate",
+        weighted_quantity=weighted_quantity,
         k_aggregation_method="equal_k" if operation == "equal_k_mean" else "none",
         support_count_role="finite_strategy_grid_support",
         uncertainty_method="heldout_strategy_configuration_folds",
@@ -173,6 +179,7 @@ def _write_hgb_frame(
         required_player_counts=players,
         missing_cell_policy="fail",
         seed_scope="single_root",
+        code_revision=code_revision,
     )
     write_parquet_artifact_atomic(table, path, sidecar=sidecar, codec=cfg.parquet_codec)
 
@@ -490,6 +497,16 @@ def run_hgb(
     if manifest_path is None or not Path(manifest_path).exists():
         raise FileNotFoundError("HGB requires the canonical strategy manifest")
     manifest = pd.read_parquet(manifest_path)
+    code_identity = cfg._code_identity or resolve_code_identity(
+        Path(__file__).resolve().parents[3],
+        policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
+    )
+    code_revision = code_identity.commit
+    if code_identity.dirty_fingerprint_sha256 is not None:
+        code_revision = (
+            f"{code_identity.commit}:development_dirty:"
+            f"{code_identity.dirty_fingerprint_sha256}"
+        )
 
     LOGGER.info(
         "HGB regression start",
@@ -505,6 +522,7 @@ def run_hgb(
     source_metrics = [Path(path) for path in metrics_paths]
     if not source_metrics:
         raise ValueError("HGB requires canonical per-k performance artifacts")
+    source_artifacts = [*source_metrics, Path(manifest_path)]
     metrics = pd.concat([pd.read_parquet(path) for path in source_metrics], ignore_index=True)
     metrics = metrics.copy()
     if "strategy" in metrics.columns:
@@ -590,34 +608,40 @@ def run_hgb(
             importance_path,
             importance_df,
             cfg=cfg,
-            source_artifacts=source_metrics,
+            source_artifacts=source_artifacts,
             players=[players],
             scope="by_k",
             operation="heldout_permutation_importance",
             conditioning="finite_grid_predictive_association_not_causal",
             grouping_keys=["players", "feature"],
+            weighted_quantity="heldout_permutation_association_importance",
+            code_revision=code_revision,
         )
         _write_hgb_frame(
             predictions_path,
             heldout.predictions,
             cfg=cfg,
-            source_artifacts=source_metrics,
+            source_artifacts=source_artifacts,
             players=[players],
             scope="by_k",
             operation="heldout_prediction",
-            conditioning="finite_strategy_grid",
+            conditioning="finite_grid_predictive_association_not_causal",
             grouping_keys=["players", "fold", "strategy"],
+            weighted_quantity="heldout_predicted_win_rate",
+            code_revision=code_revision,
         )
         _write_hgb_frame(
             fold_metrics_path,
             heldout.fold_metrics,
             cfg=cfg,
-            source_artifacts=source_metrics,
+            source_artifacts=source_artifacts,
             players=[players],
             scope="by_k",
             operation="heldout_fold_diagnostics",
-            conditioning="finite_strategy_grid",
+            conditioning="finite_grid_predictive_association_not_causal",
             grouping_keys=["players", "fold"],
+            weighted_quantity="heldout_predictive_error",
+            code_revision=code_revision,
         )
         association_values = importance_df.set_index("feature")["association_importance_mean"]
         importance_summary[f"{players}p"] = {
@@ -673,26 +697,30 @@ def run_hgb(
         )
         grouped["interpretation"] = "predictive_association_not_causal"
         _write_hgb_frame(
-            combined_dir / LONG_IMPORTANCE_NAME,
+            cfg.concat_ks_dir("hgb") / LONG_IMPORTANCE_NAME,
             overall_frame,
             cfg=cfg,
-            source_artifacts=source_metrics,
+            source_artifacts=source_artifacts,
             players=metrics_players,
             scope="concat_ks",
             operation="concatenate",
             conditioning="finite_grid_predictive_association_not_causal",
             grouping_keys=["players", "feature"],
+            weighted_quantity="heldout_permutation_association_importance",
+            code_revision=code_revision,
         )
         _write_hgb_frame(
             combined_dir / OVERALL_IMPORTANCE_NAME,
             grouped,
             cfg=cfg,
-            source_artifacts=source_metrics,
+            source_artifacts=source_artifacts,
             players=metrics_players,
             scope="across_k",
             operation="equal_k_mean",
             conditioning="finite_grid_predictive_association_not_causal",
             grouping_keys=["feature"],
+            weighted_quantity="heldout_permutation_association_importance",
+            code_revision=code_revision,
         )
         overall_series = grouped.set_index("feature")["association_importance_mean"]
         importance_summary["overall"] = {str(k): float(v) for k, v in overall_series.items()}
@@ -719,12 +747,14 @@ def run_hgb(
         proposals_path,
         proposal_frame,
         cfg=cfg,
-        source_artifacts=source_metrics,
+        source_artifacts=source_artifacts,
         players=metrics_players,
         scope="across_k",
         operation="future_candidate_generation",
         conditioning="future_simulation_only_not_current_analysis",
         grouping_keys=["players", "proposal_id"],
+        weighted_quantity="future_predicted_win_rate",
+        code_revision=code_revision,
     )
 
     output_path = combined_dir / "hgb_importance.json"
@@ -735,7 +765,7 @@ def run_hgb(
         output_path,
         producer="hgb",
         scope="across_k",
-        source_scope="by_k",
+        source_scope="by_k_and_single_root",
         operation="equal_k_mean",
         weighted_quantity="heldout_permutation_association_importance",
         k_aggregation_method="equal_k",
@@ -744,12 +774,13 @@ def run_hgb(
         replication_unit="strategy_configuration",
         conditioning="predictive_association_not_causal",
         consistency_columns=sorted(importance_summary),
-        source_artifacts=source_metrics,
+        source_artifacts=source_artifacts,
         grouping_keys=["feature"],
         player_counts=metrics_players,
         required_player_counts=metrics_players,
         missing_cell_policy="fail",
         seed_scope="single_root",
+        code_revision=code_revision,
     )
     write_json_artifact_atomic(importance_summary, output_path, sidecar=sidecar)
 

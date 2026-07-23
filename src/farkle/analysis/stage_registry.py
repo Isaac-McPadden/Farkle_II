@@ -111,34 +111,36 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "sim.seed_list",
             "sim.n_players_list",
             "ingest",
-            "analysis.mp_start_method",
         ),
     ),
     StageDefinition(
         "curate",
         group="pipeline",
+        depends_on=("ingest",),
         cache_scope=("io", "analysis.outputs"),
     ),
     StageDefinition(
         "combine",
         group="pipeline",
+        depends_on=("curate",),
         cache_scope=("io", "combine"),
     ),
     StageDefinition(
         "metrics",
         group="pipeline",
+        depends_on=("combine",),
         cache_scope=(
             "io",
             "sim.n_players_list",
             "screening",
             "batching",
             "k_aggregation",
-            "analysis.n_jobs",
         ),
     ),
     StageDefinition(
         "game_stats",
         group="analytics",
+        depends_on=("combine",),
         cache_scope=(
             "io",
             "sim.seed",
@@ -150,19 +152,20 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "analysis.rare_event_write_details",
             "analysis.rare_event_margin_quantile",
             "analysis.rare_event_target_rate",
-            "analysis.n_jobs",
         ),
     ),
     StageDefinition(
         "rng_diagnostics",
         group="diagnostics",
         folder_stub="rng",
-        cache_scope=("io", "sim.seed", "sim.n_players_list", "rng", "analysis.n_jobs"),
+        depends_on=("combine",),
+        cache_scope=("io", "sim.seed", "sim.n_players_list", "rng"),
         disabled_predicate=_rng_diagnostics_disabled,
     ),
     StageDefinition(
         "trueskill",
         group="analytics",
+        depends_on=("curate",),
         cache_scope=(
             "io",
             "sim.seed",
@@ -171,10 +174,11 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "trueskill",
         ),
     ),
-    StageDefinition("hgb", group="analytics", cache_scope=("io", "hgb")),
+    StageDefinition("hgb", group="analytics", depends_on=("metrics",), cache_scope=("io", "hgb")),
     StageDefinition(
         "screening",
         group="analytics",
+        depends_on=("metrics", "game_stats", "trueskill", "hgb"),
         cache_scope=(
             "io",
             "sim.seed",
@@ -189,18 +193,45 @@ _REGISTRY: tuple[StageDefinition, ...] = (
     StageDefinition(
         "candidate_freeze",
         group="single_root_tail",
+        depends_on=("screening",),
         cache_scope=("screening", "head2head"),
     ),
-    StageDefinition("h2h_power", group="single_root_tail", cache_scope=("head2head",)),
+    StageDefinition(
+        "h2h_power",
+        group="single_root_tail",
+        depends_on=("candidate_freeze",),
+        cache_scope=("head2head",),
+    ),
     StageDefinition(
         "h2h_execute",
         group="single_root_tail",
+        depends_on=("h2h_power",),
         cache_scope=("head2head", "rng"),
     ),
-    StageDefinition("h2h_inference", group="single_root_tail", cache_scope=("head2head",)),
-    StageDefinition("h2h_digest", group="single_root_tail", cache_scope=("head2head",)),
-    StageDefinition("agreement", group="single_root_tail", cache_scope=("artifact_contract",)),
-    StageDefinition("reporting", group="single_root_tail", cache_scope=("artifact_contract",)),
+    StageDefinition(
+        "h2h_inference",
+        group="single_root_tail",
+        depends_on=("h2h_execute",),
+        cache_scope=("head2head",),
+    ),
+    StageDefinition(
+        "h2h_digest",
+        group="single_root_tail",
+        depends_on=("h2h_inference",),
+        cache_scope=("head2head",),
+    ),
+    StageDefinition(
+        "agreement",
+        group="single_root_tail",
+        depends_on=("h2h_digest",),
+        cache_scope=("artifact_contract",),
+    ),
+    StageDefinition(
+        "reporting",
+        group="single_root_tail",
+        depends_on=("agreement",),
+        cache_scope=("artifact_contract",),
+    ),
 )
 
 _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
@@ -216,18 +247,83 @@ _ROOT_PAIR_REGISTRY: tuple[StageDefinition, ...] = (
         ),
     ),
     StageDefinition("trueskill", group="root_pair", cache_scope=("sim.seed_list", "trueskill")),
-    StageDefinition("candidate_freeze", group="root_pair", cache_scope=("screening", "head2head")),
-    StageDefinition("h2h_power", group="root_pair", cache_scope=("head2head",)),
-    StageDefinition("h2h_execute", group="root_pair", cache_scope=("head2head", "rng")),
-    StageDefinition("h2h_inference", group="root_pair", cache_scope=("head2head",)),
-    StageDefinition("h2h_digest", group="root_pair", cache_scope=("head2head",)),
-    StageDefinition("agreement", group="root_pair", cache_scope=("artifact_contract",)),
-    StageDefinition("reporting", group="root_pair", cache_scope=("artifact_contract",)),
+    StageDefinition(
+        "candidate_freeze",
+        group="root_pair",
+        depends_on=("root_stability", "trueskill"),
+        cache_scope=("screening", "head2head"),
+    ),
+    StageDefinition(
+        "h2h_power",
+        group="root_pair",
+        depends_on=("candidate_freeze",),
+        cache_scope=("head2head",),
+    ),
+    StageDefinition(
+        "h2h_execute",
+        group="root_pair",
+        depends_on=("h2h_power",),
+        cache_scope=("head2head", "rng"),
+    ),
+    StageDefinition(
+        "h2h_inference",
+        group="root_pair",
+        depends_on=("h2h_execute",),
+        cache_scope=("head2head",),
+    ),
+    StageDefinition(
+        "h2h_digest",
+        group="root_pair",
+        depends_on=("h2h_inference",),
+        cache_scope=("head2head",),
+    ),
+    StageDefinition(
+        "agreement",
+        group="root_pair",
+        depends_on=("h2h_digest",),
+        cache_scope=("artifact_contract",),
+    ),
+    StageDefinition(
+        "reporting",
+        group="root_pair",
+        depends_on=("agreement",),
+        cache_scope=("artifact_contract",),
+    ),
 )
 
 _DEFINITION_LOOKUP: dict[str, StageDefinition] = {
     definition.key: definition for definition in (*_REGISTRY, *_ROOT_PAIR_REGISTRY)
 }
+_DEFINITION_LOOKUP["simulation"] = StageDefinition(
+    "simulation",
+    group="simulation",
+    cache_key_version=4,
+    cache_scope=(
+        "sim.n_players_list",
+        "sim.seed",
+        "sim.seed_list",
+        "sim.expanded_metrics",
+        "sim.row_dir",
+        "sim.metric_chunk_dir",
+        "sim.score_thresholds",
+        "sim.dice_thresholds",
+        "sim.smart_five_opts",
+        "sim.smart_one_opts",
+        "sim.consider_score_opts",
+        "sim.consider_dice_opts",
+        "sim.auto_hot_dice_opts",
+        "sim.run_up_score_opts",
+        "sim.include_stop_at",
+        "sim.include_stop_at_heuristic",
+        "screening.resolution_delta",
+        "screening.interval_confidence",
+        "screening.max_shuffles_per_root_k",
+        "batching.target_batches",
+        "batching.min_shuffles_per_batch",
+        "rng",
+        "artifact_contract",
+    ),
+)
 
 
 def resolve_stage_layout(

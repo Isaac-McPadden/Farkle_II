@@ -8,6 +8,13 @@ import pytest
 import trueskill
 
 import farkle.analysis.run_trueskill as rt
+from farkle.analysis.trueskill_screening import (
+    ScreeningRatingCell,
+    publish_rating_cell_contract,
+)
+from farkle.config import AppConfig, IOConfig
+from farkle.utils.artifact_contract import ArtifactContractError, sha256_file, sidecar_path
+from farkle.utils.authenticated_contract import CodeIdentity
 
 
 class _DummyRating:
@@ -168,6 +175,7 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
         checkpoint_every_batches=1,
         row_data_dir=str(root),
         curated_rows_name="2p_ingested_rows.parquet",
+        cell_freshness_sha256="a" * 64,
     )
     assert player_count == "2"
     assert games == 8
@@ -209,4 +217,214 @@ def test_rate_block_worker_rejects_missing_canonical_coordinates(tmp_path: Path)
             batch_rows=1,
             resume=False,
             checkpoint_every_batches=1,
+            cell_freshness_sha256="a" * 64,
         )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["unchanged", "force", "input", "parameter", "output", "code", "method", "sidecar"],
+)
+def test_trueskill_cell_authenticated_reuse_matrix(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    root = tmp_path / "analysis"
+    block = tmp_path / "results" / "2_players"
+    block.mkdir(parents=True)
+    np.save(block / "keepers_2.npy", np.array(["A", "B"]))
+    source = tmp_path / "curated" / "by_k" / "2p" / "game_rows.parquet"
+    source.parent.mkdir(parents=True)
+    games = pa.table(
+        {
+            "winner_seat": ["P1", "P2"],
+            "P1_strategy": ["A", "A"],
+            "P2_strategy": ["B", "B"],
+            "P1_rank": [1, 2],
+            "P2_rank": [2, 1],
+        }
+    )
+    pq.write_table(games, source)
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "cfg"))
+    cfg._code_identity = CodeIdentity(
+        commit="a" * 40,
+        policy="development_dirty",
+        state="development_dirty",
+        dirty_fingerprint_sha256="b" * 64,
+    )
+    freshness = "c" * 64
+    rt._rate_block_worker(
+        str(block),
+        str(root),
+        "_seed11",
+        batch_rows=10,
+        resume=True,
+        row_data_dir=str(tmp_path / "curated"),
+        curated_rows_name="game_rows.parquet",
+        cell_freshness_sha256=freshness,
+        root_seed=11,
+    )
+    rating = root / "by_k" / "2p" / "ratings_2_seed11.parquet"
+    done = root / "by_k" / "2p" / "ratings_2_seed11.done.json"
+    stamp = rt._load_done_stamp(done)
+    assert stamp is not None
+    cell = ScreeningRatingCell(11, 2, rating, source)
+    rt._seal_rating_cell_completion(
+        cfg,
+        cell=cell,
+        done_path=done,
+        stamp=stamp,
+        source_path=source,
+        freshness=freshness,
+    )
+    assert not rt._done_stamp_matches(
+        rt._load_done_stamp(done),
+        parquet_path=rating,
+        source_path=source,
+        freshness=freshness,
+        root_seed=12,
+        player_count=2,
+    )
+
+    if mutation == "input":
+        pq.write_table(pa.concat_tables([games, games.slice(0, 1)]), source)
+    elif mutation in {"parameter", "code"}:
+        freshness = "d" * 64
+    elif mutation == "output":
+        with rating.open("ab") as handle:
+            handle.write(b"changed")
+    elif mutation == "method":
+        monkeypatch.setattr(
+            rt,
+            "TRUESKILL_CELL_METHOD_VERSION",
+            rt.TRUESKILL_CELL_METHOD_VERSION + 1,
+        )
+    elif mutation == "sidecar":
+        sidecar_path(rating).write_text("{}", encoding="utf-8")
+
+    writes = 0
+    original_save = rt._save_ratings_parquet
+
+    def counted_save(path: Path, ratings: object) -> None:
+        nonlocal writes
+        writes += 1
+        original_save(path, ratings)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(rt, "_save_ratings_parquet", counted_save)
+    rt._rate_block_worker(
+        str(block),
+        str(root),
+        "_seed11",
+        batch_rows=10,
+        resume=mutation != "force",
+        row_data_dir=str(tmp_path / "curated"),
+        curated_rows_name="game_rows.parquet",
+        cell_freshness_sha256=freshness,
+        root_seed=11,
+    )
+    assert writes == 0 if mutation == "unchanged" else writes > 0
+
+
+def test_trueskill_corruption_cannot_be_blessed_and_missing_sidecar_recovery_is_bound(
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "cfg"))
+    cfg._code_identity = CodeIdentity(
+        commit="a" * 40,
+        policy="development_dirty",
+        state="development_dirty",
+        dirty_fingerprint_sha256="b" * 64,
+    )
+    source = tmp_path / "source.parquet"
+    rating = tmp_path / "rating.parquet"
+    pq.write_table(pa.table({"winner_seat": ["P1"]}), source)
+    pq.write_table(pa.table({"strategy": ["A"], "mu": [25.0], "sigma": [8.0]}), rating)
+    cell = ScreeningRatingCell(11, 2, rating, source)
+    stamp = rt._ShardDoneStamp(
+        shard_key="k=2",
+        parquet_path=str(rating),
+        rows=1,
+        created_at=1.0,
+        root_seed=11,
+        player_count=2,
+        method_version=rt.TRUESKILL_CELL_METHOD_VERSION,
+        source_sha256=sha256_file(source),
+        source_sidecar_sha256=None,
+        parquet_sha256=sha256_file(rating),
+        freshness_sha256="c" * 64,
+        sidecar_sha256=None,
+    )
+    done = tmp_path / "rating.done.json"
+    rt._save_done_stamp(done, stamp)
+    sealed = rt._seal_rating_cell_completion(
+        cfg,
+        cell=cell,
+        done_path=done,
+        stamp=stamp,
+        source_path=source,
+        freshness="c" * 64,
+    )
+    expected_sidecar = sealed.sidecar_sha256
+    sidecar_path(rating).unlink()
+    recovered = rt._seal_rating_cell_completion(
+        cfg,
+        cell=cell,
+        done_path=done,
+        stamp=sealed,
+        source_path=source,
+        freshness="c" * 64,
+    )
+    assert recovered.sidecar_sha256 == expected_sidecar
+
+    pq.write_table(pa.table({"strategy": ["A"], "mu": [99.0], "sigma": [1.0]}), rating)
+    sidecar_path(rating).unlink(missing_ok=True)
+    publish_rating_cell_contract(
+        cfg,
+        cell,
+        completed_artifact_sha256=sha256_file(rating),
+        code_revision=rt._trueskill_code_revision(cfg),
+    )
+    with pytest.raises(ArtifactContractError, match="does not bind current bytes"):
+        rt._seal_rating_cell_completion(
+            cfg,
+            cell=cell,
+            done_path=done,
+            stamp=sealed,
+            source_path=source,
+            freshness="c" * 64,
+        )
+
+
+def test_trueskill_cell_freshness_binds_parameter_code_and_method(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg._code_identity = CodeIdentity(
+        commit="a" * 40,
+        policy="development_dirty",
+        state="development_dirty",
+        dirty_fingerprint_sha256="b" * 64,
+    )
+    baseline = rt._trueskill_cell_freshness(cfg)
+
+    cfg.trueskill.beta += 1.0
+    parameter_changed = rt._trueskill_cell_freshness(cfg)
+    assert parameter_changed != baseline
+
+    cfg._code_identity = CodeIdentity(
+        commit="c" * 40,
+        policy="development_dirty",
+        state="development_dirty",
+        dirty_fingerprint_sha256="d" * 64,
+    )
+    code_changed = rt._trueskill_cell_freshness(cfg)
+    assert code_changed != parameter_changed
+
+    monkeypatch.setattr(
+        rt,
+        "TRUESKILL_CELL_METHOD_VERSION",
+        rt.TRUESKILL_CELL_METHOD_VERSION + 1,
+    )
+    assert rt._trueskill_cell_freshness(cfg) != code_changed

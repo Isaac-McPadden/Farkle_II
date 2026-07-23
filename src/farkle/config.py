@@ -4,6 +4,7 @@
 Defines dataclasses describing I/O, simulation, and analysis settings and
 includes utilities for loading and validating YAML-based application configs.
 """
+
 from __future__ import annotations
 
 import dataclasses
@@ -407,6 +408,8 @@ class AppConfig:
     # Computed at runtime; not part of user-provided YAML
     config_sha: str | None = field(default=None, init=False, repr=False, compare=False)
     _stage_layout: "StageLayout | None" = field(default=None, init=False, repr=False, compare=False)
+    _code_identity: Any | None = field(default=None, init=False, repr=False, compare=False)
+    _run_lineage_sha256: str | None = field(default=None, init=False, repr=False, compare=False)
 
     # —— Paths ——
     @property
@@ -1323,7 +1326,7 @@ def _validate_config_keys(data: Mapping[str, Any]) -> None:
                 if per_n_unknown:
                     formatted = ", ".join(_format_unknown_keys(per_n_unknown, allowed_keys))
                     raise ValueError(
-                        "Unknown key(s) in config section " f"sim.per_n[{key!r}]: {formatted}"
+                        f"Unknown key(s) in config section sim.per_n[{key!r}]: {formatted}"
                     )
 
 
@@ -1612,10 +1615,15 @@ def _stringify_paths_for_serialization(obj: Any) -> Any:
 def effective_config_dict(cfg: AppConfig) -> dict[str, Any]:
     """Return a materialized config mapping suitable for persistence and hashing."""
 
-    resolved = _stringify_paths_for_serialization(dataclasses.asdict(cfg))
-    resolved.pop("config_sha", None)
-    resolved.pop("_stage_layout", None)
-    return resolved
+    public = {
+        item.name: (
+            dataclasses.asdict(cast(Any, value)) if dataclasses.is_dataclass(value) else value
+        )
+        for item in dataclasses.fields(AppConfig)
+        if item.init
+        for value in (getattr(cfg, item.name),)
+    }
+    return _stringify_paths_for_serialization(public)
 
 
 def _drop_nested_path(payload: MutableMapping[str, Any], path: str) -> None:

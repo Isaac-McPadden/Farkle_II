@@ -20,7 +20,6 @@ import pickle
 import shutil
 import stat
 from collections.abc import Callable
-from datetime import datetime, timezone
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Mapping, Sequence, TypeAlias
@@ -48,7 +47,12 @@ from farkle.utils import random as urandom
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
-from farkle.utils.writer import atomic_path
+from farkle.utils.stage_completion import (
+    CompletionState,
+    freshness_sha256,
+    resolve_stage_state,
+    write_stage_done,
+)
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -235,20 +239,53 @@ def simulation_done_path(cfg: AppConfig, n_players: int) -> Path:
 
 
 def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
-    """Return whether the per-N marker has the current outcome/method identity."""
+    """Return whether the per-N completion authenticates current work exactly."""
 
     done_path = simulation_done_path(cfg, n_players)
-    if not done_path.is_file():
+    state = resolve_stage_state(
+        done_path,
+        inputs=[],
+        outputs=[],
+        cfg=cfg,
+        stage="simulation",
+        stage_config_sha=_simulation_stage_config_sha(cfg, n_players),
+        cache_key_version=cfg.stage_cache_key_version("simulation"),
+    )
+    if state is not CompletionState.COMPLETE_VALID:
         return False
     try:
         payload = json.loads(done_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
-    return (
-        payload.get("rng_scheme_version") == urandom.RNG_SCHEME_VERSION
-        and payload.get("outcome_schema_version") == OUTCOME_SCHEMA_VERSION
-        and payload.get("tournament_method_version") == TOURNAMENT_METHOD_VERSION
+    return int(payload.get("n_players", -1)) == n_players
+
+
+def _simulation_stage_config_sha(cfg: AppConfig, n_players: int) -> str:
+    """Bind the shared simulation scope to one concrete root/k cell."""
+
+    return freshness_sha256(
+        {
+            "base_stage_config_sha": cfg.stage_config_sha("simulation"),
+            "root_seed": int(cfg.sim.seed),
+            "n_players": int(n_players),
+        }
     )
+
+
+def _completion_output_files(paths: Sequence[Path], done_path: Path) -> list[Path]:
+    """Expand directories so a stamp never recursively authenticates itself."""
+
+    files: list[Path] = []
+    for path in paths:
+        if path.is_dir():
+            files.extend(
+                child
+                for child in sorted(path.rglob("*"), key=lambda item: item.as_posix())
+                if child.is_file() and child.resolve() != done_path.resolve()
+            )
+        else:
+            files.append(path)
+    return list(dict.fromkeys(files))
 
 
 def write_simulation_done(
@@ -262,7 +299,7 @@ def write_simulation_done(
 ) -> Path:
     """Write a completion marker for a per-N simulation run."""
     done_path = simulation_done_path(cfg, n_players)
-    payload = {
+    metadata = {
         "n_players": n_players,
         "seed": cfg.sim.seed,
         "root_seed": cfg.sim.seed,
@@ -279,12 +316,22 @@ def write_simulation_done(
         "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
         "tournament_method_version": TOURNAMENT_METHOD_VERSION,
         "n_strategies": n_strategies,
-        "outputs": [str(p) for p in outputs],
-        "created_at": datetime.now(timezone.utc).isoformat(),
     }
-    done_path.parent.mkdir(parents=True, exist_ok=True)
-    with atomic_path(str(done_path)) as tmp_path:
-        Path(tmp_path).write_text(json.dumps(payload, indent=2, sort_keys=True))
+    output_files = _completion_output_files(outputs, done_path)
+    immutable_inputs = [
+        cfg.strategy_manifest_root_path(),
+        done_path.parent / "simulation_workload_plan.json",
+    ]
+    write_stage_done(
+        done_path,
+        inputs=immutable_inputs,
+        outputs=output_files,
+        cfg=cfg,
+        stage="simulation",
+        stage_config_sha=_simulation_stage_config_sha(cfg, n_players),
+        cache_key_version=cfg.stage_cache_key_version("simulation"),
+        metadata=metadata,
+    )
     return done_path
 
 

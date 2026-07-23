@@ -18,7 +18,10 @@ import trueskill
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
+    ensure_artifact_sidecar_atomic,
     make_artifact_sidecar,
+    sha256_file,
+    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
@@ -38,10 +41,23 @@ class ScreeningRatingCell:
     game_rows_path: Path | None = None
 
 
-def publish_rating_cell_contract(cfg: AppConfig, cell: ScreeningRatingCell) -> None:
-    """Bind one canonical root/k rating table to a screening-only sidecar."""
+def publish_rating_cell_contract(
+    cfg: AppConfig,
+    cell: ScreeningRatingCell,
+    *,
+    completed_artifact_sha256: str | None = None,
+    expected_sidecar_sha256: str | None = None,
+    code_revision: str = "unknown",
+) -> None:
+    """Finalize a rating sidecar only from an independent cell completion.
 
-    try:
+    The completed artifact digest is mandatory when the sidecar is absent, so
+    callers cannot authenticate arbitrary existing bytes by constructing new
+    metadata for them.  An expected sidecar digest additionally gates the
+    missing-sidecar recovery path.
+    """
+
+    if sidecar_path(cell.ratings_path).exists():
         validate_artifact_sidecar(
             cell.ratings_path,
             expected={
@@ -51,9 +67,18 @@ def publish_rating_cell_contract(cfg: AppConfig, cell: ScreeningRatingCell) -> N
                 "seed_scope": "single_root",
             },
         )
+        if (
+            expected_sidecar_sha256 is not None
+            and sha256_file(sidecar_path(cell.ratings_path)) != expected_sidecar_sha256
+        ):
+            raise ArtifactContractError("rating sidecar differs from cell completion identity")
         return
-    except ArtifactContractError:
-        pass
+    if completed_artifact_sha256 is None:
+        raise ArtifactContractError(
+            "missing rating sidecar requires an independent cell completion identity"
+        )
+    if sha256_file(cell.ratings_path) != completed_artifact_sha256:
+        raise ArtifactContractError("rating bytes differ from cell completion identity")
     table = pq.read_table(cell.ratings_path, columns=["strategy", "mu", "sigma"])
     sidecar = make_artifact_sidecar(
         cfg,
@@ -74,13 +99,24 @@ def publish_rating_cell_contract(cfg: AppConfig, cell: ScreeningRatingCell) -> N
         required_player_counts=[cell.k],
         missing_cell_policy="fail",
         seed_scope="single_root",
+        code_revision=code_revision,
     )
-    write_parquet_artifact_atomic(
-        table,
+    ensure_artifact_sidecar_atomic(
         cell.ratings_path,
-        sidecar=sidecar,
-        codec=cfg.parquet_codec,
+        sidecar,
+        expected={
+            "scope": ArtifactScope.BY_K.value,
+            "operation": "sequential_rating",
+            "player_counts": [cell.k],
+            "seed_scope": "single_root",
+        },
     )
+    if (
+        expected_sidecar_sha256 is not None
+        and sha256_file(sidecar_path(cell.ratings_path)) != expected_sidecar_sha256
+    ):
+        sidecar_path(cell.ratings_path).unlink(missing_ok=True)
+        raise ArtifactContractError("recovered rating sidecar differs from completion identity")
 
 
 def _load_rating_frame(cell: ScreeningRatingCell) -> pd.DataFrame:
@@ -368,6 +404,8 @@ def diagnose_rating_cell(
 def build_screening_diagnostics(
     cfg: AppConfig,
     cells: Sequence[ScreeningRatingCell],
+    *,
+    force: bool = False,
 ) -> Path | None:
     """Write replay diagnostics for cells with available canonical game rows."""
 
@@ -384,7 +422,7 @@ def build_screening_diagnostics(
         for path in (cell.ratings_path, cell.game_rows_path)
         if path is not None
     ]
-    if stage_is_up_to_date(
+    if not force and stage_is_up_to_date(
         done,
         inputs=inputs,
         outputs=[output],

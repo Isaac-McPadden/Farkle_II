@@ -1,4 +1,10 @@
-"""Versioned stage freshness and resumable lifecycle state."""
+"""Content-authenticated stage freshness and resumable lifecycle state.
+
+The completion stamp is intentionally format-agnostic.  Artifact sidecars own
+semantic schema validation; this module binds the exact bytes of every declared
+input, output, and adjacent sidecar together with scoped config, method/version,
+code, and run-lineage identities.  Paths and mtimes are diagnostic only.
+"""
 
 from __future__ import annotations
 
@@ -6,7 +12,7 @@ import hashlib
 import json
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 from farkle.utils.artifact_contract import validate_artifact_sidecar
 from farkle.utils.writer import atomic_path
@@ -29,8 +35,9 @@ _ALLOWED_STATUSES = {
     "partial_resumable",
     "blocked_by_cap",
 }
-_SCHEMA_VERSION = 3
-_DEFAULT_CACHE_KEY_VERSION = 3
+_SCHEMA_VERSION = 4
+_DEFAULT_CACHE_KEY_VERSION = 4
+_LIFECYCLE_CONTRACT_VERSION = 1
 
 
 class CompletionState(str, Enum):
@@ -76,10 +83,15 @@ def read_stage_done(done_path: Path) -> dict[str, object]:
         "cache_key_version": None,
         "freshness_key": None,
         "freshness_sha256": None,
+        "lifecycle_contract_version": None,
+        "code_identity": None,
+        "run_lineage_sha256": None,
+        "stage_identity_sha256": None,
         "completion_state": CompletionState.NOT_STARTED.value,
         "inputs": [],
-        "input_fingerprints": [],
+        "input_identities": [],
         "outputs": [],
+        "output_identities": [],
         "status": "missing",
         "reason": None,
         "blocking_dependency": None,
@@ -123,35 +135,104 @@ def _resolve_expected_contract(
     return config_sha, stage_config_sha, cache_key_version, freshness_key
 
 
-def _path_fingerprint(path: Path) -> dict[str, object]:
-    """Return a low-I/O identity for one file or recursively tracked directory."""
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _adjacent_sidecar(path: Path) -> Path:
+    return path.with_name(f"{path.name}.sidecar.json")
+
+
+def _path_content_identity(path: Path, *, logical_role: str) -> dict[str, object]:
+    """Return a path-independent exact-byte identity for one file or directory."""
 
     if not path.exists():
-        return {"path": str(path), "kind": "missing"}
-    stat = path.stat()
+        return {"logical_role": logical_role, "kind": "missing"}
     if path.is_file():
+        sidecar = _adjacent_sidecar(path)
         return {
-            "path": str(path),
+            "logical_role": logical_role,
             "kind": "file",
-            "size": stat.st_size,
-            "mtime_ns": stat.st_mtime_ns,
+            "byte_length": path.stat().st_size,
+            "content_sha256": _sha256_file(path),
+            "sidecar_sha256": _sha256_file(sidecar) if sidecar.is_file() else None,
         }
-    children = []
-    for child in sorted((item for item in path.rglob("*") if item.is_file()), key=str):
-        child_stat = child.stat()
-        children.append(
+    entries: list[dict[str, object]] = []
+    for child in sorted(
+        (item for item in path.rglob("*") if item.is_file()), key=lambda p: p.as_posix()
+    ):
+        entries.append(
             {
-                "path": child.relative_to(path).as_posix(),
-                "size": child_stat.st_size,
-                "mtime_ns": child_stat.st_mtime_ns,
+                "relative_path": child.relative_to(path).as_posix(),
+                "byte_length": child.stat().st_size,
+                "content_sha256": _sha256_file(child),
             }
         )
     return {
-        "path": str(path),
+        "logical_role": logical_role,
         "kind": "directory",
-        "mtime_ns": stat.st_mtime_ns,
-        "children": children,
+        "entry_count": len(entries),
+        "tree_sha256": freshness_sha256({"entries": entries}),
     }
+
+
+def _path_identities(paths: Sequence[Path], *, prefix: str) -> list[dict[str, object]]:
+    return [
+        _path_content_identity(path, logical_role=f"{prefix}_{index:04d}")
+        for index, path in enumerate(paths)
+    ]
+
+
+def _code_identity_payload(cfg: Any | None, supplied: Any | None) -> dict[str, object]:
+    identity = supplied or (getattr(cfg, "_code_identity", None) if cfg is not None else None)
+    if identity is None and cfg is not None:
+        from farkle.utils.authenticated_contract import (
+            CodeIdentityPolicy,
+            resolve_code_identity,
+        )
+
+        repo_root = Path(__file__).resolve().parents[3]
+        identity = resolve_code_identity(repo_root, policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY)
+    if identity is None:
+        return {"state": "unscoped_test", "commit": None, "dirty_fingerprint_sha256": None}
+    if hasattr(identity, "commit"):
+        return {
+            "commit": str(identity.commit),
+            "policy": str(identity.policy),
+            "state": str(identity.state),
+            "dirty_fingerprint_sha256": identity.dirty_fingerprint_sha256,
+        }
+    if not isinstance(identity, Mapping):
+        raise TypeError("code_identity must be a CodeIdentity or mapping")
+    return dict(identity)
+
+
+def _stage_identity_sha256(
+    *,
+    stage: str | None,
+    stage_config_sha: str | None,
+    cache_key_version: int,
+    freshness_key: Mapping[str, Any] | None,
+    code_identity: Mapping[str, object],
+    run_lineage_sha256: str | None,
+    input_identities: Sequence[Mapping[str, object]],
+) -> str:
+    return freshness_sha256(
+        {
+            "lifecycle_contract_version": _LIFECYCLE_CONTRACT_VERSION,
+            "stage_key": stage,
+            "stage_cache_key_version": cache_key_version,
+            "stage_config_identity": stage_config_sha,
+            "method_versions": dict(freshness_key or {}),
+            "code_identity": dict(code_identity),
+            "run_lineage_sha256": run_lineage_sha256,
+            "upstream_identities": list(input_identities),
+        }
+    )
 
 
 def resolve_stage_state(
@@ -168,6 +249,8 @@ def resolve_stage_state(
     sidecar_artifacts: Iterable[Path] = (),
     partial_paths: Iterable[Path] = (),
     cap_reached: bool = False,
+    code_identity: Any | None = None,
+    run_lineage_sha256: str | None = None,
 ) -> CompletionState:
     """Resolve one stage into a canonical resumable lifecycle state."""
 
@@ -212,8 +295,6 @@ def resolve_stage_state(
         return CompletionState.COMPLETE_STALE
     if stage is not None and metadata.get("stage") != stage:
         return CompletionState.COMPLETE_STALE
-    if config_sha is not None and metadata.get("config_sha") not in (None, config_sha):
-        return CompletionState.COMPLETE_STALE
     expected_stage_sha = stage_config_sha if stage_config_sha is not None else config_sha
     if expected_stage_sha is not None and metadata.get("stage_config_sha") != expected_stage_sha:
         return CompletionState.COMPLETE_STALE
@@ -233,15 +314,38 @@ def resolve_stage_state(
             # their stage hash already binds the complete freshness contract.
             return CompletionState.COMPLETE_STALE
 
-    recorded_fingerprints = metadata.get("input_fingerprints")
-    if recorded_fingerprints and recorded_fingerprints != [
-        _path_fingerprint(path) for path in input_paths
-    ]:
+    if metadata.get("lifecycle_contract_version") != _LIFECYCLE_CONTRACT_VERSION:
         return CompletionState.COMPLETE_STALE
-    done_mtime = done_path.stat().st_mtime
-    if any(not path.exists() or path.stat().st_mtime > done_mtime for path in input_paths):
+    recorded_outputs = metadata.get("outputs")
+    if isinstance(recorded_outputs, list):
+        recorded_output_paths = [Path(str(value)) for value in recorded_outputs]
+        if output_paths and not set(output_paths).issubset(recorded_output_paths):
+            return CompletionState.COMPLETE_STALE
+        output_paths = recorded_output_paths
+    current_inputs = _path_identities(input_paths, prefix="input")
+    current_outputs = _path_identities(output_paths, prefix="output")
+    if metadata.get("input_identities") != current_inputs:
         return CompletionState.COMPLETE_STALE
-    if not all(path.exists() for path in output_paths):
+    if metadata.get("output_identities") != current_outputs:
+        return CompletionState.COMPLETE_STALE
+    resolved_code = _code_identity_payload(cfg, code_identity)
+    if metadata.get("code_identity") != resolved_code:
+        return CompletionState.COMPLETE_STALE
+    resolved_lineage = run_lineage_sha256 or (
+        getattr(cfg, "_run_lineage_sha256", None) if cfg is not None else None
+    )
+    if metadata.get("run_lineage_sha256") != resolved_lineage:
+        return CompletionState.COMPLETE_STALE
+    expected_identity = _stage_identity_sha256(
+        stage=stage,
+        stage_config_sha=expected_stage_sha,
+        cache_key_version=cache_key_version,
+        freshness_key=freshness_key,
+        code_identity=resolved_code,
+        run_lineage_sha256=resolved_lineage,
+        input_identities=current_inputs,
+    )
+    if metadata.get("stage_identity_sha256") != expected_identity:
         return CompletionState.COMPLETE_STALE
     try:
         for artifact in _coerce_paths(sidecar_artifacts):
@@ -280,6 +384,9 @@ def write_stage_done(
     blocking_dependency: str | None = None,
     upstream_stage: str | None = None,
     sidecar_artifacts: Iterable[Path] = (),
+    code_identity: Any | None = None,
+    run_lineage_sha256: str | None = None,
+    metadata: Mapping[str, Any] | None = None,
 ) -> None:
     """Persist lifecycle state after declared artifact sidecars validate."""
 
@@ -302,6 +409,14 @@ def write_stage_done(
 
     input_paths = _coerce_paths(inputs)
     output_paths = _coerce_paths(outputs)
+    if status == "success":
+        missing_inputs = [path for path in input_paths if not path.exists()]
+        missing_outputs = [path for path in output_paths if not path.exists()]
+        if missing_inputs or missing_outputs:
+            raise FileNotFoundError(
+                "cannot publish successful completion with missing paths: "
+                f"inputs={missing_inputs}, outputs={missing_outputs}"
+            )
     for artifact in _coerce_paths(sidecar_artifacts):
         validate_artifact_sidecar(artifact)
 
@@ -312,8 +427,16 @@ def write_stage_done(
     else:
         completion_state = CompletionState.PARTIAL_RESUMABLE
     normalized_freshness = None if freshness_key is None else dict(freshness_key)
+    input_identities = _path_identities(input_paths, prefix="input")
+    output_identities = _path_identities(output_paths, prefix="output")
+    resolved_code = _code_identity_payload(cfg, code_identity)
+    resolved_lineage = run_lineage_sha256 or (
+        getattr(cfg, "_run_lineage_sha256", None) if cfg is not None else None
+    )
+    resolved_stage_sha = stage_config_sha if stage_config_sha is not None else config_sha
     payload = {
         "schema_version": _SCHEMA_VERSION,
+        "lifecycle_contract_version": _LIFECYCLE_CONTRACT_VERSION,
         "stage": stage,
         "config_sha": config_sha,
         "stage_config_sha": stage_config_sha if stage_config_sha is not None else config_sha,
@@ -324,13 +447,32 @@ def write_stage_done(
         ),
         "completion_state": completion_state.value,
         "inputs": [str(path) for path in input_paths],
-        "input_fingerprints": [_path_fingerprint(path) for path in input_paths],
+        "input_identities": input_identities,
         "outputs": [str(path) for path in output_paths],
+        "output_identities": output_identities,
+        "code_identity": resolved_code,
+        "run_lineage_sha256": resolved_lineage,
+        "stage_identity_sha256": _stage_identity_sha256(
+            stage=stage,
+            stage_config_sha=resolved_stage_sha,
+            cache_key_version=cache_key_version,
+            freshness_key=normalized_freshness,
+            code_identity=resolved_code,
+            run_lineage_sha256=resolved_lineage,
+            input_identities=input_identities,
+        ),
         "status": status,
         "reason": reason,
         "blocking_dependency": blocking_dependency,
         "upstream_stage": upstream_stage,
     }
+    if metadata:
+        collisions = set(payload).intersection(metadata)
+        if collisions:
+            raise ValueError(
+                f"completion metadata collides with reserved fields: {sorted(collisions)}"
+            )
+        payload.update(dict(metadata))
     done_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(done_path)) as temporary_path:
         Path(temporary_path).write_text(

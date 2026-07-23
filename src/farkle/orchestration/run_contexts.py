@@ -3,15 +3,19 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from farkle.analysis.stage_registry import StageLayout, resolve_root_pair_stage_layout
-from farkle.config import AppConfig
+from farkle.config import AppConfig, assign_config_sha, compute_config_sha
+from farkle.utils.authenticated_contract import CodeIdentity, canonical_json_bytes, identity_sha256
+from farkle.utils.writer import atomic_path
 
 SEED_PAIR_ANALYSIS_DIRNAME = "seed_pair_analysis"
+RUN_CONTEXT_FILENAME = "run_context.json"
 
 
 @dataclass(frozen=True)
@@ -23,6 +27,12 @@ class SeedRunContext:
     results_root: Path
     analysis_root: Path
     active_config_path: Path
+
+    @property
+    def run_context_path(self) -> Path:
+        """Return the separate runtime/layout lineage artifact."""
+
+        return self.results_root / RUN_CONTEXT_FILENAME
 
     @classmethod
     def from_config(cls, cfg: AppConfig) -> "SeedRunContext":
@@ -78,6 +88,8 @@ class RunContextConfig(AppConfig):
         run_cfg = cls(**init_values)
         run_cfg.config_sha = base.config_sha
         run_cfg._stage_layout = base._stage_layout
+        run_cfg._code_identity = base._code_identity
+        run_cfg._run_lineage_sha256 = base._run_lineage_sha256
         run_cfg._analysis_root_override = analysis_root
         run_cfg._root_input_layout_override = root_input_layout
         if stage_layout is not None:
@@ -125,6 +137,14 @@ class RootPairRunContext:
     analysis_root: Path
     config: RunContextConfig
 
+    @property
+    def active_config_path(self) -> Path:
+        return self.pair_root / "active_config.yaml"
+
+    @property
+    def run_context_path(self) -> Path:
+        return self.pair_root / RUN_CONTEXT_FILENAME
+
     @classmethod
     def from_root_contexts(
         cls,
@@ -152,6 +172,7 @@ class RootPairRunContext:
             seed_list=list(root_pair),
         )
         pair_base = replace(first.config, sim=pair_sim)
+        assign_config_sha(pair_base)
         run_cfg = RunContextConfig.from_base(
             pair_base,
             analysis_root=pair_analysis_root,
@@ -167,9 +188,127 @@ class RootPairRunContext:
         )
 
 
+def _code_payload(code_identity: CodeIdentity) -> dict[str, object]:
+    return {
+        "commit": code_identity.commit,
+        "policy": code_identity.policy,
+        "state": code_identity.state,
+        "dirty_fingerprint_sha256": code_identity.dirty_fingerprint_sha256,
+    }
+
+
+def configure_run_lineage(
+    context: SeedRunContext | RootPairRunContext,
+    *,
+    code_identity: CodeIdentity,
+    parent_lifecycle_roots: tuple[str, ...] = (),
+) -> str:
+    """Attach and return the immutable lineage identity used by stage freshness.
+
+    Mutable execution controls and resolved physical paths are recorded in the
+    run-context artifact but deliberately excluded from this identity.
+    """
+
+    cfg = context.config
+    public_config_sha = compute_config_sha(cfg)
+    cfg.config_sha = public_config_sha
+    roots = (
+        list(context.root_pair) if isinstance(context, RootPairRunContext) else [int(context.seed)]
+    )
+    lineage = {
+        "run_context_contract_version": 1,
+        "context_kind": "root_pair" if isinstance(context, RootPairRunContext) else "root",
+        "roots": roots,
+        "parent_lifecycle_roots": list(parent_lifecycle_roots),
+        "stage_layout_identity_sha256": identity_sha256(cfg.stage_layout.to_resolved_layout()),
+        "code_identity": _code_payload(code_identity),
+    }
+    lineage_sha = identity_sha256(lineage)
+    cfg._code_identity = code_identity
+    cfg._run_lineage_sha256 = lineage_sha
+    return lineage_sha
+
+
+def write_run_context_atomic(
+    context: SeedRunContext | RootPairRunContext,
+    *,
+    code_identity: CodeIdentity,
+    parent_lifecycle_roots: tuple[str, ...] = (),
+    cli_overrides: tuple[str, ...] = (),
+) -> str:
+    """Publish the authenticated runtime/layout artifact separately from YAML."""
+
+    lineage_sha = configure_run_lineage(
+        context,
+        code_identity=code_identity,
+        parent_lifecycle_roots=parent_lifecycle_roots,
+    )
+    cfg = context.config
+    resolved_paths = {
+        "results_root": str(
+            context.pair_root if isinstance(context, RootPairRunContext) else context.results_root
+        ),
+        "analysis_root": str(context.analysis_root),
+        "active_config": str(context.active_config_path),
+    }
+    execution = {
+        "sim_n_jobs": cfg.sim.n_jobs,
+        "sim_mp_start_method": cfg.sim.mp_start_method,
+        "sim_chunk_seconds": cfg.sim.desired_sec_per_chunk,
+        "sim_checkpoint_seconds": cfg.sim.ckpt_every_sec,
+        "ingest_n_jobs": cfg.ingest.n_jobs,
+        "analysis_n_jobs": cfg.analysis.n_jobs,
+        "analysis_mp_start_method": cfg.analysis.mp_start_method,
+        "head2head_n_jobs": cfg.head2head.n_jobs,
+        "parallel_seeds": cfg.orchestration.parallel_seeds,
+    }
+    payload = {
+        "run_context_contract_version": 1,
+        "run_lineage_sha256": lineage_sha,
+        "public_config_sha256": cfg.config_sha,
+        "parent_lifecycle_roots": list(parent_lifecycle_roots),
+        "resolved_paths": resolved_paths,
+        "resolved_stage_layout": cfg.stage_layout.to_resolved_layout(),
+        "execution_controls": execution,
+        "code_identity": _code_payload(code_identity),
+        "cli_overrides": list(cli_overrides),
+    }
+    payload["run_context_sha256"] = identity_sha256(payload)
+    path = context.run_context_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with atomic_path(str(path)) as temporary:
+        Path(temporary).write_bytes(canonical_json_bytes(payload) + b"\n")
+    return lineage_sha
+
+
+def load_run_context(path: Path, *, active_config_path: Path | None = None) -> dict[str, Any]:
+    """Load and authenticate a persisted runtime/layout context."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("run context must contain a JSON object")
+    recorded = payload.pop("run_context_sha256", None)
+    if recorded != identity_sha256(payload):
+        raise ValueError("run context hash does not match its canonical payload")
+    payload["run_context_sha256"] = recorded
+    if active_config_path is not None:
+        from farkle.config import load_app_config
+
+        roots = payload.get("parent_lifecycle_roots")
+        expected_roots = 2 if isinstance(roots, list) and len(roots) == 2 else None
+        config = load_app_config(active_config_path, seed_list_len=expected_roots)
+        if compute_config_sha(config) != payload.get("public_config_sha256"):
+            raise ValueError("run context does not bind the adjacent public configuration")
+    return payload
+
+
 __all__ = [
+    "RUN_CONTEXT_FILENAME",
     "SEED_PAIR_ANALYSIS_DIRNAME",
     "RootPairRunContext",
     "RunContextConfig",
     "SeedRunContext",
+    "configure_run_lineage",
+    "load_run_context",
+    "write_run_context_atomic",
 ]

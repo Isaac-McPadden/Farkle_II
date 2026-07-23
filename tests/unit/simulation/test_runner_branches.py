@@ -88,17 +88,21 @@ def test_output_dir_and_done_helpers(tmp_path: Path) -> None:
     assert runner.simulation_is_complete(cfg, 2) is False
     done_path.parent.mkdir(parents=True, exist_ok=True)
     done_path.write_text(
-        '{"rng_scheme_version": 1, "outcome_schema_version": 2, ' '"tournament_method_version": 2}'
+        '{"rng_scheme_version": 1, "outcome_schema_version": 2, "tournament_method_version": 2}'
     )
     assert runner.simulation_is_complete(cfg, 2) is False
 
+    checkpoint = cfg.results_root / "2_players" / "2p_checkpoint.pkl"
+    checkpoint.write_bytes(b"checkpoint")
+    cfg.strategy_manifest_root_path().write_bytes(b"strategy-manifest")
+    (done_path.parent / "simulation_workload_plan.json").write_text("{}", encoding="utf-8")
     marker = runner.write_simulation_done(
         cfg,
         2,
         num_shuffles=3,
         shuffles_per_batch=1,
         n_strategies=8,
-        outputs=[cfg.results_root / "2_players" / "2p_checkpoint.pkl"],
+        outputs=[checkpoint],
     )
     assert marker == done_path
     assert runner.simulation_is_complete(cfg, 2) is True

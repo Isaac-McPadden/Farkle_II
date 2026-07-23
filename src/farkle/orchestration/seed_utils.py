@@ -11,8 +11,15 @@ from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
 
-from farkle.config import AppConfig, effective_config_dict
+from farkle.config import (
+    AppConfig,
+    assign_config_sha,
+    compute_config_sha,
+    effective_config_dict,
+    load_app_config,
+)
 from farkle.simulation import runner
+from farkle.utils.artifact_contract import sha256_file
 from farkle.utils.writer import atomic_path
 
 
@@ -77,7 +84,7 @@ def resolve_seed_pair_args(
 
 
 def write_active_config(cfg: AppConfig, dest_dir: Path | None = None) -> None:
-    """Persist the resolved configuration alongside results."""
+    """Persist and verify a reloadable public configuration alongside results."""
     target_dir = dest_dir or cfg.results_root
     target_dir.mkdir(parents=True, exist_ok=True)
     resolved_dict = effective_config_dict(cfg)
@@ -86,7 +93,24 @@ def write_active_config(cfg: AppConfig, dest_dir: Path | None = None) -> None:
     with atomic_path(str(target)) as tmp_path:
         Path(tmp_path).write_text(resolved_yaml, encoding="utf-8")
 
-    done_payload = {"active_config": str(target), "config_sha": cfg.config_sha}
+    expected_hash = compute_config_sha(cfg)
+    reloaded = load_app_config(
+        target,
+        seed_list_len=len(cfg.sim.seed_list) if cfg.sim.seed_list is not None else None,
+    )
+    reloaded_hash = compute_config_sha(reloaded)
+    if reloaded_hash != expected_hash:
+        raise ValueError(
+            "active configuration failed public round-trip: "
+            f"expected {expected_hash}, reloaded {reloaded_hash}"
+        )
+    cfg.config_sha = expected_hash
+    done_payload = {
+        "active_config": str(target),
+        "active_config_sha256": sha256_file(target),
+        "config_sha": expected_hash,
+        "round_trip_config_sha": reloaded_hash,
+    }
     done_path = target.with_suffix(".done.json")
     with atomic_path(str(done_path)) as tmp_path:
         Path(tmp_path).write_text(
@@ -107,7 +131,7 @@ def prepare_seed_config(
     io_cfg = dataclasses.replace(base_cfg.io, results_dir_prefix=base_dir)
     sim_cfg = dataclasses.replace(base_cfg.sim, seed=seed, seed_list=[seed])
     prepared = dataclasses.replace(base_cfg, io=io_cfg, sim=sim_cfg)
-    prepared.config_sha = base_cfg.config_sha
+    assign_config_sha(prepared)
     return prepared
 
 

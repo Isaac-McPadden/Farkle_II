@@ -15,7 +15,12 @@ from farkle.analysis.trueskill_screening import (
     publish_rating_cell_contract,
 )
 from farkle.config import AppConfig, IOConfig, SimConfig
-from farkle.utils.artifact_contract import validate_artifact_sidecar
+from farkle.utils.artifact_contract import (
+    ArtifactContractError,
+    sha256_file,
+    sidecar_path,
+    validate_artifact_sidecar,
+)
 from farkle.utils.schema_helpers import expected_schema_for
 
 
@@ -58,6 +63,8 @@ def test_percentile_contribution_requires_complete_root_k_support(tmp_path: Path
     assert frame.loc["A", "complete_support"]
     assert frame.loc["A", "rating_cells_present"] == 4
     assert frame.loc["A", "candidate_contribution_rank"] == 1
+    assert frame.loc["A", "mean_percentile_rank"] == pytest.approx((2 / 3 + 1 + 1 + 1) / 4)
+    assert frame.loc["B", "mean_percentile_rank"] == pytest.approx((1 / 3 + 0.5 + 0.5 + 0.5) / 4)
     assert "C" not in frame.index
     assert "sigma" not in frame.columns
     validate_artifact_sidecar(
@@ -68,7 +75,11 @@ def test_percentile_contribution_requires_complete_root_k_support(tmp_path: Path
             "seed_scope": "both_roots_combined",
         },
     )
-    publish_rating_cell_contract(cfg, cells[0])
+    publish_rating_cell_contract(
+        cfg,
+        cells[0],
+        completed_artifact_sha256=sha256_file(cells[0].ratings_path),
+    )
     validate_artifact_sidecar(
         cells[0].ratings_path,
         expected={
@@ -77,6 +88,29 @@ def test_percentile_contribution_requires_complete_root_k_support(tmp_path: Path
             "uncertainty_method": "trueskill_model_sigma_screening_only",
         },
     )
+
+
+def test_rating_cell_contract_does_not_repair_a_present_corrupt_sidecar(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    ratings = _ratings(tmp_path / "ratings.parquet", {"A": (30.0, 2.0), "B": (20.0, 3.0)})
+    cell = ScreeningRatingCell(11, 2, ratings)
+    with pytest.raises(ArtifactContractError, match="independent cell completion"):
+        publish_rating_cell_contract(cfg, cell)
+    publish_rating_cell_contract(
+        cfg,
+        cell,
+        completed_artifact_sha256=sha256_file(ratings),
+    )
+    metadata = sidecar_path(ratings)
+    original_bytes = metadata.read_bytes()
+    corrupt_bytes = original_bytes.replace(b'"scope": "by_k"', b'"scope": "nope"')
+    assert corrupt_bytes != original_bytes
+    metadata.write_bytes(corrupt_bytes)
+
+    with pytest.raises(ArtifactContractError):
+        publish_rating_cell_contract(cfg, cell)
+
+    assert metadata.read_bytes() == corrupt_bytes
 
 
 def _game_rows(path: Path, games: int = 10) -> Path:

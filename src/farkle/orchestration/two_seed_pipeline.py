@@ -17,6 +17,7 @@ from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
     SeedRunContext,
+    write_run_context_atomic,
 )
 from farkle.orchestration.seed_utils import (
     prepare_seed_config,
@@ -27,6 +28,12 @@ from farkle.orchestration.seed_utils import (
     write_active_config,
 )
 from farkle.simulation import runner
+from farkle.utils.artifact_contract import sha256_file
+from farkle.utils.authenticated_contract import (
+    CodeIdentity,
+    CodeIdentityPolicy,
+    resolve_code_identity,
+)
 from farkle.utils.logging import setup_info_logging
 from farkle.utils.manifest import (
     EVENT_RUN_END,
@@ -41,6 +48,7 @@ from farkle.utils.parallel import (
     normalize_n_jobs,
     resolve_stage_parallel_policy,
 )
+from farkle.utils.stage_completion import CompletionState, freshness_sha256, resolve_stage_state
 from farkle.utils.writer import atomic_path
 
 LOGGER = logging.getLogger(__name__)
@@ -56,6 +64,8 @@ class _SeedRunStatus:
     analysis_ok: bool
     simulation_error: str | None = None
     analysis_error: str | None = None
+    lifecycle_sha256: str | None = None
+    stage_states: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)
@@ -137,7 +147,52 @@ def _build_seed_cfg(
     root_cfg.sim.n_jobs = policy_bundle.simulation.process_workers
     root_cfg.ingest.n_jobs = policy_bundle.ingest.process_workers
     root_cfg.analysis.n_jobs = policy_bundle.analysis.process_workers
+    assign_config_sha(root_cfg)
     return root_cfg
+
+
+def _current_plan_states(cfg: AppConfig, plan: Sequence[Any]) -> dict[str, str]:
+    states: dict[str, str] = {}
+    for item in plan:
+        if item.completion_stamp is None:
+            states[item.name] = CompletionState.COMPLETE_STALE.value
+            continue
+        states[item.name] = resolve_stage_state(
+            item.completion_stamp,
+            inputs=[],
+            outputs=item.required_outputs,
+            cfg=cfg,
+            stage=item.name,
+        ).value
+    return states
+
+
+def _root_lifecycle_identity(
+    context: SeedRunContext, plan: Sequence[Any]
+) -> tuple[str | None, dict[str, str]]:
+    states = {
+        f"simulation_{k}p": (
+            CompletionState.COMPLETE_VALID.value
+            if runner.simulation_is_complete(context.config, int(k))
+            else CompletionState.COMPLETE_STALE.value
+        )
+        for k in context.config.sim.n_players_list
+    }
+    states.update(_current_plan_states(context.config, plan))
+    if any(value != CompletionState.COMPLETE_VALID.value for value in states.values()):
+        return None, states
+    stamps = [
+        runner.simulation_done_path(context.config, int(k))
+        for k in context.config.sim.n_players_list
+    ]
+    stamps.extend(item.completion_stamp for item in plan if item.completion_stamp is not None)
+    identity = freshness_sha256(
+        {
+            "run_lineage_sha256": context.config._run_lineage_sha256,
+            "completion_stamps": [sha256_file(path) for path in stamps],
+        }
+    )
+    return identity, states
 
 
 def _run_per_seed_analysis(
@@ -182,6 +237,7 @@ def _run_one_seed(
     run_id: str,
     force: bool,
     policy_bundle: _PerSeedPolicyBundle,
+    code_identity: CodeIdentity,
 ) -> _SeedRunStatus:
     root_cfg = _build_seed_cfg(
         cfg,
@@ -190,6 +246,7 @@ def _run_one_seed(
         policy_bundle=policy_bundle,
     )
     context = SeedRunContext.from_config(root_cfg)
+    write_run_context_atomic(context, code_identity=code_identity)
     write_active_config(root_cfg)
     apply_native_thread_limits(policy_bundle.simulation)
     try:
@@ -228,11 +285,24 @@ def _run_one_seed(
             analysis_ok=False,
             analysis_error=f"{type(exc).__name__}: {exc}",
         )
+    plan = analysis.build_root_stage_plan(root_cfg, force=False)
+    lifecycle_sha, stage_states = _root_lifecycle_identity(context, plan)
+    if lifecycle_sha is None:
+        return _SeedRunStatus(
+            seed=seed,
+            context=context,
+            simulation_ok=True,
+            analysis_ok=False,
+            analysis_error="root workflow contains stale or incomplete canonical stages",
+            stage_states=stage_states,
+        )
     return _SeedRunStatus(
         seed=seed,
         context=context,
         simulation_ok=True,
         analysis_ok=True,
+        lifecycle_sha256=lifecycle_sha,
+        stage_states=stage_states,
     )
 
 
@@ -257,6 +327,10 @@ def run_pipeline(
         raise ValueError(f"two-seed-pipeline requires two distinct roots, found {seed_pair}")
     if cfg.config_sha is None:
         assign_config_sha(cfg)
+    code_identity = resolve_code_identity(
+        Path(__file__).resolve().parents[3],
+        policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
+    )
     pair_root = seed_pair_root(cfg, seed_pair)
     manifest_path = pair_root / "two_seed_pipeline_manifest.jsonl"
     health_path = pair_root / "pipeline_health.json"
@@ -287,6 +361,7 @@ def run_pipeline(
                     run_id=run_id,
                     force=force,
                     policy_bundle=policy_bundle,
+                    code_identity=code_identity,
                 )
                 for seed in seed_pair
             }
@@ -301,6 +376,7 @@ def run_pipeline(
                 run_id=run_id,
                 force=force,
                 policy_bundle=policy_bundle,
+                code_identity=code_identity,
             )
             for seed in seed_pair
         }
@@ -309,6 +385,9 @@ def run_pipeline(
             "simulation": "complete" if result.simulation_ok else "failed",
             "analysis": "complete" if result.analysis_ok else "failed",
             "error": result.simulation_error or result.analysis_error,
+            "lifecycle_sha256": result.lifecycle_sha256,
+            "stage_states": result.stage_states,
+            "public_config_sha256": result.context.config.config_sha,
         }
         for seed, result in root_results.items()
     }
@@ -328,6 +407,14 @@ def run_pipeline(
             root_contexts,
             pair_root=pair_root,
         )
+        parent_lifecycle_roots = tuple(
+            cast(str, root_results[seed].lifecycle_sha256) for seed in seed_pair
+        )
+        write_run_context_atomic(
+            pair_context,
+            code_identity=code_identity,
+            parent_lifecycle_roots=parent_lifecycle_roots,
+        )
         write_active_config(pair_context.config, dest_dir=pair_root)
         apply_native_thread_limits(policy_bundle.analysis)
         try:
@@ -338,16 +425,52 @@ def run_pipeline(
             )
         except Exception as exc:  # noqa: BLE001
             pair_error = f"{type(exc).__name__}: {exc}"
+    pair_stage_states: dict[str, str] = {}
+    if pair_context is not None and pair_error is None:
+        pair_stage_states = _current_plan_states(
+            pair_context.config,
+            analysis.build_root_pair_stage_plan(pair_context, force=False),
+        )
+        if any(
+            value != CompletionState.COMPLETE_VALID.value for value in pair_stage_states.values()
+        ):
+            pair_error = "pair workflow contains stale or incomplete canonical stages"
+    for seed, result in root_results.items():
+        if not result.simulation_ok or not result.analysis_ok:
+            continue
+        current_lifecycle, current_states = _root_lifecycle_identity(
+            result.context,
+            analysis.build_root_stage_plan(result.context.config, force=False),
+        )
+        root_health[str(seed)]["lifecycle_sha256"] = current_lifecycle
+        root_health[str(seed)]["stage_states"] = current_states
+        if current_lifecycle is None:
+            root_health[str(seed)]["analysis"] = "failed"
+            root_health[str(seed)]["error"] = (
+                "root workflow became stale before final health publication"
+            )
+    root_failures = [
+        f"root {seed}: {status['error']}"
+        for seed, status in root_health.items()
+        if status["analysis"] != "complete"
+    ]
     overall_status = "complete_success" if not root_failures and pair_error is None else "failed"
     health = {
         "seed_pair": list(seed_pair),
         "status": overall_status,
         "config_sha": cfg.config_sha,
+        "pair_public_config_sha256": (
+            pair_context.config.config_sha if pair_context is not None else None
+        ),
         "root_workflows": root_health,
         "pair_workflow": {
             "status": "complete" if pair_context is not None and pair_error is None else "failed",
             "analysis_root": str(pair_context.analysis_root) if pair_context else None,
             "error": pair_error or (root_failures[0] if root_failures else None),
+            "stage_states": pair_stage_states,
+            "run_lineage_sha256": (
+                pair_context.config._run_lineage_sha256 if pair_context is not None else None
+            ),
         },
     }
     _write_pipeline_health(health_path, health)

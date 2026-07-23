@@ -18,7 +18,23 @@ changing code or accepting a statistical conclusion.
   observational-unit-labelled game statistics and reports. RNG-scheme-v2
   derives tournament and H2H seat streams directly from complete semantic
   coordinates and makes shuffle indices, rather than scalar fingerprints, the
-  recovery identity.
+  recovery identity. Task 5 adds an opt-in version-3 authenticated-contract
+  primitive layer for canonical physical paths, actual Arrow schemas, exact
+  source/sidecar or immutable-manifest identities, typed method/version/code
+  identity, and five-state lifecycle classification. Task 6 migrates simulation
+  and shared root/pair completion to schema-4 exact-byte identities, gives every
+  root stage a final health-checked stamp, makes HGB and root TrueSkill obey the
+  shared lifecycle, separates reloadable public YAML from authenticated runtime
+  context/lineage, binds pair lineage to both parent lifecycle roots, and derives
+  final health from a last-moment canonical-state audit. Artifact producers that
+  still emit v2 sidecars remain ineligible for v3 release evidence; no existing
+  bytes or completion stamps are promoted. Task 7 seals each resumable
+  TrueSkill root/k cell to exact ordered rows, coordinates, hyperparameters,
+  method/code identity, rating bytes, and sidecar bytes; HGB completion binds
+  its target/features, whole-strategy folds, hyperparameters, RNG/method/code
+  identity, outputs, and sidecars. HGB's row-preserving per-k association union
+  now lives in `concat_ks`; only the equal-k association summary lives in
+  `across_k`.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

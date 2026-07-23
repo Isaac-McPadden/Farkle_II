@@ -13,7 +13,11 @@ from farkle.analysis.stage_registry import resolve_root_pair_stage_layout, resol
 from farkle.analysis.trueskill_screening import ScreeningRatingCell, publish_rating_cell_contract
 from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
-from farkle.utils.artifact_contract import ArtifactContractError, validate_artifact_sidecar
+from farkle.utils.artifact_contract import (
+    ArtifactContractError,
+    sha256_file,
+    validate_artifact_sidecar,
+)
 
 
 def _root_context(tmp_path: Path, seed: int, ks: tuple[int, ...] = (2, 4)) -> SeedRunContext:
@@ -42,6 +46,7 @@ def _write_rating_cell(context: SeedRunContext, k: int, *, valid_sidecar: bool =
         publish_rating_cell_contract(
             context.config,
             ScreeningRatingCell(root_seed=context.seed, k=k, ratings_path=path),
+            completed_artifact_sha256=sha256_file(path),
         )
     return path
 
@@ -115,6 +120,7 @@ def test_run_trueskill_root_rejects_incomplete_configured_k_support(
     context = _root_context(tmp_path, 11)
     rating = _write_rating_cell(context, 2)
     monkeypatch.setattr(run_trueskill_module, "run_trueskill", lambda **_kwargs: None)
+    monkeypatch.setattr(run_trueskill_module, "_resolve_root_row_data_dir", lambda _cfg: tmp_path)
     monkeypatch.setattr(
         run_trueskill_module,
         "_iter_rating_parquets",
@@ -123,7 +129,13 @@ def test_run_trueskill_root_rejects_incomplete_configured_k_support(
     monkeypatch.setattr(
         run_trueskill_module,
         "_load_done_stamp",
-        lambda _path: SimpleNamespace(parquet_path=str(rating)),
+        lambda _path: SimpleNamespace(parquet_path=str(rating), sidecar_sha256=None),
+    )
+    monkeypatch.setattr(run_trueskill_module, "_done_stamp_matches", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        run_trueskill_module,
+        "_seal_rating_cell_completion",
+        lambda _cfg, **kwargs: kwargs["stamp"],
     )
 
     with pytest.raises(RuntimeError, match="exactly every configured root/k cell"):
@@ -140,6 +152,7 @@ def test_run_trueskill_root_rejects_extra_k_cells(
         f"ratings_{k}_seed11.done.json": rating for k, rating in zip((2, 4), ratings, strict=True)
     }
     monkeypatch.setattr(run_trueskill_module, "run_trueskill", lambda **_kwargs: None)
+    monkeypatch.setattr(run_trueskill_module, "_resolve_root_row_data_dir", lambda _cfg: tmp_path)
     monkeypatch.setattr(
         run_trueskill_module,
         "_iter_rating_parquets",
@@ -148,7 +161,15 @@ def test_run_trueskill_root_rejects_extra_k_cells(
     monkeypatch.setattr(
         run_trueskill_module,
         "_load_done_stamp",
-        lambda path: SimpleNamespace(parquet_path=str(by_done_name[path.name])),
+        lambda path: SimpleNamespace(
+            parquet_path=str(by_done_name[path.name]), sidecar_sha256=None
+        ),
+    )
+    monkeypatch.setattr(run_trueskill_module, "_done_stamp_matches", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        run_trueskill_module,
+        "_seal_rating_cell_completion",
+        lambda _cfg, **kwargs: kwargs["stamp"],
     )
 
     with pytest.raises(RuntimeError, match=r"extra=\[\(11, 4\)\]"):
@@ -193,6 +214,7 @@ def test_parallel_trueskill_block_failure_propagates(
             row_data_dir=row_data_dir,
             curated_rows_name="game_rows.parquet",
             workers=2,
+            cell_freshness_sha256="a" * 64,
         )
 
 

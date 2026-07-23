@@ -94,25 +94,40 @@ def build_root_stage_plan(
         if run_rng_diagnostics is None
         else bool(run_rng_diagnostics)
     )
+
+    def root_item(name: str, action: Any, stamp_name: str | None = None) -> StagePlanItem:
+        stamp = stage_done_path(cfg.stage_dir(name), stamp_name or name)
+
+        def invoke(inner: AppConfig) -> None:
+            if force:
+                stamp.unlink(missing_ok=True)
+            action(inner)
+
+        return StagePlanItem(name, invoke, completion_stamp=stamp)
+
     plan = [
-        StagePlanItem("ingest", ingest.run),
-        StagePlanItem("curate", curate.run),
-        StagePlanItem("combine", combine.run),
-        StagePlanItem("metrics", metrics.run),
-        StagePlanItem("game_stats", lambda inner: game_stats.run(inner, force=force)),
+        root_item("ingest", ingest.run),
+        root_item("curate", curate.run),
+        root_item("combine", combine.run),
+        root_item("metrics", metrics.run),
+        root_item("game_stats", lambda inner: game_stats.run(inner, force=force)),
     ]
     if use_rng:
         plan.append(
-            StagePlanItem(
+            root_item(
                 "rng_diagnostics",
                 lambda inner: rng_module.run(inner, lags=rng_lags, force=force),
             )
         )
     plan.extend(
         [
-            StagePlanItem("trueskill", trueskill.run),
-            StagePlanItem("hgb", hgb_feat.run),
-            StagePlanItem("screening", lambda inner: screening.run(inner, force=force)),
+            root_item(
+                "trueskill",
+                lambda inner: trueskill.run(inner, force=force),
+                "trueskill_percentile_contribution",
+            ),
+            root_item("hgb", lambda inner: hgb_feat.run(inner, force=force)),
+            root_item("screening", lambda inner: screening.run(inner, force=force)),
         ]
     )
     return plan

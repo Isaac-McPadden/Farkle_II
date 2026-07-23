@@ -15,6 +15,7 @@ from farkle.orchestration.run_contexts import (
     RootPairRunContext,
     SeedRunContext,
 )
+from farkle.utils.authenticated_contract import CodeIdentity, CodeIdentityPolicy
 
 
 def _context(tmp_path: Path, root: int) -> SeedRunContext:
@@ -105,6 +106,18 @@ def _install_root_results(
     monkeypatch.setattr(two_seed_pipeline, "validate_manifest_contract", lambda _path: None)
     monkeypatch.setattr(two_seed_pipeline, "append_manifest_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(two_seed_pipeline, "write_active_config", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_current_plan_states",
+        lambda _cfg, plan: {
+            item.name: two_seed_pipeline.CompletionState.COMPLETE_VALID.value for item in plan
+        },
+    )
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_root_lifecycle_identity",
+        lambda _context, _plan: ("e" * 64, {"simulation_2p": "complete_valid"}),
+    )
 
 
 def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
@@ -170,6 +183,44 @@ def test_two_seed_pipeline_blocks_pair_tail_after_root_failure(
     assert health["pair_workflow"]["status"] == "failed"
 
 
+def test_pipeline_health_cannot_report_success_over_stale_pair_stage(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+    )
+    _install_root_results(monkeypatch, tmp_path)
+    health: dict[str, Any] = {}
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_root_pair_analysis",
+        lambda *_args, **_kwargs: None,
+    )
+
+    def states(_cfg: AppConfig, plan: list[Any]) -> dict[str, str]:
+        values = {
+            item.name: two_seed_pipeline.CompletionState.COMPLETE_VALID.value for item in plan
+        }
+        if values and next(iter(values)) == "root_stability":
+            values["root_stability"] = two_seed_pipeline.CompletionState.COMPLETE_STALE.value
+        return values
+
+    monkeypatch.setattr(two_seed_pipeline, "_current_plan_states", states)
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_write_pipeline_health",
+        lambda _path, payload: health.update(payload),
+    )
+
+    with pytest.raises(RuntimeError, match="stale or incomplete"):
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    assert health["status"] == "failed"
+    assert health["pair_workflow"]["stage_states"]["root_stability"] == "complete_stale"
+
+
 def test_worker_budget_is_split_across_concurrent_roots(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     cfg.sim.n_jobs = 8
@@ -179,3 +230,58 @@ def test_worker_budget_is_split_across_concurrent_roots(tmp_path: Path) -> None:
 
     assert policy.simulation.process_workers == 4
     assert policy.analysis.process_workers <= 4
+
+
+def test_force_bypasses_authenticated_simulation_skip(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+    )
+    policy = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
+    calls: list[bool] = []
+    monkeypatch.setattr(two_seed_pipeline, "write_run_context_atomic", lambda *_a, **_k: "x")
+    monkeypatch.setattr(two_seed_pipeline, "write_active_config", lambda *_a, **_k: None)
+    monkeypatch.setattr(two_seed_pipeline, "seed_has_completion_markers", lambda _cfg: True)
+    monkeypatch.setattr(
+        two_seed_pipeline.runner,
+        "run_tournament",
+        lambda _cfg, *, force=False: calls.append(force),
+    )
+    monkeypatch.setattr(two_seed_pipeline, "_run_per_seed_analysis", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_root_lifecycle_identity",
+        lambda *_a, **_k: ("f" * 64, {"simulation_2p": "complete_valid"}),
+    )
+    code = CodeIdentity(
+        commit="a" * 40,
+        policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+        state="clean",
+        dirty_fingerprint_sha256=None,
+    )
+
+    two_seed_pipeline._run_one_seed(
+        cfg,
+        seed=11,
+        seed_pair=(11, 22),
+        manifest_path=tmp_path / "manifest.jsonl",
+        run_id="run",
+        force=False,
+        policy_bundle=policy,
+        code_identity=code,
+    )
+    two_seed_pipeline._run_one_seed(
+        cfg,
+        seed=11,
+        seed_pair=(11, 22),
+        manifest_path=tmp_path / "manifest.jsonl",
+        run_id="run",
+        force=True,
+        policy_bundle=policy,
+        code_identity=code,
+    )
+
+    assert calls == [True]

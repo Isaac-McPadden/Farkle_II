@@ -1,5 +1,6 @@
 # src/farkle/analysis/trueskill.py
 """Run canonical per-root/per-k TrueSkill screening diagnostics."""
+
 from __future__ import annotations
 
 import logging
@@ -17,7 +18,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 
-def run(cfg: AppConfig) -> None:
+def run(cfg: AppConfig, *, force: bool = False) -> None:
     """Build per-root/per-k ratings and their screening-only contribution."""
     stage_log = stage_logger("trueskill", logger=LOGGER)
     stage_log.start()
@@ -36,7 +37,7 @@ def run(cfg: AppConfig) -> None:
         "TrueSkill analysis running",
         extra={"stage": "trueskill", "analysis_dir": str(cfg.analysis_dir)},
     )
-    run_trueskill.run_trueskill_root(cfg)
+    run_trueskill.run_trueskill_root(cfg, force=force)
     LOGGER.info(
         "TrueSkill analysis complete",
         extra={"stage": "trueskill", "path": str(out)},
