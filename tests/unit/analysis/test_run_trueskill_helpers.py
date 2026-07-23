@@ -65,6 +65,8 @@ def _write_results_block(block: Path, winners: list[str]) -> None:
         if winner == "A":
             rows.append(
                 {
+                    "termination_status": "completed",
+                    "outcome_schema_version": 2,
                     "winner_seat": "P1",
                     "winner_strategy": "A",
                     "P1_strategy": "A",
@@ -76,6 +78,8 @@ def _write_results_block(block: Path, winners: list[str]) -> None:
         else:
             rows.append(
                 {
+                    "termination_status": "completed",
+                    "outcome_schema_version": 2,
                     "winner_seat": "P2",
                     "winner_strategy": "B",
                     "P1_strategy": "A",

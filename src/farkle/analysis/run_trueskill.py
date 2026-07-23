@@ -25,10 +25,10 @@ import math
 import os
 import re
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import (
-    Iterable,
+    Any,
     Iterator,
     Mapping,
     Optional,
@@ -44,10 +44,14 @@ import pyarrow.parquet as pq
 import trueskill
 
 from farkle.analysis.trueskill_screening import (
+    TRUESKILL_CONDITIONING,
+    TRUESKILL_METHOD_VERSION,
     ScreeningRatingCell,
     build_percentile_contribution,
     build_screening_diagnostics,
+    classify_trueskill_row,
     publish_rating_cell_contract,
+    trueskill_method_contract,
 )
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
@@ -63,9 +67,7 @@ from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code
 from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
-from farkle.utils.stage_completion import (
-    freshness_sha256,
-)
+from farkle.utils.stage_completion import freshness_sha256
 from farkle.utils.writer import atomic_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
@@ -75,7 +77,9 @@ DEFAULT_DATAROOT = _REPO_ROOT / "data" / "results"
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_RATING = trueskill.Rating()  # uses env defaults
-TRUESKILL_CELL_METHOD_VERSION = 2
+TRUESKILL_CELL_METHOD_VERSION = TRUESKILL_METHOD_VERSION
+_EVIDENCE_BACKED = "evidence_backed_completed_games"
+_PRIOR_ONLY = "prior_only_unrated"
 
 
 class RatingArtifactPaths(TypedDict):
@@ -181,36 +185,91 @@ def _player_count_from_stem(stem: str) -> int | None:
 
 @dataclass(slots=True)
 class RatingStats:
-    """Simple TrueSkill rating stats container."""
+    """TrueSkill state plus explicit completed-game support."""
 
     mu: float
     sigma: float
+    strategy_attempted_exposures: int = 0
+    strategy_completed_exposures: int = 0
+    strategy_excluded_safety_limit_exposures: int = 0
+    strategy_performed_updates: int = 0
+    rating_status: str = _PRIOR_ONLY
+    cell_games_attempted: int = 0
+    cell_games_completed: int = 0
+    cell_games_excluded_safety_limit: int = 0
+    cell_performed_updates: int = 0
 
 
 def _ratings_to_table(
     mapping: Mapping[str, Union[trueskill.Rating, "RatingStats", Tuple[float, float], float]],
 ) -> pa.Table:
     """Coerce {strategy: Rating|RatingStats|(mu,sigma)|mu} → Arrow table."""
-    strategies: list[str] = []
-    mus: list[float] = []
-    sigmas: list[float] = []
+    columns: dict[str, list[object]] = {
+        "strategy": [],
+        "mu": [],
+        "sigma": [],
+        "strategy_attempted_exposures": [],
+        "strategy_completed_exposures": [],
+        "strategy_excluded_safety_limit_exposures": [],
+        "strategy_performed_updates": [],
+        "rating_status": [],
+        "cell_games_attempted": [],
+        "cell_games_completed": [],
+        "cell_games_excluded_safety_limit": [],
+        "cell_performed_updates": [],
+    }
     for k, v in mapping.items():
-        if isinstance(v, (trueskill.Rating, RatingStats)):
+        if isinstance(v, RatingStats):
             mu, sigma = float(v.mu), float(v.sigma)
+            stats = v
+        elif isinstance(v, trueskill.Rating):
+            mu, sigma = float(v.mu), float(v.sigma)
+            stats = RatingStats(mu, sigma)
         elif isinstance(v, (tuple, list)) and len(v) >= 2:
             mu, sigma = float(v[0]), float(v[1])
+            stats = RatingStats(mu, sigma)
         else:
             # fallback: scalar mu with default sigma (not expected here)
             mu, sigma = float(v), 0.0  # type: ignore[arg-type]
-        strategies.append(_normalize_strategy_id(k))
-        mus.append(mu)
-        sigmas.append(sigma)
-    strategy_values = [str(s) for s in strategies]
+            stats = RatingStats(mu, sigma)
+        columns["strategy"].append(_normalize_strategy_id(k))
+        columns["mu"].append(mu)
+        columns["sigma"].append(sigma)
+        columns["strategy_attempted_exposures"].append(stats.strategy_attempted_exposures)
+        columns["strategy_completed_exposures"].append(stats.strategy_completed_exposures)
+        columns["strategy_excluded_safety_limit_exposures"].append(
+            stats.strategy_excluded_safety_limit_exposures
+        )
+        columns["strategy_performed_updates"].append(stats.strategy_performed_updates)
+        columns["rating_status"].append(stats.rating_status)
+        columns["cell_games_attempted"].append(stats.cell_games_attempted)
+        columns["cell_games_completed"].append(stats.cell_games_completed)
+        columns["cell_games_excluded_safety_limit"].append(stats.cell_games_excluded_safety_limit)
+        columns["cell_performed_updates"].append(stats.cell_performed_updates)
     return pa.table(
         {
-            "strategy": pa.array(strategy_values, type=pa.string()),
-            "mu": pa.array(mus, type=pa.float64()),
-            "sigma": pa.array(sigmas, type=pa.float64()),
+            "strategy": pa.array(columns["strategy"], type=pa.string()),
+            "mu": pa.array(columns["mu"], type=pa.float64()),
+            "sigma": pa.array(columns["sigma"], type=pa.float64()),
+            "strategy_attempted_exposures": pa.array(
+                columns["strategy_attempted_exposures"], type=pa.int64()
+            ),
+            "strategy_completed_exposures": pa.array(
+                columns["strategy_completed_exposures"], type=pa.int64()
+            ),
+            "strategy_excluded_safety_limit_exposures": pa.array(
+                columns["strategy_excluded_safety_limit_exposures"], type=pa.int64()
+            ),
+            "strategy_performed_updates": pa.array(
+                columns["strategy_performed_updates"], type=pa.int64()
+            ),
+            "rating_status": pa.array(columns["rating_status"], type=pa.string()),
+            "cell_games_attempted": pa.array(columns["cell_games_attempted"], type=pa.int64()),
+            "cell_games_completed": pa.array(columns["cell_games_completed"], type=pa.int64()),
+            "cell_games_excluded_safety_limit": pa.array(
+                columns["cell_games_excluded_safety_limit"], type=pa.int64()
+            ),
+            "cell_performed_updates": pa.array(columns["cell_performed_updates"], type=pa.int64()),
         }
     )
 
@@ -225,11 +284,49 @@ def _save_ratings_parquet(
 
 def _load_ratings_parquet(path: Path) -> dict[str, "RatingStats"]:
     """Load ratings parquet → {strategy: RatingStats}."""
-    tbl = pq.read_table(path, columns=["strategy", "mu", "sigma"])
+    schema = pq.read_schema(path)
+    support_columns = [
+        "strategy_attempted_exposures",
+        "strategy_completed_exposures",
+        "strategy_excluded_safety_limit_exposures",
+        "strategy_performed_updates",
+        "rating_status",
+        "cell_games_attempted",
+        "cell_games_completed",
+        "cell_games_excluded_safety_limit",
+        "cell_performed_updates",
+    ]
+    columns = ["strategy", "mu", "sigma", *[c for c in support_columns if c in schema.names]]
+    tbl = pq.read_table(path, columns=columns)
     data = tbl.to_pydict()
     out: dict[str, RatingStats] = {}
-    for s, mu, sg in zip(data["strategy"], data["mu"], data["sigma"], strict=True):
-        out[str(s)] = RatingStats(float(mu), float(sg))
+    for index, (s, mu, sg) in enumerate(
+        zip(data["strategy"], data["mu"], data["sigma"], strict=True)
+    ):
+
+        def support(
+            name: str,
+            default: int | str,
+            row_index: int = index,
+        ) -> int | str:
+            values = data.get(name)
+            return default if values is None else values[row_index]
+
+        out[str(s)] = RatingStats(
+            float(mu),
+            float(sg),
+            strategy_attempted_exposures=int(support("strategy_attempted_exposures", 0)),
+            strategy_completed_exposures=int(support("strategy_completed_exposures", 0)),
+            strategy_excluded_safety_limit_exposures=int(
+                support("strategy_excluded_safety_limit_exposures", 0)
+            ),
+            strategy_performed_updates=int(support("strategy_performed_updates", 0)),
+            rating_status=str(support("rating_status", _PRIOR_ONLY)),
+            cell_games_attempted=int(support("cell_games_attempted", 0)),
+            cell_games_completed=int(support("cell_games_completed", 0)),
+            cell_games_excluded_safety_limit=int(support("cell_games_excluded_safety_limit", 0)),
+            cell_performed_updates=int(support("cell_performed_updates", 0)),
+        )
     return out
 
 
@@ -256,10 +353,10 @@ def _ensure_auxiliary_rating_sidecars(
             source_scope=ArtifactScope.BY_K,
             operation=operation,
             weighted_quantity="trueskill_mu_and_sigma",
-            support_count_role="ordered_games",
+            support_count_role="attempted_completed_excluded_and_performed_updates",
             uncertainty_method="trueskill_model_sigma_screening_only",
             replication_unit="ordered_game",
-            conditioning="finite_grid_trueskill_screening",
+            conditioning=TRUESKILL_CONDITIONING,
             consistency_columns=columns,
             source_artifacts=[cell.ratings_path],
             grouping_keys=["strategy"],
@@ -268,6 +365,10 @@ def _ensure_auxiliary_rating_sidecars(
             missing_cell_policy="fail",
             seed_scope="single_root",
             code_revision=code_revision or _trueskill_code_revision(cfg),
+            method_contract=cast(
+                Any,
+                trueskill_method_contract(operation),
+            ),
         )
 
     json_payload = json.loads(json_path.read_text(encoding="utf-8"))
@@ -276,7 +377,14 @@ def _ensure_auxiliary_rating_sidecars(
     json_sidecar = _sidecar(
         json_path,
         operation="export_sequential_ratings_json",
-        columns=["strategy", "mu", "sigma"],
+        columns=[
+            "strategy",
+            *(
+                list(next(iter(json_payload.values())).keys())
+                if json_payload and isinstance(next(iter(json_payload.values())), dict)
+                else ["mu", "sigma"]
+            ),
+        ],
     )
     ensure_artifact_sidecar_atomic(
         json_path,
@@ -317,7 +425,15 @@ class _BlockCkpt:
     batch_index: int
     games_done: int
     ratings_path: str
-    version: int = 1
+    freshness_sha256: str = ""
+    attempted_games: int = 0
+    completed_games: int = 0
+    excluded_safety_limit_games: int = 0
+    strategy_attempted_exposures: dict[str, int] = field(default_factory=dict)
+    strategy_completed_exposures: dict[str, int] = field(default_factory=dict)
+    strategy_excluded_safety_limit_exposures: dict[str, int] = field(default_factory=dict)
+    strategy_performed_updates: dict[str, int] = field(default_factory=dict)
+    version: int = 2
 
 
 @dataclass(slots=True)
@@ -336,7 +452,11 @@ class _ShardDoneStamp:
     parquet_sha256: str
     freshness_sha256: str
     sidecar_sha256: str | None
-    version: int = 3
+    attempted_games: int = 0
+    completed_games: int = 0
+    excluded_safety_limit_games: int = 0
+    performed_update_games: int = 0
+    version: int = 4
 
 
 def _save_done_stamp(path: Path, stamp: _ShardDoneStamp) -> None:
@@ -378,6 +498,10 @@ def _load_done_stamp(path: Path) -> _ShardDoneStamp | None:
             sidecar_sha256=(
                 None if payload["sidecar_sha256"] is None else str(payload["sidecar_sha256"])
             ),
+            attempted_games=int(payload["attempted_games"]),
+            completed_games=int(payload["completed_games"]),
+            excluded_safety_limit_games=int(payload["excluded_safety_limit_games"]),
+            performed_update_games=int(payload["performed_update_games"]),
             version=int(payload["version"]),
         )
     except (KeyError, TypeError, ValueError):
@@ -398,7 +522,7 @@ def _done_stamp_matches(
 
     return bool(
         stamp is not None
-        and stamp.version == 3
+        and stamp.version == 4
         and stamp.root_seed == root_seed
         and stamp.player_count == player_count
         and stamp.method_version == TRUESKILL_CELL_METHOD_VERSION
@@ -407,13 +531,12 @@ def _done_stamp_matches(
         and source_path.is_file()
         and stamp.source_sha256 == sha256_file(source_path)
         and stamp.source_sidecar_sha256
-        == (
-            sha256_file(sidecar_path(source_path))
-            if sidecar_path(source_path).is_file()
-            else None
-        )
+        == (sha256_file(sidecar_path(source_path)) if sidecar_path(source_path).is_file() else None)
         and stamp.parquet_sha256 == sha256_file(parquet_path)
         and stamp.freshness_sha256 == freshness
+        and stamp.attempted_games == stamp.completed_games + stamp.excluded_safety_limit_games
+        and stamp.performed_update_games <= stamp.completed_games
+        and stamp.rows == stamp.performed_update_games
         and (
             not require_sidecar
             or (
@@ -464,24 +587,52 @@ def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
         "batch_index": int,
         "games_done": int,
         "ratings_path": str,
+        "freshness_sha256": str,
+        "attempted_games": int,
+        "completed_games": int,
+        "excluded_safety_limit_games": int,
+        "strategy_attempted_exposures": dict,
+        "strategy_completed_exposures": dict,
+        "strategy_excluded_safety_limit_exposures": dict,
+        "strategy_performed_updates": dict,
     }
     for key, expected_type in required_keys.items():
         value = payload_any.get(key)
         if not isinstance(value, expected_type):
             return None
 
-    version_value = payload_any.get("version", 1)
-    if not isinstance(version_value, int):
+    version_value = payload_any.get("version")
+    if version_value != 2:
         return None
 
-    return _BlockCkpt(
-        row_file=payload_any["row_file"],
-        row_group=payload_any["row_group"],
-        batch_index=payload_any["batch_index"],
-        games_done=payload_any["games_done"],
-        ratings_path=payload_any["ratings_path"],
-        version=version_value,
-    )
+    def int_dict(name: str) -> dict[str, int]:
+        value = payload_any[name]
+        assert isinstance(value, dict)
+        if any(not isinstance(item, int) or item < 0 for item in value.values()):
+            raise ValueError(f"invalid TrueSkill checkpoint support: {name}")
+        return {str(key): int(item) for key, item in value.items()}
+
+    try:
+        return _BlockCkpt(
+            row_file=payload_any["row_file"],
+            row_group=payload_any["row_group"],
+            batch_index=payload_any["batch_index"],
+            games_done=payload_any["games_done"],
+            ratings_path=payload_any["ratings_path"],
+            freshness_sha256=payload_any["freshness_sha256"],
+            attempted_games=payload_any["attempted_games"],
+            completed_games=payload_any["completed_games"],
+            excluded_safety_limit_games=payload_any["excluded_safety_limit_games"],
+            strategy_attempted_exposures=int_dict("strategy_attempted_exposures"),
+            strategy_completed_exposures=int_dict("strategy_completed_exposures"),
+            strategy_excluded_safety_limit_exposures=int_dict(
+                "strategy_excluded_safety_limit_exposures"
+            ),
+            strategy_performed_updates=int_dict("strategy_performed_updates"),
+            version=version_value,
+        )
+    except (TypeError, ValueError):
+        return None
 
 
 # ---------- Single-pass streaming ----------
@@ -514,79 +665,36 @@ def _normalize_strategy_id(value: object) -> str:
     return str(value)
 
 
-def _players_and_ranks_from_batch(batch: pa.Table, n: int) -> Iterator[tuple[list[str], list[int]]]:
-    """Robust per-row extraction (tie-friendly precedence):
-    1) Derive placements from P#_rank (preserves ties)
-    2) Else, use seat_ranks (strict order, no ties)
-    3) Else, fallback: winner vs (n-1) tied second.
-    """
-    cols = set(batch.column_names)
+def _classified_games_from_batch(
+    batch: pa.Table,
+    n: int,
+) -> Iterator[tuple[str, list[str], list[int] | None]]:
+    """Yield validated canonical attempts without imputing safety-limit ranks."""
 
-    def col(name: str) -> pa.ChunkedArray | None:
-        """Return column from the batch when present, otherwise ``None``."""
-        return batch.column(name) if name in cols else None
+    required = {
+        "termination_status",
+        "outcome_schema_version",
+        "winner_seat",
+        *(f"P{seat}_strategy" for seat in range(1, n + 1)),
+        *(f"P{seat}_rank" for seat in range(1, n + 1)),
+    }
+    missing = sorted(required.difference(batch.column_names))
+    if missing:
+        raise ValueError(f"TrueSkill canonical rows lack columns: {missing}")
+    for row in batch.to_pylist():
+        game = classify_trueskill_row(row, n)
+        yield game.termination_status, game.players, game.ranks
 
-    sr_col = col("seat_ranks")
-    ranks_list = sr_col.to_pylist() if sr_col is not None else None
-    winner_col_name: str | None
-    if "winner_seat" in cols:
-        winner_col_name = "winner_seat"
-    elif "winner" in cols:
-        winner_col_name = "winner"
-    else:
-        winner_col_name = None
-    winner_col = batch.column(winner_col_name) if winner_col_name is not None else None
-    winner_list = winner_col.to_pylist() if winner_col is not None else None
-    strat_col_names: list[str] = [f"P{i}_strategy" for i in range(1, n + 1)]
-    rank_col_names: list[str] = [f"P{i}_rank" for i in range(1, n + 1)]
-    strat_cols: list[pa.ChunkedArray | None] = [col(name) for name in strat_col_names]
-    rank_cols: list[pa.ChunkedArray | None] = [col(name) for name in rank_col_names]
-    n_rows = batch.num_rows
-    for r in range(n_rows):
-        seats = [sc[r].as_py() if sc is not None else None for sc in strat_cols]
-        seats = [_normalize_strategy_id(s) if s is not None else None for s in seats]
-        # 1) prefer numeric ranks (preserves ties)
-        if any(rc is not None for rc in rank_cols):
-            pairs = [(i, rc[r].as_py()) for i, rc in enumerate(rank_cols) if rc is not None]
-            pairs = [(i, rv) for i, rv in pairs if rv is not None]
-            if len(pairs) >= 2:
-                pairs.sort(key=lambda x: x[1])
-                uniq = sorted({rv for _, rv in pairs})
-                remap = {rv: j for j, rv in enumerate(uniq)}
-                players, rr = [], []
-                for i, rv in pairs:
-                    p = seats[i]
-                    if p is None:
-                        continue
-                    players.append(p)
-                    rr.append(remap[rv])
-                if len(players) >= 2:
-                    yield cast(list[str], players), rr
-                    continue
-        # 2) seat_ranks (strict order, no ties)
-        if ranks_list is not None:
-            order = ranks_list[r]
-            if not order:
-                continue
-            order = cast(Iterable[str], order)
-            players = [seats[int(s[1:]) - 1] for s in order]
-            if any(p is None for p in players):  # skip incomplete rows
-                continue
-            yield cast(list[str], players), list(range(len(players)))
-            continue
-        # 3) fallback
-        if winner_list is None or not winner_list[r]:
-            continue
-        try:
-            w_idx = int(str(winner_list[r])[1:]) - 1
-        except Exception:
-            continue
-        winner = seats[w_idx]
-        if winner is None:
-            continue
-        losers = [s for j, s in enumerate(seats) if j != w_idx and s is not None]
-        if losers:
-            yield [winner] + losers, [0] + [1] * len(losers)
+
+def _players_and_ranks_from_batch(
+    batch: pa.Table,
+    n: int,
+) -> Iterator[tuple[list[str], list[int]]]:
+    """Yield only normally completed games with valid canonical ranks."""
+
+    for _status, players, ranks in _classified_games_from_batch(batch, n):
+        if ranks is not None:
+            yield players, ranks
 
 
 def _rate_block_worker(
@@ -670,14 +778,28 @@ def _rate_block_worker(
 
     start_rg = 0
     start_bi = 0
-    n_games = 0
-    ratings: dict[str, trueskill.Rating] = {}
+    performed_update_games = 0
+    attempted_games = 0
+    completed_games = 0
+    excluded_safety_limit_games = 0
+    ratings: dict[str, trueskill.Rating] = {strategy: env.create_rating() for strategy in keepers}
+    strategy_attempted: dict[str, int] = dict.fromkeys(keepers, 0)
+    strategy_completed: dict[str, int] = dict.fromkeys(keepers, 0)
+    strategy_excluded: dict[str, int] = dict.fromkeys(keepers, 0)
+    strategy_updates: dict[str, int] = dict.fromkeys(keepers, 0)
     if resume:
         ck = _load_block_ckpt(ck_path)
-        if ck and Path(ck.row_file) == row_file:
+        if ck and Path(ck.row_file) == row_file and ck.freshness_sha256 == cell_freshness_sha256:
             start_rg = ck.row_group
             start_bi = ck.batch_index
-            n_games = ck.games_done
+            performed_update_games = ck.games_done
+            attempted_games = ck.attempted_games
+            completed_games = ck.completed_games
+            excluded_safety_limit_games = ck.excluded_safety_limit_games
+            strategy_attempted = ck.strategy_attempted_exposures
+            strategy_completed = ck.strategy_completed_exposures
+            strategy_excluded = ck.strategy_excluded_safety_limit_exposures
+            strategy_updates = ck.strategy_performed_updates
             if Path(ck.ratings_path).exists():
                 interim = _load_ratings_parquet(Path(ck.ratings_path))
                 ratings = {k: env.create_rating(mu=v.mu, sigma=v.sigma) for k, v in interim.items()}
@@ -706,25 +828,52 @@ def _rate_block_worker(
             start_batch_idx=start_bi,
             batch_rows=batch_rows,
         ):
-            for players, ranks in _players_and_ranks_from_batch(batch, n):
+            for status, players, ranks in _classified_games_from_batch(batch, n):
+                attempted_games += 1
                 if keepers:
-                    filt = [(p, r) for p, r in zip(players, ranks, strict=True) if p in keepers]
-                    if len(filt) < 2:
-                        continue
-                    players = [p for p, _ in filt]
-                    ranks = [r for _, r in filt]
-                    uq = sorted(set(ranks))
-                    rmap = {rv: j for j, rv in enumerate(uq)}
-                    ranks = [rmap[r] for r in ranks]
+                    selected = [
+                        (player, None if ranks is None else ranks[index])
+                        for index, player in enumerate(players)
+                        if player in keepers
+                    ]
+                    players = [player for player, _rank in selected]
+                    selected_ranks = [rank for _player, rank in selected]
+                else:
+                    selected_ranks = [] if ranks is None else list(ranks)
 
                 for s in players:
                     if s not in ratings:
                         ratings[s] = env.create_rating()
+                    strategy_attempted[s] = strategy_attempted.get(s, 0) + 1
+                    strategy_completed.setdefault(s, 0)
+                    strategy_excluded.setdefault(s, 0)
+                    strategy_updates.setdefault(s, 0)
+                if status == "safety_limit":
+                    excluded_safety_limit_games += 1
+                    for s in players:
+                        strategy_excluded[s] += 1
+                    continue
+
+                completed_games += 1
+                for s in players:
+                    strategy_completed[s] += 1
+                if ranks is None:
+                    raise ValueError("completed TrueSkill game unexpectedly lacks ranks")
+                if len(players) < 2:
+                    continue
+                if keepers:
+                    if any(rank is None for rank in selected_ranks):
+                        raise ValueError("completed keeper ranks must be non-null")
+                    ranks = [int(cast(int, rank)) for rank in selected_ranks]
+                    unique_ranks = sorted(set(ranks))
+                    rank_map = {rank: index for index, rank in enumerate(unique_ranks)}
+                    ranks = [rank_map[rank] for rank in ranks]
                 teams = [[ratings[s]] for s in players]
                 new = env.rate(teams, ranks=ranks)
                 for s, t in zip(players, new, strict=False):
                     ratings[s] = t[0]
-                n_games += 1
+                    strategy_updates[s] += 1
+                performed_update_games += 1
 
             batches_since_ck += 1
             if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
@@ -735,20 +884,31 @@ def _rate_block_worker(
                         row_file=str(row_file),
                         row_group=rg,
                         batch_index=bi + 1,
-                        games_done=n_games,
+                        games_done=performed_update_games,
                         ratings_path=str(rk_path),
+                        freshness_sha256=cell_freshness_sha256,
+                        attempted_games=attempted_games,
+                        completed_games=completed_games,
+                        excluded_safety_limit_games=excluded_safety_limit_games,
+                        strategy_attempted_exposures=strategy_attempted,
+                        strategy_completed_exposures=strategy_completed,
+                        strategy_excluded_safety_limit_exposures=strategy_excluded,
+                        strategy_performed_updates=strategy_updates,
                     ),
                 )
                 if progress_logger is not None:
                     progress_logger.maybe_log(
-                        n_games,
+                        attempted_games,
                         detail=(
                             f"row group {rg + 1}, batch {bi + 1}, {len(ratings):,} ratings tracked"
                         ),
                         extra={
                             "stage": "trueskill",
                             "block": player_count,
-                            "games_done": n_games,
+                            "games_attempted": attempted_games,
+                            "games_completed": completed_games,
+                            "games_excluded_safety_limit": excluded_safety_limit_games,
+                            "games_updated": performed_update_games,
                             "games_total": total_input_games,
                             "row_group": rg,
                             "batch_index": bi + 1,
@@ -757,7 +917,33 @@ def _rate_block_worker(
                 last_ck = time.time()
                 batches_since_ck = 0
 
-        ratings_stats = {k: RatingStats(v.mu, v.sigma) for k, v in ratings.items()}
+        if attempted_games != completed_games + excluded_safety_limit_games:
+            raise ValueError("TrueSkill game support conservation failed")
+        if performed_update_games > completed_games:
+            raise ValueError("TrueSkill performed updates exceed completed games")
+        for strategy in ratings:
+            if strategy_attempted[strategy] != (
+                strategy_completed[strategy] + strategy_excluded[strategy]
+            ):
+                raise ValueError(f"TrueSkill strategy support conservation failed: {strategy}")
+            if strategy_updates[strategy] > strategy_completed[strategy]:
+                raise ValueError(f"TrueSkill strategy updates exceed completed support: {strategy}")
+        ratings_stats = {
+            strategy: RatingStats(
+                rating.mu,
+                rating.sigma,
+                strategy_attempted_exposures=strategy_attempted[strategy],
+                strategy_completed_exposures=strategy_completed[strategy],
+                strategy_excluded_safety_limit_exposures=strategy_excluded[strategy],
+                strategy_performed_updates=strategy_updates[strategy],
+                rating_status=(_EVIDENCE_BACKED if strategy_updates[strategy] > 0 else _PRIOR_ONLY),
+                cell_games_attempted=attempted_games,
+                cell_games_completed=completed_games,
+                cell_games_excluded_safety_limit=excluded_safety_limit_games,
+                cell_performed_updates=performed_update_games,
+            )
+            for strategy, rating in sorted(ratings.items())
+        }
         # Atomic writes for per-N outputs
         # Write per-N ratings as Parquet (strategy, mu, sigma)
         sidecar_path(parquet_path).unlink(missing_ok=True)
@@ -767,14 +953,17 @@ def _rate_block_worker(
         sidecar_path(json_path).unlink(missing_ok=True)
         with atomic_path(str(json_path)) as tmp_path:
             Path(tmp_path).write_text(
-                json.dumps({k: {"mu": v.mu, "sigma": v.sigma} for k, v in ratings_stats.items()})
+                json.dumps(
+                    {strategy: asdict(stats) for strategy, stats in ratings_stats.items()},
+                    sort_keys=True,
+                )
             )
         _save_done_stamp(
             done_path,
             _ShardDoneStamp(
                 shard_key=f"k={player_count}",
                 parquet_path=str(parquet_path),
-                rows=int(n_games),
+                rows=int(performed_update_games),
                 created_at=time.time(),
                 root_seed=root_seed,
                 player_count=n,
@@ -788,6 +977,10 @@ def _rate_block_worker(
                 parquet_sha256=sha256_file(parquet_path),
                 freshness_sha256=cell_freshness_sha256,
                 sidecar_sha256=None,
+                attempted_games=attempted_games,
+                completed_games=completed_games,
+                excluded_safety_limit_games=excluded_safety_limit_games,
+                performed_update_games=performed_update_games,
             ),
         )
         sidecar_path(shard_parquet).unlink(missing_ok=True)
@@ -797,7 +990,7 @@ def _rate_block_worker(
             _ShardDoneStamp(
                 shard_key=f"k={player_count}",
                 parquet_path=str(shard_parquet),
-                rows=int(n_games),
+                rows=int(performed_update_games),
                 created_at=time.time(),
                 root_seed=root_seed,
                 player_count=n,
@@ -811,11 +1004,15 @@ def _rate_block_worker(
                 parquet_sha256=sha256_file(shard_parquet),
                 freshness_sha256=cell_freshness_sha256,
                 sidecar_sha256=None,
+                attempted_games=attempted_games,
+                completed_games=completed_games,
+                excluded_safety_limit_games=excluded_safety_limit_games,
+                performed_update_games=performed_update_games,
             ),
         )
 
         run_completed = True
-        return player_count, n_games
+        return player_count, performed_update_games
     finally:
         if run_completed:
             for ck_file in (ck_path, rk_path):
@@ -1063,10 +1260,7 @@ def _trueskill_code_revision(cfg: AppConfig) -> str:
     )
     if code_identity.dirty_fingerprint_sha256 is None:
         return code_identity.commit
-    return (
-        f"{code_identity.commit}:development_dirty:"
-        f"{code_identity.dirty_fingerprint_sha256}"
-    )
+    return f"{code_identity.commit}:development_dirty:{code_identity.dirty_fingerprint_sha256}"
 
 
 def _seal_rating_cell_completion(
@@ -1137,9 +1331,7 @@ def run_trueskill_root(cfg: AppConfig, *, force: bool = False) -> None:
             paths = _rating_artifact_paths(analysis_dir, str(players), suffix)
             done_path = _block_done_stamp_path(analysis_dir, str(players), suffix)
             stamp = _load_done_stamp(done_path)
-            source_path = (
-                root_row_data_dir / "by_k" / f"{players}p" / cfg.curated_rows_name
-            )
+            source_path = root_row_data_dir / "by_k" / f"{players}p" / cfg.curated_rows_name
             if stamp is None or stamp.sidecar_sha256 is None:
                 continue
             try:
@@ -1195,9 +1387,7 @@ def run_trueskill_root(cfg: AppConfig, *, force: bool = False) -> None:
             player_count = _player_count_from_stem(parquet.stem)
             if player_count is None:
                 continue
-            done_path = _block_done_stamp_path(
-                analysis_dir, str(player_count), f"_seed{seed}"
-            )
+            done_path = _block_done_stamp_path(analysis_dir, str(player_count), f"_seed{seed}")
             done_stamp = _load_done_stamp(done_path)
             game_rows_path = (
                 seed_row_data_dir / "by_k" / f"{player_count}p" / cfg.curated_rows_name

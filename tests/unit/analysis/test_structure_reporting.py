@@ -124,6 +124,30 @@ def _publish_inputs(cfg: AppConfig) -> None:
             "pair_id": [0],
             "strategy_a": ["1"],
             "strategy_b": ["2"],
+            "games_attempted": [100],
+            "games_completed": [100],
+            "games_safety_limit": [0],
+            "replacement_attempt_count": [0],
+            "completion_game_rate": [1.0],
+            "completion_status": ["complete"],
+            "pair_inferentially_viable": [True],
+            "pair_operationally_viable": [True],
+            "pair_claim_eligible": [True],
+            "strategy_a_completion_rate": [1.0],
+            "strategy_b_completion_rate": [1.0],
+            "strategy_a_games_attempted": [100],
+            "strategy_b_games_attempted": [100],
+            "strategy_a_games_completed": [100],
+            "strategy_b_games_completed": [100],
+            "strategy_a_games_safety_limit": [0],
+            "strategy_b_games_safety_limit": [0],
+            "strategy_a_replacement_attempt_count": [0],
+            "strategy_b_replacement_attempt_count": [0],
+            "strategy_a_operationally_viable": [True],
+            "strategy_b_operationally_viable": [True],
+            "strategy_a_inferentially_viable": [True],
+            "strategy_b_inferentially_viable": [True],
+            "min_candidate_completion_rate": [0.99],
             "d_ab": [0.1],
             "ordinary_d_low": [0.08],
             "ordinary_d_high": [0.12],
@@ -139,6 +163,34 @@ def _publish_inputs(cfg: AppConfig) -> None:
         inference,
         scope=ArtifactScope.H2H_2P,
         operation="seat_adjusted_score_inference",
+    )
+    h2h_counts = pd.DataFrame(
+        {
+            "family_hash": [family_hash, family_hash],
+            "pair_id": [0, 0],
+            "strategy_a": ["1", "1"],
+            "strategy_b": ["2", "2"],
+            "root_seed": [11, 11],
+            "order": [0, 1],
+            "n_completed_required": [50, 50],
+            "max_attempts": [100, 100],
+            "games_attempted": [50, 50],
+            "games_completed": [50, 50],
+            "games_safety_limit": [0, 0],
+            "replacement_attempt_count": [0, 0],
+            "wins_a": [30, 30],
+            "wins_b": [20, 20],
+            "completion_status": ["complete", "complete"],
+            "completion_game_rate": [1.0, 1.0],
+            "safety_limit_game_rate": [0.0, 0.0],
+        }
+    )
+    _write_frame(
+        cfg,
+        cfg.h2h_order_counts_path(),
+        h2h_counts,
+        scope=ArtifactScope.H2H_2P,
+        operation="concatenate_root_order_blocks",
     )
     dominance = {
         "family_hash": family_hash,
@@ -256,12 +308,15 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     markdown = cfg.structure_report_markdown_path().read_text(encoding="utf-8")
     assert report["support"]["player_counts"] == [2]
     assert report["support"]["k_weights"] == {"2": 1.0}
-    assert report["report_contract_version"] == 2
+    assert report["report_contract_version"] == 3
     assert report["performance"]["primary_rate"] == "win_rate_per_attempt"
     assert report["safety_limits"]["games_attempted"] == 10
     assert report["safety_limits"]["games_completed"] == 10
     assert report["safety_limits"]["games_safety_limit"] == 0
     assert report["h2h"]["role"] == "primary_two_player_finalist_inference"
+    assert report["h2h"]["games_attempted"] == 100
+    assert report["h2h"]["games_completed"] == 100
+    assert report["h2h"]["games_safety_limit"] == 0
     assert report["h2h"]["unique_best_claim_permitted"] is True
     assert report["robustness"]["pareto_members"] == ["1"]
     assert "Unique best among the frozen two-player finalists" in markdown
@@ -293,6 +348,7 @@ def _claim_report(
             "equivalent_pair_count": equivalent,
             "unique_best": unique,
             "unique_best_claim_permitted": permitted,
+            "operationally_nonviable_candidates": [],
         },
     }
 

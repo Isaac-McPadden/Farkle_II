@@ -14,11 +14,17 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from farkle.analysis.trueskill_screening import (
+    TRUESKILL_CONDITIONING,
+    trueskill_method_contract,
+)
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     ArtifactSidecar,
     make_artifact_sidecar,
+    sha256_file,
+    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import (
@@ -219,6 +225,8 @@ def _load_trueskill_contribution(path: Path, roots: tuple[int, ...]) -> _RankedC
             "scope": ArtifactScope.ACROSS_K.value,
             "operation": "equal_root_k_percentile_mean",
             "seed_scope": expected_seed_scope,
+            "conditioning": TRUESKILL_CONDITIONING,
+            "method_contract": trueskill_method_contract("equal_root_k_percentile_mean"),
         },
     )
     required = {
@@ -493,6 +501,13 @@ def freeze_h2h_candidate_family(
         "trueskill": {
             "artifact_name": trueskill.sidecar.artifact_name,
             "sha256": trueskill.sidecar.artifact_sha256,
+            "sidecar_sha256": sha256_file(sidecar_path(ts_path)),
+            "artifact_contract_version": trueskill.sidecar.artifact_contract_version,
+            "estimand_version": trueskill.sidecar.estimand_version,
+            "schema_version": trueskill.sidecar.schema_version,
+            "rng_scheme_version": trueskill.sidecar.rng_scheme_version,
+            "method_contract": trueskill.sidecar.method_contract,
+            "conditioning": trueskill.sidecar.conditioning,
         },
     }
     identity = {

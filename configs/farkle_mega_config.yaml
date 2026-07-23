@@ -80,6 +80,8 @@ head2head:
   delta_equivalence: null
   candidate_cap: null
   candidate_cap_policy: "balanced-tail"
+  min_candidate_completion_rate: 0.99
+  max_attempt_multiplier: 2.0
   total_game_cap: 100000000
   allow_single_root: true
 

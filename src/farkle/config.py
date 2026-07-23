@@ -359,6 +359,8 @@ class Head2HeadConfig:
     delta_equivalence: float | None = None
     candidate_cap: int | None = None
     candidate_cap_policy: str = "balanced-tail"
+    min_candidate_completion_rate: float = 0.99
+    max_attempt_multiplier: float = 2.0
     total_game_cap: int | None = 100_000_000
     allow_single_root: bool = True
 
@@ -1808,6 +1810,10 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("head2head.candidate_cap must be at least 2")
     if h2h.candidate_cap_policy != "balanced-tail":
         raise ValueError("head2head.candidate_cap_policy must be 'balanced-tail'")
+    if not 0.0 <= h2h.min_candidate_completion_rate <= 1.0:
+        raise ValueError("head2head.min_candidate_completion_rate must be between 0 and 1")
+    if not math.isfinite(h2h.max_attempt_multiplier) or h2h.max_attempt_multiplier < 1.0:
+        raise ValueError("head2head.max_attempt_multiplier must be finite and at least 1")
     if h2h.total_game_cap is not None and h2h.total_game_cap <= 0:
         raise ValueError("head2head.total_game_cap must be positive when configured")
 

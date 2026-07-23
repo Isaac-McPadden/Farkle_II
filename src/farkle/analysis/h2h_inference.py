@@ -18,7 +18,12 @@ from scipy.optimize import brentq
 from scipy.stats import norm
 from statsmodels.stats.proportion import confint_proportions_2indep
 
-from farkle.analysis.h2h_schedule import SCORE_TEST_ID
+from farkle.analysis.h2h_schedule import (
+    H2H_CONDITIONING,
+    H2H_METHOD_VERSION,
+    SCORE_TEST_ID,
+    h2h_method_contract,
+)
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
@@ -292,6 +297,7 @@ def _holm_adjust(p_values: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
     counts_path = cfg.h2h_order_counts_path()
     plan_path = cfg.h2h_power_plan_path()
+    schedule_path = cfg.h2h_block_manifest_path()
     state_path = cfg.h2h_execution_state_path()
     validate_artifact_sidecar(
         counts_path,
@@ -309,6 +315,13 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
         },
     )
     validate_artifact_sidecar(
+        schedule_path,
+        expected={
+            "scope": ArtifactScope.H2H_2P.value,
+            "operation": "construct_pair_root_order_blocks",
+        },
+    )
+    validate_artifact_sidecar(
         state_path,
         expected={
             "scope": ArtifactScope.H2H_2P.value,
@@ -319,6 +332,8 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
     execution = json.loads(state_path.read_text(encoding="utf-8"))
     if plan.get("planning_state") != CompletionState.COMPLETE_VALID.value:
         raise RuntimeError("seat-adjusted inference requires a complete valid H2H power plan")
+    if int(plan.get("h2h_method_version", -1)) != H2H_METHOD_VERSION:
+        raise ValueError("H2H power plan uses an incompatible method version")
     if execution.get("execution_state") != CompletionState.COMPLETE_VALID.value:
         raise RuntimeError("seat-adjusted inference requires complete valid H2H execution")
     for field in ("family_hash", "schedule_hash", "total_block_count"):
@@ -328,16 +343,31 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
         raise RuntimeError("H2H execution state does not cover every scheduled block")
     required = {
         "family_hash",
+        "schedule_hash",
+        "block_id",
         "pair_id",
         "strategy_a",
         "strategy_b",
         "root_seed",
+        "root_index",
         "order",
         "order_label",
-        "games_required",
+        "seat1_strategy",
+        "seat2_strategy",
+        "n_completed_required",
+        "max_attempts",
+        "games_attempted",
         "games_completed",
+        "games_safety_limit",
+        "replacement_attempt_count",
+        "completion_status",
         "wins_seat1",
         "wins_seat2",
+        "wins_a",
+        "wins_b",
+        "rng_scheme_version",
+        "outcome_schema_version",
+        "h2h_method_version",
         "score_test_id",
     }
     schema = pq.read_schema(counts_path)
@@ -349,10 +379,17 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
         raise ValueError("H2H root/order counts are empty")
     if set(frame["family_hash"].astype(str)) != {str(plan["family_hash"])}:
         raise ValueError("H2H counts do not match the power-plan family hash")
+    if set(frame["schedule_hash"].astype(str)) != {str(plan["schedule_hash"])}:
+        raise ValueError("H2H counts do not match the power-plan schedule hash")
     if set(frame["score_test_id"].astype(str)) != {SCORE_TEST_ID}:
         raise ValueError("H2H counts were not scheduled for the accepted score procedure")
-    if not (frame["games_required"].astype(int) == frame["games_completed"].astype(int)).all():
-        raise ValueError("H2H inference refuses incomplete root/order blocks")
+    if set(frame["h2h_method_version"].astype(int)) != {H2H_METHOD_VERSION}:
+        raise ValueError("H2H counts use an incompatible method version")
+    if not (
+        frame["games_attempted"].astype(int)
+        == frame["games_completed"].astype(int) + frame["games_safety_limit"].astype(int)
+    ).all():
+        raise ValueError("H2H root/order counts violate attempt conservation")
     if not (
         frame["wins_seat1"].astype(int) + frame["wins_seat2"].astype(int)
         == frame["games_completed"].astype(int)
@@ -364,13 +401,93 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
     expected_roots = {int(root) for root in plan["root_seeds"]}
     if set(frame["root_seed"].astype(int)) != expected_roots:
         raise ValueError("H2H root/order counts do not cover the planned roots")
+    schedule = pq.read_table(schedule_path).to_pandas()
+    if schedule.empty:
+        raise ValueError("H2H block manifest is empty")
+    schedule_required = {
+        "family_hash",
+        "schedule_hash",
+        "block_id",
+        "pair_id",
+        "strategy_a",
+        "strategy_b",
+        "root_seed",
+        "root_index",
+        "order",
+        "order_label",
+        "seat1_strategy",
+        "seat2_strategy",
+        "n_completed_required",
+        "max_attempts",
+        "rng_scheme_version",
+        "outcome_schema_version",
+        "h2h_method_version",
+        "score_test_id",
+    }
+    missing_schedule = sorted(schedule_required.difference(schedule.columns))
+    if missing_schedule:
+        raise ValueError(f"H2H schedule lacks authentication columns: {missing_schedule}")
+    if schedule.duplicated(keys).any():
+        raise ValueError("H2H schedule contains duplicate immutable blocks")
+    if (
+        not schedule["n_completed_required"]
+        .astype(int)
+        .eq(int(plan["n_completed_required_per_root_order_block"]))
+        .all()
+    ):
+        raise ValueError("H2H schedule changed the frozen completed-game target")
+    if (
+        not schedule["max_attempts"]
+        .astype(int)
+        .eq(int(plan["max_attempts_per_root_order_block"]))
+        .all()
+    ):
+        raise ValueError("H2H schedule changed the frozen maximum-attempt rule")
+    if set(map(tuple, frame[keys].to_numpy())) != set(map(tuple, schedule[keys].to_numpy())):
+        raise ValueError("H2H counts do not cover the exact frozen root/order schedule")
+    schedule_indexed = schedule.set_index(keys).sort_index()
+    frame_indexed = frame.set_index(keys).sort_index()
+    static_columns = sorted(schedule_required.difference(keys))
+    for column in static_columns:
+        if not frame_indexed[column].astype(str).equals(schedule_indexed[column].astype(str)):
+            raise ValueError(f"H2H counts disagree with the frozen schedule column {column}")
+    terminal_statuses = {"complete", "unresolved_nonviable"}
+    if not set(frame["completion_status"].astype(str)).issubset(terminal_statuses):
+        raise ValueError("H2H aggregate contains a nonterminal root/order block")
+    complete = frame["completion_status"].astype(str).eq("complete")
+    unresolved = frame["completion_status"].astype(str).eq("unresolved_nonviable")
+    if not (
+        frame.loc[complete, "games_completed"].astype(int)
+        == frame.loc[complete, "n_completed_required"].astype(int)
+    ).all():
+        raise ValueError("complete H2H blocks do not reach their completed-game target")
+    if not (
+        (
+            frame.loc[unresolved, "games_attempted"].astype(int)
+            == frame.loc[unresolved, "max_attempts"].astype(int)
+        )
+        & (
+            frame.loc[unresolved, "games_completed"].astype(int)
+            < frame.loc[unresolved, "n_completed_required"].astype(int)
+        )
+    ).all():
+        raise ValueError("unresolved H2H blocks did not exhaust their declared attempt cap")
     return frame, plan
 
 
-def _combine_within_order(frame: pd.DataFrame, plan: Mapping[str, Any]) -> pd.DataFrame:
+def _combine_within_order(
+    frame: pd.DataFrame,
+    plan: Mapping[str, Any],
+    *,
+    expected_root_count: int | None = None,
+) -> pd.DataFrame:
     """Combine raw counts across roots without mixing the two seat orders."""
 
-    root_count = len(cast(list[object], plan["root_seeds"]))
+    root_count = (
+        len(cast(list[object], plan["root_seeds"]))
+        if expected_root_count is None
+        else expected_root_count
+    )
     expected_cells = root_count * 2
     pair_sizes = frame.groupby("pair_id").size()
     if not pair_sizes.eq(expected_cells).all():
@@ -402,22 +519,109 @@ def _combine_within_order(frame: pd.DataFrame, plan: Mapping[str, Any]) -> pd.Da
         )
         .agg(
             root_count=("root_seed", "nunique"),
-            games=("games_completed", "sum"),
+            root_order_cell_count=("root_seed", "size"),
+            resolved_root_order_cell_count=(
+                "completion_status",
+                lambda values: int(pd.Series(values).astype(str).eq("complete").sum()),
+            ),
+            n_completed_required=("n_completed_required", "sum"),
+            max_attempts=("max_attempts", "sum"),
+            games_attempted=("games_attempted", "sum"),
+            games_completed=("games_completed", "sum"),
+            games_safety_limit=("games_safety_limit", "sum"),
+            replacement_attempt_count=("replacement_attempt_count", "sum"),
             wins_seat1=("wins_seat1", "sum"),
             wins_seat2=("wins_seat2", "sum"),
+            wins_a=("wins_a", "sum"),
+            wins_b=("wins_b", "sum"),
         )
         .sort_values(["pair_id", "order"], kind="mergesort")
         .reset_index(drop=True)
     )
     if not combined["root_count"].eq(root_count).all():
         raise ValueError("root combination changed support between seat orders")
+    combined["order_support_complete"] = combined["resolved_root_order_cell_count"].eq(
+        combined["root_order_cell_count"]
+    ) & combined["games_completed"].eq(combined["n_completed_required"])
+    combined["completion_game_rate"] = combined["games_completed"] / combined["games_attempted"]
+    combined["safety_limit_game_rate"] = (
+        combined["games_safety_limit"] / combined["games_attempted"]
+    )
     return combined
+
+
+def _viability_status(
+    counts: pd.DataFrame,
+    plan: Mapping[str, Any],
+) -> tuple[dict[int, bool], dict[str, dict[str, Any]]]:
+    """Compute frozen-pair support and incident-attempt candidate viability."""
+
+    pair_viable = {
+        int(cast(Any, pair_id)): bool(
+            group["completion_status"].astype(str).eq("complete").all()
+            and (
+                group["games_completed"].astype(int) == group["n_completed_required"].astype(int)
+            ).all()
+        )
+        for pair_id, group in counts.groupby("pair_id", sort=True)
+    }
+    incident_rows: list[dict[str, Any]] = []
+    for row in cast(list[dict[str, Any]], counts.to_dict(orient="records")):
+        for strategy in (str(row["strategy_a"]), str(row["strategy_b"])):
+            incident_rows.append(
+                {
+                    "strategy": strategy,
+                    "pair_id": int(row["pair_id"]),
+                    "games_attempted": int(row["games_attempted"]),
+                    "games_completed": int(row["games_completed"]),
+                    "games_safety_limit": int(row["games_safety_limit"]),
+                    "replacement_attempt_count": int(row["replacement_attempt_count"]),
+                }
+            )
+    incident = pd.DataFrame(incident_rows)
+    threshold = float(plan["min_candidate_completion_rate"])
+    status: dict[str, dict[str, Any]] = {}
+    for strategy_key, group in incident.groupby("strategy", sort=True):
+        strategy = str(cast(Any, strategy_key))
+        attempted = int(group["games_attempted"].sum())
+        completed = int(group["games_completed"].sum())
+        safety_limit = int(group["games_safety_limit"].sum())
+        replacements = int(group["replacement_attempt_count"].sum())
+        completion_rate = completed / attempted if attempted else None
+        incident_pairs = sorted(set(group["pair_id"].astype(int)))
+        inferentially_viable = all(pair_viable[pair_id] for pair_id in incident_pairs)
+        operationally_viable = completion_rate is not None and completion_rate >= threshold
+        status[strategy] = {
+            "strategy": strategy,
+            "games_attempted": attempted,
+            "games_completed": completed,
+            "games_safety_limit": safety_limit,
+            "replacement_attempt_count": replacements,
+            "completion_rate": completion_rate,
+            "safety_limit_rate": safety_limit / attempted if attempted else None,
+            "min_candidate_completion_rate": threshold,
+            "operationally_viable": operationally_viable,
+            "inferentially_viable": inferentially_viable,
+            "candidate_status": (
+                "viable"
+                if operationally_viable and inferentially_viable
+                else (
+                    "operationally_nonviable"
+                    if not operationally_viable
+                    else "inferentially_nonviable"
+                )
+            ),
+        }
+    return pair_viable, status
 
 
 def _pairwise_estimates(
     cfg: AppConfig,
     combined: pd.DataFrame,
     plan: Mapping[str, Any],
+    *,
+    pair_viable: Mapping[int, bool],
+    candidate_status: Mapping[str, Mapping[str, Any]],
 ) -> pd.DataFrame:
     pair_count = int(plan["unordered_pair_count"])
     if combined["pair_id"].nunique() != pair_count:
@@ -429,80 +633,168 @@ def _pairwise_estimates(
         ordered = group.set_index("order")
         if set(ordered.index.astype(int)) != {0, 1}:
             raise ValueError(f"pair {pair_id} lacks both seat orders")
-        ab = ordered.loc[0]
-        ba = ordered.loc[1]
-        n_ab = int(cast(int, ab["games"]))
-        n_ba = int(cast(int, ba["games"]))
-        if n_ab != n_ba:
+        ab = cast(pd.Series, ordered.loc[0])
+        ba = cast(pd.Series, ordered.loc[1])
+        pair_id_int = int(cast(int, pair_id))
+        n_ab = int(cast(int, ab["games_completed"]))
+        n_ba = int(cast(int, ba["games_completed"]))
+        x_ab = int(cast(int, ab["wins_a"]))
+        x_ba = int(cast(int, ba["wins_b"]))
+        a_wins_ba = int(cast(int, ba["wins_a"]))
+        strategy_a = str(ab["strategy_a"])
+        strategy_b = str(ab["strategy_b"])
+        a_status = candidate_status[strategy_a]
+        b_status = candidate_status[strategy_b]
+        inferentially_viable = bool(pair_viable[pair_id_int])
+        if inferentially_viable and n_ab != n_ba:
             raise ValueError(f"pair {pair_id} is not exactly balanced between seat orders")
-        x_ab = int(cast(int, ab["wins_seat1"]))
-        x_ba = int(cast(int, ba["wins_seat1"]))
-        result = two_proportion_score_test(x_ab, n_ab, x_ba, n_ba)
-        ordinary_low, ordinary_high = score_difference_interval(
-            x_ab,
-            n_ab,
-            x_ba,
-            n_ba,
-            alpha=ordinary_alpha,
+        pair_operationally_viable = bool(
+            a_status["operationally_viable"] and b_status["operationally_viable"]
         )
-        simultaneous_low, simultaneous_high = score_difference_interval(
-            x_ab,
-            n_ab,
-            x_ba,
-            n_ba,
-            alpha=simultaneous_alpha,
-        )
-        q_ab = x_ab / n_ab
-        q_ba = x_ba / n_ba
-        effect = 0.5 * result.difference
-        balanced_a_wins = x_ab + (n_ba - x_ba)
-        balanced_a_rate = balanced_a_wins / (n_ab + n_ba)
-        alias = 0.5 + effect
-        if not math.isclose(balanced_a_rate, alias, rel_tol=0.0, abs_tol=1e-15):
-            raise RuntimeError("balanced A-win alias disagrees with the seat-order estimator")
-        rows.append(
-            {
-                "family_hash": str(ab["family_hash"]),
-                "pair_id": int(cast(int, pair_id)),
-                "strategy_a": str(ab["strategy_a"]),
-                "strategy_b": str(ab["strategy_b"]),
-                "n_ab": n_ab,
-                "n_ba": n_ba,
-                "seat1_a_wins_ab": x_ab,
-                "seat1_b_wins_ba": x_ba,
-                "q_ab": q_ab,
-                "q_ba": q_ba,
-                "raw_order_rate_difference": result.difference,
-                "d_ab": effect,
-                "score_null_proportion": result.null_proportion,
-                "score_z": result.statistic,
-                "score_p_value": result.p_value,
-                "ordinary_alpha": ordinary_alpha,
-                "ordinary_d_low": 0.5 * ordinary_low,
-                "ordinary_d_high": 0.5 * ordinary_high,
-                "bonferroni_alpha_per_pair": simultaneous_alpha,
-                "simultaneous_d_low": 0.5 * simultaneous_low,
-                "simultaneous_d_high": 0.5 * simultaneous_high,
-                "balanced_a_wins": balanced_a_wins,
-                "balanced_total_games": n_ab + n_ba,
-                "balanced_a_win_rate_alias": balanced_a_rate,
-                "balanced_alias_checked": True,
-                "score_test_id": SCORE_TEST_ID,
-                "interval_method_id": _INTERVAL_METHOD,
-                "planned_target_power": float(plan["target_power"]),
-                "planned_worst_scenario_power": float(plan["worst_scenario_achieved_power"]),
-            }
-        )
+        row: dict[str, Any] = {
+            "family_hash": str(ab["family_hash"]),
+            "pair_id": pair_id_int,
+            "strategy_a": strategy_a,
+            "strategy_b": strategy_b,
+            "games_attempted": int(ab["games_attempted"]) + int(ba["games_attempted"]),
+            "games_completed": n_ab + n_ba,
+            "games_safety_limit": int(ab["games_safety_limit"]) + int(ba["games_safety_limit"]),
+            "replacement_attempt_count": int(ab["replacement_attempt_count"])
+            + int(ba["replacement_attempt_count"]),
+            "completion_game_rate": (
+                (n_ab + n_ba) / (int(ab["games_attempted"]) + int(ba["games_attempted"]))
+            ),
+            "n_completed_required": int(ab["n_completed_required"])
+            + int(ba["n_completed_required"]),
+            "pair_inferentially_viable": inferentially_viable,
+            "pair_operationally_viable": pair_operationally_viable,
+            "pair_claim_eligible": inferentially_viable and pair_operationally_viable,
+            "completion_status": ("complete" if inferentially_viable else "unresolved_nonviable"),
+            "strategy_a_completion_rate": a_status["completion_rate"],
+            "strategy_b_completion_rate": b_status["completion_rate"],
+            "strategy_a_games_attempted": a_status["games_attempted"],
+            "strategy_b_games_attempted": b_status["games_attempted"],
+            "strategy_a_games_completed": a_status["games_completed"],
+            "strategy_b_games_completed": b_status["games_completed"],
+            "strategy_a_games_safety_limit": a_status["games_safety_limit"],
+            "strategy_b_games_safety_limit": b_status["games_safety_limit"],
+            "strategy_a_replacement_attempt_count": a_status["replacement_attempt_count"],
+            "strategy_b_replacement_attempt_count": b_status["replacement_attempt_count"],
+            "strategy_a_operationally_viable": a_status["operationally_viable"],
+            "strategy_b_operationally_viable": b_status["operationally_viable"],
+            "strategy_a_inferentially_viable": a_status["inferentially_viable"],
+            "strategy_b_inferentially_viable": b_status["inferentially_viable"],
+            "min_candidate_completion_rate": float(plan["min_candidate_completion_rate"]),
+            "n_ab": n_ab if inferentially_viable else None,
+            "n_ba": n_ba if inferentially_viable else None,
+            "seat1_a_wins_ab": x_ab if inferentially_viable else None,
+            "seat1_b_wins_ba": x_ba if inferentially_viable else None,
+            "seat2_a_wins_ba": a_wins_ba if inferentially_viable else None,
+            "descriptive_a_wins_completed": x_ab + a_wins_ba,
+            "descriptive_completed_games": n_ab + n_ba,
+            "descriptive_a_completed_win_rate": (
+                (x_ab + a_wins_ba) / (n_ab + n_ba) if n_ab + n_ba else None
+            ),
+            "q_ab": None,
+            "q_ba": None,
+            "raw_order_rate_difference": None,
+            "d_ab": None,
+            "score_null_proportion": None,
+            "score_z": None,
+            "score_p_value": None,
+            "ordinary_alpha": ordinary_alpha,
+            "ordinary_d_low": None,
+            "ordinary_d_high": None,
+            "bonferroni_alpha_per_pair": simultaneous_alpha,
+            "simultaneous_d_low": None,
+            "simultaneous_d_high": None,
+            "balanced_a_wins": None,
+            "balanced_total_games": None,
+            "balanced_a_win_rate_alias": None,
+            "balanced_alias_checked": False,
+            "formal_test_performed": inferentially_viable,
+            "multiplicity_family_member": True,
+            "no_test_p_value_convention": (
+                None if inferentially_viable else "null_reported_treated_as_one_for_holm"
+            ),
+            "score_test_id": SCORE_TEST_ID,
+            "interval_method_id": _INTERVAL_METHOD,
+            "h2h_method_version": H2H_METHOD_VERSION,
+            "planned_target_power": float(plan["target_power"]),
+            "planned_worst_scenario_power": float(plan["worst_scenario_achieved_power"]),
+        }
+        if inferentially_viable:
+            result = two_proportion_score_test(x_ab, n_ab, x_ba, n_ba)
+            ordinary_low, ordinary_high = score_difference_interval(
+                x_ab,
+                n_ab,
+                x_ba,
+                n_ba,
+                alpha=ordinary_alpha,
+            )
+            simultaneous_low, simultaneous_high = score_difference_interval(
+                x_ab,
+                n_ab,
+                x_ba,
+                n_ba,
+                alpha=simultaneous_alpha,
+            )
+            q_ab = x_ab / n_ab
+            q_ba = x_ba / n_ba
+            effect = 0.5 * result.difference
+            balanced_a_wins = x_ab + a_wins_ba
+            balanced_a_rate = balanced_a_wins / (n_ab + n_ba)
+            alias = 0.5 + effect
+            if not math.isclose(balanced_a_rate, alias, rel_tol=0.0, abs_tol=1e-15):
+                raise RuntimeError("actual A-win alias disagrees with the seat-order estimator")
+            row.update(
+                {
+                    "q_ab": q_ab,
+                    "q_ba": q_ba,
+                    "raw_order_rate_difference": result.difference,
+                    "d_ab": effect,
+                    "score_null_proportion": result.null_proportion,
+                    "score_z": result.statistic,
+                    "score_p_value": result.p_value,
+                    "ordinary_d_low": 0.5 * ordinary_low,
+                    "ordinary_d_high": 0.5 * ordinary_high,
+                    "simultaneous_d_low": 0.5 * simultaneous_low,
+                    "simultaneous_d_high": 0.5 * simultaneous_high,
+                    "balanced_a_wins": balanced_a_wins,
+                    "balanced_total_games": n_ab + n_ba,
+                    "balanced_a_win_rate_alias": balanced_a_rate,
+                    "balanced_alias_checked": True,
+                }
+            )
+        rows.append(row)
     output = pd.DataFrame(rows).sort_values("pair_id", kind="mergesort").reset_index(drop=True)
-    adjusted, positions = _holm_adjust(output["score_p_value"].to_numpy(dtype=float))
-    output["holm_order"] = positions
-    output["holm_adjusted_p"] = adjusted
-    output["holm_reject"] = adjusted <= ordinary_alpha
+    performed = output["formal_test_performed"].astype(bool).to_numpy()
+    working_p_values = np.where(
+        performed,
+        pd.to_numeric(output["score_p_value"], errors="coerce").fillna(1.0).to_numpy(dtype=float),
+        1.0,
+    )
+    adjusted, positions = _holm_adjust(working_p_values)
+    output["holm_order"] = pd.array(
+        [
+            int(position) if valid else None
+            for position, valid in zip(positions, performed, strict=True)
+        ],
+        dtype="Int64",
+    )
+    output["holm_adjusted_p"] = np.where(performed, adjusted, np.nan)
+    output["holm_reject_before_viability"] = performed & (adjusted <= ordinary_alpha)
+    output["holm_reject"] = output["holm_reject_before_viability"].astype(bool) & output[
+        "pair_claim_eligible"
+    ].astype(bool)
     practical = cfg.head2head.practical_delta
     equivalence = cfg.head2head.delta_equivalence
     classifications: list[str] = []
     decision_rows = cast(list[dict[str, Any]], output.to_dict(orient="records"))
     for row in decision_rows:
+        if not bool(row["pair_claim_eligible"]):
+            classifications.append("unresolved_nonviable")
+            continue
         simultaneous_low = float(row["simultaneous_d_low"])
         simultaneous_high = float(row["simultaneous_d_high"])
         effect = float(row["d_ab"])
@@ -535,6 +827,9 @@ def _root_specific_diagnostics(
     cfg: AppConfig,
     counts: pd.DataFrame,
     plan: Mapping[str, Any],
+    *,
+    pair_viable: Mapping[int, bool],
+    candidate_status: Mapping[str, Mapping[str, Any]],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Calculate fixed-root score diagnostics and cross-root agreement summaries."""
 
@@ -542,13 +837,18 @@ def _root_specific_diagnostics(
     roots = [int(cast(Any, root)) for root in cast(list[object], plan["root_seeds"])]
     for root in roots:
         selected = counts.loc[counts["root_seed"].astype(int).eq(root)].copy()
-        root_orders = selected.rename(
-            columns={
-                "games_completed": "games",
-            }
+        root_orders = _combine_within_order(
+            selected,
+            plan,
+            expected_root_count=1,
         )
-        root_orders["root_count"] = 1
-        root_inference = _pairwise_estimates(cfg, root_orders, plan)
+        root_inference = _pairwise_estimates(
+            cfg,
+            root_orders,
+            plan,
+            pair_viable=pair_viable,
+            candidate_status=candidate_status,
+        )
         root_inference.insert(0, "root_seed", root)
         root_inference["diagnostic_holm_decision"] = np.where(
             root_inference["holm_reject"].astype(bool),
@@ -570,6 +870,15 @@ def _root_specific_diagnostics(
                     "strategy_b",
                     "n_ab",
                     "n_ba",
+                    "games_attempted",
+                    "games_completed",
+                    "games_safety_limit",
+                    "replacement_attempt_count",
+                    "completion_game_rate",
+                    "completion_status",
+                    "pair_inferentially_viable",
+                    "pair_operationally_viable",
+                    "pair_claim_eligible",
                     "seat1_a_wins_ab",
                     "seat1_b_wins_ba",
                     "q_ab",
@@ -605,7 +914,7 @@ def _root_specific_diagnostics(
             "strategy_a": str(first["strategy_a"]),
             "strategy_b": str(first["strategy_b"]),
             "root_a": int(first["root_seed"]),
-            "root_a_d_ab": float(first["d_ab"]),
+            "root_a_d_ab": (None if pd.isna(first["d_ab"]) else float(first["d_ab"])),
             "root_a_diagnostic_holm_decision": str(first["diagnostic_holm_decision"]),
             "root_b": None,
             "root_b_d_ab": None,
@@ -619,22 +928,39 @@ def _root_specific_diagnostics(
         }
         if len(ordered) == 2:
             second = ordered.iloc[1]
-            first_effect = float(first["d_ab"])
-            second_effect = float(second["d_ab"])
-            discrepancy = first_effect - second_effect
+            first_effect = None if pd.isna(first["d_ab"]) else float(first["d_ab"])
+            second_effect = None if pd.isna(second["d_ab"]) else float(second["d_ab"])
+            discrepancy = (
+                None
+                if first_effect is None or second_effect is None
+                else first_effect - second_effect
+            )
             row.update(
                 {
                     "root_b": int(second["root_seed"]),
                     "root_b_d_ab": second_effect,
                     "root_b_diagnostic_holm_decision": str(second["diagnostic_holm_decision"]),
                     "effect_discrepancy_a_minus_b": discrepancy,
-                    "absolute_effect_discrepancy": abs(discrepancy),
-                    "diagnostic_holm_decision_agreement": str(first["diagnostic_holm_decision"])
-                    == str(second["diagnostic_holm_decision"]),
-                    "effect_direction_agreement": int(np.sign(first_effect))
-                    == int(np.sign(second_effect)),
-                    "agreement_available": True,
-                    "interpretation": "fixed_root_reproducibility_diagnostic_not_population_inference",
+                    "absolute_effect_discrepancy": (
+                        None if discrepancy is None else abs(discrepancy)
+                    ),
+                    "diagnostic_holm_decision_agreement": (
+                        str(first["diagnostic_holm_decision"])
+                        == str(second["diagnostic_holm_decision"])
+                        if first_effect is not None and second_effect is not None
+                        else None
+                    ),
+                    "effect_direction_agreement": (
+                        None
+                        if first_effect is None or second_effect is None
+                        else int(np.sign(first_effect)) == int(np.sign(second_effect))
+                    ),
+                    "agreement_available": (first_effect is not None and second_effect is not None),
+                    "interpretation": (
+                        "fixed_root_reproducibility_diagnostic_not_population_inference"
+                        if first_effect is not None and second_effect is not None
+                        else "unavailable_for_unresolved_nonviable_pair"
+                    ),
                 }
             )
         agreement_rows.append(row)
@@ -650,6 +976,7 @@ def _write_frame(
     sources: list[Path],
     grouping_keys: list[str],
     roots: list[int],
+    plan: Mapping[str, Any],
     weighted_quantity: str = "seat_adjusted_h2h_effect",
     uncertainty_method: str = f"{SCORE_TEST_ID}_holm",
 ) -> None:
@@ -662,10 +989,10 @@ def _write_frame(
         operation=operation,
         baseline="equal_seat_order_rates",
         weighted_quantity=weighted_quantity,
-        support_count_role="independent_games_per_seat_order",
+        support_count_role="attempted_and_completed_games_per_seat_order",
         uncertainty_method=uncertainty_method,
         replication_unit="independent_h2h_game",
-        conditioning="frozen_finite_grid_candidate_family",
+        conditioning=H2H_CONDITIONING,
         consistency_columns=frame.columns.tolist(),
         source_artifacts=sources,
         grouping_keys=grouping_keys,
@@ -673,6 +1000,12 @@ def _write_frame(
         required_player_counts=[2],
         missing_cell_policy="fail",
         seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
+        method_contract=h2h_method_contract(
+            cfg,
+            operation,
+            family_hash=str(plan["family_hash"]),
+            schedule_hash=str(plan["schedule_hash"]),
+        ),
     )
     write_parquet_artifact_atomic(
         pa.Table.from_pandas(frame, preserve_index=False),
@@ -687,8 +1020,9 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
 
     counts_path = cfg.h2h_order_counts_path()
     plan_path = cfg.h2h_power_plan_path()
+    schedule_path = cfg.h2h_block_manifest_path()
     state_path = cfg.h2h_execution_state_path()
-    sources = [counts_path, plan_path, state_path]
+    sources = [counts_path, plan_path, schedule_path, state_path]
     artifacts = H2HInferenceArtifacts(
         combined_order_counts=cfg.h2h_combined_order_counts_path(),
         pairwise_inference=cfg.h2h_pairwise_inference_path(),
@@ -707,8 +1041,21 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
         return artifacts
     counts, plan = _read_counts(cfg)
     combined = _combine_within_order(counts, plan)
-    inference = _pairwise_estimates(cfg, combined, plan)
-    root_diagnostics, root_agreement = _root_specific_diagnostics(cfg, counts, plan)
+    pair_viable, candidate_status = _viability_status(counts, plan)
+    inference = _pairwise_estimates(
+        cfg,
+        combined,
+        plan,
+        pair_viable=pair_viable,
+        candidate_status=candidate_status,
+    )
+    root_diagnostics, root_agreement = _root_specific_diagnostics(
+        cfg,
+        counts,
+        plan,
+        pair_viable=pair_viable,
+        candidate_status=candidate_status,
+    )
     roots = [int(root) for root in plan["root_seeds"]]
     _write_frame(
         cfg,
@@ -718,24 +1065,27 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
         sources=sources,
         grouping_keys=["pair_id", "order"],
         roots=roots,
+        plan=plan,
     )
     _write_frame(
         cfg,
         inference,
         artifacts.pairwise_inference,
         operation="seat_adjusted_score_inference",
-        sources=[artifacts.combined_order_counts, plan_path, state_path],
+        sources=[artifacts.combined_order_counts, plan_path, schedule_path, state_path],
         grouping_keys=["pair_id"],
         roots=roots,
+        plan=plan,
     )
     _write_frame(
         cfg,
         root_diagnostics,
         artifacts.root_pairwise_diagnostics,
         operation="root_specific_score_diagnostic",
-        sources=[counts_path, plan_path, state_path],
+        sources=[counts_path, plan_path, schedule_path, state_path],
         grouping_keys=["root_seed", "pair_id"],
         roots=roots,
+        plan=plan,
     )
     _write_frame(
         cfg,
@@ -745,6 +1095,7 @@ def run_h2h_inference(cfg: AppConfig, *, force: bool = False) -> H2HInferenceArt
         sources=[artifacts.root_pairwise_diagnostics],
         grouping_keys=["pair_id"],
         roots=roots,
+        plan=plan,
         weighted_quantity="fixed_root_effect_discrepancy",
         uncertainty_method="descriptive_fixed_root_decision_comparison",
     )

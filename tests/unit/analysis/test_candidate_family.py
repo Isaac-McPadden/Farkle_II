@@ -11,6 +11,10 @@ import pytest
 
 from farkle.analysis.candidate_family import freeze_h2h_candidate_family
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
+from farkle.analysis.trueskill_screening import (
+    TRUESKILL_CONDITIONING,
+    trueskill_method_contract,
+)
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
@@ -45,8 +49,10 @@ def _write_frame(
     scope: ArtifactScope,
     operation: str,
     seed_scope: str,
+    current_trueskill_contract: bool = True,
 ) -> None:
     table = pa.Table.from_pandas(frame, preserve_index=False)
+    is_trueskill = operation == "equal_root_k_percentile_mean" and current_trueskill_contract
     sidecar = make_artifact_sidecar(
         cfg,
         path,
@@ -59,6 +65,8 @@ def _write_frame(
         required_player_counts=[2, 4],
         missing_cell_policy="fail",
         seed_scope=seed_scope,
+        conditioning=TRUESKILL_CONDITIONING if is_trueskill else "unconditional",
+        method_contract=(trueskill_method_contract(operation) if is_trueskill else None),
     )
     write_parquet_artifact_atomic(table, path, sidecar=sidecar)
 
@@ -131,6 +139,13 @@ def test_candidate_family_balanced_tail_contraction_and_provenance(tmp_path: Pat
         "unordered_pair_count": 6,
     }
     assert len(manifest["family_hash"]) == 64
+    trueskill_identity = manifest["source_identity"]["trueskill"]
+    assert len(trueskill_identity["sidecar_sha256"]) == 64
+    assert trueskill_identity["method_contract"] == trueskill_method_contract(
+        "equal_root_k_percentile_mean"
+    )
+    assert trueskill_identity["conditioning"] == TRUESKILL_CONDITIONING
+    assert isinstance(trueskill_identity["schema_version"], int)
 
     membership = pq.read_table(artifacts.membership).to_pandas().set_index("strategy")
     assert membership.index.tolist() == [str(strategy) for strategy in range(1, 9)]
@@ -172,6 +187,56 @@ def test_candidate_family_without_cap_keeps_complete_declared_union(tmp_path: Pa
     assert manifest["candidates"] == ["1", "2", "3", "4", "5", "7", "8"]
     assert manifest["cutoff_rounds"] == 0
     assert manifest["final_cutoffs"] == manifest["initial_cutoffs"]
+
+
+def test_candidate_family_freezes_contributor_union_despite_safety_evidence(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path, cap=None)
+    _write_inputs(cfg)
+    baseline = freeze_h2h_candidate_family(cfg)
+    baseline_manifest = json.loads(baseline.manifest.read_text(encoding="utf-8"))
+
+    win_path = cfg.root_combined_performance_across_k_path()
+    win = pq.read_table(win_path).to_pandas()
+    win["safety_limit_exposure_rate"] = [
+        1.0 if strategy == 1 else 0.0 for strategy in win["strategy"]
+    ]
+    _write_frame(
+        cfg,
+        win_path,
+        win,
+        scope=ArtifactScope.CROSS_SEED,
+        operation="equal_k_mean",
+        seed_scope="root_pair_stability",
+    )
+    replay = freeze_h2h_candidate_family(cfg, force=True)
+    replay_manifest = json.loads(replay.manifest.read_text(encoding="utf-8"))
+
+    assert replay_manifest["candidates"] == baseline_manifest["candidates"]
+    assert replay_manifest["family_hash"] != baseline_manifest["family_hash"]
+
+
+def test_candidate_family_rejects_prechange_trueskill_contract(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_inputs(cfg)
+    artifacts = freeze_h2h_candidate_family(cfg)
+    original_family_bytes = artifacts.manifest.read_bytes()
+    path = cfg.trueskill_candidate_contribution_path()
+    frame = pq.read_table(path).to_pandas()
+    _write_frame(
+        cfg,
+        path,
+        frame,
+        scope=ArtifactScope.ACROSS_K,
+        operation="equal_root_k_percentile_mean",
+        seed_scope="both_roots_combined",
+        current_trueskill_contract=False,
+    )
+
+    with pytest.raises(ArtifactContractError, match="conditioning"):
+        freeze_h2h_candidate_family(cfg)
+    assert artifacts.manifest.read_bytes() == original_family_bytes
 
 
 def test_candidate_family_rejects_missing_or_over_cap_protected_set(tmp_path: Path) -> None:

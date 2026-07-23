@@ -34,7 +34,11 @@ changing code or accepting a statistical conclusion.
   its target/features, whole-strategy folds, hyperparameters, RNG/method/code
   identity, outputs, and sidecars. HGB's row-preserving per-k association union
   now lives in `concat_ks`; only the equal-k association summary lives in
-  `across_k`.
+  `across_k`. H2H method-v2 freezes completed-game targets, a 2.0x per-cell
+  attempt cap, and a 0.99 incident-attempt candidate completion threshold;
+  safety-limit attempts are retained outside formal score counts, contiguous
+  replacement prefixes are atomically resumable, and nonviable comparisons
+  retain family membership while producing no dominance or equivalence claim.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

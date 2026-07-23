@@ -6,7 +6,7 @@ import hashlib
 import json
 import math
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from functools import lru_cache
@@ -26,6 +26,7 @@ from farkle.simulation.simulation import PlayerRngCoordinates, _play_game
 from farkle.simulation.strategies import parse_strategy_identifier
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
+    H2HMethodContract,
     make_artifact_sidecar,
     validate_artifact_sidecar,
 )
@@ -35,6 +36,7 @@ from farkle.utils.artifacts import (
     write_parquet_artifact_atomic,
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_seed
+from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
 from farkle.utils.stage_completion import (
     CompletionState,
     stage_done_path,
@@ -44,7 +46,39 @@ from farkle.utils.stage_completion import (
 
 SCORE_TEST_ID: Final = "independent_two_proportion_score_v1"
 POWER_METHOD_ID: Final = "conditional_exact_power_for_score_rejection_v1"
+H2H_METHOD_VERSION: Final = 2
+H2H_CONDITIONING: Final = (
+    'formal inference conditions on termination_status == "completed"; '
+    "safety-limit attempts are retained separately"
+)
 _EXECUTION_STATE_CHECKPOINT_BLOCKS: Final = 100
+_TERMINAL_BLOCK_STATUSES: Final = {"complete", "unresolved_nonviable"}
+
+
+def h2h_method_contract(
+    cfg: AppConfig,
+    operation: str,
+    *,
+    family_hash: str | None = None,
+    schedule_hash: str | None = None,
+) -> H2HMethodContract:
+    """Return the explicit method-v2 identity for an H2H artifact."""
+
+    return {
+        "kind": "h2h",
+        "procedure": operation,
+        "parameters": {
+            "h2h_method_version": H2H_METHOD_VERSION,
+            "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+            "rng_scheme_version": RNG_SCHEME_VERSION,
+            "completed_game_target": True,
+            "safety_limit_inference_policy": "exclude",
+            "max_attempt_multiplier": float(cfg.head2head.max_attempt_multiplier),
+            "min_candidate_completion_rate": float(cfg.head2head.min_candidate_completion_rate),
+            "family_hash": family_hash,
+            "schedule_hash": schedule_hash,
+        },
+    }
 
 
 @dataclass(frozen=True)
@@ -430,6 +464,8 @@ def _schedule_hash(
     target_power: float,
     scenarios: tuple[float, ...],
     block_games: int,
+    max_attempt_multiplier: float,
+    min_candidate_completion_rate: float,
 ) -> str:
     """Hash the immutable statistical schedule contract, excluding operational caps."""
 
@@ -442,8 +478,13 @@ def _schedule_hash(
         "alpha_per_pair": alpha_per_pair,
         "target_power": target_power,
         "seat1_advantage_scenarios": list(scenarios),
-        "games_per_root_order_block": block_games,
+        "n_completed_required_per_root_order_block": block_games,
+        "max_attempt_multiplier": max_attempt_multiplier,
+        "max_attempts_per_root_order_block": math.ceil(max_attempt_multiplier * block_games),
+        "min_candidate_completion_rate": min_candidate_completion_rate,
         "rng_scheme_version": RNG_SCHEME_VERSION,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+        "h2h_method_version": H2H_METHOD_VERSION,
         "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
         "score_test_id": SCORE_TEST_ID,
         "power_method_id": POWER_METHOD_ID,
@@ -464,11 +505,13 @@ def _schedule_frame(
     schedule_hash: str,
     roots: tuple[int, ...],
     block_games: int,
+    max_attempt_multiplier: float,
     alpha_per_pair: float,
     target_power: float,
     worst_power: float,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
+    max_attempts = math.ceil(max_attempt_multiplier * block_games)
     for pair_id, (strategy_a, strategy_b) in enumerate(combinations(sorted(candidates), 2)):
         for root_index, root_seed in enumerate(roots):
             for order in (0, 1):
@@ -487,10 +530,14 @@ def _schedule_frame(
                         "order_label": "a_b" if order == 0 else "b_a",
                         "seat1_strategy": seat1,
                         "seat2_strategy": seat2,
-                        "games_required": block_games,
-                        "game_index_start": 0,
-                        "game_index_stop": block_games,
+                        "n_completed_required": block_games,
+                        "max_attempts": max_attempts,
+                        "max_attempt_multiplier": max_attempt_multiplier,
+                        "attempt_index_start": 0,
+                        "attempt_index_stop_exclusive": max_attempts,
                         "rng_scheme_version": RNG_SCHEME_VERSION,
+                        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                        "h2h_method_version": H2H_METHOD_VERSION,
                         "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
                         "score_test_id": SCORE_TEST_ID,
                         "alpha_per_pair": alpha_per_pair,
@@ -513,10 +560,10 @@ def _planning_sidecar_common(
         "source_scope": ArtifactScope.H2H_2P,
         "baseline": "equal_seat_order_rates",
         "weighted_quantity": "seat_adjusted_h2h_effect",
-        "support_count_role": "independent_games_per_root_order_block",
+        "support_count_role": "completed_games_per_root_order_block",
         "uncertainty_method": SCORE_TEST_ID,
         "replication_unit": "independent_h2h_game",
-        "conditioning": "frozen_finite_grid_candidate_family",
+        "conditioning": H2H_CONDITIONING,
         "source_artifacts": sources,
         "player_counts": [2],
         "required_player_counts": [2],
@@ -528,6 +575,13 @@ def _planning_sidecar_common(
 def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArtifacts:
     """Power-size and freeze equal pair/root/order simulation blocks."""
 
+    if (
+        not math.isfinite(cfg.head2head.max_attempt_multiplier)
+        or cfg.head2head.max_attempt_multiplier < 1.0
+    ):
+        raise ValueError("head2head.max_attempt_multiplier must be finite and at least 1")
+    if not 0.0 <= cfg.head2head.min_candidate_completion_rate <= 1.0:
+        raise ValueError("head2head.min_candidate_completion_rate must be between 0 and 1")
     family, _membership = _load_frozen_family(cfg)
     candidates = [str(value) for value in family["candidates"]]
     family_hash = str(family["family_hash"])
@@ -568,7 +622,10 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         else 0.0
     )
     games_per_pair = block_games * len(roots) * 2
-    total_games = games_per_pair * pair_count
+    total_completed_required = games_per_pair * pair_count
+    max_attempt_multiplier = float(cfg.head2head.max_attempt_multiplier)
+    max_attempts_per_block = math.ceil(max_attempt_multiplier * block_games)
+    maximum_total_attempts = max_attempts_per_block * len(roots) * 2 * pair_count
     schedule_hash = _schedule_hash(
         family_hash=family_hash,
         roots=roots,
@@ -578,10 +635,12 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         target_power=cfg.head2head.target_power,
         scenarios=scenarios,
         block_games=block_games,
+        max_attempt_multiplier=max_attempt_multiplier,
+        min_candidate_completion_rate=float(cfg.head2head.min_candidate_completion_rate),
     )
     total_blocks = pair_count * len(roots) * 2
     cap = cfg.head2head.total_game_cap
-    blocked = cap is not None and total_games > cap
+    blocked = cap is not None and maximum_total_attempts > cap
     planning_state = CompletionState.COMPLETE_VALID
     power_grid = _power_grid(
         cfg,
@@ -605,11 +664,18 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         "alpha_per_pair": alpha_per_pair,
         "target_power": cfg.head2head.target_power,
         "target_effect": cfg.head2head.practical_delta,
-        "games_per_root_order_block": block_games,
-        "games_per_order_across_roots": block_games * len(roots),
-        "games_per_pair": games_per_pair,
-        "projected_total_games": total_games,
+        "n_completed_required_per_root_order_block": block_games,
+        "n_completed_required_per_order_across_roots": block_games * len(roots),
+        "n_completed_required_per_pair": games_per_pair,
+        "total_completed_required": total_completed_required,
+        "max_attempt_multiplier": max_attempt_multiplier,
+        "max_attempts_per_root_order_block": max_attempts_per_block,
+        "maximum_total_attempts": maximum_total_attempts,
+        "min_candidate_completion_rate": cfg.head2head.min_candidate_completion_rate,
         "total_game_cap": cap,
+        "h2h_method_version": H2H_METHOD_VERSION,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+        "rng_scheme_version": RNG_SCHEME_VERSION,
         "planning_state": planning_state.value,
         "execution_authorization": "blocked_by_cap" if blocked else "ready",
         "total_block_count": total_blocks,
@@ -620,7 +686,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         "cap_guidance": (
             None
             if not blocked
-            else "increase head2head.total_game_cap to at least projected_total_games"
+            else "increase head2head.total_game_cap to at least maximum_total_attempts"
         ),
     }
     power_path = cfg.h2h_power_plan_path()
@@ -654,6 +720,12 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         operation="score_test_power_plan",
         consistency_columns=list(plan),
         grouping_keys=["family_hash"],
+        method_contract=h2h_method_contract(
+            cfg,
+            "score_test_power_plan",
+            family_hash=family_hash,
+            schedule_hash=schedule_hash,
+        ),
         **common,
     )
     write_json_artifact_atomic(plan, power_path, sidecar=power_sidecar)
@@ -665,7 +737,10 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
             cfg=cfg,
             stage="h2h_power",
             status="blocked_by_cap",
-            reason=(f"projected H2H games {total_games} exceed " f"head2head.total_game_cap={cap}"),
+            reason=(
+                f"maximum H2H attempts {maximum_total_attempts} exceed "
+                f"head2head.total_game_cap={cap}"
+            ),
             sidecar_artifacts=[power_path],
         )
         return H2HScheduleArtifacts(
@@ -681,6 +756,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         schedule_hash=schedule_hash,
         roots=roots,
         block_games=block_games,
+        max_attempt_multiplier=max_attempt_multiplier,
         alpha_per_pair=alpha_per_pair,
         target_power=cfg.head2head.target_power,
         worst_power=worst_power,
@@ -691,6 +767,12 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         operation="construct_pair_root_order_blocks",
         consistency_columns=schedule.columns.tolist(),
         grouping_keys=["pair_id", "root_seed", "order"],
+        method_contract=h2h_method_contract(
+            cfg,
+            "construct_pair_root_order_blocks",
+            family_hash=family_hash,
+            schedule_hash=schedule_hash,
+        ),
         **common,
     )
     write_parquet_artifact_atomic(
@@ -721,6 +803,7 @@ def _write_execution_state(
     state: CompletionState,
     *,
     completed_block_count: int,
+    block_rows: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Atomically publish mutable execution progress outside the power stage."""
 
@@ -734,6 +817,29 @@ def _write_execution_state(
         "completed_block_count": completed_block_count,
         "total_block_count": total,
     }
+    if block_rows is not None:
+        terminal = [
+            row for row in block_rows if str(row["completion_status"]) in _TERMINAL_BLOCK_STATUSES
+        ]
+        unresolved = [
+            row for row in terminal if str(row["completion_status"]) == "unresolved_nonviable"
+        ]
+        payload.update(
+            {
+                "terminal_block_count": len(terminal),
+                "resolved_block_count": len(terminal) - len(unresolved),
+                "unresolved_block_count": len(unresolved),
+                "games_attempted": sum(int(row["games_attempted"]) for row in terminal),
+                "games_completed": sum(int(row["games_completed"]) for row in terminal),
+                "games_safety_limit": sum(int(row["games_safety_limit"]) for row in terminal),
+                "replacement_attempt_count": sum(
+                    int(row["replacement_attempt_count"]) for row in terminal
+                ),
+                "substantive_status": (
+                    "unresolved_nonviable" if unresolved else "all_pairs_resolved"
+                ),
+            }
+        )
     state_path = cfg.h2h_execution_state_path()
     sources = [cfg.h2h_power_plan_path(), cfg.h2h_block_manifest_path()]
     sidecar = make_artifact_sidecar(
@@ -748,7 +854,7 @@ def _write_execution_state(
         support_count_role="scheduled_root_order_blocks",
         uncertainty_method=SCORE_TEST_ID,
         replication_unit="independent_h2h_game",
-        conditioning="frozen_finite_grid_candidate_family",
+        conditioning=H2H_CONDITIONING,
         consistency_columns=list(payload),
         source_artifacts=sources,
         grouping_keys=["family_hash", "schedule_hash"],
@@ -760,25 +866,116 @@ def _write_execution_state(
             if len(cast(list[int], plan["root_seeds"])) == 2
             else "single_root"
         ),
+        method_contract=h2h_method_contract(
+            cfg,
+            "h2h_execution_state",
+            family_hash=str(plan["family_hash"]),
+            schedule_hash=str(plan["schedule_hash"]),
+        ),
     )
     write_json_artifact_atomic(payload, state_path, sidecar=sidecar)
     return payload
 
 
-def _winner_seat_counts(frame: pd.DataFrame) -> tuple[int, int]:
+def _winner_seat_counts(frame: pd.DataFrame) -> tuple[int, int, int]:
+    if "termination_status" not in frame:
+        raise ValueError("H2H simulation rows lack termination_status")
+    statuses = frame["termination_status"].astype(str)
+    invalid_statuses = sorted(set(statuses).difference({"completed", "safety_limit"}))
+    if invalid_statuses:
+        raise ValueError(
+            f"H2H simulation contains invalid termination statuses: {invalid_statuses}"
+        )
+    completed = statuses.eq("completed")
+    safety_limit = statuses.eq("safety_limit")
     winner_column = next(
         (column for column in ("winner_seat", "winner") if column in frame),
         None,
     )
     if winner_column is None:
         raise ValueError("H2H simulation rows lack winner_seat/winner")
-    winners = frame[winner_column].astype(str).str.strip().str.lower()
+    if frame.loc[safety_limit, winner_column].notna().any():
+        raise ValueError("H2H safety-limit attempts cannot identify a winner")
+    winners = frame.loc[completed, winner_column].astype(str).str.strip().str.lower()
     seat1 = winners.isin({"1", "p1", "seat1", "seat_1"})
     seat2 = winners.isin({"2", "p2", "seat2", "seat_2"})
     if not (seat1 | seat2).all():
         invalid = sorted(winners.loc[~(seat1 | seat2)].unique().tolist())
         raise ValueError(f"H2H simulation contains invalid winner seats: {invalid}")
-    return int(seat1.sum()), int(seat2.sum())
+    return int(seat1.sum()), int(seat2.sum()), int(safety_limit.sum())
+
+
+def _attempt_coordinate_range_hash(block: Mapping[str, Any], stop_exclusive: int) -> str:
+    """Authenticate one contiguous semantic attempt-coordinate prefix."""
+
+    payload = {
+        "rng_scheme_version": int(block["rng_scheme_version"]),
+        "purpose": int(block["rng_purpose_namespace"]),
+        "root_seed": int(block["root_seed"]),
+        "pair_id": int(block["pair_id"]),
+        "order": int(block["order"]),
+        "attempt_index_start": 0,
+        "attempt_index_stop_exclusive": int(stop_exclusive),
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _block_progress(
+    block: Mapping[str, Any],
+    *,
+    games_attempted: int,
+    games_completed: int,
+    games_safety_limit: int,
+    wins_seat1: int,
+    wins_seat2: int,
+) -> dict[str, Any]:
+    target = int(block["n_completed_required"])
+    max_attempts = int(block["max_attempts"])
+    if games_completed >= target:
+        completion_status = "complete"
+    elif games_attempted >= max_attempts:
+        completion_status = "unresolved_nonviable"
+    else:
+        completion_status = CompletionState.PARTIAL_RESUMABLE.value
+    return {
+        **{
+            key: value
+            for key, value in block.items()
+            if not str(key).startswith("_")
+            and key
+            not in {
+                "games_attempted",
+                "games_completed",
+                "games_safety_limit",
+                "wins_seat1",
+                "wins_seat2",
+                "replacement_attempt_count",
+                "completion_status",
+                "completion_game_rate",
+                "safety_limit_game_rate",
+                "authenticated_attempt_index_start",
+                "authenticated_attempt_index_stop_exclusive",
+                "attempt_coordinate_range_hash",
+            }
+        },
+        "games_attempted": games_attempted,
+        "games_completed": games_completed,
+        "games_safety_limit": games_safety_limit,
+        "wins_seat1": wins_seat1,
+        "wins_seat2": wins_seat2,
+        "wins_a": wins_seat1 if int(block["order"]) == 0 else wins_seat2,
+        "wins_b": wins_seat2 if int(block["order"]) == 0 else wins_seat1,
+        "replacement_attempt_count": max(0, games_attempted - target),
+        "completion_status": completion_status,
+        "completion_game_rate": (games_completed / games_attempted if games_attempted else None),
+        "safety_limit_game_rate": (
+            games_safety_limit / games_attempted if games_attempted else None
+        ),
+        "authenticated_attempt_index_start": 0,
+        "authenticated_attempt_index_stop_exclusive": games_attempted,
+        "attempt_coordinate_range_hash": _attempt_coordinate_range_hash(block, games_attempted),
+    }
 
 
 def _simulate_block(
@@ -786,6 +983,8 @@ def _simulate_block(
     strategy_manifest_path: Path,
     chunk_games: int,
 ) -> dict[str, Any]:
+    """Advance one root/order block by at most ``chunk_games`` attempts."""
+
     manifest = pd.read_parquet(strategy_manifest_path)
     strategy1 = parse_strategy_identifier(
         block["seat1_strategy"],
@@ -795,23 +994,29 @@ def _simulate_block(
         block["seat2_strategy"],
         manifest=manifest,
     )
-    games_required = int(block["games_required"])
-    wins_seat1 = 0
-    wins_seat2 = 0
-    for start in range(0, games_required, chunk_games):
-        stop = min(games_required, start + chunk_games)
-        rows = []
-        for attempt_index in range(start, stop):
-            game_seed = coordinate_seed(
-                RandomPurpose.H2H_GAME,
-                root_seed=int(block["root_seed"]),
-                k=2,
-                pair_id=int(block["pair_id"]),
-                order=int(block["order"]),
-                attempt_index=attempt_index,
-                dtype=np.uint32,
-            )
-            rows.append(
+    target = int(block["n_completed_required"])
+    max_attempts = int(block["max_attempts"])
+    games_attempted = int(block.get("games_attempted", 0))
+    games_completed = int(block.get("games_completed", 0))
+    games_safety_limit = int(block.get("games_safety_limit", 0))
+    wins_seat1 = int(block.get("wins_seat1", 0))
+    wins_seat2 = int(block.get("wins_seat2", 0))
+    stop = min(max_attempts, games_attempted + chunk_games)
+    rows: list[dict[str, Any]] = []
+    for attempt_index in range(games_attempted, stop):
+        if games_completed >= target:
+            break
+        game_seed = coordinate_seed(
+            RandomPurpose.H2H_GAME,
+            root_seed=int(block["root_seed"]),
+            k=2,
+            pair_id=int(block["pair_id"]),
+            order=int(block["order"]),
+            attempt_index=attempt_index,
+            dtype=np.uint64,
+        )
+        rows.append(
+            dict(
                 _play_game(
                     game_seed,
                     [strategy1, strategy2],
@@ -820,6 +1025,9 @@ def _simulate_block(
                         "k": 2,
                         "shuffle_index": None,
                         "game_index": attempt_index,
+                        "attempt_index": attempt_index,
+                        "pair_id": int(block["pair_id"]),
+                        "order": int(block["order"]),
                         "deterministic_batch_id": None,
                         "game_seed": game_seed,
                         "rng_scheme_version": RNG_SCHEME_VERSION,
@@ -835,18 +1043,24 @@ def _simulate_block(
                     ),
                 )
             )
+        )
+        if rows[-1]["termination_status"] == "completed":
+            games_completed += 1
+    if rows:
         frame = pd.DataFrame(rows)
-        first, second = _winner_seat_counts(frame)
+        first, second, safety = _winner_seat_counts(frame)
         wins_seat1 += first
         wins_seat2 += second
-    if wins_seat1 + wins_seat2 != games_required:
-        raise RuntimeError("H2H block win counts do not equal scheduled games")
-    return {
-        **block,
-        "games_completed": games_required,
-        "wins_seat1": wins_seat1,
-        "wins_seat2": wins_seat2,
-    }
+        games_safety_limit += safety
+        games_attempted += len(rows)
+    return _block_progress(
+        block,
+        games_attempted=games_attempted,
+        games_completed=games_completed,
+        games_safety_limit=games_safety_limit,
+        wins_seat1=wins_seat1,
+        wins_seat2=wins_seat2,
+    )
 
 
 def _block_path(cfg: AppConfig, block: Mapping[str, Any]) -> Path:
@@ -857,9 +1071,9 @@ def _block_path(cfg: AppConfig, block: Mapping[str, Any]) -> Path:
     )
 
 
-def _valid_existing_block(path: Path, block: Mapping[str, Any]) -> bool:
+def _read_existing_block(path: Path, block: Mapping[str, Any]) -> dict[str, Any] | None:
     if not path.exists():
-        return False
+        return None
     validate_artifact_sidecar(
         path,
         expected={
@@ -867,21 +1081,123 @@ def _valid_existing_block(path: Path, block: Mapping[str, Any]) -> bool:
             "operation": "simulate_root_order_block",
         },
     )
-    frame = pq.read_table(
-        path,
-        columns=["block_id", "family_hash", "schedule_hash", "games_completed"],
-    ).to_pandas()
+    frame = pq.read_table(path).to_pandas()
     if len(frame) != 1:
         raise ValueError(f"H2H block checkpoint must contain one row: {path}")
-    row = frame.iloc[0]
+    row = cast(dict[str, Any], frame.iloc[0].to_dict())
+    immutable_fields = (
+        "block_id",
+        "family_hash",
+        "schedule_hash",
+        "pair_id",
+        "root_seed",
+        "order",
+        "n_completed_required",
+        "max_attempts",
+        "rng_scheme_version",
+        "outcome_schema_version",
+        "h2h_method_version",
+    )
+    mismatched = {
+        field: (row.get(field), block.get(field))
+        for field in immutable_fields
+        if str(row.get(field)) != str(block.get(field))
+    }
+    if mismatched:
+        raise ValueError(
+            f"immutable H2H block checkpoint conflicts with schedule: {path}: {mismatched}"
+        )
+    attempted = int(row["games_attempted"])
+    completed = int(row["games_completed"])
+    safety_limit = int(row["games_safety_limit"])
+    wins_seat1 = int(row["wins_seat1"])
+    wins_seat2 = int(row["wins_seat2"])
+    target = int(block["n_completed_required"])
+    max_attempts = int(block["max_attempts"])
+    if not 0 <= completed <= target or not completed <= attempted <= max_attempts:
+        raise ValueError(f"H2H block checkpoint has impossible attempt/completion counts: {path}")
+    if attempted != completed + safety_limit:
+        raise ValueError(f"H2H block checkpoint violates attempt conservation: {path}")
+    if wins_seat1 + wins_seat2 != completed:
+        raise ValueError(f"H2H block checkpoint wins do not equal completed games: {path}")
+    expected_wins_a = wins_seat1 if int(block["order"]) == 0 else wins_seat2
+    expected_wins_b = wins_seat2 if int(block["order"]) == 0 else wins_seat1
+    if int(row["wins_a"]) != expected_wins_a or int(row["wins_b"]) != expected_wins_b:
+        raise ValueError(f"H2H block checkpoint has invalid A/B win orientation: {path}")
+    if int(row["replacement_attempt_count"]) != max(0, attempted - target):
+        raise ValueError(f"H2H block checkpoint has an invalid replacement count: {path}")
     if (
-        str(row["block_id"]) != str(block["block_id"])
-        or str(row["family_hash"]) != str(block["family_hash"])
-        or str(row["schedule_hash"]) != str(block["schedule_hash"])
-        or int(cast(int, row["games_completed"])) != int(block["games_required"])
+        int(row["authenticated_attempt_index_start"]) != 0
+        or int(row["authenticated_attempt_index_stop_exclusive"]) != attempted
+        or str(row["attempt_coordinate_range_hash"])
+        != _attempt_coordinate_range_hash(block, attempted)
     ):
-        raise ValueError(f"immutable H2H block checkpoint conflicts with schedule: {path}")
-    return True
+        raise ValueError(f"H2H block checkpoint does not authenticate its attempt prefix: {path}")
+    expected = _block_progress(
+        block,
+        games_attempted=attempted,
+        games_completed=completed,
+        games_safety_limit=safety_limit,
+        wins_seat1=wins_seat1,
+        wins_seat2=wins_seat2,
+    )
+    if str(row["completion_status"]) != str(expected["completion_status"]):
+        raise ValueError(f"H2H block checkpoint has an invalid completion status: {path}")
+    return row
+
+
+def _valid_existing_block(path: Path, block: Mapping[str, Any]) -> bool:
+    row = _read_existing_block(path, block)
+    return row is not None and str(row["completion_status"]) in _TERMINAL_BLOCK_STATUSES
+
+
+def _normalize_runner_result(
+    block: Mapping[str, Any],
+    result: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Canonicalize a runner result and reject non-advancing partial work."""
+
+    for field in ("block_id", "family_hash", "schedule_hash"):
+        if str(result.get(field)) != str(block[field]):
+            raise ValueError(f"H2H block runner changed immutable field {field}")
+    completed = int(result.get("games_completed", block.get("games_completed", 0)))
+    wins_seat1 = int(result.get("wins_seat1", block.get("wins_seat1", 0)))
+    wins_seat2 = int(result.get("wins_seat2", block.get("wins_seat2", 0)))
+    safety_limit = int(result.get("games_safety_limit", block.get("games_safety_limit", 0)))
+    if "games_attempted" in result:
+        attempted = int(result["games_attempted"])
+    elif "games_safety_limit" in result:
+        attempted = completed + safety_limit
+    else:
+        # Test/custom runners that return a fully completed Bernoulli block
+        # remain valid, but production runners must report attempts explicitly.
+        attempted = completed
+    target = int(block["n_completed_required"])
+    max_attempts = int(block["max_attempts"])
+    if not 0 <= completed <= target or not completed <= attempted <= max_attempts:
+        raise ValueError("H2H block runner returned impossible attempt/completion counts")
+    if attempted != completed + safety_limit:
+        raise ValueError("H2H block runner violated attempt conservation")
+    if wins_seat1 + wins_seat2 != completed:
+        raise ValueError("H2H block runner wins do not equal completed games")
+    normalized = _block_progress(
+        block,
+        games_attempted=attempted,
+        games_completed=completed,
+        games_safety_limit=safety_limit,
+        wins_seat1=wins_seat1,
+        wins_seat2=wins_seat2,
+    )
+    supplied_status = result.get("completion_status")
+    if supplied_status is not None and str(supplied_status) != str(normalized["completion_status"]):
+        raise ValueError("H2H block runner returned an inconsistent completion status")
+    previous_attempted = int(block.get("games_attempted", 0))
+    if (
+        str(normalized["completion_status"]) not in _TERMINAL_BLOCK_STATUSES
+        and attempted <= previous_attempted
+    ):
+        raise RuntimeError("H2H block runner made no durable attempt progress")
+    return normalized
 
 
 def _write_block(
@@ -902,10 +1218,10 @@ def _write_block(
         operation="simulate_root_order_block",
         baseline="equal_seat_order_rates",
         weighted_quantity="seat1_win_count",
-        support_count_role="independent_games_per_root_order_block",
+        support_count_role="attempted_and_completed_games_per_root_order_block",
         uncertainty_method=SCORE_TEST_ID,
         replication_unit="independent_h2h_game",
-        conditioning="frozen_finite_grid_candidate_family",
+        conditioning=H2H_CONDITIONING,
         consistency_columns=frame.columns.tolist(),
         source_artifacts=[schedule_path],
         grouping_keys=["pair_id", "root_seed", "order"],
@@ -913,6 +1229,12 @@ def _write_block(
         required_player_counts=[2],
         missing_cell_policy="fail",
         seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
+        method_contract=h2h_method_contract(
+            cfg,
+            "simulate_root_order_block",
+            family_hash=str(result["family_hash"]),
+            schedule_hash=str(result["schedule_hash"]),
+        ),
     )
     write_parquet_artifact_atomic(
         pa.Table.from_pandas(frame, preserve_index=False),
@@ -1068,11 +1390,13 @@ def execute_h2h_schedule(
             order_counts=output,
             block_paths=block_paths,
         )
-    pending = [
-        record
-        for record, path in zip(records, block_paths, strict=True)
-        if not _valid_existing_block(path, record)
-    ]
+    pending: list[dict[str, Any]] = []
+    for record, path in zip(records, block_paths, strict=True):
+        checkpoint = _read_existing_block(path, record)
+        if checkpoint is None:
+            pending.append(record)
+        elif str(checkpoint["completion_status"]) not in _TERMINAL_BLOCK_STATUSES:
+            pending.append(checkpoint)
     completed_block_count = len(records) - len(pending)
     checkpoint_interval = min(
         _EXECUTION_STATE_CHECKPOINT_BLOCKS,
@@ -1111,12 +1435,21 @@ def execute_h2h_schedule(
         raise ValueError("custom H2H block runners require n_jobs=1")
     if worker_count == 1:
         for block in pending:
-            _write_block(
-                cfg,
-                block_runner(block, manifest_path, chunk_games),
-                schedule_path=schedule_path,
-                roots=roots,
-            )
+            current = block
+            while True:
+                result = _normalize_runner_result(
+                    current,
+                    block_runner(current, manifest_path, chunk_games),
+                )
+                _write_block(
+                    cfg,
+                    result,
+                    schedule_path=schedule_path,
+                    roots=roots,
+                )
+                if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
+                    break
+                current = result
             completed_block_count += 1
             checkpoint_execution_state()
     elif pending:
@@ -1129,7 +1462,7 @@ def execute_h2h_schedule(
                     block = next(iterator)
                 except StopIteration:
                     return False
-                future = executor.submit(_simulate_block, block, manifest_path, chunk_games)
+                future = executor.submit(block_runner, block, manifest_path, chunk_games)
                 active[future] = block
                 return True
 
@@ -1138,25 +1471,32 @@ def execute_h2h_schedule(
             while active:
                 finished, _ = wait(active, return_when=FIRST_COMPLETED)
                 for future in finished:
-                    active.pop(future)
+                    block = active.pop(future)
+                    result = _normalize_runner_result(block, future.result())
                     _write_block(
                         cfg,
-                        future.result(),
+                        result,
                         schedule_path=schedule_path,
                         roots=roots,
                     )
-                    completed_block_count += 1
-                    checkpoint_execution_state()
-                    submit_one()
+                    if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
+                        completed_block_count += 1
+                        checkpoint_execution_state()
+                        submit_one()
+                    else:
+                        next_future = executor.submit(
+                            block_runner, result, manifest_path, chunk_games
+                        )
+                        active[next_future] = result
 
     completed_records: list[dict[str, Any]] = []
     for record, path in zip(records, block_paths, strict=True):
-        if not _valid_existing_block(path, record):
+        block_row = _read_existing_block(path, record)
+        if block_row is None or str(block_row["completion_status"]) not in (
+            _TERMINAL_BLOCK_STATUSES
+        ):
             raise RuntimeError(f"scheduled H2H block did not complete: {path}")
-        block_rows = pq.read_table(path).to_pylist()
-        if len(block_rows) != 1:
-            raise ValueError(f"H2H block checkpoint must contain one row: {path}")
-        completed_records.append(block_rows[0])
+        completed_records.append(block_row)
     combined = pd.DataFrame(completed_records).sort_values(
         ["pair_id", "root_index", "order"], kind="mergesort"
     )
@@ -1169,10 +1509,10 @@ def execute_h2h_schedule(
         operation="concatenate_root_order_blocks",
         baseline="equal_seat_order_rates",
         weighted_quantity="seat1_win_count",
-        support_count_role="independent_games_per_root_order_block",
+        support_count_role="attempted_and_completed_games_per_root_order_block",
         uncertainty_method=SCORE_TEST_ID,
         replication_unit="independent_h2h_game",
-        conditioning="frozen_finite_grid_candidate_family",
+        conditioning=H2H_CONDITIONING,
         consistency_columns=combined.columns.tolist(),
         source_artifacts=list(block_paths),
         grouping_keys=["pair_id", "root_seed", "order"],
@@ -1180,6 +1520,12 @@ def execute_h2h_schedule(
         required_player_counts=[2],
         missing_cell_policy="fail",
         seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
+        method_contract=h2h_method_contract(
+            cfg,
+            "concatenate_root_order_blocks",
+            family_hash=str(plan["family_hash"]),
+            schedule_hash=str(plan["schedule_hash"]),
+        ),
     )
     write_parquet_artifact_atomic(
         pa.Table.from_pandas(combined, preserve_index=False),
@@ -1192,6 +1538,7 @@ def execute_h2h_schedule(
         plan,
         CompletionState.COMPLETE_VALID,
         completed_block_count=len(records),
+        block_rows=completed_records,
     )
     write_stage_done(
         done,
@@ -1209,11 +1556,14 @@ def execute_h2h_schedule(
 
 
 __all__ = [
+    "H2H_CONDITIONING",
+    "H2H_METHOD_VERSION",
     "H2HExecutionArtifacts",
     "H2HScheduleArtifacts",
     "POWER_METHOD_ID",
     "SCORE_TEST_ID",
     "execute_h2h_schedule",
+    "h2h_method_contract",
     "implemented_score_test_power",
     "independent_score_planning_power",
     "plan_h2h_schedule",

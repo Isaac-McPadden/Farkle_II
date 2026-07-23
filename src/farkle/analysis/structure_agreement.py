@@ -185,7 +185,12 @@ def _summary(
         "selection_conditioned_h2h": {
             "unordered_pair_count": int(len(pairs)),
             "directional_pair_count": int(len(directional)),
-            "unresolved_pair_count": int(pairs["decision_class"].eq("unresolved").sum()),
+            "unresolved_pair_count": int(
+                pairs["decision_class"].astype(str).str.startswith("unresolved").sum()
+            ),
+            "unresolved_nonviable_pair_count": int(
+                pairs["decision_class"].eq("unresolved_nonviable").sum()
+            ),
             "equivalent_pair_count": int(pairs["decision_class"].eq("equivalent").sum()),
             "win_rate_trueskill_direction_agreement_fraction": _fraction(
                 pairs, "win_rate_trueskill_agree"

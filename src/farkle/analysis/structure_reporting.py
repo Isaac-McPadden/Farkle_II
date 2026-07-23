@@ -107,7 +107,9 @@ def _by_k_vectors(
             attempted_exposures = int(cell["raw_attempted_exposures"].sum())
             completed_exposures = int(cell["raw_completed_exposures"].sum())
             safety_exposures = int(cell["raw_safety_limit_exposures"].sum())
-            if any(value % k for value in (attempted_exposures, completed_exposures, safety_exposures)):
+            if any(
+                value % k for value in (attempted_exposures, completed_exposures, safety_exposures)
+            ):
                 raise ValueError(f"root/k safety exposure counts are not divisible by k={k}")
             games_attempted = attempted_exposures // k
             games_completed = completed_exposures // k
@@ -243,6 +245,11 @@ def _claim_lines(report: dict[str, Any]) -> list[str]:
     ]
     if h2h["unresolved_pair_count"]:
         lines.append(f"{h2h['unresolved_pair_count']} finalist comparisons remain unresolved.")
+    if h2h["operationally_nonviable_candidates"]:
+        lines.append(
+            "Operationally nonviable frozen finalists (retained with no affected "
+            f"dominance/equivalence claims): {h2h['operationally_nonviable_candidates']}."
+        )
     if h2h["cycle_group_count"]:
         lines.append(f"{h2h['cycle_group_count']} directed cycle groups remain explicit.")
     if h2h["equivalent_pair_count"]:
@@ -290,6 +297,13 @@ def render_markdown(report: dict[str, Any]) -> str:
             f"`{report.get('safety_limits', {}).get('games_safety_limit', 'unavailable')}` of "
             f"`{report.get('safety_limits', {}).get('games_attempted', 'unavailable')}` "
             "attempted games."
+        ),
+        (
+            "- H2H completion: "
+            f"`{h2h.get('games_completed', 'unavailable')}` completed of "
+            f"`{h2h.get('games_attempted', 'unavailable')}` attempts; "
+            f"`{h2h.get('games_safety_limit', 'unavailable')}` safety-limit attempts and "
+            f"`{h2h.get('replacement_attempt_count', 'unavailable')}` replacements."
         ),
         "",
         "## Distinct evidence summaries",
@@ -381,6 +395,7 @@ def run(
     family_membership_path = cfg.h2h_candidate_family_path()
     agreement_path = cfg.structure_agreement_summary_path()
     inference_path = cfg.h2h_pairwise_inference_path()
+    h2h_counts_path = cfg.h2h_order_counts_path()
     dominance_path = cfg.h2h_dominance_summary_path()
     fronts_path = cfg.h2h_dominance_fronts_path()
     cycles_path = cfg.h2h_cycle_groups_path()
@@ -392,6 +407,7 @@ def run(
         agreement_path, operation="selection_conditioned_method_agreement"
     )
     inference, _ = _read_frame(inference_path, operation="seat_adjusted_score_inference")
+    h2h_counts, _ = _read_frame(h2h_counts_path, operation="concatenate_root_order_blocks")
     dominance, _ = _read_json(dominance_path, operation="summarize_dominance_claims")
     fronts, _ = _read_frame(fronts_path, operation="condensation_dag_fronts")
     cycles, _ = _read_frame(cycles_path, operation="detect_strongly_connected_cycles")
@@ -410,6 +426,8 @@ def run(
     inference_hashes = set(inference["family_hash"].astype(str))
     if inference_hashes != {family_hash}:
         raise ValueError("report H2H inference does not match the frozen family hash")
+    if set(h2h_counts["family_hash"].astype(str)) != {family_hash}:
+        raise ValueError("report H2H counts do not match the frozen family hash")
     if (
         str(agreement.get("family_hash")) != family_hash
         or str(dominance.get("family_hash")) != family_hash
@@ -424,6 +442,7 @@ def run(
         family_membership_path,
         agreement_path,
         inference_path,
+        h2h_counts_path,
         dominance_path,
         fronts_path,
         cycles_path,
@@ -477,6 +496,9 @@ def run(
     best_score = float(scores.max())
     screening_leaders = sorted(scores.index[np.isclose(scores, best_score)].tolist())
     decision_counts = inference["decision_class"].astype(str).value_counts().to_dict()
+    unresolved_pair_count = int(
+        inference["decision_class"].astype(str).str.startswith("unresolved").sum()
+    )
     if decision_counts.get("equivalent", 0) and cfg.head2head.delta_equivalence is None:
         raise ValueError("equivalent H2H decisions require an explicit equivalence margin")
     configured_only_2p = player_counts == [2]
@@ -492,6 +514,15 @@ def run(
             "pair_id",
             "strategy_a",
             "strategy_b",
+            "games_attempted",
+            "games_completed",
+            "games_safety_limit",
+            "replacement_attempt_count",
+            "completion_game_rate",
+            "completion_status",
+            "pair_inferentially_viable",
+            "pair_operationally_viable",
+            "pair_claim_eligible",
             "d_ab",
             "ordinary_d_low",
             "ordinary_d_high",
@@ -501,8 +532,33 @@ def run(
             "decision_class",
         ],
     )
+    candidate_viability: dict[str, dict[str, Any]] = {}
+    for raw in cast(list[dict[str, Any]], inference.to_dict(orient="records")):
+        for prefix in ("strategy_a", "strategy_b"):
+            strategy = str(raw[prefix])
+            status = {
+                "strategy": strategy,
+                "games_attempted": int(raw[f"{prefix}_games_attempted"]),
+                "games_completed": int(raw[f"{prefix}_games_completed"]),
+                "games_safety_limit": int(raw[f"{prefix}_games_safety_limit"]),
+                "replacement_attempt_count": int(raw[f"{prefix}_replacement_attempt_count"]),
+                "completion_rate": raw[f"{prefix}_completion_rate"],
+                "operationally_viable": bool(raw[f"{prefix}_operationally_viable"]),
+                "inferentially_viable": bool(raw[f"{prefix}_inferentially_viable"]),
+                "min_candidate_completion_rate": float(raw["min_candidate_completion_rate"]),
+            }
+            if strategy in candidate_viability and candidate_viability[strategy] != status:
+                raise ValueError("report candidate viability varies between comparisons")
+            candidate_viability[strategy] = status
+    candidate_viability_rows = [
+        candidate_viability[strategy] for strategy in sorted(candidate_viability)
+    ]
+    h2h_games_attempted = int(h2h_counts["games_attempted"].sum())
+    h2h_games_completed = int(h2h_counts["games_completed"].sum())
+    h2h_games_safety_limit = int(h2h_counts["games_safety_limit"].sum())
+    h2h_replacements = int(h2h_counts["replacement_attempt_count"].sum())
     report: dict[str, Any] = {
-        "report_contract_version": 2,
+        "report_contract_version": 3,
         "execution_scope": execution_scope,
         "roots": list(roots),
         "finite_grid_conditionality": True,
@@ -515,7 +571,10 @@ def run(
         },
         "conditioning": {
             "tournament_performance": performance_sidecar.conditioning,
-            "h2h": "frozen_finite_grid_candidate_family",
+            "h2h": (
+                "frozen finite-grid candidate family; formal inference conditions on "
+                'termination_status == "completed"'
+            ),
             "winner_conditioning": "unconditional_tournament_performance_not_winner_conditioned",
         },
         "candidate_family": {
@@ -573,8 +632,46 @@ def run(
             "role": h2h_role,
             "family_hash": family["family_hash"],
             "decision_counts": {str(key): int(value) for key, value in decision_counts.items()},
-            "unresolved_pair_count": int(decision_counts.get("unresolved", 0)),
+            "unresolved_pair_count": unresolved_pair_count,
+            "unresolved_nonviable_pair_count": int(decision_counts.get("unresolved_nonviable", 0)),
             "equivalent_pair_count": int(decision_counts.get("equivalent", 0)),
+            "games_attempted": h2h_games_attempted,
+            "games_completed": h2h_games_completed,
+            "games_safety_limit": h2h_games_safety_limit,
+            "replacement_attempt_count": h2h_replacements,
+            "completion_game_rate": (
+                h2h_games_completed / h2h_games_attempted if h2h_games_attempted else None
+            ),
+            "safety_limit_game_rate": (
+                h2h_games_safety_limit / h2h_games_attempted if h2h_games_attempted else None
+            ),
+            "by_pair_root_order": _records(
+                h2h_counts,
+                [
+                    "pair_id",
+                    "strategy_a",
+                    "strategy_b",
+                    "root_seed",
+                    "order",
+                    "n_completed_required",
+                    "max_attempts",
+                    "games_attempted",
+                    "games_completed",
+                    "games_safety_limit",
+                    "replacement_attempt_count",
+                    "wins_a",
+                    "wins_b",
+                    "completion_status",
+                    "completion_game_rate",
+                    "safety_limit_game_rate",
+                ],
+            ),
+            "candidate_viability": candidate_viability_rows,
+            "operationally_nonviable_candidates": sorted(
+                row["strategy"]
+                for row in candidate_viability_rows
+                if not row["operationally_viable"]
+            ),
             "cycle_group_count": int(dominance["practical_cycle_group_count"]),
             "cycles": _cycle_records(cycles),
             "fronts": _records(

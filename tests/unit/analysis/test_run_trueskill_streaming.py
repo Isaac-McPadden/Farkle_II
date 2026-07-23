@@ -91,25 +91,18 @@ def test_stream_batches_respects_resume_offsets(sample_parquet: Path) -> None:
     assert [(rg, bi, batch.num_rows) for rg, bi, batch in later_groups] == [(1, 0, 2)]
 
 
-def test_players_and_ranks_precedence(tmp_path: Path) -> None:
-    seat_ranks = pa.array(
-        [
-            ["P3", "P2", "P1"],
-            ["P2", "P1"],
-            None,
-        ],
-        type=pa.list_(pa.string()),
-    )
+def test_players_and_ranks_use_only_completed_canonical_rows(tmp_path: Path) -> None:
     table = pa.table(
         {
-            "seat_ranks": seat_ranks,
-            "winner": ["P3", "P2", "P3"],
+            "termination_status": ["completed", "safety_limit", "completed"],
+            "outcome_schema_version": [2, 2, 2],
+            "winner_seat": ["P1", None, "P2"],
             "P1_strategy": ["alpha", "delta", "zeta"],
             "P2_strategy": ["beta", "epsilon", "eta"],
-            "P3_strategy": ["gamma", None, "theta"],
-            "P1_rank": pa.array([1, None, None], type=pa.int64()),
-            "P2_rank": pa.array([1, None, None], type=pa.int64()),
-            "P3_rank": pa.array([2, None, None], type=pa.int64()),
+            "P3_strategy": ["gamma", "iota", "theta"],
+            "P1_rank": pa.array([1, None, 3], type=pa.int64()),
+            "P2_rank": pa.array([2, None, 1], type=pa.int64()),
+            "P3_rank": pa.array([3, None, 2], type=pa.int64()),
         }
     )
     path = tmp_path / "precedence.parquet"
@@ -124,9 +117,25 @@ def test_players_and_ranks_precedence(tmp_path: Path) -> None:
     )[2]
     rows = list(rt._players_and_ranks_from_batch(batch, 3))
     assert rows == [
-        (["alpha", "beta", "gamma"], [0, 0, 1]),
-        (["epsilon", "delta"], [0, 1]),
+        (["alpha", "beta", "gamma"], [0, 1, 2]),
+        (["zeta", "eta", "theta"], [2, 0, 1]),
     ]
+
+
+def test_safety_limit_rows_cannot_carry_ranks_or_become_draws() -> None:
+    table = pa.table(
+        {
+            "termination_status": ["safety_limit"],
+            "outcome_schema_version": [2],
+            "winner_seat": pa.array([None], type=pa.string()),
+            "P1_strategy": ["A"],
+            "P2_strategy": ["B"],
+            "P1_rank": pa.array([1], type=pa.int64()),
+            "P2_rank": pa.array([1], type=pa.int64()),
+        }
+    )
+    with pytest.raises(ValueError, match="null winner and null ranks"):
+        list(rt._players_and_ranks_from_batch(table, 2))
 
 
 def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
@@ -140,11 +149,13 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
 
     table = pa.table(
         {
+            "termination_status": ["completed", "completed"],
+            "outcome_schema_version": [2, 2],
             "winner_seat": ["P1", "P2"],
             "P1_strategy": ["A", "A"],
             "P2_strategy": ["B", "C"],
-            "P1_rank": pa.array([0, 0], type=pa.int64()),
-            "P2_rank": pa.array([1, 2], type=pa.int64()),
+            "P1_rank": pa.array([1, 2], type=pa.int64()),
+            "P2_rank": pa.array([2, 1], type=pa.int64()),
         }
     )
     row_file = data_dir / "2p_ingested_rows.parquet"
@@ -161,8 +172,16 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
             row_file=str(row_file),
             row_group=1,
             batch_index=0,
-            games_done=7,
+            games_done=0,
             ratings_path=str(ratings_ck),
+            freshness_sha256="a" * 64,
+            attempted_games=1,
+            completed_games=1,
+            excluded_safety_limit_games=0,
+            strategy_attempted_exposures={"A": 1, "C": 0},
+            strategy_completed_exposures={"A": 1, "C": 0},
+            strategy_excluded_safety_limit_exposures={"A": 0, "C": 0},
+            strategy_performed_updates={"A": 0, "C": 0},
         ),
     )
 
@@ -178,13 +197,121 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
         cell_freshness_sha256="a" * 64,
     )
     assert player_count == "2"
-    assert games == 8
+    assert games == 1
 
     ratings = rt._load_ratings_parquet(data_dir / "ratings_2.parquet")
     assert set(ratings) == {"A", "C"}
     assert "B" not in ratings
     assert not (data_dir / "ratings_2.ckpt.json").exists()
     assert not (data_dir / "ratings_2.checkpoint.parquet").exists()
+
+
+def _run_rating_fixture(
+    tmp_path: Path,
+    rows: list[dict[str, object]],
+    *,
+    keepers: tuple[str, ...],
+) -> tuple[dict[str, rt.RatingStats], rt._ShardDoneStamp]:
+    root = tmp_path / "analysis"
+    block = tmp_path / "results" / "2_players"
+    block.mkdir(parents=True)
+    np.save(block / "keepers_2.npy", np.array(keepers))
+    source = tmp_path / "curated" / "by_k" / "2p" / "games.parquet"
+    source.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(rows), source)
+    _player_count, updates = rt._rate_block_worker(
+        str(block),
+        str(root),
+        "_seed11",
+        batch_rows=2,
+        resume=False,
+        checkpoint_every_batches=1,
+        row_data_dir=str(tmp_path / "curated"),
+        curated_rows_name="games.parquet",
+        cell_freshness_sha256="a" * 64,
+        root_seed=11,
+    )
+    rating_path = root / "by_k" / "2p" / "ratings_2_seed11.parquet"
+    stamp = rt._load_done_stamp(root / "by_k" / "2p" / "ratings_2_seed11.done.json")
+    assert stamp is not None
+    assert updates == stamp.performed_update_games
+    return rt._load_ratings_parquet(rating_path), stamp
+
+
+def _completed_row(winner: str) -> dict[str, object]:
+    return {
+        "termination_status": "completed",
+        "outcome_schema_version": 2,
+        "winner_seat": winner,
+        "P1_strategy": "A",
+        "P2_strategy": "B",
+        "P1_rank": 1 if winner == "P1" else 2,
+        "P2_rank": 2 if winner == "P1" else 1,
+    }
+
+
+def test_all_completed_ratings_are_unchanged(tmp_path: Path) -> None:
+    ratings, stamp = _run_rating_fixture(
+        tmp_path,
+        [_completed_row("P1"), _completed_row("P2")],
+        keepers=("A", "B"),
+    )
+    env = trueskill.TrueSkill()
+    expected_a = env.create_rating()
+    expected_b = env.create_rating()
+    for ranks in ([0, 1], [1, 0]):
+        updated = env.rate([[expected_a], [expected_b]], ranks=ranks)
+        expected_a, expected_b = updated[0][0], updated[1][0]
+
+    assert ratings["A"].mu == pytest.approx(expected_a.mu)
+    assert ratings["A"].sigma == pytest.approx(expected_a.sigma)
+    assert ratings["B"].mu == pytest.approx(expected_b.mu)
+    assert ratings["B"].sigma == pytest.approx(expected_b.sigma)
+    assert stamp.attempted_games == stamp.completed_games == 2
+    assert stamp.excluded_safety_limit_games == 0
+    assert stamp.performed_update_games == 2
+
+
+def test_mixed_support_excludes_safety_and_retains_prior_only_strategy(
+    tmp_path: Path,
+) -> None:
+    safety_ac = {
+        "termination_status": "safety_limit",
+        "outcome_schema_version": 2,
+        "winner_seat": None,
+        "P1_strategy": "A",
+        "P2_strategy": "C",
+        "P1_rank": None,
+        "P2_rank": None,
+    }
+    safety_cb = {
+        **safety_ac,
+        "P1_strategy": "C",
+        "P2_strategy": "B",
+    }
+    ratings, stamp = _run_rating_fixture(
+        tmp_path,
+        [_completed_row("P1"), safety_ac, safety_cb, _completed_row("P2")],
+        keepers=("A", "B", "C"),
+    )
+
+    assert (
+        stamp.attempted_games,
+        stamp.completed_games,
+        stamp.excluded_safety_limit_games,
+        stamp.performed_update_games,
+    ) == (4, 2, 2, 2)
+    assert ratings["C"].strategy_attempted_exposures == 2
+    assert ratings["C"].strategy_completed_exposures == 0
+    assert ratings["C"].strategy_excluded_safety_limit_exposures == 2
+    assert ratings["C"].strategy_performed_updates == 0
+    assert ratings["C"].rating_status == "prior_only_unrated"
+    assert ratings["C"].mu == pytest.approx(trueskill.Rating().mu)
+    assert ratings["C"].sigma == pytest.approx(trueskill.Rating().sigma)
+    for stats in ratings.values():
+        assert stats.strategy_attempted_exposures == (
+            stats.strategy_completed_exposures + stats.strategy_excluded_safety_limit_exposures
+        )
 
 
 @pytest.mark.parametrize(
@@ -238,6 +365,8 @@ def test_trueskill_cell_authenticated_reuse_matrix(
     source.parent.mkdir(parents=True)
     games = pa.table(
         {
+            "termination_status": ["completed", "completed"],
+            "outcome_schema_version": [2, 2],
             "winner_seat": ["P1", "P2"],
             "P1_strategy": ["A", "A"],
             "P2_strategy": ["B", "B"],
@@ -339,7 +468,35 @@ def test_trueskill_corruption_cannot_be_blessed_and_missing_sidecar_recovery_is_
     source = tmp_path / "source.parquet"
     rating = tmp_path / "rating.parquet"
     pq.write_table(pa.table({"winner_seat": ["P1"]}), source)
-    pq.write_table(pa.table({"strategy": ["A"], "mu": [25.0], "sigma": [8.0]}), rating)
+    support = {
+        "A": rt.RatingStats(
+            25.0,
+            8.0,
+            1,
+            1,
+            0,
+            1,
+            "evidence_backed_completed_games",
+            1,
+            1,
+            0,
+            1,
+        ),
+        "B": rt.RatingStats(
+            25.0,
+            8.0,
+            1,
+            1,
+            0,
+            1,
+            "evidence_backed_completed_games",
+            1,
+            1,
+            0,
+            1,
+        ),
+    }
+    pq.write_table(rt._ratings_to_table(support), rating)
     cell = ScreeningRatingCell(11, 2, rating, source)
     stamp = rt._ShardDoneStamp(
         shard_key="k=2",
@@ -354,6 +511,10 @@ def test_trueskill_corruption_cannot_be_blessed_and_missing_sidecar_recovery_is_
         parquet_sha256=sha256_file(rating),
         freshness_sha256="c" * 64,
         sidecar_sha256=None,
+        attempted_games=1,
+        completed_games=1,
+        excluded_safety_limit_games=0,
+        performed_update_games=1,
     )
     done = tmp_path / "rating.done.json"
     rt._save_done_stamp(done, stamp)
@@ -377,7 +538,9 @@ def test_trueskill_corruption_cannot_be_blessed_and_missing_sidecar_recovery_is_
     )
     assert recovered.sidecar_sha256 == expected_sidecar
 
-    pq.write_table(pa.table({"strategy": ["A"], "mu": [99.0], "sigma": [1.0]}), rating)
+    support["A"].mu = 99.0
+    support["A"].sigma = 1.0
+    pq.write_table(rt._ratings_to_table(support), rating)
     sidecar_path(rating).unlink(missing_ok=True)
     publish_rating_cell_contract(
         cfg,

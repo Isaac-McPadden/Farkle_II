@@ -62,6 +62,8 @@ head2head:
   delta_equivalence: null
   candidate_cap: null
   candidate_cap_policy:
+  min_candidate_completion_rate:
+  max_attempt_multiplier:
   total_game_cap:
   allow_single_root:
 

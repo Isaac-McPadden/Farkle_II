@@ -12,11 +12,13 @@ import pytest
 
 from farkle.analysis.dominance import build_dominance_outputs
 from farkle.analysis.h2h_inference import run_h2h_inference
-from farkle.analysis.h2h_schedule import SCORE_TEST_ID
+from farkle.analysis.h2h_schedule import H2H_METHOD_VERSION, SCORE_TEST_ID
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
+from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
+from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
@@ -54,6 +56,13 @@ def _decision_row(
         "holm_reject": directed,
         "practical_delta": 0.03,
         "decision_class": decision,
+        "pair_claim_eligible": True,
+        "strategy_a_completion_rate": 1.0,
+        "strategy_b_completion_rate": 1.0,
+        "strategy_a_operationally_viable": True,
+        "strategy_b_operationally_viable": True,
+        "strategy_a_inferentially_viable": True,
+        "strategy_b_inferentially_viable": True,
     }
 
 
@@ -152,6 +161,8 @@ def _publish_execution_inputs(
                 rows.append(
                     {
                         "family_hash": "c" * 64,
+                        "schedule_hash": "d" * 64,
+                        "block_id": f"block-{pair_id}-{root_seed}-{order}",
                         "pair_id": pair_id,
                         "strategy_a": strategy_a,
                         "strategy_b": strategy_b,
@@ -159,10 +170,25 @@ def _publish_execution_inputs(
                         "root_index": root_index,
                         "order": order,
                         "order_label": "a_b" if order == 0 else "b_a",
-                        "games_required": games,
+                        "seat1_strategy": strategy_a if order == 0 else strategy_b,
+                        "seat2_strategy": strategy_b if order == 0 else strategy_a,
+                        "n_completed_required": games,
+                        "max_attempts": 2 * games,
+                        "games_attempted": games,
                         "games_completed": games,
+                        "games_safety_limit": 0,
+                        "replacement_attempt_count": 0,
+                        "completion_status": "complete",
+                        "completion_game_rate": 1.0,
+                        "safety_limit_game_rate": 0.0,
                         "wins_seat1": wins_seat1,
                         "wins_seat2": games - wins_seat1,
+                        "wins_a": (wins_seat1 if order == 0 else games - wins_seat1),
+                        "wins_b": (games - wins_seat1 if order == 0 else wins_seat1),
+                        "rng_scheme_version": RNG_SCHEME_VERSION,
+                        "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
+                        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                        "h2h_method_version": H2H_METHOD_VERSION,
                         "score_test_id": SCORE_TEST_ID,
                     }
                 )
@@ -187,6 +213,47 @@ def _publish_execution_inputs(
         counts_path,
         sidecar=counts_sidecar,
     )
+    schedule_columns = [
+        "family_hash",
+        "schedule_hash",
+        "block_id",
+        "pair_id",
+        "strategy_a",
+        "strategy_b",
+        "root_seed",
+        "root_index",
+        "order",
+        "order_label",
+        "seat1_strategy",
+        "seat2_strategy",
+        "n_completed_required",
+        "max_attempts",
+        "rng_scheme_version",
+        "rng_purpose_namespace",
+        "outcome_schema_version",
+        "h2h_method_version",
+        "score_test_id",
+    ]
+    schedule = counts[schedule_columns].copy()
+    schedule_path = cfg.h2h_block_manifest_path()
+    schedule_sidecar = make_artifact_sidecar(
+        cfg,
+        schedule_path,
+        producer="test",
+        scope=ArtifactScope.H2H_2P,
+        source_scope=ArtifactScope.H2H_2P,
+        operation="construct_pair_root_order_blocks",
+        consistency_columns=schedule.columns.tolist(),
+        player_counts=[2],
+        required_player_counts=[2],
+        missing_cell_policy="fail",
+        seed_scope="both_roots_combined",
+    )
+    write_parquet_artifact_atomic(
+        pa.Table.from_pandas(schedule, preserve_index=False),
+        schedule_path,
+        sidecar=schedule_sidecar,
+    )
     plan = {
         "family_hash": "c" * 64,
         "schedule_hash": "d" * 64,
@@ -195,6 +262,13 @@ def _publish_execution_inputs(
         "root_seeds": roots,
         "unordered_pair_count": len(pairs),
         "total_block_count": len(rows),
+        "n_completed_required_per_root_order_block": games,
+        "max_attempts_per_root_order_block": 2 * games,
+        "max_attempt_multiplier": 2.0,
+        "min_candidate_completion_rate": 0.99,
+        "h2h_method_version": H2H_METHOD_VERSION,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+        "rng_scheme_version": RNG_SCHEME_VERSION,
         "target_power": 0.80,
         "worst_scenario_achieved_power": 0.81,
     }

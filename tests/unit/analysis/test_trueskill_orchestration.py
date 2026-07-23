@@ -38,6 +38,18 @@ def _write_rating_cell(context: SeedRunContext, k: int, *, valid_sidecar: bool =
                 "strategy": ["A", "B"],
                 "mu": [30.0 + context.seed / 100 + k / 1000, 20.0],
                 "sigma": [2.0, 3.0],
+                "strategy_attempted_exposures": [1, 1],
+                "strategy_completed_exposures": [1, 1],
+                "strategy_excluded_safety_limit_exposures": [0, 0],
+                "strategy_performed_updates": [1, 1],
+                "rating_status": [
+                    "evidence_backed_completed_games",
+                    "evidence_backed_completed_games",
+                ],
+                "cell_games_attempted": [1, 1],
+                "cell_games_completed": [1, 1],
+                "cell_games_excluded_safety_limit": [0, 0],
+                "cell_performed_updates": [1, 1],
             }
         ),
         path,

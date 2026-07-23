@@ -23,13 +23,15 @@ from farkle.analysis.h2h_inference import (
     score_difference_interval,
     two_proportion_score_test,
 )
-from farkle.analysis.h2h_schedule import SCORE_TEST_ID
+from farkle.analysis.h2h_schedule import H2H_METHOD_VERSION, SCORE_TEST_ID
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
 )
+from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
+from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
 
 
 def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
@@ -49,6 +51,8 @@ def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
 def _publish_inputs(
     cfg: AppConfig,
     pairs: list[tuple[str, str, int, int, int]],
+    *,
+    cell_overrides: dict[tuple[int, int, int], dict[str, object]] | None = None,
 ) -> None:
     """Publish pairs as (A, B, games/order/root, x_ab/root, x_ba/root)."""
 
@@ -58,23 +62,48 @@ def _publish_inputs(
     for pair_id, (strategy_a, strategy_b, games, x_ab, x_ba) in enumerate(pairs):
         for root_index, root_seed in enumerate(roots):
             for order, wins_seat1 in ((0, x_ab), (1, x_ba)):
-                rows.append(
-                    {
-                        "family_hash": family_hash,
-                        "pair_id": pair_id,
-                        "strategy_a": strategy_a,
-                        "strategy_b": strategy_b,
-                        "root_seed": root_seed,
-                        "root_index": root_index,
-                        "order": order,
-                        "order_label": "a_b" if order == 0 else "b_a",
-                        "games_required": games,
-                        "games_completed": games,
-                        "wins_seat1": wins_seat1,
-                        "wins_seat2": games - wins_seat1,
-                        "score_test_id": SCORE_TEST_ID,
-                    }
-                )
+                row: dict[str, object] = {
+                    "family_hash": family_hash,
+                    "schedule_hash": "c" * 64,
+                    "block_id": f"block-{pair_id}-{root_seed}-{order}",
+                    "pair_id": pair_id,
+                    "strategy_a": strategy_a,
+                    "strategy_b": strategy_b,
+                    "root_seed": root_seed,
+                    "root_index": root_index,
+                    "order": order,
+                    "order_label": "a_b" if order == 0 else "b_a",
+                    "seat1_strategy": strategy_a if order == 0 else strategy_b,
+                    "seat2_strategy": strategy_b if order == 0 else strategy_a,
+                    "n_completed_required": games,
+                    "max_attempts": 2 * games,
+                    "games_attempted": games,
+                    "games_completed": games,
+                    "games_safety_limit": 0,
+                    "replacement_attempt_count": 0,
+                    "completion_status": "complete",
+                    "completion_game_rate": 1.0,
+                    "safety_limit_game_rate": 0.0,
+                    "wins_seat1": wins_seat1,
+                    "wins_seat2": games - wins_seat1,
+                    "rng_scheme_version": RNG_SCHEME_VERSION,
+                    "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
+                    "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                    "h2h_method_version": H2H_METHOD_VERSION,
+                    "score_test_id": SCORE_TEST_ID,
+                }
+                if cell_overrides is not None:
+                    row.update(cell_overrides.get((pair_id, int(root_seed), order), {}))
+                attempted = int(row["games_attempted"])
+                completed = int(row["games_completed"])
+                safety = int(row["games_safety_limit"])
+                seat1_wins = int(row["wins_seat1"])
+                seat2_wins = int(row["wins_seat2"])
+                row["wins_a"] = seat1_wins if order == 0 else seat2_wins
+                row["wins_b"] = seat2_wins if order == 0 else seat1_wins
+                row["completion_game_rate"] = completed / attempted if attempted else None
+                row["safety_limit_game_rate"] = safety / attempted if attempted else None
+                rows.append(row)
     counts = pd.DataFrame(rows)
     counts_path = cfg.h2h_order_counts_path()
     counts_table = pa.Table.from_pandas(counts, preserve_index=False)
@@ -93,6 +122,47 @@ def _publish_inputs(
         seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
     )
     write_parquet_artifact_atomic(counts_table, counts_path, sidecar=counts_sidecar)
+    schedule_columns = [
+        "family_hash",
+        "schedule_hash",
+        "block_id",
+        "pair_id",
+        "strategy_a",
+        "strategy_b",
+        "root_seed",
+        "root_index",
+        "order",
+        "order_label",
+        "seat1_strategy",
+        "seat2_strategy",
+        "n_completed_required",
+        "max_attempts",
+        "rng_scheme_version",
+        "rng_purpose_namespace",
+        "outcome_schema_version",
+        "h2h_method_version",
+        "score_test_id",
+    ]
+    schedule = counts[schedule_columns].copy()
+    schedule_path = cfg.h2h_block_manifest_path()
+    schedule_sidecar = make_artifact_sidecar(
+        cfg,
+        schedule_path,
+        producer="test",
+        scope=ArtifactScope.H2H_2P,
+        source_scope=ArtifactScope.H2H_2P,
+        operation="construct_pair_root_order_blocks",
+        consistency_columns=schedule.columns.tolist(),
+        player_counts=[2],
+        required_player_counts=[2],
+        missing_cell_policy="fail",
+        seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
+    )
+    write_parquet_artifact_atomic(
+        pa.Table.from_pandas(schedule, preserve_index=False),
+        schedule_path,
+        sidecar=schedule_sidecar,
+    )
 
     plan = {
         "family_hash": family_hash,
@@ -102,6 +172,13 @@ def _publish_inputs(
         "root_seeds": roots,
         "unordered_pair_count": len(pairs),
         "total_block_count": len(rows),
+        "n_completed_required_per_root_order_block": pairs[0][2],
+        "max_attempts_per_root_order_block": 2 * pairs[0][2],
+        "max_attempt_multiplier": 2.0,
+        "min_candidate_completion_rate": cfg.head2head.min_candidate_completion_rate,
+        "h2h_method_version": H2H_METHOD_VERSION,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+        "rng_scheme_version": RNG_SCHEME_VERSION,
         "target_power": 0.80,
         "worst_scenario_achieved_power": 0.81,
     }
@@ -127,6 +204,10 @@ def _publish_inputs(
         "execution_state": "complete_valid",
         "completed_block_count": len(rows),
         "total_block_count": len(rows),
+        "games_attempted": int(counts["games_attempted"].sum()),
+        "games_completed": int(counts["games_completed"].sum()),
+        "games_safety_limit": int(counts["games_safety_limit"].sum()),
+        "replacement_attempt_count": int(counts["replacement_attempt_count"].sum()),
     }
     state_path = cfg.h2h_execution_state_path()
     state_sidecar = make_artifact_sidecar(
@@ -301,7 +382,7 @@ def test_seat_adjusted_inference_holm_and_decision_classes(tmp_path: Path) -> No
     assert len(combined) == 6
     assert combined["root_count"].eq(2).all()
     first_ab = combined.loc[(combined["pair_id"] == 0) & (combined["order"] == 0)].iloc[0]
-    assert first_ab["games"] == 10_000
+    assert first_ab["games_completed"] == 10_000
     assert first_ab["wins_seat1"] == 6_000
 
     inference = pq.read_table(artifacts.pairwise_inference).to_pandas().set_index("pair_id")
@@ -406,6 +487,153 @@ def test_equivalence_requires_explicit_margin(tmp_path: Path) -> None:
     assert inference["simultaneous_d_high"] < 0.02
 
 
+def test_mixed_completed_and_safety_attempts_use_completed_score_counts_and_actual_a_wins(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    overrides = {
+        (0, root, order): {
+            "games_attempted": 101,
+            "games_completed": 100,
+            "games_safety_limit": 1,
+            "replacement_attempt_count": 1,
+            "completion_status": "complete",
+        }
+        for root in (11, 22)
+        for order in (0, 1)
+    }
+    _publish_inputs(
+        cfg,
+        [("1", "2", 100, 60, 40)],
+        cell_overrides=overrides,
+    )
+
+    artifacts = run_h2h_inference(cfg)
+    inference = pq.read_table(artifacts.pairwise_inference).to_pandas().iloc[0]
+
+    assert inference["games_attempted"] == 404
+    assert inference["games_completed"] == 400
+    assert inference["games_safety_limit"] == 4
+    assert inference["replacement_attempt_count"] == 4
+    assert inference["q_ab"] == pytest.approx(0.60)
+    assert inference["q_ba"] == pytest.approx(0.40)
+    assert inference["balanced_a_wins"] == 240
+    assert inference["seat2_a_wins_ba"] == 120
+    assert inference["balanced_a_win_rate_alias"] == pytest.approx(0.60)
+    assert bool(inference["pair_inferentially_viable"])
+    assert bool(inference["pair_operationally_viable"])
+
+
+def test_zero_completed_pair_is_no_test_and_never_equivalent(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.head2head.delta_equivalence = 0.20
+    overrides = {
+        (0, root, order): {
+            "games_attempted": 200,
+            "games_completed": 0,
+            "games_safety_limit": 200,
+            "replacement_attempt_count": 100,
+            "completion_status": "unresolved_nonviable",
+            "wins_seat1": 0,
+            "wins_seat2": 0,
+        }
+        for root in (11, 22)
+        for order in (0, 1)
+    }
+    _publish_inputs(
+        cfg,
+        [("1", "2", 100, 0, 0)],
+        cell_overrides=overrides,
+    )
+
+    artifacts = run_h2h_inference(cfg)
+    inference = pq.read_table(artifacts.pairwise_inference).to_pandas().iloc[0]
+
+    assert inference["completion_status"] == "unresolved_nonviable"
+    assert not bool(inference["formal_test_performed"])
+    assert pd.isna(inference["q_ab"])
+    assert pd.isna(inference["q_ba"])
+    assert pd.isna(inference["d_ab"])
+    assert pd.isna(inference["score_p_value"])
+    assert pd.isna(inference["holm_adjusted_p"])
+    assert not bool(inference["holm_reject"])
+    assert inference["decision_class"] == "unresolved_nonviable"
+    assert not bool(inference["strategy_a_operationally_viable"])
+    assert not bool(inference["strategy_b_operationally_viable"])
+    assert bool(inference["multiplicity_family_member"])
+    assert inference["no_test_p_value_convention"] == "null_reported_treated_as_one_for_holm"
+
+
+def test_below_threshold_candidate_retains_valid_pair_estimate_but_gets_no_claim(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.head2head.delta_equivalence = 0.20
+    overrides = {
+        (0, root, order): {
+            "games_attempted": 102,
+            "games_completed": 100,
+            "games_safety_limit": 2,
+            "replacement_attempt_count": 2,
+            "completion_status": "complete",
+        }
+        for root in (11, 22)
+        for order in (0, 1)
+    }
+    _publish_inputs(
+        cfg,
+        [("1", "2", 100, 50, 50)],
+        cell_overrides=overrides,
+    )
+
+    artifacts = run_h2h_inference(cfg)
+    inference = pq.read_table(artifacts.pairwise_inference).to_pandas().iloc[0]
+
+    assert bool(inference["formal_test_performed"])
+    assert inference["score_p_value"] == pytest.approx(1.0)
+    assert inference["d_ab"] == pytest.approx(0.0)
+    assert not bool(inference["pair_operationally_viable"])
+    assert not bool(inference["pair_claim_eligible"])
+    assert inference["decision_class"] == "unresolved_nonviable"
+
+
+def test_no_test_pair_retains_frozen_holm_family_size(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    overrides = {
+        (1, root, order): {
+            "games_attempted": 200,
+            "games_completed": 0,
+            "games_safety_limit": 200,
+            "replacement_attempt_count": 100,
+            "completion_status": "unresolved_nonviable",
+            "wins_seat1": 0,
+            "wins_seat2": 0,
+        }
+        for root in (11, 22)
+        for order in (0, 1)
+    }
+    _publish_inputs(
+        cfg,
+        [
+            ("1", "2", 100, 80, 20),
+            ("1", "3", 100, 0, 0),
+            ("2", "3", 100, 50, 50),
+        ],
+        cell_overrides=overrides,
+    )
+
+    artifacts = run_h2h_inference(cfg)
+    inference = pq.read_table(artifacts.pairwise_inference).to_pandas().set_index("pair_id")
+
+    assert pd.isna(inference.loc[1, "score_p_value"])
+    assert pd.isna(inference.loc[1, "holm_adjusted_p"])
+    assert not bool(inference.loc[1, "formal_test_performed"])
+    assert inference.loc[0, "holm_adjusted_p"] == pytest.approx(
+        min(1.0, 3.0 * inference.loc[0, "score_p_value"])
+    )
+    assert inference["multiplicity_family_member"].all()
+
+
 def test_statistical_contract_rejects_invalid_equivalence_margin(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     cfg.head2head.delta_equivalence = 0.0
@@ -414,15 +642,15 @@ def test_statistical_contract_rejects_invalid_equivalence_margin(tmp_path: Path)
         cfg.validate_statistical_contract(require_two_roots=True)
 
 
-def test_inference_rejects_unbalanced_order_allocation(tmp_path: Path) -> None:
+def test_inference_rejects_counts_that_do_not_authenticate_frozen_schedule(
+    tmp_path: Path,
+) -> None:
     cfg = _cfg(tmp_path)
     _publish_inputs(cfg, [("1", "2", 5_000, 2_600, 2_400)])
     counts_path = cfg.h2h_order_counts_path()
     counts = pq.read_table(counts_path).to_pandas()
     mask = (counts["root_seed"] == 22) & (counts["order"] == 1)
-    counts.loc[mask, "games_required"] = 4_999
-    counts.loc[mask, "games_completed"] = 4_999
-    counts.loc[mask, "wins_seat2"] = 2_599
+    counts.loc[mask, "n_completed_required"] = 4_999
     table = pa.Table.from_pandas(counts, preserve_index=False)
     sidecar = make_artifact_sidecar(
         cfg,
@@ -440,5 +668,5 @@ def test_inference_rejects_unbalanced_order_allocation(tmp_path: Path) -> None:
     )
     write_parquet_artifact_atomic(table, counts_path, sidecar=sidecar)
 
-    with pytest.raises(ValueError, match="not exactly balanced"):
+    with pytest.raises(ValueError, match="frozen schedule column n_completed_required"):
         run_h2h_inference(cfg)

@@ -35,6 +35,11 @@ Preserve these invariants:
   separately authenticated `run_context.json`;
 - the H2H power plan is immutable after publication and execution progress is
   a separate resumable artifact;
+- H2H targets completed games per pair/root/order, retains safety-limit attempts
+  outside score-test counts, resumes deterministic contiguous replacements up
+  to the frozen 2.0x attempt cap, keeps no-test pairs in the multiplicity family,
+  and evaluates the frozen candidates against the 0.99 incident-attempt
+  completion threshold without shrinking the family;
 - transient artifact I/O uses bounded, provider-neutral retries, and completed
   H2H execution can finalize a missing stamp without replaying block data.
 

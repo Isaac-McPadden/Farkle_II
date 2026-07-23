@@ -161,7 +161,12 @@ def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     assert "execution_state" not in plan
     assert "completed_block_count" not in plan
     assert plan["alpha_per_pair"] == pytest.approx(0.02 / 3)
-    assert plan["games_per_pair"] % 4 == 0
+    assert plan["n_completed_required_per_pair"] % 4 == 0
+    assert plan["max_attempt_multiplier"] == 2.0
+    assert plan["min_candidate_completion_rate"] == 0.99
+    assert plan["max_attempts_per_root_order_block"] == math.ceil(
+        2.0 * plan["n_completed_required_per_root_order_block"]
+    )
     assert plan["worst_scenario_achieved_power"] >= 0.80
     assert plan["previous_equal_block_size_worst_power"] < 0.80
     target_rows = [
@@ -174,12 +179,12 @@ def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     assert len(schedule) == 3 * 2 * 2
     assert set(schedule["root_seed"]) == {11, 22}
     assert set(schedule["order"]) == {0, 1}
-    assert schedule.groupby("pair_id")["games_required"].nunique().eq(1).all()
+    assert schedule.groupby("pair_id")["n_completed_required"].nunique().eq(1).all()
     assert schedule["block_id"].is_unique
     assert set(schedule["schedule_hash"]) == {plan["schedule_hash"]}
     first_pair = schedule.loc[schedule["pair_id"].eq(0)]
     assert len(first_pair) == 4
-    assert first_pair["games_required"].sum() == plan["games_per_pair"]
+    assert first_pair["n_completed_required"].sum() == plan["n_completed_required_per_pair"]
 
     first = schedule.sort_values(["root_seed", "order"]).iloc[0]
     order_seed = coordinate_seed(
@@ -223,11 +228,11 @@ def test_power_plan_stops_before_schedule_when_cap_is_too_small(tmp_path: Path) 
     assert artifacts.execution_blocked is True
     assert artifacts.block_manifest is None
     assert not cfg.h2h_block_manifest_path().exists()
-    assert plan["projected_total_games"] > 1
+    assert plan["maximum_total_attempts"] > 1
     assert plan["execution_authorization"] == "blocked_by_cap"
     assert "head2head.total_game_cap" in plan["cap_guidance"]
 
-    cfg.head2head.total_game_cap = plan["projected_total_games"]
+    cfg.head2head.total_game_cap = plan["maximum_total_attempts"]
     resumed = plan_h2h_schedule(cfg)
     assert resumed.planning_state is CompletionState.COMPLETE_VALID
     assert resumed.execution_blocked is False
@@ -247,7 +252,7 @@ def test_single_root_plan_is_explicit_and_even_by_order(tmp_path: Path) -> None:
     schedule = pq.read_table(block_manifest).to_pandas()
 
     assert plan["single_root_execution"] is True
-    assert plan["games_per_pair"] % 2 == 0
+    assert plan["n_completed_required_per_pair"] % 2 == 0
     assert len(schedule) == 3 * 2
     assert set(schedule["root_seed"]) == {11}
     validate_artifact_sidecar(
@@ -286,6 +291,28 @@ def test_statistical_contract_locks_h2h_planning_scenarios(
         cfg.validate_statistical_contract(require_two_roots=True)
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("max_attempt_multiplier", 0.99, "max_attempt_multiplier"),
+        ("max_attempt_multiplier", math.inf, "max_attempt_multiplier"),
+        ("min_candidate_completion_rate", -0.01, "min_candidate_completion_rate"),
+        ("min_candidate_completion_rate", 1.01, "min_candidate_completion_rate"),
+    ],
+)
+def test_statistical_contract_validates_h2h_noncompletion_policy(
+    tmp_path: Path,
+    field: str,
+    value: float,
+    message: str,
+) -> None:
+    cfg = _cfg(tmp_path)
+    setattr(cfg.head2head, field, value)
+
+    with pytest.raises(ValueError, match=message):
+        cfg.validate_statistical_contract(require_two_roots=True)
+
+
 def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=("1", "2"))
@@ -301,7 +328,7 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
         calls.append(str(block["block_id"]))
         state = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
         completed_counts_seen_by_runner.append(int(state["completed_block_count"]))
-        games = int(block["games_required"])
+        games = int(block["n_completed_required"])
         return {
             **block,
             "games_completed": games,
@@ -315,7 +342,11 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     assert completed_counts_seen_by_runner == [0, 1, 2, 3]
     counts = pq.read_table(completed.order_counts).to_pandas()
     assert len(counts) == 4
-    assert (counts["games_completed"] == counts["games_required"]).all()
+    assert (counts["games_completed"] == counts["n_completed_required"]).all()
+    assert (counts["games_attempted"] == counts["games_completed"]).all()
+    assert counts["games_safety_limit"].eq(0).all()
+    assert counts["replacement_attempt_count"].eq(0).all()
+    assert counts["completion_status"].eq("complete").all()
     assert all(path.exists() for path in completed.block_paths)
     state_payload = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
     assert state_payload["execution_state"] == CompletionState.COMPLETE_VALID.value
@@ -336,6 +367,209 @@ def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: 
     )
 
 
+def test_resume_during_replacements_starts_at_smallest_unauthenticated_attempt(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    _write_frozen_family(cfg, strategies=("1", "2"))
+    plan_h2h_schedule(cfg)
+    manifest_path = cfg.strategy_manifest_root_path()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+    calls = 0
+
+    def interrupt_after_initial_attempts(
+        block: dict[str, Any], _manifest: Path, _chunk: int
+    ) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        target = int(block["n_completed_required"])
+        if calls == 1:
+            return {
+                **block,
+                "games_attempted": target,
+                "games_completed": target - 1,
+                "games_safety_limit": 1,
+                "wins_seat1": target - 1,
+                "wins_seat2": 0,
+                "replacement_attempt_count": 0,
+                "completion_status": CompletionState.PARTIAL_RESUMABLE.value,
+            }
+        raise RuntimeError("intentional replacement interruption")
+
+    with pytest.raises(RuntimeError, match="replacement interruption"):
+        execute_h2h_schedule(
+            cfg,
+            n_jobs=1,
+            block_runner=interrupt_after_initial_attempts,
+        )
+
+    first_block = sorted(cfg.h2h_block_results_dir().glob("*.parquet"))[0]
+    checkpoint = pq.read_table(first_block).to_pandas().iloc[0]
+    target = int(checkpoint["n_completed_required"])
+    assert checkpoint["games_attempted"] == target
+    assert checkpoint["games_completed"] == target - 1
+    assert checkpoint["authenticated_attempt_index_stop_exclusive"] == target
+    assert checkpoint["completion_status"] == CompletionState.PARTIAL_RESUMABLE.value
+
+    resumed_coordinates: list[int] = []
+
+    def finish_from_checkpoint(
+        block: dict[str, Any], _manifest: Path, _chunk: int
+    ) -> dict[str, Any]:
+        target = int(block["n_completed_required"])
+        attempted = int(block.get("games_attempted", 0))
+        if attempted:
+            resumed_coordinates.append(attempted)
+            assert attempted == target
+            return {
+                **block,
+                "games_attempted": target + 1,
+                "games_completed": target,
+                "games_safety_limit": 1,
+                "wins_seat1": int(block["wins_seat1"]) + 1,
+                "wins_seat2": int(block["wins_seat2"]),
+                "replacement_attempt_count": 1,
+                "completion_status": "complete",
+            }
+        return {
+            **block,
+            "games_attempted": target,
+            "games_completed": target,
+            "games_safety_limit": 0,
+            "wins_seat1": target,
+            "wins_seat2": 0,
+            "replacement_attempt_count": 0,
+            "completion_status": "complete",
+        }
+
+    completed = execute_h2h_schedule(cfg, n_jobs=1, block_runner=finish_from_checkpoint)
+    counts = pq.read_table(completed.order_counts).to_pandas()
+
+    assert resumed_coordinates == [target]
+    replaced = counts.loc[counts["replacement_attempt_count"].eq(1)]
+    assert len(replaced) == 1
+    assert replaced.iloc[0]["games_attempted"] == target + 1
+    assert replaced.iloc[0]["games_completed"] == target
+    assert replaced.iloc[0]["games_safety_limit"] == 1
+
+
+def test_always_noncompleted_blocks_stop_at_frozen_attempt_cap(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_frozen_family(cfg, strategies=("1", "2"))
+    plan_h2h_schedule(cfg)
+    manifest_path = cfg.strategy_manifest_root_path()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+    calls = 0
+
+    def always_safety_limit(block: dict[str, Any], _manifest: Path, _chunk: int) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        cap = int(block["max_attempts"])
+        target = int(block["n_completed_required"])
+        return {
+            **block,
+            "games_attempted": cap,
+            "games_completed": 0,
+            "games_safety_limit": cap,
+            "wins_seat1": 0,
+            "wins_seat2": 0,
+            "replacement_attempt_count": cap - target,
+            "completion_status": "unresolved_nonviable",
+        }
+
+    artifacts = execute_h2h_schedule(
+        cfg,
+        n_jobs=1,
+        block_runner=always_safety_limit,
+    )
+    counts = pq.read_table(artifacts.order_counts).to_pandas()
+    state = json.loads(artifacts.execution_state.read_text(encoding="utf-8"))
+
+    assert calls == len(counts) == 4
+    assert counts["completion_status"].eq("unresolved_nonviable").all()
+    assert (counts["games_attempted"] == counts["max_attempts"]).all()
+    assert counts["games_completed"].eq(0).all()
+    assert (
+        counts["replacement_attempt_count"]
+        == counts["max_attempts"] - counts["n_completed_required"]
+    ).all()
+    assert state["unresolved_block_count"] == 4
+    assert state["substantive_status"] == "unresolved_nonviable"
+
+
+def test_engine_block_oracle_excludes_safety_attempt_and_uses_replacement_coordinate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    outcomes = {
+        0: {"termination_status": "safety_limit", "winner_seat": None},
+        1: {"termination_status": "completed", "winner_seat": "P1"},
+        2: {"termination_status": "completed", "winner_seat": "P2"},
+    }
+    observed_attempts: list[int] = []
+
+    monkeypatch.setattr(h2h_schedule_module.pd, "read_parquet", lambda _path: pd.DataFrame())
+    monkeypatch.setattr(
+        h2h_schedule_module,
+        "parse_strategy_identifier",
+        lambda value, *, manifest: value,
+    )
+
+    def fake_play_game(
+        _seed: int,
+        _strategies: list[object],
+        *,
+        provenance: dict[str, Any],
+        player_rng_coordinates: object,
+    ) -> dict[str, object]:
+        del player_rng_coordinates
+        attempt = int(provenance["attempt_index"])
+        observed_attempts.append(attempt)
+        return outcomes[attempt]
+
+    monkeypatch.setattr(h2h_schedule_module, "_play_game", fake_play_game)
+    block = {
+        "family_hash": "a" * 64,
+        "schedule_hash": "b" * 64,
+        "block_id": "block",
+        "pair_id": 0,
+        "strategy_a": "1",
+        "strategy_b": "2",
+        "root_seed": 11,
+        "root_index": 0,
+        "order": 0,
+        "order_label": "a_b",
+        "seat1_strategy": "1",
+        "seat2_strategy": "2",
+        "n_completed_required": 2,
+        "max_attempts": 4,
+        "max_attempt_multiplier": 2.0,
+        "rng_scheme_version": 2,
+        "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
+        "outcome_schema_version": 2,
+        "h2h_method_version": 2,
+        "score_test_id": SCORE_TEST_ID,
+    }
+
+    partial = h2h_schedule_module._simulate_block(block, Path("unused"), 2)
+    completed = h2h_schedule_module._simulate_block(partial, Path("unused"), 2)
+
+    assert observed_attempts == [0, 1, 2]
+    assert partial["games_attempted"] == 2
+    assert partial["games_completed"] == 1
+    assert partial["games_safety_limit"] == 1
+    assert partial["completion_status"] == CompletionState.PARTIAL_RESUMABLE.value
+    assert completed["games_attempted"] == 3
+    assert completed["games_completed"] == 2
+    assert completed["games_safety_limit"] == 1
+    assert completed["wins_seat1"] == 1
+    assert completed["wins_seat2"] == 1
+    assert completed["replacement_attempt_count"] == 1
+    assert completed["authenticated_attempt_index_stop_exclusive"] == 3
+    assert completed["completion_status"] == "complete"
+
+
 def test_large_h2h_execution_throttles_execution_state_rewrites(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=tuple(str(value) for value in range(8)))
@@ -348,7 +582,7 @@ def test_large_h2h_execution_throttles_execution_state_rewrites(tmp_path: Path) 
     def fake_runner(block: dict[str, Any], _manifest: Path, _chunk: int) -> dict[str, Any]:
         state = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
         completed_counts_seen_by_runner.append(int(state["completed_block_count"]))
-        games = int(block["games_required"])
+        games = int(block["n_completed_required"])
         return {
             **block,
             "games_completed": games,
@@ -381,9 +615,10 @@ def test_complete_execution_without_stamp_fast_finalizes(
         n_jobs=1,
         block_runner=lambda block, _manifest, _chunk: {
             **block,
-            "games_completed": int(block["games_required"]),
-            "wins_seat1": int(block["games_required"]) // 2,
-            "wins_seat2": int(block["games_required"]) - int(block["games_required"]) // 2,
+            "games_completed": int(block["n_completed_required"]),
+            "wins_seat1": int(block["n_completed_required"]) // 2,
+            "wins_seat2": int(block["n_completed_required"])
+            - int(block["n_completed_required"]) // 2,
         },
     )
     done = cfg.stage_dir("h2h_execute") / "h2h_execute.done.json"

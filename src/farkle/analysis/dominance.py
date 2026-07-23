@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, cast
@@ -30,6 +31,7 @@ _ALLOWED_DECISIONS: Final = {
     "statistical_only_advantage_b",
     "equivalent",
     "unresolved",
+    "unresolved_nonviable",
 }
 _SCREENING_SCORE_OPERATIONS: Final = {"equal_k_mean", "declared_k_weighted_mean"}
 
@@ -165,6 +167,13 @@ def _read_inference(cfg: AppConfig) -> pd.DataFrame:
         "holm_reject",
         "practical_delta",
         "decision_class",
+        "pair_claim_eligible",
+        "strategy_a_completion_rate",
+        "strategy_b_completion_rate",
+        "strategy_a_operationally_viable",
+        "strategy_b_operationally_viable",
+        "strategy_a_inferentially_viable",
+        "strategy_b_inferentially_viable",
     }
     schema = pq.read_schema(path)
     missing = sorted(required.difference(schema.names))
@@ -273,7 +282,7 @@ def _edge_frames(
         decision = str(raw["decision_class"])
         strategy_a = str(raw["strategy_a"])
         strategy_b = str(raw["strategy_b"])
-        directed = decision not in {"unresolved", "equivalent"}
+        directed = decision.endswith("_a") or decision.endswith("_b")
         if bool(raw["holm_reject"]) != directed:
             raise ValueError("Holm decisions and directional decision classes disagree")
         if decision.endswith("_a"):
@@ -346,12 +355,31 @@ def _descriptive_scores(
     tournament_scores: dict[str, float],
 ) -> pd.DataFrame:
     rates: dict[str, list[float]] = {node: [] for node in nodes}
+    completion_rates: dict[str, float] = {}
+    operational: dict[str, bool] = {}
+    inferential: dict[str, bool] = {}
     for raw in cast(list[dict[str, Any]], frame.to_dict(orient="records")):
         strategy_a = str(raw["strategy_a"])
         strategy_b = str(raw["strategy_b"])
-        a_rate = float(raw["balanced_a_win_rate_alias"])
-        rates[strategy_a].append(a_rate)
-        rates[strategy_b].append(1.0 - a_rate)
+        if pd.notna(raw["balanced_a_win_rate_alias"]):
+            a_rate = float(raw["balanced_a_win_rate_alias"])
+            rates[strategy_a].append(a_rate)
+            rates[strategy_b].append(1.0 - a_rate)
+        for strategy, prefix in ((strategy_a, "strategy_a"), (strategy_b, "strategy_b")):
+            rate = float(raw[f"{prefix}_completion_rate"])
+            viable = bool(raw[f"{prefix}_operationally_viable"])
+            inference_viable = bool(raw[f"{prefix}_inferentially_viable"])
+            if strategy in completion_rates and not math.isclose(
+                completion_rates[strategy], rate, rel_tol=0.0, abs_tol=1e-15
+            ):
+                raise ValueError("candidate completion rate varies between H2H comparisons")
+            if strategy in operational and operational[strategy] != viable:
+                raise ValueError("candidate operational viability varies between comparisons")
+            if strategy in inferential and inferential[strategy] != inference_viable:
+                raise ValueError("candidate inferential viability varies between comparisons")
+            completion_rates[strategy] = rate
+            operational[strategy] = viable
+            inferential[strategy] = inference_viable
     rows: list[dict[str, Any]] = []
     opponent_count = len(nodes) - 1
     for strategy in sorted(nodes):
@@ -362,7 +390,15 @@ def _descriptive_scores(
         rows.append(
             {
                 "strategy": strategy,
-                "round_robin_mean_win_rate": sum(rates[strategy]) / opponent_count,
+                "round_robin_mean_win_rate": (
+                    sum(rates[strategy]) / len(rates[strategy]) if rates[strategy] else None
+                ),
+                "completed_pair_estimate_count": len(rates[strategy]),
+                "planned_opponent_count": opponent_count,
+                "candidate_completion_rate": completion_rates[strategy],
+                "operationally_viable": operational[strategy],
+                "inferentially_viable": inferential[strategy],
+                "candidate_claim_eligible": operational[strategy] and inferential[strategy],
                 "practical_wins": practical_wins,
                 "practical_losses": practical_losses,
                 "practical_net_wins": practical_wins - practical_losses,
@@ -626,7 +662,8 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
     direct_practical_winners = sorted(
         strategy
         for strategy in nodes
-        if sum(winner == strategy for winner, _ in practical_edges) == len(nodes) - 1
+        if bool(scores.loc[scores["strategy"].eq(strategy), "candidate_claim_eligible"].iloc[0])
+        and sum(winner == strategy for winner, _ in practical_edges) == len(nodes) - 1
     )
     if len(direct_practical_winners) > 1:
         raise RuntimeError("more than one strategy directly dominates every finalist")
@@ -647,6 +684,12 @@ def build_dominance_outputs(cfg: AppConfig, *, force: bool = False) -> Dominance
         "unique_best": direct_practical_winners[0] if direct_practical_winners else None,
         "unique_best_claim_permitted": bool(direct_practical_winners),
         "unique_best_rule": "direct_practical_dominance_over_every_other_finalist",
+        "operationally_nonviable_candidates": sorted(
+            scores.loc[~scores["operationally_viable"].astype(bool), "strategy"].astype(str)
+        ),
+        "inferentially_nonviable_candidates": sorted(
+            scores.loc[~scores["inferentially_viable"].astype(bool), "strategy"].astype(str)
+        ),
         "display_order_is_inferential": False,
         "interpretation": (
             "Fronts are partial dominance layers; cycle members and unresolved pairs "

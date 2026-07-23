@@ -8,7 +8,12 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from farkle.analysis import run_trueskill, stage_logger
-from farkle.analysis.trueskill_screening import ScreeningRatingCell, build_percentile_contribution
+from farkle.analysis.trueskill_screening import (
+    TRUESKILL_CONDITIONING,
+    ScreeningRatingCell,
+    build_percentile_contribution,
+    trueskill_method_contract,
+)
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import validate_artifact_sidecar
 
@@ -84,6 +89,8 @@ def run_root_pair(
                     "operation": "sequential_rating",
                     "player_counts": [k],
                     "seed_scope": "single_root",
+                    "conditioning": TRUESKILL_CONDITIONING,
+                    "method_contract": trueskill_method_contract("sequential_rating"),
                 },
             )
             cells.append(ScreeningRatingCell(root_seed=context.seed, k=k, ratings_path=path))

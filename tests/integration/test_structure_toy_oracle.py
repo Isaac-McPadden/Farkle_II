@@ -12,7 +12,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from farkle.analysis import h2h_schedule
-from farkle.analysis.all_player_metrics import all_player_batch_schema
+from farkle.analysis.all_player_metrics import ATTEMPT_CONDITIONING, all_player_batch_schema
 from farkle.analysis.candidate_family import freeze_h2h_candidate_family
 from farkle.analysis.dominance import build_dominance_outputs
 from farkle.analysis.h2h_inference import run_h2h_inference
@@ -22,7 +22,12 @@ from farkle.analysis.root_stability import RootBatchCell, build_two_root_stabili
 from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.analysis.structure_agreement import run as run_structure_agreement
 from farkle.analysis.structure_reporting import run as run_structure_reporting
-from farkle.analysis.trueskill_screening import ScreeningRatingCell, build_percentile_contribution
+from farkle.analysis.trueskill_screening import (
+    TRUESKILL_CONDITIONING,
+    ScreeningRatingCell,
+    build_percentile_contribution,
+    trueskill_method_contract,
+)
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.orchestration.run_contexts import SEED_PAIR_ANALYSIS_DIRNAME, RunContextConfig
 from farkle.utils.artifact_contract import (
@@ -41,7 +46,7 @@ def _toy_block_runner(
 ) -> dict[str, Any]:
     """Return deterministic cyclic evidence for one immutable coordinate block."""
 
-    games = int(block["games_required"])
+    games = int(block["n_completed_required"])
     pair_id = int(block["pair_id"])
     order = int(block["order"])
     favors_first_named = pair_id in {0, 2}
@@ -53,6 +58,39 @@ def _toy_block_runner(
         "games_completed": games,
         "wins_seat1": wins_seat1,
         "wins_seat2": games - wins_seat1,
+    }
+
+
+def _noncompletion_oracle_runner(
+    block: dict[str, Any],
+    _strategy_manifest: Path,
+    _chunk_games: int,
+) -> dict[str, Any]:
+    """Mix bounded replacements with an always-noncompleted frozen candidate."""
+
+    target = int(block["n_completed_required"])
+    cap = int(block["max_attempts"])
+    if "3" in {str(block["strategy_a"]), str(block["strategy_b"])}:
+        return {
+            **block,
+            "games_attempted": cap,
+            "games_completed": 0,
+            "games_safety_limit": cap,
+            "wins_seat1": 0,
+            "wins_seat2": 0,
+            "replacement_attempt_count": cap - target,
+            "completion_status": "unresolved_nonviable",
+        }
+    wins_seat1 = target // 2
+    return {
+        **block,
+        "games_attempted": target + 1,
+        "games_completed": target,
+        "games_safety_limit": 1,
+        "wins_seat1": wins_seat1,
+        "wins_seat2": target - wins_seat1,
+        "replacement_attempt_count": 1,
+        "completion_status": "complete",
     }
 
 
@@ -93,7 +131,10 @@ def _metric_row(
             "deterministic_batch_id": batch,
             "strategy": strategy,
             "raw_player_game_exposures": 10,
+            "raw_completed_player_game_exposures": 10,
+            "raw_safety_limit_player_game_exposures": 0,
             "raw_wins": wins,
+            "raw_losses": 10 - wins,
         }
     )
     for name in (
@@ -137,7 +178,7 @@ def _write_root_cells(cfg: AppConfig, root: Path) -> list[RootBatchCell]:
             scope=ArtifactScope.BY_K,
             source_scope=ArtifactScope.BY_K,
             operation="aggregate_player_batch_statistics",
-            conditioning="unconditional",
+            conditioning=ATTEMPT_CONDITIONING,
             consistency_columns=table.schema.names,
             grouping_keys=["root_seed", "k", "deterministic_batch_id", "strategy"],
             player_counts=[k],
@@ -167,6 +208,19 @@ def _write_trueskill_contribution(cfg: AppConfig, root: Path) -> Path:
                     "strategy": [1, 2, 3],
                     "mu": [30.0 + root_seed / 100, 25.0 + k / 100, 20.0],
                     "sigma": [2.0, 2.5, 3.0],
+                    "strategy_attempted_exposures": [2, 1, 1],
+                    "strategy_completed_exposures": [2, 1, 1],
+                    "strategy_excluded_safety_limit_exposures": [0, 0, 0],
+                    "strategy_performed_updates": [2, 1, 1],
+                    "rating_status": [
+                        "evidence_backed_completed_games",
+                        "evidence_backed_completed_games",
+                        "evidence_backed_completed_games",
+                    ],
+                    "cell_games_attempted": [2, 2, 2],
+                    "cell_games_completed": [2, 2, 2],
+                    "cell_games_excluded_safety_limit": [0, 0, 0],
+                    "cell_performed_updates": [2, 2, 2],
                 }
             )
             sidecar = make_artifact_sidecar(
@@ -176,7 +230,8 @@ def _write_trueskill_contribution(cfg: AppConfig, root: Path) -> Path:
                 scope=ArtifactScope.BY_K,
                 source_scope=ArtifactScope.BY_K,
                 operation="sequential_rating",
-                conditioning="finite_grid_trueskill_screening",
+                conditioning=TRUESKILL_CONDITIONING,
+                method_contract=trueskill_method_contract("sequential_rating"),
                 consistency_columns=table.schema.names,
                 grouping_keys=["strategy"],
                 player_counts=[k],
@@ -370,3 +425,56 @@ def test_two_root_multi_k_resume_matches_worker_count_oracle(
     )
     assert observed_stage_dirs == expected_stage_dirs
     assert all(any(path.iterdir()) for path in resumed_cfg.analysis_dir.iterdir() if path.is_dir())
+
+
+@pytest.mark.integration
+def test_always_noncompleted_candidate_remains_frozen_and_has_no_report_claim(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path / "noncompletion")
+    cfg.head2head.delta_equivalence = 0.20
+    _stability, family, _schedule = _prepare(cfg, tmp_path / "noncompletion")
+
+    execution = execute_h2h_schedule(
+        cfg,
+        n_jobs=1,
+        block_runner=_noncompletion_oracle_runner,
+    )
+    inference_artifacts, dominance_artifacts, report = _finish(cfg)
+    membership = pq.read_table(family.membership).to_pandas()
+    counts = pq.read_table(execution.order_counts).to_pandas()
+    inference = pq.read_table(inference_artifacts.pairwise_inference).to_pandas()
+    dominance = json.loads(dominance_artifacts.summary.read_text(encoding="utf-8"))
+
+    frozen = membership.loc[membership["final_family"].astype(bool), "strategy"].astype(str)
+    assert set(frozen) == {"1", "2", "3"}
+    affected_counts = counts.loc[
+        counts["strategy_a"].astype(str).eq("3") | counts["strategy_b"].astype(str).eq("3")
+    ]
+    assert len(affected_counts) == 8
+    assert affected_counts["completion_status"].eq("unresolved_nonviable").all()
+    assert (affected_counts["games_attempted"] == affected_counts["max_attempts"]).all()
+    assert affected_counts["games_completed"].eq(0).all()
+
+    affected_inference = inference.loc[
+        inference["strategy_a"].astype(str).eq("3") | inference["strategy_b"].astype(str).eq("3")
+    ]
+    assert len(affected_inference) == 2
+    assert affected_inference["decision_class"].eq("unresolved_nonviable").all()
+    assert affected_inference["d_ab"].isna().all()
+    assert affected_inference["score_p_value"].isna().all()
+    assert not affected_inference["holm_reject"].any()
+    assert not inference["decision_class"].eq("equivalent").any()
+    assert dominance["unique_best"] is None
+    assert dominance["unique_best_claim_permitted"] is False
+    assert "3" in dominance["operationally_nonviable_candidates"]
+
+    candidate_rows = {row["strategy"]: row for row in report["h2h"]["candidate_viability"]}
+    assert candidate_rows["3"]["operationally_viable"] is False
+    assert report["h2h"]["games_safety_limit"] > 0
+    assert report["h2h"]["replacement_attempt_count"] > 0
+    assert report["h2h"]["unresolved_nonviable_pair_count"] == 3
+    assert report["h2h"]["unique_best_claim_permitted"] is False
+    assert any(
+        "Operationally nonviable frozen finalists" in line for line in report["claim_language"]
+    )
