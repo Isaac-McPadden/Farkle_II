@@ -1436,7 +1436,13 @@ def run_tournament(
                     )
                     collected_metric_chunks[chunk_index] = (sums, sqs)
                 else:
-                    collected_metric_chunks[chunk_index] = (sums, sqs)
+                    if metric_sums is None or metric_sq_sums is None:
+                        raise RuntimeError("Metric-only checkpoint aggregates are unavailable")
+                    # The checkpoint is the only recovery source in this mode, so
+                    # commit statistics before advancing ownership below.
+                    _reduce_metric_chunk_payloads(
+                        {chunk_index: (sums, sqs)}, metric_sums, metric_sq_sums
+                    )
                 LOGGER.debug(
                     "Chunk processed",
                     extra={

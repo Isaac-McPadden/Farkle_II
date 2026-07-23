@@ -328,6 +328,129 @@ def test_checkpoint_coordinates_resume_without_row_or_metric_artifacts(
     )
 
 
+def test_metric_only_checkpoint_resume_commits_statistics_before_ownership(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    strategies = _mini_strats(2)
+    monkeypatch.setattr(rt, "_measure_throughput", lambda _sample: 1.0)
+
+    def synchronous_map(func, iterable, *, initializer=None, initargs=(), **_kwargs):
+        if initializer is not None:
+            initializer(*initargs)
+        for item in iterable:
+            yield func(item)
+
+    monkeypatch.setattr(rt.parallel, "process_map", synchronous_map)
+
+    def metric_block(tasks, **_kwargs):
+        assert _kwargs == {"collect_rows": False, "row_dir": None, "manifest_path": None}
+        counts = rt.OutcomeCounter()
+        sums, square_sums = rt._empty_metric_aggregates()
+        for task in tasks:
+            counts.attempted_exposures.update({0: 1, 1: 1})
+            counts.games_attempted += 1
+            if task.shuffle_index == 1:
+                counts.safety_limit_exposures.update({0: 1, 1: 1})
+                counts.games_safety_limit += 1
+                continue
+            winner = task.shuffle_index // 2
+            counts[winner] += 1
+            counts.completed_exposures.update({0: 1, 1: 1})
+            counts.games_completed += 1
+            for position, label in enumerate(rt.METRIC_LABELS, start=1):
+                value = float(position * (task.shuffle_index + 1))
+                sums[label][winner] += value
+                square_sums[label][winner] += value * value
+        return counts, sums, square_sums
+
+    monkeypatch.setattr(rt, "_run_chunk_metrics", metric_block)
+    config = rt.TournamentConfig(
+        n_players=2,
+        num_shuffles=3,
+        ckpt_every_sec=0,
+        deterministic_batch_size=1,
+    )
+    resumed_path = tmp_path / "resumed.pkl"
+    uninterrupted_path = tmp_path / "uninterrupted.pkl"
+
+    real_save_checkpoint = rt._save_checkpoint
+    interrupted = False
+
+    def interrupt_after_first_ownership(*args, **kwargs) -> None:
+        nonlocal interrupted
+        real_save_checkpoint(*args, **kwargs)
+        checkpoint = pickle.loads(resumed_path.read_bytes())
+        if not interrupted and checkpoint["meta"]["completed_shuffle_indices"] == [0]:
+            interrupted = True
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(rt, "_save_checkpoint", interrupt_after_first_ownership)
+    with pytest.raises(KeyboardInterrupt):
+        rt.run_tournament(
+            config=config,
+            checkpoint_path=resumed_path,
+            strategies=strategies,
+            num_shuffles=config.num_shuffles,
+            n_jobs=1,
+            collect_metrics=True,
+        )
+
+    first_boundary = pickle.loads(resumed_path.read_bytes())
+    assert first_boundary["meta"]["completed_shuffle_indices"] == [0]
+    assert first_boundary["meta"]["completed_process_block_indices"] == [1]
+    for position, label in enumerate(rt.METRIC_LABELS, start=1):
+        assert first_boundary["metric_sums"][label] == {0: float(position)}
+        assert first_boundary["metric_square_sums"][label] == {0: float(position * position)}
+    assert not list(tmp_path.rglob("*.jsonl"))
+
+    rt.run_tournament(
+        config=config,
+        checkpoint_path=resumed_path,
+        strategies=strategies,
+        num_shuffles=config.num_shuffles,
+        n_jobs=1,
+        collect_metrics=True,
+    )
+    rt.run_tournament(
+        config=config,
+        checkpoint_path=uninterrupted_path,
+        strategies=strategies,
+        num_shuffles=config.num_shuffles,
+        n_jobs=1,
+        collect_metrics=True,
+    )
+
+    resumed = pickle.loads(resumed_path.read_bytes())
+    uninterrupted = pickle.loads(uninterrupted_path.read_bytes())
+    assert resumed["win_totals"] == uninterrupted["win_totals"] == Counter({0: 1, 1: 1})
+    assert resumed["outcome_counts"] == uninterrupted["outcome_counts"]
+    assert resumed["outcome_counts"] == {
+        "games_attempted": 3,
+        "games_completed": 2,
+        "games_safety_limit": 1,
+        "attempted_exposures": {0: 3, 1: 3},
+        "completed_exposures": {0: 2, 1: 2},
+        "safety_limit_exposures": {0: 1, 1: 1},
+    }
+    assert resumed["metric_sums"] == uninterrupted["metric_sums"]
+    assert resumed["metric_square_sums"] == uninterrupted["metric_square_sums"]
+    for position, label in enumerate(rt.METRIC_LABELS, start=1):
+        assert resumed["metric_sums"][label] == {
+            0: float(position),
+            1: float(3 * position),
+        }
+        assert resumed["metric_square_sums"][label] == {
+            0: float(position * position),
+            1: float(9 * position * position),
+        }
+    assert resumed["meta"]["completed_shuffle_indices"] == uninterrupted["meta"][
+        "completed_shuffle_indices"
+    ] == [0, 1, 2]
+    assert resumed["meta"]["completed_process_block_indices"] == uninterrupted["meta"][
+        "completed_process_block_indices"
+    ] == [1, 2, 3]
+
+
 def test_direct_resume_rejects_v1_checkpoint_identity(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
