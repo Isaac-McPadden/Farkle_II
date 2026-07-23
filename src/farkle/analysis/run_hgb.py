@@ -33,7 +33,7 @@ from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
 )
-from farkle.utils.random import RandomPurpose, coordinate_rng, coordinate_seed
+from farkle.utils.random import RandomPurpose, coordinate_rng, coordinate_seed_sequence
 
 if TYPE_CHECKING:
     from farkle.config import AppConfig
@@ -196,15 +196,18 @@ def _r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
     return float(1.0 - (ss_res / ss_tot))
 
 
-def _model_seed(root_seed: int, players: int, fold: int) -> int:
-    """Return a stable sklearn-compatible seed for one HGB fit."""
+def _model_random_state(root_seed: int, players: int, fold: int) -> np.random.RandomState:
+    """Return sklearn-compatible state derived directly from full coordinates."""
 
-    return coordinate_seed(
-        RandomPurpose.HGB,
-        root_seed=root_seed,
-        k=players,
-        replicate_index=fold,
-        dtype=np.uint32,
+    return np.random.RandomState(
+        np.random.MT19937(
+            coordinate_seed_sequence(
+                RandomPurpose.HGB,
+                root_seed=root_seed,
+                k=players,
+                replicate_index=fold,
+            )
+        )
     )
 
 
@@ -294,11 +297,10 @@ def _heldout_strategy_evaluation(
     for fold in range(folds):
         test_mask = fold_ids == fold
         train_mask = ~test_mask
-        model_seed = _model_seed(root_seed, players, fold + 1)
         model = HistGradientBoostingRegressor(
             max_depth=max_depth,
             max_iter=max_iter,
-            random_state=model_seed,
+            random_state=_model_random_state(root_seed, players, fold + 1),
         )
         model.fit(all_features.loc[train_mask], all_targets[train_mask])
         heldout_features = all_features.loc[test_mask]
@@ -310,7 +312,7 @@ def _heldout_strategy_evaluation(
             heldout_features,
             heldout_targets,
             n_repeats=permutation_repeats,
-            random_state=_model_seed(root_seed, players, folds + fold + 1),
+            random_state=_model_random_state(root_seed, players, folds + fold + 1),
             scoring="neg_mean_absolute_error",
         )
         perm = cast(PermutationImportanceResult, perm_raw)
@@ -636,7 +638,7 @@ def run_hgb(
         full_model = HistGradientBoostingRegressor(
             max_depth=max_depth,
             max_iter=max_iter,
-            random_state=_model_seed(seed, players, 0),
+            random_state=_model_random_state(seed, players, 0),
         )
         full_model.fit(features, target)
         proposals = _future_strategy_proposals(

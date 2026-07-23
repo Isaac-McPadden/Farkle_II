@@ -22,7 +22,7 @@ from scipy.signal import fftconvolve
 from scipy.stats import binom, nchypergeom_fisher, norm
 
 from farkle.config import AppConfig, ArtifactScope
-from farkle.simulation.simulation import simulate_many_games_from_seeds
+from farkle.simulation.simulation import PlayerRngCoordinates, _play_game
 from farkle.simulation.strategies import parse_strategy_identifier
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
@@ -800,23 +800,42 @@ def _simulate_block(
     wins_seat2 = 0
     for start in range(0, games_required, chunk_games):
         stop = min(games_required, start + chunk_games)
-        seeds = [
-            coordinate_seed(
+        rows = []
+        for attempt_index in range(start, stop):
+            game_seed = coordinate_seed(
                 RandomPurpose.H2H_GAME,
                 root_seed=int(block["root_seed"]),
                 k=2,
-                pair_index=int(block["pair_id"]),
+                pair_id=int(block["pair_id"]),
                 order=int(block["order"]),
-                game_index=game_index,
+                attempt_index=attempt_index,
+                dtype=np.uint32,
             )
-            for game_index in range(start, stop)
-        ]
-        frame = simulate_many_games_from_seeds(
-            seeds=seeds,
-            strategies=[strategy1, strategy2],
-            n_jobs=1,
-            root_seed=int(block["root_seed"]),
-        )
+            rows.append(
+                _play_game(
+                    game_seed,
+                    [strategy1, strategy2],
+                    provenance={
+                        "root_seed": int(block["root_seed"]),
+                        "k": 2,
+                        "shuffle_index": None,
+                        "game_index": attempt_index,
+                        "deterministic_batch_id": None,
+                        "game_seed": game_seed,
+                        "rng_scheme_version": RNG_SCHEME_VERSION,
+                        "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
+                    },
+                    player_rng_coordinates=PlayerRngCoordinates(
+                        purpose=RandomPurpose.H2H_PLAYER,
+                        root_seed=int(block["root_seed"]),
+                        k=2,
+                        pair_id=int(block["pair_id"]),
+                        order=int(block["order"]),
+                        attempt_index=attempt_index,
+                    ),
+                )
+            )
+        frame = pd.DataFrame(rows)
         first, second = _winner_seat_counts(frame)
         wins_seat1 += first
         wins_seat2 += second

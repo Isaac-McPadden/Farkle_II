@@ -207,5 +207,20 @@ def test_run_tournament_process_executor(monkeypatch: pytest.MonkeyPatch, tmp_pa
     wins = data["win_totals"] if isinstance(data, dict) else data
     assert wins, "empty win counter"
 
+    one_worker_ckpt = tmp_path / "one_worker.pkl"
+    rt.run_tournament(
+        config=cfg,
+        global_seed=123,
+        checkpoint_path=one_worker_ckpt,
+        n_jobs=1,
+        num_shuffles=2,
+    )
+    one_worker = pickle.loads(one_worker_ckpt.read_bytes())
+    assert data["win_totals"] == one_worker["win_totals"]
+    assert data["outcome_counts"] == one_worker["outcome_counts"]
+    assert (
+        data["meta"]["completed_shuffle_indices"] == one_worker["meta"]["completed_shuffle_indices"]
+    )
+
     expected = {str(s) for s in _tiny_strategy_grid()}
     assert set(wins.keys()).issubset(expected)

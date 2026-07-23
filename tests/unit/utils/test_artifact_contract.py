@@ -20,6 +20,7 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import read_parquet_artifact, write_parquet_artifact_atomic
+from farkle.utils.random import RNG_SCHEME_VERSION
 from farkle.utils.stage_completion import stage_is_up_to_date, write_stage_done
 
 
@@ -49,7 +50,7 @@ def _metadata(path: Path, **changes: object) -> ArtifactSidecar:
         required_player_counts=[2],
         missing_cell_policy="fail",
         seed_scope="single_root",
-        rng_scheme_version=1,
+        rng_scheme_version=RNG_SCHEME_VERSION,
         config_hash="abc",
         input_manifest_hashes=[],
         code_revision="test-revision",
@@ -114,6 +115,7 @@ def test_unknown_or_missing_sidecar_fields_fail_closed(tmp_path: Path) -> None:
         ({"player_counts": [4, 2]}, "sorted unique"),
         ({"player_counts": [2], "required_player_counts": [2, 4]}, "support is incomplete"),
         ({"artifact_contract_version": 1}, "contract is stale or unsupported"),
+        ({"rng_scheme_version": 1}, "RNG scheme is stale or unsupported"),
         (
             {
                 "method_contract": {

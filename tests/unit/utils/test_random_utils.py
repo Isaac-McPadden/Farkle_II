@@ -8,6 +8,7 @@ from farkle.utils.random import (
     PURPOSE_NAMESPACES,
     RNG_SCHEME_VERSION,
     RandomPurpose,
+    coordinate_entropy,
     coordinate_rng,
     coordinate_seed,
     make_rng,
@@ -18,13 +19,24 @@ from farkle.utils.random import (
 
 def _coordinate_payload(index: int) -> tuple[int, bytes]:
     rng = coordinate_rng(
-        RandomPurpose.TOURNAMENT_GAME,
+        RandomPurpose.TOURNAMENT_PLAYER,
         root_seed=92821,
         k=4,
         shuffle_index=index // 5,
         game_index=index % 5,
+        seat_index=index % 4,
     )
     return index, rng.bytes(128)
+
+
+def _v1_tournament_game_seed(*, root_seed: int, k: int, shuffle_index: int, game_index: int) -> int:
+    """Independent oracle for the reviewed v1 uint32 narrowing path."""
+
+    mask = 2**32 - 1
+    entropy = [1, 102]
+    for value in (root_seed, k, shuffle_index, 0, 0, game_index, 0, 0):
+        entropy.extend((value & mask, value >> 32))
+    return int(np.random.SeedSequence(entropy).generate_state(1, dtype=np.uint32)[0])
 
 
 def test_spawn_seeds_deterministic():
@@ -55,7 +67,71 @@ def test_coordinate_streams_are_stable_and_purpose_separated() -> None:
 
     assert first == replay
     assert first != other_purpose
-    assert RNG_SCHEME_VERSION == 1
+    assert RNG_SCHEME_VERSION == 2
+
+
+def test_reviewed_v1_uint32_collision_has_distinct_v2_player_streams() -> None:
+    first = {"root_seed": 32, "k": 2, "shuffle_index": 194, "game_index": 18}
+    second = {"root_seed": 32, "k": 2, "shuffle_index": 4052, "game_index": 4}
+
+    assert _v1_tournament_game_seed(**first) == 2_963_478_802
+    assert _v1_tournament_game_seed(**second) == 2_963_478_802
+    assert coordinate_rng(RandomPurpose.TOURNAMENT_PLAYER, **first, seat_index=0).bytes(
+        128
+    ) != coordinate_rng(RandomPurpose.TOURNAMENT_PLAYER, **second, seat_index=0).bytes(128)
+
+
+def test_v2_separates_root_k_batch_seat_and_purpose_and_replays() -> None:
+    base = {
+        "root_seed": 32,
+        "k": 2,
+        "shuffle_index": 29,
+        "game_index": 7,
+        "seat_index": 0,
+    }
+    selected = coordinate_rng(RandomPurpose.TOURNAMENT_PLAYER, **base).bytes(128)
+    variants = [
+        coordinate_rng(RandomPurpose.TOURNAMENT_PLAYER, **{**base, "root_seed": 33}).bytes(128),
+        coordinate_rng(RandomPurpose.TOURNAMENT_PLAYER, **{**base, "k": 4}).bytes(128),
+        coordinate_rng(RandomPurpose.TOURNAMENT_PLAYER, **{**base, "shuffle_index": 30}).bytes(128),
+        coordinate_rng(RandomPurpose.TOURNAMENT_PLAYER, **{**base, "seat_index": 1}).bytes(128),
+        coordinate_rng(RandomPurpose.BOOTSTRAP, **base).bytes(128),
+        coordinate_rng(
+            RandomPurpose.H2H_PLAYER,
+            root_seed=32,
+            k=2,
+            pair_id=0,
+            order=0,
+            attempt_index=7,
+            seat_index=0,
+        ).bytes(128),
+    ]
+
+    assert selected == coordinate_rng(RandomPurpose.TOURNAMENT_PLAYER, **base).bytes(128)
+    assert len({selected, *variants}) == 1 + len(variants)
+
+
+def test_production_scale_coordinate_identity_enumeration_without_games() -> None:
+    """Enumerate one million seat identities without materializing outcomes."""
+
+    previous: tuple[int, ...] | None = None
+    enumerated = 0
+    for shuffle_index in range(4_000):
+        for game_index in range(125):
+            for seat_index in range(2):
+                identity = coordinate_entropy(
+                    RandomPurpose.TOURNAMENT_PLAYER,
+                    root_seed=102,
+                    k=2,
+                    shuffle_index=shuffle_index,
+                    game_index=game_index,
+                    seat_index=seat_index,
+                )
+                assert identity != previous
+                previous = identity
+                enumerated += 1
+
+    assert enumerated == 1_000_000
 
 
 def test_coordinate_changes_are_local_and_do_not_depend_on_draw_history() -> None:

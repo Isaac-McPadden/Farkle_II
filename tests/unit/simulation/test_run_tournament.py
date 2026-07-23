@@ -125,7 +125,7 @@ def test_measure_throughput_uses_spawned_seeds(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(
         rt,
         "_play_game",
-        lambda seed, strategies: observed.append(seed) or {"winner_seat": "p0"},
+        lambda seed, strategies, **_kwargs: observed.append(seed) or {"winner_seat": "p0"},
         raising=True,
     )
 
@@ -246,6 +246,7 @@ def test_checkpoint_coordinates_resume_without_row_or_metric_artifacts(
         "coordinate_seed",
         lambda _purpose, *, root_seed, shuffle_index=0, **_kwargs: root_seed + shuffle_index,
     )
+
     def completed_shuffle(task: rt.ShuffleTask) -> rt.OutcomeCounter:
         winner = f"W{task.shuffle_index}"
         loser = f"L{task.shuffle_index}"
@@ -311,6 +312,61 @@ def test_checkpoint_coordinates_resume_without_row_or_metric_artifacts(
     assert completed["meta"]["completed_shuffle_indices"] == [0, 1, 2]
     assert completed["meta"]["completed_process_block_indices"] == [1, 2, 3]
 
+    uninterrupted_path = tmp_path / "uninterrupted.pkl"
+    rt.run_tournament(
+        config=cfg,
+        num_shuffles=cfg.num_shuffles,
+        checkpoint_path=uninterrupted_path,
+        n_jobs=1,
+    )
+    uninterrupted = pickle.loads(uninterrupted_path.read_bytes())
+    assert completed["win_totals"] == uninterrupted["win_totals"]
+    assert completed["outcome_counts"] == uninterrupted["outcome_counts"]
+    assert (
+        completed["meta"]["completed_shuffle_indices"]
+        == uninterrupted["meta"]["completed_shuffle_indices"]
+    )
+
+
+def test_direct_resume_rejects_v1_checkpoint_identity(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    strategies = _mini_strats(4)
+    monkeypatch.setattr(rt, "_measure_throughput", lambda _sample: 1.0)
+    checkpoint = tmp_path / "v1.pkl"
+    checkpoint.write_bytes(
+        pickle.dumps({"win_totals": Counter(), "meta": {"rng_scheme_version": 1}})
+    )
+
+    with pytest.raises(ValueError, match="Checkpoint RNG scheme is stale"):
+        rt.run_tournament(
+            config=rt.TournamentConfig(n_players=2, num_shuffles=1),
+            checkpoint_path=checkpoint,
+            strategies=strategies,
+            num_shuffles=1,
+            n_jobs=1,
+        )
+
+
+def test_resume_ownership_uses_shuffle_index_not_scalar_fingerprint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(rt.urandom, "coordinate_seed", lambda *args, **kwargs: 77)
+
+    pending = list(
+        rt._iter_pending_chunk_items(
+            num_shuffles=2,
+            shuffles_per_chunk=2,
+            global_seed=32,
+            k=2,
+            deterministic_batch_size=2,
+            completed_shuffle_indices={0},
+            completed_chunk_indices=set(),
+        )
+    )
+
+    assert [(task.shuffle_index, task.shuffle_seed) for task in pending[0][1]] == [(1, 77)]
+
 
 def test_shuffle_rows_preserve_turns_and_rng_coordinates() -> None:
     strategies = _mini_strats(4)
@@ -334,7 +390,7 @@ def test_shuffle_rows_preserve_turns_and_rng_coordinates() -> None:
         assert row["shuffle_index"] == 7
         assert row["deterministic_batch_id"] == 2
         assert row["shuffle_seed"] == 1234
-        assert row["rng_scheme_version"] == 1
+        assert row["rng_scheme_version"] == rt.urandom.RNG_SCHEME_VERSION
         assert row["rng_purpose_namespace"] == 102
         assert row["P1_n_turns"] >= 1
         assert row["P2_n_turns"] >= 1

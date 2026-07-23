@@ -35,7 +35,7 @@ an actionable replacement message and are never reinterpreted.
 
 ## Locked statistical settings
 
-- `rng.scheme_version = 1`
+- `rng.scheme_version = 2`
 - `rng.bit_generator = PCG64DXSM`
 - `screening.resolution_delta = 0.03`, the maximum full 95% Wilson width
 - `screening.practical_delta_by_k` must contain every configured k

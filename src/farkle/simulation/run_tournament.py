@@ -27,6 +27,7 @@ from pyarrow import parquet as pq
 
 from farkle.game.engine import TerminationStatus
 from farkle.simulation.simulation import (
+    PlayerRngCoordinates,
     _play_game,
     generate_strategy_grid,
     simulation_rows_to_table,
@@ -213,6 +214,26 @@ class OutcomeCounter(Counter[int | str]):
             "safety_limit_exposures": dict(self.safety_limit_exposures),
         }
 
+    def __reduce__(self) -> tuple[object, tuple[dict[int | str, int], dict[str, Any]]]:
+        """Preserve explicit outcome state across process boundaries."""
+
+        return (_restore_outcome_counter, (dict(self), self.outcome_payload()))
+
+
+def _restore_outcome_counter(
+    counts: dict[int | str, int], outcome_counts: dict[str, Any]
+) -> OutcomeCounter:
+    """Rebuild a worker result without losing non-Counter conservation fields."""
+
+    restored = OutcomeCounter(counts)
+    restored.attempted_exposures.update(outcome_counts.get("attempted_exposures", {}))
+    restored.completed_exposures.update(outcome_counts.get("completed_exposures", {}))
+    restored.safety_limit_exposures.update(outcome_counts.get("safety_limit_exposures", {}))
+    restored.games_attempted = int(outcome_counts.get("games_attempted", 0))
+    restored.games_completed = int(outcome_counts.get("games_completed", 0))
+    restored.games_safety_limit = int(outcome_counts.get("games_safety_limit", 0))
+    return restored
+
 
 # ---------------------------------------------------------------------------
 # Worker state and helpers
@@ -263,9 +284,7 @@ def _coerce_shuffle_task(task: ShuffleTask | int) -> ShuffleTask:
     )
 
 
-def _play_one_shuffle(
-    task: ShuffleTask | int, *, collect_rows: bool = False
-) -> Tuple[
+def _play_one_shuffle(task: ShuffleTask | int, *, collect_rows: bool = False) -> Tuple[
     Counter[int | str],
     Dict[str, Dict[int | str, float]],
     Dict[str, Dict[int | str, float]],
@@ -319,6 +338,13 @@ def _play_one_shuffle(
                 "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
                 "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_GAME),
             },
+            player_rng_coordinates=PlayerRngCoordinates(
+                purpose=urandom.RandomPurpose.TOURNAMENT_PLAYER,
+                root_seed=work.root_seed,
+                k=work.k,
+                shuffle_index=work.shuffle_index,
+                game_index=game_index,
+            ),
         )
         status = wins.record_row(row, k=work.k, source="Simulation row")
         if status is TerminationStatus.SAFETY_LIMIT:
@@ -463,7 +489,7 @@ def _run_chunk_metrics(
                 sq_total[label][k] += v
 
         if row_dir is not None and collect_rows:
-            out = row_dir / f"rows_{getpid()}_{task.shuffle_seed}.parquet"
+            out = row_dir / f"rows_{task.root_seed}_{task.k}p_{task.shuffle_index:012d}.parquet"
             tbl = simulation_rows_to_table(rows, task.k)
             manifest_file = manifest_path or (row_dir / "manifest.jsonl")
             run_streaming_shard(
@@ -479,6 +505,7 @@ def _run_chunk_metrics(
                     "shuffle_seed": task.shuffle_seed,
                     "deterministic_batch_id": task.deterministic_batch_id,
                     "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+                    "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE),
                     "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
                     "tournament_method_version": TOURNAMENT_METHOD_VERSION,
                     "pid": getpid(),
@@ -515,8 +542,18 @@ def _measure_throughput(
 
     seeds = urandom.spawn_seeds(sample_games, seed=seed)
     start = time.perf_counter()
-    for gs in seeds:
-        _play_game(int(gs), sample_strategies)
+    for game_index, game_seed in enumerate(seeds):
+        _play_game(
+            int(game_seed),
+            sample_strategies,
+            player_rng_coordinates=PlayerRngCoordinates(
+                purpose=urandom.RandomPurpose.TOURNAMENT_PLAYER,
+                root_seed=seed,
+                k=len(sample_strategies),
+                shuffle_index=0,
+                game_index=game_index,
+            ),
+        )
     return sample_games / (time.perf_counter() - start)
 
 
@@ -543,9 +580,7 @@ def _save_checkpoint(
         Path(tmp_path).write_bytes(pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL))
 
 
-def _coerce_counter(
-    raw: object, outcome_counts: Mapping[str, Any] | None = None
-) -> OutcomeCounter:
+def _coerce_counter(raw: object, outcome_counts: Mapping[str, Any] | None = None) -> OutcomeCounter:
     """Coerce checkpointed win totals into a normalized ``Counter``.
 
     Args:
@@ -588,7 +623,9 @@ def _coerce_counter(
             raise TypeError(f"Unexpected {name} payload type: {type(values)}")
         target.update({int(k) if str(k).isdigit() else k: int(v) for k, v in values.items()})
     normalized.games_attempted = int(outcome_counts.get("games_attempted", 0))
-    normalized.games_completed = int(outcome_counts.get("games_completed", sum(normalized.values())))
+    normalized.games_completed = int(
+        outcome_counts.get("games_completed", sum(normalized.values()))
+    )
     normalized.games_safety_limit = int(outcome_counts.get("games_safety_limit", 0))
     if min(
         (
@@ -734,9 +771,7 @@ def _load_row_manifest_aggregates(
         parquet_file = pq.ParquetFile(row_path)
         for batch in parquet_file.iter_batches():
             for row in batch.to_pylist():
-                status = win_totals.record_row(
-                    row, k=int(row["k"]), source=f"Row shard {row_path}"
-                )
+                status = win_totals.record_row(row, k=int(row["k"]), source=f"Row shard {row_path}")
                 if status is TerminationStatus.SAFETY_LIMIT:
                     continue
                 winner = row.get("winner_seat")
@@ -806,12 +841,8 @@ def _load_metric_chunk_aggregates(
                 if wins_available and file_has_wins and label == METRIC_LABELS[0]:
                     win_totals[strategy] += int(row["wins"])
                     if file_has_outcomes:
-                        win_totals.attempted_exposures[strategy] += int(
-                            row["attempted_exposures"]
-                        )
-                        win_totals.completed_exposures[strategy] += int(
-                            row["completed_exposures"]
-                        )
+                        win_totals.attempted_exposures[strategy] += int(row["attempted_exposures"])
+                        win_totals.completed_exposures[strategy] += int(row["completed_exposures"])
                         win_totals.safety_limit_exposures[strategy] += int(
                             row["safety_limit_exposures"]
                         )
@@ -889,7 +920,7 @@ def _iter_pending_chunk_items(
     global_seed: int,
     k: int = 0,
     deterministic_batch_size: int = 30,
-    completed_shuffles: set[int],
+    completed_shuffle_indices: set[int],
     completed_chunk_indices: set[int],
 ) -> Iterator[Tuple[int, List[ShuffleTask]]]:
     """Yield only the unfinished shuffle chunks needed for a resumed run.
@@ -898,7 +929,7 @@ def _iter_pending_chunk_items(
         num_shuffles: Total number of shuffle seeds to generate.
         shuffles_per_chunk: Maximum seeds per emitted chunk.
         global_seed: Root seed used to spawn deterministic chunk seeds.
-        completed_shuffles: Shuffle seeds already processed in prior runs.
+        completed_shuffle_indices: Semantic shuffle indices already processed in prior runs.
         completed_chunk_indices: Chunk indices already fully processed.
 
     Yields:
@@ -913,7 +944,7 @@ def _iter_pending_chunk_items(
     ):
         if chunk_index in completed_chunk_indices:
             continue
-        pending = [task for task in chunk if task.shuffle_seed not in completed_shuffles]
+        pending = [task for task in chunk if task.shuffle_index not in completed_shuffle_indices]
         if pending:
             yield chunk_index, pending
 
@@ -1030,7 +1061,11 @@ def run_tournament(
         "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
         "tournament_method_version": TOURNAMENT_METHOD_VERSION,
         "rng_bit_generator": "PCG64DXSM",
-        "coordinate_contract_version": 1,
+        "coordinate_contract_version": 2,
+        "shuffle_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE),
+        "shuffle_permutation_purpose_namespace": int(urandom.RandomPurpose.SHUFFLE_PERMUTATION),
+        "game_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_GAME),
+        "player_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_PLAYER),
         "deterministic_batch_size": cfg.deterministic_batch_size,
     }
     if checkpoint_metadata:
@@ -1091,6 +1126,15 @@ def run_tournament(
     if resume and ckpt_path.exists():
         payload = pickle.loads(ckpt_path.read_bytes())
         assert payload is not None
+        persisted_meta = payload.get("meta", {}) if isinstance(payload, Mapping) else {}
+        if (
+            isinstance(persisted_meta, Mapping)
+            and "rng_scheme_version" in persisted_meta
+            and persisted_meta.get("rng_scheme_version") != urandom.RNG_SCHEME_VERSION
+        ):
+            raise ValueError(
+                "Checkpoint RNG scheme is stale or unsupported; restart from a v2 output root"
+            )
         raw_counts = payload.get("win_totals", payload)
         outcome_counts = payload.get("outcome_counts")
         win_totals = _coerce_counter(
@@ -1125,26 +1169,15 @@ def run_tournament(
     completed_shuffle_indices = {
         int(value) for value in checkpoint_payload_meta.get("completed_shuffle_indices", [])
     }
-    completed_shuffles: set[int] = {
-        urandom.coordinate_seed(
-            urandom.RandomPurpose.TOURNAMENT_SHUFFLE,
-            root_seed=global_seed,
-            k=cfg.n_players,
-            shuffle_index=index,
-            dtype=np.uint32,
-        )
-        for index in completed_shuffle_indices
-    }
     if can_resume_from_artifacts and row_manifest_path is not None and row_manifest_path.exists():
-        completed_shuffles |= _manifest_int_set(row_manifest_path, "shuffle_seed")
         completed_shuffle_indices |= _manifest_int_set(row_manifest_path, "shuffle_index")
-        if completed_shuffles:
+        if completed_shuffle_indices:
             LOGGER.info(
-                "Recovered completed shuffle seeds from row manifest",
+                "Recovered completed semantic shuffle coordinates from row manifest",
                 extra={
                     "stage": "simulation",
-                    "completed_shuffles": len(completed_shuffles),
-                    "remaining_shuffles": max(0, cfg.num_shuffles - len(completed_shuffles)),
+                    "completed_shuffles": len(completed_shuffle_indices),
+                    "remaining_shuffles": max(0, cfg.num_shuffles - len(completed_shuffle_indices)),
                     "manifest_path": str(row_manifest_path),
                 },
             )
@@ -1237,7 +1270,7 @@ def run_tournament(
         global_seed=global_seed,
         k=cfg.n_players,
         deterministic_batch_size=cfg.deterministic_batch_size,
-        completed_shuffles=completed_shuffles,
+        completed_shuffle_indices=completed_shuffle_indices,
         completed_chunk_indices=completed_chunk_indices,
     )
     remaining_chunk_count = sum(
@@ -1248,7 +1281,7 @@ def run_tournament(
             global_seed=global_seed,
             k=cfg.n_players,
             deterministic_batch_size=cfg.deterministic_batch_size,
-            completed_shuffles=completed_shuffles,
+            completed_shuffle_indices=completed_shuffle_indices,
             completed_chunk_indices=completed_chunk_indices,
         )
     )
@@ -1320,7 +1353,11 @@ def run_tournament(
                     result,
                 )
                 win_totals.absorb(wins)
-                chunk_games = wins.games_completed if isinstance(wins, OutcomeCounter) else int(sum(wins.values()))
+                chunk_games = (
+                    wins.games_completed
+                    if isinstance(wins, OutcomeCounter)
+                    else int(sum(wins.values()))
+                )
                 games_completed = win_totals.games_completed
                 if metric_chunk_directory is not None:
                     chunk_path = metric_chunk_directory / f"metrics_{chunk_index:06d}.parquet"
@@ -1335,7 +1372,11 @@ def run_tournament(
                         for label in METRIC_LABELS
                         for strat in sorted(
                             set(sums[label])
-                            | set(wins.attempted_exposures if isinstance(wins, OutcomeCounter) else wins),
+                            | set(
+                                wins.attempted_exposures
+                                if isinstance(wins, OutcomeCounter)
+                                else wins
+                            ),
                             key=str,
                         )
                         for val in [sums[label].get(strat, 0.0)]
@@ -1379,6 +1420,7 @@ def run_tournament(
                             "shuffle_indices": [task.shuffle_index for task in block_tasks],
                             "shuffle_seeds": [task.shuffle_seed for task in block_tasks],
                             "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+                            "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE),
                             "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
                             "tournament_method_version": TOURNAMENT_METHOD_VERSION,
                         },
@@ -1418,7 +1460,6 @@ def run_tournament(
                 )
 
             completed_shuffle_indices.update(task.shuffle_index for task in block_tasks)
-            completed_shuffles.update(task.shuffle_seed for task in block_tasks)
             completed_chunk_indices.add(chunk_index)
             checkpoint_meta["completed_shuffle_indices"] = sorted(completed_shuffle_indices)
             checkpoint_meta["completed_process_block_indices"] = sorted(completed_chunk_indices)

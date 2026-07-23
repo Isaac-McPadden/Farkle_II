@@ -195,7 +195,7 @@ def test_simulate_many_games_deterministic_counts():
         n_jobs=1,
     )
     counts = df["winner_seat"].value_counts().to_dict()
-    assert counts == {"P3": 5, "P2": 4, "P1": 1}
+    assert counts == {"P2": 6, "P1": 2, "P3": 2}
 
 
 def test_generate_strategy_grid_appends_stop_at_metadata():

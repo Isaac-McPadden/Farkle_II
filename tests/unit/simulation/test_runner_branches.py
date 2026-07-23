@@ -87,7 +87,9 @@ def test_output_dir_and_done_helpers(tmp_path: Path) -> None:
     assert done_path == cfg.results_root / "2_players" / "simulation.done.json"
     assert runner.simulation_is_complete(cfg, 2) is False
     done_path.parent.mkdir(parents=True, exist_ok=True)
-    done_path.write_text('{"outcome_schema_version": 1, "tournament_method_version": 1}')
+    done_path.write_text(
+        '{"rng_scheme_version": 1, "outcome_schema_version": 2, ' '"tournament_method_version": 2}'
+    )
     assert runner.simulation_is_complete(cfg, 2) is False
 
     marker = runner.write_simulation_done(
@@ -667,6 +669,7 @@ def _row_manifest_record(
         "shuffle_seed": shuffle_index + 1 if shuffle_seed is None else shuffle_seed,
         "deterministic_batch_id": shuffle_index,
         "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+        "rng_purpose_namespace": int(runner.urandom.RandomPurpose.TOURNAMENT_SHUFFLE),
         "outcome_schema_version": runner.OUTCOME_SCHEMA_VERSION,
         "tournament_method_version": runner.TOURNAMENT_METHOD_VERSION,
     }
@@ -689,6 +692,7 @@ def _metric_manifest_record(
         "shuffle_indices": [deterministic_batch_id],
         "shuffle_seeds": [deterministic_batch_id + 1],
         "rng_scheme_version": runner.urandom.RNG_SCHEME_VERSION,
+        "rng_purpose_namespace": int(runner.urandom.RandomPurpose.TOURNAMENT_SHUFFLE),
         "outcome_schema_version": runner.OUTCOME_SCHEMA_VERSION,
         "tournament_method_version": runner.TOURNAMENT_METHOD_VERSION,
     }
@@ -765,7 +769,7 @@ def test_validate_resume_outputs_checkpoint_meta_missing_or_non_mapping(
         ("global_seed", 999),
         ("n_strategies", 999),
         ("strategy_manifest_sha", "wrong"),
-        ("rng_scheme_version", 999),
+        ("rng_scheme_version", 1),
         ("outcome_schema_version", 999),
         ("tournament_method_version", 999),
         ("rng_bit_generator", "wrong"),

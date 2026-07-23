@@ -147,7 +147,7 @@ class IOConfig:
 class RNGConfig:
     """Versioned deterministic random-stream contract."""
 
-    scheme_version: int = 1
+    scheme_version: int = 2
     bit_generator: str = "PCG64DXSM"
 
 
@@ -1689,8 +1689,8 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("sim.n_players_list must contain player counts >= 2")
     if len(set(player_counts)) != len(player_counts):
         raise ValueError("sim.n_players_list must not contain duplicate player counts")
-    if cfg.rng.scheme_version != 1 or cfg.rng.bit_generator != "PCG64DXSM":
-        raise ValueError("rng must use scheme_version=1 and bit_generator='PCG64DXSM'")
+    if cfg.rng.scheme_version != 2 or cfg.rng.bit_generator != "PCG64DXSM":
+        raise ValueError("rng must use scheme_version=2 and bit_generator='PCG64DXSM'")
     contract_versions = dataclasses.asdict(cfg.artifact_contract)
     if any(int(value) < 1 for value in contract_versions.values()):
         raise ValueError("artifact_contract versions must all be positive integers")

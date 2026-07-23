@@ -30,6 +30,7 @@ from typing import (
 )
 
 from farkle.config import ArtifactScope, compute_config_sha
+from farkle.utils.random import RNG_SCHEME_VERSION
 
 if TYPE_CHECKING:
     from farkle.config import AppConfig
@@ -384,6 +385,11 @@ def _validate_sidecar_fields(metadata: ArtifactSidecar) -> None:
         raise ArtifactContractError(
             "sidecar artifact contract is stale or unsupported: "
             f"{metadata.artifact_contract_version}; expected {ARTIFACT_CONTRACT_VERSION}"
+        )
+    if metadata.rng_scheme_version != RNG_SCHEME_VERSION:
+        raise ArtifactContractError(
+            "sidecar RNG scheme is stale or unsupported: "
+            f"{metadata.rng_scheme_version}; expected {RNG_SCHEME_VERSION}"
         )
 
     required_text = {

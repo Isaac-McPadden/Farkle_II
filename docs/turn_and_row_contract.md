@@ -13,7 +13,7 @@ Tournament rows carry the stable simulation coordinates used to produce them:
 - zero-based `shuffle_index`
 - zero-based `game_index` within the shuffle
 - zero-based `deterministic_batch_id`
-- `shuffle_seed` and `game_seed`
+- diagnostic `shuffle_seed` and `game_seed` fingerprints
 - `rng_scheme_version` and `rng_purpose_namespace`
 
 The deterministic batch identifier is `shuffle_index // shuffles_per_batch`.
@@ -24,11 +24,16 @@ runtime projection and cannot change their boundaries.
 Checkpoints own completed zero-based shuffle indices and one-based process-block
 indices even when row and metric outputs are disabled. Row manifests own one
 shuffle coordinate apiece. Metric manifests own an explicit ordered list of
-shuffle indices and their coordinate-derived seeds, allowing an interrupted
+shuffle indices plus non-authoritative coordinate fingerprints, allowing an interrupted
 row-producing block to resume from its unfinished suffix. Completion markers
 record the full shuffle range, batch count, batch size, root, k, and RNG scheme.
 Changing process-executor worker counts, interrupting, or resuming therefore
 does not change coordinate identity or regenerate checkpointed work.
+
+RNG scheme v2 constructs every tournament seat generator directly from
+`(root_seed, k, shuffle_index, game_index, seat_index)` in namespace 103.
+Scalar fingerprints may collide and are never used for ownership, replay, or
+as roots for child generators.
 
 Ingest and curate retain these coordinates as typed columns rather than
 reconstructing them from filenames or row order. The canonical row schema also

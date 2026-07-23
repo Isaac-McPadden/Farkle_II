@@ -7,7 +7,7 @@ import pytest
 
 pytest.importorskip("sklearn")
 
-from farkle.analysis import hgb_feat
+from farkle.analysis import hgb_feat, run_hgb
 from farkle.config import AppConfig, IOConfig
 from farkle.simulation.strategies import STRATEGY_TUPLE_FIELDS, ThresholdStrategy, strategy_tuple
 from farkle.utils.artifact_contract import (
@@ -16,6 +16,15 @@ from farkle.utils.artifact_contract import (
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+
+
+def test_hgb_external_random_state_is_direct_coordinate_owned() -> None:
+    selected = run_hgb._model_random_state(32, 2, 1).bytes(64)
+
+    assert selected == run_hgb._model_random_state(32, 2, 1).bytes(64)
+    assert selected != run_hgb._model_random_state(33, 2, 1).bytes(64)
+    assert selected != run_hgb._model_random_state(32, 4, 1).bytes(64)
+    assert selected != run_hgb._model_random_state(32, 2, 2).bytes(64)
 
 
 def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:

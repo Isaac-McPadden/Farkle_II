@@ -12,9 +12,10 @@ Key entry points include:
 from __future__ import annotations
 
 import multiprocessing as mp
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Any, Iterable, List, Mapping, Sequence, Tuple
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 
@@ -41,6 +42,7 @@ __all__: list[str] = [
     "aggregate_metrics",
     "simulation_rows_to_table",
     "validate_simulation_row",
+    "PlayerRngCoordinates",
 ]
 
 
@@ -326,9 +328,40 @@ def experiment_size(
 # ---------------------------------------------------------------------------
 # Batch simulation helpers
 # ---------------------------------------------------------------------------
+@dataclass(frozen=True, slots=True)
+class PlayerRngCoordinates:
+    """Complete semantic coordinates used to construct every seat stream."""
+
+    purpose: RandomPurpose
+    root_seed: int
+    k: int
+    shuffle_index: int = 0
+    pair_id: int = 0
+    order: int = 0
+    game_index: int | None = None
+    attempt_index: int | None = None
+
+    def rng_for_seat(self, seat_index: int) -> np.random.Generator:
+        """Build the PCG64DXSM stream for one zero-based seat."""
+
+        return coordinate_rng(
+            self.purpose,
+            root_seed=self.root_seed,
+            k=self.k,
+            shuffle_index=self.shuffle_index,
+            pair_id=self.pair_id,
+            order=self.order,
+            game_index=self.game_index,
+            attempt_index=self.attempt_index,
+            seat_index=seat_index,
+        )
+
+
 def _make_players(
     strategies: Sequence[ThresholdStrategy],
     seed: int,
+    *,
+    rng_coordinates: PlayerRngCoordinates | None = None,
 ) -> List[FarklePlayer]:
     """Instantiate ``FarklePlayer`` objects for a table.
 
@@ -345,16 +378,18 @@ def _make_players(
         Players ready to be passed to ``FarkleGame``.
     """
 
+    coordinates = rng_coordinates or PlayerRngCoordinates(
+        purpose=RandomPurpose.PLAYER,
+        root_seed=seed,
+        k=len(strategies),
+    )
+    if coordinates.k != len(strategies):
+        raise ValueError("Player RNG coordinate k does not match the number of seated strategies")
     return [
         FarklePlayer(
             name=f"P{i + 1}",
             strategy=s,
-            rng=coordinate_rng(
-                RandomPurpose.PLAYER,
-                root_seed=seed,
-                k=len(strategies),
-                seat_index=i,
-            ),
+            rng=coordinates.rng_for_seat(i),
         )
         for i, s in enumerate(strategies)
     ]
@@ -437,6 +472,7 @@ def _play_game(
     target_score: int = 10_000,
     provenance: Mapping[str, Any] | None = None,
     max_rounds: int = 200,
+    player_rng_coordinates: PlayerRngCoordinates | None = None,
 ) -> Mapping[str, Any]:
     """Play a single game and return flattened metrics.
 
@@ -458,7 +494,7 @@ def _play_game(
         per-player statistics.
     """
     # give every player an *independent* PRNG, but reproducible
-    players = _make_players(strategies, seed)
+    players = _make_players(strategies, seed, rng_coordinates=player_rng_coordinates)
     game = FarkleGame(players, target_score=target_score, table_seed=seed)
     gm = game.play() if max_rounds == 200 else game.play(max_rounds=max_rounds)
     winners = [name for name, ps in gm.players.items() if ps.rank == 1]
@@ -558,6 +594,13 @@ def simulate_many_games(
                 "rng_scheme_version": RNG_SCHEME_VERSION,
                 "rng_purpose_namespace": int(RandomPurpose.INDEXED_SEED),
             },
+            200,
+            PlayerRngCoordinates(
+                purpose=RandomPurpose.PLAYER,
+                root_seed=seed,
+                k=len(strategies),
+                game_index=game_index,
+            ),
         )
         for game_index, game_seed in enumerate(seeds)
     ]
@@ -611,6 +654,13 @@ def simulate_many_games_from_seeds(
                 "rng_scheme_version": RNG_SCHEME_VERSION,
                 "rng_purpose_namespace": int(RandomPurpose.INDEXED_SEED),
             },
+            200,
+            PlayerRngCoordinates(
+                purpose=RandomPurpose.PLAYER,
+                root_seed=int(game_seed) if root_seed is None else root_seed,
+                k=len(strategies),
+                game_index=0 if root_seed is None else game_index,
+            ),
         )
         for game_index, game_seed in enumerate(seeds)
     ]

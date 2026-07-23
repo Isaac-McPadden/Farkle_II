@@ -8,6 +8,7 @@ import pyarrow as pa
 
 from farkle.utils.artifact_contract import ArtifactSidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.random import RNG_SCHEME_VERSION
 
 
 def sidecar_metadata(path: Path, *, scope: str = "concat_ks") -> ArtifactSidecar:
@@ -38,7 +39,7 @@ def sidecar_metadata(path: Path, *, scope: str = "concat_ks") -> ArtifactSidecar
         required_player_counts=[1],
         missing_cell_policy="not_applicable",
         seed_scope="single_root",
-        rng_scheme_version=1,
+        rng_scheme_version=RNG_SCHEME_VERSION,
         config_hash="test-config",
         input_manifest_hashes=[],
         code_revision="test-revision",

@@ -8,11 +8,12 @@ modules and use hand-checkable tests before accepting a claim.
 - `simulation/workload_planner.py`: smallest workload satisfying maximum full
   Wilson width, rounded to exactly 100 equal contiguous batches with at least
   30 shuffles each.
-- `utils/random.py`: scheme-1 `SeedSequence` namespaces and explicit
-  `PCG64DXSM`; streams depend on stable coordinates, never worker order or draw
-  history.
-- `simulation/run_tournament.py`: immutable root/k/shuffle ownership,
-  block-level recovery, and explicit attempted/completed/safety-limit counters.
+- `utils/random.py`: scheme-2 `SeedSequence` namespaces and explicit
+  `PCG64DXSM`; tournament and H2H seat streams derive directly from full-width
+  semantic coordinates, never scalar fingerprints, worker order, or draw history.
+- `simulation/run_tournament.py`: immutable root/k/shuffle-index ownership,
+  block-level recovery by semantic coordinate, and explicit
+  attempted/completed/safety-limit counters.
 
 ## Returns and performance
 

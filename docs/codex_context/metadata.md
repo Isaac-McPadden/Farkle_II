@@ -15,7 +15,10 @@ changing code or accepting a statistical conclusion.
   recognizes the two canonical descriptive-screening files at their stage root.
   Outcome-schema-v2 and tournament-method-v2 add explicit safety-limit rows,
   all-attempt tournament denominators, completed-only winner products, and
-  observational-unit-labelled game statistics and reports.
+  observational-unit-labelled game statistics and reports. RNG-scheme-v2
+  derives tournament and H2H seat streams directly from complete semantic
+  coordinates and makes shuffle indices, rather than scalar fingerprints, the
+  recovery identity.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

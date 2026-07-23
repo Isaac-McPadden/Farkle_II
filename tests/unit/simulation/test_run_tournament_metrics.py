@@ -74,9 +74,7 @@ def silence_logging(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _fake_play_one_shuffle(
-    task: rt.ShuffleTask | int, *, collect_rows: bool = False
-) -> tuple[
+def _fake_play_one_shuffle(task: rt.ShuffleTask | int, *, collect_rows: bool = False) -> tuple[
     Counter[int | str],
     dict[str, dict[int | str, float]],
     dict[str, dict[int | str, float]],
@@ -106,7 +104,7 @@ def _fake_play_one_shuffle(
         "winner_seat": "P1",
         "winner_strategy": winner,
         "game_seed": seed,
-        "rng_scheme_version": 1,
+        "rng_scheme_version": 2,
         "rng_purpose_namespace": 102,
         "seat_ranks": [f"P{seat}" for seat in range(1, n_players + 1)],
         "winning_score": seed,
@@ -164,7 +162,9 @@ def _setup_serial_run(monkeypatch: pytest.MonkeyPatch) -> list[ThresholdStrategy
         rt, "generate_strategy_grid", lambda *a, **kw: (strategies, None), raising=True
     )
 
-    def fake_measure(sample_strategies, sample_games: int = 2_000, seed: int = 0) -> float:  # noqa: ARG001
+    def fake_measure(
+        sample_strategies, sample_games: int = 2_000, seed: int = 0
+    ) -> float:  # noqa: ARG001
         n_players = max(1, len(sample_strategies))
         return 8_160 / n_players
 
@@ -216,6 +216,7 @@ def _write_row_shard(row_dir: Path, seed: int) -> None:
         {
             "path": path.name,
             "rows": 1,
+            "shuffle_index": seed,
             "shuffle_seed": seed,
             "n_players": 2,
         },
@@ -336,7 +337,7 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     assert recorded["rows"][0]["game_seed"] == 3
     assert recorded["rows"][0]["winner_strategy"] == 3
     assert recorded["rows"][0]["termination_status"] == "completed"
-    assert recorded["out_path"] == tmp_path / "rows_42_3.parquet"
+    assert recorded["out_path"] == tmp_path / "rows_3_2p_000000000000.parquet"
     assert recorded["manifest_path"] == manifest
     assert recorded["schema"].field("winner_strategy") == pa.field(
         "winner_strategy", pa.int32(), nullable=True
@@ -344,13 +345,14 @@ def test_run_chunk_metrics_row_logging(monkeypatch, tmp_path):
     assert recorded["schema"].field("P1_rank") == pa.field("P1_rank", pa.int8(), nullable=True)
     assert recorded["batches"] and isinstance(recorded["batches"][0], pa.Table)
     assert recorded["extra"] == {
-        "path": "rows_42_3.parquet",
+        "path": "rows_3_2p_000000000000.parquet",
         "root_seed": 3,
         "n_players": 2,
         "shuffle_index": 0,
         "shuffle_seed": 3,
         "deterministic_batch_id": 0,
-        "rng_scheme_version": 1,
+        "rng_scheme_version": 2,
+        "rng_purpose_namespace": 100,
         "outcome_schema_version": 2,
         "tournament_method_version": 2,
         "pid": 42,

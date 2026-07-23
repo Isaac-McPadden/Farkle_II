@@ -63,7 +63,7 @@ head2head:
   allow_single_root: true
 
 rng:
-  scheme_version: 1
+  scheme_version: 2
   bit_generator: "PCG64DXSM"
 
 screening:

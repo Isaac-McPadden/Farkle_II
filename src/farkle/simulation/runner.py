@@ -245,7 +245,8 @@ def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
     except (OSError, UnicodeError, json.JSONDecodeError):
         return False
     return (
-        payload.get("outcome_schema_version") == OUTCOME_SCHEMA_VERSION
+        payload.get("rng_scheme_version") == urandom.RNG_SCHEME_VERSION
+        and payload.get("outcome_schema_version") == OUTCOME_SCHEMA_VERSION
         and payload.get("tournament_method_version") == TOURNAMENT_METHOD_VERSION
     )
 
@@ -274,6 +275,7 @@ def write_simulation_done(
         ),
         "shuffles_per_batch": shuffles_per_batch,
         "rng_scheme_version": urandom.RNG_SCHEME_VERSION,
+        "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE),
         "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
         "tournament_method_version": TOURNAMENT_METHOD_VERSION,
         "n_strategies": n_strategies,
@@ -567,7 +569,6 @@ def _validate_resume_outputs(
                 for index in range(n_shuffles)
             }
             expected_seeds = set(expected_seed_by_index.values())
-            seen: set[int] = set()
             seen_indices: set[int] = set()
             duplicates = 0
             unexpected = 0
@@ -584,9 +585,8 @@ def _validate_resume_outputs(
                 except (TypeError, ValueError):
                     coordinate_errors += 1
                     continue
-                if seed_int in seen or index_int in seen_indices:
+                if index_int in seen_indices:
                     duplicates += 1
-                seen.add(seed_int)
                 seen_indices.add(index_int)
                 if (
                     seed_int not in expected_seeds
@@ -599,6 +599,8 @@ def _validate_resume_outputs(
                     or record.get("n_players") != n_players
                     or record.get("deterministic_batch_id") != expected_batch
                     or record.get("rng_scheme_version") != urandom.RNG_SCHEME_VERSION
+                    or record.get("rng_purpose_namespace")
+                    != int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE)
                     or record.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION
                     or record.get("tournament_method_version") != TOURNAMENT_METHOD_VERSION
                 ):
@@ -667,6 +669,8 @@ def _validate_resume_outputs(
                     record.get("root_seed") != cfg.sim.seed
                     or record.get("n_players") != n_players
                     or record.get("rng_scheme_version") != urandom.RNG_SCHEME_VERSION
+                    or record.get("rng_purpose_namespace")
+                    != int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE)
                     or record.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION
                     or record.get("tournament_method_version") != TOURNAMENT_METHOD_VERSION
                     or process_block_index != batch_id + 1

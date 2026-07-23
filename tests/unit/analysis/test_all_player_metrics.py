@@ -70,7 +70,7 @@ def _game_row(
         "termination_status": "completed",
         "outcome_schema_version": 2,
         "game_seed": 200 + shuffle_index,
-        "rng_scheme_version": 1,
+        "rng_scheme_version": 2,
         "rng_purpose_namespace": 102,
         "seat_ranks": [winner_seat, "P2" if winner_seat == "P1" else "P1"],
         "winning_score": max(cast(int, p1["score"]), cast(int, p2["score"])),
@@ -143,12 +143,12 @@ def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> Non
             "method_contract": {
                 "kind": "turn_metrics",
                 "procedure": "aggregate_player_batch_statistics",
-                    "parameters": {
-                        "exposure_denominator": "player_game_exposure",
-                        "completed_diagnostic_denominator": "completed_player_game_exposure",
-                        "safety_limit_numerator": "safety_limit_player_game_exposure",
-                        "outcome_schema_version": 2,
-                        "tournament_method_version": 2,
+                "parameters": {
+                    "exposure_denominator": "player_game_exposure",
+                    "completed_diagnostic_denominator": "completed_player_game_exposure",
+                    "safety_limit_numerator": "safety_limit_player_game_exposure",
+                    "outcome_schema_version": 2,
+                    "tournament_method_version": 2,
                 },
             },
         },

@@ -64,7 +64,7 @@ def _row(
         "winner_seat": f"P{winner_seat}" if completed else None,
         "winner_strategy": strategies[winner_seat - 1] if completed else None,
         "game_seed": 2_000 + game,
-        "rng_scheme_version": 1,
+        "rng_scheme_version": 2,
         "rng_purpose_namespace": 102,
         "seat_ranks": [f"P{seat}" for seat in ordered_seats] if completed else [None] * k,
         "winning_score": 120 if completed else None,
