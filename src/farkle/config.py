@@ -412,6 +412,7 @@ class AppConfig:
     _stage_layout: "StageLayout | None" = field(default=None, init=False, repr=False, compare=False)
     _code_identity: Any | None = field(default=None, init=False, repr=False, compare=False)
     _run_lineage_sha256: str | None = field(default=None, init=False, repr=False, compare=False)
+    _game_profile_sha256: str | None = field(default=None, init=False, repr=False, compare=False)
 
     # —— Paths ——
     @property
@@ -478,7 +479,7 @@ class AppConfig:
             normalized_counts,
             key=lambda value: (isinstance(value, str), str(value)),
         )
-        return {
+        freshness: dict[str, Any] = {
             "artifact_contract_version": contract.artifact_contract_version,
             "estimand_version": contract.estimand_version,
             "schema_version": contract.schema_version,
@@ -502,6 +503,9 @@ class AppConfig:
             "conditioning": "unconditional_default",
             "multiplicity": "holm_h2h",
         }
+        if self._game_profile_sha256 is not None:
+            freshness["game_profile_sha256"] = self._game_profile_sha256
+        return freshness
 
     def set_stage_layout(self, layout: "StageLayout") -> None:
         """Override the resolved stage layout (used by CLI orchestration)."""

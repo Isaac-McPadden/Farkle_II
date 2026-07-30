@@ -129,10 +129,7 @@ def _read_cell(cell: RootBatchCell) -> pd.DataFrame:
     validate_rectangular_batch_support(frame, context=str(cell.path))
     exposures = frame["raw_player_game_exposures"]
     wins = frame["raw_wins"]
-    if (
-        (wins < 0).any()
-        or (wins > frame["raw_completed_player_game_exposures"]).any()
-    ):
+    if (wins < 0).any() or (wins > frame["raw_completed_player_game_exposures"]).any():
         raise ValueError(f"{cell.path} contains invalid wins or exposure support")
     if not (
         exposures
@@ -231,9 +228,7 @@ def _estimate_k(
                     group[["root_seed", "deterministic_batch_id"]].drop_duplicates().shape[0]
                 ),
                 "raw_batches": int(
-                    positive[["root_seed", "deterministic_batch_id"]]
-                    .drop_duplicates()
-                    .shape[0]
+                    positive[["root_seed", "deterministic_batch_id"]].drop_duplicates().shape[0]
                 ),
                 "excluded_zero_exposure_batch_cells": int(
                     group["raw_player_game_exposures"].eq(0).sum()
@@ -657,9 +652,14 @@ def _scope_estimates(
     return by_k_tables, across_by_scope
 
 
-def _safe_standardized(raw_difference: float, expected_mcse: float) -> float:
+def _safe_standardized(
+    raw_difference: float,
+    expected_mcse: float | None,
+) -> float | None:
     """Return a stable standardized discrepancy for zero-noise edge cases."""
 
+    if expected_mcse is None or not np.isfinite(expected_mcse):
+        return None
     if expected_mcse > 0.0:
         return raw_difference / expected_mcse
     if raw_difference == 0.0:
@@ -671,6 +671,21 @@ def _at_float(frame: pd.DataFrame, strategy: Hashable, column: str) -> float:
     """Read one known numeric scalar from a strategy-indexed frame."""
 
     return float(cast(float, frame.at[strategy, column]))
+
+
+def _combined_optional_mcse(
+    frame_a: pd.DataFrame,
+    frame_b: pd.DataFrame,
+    strategy: Hashable,
+    column: str,
+) -> float | None:
+    """Combine independent MCSEs when both half-sample estimates are available."""
+
+    value_a = frame_a.at[strategy, column]
+    value_b = frame_b.at[strategy, column]
+    if pd.isna(value_a) or pd.isna(value_b):
+        return None
+    return sqrt(float(cast(float, value_a)) ** 2 + float(cast(float, value_b)) ** 2)
 
 
 def _at_str(frame: pd.DataFrame, strategy: Hashable, column: str) -> str:
@@ -1019,9 +1034,11 @@ def _half_drift(
                 raw = _at_float(first, strategy, "chance_delta") - _at_float(
                     second, strategy, "chance_delta"
                 )
-                expected = sqrt(
-                    _at_float(first, strategy, "batch_mcse") ** 2
-                    + _at_float(second, strategy, "batch_mcse") ** 2
+                expected = _combined_optional_mcse(
+                    first,
+                    second,
+                    strategy,
+                    "batch_mcse",
                 )
                 rows.append(
                     {
@@ -1059,9 +1076,11 @@ def _half_drift(
             raw = _at_float(first_across, strategy, "across_k_score") - _at_float(
                 second_across, strategy, "across_k_score"
             )
-            expected = sqrt(
-                _at_float(first_across, strategy, "across_k_mcse") ** 2
-                + _at_float(second_across, strategy, "across_k_mcse") ** 2
+            expected = _combined_optional_mcse(
+                first_across,
+                second_across,
+                strategy,
+                "across_k_mcse",
             )
             rows.append(
                 {

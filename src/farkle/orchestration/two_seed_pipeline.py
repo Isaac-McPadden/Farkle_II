@@ -26,6 +26,7 @@ from farkle.orchestration.seed_utils import (
     write_active_config,
 )
 from farkle.simulation import runner
+from farkle.simulation.game_profile import GameProfile
 from farkle.utils.artifact_contract import sha256_file
 from farkle.utils.authenticated_contract import (
     CodeIdentity,
@@ -160,6 +161,7 @@ def _current_plan_states(cfg: AppConfig, plan: Sequence[Any]) -> dict[str, str]:
             outputs=item.required_outputs,
             cfg=cfg,
             stage=item.name,
+            freshness_key=item.freshness_key,
         ).value
     return states
 
@@ -235,6 +237,7 @@ def _run_one_seed(
     force: bool,
     policy_bundle: _PerSeedPolicyBundle,
     code_identity: CodeIdentity,
+    oracle_game_profile: GameProfile | None = None,
 ) -> _SeedRunStatus:
     root_cfg = _build_seed_cfg(
         cfg,
@@ -243,14 +246,27 @@ def _run_one_seed(
         policy_bundle=policy_bundle,
     )
     context = SeedRunContext.from_config(root_cfg)
-    write_run_context_atomic(context, code_identity=code_identity)
+    write_run_context_atomic(
+        context,
+        code_identity=code_identity,
+        game_profile_sha256=(
+            oracle_game_profile.sha256 if oracle_game_profile is not None else None
+        ),
+    )
     write_active_config(root_cfg)
     apply_native_thread_limits(policy_bundle.simulation)
     try:
         if not force and seed_has_completion_markers(root_cfg):
             simulation_event = "root_simulation_skipped_complete"
         else:
-            runner.run_tournament(root_cfg, force=force)
+            if oracle_game_profile is None:
+                runner.run_tournament(root_cfg, force=force)
+            else:
+                runner.run_tournament(
+                    root_cfg,
+                    force=force,
+                    oracle_game_profile=oracle_game_profile,
+                )
             simulation_event = "root_simulation_complete"
         append_manifest_event(
             manifest_path,
@@ -317,6 +333,7 @@ def run_pipeline(
     *,
     seed_pair: tuple[int, int],
     force: bool = False,
+    oracle_game_profile: GameProfile | None = None,
 ) -> None:
     """Run both roots, then combination, H2H, agreement, and reporting once."""
 
@@ -359,6 +376,7 @@ def run_pipeline(
                     force=force,
                     policy_bundle=policy_bundle,
                     code_identity=code_identity,
+                    oracle_game_profile=oracle_game_profile,
                 )
                 for seed in seed_pair
             }
@@ -374,6 +392,7 @@ def run_pipeline(
                 force=force,
                 policy_bundle=policy_bundle,
                 code_identity=code_identity,
+                oracle_game_profile=oracle_game_profile,
             )
             for seed in seed_pair
         }
@@ -411,6 +430,9 @@ def run_pipeline(
             pair_context,
             code_identity=code_identity,
             parent_lifecycle_roots=parent_lifecycle_roots,
+            game_profile_sha256=(
+                oracle_game_profile.sha256 if oracle_game_profile is not None else None
+            ),
         )
         write_active_config(pair_context.config, dest_dir=pair_root)
         apply_native_thread_limits(policy_bundle.analysis)
@@ -419,6 +441,7 @@ def run_pipeline(
                 pair_context,
                 force=force,
                 manifest_path=manifest_path,
+                oracle_game_profile=oracle_game_profile,
             )
         except Exception as exc:  # noqa: BLE001
             pair_error = f"{type(exc).__name__}: {exc}"
@@ -443,9 +466,9 @@ def run_pipeline(
         root_health[str(seed)]["stage_states"] = current_states
         if current_lifecycle is None:
             root_health[str(seed)]["analysis"] = "failed"
-            root_health[str(seed)][
-                "error"
-            ] = "root workflow became stale before final health publication"
+            root_health[str(seed)]["error"] = (
+                "root workflow became stale before final health publication"
+            )
     root_failures = [
         f"root {seed}: {status['error']}"
         for seed, status in root_health.items()

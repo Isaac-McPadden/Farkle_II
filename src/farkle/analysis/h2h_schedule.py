@@ -22,6 +22,7 @@ from scipy.signal import fftconvolve
 from scipy.stats import binom, nchypergeom_fisher, norm
 
 from farkle.config import AppConfig, ArtifactScope
+from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.simulation import PlayerRngCoordinates, _play_game
 from farkle.simulation.strategies import parse_strategy_identifier
 from farkle.utils.artifact_contract import (
@@ -65,20 +66,23 @@ def h2h_method_contract(
 ) -> H2HMethodContract:
     """Return the explicit method-v2 identity for an H2H artifact."""
 
+    parameters: dict[str, Any] = {
+        "h2h_method_version": H2H_METHOD_VERSION,
+        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+        "rng_scheme_version": RNG_SCHEME_VERSION,
+        "completed_game_target": True,
+        "safety_limit_inference_policy": "exclude",
+        "max_attempt_multiplier": float(cfg.head2head.max_attempt_multiplier),
+        "min_candidate_completion_rate": float(cfg.head2head.min_candidate_completion_rate),
+        "family_hash": family_hash,
+        "schedule_hash": schedule_hash,
+    }
+    if cfg._game_profile_sha256 is not None:
+        parameters["game_profile_sha256"] = cfg._game_profile_sha256
     return {
         "kind": "h2h",
         "procedure": operation,
-        "parameters": {
-            "h2h_method_version": H2H_METHOD_VERSION,
-            "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
-            "rng_scheme_version": RNG_SCHEME_VERSION,
-            "completed_game_target": True,
-            "safety_limit_inference_policy": "exclude",
-            "max_attempt_multiplier": float(cfg.head2head.max_attempt_multiplier),
-            "min_candidate_completion_rate": float(cfg.head2head.min_candidate_completion_rate),
-            "family_hash": family_hash,
-            "schedule_hash": schedule_hash,
-        },
+        "parameters": parameters,
     }
 
 
@@ -435,6 +439,7 @@ def _schedule_hash(
     block_games: int,
     max_attempt_multiplier: float,
     min_candidate_completion_rate: float,
+    game_profile_sha256: str | None,
 ) -> str:
     """Hash the immutable statistical schedule contract, excluding operational caps."""
 
@@ -458,6 +463,8 @@ def _schedule_hash(
         "score_test_id": SCORE_TEST_ID,
         "power_method_id": POWER_METHOD_ID,
     }
+    if game_profile_sha256 is not None:
+        contract["game_profile_sha256"] = game_profile_sha256
     encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
@@ -478,6 +485,7 @@ def _schedule_frame(
     alpha_per_pair: float,
     target_power: float,
     worst_power: float,
+    game_profile_sha256: str | None,
 ) -> pd.DataFrame:
     rows: list[dict[str, Any]] = []
     max_attempts = math.ceil(max_attempt_multiplier * block_games)
@@ -486,38 +494,37 @@ def _schedule_frame(
             for order in (0, 1):
                 seat1 = strategy_a if order == 0 else strategy_b
                 seat2 = strategy_b if order == 0 else strategy_a
-                rows.append(
-                    {
-                        "family_hash": family_hash,
-                        "schedule_hash": schedule_hash,
-                        "pair_id": pair_id,
-                        "strategy_a": strategy_a,
-                        "strategy_b": strategy_b,
-                        "root_seed": root_seed,
-                        "root_index": root_index,
-                        "order": order,
-                        "order_label": "a_b" if order == 0 else "b_a",
-                        "seat1_strategy": seat1,
-                        "seat2_strategy": seat2,
-                        "n_completed_required": block_games,
-                        "max_attempts": max_attempts,
-                        "max_attempt_multiplier": max_attempt_multiplier,
-                        "attempt_index_start": 0,
-                        "attempt_index_stop_exclusive": max_attempts,
-                        "rng_scheme_version": RNG_SCHEME_VERSION,
-                        "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
-                        "h2h_method_version": H2H_METHOD_VERSION,
-                        "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
-                        "score_test_id": SCORE_TEST_ID,
-                        "alpha_per_pair": alpha_per_pair,
-                        "target_power": target_power,
-                        "worst_scenario_achieved_power": worst_power,
-                        "power_conditioning": (
-                            "conditional_on_achieving_exact_completed_game_support"
-                        ),
-                        "block_id": _block_id(schedule_hash, pair_id, root_seed, order),
-                    }
-                )
+                row = {
+                    "family_hash": family_hash,
+                    "schedule_hash": schedule_hash,
+                    "pair_id": pair_id,
+                    "strategy_a": strategy_a,
+                    "strategy_b": strategy_b,
+                    "root_seed": root_seed,
+                    "root_index": root_index,
+                    "order": order,
+                    "order_label": "a_b" if order == 0 else "b_a",
+                    "seat1_strategy": seat1,
+                    "seat2_strategy": seat2,
+                    "n_completed_required": block_games,
+                    "max_attempts": max_attempts,
+                    "max_attempt_multiplier": max_attempt_multiplier,
+                    "attempt_index_start": 0,
+                    "attempt_index_stop_exclusive": max_attempts,
+                    "rng_scheme_version": RNG_SCHEME_VERSION,
+                    "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                    "h2h_method_version": H2H_METHOD_VERSION,
+                    "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
+                    "score_test_id": SCORE_TEST_ID,
+                    "alpha_per_pair": alpha_per_pair,
+                    "target_power": target_power,
+                    "worst_scenario_achieved_power": worst_power,
+                    "power_conditioning": ("conditional_on_achieving_exact_completed_game_support"),
+                    "block_id": _block_id(schedule_hash, pair_id, root_seed, order),
+                }
+                if game_profile_sha256 is not None:
+                    row["game_profile_sha256"] = game_profile_sha256
+                rows.append(row)
     frame = pd.DataFrame(rows)
     for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
         frame[column] = canonical_strategy_ids(
@@ -615,6 +622,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         block_games=block_games,
         max_attempt_multiplier=max_attempt_multiplier,
         min_candidate_completion_rate=float(cfg.head2head.min_candidate_completion_rate),
+        game_profile_sha256=cfg._game_profile_sha256,
     )
     total_blocks = pair_count * len(roots) * 2
     cap = cfg.head2head.total_game_cap
@@ -663,6 +671,8 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         "seat_order_rng_contract": "independent_coordinate_streams",
         "power_validation": power_grid,
     }
+    if cfg._game_profile_sha256 is not None:
+        plan["game_profile_sha256"] = cfg._game_profile_sha256
     power_path = cfg.h2h_power_plan_path()
     schedule_path = cfg.h2h_block_manifest_path()
     schedule = _schedule_frame(
@@ -675,6 +685,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         alpha_per_pair=alpha_per_pair,
         target_power=cfg.head2head.target_power,
         worst_power=worst_power,
+        game_profile_sha256=cfg._game_profile_sha256,
     )
     family_sources = [
         cfg.h2h_candidate_family_manifest_path(),
@@ -837,6 +848,8 @@ def _write_execution_state(
         "completed_block_count": completed_block_count,
         "total_block_count": total,
     }
+    if plan.get("game_profile_sha256") is not None:
+        payload["game_profile_sha256"] = str(plan["game_profile_sha256"])
     if block_rows is not None:
         terminal = [
             row for row in block_rows if str(row["completion_status"]) in _TERMINAL_BLOCK_STATUSES
@@ -1054,6 +1067,7 @@ def _simulate_block(
     block: dict[str, Any],
     strategy_manifest_path: Path,
     chunk_games: int,
+    oracle_game_profile: GameProfile | None = None,
 ) -> dict[str, Any]:
     """Advance one root/order block by at most ``chunk_games`` attempts."""
 
@@ -1087,35 +1101,41 @@ def _simulate_block(
             attempt_index=attempt_index,
             dtype=np.uint64,
         )
-        rows.append(
-            dict(
-                _play_game(
-                    game_seed,
-                    [strategy1, strategy2],
-                    provenance={
-                        "root_seed": int(block["root_seed"]),
-                        "k": 2,
-                        "shuffle_index": None,
-                        "game_index": attempt_index,
-                        "attempt_index": attempt_index,
-                        "pair_id": int(block["pair_id"]),
-                        "order": int(block["order"]),
-                        "deterministic_batch_id": None,
-                        "game_seed": game_seed,
-                        "rng_scheme_version": RNG_SCHEME_VERSION,
-                        "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
-                    },
-                    player_rng_coordinates=PlayerRngCoordinates(
-                        purpose=RandomPurpose.H2H_PLAYER,
-                        root_seed=int(block["root_seed"]),
-                        k=2,
-                        pair_id=int(block["pair_id"]),
-                        order=int(block["order"]),
-                        attempt_index=attempt_index,
-                    ),
-                )
+        play_kwargs: dict[str, Any] = {
+            "provenance": {
+                "root_seed": int(block["root_seed"]),
+                "k": 2,
+                "shuffle_index": None,
+                "game_index": attempt_index,
+                "attempt_index": attempt_index,
+                "pair_id": int(block["pair_id"]),
+                "order": int(block["order"]),
+                "deterministic_batch_id": None,
+                "game_seed": game_seed,
+                "rng_scheme_version": RNG_SCHEME_VERSION,
+                "rng_purpose_namespace": int(RandomPurpose.H2H_GAME),
+            },
+            "player_rng_coordinates": PlayerRngCoordinates(
+                purpose=RandomPurpose.H2H_PLAYER,
+                root_seed=int(block["root_seed"]),
+                k=2,
+                pair_id=int(block["pair_id"]),
+                order=int(block["order"]),
+                attempt_index=attempt_index,
+            ),
+        }
+        if oracle_game_profile is not None:
+            limits = oracle_game_profile.h2h_limits(
+                root_seed=int(block["root_seed"]),
+                pair_id=int(block["pair_id"]),
+                order=int(block["order"]),
+                attempt_index=attempt_index,
             )
-        )
+            play_kwargs.update(
+                target_score=limits.target_score,
+                max_rounds=limits.max_rounds,
+            )
+        rows.append(dict(_play_game(game_seed, [strategy1, strategy2], **play_kwargs)))
         if rows[-1]["termination_status"] == "completed":
             games_completed += 1
     if rows:
@@ -1157,7 +1177,7 @@ def _read_authenticated_block(path: Path, block: Mapping[str, Any]) -> dict[str,
     if len(frame) != 1:
         raise ValueError(f"H2H block checkpoint must contain one row: {path}")
     row = cast(dict[str, Any], frame.iloc[0].to_dict())
-    immutable_fields = (
+    immutable_fields: tuple[str, ...] = (
         "block_id",
         "family_hash",
         "schedule_hash",
@@ -1170,6 +1190,8 @@ def _read_authenticated_block(path: Path, block: Mapping[str, Any]) -> dict[str,
         "outcome_schema_version",
         "h2h_method_version",
     )
+    if block.get("game_profile_sha256") is not None:
+        immutable_fields = (*immutable_fields, "game_profile_sha256")
     mismatched = {
         field: (row.get(field), block.get(field))
         for field in immutable_fields
@@ -1415,11 +1437,15 @@ def execute_h2h_schedule(
     n_jobs: int | None = None,
     chunk_games: int = 1_000,
     block_runner: BlockRunner = _simulate_block,
+    oracle_game_profile: GameProfile | None = None,
 ) -> H2HExecutionArtifacts:
     """Execute missing immutable blocks and publish their row-preserving union."""
 
     if chunk_games < 1:
         raise ValueError("chunk_games must be positive")
+    profile_sha256 = oracle_game_profile.sha256 if oracle_game_profile is not None else None
+    if profile_sha256 != cfg._game_profile_sha256:
+        raise ValueError("H2H game profile does not match the authenticated run context")
     plan_path = cfg.h2h_power_plan_path()
     schedule_path = cfg.h2h_block_manifest_path()
     state_path = cfg.h2h_execution_state_path()
@@ -1549,9 +1575,19 @@ def execute_h2h_schedule(
         for block in pending:
             current = block
             while True:
+                raw_result = (
+                    _simulate_block(
+                        current,
+                        manifest_path,
+                        chunk_games,
+                        oracle_game_profile,
+                    )
+                    if block_runner is _simulate_block
+                    else block_runner(current, manifest_path, chunk_games)
+                )
                 result = _normalize_runner_result(
                     current,
-                    block_runner(current, manifest_path, chunk_games),
+                    raw_result,
                 )
                 _write_block(
                     cfg,
@@ -1574,7 +1610,16 @@ def execute_h2h_schedule(
                     block = next(iterator)
                 except StopIteration:
                     return False
-                future = executor.submit(block_runner, block, manifest_path, chunk_games)
+                if block_runner is _simulate_block:
+                    future = executor.submit(
+                        _simulate_block,
+                        block,
+                        manifest_path,
+                        chunk_games,
+                        oracle_game_profile,
+                    )
+                else:
+                    future = executor.submit(block_runner, block, manifest_path, chunk_games)
                 active[future] = block
                 return True
 
@@ -1596,9 +1641,18 @@ def execute_h2h_schedule(
                         checkpoint_execution_state()
                         submit_one()
                     else:
-                        next_future = executor.submit(
-                            block_runner, result, manifest_path, chunk_games
-                        )
+                        if block_runner is _simulate_block:
+                            next_future = executor.submit(
+                                _simulate_block,
+                                result,
+                                manifest_path,
+                                chunk_games,
+                                oracle_game_profile,
+                            )
+                        else:
+                            next_future = executor.submit(
+                                block_runner, result, manifest_path, chunk_games
+                            )
                         active[next_future] = result
 
     completed_records: list[dict[str, Any]] = []

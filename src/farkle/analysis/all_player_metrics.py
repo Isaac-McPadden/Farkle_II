@@ -159,6 +159,19 @@ def _require_positive_int(row: Mapping[str, Any], field: str, *, source: Path) -
     return integer
 
 
+def _require_nonnegative_int(row: Mapping[str, Any], field: str, *, source: Path) -> int:
+    value = row.get(field)
+    if value is None:
+        raise ValueError(
+            f"{source} is missing required {field!r} values; rerun simulation and curation "
+            "under the coordinate-and-turn row contract"
+        )
+    integer = int(value)
+    if integer < 0:
+        raise ValueError(f"{source} contains negative {field!r}: {integer}")
+    return integer
+
+
 def _update_exposure(
     accumulator: defaultdict[str, float],
     row: Mapping[str, Any],
@@ -175,10 +188,24 @@ def _update_exposure(
             "retired row schemas cannot satisfy unconditional all-player metrics"
         )
     score = float(score_value)
-    n_turns = _require_positive_int(row, f"{prefix}n_turns", source=source)
-    n_rounds = _require_positive_int(row, "n_rounds", source=source)
-    exact_return = score / n_turns
-    proxy_return = score / n_rounds
+    if row.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION:
+        raise ValueError(f"{source} is not outcome-schema-v{OUTCOME_SCHEMA_VERSION} compatible")
+    try:
+        status = TerminationStatus(row["termination_status"])
+    except (KeyError, ValueError) as exc:
+        raise ValueError(f"{source} contains an invalid termination_status") from exc
+    if status is TerminationStatus.COMPLETED:
+        n_turns = _require_positive_int(row, f"{prefix}n_turns", source=source)
+        n_rounds = _require_positive_int(row, "n_rounds", source=source)
+    else:
+        n_turns = _require_nonnegative_int(row, f"{prefix}n_turns", source=source)
+        n_rounds = _require_nonnegative_int(row, "n_rounds", source=source)
+    if (n_turns == 0 or n_rounds == 0) and score != 0:
+        raise ValueError(
+            f"{source} contains a positive final score with a zero turn/round denominator"
+        )
+    exact_return = score / n_turns if n_turns else 0.0
+    proxy_return = score / n_rounds if n_rounds else 0.0
     turn_difference = n_turns - n_rounds
     hit_max_rounds = row.get(f"{prefix}hit_max_rounds")
     if hit_max_rounds is None:
@@ -186,21 +213,12 @@ def _update_exposure(
             f"{source} is missing maximum-round abort status for seat {seat}; "
             "rerun simulation and curation under the turn row contract"
         )
-
-    if row.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION:
-        raise ValueError(f"{source} is not outcome-schema-v{OUTCOME_SCHEMA_VERSION} compatible")
-    try:
-        status = TerminationStatus(row["termination_status"])
-    except (KeyError, ValueError) as exc:
-        raise ValueError(f"{source} contains an invalid termination_status") from exc
     won = row.get("winner_seat") == f"P{seat}"
     if status is TerminationStatus.SAFETY_LIMIT and row.get("winner_seat") is not None:
         raise ValueError(f"{source} fabricates a winner for a safety-limit attempt")
 
     accumulator["raw_player_game_exposures"] += 1
-    accumulator["raw_completed_player_game_exposures"] += int(
-        status is TerminationStatus.COMPLETED
-    )
+    accumulator["raw_completed_player_game_exposures"] += int(status is TerminationStatus.COMPLETED)
     accumulator["raw_safety_limit_player_game_exposures"] += int(
         status is TerminationStatus.SAFETY_LIMIT
     )

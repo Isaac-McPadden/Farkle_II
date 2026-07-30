@@ -20,7 +20,9 @@ modules and use hand-checkable tests before accepting a claim.
 - `analysis/all_player_metrics.py`: all attempted player-game exposures, with a
   safety-limit attempt counted as a loss for every participant; explicit
   completed/safety-limit support; exact turn- and game-denominated returns;
-  rounds proxy, mismatch prevalence, and maximum-round abort exposures.
+  rounds proxy, mismatch prevalence, and maximum-round abort exposures. A
+  zero-turn/zero-round safety attempt has zero game-weighted return and no
+  turn-weighted return; completed games still require positive denominators.
 - `analysis/performance.py`: primary per-attempt win rates relative to `1/k`, a
   labelled completed-only diagnostic, per-attempt Wilson checks and batch MCSE
   `s_batch/sqrt(B)`, complete-support equal-k performance, declared
@@ -29,7 +31,8 @@ modules and use hand-checkable tests before accepting a claim.
   contrasts, within-k spread, and cross-k Spearman/Kendall agreement. Boundary
   logits are unavailable.
 - `analysis/screening.py`: descriptive evidence only. Screening does not imply
-  equality, final tiers, or unique-best status.
+  equality, final tiers, or unique-best status, and consumes the canonical
+  all-attempt performance conditioning.
 
 ## Seat, game, and RNG diagnostics
 
@@ -72,7 +75,9 @@ modules and use hand-checkable tests before accepting a claim.
   root-population interval, heterogeneity model, significance/rejection
   classification, or multiple-testing inference is permitted. MCSE and
   intervals describe Monte Carlo precision; practical threshold positions and
-  joint-bootstrap reference exceedances remain descriptive.
+  joint-bootstrap reference exceedances remain descriptive. Half-drift retains
+  raw differences but leaves MCSE and standardized drift unavailable when a
+  half contains only one deterministic batch.
 
 ## H2H
 
@@ -98,8 +103,10 @@ modules and use hand-checkable tests before accepting a claim.
   agreement, admission counts, selection-conditioned H2H agreement, and root
   H2H stability.
 - `analysis/structure_reporting.py`: sidecar-validated JSON/Markdown/plot
-  reports. Claim language is constrained by support, unresolved comparisons,
-  cycles, configured equivalence, and direct-dominance evidence.
+  reports. The reporting completion binds the migration inventory as an output
+  and reports TrueSkill's completed-game/safety-limit conditioning explicitly.
+  Claim language is constrained by support, unresolved comparisons, cycles,
+  configured equivalence, and direct-dominance evidence.
 
 ## Primary oracles
 
@@ -110,3 +117,4 @@ modules and use hand-checkable tests before accepting a claim.
 - `tests/unit/analysis/test_h2h_inference.py`
 - `tests/unit/analysis/test_dominance.py`
 - `tests/integration/test_structure_toy_oracle.py`
+- `tests/integration/test_simulation_to_report_oracle.py`

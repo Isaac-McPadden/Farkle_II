@@ -90,6 +90,7 @@ class RunContextConfig(AppConfig):
         run_cfg._stage_layout = base._stage_layout
         run_cfg._code_identity = base._code_identity
         run_cfg._run_lineage_sha256 = base._run_lineage_sha256
+        run_cfg._game_profile_sha256 = base._game_profile_sha256
         run_cfg._analysis_root_override = analysis_root
         run_cfg._root_input_layout_override = root_input_layout
         if stage_layout is not None:
@@ -202,6 +203,7 @@ def configure_run_lineage(
     *,
     code_identity: CodeIdentity,
     parent_lifecycle_roots: tuple[str, ...] = (),
+    game_profile_sha256: str | None = None,
 ) -> str:
     """Attach and return the immutable lineage identity used by stage freshness.
 
@@ -210,6 +212,12 @@ def configure_run_lineage(
     """
 
     cfg = context.config
+    resolved_game_profile_sha256 = game_profile_sha256 or cfg._game_profile_sha256
+    if resolved_game_profile_sha256 is not None and (
+        len(resolved_game_profile_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in resolved_game_profile_sha256)
+    ):
+        raise ValueError("game_profile_sha256 must be a lowercase SHA-256 digest")
     public_config_sha = compute_config_sha(cfg)
     cfg.config_sha = public_config_sha
     roots = (
@@ -223,9 +231,12 @@ def configure_run_lineage(
         "stage_layout_identity_sha256": identity_sha256(cfg.stage_layout.to_resolved_layout()),
         "code_identity": _code_payload(code_identity),
     }
+    if resolved_game_profile_sha256 is not None:
+        lineage["game_profile_sha256"] = resolved_game_profile_sha256
     lineage_sha = identity_sha256(lineage)
     cfg._code_identity = code_identity
     cfg._run_lineage_sha256 = lineage_sha
+    cfg._game_profile_sha256 = resolved_game_profile_sha256
     return lineage_sha
 
 
@@ -235,6 +246,7 @@ def write_run_context_atomic(
     code_identity: CodeIdentity,
     parent_lifecycle_roots: tuple[str, ...] = (),
     cli_overrides: tuple[str, ...] = (),
+    game_profile_sha256: str | None = None,
 ) -> str:
     """Publish the authenticated runtime/layout artifact separately from YAML."""
 
@@ -242,6 +254,7 @@ def write_run_context_atomic(
         context,
         code_identity=code_identity,
         parent_lifecycle_roots=parent_lifecycle_roots,
+        game_profile_sha256=game_profile_sha256,
     )
     cfg = context.config
     resolved_paths = {
@@ -273,6 +286,10 @@ def write_run_context_atomic(
         "code_identity": _code_payload(code_identity),
         "cli_overrides": list(cli_overrides),
     }
+    if cfg._game_profile_sha256 is not None:
+        payload["lineage_extensions"] = {
+            "game_profile_sha256": cfg._game_profile_sha256,
+        }
     payload["run_context_sha256"] = identity_sha256(payload)
     path = context.run_context_path
     path.parent.mkdir(parents=True, exist_ok=True)

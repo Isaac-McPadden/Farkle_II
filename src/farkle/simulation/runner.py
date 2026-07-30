@@ -30,6 +30,7 @@ import pyarrow as pa
 
 import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig
+from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
 from farkle.simulation.simulation import experiment_size, generate_strategy_grid
 from farkle.simulation.strategies import (
@@ -263,13 +264,14 @@ def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
 def _simulation_stage_config_sha(cfg: AppConfig, n_players: int) -> str:
     """Bind the shared simulation scope to one concrete root/k cell."""
 
-    return freshness_sha256(
-        {
-            "base_stage_config_sha": cfg.stage_config_sha("simulation"),
-            "root_seed": int(cfg.sim.seed),
-            "n_players": int(n_players),
-        }
-    )
+    identity: dict[str, object] = {
+        "base_stage_config_sha": cfg.stage_config_sha("simulation"),
+        "root_seed": int(cfg.sim.seed),
+        "n_players": int(n_players),
+    }
+    if cfg._game_profile_sha256 is not None:
+        identity["game_profile_sha256"] = cfg._game_profile_sha256
+    return freshness_sha256(identity)
 
 
 def _completion_output_files(paths: Sequence[Path], done_path: Path) -> list[Path]:
@@ -299,7 +301,7 @@ def write_simulation_done(
 ) -> Path:
     """Write a completion marker for a per-N simulation run."""
     done_path = simulation_done_path(cfg, n_players)
-    metadata = {
+    metadata: dict[str, object] = {
         "n_players": n_players,
         "seed": cfg.sim.seed,
         "root_seed": cfg.sim.seed,
@@ -317,6 +319,8 @@ def write_simulation_done(
         "tournament_method_version": TOURNAMENT_METHOD_VERSION,
         "n_strategies": n_strategies,
     }
+    if cfg._game_profile_sha256 is not None:
+        metadata["game_profile_sha256"] = cfg._game_profile_sha256
     output_files = _completion_output_files(outputs, done_path)
     immutable_inputs = [
         cfg.strategy_manifest_root_path(),
@@ -571,6 +575,8 @@ def _validate_resume_outputs(
         "rng_bit_generator": "PCG64DXSM",
         **_workload_checkpoint_metadata(workload_plan),
     }
+    if cfg._game_profile_sha256 is not None:
+        expected_meta["game_profile_sha256"] = cfg._game_profile_sha256
     root_manifest_path = cfg.strategy_manifest_root_path()
     if root_manifest_path.exists():
         _validate_manifest_matches(strategies_manifest, root_manifest_path, label="Strategy")
@@ -650,6 +656,7 @@ def _validate_resume_outputs(
                     != int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE)
                     or record.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION
                     or record.get("tournament_method_version") != TOURNAMENT_METHOD_VERSION
+                    or record.get("game_profile_sha256") != cfg._game_profile_sha256
                 ):
                     coordinate_errors += 1
             if duplicates:
@@ -720,6 +727,7 @@ def _validate_resume_outputs(
                     != int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE)
                     or record.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION
                     or record.get("tournament_method_version") != TOURNAMENT_METHOD_VERSION
+                    or record.get("game_profile_sha256") != cfg._game_profile_sha256
                     or process_block_index != batch_id + 1
                     or not shuffle_indices
                     or shuffle_indices != sorted(shuffle_indices)
@@ -745,12 +753,23 @@ def _validate_resume_outputs(
                 )
 
 
-def run_tournament(cfg: AppConfig, *, force: bool = False) -> int:
+def run_tournament(
+    cfg: AppConfig,
+    *,
+    force: bool = False,
+    oracle_game_profile: GameProfile | None = None,
+) -> int:
     """Top-level dispatcher that runs single-N or multi-N based on the config.
 
     - If ``sim.n_players_list`` has one element, runs that N and returns total games (int).
     - If it has multiple elements, runs them all and returns the **sum** of total games.
     """
+    profile_sha256 = oracle_game_profile.sha256 if oracle_game_profile is not None else None
+    if cfg._game_profile_sha256 != profile_sha256:
+        if cfg._run_lineage_sha256 is not None:
+            raise ValueError("game-profile identity does not match the authenticated run lineage")
+        cfg._game_profile_sha256 = profile_sha256
+
     configured_n_vals = list(cfg.sim.n_players_list)
     if not configured_n_vals:
         raise ValueError("sim.n_players_list must contain at least one player count")
@@ -778,7 +797,9 @@ def run_tournament(cfg: AppConfig, *, force: bool = False) -> int:
                 "expanded_metrics": cfg.sim.expanded_metrics,
             },
         )
-        return run_single_n(cfg, n, force=force)
+        if oracle_game_profile is None:
+            return run_single_n(cfg, n, force=force)
+        return run_single_n(cfg, n, force=force, oracle_game_profile=oracle_game_profile)
 
     LOGGER.info(
         "Running multi-N tournaments",
@@ -792,7 +813,15 @@ def run_tournament(cfg: AppConfig, *, force: bool = False) -> int:
             "expanded_metrics": cfg.sim.expanded_metrics,
         },
     )
-    totals = run_multi(cfg, player_counts=n_vals, force=force)
+    if oracle_game_profile is None:
+        totals = run_multi(cfg, player_counts=n_vals, force=force)
+    else:
+        totals = run_multi(
+            cfg,
+            player_counts=n_vals,
+            force=force,
+            oracle_game_profile=oracle_game_profile,
+        )
     return int(sum(totals.values()))
 
 
@@ -802,6 +831,7 @@ def run_single_n(
     strategies: list[ThresholdStrategy] | None = None,
     *,
     force: bool = False,
+    oracle_game_profile: GameProfile | None = None,
 ) -> int:
     """Run a Farkle tournament for a single tournament with player count *n*."""
     # --- Grid & tests ---
@@ -921,10 +951,16 @@ def run_single_n(
             "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
             "tournament_method_version": TOURNAMENT_METHOD_VERSION,
             "rng_bit_generator": "PCG64DXSM",
+            **(
+                {"game_profile_sha256": oracle_game_profile.sha256}
+                if oracle_game_profile is not None
+                else {}
+            ),
             **_workload_checkpoint_metadata(workload_plan),
         },
         workload_plan=workload_plan,
         workload_plan_path=workload_plan_path,
+        oracle_game_profile=oracle_game_profile,
     )
 
     # --- Final checkpoint post-processing ---
@@ -1052,6 +1088,7 @@ def run_multi(
     player_counts: Sequence[int] | None = None,
     *,
     force: bool = False,
+    oracle_game_profile: GameProfile | None = None,
 ) -> dict[int, int]:
     """Run tournaments for multiple player counts."""
     results: dict[int, int] = {}
@@ -1091,7 +1128,16 @@ def run_multi(
         return results
 
     for n in valid_counts:
-        games = run_single_n(cfg, n, strategies=strategies, force=force)
+        if oracle_game_profile is None:
+            games = run_single_n(cfg, n, strategies=strategies, force=force)
+        else:
+            games = run_single_n(
+                cfg,
+                n,
+                strategies=strategies,
+                force=force,
+                oracle_game_profile=oracle_game_profile,
+            )
         results[n] = games
     return results
 

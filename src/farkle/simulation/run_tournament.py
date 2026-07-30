@@ -26,6 +26,7 @@ import pyarrow as pa
 from pyarrow import parquet as pq
 
 from farkle.game.engine import TerminationStatus
+from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.simulation import (
     PlayerRngCoordinates,
     _play_game,
@@ -246,6 +247,7 @@ class WorkerState:
 
     strats: list[ThresholdStrategy]
     cfg: TournamentConfig
+    game_profile: GameProfile | None = None
 
 
 _STATE: WorkerState | None = None
@@ -254,13 +256,14 @@ _STATE: WorkerState | None = None
 def _init_worker(
     strategies: Sequence[ThresholdStrategy],
     config: TournamentConfig,
+    game_profile: GameProfile | None = None,
 ) -> None:
     """Initialise per-process state."""
 
     global _STATE
     if len(strategies) % config.n_players != 0:
         raise ValueError(f"n_players must divide {len(strategies):,}")
-    _STATE = WorkerState(list(strategies), config)
+    _STATE = WorkerState(list(strategies), config, game_profile)
 
 
 # ---------------------------------------------------------------------------
@@ -324,9 +327,20 @@ def _play_one_shuffle(task: ShuffleTask | int, *, collect_rows: bool = False) ->
         idxs = perm[offset : offset + state.cfg.n_players].tolist()  # type: ignore
         offset += state.cfg.n_players  # type: ignore
 
+        game_limits = (
+            state.game_profile.tournament_limits(  # type: ignore[union-attr]
+                root_seed=work.root_seed,
+                k=work.k,
+                shuffle_index=work.shuffle_index,
+                game_index=game_index,
+            )
+            if state.game_profile is not None  # type: ignore[union-attr]
+            else None
+        )
         row = _play_game(  # type: ignore[union-attr]
             int(gseed),
             [state.strats[i] for i in idxs],  # type: ignore[union-attr]
+            target_score=(game_limits.target_score if game_limits is not None else 10_000),
             provenance={
                 "root_seed": work.root_seed,
                 "k": work.k,
@@ -345,6 +359,7 @@ def _play_one_shuffle(task: ShuffleTask | int, *, collect_rows: bool = False) ->
                 shuffle_index=work.shuffle_index,
                 game_index=game_index,
             ),
+            max_rounds=(game_limits.max_rounds if game_limits is not None else 200),
         )
         status = wins.record_row(row, k=work.k, source="Simulation row")
         if status is TerminationStatus.SAFETY_LIMIT:
@@ -509,6 +524,11 @@ def _run_chunk_metrics(
                     "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
                     "tournament_method_version": TOURNAMENT_METHOD_VERSION,
                     "pid": getpid(),
+                    **(
+                        {"game_profile_sha256": _STATE.game_profile.sha256}
+                        if _STATE is not None and _STATE.game_profile is not None
+                        else {}
+                    ),
                 },
             )
             LOGGER.info(
@@ -537,6 +557,7 @@ def _measure_throughput(
     sample_strategies: Sequence[ThresholdStrategy],
     sample_games: int = 2_000,
     seed: int = 0,
+    game_profile: GameProfile | None = None,
 ) -> float:
     """Quick benchmark returning games processed per second."""
 
@@ -546,6 +567,10 @@ def _measure_throughput(
         _play_game(
             int(game_seed),
             sample_strategies,
+            target_score=(
+                game_profile.default_target_score if game_profile is not None else 10_000
+            ),
+            max_rounds=(game_profile.default_max_rounds if game_profile is not None else 200),
             player_rng_coordinates=PlayerRngCoordinates(
                 purpose=urandom.RandomPurpose.TOURNAMENT_PLAYER,
                 root_seed=seed,
@@ -991,6 +1016,7 @@ def run_tournament(
     checkpoint_metadata: Mapping[str, Any] | None = None,
     workload_plan: TournamentWorkloadPlan | None = None,
     workload_plan_path: Path | None = None,
+    oracle_game_profile: GameProfile | None = None,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
@@ -1068,6 +1094,8 @@ def run_tournament(
         "player_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_PLAYER),
         "deterministic_batch_size": cfg.deterministic_batch_size,
     }
+    if oracle_game_profile is not None:
+        checkpoint_meta["game_profile_sha256"] = oracle_game_profile.sha256
     if checkpoint_metadata:
         checkpoint_meta.update(checkpoint_metadata)
     if workload_plan is not None:
@@ -1082,7 +1110,13 @@ def run_tournament(
             }
         )
 
-    games_per_sec = _measure_throughput(strategies[: cfg.n_players])
+    if oracle_game_profile is None:
+        games_per_sec = _measure_throughput(strategies[: cfg.n_players])
+    else:
+        games_per_sec = _measure_throughput(
+            strategies[: cfg.n_players],
+            game_profile=oracle_game_profile,
+        )
     if workload_plan is not None:
         if (
             workload_plan.k != cfg.n_players
@@ -1339,7 +1373,7 @@ def run_tournament(
             chunk_items,
             n_jobs=resolved_n_jobs,
             initializer=_init_worker,
-            initargs=(strategies, cfg),
+            initargs=(strategies, cfg, oracle_game_profile),
             window=4 * resolved_n_jobs,
             mp_context=mp_context,
         ):
@@ -1423,6 +1457,11 @@ def run_tournament(
                             "rng_purpose_namespace": int(urandom.RandomPurpose.TOURNAMENT_SHUFFLE),
                             "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
                             "tournament_method_version": TOURNAMENT_METHOD_VERSION,
+                            **(
+                                {"game_profile_sha256": oracle_game_profile.sha256}
+                                if oracle_game_profile is not None
+                                else {}
+                            ),
                         },
                     )
                     LOGGER.info(

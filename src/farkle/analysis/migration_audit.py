@@ -106,6 +106,7 @@ def run(cfg: AppConfig) -> Path:
         source_scope=ArtifactScope.DIAGNOSTICS,
         operation="inventory_ignored_on_disk_artifacts",
         conditioning="filesystem_inventory_only",
+        consistency_columns=list(payload),
         seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
         player_counts=sorted({int(k) for k in cfg.sim.n_players_list}),
         required_player_counts=sorted({int(k) for k in cfg.sim.n_players_list}),

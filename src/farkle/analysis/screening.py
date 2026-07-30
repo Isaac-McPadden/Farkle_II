@@ -8,6 +8,7 @@ from typing import Any
 import pandas as pd
 import pyarrow as pa
 
+from farkle.analysis.all_player_metrics import ATTEMPT_CONDITIONING
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.artifacts import (
@@ -34,7 +35,7 @@ def _build_screening_frame(cfg: AppConfig, player_counts: list[int]) -> pd.DataF
         expected_sidecar={
             "scope": ArtifactScope.ACROSS_K.value,
             "operation": "equal_k_mean",
-            "conditioning": "unconditional",
+            "conditioning": ATTEMPT_CONDITIONING,
         },
     ).to_pandas()
     bootstrap = read_parquet_artifact(
@@ -121,7 +122,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         "support_count_role": "raw_player_game_exposures",
         "uncertainty_method": "descriptive_with_joint_batch_resampling",
         "replication_unit": "deterministic_shuffle_batch",
-        "conditioning": "unconditional",
+        "conditioning": ATTEMPT_CONDITIONING,
         "source_artifacts": sources,
         "grouping_keys": ["root_seed", "strategy"],
         "player_counts": player_counts,

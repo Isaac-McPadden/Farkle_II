@@ -13,6 +13,7 @@ from farkle.analysis.structure_reporting import (
     render_markdown,
     run,
 )
+from farkle.analysis.trueskill_screening import TRUESKILL_CONDITIONING
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
@@ -37,6 +38,7 @@ def _write_frame(
     operation: str,
     player_counts: list[int] | None = None,
     k_aggregation_method: str = "none",
+    conditioning: str = "unconditional",
 ) -> None:
     counts = player_counts or [2]
     sidecar = make_artifact_sidecar(
@@ -46,6 +48,7 @@ def _write_frame(
         scope=scope,
         source_scope=scope,
         operation=operation,
+        conditioning=conditioning,
         k_aggregation_method=k_aggregation_method,
         consistency_columns=frame.columns.tolist(),
         player_counts=counts,
@@ -285,6 +288,22 @@ def _publish_inputs(cfg: AppConfig) -> None:
         operation="equal_k_mean",
         k_aggregation_method="equal_k",
     )
+    trueskill = pd.DataFrame(
+        {
+            "strategy": ["1", "2"],
+            "mean_percentile_rank": [1.0, 0.0],
+            "complete_support": [True, True],
+        }
+    )
+    _write_frame(
+        cfg,
+        cfg.trueskill_candidate_contribution_path(),
+        trueskill,
+        scope=ArtifactScope.ACROSS_K,
+        operation="equal_k_percentile_mean",
+        k_aggregation_method="equal_k",
+        conditioning=TRUESKILL_CONDITIONING,
+    )
     by_k = pd.DataFrame(
         {
             "root_seed": [11, 11],
@@ -315,6 +334,7 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     assert report["support"]["player_counts"] == [2]
     assert report["support"]["k_weights"] == {"2": 1.0}
     assert report["report_contract_version"] == 4
+    assert report["conditioning"]["trueskill"] == TRUESKILL_CONDITIONING
     completion = json.loads(
         stage_done_path(cfg.stage_dir("reporting"), "structure_reporting").read_text(
             encoding="utf-8"

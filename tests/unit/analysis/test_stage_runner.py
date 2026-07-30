@@ -159,3 +159,41 @@ def test_stage_runner_accepts_successful_declared_completion_stamp(tmp_path: Pat
 
     assert calls == ["downstream"]
     assert not cfg.stage_dir("h2h_digest").exists()
+
+
+def test_stage_runner_validates_declared_stage_specific_freshness(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    output = cfg.h2h_pairwise_inference_path()
+    stamp = stage_done_path(cfg.stage_dir("h2h_inference"), "h2h_inference")
+    freshness_key = {**cfg.freshness_key(), "method_version": 99}
+
+    def _action(_cfg: AppConfig) -> None:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("complete", encoding="utf-8")
+        write_stage_done(
+            stamp,
+            inputs=[],
+            outputs=[output],
+            cfg=cfg,
+            stage="h2h_inference",
+            freshness_key=freshness_key,
+        )
+
+    result = StageRunner.run(
+        [
+            StagePlanItem(
+                "h2h_inference",
+                _action,
+                required_outputs=(output,),
+                completion_stamp=stamp,
+                freshness_key=freshness_key,
+            )
+        ],
+        StageRunContext(
+            config=cfg,
+            manifest_path=tmp_path / "custom_freshness.jsonl",
+            run_label="pair",
+        ),
+    )
+
+    assert result.failed_steps == []

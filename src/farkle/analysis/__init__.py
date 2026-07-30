@@ -7,12 +7,15 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
-from typing import Any, Sequence
+from typing import TYPE_CHECKING, Any, Sequence
 
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.config import AppConfig
 from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
 from farkle.utils.stage_completion import stage_done_path
+
+if TYPE_CHECKING:
+    from farkle.simulation.game_profile import GameProfile
 
 LOGGER = logging.getLogger(__name__)
 
@@ -95,7 +98,13 @@ def build_root_stage_plan(
         else bool(run_rng_diagnostics)
     )
 
-    def root_item(name: str, action: Any, stamp_name: str | None = None) -> StagePlanItem:
+    def root_item(
+        name: str,
+        action: Any,
+        stamp_name: str | None = None,
+        *,
+        freshness_key: dict[str, object] | None = None,
+    ) -> StagePlanItem:
         stamp = stage_done_path(cfg.stage_dir(name), stamp_name or name)
 
         def invoke(inner: AppConfig) -> None:
@@ -103,7 +112,12 @@ def build_root_stage_plan(
                 stamp.unlink(missing_ok=True)
             action(inner)
 
-        return StagePlanItem(name, invoke, completion_stamp=stamp)
+        return StagePlanItem(
+            name,
+            invoke,
+            completion_stamp=stamp,
+            freshness_key=freshness_key,
+        )
 
     plan = [
         root_item("ingest", ingest.run),
@@ -126,7 +140,11 @@ def build_root_stage_plan(
                 lambda inner: trueskill.run(inner, force=force),
                 "trueskill_percentile_contribution",
             ),
-            root_item("hgb", lambda inner: hgb_feat.run(inner, force=force)),
+            root_item(
+                "hgb",
+                lambda inner: hgb_feat.run(inner, force=force),
+                freshness_key=hgb_feat._hgb_freshness_key(cfg),
+            ),
             root_item("screening", lambda inner: screening.run(inner, force=force)),
         ]
     )
@@ -138,6 +156,7 @@ def _h2h_tail_plan(
     *,
     force: bool,
     execution_scope: str,
+    oracle_game_profile: GameProfile | None = None,
 ) -> list[StagePlanItem]:
     """Build the common single-root or root-pair H2H tail."""
 
@@ -146,7 +165,12 @@ def _h2h_tail_plan(
     from farkle.analysis.h2h_inference import run_h2h_inference
     from farkle.analysis.h2h_schedule import execute_h2h_schedule, plan_h2h_schedule
     from farkle.analysis.structure_agreement import run as run_structure_agreement
-    from farkle.analysis.structure_reporting import run as run_structure_reporting
+    from farkle.analysis.structure_reporting import (
+        _structure_reporting_freshness_key,
+    )
+    from farkle.analysis.structure_reporting import (
+        run as run_structure_reporting,
+    )
 
     def _candidate_freeze(inner: AppConfig) -> None:
         freeze_h2h_candidate_family(inner, force=force)
@@ -155,7 +179,11 @@ def _h2h_tail_plan(
         plan_h2h_schedule(inner, force=force)
 
     def _execute(inner: AppConfig) -> None:
-        execute_h2h_schedule(inner, n_jobs=inner.analysis.n_jobs)
+        execute_h2h_schedule(
+            inner,
+            n_jobs=inner.analysis.n_jobs,
+            oracle_game_profile=oracle_game_profile,
+        )
 
     def _inference(inner: AppConfig) -> None:
         run_h2h_inference(inner, force=force)
@@ -242,6 +270,7 @@ def _h2h_tail_plan(
                 cfg.migration_report_path(),
             ),
             completion_stamp=stage_done_path(cfg.stage_dir("reporting"), "structure_reporting"),
+            freshness_key=_structure_reporting_freshness_key(cfg),
         ),
     ]
 
@@ -250,24 +279,35 @@ def build_single_root_h2h_tail_plan(
     cfg: AppConfig,
     *,
     force: bool = False,
+    oracle_game_profile: GameProfile | None = None,
 ) -> list[StagePlanItem]:
     """Build an explicitly labelled H2H tail for a standalone root run."""
 
     roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
     if roots != (int(cfg.sim.seed),):
         raise ValueError(f"single-root H2H requires one configured root, found {roots}")
-    return _h2h_tail_plan(cfg, force=force, execution_scope="single_root")
+    return _h2h_tail_plan(
+        cfg,
+        force=force,
+        execution_scope="single_root",
+        oracle_game_profile=oracle_game_profile,
+    )
 
 
 def build_root_pair_stage_plan(
     context: RootPairRunContext,
     *,
     force: bool = False,
+    oracle_game_profile: GameProfile | None = None,
 ) -> list[StagePlanItem]:
     """Build the one-time pair workflow from root combination through reporting."""
 
     from farkle.analysis import trueskill
-    from farkle.analysis.root_stability import RootBatchCell, build_two_root_stability
+    from farkle.analysis.root_stability import (
+        RootBatchCell,
+        _root_stability_freshness_key,
+        build_two_root_stability,
+    )
 
     cfg = context.config
     required_k = tuple(sorted({int(k) for k in cfg.sim.n_players_list}))
@@ -308,6 +348,7 @@ def build_root_pair_stage_plan(
             metadata={"root_pair": list(context.root_pair)},
             required_outputs=root_stability_outputs,
             completion_stamp=stage_done_path(cfg.stage_dir("root_stability"), "root_stability"),
+            freshness_key=_root_stability_freshness_key(cfg),
         ),
         StagePlanItem(
             "trueskill",
@@ -318,7 +359,12 @@ def build_root_pair_stage_plan(
                 cfg.stage_dir("trueskill"), "trueskill_percentile_contribution"
             ),
         ),
-        *_h2h_tail_plan(cfg, force=force, execution_scope="root_pair"),
+        *_h2h_tail_plan(
+            cfg,
+            force=force,
+            execution_scope="root_pair",
+            oracle_game_profile=oracle_game_profile,
+        ),
     ]
 
 
@@ -378,6 +424,7 @@ def run_single_root_analysis(
     manifest_path: Path | None = None,
     rng_lags: Sequence[int] | None = None,
     run_rng_diagnostics: bool | None = None,
+    oracle_game_profile: GameProfile | None = None,
 ) -> None:
     """Run a standalone root and append its explicitly labelled H2H tail."""
 
@@ -390,7 +437,11 @@ def run_single_root_analysis(
     )
     _run_plan(
         cfg,
-        build_single_root_h2h_tail_plan(cfg, force=force),
+        build_single_root_h2h_tail_plan(
+            cfg,
+            force=force,
+            oracle_game_profile=oracle_game_profile,
+        ),
         run_label=f"single_root_h2h_{cfg.sim.seed}",
         execution_scope="single_root",
         manifest_path=manifest_path,
@@ -402,12 +453,17 @@ def run_root_pair_analysis(
     *,
     force: bool = False,
     manifest_path: Path | None = None,
+    oracle_game_profile: GameProfile | None = None,
 ) -> None:
     """Run the root-pair workflow exactly once at the pair analysis root."""
 
     _run_plan(
         context.config,
-        build_root_pair_stage_plan(context, force=force),
+        build_root_pair_stage_plan(
+            context,
+            force=force,
+            oracle_game_profile=oracle_game_profile,
+        ),
         run_label=f"root_pair_workflow_{context.root_pair[0]}_{context.root_pair[1]}",
         execution_scope="root_pair",
         manifest_path=manifest_path,

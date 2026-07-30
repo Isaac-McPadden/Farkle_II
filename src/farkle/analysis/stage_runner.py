@@ -32,6 +32,7 @@ class StagePlanItem:
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     required_outputs: Sequence[Path] = dataclasses.field(default_factory=tuple)
     completion_stamp: Path | None = None
+    freshness_key: Mapping[str, Any] | None = None
 
 
 class StageValidationError(RuntimeError):
@@ -166,6 +167,7 @@ class StageRunner:
                         outputs=item.required_outputs,
                         cfg=context.config,
                         stage=item.name,
+                        freshness_key=item.freshness_key,
                     )
                     if completion_state is not CompletionState.COMPLETE_VALID:
                         failure_status = (

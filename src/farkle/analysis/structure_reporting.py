@@ -429,6 +429,7 @@ def run(
     fronts_path = cfg.h2h_dominance_fronts_path()
     cycles_path = cfg.h2h_cycle_groups_path()
     root_h2h_path = cfg.h2h_root_agreement_path()
+    trueskill_path = cfg.trueskill_candidate_contribution_path()
     performance_path = _performance_source(cfg, roots)
     family, family_sidecar = _read_json(family_manifest_path, operation="candidate_family_freeze")
     membership, _ = _read_frame(family_membership_path, operation="candidate_family_freeze")
@@ -442,6 +443,10 @@ def run(
     cycles, _ = _read_frame(cycles_path, operation="detect_strongly_connected_cycles")
     _root_h2h, root_h2h_sidecar = _read_frame(
         root_h2h_path, operation="fixed_root_h2h_agreement_diagnostic"
+    )
+    _trueskill, trueskill_sidecar = _read_frame(
+        trueskill_path,
+        operation="equal_root_k_percentile_mean" if len(roots) == 2 else "equal_k_percentile_mean",
     )
     performance, performance_sidecar, score_column = _performance_frame(performance_path, roots)
     expected_seed_scope = "both_roots_combined" if len(roots) == 2 else "single_root"
@@ -476,6 +481,7 @@ def run(
         fronts_path,
         cycles_path,
         root_h2h_path,
+        trueskill_path,
         performance_path,
         migration_path,
         *per_k_sources,
@@ -498,7 +504,7 @@ def run(
     output_json = cfg.structure_report_json_path()
     output_markdown = cfg.structure_report_markdown_path()
     output_plot = cfg.structure_report_plot_path()
-    outputs = [output_json, output_markdown, output_plot]
+    outputs = [output_json, output_markdown, output_plot, migration_path]
     done = stage_done_path(cfg.stage_dir("reporting"), "structure_reporting")
     if not force and stage_is_up_to_date(
         done,
@@ -589,6 +595,7 @@ def run(
         },
         "conditioning": {
             "tournament_performance": performance_sidecar.conditioning,
+            "trueskill": trueskill_sidecar.conditioning,
             "h2h": (
                 "frozen finite-grid candidate family; formal inference conditions on "
                 'termination_status == "completed"'

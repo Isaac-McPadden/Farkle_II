@@ -133,6 +133,30 @@ def test_ratio_mcse_matches_equal_exposure_batch_formula() -> None:
     assert observed == pytest.approx(np.std(wins / exposures, ddof=1) / np.sqrt(4))
 
 
+def test_half_drift_preserves_raw_difference_when_one_batch_per_half_has_no_mcse(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    values = {
+        (11, 2): {1: [7, 8], 2: [5, 4], 3: [4, 5]},
+        (22, 2): {1: [6, 7], 2: [5, 6], 3: [5, 4]},
+        (11, 4): {1: [4, 3], 2: [3, 2], 3: [2, 3]},
+        (22, 4): {1: [3, 4], 2: [2, 3], 3: [3, 2]},
+    }
+    cells = [
+        _write_cell(cfg, tmp_path, root, k, strategy_wins)
+        for (root, k), strategy_wins in sorted(values.items())
+    ]
+
+    artifacts = build_two_root_stability(cfg, cells)
+    drift = pq.read_table(artifacts.half_drift).to_pandas()
+
+    assert len(drift) == 18
+    assert drift["raw_difference"].notna().all()
+    assert drift["expected_mcse"].isna().all()
+    assert drift["standardized_drift"].isna().all()
+
+
 def test_two_root_combination_and_stability_contract(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     cells = _write_inputs(cfg, tmp_path)
@@ -281,7 +305,9 @@ def test_root_stability_excludes_declared_zero_batch_and_records_it(tmp_path: Pa
     cells = _write_inputs(cfg, tmp_path)
     target = cells[0]
     rows = pq.read_table(target.path).to_pylist()
-    rows.extend(_metric_row(target.root_seed, target.k, 4, strategy, 0, 0) for strategy in (1, 2, 3))
+    rows.extend(
+        _metric_row(target.root_seed, target.k, 4, strategy, 0, 0) for strategy in (1, 2, 3)
+    )
     table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
     sidecar = make_artifact_sidecar(
         cfg,

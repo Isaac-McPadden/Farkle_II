@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-07-29`
+- Reconciled date: `2026-07-30`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -53,6 +53,19 @@ changing code or accepting a statistical conclusion.
   coordinate, merges zero-based seats before group updates, publishes
   zero-centered descriptive reference bands, and is bound to cache-key-v4.
   Final pipeline health rechecks the current diagnostic-stage lifecycle state.
+  Task 14's raw oracle adds an authenticated, immutable limit-only game profile:
+  its canonical hash extends run lineage and simulation freshness while an
+  omitted profile preserves the production game limits and RNG-v2 coordinates.
+  Its raw-derived tournament extension carries zero-turn safety attempts as
+  attempted losses, keeps completed-only winner products and TrueSkill updates
+  excluded, preserves unavailable one-batch half-drift MCSE as null, and
+  authenticates the production root/pair stages through candidate-family
+  freezing. The final Task 14 oracle now drives that fixture through the public
+  two-root orchestrator, production H2H replacements and cap exhaustion,
+  inference, dominance, agreement, and reporting. Reporting authenticates the
+  migration report as a stage output, carries the canonical completed-game
+  TrueSkill conditioning explicitly, and a no-force rerun preserves every
+  stable workflow byte.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

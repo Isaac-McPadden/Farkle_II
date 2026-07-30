@@ -8,6 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.analysis import screening
+from farkle.analysis.all_player_metrics import ATTEMPT_CONDITIONING
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
@@ -45,7 +46,7 @@ def _write_artifact(
         operation=operation,
         k_aggregation_method="equal_k" if scope is ArtifactScope.ACROSS_K else "none",
         uncertainty_method=uncertainty_method,
-        conditioning="unconditional",
+        conditioning=ATTEMPT_CONDITIONING,
         player_counts=player_counts,
         required_player_counts=player_counts,
         missing_cell_policy="fail",

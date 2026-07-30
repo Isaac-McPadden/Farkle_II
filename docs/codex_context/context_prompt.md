@@ -48,6 +48,8 @@ Preserve these invariants:
   to the frozen 2.0x attempt cap, keeps no-test pairs in the multiplicity family,
   and evaluates the frozen candidates against the 0.99 incident-attempt
   completion threshold without shrinking the family;
+- final reporting authenticates the migration inventory as a stage output and
+  states TrueSkill's completed-game conditioning and safety-limit exclusion;
 - transient artifact I/O uses bounded, provider-neutral retries, and completed
   H2H execution can finalize a missing stamp without replaying block data.
 

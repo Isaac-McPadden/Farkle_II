@@ -175,3 +175,40 @@ def test_all_player_metrics_reject_missing_exact_turn_counter(tmp_path: Path) ->
 
     with pytest.raises(ValueError, match="coordinate-and-turn row contract"):
         build_all_player_batch_metrics(cfg, 2)
+
+
+def test_all_player_metrics_accept_zero_turn_safety_limit_as_attempted_loss(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    row = _game_row(
+        shuffle_index=0,
+        winner_seat="P1",
+        n_rounds=0,
+        p1=_exposure_values(10, 0, 0, 1, hit_max_rounds=True),
+        p2=_exposure_values(20, 0, 0, 2, hit_max_rounds=True),
+    )
+    row.update(
+        {
+            "winner_seat": None,
+            "winner_strategy": None,
+            "termination_status": "safety_limit",
+            "winning_score": None,
+        }
+    )
+    _write_source(cfg, [row])
+
+    output = build_all_player_batch_metrics(cfg, 2)
+    rows = pq.read_table(output).to_pylist()
+
+    assert len(rows) == 2
+    for metric in rows:
+        assert metric["raw_player_game_exposures"] == 1
+        assert metric["raw_completed_player_game_exposures"] == 0
+        assert metric["raw_safety_limit_player_game_exposures"] == 1
+        assert metric["raw_wins"] == 0
+        assert metric["raw_losses"] == 1
+        assert metric["raw_n_turns_sum"] == 0
+        assert metric["turn_return_turn_weighted"] is None
+        assert metric["turn_return_game_weighted_exact"] == 0
+        assert metric["turn_return_round_proxy"] == 0
