@@ -10,8 +10,8 @@ sim:
   n_players_list: [2, 4, 5]
 
   # Schedule & runtime controls
-  seed: 32                        # primary RNG seed (results_root uses seed suffix)
-  seed_list: [32, 33]             # explicit seeds (len 1 single-seed, len 2 two-seed)
+  seed: 34                        # primary RNG seed (results_root uses seed suffix)
+  seed_list: [34, 35]             # explicit seeds (len 1 single-seed, len 2 two-seed)
   n_jobs: 12                    # null = auto; otherwise an int
   mp_start_method: null          # start method: default|null|spawn|fork|forkserver
   expanded_metrics: true          # if true, also write {n}p_metrics.parquet with sums & sq_sums
@@ -97,9 +97,9 @@ robustness:
   matched_count_fractions: [0.25, 0.50, 0.75, 1.0]
 
 artifact_contract:
-  artifact_contract_version: 2
-  estimand_version: 1
-  schema_version: 1
+  artifact_contract_version: 3
+  estimand_version: 2
+  schema_version: 2
 
 k_aggregation:
   method: "equal-k"
