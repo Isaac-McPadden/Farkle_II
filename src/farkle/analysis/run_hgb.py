@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 import numpy as np
 import pandas as pd
 import pyarrow as pa
+import pyarrow.parquet as pq
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.inspection import permutation_importance
 
@@ -38,6 +39,7 @@ from farkle.utils.authenticated_contract import (
     resolve_code_identity,
 )
 from farkle.utils.random import RandomPurpose, coordinate_rng, coordinate_seed_sequence
+from farkle.utils.strategy_ids import canonical_strategy_ids, require_strategy_id_field
 
 if TYPE_CHECKING:
     from farkle.config import AppConfig
@@ -96,7 +98,11 @@ def _parse_strategy_features(
 ) -> pd.DataFrame:
     """Return a feature matrix indexed by strategy identifier."""
 
-    unique = pd.Series(pd.unique(strategies.dropna()))
+    canonical = canonical_strategy_ids(
+        strategies,
+        context="HGB performance strategy",
+    )
+    unique = pd.Series(pd.unique(canonical), dtype="Int32")
     if unique.empty:
         columns = ["strategy"] + [name for name, _dtype in FEATURE_SPECS]
         return pd.DataFrame(columns=columns).set_index("strategy")
@@ -106,12 +112,8 @@ def _parse_strategy_features(
         columns = ["strategy"] + [name for name, _dtype in FEATURE_SPECS]
         return pd.DataFrame(columns=columns).set_index("strategy")
 
-    skipped = int(attrs.isna().all(axis=1).sum())
-    if skipped:
-        LOGGER.warning(
-            "Skipping unparseable strategies",
-            extra={"stage": "hgb", "count": skipped},
-        )
+    if attrs.isna().any(axis=None):
+        raise ValueError("HGB strategy manifest contains null canonical feature values")
 
     favor_raw = attrs["favor_dice_or_score"]
     favor_score = favor_raw.apply(
@@ -522,6 +524,17 @@ def run_hgb(
     source_metrics = [Path(path) for path in metrics_paths]
     if not source_metrics:
         raise ValueError("HGB requires canonical per-k performance artifacts")
+    require_strategy_id_field(
+        pq.read_schema(manifest_path),
+        "strategy_id",
+        context=str(manifest_path),
+    )
+    for path in source_metrics:
+        require_strategy_id_field(
+            pq.read_schema(path),
+            "strategy",
+            context=str(path),
+        )
     source_artifacts = [*source_metrics, Path(manifest_path)]
     metrics = pd.concat([pd.read_parquet(path) for path in source_metrics], ignore_index=True)
     metrics = metrics.copy()
@@ -554,8 +567,17 @@ def run_hgb(
         return
 
     feature_cols = [name for name, _dtype in FEATURE_SPECS]
+    expected_strategy_support = {int(value) for value in data["strategy"]}
+    if {int(value) for value in feature_frame.index} != expected_strategy_support:
+        raise ValueError("HGB feature support differs from canonical performance support")
+    if data.duplicated(subset=["strategy", "players"]).any():
+        raise ValueError("HGB performance input contains duplicate strategy/k rows")
     data = data.join(feature_frame, on="strategy", how="inner")
-    data = data.drop_duplicates(subset=["strategy", "players"]).reset_index(drop=True)
+    if len(data) != len(metrics) or {int(value) for value in data["strategy"]} != (
+        expected_strategy_support
+    ):
+        raise ValueError("HGB feature join dropped canonical strategy support")
+    data = data.reset_index(drop=True)
     if data.empty:
         LOGGER.warning(
             "HGB regression skipped: no rows after feature join",

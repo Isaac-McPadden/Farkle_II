@@ -16,6 +16,7 @@ from farkle.utils.artifact_contract import make_artifact_sidecar
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
+from farkle.utils.strategy_ids import STRATEGY_ID_ARROW_TYPE
 from farkle.utils.streaming_loop import run_streaming_shard
 
 ATTEMPT_CONDITIONING: Final[str] = "all_attempted_player_game_exposures_safety_limit_is_loss"
@@ -37,7 +38,7 @@ _IDENTITY_FIELDS: Final[list[pa.Field]] = [
     pa.field("root_seed", pa.int64(), nullable=False),
     pa.field("k", pa.int16(), nullable=False),
     pa.field("deterministic_batch_id", pa.int32(), nullable=False),
-    pa.field("strategy", pa.int32(), nullable=False),
+    pa.field("strategy", STRATEGY_ID_ARROW_TYPE, nullable=False),
 ]
 _CORE_COUNT_FIELDS: Final[tuple[str, ...]] = (
     "raw_player_game_exposures",

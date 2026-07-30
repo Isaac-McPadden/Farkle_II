@@ -1,21 +1,31 @@
 # src/farkle/analysis/rng_diagnostics.py
-"""RNG diagnostics for curated rows ordered by ``game_seed``.
+"""RNG diagnostics in canonical RNG-v2 tournament-player coordinate order.
 
-Computes lagged autocorrelation for win indicators and game lengths at both
-strategy and matchup-strategy levels. Approximate reference bands are diagnostic
-only and do not establish independence. When inputs or required columns are
-missing, the module logs a skip instead of raising.
+Each seat exposure is identified by
+``(root_seed, k, shuffle_index, game_index, seat_index)`` and the full stream is
+ordered lexicographically by that coordinate. Seats are merged in ascending
+zero-based ``seat_index`` (``P1 = 0``) within each game before observations are
+filtered into strategy and matchup-strategy sequences. Lag correlations are
+Pearson correlations of the resulting consecutive within-group metric values.
+
+The zero-centered approximate reference bands are descriptive only and do not
+establish independence. When inputs or required columns are missing, the module
+logs a skip instead of raising.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import logging
 import re
+import sqlite3
 from collections import deque
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from itertools import chain
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Iterator, cast
 
 import numpy as np
@@ -25,21 +35,27 @@ import pyarrow.dataset as ds
 
 from farkle.analysis import stage_logger
 from farkle.config import AppConfig, ArtifactScope
-from farkle.utils.artifact_contract import make_artifact_sidecar
+from farkle.utils.artifact_contract import MethodContract, make_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.parallel import apply_native_thread_limits, resolve_stage_parallel_policy
 from farkle.utils.progress import ScheduledProgressLogger
+from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 LOGGER = logging.getLogger(__name__)
 
 _EXPECTED_NOTE = (
-    "Approximate autocorrelation reference band only; values inside the band do not "
-    "establish independence"
+    "Zero-centered approximate descriptive reference band only; values inside or "
+    "outside the band do not establish or refute independence"
 )
-_BAND_METHOD = "approximate_1.96_over_sqrt_n_autocorrelation_reference_band"
+_BAND_METHOD = "zero_centered_1.96_over_sqrt_lagged_pairs_descriptive_reference_band"
+_DIAGNOSTIC_METHOD_VERSION = 2
+_GAME_COORDINATE_COLUMNS = ("root_seed", "k", "shuffle_index", "game_index")
+_SEAT_COORDINATE_COLUMNS = (*_GAME_COORDINATE_COLUMNS, "seat_index")
+_SEQUENCE_DEFINITION = "lexicographic_rng_v2_tournament_player_coordinate_then_within_group_filter"
 _SEAT_STRATEGY_RE = re.compile(r"^P(\d+)_strategy$")
 _STREAM_BATCH_SIZE = 100_000
+_GLOBAL_MERGE_BATCH_SIZE = 50_000
 _DEFAULT_MAX_MATCHUP_GROUPS = 100_000
 
 
@@ -123,7 +139,12 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     strat_cols = _seat_strategy_columns(cfg, dataset.schema.names)
     winner_col = _winner_column(schema_names)
 
-    required = {"game_seed", "n_rounds"}
+    required = {
+        *_GAME_COORDINATE_COLUMNS,
+        "rng_scheme_version",
+        "rng_purpose_namespace",
+        "n_rounds",
+    }
     if not required.issubset(schema_names) or winner_col is None:
         stage_log.missing_input(
             "curated parquet missing required columns",
@@ -140,7 +161,14 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         )
         return
 
-    columns = ["game_seed", "n_rounds", winner_col, *strat_cols]
+    columns = [
+        *_GAME_COORDINATE_COLUMNS,
+        "rng_scheme_version",
+        "rng_purpose_namespace",
+        "n_rounds",
+        winner_col,
+        *strat_cols,
+    ]
     max_matchup_groups = cfg.analysis.rng_max_matchup_groups
     if max_matchup_groups is None:
         max_matchup_groups = _DEFAULT_MAX_MATCHUP_GROUPS
@@ -181,11 +209,30 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         producer="rng_diagnostics",
         scope=ArtifactScope.DIAGNOSTICS,
         source_scope=ArtifactScope.CONCAT_KS,
-        operation="diagnostic_band",
+        operation="semantic_coordinate_lag_correlation",
         uncertainty_method=_BAND_METHOD,
         support_count_role="ordered_group_observations",
         replication_unit="lagged_observation_pair",
         conditioning="diagnostic_only_no_independence_claim",
+        method_contract=cast(
+            MethodContract,
+            {
+                "kind": "diagnostic_band",
+                "procedure": "semantic_coordinate_lag_correlation",
+                "parameters": {
+                    "method_version": _DIAGNOSTIC_METHOD_VERSION,
+                    "rng_scheme_version": RNG_SCHEME_VERSION,
+                    "purpose_namespace": int(RandomPurpose.TOURNAMENT_PLAYER),
+                    "global_order_columns": list(_SEAT_COORDINATE_COLUMNS),
+                    "seat_order": [
+                        _rng_seat_index_from_strategy_column(column) for column in strat_cols
+                    ],
+                    "sequence_definition": _SEQUENCE_DEFINITION,
+                    "reference_band_method": _BAND_METHOD,
+                    "claim": "descriptive_only_no_independence_claim",
+                },
+            },
+        ),
         consistency_columns=table_out.schema.names,
         source_artifacts=[data_file],
         grouping_keys=["summary_level", "strategy", "matchup", "n_players", "lag", "metric"],
@@ -219,7 +266,7 @@ def _iter_prepared_batches(
     batch_size: int,
     arrow_threads: int,
 ) -> Iterator[pd.DataFrame]:
-    """Yield sorted per-game batches with matchup and winner strategy columns resolved.
+    """Yield prepared game batches retaining every semantic ordering key.
 
     Args:
         dataset: Curated parquet dataset being scanned.
@@ -230,7 +277,9 @@ def _iter_prepared_batches(
         arrow_threads: Number of Arrow threads available to the scanner.
 
     Yields:
-        Data frames containing normalized winner, matchup, and player-count columns.
+        Data frames containing the full RNG-v2 game coordinate, normalized
+        winner, matchup, and player-count columns. Per-batch sorting is only
+        preparation for the later disk-backed global merge.
     """
     scanner = dataset.scanner(
         columns=list(columns),
@@ -243,11 +292,198 @@ def _iter_prepared_batches(
         df = batch.to_pandas(categories=list(strat_cols))
         if df.empty:
             continue
-        df = df.sort_values("game_seed", kind="mergesort")
+        versions = pd.to_numeric(df["rng_scheme_version"], errors="coerce")
+        if versions.isna().any() or not (versions == RNG_SCHEME_VERSION).all():
+            raise ValueError(f"rng_diagnostics requires RNG scheme version {RNG_SCHEME_VERSION}")
+        namespaces = pd.to_numeric(df["rng_purpose_namespace"], errors="coerce")
+        if namespaces.isna().any() or not (namespaces == int(RandomPurpose.TOURNAMENT_GAME)).all():
+            raise ValueError(
+                "rng_diagnostics requires tournament-game outcome coordinates "
+                f"(namespace {int(RandomPurpose.TOURNAMENT_GAME)})"
+            )
+        if df[list(_GAME_COORDINATE_COLUMNS)].isna().any(axis=None):
+            raise ValueError("rng_diagnostics semantic game coordinates cannot be null")
+        df = df.sort_values(list(_GAME_COORDINATE_COLUMNS), kind="mergesort")
         df["matchup"] = _build_matchup_labels(df, strat_cols)
         df["n_players"] = df[strat_cols].notna().sum(axis=1).astype(int)
         df["winner_strategy"] = _winner_strategies(df, winner_col, strat_cols)
-        yield df[["n_rounds", "matchup", "n_players", "winner_strategy", *strat_cols]]
+        yield df[
+            [
+                *_GAME_COORDINATE_COLUMNS,
+                "n_rounds",
+                "matchup",
+                "n_players",
+                "winner_strategy",
+                *strat_cols,
+            ]
+        ]
+
+
+def _sql_text(value: object) -> str | None:
+    """Normalize a nullable strategy or matchup value for a temporary SQL run."""
+
+    if _is_missing_scalar(value):
+        return None
+    return str(value)
+
+
+def _iter_globally_ordered_game_batches(
+    data_batches: Iterable[pd.DataFrame],
+    *,
+    strat_cols: Sequence[str],
+    output_batch_size: int = _GLOBAL_MERGE_BATCH_SIZE,
+) -> Iterator[pd.DataFrame]:
+    """Externally sort prepared games by the complete semantic coordinate.
+
+    A disposable SQLite table provides a disk-backed global sort, so RAM stays
+    bounded and Arrow batch boundaries cannot affect the emitted order. The
+    semantic game coordinate is a primary key; duplicate coordinates fail
+    because they cannot define one canonical seat-exposure sequence.
+    """
+
+    if output_batch_size < 1:
+        raise ValueError("output_batch_size must be positive")
+    normalized_strat_cols = tuple(strat_cols)
+    if any(_SEAT_STRATEGY_RE.fullmatch(column) is None for column in normalized_strat_cols):
+        raise ValueError("strat_cols must contain only canonical P<seat>_strategy columns")
+    value_columns = (
+        *_GAME_COORDINATE_COLUMNS,
+        "n_rounds",
+        "matchup",
+        "n_players",
+        "winner_strategy",
+        *normalized_strat_cols,
+    )
+    numeric_columns = (*_GAME_COORDINATE_COLUMNS, "n_rounds", "n_players")
+    placeholders = ", ".join("?" for _ in value_columns)
+    quoted_columns = ", ".join(f'"{column}"' for column in value_columns)
+    order_sql = ", ".join(f'"{column}"' for column in _GAME_COORDINATE_COLUMNS)
+    column_definitions = [
+        '"root_seed" INTEGER NOT NULL',
+        '"k" INTEGER NOT NULL',
+        '"shuffle_index" INTEGER NOT NULL',
+        '"game_index" INTEGER NOT NULL',
+        '"n_rounds" INTEGER NOT NULL',
+        '"matchup" TEXT',
+        '"n_players" INTEGER NOT NULL',
+        '"winner_strategy" TEXT',
+        *(f'"{column}" TEXT' for column in normalized_strat_cols),
+        'PRIMARY KEY ("root_seed", "k", "shuffle_index", "game_index")',
+    ]
+    create_table_sql = (
+        "CREATE TABLE games (\n"
+        + ",\n".join(f"    {definition}" for definition in column_definitions)
+        + "\n) WITHOUT ROWID"
+    )
+
+    with TemporaryDirectory(prefix="farkle_rng_diagnostics_") as temp_dir:
+        database_path = Path(temp_dir) / "global_order.sqlite3"
+        connection = sqlite3.connect(database_path)
+        try:
+            connection.execute("PRAGMA temp_store=FILE")
+            connection.execute("PRAGMA journal_mode=OFF")
+            connection.execute("PRAGMA synchronous=OFF")
+            connection.execute(create_table_sql)
+            insert_sql = f"INSERT INTO games ({quoted_columns}) VALUES ({placeholders})"
+            for batch in data_batches:
+                if batch.empty:
+                    continue
+                missing_required = [
+                    column
+                    for column in value_columns
+                    if column not in batch.columns and column not in normalized_strat_cols
+                ]
+                if missing_required:
+                    raise ValueError(
+                        "rng_diagnostics prepared batch missing columns: "
+                        + ", ".join(missing_required)
+                    )
+                working = batch.reindex(columns=value_columns)
+                records: list[tuple[object, ...]] = []
+                for values in working.itertuples(index=False, name=None):
+                    raw = dict(zip(value_columns, values, strict=True))
+                    if any(_is_missing_scalar(raw[column]) for column in numeric_columns):
+                        raise ValueError(
+                            "rng_diagnostics ordering and metric columns cannot be null"
+                        )
+                    records.append(
+                        tuple(
+                            (
+                                int(raw[column])
+                                if column in numeric_columns
+                                else _sql_text(raw[column])
+                            )
+                            for column in value_columns
+                        )
+                    )
+                try:
+                    connection.executemany(insert_sql, records)
+                except sqlite3.IntegrityError as exc:
+                    raise ValueError(
+                        "rng_diagnostics requires unique semantic game coordinates"
+                    ) from exc
+                connection.commit()
+
+            cursor = connection.execute(f"SELECT {quoted_columns} FROM games ORDER BY {order_sql}")
+            while rows := cursor.fetchmany(output_batch_size):
+                yield pd.DataFrame.from_records(rows, columns=value_columns)
+        finally:
+            connection.close()
+
+
+def _merge_seats_in_semantic_order(
+    games: pd.DataFrame,
+    *,
+    strat_cols: Sequence[str],
+) -> pd.DataFrame:
+    """Return seat exposures in complete RNG-v2 tournament-player order."""
+
+    seat_frames: list[pd.DataFrame] = []
+    base_columns = [
+        *_GAME_COORDINATE_COLUMNS,
+        "matchup",
+        "n_players",
+        "winner_strategy",
+        "n_rounds",
+    ]
+    for strat_col in strat_cols:
+        if strat_col not in games.columns:
+            continue
+        seat = games[[*base_columns, strat_col]].rename(columns={strat_col: "strategy"})
+        seat = seat.dropna(subset=["strategy"]).copy()
+        if seat.empty:
+            continue
+        seat["seat_index"] = _rng_seat_index_from_strategy_column(strat_col)
+        seat_frames.append(seat)
+    if not seat_frames:
+        return pd.DataFrame(
+            columns=[
+                *_SEAT_COORDINATE_COLUMNS,
+                "matchup",
+                "strategy",
+                "n_players",
+                "win_indicator",
+                "n_rounds",
+            ]
+        )
+
+    merged = pd.concat(seat_frames, ignore_index=True)
+    merged["strategy"] = merged["strategy"].astype("string")
+    merged["winner_strategy"] = merged["winner_strategy"].astype("string")
+    merged["win_indicator"] = (
+        merged["winner_strategy"].notna() & (merged["strategy"] == merged["winner_strategy"])
+    ).astype(np.int8)
+    merged = merged.sort_values(list(_SEAT_COORDINATE_COLUMNS), kind="mergesort")
+    return merged[
+        [
+            *_SEAT_COORDINATE_COLUMNS,
+            "matchup",
+            "strategy",
+            "n_players",
+            "win_indicator",
+            "n_rounds",
+        ]
+    ]
 
 
 def _collect_diagnostics_streaming_compact(
@@ -258,11 +494,12 @@ def _collect_diagnostics_streaming_compact(
     progress_logger: ScheduledProgressLogger | None,
     max_matchup_groups: int | None,
 ) -> tuple[pd.DataFrame, int]:
-    """Aggregate autocorrelation diagnostics from prepared seat-level batches.
+    """Aggregate diagnostics after a global semantic-coordinate merge.
 
     Args:
-        data_batches: Prepared batches yielded by :func:`_iter_prepared_batches`.
-        strat_cols: Seat strategy columns that should be melted into seat rows.
+        data_batches: Prepared game batches yielded by
+            :func:`_iter_prepared_batches`; their input order is irrelevant.
+        strat_cols: Seat strategy columns merged in ascending seat order.
         lags: Positive lags to evaluate.
         progress_logger: Optional scheduled progress logger.
         max_matchup_groups: Optional cap on tracked matchup-strategy groups.
@@ -279,51 +516,40 @@ def _collect_diagnostics_streaming_compact(
     skipped_matchup_groups = 0
     skipped_matchup_rows = 0
 
-    for batch in data_batches:
+    ordered_game_batches = _iter_globally_ordered_game_batches(
+        data_batches,
+        strat_cols=strat_cols,
+    )
+    for game_batch in ordered_game_batches:
+        batch = _merge_seats_in_semantic_order(game_batch, strat_cols=strat_cols)
         if batch.empty:
             continue
         processed_batches += 1
-        processed_rows += int(batch.shape[0])
+        processed_rows += int(game_batch.shape[0])
+        melted_rows += int(batch.shape[0])
 
-        for strat_col in strat_cols:
-            if strat_col not in batch.columns:
-                continue
-            seat = batch[["matchup", "n_players", "winner_strategy", "n_rounds", strat_col]].rename(
-                columns={strat_col: "strategy"}
-            )
-            seat = seat.dropna(subset=["strategy"]).copy()
-            if seat.empty:
-                continue
-            seat["strategy"] = seat["strategy"].astype("string")
-            seat["winner_strategy"] = seat["winner_strategy"].astype("string")
-            seat["win_indicator"] = (
-                seat["winner_strategy"].notna() & (seat["strategy"] == seat["winner_strategy"])
-            ).astype(np.int8)
-            seat = seat[["matchup", "strategy", "n_players", "win_indicator", "n_rounds"]]
-            melted_rows += int(seat.shape[0])
+        grouped_strategy = batch.groupby(["strategy", "n_players"], observed=True, sort=False)
+        for (strategy, n_players), group in grouped_strategy:
+            key = (str(strategy), int(cast(int, n_players)))
+            state = strategy_states.setdefault(key, _GroupStreamAccumulator(normalized_lags))
+            state.extend(group)
 
-            grouped_strategy = seat.groupby(["strategy", "n_players"], observed=True, sort=False)
-            for (strategy, n_players), group in grouped_strategy:
-                key = (str(strategy), int(cast(int, n_players)))
-                state = strategy_states.setdefault(key, _GroupStreamAccumulator(normalized_lags))
-                state.extend(group)
-
-            grouped_matchup = seat.groupby(
-                ["matchup", "strategy", "n_players"], observed=True, sort=False
-            )
-            for (matchup, strategy, n_players), group in grouped_matchup:
-                matchup_key = None if _is_missing_scalar(matchup) else str(matchup)
-                matchup_state_key = (matchup_key, str(strategy), int(cast(int, n_players)))
-                matchup_state = matchup_states.get(matchup_state_key)
-                if matchup_state is None:
-                    if max_matchup_groups is not None and len(matchup_states) >= max_matchup_groups:
-                        skipped_matchup_groups += 1
-                        skipped_matchup_rows += int(group.shape[0])
-                        continue
-                    matchup_state = matchup_states.setdefault(
-                        matchup_state_key, _GroupStreamAccumulator(normalized_lags)
-                    )
-                matchup_state.extend(group)
+        grouped_matchup = batch.groupby(
+            ["matchup", "strategy", "n_players"], observed=True, sort=False
+        )
+        for (matchup, strategy, n_players), group in grouped_matchup:
+            matchup_key = None if _is_missing_scalar(matchup) else str(matchup)
+            matchup_state_key = (matchup_key, str(strategy), int(cast(int, n_players)))
+            matchup_state = matchup_states.get(matchup_state_key)
+            if matchup_state is None:
+                if max_matchup_groups is not None and len(matchup_states) >= max_matchup_groups:
+                    skipped_matchup_groups += 1
+                    skipped_matchup_rows += int(group.shape[0])
+                    continue
+                matchup_state = matchup_states.setdefault(
+                    matchup_state_key, _GroupStreamAccumulator(normalized_lags)
+                )
+            matchup_state.extend(group)
 
         if progress_logger is not None:
             progress_logger.maybe_log(
@@ -385,8 +611,9 @@ def _collect_diagnostics_streaming_compact(
 
     diagnostics = pd.DataFrame(rows)
     diagnostics = diagnostics.sort_values(
-        ["summary_level", "strategy", "n_players", "lag", "metric"],
+        ["summary_level", "strategy", "matchup", "n_players", "lag", "metric"],
         kind="mergesort",
+        na_position="first",
     )
     diagnostics.reset_index(drop=True, inplace=True)
     return diagnostics, melted_rows
@@ -535,6 +762,12 @@ def _seat_number_from_strategy_column(column_name: str) -> int:
     return int(match.group(1))
 
 
+def _rng_seat_index_from_strategy_column(column_name: str) -> int:
+    """Return the zero-based RNG-v2 seat coordinate for a strategy column."""
+
+    return _seat_number_from_strategy_column(column_name) - 1
+
+
 def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFrame:
     """Convert seat strategy columns into one seat-level row per strategy occurrence.
 
@@ -545,7 +778,13 @@ def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFram
     Returns:
         Seat-level frame with ``strategy`` and ``win_indicator`` columns.
     """
-    id_vars = ["game_seed", "n_rounds", "matchup", "n_players", "winner_strategy"]
+    id_vars = [
+        *_GAME_COORDINATE_COLUMNS,
+        "n_rounds",
+        "matchup",
+        "n_players",
+        "winner_strategy",
+    ]
     melted = df[id_vars + list(strat_cols)].melt(
         id_vars=id_vars,
         value_vars=strat_cols,
@@ -555,9 +794,11 @@ def _melt_strategies(df: pd.DataFrame, strat_cols: Sequence[str]) -> pd.DataFram
     melted = melted.dropna(subset=["strategy"])
     melted["strategy"] = melted["strategy"].astype("string")
     melted["winner_strategy"] = melted["winner_strategy"].astype("string")
-    melted["seat"] = melted["seat"].str.removesuffix("_strategy")
-    melted["win_indicator"] = (melted["strategy"] == melted["winner_strategy"]).astype(int)
-    return melted
+    melted["seat_index"] = melted["seat"].map(_rng_seat_index_from_strategy_column)
+    melted["win_indicator"] = (
+        melted["winner_strategy"].notna() & (melted["strategy"] == melted["winner_strategy"])
+    ).astype(int)
+    return melted.sort_values(list(_SEAT_COORDINATE_COLUMNS), kind="mergesort")
 
 
 @dataclass(slots=True)
@@ -619,7 +860,7 @@ class _MetricStreamAccumulator:
         """Add an ordered series of numeric observations to the stream state.
 
         Args:
-            values: Metric series already ordered by increasing ``game_seed``.
+            values: Metric series already ordered by the declared semantic coordinate.
         """
         numeric = pd.to_numeric(values, errors="coerce").to_numpy(dtype=float)
         for value in numeric:
@@ -686,7 +927,8 @@ def _iter_melted_batches(
         arrow_threads: Number of Arrow threads available to the scanner.
 
     Yields:
-        Seat-level frames sorted by ``game_seed`` and ready for diagnostics.
+        Seat-level frames sorted within the batch by the complete semantic
+        coordinate. This compatibility helper is not the canonical global merge.
     """
     scanner = dataset.scanner(
         columns=list(columns),
@@ -699,14 +941,23 @@ def _iter_melted_batches(
         df = batch.to_pandas(categories=list(strat_cols))
         if df.empty:
             continue
-        df = df.sort_values("game_seed", kind="mergesort")
+        df = df.sort_values(list(_GAME_COORDINATE_COLUMNS), kind="mergesort")
         df["matchup"] = _build_matchup_labels(df, strat_cols)
         df["n_players"] = df[strat_cols].notna().sum(axis=1).astype(int)
         df["winner_strategy"] = _winner_strategies(df, winner_col, strat_cols)
         melted = _melt_strategies(df, strat_cols)
         if melted.empty:
             continue
-        yield melted[["game_seed", "strategy", "matchup", "n_players", "win_indicator", "n_rounds"]]
+        yield melted[
+            [
+                *_SEAT_COORDINATE_COLUMNS,
+                "strategy",
+                "matchup",
+                "n_players",
+                "win_indicator",
+                "n_rounds",
+            ]
+        ]
 
 
 def _rows_from_group_state(
@@ -741,10 +992,11 @@ def _rows_from_group_state(
         for lag in lags:
             if n_obs <= lag:
                 continue
-            autocorr = metric_state.autocorr(lag)
+            lag_state = metric_state.states[lag]
+            autocorr = lag_state.autocorr()
             if autocorr is None or pd.isna(autocorr):
                 continue
-            stderr = 1.0 / n_obs**0.5
+            reference_half_width = 1.96 / lag_state.pair_count**0.5
             rows.append(
                 {
                     "summary_level": summary_level,
@@ -752,11 +1004,13 @@ def _rows_from_group_state(
                     "matchup": matchup,
                     "n_players": n_players,
                     "observations": n_obs,
+                    "lagged_pairs": lag_state.pair_count,
                     "lag": lag,
                     "metric": metric,
                     "autocorr": autocorr,
-                    "diagnostic_band_lower": autocorr - 1.96 * stderr,
-                    "diagnostic_band_upper": autocorr + 1.96 * stderr,
+                    "zero_centered_descriptive_reference_band_lower": -reference_half_width,
+                    "zero_centered_descriptive_reference_band_upper": reference_half_width,
+                    "sequence_order": ",".join(_SEAT_COORDINATE_COLUMNS),
                     "note": _EXPECTED_NOTE,
                 }
             )
@@ -801,7 +1055,7 @@ def _collect_diagnostics_streaming(
         for (strategy, n_players), group in grouped_strategy:
             key = (str(strategy), int(cast(int, n_players)))
             state = strategy_states.setdefault(key, _GroupStreamAccumulator(normalized_lags))
-            ordered = group.sort_values("game_seed", kind="mergesort")
+            ordered = group.sort_values(list(_SEAT_COORDINATE_COLUMNS), kind="mergesort")
             state.extend(ordered)
 
         grouped_matchup = batch.groupby(
@@ -819,7 +1073,7 @@ def _collect_diagnostics_streaming(
                 matchup_state = matchup_states.setdefault(
                     matchup_state_key, _GroupStreamAccumulator(normalized_lags)
                 )
-            ordered = group.sort_values("game_seed", kind="mergesort")
+            ordered = group.sort_values(list(_SEAT_COORDINATE_COLUMNS), kind="mergesort")
             matchup_state.extend(ordered)
 
         if progress_logger is not None:
@@ -882,8 +1136,9 @@ def _collect_diagnostics_streaming(
 
     diagnostics = pd.DataFrame(rows)
     diagnostics = diagnostics.sort_values(
-        ["summary_level", "strategy", "n_players", "lag", "metric"],
+        ["summary_level", "strategy", "matchup", "n_players", "lag", "metric"],
         kind="mergesort",
+        na_position="first",
     )
     diagnostics.reset_index(drop=True, inplace=True)
     return diagnostics, melted_rows
@@ -939,7 +1194,8 @@ def _collect_diagnostics(data: pd.DataFrame, *, lags: Iterable[int]) -> pd.DataF
         return pd.DataFrame()
     diagnostics = pd.DataFrame(flattened)
     diagnostics = diagnostics.sort_values(
-        ["summary_level", "strategy", "n_players", "lag", "metric"]
+        ["summary_level", "strategy", "matchup", "n_players", "lag", "metric"],
+        na_position="first",
     )
     return diagnostics
 
@@ -967,7 +1223,7 @@ def _group_diagnostics(
         Diagnostic rows as series objects suitable for later concatenation.
     """
     rows: list[pd.Series] = []
-    ordered = group.sort_values("game_seed")
+    ordered = group.sort_values(list(_SEAT_COORDINATE_COLUMNS), kind="mergesort")
     metrics = {
         "win_indicator": ordered["win_indicator"],
         "n_rounds": ordered["n_rounds"],
@@ -982,9 +1238,8 @@ def _group_diagnostics(
             autocorr = cleaned.autocorr(lag=lag)
             if pd.isna(autocorr):
                 continue
-            stderr = 1.0 / n_obs**0.5
-            diagnostic_band_lower = autocorr - 1.96 * stderr
-            diagnostic_band_upper = autocorr + 1.96 * stderr
+            lagged_pairs = n_obs - lag
+            reference_half_width = 1.96 / lagged_pairs**0.5
             rows.append(
                 pd.Series(
                     {
@@ -993,11 +1248,13 @@ def _group_diagnostics(
                         "matchup": matchup,
                         "n_players": n_players,
                         "observations": n_obs,
+                        "lagged_pairs": lagged_pairs,
                         "lag": lag,
                         "metric": metric,
                         "autocorr": autocorr,
-                        "diagnostic_band_lower": diagnostic_band_lower,
-                        "diagnostic_band_upper": diagnostic_band_upper,
+                        "zero_centered_descriptive_reference_band_lower": (-reference_half_width),
+                        "zero_centered_descriptive_reference_band_upper": (reference_half_width),
+                        "sequence_order": ",".join(_SEAT_COORDINATE_COLUMNS),
                         "note": _EXPECTED_NOTE,
                     }
                 )
@@ -1008,6 +1265,12 @@ def _group_diagnostics(
 def _rng_stage_config_sha(cfg: AppConfig, lags: Sequence[int]) -> str:
     payload = {
         "base_stage_config_sha": cfg.stage_config_sha("rng_diagnostics"),
+        "diagnostic_method_version": _DIAGNOSTIC_METHOD_VERSION,
+        "rng_scheme_version": RNG_SCHEME_VERSION,
+        "purpose_namespace": int(RandomPurpose.TOURNAMENT_PLAYER),
+        "sequence_order": list(_SEAT_COORDINATE_COLUMNS),
+        "sequence_definition": _SEQUENCE_DEFINITION,
+        "reference_band_method": _BAND_METHOD,
         "lags": [int(lag) for lag in lags],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()

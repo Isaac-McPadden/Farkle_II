@@ -13,6 +13,7 @@ import logging
 import re
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass
 from pathlib import Path
 
 import numpy as np
@@ -21,6 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.config import AppConfig, ArtifactScope, load_app_config
+from farkle.simulation.simulation import validate_simulation_row
 from farkle.utils.artifact_contract import (
     ArtifactSidecar,
     ensure_artifact_sidecar_atomic,
@@ -34,15 +36,29 @@ from farkle.utils.parallel import (
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
+from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 from farkle.utils.schema_helpers import (
     OUTCOME_SCHEMA_VERSION,
     TOURNAMENT_METHOD_VERSION,
-    expected_schema_for,
+    raw_simulation_schema_for,
 )
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.streaming_loop import run_streaming_shard
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _RowShard:
+    """One manifest-authenticated tournament row shard."""
+
+    path: Path
+    expected_rows: int
+    root_seed: int
+    k: int
+    shuffle_index: int
+    deterministic_batch_id: int
+    shuffle_seed: int
 
 
 def _ingested_rows_sidecar(
@@ -111,7 +127,7 @@ def _canonical_row_shards(
     block: Path,
     cfg: AppConfig,
     n_players: int,
-) -> tuple[Path, list[tuple[Path, int]]]:
+) -> tuple[Path, list[_RowShard]]:
     """Validate and return manifest-ordered canonical simulation row shards."""
 
     row_dir = cfg.simulation_row_dir(n_players)
@@ -145,7 +161,7 @@ def _canonical_row_shards(
     ):
         raise ValueError(f"simulation completion mismatch: {completion_path}")
 
-    records_by_index: dict[int, tuple[Path, int]] = {}
+    records_by_index: dict[int, _RowShard] = {}
     seen_paths: set[Path] = set()
     for record in iter_manifest(manifest_path):
         raw_name = record.get("path")
@@ -158,6 +174,7 @@ def _canonical_row_shards(
             shuffle_index = int(record["shuffle_index"])
             expected_rows = int(record["rows"])
             batch_id = int(record["deterministic_batch_id"])
+            shuffle_seed = int(record["shuffle_seed"])
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"invalid row manifest coordinate: {manifest_path}") from exc
         shard_path = row_dir / relative
@@ -173,7 +190,15 @@ def _canonical_row_shards(
             or batch_id != shuffle_index // shuffles_per_batch
         ):
             raise ValueError(f"row manifest support mismatch: {manifest_path}")
-        records_by_index[shuffle_index] = (shard_path, expected_rows)
+        records_by_index[shuffle_index] = _RowShard(
+            path=shard_path,
+            expected_rows=expected_rows,
+            root_seed=int(cfg.sim.seed),
+            k=n_players,
+            shuffle_index=shuffle_index,
+            deterministic_batch_id=batch_id,
+            shuffle_seed=shuffle_seed,
+        )
         seen_paths.add(shard_path)
 
     expected_indices = set(range(start, end + 1))
@@ -187,32 +212,76 @@ def _canonical_row_shards(
     return manifest_path, [records_by_index[index] for index in range(start, end + 1)]
 
 
-def _iter_shards(shards: list[tuple[Path, int]], cols: tuple[str, ...]):
-    """
-    Yield one ``(DataFrame, source_path)`` per shard, selecting only the
-    *intersection* of *cols* with the shard’s schema.
+def _iter_shards(shards: list[_RowShard], cols: tuple[str, ...]):
+    """Yield validated shard row groups with the requested canonical columns."""
 
-    Parquet will raise if we request a column that doesn’t exist, so read the
-    whole shard once and trim afterwards.  The ingest pipeline later pads any
-    truly-missing columns back in :func:`_coerce_schema`, keeping the final
-    table rectangular.
-    """
-
-    for row_file, expected_rows in shards:
+    for shard in shards:
+        row_file = shard.path
         if not row_file.is_file():
             raise FileNotFoundError(f"row manifest references missing shard: {row_file}")
         parquet = pq.ParquetFile(row_file)
-        unexpected = sorted(set(parquet.schema_arrow.names).difference(cols))
-        if unexpected:
-            raise ValueError(f"row shard contains noncanonical columns {unexpected}: {row_file}")
-        if parquet.metadata.num_rows != expected_rows:
+        raw_schema = raw_simulation_schema_for(shard.k)
+        unexpected = sorted(set(parquet.schema_arrow.names).difference(raw_schema.names))
+        missing = sorted(set(raw_schema.names).difference(parquet.schema_arrow.names))
+        if unexpected or missing:
+            raise ValueError(
+                f"row shard contains noncanonical columns {unexpected} and misses "
+                f"required columns {missing}: {row_file}"
+            )
+        if not parquet.schema_arrow.equals(raw_schema, check_metadata=False):
+            raise ValueError(
+                f"row shard schema is not the exact canonical raw schema for k={shard.k}: "
+                f"{row_file}"
+            )
+        if parquet.metadata.num_rows != shard.expected_rows:
             raise ValueError(
                 f"row manifest count mismatch for {row_file}: "
-                f"expected {expected_rows}, found {parquet.metadata.num_rows}"
+                f"expected {shard.expected_rows}, found {parquet.metadata.num_rows}"
             )
         present = [column for column in cols if column in parquet.schema_arrow.names]
+        game_indices: set[int] = set()
         for row_group in range(parquet.num_row_groups):
-            yield parquet.read_row_group(row_group, columns=present).to_pandas(), row_file
+            table = parquet.read_row_group(row_group)
+            for row in table.to_pylist():
+                identity = (
+                    row.get("root_seed"),
+                    row.get("k"),
+                    row.get("shuffle_index"),
+                    row.get("deterministic_batch_id"),
+                    row.get("shuffle_seed"),
+                )
+                expected_identity = (
+                    shard.root_seed,
+                    shard.k,
+                    shard.shuffle_index,
+                    shard.deterministic_batch_id,
+                    shard.shuffle_seed,
+                )
+                if identity != expected_identity:
+                    raise ValueError(
+                        f"row shard internal root/k/shuffle/batch identity mismatch: {row_file}"
+                    )
+                if (
+                    row.get("rng_scheme_version") != int(RNG_SCHEME_VERSION)
+                    or row.get("rng_purpose_namespace")
+                    != int(RandomPurpose.TOURNAMENT_GAME)
+                    or row.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION
+                ):
+                    raise ValueError(f"row shard internal version/namespace mismatch: {row_file}")
+                game_index = row.get("game_index")
+                if (
+                    isinstance(game_index, bool)
+                    or not isinstance(game_index, (int, np.integer))
+                    or int(game_index) in game_indices
+                ):
+                    raise ValueError(f"row shard contains duplicate or invalid game key: {row_file}")
+                game_indices.add(int(game_index))
+                validate_simulation_row(row)
+            yield table.select(present).to_pandas(), row_file
+        if game_indices != set(range(shard.expected_rows)):
+            raise ValueError(
+                f"row shard game_index support must be 0..{shard.expected_rows - 1}: {row_file}"
+            )
 
 
 # Regex once, reuse
@@ -267,67 +336,6 @@ def _fix_winner(df: pd.DataFrame) -> pd.DataFrame:
             df["seat_ranks"] = df["winner_seat"].apply(lambda s: [s])
 
     return df
-
-
-def _coerce_strategy_ids(
-    df: pd.DataFrame,
-) -> pd.DataFrame:
-    """Ensure all strategy columns are normalized to integer IDs."""
-    df = df.copy()
-    strategy_cols = [c for c in df.columns if c == "winner_strategy" or _SEAT_RE.match(c)]
-    for col in strategy_cols:
-        series = df[col]
-        numeric = pd.to_numeric(series, errors="coerce")
-        fractional_mask = numeric.notna() & (numeric % 1 != 0)
-        if fractional_mask.any():
-            sample = series[fractional_mask].iloc[0]
-            LOGGER.debug(
-                "Non-integer strategy value detected",
-                extra={
-                    "stage": "ingest",
-                    "column": col,
-                    "sample_type": type(sample).__name__,
-                },
-            )
-            raise RuntimeError("Non-integer strategy value detected in ingest")
-        id_series = numeric.astype("Int64")
-        missing_mask = id_series.isna() & series.notna()
-        if missing_mask.any():
-            sample = series[missing_mask].iloc[0]
-            raise ValueError(
-                f"retired nonnumeric strategy identifier in {col}: {sample!r}; "
-                "regenerate simulation artifacts with numeric strategy IDs"
-            )
-        unresolved = id_series.isna() & series.notna()
-        if unresolved.any():
-            sample = series[unresolved].iloc[0]
-            LOGGER.error(
-                "Unmapped strategy identifiers detected",
-                extra={
-                    "stage": "ingest",
-                    "column": col,
-                    "sample": str(sample),
-                },
-            )
-            raise RuntimeError("Unmapped strategy identifiers detected")
-        df[col] = id_series.astype("Int64")
-    return df
-
-
-def _validate_strategy_dtypes(df: pd.DataFrame) -> None:
-    """Validate that strategy columns conform to integer identifier dtype."""
-    strategy_cols = [c for c in df.columns if c == "winner_strategy" or _SEAT_RE.match(c)]
-    for col in strategy_cols:
-        if not pd.api.types.is_integer_dtype(df[col].dtype):
-            LOGGER.error(
-                "Strategy column has unexpected dtype",
-                extra={
-                    "stage": "ingest",
-                    "column": col,
-                    "dtype": str(df[col].dtype),
-                },
-            )
-            raise RuntimeError("Strategy column dtype mismatch")
 
 
 def _n_from_block(name: str) -> int | None:
@@ -390,7 +398,7 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
     raw_out = cfg.ingested_rows_raw(n)
     source_manifest, row_shards = _canonical_row_shards(block, cfg, n)
 
-    canon = expected_schema_for(n)
+    canon = raw_simulation_schema_for(n)
     seat_cols = [c for c in canon.names if c.startswith("P")]
     wanted = tuple(
         dict.fromkeys(
@@ -428,8 +436,6 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
             )
 
             shard_df = _fix_winner(shard_df)
-            shard_df = _coerce_strategy_ids(shard_df)
-            _validate_strategy_dtypes(shard_df)
             canon_names = canon.names
             extras = sorted(
                 c for c in shard_df.columns if c not in canon_names and not c.startswith("P")
@@ -444,9 +450,12 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
                     },
                 )
                 raise RuntimeError("Schema mismatch")
-            for name in canon_names:
-                if name not in shard_df.columns:
-                    shard_df[name] = pd.NA
+            missing_columns = sorted(set(canon_names).difference(shard_df.columns))
+            if missing_columns:
+                raise ValueError(
+                    f"row shard is missing required identity/outcome columns "
+                    f"{missing_columns}: {shard_path}"
+                )
             shard_df = shard_df[canon_names]
             table = pa.Table.from_pandas(shard_df, schema=canon, preserve_index=False)
             total += len(shard_df)

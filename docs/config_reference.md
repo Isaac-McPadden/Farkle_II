@@ -65,7 +65,8 @@ operation and artifact.
 
 - `report_pareto`, `report_maximin`
 - `delta_seed_stability`
-- `joint_discrepancy_alpha`
+- `joint_discrepancy_alpha` (upper-tail fraction for a descriptive joint
+  reference quantile, not an inferential test level)
 - `matched_count_fractions`
 
 The workload planner chooses the smallest shuffle count meeting the Wilson
@@ -84,9 +85,13 @@ small produces `blocked_by_cap` before simulation work begins.
 - `total_game_cap` is operational and does not alter the schedule hash
 - `allow_single_root` controls explicitly labelled single-root execution
 
-The planner validates the implemented two-proportion score rejection rule at
-the Bonferroni planning threshold. Work is equal across roots and seat orders;
-single-root work is equal across seat orders.
+The planner exhaustively finds the first admissible completed-game block size
+whose exact implemented two-proportion score-test power reaches the Bonferroni
+target over every locked seat scenario. Power is conditional on reaching that
+completed support. Work is equal across roots and seat orders; single-root work
+is equal across seat orders. `total_game_cap` authorization and progress live in
+mutable execution state, so a cap-only raise never rewrites the immutable power
+plan or block manifest.
 
 ## Simulation, analysis, and model settings
 

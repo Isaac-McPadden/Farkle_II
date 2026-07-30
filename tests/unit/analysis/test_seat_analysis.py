@@ -147,6 +147,24 @@ def test_canonical_seat_estimators_and_diagnostics(tmp_path: Path) -> None:
             "operation": "within_k_exposure_combination",
         },
     )
+    validate_artifact_sidecar(
+        artifacts.selfplay_diagnostic,
+        expected={
+            "conditioning": (
+                "all attempted games conditional on every seat using the same strategy"
+            ),
+            "replication_unit": "attempted_self_play_game",
+        },
+    )
+    validate_artifact_sidecar(
+        artifacts.mirrored_diagnostic,
+        expected={
+            "conditioning": 'termination_status == "completed"',
+            "replication_unit": (
+                "within_batch_count_matched_opposite_orientation_game_pair"
+            ),
+        },
+    )
 
 
 def test_declared_k_weights_are_used_for_standardization(tmp_path: Path) -> None:

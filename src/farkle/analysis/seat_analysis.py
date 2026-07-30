@@ -18,6 +18,7 @@ from farkle.game.engine import TerminationStatus
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
+from farkle.utils.strategy_ids import STRATEGY_ID_ARROW_TYPE
 from farkle.utils.streaming_loop import run_streaming_shard
 
 _COUNT_SCHEMA: Final = pa.schema(
@@ -25,7 +26,7 @@ _COUNT_SCHEMA: Final = pa.schema(
         pa.field("root_seed", pa.int64(), nullable=False),
         pa.field("k", pa.int16(), nullable=False),
         pa.field("deterministic_batch_id", pa.int32(), nullable=False),
-        pa.field("strategy", pa.int32(), nullable=False),
+        pa.field("strategy", STRATEGY_ID_ARROW_TYPE, nullable=False),
         pa.field("seat", pa.int16(), nullable=False),
         pa.field("raw_wins", pa.int64(), nullable=False),
         pa.field("raw_exposures", pa.int64(), nullable=False),
@@ -578,6 +579,7 @@ def _write_frame(
     k_weights: dict[int, float] | None = None,
     missing_cell_policy: str = "fail",
     conditioning: str = ATTEMPT_CONDITIONING,
+    replication_unit: str = "attempted_player_game_exposure_grouped_by_deterministic_shuffle_batch",
 ) -> None:
     sidecar = make_artifact_sidecar(
         cfg,
@@ -592,7 +594,7 @@ def _write_frame(
         k_weights=k_weights,
         support_count_role="raw_player_game_exposures",
         uncertainty_method="descriptive",
-        replication_unit="deterministic_shuffle_batch",
+        replication_unit=replication_unit,
         conditioning=conditioning,
         consistency_columns=frame.columns.tolist(),
         source_artifacts=sources,
@@ -661,7 +663,10 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
             operation="calculate_strategy_seat_effects",
             sources=[count_path],
             ks=[k],
-            grouping_keys=["root_seed", "k", "strategy", "seat"],
+        grouping_keys=["root_seed", "k", "strategy", "seat"],
+        conditioning=(
+            "all attempted player-game exposures conditional on root_seed, k, strategy, and seat"
+        ),
         )
         _write_frame(
             cfg,
@@ -671,7 +676,8 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
             operation="calculate_population_seat_effects",
             sources=[count_path],
             ks=[k],
-            grouping_keys=["root_seed", "k", "seat"],
+        grouping_keys=["root_seed", "k", "seat"],
+        conditioning="all attempted player-game exposures conditional on root_seed, k, and seat",
         )
 
     standardized, mixture = _standardized_frames(cfg, by_k, population_by_k, ks)
@@ -689,6 +695,10 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
         k_method=k_method,
         k_weights=sidecar_weights,
         missing_cell_policy="declared_common_support",
+        conditioning=(
+            "complete declared k support conditional on root_seed, effect_scope, strategy, and seat"
+        ),
+        replication_unit="declared_k_cell",
     )
     _write_frame(
         cfg,
@@ -700,6 +710,10 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
         ks=ks,
         grouping_keys=["root_seed", "effect_scope", "strategy", "seat"],
         missing_cell_policy="declared_common_support",
+        conditioning=(
+            "all attempted player-game exposures over declared common k support conditional on "
+            "root_seed, effect_scope, strategy, and seat"
+        ),
     )
     selfplay, mirrored = _game_diagnostics(sources)
     _write_frame(
@@ -711,6 +725,8 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
         sources=list(sources.values()),
         ks=ks,
         grouping_keys=["root_seed", "k", "strategy"],
+        conditioning="all attempted games conditional on every seat using the same strategy",
+        replication_unit="attempted_self_play_game",
     )
     _write_frame(
         cfg,
@@ -722,6 +738,7 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
         ks=ks,
         grouping_keys=["root_seed", "strategy_a", "strategy_b"],
         conditioning='termination_status == "completed"',
+        replication_unit="within_batch_count_matched_opposite_orientation_game_pair",
     )
     write_stage_done(
         done,

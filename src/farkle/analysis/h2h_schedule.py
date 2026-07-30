@@ -43,9 +43,10 @@ from farkle.utils.stage_completion import (
     stage_is_up_to_date,
     write_stage_done,
 )
+from farkle.utils.strategy_ids import canonical_strategy_ids, require_strategy_id_field
 
 SCORE_TEST_ID: Final = "independent_two_proportion_score_v1"
-POWER_METHOD_ID: Final = "conditional_exact_power_for_score_rejection_v1"
+POWER_METHOD_ID: Final = "conditional_exact_power_first_crossing_v2"
 H2H_METHOD_VERSION: Final = 2
 H2H_CONDITIONING: Final = (
     'formal inference conditions on termination_status == "completed"; '
@@ -83,10 +84,10 @@ def h2h_method_contract(
 
 @dataclass(frozen=True)
 class H2HScheduleArtifacts:
-    """Immutable power plan and optional executable block manifest."""
+    """Immutable power plan and block manifest plus mutable authorization status."""
 
     power_plan: Path
-    block_manifest: Path | None
+    block_manifest: Path
     planning_state: CompletionState
     execution_blocked: bool
 
@@ -193,6 +194,31 @@ def _fixed_first_count_boundaries(count1: int, nobs: int, alpha: float) -> tuple
     return lower, upper
 
 
+def _fixed_first_count_boundary_arrays(
+    nobs: int,
+    alpha: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return exact rejecting count boundaries for every first-sample count."""
+
+    count1 = np.arange(nobs + 1, dtype=np.float64)
+    critical_squared = _score_critical_value(alpha) ** 2
+    quadratic = 2.0 * nobs + critical_squared
+    linear = -4.0 * nobs * count1 - 2.0 * critical_squared * (nobs - count1)
+    constant = quadratic * count1 * count1 - 2.0 * critical_squared * nobs * count1
+    discriminant = np.maximum(linear * linear - 4.0 * quadratic * constant, 0.0)
+    root_distance = np.sqrt(discriminant)
+    lower_root = (-linear - root_distance) / (2.0 * quadratic)
+    upper_root = (-linear + root_distance) / (2.0 * quadratic)
+
+    # Rejection is strict (|z| > critical), hence the ceil/floor treatment
+    # when a quadratic root is itself an integer count.
+    lower = np.clip(np.ceil(lower_root).astype(np.int64) - 1, -1, nobs)
+    upper = np.clip(np.floor(upper_root).astype(np.int64) + 1, 0, nobs + 1)
+    lower[count1 == 0] = -1
+    upper[count1 == nobs] = nobs + 1
+    return lower, upper
+
+
 def _conditional_fisher_power(
     total_pmf: np.ndarray,
     nobs: int,
@@ -236,17 +262,7 @@ def implemented_score_test_power(
     nobs = int(games_per_order)
     support = np.arange(nobs + 1, dtype=np.int64)
     first_pmf = binom.pmf(support, nobs, q_ab)
-    second_pmf = binom.pmf(support, nobs, q_ba)
-    total_pmf = np.maximum(fftconvolve(first_pmf, second_pmf), 0.0)
-    total_mass = float(total_pmf.sum())
-    if not math.isfinite(total_mass) or total_mass <= 0.0:
-        raise RuntimeError("score-test power calculation produced invalid probability mass")
-    total_pmf /= total_mass
-
-    lower = np.empty(nobs + 1, dtype=np.int64)
-    upper = np.empty(nobs + 1, dtype=np.int64)
-    for count1 in support.tolist():
-        lower[count1], upper[count1] = _fixed_first_count_boundaries(count1, nobs, alpha)
+    lower, upper = _fixed_first_count_boundary_arrays(nobs, alpha)
     rejection_given_first = binom.cdf(lower, nobs, q_ba) + binom.sf(
         upper - 1,
         nobs,
@@ -254,6 +270,12 @@ def implemented_score_test_power(
     )
     power = float(np.dot(first_pmf, rejection_given_first))
     if nobs <= 64:
+        second_pmf = binom.pmf(support, nobs, q_ba)
+        total_pmf = np.maximum(fftconvolve(first_pmf, second_pmf), 0.0)
+        total_mass = float(total_pmf.sum())
+        if not math.isfinite(total_mass) or total_mass <= 0.0:
+            raise RuntimeError("score-test power calculation produced invalid probability mass")
+        total_pmf /= total_mass
         conditional_power = _conditional_fisher_power(total_pmf, nobs, q_ab, q_ba, alpha)
         if not math.isclose(power, conditional_power, rel_tol=1e-11, abs_tol=1e-13):
             raise RuntimeError("conditional Fisher and joint-binomial power sums disagree")
@@ -292,25 +314,6 @@ def _worst_scenario_power(
     )
 
 
-def _asymptotic_worst_scenario_power(
-    *,
-    games_per_root_order_block: int,
-    root_count: int,
-    effect: float,
-    scenarios: tuple[float, ...],
-    alpha_per_pair: float,
-) -> float:
-    games_per_order = games_per_root_order_block * root_count
-    return min(
-        independent_score_planning_power(
-            games_per_order,
-            *_scenario_probabilities(effect, advantage),
-            alpha_per_pair,
-        )
-        for advantage in scenarios
-    )
-
-
 def _minimum_block_games(
     *,
     root_count: int,
@@ -321,9 +324,13 @@ def _minimum_block_games(
 ) -> int:
     """Find the smallest equal root/order block size satisfying worst-case power."""
 
-    def asymptotically_sufficient(block_games: int) -> bool:
-        return (
-            _asymptotic_worst_scenario_power(
+    # Exact discrete score-test power is not globally monotone in sample size.
+    # Scan every admitted positive integer block size so the returned value is
+    # the true first crossing, not merely a crossing whose predecessor fails.
+    block_games = 1
+    while block_games <= 2**50:
+        if (
+            _worst_scenario_power(
                 games_per_root_order_block=block_games,
                 root_count=root_count,
                 effect=effect,
@@ -331,51 +338,10 @@ def _minimum_block_games(
                 alpha_per_pair=alpha_per_pair,
             )
             >= target_power
-        )
-
-    upper = 1
-    while not asymptotically_sufficient(upper):
-        upper *= 2
-        if upper > 2**50:
-            raise RuntimeError("H2H power search failed to find a finite allocation")
-    lower = 0
-    while lower + 1 < upper:
-        midpoint = (lower + upper) // 2
-        if asymptotically_sufficient(midpoint):
-            upper = midpoint
-        else:
-            lower = midpoint
-    exact_upper = upper
-    while (
-        _worst_scenario_power(
-            games_per_root_order_block=exact_upper,
-            root_count=root_count,
-            effect=effect,
-            scenarios=scenarios,
-            alpha_per_pair=alpha_per_pair,
-        )
-        < target_power
-    ):
-        exact_upper *= 2
-        if exact_upper > 2**50:
-            raise RuntimeError("H2H exact power search failed to find a finite allocation")
-    exact_lower = 0
-    while exact_lower + 1 < exact_upper:
-        midpoint = (exact_lower + exact_upper) // 2
-        if (
-            _worst_scenario_power(
-                games_per_root_order_block=midpoint,
-                root_count=root_count,
-                effect=effect,
-                scenarios=scenarios,
-                alpha_per_pair=alpha_per_pair,
-            )
-            >= target_power
         ):
-            exact_upper = midpoint
-        else:
-            exact_lower = midpoint
-    return exact_upper
+            return block_games
+        block_games += 1
+    raise RuntimeError("H2H exact power search failed to find a finite allocation")
 
 
 def _load_frozen_family(cfg: AppConfig) -> tuple[dict[str, Any], pd.DataFrame]:
@@ -390,6 +356,8 @@ def _load_frozen_family(cfg: AppConfig) -> tuple[dict[str, Any], pd.DataFrame]:
             },
         )
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    membership_schema = pq.read_schema(membership_path)
+    require_strategy_id_field(membership_schema, "strategy", context=str(membership_path))
     membership = pq.read_table(membership_path).to_pandas()
     candidates = manifest.get("candidates")
     family_hash = manifest.get("family_hash")
@@ -398,9 +366,9 @@ def _load_frozen_family(cfg: AppConfig) -> tuple[dict[str, Any], pd.DataFrame]:
     if not isinstance(family_hash, str) or len(family_hash) != 64:
         raise ValueError("frozen candidate manifest has an invalid family hash")
     selected = sorted(
-        membership.loc[membership["final_family"].astype(bool), "strategy"].astype(str).tolist()
+        membership.loc[membership["final_family"].astype(bool), "strategy"].astype(int).tolist()
     )
-    if selected != sorted(str(candidate) for candidate in candidates):
+    if selected != sorted(int(candidate) for candidate in candidates):
         raise ValueError("candidate manifest and membership artifact disagree")
     hashes = set(membership["family_hash"].astype(str))
     if hashes != {family_hash}:
@@ -430,8 +398,8 @@ def _power_grid(
     block_games: int,
     roots: tuple[int, ...],
     alpha_per_pair: float,
-) -> list[dict[str, float]]:
-    rows: list[dict[str, float]] = []
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     games_per_order = block_games * len(roots)
     for effect in cfg.head2head.sensitivity_deltas:
         for advantage in cfg.head2head.seat1_advantage_scenarios:
@@ -443,6 +411,7 @@ def _power_grid(
                     "q_ab": q_ab,
                     "q_ba": q_ba,
                     "games_per_order": games_per_order,
+                    "power_conditioning": "exact_completed_games_per_order_achieved",
                     "achieved_power": implemented_score_test_power(
                         games_per_order,
                         q_ab,
@@ -500,7 +469,7 @@ def _block_id(schedule_hash: str, pair_id: int, root_seed: int, order: int) -> s
 
 def _schedule_frame(
     *,
-    candidates: list[str],
+    candidates: list[int],
     family_hash: str,
     schedule_hash: str,
     roots: tuple[int, ...],
@@ -543,10 +512,19 @@ def _schedule_frame(
                         "alpha_per_pair": alpha_per_pair,
                         "target_power": target_power,
                         "worst_scenario_achieved_power": worst_power,
+                        "power_conditioning": (
+                            "conditional_on_achieving_exact_completed_game_support"
+                        ),
                         "block_id": _block_id(schedule_hash, pair_id, root_seed, order),
                     }
                 )
-    return pd.DataFrame(rows)
+    frame = pd.DataFrame(rows)
+    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
+        frame[column] = canonical_strategy_ids(
+            frame[column],
+            context=f"H2H schedule {column}",
+        )
+    return frame
 
 
 def _planning_sidecar_common(
@@ -583,7 +561,7 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
     if not 0.0 <= cfg.head2head.min_candidate_completion_rate <= 1.0:
         raise ValueError("head2head.min_candidate_completion_rate must be between 0 and 1")
     family, _membership = _load_frozen_family(cfg)
-    candidates = [str(value) for value in family["candidates"]]
+    candidates = [int(value) for value in family["candidates"]]
     family_hash = str(family["family_hash"])
     roots = _roots_from_manifest(family)
     if roots != _configured_roots(cfg):
@@ -663,6 +641,9 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         "family_alpha": cfg.head2head.family_alpha,
         "alpha_per_pair": alpha_per_pair,
         "target_power": cfg.head2head.target_power,
+        "power_conditioning": (
+            "conditional_on_achieving_n_completed_required_in_every_pair_root_order_cell"
+        ),
         "target_effect": cfg.head2head.practical_delta,
         "n_completed_required_per_root_order_block": block_games,
         "n_completed_required_per_order_across_roots": block_games * len(roots),
@@ -672,31 +653,35 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         "max_attempts_per_root_order_block": max_attempts_per_block,
         "maximum_total_attempts": maximum_total_attempts,
         "min_candidate_completion_rate": cfg.head2head.min_candidate_completion_rate,
-        "total_game_cap": cap,
         "h2h_method_version": H2H_METHOD_VERSION,
         "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
         "rng_scheme_version": RNG_SCHEME_VERSION,
         "planning_state": planning_state.value,
-        "execution_authorization": "blocked_by_cap" if blocked else "ready",
         "total_block_count": total_blocks,
         "worst_scenario_achieved_power": worst_power,
         "previous_equal_block_size_worst_power": previous_power,
         "seat_order_rng_contract": "independent_coordinate_streams",
         "power_validation": power_grid,
-        "cap_guidance": (
-            None
-            if not blocked
-            else "increase head2head.total_game_cap to at least maximum_total_attempts"
-        ),
     }
     power_path = cfg.h2h_power_plan_path()
     schedule_path = cfg.h2h_block_manifest_path()
+    schedule = _schedule_frame(
+        candidates=candidates,
+        family_hash=family_hash,
+        schedule_hash=schedule_hash,
+        roots=roots,
+        block_games=block_games,
+        max_attempt_multiplier=max_attempt_multiplier,
+        alpha_per_pair=alpha_per_pair,
+        target_power=cfg.head2head.target_power,
+        worst_power=worst_power,
+    )
     family_sources = [
         cfg.h2h_candidate_family_manifest_path(),
         cfg.h2h_candidate_family_path(),
     ]
     done = stage_done_path(cfg.stage_dir("h2h_power"), "h2h_power")
-    expected_outputs = [power_path] if blocked else [power_path, schedule_path]
+    expected_outputs = [power_path, schedule_path]
     if not force and stage_is_up_to_date(
         done,
         inputs=family_sources,
@@ -706,12 +691,64 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         sidecar_artifacts=expected_outputs,
     ):
         existing_plan = json.loads(power_path.read_text(encoding="utf-8"))
+        _refresh_execution_authorization(cfg, existing_plan, blocked=blocked)
         return H2HScheduleArtifacts(
             power_plan=power_path,
-            block_manifest=None if blocked else schedule_path,
+            block_manifest=schedule_path,
             planning_state=CompletionState(str(existing_plan["planning_state"])),
-            execution_blocked=existing_plan["execution_authorization"] == "blocked_by_cap",
+            execution_blocked=blocked,
         )
+
+    if power_path.exists() and schedule_path.exists():
+        try:
+            validate_artifact_sidecar(
+                power_path,
+                expected={
+                    "scope": ArtifactScope.H2H_2P.value,
+                    "operation": "score_test_power_plan",
+                },
+            )
+            validate_artifact_sidecar(
+                schedule_path,
+                expected={
+                    "scope": ArtifactScope.H2H_2P.value,
+                    "operation": "construct_pair_root_order_blocks",
+                },
+            )
+            existing_plan = json.loads(power_path.read_text(encoding="utf-8"))
+            existing_schedule = pq.read_table(schedule_path).to_pandas()
+        except (ArtifactContractError, OSError):
+            pass
+        else:
+            if existing_plan != plan or not existing_schedule.equals(schedule):
+                raise RuntimeError(
+                    "published H2H statistical design differs from the requested design; "
+                    "use a new output root"
+                )
+            _refresh_execution_authorization(cfg, existing_plan, blocked=blocked)
+            write_stage_done(
+                done,
+                inputs=family_sources,
+                outputs=[power_path, schedule_path],
+                cfg=cfg,
+                stage="h2h_power",
+                status="blocked_by_cap" if blocked else "success",
+                reason=(
+                    (
+                        f"maximum H2H attempts {maximum_total_attempts} exceed "
+                        f"head2head.total_game_cap={cap}"
+                    )
+                    if blocked
+                    else None
+                ),
+                sidecar_artifacts=[power_path, schedule_path],
+            )
+            return H2HScheduleArtifacts(
+                power_plan=power_path,
+                block_manifest=schedule_path,
+                planning_state=planning_state,
+                execution_blocked=blocked,
+            )
 
     common = _planning_sidecar_common(sources=family_sources, roots=roots)
     power_sidecar = make_artifact_sidecar(
@@ -729,38 +766,6 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         **common,
     )
     write_json_artifact_atomic(plan, power_path, sidecar=power_sidecar)
-    if blocked:
-        write_stage_done(
-            done,
-            inputs=family_sources,
-            outputs=[power_path],
-            cfg=cfg,
-            stage="h2h_power",
-            status="blocked_by_cap",
-            reason=(
-                f"maximum H2H attempts {maximum_total_attempts} exceed "
-                f"head2head.total_game_cap={cap}"
-            ),
-            sidecar_artifacts=[power_path],
-        )
-        return H2HScheduleArtifacts(
-            power_plan=power_path,
-            block_manifest=None,
-            planning_state=planning_state,
-            execution_blocked=True,
-        )
-
-    schedule = _schedule_frame(
-        candidates=candidates,
-        family_hash=family_hash,
-        schedule_hash=schedule_hash,
-        roots=roots,
-        block_games=block_games,
-        max_attempt_multiplier=max_attempt_multiplier,
-        alpha_per_pair=alpha_per_pair,
-        target_power=cfg.head2head.target_power,
-        worst_power=worst_power,
-    )
     schedule_sidecar = make_artifact_sidecar(
         cfg,
         schedule_path,
@@ -781,19 +786,26 @@ def plan_h2h_schedule(cfg: AppConfig, *, force: bool = False) -> H2HScheduleArti
         sidecar=schedule_sidecar,
         codec=cfg.parquet_codec,
     )
+    _refresh_execution_authorization(cfg, plan, blocked=blocked)
     write_stage_done(
         done,
         inputs=family_sources,
         outputs=[power_path, schedule_path],
         cfg=cfg,
         stage="h2h_power",
+        status="blocked_by_cap" if blocked else "success",
+        reason=(
+            (f"maximum H2H attempts {maximum_total_attempts} exceed head2head.total_game_cap={cap}")
+            if blocked
+            else None
+        ),
         sidecar_artifacts=[power_path, schedule_path],
     )
     return H2HScheduleArtifacts(
         power_plan=power_path,
         block_manifest=schedule_path,
         planning_state=planning_state,
-        execution_blocked=False,
+        execution_blocked=blocked,
     )
 
 
@@ -813,6 +825,14 @@ def _write_execution_state(
     payload = {
         "family_hash": str(plan["family_hash"]),
         "schedule_hash": str(plan["schedule_hash"]),
+        "authorized_total_game_cap": cfg.head2head.total_game_cap,
+        "maximum_total_attempts": int(plan["maximum_total_attempts"]),
+        "execution_authorization": (
+            "blocked_by_cap"
+            if cfg.head2head.total_game_cap is not None
+            and int(plan["maximum_total_attempts"]) > cfg.head2head.total_game_cap
+            else "ready"
+        ),
         "execution_state": state.value,
         "completed_block_count": completed_block_count,
         "total_block_count": total,
@@ -875,6 +895,58 @@ def _write_execution_state(
     )
     write_json_artifact_atomic(payload, state_path, sidecar=sidecar)
     return payload
+
+
+def _refresh_execution_authorization(
+    cfg: AppConfig,
+    plan: Mapping[str, Any],
+    *,
+    blocked: bool,
+) -> dict[str, Any]:
+    """Publish cap authorization without changing immutable statistical design."""
+
+    state_path = cfg.h2h_execution_state_path()
+    if state_path.exists():
+        try:
+            existing = cast(
+                dict[str, Any],
+                read_json_artifact(
+                    state_path,
+                    expected_sidecar={
+                        "scope": ArtifactScope.H2H_2P.value,
+                        "operation": "h2h_execution_state",
+                    },
+                ),
+            )
+        except ArtifactContractError:
+            existing = {}
+        if existing:
+            for field in ("family_hash", "schedule_hash", "total_block_count"):
+                if existing.get(field) != plan.get(field):
+                    raise ValueError(
+                        f"H2H execution state conflicts with immutable plan field {field}"
+                    )
+            current_state = str(existing.get("execution_state"))
+            current_authorization = str(existing.get("execution_authorization"))
+            desired_authorization = "blocked_by_cap" if blocked else "ready"
+            if (
+                current_authorization == desired_authorization
+                and existing.get("authorized_total_game_cap") == cfg.head2head.total_game_cap
+            ):
+                return existing
+            if current_state not in {
+                CompletionState.NOT_STARTED.value,
+                CompletionState.BLOCKED_BY_CAP.value,
+            }:
+                raise RuntimeError(
+                    "cannot change H2H cap authorization after execution progress exists"
+                )
+    return _write_execution_state(
+        cfg,
+        plan,
+        CompletionState.BLOCKED_BY_CAP if blocked else CompletionState.NOT_STARTED,
+        completed_block_count=0,
+    )
 
 
 def _winner_seat_counts(frame: pd.DataFrame) -> tuple[int, int, int]:
@@ -1071,7 +1143,7 @@ def _block_path(cfg: AppConfig, block: Mapping[str, Any]) -> Path:
     )
 
 
-def _read_existing_block(path: Path, block: Mapping[str, Any]) -> dict[str, Any] | None:
+def _read_authenticated_block(path: Path, block: Mapping[str, Any]) -> dict[str, Any] | None:
     if not path.exists():
         return None
     validate_artifact_sidecar(
@@ -1146,6 +1218,25 @@ def _read_existing_block(path: Path, block: Mapping[str, Any]) -> dict[str, Any]
     return row
 
 
+def _read_existing_block(path: Path, block: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Return one valid checkpoint or classify only its coordinate as pending."""
+
+    try:
+        return _read_authenticated_block(path, block)
+    except (
+        ArtifactContractError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        pa.ArrowInvalid,
+    ):
+        # Data without its matching sidecar is never trusted or re-sidecarred.
+        # The immutable schedule coordinate is replayed and atomically replaces
+        # the unauthenticated pair.
+        return None
+
+
 def _valid_existing_block(path: Path, block: Mapping[str, Any]) -> bool:
     row = _read_existing_block(path, block)
     return row is not None and str(row["completion_status"]) in _TERMINAL_BLOCK_STATUSES
@@ -1209,6 +1300,11 @@ def _write_block(
 ) -> Path:
     path = _block_path(cfg, result)
     frame = pd.DataFrame([result])
+    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
+        frame[column] = canonical_strategy_ids(
+            frame[column],
+            context=f"H2H block {column}",
+        )
     sidecar = make_artifact_sidecar(
         cfg,
         path,
@@ -1299,14 +1395,17 @@ def _completed_execution_is_recoverable(
     expected_sources = [str(path) for path in block_paths]
     if output_sidecar.source_artifacts != expected_sources:
         raise ValueError("completed H2H aggregate does not reference the frozen block set")
-    for path in block_paths:
-        validate_artifact_sidecar(
-            path,
-            expected={
-                "scope": ArtifactScope.H2H_2P.value,
-                "operation": "simulate_root_order_block",
-            },
-        )
+    try:
+        for path in block_paths:
+            validate_artifact_sidecar(
+                path,
+                expected={
+                    "scope": ArtifactScope.H2H_2P.value,
+                    "operation": "simulate_root_order_block",
+                },
+            )
+    except ArtifactContractError:
+        return False
     return True
 
 
@@ -1333,12 +1432,25 @@ def execute_h2h_schedule(
     plan = json.loads(plan_path.read_text(encoding="utf-8"))
     if plan.get("planning_state") != CompletionState.COMPLETE_VALID.value:
         raise RuntimeError("H2H execution requires a complete valid power plan")
-    if plan.get("execution_authorization") == "blocked_by_cap":
+    authorization = cast(
+        dict[str, Any],
+        read_json_artifact(
+            state_path,
+            expected_sidecar={
+                "scope": ArtifactScope.H2H_2P.value,
+                "operation": "h2h_execution_state",
+            },
+        ),
+    )
+    for field in ("family_hash", "schedule_hash", "total_block_count"):
+        if authorization.get(field) != plan.get(field):
+            raise ValueError(f"H2H execution authorization conflicts with plan field {field}")
+    if authorization.get("execution_authorization") == "blocked_by_cap":
         raise RuntimeError(
             "H2H execution is blocked; raise head2head.total_game_cap to the planned workload"
         )
-    if plan.get("execution_authorization") != "ready":
-        raise RuntimeError("H2H power plan lacks a valid execution authorization")
+    if authorization.get("execution_authorization") != "ready":
+        raise RuntimeError("H2H execution state lacks a valid cap authorization")
     validate_artifact_sidecar(
         schedule_path,
         expected={
@@ -1500,6 +1612,11 @@ def execute_h2h_schedule(
     combined = pd.DataFrame(completed_records).sort_values(
         ["pair_id", "root_index", "order"], kind="mergesort"
     )
+    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
+        combined[column] = canonical_strategy_ids(
+            combined[column],
+            context=f"H2H aggregate {column}",
+        )
     sidecar = make_artifact_sidecar(
         cfg,
         output,

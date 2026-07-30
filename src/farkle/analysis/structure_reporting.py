@@ -21,6 +21,7 @@ from farkle.utils.artifacts import write_json_artifact_atomic
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 _PERFORMANCE_OPERATIONS: Final = {"equal_k_mean", "declared_k_weighted_mean"}
+STRUCTURE_REPORT_CONTRACT_VERSION: Final = 4
 
 
 def _read_json(path: Path, *, operation: str) -> tuple[dict[str, Any], ArtifactSidecar]:
@@ -41,6 +42,15 @@ def _roots(cfg: AppConfig) -> tuple[int, ...]:
     if len(roots) not in {1, 2}:
         raise ValueError(f"reporting requires one or two roots, found {roots}")
     return roots
+
+
+def _structure_reporting_freshness_key(cfg: AppConfig) -> dict[str, object]:
+    """Bind the machine-readable report schema to lifecycle freshness."""
+
+    return {
+        **cfg.freshness_key(),
+        "structure_report_contract_version": STRUCTURE_REPORT_CONTRACT_VERSION,
+    }
 
 
 def _performance_source(cfg: AppConfig, roots: tuple[int, ...]) -> Path:
@@ -206,6 +216,28 @@ def _records(frame: pd.DataFrame, columns: list[str]) -> list[dict[str, Any]]:
     return rows
 
 
+def _tournament_stability_summary(
+    rank: pd.DataFrame,
+    inclusion: pd.DataFrame,
+) -> dict[str, Any]:
+    """Build the explicitly descriptive fixed-design report section."""
+
+    return {
+        "available": True,
+        "interpretation": "fixed_design_descriptive_reproducibility_with_monte_carlo_precision",
+        "rank_summary": _records(rank, rank.columns.tolist())[0],
+        "root_specific_bootstrap_top_n_inclusion": _records(
+            inclusion,
+            [
+                "root_seed",
+                "strategy",
+                "top_n_size",
+                "bootstrap_top_n_inclusion_frequency",
+            ],
+        ),
+    }
+
+
 def _cycle_records(cycles: pd.DataFrame) -> list[dict[str, Any]]:
     if cycles.empty:
         return []
@@ -238,10 +270,7 @@ def _claim_lines(report: dict[str, Any]) -> list[str]:
     lines = [
         "Tournament screening leaders are descriptive chance-adjusted score leaders.",
         f"Pareto membership contains {robustness['pareto_member_count']} strategy configurations.",
-        (
-            "The separate maximin descriptive leader is "
-            f"{robustness['maximin_descriptive_leader']}."
-        ),
+        (f"The separate maximin descriptive leader is {robustness['maximin_descriptive_leader']}."),
     ]
     if h2h["unresolved_pair_count"]:
         lines.append(f"{h2h['unresolved_pair_count']} finalist comparisons remain unresolved.")
@@ -460,19 +489,7 @@ def run(
             inclusion_path, operation="root_specific_bootstrap_top_n_inclusion"
         )
         sources.extend([rank_path, inclusion_path])
-        tournament_stability = {
-            "available": True,
-            "rank_summary": _records(rank, rank.columns.tolist())[0],
-            "root_specific_bootstrap_top_n_inclusion": _records(
-                inclusion,
-                [
-                    "root_seed",
-                    "strategy",
-                    "top_n_size",
-                    "top_n_inclusion_probability",
-                ],
-            ),
-        }
+        tournament_stability = _tournament_stability_summary(rank, inclusion)
     else:
         tournament_stability = {
             "available": False,
@@ -489,6 +506,7 @@ def run(
         outputs=outputs,
         cfg=cfg,
         stage="reporting",
+        freshness_key=_structure_reporting_freshness_key(cfg),
         sidecar_artifacts=outputs,
     ):
         return
@@ -558,7 +576,7 @@ def run(
     h2h_games_safety_limit = int(h2h_counts["games_safety_limit"].sum())
     h2h_replacements = int(h2h_counts["replacement_attempt_count"].sum())
     report: dict[str, Any] = {
-        "report_contract_version": 3,
+        "report_contract_version": STRUCTURE_REPORT_CONTRACT_VERSION,
         "execution_scope": execution_scope,
         "roots": list(roots),
         "finite_grid_conditionality": True,
@@ -755,6 +773,7 @@ def run(
         outputs=outputs,
         cfg=cfg,
         stage="reporting",
+        freshness_key=_structure_reporting_freshness_key(cfg),
         sidecar_artifacts=outputs,
     )
 

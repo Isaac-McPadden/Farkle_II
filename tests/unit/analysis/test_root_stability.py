@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import numpy as np
@@ -19,9 +20,11 @@ from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     make_artifact_sidecar,
+    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.stage_completion import stage_done_path
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
@@ -158,7 +161,7 @@ def test_two_root_combination_and_stability_contract(tmp_path: Path) -> None:
         "raw_difference",
         "standardized_discrepancy",
         "threshold_fraction",
-        "joint_discrepancy_flag",
+        "exceeds_joint_reference_quantile",
     }.issubset(discrepancies.columns)
     assert set(discrepancies["estimand_scope"]) == {"by_k", "across_k"}
 
@@ -171,10 +174,10 @@ def test_two_root_combination_and_stability_contract(tmp_path: Path) -> None:
     assert set(root_inclusion["root_seed"]) == {11, 22}
     assert len(root_inclusion) == 6
     assert root_inclusion["complete_support"].all()
-    assert root_inclusion["top_n_inclusion_probability"].between(0.0, 1.0).all()
-    assert root_inclusion.groupby("root_seed")["top_n_inclusion_probability"].sum().tolist() == (
-        pytest.approx([2.0, 2.0])
-    )
+    assert root_inclusion["bootstrap_top_n_inclusion_frequency"].between(0.0, 1.0).all()
+    assert root_inclusion.groupby("root_seed")[
+        "bootstrap_top_n_inclusion_frequency"
+    ].sum().tolist() == pytest.approx([2.0, 2.0])
     assert pq.read_table(artifacts.control_movement).num_rows == 1
     assert pq.read_table(artifacts.shortlist_changes).num_rows == 3
 
@@ -184,10 +187,56 @@ def test_two_root_combination_and_stability_contract(tmp_path: Path) -> None:
     assert set(drift["estimand_scope"]) == {"by_k", "across_k"}
     assert set(drift["root_seed"]) == {11, 22}
 
-    forbidden = {"tau_squared", "i_squared", "root_population_interval"}
+    # This pointwise interval excludes chance, which historically triggered a
+    # statistically_* label. It remains Monte Carlo precision only.
+    assert strategy["batch_mc_precision_interval_low"] > strategy["chance_baseline"]
+    assert strategy["practical_threshold_position"] == "above_positive_threshold"
+
+    forbidden = {
+        "tau_squared",
+        "i_squared",
+        "root_population_interval",
+        "performance_classification",
+        "root_a_classification",
+        "root_b_classification",
+        "combined_classification",
+        "classification_changed",
+        "joint_adjusted_diagnostic_p",
+        "diagnostic_family_alpha",
+        "joint_max_abs_standardized_critical",
+        "joint_unusual",
+        "flagged_estimands",
+    }
+    forbidden_language = ("statistically_", "significance", "rejection")
     for path in artifacts.all_paths:
-        assert forbidden.isdisjoint(pq.read_schema(path).names)
-        validate_artifact_sidecar(path, expected={"scope": "cross_seed"})
+        frame = pq.read_table(path).to_pandas()
+        assert forbidden.isdisjoint(frame.columns)
+        serialized = json.dumps(
+            {
+                "columns": frame.columns.tolist(),
+                "string_values": {
+                    column: frame[column].dropna().astype(str).tolist()
+                    for column in frame.select_dtypes(include=["object", "string"]).columns
+                },
+                "sidecar": json.loads(sidecar_path(path).read_text(encoding="utf-8")),
+            },
+            sort_keys=True,
+        ).lower()
+        assert not any(label in serialized for label in forbidden_language)
+        sidecar = validate_artifact_sidecar(path, expected={"scope": "cross_seed"})
+        assert (sidecar.method_contract or {}).get("parameters") == {
+            "method_version": 2,
+            "design_interpretation": "fixed_design_descriptive_reproducibility",
+            "interval_role": "monte_carlo_precision",
+            "root_population_inference": "none",
+            "multiple_testing_inference": "none",
+        }
+    completion = json.loads(
+        stage_done_path(cfg.stage_dir("root_stability"), "root_stability").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert completion["freshness_key"]["root_stability_method_version"] == 2
 
     first = pq.read_table(artifacts.discrepancies).to_pandas()
     build_two_root_stability(cfg, cells, force=True)
@@ -224,4 +273,66 @@ def test_two_root_combination_rejects_scope_mismatched_input(tmp_path: Path) -> 
     write_parquet_artifact_atomic(table, invalid.path, sidecar=sidecar)
 
     with pytest.raises(ArtifactContractError, match="scope"):
+        build_two_root_stability(cfg, cells)
+
+
+def test_root_stability_excludes_declared_zero_batch_and_records_it(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cells = _write_inputs(cfg, tmp_path)
+    target = cells[0]
+    rows = pq.read_table(target.path).to_pylist()
+    rows.extend(_metric_row(target.root_seed, target.k, 4, strategy, 0, 0) for strategy in (1, 2, 3))
+    table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
+    sidecar = make_artifact_sidecar(
+        cfg,
+        target.path,
+        producer="test",
+        scope=ArtifactScope.BY_K,
+        source_scope=ArtifactScope.BY_K,
+        operation="aggregate_performance_by_strategy",
+        conditioning="all_attempted_player_game_exposures_safety_limit_is_loss",
+        consistency_columns=table.schema.names,
+        player_counts=[target.k],
+        required_player_counts=[target.k],
+        missing_cell_policy="fail",
+        seed_scope="single_root",
+    )
+    write_parquet_artifact_atomic(table, target.path, sidecar=sidecar)
+
+    artifacts = build_two_root_stability(cfg, cells)
+    combined = pq.read_table(artifacts.combined_by_k[0]).to_pandas()
+    root_rows = combined.loc[combined["estimate_scope"].eq("root_11")]
+
+    assert set(root_rows["raw_declared_batches"]) == {5}
+    assert set(root_rows["raw_batches"]) == {4}
+    assert set(root_rows["excluded_zero_exposure_batch_cells"]) == {1}
+
+
+def test_root_stability_rejects_missing_strategy_batch_cell(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cells = _write_inputs(cfg, tmp_path)
+    target = cells[0]
+    rows = [
+        row
+        for row in pq.read_table(target.path).to_pylist()
+        if not (row["deterministic_batch_id"] == 3 and row["strategy"] == 3)
+    ]
+    table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
+    sidecar = make_artifact_sidecar(
+        cfg,
+        target.path,
+        producer="test",
+        scope=ArtifactScope.BY_K,
+        source_scope=ArtifactScope.BY_K,
+        operation="aggregate_performance_by_strategy",
+        conditioning="all_attempted_player_game_exposures_safety_limit_is_loss",
+        consistency_columns=table.schema.names,
+        player_counts=[target.k],
+        required_player_counts=[target.k],
+        missing_cell_policy="fail",
+        seed_scope="single_root",
+    )
+    write_parquet_artifact_atomic(table, target.path, sidecar=sidecar)
+
+    with pytest.raises(ValueError, match="missing declared rectangular strategy/batch cells"):
         build_two_root_stability(cfg, cells)

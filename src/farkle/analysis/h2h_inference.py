@@ -33,6 +33,7 @@ from farkle.utils.stage_completion import (
     stage_is_up_to_date,
     write_stage_done,
 )
+from farkle.utils.strategy_ids import canonical_strategy_ids, require_strategy_id_field
 
 _INTERVAL_METHOD: Final = "independent_two_proportion_score_inversion_v1"
 
@@ -366,11 +367,14 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
         "wins_a",
         "wins_b",
         "rng_scheme_version",
+        "rng_purpose_namespace",
         "outcome_schema_version",
         "h2h_method_version",
         "score_test_id",
     }
     schema = pq.read_schema(counts_path)
+    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
+        require_strategy_id_field(schema, column, context=str(counts_path))
     missing = sorted(required.difference(schema.names))
     if missing:
         raise ValueError(f"H2H root/order counts lack inference columns: {missing}")
@@ -385,6 +389,30 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
         raise ValueError("H2H counts were not scheduled for the accepted score procedure")
     if set(frame["h2h_method_version"].astype(int)) != {H2H_METHOD_VERSION}:
         raise ValueError("H2H counts use an incompatible method version")
+    integer_support = frame[
+        [
+            "n_completed_required",
+            "max_attempts",
+            "games_attempted",
+            "games_completed",
+            "games_safety_limit",
+            "replacement_attempt_count",
+            "wins_seat1",
+            "wins_seat2",
+            "wins_a",
+            "wins_b",
+        ]
+    ].astype(int)
+    if (integer_support < 0).any().any():
+        raise ValueError("H2H root/order counts contain negative support")
+    if not (
+        (integer_support["n_completed_required"] > 0)
+        & (integer_support["max_attempts"] >= integer_support["n_completed_required"])
+        & (integer_support["games_completed"] <= integer_support["n_completed_required"])
+        & (integer_support["games_completed"] <= integer_support["games_attempted"])
+        & (integer_support["games_attempted"] <= integer_support["max_attempts"])
+    ).all():
+        raise ValueError("H2H root/order counts lie outside planned attempt support")
     if not (
         frame["games_attempted"].astype(int)
         == frame["games_completed"].astype(int) + frame["games_safety_limit"].astype(int)
@@ -395,6 +423,13 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
         == frame["games_completed"].astype(int)
     ).all():
         raise ValueError("H2H root/order wins do not equal completed games")
+    if not (
+        frame["replacement_attempt_count"].astype(int)
+        == (frame["games_attempted"].astype(int) - frame["n_completed_required"].astype(int)).clip(
+            lower=0
+        )
+    ).all():
+        raise ValueError("H2H root/order replacement support is not permitted by the plan")
     keys = ["pair_id", "root_seed", "order"]
     if frame.duplicated(keys).any():
         raise ValueError("H2H root/order counts contain duplicate immutable blocks")
@@ -420,6 +455,7 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
         "n_completed_required",
         "max_attempts",
         "rng_scheme_version",
+        "rng_purpose_namespace",
         "outcome_schema_version",
         "h2h_method_version",
         "score_test_id",
@@ -429,6 +465,55 @@ def _read_counts(cfg: AppConfig) -> tuple[pd.DataFrame, dict[str, Any]]:
         raise ValueError(f"H2H schedule lacks authentication columns: {missing_schedule}")
     if schedule.duplicated(keys).any():
         raise ValueError("H2H schedule contains duplicate immutable blocks")
+    if len(schedule) != int(plan["total_block_count"]):
+        raise ValueError("H2H schedule does not contain the planned block count")
+    if set(schedule["family_hash"].astype(str)) != {str(plan["family_hash"])}:
+        raise ValueError("H2H schedule changed the frozen family hash")
+    if set(schedule["schedule_hash"].astype(str)) != {str(plan["schedule_hash"])}:
+        raise ValueError("H2H schedule changed its immutable schedule hash")
+    expected_roots_in_order = [int(root) for root in plan["root_seeds"]]
+    root_index = {root: index for index, root in enumerate(expected_roots_in_order)}
+    expected_cells = {
+        (pair_id, root, order)
+        for pair_id in range(int(plan["unordered_pair_count"]))
+        for root in expected_roots_in_order
+        for order in (0, 1)
+    }
+    observed_cells = {
+        (int(pair_id), int(root), int(order))
+        for pair_id, root, order in schedule[keys].itertuples(index=False, name=None)
+    }
+    if observed_cells != expected_cells:
+        raise ValueError("H2H schedule is not the exact planned pair/root/order Cartesian support")
+    if not schedule.apply(
+        lambda row: int(row["root_index"]) == root_index[int(row["root_seed"])],
+        axis=1,
+    ).all():
+        raise ValueError("H2H schedule root indices do not match the frozen root order")
+    expected_order_labels = schedule["order"].astype(int).map({0: "a_b", 1: "b_a"})
+    if not schedule["order_label"].astype(str).equals(expected_order_labels.astype(str)):
+        raise ValueError("H2H schedule order labels do not match immutable order identities")
+    expected_seat1 = schedule["strategy_a"].where(
+        schedule["order"].astype(int).eq(0),
+        schedule["strategy_b"],
+    )
+    expected_seat2 = schedule["strategy_b"].where(
+        schedule["order"].astype(int).eq(0),
+        schedule["strategy_a"],
+    )
+    if not (
+        schedule["seat1_strategy"].astype(str).equals(expected_seat1.astype(str))
+        and schedule["seat2_strategy"].astype(str).equals(expected_seat2.astype(str))
+    ):
+        raise ValueError("H2H schedule seat mapping does not match the frozen pair order")
+    pair_identities = schedule.groupby("pair_id").agg(
+        strategy_a_count=("strategy_a", "nunique"),
+        strategy_b_count=("strategy_b", "nunique"),
+    )
+    if not (
+        pair_identities["strategy_a_count"].eq(1) & pair_identities["strategy_b_count"].eq(1)
+    ).all():
+        raise ValueError("H2H schedule pair identities vary across root/order cells")
     if (
         not schedule["n_completed_required"]
         .astype(int)
@@ -553,7 +638,7 @@ def _combine_within_order(
 def _viability_status(
     counts: pd.DataFrame,
     plan: Mapping[str, Any],
-) -> tuple[dict[int, bool], dict[str, dict[str, Any]]]:
+) -> tuple[dict[int, bool], dict[int, dict[str, Any]]]:
     """Compute frozen-pair support and incident-attempt candidate viability."""
 
     pair_viable = {
@@ -567,7 +652,7 @@ def _viability_status(
     }
     incident_rows: list[dict[str, Any]] = []
     for row in cast(list[dict[str, Any]], counts.to_dict(orient="records")):
-        for strategy in (str(row["strategy_a"]), str(row["strategy_b"])):
+        for strategy in (int(row["strategy_a"]), int(row["strategy_b"])):
             incident_rows.append(
                 {
                     "strategy": strategy,
@@ -580,9 +665,9 @@ def _viability_status(
             )
     incident = pd.DataFrame(incident_rows)
     threshold = float(plan["min_candidate_completion_rate"])
-    status: dict[str, dict[str, Any]] = {}
+    status: dict[int, dict[str, Any]] = {}
     for strategy_key, group in incident.groupby("strategy", sort=True):
-        strategy = str(cast(Any, strategy_key))
+        strategy = int(cast(Any, strategy_key))
         attempted = int(group["games_attempted"].sum())
         completed = int(group["games_completed"].sum())
         safety_limit = int(group["games_safety_limit"].sum())
@@ -621,7 +706,7 @@ def _pairwise_estimates(
     plan: Mapping[str, Any],
     *,
     pair_viable: Mapping[int, bool],
-    candidate_status: Mapping[str, Mapping[str, Any]],
+    candidate_status: Mapping[int, Mapping[str, Any]],
 ) -> pd.DataFrame:
     pair_count = int(plan["unordered_pair_count"])
     if combined["pair_id"].nunique() != pair_count:
@@ -641,8 +726,8 @@ def _pairwise_estimates(
         x_ab = int(cast(int, ab["wins_a"]))
         x_ba = int(cast(int, ba["wins_b"]))
         a_wins_ba = int(cast(int, ba["wins_a"]))
-        strategy_a = str(ab["strategy_a"])
-        strategy_b = str(ab["strategy_b"])
+        strategy_a = int(ab["strategy_a"])
+        strategy_b = int(ab["strategy_b"])
         a_status = candidate_status[strategy_a]
         b_status = candidate_status[strategy_b]
         inferentially_viable = bool(pair_viable[pair_id_int])
@@ -720,8 +805,15 @@ def _pairwise_estimates(
             "score_test_id": SCORE_TEST_ID,
             "interval_method_id": _INTERVAL_METHOD,
             "h2h_method_version": H2H_METHOD_VERSION,
-            "planned_target_power": float(plan["target_power"]),
-            "planned_worst_scenario_power": float(plan["worst_scenario_achieved_power"]),
+            "planned_target_power_conditional_on_completed_support": float(plan["target_power"]),
+            "planned_worst_scenario_power_conditional_on_completed_support": float(
+                plan["worst_scenario_achieved_power"]
+            ),
+            "power_support_status": (
+                "completed_support_achieved"
+                if inferentially_viable
+                else "unresolved_required_completed_support_not_achieved"
+            ),
         }
         if inferentially_viable:
             result = two_proportion_score_test(x_ab, n_ab, x_ba, n_ba)
@@ -829,7 +921,7 @@ def _root_specific_diagnostics(
     plan: Mapping[str, Any],
     *,
     pair_viable: Mapping[int, bool],
-    candidate_status: Mapping[str, Mapping[str, Any]],
+    candidate_status: Mapping[int, Mapping[str, Any]],
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Calculate fixed-root score diagnostics and cross-root agreement summaries."""
 
@@ -911,8 +1003,8 @@ def _root_specific_diagnostics(
         row: dict[str, Any] = {
             "family_hash": str(first["family_hash"]),
             "pair_id": int(cast(int, pair_id)),
-            "strategy_a": str(first["strategy_a"]),
-            "strategy_b": str(first["strategy_b"]),
+            "strategy_a": int(first["strategy_a"]),
+            "strategy_b": int(first["strategy_b"]),
             "root_a": int(first["root_seed"]),
             "root_a_d_ab": (None if pd.isna(first["d_ab"]) else float(first["d_ab"])),
             "root_a_diagnostic_holm_decision": str(first["diagnostic_holm_decision"]),
@@ -980,6 +1072,13 @@ def _write_frame(
     weighted_quantity: str = "seat_adjusted_h2h_effect",
     uncertainty_method: str = f"{SCORE_TEST_ID}_holm",
 ) -> None:
+    frame = frame.copy()
+    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
+        if column in frame:
+            frame[column] = canonical_strategy_ids(
+                frame[column],
+                context=f"{operation} {column}",
+            )
     sidecar = make_artifact_sidecar(
         cfg,
         path,

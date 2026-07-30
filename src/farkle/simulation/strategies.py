@@ -16,6 +16,7 @@ from typing import Any, Callable, Iterable, Mapping, Protocol, Sequence, Tuple
 import numba as nb
 import pandas as pd
 
+from farkle.utils.strategy_ids import canonical_strategy_id, canonical_strategy_ids
 from farkle.utils.types import DiceRoll  # noqa: F401 Likely needed for decide(*)
 
 __all__: list[str] = [
@@ -727,7 +728,7 @@ def build_strategy_manifest(strategies: Sequence[ThresholdStrategy]) -> pd.DataF
     for strat in strategies:
         if strat.strategy_id is None:
             continue
-        sid = int(strat.strategy_id)
+        sid = canonical_strategy_id(strat.strategy_id, context="strategy.strategy_id")
         if sid in rows:
             continue
         attrs: dict[str, Any] = dict(zip(STRATEGY_TUPLE_FIELDS, strategy_tuple(strat), strict=True))
@@ -739,6 +740,10 @@ def build_strategy_manifest(strategies: Sequence[ThresholdStrategy]) -> pd.DataF
 
     manifest = pd.DataFrame(rows.values())
     if not manifest.empty:
+        manifest["strategy_id"] = canonical_strategy_ids(
+            manifest["strategy_id"],
+            context="strategy manifest strategy_id",
+        )
         manifest = manifest.sort_values("strategy_id", kind="mergesort").reset_index(drop=True)
     return manifest
 
@@ -749,14 +754,9 @@ def normalize_strategy_ids(series: pd.Series) -> pd.Series:
 
 
 def coerce_strategy_ids(series: pd.Series) -> pd.Series:
-    """Return nullable integer strategy IDs and reject retired string encodings."""
-    normalized = normalize_strategy_ids(series)
-    invalid = normalized.isna() & series.notna()
-    if invalid.any():
-        raise ValueError(
-            f"nonnumeric strategy identifier is not accepted: {series[invalid].iloc[0]!r}"
-        )
-    return normalized
+    """Return canonical non-null strategy IDs without permissive parsing."""
+
+    return canonical_strategy_ids(series, context="strategy identifier")
 
 
 def parse_strategy_identifier(
@@ -808,14 +808,14 @@ def strategy_attributes_from_series(
     """Return manifest attributes for canonical numeric strategy identifiers."""
     if manifest is None or manifest.empty:
         raise ValueError("strategy manifest is required for attribute decoding")
-    id_series = normalize_strategy_ids(strategies)
-    invalid = id_series.isna() & strategies.notna()
-    if invalid.any():
-        raise ValueError(f"nonnumeric strategy identifier: {strategies[invalid].iloc[0]!r}")
-    if not id_series.notna().any():
+    id_series = canonical_strategy_ids(
+        strategies,
+        context="strategy feature identifier",
+    )
+    if id_series.empty:
         return pd.DataFrame(columns=STRATEGY_TUPLE_FIELDS)
     manifest_indexed = manifest.set_index("strategy_id")
-    ids = id_series.dropna().astype(int)
+    ids = id_series.astype(int)
     mapped = manifest_indexed.reindex(ids.values)
     if mapped[list(STRATEGY_TUPLE_FIELDS)].isna().all(axis=1).any():
         raise KeyError("strategy ID missing from canonical manifest")

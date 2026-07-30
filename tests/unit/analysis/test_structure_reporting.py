@@ -7,10 +7,16 @@ from typing import Any
 import pandas as pd
 import pyarrow as pa
 
-from farkle.analysis.structure_reporting import _claim_lines, render_markdown, run
+from farkle.analysis.structure_reporting import (
+    _claim_lines,
+    _tournament_stability_summary,
+    render_markdown,
+    run,
+)
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
+from farkle.utils.stage_completion import stage_done_path
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
@@ -308,7 +314,13 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
     markdown = cfg.structure_report_markdown_path().read_text(encoding="utf-8")
     assert report["support"]["player_counts"] == [2]
     assert report["support"]["k_weights"] == {"2": 1.0}
-    assert report["report_contract_version"] == 3
+    assert report["report_contract_version"] == 4
+    completion = json.loads(
+        stage_done_path(cfg.stage_dir("reporting"), "structure_reporting").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert completion["freshness_key"]["structure_report_contract_version"] == 4
     assert report["performance"]["primary_rate"] == "win_rate_per_attempt"
     assert report["safety_limits"]["games_attempted"] == 10
     assert report["safety_limits"]["games_completed"] == 10
@@ -327,6 +339,35 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
         cfg.structure_report_plot_path(),
     ):
         validate_artifact_sidecar(path, expected={"scope": "diagnostics"})
+
+
+def test_fixed_design_stability_report_has_no_inferential_labels() -> None:
+    rank = pd.DataFrame(
+        {
+            "root_a": [11],
+            "root_b": [22],
+            "spearman_rank_correlation": [0.9],
+            "p95_absolute_rank_movement": [2.0],
+        }
+    )
+    inclusion = pd.DataFrame(
+        {
+            "root_seed": [11, 22],
+            "strategy": [1, 1],
+            "top_n_size": [1, 1],
+            "bootstrap_top_n_inclusion_frequency": [1.0, 0.95],
+        }
+    )
+
+    summary = _tournament_stability_summary(rank, inclusion)
+
+    assert summary["interpretation"] == (
+        "fixed_design_descriptive_reproducibility_with_monte_carlo_precision"
+    )
+    serialized = json.dumps(summary, sort_keys=True).lower()
+    assert "statistically_" not in serialized
+    assert "significance" not in serialized
+    assert "rejection" not in serialized
 
 
 def _claim_report(

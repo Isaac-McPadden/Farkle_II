@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
@@ -36,6 +35,11 @@ from farkle.utils.stage_completion import (
     stage_is_up_to_date,
     write_stage_done,
 )
+from farkle.utils.strategy_ids import (
+    canonical_strategy_id,
+    canonical_strategy_ids,
+    require_strategy_id_field,
+)
 
 _WIN_RATE_OPERATIONS: Final = {"equal_k_mean", "declared_k_weighted_mean"}
 
@@ -58,34 +62,22 @@ class CandidateFamilyArtifacts:
 class _RankedContribution:
     """One complete method-level ranking with stable strategy identifiers."""
 
-    ranks: dict[str, int]
-    scores: dict[str, float]
+    ranks: dict[int, int]
+    scores: dict[int, float]
     score_name: str
     sidecar: ArtifactSidecar
 
     @property
-    def ordered(self) -> list[str]:
+    def ordered(self) -> list[int]:
         """Return strategy identifiers in declared rank order."""
 
         return sorted(self.ranks, key=self.ranks.__getitem__)
 
 
-def _strategy_key(value: object) -> str:
-    """Normalize numeric and textual strategy identifiers without guessing aliases."""
+def _strategy_key(value: object) -> int:
+    """Return one canonical non-null integer strategy identifier."""
 
-    if isinstance(value, bool) or value is None:
-        raise ValueError(f"invalid strategy identifier: {value!r}")
-    if isinstance(value, (int, np.integer)):
-        return str(int(value))
-    if isinstance(value, (float, np.floating)):
-        numeric = float(value)
-        if not math.isfinite(numeric) or not numeric.is_integer():
-            raise ValueError(f"invalid numeric strategy identifier: {value!r}")
-        return str(int(numeric))
-    normalized = str(value).strip()
-    if not normalized:
-        raise ValueError("strategy identifiers must not be blank")
-    return normalized
+    return canonical_strategy_id(value)
 
 
 def _configured_roots(cfg: AppConfig) -> tuple[int, ...]:
@@ -178,6 +170,7 @@ def _load_win_rate_contribution(
             f"win-rate contribution operation {sidecar.operation!r} is not canonical"
         )
     schema = pq.read_schema(path)
+    require_strategy_id_field(schema, "strategy", context=str(path))
     if len(roots) == 2:
         if sidecar.scope != ArtifactScope.CROSS_SEED.value:
             raise ArtifactContractError(
@@ -236,6 +229,7 @@ def _load_trueskill_contribution(path: Path, roots: tuple[int, ...]) -> _RankedC
         "complete_support",
     }
     schema = pq.read_schema(path)
+    require_strategy_id_field(schema, "strategy", context=str(path))
     missing = sorted(required.difference(schema.names))
     if missing:
         raise ValueError(f"TrueSkill contribution lacks columns: {missing}")
@@ -249,7 +243,7 @@ def _load_trueskill_contribution(path: Path, roots: tuple[int, ...]) -> _RankedC
     )
 
 
-def _top_set(contribution: _RankedContribution, cutoff: int) -> set[str]:
+def _top_set(contribution: _RankedContribution, cutoff: int) -> set[int]:
     return {strategy for strategy, rank in contribution.ranks.items() if rank <= cutoff}
 
 
@@ -257,8 +251,8 @@ def _family_at_cutoffs(
     win_rate: _RankedContribution,
     trueskill: _RankedContribution,
     cutoffs: dict[str, int],
-    protected: set[str],
-) -> set[str]:
+    protected: set[int],
+) -> set[int]:
     return (
         _top_set(win_rate, cutoffs["win_rate"])
         | _top_set(trueskill, cutoffs["trueskill"])
@@ -272,8 +266,8 @@ def _contract_family(
     trueskill: _RankedContribution,
     contribution_size: int,
     candidate_cap: int | None,
-    protected: set[str],
-) -> tuple[set[str], dict[str, int], dict[str, int], list[dict[str, Any]], dict[str, int]]:
+    protected: set[int],
+) -> tuple[set[int], dict[str, int], dict[str, int], list[dict[str, Any]], dict[int, int]]:
     """Apply simultaneous method-tail contraction and retain removal provenance."""
 
     initial_cutoffs = {
@@ -291,7 +285,7 @@ def _contract_family(
             "removed": [],
         }
     ]
-    removal_round: dict[str, int] = {}
+    removal_round: dict[int, int] = {}
     if candidate_cap is not None and len(protected) > candidate_cap:
         raise ValueError(
             "head2head.candidate_cap is smaller than the protected control and "
@@ -323,7 +317,7 @@ def _contract_family(
     return family, initial_cutoffs, cutoffs, history, removal_round
 
 
-def _overlap_summary(left: set[str], right: set[str]) -> dict[str, int | float]:
+def _overlap_summary(left: set[int], right: set[int]) -> dict[str, int | float]:
     intersection = left & right
     union = left | right
     smaller = min(len(left), len(right))
@@ -343,12 +337,12 @@ def _family_hash(payload: dict[str, Any]) -> str:
 
 
 def _admission_reasons(
-    strategy: str,
+    strategy: int,
     *,
-    win_set: set[str],
-    trueskill_set: set[str],
-    controls: set[str],
-    diagnostics: set[str],
+    win_set: set[int],
+    trueskill_set: set[int],
+    controls: set[int],
+    diagnostics: set[int],
 ) -> list[str]:
     reasons: list[str] = []
     if strategy in win_set:
@@ -366,12 +360,12 @@ def _membership_frame(
     *,
     win_rate: _RankedContribution,
     trueskill: _RankedContribution,
-    family: set[str],
+    family: set[int],
     initial_cutoffs: dict[str, int],
     final_cutoffs: dict[str, int],
-    controls: set[str],
-    diagnostics: set[str],
-    removal_round: dict[str, int],
+    controls: set[int],
+    diagnostics: set[int],
+    removal_round: dict[int, int],
     contraction_rounds: int,
     family_hash: str,
 ) -> pd.DataFrame:
@@ -425,6 +419,10 @@ def _membership_frame(
             }
         )
     frame = pd.DataFrame(rows)
+    frame["strategy"] = canonical_strategy_ids(
+        frame["strategy"],
+        context="candidate family strategy",
+    )
     for column in ("win_rate_rank", "trueskill_rank", "removal_round"):
         frame[column] = frame[column].astype("Int64")
     return frame

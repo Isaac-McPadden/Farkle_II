@@ -11,11 +11,12 @@ import pytest
 
 from farkle.analysis import ingest
 from farkle.config import AppConfig, IngestConfig, IOConfig, SimConfig
-from farkle.simulation.simulation import _play_game
+from farkle.simulation.simulation import _play_game, simulation_rows_to_table
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
 from farkle.utils.manifest import append_manifest_line
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
+from farkle.utils.schema_helpers import raw_simulation_schema_for
 
 
 def _write_completed_row_run(cfg: AppConfig, *, retired_winner_field: bool = False) -> Path:
@@ -45,10 +46,12 @@ def _write_completed_row_run(cfg: AppConfig, *, retired_winner_field: bool = Fal
             },
         )
     )
-    if retired_winner_field:
-        row["winner"] = row.pop("winner_seat")
     shard = row_dir / "rows_test_456.parquet"
-    pq.write_table(pa.Table.from_pylist([row]), shard)
+    table = simulation_rows_to_table([row], 2)
+    if retired_winner_field:
+        winner = table["winner_seat"]
+        table = table.drop(["winner_seat"]).append_column("winner", winner)
+    pq.write_table(table, shard)
     append_manifest_line(
         row_dir / "manifest.jsonl",
         {
@@ -106,6 +109,10 @@ def test_ingest_reads_manifest_backed_row_directory_through_spawn_worker(tmp_pat
     assert output.loc[0, "shuffle_index"] == 0
     assert output.loc[0, "winner_seat"] in {"P1", "P2"}
     assert "winner" not in output.columns
+    assert pq.read_schema(cfg.ingested_rows_raw(2)).equals(
+        raw_simulation_schema_for(2),
+        check_metadata=False,
+    )
     validate_artifact_sidecar(
         cfg.ingested_rows_raw(2),
         expected={
@@ -127,4 +134,81 @@ def test_ingest_rejects_retired_winner_field_in_new_row_shard(tmp_path: Path) ->
     _write_completed_row_run(cfg, retired_winner_field=True)
 
     with pytest.raises(ValueError, match="noncanonical columns.*winner"):
+        ingest.run(cfg)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "wrong_root",
+        "wrong_k",
+        "wrong_shuffle",
+        "wrong_batch",
+        "wrong_game_index",
+        "duplicate_game_key",
+        "invalid_winner",
+        "invalid_rank",
+        "invalid_termination",
+        "repeated_strategy",
+        "bad_victory_margin",
+        "bad_loss_margin",
+        "missing_identity",
+        "nonnumeric_strategy",
+    ],
+)
+def test_ingest_rejects_internally_malformed_row_shards(
+    tmp_path: Path,
+    corruption: str,
+) -> None:
+    cfg = _config(tmp_path, workers=1)
+    shard = _write_completed_row_run(cfg)
+    table = pq.read_table(shard)
+    rows = table.to_pylist()
+    row = rows[0]
+
+    if corruption == "wrong_root":
+        row["root_seed"] += 1
+    elif corruption == "wrong_k":
+        row["k"] = 3
+    elif corruption == "wrong_shuffle":
+        row["shuffle_index"] = 1
+    elif corruption == "wrong_batch":
+        row["deterministic_batch_id"] = 1
+    elif corruption == "wrong_game_index":
+        row["game_index"] = 1
+    elif corruption == "duplicate_game_key":
+        rows.append(dict(row))
+    elif corruption == "invalid_winner":
+        row["winner_seat"] = "P3"
+    elif corruption == "invalid_rank":
+        row["P1_rank"] = 1
+        row["P2_rank"] = 1
+    elif corruption == "invalid_termination":
+        row["termination_status"] = "safety_limit"
+    elif corruption == "repeated_strategy":
+        row["P2_strategy"] = row["P1_strategy"]
+    elif corruption == "bad_victory_margin":
+        row["victory_margin"] += 50
+    elif corruption == "bad_loss_margin":
+        row["P2_loss_margin"] += 50
+
+    rewritten = pa.Table.from_pylist(rows, schema=raw_simulation_schema_for(2))
+    if corruption == "missing_identity":
+        rewritten = rewritten.drop(["root_seed"])
+    elif corruption == "nonnumeric_strategy":
+        index = rewritten.schema.get_field_index("P1_strategy")
+        rewritten = rewritten.set_column(
+            index,
+            "P1_strategy",
+            pa.array(["11"], type=pa.string()),
+        )
+    pq.write_table(rewritten, shard)
+
+    if corruption == "duplicate_game_key":
+        manifest_path = shard.parent / "manifest.jsonl"
+        record = json.loads(manifest_path.read_text(encoding="utf-8"))
+        record["rows"] = 2
+        manifest_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
+
+    with pytest.raises(ValueError):
         ingest.run(cfg)

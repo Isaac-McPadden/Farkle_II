@@ -389,6 +389,14 @@ def test_two_root_multi_k_resume_matches_worker_count_oracle(
     assert baseline_report["h2h"]["pair_intervals"] == resumed_report["h2h"]["pair_intervals"]
     assert baseline_report["h2h"]["unique_best_claim_permitted"] is False
     assert baseline_report["h2h"]["cycle_group_count"] >= 1
+    tournament_stability = resumed_report["tournament_root_stability"]
+    assert tournament_stability["interpretation"] == (
+        "fixed_design_descriptive_reproducibility_with_monte_carlo_precision"
+    )
+    serialized_stability = json.dumps(tournament_stability, sort_keys=True).lower()
+    assert "statistically_" not in serialized_stability
+    assert "significance" not in serialized_stability
+    assert "rejection" not in serialized_stability
 
     derived = [
         *resumed_stability.all_paths,

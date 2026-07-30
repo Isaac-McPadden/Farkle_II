@@ -134,16 +134,25 @@ per attempted game. Winner/margin/close-game products use completed games or
 completed seated-strategy exposures only. Every game-stat output states its
 observational unit and its completed/safety-limit support. Canonical seat
 strategy columns match `P<seat>_strategy`; `winner_strategy` is never treated
-as another exposure. RNG reference fields use
-`diagnostic_band_*`; they do not assert independence. Roll diagnostics exactly
-enumerate all ordered outcomes for one through six dice.
+as another exposure. RNG lag diagnostics order every seat exposure
+lexicographically by the complete RNG-v2 tournament-player coordinate
+`(root_seed, k, shuffle_index, game_index, seat_index)`, merge seats in ascending
+zero-based seat order (`P1 = 0`) within each game, and then filter that stream
+into strategy and matchup-strategy sequences. The
+`zero_centered_descriptive_reference_band_*` fields are approximate descriptive
+references based on lagged-pair count; they do not establish or refute
+independence. Roll diagnostics exactly enumerate all ordered outcomes for one
+through six dice.
 
 ## TrueSkill and HGB
 
 TrueSkill ratings are canonical only per root and k. The candidate contribution
 normalizes percentile rank within each complete root/k cell and averages those
-percentiles. Tau-zero, reversed-order, and held-out predictive-calibration
-results are diagnostics.
+percentiles. Tau-zero and reversed-order results are diagnostics. Held-out
+descriptive scores use `mu_softmax_heuristic` probabilities computed as
+`softmax(mu / beta)`. TrueSkill sigma is ignored; these are heuristic
+probabilities, not TrueSkill predictive probabilities. They do not affect the
+canonical percentile candidate contribution.
 
 HGB scoring and permutation importance are evaluated on held-out strategy
 configurations and report fold variability and finite-grid support. Results are
@@ -160,7 +169,11 @@ threshold fractions, joint discrepancy diagnostics, rank correlations,
 shortlist changes, matched-count convergence, and first/second-half drift.
 
 Roots are deterministic simulation domains for one fixed design. These outputs
-make no root-population inference.
+label intervals as Monte Carlo precision intervals and practical categories as
+positions relative to declared thresholds. Joint-bootstrap outputs are
+descriptive reference quantiles and exceedance frequencies. They contain no
+significance or rejection classification and do not support root-population or
+multiple-testing inference.
 
 ## H2H family, schedule, and inference
 
@@ -171,15 +184,23 @@ record every rank, admission reason, cutoff round, removal, overlap, content
 hash, and projected workload.
 
 The power plan binds the family, effects, alpha, target power, seat scenarios,
-allocation, RNG version, and score procedure in a schedule hash. Immutable
-pair/root/order blocks carry that hash and coordinate-owned RNG identity.
-The power plan remains immutable after publication. The execution stage owns a
-separate `execution_state.json` containing the family and schedule hashes,
-lifecycle state, completed block count, and total block count. Inference
-requires this artifact to be `complete_valid` and to match the power plan.
+exact first-crossing allocation, RNG version, and score procedure in a schedule
+hash. Its power is explicitly conditional on achieving the planned completed
+games in every pair/root/order cell. Immutable pair/root/order blocks carry that
+hash and coordinate-owned RNG identity. The power plan and block manifest
+remain byte-immutable after publication. The execution stage owns a separate
+`execution_state.json` containing cap authorization, the family and schedule
+hashes, lifecycle state, completed block count, and total block count. Raising
+only the operational total-game authorization changes this state without
+rewriting either statistical-design artifact. Inference requires execution to
+be `complete_valid` and to match every manifest cell; a cell that exhausts its
+attempt cap is unresolved and does not claim achieved power.
 If final completion-stamp publication is interrupted, a no-force resume
 authenticates the frozen block set and canonical execution outputs, then writes
 only the missing stamp; it does not replay blocks or rebuild the aggregate.
+An invalid or missing block sidecar instead makes only that immutable coordinate
+pending for deterministic replay; existing unauthenticated data bytes are never
+re-sidecarred.
 
 Pair outputs are grouped by their owning stages under
 `results_seed_pair_X_Y/seed_pair_analysis`: root stability, TrueSkill,
@@ -204,7 +225,7 @@ Canonical Markdown, JSON, and plot outputs require sidecar-validated inputs.
 Reports state roots, k support, weights, controls, conditioning, candidate
 provenance, intervals, unresolved evidence, cycles, and the decision rule for
 each meaning of “best.” Outside two-player analyses, H2H is labelled as an
-external finalist diagnostic. Report-contract-v2 also states the primary
+external finalist diagnostic. Report-contract-v4 also states the primary
 per-attempt tournament rate and publishes attempted/completed/safety-limit
 games by root and k plus strategy exposure counts and rates.
 

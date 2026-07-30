@@ -88,6 +88,7 @@ def _write_inputs(cfg: AppConfig) -> None:
         ]
         if k == 2:
             rows.append(_metric_row(k, 0, 3, 50, 100))
+            rows.append(_metric_row(k, 1, 3, 0, 0))
         _write_batch_metrics(cfg, k, rows)
 
 
@@ -197,6 +198,83 @@ def test_joint_batch_resampling_is_coordinate_deterministic(tmp_path: Path) -> N
     second = pq.read_table(artifacts.bootstrap).to_pandas()
 
     pd.testing.assert_frame_equal(first, second)
+
+
+def test_declared_zero_exposure_batch_is_excluded_without_changing_estimate(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.screening.controls = []
+    _write_inputs(cfg)
+    baseline = build_canonical_performance(cfg)
+    baseline_k4 = pq.read_table(baseline.by_k[1]).to_pandas().set_index("strategy")
+
+    path = cfg.metrics_all_player_batch_path(4)
+    rows = pq.read_table(path).to_pylist()
+    rows.extend(_metric_row(4, 2, strategy, 0, 0) for strategy in (1, 2))
+    _write_batch_metrics(cfg, 4, rows)
+    updated = build_canonical_performance(cfg, force=True)
+    updated_k4 = pq.read_table(updated.by_k[1]).to_pandas().set_index("strategy")
+
+    for strategy in (1, 2):
+        assert updated_k4.loc[strategy, "win_rate"] == pytest.approx(
+            baseline_k4.loc[strategy, "win_rate"]
+        )
+        assert updated_k4.loc[strategy, "batch_mcse"] == pytest.approx(
+            baseline_k4.loc[strategy, "batch_mcse"]
+        )
+        assert updated_k4.loc[strategy, "raw_declared_batches"] == 3
+        assert updated_k4.loc[strategy, "raw_batches"] == 2
+        assert updated_k4.loc[strategy, "excluded_zero_exposure_batch_cells"] == 1
+
+
+def test_partial_zero_exposure_cell_is_recorded_and_joint_vector_is_excluded(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.screening.controls = []
+    _write_inputs(cfg)
+    path = cfg.metrics_all_player_batch_path(4)
+    rows = pq.read_table(path).to_pylist()
+    replacement = _metric_row(4, 1, 2, 0, 0)
+    rows = [
+        replacement
+        if row["deterministic_batch_id"] == 1 and row["strategy"] == 2
+        else row
+        for row in rows
+    ]
+    rows.extend(
+        [
+            _metric_row(4, 2, 1, 35, 100),
+            _metric_row(4, 2, 2, 25, 100),
+        ]
+    )
+    _write_batch_metrics(cfg, 4, rows)
+
+    artifacts = build_canonical_performance(cfg)
+    k4 = pq.read_table(artifacts.by_k[1]).to_pandas().set_index("strategy")
+
+    assert k4.loc[2, "raw_declared_batches"] == 3
+    assert k4.loc[2, "raw_batches"] == 2
+    assert k4.loc[2, "excluded_zero_exposure_batch_cells"] == 1
+    assert pq.read_table(artifacts.bootstrap).num_rows == 2
+
+
+def test_missing_strategy_batch_cell_fails_instead_of_becoming_implicit_zero(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    _write_inputs(cfg)
+    path = cfg.metrics_all_player_batch_path(4)
+    rows = [
+        row
+        for row in pq.read_table(path).to_pylist()
+        if not (row["deterministic_batch_id"] == 1 and row["strategy"] == 2)
+    ]
+    _write_batch_metrics(cfg, 4, rows)
+
+    with pytest.raises(ValueError, match="missing declared rectangular strategy/batch cells"):
+        build_canonical_performance(cfg)
 
 
 def test_pareto_membership_preserves_tradeoffs_and_exact_ties() -> None:

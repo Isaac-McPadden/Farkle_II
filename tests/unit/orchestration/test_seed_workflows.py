@@ -221,6 +221,57 @@ def test_pipeline_health_cannot_report_success_over_stale_pair_stage(
     assert health["pair_workflow"]["stage_states"]["root_stability"] == "complete_stale"
 
 
+def test_pipeline_health_rechecks_current_rng_diagnostic_freshness(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "results"),
+        sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+    )
+    root_lifecycle_identity = two_seed_pipeline._root_lifecycle_identity
+    _install_root_results(monkeypatch, tmp_path)
+    health: dict[str, Any] = {}
+    monkeypatch.setattr(
+        two_seed_pipeline.analysis,
+        "run_root_pair_analysis",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_root_lifecycle_identity",
+        root_lifecycle_identity,
+    )
+    monkeypatch.setattr(
+        two_seed_pipeline.runner,
+        "simulation_is_complete",
+        lambda _cfg, _k: True,
+    )
+
+    def current_states(_cfg: AppConfig, plan: list[Any]) -> dict[str, str]:
+        states = {
+            item.name: two_seed_pipeline.CompletionState.COMPLETE_VALID.value for item in plan
+        }
+        if "rng_diagnostics" in states:
+            states["rng_diagnostics"] = two_seed_pipeline.CompletionState.COMPLETE_STALE.value
+        return states
+
+    monkeypatch.setattr(two_seed_pipeline, "_current_plan_states", current_states)
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_write_pipeline_health",
+        lambda _path, payload: health.update(payload),
+    )
+
+    with pytest.raises(RuntimeError, match="root workflow became stale"):
+        two_seed_pipeline.run_pipeline(cfg, seed_pair=(11, 22))
+
+    assert health["status"] == "failed"
+    assert health["root_workflows"]["11"]["analysis"] == "failed"
+    assert health["root_workflows"]["22"]["analysis"] == "failed"
+    assert health["root_workflows"]["22"]["stage_states"]["rng_diagnostics"] == "complete_stale"
+
+
 def test_worker_budget_is_split_across_concurrent_roots(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     cfg.sim.n_jobs = 8

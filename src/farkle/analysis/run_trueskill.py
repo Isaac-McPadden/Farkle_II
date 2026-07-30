@@ -68,6 +68,11 @@ from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
 from farkle.utils.stage_completion import freshness_sha256
+from farkle.utils.strategy_ids import (
+    STRATEGY_ID_ARROW_TYPE,
+    canonical_strategy_id,
+    require_strategy_id_field,
+)
 from farkle.utils.writer import atomic_path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]  # hop out of src/farkle
@@ -232,7 +237,17 @@ def _ratings_to_table(
             # fallback: scalar mu with default sigma (not expected here)
             mu, sigma = float(v), 0.0  # type: ignore[arg-type]
             stats = RatingStats(mu, sigma)
-        columns["strategy"].append(_normalize_strategy_id(k))
+        normalized_strategy = _normalize_strategy_id(k)
+        if not normalized_strategy.isdigit():
+            raise ValueError(
+                f"TrueSkill strategy identifier is not canonical numeric ID: {k!r}"
+            )
+        columns["strategy"].append(
+            canonical_strategy_id(
+                int(normalized_strategy),
+                context="TrueSkill rating strategy",
+            )
+        )
         columns["mu"].append(mu)
         columns["sigma"].append(sigma)
         columns["strategy_attempted_exposures"].append(stats.strategy_attempted_exposures)
@@ -248,7 +263,7 @@ def _ratings_to_table(
         columns["cell_performed_updates"].append(stats.cell_performed_updates)
     return pa.table(
         {
-            "strategy": pa.array(columns["strategy"], type=pa.string()),
+            "strategy": pa.array(columns["strategy"], type=STRATEGY_ID_ARROW_TYPE),
             "mu": pa.array(columns["mu"], type=pa.float64()),
             "sigma": pa.array(columns["sigma"], type=pa.float64()),
             "strategy_attempted_exposures": pa.array(
@@ -285,6 +300,7 @@ def _save_ratings_parquet(
 def _load_ratings_parquet(path: Path) -> dict[str, "RatingStats"]:
     """Load ratings parquet → {strategy: RatingStats}."""
     schema = pq.read_schema(path)
+    require_strategy_id_field(schema, "strategy", context=str(path))
     support_columns = [
         "strategy_attempted_exposures",
         "strategy_completed_exposures",

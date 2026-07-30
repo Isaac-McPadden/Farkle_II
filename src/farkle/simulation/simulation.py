@@ -32,6 +32,7 @@ from farkle.simulation.strategies import (
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_rng, spawn_seeds
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, raw_simulation_schema_for
+from farkle.utils.strategy_ids import canonical_strategy_id
 
 __all__: list[str] = [
     "generate_strategy_grid",
@@ -409,6 +410,26 @@ def validate_simulation_row(row: Mapping[str, Any]) -> None:
         raise ValueError(f"Simulation row must use outcome_schema_version={OUTCOME_SCHEMA_VERSION}")
 
     seats = [f"P{index}" for index in range(1, n_players + 1)]
+    strategies: list[int] = []
+    scores: list[int] = []
+    for seat in seats:
+        strategy_field = f"{seat}_strategy"
+        score_field = f"{seat}_score"
+        if strategy_field not in row or row.get(strategy_field) is None:
+            raise ValueError(f"Simulation row missing seated strategy {strategy_field}")
+        strategies.append(
+            canonical_strategy_id(
+                row[strategy_field],
+                context=f"simulation row {strategy_field}",
+            )
+        )
+        score = row.get(score_field)
+        if isinstance(score, bool) or not isinstance(score, (int, np.integer)):
+            raise ValueError(f"Simulation row {score_field} must be an integer")
+        scores.append(int(score))
+    if len(set(strategies)) != n_players:
+        raise ValueError("Simulation row must seat distinct strategies")
+
     missing_ranks = [seat for seat in seats if f"{seat}_rank" not in row]
     if missing_ranks:
         raise ValueError(f"Simulation row missing participant ranks for {missing_ranks}")
@@ -418,27 +439,63 @@ def validate_simulation_row(row: Mapping[str, Any]) -> None:
 
     if status is TerminationStatus.COMPLETED:
         rank_one_seats = [seat for seat, rank in zip(seats, ranks, strict=True) if rank == 1]
-        if len(rank_one_seats) != 1 or winner_seat != rank_one_seats[0]:
+        if (
+            not isinstance(winner_seat, str)
+            or len(rank_one_seats) != 1
+            or winner_seat != rank_one_seats[0]
+        ):
             raise ValueError(
                 "Completed simulation row must have exactly one winner matching its rank-1 seat"
             )
         if any(rank is None for rank in ranks) or sorted(ranks) != list(range(1, n_players + 1)):
             raise ValueError("Completed simulation row ranks must be the permutation 1..k")
+        score_order = sorted(range(n_players), key=lambda index: (-scores[index], index))
+        expected_ranks = [0] * n_players
+        for rank, player_index in enumerate(score_order, start=1):
+            expected_ranks[player_index] = rank
+        if [int(rank) for rank in ranks] != expected_ranks:
+            raise ValueError("Completed simulation row ranks are inconsistent with final scores")
         if winner_strategy is None or winner_strategy != row.get(f"{winner_seat}_strategy"):
             raise ValueError("Completed simulation row must identify the winning strategy")
-        if row.get("winning_score") is None or row.get("victory_margin") is None:
+        canonical_strategy_id(
+            winner_strategy,
+            context="simulation row winner_strategy",
+        )
+        winning_score = row.get("winning_score")
+        victory_margin = row.get("victory_margin")
+        if winning_score is None or victory_margin is None:
             raise ValueError("Completed simulation row must retain winner-conditioned fields")
         if row.get("hit_safety_limit") is not False:
             raise ValueError("Completed simulation row cannot hit the safety limit")
-        expected_seat_ranks = [
-            seat for _, seat in sorted(zip(ranks, seats, strict=True), key=lambda item: item[0])
-        ]
-        if row.get("seat_ranks") != expected_seat_ranks:
+        if any(row.get(f"{seat}_hit_max_rounds") is not False for seat in seats):
+            raise ValueError("Completed simulation row cannot mark a seat at the safety limit")
+        winner_index = seats.index(winner_seat)
+        if int(winning_score) != scores[winner_index] or int(winning_score) != max(scores):
+            raise ValueError("Completed simulation row has inconsistent winning_score")
+        ordered_scores = sorted(scores, reverse=True)
+        runner_up_score = ordered_scores[1] if n_players > 1 else 0
+        if int(victory_margin) != int(winning_score) - runner_up_score:
+            raise ValueError("Completed simulation row has inconsistent victory_margin")
+        for seat, score in zip(seats, scores, strict=True):
+            loss_margin = row.get(f"{seat}_loss_margin")
+            if (
+                isinstance(loss_margin, bool)
+                or not isinstance(loss_margin, (int, np.integer))
+                or int(loss_margin) != int(winning_score) - score
+            ):
+                raise ValueError(
+                    f"Completed simulation row has inconsistent {seat}_loss_margin"
+                )
+        expected_seat_ranks = [seats[index] for index in score_order]
+        seat_ranks = row.get("seat_ranks")
+        if seat_ranks is None or list(seat_ranks) != expected_seat_ranks:
             raise ValueError("Completed simulation row has inconsistent seat_ranks")
         return
 
     if row.get("hit_safety_limit") is not True:
         raise ValueError("Safety-limit simulation row must set hit_safety_limit=true")
+    if any(row.get(f"{seat}_hit_max_rounds") is not True for seat in seats):
+        raise ValueError("Safety-limit simulation row must mark every seat at the safety limit")
     winner_conditioned = {
         "winner_seat": winner_seat,
         "winner_strategy": winner_strategy,
@@ -450,7 +507,8 @@ def validate_simulation_row(row: Mapping[str, Any]) -> None:
         raise ValueError(f"Safety-limit simulation row cannot claim a winner: {present}")
     if any(rank is not None for rank in ranks):
         raise ValueError("Safety-limit simulation row cannot assign participant ranks")
-    if row.get("seat_ranks") != [None] * n_players:
+    seat_ranks = row.get("seat_ranks")
+    if seat_ranks is None or list(seat_ranks) != [None] * n_players:
         raise ValueError("Safety-limit simulation row must retain k null seat-rank entries")
     if any(row.get(f"{seat}_loss_margin") is not None for seat in seats):
         raise ValueError("Safety-limit simulation row cannot assign loss margins")

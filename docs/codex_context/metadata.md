@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-07-22`
+- Reconciled date: `2026-07-29`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -39,6 +39,20 @@ changing code or accepting a statistical conclusion.
   safety-limit attempts are retained outside formal score counts, contiguous
   replacement prefixes are atomically resumable, and nonviable comparisons
   retain family membership while producing no dominance or equivalence claim.
+  Task 9 replaces the nonmonotone allocation binary search with an exhaustive
+  exact first-crossing scan, joins every completed count cell to the immutable
+  manifest before pooling, moves cap authorization wholly into mutable
+  execution state, and replays only coordinates whose block data/sidecar pair
+  fails authentication. Planned power is conditional on attaining exact
+  completed support; cap exhaustion is reported as unresolved. Task 10
+  root-stability method-v2 removes significance/rejection classifications,
+  relabels intervals and joint-bootstrap quantities as descriptive Monte Carlo
+  precision/reference diagnostics, and invalidates prior root-stability
+  artifacts through the versioned stage freshness identity. RNG diagnostic
+  method-v2 uses a disk-backed global merge over the full tournament-player
+  coordinate, merges zero-based seats before group updates, publishes
+  zero-centered descriptive reference bands, and is bound to cache-key-v4.
+  Final pipeline health rechecks the current diagnostic-stage lifecycle state.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

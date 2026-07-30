@@ -70,6 +70,12 @@ def test_resolve_stage_layout_config_controls_rng(tmp_path: Path) -> None:
     layout = resolve_stage_layout(cfg)
 
     assert "rng_diagnostics" in [placement.definition.key for placement in base_layout.placements]
+    rng_placement = next(
+        placement
+        for placement in base_layout.placements
+        if placement.definition.key == "rng_diagnostics"
+    )
+    assert rng_placement.definition.cache_key_version == 4
     assert "rng_diagnostics" not in [placement.definition.key for placement in layout.placements]
 
 

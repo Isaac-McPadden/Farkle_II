@@ -311,7 +311,7 @@ def test_final_round_continue_when_ahead_run_up_true():
 
 
 def test_take_turn_roll_limit(monkeypatch):
-    """Player exceeds ``ROLL_LIMIT`` when every roll scores."""
+    """Player stops at exactly ``ROLL_LIMIT`` when every roll scores."""
 
     def scoring_roll(self, n):
         self.n_rolls += 1
@@ -325,7 +325,7 @@ def test_take_turn_roll_limit(monkeypatch):
         p.take_turn(target_score=10_000)
 
     assert p.n_turns == 1
-    assert p.n_rolls == ROLL_LIMIT + 1
+    assert p.n_rolls == ROLL_LIMIT
 
 
 def test_game_stops_at_default_max_rounds(monkeypatch):

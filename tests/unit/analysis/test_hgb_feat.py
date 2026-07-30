@@ -57,7 +57,12 @@ def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
     )
     write_parquet_artifact_atomic(table, metrics_path, sidecar=sidecar)
     manifest_path = cfg.strategy_manifest_root_path()
-    manifest_table = pa.table({"strategy_id": [0], "score_threshold": [300]})
+    manifest_table = pa.table(
+        {
+            "strategy_id": pa.array([0], type=pa.int32()),
+            "score_threshold": [300],
+        }
+    )
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(manifest_table, manifest_path)
     os.utime(metrics_path, (1000, 1000))
@@ -200,7 +205,12 @@ def test_hgb_authenticated_completion_recomputes_on_contract_mutation(
         write_parquet_artifact_atomic(table, metrics, sidecar=metadata)
     elif mutation == "features":
         pq.write_table(
-            pa.table({"strategy_id": [0], "score_threshold": [350]}),
+            pa.table(
+                {
+                    "strategy_id": pa.array([0], type=pa.int32()),
+                    "score_threshold": [350],
+                }
+            ),
             cfg.strategy_manifest_root_path(),
         )
     elif mutation == "parameter":
@@ -331,6 +341,7 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
         ]
     )
     manifest["favor_dice_or_score"] = manifest["favor_dice_or_score"].map(lambda value: value.value)
+    manifest["strategy_id"] = pd.array(manifest["strategy_id"].tolist(), dtype="Int32")
     manifest_path = cfg.strategy_manifest_root_path()
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     manifest.to_parquet(manifest_path, index=False)
@@ -342,6 +353,7 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
             "win_rate": [0.35, 0.45, 0.55, 0.65],
         }
     )
+    performance["strategy"] = pd.array(performance["strategy"].tolist(), dtype="Int32")
     source = cfg.performance_by_k_path(2)
     table = pa.Table.from_pandas(performance, preserve_index=False)
     source_sidecar = make_artifact_sidecar(
@@ -380,6 +392,7 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
             "weighted_quantity": "heldout_permutation_association_importance",
         },
     )
+    performance["strategy"] = pd.array(performance["strategy"].tolist(), dtype="Int32")
     assert concat_metadata.k_aggregation_method == "none"
     validate_artifact_sidecar(
         cfg.across_k_dir("hgb") / hgb_feat._hgb.OVERALL_IMPORTANCE_NAME,

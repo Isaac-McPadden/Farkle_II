@@ -258,7 +258,6 @@ def _publish_execution_inputs(
         "family_hash": "c" * 64,
         "schedule_hash": "d" * 64,
         "planning_state": "complete_valid",
-        "execution_authorization": "ready",
         "root_seeds": roots,
         "unordered_pair_count": len(pairs),
         "total_block_count": len(rows),
@@ -290,6 +289,7 @@ def _publish_execution_inputs(
     execution = {
         "family_hash": plan["family_hash"],
         "schedule_hash": plan["schedule_hash"],
+        "execution_authorization": "ready",
         "execution_state": "complete_valid",
         "completed_block_count": len(rows),
         "total_block_count": len(rows),

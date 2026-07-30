@@ -239,7 +239,7 @@ class FarklePlayer:
         rolls_this_turn = 0
 
         while dice > 0:
-            if rolls_this_turn > ROLL_LIMIT:
+            if rolls_this_turn >= ROLL_LIMIT:
                 raise RuntimeError(f"Turn exceeded {ROLL_LIMIT} rolls - aborting.")
             roll = self._roll(dice)
             rolls_this_turn += 1

@@ -2,7 +2,6 @@ import pandas as pd
 import pytest
 
 from farkle.simulation.strategies import (
-    STRATEGY_TUPLE_FIELDS,
     FavorDiceOrScore,
     StopAtStrategy,
     StrategyGridOptions,
@@ -482,7 +481,7 @@ def test_strategy_id_normalization_and_coercion_helpers():
     normalized = normalize_strategy_ids(series)
     assert normalized.tolist() == [1, 2, pd.NA, pd.NA, 7]
 
-    with pytest.raises(ValueError, match="nonnumeric strategy identifier"):
+    with pytest.raises(ValueError, match="canonical integer logical type"):
         coerce_strategy_ids(series)
 
 
@@ -492,7 +491,7 @@ def test_strategy_id_normalization_decimal_failure_mode():
     with pytest.raises(TypeError):
         normalize_strategy_ids(series)
 
-    with pytest.raises(TypeError):
+    with pytest.raises(ValueError):
         coerce_strategy_ids(series)
 
 
@@ -602,6 +601,5 @@ def test_option_combo_encoder_manifest_identifier_paths():
     assert attrs.loc[11, "favor_dice_or_score"] == "score"
     assert attrs.loc[17, "favor_dice_or_score"] == "dice"
 
-    empty_attrs = strategy_attributes_from_series(pd.Series([None, pd.NA]), manifest=manifest)
-    assert empty_attrs.empty
-    assert empty_attrs.columns.tolist() == list(STRATEGY_TUPLE_FIELDS)
+    with pytest.raises(ValueError, match="must be non-null"):
+        strategy_attributes_from_series(pd.Series([None, pd.NA]), manifest=manifest)

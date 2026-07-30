@@ -17,6 +17,10 @@ from farkle.analysis.all_player_metrics import (
     ATTEMPT_CONDITIONING,
     validate_unconditional_all_player_schema,
 )
+from farkle.analysis.batch_support import (
+    RECTANGULAR_SUPPORT_POLICY,
+    validate_rectangular_batch_support,
+)
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
@@ -26,6 +30,7 @@ from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.random import RandomPurpose, coordinate_rng
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.stats import wilson_ci
+from farkle.utils.strategy_ids import canonical_strategy_ids, require_strategy_id_field
 
 _INPUT_COLUMNS: Final[tuple[str, ...]] = (
     "root_seed",
@@ -73,6 +78,7 @@ def _read_batch_metrics(path: Path, k: int) -> pd.DataFrame:
     )
     schema = pq.read_schema(path)
     validate_unconditional_all_player_schema(schema)
+    require_strategy_id_field(schema, "strategy", context=str(path))
     missing = sorted(set(_INPUT_COLUMNS).difference(schema.names))
     if missing:
         raise ValueError(f"{path} lacks canonical performance inputs: {missing}")
@@ -85,8 +91,7 @@ def _read_batch_metrics(path: Path, k: int) -> pd.DataFrame:
         raise ValueError(f"{path} must contain exactly one root, found {roots}")
     if frame.duplicated(["root_seed", "k", "deterministic_batch_id", "strategy"]).any():
         raise ValueError(f"{path} contains duplicate root/k/batch/strategy cells")
-    if (frame["raw_player_game_exposures"] <= 0).any():
-        raise ValueError(f"{path} contains nonpositive exposure support")
+    validate_rectangular_batch_support(frame, context=str(path))
     if (frame["raw_wins"] < 0).any() or (
         frame["raw_wins"] > frame["raw_completed_player_game_exposures"]
     ).any():
@@ -112,16 +117,24 @@ def _estimate_one_k(
 ) -> pd.DataFrame:
     chance = 1.0 / k
     alpha = 0.05
-    rows: list[dict[str, int | float | bool | None]] = []
+    rows: list[dict[str, int | float | bool | str | None]] = []
     for strategy, group in frame.groupby("strategy", sort=True):
+        positive = group.loc[group["raw_player_game_exposures"] > 0]
         wins = int(group["raw_wins"].sum())
         exposures = int(group["raw_player_game_exposures"].sum())
         completed_exposures = int(group["raw_completed_player_game_exposures"].sum())
         safety_exposures = int(group["raw_safety_limit_player_game_exposures"].sum())
         losses = int(group["raw_losses"].sum())
-        batches = int(group["deterministic_batch_id"].nunique())
+        declared_batches = int(group["deterministic_batch_id"].nunique())
+        batches = int(positive["deterministic_batch_id"].nunique())
+        excluded_zero_exposure_cells = declared_batches - batches
+        if exposures <= 0:
+            raise ValueError(
+                f"strategy {strategy} has no positive exposure cells after explicit "
+                "zero-exposure exclusion"
+            )
         rate = wins / exposures
-        batch_rates = group["raw_wins"].to_numpy(dtype=float) / group[
+        batch_rates = positive["raw_wins"].to_numpy(dtype=float) / positive[
             "raw_player_game_exposures"
         ].to_numpy(dtype=float)
         if batches >= 2:
@@ -147,7 +160,10 @@ def _estimate_one_k(
                 "raw_completed_exposures": completed_exposures,
                 "raw_safety_limit_exposures": safety_exposures,
                 "raw_losses": losses,
+                "raw_declared_batches": declared_batches,
                 "raw_batches": batches,
+                "excluded_zero_exposure_batch_cells": excluded_zero_exposure_cells,
+                "batch_support_policy": RECTANGULAR_SUPPORT_POLICY,
                 "win_rate_per_attempt": rate,
                 "win_rate": rate,
                 "win_rate_given_completion": (
@@ -233,6 +249,9 @@ def _across_k_estimates(
         "raw_completed_exposures",
         "raw_safety_limit_exposures",
         "raw_losses",
+        "raw_declared_batches",
+        "raw_batches",
+        "excluded_zero_exposure_batch_cells",
     )
     count_maps = {
         column: {
@@ -315,20 +334,24 @@ def _batch_arrays(
     arrays: dict[int, tuple[np.ndarray, np.ndarray]] = {}
     strategy_list = strategies.tolist()
     for k, frame in frames.items():
-        wins = (
-            frame.pivot(index="deterministic_batch_id", columns="strategy", values="raw_wins")
-            .reindex(columns=strategy_list, fill_value=0)
-            .fillna(0)
-        )
+        wins = frame.pivot(
+            index="deterministic_batch_id", columns="strategy", values="raw_wins"
+        ).reindex(columns=strategy_list)
         exposures = (
             frame.pivot(
                 index="deterministic_batch_id",
                 columns="strategy",
                 values="raw_player_game_exposures",
             )
-            .reindex(index=wins.index, columns=strategy_list, fill_value=0)
-            .fillna(0)
+            .reindex(index=wins.index, columns=strategy_list)
         )
+        if wins.isna().any().any() or exposures.isna().any().any():
+            raise ValueError("joint resampling requires exact rectangular batch support")
+        zero_containing_vectors = exposures.eq(0).any(axis=1)
+        wins = wins.loc[~zero_containing_vectors]
+        exposures = exposures.loc[~zero_containing_vectors]
+        if wins.empty:
+            raise ValueError("joint resampling has no positive-exposure batch vectors")
         arrays[k] = (wins.to_numpy(dtype=float), exposures.to_numpy(dtype=float))
     return arrays
 
@@ -623,7 +646,9 @@ def _player_count_effect_diagnostics(
                 }
             )
             rows.append(rank_row)
-    return pd.DataFrame(rows)
+    output = pd.DataFrame(rows)
+    output["strategy"] = pd.array(output["strategy"].tolist(), dtype="Int32")
+    return output
 
 
 def _write_frame(
@@ -639,6 +664,14 @@ def _write_frame(
     uncertainty_method: str,
     k_aggregation_method: str = "none",
 ) -> None:
+    frame = frame.copy()
+    for column in ("strategy", "control_strategy"):
+        if column in frame:
+            frame[column] = canonical_strategy_ids(
+                frame[column],
+                nullable=bool(frame[column].isna().any()),
+                context=f"{operation} {column}",
+            )
     sidecar = make_artifact_sidecar(
         cfg,
         path,

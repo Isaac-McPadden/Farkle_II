@@ -40,8 +40,12 @@ modules and use hand-checkable tests before accepting a claim.
 - `analysis/game_stats.py`: attempted-game lengths and multi-target events,
   completed-only winner/margin products, and explicit observational units.
   Strategy-conditioned counts use only canonical `P<seat>_strategy` columns.
-- `analysis/rng_diagnostics.py`: descriptive `diagnostic_band_*` references;
-  no independence conclusion.
+- `analysis/rng_diagnostics.py`: lag association after a disk-backed global
+  lexicographic merge on the complete RNG-v2 tournament-player coordinate
+  `(root_seed, k, shuffle_index, game_index, seat_index)`, with seats merged in
+  ascending zero-based order (`P1 = 0`) before group updates. Zero-centered
+  `zero_centered_descriptive_reference_band_*` references use lagged-pair
+  support and make no independence conclusion.
 - `analysis/roll_enumeration.py`: exact enumeration of all `6**d` ordered
   outcomes for dice counts one through six.
 
@@ -49,7 +53,9 @@ modules and use hand-checkable tests before accepting a claim.
 
 - `analysis/run_trueskill.py`: sequential canonical ratings per root/k only.
 - `analysis/trueskill_screening.py`: complete-cell percentile-rank candidate
-  contribution plus tau-zero, order, and predictive-calibration diagnostics.
+  contribution plus tau-zero and order diagnostics. Held-out descriptive scores
+  use `mu_softmax_heuristic = softmax(mu / beta)`, explicitly ignore sigma, and
+  are not TrueSkill predictive probabilities.
 - TrueSkill sigma is model state, not a sampling standard error and not a
   cross-k uncertainty input.
 - `analysis/run_hgb.py`: held-out strategy-configuration predictions and
@@ -63,17 +69,22 @@ modules and use hand-checkable tests before accepting a claim.
   discrepancies, joint diagnostics, rank correlations, 95th-percentile rank
   movement, bootstrap top-N inclusion by root, convergence, and half drift.
 - Interpretation is fixed-design reproducibility across two RNG domains. No
-  root-population interval or heterogeneity model is permitted.
+  root-population interval, heterogeneity model, significance/rejection
+  classification, or multiple-testing inference is permitted. MCSE and
+  intervals describe Monte Carlo precision; practical threshold positions and
+  joint-bootstrap reference exceedances remain descriptive.
 
 ## H2H
 
 - `analysis/candidate_family.py`: top 75 from canonical performance and
   TrueSkill, plus protected controls/diagnostics; simultaneous balanced-tail
   contraction; complete provenance and family hash.
-- `analysis/h2h_schedule.py`: Bonferroni planning threshold, deterministic
-  validation of the implemented two-proportion score rejection rule, and equal
-  root/order allocation. Blocks bind family and schedule hashes to stable RNG
-  coordinates.
+- `analysis/h2h_schedule.py`: Bonferroni planning threshold, exhaustive exact
+  first-crossing allocation for the implemented two-proportion score rejection
+  rule over every locked seat scenario, and equal root/order completed support.
+  Power is conditional on reaching completed support. Blocks bind family and
+  schedule hashes to stable RNG coordinates; cap authorization/progress is
+  mutable state outside the byte-immutable plan and manifest.
 - `analysis/h2h_inference.py`: `d_AB = 0.5(q_AB-q_BA)`, constrained-null score
   test, score-inversion intervals, Holm decisions, simultaneous practical
   bounds, optional equivalence, and labelled root diagnostics.

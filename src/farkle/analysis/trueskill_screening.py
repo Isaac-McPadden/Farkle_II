@@ -28,9 +28,24 @@ from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.parallel import normalize_n_jobs, resolve_mp_context
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
+from farkle.utils.strategy_ids import (
+    canonical_strategy_id,
+    canonical_strategy_ids,
+    require_strategy_id_field,
+)
 
 _HOLDOUT_FRACTION: Final = 0.2
 TRUESKILL_METHOD_VERSION: Final = 3
+TRUESKILL_DIAGNOSTIC_METHOD_VERSION: Final = 1
+MU_SOFTMAX_HEURISTIC: Final = "mu_softmax_heuristic"
+MU_SOFTMAX_HEURISTIC_OPERATION: Final = (
+    "aggregate_trueskill_screening_diagnostics_mu_softmax_heuristic"
+)
+MU_SOFTMAX_HEURISTIC_CLAIM: Final = (
+    "Held-out descriptive scores use mu_softmax_heuristic probabilities computed "
+    "as softmax(mu / beta). TrueSkill sigma is ignored; these are heuristic "
+    "probabilities, not TrueSkill predictive probabilities."
+)
 TRUESKILL_CONDITIONING: Final = (
     "Descriptive TrueSkill screening conditional on games that completed under "
     "the configured safety-round limit; safety-limit attempts are excluded from "
@@ -70,6 +85,34 @@ def trueskill_method_contract(procedure: str) -> dict[str, Any]:
     }
 
 
+def trueskill_diagnostic_method_contract() -> dict[str, Any]:
+    """Return the versioned replay and mu-softmax diagnostic identity."""
+
+    contract = trueskill_method_contract(MU_SOFTMAX_HEURISTIC_OPERATION)
+    contract["parameters"].update(
+        {
+            "diagnostic_method_version": TRUESKILL_DIAGNOSTIC_METHOD_VERSION,
+            "heldout_probability_method": MU_SOFTMAX_HEURISTIC,
+            "heldout_probability_formula": "softmax(mu / beta)",
+            "heldout_probability_sigma_policy": "ignored",
+            "heldout_fraction": _HOLDOUT_FRACTION,
+            "heldout_rating_policy": "freeze_after_chronological_training_prefix",
+            "heldout_target": "unique_rank_1_completed_game_winner",
+            "interpretation": MU_SOFTMAX_HEURISTIC_CLAIM,
+        }
+    )
+    return contract
+
+
+def _trueskill_diagnostic_freshness_key(cfg: AppConfig) -> dict[str, Any]:
+    """Bind diagnostic-only method identity without staling percentile ratings."""
+
+    return {
+        **cfg.freshness_key(),
+        "trueskill_diagnostic_method_version": TRUESKILL_DIAGNOSTIC_METHOD_VERSION,
+    }
+
+
 @dataclass(frozen=True)
 class ClassifiedTrueSkillGame:
     """One canonical attempted game classified before any TrueSkill update."""
@@ -94,7 +137,14 @@ def classify_trueskill_row(row: Mapping[str, object], k: int) -> ClassifiedTrueS
         strategy = row.get(f"P{seat}_strategy")
         if strategy is None:
             raise ValueError(f"TrueSkill row lacks P{seat}_strategy")
-        players.append(str(strategy))
+        players.append(
+            str(
+                canonical_strategy_id(
+                    strategy,
+                    context=f"TrueSkill row P{seat}_strategy",
+                )
+            )
+        )
         raw_ranks.append(row.get(f"P{seat}_rank"))
 
     winner = row.get("winner_seat")
@@ -275,6 +325,7 @@ def publish_rating_cell_contract(
 
 def _load_rating_frame(cell: ScreeningRatingCell) -> pd.DataFrame:
     schema = pq.read_schema(cell.ratings_path)
+    require_strategy_id_field(schema, "strategy", context=str(cell.ratings_path))
     required = set(_RATING_COLUMNS)
     missing = sorted(required.difference(schema.names))
     if missing:
@@ -285,7 +336,10 @@ def _load_rating_frame(cell: ScreeningRatingCell) -> pd.DataFrame:
     ).to_pandas()
     if frame["strategy"].duplicated().any():
         raise ValueError(f"{cell.ratings_path} contains duplicate strategies")
-    frame["strategy"] = frame["strategy"].astype(str)
+    frame["strategy"] = canonical_strategy_ids(
+        frame["strategy"],
+        context=f"{cell.ratings_path} strategy",
+    )
     frame["evidence_backed"] = frame["rating_status"].eq(_EVIDENCE_BACKED)
     frame["root_seed"] = cell.root_seed
     frame["k"] = cell.k
@@ -361,6 +415,10 @@ def build_percentile_contribution(
     contribution = contribution.loc[contribution["complete_support"]].copy()
     contribution["candidate_contribution_rank"] = range(1, len(contribution) + 1)
     contribution.reset_index(drop=True, inplace=True)
+    contribution["strategy"] = canonical_strategy_ids(
+        contribution["strategy"],
+        context="TrueSkill percentile contribution strategy",
+    )
 
     table = pa.Table.from_pandas(contribution, preserve_index=False)
     roots = sorted({cell.root_seed for cell in cells})
@@ -510,14 +568,39 @@ def _max_mu_shift(
     return max(abs(baseline[key][0] - alternative[key][0]) for key in common)
 
 
-def _heldout_scores(
+def mu_softmax_heuristic_probabilities(
+    ratings: Sequence[tuple[float, float]],
+    *,
+    beta: float,
+) -> np.ndarray:
+    """Return descriptive softmax(mu / beta) probabilities.
+
+    Sigma is accepted and validated to make the ignored model state explicit.
+    This heuristic is not a TrueSkill predictive-probability calculation.
+    """
+
+    if not ratings:
+        raise ValueError("mu_softmax_heuristic requires at least one rating")
+    if not math.isfinite(beta) or beta <= 0:
+        raise ValueError("mu_softmax_heuristic requires finite beta > 0")
+    rating_array = np.asarray(ratings, dtype=float)
+    if rating_array.shape != (len(ratings), 2) or not np.all(np.isfinite(rating_array)):
+        raise ValueError("mu_softmax_heuristic requires finite (mu, sigma) ratings")
+    if np.any(rating_array[:, 1] <= 0):
+        raise ValueError("mu_softmax_heuristic requires sigma > 0")
+    logits = (rating_array[:, 0] - np.max(rating_array[:, 0])) / beta
+    probabilities = np.exp(logits)
+    return probabilities / probabilities.sum()
+
+
+def _mu_softmax_heuristic_heldout_scores(
     path: Path,
     k: int,
     *,
     beta: float,
     tau: float,
     draw_probability: float,
-) -> dict[str, float | int | None]:
+) -> dict[str, object]:
     game_total = _support_counts(path, k)["completed_games"]
     train_games = max(1, math.floor(game_total * (1.0 - _HOLDOUT_FRACTION))) if game_total else 0
     fitted, observed_train = _fit(
@@ -534,10 +617,8 @@ def _heldout_scores(
     for index, (players, ranks) in enumerate(_games(path, k)):
         if index < observed_train:
             continue
-        mus = np.array([fitted.get(player, (25.0, 25.0 / 3.0))[0] for player in players])
-        logits = (mus - mus.max()) / max(beta, 1e-12)
-        probabilities = np.exp(logits)
-        probabilities /= probabilities.sum()
+        ratings = [fitted.get(player, (25.0, 25.0 / 3.0)) for player in players]
+        probabilities = mu_softmax_heuristic_probabilities(ratings, beta=beta)
         winner_positions = np.flatnonzero(np.asarray(ranks) == min(ranks))
         target: np.ndarray = np.zeros(k, dtype=float)
         target[winner_positions] = 1.0 / len(winner_positions)
@@ -548,15 +629,26 @@ def _heldout_scores(
         correct.append(float(predicted in winner_positions))
     holdout_games = len(log_losses)
     return {
-        "training_games": observed_train,
-        "holdout_games": holdout_games,
-        "heldout_log_loss": float(np.mean(log_losses)) if log_losses else None,
-        "uniform_log_loss": math.log(k) if holdout_games else None,
-        "heldout_brier_score": float(np.mean(brier_scores)) if brier_scores else None,
-        "uniform_brier_score": 1.0 - 1.0 / k if holdout_games else None,
-        "mean_top_probability": float(np.mean(confidences)) if confidences else None,
-        "top_prediction_accuracy": float(np.mean(correct)) if correct else None,
-        "top_probability_calibration_gap": (
+        "mu_softmax_heuristic_claim": MU_SOFTMAX_HEURISTIC_CLAIM,
+        "mu_softmax_heuristic_training_games": observed_train,
+        "mu_softmax_heuristic_holdout_games": holdout_games,
+        "mu_softmax_heuristic_heldout_log_loss": (
+            float(np.mean(log_losses)) if log_losses else None
+        ),
+        "mu_softmax_heuristic_uniform_reference_log_loss": (math.log(k) if holdout_games else None),
+        "mu_softmax_heuristic_heldout_brier_score": (
+            float(np.mean(brier_scores)) if brier_scores else None
+        ),
+        "mu_softmax_heuristic_uniform_reference_brier_score": (
+            1.0 - 1.0 / k if holdout_games else None
+        ),
+        "mu_softmax_heuristic_mean_top_probability": (
+            float(np.mean(confidences)) if confidences else None
+        ),
+        "mu_softmax_heuristic_top_prediction_accuracy": (
+            float(np.mean(correct)) if correct else None
+        ),
+        "mu_softmax_heuristic_mean_top_probability_minus_accuracy": (
             float(np.mean(confidences) - np.mean(correct)) if confidences else None
         ),
     }
@@ -629,7 +721,7 @@ def diagnose_rating_cell(
         "reversed_order_games": reversed_games,
         "reversed_order_rank_correlation": _rank_correlation(baseline, reversed_order),
         "reversed_order_max_abs_mu_shift": _max_mu_shift(baseline, reversed_order),
-        **_heldout_scores(
+        **_mu_softmax_heuristic_heldout_scores(
             cell.game_rows_path,
             cell.k,
             beta=beta,
@@ -666,6 +758,7 @@ def build_screening_diagnostics(
         outputs=[output],
         cfg=cfg,
         stage="trueskill",
+        freshness_key=_trueskill_diagnostic_freshness_key(cfg),
         sidecar_artifacts=[output],
     ):
         return output
@@ -704,10 +797,10 @@ def build_screening_diagnostics(
         producer="trueskill_screening",
         scope=ArtifactScope.DIAGNOSTICS,
         source_scope=ArtifactScope.BY_K,
-        operation="aggregate_trueskill_screening_diagnostics",
-        weighted_quantity="trueskill_screening_sensitivity",
+        operation=MU_SOFTMAX_HEURISTIC_OPERATION,
+        weighted_quantity="trueskill_screening_sensitivity_and_mu_softmax_heuristic_scores",
         support_count_role="ordered_games",
-        uncertainty_method="descriptive_replay_and_heldout_prediction",
+        uncertainty_method="descriptive_replay_and_mu_softmax_heuristic_scoring",
         replication_unit="game",
         conditioning=TRUESKILL_CONDITIONING,
         consistency_columns=table.schema.names,
@@ -724,7 +817,7 @@ def build_screening_diagnostics(
         seed_scope="both_roots_combined" if len(roots) == 2 else "single_root",
         method_contract=cast(
             Any,
-            trueskill_method_contract("aggregate_trueskill_screening_diagnostics"),
+            trueskill_diagnostic_method_contract(),
         ),
     )
     write_parquet_artifact_atomic(table, output, sidecar=sidecar, codec=cfg.parquet_codec)
@@ -734,19 +827,26 @@ def build_screening_diagnostics(
         outputs=[output],
         cfg=cfg,
         stage="trueskill",
+        freshness_key=_trueskill_diagnostic_freshness_key(cfg),
         sidecar_artifacts=[output],
     )
     return output
 
 
 __all__ = [
+    "MU_SOFTMAX_HEURISTIC",
+    "MU_SOFTMAX_HEURISTIC_CLAIM",
+    "MU_SOFTMAX_HEURISTIC_OPERATION",
     "ScreeningRatingCell",
     "TRUESKILL_CONDITIONING",
+    "TRUESKILL_DIAGNOSTIC_METHOD_VERSION",
     "TRUESKILL_METHOD_VERSION",
     "build_percentile_contribution",
     "build_screening_diagnostics",
     "classify_trueskill_row",
     "diagnose_rating_cell",
+    "mu_softmax_heuristic_probabilities",
     "publish_rating_cell_contract",
+    "trueskill_diagnostic_method_contract",
     "trueskill_method_contract",
 ]

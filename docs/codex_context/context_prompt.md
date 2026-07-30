@@ -21,6 +21,12 @@ Preserve these invariants:
 - tournament primary rates and batch MCSE use all attempted player-game
   exposures; completed-only rates are labelled diagnostics;
 - separation of descriptive screening, inference, dominance, and display order;
+- RNG lag diagnostics globally order seat exposures by the full RNG-v2
+  tournament-player coordinate, merge zero-based seats before group updates,
+  and use zero-centered descriptive reference bands with no independence claim;
+- two-root stability is fixed-design descriptive reproducibility: intervals are
+  Monte Carlo precision, practical threshold positions are not tests, and joint
+  discrepancy reference quantiles/frequencies are not multiple-testing inference;
 - current code never reads old on-disk analysis artifacts;
 - pair analysis lives under `results_seed_pair_X_Y/seed_pair_analysis`, path
   lookup is non-mutating, and every H2H phase owns its artifacts;
@@ -33,8 +39,10 @@ Preserve these invariants:
 - active configs contain only reloadable public fields; resolved paths, layouts,
   parent lifecycle roots, code identity, and execution controls live in the
   separately authenticated `run_context.json`;
-- the H2H power plan is immutable after publication and execution progress is
-  a separate resumable artifact;
+- the H2H power plan and block manifest are immutable after publication;
+  exact-power allocation is the global first admissible crossing, power is
+  conditional on completed support, and cap authorization/execution progress
+  is a separate resumable artifact;
 - H2H targets completed games per pair/root/order, retains safety-limit attempts
   outside score-test counts, resumes deterministic contiguous replacements up
   to the frozen 2.0x attempt cap, keeps no-test pairs in the multiplicity family,

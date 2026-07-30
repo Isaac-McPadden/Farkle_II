@@ -94,17 +94,22 @@ def _publish_inputs(
                 }
                 if cell_overrides is not None:
                     row.update(cell_overrides.get((pair_id, int(root_seed), order), {}))
-                attempted = int(row["games_attempted"])
-                completed = int(row["games_completed"])
-                safety = int(row["games_safety_limit"])
-                seat1_wins = int(row["wins_seat1"])
-                seat2_wins = int(row["wins_seat2"])
+                attempted = int(cast(Any, row["games_attempted"]))
+                completed = int(cast(Any, row["games_completed"]))
+                safety = int(cast(Any, row["games_safety_limit"]))
+                seat1_wins = int(cast(Any, row["wins_seat1"]))
+                seat2_wins = int(cast(Any, row["wins_seat2"]))
                 row["wins_a"] = seat1_wins if order == 0 else seat2_wins
                 row["wins_b"] = seat2_wins if order == 0 else seat1_wins
                 row["completion_game_rate"] = completed / attempted if attempted else None
                 row["safety_limit_game_rate"] = safety / attempted if attempted else None
                 rows.append(row)
     counts = pd.DataFrame(rows)
+    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
+        counts[column] = pd.array(
+            [int(value) for value in counts[column]],
+            dtype="Int32",
+        )
     counts_path = cfg.h2h_order_counts_path()
     counts_table = pa.Table.from_pandas(counts, preserve_index=False)
     counts_sidecar = make_artifact_sidecar(
@@ -168,7 +173,6 @@ def _publish_inputs(
         "family_hash": family_hash,
         "schedule_hash": "c" * 64,
         "planning_state": "complete_valid",
-        "execution_authorization": "ready",
         "root_seeds": roots,
         "unordered_pair_count": len(pairs),
         "total_block_count": len(rows),
@@ -201,6 +205,7 @@ def _publish_inputs(
     execution = {
         "family_hash": family_hash,
         "schedule_hash": plan["schedule_hash"],
+        "execution_authorization": "ready",
         "execution_state": "complete_valid",
         "completed_block_count": len(rows),
         "total_block_count": len(rows),
@@ -522,6 +527,7 @@ def test_mixed_completed_and_safety_attempts_use_completed_score_counts_and_actu
     assert inference["balanced_a_win_rate_alias"] == pytest.approx(0.60)
     assert bool(inference["pair_inferentially_viable"])
     assert bool(inference["pair_operationally_viable"])
+    assert inference["power_support_status"] == "completed_support_achieved"
 
 
 def test_zero_completed_pair_is_no_test_and_never_equivalent(tmp_path: Path) -> None:
@@ -562,6 +568,7 @@ def test_zero_completed_pair_is_no_test_and_never_equivalent(tmp_path: Path) -> 
     assert not bool(inference["strategy_b_operationally_viable"])
     assert bool(inference["multiplicity_family_member"])
     assert inference["no_test_p_value_convention"] == "null_reported_treated_as_one_for_holm"
+    assert inference["power_support_status"] == "unresolved_required_completed_support_not_achieved"
 
 
 def test_below_threshold_candidate_retains_valid_pair_estimate_but_gets_no_claim(
@@ -629,7 +636,7 @@ def test_no_test_pair_retains_frozen_holm_family_size(tmp_path: Path) -> None:
     assert pd.isna(inference.loc[1, "holm_adjusted_p"])
     assert not bool(inference.loc[1, "formal_test_performed"])
     assert inference.loc[0, "holm_adjusted_p"] == pytest.approx(
-        min(1.0, 3.0 * inference.loc[0, "score_p_value"])
+        min(1.0, 3.0 * float(cast(Any, inference.loc[0, "score_p_value"])))
     )
     assert inference["multiplicity_family_member"].all()
 
@@ -650,7 +657,7 @@ def test_inference_rejects_counts_that_do_not_authenticate_frozen_schedule(
     counts_path = cfg.h2h_order_counts_path()
     counts = pq.read_table(counts_path).to_pandas()
     mask = (counts["root_seed"] == 22) & (counts["order"] == 1)
-    counts.loc[mask, "n_completed_required"] = 4_999
+    counts.loc[mask, "n_completed_required"] = 5_001
     table = pa.Table.from_pandas(counts, preserve_index=False)
     sidecar = make_artifact_sidecar(
         cfg,
@@ -670,3 +677,59 @@ def test_inference_rejects_counts_that_do_not_authenticate_frozen_schedule(
 
     with pytest.raises(ValueError, match="frozen schedule column n_completed_required"):
         run_h2h_inference(cfg)
+
+
+def test_inference_rejects_compensated_root_order_imbalance(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    _publish_inputs(cfg, [("1", "2", 100, 50, 50)])
+    counts_path = cfg.h2h_order_counts_path()
+    counts = pq.read_table(counts_path).to_pandas()
+    expanded = ((counts["root_seed"] == 11) & (counts["order"] == 1)) | (
+        (counts["root_seed"] == 22) & (counts["order"] == 0)
+    )
+    counts.loc[expanded, "n_completed_required"] = 200
+    counts.loc[expanded, "games_attempted"] = 200
+    counts.loc[expanded, "games_completed"] = 200
+    counts.loc[expanded, "wins_seat1"] = 100
+    counts.loc[expanded, "wins_seat2"] = 100
+    counts.loc[expanded, "wins_a"] = 100
+    counts.loc[expanded, "wins_b"] = 100
+    counts.loc[expanded, "replacement_attempt_count"] = 0
+    table = pa.Table.from_pandas(counts, preserve_index=False)
+    sidecar = make_artifact_sidecar(
+        cfg,
+        counts_path,
+        producer="test",
+        scope=ArtifactScope.H2H_2P,
+        source_scope=ArtifactScope.H2H_2P,
+        operation="concatenate_root_order_blocks",
+        uncertainty_method=SCORE_TEST_ID,
+        consistency_columns=counts.columns.tolist(),
+        player_counts=[2],
+        required_player_counts=[2],
+        missing_cell_policy="fail",
+        seed_scope="both_roots_combined",
+    )
+    write_parquet_artifact_atomic(table, counts_path, sidecar=sidecar)
+
+    with pytest.raises(ValueError, match="frozen schedule column n_completed_required"):
+        run_h2h_inference(cfg)
+
+
+def test_inference_accepts_exact_current_style_root_order_support(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    _publish_inputs(cfg, [("1", "2", 1_974, 1_020, 954)])
+
+    artifacts = run_h2h_inference(cfg)
+
+    combined = pq.read_table(artifacts.combined_order_counts).to_pandas()
+    inference = pq.read_table(artifacts.pairwise_inference).to_pandas().iloc[0]
+    assert len(combined) == 2
+    assert combined["games_completed"].eq(3_948).all()
+    assert combined["root_count"].eq(2).all()
+    assert inference["games_completed"] == 7_896
+    assert inference["power_support_status"] == "completed_support_achieved"

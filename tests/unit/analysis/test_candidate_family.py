@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pandas as pd
 import pyarrow as pa
@@ -51,6 +51,8 @@ def _write_frame(
     seed_scope: str,
     current_trueskill_contract: bool = True,
 ) -> None:
+    frame = frame.copy()
+    frame["strategy"] = pd.array(frame["strategy"].tolist(), dtype="Int32")
     table = pa.Table.from_pandas(frame, preserve_index=False)
     is_trueskill = operation == "equal_root_k_percentile_mean" and current_trueskill_contract
     sidecar = make_artifact_sidecar(
@@ -66,7 +68,10 @@ def _write_frame(
         missing_cell_policy="fail",
         seed_scope=seed_scope,
         conditioning=TRUESKILL_CONDITIONING if is_trueskill else "unconditional",
-        method_contract=(trueskill_method_contract(operation) if is_trueskill else None),
+        method_contract=cast(
+            Any,
+            trueskill_method_contract(operation) if is_trueskill else None,
+        ),
     )
     write_parquet_artifact_atomic(table, path, sidecar=sidecar)
 
@@ -123,13 +128,13 @@ def test_candidate_family_balanced_tail_contraction_and_provenance(tmp_path: Pat
     artifacts = freeze_h2h_candidate_family(cfg)
 
     manifest = json.loads(artifacts.manifest.read_text(encoding="utf-8"))
-    assert manifest["candidates"] == ["1", "3", "7", "8"]
+    assert manifest["candidates"] == [1, 3, 7, 8]
     assert manifest["candidate_count"] == 4
     assert manifest["initial_cutoffs"] == {"win_rate": 3, "trueskill": 3}
     assert manifest["final_cutoffs"] == {"win_rate": 1, "trueskill": 1}
     assert manifest["cutoff_rounds"] == 2
-    assert manifest["cutoff_history"][1]["removed"] == ["5"]
-    assert manifest["cutoff_history"][2]["removed"] == ["2", "4"]
+    assert manifest["cutoff_history"][1]["removed"] == [5]
+    assert manifest["cutoff_history"][2]["removed"] == [2, 4]
     assert manifest["initial_overlap"]["intersection_count"] == 1
     assert manifest["projected_workload"] == {
         "game_allocation_status": "pending_power_plan",
@@ -148,17 +153,17 @@ def test_candidate_family_balanced_tail_contraction_and_provenance(tmp_path: Pat
     assert isinstance(trueskill_identity["schema_version"], int)
 
     membership = pq.read_table(artifacts.membership).to_pandas().set_index("strategy")
-    assert membership.index.tolist() == [str(strategy) for strategy in range(1, 9)]
-    assert int(cast(int, membership.loc["1", "win_rate_rank"])) == 1
-    assert int(cast(int, membership.loc["3", "trueskill_rank"])) == 1
-    assert int(cast(int, membership.loc["5", "removal_round"])) == 1
-    assert int(cast(int, membership.loc["2", "removal_round"])) == 2
-    assert bool(membership.loc["7", "protected"])
-    assert bool(membership.loc["7", "final_family"])
-    assert json.loads(cast(str, membership.loc["7", "final_admission_reasons"])) == [
+    assert membership.index.tolist() == list(range(1, 9))
+    assert int(cast(int, membership.loc[1, "win_rate_rank"])) == 1
+    assert int(cast(int, membership.loc[3, "trueskill_rank"])) == 1
+    assert int(cast(int, membership.loc[5, "removal_round"])) == 1
+    assert int(cast(int, membership.loc[2, "removal_round"])) == 2
+    assert bool(membership.loc[7, "protected"])
+    assert bool(membership.loc[7, "final_family"])
+    assert json.loads(cast(str, membership.loc[7, "final_admission_reasons"])) == [
         "mandatory_diagnostic"
     ]
-    assert not bool(membership.loc["6", "initial_family"])
+    assert not bool(membership.loc[6, "initial_family"])
     assert membership["family_hash"].nunique() == 1
     assert membership["family_hash"].iloc[0] == manifest["family_hash"]
 
@@ -184,7 +189,7 @@ def test_candidate_family_without_cap_keeps_complete_declared_union(tmp_path: Pa
     artifacts = freeze_h2h_candidate_family(cfg)
     manifest = json.loads(artifacts.manifest.read_text(encoding="utf-8"))
 
-    assert manifest["candidates"] == ["1", "2", "3", "4", "5", "7", "8"]
+    assert manifest["candidates"] == [1, 2, 3, 4, 5, 7, 8]
     assert manifest["cutoff_rounds"] == 0
     assert manifest["final_cutoffs"] == manifest["initial_cutoffs"]
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -20,7 +21,11 @@ from farkle.analysis.h2h_schedule import (
     plan_h2h_schedule,
 )
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
-from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
+from farkle.utils.artifact_contract import (
+    make_artifact_sidecar,
+    sidecar_path,
+    validate_artifact_sidecar,
+)
 from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
@@ -46,7 +51,7 @@ def _cfg(tmp_path: Path, *, roots: tuple[int, ...] = (11, 22)) -> AppConfig:
     return cfg
 
 
-def _write_frozen_family(cfg: AppConfig, strategies: tuple[str, ...] = ("1", "2", "3")) -> None:
+def _write_frozen_family(cfg: AppConfig, strategies: tuple[int, ...] = (1, 2, 3)) -> None:
     family_hash = "a" * 64
     roots = cfg.sim.seed_list or [cfg.sim.seed]
     membership = pd.DataFrame(
@@ -56,6 +61,7 @@ def _write_frozen_family(cfg: AppConfig, strategies: tuple[str, ...] = ("1", "2"
             "family_hash": [family_hash] * len(strategies),
         }
     )
+    membership["strategy"] = pd.array(membership["strategy"].tolist(), dtype="Int32")
     manifest: dict[str, Any] = {
         "family_hash": family_hash,
         "candidates": list(strategies),
@@ -132,6 +138,68 @@ def test_implemented_score_power_matches_brute_force_small_case() -> None:
     assert observed == pytest.approx(expected, rel=1e-12, abs=1e-14)
 
 
+def test_exact_power_allocation_handles_review_nonmonotone_small_n_counterexample() -> None:
+    observed = h2h_schedule_module._minimum_block_games(
+        root_count=1,
+        effect=0.10,
+        scenarios=(0.0, 0.03, 0.06),
+        alpha_per_pair=0.20,
+        target_power=0.40,
+    )
+
+    assert observed == 1
+    assert h2h_schedule_module._worst_scenario_power(
+        games_per_root_order_block=1,
+        root_count=1,
+        effect=0.10,
+        scenarios=(0.0, 0.03, 0.06),
+        alpha_per_pair=0.20,
+    ) == pytest.approx(0.5128)
+
+
+@pytest.mark.parametrize(
+    ("root_count", "effect", "alpha", "target"),
+    [
+        (1, 0.10, 0.20, 0.30),
+        (1, 0.10, 0.20, 0.50),
+        (2, 0.08, 0.10, 0.50),
+        (2, 0.10, 0.05, 0.60),
+    ],
+)
+def test_exact_power_allocation_matches_brute_force_first_crossing_on_small_domains(
+    root_count: int,
+    effect: float,
+    alpha: float,
+    target: float,
+) -> None:
+    scenarios = (0.0, 0.03, 0.06)
+    brute_force = next(
+        block
+        for block in range(1, 101)
+        if min(
+            implemented_score_test_power(
+                block * root_count,
+                0.5 + seat_advantage + effect,
+                0.5 + seat_advantage - effect,
+                alpha,
+            )
+            for seat_advantage in scenarios
+        )
+        >= target
+    )
+
+    assert (
+        h2h_schedule_module._minimum_block_games(
+            root_count=root_count,
+            effect=effect,
+            scenarios=scenarios,
+            alpha_per_pair=alpha,
+            target_power=target,
+        )
+        == brute_force
+    )
+
+
 def test_identical_strategy_family_error_respects_bonferroni_bound() -> None:
     comparisons = 6
     family_alpha = 0.02
@@ -157,7 +225,8 @@ def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     plan = json.loads(artifacts.power_plan.read_text(encoding="utf-8"))
     assert plan["score_test_id"] == SCORE_TEST_ID
     assert len(plan["schedule_hash"]) == 64
-    assert plan["execution_authorization"] == "ready"
+    assert "execution_authorization" not in plan
+    assert "total_game_cap" not in plan
     assert "execution_state" not in plan
     assert "completed_block_count" not in plan
     assert plan["alpha_per_pair"] == pytest.approx(0.02 / 3)
@@ -174,6 +243,12 @@ def test_power_plan_and_two_root_block_allocation(tmp_path: Path) -> None:
     ]
     assert len(target_rows) == 3
     assert min(row["achieved_power"] for row in target_rows) >= 0.80
+    assert {row["power_conditioning"] for row in target_rows} == {
+        "exact_completed_games_per_order_achieved"
+    }
+    authorization = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
+    assert authorization["execution_authorization"] == "ready"
+    assert authorization["execution_state"] == CompletionState.NOT_STARTED.value
 
     schedule = pq.read_table(artifacts.block_manifest).to_pandas()
     assert len(schedule) == 3 * 2 * 2
@@ -223,14 +298,21 @@ def test_power_plan_stops_before_schedule_when_cap_is_too_small(tmp_path: Path) 
     artifacts = plan_h2h_schedule(cfg)
     plan = json.loads(artifacts.power_plan.read_text(encoding="utf-8"))
     blocked_schedule_hash = plan["schedule_hash"]
+    immutable_plan_bytes = artifacts.power_plan.read_bytes()
+    immutable_plan_sha256 = hashlib.sha256(immutable_plan_bytes).hexdigest()
+    immutable_sidecar_bytes = sidecar_path(artifacts.power_plan).read_bytes()
 
     assert artifacts.planning_state is CompletionState.COMPLETE_VALID
     assert artifacts.execution_blocked is True
-    assert artifacts.block_manifest is None
-    assert not cfg.h2h_block_manifest_path().exists()
+    assert artifacts.block_manifest == cfg.h2h_block_manifest_path()
+    assert cfg.h2h_block_manifest_path().exists()
     assert plan["maximum_total_attempts"] > 1
-    assert plan["execution_authorization"] == "blocked_by_cap"
-    assert "head2head.total_game_cap" in plan["cap_guidance"]
+    assert "execution_authorization" not in plan
+    assert "total_game_cap" not in plan
+    blocked_state = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
+    assert blocked_state["execution_authorization"] == "blocked_by_cap"
+    assert blocked_state["execution_state"] == CompletionState.BLOCKED_BY_CAP.value
+    assert blocked_state["authorized_total_game_cap"] == 1
 
     cfg.head2head.total_game_cap = plan["maximum_total_attempts"]
     resumed = plan_h2h_schedule(cfg)
@@ -239,6 +321,13 @@ def test_power_plan_stops_before_schedule_when_cap_is_too_small(tmp_path: Path) 
     assert resumed.block_manifest is not None
     resumed_plan = json.loads(resumed.power_plan.read_text(encoding="utf-8"))
     assert resumed_plan["schedule_hash"] == blocked_schedule_hash
+    assert resumed.power_plan.read_bytes() == immutable_plan_bytes
+    assert hashlib.sha256(resumed.power_plan.read_bytes()).hexdigest() == immutable_plan_sha256
+    assert sidecar_path(resumed.power_plan).read_bytes() == immutable_sidecar_bytes
+    resumed_state = json.loads(cfg.h2h_execution_state_path().read_text(encoding="utf-8"))
+    assert resumed_state["execution_authorization"] == "ready"
+    assert resumed_state["execution_state"] == CompletionState.NOT_STARTED.value
+    assert resumed_state["authorized_total_game_cap"] == plan["maximum_total_attempts"]
 
 
 def test_single_root_plan_is_explicit_and_even_by_order(tmp_path: Path) -> None:
@@ -315,7 +404,7 @@ def test_statistical_contract_validates_h2h_noncompletion_policy(
 
 def test_block_checkpoints_resume_without_regenerating_completed_work(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    _write_frozen_family(cfg, strategies=("1", "2"))
+    _write_frozen_family(cfg, strategies=(1, 2))
     plan_h2h_schedule(cfg)
     manifest_path = cfg.strategy_manifest_root_path()
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,7 +460,7 @@ def test_resume_during_replacements_starts_at_smallest_unauthenticated_attempt(
     tmp_path: Path,
 ) -> None:
     cfg = _cfg(tmp_path)
-    _write_frozen_family(cfg, strategies=("1", "2"))
+    _write_frozen_family(cfg, strategies=(1, 2))
     plan_h2h_schedule(cfg)
     manifest_path = cfg.strategy_manifest_root_path()
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -454,9 +543,58 @@ def test_resume_during_replacements_starts_at_smallest_unauthenticated_attempt(
     assert replaced.iloc[0]["games_safety_limit"] == 1
 
 
+def test_interrupted_block_sidecar_publication_replays_only_that_coordinate(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    _write_frozen_family(cfg, strategies=(1, 2))
+    plan_h2h_schedule(cfg)
+    manifest_path = cfg.strategy_manifest_root_path()
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.table({"strategy_id": pa.array([], type=pa.int64())}), manifest_path)
+
+    initial = execute_h2h_schedule(
+        cfg,
+        n_jobs=1,
+        block_runner=lambda block, _manifest, _chunk: {
+            **block,
+            "games_completed": int(block["n_completed_required"]),
+            "wins_seat1": int(block["n_completed_required"]) // 2,
+            "wins_seat2": int(block["n_completed_required"])
+            - int(block["n_completed_required"]) // 2,
+        },
+    )
+    interrupted_path = initial.block_paths[1]
+    interrupted_block_id = str(pq.read_table(interrupted_path).to_pandas().iloc[0]["block_id"])
+    sidecar_path(interrupted_path).unlink()
+    replayed: list[str] = []
+
+    def replay_one(
+        block: dict[str, Any],
+        _manifest: Path,
+        _chunk: int,
+    ) -> dict[str, Any]:
+        replayed.append(str(block["block_id"]))
+        games = int(block["n_completed_required"])
+        return {
+            **block,
+            "games_completed": games,
+            "wins_seat1": games,
+            "wins_seat2": 0,
+        }
+
+    recovered = execute_h2h_schedule(cfg, n_jobs=1, block_runner=replay_one)
+
+    assert replayed == [interrupted_block_id]
+    validate_artifact_sidecar(interrupted_path)
+    replaced = pq.read_table(interrupted_path).to_pandas().iloc[0]
+    assert replaced["wins_seat1"] == replaced["games_completed"]
+    assert len(recovered.block_paths) == 4
+
+
 def test_always_noncompleted_blocks_stop_at_frozen_attempt_cap(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    _write_frozen_family(cfg, strategies=("1", "2"))
+    _write_frozen_family(cfg, strategies=(1, 2))
     plan_h2h_schedule(cfg)
     manifest_path = cfg.strategy_manifest_root_path()
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -534,14 +672,14 @@ def test_engine_block_oracle_excludes_safety_attempt_and_uses_replacement_coordi
         "schedule_hash": "b" * 64,
         "block_id": "block",
         "pair_id": 0,
-        "strategy_a": "1",
-        "strategy_b": "2",
+        "strategy_a": 1,
+        "strategy_b": 2,
         "root_seed": 11,
         "root_index": 0,
         "order": 0,
         "order_label": "a_b",
-        "seat1_strategy": "1",
-        "seat2_strategy": "2",
+        "seat1_strategy": 1,
+        "seat2_strategy": 2,
         "n_completed_required": 2,
         "max_attempts": 4,
         "max_attempt_multiplier": 2.0,
@@ -572,7 +710,7 @@ def test_engine_block_oracle_excludes_safety_attempt_and_uses_replacement_coordi
 
 def test_large_h2h_execution_throttles_execution_state_rewrites(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    _write_frozen_family(cfg, strategies=tuple(str(value) for value in range(8)))
+    _write_frozen_family(cfg, strategies=tuple(range(8)))
     plan_h2h_schedule(cfg)
     manifest_path = cfg.strategy_manifest_root_path()
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -604,7 +742,7 @@ def test_complete_execution_without_stamp_fast_finalizes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     cfg = _cfg(tmp_path)
-    _write_frozen_family(cfg, strategies=("1", "2"))
+    _write_frozen_family(cfg, strategies=(1, 2))
     plan_h2h_schedule(cfg)
     manifest_path = cfg.strategy_manifest_root_path()
     manifest_path.parent.mkdir(parents=True, exist_ok=True)

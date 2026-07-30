@@ -12,6 +12,8 @@ from typing import Final
 
 import pyarrow as pa
 
+from farkle.utils.strategy_ids import STRATEGY_ID_ARROW_TYPE
+
 OUTCOME_SCHEMA_VERSION: Final[int] = 2
 TOURNAMENT_METHOD_VERSION: Final[int] = 2
 
@@ -29,7 +31,7 @@ _BASE_FIELDS: Final[list[pa.Field]] = [
     pa.field("hit_safety_limit", pa.bool_(), nullable=False),
     pa.field("outcome_schema_version", pa.int16(), nullable=False),
     pa.field("winner_seat", pa.string(), nullable=True),
-    pa.field("winner_strategy", pa.int32(), nullable=True),
+    pa.field("winner_strategy", STRATEGY_ID_ARROW_TYPE, nullable=True),
     pa.field("game_seed", pa.int64(), nullable=False),
     pa.field("rng_scheme_version", pa.int16(), nullable=False),
     pa.field("rng_purpose_namespace", pa.int32(), nullable=False),
@@ -44,7 +46,7 @@ _SEAT_TEMPLATE: Final[dict[str, tuple[pa.DataType, bool]]] = {
     "farkles": (pa.int16(), False),
     "rolls": (pa.int16(), False),
     "highest_turn": (pa.int16(), False),
-    "strategy": (pa.int32(), False),
+    "strategy": (STRATEGY_ID_ARROW_TYPE, False),
     "rank": (pa.int8(), True),
     "loss_margin": (pa.int32(), True),
     "smart_five_uses": (pa.int16(), False),

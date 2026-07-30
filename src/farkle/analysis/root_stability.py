@@ -23,11 +23,16 @@ from farkle.analysis.all_player_metrics import (
     ATTEMPT_CONDITIONING,
     validate_unconditional_all_player_schema,
 )
+from farkle.analysis.batch_support import (
+    RECTANGULAR_SUPPORT_POLICY,
+    validate_rectangular_batch_support,
+)
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.random import RandomPurpose, coordinate_rng
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
+from farkle.utils.strategy_ids import canonical_strategy_ids, require_strategy_id_field
 
 _INPUT_COLUMNS: Final[tuple[str, ...]] = (
     "root_seed",
@@ -40,6 +45,7 @@ _INPUT_COLUMNS: Final[tuple[str, ...]] = (
     "raw_safety_limit_player_game_exposures",
     "raw_losses",
 )
+ROOT_STABILITY_METHOD_VERSION: Final = 2
 
 
 @dataclass(frozen=True)
@@ -108,6 +114,7 @@ def _read_cell(cell: RootBatchCell) -> pd.DataFrame:
     )
     schema = pq.read_schema(cell.path)
     validate_unconditional_all_player_schema(schema)
+    require_strategy_id_field(schema, "strategy", context=str(cell.path))
     missing = sorted(set(_INPUT_COLUMNS).difference(schema.names))
     if missing:
         raise ValueError(f"{cell.path} lacks two-root inputs: {missing}")
@@ -119,14 +126,13 @@ def _read_cell(cell: RootBatchCell) -> pd.DataFrame:
             f"{cell.path} contains root/k {observed_roots}/{observed_k}; "
             f"expected [{cell.root_seed}]/[{cell.k}]"
         )
-    keys = ["root_seed", "k", "deterministic_batch_id", "strategy"]
-    if frame.duplicated(keys).any():
-        raise ValueError(f"{cell.path} contains duplicate root/k/batch/strategy cells")
+    validate_rectangular_batch_support(frame, context=str(cell.path))
     exposures = frame["raw_player_game_exposures"]
     wins = frame["raw_wins"]
-    if (exposures <= 0).any() or (wins < 0).any() or (
-        wins > frame["raw_completed_player_game_exposures"]
-    ).any():
+    if (
+        (wins < 0).any()
+        or (wins > frame["raw_completed_player_game_exposures"]).any()
+    ):
         raise ValueError(f"{cell.path} contains invalid wins or exposure support")
     if not (
         exposures
@@ -152,18 +158,23 @@ def _ratio_mcse(wins: np.ndarray, exposures: np.ndarray) -> float | None:
     return sqrt(max(variance, 0.0)) / total_exposures
 
 
-def _classification(effect: float, mcse: float | None, practical_delta: float) -> str:
-    """Classify performance relative to chance without implying equivalence."""
+def _practical_threshold_position(effect: float, practical_delta: float) -> str:
+    """Describe an estimate's position relative to the declared practical thresholds."""
 
     if effect >= practical_delta:
-        return "meaningfully_above"
+        return "above_positive_threshold"
     if effect <= -practical_delta:
-        return "meaningfully_below"
-    if mcse is not None and mcse > 0.0:
-        critical = float(norm.ppf(0.975))
-        if effect - critical * mcse > 0.0:
-            return "statistically_above_below_practical"
-    return "unresolved"
+        return "below_negative_threshold"
+    return "between_thresholds"
+
+
+def _root_stability_freshness_key(cfg: AppConfig) -> dict[str, object]:
+    """Bind fixed-design diagnostic semantics to the stage lifecycle."""
+
+    return {
+        **cfg.freshness_key(),
+        "root_stability_method_version": ROOT_STABILITY_METHOD_VERSION,
+    }
 
 
 def _estimate_k(
@@ -179,13 +190,19 @@ def _estimate_k(
     rows: list[dict[str, object]] = []
     chance = 1.0 / k
     for strategy, group in frame.groupby("strategy", sort=True):
-        batch_wins = group["raw_wins"].to_numpy(dtype=float)
-        batch_exposures = group["raw_player_game_exposures"].to_numpy(dtype=float)
+        positive = group.loc[group["raw_player_game_exposures"] > 0]
+        batch_wins = positive["raw_wins"].to_numpy(dtype=float)
+        batch_exposures = positive["raw_player_game_exposures"].to_numpy(dtype=float)
         wins = int(batch_wins.sum())
         exposures = int(batch_exposures.sum())
         completed_exposures = int(group["raw_completed_player_game_exposures"].sum())
         safety_exposures = int(group["raw_safety_limit_player_game_exposures"].sum())
         losses = int(group["raw_losses"].sum())
+        if exposures <= 0:
+            raise ValueError(
+                f"strategy {strategy} has no positive exposure cells after explicit "
+                "zero-exposure exclusion"
+            )
         rate = wins / exposures
         mcse = _ratio_mcse(batch_wins, batch_exposures)
         if mcse is None:
@@ -210,9 +227,18 @@ def _estimate_k(
                 "raw_completed_exposures": completed_exposures,
                 "raw_safety_limit_exposures": safety_exposures,
                 "raw_losses": losses,
-                "raw_batches": int(
+                "raw_declared_batches": int(
                     group[["root_seed", "deterministic_batch_id"]].drop_duplicates().shape[0]
                 ),
+                "raw_batches": int(
+                    positive[["root_seed", "deterministic_batch_id"]]
+                    .drop_duplicates()
+                    .shape[0]
+                ),
+                "excluded_zero_exposure_batch_cells": int(
+                    group["raw_player_game_exposures"].eq(0).sum()
+                ),
+                "batch_support_policy": RECTANGULAR_SUPPORT_POLICY,
                 "win_rate": rate,
                 "win_rate_per_attempt": rate,
                 "win_rate_given_completion": (
@@ -221,10 +247,12 @@ def _estimate_k(
                 "safety_limit_exposure_rate": safety_exposures / exposures,
                 "chance_delta": effect,
                 "batch_mcse": mcse,
-                "batch_interval_low": interval_low,
-                "batch_interval_high": interval_high,
+                "batch_mc_precision_interval_low": interval_low,
+                "batch_mc_precision_interval_high": interval_high,
                 "practical_delta": practical_delta,
-                "performance_classification": _classification(effect, mcse, practical_delta),
+                "practical_threshold_position": _practical_threshold_position(
+                    effect, practical_delta
+                ),
             }
         )
     return pd.DataFrame(rows)
@@ -274,6 +302,9 @@ def _estimate_across_k(
         "raw_completed_exposures",
         "raw_safety_limit_exposures",
         "raw_losses",
+        "raw_declared_batches",
+        "raw_batches",
+        "excluded_zero_exposure_batch_cells",
     )
     count_maps = {
         column: {
@@ -306,18 +337,19 @@ def _estimate_across_k(
                 "k_aggregation_method": cfg_method_name(weights, required_k),
                 "across_k_score": score,
                 "across_k_mcse": mcse,
-                "across_k_interval_low": score - critical * mcse,
-                "across_k_interval_high": score + critical * mcse,
+                "across_k_mc_precision_interval_low": score - critical * mcse,
+                "across_k_mc_precision_interval_high": score + critical * mcse,
                 "minimum_chance_delta": float(values[worst_position]),
                 "worst_k": required_k[worst_position],
                 "practical_delta": practical_delta,
-                "performance_classification": _classification(score, mcse, practical_delta),
+                "practical_threshold_position": _practical_threshold_position(
+                    score, practical_delta
+                ),
             }
         )
-        rows[-1]["safety_limit_exposure_rate"] = (
-            int(cast(int, rows[-1]["raw_safety_limit_exposures"]))
-            / int(cast(int, rows[-1]["raw_attempted_exposures"]))
-        )
+        rows[-1]["safety_limit_exposure_rate"] = int(
+            cast(int, rows[-1]["raw_safety_limit_exposures"])
+        ) / int(cast(int, rows[-1]["raw_attempted_exposures"]))
     return pd.DataFrame(rows)
 
 
@@ -344,6 +376,12 @@ def _build_matrix(frame: pd.DataFrame, strategies: np.ndarray) -> _BatchMatrix:
     exposures = exposures.reindex(index=batch_ids, columns=strategies)
     if wins.isna().any().any() or exposures.isna().any().any():
         raise ValueError("every root/k batch must contain every strategy exactly once")
+    zero_containing_vectors = exposures.eq(0).any(axis=1)
+    wins = wins.loc[~zero_containing_vectors]
+    exposures = exposures.loc[~zero_containing_vectors]
+    batch_ids = batch_ids[~zero_containing_vectors.to_numpy()]
+    if not len(batch_ids):
+        raise ValueError("root stability has no positive-exposure batch vectors")
     return _BatchMatrix(
         strategies=strategies,
         batch_ids=batch_ids,
@@ -548,7 +586,7 @@ def _root_bootstrap_top_n_inclusion(
                     "k_aggregation_method": cfg_method_name(weights, required_k),
                     "bootstrap_replicates": replicates,
                     "top_n_size": top_n,
-                    "top_n_inclusion_probability": float(count / replicates),
+                    "bootstrap_top_n_inclusion_frequency": float(count / replicates),
                 }
             )
     return pd.DataFrame(rows)
@@ -683,14 +721,18 @@ def _discrepancies(
                     "standardized_discrepancy": _safe_standardized(raw, expected),
                     "stability_threshold": threshold,
                     "threshold_fraction": abs(raw) / threshold,
-                    "root_a_classification": _at_str(a, strategy, "performance_classification"),
-                    "root_b_classification": _at_str(b, strategy, "performance_classification"),
-                    "combined_classification": _at_str(
-                        combined, strategy, "performance_classification"
+                    "root_a_practical_threshold_position": _at_str(
+                        a, strategy, "practical_threshold_position"
                     ),
-                    "classification_changed": (
-                        _at_str(a, strategy, "performance_classification")
-                        != _at_str(b, strategy, "performance_classification")
+                    "root_b_practical_threshold_position": _at_str(
+                        b, strategy, "practical_threshold_position"
+                    ),
+                    "combined_practical_threshold_position": _at_str(
+                        combined, strategy, "practical_threshold_position"
+                    ),
+                    "practical_threshold_position_changed": (
+                        _at_str(a, strategy, "practical_threshold_position")
+                        != _at_str(b, strategy, "practical_threshold_position")
                     ),
                 }
             )
@@ -721,14 +763,18 @@ def _discrepancies(
                 "standardized_discrepancy": _safe_standardized(raw, expected),
                 "stability_threshold": threshold,
                 "threshold_fraction": abs(raw) / threshold,
-                "root_a_classification": _at_str(a, strategy, "performance_classification"),
-                "root_b_classification": _at_str(b, strategy, "performance_classification"),
-                "combined_classification": _at_str(
-                    combined, strategy, "performance_classification"
+                "root_a_practical_threshold_position": _at_str(
+                    a, strategy, "practical_threshold_position"
                 ),
-                "classification_changed": (
-                    _at_str(a, strategy, "performance_classification")
-                    != _at_str(b, strategy, "performance_classification")
+                "root_b_practical_threshold_position": _at_str(
+                    b, strategy, "practical_threshold_position"
+                ),
+                "combined_practical_threshold_position": _at_str(
+                    combined, strategy, "practical_threshold_position"
+                ),
+                "practical_threshold_position_changed": (
+                    _at_str(a, strategy, "practical_threshold_position")
+                    != _at_str(b, strategy, "practical_threshold_position")
                 ),
             }
         )
@@ -745,7 +791,7 @@ def _joint_discrepancy_bootstrap(
     """Calibrate dependent discrepancy flags from joint batch-vector resampling."""
 
     replicates = cfg.screening.bootstrap_replicates
-    alpha = cfg.robustness.joint_discrepancy_alpha
+    reference_upper_tail_fraction = cfg.robustness.joint_discrepancy_alpha
     weights = _k_weights(cfg, required_k)
     strategies = np.sort(discrepancies["strategy"].astype(int).unique())
     matrices: dict[tuple[int, int], _BatchMatrix] = {}
@@ -804,11 +850,15 @@ def _joint_discrepancy_bootstrap(
         nonempty = [part for part in standardized_parts if part.size]
         maxima[replicate] = max((float(part.max()) for part in nonempty), default=0.0)
 
-    critical = float(np.quantile(maxima, 1.0 - alpha, method="higher"))
+    reference_quantile = float(
+        np.quantile(maxima, 1.0 - reference_upper_tail_fraction, method="higher")
+    )
     enriched = discrepancies.copy()
-    enriched["joint_max_abs_standardized_critical"] = critical
-    enriched["joint_discrepancy_flag"] = enriched["standardized_discrepancy"].abs() > critical
-    enriched["joint_adjusted_diagnostic_p"] = [
+    enriched["joint_max_abs_standardized_reference_quantile"] = reference_quantile
+    enriched["exceeds_joint_reference_quantile"] = (
+        enriched["standardized_discrepancy"].abs() > reference_quantile
+    )
+    enriched["joint_bootstrap_exceedance_frequency"] = [
         (1.0 + float(np.count_nonzero(maxima >= abs(value)))) / (replicates + 1.0)
         for value in enriched["standardized_discrepancy"].astype(float)
     ]
@@ -820,11 +870,15 @@ def _joint_discrepancy_bootstrap(
                 "root_a": root_a,
                 "root_b": root_b,
                 "bootstrap_replicates": replicates,
-                "diagnostic_family_alpha": alpha,
+                "joint_reference_upper_tail_fraction": reference_upper_tail_fraction,
                 "maximum_absolute_standardized_discrepancy": observed_max,
-                "joint_max_abs_standardized_critical": critical,
-                "joint_unusual": observed_max > critical,
-                "flagged_estimands": int(enriched["joint_discrepancy_flag"].sum()),
+                "joint_max_abs_standardized_reference_quantile": reference_quantile,
+                "observed_max_exceeds_joint_reference_quantile": (
+                    observed_max > reference_quantile
+                ),
+                "estimands_exceeding_joint_reference_quantile": int(
+                    enriched["exceeds_joint_reference_quantile"].sum()
+                ),
                 "interpretation": "reproducibility_diagnostic_not_root_random_effect",
             }
         ]
@@ -981,9 +1035,9 @@ def _half_drift(
                         "expected_mcse": expected,
                         "standardized_drift": _safe_standardized(raw, expected),
                         "threshold_fraction": abs(raw) / cfg.robustness.delta_seed_stability,
-                        "classification_changed": (
-                            _at_str(first, strategy, "performance_classification")
-                            != _at_str(second, strategy, "performance_classification")
+                        "practical_threshold_position_changed": (
+                            _at_str(first, strategy, "practical_threshold_position")
+                            != _at_str(second, strategy, "practical_threshold_position")
                         ),
                         "interpretation": "within_root_drift_not_additional_root",
                     }
@@ -1021,9 +1075,9 @@ def _half_drift(
                     "expected_mcse": expected,
                     "standardized_drift": _safe_standardized(raw, expected),
                     "threshold_fraction": abs(raw) / cfg.robustness.delta_seed_stability,
-                    "classification_changed": (
-                        _at_str(first_across, strategy, "performance_classification")
-                        != _at_str(second_across, strategy, "performance_classification")
+                    "practical_threshold_position_changed": (
+                        _at_str(first_across, strategy, "practical_threshold_position")
+                        != _at_str(second_across, strategy, "practical_threshold_position")
                     ),
                     "interpretation": "within_root_drift_not_additional_root",
                 }
@@ -1046,6 +1100,13 @@ def _write_frame(
 ) -> None:
     """Publish one hash-bound cross-seed artifact."""
 
+    frame = frame.copy()
+    if "strategy" in frame:
+        frame["strategy"] = canonical_strategy_ids(
+            frame["strategy"],
+            nullable=bool(frame["strategy"].isna().any()),
+            context=f"{operation} strategy",
+        )
     sidecar = make_artifact_sidecar(
         cfg,
         path,
@@ -1053,6 +1114,17 @@ def _write_frame(
         scope=ArtifactScope.CROSS_SEED,
         source_scope=ArtifactScope.BY_K,
         operation=operation,
+        method_contract={
+            "kind": "root_combination",
+            "procedure": operation,
+            "parameters": {
+                "method_version": ROOT_STABILITY_METHOD_VERSION,
+                "design_interpretation": "fixed_design_descriptive_reproducibility",
+                "interval_role": "monte_carlo_precision",
+                "root_population_inference": "none",
+                "multiple_testing_inference": "none",
+            },
+        },
         baseline="chance_1_over_k",
         weighted_quantity="win_rate_minus_chance",
         k_aggregation_method=k_aggregation_method,
@@ -1122,6 +1194,7 @@ def build_two_root_stability(
         outputs=list(artifacts.all_paths),
         cfg=cfg,
         stage="root_stability",
+        freshness_key=_root_stability_freshness_key(cfg),
         sidecar_artifacts=list(artifacts.all_paths),
     ):
         return artifacts
@@ -1170,7 +1243,7 @@ def build_two_root_stability(
             sources=[cell_map[(root, k)].path for root in root_pair],
             player_counts=[k],
             grouping_keys=["estimate_scope", "root_seed", "k", "strategy"],
-            uncertainty_method="within_root_and_combined_batch_ratio_mcse",
+            uncertainty_method="descriptive_fixed_design_batch_ratio_mc_precision",
         )
     _write_frame(
         cfg,
@@ -1180,7 +1253,7 @@ def build_two_root_stability(
         sources=sources,
         player_counts=required_k,
         grouping_keys=["estimate_scope", "root_seed", "strategy"],
-        uncertainty_method="independent_k_variance_sum",
+        uncertainty_method="descriptive_fixed_design_independent_k_mc_precision",
         k_aggregation_method=aggregation_method,
     )
     _write_frame(
@@ -1191,7 +1264,7 @@ def build_two_root_stability(
         sources=sources,
         player_counts=required_k,
         grouping_keys=["root_seed", "strategy"],
-        uncertainty_method="root_specific_joint_deterministic_batch_resampling",
+        uncertainty_method="descriptive_fixed_root_joint_batch_resampling",
         k_aggregation_method=aggregation_method,
     )
     diagnostic_frames = (
@@ -1200,14 +1273,14 @@ def build_two_root_stability(
             artifacts.discrepancies,
             "root_difference",
             ["estimand_scope", "k", "strategy"],
-            "joint_max_standardized_batch_resampling",
+            "descriptive_fixed_design_joint_max_batch_resampling",
         ),
         (
             joint_summary,
             artifacts.joint_discrepancy,
             "joint_discrepancy_diagnostic",
             ["root_a", "root_b"],
-            "joint_max_standardized_batch_resampling",
+            "descriptive_fixed_design_joint_max_batch_resampling",
         ),
         (
             rank,
@@ -1269,9 +1342,15 @@ def build_two_root_stability(
         outputs=list(artifacts.all_paths),
         cfg=cfg,
         stage="root_stability",
+        freshness_key=_root_stability_freshness_key(cfg),
         sidecar_artifacts=list(artifacts.all_paths),
     )
     return artifacts
 
 
-__all__ = ["RootBatchCell", "RootStabilityArtifacts", "build_two_root_stability"]
+__all__ = [
+    "ROOT_STABILITY_METHOD_VERSION",
+    "RootBatchCell",
+    "RootStabilityArtifacts",
+    "build_two_root_stability",
+]
