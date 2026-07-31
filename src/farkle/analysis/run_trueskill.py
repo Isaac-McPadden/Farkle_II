@@ -61,12 +61,15 @@ from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
     sha256_file,
     sidecar_path,
+    validate_artifact_sidecar,
+    write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code_identity
 from farkle.utils.parallel import resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
+from farkle.utils.release_identity import is_v3_config
 from farkle.utils.stage_completion import freshness_sha256
 from farkle.utils.strategy_ids import (
     STRATEGY_ID_ARROW_TYPE,
@@ -239,9 +242,7 @@ def _ratings_to_table(
             stats = RatingStats(mu, sigma)
         normalized_strategy = _normalize_strategy_id(k)
         if not normalized_strategy.isdigit():
-            raise ValueError(
-                f"TrueSkill strategy identifier is not canonical numeric ID: {k!r}"
-            )
+            raise ValueError(f"TrueSkill strategy identifier is not canonical numeric ID: {k!r}")
         columns["strategy"].append(
             canonical_strategy_id(
                 int(normalized_strategy),
@@ -402,7 +403,8 @@ def _ensure_auxiliary_rating_sidecars(
             ),
         ],
     )
-    ensure_artifact_sidecar_atomic(
+    _publish_or_validate_trueskill_auxiliary(
+        cfg,
         json_path,
         json_sidecar,
         expected={
@@ -420,7 +422,8 @@ def _ensure_auxiliary_rating_sidecars(
         operation="snapshot_sequential_rating_cell",
         columns=shard_schema.names,
     )
-    ensure_artifact_sidecar_atomic(
+    _publish_or_validate_trueskill_auxiliary(
+        cfg,
         shard_path,
         shard_sidecar,
         expected={
@@ -429,6 +432,30 @@ def _ensure_auxiliary_rating_sidecars(
             "player_counts": [cell.k],
         },
     )
+
+
+def _publish_or_validate_trueskill_auxiliary(
+    cfg: AppConfig,
+    path: Path,
+    metadata: ArtifactSidecar,
+    *,
+    expected: Mapping[str, Any],
+) -> None:
+    """Publish fresh worker outputs under v3; compatibility mode may backfill."""
+
+    if is_v3_config(cfg) and not sidecar_path(path).exists():
+        content = path.read_bytes()
+
+        def _write_auxiliary(staged: Path) -> None:
+            staged.write_bytes(content)
+
+        write_artifact_with_sidecar_atomic(
+            path,
+            metadata,
+            _write_auxiliary,
+        )
+        return
+    ensure_artifact_sidecar_atomic(path, metadata, expected=expected)
 
 
 # ---------- Per-N checkpointing ----------
@@ -1329,6 +1356,15 @@ def run_trueskill_root(cfg: AppConfig, *, force: bool = False) -> None:
     analysis_dir = cfg.trueskill_stage_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
     root_row_data_dir = _resolve_root_row_data_dir(cfg)
+    if is_v3_config(cfg) and root_row_data_dir is not None:
+        for players in sorted({int(k) for k in cfg.sim.n_players_list}):
+            validate_artifact_sidecar(
+                root_row_data_dir / "by_k" / f"{players}p" / cfg.curated_rows_name,
+                expected={
+                    "scope": ArtifactScope.BY_K.value,
+                    "operation": "curate_game_rows",
+                },
+            )
 
     env_kwargs: dict[str, float] = _coerce_trueskill_env_kwargs(
         {

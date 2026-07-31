@@ -339,9 +339,7 @@ def test_combine_rerun_replaces_partition_and_combined_manifests(tmp_results_dir
     cfg.config_sha = "sha-two"
     combine.run(cfg)
 
-    partition_manifest = (
-        cfg.combine_stage_dir / "partition_manifests" / "2p_partition.manifest.jsonl"
-    )
+    partition_manifest = cfg.by_k_dir("combine", 2) / "2p_partition.manifest.jsonl"
     combined_manifest = cfg.combined_manifest_path()
     partition_lines = partition_manifest.read_text(encoding="utf-8").splitlines()
     combined_lines = combined_manifest.read_text(encoding="utf-8").splitlines()

@@ -117,4 +117,7 @@ def test_raw_simulation_to_authenticated_report_via_normal_orchestration(
     elapsed = time.perf_counter() - started
     record_property("raw_simulation_to_report_runtime_seconds", round(elapsed, 3))
     print(f"raw simulation-to-report oracle runtime: {elapsed:.3f}s")
-    assert elapsed <= 90.0
+    # Authenticated-v3 revalidates every output sidecar, immutable manifest,
+    # source identity, and completion inventory on both the first run and the
+    # no-force replay.
+    assert elapsed <= 240.0

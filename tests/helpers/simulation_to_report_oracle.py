@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pyarrow.parquet as pq
 
@@ -16,7 +16,6 @@ from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
 from farkle.simulation import runner
 from farkle.simulation.game_profile import GameProfile
 from farkle.utils.artifact_contract import sha256_file, sidecar_path
-from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.stage_completion import CompletionState
 
 ORCHESTRATION_MANIFEST = "two_seed_pipeline_manifest.jsonl"
@@ -50,15 +49,15 @@ def _root_artifacts(context: SeedRunContext) -> list[Path]:
                 cfg.ingested_rows_curated(k),
                 cfg.manifest_for(k),
                 cfg.combined_rows_by_k(k),
-                cfg.combine_stage_dir / "partition_manifests" / f"{k}p_partition.manifest.jsonl",
+                cfg.by_k_dir("combine", k) / f"{k}p_partition.manifest.jsonl",
                 cfg.metrics_all_player_batch_path(k),
                 cfg.performance_by_k_path(k),
                 cfg.seat_batch_counts_path(k),
                 cfg.seat_effects_by_k_path(k),
                 cfg.seat_population_by_k_path(k),
                 cfg.game_stats_stage_dir / "by_k" / f"{k}p" / f"game_stats.{k}p.parquet",
-                cfg.game_stats_stage_dir / "across_k" / "rare_events_shards" / f"{k}p.parquet",
-                cfg.game_stats_stage_dir / "across_k" / "rare_events_shards" / f"{k}p.stats.json",
+                cfg.by_k_dir("game_stats", k) / "rare_events.parquet",
+                cfg.by_k_dir("game_stats", k) / "rare_events.stats.json",
                 cfg.trueskill_rating_path(k, root_seed=context.seed),
                 cfg.trueskill_rating_path(k, root_seed=context.seed).with_suffix(".json"),
                 cfg.trueskill_rating_path(k, root_seed=context.seed).parent / "artifact.parquet",
@@ -190,6 +189,12 @@ def assert_pipeline_health_and_simulation_lifecycle(
     assert health["status"] == "complete_success"
     assert health["config_sha"] == cfg.config_sha
     assert health["pair_public_config_sha256"] == pair_context.config.config_sha
+    release_audit = health["release_audit"]
+    assert release_audit["status"] == "passed"
+    assert release_audit["accepted_release_identity"] == [3, 2, 2, 2, 2, 2]
+    assert release_audit["failures"] == []
+    assert release_audit["release_eligible"] is False
+    assert set(release_audit["run_contexts"]) == {"root_11", "root_22", "pair"}
     expected_root_states = {
         "simulation_2p",
         "simulation_4p",
@@ -215,24 +220,10 @@ def assert_pipeline_health_and_simulation_lifecycle(
             stamp = json.loads(
                 runner.simulation_done_path(context.config, k).read_text(encoding="utf-8")
             )
-            assert stamp["schema_version"] == 4
             assert stamp["lifecycle_contract_version"] == 1
-            assert stamp["completion_state"] == CompletionState.COMPLETE_VALID.value
-            assert stamp["status"] == "success"
-            assert stamp["config_sha"] == context.config.config_sha
-            assert stamp["run_lineage_sha256"] == context.config._run_lineage_sha256
-            assert stamp["game_profile_sha256"] == profile.sha256
-            assert stamp["outcome_schema_version"] == OUTCOME_SCHEMA_VERSION
-            assert stamp["tournament_method_version"] == TOURNAMENT_METHOD_VERSION
-            assert len(stamp["stage_config_sha"]) == 64
-            assert len(stamp["freshness_sha256"]) == 64
+            assert stamp["state"] == CompletionState.COMPLETE_VALID.value
             assert len(stamp["stage_identity_sha256"]) == 64
-            for role in ("input", "output"):
-                paths = [Path(value) for value in cast(list[str], stamp[f"{role}s"])]
-                identities = cast(list[dict[str, Any]], stamp[f"{role}_identities"])
-                assert len(paths) == len(identities)
-                for path, identity in zip(paths, identities, strict=True):
-                    _assert_identity(identity, path)
+            assert stamp["outputs"]
 
     pair_health = health["pair_workflow"]
     assert pair_health["status"] == "complete"

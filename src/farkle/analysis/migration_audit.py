@@ -82,7 +82,7 @@ def run(cfg: AppConfig) -> Path:
     output = cfg.migration_report_path()
     ignored = inventory(cfg)
     payload = {
-        "migration_report_version": 2,
+        "migration_report_version": 3,
         "scan_root": str(cfg.results_root),
         "ignored_artifact_count": len(ignored),
         "ignored_artifacts": ignored,

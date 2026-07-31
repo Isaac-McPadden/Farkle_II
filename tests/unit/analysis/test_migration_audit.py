@@ -22,6 +22,7 @@ def test_migration_audit_inventories_retired_files_without_reading_or_deleting(
     output = migration_audit.run(cfg)
     payload = json.loads(output.read_text(encoding="utf-8"))
 
+    assert payload["migration_report_version"] == 3
     assert payload["ignored_artifact_count"] == 1
     assert payload["ignored_artifacts"][0]["path"] == "archive/metrics_weighted.parquet"
     assert payload["artifacts_deleted"] is False

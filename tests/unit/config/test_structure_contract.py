@@ -5,7 +5,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from farkle.config import AppConfig, ArtifactScope, IOConfig, load_app_config
+from farkle.config import (
+    AppConfig,
+    ArtifactContractConfig,
+    ArtifactScope,
+    IOConfig,
+    load_app_config,
+)
 
 
 @pytest.mark.parametrize(
@@ -14,7 +20,64 @@ from farkle.config import AppConfig, ArtifactScope, IOConfig, load_app_config
 )
 def test_active_configuration_examples_use_the_current_contract(filename: str) -> None:
     config_path = Path(__file__).resolve().parents[3] / "configs" / filename
-    load_app_config(config_path)
+    cfg = load_app_config(config_path)
+    cfg.validate_statistical_contract(
+        require_two_roots=filename in {"farkle_mega_config.yaml", "fast_config.yaml"}
+    )
+    assert (
+        cfg.artifact_contract.artifact_contract_version,
+        cfg.rng.scheme_version,
+        2,
+        cfg.artifact_contract.schema_version,
+        cfg.artifact_contract.estimand_version,
+        cfg.artifact_contract.conditioning_version,
+    ) == (3, 2, 2, 2, 2, 2)
+
+
+def test_public_artifact_contract_defaults_and_freshness_use_exact_release_identity() -> None:
+    contract = ArtifactContractConfig()
+    cfg = AppConfig()
+
+    assert (
+        contract.artifact_contract_version,
+        cfg.rng.scheme_version,
+        cfg.freshness_key()["outcome_schema_version"],
+        contract.schema_version,
+        contract.estimand_version,
+        contract.conditioning_version,
+    ) == (3, 2, 2, 2, 2, 2)
+    assert {
+        key: cfg.freshness_key()[key]
+        for key in (
+            "artifact_contract_version",
+            "rng_scheme_version",
+            "outcome_schema_version",
+            "schema_version",
+            "estimand_version",
+            "conditioning_version",
+        )
+    } == {
+        "artifact_contract_version": 3,
+        "rng_scheme_version": 2,
+        "outcome_schema_version": 2,
+        "schema_version": 2,
+        "estimand_version": 2,
+        "conditioning_version": 2,
+    }
+
+
+def test_public_validation_lock_rejects_v2_and_mixed_release_identities() -> None:
+    cfg = AppConfig()
+    cfg.artifact_contract.artifact_contract_version = 2
+    with pytest.raises(ValueError, match="must be exactly 3"):
+        cfg.validate_statistical_contract()
+
+    cfg.artifact_contract.artifact_contract_version = 3
+    for field in ("schema_version", "estimand_version", "conditioning_version"):
+        setattr(cfg.artifact_contract, field, 1)
+        with pytest.raises(ValueError, match="requires estimand_version=2"):
+            cfg.validate_statistical_contract()
+        setattr(cfg.artifact_contract, field, 2)
 
 
 @pytest.mark.parametrize(

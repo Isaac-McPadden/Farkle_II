@@ -117,6 +117,8 @@ def _publish_scores(
             for index, strategy in enumerate(strategies)
         ]
     )
+    if pd.api.types.is_integer_dtype(score_frame["strategy"]):
+        score_frame["strategy"] = score_frame["strategy"].astype("Int32")
     score_path = cfg.root_combined_performance_across_k_path()
     score_sidecar = make_artifact_sidecar(
         cfg,
@@ -193,6 +195,8 @@ def _publish_execution_inputs(
                     }
                 )
     counts = pd.DataFrame(rows)
+    for column in ("strategy_a", "strategy_b", "seat1_strategy", "seat2_strategy"):
+        counts[column] = counts[column].astype("Int32")
     counts_path = cfg.h2h_order_counts_path()
     counts_sidecar = make_artifact_sidecar(
         cfg,
@@ -484,8 +488,8 @@ def test_identifier_renaming_does_not_change_graph_structure(tmp_path: Path) -> 
 
 
 def test_relabelled_permuted_inference_and_dominance_are_invariant(tmp_path: Path) -> None:
-    first = ("A", "B", "C", "D")
-    renamed = ("W", "X", "Y", "Z")
+    first = (1, 2, 3, 4)
+    renamed = (11, 12, 13, 14)
     mapping = dict(zip(first, renamed, strict=True))
     first_decisions = _cycle_decisions(first)
     renamed_decisions = _cycle_decisions(renamed)
@@ -511,13 +515,13 @@ def test_relabelled_permuted_inference_and_dominance_are_invariant(tmp_path: Pat
 
     def mapped_decisions(
         path: Path,
-        rename: dict[str, str] | None = None,
-    ) -> set[tuple[str, str, str]]:
+        rename: dict[int, int] | None = None,
+    ) -> set[tuple[int, int, str]]:
         frame = pq.read_table(path).to_pandas()
         return {
             (
-                (rename or {}).get(str(row.strategy_a), str(row.strategy_a)),
-                (rename or {}).get(str(row.strategy_b), str(row.strategy_b)),
+                (rename or {}).get(int(row.strategy_a), int(row.strategy_a)),
+                (rename or {}).get(int(row.strategy_b), int(row.strategy_b)),
                 str(row.decision_class),
             )
             for row in frame.itertuples()
@@ -529,16 +533,19 @@ def test_relabelled_permuted_inference_and_dominance_are_invariant(tmp_path: Pat
     first_edges = pq.read_table(first_dominance.edges).to_pandas()
     renamed_edges = pq.read_table(renamed_dominance.edges).to_pandas()
     assert {
-        (row.graph_type, mapping[row.winner], mapping[row.loser])
+        (row.graph_type, mapping[int(row.winner)], mapping[int(row.loser)])
         for row in first_edges.itertuples()
-    } == {(row.graph_type, row.winner, row.loser) for row in renamed_edges.itertuples()}
+    } == {
+        (row.graph_type, int(row.winner), int(row.loser))
+        for row in renamed_edges.itertuples()
+    }
     first_fronts = pq.read_table(first_dominance.fronts).to_pandas()
     renamed_fronts = pq.read_table(renamed_dominance.fronts).to_pandas()
     assert {
-        mapping[row.strategy]: (row.practical_front, row.statistical_front)
+        mapping[int(row.strategy)]: (row.practical_front, row.statistical_front)
         for row in first_fronts.itertuples()
     } == {
-        row.strategy: (row.practical_front, row.statistical_front)
+        int(row.strategy): (row.practical_front, row.statistical_front)
         for row in renamed_fronts.itertuples()
     }
     first_cycles = pq.read_table(first_dominance.cycles).to_pandas()
@@ -546,11 +553,17 @@ def test_relabelled_permuted_inference_and_dominance_are_invariant(tmp_path: Pat
     assert {
         (
             row.graph_type,
-            tuple(mapping[item] for item in json.loads(row.representative_shortest_cycle_json)),
+            tuple(
+                mapping[int(item)]
+                for item in json.loads(row.representative_shortest_cycle_json)
+            ),
         )
         for row in first_cycles.itertuples()
     } == {
-        (row.graph_type, tuple(json.loads(row.representative_shortest_cycle_json)))
+        (
+            row.graph_type,
+            tuple(int(item) for item in json.loads(row.representative_shortest_cycle_json)),
+        )
         for row in renamed_cycles.itertuples()
     }
     first_summary = json.loads(first_dominance.summary.read_text(encoding="utf-8"))

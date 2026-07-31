@@ -10,6 +10,7 @@ from farkle.analysis import run_hgb as _hgb
 from farkle.analysis import stage_logger
 from farkle.config import AppConfig
 from farkle.utils.artifact_contract import validate_artifact_sidecar
+from farkle.utils.release_identity import is_v3_config
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 LOGGER = logging.getLogger(__name__)
@@ -67,6 +68,11 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             paths=[] if manifest_path is None else [str(manifest_path)],
         )
         return
+    if is_v3_config(cfg):
+        validate_artifact_sidecar(
+            manifest_path,
+            expected={"operation": "publish_strategy_manifest"},
+        )
     inputs = [*metrics_paths, manifest_path]
     outputs = [
         json_out,

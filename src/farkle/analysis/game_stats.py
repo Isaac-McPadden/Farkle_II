@@ -41,7 +41,7 @@ import json
 import logging
 import math
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from concurrent.futures import FIRST_EXCEPTION, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -65,10 +65,13 @@ from farkle.utils.artifact_contract import (
     ensure_artifact_sidecar_atomic,
     make_artifact_sidecar,
     sidecar_path,
+    validate_artifact_sidecar,
+    write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_atomic
 from farkle.utils.parallel import normalize_n_jobs, resolve_mp_context
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
+from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import n_players_from_schema
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.types import Compression
@@ -362,6 +365,23 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             "no curated parquet files found", analysis_dir=str(cfg.analysis_dir)
         )
         return
+    if is_v3_config(cfg):
+        for _, path in per_n_inputs:
+            validate_artifact_sidecar(
+                path,
+                expected={
+                    "scope": ArtifactScope.BY_K.value,
+                    "operation": "curate_game_rows",
+                },
+            )
+        if combined_path.exists():
+            validate_artifact_sidecar(
+                combined_path,
+                expected={
+                    "scope": ArtifactScope.CONCAT_KS.value,
+                    "operation": "concatenate",
+                },
+            )
 
     missing_k = sorted(set(configured_k_values) - set(input_by_k))
     if missing_k:
@@ -512,6 +532,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             sidecar_path(rare_events_output).unlink(missing_ok=True)
             rare_event_rows = _rare_event_flags(
                 per_n_inputs,
+                cfg=cfg,
                 thresholds=resolved_thresholds,
                 target_score=resolved_target_score,
                 output_path=rare_events_output,
@@ -543,6 +564,10 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         per_n_inputs=per_n_inputs,
         output_path=rare_events_output,
         details_path=rare_events_details_output if write_details else None,
+        publish_v3_missing=(
+            not rare_events_summary_data_up_to_date
+            or (write_details and not rare_events_details_data_up_to_date)
+        ),
     )
     if not rare_events_summary_contract_up_to_date:
         write_stage_done(
@@ -670,13 +695,17 @@ def _compute_k_game_stats(
 
         for strategy_col in strategy_cols:
             strategies = df[strategy_col]
-            for strategy, group in pd.DataFrame(
-                {
-                    "strategy": strategies,
-                    "completed": completed,
-                    "safety_limit": safety_limit,
-                }
-            ).dropna(subset=["strategy"]).groupby("strategy", observed=True, sort=False):
+            for strategy, group in (
+                pd.DataFrame(
+                    {
+                        "strategy": strategies,
+                        "completed": completed,
+                        "safety_limit": safety_limit,
+                    }
+                )
+                .dropna(subset=["strategy"])
+                .groupby("strategy", observed=True, sort=False)
+            ):
                 counts = outcome_counts.setdefault(strategy, [0, 0, 0])
                 counts[0] += int(group.shape[0])
                 counts[1] += int(group["completed"].sum())
@@ -867,6 +896,7 @@ def _compute_k_game_stats(
         done_path,
         inputs=[input_path],
         outputs=[artifact_path],
+        cfg=cfg,
         sidecar_artifacts=[artifact_path],
         config_sha=config_sha,
         stage="game_stats",
@@ -957,6 +987,7 @@ def _aggregate_completed_k_game_stats(
             done_path,
             inputs=[],
             outputs=[artifact_path],
+            cfg=cfg,
             stage="game_stats",
             stage_config_sha=stage_config_sha,
             cache_key_version=cache_key_version,
@@ -975,6 +1006,7 @@ def _aggregate_completed_k_game_stats(
         combined_stamp,
         inputs=completed_paths,
         outputs=outputs,
+        cfg=cfg,
         stage="game_stats",
         stage_config_sha=stage_config_sha,
         cache_key_version=cache_key_version,
@@ -1042,9 +1074,7 @@ def _aggregate_completed_k_game_stats(
         margin_df["attempted_observations"] = margin_df["observations"]
         margin_df["observations"] = margin_df["margin_observations"]
         margin_df = margin_df.drop(columns=["margin_observations"])
-        margin_df["observational_unit"] = (
-            "seated_strategy_exposure_per_completed_game"
-        )
+        margin_df["observational_unit"] = "seated_strategy_exposure_per_completed_game"
     else:
         margin_df = margin_df.iloc[0:0].copy()
     _write_scoped_game_stats(
@@ -1153,8 +1183,7 @@ def _aggregate_completed_k_game_stats(
             1, "observational_unit", "seated_strategy_exposure_per_completed_game"
         )
         combined_margin["safety_limit_observation_rate"] = (
-            combined_margin["safety_limit_observations"]
-            / combined_margin["attempted_observations"]
+            combined_margin["safety_limit_observations"] / combined_margin["attempted_observations"]
         )
     else:
         combined_margin = pd.DataFrame(columns=["summary_level", "strategy", "observations"])
@@ -1175,6 +1204,7 @@ def _aggregate_completed_k_game_stats(
         combined_stamp,
         inputs=completed_paths,
         outputs=outputs,
+        cfg=cfg,
         config_sha=config_sha,
         stage="game_stats",
         stage_config_sha=stage_config_sha,
@@ -1787,6 +1817,7 @@ def _rare_event_summary(
 def _rare_event_flags(
     per_n_inputs: Sequence[tuple[int, Path]],
     *,
+    cfg: AppConfig | None = None,
     thresholds: Sequence[int],
     target_score: int,
     output_path: Path,
@@ -1830,6 +1861,7 @@ def _rare_event_flags(
             stage="game_stats",
             stage_config_sha=resume_sha,
             cache_key_version=cache_key_version,
+            cfg=cfg,
         ):
             continue
         stale_inputs.append((n_players, path, shard_path, stats_path, done_path))
@@ -1863,6 +1895,7 @@ def _rare_event_flags(
                     run_config_sha=config_sha,
                     cache_key_version=cache_key_version,
                     progress_logging=progress_logging,
+                    publish_completion=not is_v3_config(cfg),
                 )
         else:
             with ProcessPoolExecutor(max_workers=worker_count) as executor:
@@ -1882,6 +1915,7 @@ def _rare_event_flags(
                         run_config_sha=config_sha,
                         cache_key_version=cache_key_version,
                         progress_logging=progress_logging,
+                        publish_completion=not is_v3_config(cfg),
                     )
                     for n_players, path, shard_path, stats_path, done_path in stale_inputs
                 ]
@@ -1957,9 +1991,7 @@ def _rare_event_flags(
             completed_observations = sums["completed_observations"]
             for flag in flags[1:]:
                 summary_row[flag] = (
-                    sums[flag] / completed_observations
-                    if completed_observations
-                    else float("nan")
+                    sums[flag] / completed_observations if completed_observations else float("nan")
                 )
             summary_rows.append(summary_row)
 
@@ -1983,9 +2015,7 @@ def _rare_event_flags(
             completed_observations = sums["completed_observations"]
             for flag in flags[1:]:
                 summary_row[flag] = (
-                    sums[flag] / completed_observations
-                    if completed_observations
-                    else float("nan")
+                    sums[flag] / completed_observations if completed_observations else float("nan")
                 )
             summary_rows.append(summary_row)
 
@@ -2034,10 +2064,11 @@ def _rare_event_shard_paths(output_path: Path, n_players: int) -> tuple[Path, Pa
     Returns:
         Tuple of ``(shard_path, stats_path, done_path)``.
     """
-    shard_dir = output_path.parent / f"{output_path.stem}_shards"
-    shard_path = shard_dir / f"{n_players}p.parquet"
-    stats_path = shard_dir / f"{n_players}p.stats.json"
-    done_path = shard_dir / f"{n_players}p.done.json"
+    stage_dir = output_path.parents[1]
+    shard_dir = stage_dir / ArtifactScope.BY_K.value / f"{n_players}p"
+    shard_path = shard_dir / "rare_events.parquet"
+    stats_path = shard_dir / "rare_events.stats.json"
+    done_path = shard_dir / "rare_events.done.json"
     return shard_path, stats_path, done_path
 
 
@@ -2047,6 +2078,7 @@ def _ensure_rare_event_sidecars(
     per_n_inputs: Sequence[tuple[int, Path]],
     output_path: Path,
     details_path: Path | None,
+    publish_v3_missing: bool = False,
 ) -> list[Path]:
     """Publish missing contracts for resumable rare-event artifacts."""
 
@@ -2078,7 +2110,8 @@ def _ensure_rare_event_sidecars(
             required_player_counts=[n_players],
             missing_cell_policy="fail",
         )
-        ensure_artifact_sidecar_atomic(
+        _publish_or_validate_rare_event_sidecar(
+            cfg,
             shard_path,
             shard_sidecar,
             expected={
@@ -2086,6 +2119,7 @@ def _ensure_rare_event_sidecars(
                 "operation": "summarize_rare_events_by_k",
                 "player_counts": [n_players],
             },
+            publish_v3_missing=publish_v3_missing,
         )
 
         stats_payload = json.loads(stats_path.read_text(encoding="utf-8"))
@@ -2111,7 +2145,8 @@ def _ensure_rare_event_sidecars(
             required_player_counts=[n_players],
             missing_cell_policy="fail",
         )
-        ensure_artifact_sidecar_atomic(
+        _publish_or_validate_rare_event_sidecar(
+            cfg,
             stats_path,
             stats_sidecar,
             expected={
@@ -2119,6 +2154,7 @@ def _ensure_rare_event_sidecars(
                 "operation": "checkpoint_rare_event_counts_by_k",
                 "player_counts": [n_players],
             },
+            publish_v3_missing=publish_v3_missing,
         )
         if not stage_is_up_to_date(
             done_path,
@@ -2152,8 +2188,7 @@ def _ensure_rare_event_sidecars(
         uncertainty_method="descriptive",
         replication_unit="declared_in_observational_unit_column",
         conditioning=(
-            "multi_target_on_all_attempts; margin_flags_conditioned_on_"
-            f"{_COMPLETED_CONDITIONING}"
+            f"multi_target_on_all_attempts; margin_flags_conditioned_on_{_COMPLETED_CONDITIONING}"
         ),
         consistency_columns=output_schema.names,
         source_artifacts=[*shard_paths, *stats_paths],
@@ -2162,7 +2197,8 @@ def _ensure_rare_event_sidecars(
         required_player_counts=player_counts,
         missing_cell_policy="fail",
     )
-    ensure_artifact_sidecar_atomic(
+    _publish_or_validate_rare_event_sidecar(
+        cfg,
         output_path,
         output_sidecar,
         expected={
@@ -2170,6 +2206,7 @@ def _ensure_rare_event_sidecars(
             "operation": "combine_rare_event_shards",
             "player_counts": player_counts,
         },
+        publish_v3_missing=publish_v3_missing,
     )
 
     artifacts = [output_path, *shard_paths, *stats_paths]
@@ -2197,7 +2234,8 @@ def _ensure_rare_event_sidecars(
             required_player_counts=player_counts,
             missing_cell_policy="fail",
         )
-        ensure_artifact_sidecar_atomic(
+        _publish_or_validate_rare_event_sidecar(
+            cfg,
             details_path,
             details_sidecar,
             expected={
@@ -2205,9 +2243,39 @@ def _ensure_rare_event_sidecars(
                 "operation": "enumerate_rare_event_details",
                 "player_counts": player_counts,
             },
+            publish_v3_missing=publish_v3_missing,
         )
         artifacts.append(details_path)
     return artifacts
+
+
+def _publish_or_validate_rare_event_sidecar(
+    cfg: AppConfig,
+    path: Path,
+    metadata: Any,
+    *,
+    expected: Mapping[str, Any],
+    publish_v3_missing: bool,
+) -> None:
+    """Publish only freshly rebuilt v3 bytes; never promote a cached v2 artifact."""
+
+    if is_v3_config(cfg) and not sidecar_path(path).exists():
+        if not publish_v3_missing:
+            raise RuntimeError(
+                f"refusing to promote cached bytes into artifact contract v3: {path}"
+            )
+        content = path.read_bytes()
+
+        def _write_rebuilt(staged: Path) -> None:
+            staged.write_bytes(content)
+
+        write_artifact_with_sidecar_atomic(
+            path,
+            metadata,
+            _write_rebuilt,
+        )
+        return
+    ensure_artifact_sidecar_atomic(path, metadata, expected=expected)
 
 
 def _rare_event_schema(
@@ -2311,6 +2379,7 @@ def _build_rare_event_summary_shard(
     run_config_sha: str | None,
     cache_key_version: int,
     progress_logging: ProgressLogConfig | None = None,
+    publish_completion: bool = True,
 ) -> None:
     """Build one player-count rare-event shard and its summary counters.
 
@@ -2411,9 +2480,7 @@ def _build_rare_event_summary_shard(
                 global_sums["safety_limit_observations"] += int(safety_limit.sum())
                 global_sums["multi_reached_target"] += int(multi_target.sum())
                 for thr in thresholds:
-                    global_sums[f"margin_le_{thr}"] += int(
-                        flag_series[f"margin_le_{thr}"].sum()
-                    )
+                    global_sums[f"margin_le_{thr}"] += int(flag_series[f"margin_le_{thr}"].sum())
 
                 exposure_base = df[strategy_cols].copy()
                 exposure_base["completed_observations"] = completed.astype(np.uint8)
@@ -2490,9 +2557,7 @@ def _build_rare_event_summary_shard(
 
                 per_game_data: dict[str, ArrowColumnData] = {
                     "summary_level": np.full(count, "game", dtype=object),
-                    "observational_unit": np.full(
-                        count, _ATTEMPTED_STRATEGY_UNIT, dtype=object
-                    ),
+                    "observational_unit": np.full(count, _ATTEMPTED_STRATEGY_UNIT, dtype=object),
                     "strategy": strategy_values,
                     "n_players": np.full(count, n_players, dtype=player_dtype),
                     "termination_status": melted["termination_status"].astype(str).to_numpy(),
@@ -2502,11 +2567,14 @@ def _build_rare_event_summary_shard(
                         dtype=flag_dtype
                     ),
                     "observations": np.ones(count, dtype=obs_dtype),
-                    "completed_observations": melted["termination_status"].eq("completed").to_numpy(
-                    ).astype(obs_dtype, copy=False),
-                    "safety_limit_observations": melted["termination_status"].eq(
-                        "safety_limit"
-                    ).to_numpy().astype(obs_dtype, copy=False),
+                    "completed_observations": melted["termination_status"]
+                    .eq("completed")
+                    .to_numpy()
+                    .astype(obs_dtype, copy=False),
+                    "safety_limit_observations": melted["termination_status"]
+                    .eq("safety_limit")
+                    .to_numpy()
+                    .astype(obs_dtype, copy=False),
                 }
                 for thr in thresholds:
                     flag_name = f"margin_le_{thr}"
@@ -2543,15 +2611,16 @@ def _build_rare_event_summary_shard(
     stats_path.parent.mkdir(parents=True, exist_ok=True)
     with atomic_path(str(stats_path)) as tmp_path:
         Path(tmp_path).write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-    write_stage_done(
-        done_path,
-        inputs=[input_path],
-        outputs=[shard_path, stats_path],
-        config_sha=run_config_sha,
-        stage="game_stats",
-        stage_config_sha=config_sha,
-        cache_key_version=cache_key_version,
-    )
+    if publish_completion:
+        write_stage_done(
+            done_path,
+            inputs=[input_path],
+            outputs=[shard_path, stats_path],
+            config_sha=run_config_sha,
+            stage="game_stats",
+            stage_config_sha=config_sha,
+            cache_key_version=cache_key_version,
+        )
 
 
 def _rare_event_details(
@@ -2677,9 +2746,7 @@ def _rare_event_details(
                 count = _strategy_key_to_int(melted.shape[0], field="observations")
                 per_game_data: dict[str, ArrowColumnData] = {
                     "summary_level": np.full(count, "game", dtype=object),
-                    "observational_unit": np.full(
-                        count, _ATTEMPTED_STRATEGY_UNIT, dtype=object
-                    ),
+                    "observational_unit": np.full(count, _ATTEMPTED_STRATEGY_UNIT, dtype=object),
                     "strategy": strategy_values,
                     "n_players": np.full(count, n_players, dtype=player_dtype),
                     "termination_status": melted["termination_status"].astype(str).to_numpy(),
@@ -2693,9 +2760,10 @@ def _rare_event_details(
                     .eq("completed")
                     .to_numpy()
                     .astype(obs_dtype, copy=False),
-                    "safety_limit_observations": melted["termination_status"].eq(
-                        "safety_limit"
-                    ).to_numpy().astype(obs_dtype, copy=False),
+                    "safety_limit_observations": melted["termination_status"]
+                    .eq("safety_limit")
+                    .to_numpy()
+                    .astype(obs_dtype, copy=False),
                 }
                 for thr in thresholds:
                     per_game_data[f"margin_le_{thr}"] = melted[f"margin_le_{thr}"].to_numpy(
@@ -2708,8 +2776,7 @@ def _rare_event_details(
                     progress_logger.maybe_log(
                         processed_rows,
                         detail=(
-                            f"{batch_idx:,} batches, "
-                            f"{detail_rows_written:,} detail rows written"
+                            f"{batch_idx:,} batches, {detail_rows_written:,} detail rows written"
                         ),
                         extra={
                             "stage": "game_stats",

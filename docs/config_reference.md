@@ -43,7 +43,11 @@ an actionable replacement message and are never reinterpreted.
 - `batching.target_batches = 100`
 - `batching.min_shuffles_per_batch >= 30`
 - `k_aggregation.method` is `equal-k` or `declared-mapping`
-- `artifact_contract.artifact_contract_version = 2`
+- authenticated release identity:
+  `artifact_contract.artifact_contract_version = 3`,
+  `schema_version = 2`, `estimand_version = 2`, and
+  `conditioning_version = 2`
+- `rng.scheme_version = 2` and outcome schema 2 are required by that identity
 
 For `declared-mapping`, `k_aggregation.k_weights` must be positive, sum to
 one, and cover the complete configured k support. Equal-k is the canonical
@@ -144,8 +148,16 @@ k_aggregation:
   method: equal-k
 
 artifact_contract:
-  artifact_contract_version: 2
+  artifact_contract_version: 3
+  schema_version: 2
+  estimand_version: 2
+  conditioning_version: 2
 ```
+
+The public v3 switch intentionally invalidates all contract-v2 artifacts,
+sidecars, completion stamps, and mixed v2/v3 descendant graphs. Release
+workflows must use a new output prefix; old bytes cannot be promoted by adding
+or replacing sidecars.
 
 ```powershell
 farkle --config configs/fast_config.yaml --set sim.n_jobs=8 run

@@ -12,8 +12,9 @@ import pyarrow.parquet as pq
 
 from farkle.config import AppConfig, ArtifactScope
 from farkle.game.engine import TerminationStatus
-from farkle.utils.artifact_contract import make_artifact_sidecar
+from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.manifest import iter_manifest
+from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.strategy_ids import STRATEGY_ID_ARROW_TYPE
@@ -369,6 +370,14 @@ def build_all_player_batch_metrics(
     """Build the canonical unconditional player-exposure artifact for one k."""
 
     source = cfg.ingested_rows_curated(k)
+    if is_v3_config(cfg):
+        validate_artifact_sidecar(
+            source,
+            expected={
+                "scope": ArtifactScope.BY_K.value,
+                "operation": "curate_game_rows",
+            },
+        )
     if not source.exists():
         raise FileNotFoundError(source)
     output = cfg.metrics_all_player_batch_path(k)

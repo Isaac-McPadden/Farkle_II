@@ -23,7 +23,11 @@ from tests.helpers.raw_simulation_oracle import (
 from farkle.orchestration.run_contexts import SeedRunContext, load_run_context
 from farkle.simulation import runner
 from farkle.simulation.game_profile import GameProfile
-from farkle.utils.artifact_contract import sha256_file
+from farkle.utils.artifact_contract import sha256_file, sidecar_path
+from farkle.utils.authenticated_contract import (
+    load_authenticated_sidecar,
+    load_immutable_manifest_sidecar,
+)
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.random import (
     RNG_SCHEME_VERSION,
@@ -309,42 +313,46 @@ def _assert_authenticated_simulations(
             assert runner.simulation_is_complete(context.config, k)
             done_path = runner.simulation_done_path(context.config, k)
             stamp = json.loads(done_path.read_text(encoding="utf-8"))
-            assert stamp["schema_version"] == 4
             assert stamp["lifecycle_contract_version"] == 1
-            assert stamp["stage"] == "simulation"
-            assert stamp["status"] == "success"
-            assert stamp["completion_state"] == CompletionState.COMPLETE_VALID.value
-            assert stamp["config_sha"] == context.config.config_sha
-            assert stamp["run_lineage_sha256"] == context.config._run_lineage_sha256
-            assert len(stamp["stage_config_sha"]) == 64
-            assert len(stamp["freshness_sha256"]) == 64
+            assert stamp["state"] == CompletionState.COMPLETE_VALID.value
             assert len(stamp["stage_identity_sha256"]) == 64
-            assert stamp["freshness_key"]["game_profile_sha256"] == profile_sha256
-            assert stamp["game_profile_sha256"] == profile_sha256
-            assert stamp["rng_scheme_version"] == RNG_SCHEME_VERSION
-            assert stamp["outcome_schema_version"] == OUTCOME_SCHEMA_VERSION
-            assert stamp["tournament_method_version"] == TOURNAMENT_METHOD_VERSION
-            assert stamp["n_players"] == k
-            assert stamp["num_shuffles"] == 2
-            assert stamp["shuffles_per_batch"] == 1
-            assert stamp["n_strategies"] == 4
-            assert stamp["code_identity"] == persisted_context["code_identity"]
-
-            for role in ("input_identities", "output_identities"):
-                identities = stamp[role]
-                assert identities
-                for identity, raw_path in zip(
-                    identities,
-                    stamp["inputs" if role == "input_identities" else "outputs"],
-                    strict=True,
-                ):
-                    path = Path(raw_path).resolve()
-                    assert _is_relative_to(path, context.results_root.resolve())
-                    assert identity["kind"] == "file"
+            assert stamp["outputs"]
+            for output in stamp["outputs"]:
+                identity = output["artifact"] or output["manifest"]
+                location = identity["location"]
+                assert location["stage_key"] == "simulation"
+                assert location["scope"] == "diagnostics"
+                path = context.results_root / location["relative_path"]
+                assert path.is_file()
+                assert sidecar_path(path).is_file()
+                assert output["sidecar_sha256"] == sha256_file(sidecar_path(path))
+                if output["artifact"] is not None:
                     assert identity["byte_length"] == path.stat().st_size
                     assert identity["content_sha256"] == sha256_file(path)
-                    assert len(identity["content_sha256"]) == 64
-                    assert identity["sidecar_sha256"] is None
+                    authenticated = load_authenticated_sidecar(path)
+                    versions = authenticated.versions
+                    assert (
+                        versions.artifact_contract_version,
+                        versions.rng_scheme_version,
+                        versions.outcome_schema_version,
+                        versions.schema_version,
+                        versions.estimand_version,
+                        versions.conditioning_version,
+                    ) == (3, 2, 2, 2, 2, 2)
+                    assert (
+                        versions.method_versions["tournament_method_version"]
+                        == TOURNAMENT_METHOD_VERSION
+                    )
+                    assert (
+                        authenticated.stage_identity.immutable_design_identities[
+                            "game_profile_sha256"
+                        ]
+                        == profile_sha256
+                    )
+                else:
+                    manifest = load_immutable_manifest_sidecar(path)
+                    assert identity["manifest_sha256"] == sha256_file(path)
+                    assert manifest.summary.entry_count == identity["summary"]["entry_count"]
 
             workload = json.loads(
                 (context.config.n_dir(k) / "simulation_workload_plan.json").read_text(

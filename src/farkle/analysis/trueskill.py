@@ -16,6 +16,7 @@ from farkle.analysis.trueskill_screening import (
 )
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import validate_artifact_sidecar
+from farkle.utils.release_identity import is_v3_config
 
 if TYPE_CHECKING:
     from farkle.orchestration.run_contexts import SeedRunContext
@@ -35,6 +36,14 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     if not curated_parquet.exists():
         raise FileNotFoundError(
             f"TrueSkill requires canonical concatenated rows: {curated_parquet}"
+        )
+    if is_v3_config(cfg):
+        validate_artifact_sidecar(
+            curated_parquet,
+            expected={
+                "scope": ArtifactScope.CONCAT_KS.value,
+                "operation": "concatenate",
+            },
         )
 
     out = cfg.trueskill_candidate_contribution_path()

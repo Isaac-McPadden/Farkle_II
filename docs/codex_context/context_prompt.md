@@ -30,9 +30,11 @@ Preserve these invariants:
 - current code never reads old on-disk analysis artifacts;
 - pair analysis lives under `results_seed_pair_X_Y/seed_pair_analysis`, path
   lookup is non-mutating, and every H2H phase owns its artifacts;
-- simulation and shared root/pair completion use exact-byte, code-, config-,
-  lineage-, input-, output-, and sidecar-authenticated lifecycle stamps; old
-  completion schemas are stale and v2 bytes cannot be promoted or re-sidecarred;
+- explicit artifact-contract-v3 runs publish simulation through frozen
+  candidate-family artifacts with canonical path/scope, actual Arrow or typed
+  non-Parquet format, complete version/method, code/config, exact source or
+  immutable-manifest identities, and authenticated completion; old completion
+  schemas are stale and v2 bytes cannot be promoted or re-sidecarred;
 - TrueSkill root/k completion binds ordered row bytes and rating sidecars, and
   HGB completion binds target/features, whole-strategy folds, model/RNG method,
   outputs, and sidecars; HGB per-k row unions live in `concat_ks`;

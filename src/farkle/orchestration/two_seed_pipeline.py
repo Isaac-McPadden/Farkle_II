@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Any, Sequence, cast
 
 from farkle import analysis
+from farkle.analysis.release_audit import audit_sidecar_completeness
 from farkle.analysis.stage_runner import StageRunContext, StageRunner
 from farkle.config import AppConfig, assign_config_sha
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
     SeedRunContext,
+    load_run_context,
     write_run_context_atomic,
 )
 from farkle.orchestration.seed_utils import (
@@ -237,6 +239,7 @@ def _run_one_seed(
     force: bool,
     policy_bundle: _PerSeedPolicyBundle,
     code_identity: CodeIdentity,
+    cli_overrides: tuple[str, ...] = (),
     oracle_game_profile: GameProfile | None = None,
 ) -> _SeedRunStatus:
     root_cfg = _build_seed_cfg(
@@ -249,6 +252,7 @@ def _run_one_seed(
     write_run_context_atomic(
         context,
         code_identity=code_identity,
+        cli_overrides=cli_overrides,
         game_profile_sha256=(
             oracle_game_profile.sha256 if oracle_game_profile is not None else None
         ),
@@ -328,22 +332,101 @@ def _write_pipeline_health(path: Path, payload: dict[str, Any]) -> None:
         )
 
 
+def _final_release_gate(
+    root_results: dict[int, _SeedRunStatus],
+    pair_context: RootPairRunContext,
+    *,
+    code_identity: CodeIdentity,
+    allow_oracle_code_identity: bool,
+) -> dict[str, Any]:
+    """Authenticate run contexts and every canonical descendant before success."""
+
+    failures: list[str] = []
+    contexts: list[SeedRunContext | RootPairRunContext] = [
+        root_results[seed].context for seed in sorted(root_results)
+    ]
+    contexts.append(pair_context)
+    run_contexts: dict[str, dict[str, str]] = {}
+    for context in contexts:
+        label = (
+            "pair"
+            if isinstance(context, RootPairRunContext)
+            else f"root_{int(context.seed)}"
+        )
+        try:
+            persisted = load_run_context(
+                context.run_context_path,
+                active_config_path=context.active_config_path,
+            )
+            run_contexts[label] = {
+                "path": str(context.run_context_path),
+                "sha256": sha256_file(context.run_context_path),
+                "identity_sha256": str(persisted["run_context_sha256"]),
+            }
+        except Exception as exc:  # noqa: BLE001
+            failures.append(f"{label} run context: {type(exc).__name__}: {exc}")
+        for failure in audit_sidecar_completeness(context.analysis_root):
+            failures.append(f"{label} authenticated graph: {failure}")
+    release_eligible = (
+        code_identity.policy == CodeIdentityPolicy.RELEASE_CLEAN.value
+        and code_identity.state == "clean"
+    )
+    if not release_eligible and not allow_oracle_code_identity:
+        failures.append("release approval requires release-clean code identity")
+    return {
+        "status": "passed" if not failures else "failed",
+        "release_eligible": release_eligible,
+        "accepted_release_identity": [3, 2, 2, 2, 2, 2],
+        "artifact_roots": [str(context.analysis_root) for context in contexts],
+        "run_contexts": run_contexts,
+        "code_identity": {
+            "commit": code_identity.commit,
+            "policy": code_identity.policy,
+            "state": code_identity.state,
+            "dirty_fingerprint_sha256": code_identity.dirty_fingerprint_sha256,
+        },
+        "failures": sorted(failures),
+    }
+
+
 def run_pipeline(
     cfg: AppConfig,
     *,
     seed_pair: tuple[int, int],
     force: bool = False,
+    cli_overrides: tuple[str, ...] = (),
     oracle_game_profile: GameProfile | None = None,
 ) -> None:
     """Run both roots, then combination, H2H, agreement, and reporting once."""
 
     if len(set(seed_pair)) != 2:
         raise ValueError(f"two-seed-pipeline requires two distinct roots, found {seed_pair}")
+    if oracle_game_profile is None:
+        cfg.validate_statistical_contract(require_two_roots=True)
+    else:
+        contract = cfg.artifact_contract
+        release_identity = (
+            contract.artifact_contract_version,
+            cfg.rng.scheme_version,
+            runner.OUTCOME_SCHEMA_VERSION,
+            contract.schema_version,
+            contract.estimand_version,
+            contract.conditioning_version,
+        )
+        if release_identity != (3, 2, 2, 2, 2, 2):
+            raise ValueError(
+                "the test-only oracle seam still requires release identity "
+                "3/2/2/2/2/2"
+            )
     if cfg.config_sha is None:
         assign_config_sha(cfg)
     code_identity = resolve_code_identity(
         Path(__file__).resolve().parents[3],
-        policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
+        policy=(
+            CodeIdentityPolicy.DEVELOPMENT_DIRTY
+            if oracle_game_profile is not None
+            else CodeIdentityPolicy.RELEASE_CLEAN
+        ),
     )
     pair_root = seed_pair_root(cfg, seed_pair)
     manifest_path = pair_root / "two_seed_pipeline_manifest.jsonl"
@@ -376,6 +459,7 @@ def run_pipeline(
                     force=force,
                     policy_bundle=policy_bundle,
                     code_identity=code_identity,
+                    cli_overrides=cli_overrides,
                     oracle_game_profile=oracle_game_profile,
                 )
                 for seed in seed_pair
@@ -392,6 +476,7 @@ def run_pipeline(
                 force=force,
                 policy_bundle=policy_bundle,
                 code_identity=code_identity,
+                cli_overrides=cli_overrides,
                 oracle_game_profile=oracle_game_profile,
             )
             for seed in seed_pair
@@ -430,6 +515,7 @@ def run_pipeline(
             pair_context,
             code_identity=code_identity,
             parent_lifecycle_roots=parent_lifecycle_roots,
+            cli_overrides=cli_overrides,
             game_profile_sha256=(
                 oracle_game_profile.sha256 if oracle_game_profile is not None else None
             ),
@@ -474,6 +560,23 @@ def run_pipeline(
         for seed, status in root_health.items()
         if status["analysis"] != "complete"
     ]
+    release_audit: dict[str, Any] = {
+        "status": "not_run",
+        "release_eligible": False,
+        "accepted_release_identity": [3, 2, 2, 2, 2, 2],
+        "artifact_roots": [],
+        "run_contexts": {},
+        "failures": ["pair workflow did not reach the final release gate"],
+    }
+    if not root_failures and pair_context is not None and pair_error is None:
+        release_audit = _final_release_gate(
+            root_results,
+            pair_context,
+            code_identity=code_identity,
+            allow_oracle_code_identity=oracle_game_profile is not None,
+        )
+        if release_audit["status"] != "passed":
+            pair_error = "final release audit failed: " + str(release_audit["failures"][0])
     overall_status = "complete_success" if not root_failures and pair_error is None else "failed"
     health = {
         "seed_pair": list(seed_pair),
@@ -483,6 +586,7 @@ def run_pipeline(
             pair_context.config.config_sha if pair_context is not None else None
         ),
         "root_workflows": root_health,
+        "release_audit": release_audit,
         "pair_workflow": {
             "status": "complete" if pair_context is not None and pair_error is None else "failed",
             "analysis_root": str(pair_context.analysis_root) if pair_context else None,

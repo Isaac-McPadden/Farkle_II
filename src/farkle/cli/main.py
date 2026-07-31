@@ -340,7 +340,6 @@ def main(argv: Sequence[str] | None = None) -> None:
             cfg.sim.seed_list = list(seed_pair_override)
         if expected_seed_len is not None:
             cfg.sim.populate_seed_list(expected_seed_len)
-        assign_config_sha(cfg)
 
         margin_thresholds = getattr(args, "margin_thresholds", None)
         if margin_thresholds:
@@ -358,6 +357,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         if rng_lags_arg:
             rng_lags = tuple(sorted({int(lag) for lag in rng_lags_arg}))
         compute_rng_diagnostics = getattr(args, "rng_diagnostics", None)
+        cfg.validate_statistical_contract(
+            require_two_roots=args.command == "two-seed-pipeline"
+        )
+        assign_config_sha(cfg)
 
         LOGGER.info(
             "Configuration prepared",
@@ -495,6 +498,7 @@ def main(argv: Sequence[str] | None = None) -> None:
             cfg,
             seed_pair=seed_pair,
             force=getattr(args, "force", False),
+            cli_overrides=tuple(args.overrides or ()),
         )
         LOGGER.info(
             "Two-seed pipeline command completed",

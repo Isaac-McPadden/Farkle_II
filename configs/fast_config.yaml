@@ -2,7 +2,7 @@
 # Drives BOTH simulation and analysis.
 
 io:
-  results_dir_prefix: "results"   # prefix under data/ for per-N run folders
+  results_dir_prefix: "results_post_fast_config_remediated_20260730"
   analysis_subdir: "analysis"     # analysis outputs live under results_root/analysis
 
 sim:
@@ -100,6 +100,7 @@ artifact_contract:
   artifact_contract_version: 3
   estimand_version: 2
   schema_version: 2
+  conditioning_version: 2
 
 k_aggregation:
   method: "equal-k"

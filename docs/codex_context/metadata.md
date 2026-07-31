@@ -60,7 +60,17 @@ changing code or accepting a statistical conclusion.
   attempted losses, keeps completed-only winner products and TrueSkill updates
   excluded, preserves unavailable one-batch half-drift MCSE as null, and
   authenticates the production root/pair stages through candidate-family
-  freezing. The final Task 14 oracle now drives that fixture through the public
+  freezing. Task 15B replaces that release-path publication boundary, from
+  simulation through candidate-family freezing, with opt-in authenticated
+  artifact contract v3. The v3 path requires the complete `3/2/2/2/2/2`
+  artifact/RNG/outcome/derived-schema/estimand/conditioning identity, exact
+  code and stage-config identity, actual Arrow schemas or typed non-Parquet
+  format identities, exact ordinary sources or coordinate-sorted immutable
+  manifest roots, and authenticated completion published only after all owned
+  outputs validate. It rejects v2 inputs and never backfills missing v3
+  sidecars onto cached bytes. The H2H tail/reporting migration and the atomic
+  public-default/release-audit switch remain Tasks 15C and 15D. The final Task
+  14 oracle now drives that fixture through the public
   two-root orchestrator, production H2H replacements and cap exhaustion,
   inference, dominance, agreement, and reporting. Reporting authenticates the
   migration report as a stage output, carries the canonical completed-game

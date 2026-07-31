@@ -29,6 +29,7 @@ from farkle.utils.artifact_contract import (
     ArtifactContractError,
     H2HMethodContract,
     make_artifact_sidecar,
+    sha256_file,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import (
@@ -36,6 +37,7 @@ from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
 )
+from farkle.utils.authenticated_contract import load_authenticated_sidecar
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_seed
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
 from farkle.utils.stage_completion import (
@@ -1415,7 +1417,18 @@ def _completed_execution_is_recoverable(
             f"completed H2H execution state conflicts with the power plan: {mismatched}"
         )
     expected_sources = [str(path) for path in block_paths]
-    if output_sidecar.source_artifacts != expected_sources:
+    if output_sidecar.artifact_contract_version == 3:
+        authenticated_output = load_authenticated_sidecar(output)
+        recorded_hashes = sorted(
+            source.artifact.content_sha256
+            for source in authenticated_output.source_artifacts
+        )
+        current_hashes = sorted(sha256_file(path) for path in block_paths)
+        if recorded_hashes != current_hashes:
+            raise ValueError(
+                "completed H2H aggregate does not reference the frozen block set"
+            )
+    elif output_sidecar.source_artifacts != expected_sources:
         raise ValueError("completed H2H aggregate does not reference the frozen block set")
     try:
         for path in block_paths:

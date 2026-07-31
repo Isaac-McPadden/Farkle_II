@@ -15,7 +15,7 @@ import os
 import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -235,6 +235,7 @@ class ArtifactSidecar:
     code_revision: str
     artifact_sha256: str = ""
     artifact_size_bytes: int = 0
+    _cfg: AppConfig | None = field(default=None, repr=False, compare=False)
 
     def with_artifact_identity(self, path: Path) -> "ArtifactSidecar":
         """Return metadata bound to the exact bytes at *path*."""
@@ -340,6 +341,7 @@ def make_artifact_sidecar(
         config_hash=cfg.config_sha or compute_config_sha(cfg),
         input_manifest_hashes=manifest_hashes(input_manifests),
         code_revision=code_revision,
+        _cfg=cfg,
     )
 
 
@@ -477,7 +479,9 @@ def _validate_sidecar_fields(metadata: ArtifactSidecar) -> None:
 
 
 def _canonical_json(metadata: ArtifactSidecar) -> str:
-    return json.dumps(asdict(metadata), indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    payload = asdict(metadata)
+    payload.pop("_cfg", None)
+    return json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
 def write_artifact_with_sidecar_atomic(
@@ -513,6 +517,10 @@ def publish_staged_artifact_with_sidecar(
 
     staged_path = Path(staged_data)
     final_path = Path(artifact_path)
+    if metadata.artifact_contract_version == 3:
+        from farkle.utils.release_identity import publish_staged_v3_from_metadata
+
+        return publish_staged_v3_from_metadata(staged_path, final_path, metadata)
     final_sidecar = sidecar_path(final_path)
     final_path.parent.mkdir(parents=True, exist_ok=True)
     if not staged_path.is_file() or staged_path.stat().st_size == 0:
@@ -553,6 +561,15 @@ def ensure_artifact_sidecar_atomic(
 
     final_path = Path(artifact_path)
     final_sidecar = sidecar_path(final_path)
+    if metadata.artifact_contract_version == 3:
+        if not final_sidecar.exists():
+            raise ArtifactContractError(
+                "authenticated v3 forbids publishing a sidecar for pre-existing bytes; "
+                "recompute the artifact"
+            )
+        from farkle.utils.release_identity import validate_v3_compat
+
+        return validate_v3_compat(final_path, expected=expected)
     if final_sidecar.exists():
         return validate_artifact_sidecar(final_path, expected=expected)
     if not final_path.is_file() or final_path.stat().st_size == 0:
@@ -579,6 +596,10 @@ def load_artifact_sidecar(artifact_path: Path | str) -> ArtifactSidecar:
     metadata_path = sidecar_path(path)
     try:
         payload = read_json_file_with_retry(metadata_path)
+        if isinstance(payload, Mapping) and payload.get("artifact_contract_version") == 3:
+            from farkle.utils.release_identity import validate_v3_compat
+
+            return validate_v3_compat(path)
         metadata = ArtifactSidecar(**payload)
     except FileNotFoundError as exc:
         raise ArtifactContractError(
@@ -598,6 +619,14 @@ def validate_artifact_sidecar(
     """Validate the sidecar, byte identity, and optional consumer expectations."""
 
     path = Path(artifact_path)
+    try:
+        payload = read_json_file_with_retry(sidecar_path(path))
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        payload = None
+    if isinstance(payload, Mapping) and payload.get("artifact_contract_version") == 3:
+        from farkle.utils.release_identity import validate_v3_compat
+
+        return validate_v3_compat(path, expected=expected)
     metadata = load_artifact_sidecar(path)
     try:
         artifact_size, digest = retry_transient_io(lambda: (path.stat().st_size, sha256_file(path)))

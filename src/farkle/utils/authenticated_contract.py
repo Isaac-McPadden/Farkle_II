@@ -39,6 +39,7 @@ LIFECYCLE_CONTRACT_VERSION: Final = 1
 MANIFEST_CONTRACT_VERSION: Final = 1
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _BY_K_RE: Final = re.compile(r"^([1-9][0-9]*)p$")
+_SIMULATION_SCOPE: Final = ArtifactScope.DIAGNOSTICS.value
 _T = TypeVar("_T")
 
 
@@ -119,23 +120,32 @@ class CanonicalArtifactLocation:
     player_count: int | None = None
 
     def __post_init__(self) -> None:
-        scope = ArtifactScope(self.scope)
+        if self.stage_key == "simulation":
+            if self.scope != _SIMULATION_SCOPE or self.player_count is not None:
+                raise ValueError("simulation locations require diagnostics scope")
+            scope = ArtifactScope.DIAGNOSTICS
+        else:
+            scope = ArtifactScope(self.scope)
         relative = Path(self.relative_path)
         if not self.stage_key.strip():
             raise ValueError("stage_key must be non-blank")
         if not self.relative_path or relative.is_absolute() or ".." in relative.parts:
             raise ValueError("relative_path must remain within its canonical scope")
-        if scope.requires_player_count:
+        if scope is not None and scope.requires_player_count:
             if isinstance(self.player_count, bool) or self.player_count is None:
                 raise ValueError("by_k locations require player_count")
             if self.player_count < 1:
                 raise ValueError("player_count must be positive")
-        elif self.player_count is not None:
+        elif scope is not None and self.player_count is not None:
             raise ValueError(f"{scope.value} locations do not accept player_count")
 
     def path(self, cfg: AppConfig) -> Path:
         """Resolve this logical identity through the application's path API."""
 
+        if self.stage_key == "simulation":
+            if self.scope != _SIMULATION_SCOPE or self.player_count is not None:
+                raise ValueError("simulation artifacts use the diagnostics scope")
+            return cfg.results_root / self.relative_path
         return cfg.scope_path(
             self.stage_key,
             ArtifactScope(self.scope),
@@ -161,6 +171,21 @@ def derive_canonical_location(
     """Derive scope and relative name from a canonical physical path."""
 
     artifact = Path(path).resolve()
+    if stage_key == "simulation":
+        stage_root = cfg.results_root.resolve()
+        try:
+            relative = artifact.relative_to(stage_root)
+        except ValueError as exc:
+            raise ArtifactMismatchError(
+                f"artifact {artifact} is outside the canonical simulation root"
+            ) from exc
+        location = CanonicalArtifactLocation(
+            stage_key=stage_key,
+            scope=_SIMULATION_SCOPE,
+            relative_path=relative.as_posix(),
+        )
+        location.require_path(cfg, artifact)
+        return location
     stage_root = cfg.stage_dir(stage_key, create=False).resolve()
     try:
         relative = artifact.relative_to(stage_root)
@@ -271,9 +296,15 @@ def parquet_schema_identity(path: Path | str, *, schema_version: int) -> ArrowSc
 def _extract_required_path(payload: Mapping[str, Any], dotted_path: str) -> Any:
     cursor: Any = payload
     for part in dotted_path.split("."):
-        if not isinstance(cursor, Mapping) or part not in cursor:
+        if not isinstance(cursor, Mapping):
             raise ValueError(f"stage config field {dotted_path!r} is absent")
-        cursor = cursor[part]
+        if part in cursor:
+            cursor = cursor[part]
+            continue
+        numeric_part = int(part) if part.isdecimal() else None
+        if numeric_part is None or numeric_part not in cursor:
+            raise ValueError(f"stage config field {dotted_path!r} is absent")
+        cursor = cursor[numeric_part]
     return cursor
 
 
@@ -472,9 +503,34 @@ class MethodContract:
     equivalence_margin: float | None = None
     ordinary_alpha: float | None = None
     simultaneous_alpha: float | None = None
+    conditioning: str = "unconditional"
+    source_scope: str | None = None
+    root_seeds: tuple[int, ...] = ()
+    player_counts: tuple[int, ...] = ()
+    required_player_counts: tuple[int, ...] = ()
+    weighted_quantity: str = "none"
+    support_count_role: str = "raw_support_provenance"
+    uncertainty_method: str = "none"
+    k_aggregation_method: str = "none"
+    missing_cell_policy: str = "not_applicable"
+    seed_scope: str = "single_root"
+    consistency_columns: tuple[str, ...] = ()
+    grouping_keys: tuple[str, ...] = ()
+    semantic_contract_sha256: str | None = None
 
     def __post_init__(self) -> None:
-        for name in ("procedure", "baseline", "replication_unit"):
+        for name in (
+            "procedure",
+            "baseline",
+            "replication_unit",
+            "conditioning",
+            "weighted_quantity",
+            "support_count_role",
+            "uncertainty_method",
+            "k_aggregation_method",
+            "missing_cell_policy",
+            "seed_scope",
+        ):
             if not cast(str, getattr(self, name)).strip():
                 raise ValueError(f"{name} must be non-blank")
         if self.method_version < 1:
@@ -502,6 +558,19 @@ class MethodContract:
                 not math.isfinite(alpha_value) or not 0.0 < alpha_value < 1.0
             ):
                 raise ValueError(f"{name} must be strictly between zero and one")
+        for name in ("root_seeds", "player_counts", "required_player_counts"):
+            coordinate_values = cast(tuple[int, ...], getattr(self, name))
+            if coordinate_values != tuple(sorted(set(coordinate_values))):
+                raise ValueError(f"{name} must be sorted and unique")
+            if name != "root_seeds" and any(value < 1 for value in coordinate_values):
+                raise ValueError(f"{name} must contain positive values")
+        if not set(self.required_player_counts).issubset(self.player_counts):
+            raise ValueError("required_player_counts must be present in player_counts")
+        if self.semantic_contract_sha256 is not None:
+            _require_sha256(
+                self.semantic_contract_sha256,
+                label="semantic_contract_sha256",
+            )
 
     @property
     def sha256(self) -> str:
@@ -599,14 +668,104 @@ def make_stage_identity(
 
 
 @dataclass(frozen=True, slots=True)
+class ArtifactFormatIdentity:
+    """Exact non-Parquet format identity without a fictitious Arrow schema."""
+
+    media_type: str
+    format_version: int
+    structural_schema_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if not self.media_type.strip():
+            raise ValueError("artifact media_type must be non-blank")
+        if self.format_version < 1:
+            raise ValueError("artifact format_version must be positive")
+        if self.structural_schema_sha256 is not None:
+            _require_sha256(
+                self.structural_schema_sha256,
+                label="structural_schema_sha256",
+            )
+
+
+def _json_structural_shape(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_structural_shape(item) for key, item in sorted(value.items())}
+    if isinstance(value, list):
+        return [_json_structural_shape(value[0])] if value else []
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "boolean"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    raise ArtifactMismatchError(f"unsupported JSON structural value: {type(value).__name__}")
+
+
+def file_format_identity(
+    path: Path | str,
+    *,
+    media_type: str,
+    format_version: int = 1,
+) -> ArtifactFormatIdentity:
+    """Inspect non-Parquet bytes and return their actual typed format identity."""
+
+    artifact = Path(path)
+    structural: str | None = None
+    try:
+        if media_type == "application/json":
+            structural = identity_sha256(
+                _json_structural_shape(json.loads(artifact.read_text(encoding="utf-8")))
+            )
+        elif media_type == "application/x-ndjson":
+            text = artifact.read_text(encoding="utf-8")
+            try:
+                shapes = {
+                    json.dumps(
+                        _json_structural_shape(json.loads(text)),
+                        sort_keys=True,
+                    )
+                }
+            except json.JSONDecodeError:
+                shapes = {
+                    json.dumps(
+                        _json_structural_shape(json.loads(line)),
+                        sort_keys=True,
+                    )
+                    for line in text.splitlines()
+                    if line.strip()
+                }
+            structural = identity_sha256(sorted(shapes))
+        elif media_type.startswith("text/") or media_type == "application/yaml":
+            artifact.read_text(encoding="utf-8")
+        elif media_type == "image/png" and not artifact.read_bytes().startswith(
+            b"\x89PNG\r\n\x1a\n"
+        ):
+            raise ArtifactMismatchError(f"invalid PNG artifact: {artifact}")
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ArtifactMismatchError(
+            f"artifact does not satisfy declared format {media_type}: {artifact}"
+        ) from exc
+    return ArtifactFormatIdentity(
+        media_type=media_type,
+        format_version=format_version,
+        structural_schema_sha256=structural,
+    )
+
+
+@dataclass(frozen=True, slots=True)
 class ArtifactIdentity:
     """Exact physical, byte, schema, and logical-operation identity."""
 
     location: CanonicalArtifactLocation
     byte_length: int
     content_sha256: str
-    arrow_schema: ArrowSchemaIdentity
+    arrow_schema: ArrowSchemaIdentity | None
     logical_operation: str
+    format_identity: "ArtifactFormatIdentity | None" = None
 
     def __post_init__(self) -> None:
         if self.byte_length <= 0:
@@ -614,6 +773,10 @@ class ArtifactIdentity:
         _require_sha256(self.content_sha256, label="content_sha256")
         if not self.logical_operation.strip():
             raise ValueError("logical_operation must be non-blank")
+        if (self.arrow_schema is None) == (self.format_identity is None):
+            raise ValueError(
+                "artifact identity requires exactly one Arrow schema or non-Parquet format identity"
+            )
 
     @property
     def sha256(self) -> str:
@@ -877,11 +1040,16 @@ def _parse_schema(payload: Mapping[str, Any]) -> ArrowSchemaIdentity:
 
 
 def _parse_artifact(payload: Mapping[str, Any]) -> ArtifactIdentity:
+    arrow_payload = payload["arrow_schema"]
+    format_payload = payload.get("format_identity")
     return _construct(
         ArtifactIdentity,
         payload,
         location=_parse_location(payload["location"]),
-        arrow_schema=_parse_schema(payload["arrow_schema"]),
+        arrow_schema=None if arrow_payload is None else _parse_schema(arrow_payload),
+        format_identity=(
+            None if format_payload is None else _construct(ArtifactFormatIdentity, format_payload)
+        ),
     )
 
 
@@ -907,6 +1075,11 @@ def _parse_method(payload: Mapping[str, Any]) -> MethodContract:
         MethodContract,
         payload,
         k_weights=None if weights is None else tuple((int(k), float(v)) for k, v in weights),
+        root_seeds=tuple(int(value) for value in payload["root_seeds"]),
+        player_counts=tuple(int(value) for value in payload["player_counts"]),
+        required_player_counts=tuple(int(value) for value in payload["required_player_counts"]),
+        consistency_columns=tuple(str(value) for value in payload["consistency_columns"]),
+        grouping_keys=tuple(str(value) for value in payload["grouping_keys"]),
     )
 
 
@@ -1003,12 +1176,22 @@ def _current_artifact_identity(
     location: CanonicalArtifactLocation,
     schema_version: int,
     logical_operation: str,
+    format_identity: ArtifactFormatIdentity | None = None,
 ) -> ArtifactIdentity:
     try:
         byte_length, content_hash = retry_transient_io(
             lambda: (path.stat().st_size, sha256_file(path))
         )
-        schema = parquet_schema_identity(path, schema_version=schema_version)
+        if format_identity is None:
+            schema = parquet_schema_identity(path, schema_version=schema_version)
+            current_format = None
+        else:
+            schema = None
+            current_format = file_format_identity(
+                path,
+                media_type=format_identity.media_type,
+                format_version=format_identity.format_version,
+            )
     except (OSError, pa.ArrowException) as exc:
         raise ArtifactMismatchError(f"artifact cannot be authenticated: {path}: {exc}") from exc
     return ArtifactIdentity(
@@ -1017,6 +1200,7 @@ def _current_artifact_identity(
         content_sha256=content_hash,
         arrow_schema=schema,
         logical_operation=logical_operation,
+        format_identity=current_format,
     )
 
 
@@ -1048,12 +1232,20 @@ def validate_authenticated_artifact(
     current = _current_artifact_identity(
         artifact_path,
         location=expected_location,
-        schema_version=metadata.artifact.arrow_schema.schema_version,
+        schema_version=(
+            metadata.versions.schema_version
+            if metadata.artifact.arrow_schema is None
+            else metadata.artifact.arrow_schema.schema_version
+        ),
         logical_operation=metadata.artifact.logical_operation,
+        format_identity=metadata.artifact.format_identity,
     )
     if current != metadata.artifact:
         raise ArtifactMismatchError("artifact bytes or actual Arrow schema do not match sidecar")
-    if expected_stage_identity is not None and metadata.stage_identity != expected_stage_identity:
+    if (
+        expected_stage_identity is not None
+        and metadata.stage_identity.sha256 != expected_stage_identity.sha256
+    ):
         raise ArtifactMismatchError("stage identity does not match")
     if (
         expected_method_contract is not None
@@ -1082,8 +1274,13 @@ def validate_authenticated_artifact(
                 current_source = _current_artifact_identity(
                     source_path,
                     location=source.artifact.location,
-                    schema_version=source.artifact.arrow_schema.schema_version,
+                    schema_version=(
+                        source_cfg.artifact_contract.schema_version
+                        if source.artifact.arrow_schema is None
+                        else source.artifact.arrow_schema.schema_version
+                    ),
                     logical_operation=source.artifact.logical_operation,
+                    format_identity=source.artifact.format_identity,
                 )
             except ArtifactMismatchError as exc:
                 raise ArtifactMismatchError(
@@ -1168,6 +1365,127 @@ def capture_source_artifact(
     )
 
 
+def _require_unbound_canonical_suffix(
+    path: Path,
+    location: CanonicalArtifactLocation,
+) -> None:
+    """Validate a canonical location when the owning config is an upstream run."""
+
+    relative_parts = Path(location.relative_path).parts
+    if location.stage_key == "simulation":
+        expected_suffix = relative_parts
+    elif location.scope == ArtifactScope.BY_K.value:
+        assert location.player_count is not None
+        expected_suffix = (
+            location.scope,
+            f"{location.player_count}p",
+            *relative_parts,
+        )
+    else:
+        expected_suffix = (location.scope, *relative_parts)
+    actual_parts = path.resolve().parts
+    if tuple(actual_parts[-len(expected_suffix) :]) != tuple(expected_suffix):
+        raise ArtifactMismatchError(
+            f"artifact path {path} does not realize canonical location {location}"
+        )
+
+
+def validate_authenticated_artifact_unbound(
+    path: Path | str,
+    *,
+    expected_location: CanonicalArtifactLocation | None = None,
+    expected_method_contract: MethodContract | None = None,
+    expected_versions: VersionIdentity | None = None,
+    source_paths: Mapping[str, Path] | None = None,
+    manifest_paths: Mapping[str, tuple[Path, Path]] | None = None,
+    validate_provenance: bool = True,
+) -> AuthenticatedSidecar:
+    """Validate exact v3 bytes/schema and logical path without an owning config.
+
+    Pair stages use this only for artifacts owned by separately authenticated
+    root run contexts.  Publication still records path-independent canonical
+    locations; this helper never infers a new identity from a physical path.
+    """
+
+    artifact_path = Path(path)
+    metadata = load_authenticated_sidecar(artifact_path)
+    location = expected_location or metadata.artifact.location
+    if metadata.artifact.location != location:
+        raise ArtifactMismatchError("sidecar declares a different canonical artifact location")
+    _require_unbound_canonical_suffix(artifact_path, location)
+    current = _current_artifact_identity(
+        artifact_path,
+        location=location,
+        schema_version=(
+            metadata.versions.schema_version
+            if metadata.artifact.arrow_schema is None
+            else metadata.artifact.arrow_schema.schema_version
+        ),
+        logical_operation=metadata.artifact.logical_operation,
+        format_identity=metadata.artifact.format_identity,
+    )
+    if current != metadata.artifact:
+        raise ArtifactMismatchError("artifact bytes or actual schema do not match sidecar")
+    if (
+        expected_method_contract is not None
+        and metadata.method_contract != expected_method_contract
+    ):
+        raise ArtifactMismatchError("method contract does not match")
+    if expected_versions is not None and metadata.versions != expected_versions:
+        raise ArtifactMismatchError("method/RNG/outcome/schema version identity does not match")
+    if not validate_provenance:
+        return metadata
+    source_roles = {source.logical_role for source in metadata.source_artifacts}
+    if source_roles:
+        if source_paths is None or set(source_paths) != source_roles:
+            raise ArtifactMismatchError("all declared source artifact roles require exact paths")
+        for source in metadata.source_artifacts:
+            current_source = capture_source_artifact_unbound(
+                source_paths[source.logical_role],
+                logical_role=source.logical_role,
+            )
+            if current_source != source:
+                raise ArtifactMismatchError(
+                    f"source artifact bytes or sidecar changed: {source.logical_role}"
+                )
+    manifest_roles = {manifest.logical_role for manifest in metadata.manifest_roots}
+    if manifest_roles:
+        if manifest_paths is None or set(manifest_paths) != manifest_roles:
+            raise ArtifactMismatchError("all declared immutable manifest roles require exact paths")
+        for manifest in metadata.manifest_roots:
+            manifest_path, manifest_sidecar_path = manifest_paths[manifest.logical_role]
+            _require_unbound_canonical_suffix(manifest_path, manifest.location)
+            if manifest_sidecar_path.resolve() != sidecar_path(manifest_path).resolve():
+                raise ArtifactMismatchError(
+                    f"manifest sidecar is not adjacent: {manifest.logical_role}"
+                )
+            loaded_manifest = load_immutable_manifest_sidecar(manifest_path)
+            if (
+                sha256_file(manifest_path) != manifest.manifest_sha256
+                or sha256_file(manifest_sidecar_path) != manifest.sidecar_sha256
+                or loaded_manifest.sidecar_contract_sha256 != manifest.sidecar_contract_sha256
+                or loaded_manifest.summary != manifest.summary
+            ):
+                raise ArtifactMismatchError(f"manifest root changed: {manifest.logical_role}")
+    return metadata
+
+
+def capture_source_artifact_unbound(
+    path: Path | str,
+    *,
+    logical_role: str,
+) -> SourceArtifactIdentity:
+    """Capture an exact source owned by another authenticated run context."""
+
+    metadata = validate_authenticated_artifact_unbound(path, validate_provenance=False)
+    return SourceArtifactIdentity(
+        logical_role=logical_role,
+        artifact=metadata.artifact,
+        sidecar_sha256=sha256_file(sidecar_path(path)),
+        sidecar_contract_sha256=metadata.sidecar_contract_sha256,
+    )
+
+
 def capture_manifest_root(
     *,
     logical_role: str,
@@ -1182,7 +1500,10 @@ def capture_manifest_root(
     metadata = load_immutable_manifest_sidecar(manifest_path)
     if metadata.location != expected_location:
         raise ArtifactMismatchError("manifest sidecar declares a different canonical location")
-    if expected_stage_identity is not None and metadata.stage_identity != expected_stage_identity:
+    if (
+        expected_stage_identity is not None
+        and metadata.stage_identity.sha256 != expected_stage_identity.sha256
+    ):
         raise ArtifactMismatchError("manifest stage identity does not match")
     if sha256_file(manifest_path) != metadata.manifest_sha256:
         raise ArtifactMismatchError("manifest bytes do not match its sidecar")
@@ -1278,6 +1599,75 @@ def publish_immutable_manifest_atomic(
         staged_sidecar.unlink(missing_ok=True)
 
 
+def publish_immutable_manifest_bytes_atomic(
+    path: Path | str,
+    *,
+    cfg: AppConfig,
+    location: CanonicalArtifactLocation,
+    stage_identity: StageIdentity,
+    entries: Iterable[ManifestEntry],
+    write_data: Callable[[Path], None],
+) -> ImmutableManifestSidecar:
+    """Publish an immutable native manifest plus a typed coordinate root.
+
+    The native bytes remain readable by the stage-specific streaming consumer;
+    the adjacent v3 sidecar binds their exact hash and a separately canonical
+    coordinate-sorted shard root.
+    """
+
+    final_path = location.require_path(cfg, path)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    data_fd, data_name = tempfile.mkstemp(prefix="._manifest_v3_", dir=final_path.parent)
+    os.close(data_fd)
+    sidecar_fd, sidecar_name = tempfile.mkstemp(
+        prefix="._manifest_sidecar_v3_",
+        dir=final_path.parent,
+    )
+    os.close(sidecar_fd)
+    staged_data = Path(data_name)
+    staged_sidecar = Path(sidecar_name)
+    final_sidecar = sidecar_path(final_path)
+    try:
+        write_data(staged_data)
+        if not staged_data.is_file() or staged_data.stat().st_size <= 0:
+            raise ArtifactMismatchError("manifest writer produced no bytes")
+        summary = compute_manifest_root(entries)
+        if summary.entry_count == 0:
+            raise ValueError("immutable manifest must contain at least one entry")
+        payload = {
+            "artifact_contract_version": ARTIFACT_CONTRACT_VERSION,
+            "manifest_contract_version": MANIFEST_CONTRACT_VERSION,
+            "location": location,
+            "manifest_sha256": sha256_file(staged_data),
+            "summary": summary,
+            "stage_identity": stage_identity,
+        }
+        metadata = ImmutableManifestSidecar(
+            artifact_contract_version=ARTIFACT_CONTRACT_VERSION,
+            manifest_contract_version=MANIFEST_CONTRACT_VERSION,
+            location=location,
+            manifest_sha256=cast(str, payload["manifest_sha256"]),
+            summary=summary,
+            stage_identity=stage_identity,
+            sidecar_contract_sha256=identity_sha256(payload),
+        )
+        staged_sidecar.write_bytes(metadata.canonical_bytes())
+        final_sidecar.unlink(missing_ok=True)
+        replace_file_atomic(staged_data, final_path)
+        replace_file_atomic(staged_sidecar, final_sidecar)
+        capture_manifest_root(
+            logical_role="publication_check",
+            manifest_path=final_path,
+            cfg=cfg,
+            expected_location=location,
+            expected_stage_identity=stage_identity,
+        )
+        return metadata
+    finally:
+        staged_data.unlink(missing_ok=True)
+        staged_sidecar.unlink(missing_ok=True)
+
+
 def publish_authenticated_parquet_atomic(
     path: Path | str,
     *,
@@ -1299,18 +1689,111 @@ def publish_authenticated_parquet_atomic(
     final_path.parent.mkdir(parents=True, exist_ok=True)
     data_fd, data_name = tempfile.mkstemp(prefix="._artifact_v3_", dir=final_path.parent)
     os.close(data_fd)
-    sidecar_fd, sidecar_name = tempfile.mkstemp(prefix="._sidecar_v3_", dir=final_path.parent)
-    os.close(sidecar_fd)
     staged_data = Path(data_name)
+    try:
+        write_data(staged_data)
+        return publish_staged_authenticated_artifact_atomic(
+            staged_data,
+            final_path,
+            cfg=cfg,
+            location=location,
+            stage_identity=stage_identity,
+            method_contract=method_contract,
+            sources=sources,
+            manifest_roots=manifest_roots,
+            source_paths=source_paths,
+            source_configs=source_configs,
+            manifest_paths=manifest_paths,
+            manifest_configs=manifest_configs,
+        )
+    finally:
+        staged_data.unlink(missing_ok=True)
+
+
+def publish_authenticated_file_atomic(
+    path: Path | str,
+    *,
+    cfg: AppConfig,
+    location: CanonicalArtifactLocation,
+    stage_identity: StageIdentity,
+    method_contract: MethodContract,
+    format_identity: ArtifactFormatIdentity,
+    write_data: Callable[[Path], None],
+    sources: Sequence[SourceArtifactIdentity] = (),
+    manifest_roots: Sequence[ManifestRootIdentity] = (),
+    source_paths: Mapping[str, Path] | None = None,
+    source_configs: Mapping[str, AppConfig] | None = None,
+    manifest_paths: Mapping[str, tuple[Path, Path]] | None = None,
+    manifest_configs: Mapping[str, AppConfig] | None = None,
+) -> AuthenticatedSidecar:
+    """Publish a typed JSON/text/PNG/binary artifact and its v3 sidecar."""
+
+    final_path = location.require_path(cfg, path)
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    data_fd, data_name = tempfile.mkstemp(prefix="._artifact_v3_", dir=final_path.parent)
+    os.close(data_fd)
+    staged_data = Path(data_name)
+    try:
+        write_data(staged_data)
+        return publish_staged_authenticated_artifact_atomic(
+            staged_data,
+            final_path,
+            cfg=cfg,
+            location=location,
+            stage_identity=stage_identity,
+            method_contract=method_contract,
+            format_identity=format_identity,
+            sources=sources,
+            manifest_roots=manifest_roots,
+            source_paths=source_paths,
+            source_configs=source_configs,
+            manifest_paths=manifest_paths,
+            manifest_configs=manifest_configs,
+        )
+    finally:
+        staged_data.unlink(missing_ok=True)
+
+
+def publish_staged_authenticated_artifact_atomic(
+    staged_data: Path | str,
+    path: Path | str,
+    *,
+    cfg: AppConfig,
+    location: CanonicalArtifactLocation,
+    stage_identity: StageIdentity,
+    method_contract: MethodContract,
+    format_identity: ArtifactFormatIdentity | None = None,
+    sources: Sequence[SourceArtifactIdentity] = (),
+    manifest_roots: Sequence[ManifestRootIdentity] = (),
+    source_paths: Mapping[str, Path] | None = None,
+    source_configs: Mapping[str, AppConfig] | None = None,
+    manifest_paths: Mapping[str, tuple[Path, Path]] | None = None,
+    manifest_configs: Mapping[str, AppConfig] | None = None,
+    validate_unbound_sources: bool = False,
+) -> AuthenticatedSidecar:
+    """Publish an already staged v3 artifact without permitting sidecar backfill."""
+
+    staged_path = Path(staged_data)
+    final_path = location.require_path(cfg, path)
+    if not staged_path.is_file() or staged_path.stat().st_size <= 0:
+        raise ArtifactMismatchError(f"artifact writer did not create {staged_path}")
+    if staged_path.parent.resolve() != final_path.parent.resolve():
+        raise ArtifactMismatchError("staged artifact must be on the destination filesystem")
+    final_path.parent.mkdir(parents=True, exist_ok=True)
+    sidecar_fd, sidecar_name = tempfile.mkstemp(
+        prefix="._sidecar_v3_",
+        dir=final_path.parent,
+    )
+    os.close(sidecar_fd)
     staged_sidecar = Path(sidecar_name)
     final_sidecar = sidecar_path(final_path)
     try:
-        write_data(staged_data)
         artifact = _current_artifact_identity(
-            staged_data,
+            staged_path,
             location=location,
             schema_version=stage_identity.versions.schema_version,
             logical_operation=method_contract.procedure,
+            format_identity=format_identity,
         )
         metadata = make_authenticated_sidecar(
             artifact=artifact,
@@ -1321,8 +1804,32 @@ def publish_authenticated_parquet_atomic(
         )
         staged_sidecar.write_bytes(metadata.canonical_bytes())
         final_sidecar.unlink(missing_ok=True)
-        replace_file_atomic(staged_data, final_path)
+        replace_file_atomic(staged_path, final_path)
         replace_file_atomic(staged_sidecar, final_sidecar)
+        if validate_unbound_sources:
+            validated = validate_authenticated_artifact_unbound(
+                final_path,
+                expected_location=location,
+                expected_method_contract=method_contract,
+                expected_versions=stage_identity.versions,
+                validate_provenance=False,
+            )
+            resolved_source_paths = source_paths or {}
+            if set(resolved_source_paths) != {source.logical_role for source in sources}:
+                raise ArtifactMismatchError(
+                    "all declared source artifact roles require exact paths"
+                )
+            for source in sources:
+                source_path = resolved_source_paths[source.logical_role]
+                current = capture_source_artifact_unbound(
+                    source_path,
+                    logical_role=source.logical_role,
+                )
+                if current != source:
+                    raise ArtifactMismatchError(
+                        f"source artifact identity changed: {source.logical_role}"
+                    )
+            return validated
         validate_authenticated_artifact(
             final_path,
             cfg=cfg,
@@ -1337,7 +1844,6 @@ def publish_authenticated_parquet_atomic(
         )
         return metadata
     finally:
-        staged_data.unlink(missing_ok=True)
         staged_sidecar.unlink(missing_ok=True)
 
 
@@ -1345,11 +1851,21 @@ def publish_authenticated_parquet_atomic(
 class CompletionOutputIdentity:
     """Completion-stamp binding for one exact output and sidecar."""
 
-    artifact: ArtifactIdentity
+    artifact: ArtifactIdentity | None
     sidecar_sha256: str
+    manifest: ManifestRootIdentity | None = None
 
     def __post_init__(self) -> None:
         _require_sha256(self.sidecar_sha256, label="completion sidecar_sha256")
+        if (self.artifact is None) == (self.manifest is None):
+            raise ValueError("completion output requires exactly one artifact or manifest identity")
+
+    @property
+    def location(self) -> CanonicalArtifactLocation:
+        if self.artifact is not None:
+            return self.artifact.location
+        assert self.manifest is not None
+        return self.manifest.location
 
 
 @dataclass(frozen=True, slots=True)
@@ -1372,7 +1888,7 @@ class AuthenticatedCompletion:
             raise ValueError("completion state must be complete_valid or blocked_by_cap")
         if self.state == CompletionState.COMPLETE_VALID.value and not self.outputs:
             raise ValueError("complete_valid requires at least one output")
-        locations = [output.artifact.location for output in self.outputs]
+        locations = [output.location for output in self.outputs]
         if len(locations) != len(set(locations)):
             raise ValueError("completion outputs must have unique canonical locations")
         if locations != sorted(locations, key=canonical_json_bytes):
@@ -1398,7 +1914,8 @@ def _load_completion(path: Path) -> AuthenticatedCompletion:
         _construct(
             CompletionOutputIdentity,
             item,
-            artifact=_parse_artifact(item["artifact"]),
+            artifact=(None if item["artifact"] is None else _parse_artifact(item["artifact"])),
+            manifest=(None if item.get("manifest") is None else _parse_manifest(item["manifest"])),
         )
         for item in payload["outputs"]
     )
@@ -1419,6 +1936,9 @@ def classify_authenticated_lifecycle(
 ) -> CompletionState:
     """Classify authenticated work into exactly one canonical lifecycle state."""
 
+    # Retained for API compatibility with callers that own same-run configs;
+    # v3 source validation below is path-independent for cross-root consumers.
+    _ = source_configs, manifest_configs
     materialized = any(location.path(cfg).exists() for location in required_locations) or any(
         path.exists() for path in partial_paths
     )
@@ -1433,24 +1953,64 @@ def classify_authenticated_lifecycle(
     if completion.state == CompletionState.BLOCKED_BY_CAP.value:
         return CompletionState.BLOCKED_BY_CAP
     expected_paths = {location.path(cfg).resolve(): location for location in required_locations}
-    recorded = {output.artifact.location: output for output in completion.outputs}
+    recorded = {output.location: output for output in completion.outputs}
     if set(recorded) != set(required_locations):
         return CompletionState.COMPLETE_STALE
     try:
         for path, location in expected_paths.items():
             output = recorded[location]
-            metadata = validate_authenticated_artifact(
-                path,
-                cfg=cfg,
-                expected_location=location,
-                expected_stage_identity=expected_stage_identity,
-                expected_sidecar_sha256=output.sidecar_sha256,
-                source_paths=source_paths,
-                source_configs=source_configs,
-                manifest_paths=manifest_paths,
-                manifest_configs=manifest_configs,
+            if output.manifest is not None:
+                manifest = load_immutable_manifest_sidecar(path)
+                if (
+                    manifest.location != location
+                    or manifest.stage_identity.versions != expected_stage_identity.versions
+                    or manifest.stage_identity.code != expected_stage_identity.code
+                    or manifest.stage_identity.stage_config.sha256
+                    != expected_stage_identity.stage_config.sha256
+                    or sha256_file(path) != manifest.manifest_sha256
+                    or sha256_file(sidecar_path(path)) != output.sidecar_sha256
+                    or output.manifest.manifest_sha256 != manifest.manifest_sha256
+                    or output.manifest.summary != manifest.summary
+                ):
+                    return CompletionState.COMPLETE_STALE
+                continue
+            assert output.artifact is not None
+            location.require_path(cfg, path)
+            declared = load_authenticated_sidecar(path)
+            source_roles = {item.logical_role for item in declared.source_artifacts}
+            manifest_roles = {item.logical_role for item in declared.manifest_roots}
+            resolved_sources = (
+                None
+                if not source_roles
+                else {
+                    role: source_paths[role]
+                    for role in source_roles
+                    if source_paths is not None and role in source_paths
+                }
             )
-            if metadata.artifact != output.artifact:
+            resolved_manifests = (
+                None
+                if not manifest_roles
+                else {
+                    role: manifest_paths[role]
+                    for role in manifest_roles
+                    if manifest_paths is not None and role in manifest_paths
+                }
+            )
+            metadata = validate_authenticated_artifact_unbound(
+                path,
+                expected_location=location,
+                expected_versions=expected_stage_identity.versions,
+                source_paths=resolved_sources,
+                manifest_paths=resolved_manifests,
+            )
+            if (
+                sha256_file(sidecar_path(path)) != output.sidecar_sha256
+                or metadata.artifact != output.artifact
+                or metadata.stage_identity.code != expected_stage_identity.code
+                or metadata.stage_identity.stage_config.sha256
+                != expected_stage_identity.stage_config.sha256
+            ):
                 return CompletionState.COMPLETE_STALE
     except AuthenticatedContractError:
         return CompletionState.COMPLETE_STALE
@@ -1476,6 +2036,8 @@ def finalize_missing_sidecar_atomic(
     completion output identity.
     """
 
+    if completion_output.artifact is None:
+        raise ArtifactMismatchError("artifact sidecar recovery requires an artifact completion")
     artifact_path = expected_sidecar.artifact.location.require_path(cfg, path)
     metadata_path = sidecar_path(artifact_path)
     if metadata_path.exists():
@@ -1497,6 +2059,7 @@ def finalize_missing_sidecar_atomic(
         location=expected_sidecar.artifact.location,
         schema_version=expected_sidecar.versions.schema_version,
         logical_operation=expected_sidecar.method_contract.procedure,
+        format_identity=expected_sidecar.artifact.format_identity,
     )
     if current != expected_sidecar.artifact or completion_output.artifact != current:
         raise ArtifactMismatchError(
@@ -1532,6 +2095,7 @@ def finalize_missing_sidecar_atomic(
 __all__ = [
     "ARTIFACT_CONTRACT_VERSION",
     "LIFECYCLE_CONTRACT_VERSION",
+    "ArtifactFormatIdentity",
     "ArtifactIdentity",
     "ArtifactMismatchError",
     "AuthenticatedCompletion",
@@ -1557,10 +2121,12 @@ __all__ = [
     "canonical_json_bytes",
     "capture_manifest_root",
     "capture_source_artifact",
+    "capture_source_artifact_unbound",
     "classify_authenticated_lifecycle",
     "compute_manifest_root",
     "derive_canonical_location",
     "finalize_missing_sidecar_atomic",
+    "file_format_identity",
     "identity_sha256",
     "load_authenticated_sidecar",
     "load_immutable_manifest_sidecar",
@@ -1568,9 +2134,13 @@ __all__ = [
     "make_stage_identity",
     "parquet_schema_identity",
     "publish_authenticated_parquet_atomic",
+    "publish_authenticated_file_atomic",
+    "publish_staged_authenticated_artifact_atomic",
     "publish_immutable_manifest_atomic",
+    "publish_immutable_manifest_bytes_atomic",
     "resolve_code_identity",
     "stage_config_identity",
     "validate_authenticated_artifact",
+    "validate_authenticated_artifact_unbound",
     "write_authenticated_completion_atomic",
 ]

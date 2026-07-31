@@ -5,6 +5,7 @@ This entry point streams over experiment outputs, validates schemas, and
 writes player-count-specific shards that feed the downstream combine and
 metrics stages.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -22,6 +23,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from farkle.config import AppConfig, ArtifactScope, load_app_config
+from farkle.simulation.runner import simulation_is_complete
 from farkle.simulation.simulation import validate_simulation_row
 from farkle.utils.artifact_contract import (
     ArtifactSidecar,
@@ -37,6 +39,7 @@ from farkle.utils.parallel import (
     resolve_stage_parallel_policy,
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
+from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import (
     OUTCOME_SCHEMA_VERSION,
     TOURNAMENT_METHOD_VERSION,
@@ -142,7 +145,23 @@ def _canonical_row_shards(
             "ingest requires a completed canonical row-shard directory with "
             f"manifest.jsonl: {row_dir}"
         )
-    completion = json.loads(completion_path.read_text(encoding="utf-8"))
+    if is_v3_config(cfg):
+        if not simulation_is_complete(cfg, n_players):
+            raise ValueError(f"simulation lifecycle does not authenticate for {n_players} players")
+        workload_path = block / "simulation_workload_plan.json"
+        workload = json.loads(workload_path.read_text(encoding="utf-8"))
+        completion = {
+            "root_seed": cfg.sim.seed,
+            "n_players": n_players,
+            "rng_scheme_version": cfg.rng.scheme_version,
+            "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+            "tournament_method_version": TOURNAMENT_METHOD_VERSION,
+            "shuffle_index_start": 0,
+            "shuffle_index_end": int(workload["required_shuffles"]) - 1,
+            "shuffles_per_batch": int(workload["shuffles_per_batch"]),
+        }
+    else:
+        completion = json.loads(completion_path.read_text(encoding="utf-8"))
     try:
         start = int(completion["shuffle_index_start"])
         end = int(completion["shuffle_index_end"])
@@ -263,8 +282,7 @@ def _iter_shards(shards: list[_RowShard], cols: tuple[str, ...]):
                     )
                 if (
                     row.get("rng_scheme_version") != int(RNG_SCHEME_VERSION)
-                    or row.get("rng_purpose_namespace")
-                    != int(RandomPurpose.TOURNAMENT_GAME)
+                    or row.get("rng_purpose_namespace") != int(RandomPurpose.TOURNAMENT_GAME)
                     or row.get("outcome_schema_version") != OUTCOME_SCHEMA_VERSION
                 ):
                     raise ValueError(f"row shard internal version/namespace mismatch: {row_file}")
@@ -274,7 +292,9 @@ def _iter_shards(shards: list[_RowShard], cols: tuple[str, ...]):
                     or not isinstance(game_index, (int, np.integer))
                     or int(game_index) in game_indices
                 ):
-                    raise ValueError(f"row shard contains duplicate or invalid game key: {row_file}")
+                    raise ValueError(
+                        f"row shard contains duplicate or invalid game key: {row_file}"
+                    )
                 game_indices.add(int(game_index))
                 validate_simulation_row(row)
             yield table.select(present).to_pandas(), row_file

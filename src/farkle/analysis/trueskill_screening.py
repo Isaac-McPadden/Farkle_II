@@ -23,9 +23,11 @@ from farkle.utils.artifact_contract import (
     sha256_file,
     sidecar_path,
     validate_artifact_sidecar,
+    write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.parallel import normalize_n_jobs, resolve_mp_context
+from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.strategy_ids import (
@@ -303,18 +305,34 @@ def publish_rating_cell_contract(
         code_revision=code_revision,
         method_contract=cast(Any, trueskill_method_contract("sequential_rating")),
     )
-    ensure_artifact_sidecar_atomic(
-        cell.ratings_path,
-        sidecar,
-        expected={
-            "scope": ArtifactScope.BY_K.value,
-            "operation": "sequential_rating",
-            "player_counts": [cell.k],
-            "seed_scope": "single_root",
-            "conditioning": TRUESKILL_CONDITIONING,
-            "method_contract": trueskill_method_contract("sequential_rating"),
-        },
-    )
+    if is_v3_config(cfg):
+        if expected_sidecar_sha256 is not None:
+            raise ArtifactContractError(
+                "authenticated v3 cannot reconstruct a missing sidecar from cached bytes"
+            )
+        content = cell.ratings_path.read_bytes()
+
+        def _write_rating(staged: Path) -> None:
+            staged.write_bytes(content)
+
+        write_artifact_with_sidecar_atomic(
+            cell.ratings_path,
+            sidecar,
+            _write_rating,
+        )
+    else:
+        ensure_artifact_sidecar_atomic(
+            cell.ratings_path,
+            sidecar,
+            expected={
+                "scope": ArtifactScope.BY_K.value,
+                "operation": "sequential_rating",
+                "player_counts": [cell.k],
+                "seed_scope": "single_root",
+                "conditioning": TRUESKILL_CONDITIONING,
+                "method_contract": trueskill_method_contract("sequential_rating"),
+            },
+        )
     if (
         expected_sidecar_sha256 is not None
         and sha256_file(sidecar_path(cell.ratings_path)) != expected_sidecar_sha256

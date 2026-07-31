@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from farkle.analysis.stage_registry import resolve_stage_layout
-from farkle.config import AppConfig, IOConfig, SimConfig, assign_config_sha
+from farkle.config import AppConfig, IOConfig, ScreeningConfig, SimConfig, assign_config_sha
 from farkle.orchestration import two_seed_pipeline
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
@@ -103,6 +103,16 @@ def _install_root_results(
         )
 
     monkeypatch.setattr(two_seed_pipeline, "_run_one_seed", fake_run_one_seed)
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "resolve_code_identity",
+        lambda *_args, **_kwargs: CodeIdentity(
+            commit="a" * 40,
+            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+            state="clean",
+            dirty_fingerprint_sha256=None,
+        ),
+    )
     monkeypatch.setattr(two_seed_pipeline, "validate_manifest_contract", lambda _path: None)
     monkeypatch.setattr(two_seed_pipeline, "append_manifest_event", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(two_seed_pipeline, "write_active_config", lambda *_args, **_kwargs: None)
@@ -118,6 +128,18 @@ def _install_root_results(
         "_root_lifecycle_identity",
         lambda _context, _plan: ("e" * 64, {"simulation_2p": "complete_valid"}),
     )
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "_final_release_gate",
+        lambda *_args, **_kwargs: {
+            "status": "passed",
+            "release_eligible": True,
+            "accepted_release_identity": [3, 2, 2, 2, 2, 2],
+            "artifact_roots": [],
+            "run_contexts": {},
+            "failures": [],
+        },
+    )
 
 
 def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
@@ -127,6 +149,7 @@ def test_two_seed_pipeline_runs_pair_tail_once_at_pair_analysis_root(
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
     _install_root_results(monkeypatch, tmp_path)
     calls: list[RootPairRunContext] = []
@@ -160,6 +183,7 @@ def test_two_seed_pipeline_blocks_pair_tail_after_root_failure(
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
     _install_root_results(monkeypatch, tmp_path, failed_root=22)
     pair_calls: list[object] = []
@@ -190,6 +214,7 @@ def test_pipeline_health_cannot_report_success_over_stale_pair_stage(
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
     _install_root_results(monkeypatch, tmp_path)
     health: dict[str, Any] = {}
@@ -228,6 +253,7 @@ def test_pipeline_health_rechecks_current_rng_diagnostic_freshness(
     cfg = AppConfig(
         io=IOConfig(results_dir_prefix=tmp_path / "results"),
         sim=SimConfig(seed=11, seed_list=[11, 22], n_players_list=[2]),
+        screening=ScreeningConfig(practical_delta_by_k={2: 0.03}, delta_across_k=0.03),
     )
     root_lifecycle_identity = two_seed_pipeline._root_lifecycle_identity
     _install_root_results(monkeypatch, tmp_path)

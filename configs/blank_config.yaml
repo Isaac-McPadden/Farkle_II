@@ -95,9 +95,10 @@ robustness:
   matched_count_fractions:
 
 artifact_contract:
-  artifact_contract_version:
-  estimand_version:
-  schema_version:
+  artifact_contract_version:  # accepted public release value: 3
+  estimand_version:  # accepted public release value: 2
+  schema_version:  # accepted public release value: 2
+  conditioning_version:  # accepted public release value: 2
 
 k_aggregation:
   method:

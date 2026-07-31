@@ -29,7 +29,7 @@ import pandas as pd
 import pyarrow as pa
 
 import farkle.simulation.run_tournament as tournament_mod
-from farkle.config import AppConfig
+from farkle.config import AppConfig, ArtifactScope
 from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
 from farkle.simulation.simulation import experiment_size, generate_strategy_grid
@@ -45,8 +45,23 @@ from farkle.simulation.workload_planner import (
     write_workload_plan,
 )
 from farkle.utils import random as urandom
+from farkle.utils.artifact_contract import (
+    make_artifact_sidecar,
+    sha256_file,
+    sidecar_path,
+    write_artifact_with_sidecar_atomic,
+)
 from farkle.utils.artifacts import write_parquet_atomic
+from farkle.utils.authenticated_contract import (
+    ManifestEntry,
+    load_authenticated_sidecar,
+    validate_authenticated_artifact_unbound,
+)
 from farkle.utils.manifest import iter_manifest
+from farkle.utils.release_identity import (
+    is_v3_config,
+    publish_native_manifest_v3,
+)
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION, TOURNAMENT_METHOD_VERSION
 from farkle.utils.stage_completion import (
     CompletionState,
@@ -243,10 +258,25 @@ def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
     """Return whether the per-N completion authenticates current work exactly."""
 
     done_path = simulation_done_path(cfg, n_players)
+    outputs: list[Path] = []
+    inputs: list[Path] = []
+    if is_v3_config(cfg):
+        try:
+            payload = json.loads(done_path.read_text(encoding="utf-8"))
+            for item in payload["outputs"]:
+                declared = item.get("artifact") or item.get("manifest")
+                location = declared["location"]
+                outputs.append(cfg.results_root / str(location["relative_path"]))
+            inputs = [
+                cfg.strategy_manifest_root_path(),
+                done_path.parent / "simulation_workload_plan.json",
+            ]
+        except (OSError, KeyError, TypeError, json.JSONDecodeError):
+            return False
     state = resolve_stage_state(
         done_path,
-        inputs=[],
-        outputs=[],
+        inputs=inputs,
+        outputs=outputs,
         cfg=cfg,
         stage="simulation",
         stage_config_sha=_simulation_stage_config_sha(cfg, n_players),
@@ -254,6 +284,13 @@ def simulation_is_complete(cfg: AppConfig, n_players: int) -> bool:
     )
     if state is not CompletionState.COMPLETE_VALID:
         return False
+    if is_v3_config(cfg):
+        try:
+            return any(
+                path.resolve().is_relative_to(cfg.n_dir(n_players).resolve()) for path in outputs
+            )
+        except OSError:
+            return False
     try:
         payload = json.loads(done_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
@@ -283,11 +320,174 @@ def _completion_output_files(paths: Sequence[Path], done_path: Path) -> list[Pat
             files.extend(
                 child
                 for child in sorted(path.rglob("*"), key=lambda item: item.as_posix())
-                if child.is_file() and child.resolve() != done_path.resolve()
+                if child.is_file()
+                and child.resolve() != done_path.resolve()
+                and not child.name.endswith(".sidecar.json")
             )
         else:
             files.append(path)
     return list(dict.fromkeys(files))
+
+
+def _publish_simulation_manifest_v3(
+    cfg: AppConfig,
+    *,
+    path: Path,
+    n_players: int,
+) -> None:
+    records = list(iter_manifest(path))
+    entries: list[ManifestEntry] = []
+    for index, record in enumerate(records):
+        raw_path = record.get("path")
+        if not isinstance(raw_path, str):
+            raise ValueError(f"simulation manifest entry is missing a path: {path}")
+        source = Path(raw_path)
+        if not source.is_absolute():
+            source = path.parent / source
+        metadata = load_authenticated_sidecar(source)
+        schema = metadata.artifact.arrow_schema
+        if schema is None:
+            raise ValueError(f"simulation shard is not Parquet: {source}")
+        coordinate_value = record.get(
+            "shuffle_index",
+            record.get("deterministic_batch_id", index),
+        )
+        coordinate = (int(coordinate_value),)
+        entries.append(
+            ManifestEntry(
+                coordinate=coordinate,
+                canonical_relative_path=source.resolve()
+                .relative_to(cfg.results_root.resolve())
+                .as_posix(),
+                data_sha256=sha256_file(source),
+                sidecar_sha256=sha256_file(sidecar_path(source)),
+                schema_fingerprint_sha256=schema.fingerprint_sha256,
+            )
+        )
+    entries.sort(key=lambda item: item.coordinate)
+    publish_native_manifest_v3(
+        path,
+        cfg=cfg,
+        stage_key="simulation",
+        entries=entries,
+        source_paths=[],
+        operation="publish_simulation_shard_manifest",
+        player_counts=[n_players],
+    )
+
+
+def _publish_simulation_outputs_v3(
+    cfg: AppConfig,
+    *,
+    n_players: int,
+    outputs: Sequence[Path],
+    done_path: Path,
+    allow_unsealed_outputs: bool,
+) -> None:
+    if not is_v3_config(cfg):
+        return
+    files = _completion_output_files(outputs, done_path)
+    manifests = [
+        path
+        for path in files
+        if path.suffix.lower() == ".jsonl"
+        and path.name in {"manifest.jsonl", "metrics_manifest.jsonl"}
+    ]
+    ordinary = [path for path in files if path not in manifests]
+    strategy = cfg.strategy_manifest_root_path()
+    workload = done_path.parent / "simulation_workload_plan.json"
+    ordered = sorted(
+        ordinary,
+        key=lambda path: (
+            0
+            if path.resolve() == strategy.resolve()
+            else 1
+            if path.resolve() == workload.resolve()
+            else 2,
+            path.as_posix(),
+        ),
+    )
+    for path in ordered:
+        if not path.is_file() or path.stat().st_size <= 0:
+            raise FileNotFoundError(f"simulation output is missing or empty: {path}")
+        adjacent = sidecar_path(path)
+        if adjacent.is_file():
+            try:
+                payload = json.loads(adjacent.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                payload = {}
+            if payload.get("artifact_contract_version") == 3:
+                validate_authenticated_artifact_unbound(path, validate_provenance=False)
+                continue
+            raise ValueError(f"legacy sidecar cannot satisfy simulation v3: {path}")
+        if not allow_unsealed_outputs:
+            raise ValueError(
+                "refusing to promote pre-existing simulation bytes into artifact "
+                f"contract v3: {path}"
+            )
+        sources: list[Path] = []
+        if path.resolve() != strategy.resolve():
+            sources.append(strategy)
+        if path.resolve() not in {strategy.resolve(), workload.resolve()}:
+            sources.append(workload)
+        operation = (
+            "publish_strategy_manifest"
+            if path.resolve() == strategy.resolve()
+            else "publish_simulation_workload_plan"
+            if path.resolve() == workload.resolve()
+            else "publish_simulation_output"
+        )
+        support_counts = (
+            sorted({int(value) for value in cfg.sim.n_players_list})
+            if path.resolve() == strategy.resolve()
+            else [n_players]
+        )
+        metadata = make_artifact_sidecar(
+            cfg,
+            path,
+            producer="simulation",
+            scope=ArtifactScope.DIAGNOSTICS,
+            source_scope=ArtifactScope.DIAGNOSTICS,
+            operation=operation,
+            baseline="tournament_design",
+            weighted_quantity="raw_simulation_evidence",
+            support_count_role="root_k_simulation",
+            uncertainty_method="deterministic_monte_carlo",
+            replication_unit="shuffle",
+            conditioning="all_attempted_games",
+            source_artifacts=sources,
+            player_counts=support_counts,
+            required_player_counts=support_counts,
+            missing_cell_policy="fail",
+            seed_scope="single_root",
+            method_contract={
+                "kind": "operation",
+                "procedure": operation,
+                "parameters": {
+                    "tournament_method_version": TOURNAMENT_METHOD_VERSION,
+                    "outcome_schema_version": OUTCOME_SCHEMA_VERSION,
+                },
+            },
+        )
+        existing = path.read_bytes()
+        def _write_existing(
+            staged: Path,
+            *,
+            content: bytes = existing,
+        ) -> None:
+            staged.write_bytes(content)
+
+        write_artifact_with_sidecar_atomic(
+            path,
+            metadata,
+            _write_existing,
+        )
+    for manifest in manifests:
+        _publish_simulation_manifest_v3(
+            cfg,
+            path=manifest,
+            n_players=n_players,
+        )
 
 
 def write_simulation_done(
@@ -298,6 +498,7 @@ def write_simulation_done(
     shuffles_per_batch: int,
     n_strategies: int,
     outputs: Sequence[Path],
+    allow_unsealed_v3_outputs: bool = False,
 ) -> Path:
     """Write a completion marker for a per-N simulation run."""
     done_path = simulation_done_path(cfg, n_players)
@@ -321,6 +522,13 @@ def write_simulation_done(
     }
     if cfg._game_profile_sha256 is not None:
         metadata["game_profile_sha256"] = cfg._game_profile_sha256
+    _publish_simulation_outputs_v3(
+        cfg,
+        n_players=n_players,
+        outputs=outputs,
+        done_path=done_path,
+        allow_unsealed_outputs=allow_unsealed_v3_outputs,
+    )
     output_files = _completion_output_files(outputs, done_path)
     immutable_inputs = [
         cfg.strategy_manifest_root_path(),
@@ -476,19 +684,30 @@ def _purge_simulation_outputs(
     done_path = n_dir / "simulation.done.json"
     ckpt_parquet = n_dir / f"{n_players}p_checkpoint.parquet"
     metrics_parquet = n_dir / f"{n_players}p_metrics.parquet"
-    _remove_paths([ckpt_path, ckpt_parquet, metrics_parquet, strategy_manifest_path, done_path])
+    ordinary = [
+        ckpt_path,
+        ckpt_parquet,
+        metrics_parquet,
+        strategy_manifest_path,
+        n_dir / "simulation_workload_plan.json",
+    ]
+    _remove_paths([*ordinary, *(sidecar_path(path) for path in ordinary), done_path])
 
     if row_dir is not None and row_dir.exists():
         if row_dir == n_dir:
-            _remove_paths(list(row_dir.glob("rows_*.parquet")))
-            _remove_paths([row_dir / "manifest.jsonl"])
+            rows = list(row_dir.glob("rows_*.parquet"))
+            manifest = row_dir / "manifest.jsonl"
+            _remove_paths([*rows, *(sidecar_path(path) for path in rows)])
+            _remove_paths([manifest, sidecar_path(manifest)])
         else:
             _remove_paths([row_dir])
 
     if metric_chunk_dir is not None and metric_chunk_dir.exists():
         if metric_chunk_dir == n_dir:
-            _remove_paths(list(metric_chunk_dir.glob("metrics_*.parquet")))
-            _remove_paths([metric_chunk_dir / "metrics_manifest.jsonl"])
+            chunks = list(metric_chunk_dir.glob("metrics_*.parquet"))
+            manifest = metric_chunk_dir / "metrics_manifest.jsonl"
+            _remove_paths([*chunks, *(sidecar_path(path) for path in chunks)])
+            _remove_paths([manifest, sidecar_path(manifest)])
         else:
             _remove_paths([metric_chunk_dir])
 
@@ -535,6 +754,34 @@ def _has_existing_outputs(
         if next(metric_chunk_dir.glob("metrics_*.parquet"), None) is not None:
             return True
     return False
+
+
+def _has_unsealed_simulation_outputs(
+    *,
+    n_dir: Path,
+    row_dir: Path | None,
+    metric_chunk_dir: Path | None,
+    strategy_manifest_path: Path,
+) -> bool:
+    """Detect pre-v3 bytes that must never be blessed by a later completion."""
+
+    candidates = [strategy_manifest_path]
+    roots = {n_dir.resolve()}
+    if row_dir is not None:
+        roots.add(row_dir.resolve())
+    if metric_chunk_dir is not None:
+        roots.add(metric_chunk_dir.resolve())
+    for root in roots:
+        if root.is_dir():
+            candidates.extend(
+                path
+                for path in root.rglob("*")
+                if path.is_file()
+                and not path.name.endswith(".sidecar.json")
+                and not path.name.endswith(".done.json")
+                and not path.name.startswith("._")
+            )
+    return any(path.is_file() and not sidecar_path(path).is_file() for path in candidates)
 
 
 def _validate_resume_outputs(
@@ -850,12 +1097,20 @@ def run_single_n(
     n_dir = results_dir / f"{n}_players"
     n_dir.mkdir(parents=True, exist_ok=True)
     workload_plan_path = n_dir / "simulation_workload_plan.json"
-    write_workload_plan(workload_plan_path, workload_plan)
+    row_dir = _resolve_row_output_dir(cfg, n)
+    metric_chunk_dir = _resolve_metric_chunk_dir(cfg, n)
+    had_unsealed_v3_outputs = is_v3_config(cfg) and _has_unsealed_simulation_outputs(
+        n_dir=n_dir,
+        row_dir=row_dir,
+        metric_chunk_dir=metric_chunk_dir,
+        strategy_manifest_path=cfg.strategy_manifest_root_path(),
+    )
     LOGGER.info(
         "Tournament workload plan resolved",
         extra={"stage": "simulation", **workload_plan.to_dict()},
     )
     if workload_plan.cap_exceeded:
+        write_workload_plan(workload_plan_path, workload_plan)
         LOGGER.error(
             "Tournament workload blocked by configured cap",
             extra={"stage": "simulation", **workload_plan.to_dict()},
@@ -876,8 +1131,11 @@ def run_single_n(
             "checkpoint_exists": checkpoint_exists,
         },
     )
-    row_dir = _resolve_row_output_dir(cfg, n)
-    metric_chunk_dir = _resolve_metric_chunk_dir(cfg, n)
+    if had_unsealed_v3_outputs and not force:
+        raise ValueError(
+            "artifact contract v3 found pre-existing simulation bytes without "
+            "authenticated sidecars; use --force or a new configured output root"
+        )
     manifest = build_strategy_manifest(strategies)
     if force:
         _purge_simulation_outputs(
@@ -904,6 +1162,7 @@ def run_single_n(
             row_dir=row_dir,
             metric_chunk_dir=metric_chunk_dir,
         )
+    write_workload_plan(workload_plan_path, workload_plan)
     if not manifest.empty:
         manifest_path = cfg.strategy_manifest_root_path()
         if not manifest_path.exists():
@@ -1071,14 +1330,25 @@ def run_single_n(
         outputs.append(row_dir)
     if metric_chunk_dir is not None and metric_chunk_dir.exists():
         outputs.append(metric_chunk_dir)
-    write_simulation_done(
-        cfg,
-        n,
-        num_shuffles=n_shuffles,
-        shuffles_per_batch=workload_plan.shuffles_per_batch,
-        n_strategies=grid_size,
-        outputs=outputs,
-    )
+    if is_v3_config(cfg):
+        write_simulation_done(
+            cfg,
+            n,
+            num_shuffles=n_shuffles,
+            shuffles_per_batch=workload_plan.shuffles_per_batch,
+            n_strategies=grid_size,
+            outputs=outputs,
+            allow_unsealed_v3_outputs=force or not had_unsealed_v3_outputs,
+        )
+    else:
+        write_simulation_done(
+            cfg,
+            n,
+            num_shuffles=n_shuffles,
+            shuffles_per_batch=workload_plan.shuffles_per_batch,
+            n_strategies=grid_size,
+            outputs=outputs,
+        )
 
     return total_games
 

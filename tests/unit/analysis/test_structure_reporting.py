@@ -17,6 +17,7 @@ from farkle.analysis.trueskill_screening import TRUESKILL_CONDITIONING
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
 from farkle.utils.artifacts import write_json_artifact_atomic, write_parquet_artifact_atomic
+from farkle.utils.authenticated_contract import load_authenticated_sidecar
 from farkle.utils.stage_completion import stage_done_path
 
 
@@ -340,7 +341,12 @@ def test_reporting_writes_sidecar_validated_json_markdown_and_plot(tmp_path: Pat
             encoding="utf-8"
         )
     )
-    assert completion["freshness_key"]["structure_report_contract_version"] == 4
+    assert completion["state"] == "complete_valid"
+    assert len(completion["stage_identity_sha256"]) == 64
+    assert completion["outputs"]
+    report_identity = load_authenticated_sidecar(cfg.structure_report_json_path())
+    assert report_identity.versions.artifact_contract_version == 3
+    assert report_identity.versions.method_versions["structure_report_contract_version"] == 4
     assert report["performance"]["primary_rate"] == "win_rate_per_attempt"
     assert report["safety_limits"]["games_attempted"] == 10
     assert report["safety_limits"]["games_completed"] == 10

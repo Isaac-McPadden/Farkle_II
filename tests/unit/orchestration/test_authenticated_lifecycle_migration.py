@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from farkle.analysis.stage_registry import resolve_stage_layout
@@ -23,6 +25,8 @@ from farkle.orchestration.run_contexts import (
 )
 from farkle.orchestration.seed_utils import write_active_config
 from farkle.simulation import runner
+from farkle.utils.artifact_contract import make_artifact_sidecar, sidecar_path
+from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.authenticated_contract import CodeIdentity, CodeIdentityPolicy
 from farkle.utils.stage_completion import (
     CompletionState,
@@ -56,6 +60,34 @@ def _cfg(tmp_path: Path, *, root: int = 11) -> AppConfig:
     return cfg
 
 
+def _publish_table(
+    cfg: AppConfig,
+    path: Path,
+    *,
+    producer: str,
+    sources: list[Path] | None = None,
+) -> None:
+    table = pa.table({"value": [1]})
+    scope = "by_k" if "by_k" in path.parts else "cross_seed"
+    write_parquet_artifact_atomic(
+        table,
+        path,
+        sidecar=make_artifact_sidecar(
+            cfg,
+            path,
+            producer=producer,
+            scope=scope,
+            source_scope="by_k",
+            operation=f"publish_{producer}_test",
+            consistency_columns=table.schema.names,
+            source_artifacts=sources or [],
+            player_counts=[2],
+            required_player_counts=[2],
+            missing_cell_policy="fail",
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     "mutation",
     ("grid", "strategy_manifest", "output", "sidecar", "code", "method"),
@@ -70,33 +102,39 @@ def test_simulation_completion_mutation_matrix(
     n_dir.mkdir(parents=True)
     strategy_manifest = cfg.strategy_manifest_root_path()
     strategy_manifest.parent.mkdir(parents=True, exist_ok=True)
-    strategy_manifest.write_bytes(b"strategy-grid-v1")
-    (n_dir / "simulation_workload_plan.json").write_text("{}", encoding="utf-8")
+    pq.write_table(
+        pa.table({"strategy_id": pa.array([1, 2], type=pa.int32())}),
+        strategy_manifest,
+    )
+    workload = n_dir / "simulation_workload_plan.json"
+    workload.write_text("{}", encoding="utf-8")
     output = n_dir / "2p_checkpoint.pkl"
     output.write_bytes(b"output-v1")
-    output.with_name(f"{output.name}.sidecar.json").write_text("sidecar-v1", encoding="utf-8")
     runner.write_simulation_done(
         cfg,
         2,
         num_shuffles=2,
         shuffles_per_batch=1,
         n_strategies=2,
-        outputs=[output],
+        outputs=[strategy_manifest, workload, output],
+        allow_unsealed_v3_outputs=True,
     )
     assert runner.simulation_is_complete(cfg, 2)
 
     if mutation == "grid":
         cfg.sim.score_thresholds = [999]
     elif mutation == "strategy_manifest":
-        strategy_manifest.write_bytes(b"strategy-grid-v2")
+        strategy_manifest.write_bytes(strategy_manifest.read_bytes() + b"mutation")
     elif mutation == "output":
         output.write_bytes(b"output-v2")
     elif mutation == "sidecar":
-        output.with_name(f"{output.name}.sidecar.json").write_text("sidecar-v2", encoding="utf-8")
+        sidecar_path(output).write_text("sidecar-v2", encoding="utf-8")
     elif mutation == "code":
         cfg._code_identity = _code("b" * 40)
     else:
-        monkeypatch.setattr("farkle.utils.schema_helpers.TOURNAMENT_METHOD_VERSION", 99)
+        metadata = json.loads(sidecar_path(output).read_text(encoding="utf-8"))
+        metadata["versions"]["method_versions"]["tournament_method_version"] = 99
+        sidecar_path(output).write_text(json.dumps(metadata), encoding="utf-8")
 
     assert not runner.simulation_is_complete(cfg, 2)
 
@@ -107,12 +145,11 @@ def test_simulation_completion_mutation_matrix(
 )
 def test_root_stage_completion_mutation_matrix(tmp_path: Path, mutation: str) -> None:
     cfg = _cfg(tmp_path)
-    source = tmp_path / "source.parquet"
-    output = tmp_path / "output.parquet"
-    sidecar = output.with_name(f"{output.name}.sidecar.json")
-    source.write_bytes(b"input-v1")
-    output.write_bytes(b"output-v1")
-    sidecar.write_text("sidecar-v1", encoding="utf-8")
+    source = cfg.combined_rows_by_k(2)
+    output = cfg.metrics_all_player_batch_path(2)
+    _publish_table(cfg, source, producer="combine")
+    _publish_table(cfg, output, producer="metrics", sources=[source])
+    adjacent = sidecar_path(output)
     done = stage_done_path(cfg.metrics_stage_dir, "metrics")
     write_stage_done(done, inputs=[source], outputs=[output], cfg=cfg, stage="metrics")
     assert (
@@ -125,7 +162,7 @@ def test_root_stage_completion_mutation_matrix(tmp_path: Path, mutation: str) ->
     elif mutation == "output":
         output.write_bytes(b"output-v2")
     elif mutation == "sidecar":
-        sidecar.write_text("sidecar-v2", encoding="utf-8")
+        adjacent.write_text("sidecar-v2", encoding="utf-8")
     elif mutation == "stage_config":
         cfg.screening.resolution_delta = 0.8
     elif mutation == "code":
@@ -141,10 +178,10 @@ def test_root_stage_completion_mutation_matrix(tmp_path: Path, mutation: str) ->
 
 def test_runtime_only_change_does_not_stale_root_stage(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    source = tmp_path / "source"
-    output = tmp_path / "output"
-    source.write_text("input", encoding="utf-8")
-    output.write_text("output", encoding="utf-8")
+    source = cfg.combined_rows_by_k(2)
+    output = cfg.metrics_all_player_batch_path(2)
+    _publish_table(cfg, source, producer="combine")
+    _publish_table(cfg, output, producer="metrics", sources=[source])
     done = stage_done_path(cfg.metrics_stage_dir, "metrics")
     write_stage_done(done, inputs=[source], outputs=[output], cfg=cfg, stage="metrics")
 
@@ -160,7 +197,10 @@ def test_runtime_only_change_does_not_stale_root_stage(tmp_path: Path) -> None:
 def test_pair_public_config_and_context_round_trip_bind_parent_and_stage_hashes(
     tmp_path: Path,
 ) -> None:
-    roots = tuple(SeedRunContext.from_config(_cfg(tmp_path, root=root)) for root in (11, 22))
+    roots = (
+        SeedRunContext.from_config(_cfg(tmp_path, root=11)),
+        SeedRunContext.from_config(_cfg(tmp_path, root=22)),
+    )
     pair = RootPairRunContext.from_root_contexts(roots, pair_root=tmp_path / "pair")
     parents = ("2" * 64, "3" * 64)
     write_run_context_atomic(pair, code_identity=_code(), parent_lifecycle_roots=parents)
@@ -178,22 +218,19 @@ def test_pair_public_config_and_context_round_trip_bind_parent_and_stage_hashes(
     assert tuple(persisted_context["parent_lifecycle_roots"]) == parents
     assert persisted_context["run_lineage_sha256"] == pair.config._run_lineage_sha256
 
-    source = tmp_path / "root-input"
-    source.write_text("root", encoding="utf-8")
     output = pair.config.root_discrepancies_path()
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text("pair-output", encoding="utf-8")
+    _publish_table(pair.config, output, producer="root_stability")
     done = stage_done_path(pair.config.stage_dir("root_stability"), "root_stability")
     write_stage_done(
         done,
-        inputs=[source],
+        inputs=[],
         outputs=[output],
         cfg=pair.config,
         stage="root_stability",
     )
     stamp = json.loads(done.read_text(encoding="utf-8"))
-    assert stamp["config_sha"] == pair.config.config_sha
-    assert stamp["run_lineage_sha256"] == persisted_context["run_lineage_sha256"]
+    assert stamp["state"] == CompletionState.COMPLETE_VALID.value
+    assert stamp["outputs"]
 
     configure_run_lineage(
         pair,
@@ -203,7 +240,7 @@ def test_pair_public_config_and_context_round_trip_bind_parent_and_stage_hashes(
     assert (
         resolve_stage_state(
             done,
-            [source],
+            [],
             [output],
             cfg=pair.config,
             stage="root_stability",

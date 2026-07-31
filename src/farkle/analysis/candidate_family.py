@@ -30,6 +30,7 @@ from farkle.utils.artifacts import (
     write_json_artifact_atomic,
     write_parquet_artifact_atomic,
 )
+from farkle.utils.authenticated_contract import load_authenticated_sidecar
 from farkle.utils.stage_completion import (
     stage_done_path,
     stage_is_up_to_date,
@@ -175,6 +176,10 @@ def _load_win_rate_contribution(
         if sidecar.scope != ArtifactScope.CROSS_SEED.value:
             raise ArtifactContractError(
                 "two-root candidate freezing requires the cross_seed win-rate contribution"
+            )
+        if sidecar.seed_scope != "root_pair_stability":
+            raise ArtifactContractError(
+                "two-root candidate freezing requires root_pair_stability seed scope"
             )
         required = {"estimate_scope", "strategy", "across_k_score", "complete_support"}
         missing = sorted(required.difference(schema.names))
@@ -491,6 +496,7 @@ def freeze_h2h_candidate_family(
     final_ts = _top_set(trueskill, final_cutoffs["trueskill"])
     candidates = sorted(family)
     pair_count = len(candidates) * (len(candidates) - 1) // 2
+    trueskill_authenticated = load_authenticated_sidecar(ts_path)
     source_identity = {
         "win_rate": {
             "artifact_name": win_rate.sidecar.artifact_name,
@@ -504,7 +510,12 @@ def freeze_h2h_candidate_family(
             "estimand_version": trueskill.sidecar.estimand_version,
             "schema_version": trueskill.sidecar.schema_version,
             "rng_scheme_version": trueskill.sidecar.rng_scheme_version,
-            "method_contract": trueskill.sidecar.method_contract,
+            "outcome_schema_version": trueskill_authenticated.versions.outcome_schema_version,
+            "conditioning_version": (
+                trueskill_authenticated.versions.conditioning_version
+            ),
+            "method_contract_sha256": trueskill_authenticated.method_contract.sha256,
+            "stage_identity_sha256": trueskill_authenticated.stage_identity.sha256,
             "conditioning": trueskill.sidecar.conditioning,
         },
     }

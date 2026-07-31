@@ -35,11 +35,16 @@ import pyarrow.dataset as ds
 
 from farkle.analysis import stage_logger
 from farkle.config import AppConfig, ArtifactScope
-from farkle.utils.artifact_contract import MethodContract, make_artifact_sidecar
+from farkle.utils.artifact_contract import (
+    MethodContract,
+    make_artifact_sidecar,
+    validate_artifact_sidecar,
+)
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.parallel import apply_native_thread_limits, resolve_stage_parallel_policy
 from farkle.utils.progress import ScheduledProgressLogger
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
+from farkle.utils.release_identity import is_v3_config
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 LOGGER = logging.getLogger(__name__)
@@ -115,6 +120,14 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     if not data_file.exists():
         stage_log.missing_input("missing curated parquet", path=str(data_file))
         return
+    if is_v3_config(cfg):
+        validate_artifact_sidecar(
+            data_file,
+            expected={
+                "scope": ArtifactScope.CONCAT_KS.value,
+                "operation": "concatenate",
+            },
+        )
 
     stage_config_sha = _rng_stage_config_sha(cfg, lags)
     if not force and stage_is_up_to_date(
@@ -245,6 +258,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         stamp_path,
         inputs=[data_file],
         outputs=[out_file],
+        cfg=cfg,
         config_sha=cfg.config_sha,
         stage="rng_diagnostics",
         stage_config_sha=stage_config_sha,

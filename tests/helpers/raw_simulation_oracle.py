@@ -151,9 +151,10 @@ def write_tiny_oracle_config(tmp_path: Path) -> Path:
             "matched_count_fractions": [1.0],
         },
         "artifact_contract": {
-            "artifact_contract_version": 2,
-            "estimand_version": 1,
-            "schema_version": 1,
+            "artifact_contract_version": 3,
+            "estimand_version": 2,
+            "schema_version": 2,
+            "conditioning_version": 2,
         },
         "k_aggregation": {"method": "equal-k", "k_weights": None},
         "hgb": {

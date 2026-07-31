@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pyarrow as pa
 import pytest
 
 from farkle.analysis.stage_runner import (
@@ -14,12 +15,34 @@ from farkle.analysis.stage_runner import (
     StageRunner,
     StageValidationError,
 )
-from farkle.config import AppConfig, IOConfig
+from farkle.config import AppConfig, ArtifactScope, IOConfig
+from farkle.utils.artifact_contract import ArtifactContractError, make_artifact_sidecar
+from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.stage_completion import stage_done_path, write_stage_done
 
 
 def _manifest_lines(path: Path) -> list[dict[str, object]]:
     return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+
+def _write_authenticated_output(cfg: AppConfig, output: Path) -> None:
+    table = pa.table({"value": [1]})
+    write_parquet_artifact_atomic(
+        table,
+        output,
+        sidecar=make_artifact_sidecar(
+            cfg,
+            output,
+            producer="h2h_inference",
+            scope=ArtifactScope.H2H_2P,
+            source_scope=ArtifactScope.H2H_2P,
+            operation="test_h2h_inference_output",
+            consistency_columns=table.schema.names,
+            player_counts=[2],
+            required_player_counts=[2],
+            missing_cell_policy="fail",
+        ),
+    )
 
 
 def test_stage_runner_marks_failed_when_required_output_missing_and_stops_downstream(
@@ -75,8 +98,7 @@ def test_stage_runner_rejects_unsuccessful_declared_completion_stamp(
     calls: list[str] = []
 
     def _action(_cfg: AppConfig) -> None:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("complete", encoding="utf-8")
+        _write_authenticated_output(cfg, output)
         if status == "invalid":
             stamp.parent.mkdir(parents=True, exist_ok=True)
             stamp.write_text("not json", encoding="utf-8")
@@ -116,7 +138,12 @@ def test_stage_runner_rejects_unsuccessful_declared_completion_stamp(
     ]
     context = StageRunContext(config=cfg, manifest_path=manifest_path, run_label="pair")
 
-    with pytest.raises(StageCompletionError, match=status):
+    expected_errors = (
+        (StageCompletionError, ArtifactContractError)
+        if status == "failed"
+        else StageCompletionError
+    )
+    with pytest.raises(expected_errors):
         StageRunner.run(plan, context)
 
     assert calls == []
@@ -130,8 +157,7 @@ def test_stage_runner_accepts_successful_declared_completion_stamp(tmp_path: Pat
     calls: list[str] = []
 
     def _action(_cfg: AppConfig) -> None:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("complete", encoding="utf-8")
+        _write_authenticated_output(cfg, output)
         write_stage_done(
             stamp,
             inputs=[],
@@ -168,8 +194,7 @@ def test_stage_runner_validates_declared_stage_specific_freshness(tmp_path: Path
     freshness_key = {**cfg.freshness_key(), "method_version": 99}
 
     def _action(_cfg: AppConfig) -> None:
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_text("complete", encoding="utf-8")
+        _write_authenticated_output(cfg, output)
         write_stage_done(
             stamp,
             inputs=[],

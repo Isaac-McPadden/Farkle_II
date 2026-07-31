@@ -18,8 +18,11 @@ from farkle.utils.artifact_contract import (
     ArtifactSidecar,
     ensure_artifact_sidecar_atomic,
     make_artifact_sidecar,
+    validate_artifact_sidecar,
     write_artifact_with_sidecar_atomic,
 )
+from farkle.utils.artifacts import write_json_artifact_atomic
+from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import expected_schema_for, n_players_from_schema
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.writer import atomic_path
@@ -115,6 +118,28 @@ def _write_manifest(
         "created_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    if is_v3_config(cfg):
+        source = cfg.ingested_rows_curated(n_players)
+        sidecar = make_artifact_sidecar(
+            cfg,
+            manifest_path,
+            producer="curate",
+            scope=ArtifactScope.BY_K,
+            source_scope=ArtifactScope.BY_K,
+            operation="curated_schema_manifest",
+            weighted_quantity="schema_and_row_count",
+            support_count_role="curated_rows",
+            uncertainty_method="none",
+            replication_unit="curated_artifact",
+            conditioning="unconditional",
+            source_artifacts=[source],
+            player_counts=[n_players],
+            required_player_counts=[n_players],
+            missing_cell_policy="fail",
+            seed_scope="single_root",
+        )
+        write_json_artifact_atomic(payload, manifest_path, sidecar=sidecar)
+        return
     with atomic_path(str(manifest_path)) as staged:
         Path(staged).write_text(
             json.dumps(payload, indent=2, sort_keys=True) + "\n",
@@ -178,6 +203,14 @@ def run(cfg: AppConfig) -> None:
     for n_players, raw, output, manifest in zip(
         player_counts, raw_files, curated_files, manifests, strict=True
     ):
+        if is_v3_config(cfg):
+            validate_artifact_sidecar(
+                raw,
+                expected={
+                    "scope": ArtifactScope.BY_K.value,
+                    "operation": "ingest_simulation_rows",
+                },
+            )
         metadata = pq.read_metadata(raw)
         schema = metadata.schema.to_arrow_schema()
         expected = expected_schema_for(n_players_from_schema(schema))

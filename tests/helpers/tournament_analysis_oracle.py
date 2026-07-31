@@ -39,11 +39,14 @@ from farkle.utils.artifact_contract import (
     sidecar_path,
     validate_artifact_sidecar,
 )
+from farkle.utils.authenticated_contract import (
+    load_authenticated_sidecar,
+    validate_authenticated_artifact_unbound,
+)
 from farkle.utils.schema_helpers import expected_schema_for, raw_simulation_schema_for
 from farkle.utils.stage_completion import (
     CompletionState,
     freshness_sha256,
-    read_stage_done,
     resolve_stage_state,
 )
 
@@ -332,11 +335,11 @@ def assert_root_pipeline_oracle(
 
         proposals = pq.read_table(cfg.hgb_future_proposals_path()).to_pandas()
         assert not proposals["included_in_current_analysis"].any()
-        hgb_done = read_stage_done(cfg.hgb_stage_dir / "hgb.done.json")
-        freshness = hgb_done["freshness_key"]
-        assert isinstance(freshness, dict)
-        assert freshness["hgb_method_version"] == 2
-        assert freshness["hgb_rng_method_version"] == 2
+        hgb_done = json.loads((cfg.hgb_stage_dir / "hgb.done.json").read_text(encoding="utf-8"))
+        assert hgb_done["state"] == CompletionState.COMPLETE_VALID.value
+        hgb_sidecar = load_authenticated_sidecar(cfg.hgb_fold_metrics_path(2))
+        assert hgb_sidecar.versions.method_versions["hgb_method_version"] == 2
+        assert hgb_sidecar.versions.method_versions["hgb_rng_method_version"] == 2
         assert cfg.hgb.heldout_folds == 2
         assert cfg.hgb.permutation_repeats == 1
         assert cfg.hgb.n_estimators == 1
@@ -593,19 +596,20 @@ def assert_pair_h2h_oracle(
     assert _sum(counts, "games_safety_limit") == 3
     assert _sum(counts, "replacement_attempt_count") == 2
 
-    schedule_sidecar = validate_artifact_sidecar(cfg.h2h_block_manifest_path())
-    assert schedule_sidecar.source_artifacts == [
-        str(cfg.h2h_candidate_family_manifest_path()),
-        str(cfg.h2h_candidate_family_path()),
-    ]
+    schedule_sidecar = load_authenticated_sidecar(cfg.h2h_block_manifest_path())
+    assert len(schedule_sidecar.source_artifacts) == 2
+    assert {
+        source.artifact.location.stage_key for source in schedule_sidecar.source_artifacts
+    } == {"candidate_freeze"}
     for path in sorted(cfg.h2h_block_results_dir().glob("*.parquet")):
-        metadata = validate_artifact_sidecar(path)
-        assert metadata.source_artifacts == [str(cfg.h2h_block_manifest_path())]
-        parameters = cast(dict[str, Any], metadata.method_contract.get("parameters"))
-        assert parameters["family_hash"] == frozen.family_hash
-        assert parameters["schedule_hash"] == plan["schedule_hash"]
-        assert parameters["game_profile_sha256"] == profile.sha256
-        assert parameters["h2h_method_version"] == H2H_METHOD_VERSION
+        metadata = load_authenticated_sidecar(path)
+        assert len(metadata.source_artifacts) == 1
+        assert metadata.source_artifacts[0].artifact.location == (
+            schedule_sidecar.artifact.location
+        )
+        assert metadata.method_contract.family_hash == frozen.family_hash
+        assert metadata.method_contract.schedule_hash == plan["schedule_hash"]
+        assert metadata.versions.method_versions["h2h_method_version"] == H2H_METHOD_VERSION
 
     inference = pq.read_table(cfg.h2h_pairwise_inference_path()).to_pandas().set_index("pair_id")
     assert set(inference.index.astype(int)) == {0, 1, 2}
@@ -724,16 +728,11 @@ def _tree_identity(path: Path) -> tuple[int, str]:
 
 def _assert_stamp(cfg: Any, item: Any) -> None:
     assert item.completion_stamp is not None
-    stamp = read_stage_done(item.completion_stamp)
-    assert stamp["schema_version"] == 4
+    stamp = json.loads(item.completion_stamp.read_text(encoding="utf-8"))
     assert stamp["lifecycle_contract_version"] == 1
-    assert stamp["stage"] == item.name
-    assert stamp["status"] == "success"
-    assert stamp["completion_state"] == CompletionState.COMPLETE_VALID.value
-    assert stamp["config_sha"] == cfg.config_sha
-    assert stamp["run_lineage_sha256"] == cfg._run_lineage_sha256
-    for key in ("stage_config_sha", "freshness_sha256", "stage_identity_sha256"):
-        assert len(str(stamp[key])) == 64
+    assert stamp["state"] == CompletionState.COMPLETE_VALID.value
+    assert len(str(stamp["stage_identity_sha256"])) == 64
+    assert stamp["outputs"]
     assert (
         resolve_stage_state(
             item.completion_stamp,
@@ -745,25 +744,6 @@ def _assert_stamp(cfg: Any, item: Any) -> None:
         )
         is CompletionState.COMPLETE_VALID
     )
-    for role in ("input", "output"):
-        recorded_paths = cast(list[str], stamp[f"{role}s"])
-        paths = [Path(value) for value in recorded_paths]
-        identities = cast(list[dict[str, Any]], stamp[f"{role}_identities"])
-        assert len(paths) == len(identities)
-        for path, identity in zip(paths, identities, strict=True):
-            assert path.exists()
-            if path.is_file():
-                assert identity["kind"] == "file"
-                assert identity["byte_length"] == path.stat().st_size
-                assert identity["content_sha256"] == sha256_file(path)
-                metadata_path = sidecar_path(path)
-                expected_sidecar = sha256_file(metadata_path) if metadata_path.exists() else None
-                assert identity["sidecar_sha256"] == expected_sidecar
-            else:
-                count, digest = _tree_identity(path)
-                assert identity["kind"] == "directory"
-                assert identity["entry_count"] == count
-                assert identity["tree_sha256"] == digest
 
 
 def _assert_sidecars(analysis_root: Path, config_sha: str, workflow_root: Path) -> None:
@@ -773,10 +753,16 @@ def _assert_sidecars(analysis_root: Path, config_sha: str, workflow_root: Path) 
     for metadata_path in sidecars:
         artifact = Path(str(metadata_path)[: -len(".sidecar.json")])
         metadata = validate_artifact_sidecar(artifact)
-        assert metadata.artifact_contract_version == 2
-        assert metadata.estimand_version == 1
-        assert metadata.schema_version == 1
-        assert metadata.config_hash == config_sha
+        authenticated = validate_authenticated_artifact_unbound(
+            artifact,
+            validate_provenance=False,
+        )
+        assert metadata.artifact_contract_version == 3
+        assert metadata.estimand_version == 2
+        assert metadata.schema_version == 2
+        assert authenticated.versions.conditioning_version == 2
+        assert authenticated.versions.rng_scheme_version == 2
+        assert authenticated.versions.outcome_schema_version == 2
         assert metadata.artifact_sha256 == sha256_file(artifact)
         assert metadata.artifact_size_bytes == artifact.stat().st_size
         assert metadata.method_contract["procedure"] == metadata.operation
@@ -790,26 +776,15 @@ def _assert_sidecars(analysis_root: Path, config_sha: str, workflow_root: Path) 
             else:
                 assert set(metadata.consistency_columns) == set(payload)
         scope_parts = [part for part in artifact.parts if part in _SCOPES]
-        if "all_ingested_rows_partitioned" in artifact.parts or "rare_events_shards" in (
-            artifact.parts
-        ):
-            assert metadata.scope == ArtifactScope.BY_K.value
-        elif artifact.name.startswith("descriptive_screening."):
-            assert metadata.scope == ArtifactScope.ACROSS_K.value
-        else:
-            assert len(scope_parts) == 1
-            assert metadata.scope == scope_parts[0]
+        assert len(scope_parts) == 1
+        assert metadata.scope == authenticated.artifact.location.scope == scope_parts[0]
         if metadata.scope == ArtifactScope.BY_K.value:
-            if "by_k" in artifact.parts:
-                k = int(artifact.parts[artifact.parts.index("by_k") + 1].removesuffix("p"))
-                assert metadata.required_player_counts == [k]
-            else:
-                assert len(metadata.required_player_counts) == 1
-                assert metadata.required_player_counts[0] in ORACLE_PLAYER_COUNTS
-        for source in metadata.source_artifacts:
-            source_path = Path(source)
-            assert source_path.exists()
-            assert source_path == workflow_root or workflow_root in source_path.parents
+            k = authenticated.artifact.location.player_count
+            assert k is not None
+            assert metadata.required_player_counts == [k]
+        for source in authenticated.source_artifacts:
+            assert len(source.sidecar_sha256) == 64
+            assert len(source.artifact.content_sha256) == 64
 
 
 def assert_authenticated_analysis_graph(

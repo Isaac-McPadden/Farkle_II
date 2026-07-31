@@ -146,9 +146,10 @@ def test_candidate_family_balanced_tail_contraction_and_provenance(tmp_path: Pat
     assert len(manifest["family_hash"]) == 64
     trueskill_identity = manifest["source_identity"]["trueskill"]
     assert len(trueskill_identity["sidecar_sha256"]) == 64
-    assert trueskill_identity["method_contract"] == trueskill_method_contract(
-        "equal_root_k_percentile_mean"
-    )
+    assert len(trueskill_identity["method_contract_sha256"]) == 64
+    assert len(trueskill_identity["stage_identity_sha256"]) == 64
+    assert trueskill_identity["outcome_schema_version"] == 2
+    assert trueskill_identity["conditioning_version"] == 2
     assert trueskill_identity["conditioning"] == TRUESKILL_CONDITIONING
     assert isinstance(trueskill_identity["schema_version"], int)
 
@@ -261,7 +262,7 @@ def test_candidate_family_rejects_missing_or_over_cap_protected_set(tmp_path: Pa
         freeze_h2h_candidate_family(cap_cfg)
 
 
-def test_two_root_family_rejects_single_root_win_rate_scope(tmp_path: Path) -> None:
+def test_two_root_family_rejects_single_root_win_rate_identity(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_inputs(cfg)
     win_path = cfg.root_combined_performance_across_k_path()
@@ -270,12 +271,12 @@ def test_two_root_family_rejects_single_root_win_rate_scope(tmp_path: Path) -> N
         cfg,
         win_path,
         frame,
-        scope=ArtifactScope.ACROSS_K,
+        scope=ArtifactScope.CROSS_SEED,
         operation="equal_k_mean",
         seed_scope="single_root",
     )
 
-    with pytest.raises(ArtifactContractError, match="cross_seed"):
+    with pytest.raises(ArtifactContractError, match="root_pair_stability"):
         freeze_h2h_candidate_family(cfg)
 
 

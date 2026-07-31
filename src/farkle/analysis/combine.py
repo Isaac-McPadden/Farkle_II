@@ -15,7 +15,9 @@ from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
     sidecar_path,
+    validate_artifact_sidecar,
 )
+from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import expected_schema_for
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.streaming_loop import run_streaming_shard
@@ -128,8 +130,8 @@ def _partition_paths(cfg: AppConfig, n_players: int) -> tuple[Path, Path]:
         Tuple of ``(partition_parquet_path, partition_manifest_path)``.
     """
     prefix = f"{int(n_players)}p"
-    partition_dir = cfg.combine_partitioned_dir
-    manifest_dir = cfg.combine_stage_dir / "partition_manifests"
+    partition_dir = cfg.by_k_dir("combine", int(n_players))
+    manifest_dir = partition_dir
     return (
         partition_dir / f"{prefix}_part-00000.parquet",
         manifest_dir / f"{prefix}_partition.manifest.jsonl",
@@ -342,6 +344,15 @@ def run(cfg: AppConfig) -> None:
             "Combine: no inputs discovered", extra={"stage": "combine", "path": str(cfg.data_dir)}
         )
         return
+    if is_v3_config(cfg):
+        for path in files:
+            validate_artifact_sidecar(
+                path,
+                expected={
+                    "scope": ArtifactScope.BY_K.value,
+                    "operation": "curate_game_rows",
+                },
+            )
 
     target = expected_schema_for(12)
     manifest_path = cfg.combined_manifest_path()

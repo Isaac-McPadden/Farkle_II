@@ -24,6 +24,7 @@ from farkle.utils.artifact_contract import (
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.authenticated_contract import load_authenticated_sidecar
 from farkle.utils.stage_completion import stage_done_path
 
 
@@ -79,8 +80,15 @@ def _metric_row(
     return row
 
 
+def _root_cfg(tmp_path: Path, root: int) -> AppConfig:
+    return AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "inputs" / f"root_{root}"),
+        sim=SimConfig(seed=root, seed_list=[root], n_players_list=[2, 4]),
+    )
+
+
 def _write_cell(
-    cfg: AppConfig,
+    _cfg: AppConfig,
     tmp_path: Path,
     root: int,
     k: int,
@@ -91,12 +99,13 @@ def _write_cell(
         for strategy, values in sorted(strategy_wins.items())
         for batch, wins in enumerate(values)
     ]
-    path = tmp_path / "inputs" / f"root_{root}" / f"{k}p_metrics.parquet"
+    root_cfg = _root_cfg(tmp_path, root)
+    path = root_cfg.metrics_all_player_batch_path(k)
     table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
     sidecar = make_artifact_sidecar(
-        cfg,
+        root_cfg,
         path,
-        producer="test",
+        producer="metrics",
         scope=ArtifactScope.BY_K,
         source_scope=ArtifactScope.BY_K,
         operation="aggregate_performance_by_strategy",
@@ -247,20 +256,36 @@ def test_two_root_combination_and_stability_contract(tmp_path: Path) -> None:
             sort_keys=True,
         ).lower()
         assert not any(label in serialized for label in forbidden_language)
-        sidecar = validate_artifact_sidecar(path, expected={"scope": "cross_seed"})
-        assert (sidecar.method_contract or {}).get("parameters") == {
-            "method_version": 2,
-            "design_interpretation": "fixed_design_descriptive_reproducibility",
-            "interval_role": "monte_carlo_precision",
-            "root_population_inference": "none",
-            "multiple_testing_inference": "none",
-        }
+        validate_artifact_sidecar(
+            path,
+            expected={
+                "scope": "cross_seed",
+                "method_contract": {
+                    "kind": "root_combination",
+                    "procedure": load_authenticated_sidecar(
+                        path
+                    ).artifact.logical_operation,
+                    "parameters": {
+                        "method_version": 2,
+                        "design_interpretation": (
+                            "fixed_design_descriptive_reproducibility"
+                        ),
+                        "interval_role": "monte_carlo_precision",
+                        "root_population_inference": "none",
+                        "multiple_testing_inference": "none",
+                    },
+                },
+            },
+        )
     completion = json.loads(
         stage_done_path(cfg.stage_dir("root_stability"), "root_stability").read_text(
             encoding="utf-8"
         )
     )
-    assert completion["freshness_key"]["root_stability_method_version"] == 2
+    assert completion["state"] == "complete_valid"
+    assert completion["outputs"]
+    authenticated = load_authenticated_sidecar(artifacts.discrepancies)
+    assert authenticated.versions.method_versions["root_stability_method_version"] == 2
 
     first = pq.read_table(artifacts.discrepancies).to_pandas()
     build_two_root_stability(cfg, cells, force=True)
@@ -276,15 +301,15 @@ def test_two_root_combination_rejects_incomplete_root_k_support(tmp_path: Path) 
         build_two_root_stability(cfg, cells[:-1])
 
 
-def test_two_root_combination_rejects_scope_mismatched_input(tmp_path: Path) -> None:
+def test_v3_publication_rejects_noncanonical_root_input_identity(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     cells = _write_inputs(cfg, tmp_path)
     invalid = cells[0]
     table = pq.read_table(invalid.path)
     sidecar = make_artifact_sidecar(
-        cfg,
+        _root_cfg(tmp_path, invalid.root_seed),
         invalid.path,
-        producer="test",
+        producer="metrics",
         scope=ArtifactScope.CONCAT_KS,
         source_scope=ArtifactScope.BY_K,
         operation="concatenate",
@@ -294,10 +319,8 @@ def test_two_root_combination_rejects_scope_mismatched_input(tmp_path: Path) -> 
         required_player_counts=[invalid.k],
         missing_cell_policy="fail",
     )
-    write_parquet_artifact_atomic(table, invalid.path, sidecar=sidecar)
-
-    with pytest.raises(ArtifactContractError, match="scope"):
-        build_two_root_stability(cfg, cells)
+    with pytest.raises(ArtifactContractError, match="declared scope"):
+        write_parquet_artifact_atomic(table, invalid.path, sidecar=sidecar)
 
 
 def test_root_stability_excludes_declared_zero_batch_and_records_it(tmp_path: Path) -> None:
@@ -310,7 +333,7 @@ def test_root_stability_excludes_declared_zero_batch_and_records_it(tmp_path: Pa
     )
     table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
     sidecar = make_artifact_sidecar(
-        cfg,
+        _root_cfg(tmp_path, target.root_seed),
         target.path,
         producer="test",
         scope=ArtifactScope.BY_K,
@@ -345,7 +368,7 @@ def test_root_stability_rejects_missing_strategy_batch_cell(tmp_path: Path) -> N
     ]
     table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
     sidecar = make_artifact_sidecar(
-        cfg,
+        _root_cfg(tmp_path, target.root_seed),
         target.path,
         producer="test",
         scope=ArtifactScope.BY_K,

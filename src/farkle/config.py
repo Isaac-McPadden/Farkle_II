@@ -158,8 +158,10 @@ class ScreeningConfig:
 
     resolution_delta: float = 0.03
     interval_confidence: float = 0.95
-    practical_delta_by_k: dict[int, float] | None = None
-    delta_across_k: float | None = None
+    practical_delta_by_k: dict[int, float] | None = field(
+        default_factory=lambda: {5: 0.03}
+    )
+    delta_across_k: float | None = 0.03
     bootstrap_replicates: int = 2_000
     candidate_contribution_size: int = 75
     controls: list[int] = field(default_factory=list)
@@ -191,13 +193,13 @@ class RobustnessConfig:
 class ArtifactContractConfig:
     """Versions participating in artifact validation and cache freshness."""
 
-    artifact_contract_version: int = 2
-    estimand_version: int = 1
-    schema_version: int = 1
+    artifact_contract_version: int = 3
+    estimand_version: int = 2
+    schema_version: int = 2
     baseline_version: int = 1
     k_support_version: int = 1
     weighting_version: int = 1
-    conditioning_version: int = 1
+    conditioning_version: int = 2
     multiplicity_version: int = 1
     candidate_family_version: int = 1
 
@@ -688,7 +690,7 @@ class AppConfig:
     def combine_partitioned_dir(self) -> Path:
         """Directory holding partitioned combined curated rows."""
 
-        return self.concat_ks_dir("combine") / "all_ingested_rows_partitioned"
+        return self.stage_dir("combine") / ArtifactScope.BY_K.value
 
     def metrics_per_k_dir(self, k: int) -> Path:
         """Directory holding metrics artifacts for ``k`` players."""
@@ -1173,18 +1175,14 @@ class AppConfig:
 
     @property
     def curated_dataset(self) -> Path:
-        """Canonical partitioned row-preserving cross-k curated dataset."""
+        """Canonical by-k partitioned row-preserving curated dataset."""
 
-        return self.input_scope_path(
-            "combine",
-            ArtifactScope.CONCAT_KS,
-            "all_ingested_rows_partitioned",
-        )
+        return self.combine_partitioned_dir
 
     def screening_path(self, filename: str = "descriptive_screening.parquet") -> Path:
         """Return a canonical descriptive-screening artifact path."""
 
-        return self.screening_stage_dir / filename
+        return self.across_k_dir("screening") / filename
 
     @property
     def game_stats_margin_thresholds(self) -> tuple[int, ...]:
@@ -1217,7 +1215,7 @@ class AppConfig:
     def combined_rows_by_k(self, n: int) -> Path:
         """Canonical normalized row partition for one player count."""
 
-        return self.combine_partitioned_dir / f"{int(n)}p_part-00000.parquet"
+        return self.by_k_dir("combine", int(n)) / f"{int(n)}p_part-00000.parquet"
 
     def combined_manifest_path(self) -> Path:
         """Path to the manifest accompanying ``curated_parquet``."""
@@ -1708,8 +1706,26 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
     contract_versions = dataclasses.asdict(cfg.artifact_contract)
     if any(int(value) < 1 for value in contract_versions.values()):
         raise ValueError("artifact_contract versions must all be positive integers")
-    if cfg.artifact_contract.artifact_contract_version != 2:
-        raise ValueError("artifact_contract.artifact_contract_version is locked at 2")
+    artifact_version = cfg.artifact_contract.artifact_contract_version
+    if artifact_version != 3:
+        raise ValueError(
+            "artifact_contract.artifact_contract_version must be exactly 3 "
+            "for the public release path"
+        )
+    accepted_v3 = {
+        "estimand_version": 2,
+        "schema_version": 2,
+        "conditioning_version": 2,
+    }
+    actual_v3 = {
+        name: int(getattr(cfg.artifact_contract, name))
+        for name in accepted_v3
+    }
+    if actual_v3 != accepted_v3:
+        raise ValueError(
+            "authenticated artifact contract 3 requires "
+            "estimand_version=2, schema_version=2, and conditioning_version=2"
+        )
     if not 0.0 < cfg.screening.resolution_delta < 1.0:
         raise ValueError("screening.resolution_delta must be between 0 and 1")
     if cfg.screening.interval_confidence != 0.95:

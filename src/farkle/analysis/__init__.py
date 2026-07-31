@@ -212,7 +212,10 @@ def _h2h_tail_plan(
             "h2h_power",
             _power,
             metadata={"execution_scope": execution_scope},
-            required_outputs=(cfg.h2h_power_plan_path(),),
+            required_outputs=(
+                cfg.h2h_power_plan_path(),
+                cfg.h2h_block_manifest_path(),
+            ),
             completion_stamp=stage_done_path(cfg.stage_dir("h2h_power"), "h2h_power"),
         ),
         StagePlanItem(
@@ -222,6 +225,7 @@ def _h2h_tail_plan(
             required_outputs=(
                 cfg.h2h_execution_state_path(),
                 cfg.h2h_order_counts_path(),
+                cfg.h2h_block_results_dir(),
             ),
             completion_stamp=stage_done_path(cfg.stage_dir("h2h_execute"), "h2h_execute"),
         ),

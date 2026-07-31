@@ -217,6 +217,10 @@ def _write_cfg(tmp_path: Path) -> Path:
     cfg = {
         "io": {"results_dir_prefix": str(tmp_path / "out")},
         "sim": {"seed": 7, "n_players_list": [2]},
+        "screening": {
+            "practical_delta_by_k": {2: 0.03},
+            "delta_across_k": 0.03,
+        },
     }
     path = tmp_path / "cfg.yml"
     path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
@@ -495,7 +499,11 @@ def test_two_seed_pipeline_top_level_passes_force_and_seed_pair(
         ]
     )
 
-    assert captured == {"seed_pair": (9, 11), "force": True}
+    assert captured == {
+        "seed_pair": (9, 11),
+        "force": True,
+        "cli_overrides": (),
+    }
 
 
 @pytest.mark.parametrize(
@@ -568,6 +576,10 @@ def test_main_dispatches_each_simulation_and_analysis_stage(
                 "seed": 7,
                 "seed_list": seed_list,
                 "n_players_list": n_players_list,
+            },
+            "screening": {
+                "practical_delta_by_k": dict.fromkeys(n_players_list, 0.03),
+                "delta_across_k": 0.03,
             },
         }
         path = tmp_path / f"{name}.yml"

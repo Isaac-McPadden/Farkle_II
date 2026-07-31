@@ -257,6 +257,22 @@ def resolve_stage_state(
     input_paths = _coerce_paths(inputs)
     output_paths = _coerce_paths(outputs)
     partial = _coerce_paths(partial_paths)
+    if cfg is not None and stage is not None:
+        from farkle.utils.release_identity import (
+            is_v3_config,
+            resolve_v3_stage_state,
+        )
+
+        if is_v3_config(cfg):
+            return resolve_v3_stage_state(
+                done_path,
+                cfg=cfg,
+                stage_key=stage,
+                inputs=input_paths,
+                outputs=output_paths,
+                partial_paths=partial,
+                cap_reached=cap_reached,
+            )
     has_materialized_work = any(path.exists() for path in (*output_paths, *partial))
     if cap_reached:
         return CompletionState.BLOCKED_BY_CAP
@@ -398,6 +414,22 @@ def write_stage_done(
         raise ValueError(
             "blocking_dependency and upstream_stage are required when status is failed/skipped"
         )
+    if cfg is not None and stage is not None:
+        from farkle.utils.release_identity import (
+            is_v3_config,
+            write_v3_stage_completion,
+        )
+
+        if is_v3_config(cfg):
+            write_v3_stage_completion(
+                done_path,
+                cfg=cfg,
+                stage_key=stage,
+                inputs=_coerce_paths(inputs),
+                outputs=_coerce_paths(outputs),
+                status=status,
+            )
+            return
     config_sha, stage_config_sha, cache_key_version, freshness_key = _resolve_expected_contract(
         cfg=cfg,
         stage=stage,

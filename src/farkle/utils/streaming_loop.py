@@ -4,6 +4,7 @@ Helpers for streaming Parquet shard creation. Provides producer/consumer
 thread utilities, a bounded queue wrapper, and the runner that writes batches
 while recording manifest metadata.
 """
+
 from __future__ import annotations
 
 import logging
@@ -15,7 +16,11 @@ from typing import Any, Callable, Dict, Iterable
 
 import pyarrow as pa
 
-from .artifact_contract import ArtifactSidecar
+from .artifact_contract import (
+    ArtifactSidecar,
+    make_artifact_sidecar,
+    write_artifact_with_sidecar_atomic,
+)
 from .manifest import append_manifest_line
 from .types import Compression
 from .writer import ParquetShardWriter
@@ -88,6 +93,40 @@ def run_streaming_shard(
             **(manifest_extra or {}),
         },
     )
+    if sidecar is not None and sidecar.artifact_contract_version == 3:
+        cfg = sidecar._cfg
+        if cfg is None:
+            raise RuntimeError("authenticated v3 stream manifest requires its owning config")
+        manifest = Path(manifest_path)
+        existing = manifest.read_bytes()
+        manifest_sidecar = make_artifact_sidecar(
+            cfg,
+            manifest,
+            producer=sidecar.producer,
+            scope=sidecar.scope,
+            source_scope=sidecar.scope,
+            operation=f"{sidecar.operation}_stream_manifest",
+            baseline="none",
+            weighted_quantity="coordinate_manifest",
+            support_count_role="streamed_output_inventory",
+            uncertainty_method="none",
+            replication_unit="manifest_entry",
+            conditioning=sidecar.conditioning,
+            source_artifacts=[Path(out_path)],
+            player_counts=sidecar.player_counts,
+            required_player_counts=sidecar.required_player_counts,
+            missing_cell_policy=sidecar.missing_cell_policy,
+            seed_scope=sidecar.seed_scope,
+        )
+
+        def _write_manifest(staged: Path) -> None:
+            staged.write_bytes(existing)
+
+        write_artifact_with_sidecar_atomic(
+            manifest,
+            manifest_sidecar,
+            _write_manifest,
+        )
 
 
 def _output_ready(out_path: str, manifest_path: str, manifest_extra: Dict[str, Any] | None) -> bool:
