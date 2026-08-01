@@ -259,7 +259,7 @@ def test_mu_softmax_heuristic_claim_and_method_contract_are_exact() -> None:
 
     assert MU_SOFTMAX_HEURISTIC == "mu_softmax_heuristic"
     assert expected_claim == MU_SOFTMAX_HEURISTIC_CLAIM
-    assert trueskill_diagnostic_method_contract()["parameters"] == {
+    assert trueskill_diagnostic_method_contract().get("parameters") == {
         "method_version": 3,
         "outcome_schema_version": 2,
         "conditioning": "termination_status == completed",
