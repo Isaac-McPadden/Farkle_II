@@ -49,9 +49,12 @@ changing code or accepting a statistical conclusion.
   relabels intervals and joint-bootstrap quantities as descriptive Monte Carlo
   precision/reference diagnostics, and invalidates prior root-stability
   artifacts through the versioned stage freshness identity. RNG diagnostic
-  method-v2 uses a disk-backed global merge over the full tournament-player
+  method-v3 uses a disk-backed global merge over the full tournament-player
   coordinate, merges zero-based seats before group updates, publishes
-  zero-centered descriptive reference bands, and is bound to cache-key-v4.
+  zero-centered descriptive reference bands, and is bound to cache-key-v5.
+  Its freshness identity includes the typed public lag set and matchup-group
+  cap, while artifact method metadata records the effective cap, normalized
+  lags, and tracked/skipped group counts.
   Final pipeline health rechecks the current diagnostic-stage lifecycle state.
   Task 14's raw oracle adds an authenticated, immutable limit-only game profile:
   its canonical hash extends run lineage and simulation freshness while an

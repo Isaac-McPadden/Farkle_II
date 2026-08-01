@@ -18,6 +18,7 @@ import trueskill
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
+    TrueSkillMethodContract,
     ensure_artifact_sidecar_atomic,
     make_artifact_sidecar,
     sha256_file,
@@ -72,7 +73,7 @@ _RATING_COLUMNS: Final = {
 }
 
 
-def trueskill_method_contract(procedure: str) -> dict[str, Any]:
+def trueskill_method_contract(procedure: str) -> TrueSkillMethodContract:
     """Return the versioned completed-game TrueSkill method identity."""
 
     return {
@@ -87,11 +88,13 @@ def trueskill_method_contract(procedure: str) -> dict[str, Any]:
     }
 
 
-def trueskill_diagnostic_method_contract() -> dict[str, Any]:
+def trueskill_diagnostic_method_contract() -> TrueSkillMethodContract:
     """Return the versioned replay and mu-softmax diagnostic identity."""
 
     contract = trueskill_method_contract(MU_SOFTMAX_HEURISTIC_OPERATION)
-    contract["parameters"].update(
+    parameters = contract.get("parameters")
+    assert parameters is not None
+    parameters.update(
         {
             "diagnostic_method_version": TRUESKILL_DIAGNOSTIC_METHOD_VERSION,
             "heldout_probability_method": MU_SOFTMAX_HEURISTIC,

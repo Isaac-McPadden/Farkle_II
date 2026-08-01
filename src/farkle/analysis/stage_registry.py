@@ -160,8 +160,15 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         group="diagnostics",
         folder_stub="rng",
         depends_on=("combine",),
-        cache_scope=("io", "sim.seed", "sim.n_players_list", "rng"),
-        cache_key_version=4,
+        cache_scope=(
+            "io",
+            "sim.seed",
+            "sim.n_players_list",
+            "rng",
+            "analysis.rng_max_matchup_groups",
+            "analysis.rng_diagnostic_lags",
+        ),
+        cache_key_version=5,
         disabled_predicate=_rng_diagnostics_disabled,
     ),
     StageDefinition(

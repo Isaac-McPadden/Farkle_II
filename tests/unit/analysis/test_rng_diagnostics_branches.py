@@ -10,8 +10,13 @@ import pyarrow.dataset as ds
 import pytest
 
 from farkle.analysis import rng_diagnostics
+from farkle.analysis.stage_registry import resolve_stage_definition
+from farkle.config import AppConfig, ArtifactScope
+from farkle.utils.artifact_contract import MethodContract, make_artifact_sidecar
 from farkle.utils.progress import ScheduledProgressLogger
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
+from farkle.utils.release_identity import _typed_method
+from farkle.utils.stage_completion import stage_is_up_to_date, write_stage_done
 
 
 class _StubProgressLogger:
@@ -127,7 +132,7 @@ def test_collect_diagnostics_streaming_compact_caps_matchups_and_logs_progress(
     progress_logger = _StubProgressLogger()
 
     with caplog.at_level(logging.WARNING):
-        diagnostics, melted_rows = rng_diagnostics._collect_diagnostics_streaming_compact(
+        diagnostics, melted_rows, capacity = rng_diagnostics._collect_diagnostics_streaming_compact(
             [pd.DataFrame(), batch],
             strat_cols=["P1_strategy", "P2_strategy", "P3_strategy"],
             lags=(1,),
@@ -137,9 +142,96 @@ def test_collect_diagnostics_streaming_compact_caps_matchups_and_logs_progress(
 
     assert melted_rows == 6
     assert not diagnostics.empty
+    assert capacity == rng_diagnostics.RNGDiagnosticCapacityMetadata(
+        effective_matchup_group_cap=1,
+        normalized_lags=(1,),
+        tracked_matchup_group_count=1,
+        skipped_matchup_group_count=3,
+        skipped_matchup_row_count=4,
+    )
     assert progress_logger.calls
     assert any(
         record.message == "rng-diagnostics matchup grouping capped" for record in caplog.records
+    )
+
+
+def test_rng_cap_lags_freshness_and_typed_metadata(tmp_path) -> None:
+    cfg = AppConfig()
+    baseline = cfg.stage_config_sha("rng_diagnostics")
+
+    cfg.analysis.rng_max_matchup_groups = 150_000
+    cap_mutation = cfg.stage_config_sha("rng_diagnostics")
+    assert cap_mutation != baseline
+
+    cfg.analysis.rng_diagnostic_lags = (1, 2, 4)
+    lag_mutation = cfg.stage_config_sha("rng_diagnostics")
+    assert lag_mutation != cap_mutation
+    assert rng_diagnostics._rng_stage_config_sha(cfg, (4, 2, 1, 2, 0)) == (
+        rng_diagnostics._rng_stage_config_sha(cfg, (1, 2, 4))
+    )
+
+    capacity = rng_diagnostics.RNGDiagnosticCapacityMetadata(
+        effective_matchup_group_cap=150_000,
+        normalized_lags=(1, 2, 4),
+        tracked_matchup_group_count=117_292,
+        skipped_matchup_group_count=0,
+        skipped_matchup_row_count=0,
+    )
+    parameters = rng_diagnostics._rng_method_parameters(
+        capacity,
+        strat_cols=("P1_strategy", "P2_strategy"),
+    )
+    assert parameters["method_version"] == 3
+    assert parameters["effective_matchup_group_cap"] == 150_000
+    assert parameters["normalized_lags"] == [1, 2, 4]
+    assert parameters["tracked_matchup_group_count"] == 117_292
+    assert parameters["skipped_matchup_group_count"] == 0
+    artifact_metadata = make_artifact_sidecar(
+        cfg,
+        cfg.rng_output_path("rng_diagnostics.parquet"),
+        producer="rng_diagnostics",
+        scope=ArtifactScope.DIAGNOSTICS,
+        source_scope=ArtifactScope.CONCAT_KS,
+        operation="semantic_coordinate_lag_correlation",
+        method_contract=cast(
+            MethodContract,
+            {
+                "kind": "diagnostic_band",
+                "procedure": "semantic_coordinate_lag_correlation",
+                "parameters": parameters,
+            },
+        ),
+        player_counts=[5],
+        required_player_counts=[5],
+    )
+    typed_method = _typed_method(cfg, artifact_metadata, method_version=3)
+    assert typed_method.rng_effective_matchup_group_cap == 150_000
+    assert typed_method.rng_diagnostic_lags == (1, 2, 4)
+    assert typed_method.rng_tracked_matchup_group_count == 117_292
+    assert typed_method.rng_skipped_matchup_group_count == 0
+
+    old_input = tmp_path / "input"
+    old_output = tmp_path / "output"
+    old_stamp = tmp_path / "rng.done.json"
+    old_input.write_text("input", encoding="utf-8")
+    old_output.write_text("output", encoding="utf-8")
+    write_stage_done(
+        old_stamp,
+        inputs=[old_input],
+        outputs=[old_output],
+        stage="rng_diagnostics",
+        stage_config_sha=lag_mutation,
+        cache_key_version=4,
+    )
+    current_cache_version = resolve_stage_definition("rng_diagnostics").cache_key_version
+    assert current_cache_version == 5
+    assert not stage_is_up_to_date(
+        old_stamp,
+        inputs=[old_input],
+        outputs=[old_output],
+        stage="rng_diagnostics",
+        stage_config_sha=lag_mutation,
+        cache_key_version=current_cache_version,
     )
 
 
@@ -227,7 +319,7 @@ def test_one_frame_semantic_sequence_matches_hand_oracle() -> None:
     frame = _prepared_hand_frame()
     prepared = _prepare_arrow_frames([frame])
 
-    diagnostics, melted_rows = rng_diagnostics._collect_diagnostics_streaming_compact(
+    diagnostics, melted_rows, capacity = rng_diagnostics._collect_diagnostics_streaming_compact(
         prepared,
         strat_cols=["P1_strategy", "P2_strategy"],
         lags=(1,),
@@ -236,6 +328,7 @@ def test_one_frame_semantic_sequence_matches_hand_oracle() -> None:
     )
 
     assert melted_rows == 12
+    assert capacity.skipped_matchup_group_count == 0
     hand_sequences = {
         "A": {
             "win_indicator": [1, 0, 0, 1, 0, 0],
@@ -268,12 +361,14 @@ def test_one_frame_semantic_sequence_matches_hand_oracle() -> None:
 
 def test_fragmented_batches_and_seats_match_one_frame_oracle() -> None:
     frame = _prepared_hand_frame()
-    one_frame, one_frame_rows = rng_diagnostics._collect_diagnostics_streaming_compact(
-        [frame],
-        strat_cols=["P1_strategy", "P2_strategy"],
-        lags=(1, 2),
-        progress_logger=None,
-        max_matchup_groups=None,
+    one_frame, one_frame_rows, one_frame_capacity = (
+        rng_diagnostics._collect_diagnostics_streaming_compact(
+            [frame],
+            strat_cols=["P1_strategy", "P2_strategy"],
+            lags=(1, 2),
+            progress_logger=None,
+            max_matchup_groups=None,
+        )
     )
     fragments = [
         frame.iloc[[4, 1]].copy(),
@@ -283,12 +378,14 @@ def test_fragmented_batches_and_seats_match_one_frame_oracle() -> None:
     ]
     prepared_fragments = _prepare_arrow_frames(fragments)
 
-    fragmented, fragmented_rows = rng_diagnostics._collect_diagnostics_streaming_compact(
-        prepared_fragments,
-        strat_cols=["P1_strategy", "P2_strategy"],
-        lags=(1, 2),
-        progress_logger=None,
-        max_matchup_groups=None,
+    fragmented, fragmented_rows, fragmented_capacity = (
+        rng_diagnostics._collect_diagnostics_streaming_compact(
+            prepared_fragments,
+            strat_cols=["P1_strategy", "P2_strategy"],
+            lags=(1, 2),
+            progress_logger=None,
+            max_matchup_groups=None,
+        )
     )
     globally_ordered = pd.concat(
         list(
@@ -313,6 +410,7 @@ def test_fragmented_batches_and_seats_match_one_frame_oracle() -> None:
         atol=1e-15,
     )
     assert fragmented_rows == one_frame_rows == 12
+    assert fragmented_capacity == one_frame_capacity
     assert list(
         seats[["shuffle_index", "game_index", "seat_index"]].itertuples(index=False, name=None)
     ) == [

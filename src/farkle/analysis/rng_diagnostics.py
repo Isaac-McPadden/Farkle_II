@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from itertools import chain
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Iterator, cast
+from typing import Iterator, TypedDict, cast
 
 import numpy as np
 import pandas as pd
@@ -54,7 +54,7 @@ _EXPECTED_NOTE = (
     "outside the band do not establish or refute independence"
 )
 _BAND_METHOD = "zero_centered_1.96_over_sqrt_lagged_pairs_descriptive_reference_band"
-_DIAGNOSTIC_METHOD_VERSION = 2
+_DIAGNOSTIC_METHOD_VERSION = 3
 _GAME_COORDINATE_COLUMNS = ("root_seed", "k", "shuffle_index", "game_index")
 _SEAT_COORDINATE_COLUMNS = (*_GAME_COORDINATE_COLUMNS, "seat_index")
 _SEQUENCE_DEFINITION = "lexicographic_rng_v2_tournament_player_coordinate_then_within_group_filter"
@@ -62,6 +62,35 @@ _SEAT_STRATEGY_RE = re.compile(r"^P(\d+)_strategy$")
 _STREAM_BATCH_SIZE = 100_000
 _GLOBAL_MERGE_BATCH_SIZE = 50_000
 _DEFAULT_MAX_MATCHUP_GROUPS = 100_000
+
+
+@dataclass(frozen=True)
+class RNGDiagnosticCapacityMetadata:
+    """Capacity and lag support actually used by one diagnostic artifact."""
+
+    effective_matchup_group_cap: int | None
+    normalized_lags: tuple[int, ...]
+    tracked_matchup_group_count: int
+    skipped_matchup_group_count: int
+    skipped_matchup_row_count: int
+
+
+class RNGDiagnosticMethodParameters(TypedDict):
+    """Authenticated RNG-diagnostic method parameters written to the sidecar."""
+
+    method_version: int
+    rng_scheme_version: int
+    purpose_namespace: int
+    global_order_columns: list[str]
+    seat_order: list[int]
+    sequence_definition: str
+    reference_band_method: str
+    claim: str
+    effective_matchup_group_cap: int | None
+    normalized_lags: list[int]
+    tracked_matchup_group_count: int
+    skipped_matchup_group_count: int
+    skipped_matchup_row_count: int
 
 
 def _is_missing_scalar(value: object) -> bool:
@@ -83,7 +112,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
 
     Args:
         cfg: Application configuration for locating curated inputs and outputs.
-        lags: Optional sequence of positive lags (defaults to ``(1,)``).
+        lags: Optional sequence of positive lags overriding the typed config field.
         force: Recompute even when the done-stamp matches inputs/outputs.
     """
 
@@ -112,7 +141,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     out_file = cfg.rng_output_path("rng_diagnostics.parquet")
     stamp_path = stage_done_path(cfg.rng_stage_dir, "rng_diagnostics")
 
-    lags = _normalize_lags(lags)
+    lags = _normalize_lags(cfg.analysis.rng_diagnostic_lags if lags is None else lags)
     if not lags:
         stage_log.missing_input("no valid lags provided")
         return
@@ -182,11 +211,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         winner_col,
         *strat_cols,
     ]
-    max_matchup_groups = cfg.analysis.rng_max_matchup_groups
-    if max_matchup_groups is None:
-        max_matchup_groups = _DEFAULT_MAX_MATCHUP_GROUPS
-    if max_matchup_groups <= 0:
-        max_matchup_groups = None
+    max_matchup_groups = _effective_max_matchup_groups(cfg.analysis.rng_max_matchup_groups)
     prepared_batches = _iter_prepared_batches(
         dataset,
         columns=columns,
@@ -195,7 +220,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         batch_size=_STREAM_BATCH_SIZE,
         arrow_threads=policy.arrow_threads,
     )
-    diagnostics, melted_rows = _collect_diagnostics_streaming_compact(
+    diagnostics, melted_rows, capacity = _collect_diagnostics_streaming_compact(
         prepared_batches,
         strat_cols=strat_cols,
         lags=lags,
@@ -216,6 +241,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         return
 
     table_out = pa.Table.from_pandas(diagnostics, preserve_index=False)
+    method_parameters = _rng_method_parameters(capacity, strat_cols=strat_cols)
     sidecar = make_artifact_sidecar(
         cfg,
         out_file,
@@ -232,18 +258,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
             {
                 "kind": "diagnostic_band",
                 "procedure": "semantic_coordinate_lag_correlation",
-                "parameters": {
-                    "method_version": _DIAGNOSTIC_METHOD_VERSION,
-                    "rng_scheme_version": RNG_SCHEME_VERSION,
-                    "purpose_namespace": int(RandomPurpose.TOURNAMENT_PLAYER),
-                    "global_order_columns": list(_SEAT_COORDINATE_COLUMNS),
-                    "seat_order": [
-                        _rng_seat_index_from_strategy_column(column) for column in strat_cols
-                    ],
-                    "sequence_definition": _SEQUENCE_DEFINITION,
-                    "reference_band_method": _BAND_METHOD,
-                    "claim": "descriptive_only_no_independence_claim",
-                },
+                "parameters": method_parameters,
             },
         ),
         consistency_columns=table_out.schema.names,
@@ -269,6 +284,30 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         "rng-diagnostics: written",
         extra={"stage": "rng_diagnostics", "rows": len(diagnostics), "path": str(out_file)},
     )
+
+
+def _rng_method_parameters(
+    capacity: RNGDiagnosticCapacityMetadata,
+    *,
+    strat_cols: Sequence[str],
+) -> RNGDiagnosticMethodParameters:
+    """Build the typed authenticated method metadata for a diagnostic artifact."""
+
+    return {
+        "method_version": _DIAGNOSTIC_METHOD_VERSION,
+        "rng_scheme_version": RNG_SCHEME_VERSION,
+        "purpose_namespace": int(RandomPurpose.TOURNAMENT_PLAYER),
+        "global_order_columns": list(_SEAT_COORDINATE_COLUMNS),
+        "seat_order": [_rng_seat_index_from_strategy_column(column) for column in strat_cols],
+        "sequence_definition": _SEQUENCE_DEFINITION,
+        "reference_band_method": _BAND_METHOD,
+        "claim": "descriptive_only_no_independence_claim",
+        "effective_matchup_group_cap": capacity.effective_matchup_group_cap,
+        "normalized_lags": list(capacity.normalized_lags),
+        "tracked_matchup_group_count": capacity.tracked_matchup_group_count,
+        "skipped_matchup_group_count": capacity.skipped_matchup_group_count,
+        "skipped_matchup_row_count": capacity.skipped_matchup_row_count,
+    }
 
 
 def _iter_prepared_batches(
@@ -507,7 +546,7 @@ def _collect_diagnostics_streaming_compact(
     lags: Sequence[int],
     progress_logger: ScheduledProgressLogger | None,
     max_matchup_groups: int | None,
-) -> tuple[pd.DataFrame, int]:
+) -> tuple[pd.DataFrame, int, RNGDiagnosticCapacityMetadata]:
     """Aggregate diagnostics after a global semantic-coordinate merge.
 
     Args:
@@ -519,7 +558,7 @@ def _collect_diagnostics_streaming_compact(
         max_matchup_groups: Optional cap on tracked matchup-strategy groups.
 
     Returns:
-        Tuple of the diagnostics frame and the number of melted seat rows processed.
+        Diagnostics, melted seat-row count, and typed capacity/lag metadata.
     """
     normalized_lags = tuple(int(lag) for lag in lags)
     strategy_states: dict[tuple[str, int], _GroupStreamAccumulator] = {}
@@ -527,7 +566,7 @@ def _collect_diagnostics_streaming_compact(
     processed_batches = 0
     processed_rows = 0
     melted_rows = 0
-    skipped_matchup_groups = 0
+    skipped_matchup_state_keys: set[tuple[str | None, str, int]] = set()
     skipped_matchup_rows = 0
 
     ordered_game_batches = _iter_globally_ordered_game_batches(
@@ -557,7 +596,7 @@ def _collect_diagnostics_streaming_compact(
             matchup_state = matchup_states.get(matchup_state_key)
             if matchup_state is None:
                 if max_matchup_groups is not None and len(matchup_states) >= max_matchup_groups:
-                    skipped_matchup_groups += 1
+                    skipped_matchup_state_keys.add(matchup_state_key)
                     skipped_matchup_rows += int(group.shape[0])
                     continue
                 matchup_state = matchup_states.setdefault(
@@ -572,7 +611,7 @@ def _collect_diagnostics_streaming_compact(
                     f"{processed_batches:,} batches, {melted_rows:,} melted rows, "
                     f"{len(strategy_states):,} strategy groups, "
                     f"{len(matchup_states):,} matchup groups, "
-                    f"{skipped_matchup_groups:,} matchup groups skipped"
+                    f"{len(skipped_matchup_state_keys):,} matchup groups skipped"
                 ),
                 extra={
                     "stage": "rng_diagnostics",
@@ -581,11 +620,12 @@ def _collect_diagnostics_streaming_compact(
                     "melted_rows": melted_rows,
                     "strategy_groups": len(strategy_states),
                     "matchup_groups": len(matchup_states),
-                    "matchup_groups_skipped": skipped_matchup_groups,
+                    "matchup_groups_skipped": len(skipped_matchup_state_keys),
                     "matchup_rows_skipped": skipped_matchup_rows,
                 },
             )
 
+    skipped_matchup_groups = len(skipped_matchup_state_keys)
     if skipped_matchup_groups > 0:
         LOGGER.warning(
             "rng-diagnostics matchup grouping capped",
@@ -620,8 +660,15 @@ def _collect_diagnostics_streaming_compact(
                 group_state=state,
             )
         )
+    capacity = RNGDiagnosticCapacityMetadata(
+        effective_matchup_group_cap=max_matchup_groups,
+        normalized_lags=normalized_lags,
+        tracked_matchup_group_count=len(matchup_states),
+        skipped_matchup_group_count=skipped_matchup_groups,
+        skipped_matchup_row_count=skipped_matchup_rows,
+    )
     if not rows:
-        return pd.DataFrame(), melted_rows
+        return pd.DataFrame(), melted_rows, capacity
 
     diagnostics = pd.DataFrame(rows)
     diagnostics = diagnostics.sort_values(
@@ -630,7 +677,7 @@ def _collect_diagnostics_streaming_compact(
         na_position="first",
     )
     diagnostics.reset_index(drop=True, inplace=True)
-    return diagnostics, melted_rows
+    return diagnostics, melted_rows, capacity
 
 
 def _normalize_lags(lags: Sequence[int] | None) -> tuple[int, ...]:
@@ -646,6 +693,16 @@ def _normalize_lags(lags: Sequence[int] | None) -> tuple[int, ...]:
         return (1,)
     valid = sorted({int(lag) for lag in lags if int(lag) > 0})
     return tuple(valid)
+
+
+def _effective_max_matchup_groups(configured_cap: int | None) -> int | None:
+    """Resolve the public cap to the exact capacity used by the collector."""
+
+    if configured_cap is None:
+        return _DEFAULT_MAX_MATCHUP_GROUPS
+    if configured_cap <= 0:
+        return None
+    return int(configured_cap)
 
 
 def _winner_column(names: set[str]) -> str | None:
@@ -1277,6 +1334,7 @@ def _group_diagnostics(
 
 
 def _rng_stage_config_sha(cfg: AppConfig, lags: Sequence[int]) -> str:
+    normalized_lags = _normalize_lags(lags)
     payload = {
         "base_stage_config_sha": cfg.stage_config_sha("rng_diagnostics"),
         "diagnostic_method_version": _DIAGNOSTIC_METHOD_VERSION,
@@ -1285,7 +1343,10 @@ def _rng_stage_config_sha(cfg: AppConfig, lags: Sequence[int]) -> str:
         "sequence_order": list(_SEAT_COORDINATE_COLUMNS),
         "sequence_definition": _SEQUENCE_DEFINITION,
         "reference_band_method": _BAND_METHOD,
-        "lags": [int(lag) for lag in lags],
+        "effective_matchup_group_cap": _effective_max_matchup_groups(
+            cfg.analysis.rng_max_matchup_groups
+        ),
+        "normalized_lags": [int(lag) for lag in normalized_lags],
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 

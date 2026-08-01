@@ -356,6 +356,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         rng_lags_arg = getattr(args, "rng_lags", None)
         if rng_lags_arg:
             rng_lags = tuple(sorted({int(lag) for lag in rng_lags_arg}))
+            cfg.analysis.rng_diagnostic_lags = rng_lags
         compute_rng_diagnostics = getattr(args, "rng_diagnostics", None)
         cfg.validate_statistical_contract(
             require_two_roots=args.command == "two-seed-pipeline"

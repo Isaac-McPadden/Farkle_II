@@ -30,6 +30,7 @@ from farkle.analysis.trueskill_screening import (
 )
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
 from farkle.orchestration.run_contexts import SEED_PAIR_ANALYSIS_DIRNAME, RunContextConfig
+from farkle.orchestration.seed_utils import prepare_seed_config
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
     sidecar_path,
@@ -43,6 +44,7 @@ def _toy_block_runner(
     block: dict[str, Any],
     _strategy_manifest: Path,
     _chunk_games: int,
+    _oracle_game_profile: object | None = None,
 ) -> dict[str, Any]:
     """Return deterministic cyclic evidence for one immutable coordinate block."""
 
@@ -65,6 +67,7 @@ def _noncompletion_oracle_runner(
     block: dict[str, Any],
     _strategy_manifest: Path,
     _chunk_games: int,
+    _oracle_game_profile: object | None = None,
 ) -> dict[str, Any]:
     """Mix bounded replacements with an always-noncompleted frozen candidate."""
 
@@ -158,6 +161,11 @@ def _write_root_cells(cfg: AppConfig, root: Path) -> list[RootBatchCell]:
     }
     cells: list[RootBatchCell] = []
     for (root_seed, k), strategy_values in sorted(base_wins.items()):
+        root_cfg = prepare_seed_config(
+            cfg,
+            seed=root_seed,
+            base_results_dir=root / "inputs" / f"root_{root_seed}" / "results",
+        )
         rows = [
             _metric_row(
                 root_seed=root_seed,
@@ -169,10 +177,10 @@ def _write_root_cells(cfg: AppConfig, root: Path) -> list[RootBatchCell]:
             for batch in range(100)
             for strategy, base in sorted(strategy_values.items())
         ]
-        path = root / "inputs" / f"root_{root_seed}" / f"{k}p_metrics.parquet"
+        path = root_cfg.metrics_all_player_batch_path(k)
         table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
         sidecar = make_artifact_sidecar(
-            cfg,
+            root_cfg,
             path,
             producer="toy_oracle",
             scope=ArtifactScope.BY_K,
@@ -194,18 +202,16 @@ def _write_root_cells(cfg: AppConfig, root: Path) -> list[RootBatchCell]:
 def _write_trueskill_contribution(cfg: AppConfig, root: Path) -> Path:
     cells: list[ScreeningRatingCell] = []
     for root_seed in (11, 22):
+        root_cfg = prepare_seed_config(
+            cfg,
+            seed=root_seed,
+            base_results_dir=root / "inputs" / f"root_{root_seed}" / "results",
+        )
         for k in (2, 4):
-            path = (
-                root
-                / "inputs"
-                / "toy_root_ratings"
-                / f"root_{root_seed}"
-                / f"{k}p"
-                / f"ratings_{k}_seed{root_seed}.parquet"
-            )
+            path = root_cfg.trueskill_rating_path(k, root_seed=root_seed)
             table = pa.table(
                 {
-                    "strategy": [1, 2, 3],
+                    "strategy": pa.array([1, 2, 3], type=pa.int32()),
                     "mu": [30.0 + root_seed / 100, 25.0 + k / 100, 20.0],
                     "sigma": [2.0, 2.5, 3.0],
                     "strategy_attempted_exposures": [2, 1, 1],
@@ -224,7 +230,7 @@ def _write_trueskill_contribution(cfg: AppConfig, root: Path) -> Path:
                 }
             )
             sidecar = make_artifact_sidecar(
-                cfg,
+                root_cfg,
                 path,
                 producer="toy_oracle",
                 scope=ArtifactScope.BY_K,

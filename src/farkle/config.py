@@ -318,6 +318,8 @@ class AnalysisConfig:
     """Optional target rate for multi-target rare-event thresholds."""
     rng_max_matchup_groups: int | None = 100_000
     """Cap matchup-strategy group states in RNG diagnostics to bound memory use."""
+    rng_diagnostic_lags: tuple[int, ...] = (1,)
+    """Normalized positive lags included in RNG-diagnostic freshness identity."""
 
 
 @dataclass
@@ -1703,6 +1705,18 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         raise ValueError("sim.n_players_list must not contain duplicate player counts")
     if cfg.rng.scheme_version != 2 or cfg.rng.bit_generator != "PCG64DXSM":
         raise ValueError("rng must use scheme_version=2 and bit_generator='PCG64DXSM'")
+    rng_cap = cfg.analysis.rng_max_matchup_groups
+    if rng_cap is not None and (
+        isinstance(rng_cap, bool) or not isinstance(rng_cap, int) or rng_cap < 1
+    ):
+        raise ValueError("analysis.rng_max_matchup_groups must be positive when configured")
+    rng_lags = cfg.analysis.rng_diagnostic_lags
+    if (
+        not rng_lags
+        or any(isinstance(lag, bool) or not isinstance(lag, int) or lag < 1 for lag in rng_lags)
+        or tuple(sorted(set(rng_lags))) != rng_lags
+    ):
+        raise ValueError("analysis.rng_diagnostic_lags must be unique increasing positive integers")
     contract_versions = dataclasses.asdict(cfg.artifact_contract)
     if any(int(value) < 1 for value in contract_versions.values()):
         raise ValueError("artifact_contract versions must all be positive integers")

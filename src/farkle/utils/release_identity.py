@@ -162,7 +162,7 @@ def _method_versions(
     stage_versions = {
         "simulation": {"tournament_method_version": TOURNAMENT_METHOD_VERSION},
         "ingest": {"tournament_method_version": TOURNAMENT_METHOD_VERSION},
-        "rng_diagnostics": {"rng_diagnostic_method_version": 2},
+        "rng_diagnostics": {"rng_diagnostic_method_version": 3},
         "trueskill": {
             "trueskill_method_version": 3,
             "trueskill_diagnostic_method_version": 1,
@@ -260,6 +260,20 @@ def _typed_method(
 ) -> MethodContract:
     parameters = metadata.method_contract.get("parameters") or {}
 
+    def _optional_int(name: str) -> int | None:
+        value = parameters.get(name)
+        if isinstance(value, int) and not isinstance(value, bool):
+            return int(value)
+        return None
+
+    raw_lags = parameters.get("normalized_lags")
+    rng_lags = (
+        tuple(int(value) for value in raw_lags)
+        if isinstance(raw_lags, (list, tuple))
+        and all(isinstance(value, int) and not isinstance(value, bool) for value in raw_lags)
+        else ()
+    )
+
     def _hash(name: str) -> str | None:
         value = parameters.get(name)
         return value if isinstance(value, str) and len(value) == 64 else None
@@ -313,6 +327,11 @@ def _typed_method(
         consistency_columns=tuple(metadata.consistency_columns),
         grouping_keys=tuple(metadata.grouping_keys),
         semantic_contract_sha256=identity_sha256(metadata.method_contract),
+        rng_effective_matchup_group_cap=_optional_int("effective_matchup_group_cap"),
+        rng_diagnostic_lags=rng_lags,
+        rng_tracked_matchup_group_count=_optional_int("tracked_matchup_group_count"),
+        rng_skipped_matchup_group_count=_optional_int("skipped_matchup_group_count"),
+        rng_skipped_matchup_row_count=_optional_int("skipped_matchup_row_count"),
     )
 
 

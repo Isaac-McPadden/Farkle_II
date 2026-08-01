@@ -127,7 +127,9 @@ def test_normal_completed_games_have_one_winner_and_permutation_ranks(
     assert metrics.winner == "P2"
     assert metrics.winning_score == 200
     assert ranks.count(1) == 1
-    assert sorted(ranks) == list(range(1, n_players + 1))
+    completed_ranks = [rank for rank in ranks if rank is not None]
+    assert len(completed_ranks) == n_players
+    assert sorted(completed_ranks) == list(range(1, n_players + 1))
 
 
 def test_nullable_safety_outcome_round_trips_through_typed_parquet(

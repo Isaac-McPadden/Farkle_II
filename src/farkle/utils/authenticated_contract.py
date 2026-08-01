@@ -517,6 +517,11 @@ class MethodContract:
     consistency_columns: tuple[str, ...] = ()
     grouping_keys: tuple[str, ...] = ()
     semantic_contract_sha256: str | None = None
+    rng_effective_matchup_group_cap: int | None = None
+    rng_diagnostic_lags: tuple[int, ...] = ()
+    rng_tracked_matchup_group_count: int | None = None
+    rng_skipped_matchup_group_count: int | None = None
+    rng_skipped_matchup_row_count: int | None = None
 
     def __post_init__(self) -> None:
         for name in (
@@ -571,6 +576,28 @@ class MethodContract:
                 self.semantic_contract_sha256,
                 label="semantic_contract_sha256",
             )
+        rng_counts = (
+            self.rng_tracked_matchup_group_count,
+            self.rng_skipped_matchup_group_count,
+            self.rng_skipped_matchup_row_count,
+        )
+        if any(value is not None and value < 0 for value in rng_counts):
+            raise ValueError("RNG diagnostic capacity counts must be nonnegative")
+        if self.rng_effective_matchup_group_cap is not None and (
+            self.rng_effective_matchup_group_cap < 1
+        ):
+            raise ValueError("RNG diagnostic effective matchup-group cap must be positive")
+        if self.rng_diagnostic_lags and (
+            tuple(sorted(set(self.rng_diagnostic_lags))) != self.rng_diagnostic_lags
+            or any(lag < 1 for lag in self.rng_diagnostic_lags)
+        ):
+            raise ValueError("RNG diagnostic lags must be unique increasing positive integers")
+        if self.procedure == "semantic_coordinate_lag_correlation" and (
+            self.rng_effective_matchup_group_cap is None
+            or not self.rng_diagnostic_lags
+            or any(value is None for value in rng_counts)
+        ):
+            raise ValueError("RNG diagnostic method metadata requires cap, lags, and group counts")
 
     @property
     def sha256(self) -> str:
@@ -1080,6 +1107,9 @@ def _parse_method(payload: Mapping[str, Any]) -> MethodContract:
         required_player_counts=tuple(int(value) for value in payload["required_player_counts"]),
         consistency_columns=tuple(str(value) for value in payload["consistency_columns"]),
         grouping_keys=tuple(str(value) for value in payload["grouping_keys"]),
+        rng_diagnostic_lags=tuple(
+            int(value) for value in payload.get("rng_diagnostic_lags", ())
+        ),
     )
 
 

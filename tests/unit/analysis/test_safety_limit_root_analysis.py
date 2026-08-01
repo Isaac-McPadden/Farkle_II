@@ -159,8 +159,19 @@ def _write_inputs(cfg: AppConfig) -> dict[int, list[dict[str, object]]]:
     for k, rows in rows_by_k.items():
         table = pa.Table.from_pylist(rows, schema=expected_schema_for(k))
         ingested = cfg.ingested_rows_curated(k)
-        ingested.parent.mkdir(parents=True, exist_ok=True)
-        pq.write_table(table, ingested)
+        ingested_sidecar = make_artifact_sidecar(
+            cfg,
+            ingested,
+            producer="curate",
+            scope=ArtifactScope.BY_K,
+            source_scope=ArtifactScope.BY_K,
+            operation="curate_game_rows",
+            consistency_columns=table.schema.names,
+            player_counts=[k],
+            required_player_counts=[k],
+            missing_cell_policy="fail",
+        )
+        write_parquet_artifact_atomic(table, ingested, sidecar=ingested_sidecar)
         combined = cfg.combined_rows_by_k(k)
         sidecar = make_artifact_sidecar(
             cfg,
@@ -176,8 +187,23 @@ def _write_inputs(cfg: AppConfig) -> dict[int, list[dict[str, object]]]:
         )
         write_parquet_artifact_atomic(table, combined, sidecar=sidecar)
         combined_frames.append(table.to_pandas())
-    cfg.curated_parquet.parent.mkdir(parents=True, exist_ok=True)
-    pd.concat(combined_frames, ignore_index=True, sort=False).to_parquet(cfg.curated_parquet)
+    concat_table = pa.Table.from_pandas(
+        pd.concat(combined_frames, ignore_index=True, sort=False),
+        preserve_index=False,
+    )
+    concat_sidecar = make_artifact_sidecar(
+        cfg,
+        cfg.curated_parquet,
+        producer="combine",
+        scope=ArtifactScope.CONCAT_KS,
+        source_scope=ArtifactScope.BY_K,
+        operation="concatenate",
+        consistency_columns=concat_table.schema.names,
+        player_counts=[2, 3],
+        required_player_counts=[2, 3],
+        missing_cell_policy="fail",
+    )
+    write_parquet_artifact_atomic(concat_table, cfg.curated_parquet, sidecar=concat_sidecar)
     return rows_by_k
 
 
@@ -189,7 +215,9 @@ def test_mixed_outcomes_propagate_without_fabricated_winner(tmp_path: Path) -> N
     for row in rows_by_k[2]:
         status = counter.record_row(row, k=2, source="hand fixture")
         if status.value == "completed":
-            counter[row["winner_strategy"]] += 1
+            winner_strategy = row["winner_strategy"]
+            assert isinstance(winner_strategy, (int, str))
+            counter[winner_strategy] += 1
     assert counter.games_attempted == 8
     assert counter.games_completed == 4
     assert counter.games_safety_limit == 4

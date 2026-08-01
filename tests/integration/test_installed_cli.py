@@ -26,6 +26,7 @@ def _write_config(tmp_path: Path) -> tuple[Path, Path]:
             {
                 "io": {"results_dir_prefix": str(results_prefix)},
                 "sim": {"n_players_list": [2], "seed": 7, "seed_list": [7, 8]},
+                "screening": {"practical_delta_by_k": {2: 0.03}},
             }
         ),
         encoding="utf-8",
@@ -56,12 +57,13 @@ def _run_installed_cli(
                 from farkle.orchestration.seed_utils import seed_pair_root
 
 
-                def _capture_pipeline(cfg, *, seed_pair, force=False):
+                def _capture_pipeline(cfg, *, seed_pair, force=False, cli_overrides=()):
                     payload = {
                         "seed_pair": list(seed_pair),
                         "configured_seed_list": list(cfg.sim.seed_list),
                         "pair_root": str(seed_pair_root(cfg, seed_pair)),
                         "force": force,
+                        "cli_overrides": list(cli_overrides),
                     }
                     Path(os.environ["FARKLE_CLI_CAPTURE"]).write_text(
                         json.dumps(payload, sort_keys=True), encoding="utf-8"
@@ -113,6 +115,7 @@ def test_installed_entrypoint_resolves_documented_post_subcommand_seed_pair(
     assert completed.returncode == 0, completed.stderr
     assert capture_path is not None
     assert json.loads(capture_path.read_text(encoding="utf-8")) == {
+        "cli_overrides": [],
         "configured_seed_list": [42, 43],
         "force": False,
         "pair_root": str(tmp_path / "results_seed_pair_42_43"),
