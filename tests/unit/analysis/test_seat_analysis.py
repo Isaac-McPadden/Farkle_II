@@ -160,9 +160,7 @@ def test_canonical_seat_estimators_and_diagnostics(tmp_path: Path) -> None:
         artifacts.mirrored_diagnostic,
         expected={
             "conditioning": 'termination_status == "completed"',
-            "replication_unit": (
-                "within_batch_count_matched_opposite_orientation_game_pair"
-            ),
+            "replication_unit": ("within_batch_count_matched_opposite_orientation_game_pair"),
         },
     )
 

@@ -1420,14 +1420,11 @@ def _completed_execution_is_recoverable(
     if output_sidecar.artifact_contract_version == 3:
         authenticated_output = load_authenticated_sidecar(output)
         recorded_hashes = sorted(
-            source.artifact.content_sha256
-            for source in authenticated_output.source_artifacts
+            source.artifact.content_sha256 for source in authenticated_output.source_artifacts
         )
         current_hashes = sorted(sha256_file(path) for path in block_paths)
         if recorded_hashes != current_hashes:
-            raise ValueError(
-                "completed H2H aggregate does not reference the frozen block set"
-            )
+            raise ValueError("completed H2H aggregate does not reference the frozen block set")
     elif output_sidecar.source_artifacts != expected_sources:
         raise ValueError("completed H2H aggregate does not reference the frozen block set")
     try:

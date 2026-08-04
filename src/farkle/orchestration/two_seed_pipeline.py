@@ -75,10 +75,16 @@ class _PerSeedPolicyBundle:
     simulation: StageParallelPolicy
     ingest: StageParallelPolicy
     analysis: StageParallelPolicy
+    head2head: StageParallelPolicy
+    requested_n_jobs: dict[str, int | None]
+    resolved_n_jobs: dict[str, int]
 
-    def as_metadata(self) -> dict[str, dict[str, int]]:
+    def as_metadata(self) -> dict[str, dict[str, int | None]]:
         return {
             name: {
+                "requested_n_jobs": self.requested_n_jobs[name],
+                "resolved_n_jobs": self.resolved_n_jobs[name],
+                "effective_n_jobs": policy.process_workers,
                 "total_cores": policy.total_cores,
                 "process_workers": policy.process_workers,
                 "python_threads": policy.python_threads,
@@ -89,6 +95,7 @@ class _PerSeedPolicyBundle:
                 ("simulation", self.simulation),
                 ("ingest", self.ingest),
                 ("analysis", self.analysis),
+                ("head2head", self.head2head),
             )
         }
 
@@ -100,25 +107,41 @@ def _per_seed_worker_budget(total_workers: int, seed_count: int) -> int:
 
 
 def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPolicyBundle:
-    total_workers = normalize_n_jobs(cfg.sim.n_jobs, default=1)
     concurrency = seed_count if cfg.orchestration.parallel_seeds else 1
-    per_root_workers = _per_seed_worker_budget(total_workers, concurrency)
+    requested: dict[str, int | None] = {
+        "simulation": cfg.sim.n_jobs,
+        "ingest": cfg.ingest.n_jobs,
+        "analysis": cfg.analysis.n_jobs,
+        "head2head": cfg.head2head.n_jobs,
+    }
+    resolved = {name: normalize_n_jobs(value, default=1) for name, value in requested.items()}
+    effective = {
+        name: (value if name == "head2head" else _per_seed_worker_budget(value, concurrency))
+        for name, value in resolved.items()
+    }
     bundle = _PerSeedPolicyBundle(
         simulation=resolve_stage_parallel_policy(
             "simulation",
             cfg.sim,
-            n_jobs_override=per_root_workers,
+            n_jobs_override=effective["simulation"],
         ),
         ingest=resolve_stage_parallel_policy(
             "ingest",
             cfg.ingest,
-            n_jobs_override=min(per_root_workers, normalize_n_jobs(cfg.ingest.n_jobs)),
+            n_jobs_override=effective["ingest"],
         ),
         analysis=resolve_stage_parallel_policy(
             "analysis",
             cfg.analysis,
-            n_jobs_override=per_root_workers,
+            n_jobs_override=effective["analysis"],
         ),
+        head2head=resolve_stage_parallel_policy(
+            "head2head",
+            cfg.head2head,
+            n_jobs_override=effective["head2head"],
+        ),
+        requested_n_jobs=requested,
+        resolved_n_jobs=resolved,
     )
     LOGGER.info(
         "Resolved root process-worker policies",
@@ -130,6 +153,66 @@ def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPol
         },
     )
     return bundle
+
+
+def _project_file_capacity(cfg: AppConfig, *, root_count: int) -> dict[str, object]:
+    """Project the high-cardinality file classes before pipeline execution.
+
+    This is operational capacity information.  Tournament precision planning
+    determines the shuffle count, but this projection is not a statistical
+    sample-size calculation and does not authorize or block work.
+    """
+
+    _strategies, strategy_count, _custom = runner._resolve_strategies(cfg, None)
+    workload_by_k: list[dict[str, object]] = []
+    tournament_shards = 0
+    required_games = 0
+    for k in sorted({int(value) for value in cfg.sim.n_players_list}):
+        plan = runner._plan_workload_from_config(cfg, strategy_count, k)
+        row_shards_per_root = plan.required_shuffles if cfg.simulation_row_dir(k) else 0
+        tournament_shards += row_shards_per_root * root_count
+        required_games += plan.required_games * root_count
+        workload_by_k.append(
+            {
+                "k": k,
+                "required_games_per_root": plan.required_games,
+                "required_shuffles_per_root": plan.required_shuffles,
+                "row_shards_per_root": row_shards_per_root,
+                "cap_exceeded": plan.cap_exceeded,
+                "cap_state": plan.status,
+            }
+        )
+
+    protected_count = len(set(cfg.screening.controls) | set(cfg.screening.mandatory_diagnostics))
+    candidate_upper = min(
+        strategy_count,
+        2 * cfg.screening.candidate_contribution_size + protected_count,
+    )
+    if cfg.head2head.candidate_cap is not None:
+        candidate_upper = min(candidate_upper, cfg.head2head.candidate_cap)
+    h2h_blocks = candidate_upper * (candidate_upper - 1) // 2 * root_count * 2
+    projected_data_files = tournament_shards + h2h_blocks
+    projected_sidecars = projected_data_files
+    return {
+        "estimate_kind": "declared_high_cardinality_upper_envelope",
+        "operational_capacity_only": True,
+        "statistical_sample_size_calculation": False,
+        "root_count": root_count,
+        "strategy_count": strategy_count,
+        "workload_by_k": workload_by_k,
+        "required_games_all_roots": required_games,
+        "tournament_row_shards": tournament_shards,
+        "h2h_candidate_count_upper_envelope": candidate_upper,
+        "h2h_coordinate_blocks_upper_envelope": h2h_blocks,
+        "projected_sidecars": projected_sidecars,
+        "projected_total_files": projected_data_files + projected_sidecars,
+        "projected_total_scope": (
+            "tournament row shards, H2H coordinate blocks, and their adjacent sidecars; "
+            "bounded fixed workflow artifacts, manifests, logs, and completion stamps excluded"
+        ),
+        "warning_threshold": None,
+        "warning": False,
+    }
 
 
 def _build_seed_cfg(
@@ -253,6 +336,7 @@ def _run_one_seed(
         context,
         code_identity=code_identity,
         cli_overrides=cli_overrides,
+        worker_counts=policy_bundle.as_metadata(),
         game_profile_sha256=(
             oracle_game_profile.sha256 if oracle_game_profile is not None else None
         ),
@@ -348,11 +432,7 @@ def _final_release_gate(
     contexts.append(pair_context)
     run_contexts: dict[str, dict[str, str]] = {}
     for context in contexts:
-        label = (
-            "pair"
-            if isinstance(context, RootPairRunContext)
-            else f"root_{int(context.seed)}"
-        )
+        label = "pair" if isinstance(context, RootPairRunContext) else f"root_{int(context.seed)}"
         try:
             persisted = load_run_context(
                 context.run_context_path,
@@ -415,8 +495,7 @@ def run_pipeline(
         )
         if release_identity != (3, 2, 2, 2, 2, 2):
             raise ValueError(
-                "the test-only oracle seam still requires release identity "
-                "3/2/2/2/2/2"
+                "the test-only oracle seam still requires release identity " "3/2/2/2/2/2"
             )
     if cfg.config_sha is None:
         assign_config_sha(cfg)
@@ -434,6 +513,11 @@ def run_pipeline(
     run_id = make_run_id(f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}")
     validate_manifest_contract(manifest_path)
     policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
+    file_capacity = _project_file_capacity(cfg, root_count=len(seed_pair))
+    LOGGER.info(
+        "Projected pipeline file-count capacity",
+        extra={"stage": "orchestration_preflight", **file_capacity},
+    )
     append_manifest_event(
         manifest_path,
         {
@@ -442,6 +526,7 @@ def run_pipeline(
             "results_dir": str(pair_root),
             "pair_analysis_dir": str(pair_root / SEED_PAIR_ANALYSIS_DIRNAME),
             "resolved_policy": policy_bundle.as_metadata(),
+            "file_count_capacity": file_capacity,
         },
         run_id=run_id,
         config_sha=cfg.config_sha,
@@ -516,6 +601,7 @@ def run_pipeline(
             code_identity=code_identity,
             parent_lifecycle_roots=parent_lifecycle_roots,
             cli_overrides=cli_overrides,
+            worker_counts=policy_bundle.as_metadata(),
             game_profile_sha256=(
                 oracle_game_profile.sha256 if oracle_game_profile is not None else None
             ),
@@ -552,9 +638,9 @@ def run_pipeline(
         root_health[str(seed)]["stage_states"] = current_states
         if current_lifecycle is None:
             root_health[str(seed)]["analysis"] = "failed"
-            root_health[str(seed)]["error"] = (
-                "root workflow became stale before final health publication"
-            )
+            root_health[str(seed)][
+                "error"
+            ] = "root workflow became stale before final health publication"
     root_failures = [
         f"root {seed}: {status['error']}"
         for seed, status in root_health.items()

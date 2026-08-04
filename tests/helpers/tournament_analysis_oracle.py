@@ -598,9 +598,9 @@ def assert_pair_h2h_oracle(
 
     schedule_sidecar = load_authenticated_sidecar(cfg.h2h_block_manifest_path())
     assert len(schedule_sidecar.source_artifacts) == 2
-    assert {
-        source.artifact.location.stage_key for source in schedule_sidecar.source_artifacts
-    } == {"candidate_freeze"}
+    assert {source.artifact.location.stage_key for source in schedule_sidecar.source_artifacts} == {
+        "candidate_freeze"
+    }
     for path in sorted(cfg.h2h_block_results_dir().glob("*.parquet")):
         metadata = load_authenticated_sidecar(path)
         assert len(metadata.source_artifacts) == 1

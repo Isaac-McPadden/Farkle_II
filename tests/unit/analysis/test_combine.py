@@ -3,26 +3,52 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from tests.helpers.artifact_sidecars import (
+    make_authenticated_v3_config,
+    publish_v3_parquet,
+)
 
 from farkle.analysis import combine
 from farkle.analysis.checks import check_pre_metrics
-from farkle.config import AppConfig, IOConfig
+from farkle.config import AppConfig
 from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
 from farkle.utils.schema_helpers import expected_schema_for
 
 
-def _write_curated(path: Path, schema: pa.Schema, rows: list[dict]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _cfg(tmp_path: Path) -> AppConfig:
+    return make_authenticated_v3_config(
+        tmp_path,
+        name="combine",
+        root_seed=0,
+        player_counts=(1, 2),
+    )
+
+
+def _write_curated(
+    cfg: AppConfig,
+    path: Path,
+    schema: pa.Schema,
+    rows: list[dict[str, object]],
+) -> None:
     tbl = pa.Table.from_pylist(rows, schema=schema)
-    pq.write_table(tbl, path)
+    publish_v3_parquet(
+        cfg,
+        path,
+        tbl,
+        stage_key="curate",
+        producer="curate",
+        operation="curate_game_rows",
+        source_scope="by_k",
+    )
 
 
 def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    cfg = _cfg(tmp_results_dir)
     # create per-N curated files
     p1 = cfg.ingested_rows_curated(1)
     schema1 = expected_schema_for(1)
     _write_curated(
+        cfg,
         p1,
         schema1,
         [
@@ -48,6 +74,7 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
     p2 = cfg.ingested_rows_curated(2)
     schema2 = expected_schema_for(2)
     _write_curated(
+        cfg,
         p2,
         schema2,
         [
@@ -145,7 +172,7 @@ def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) ->
 
 
 def test_combine_logs_when_no_inputs(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    cfg = _cfg(tmp_results_dir)
     calls: list[tuple[list[Path], Path, int]] = []
 
     monkeypatch.setattr(
@@ -164,7 +191,7 @@ def test_combine_logs_when_no_inputs(tmp_results_dir: Path, capinfo, monkeypatch
 
 
 def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    cfg = _cfg(tmp_results_dir)
     calls: list[tuple[list[Path], Path, int]] = []
 
     monkeypatch.setattr(
@@ -175,7 +202,7 @@ def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeyp
 
     schema = pa.schema([("winner", pa.string())])
     input_path = cfg.ingested_rows_curated(1)
-    _write_curated(input_path, schema, [{"winner": "P1"}])
+    _write_curated(cfg, input_path, schema, [{"winner": "P1"}])
 
     out_dir = cfg.concat_ks_dir("combine")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -192,7 +219,7 @@ def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeyp
 
 
 def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    cfg = _cfg(tmp_results_dir)
     calls: list[tuple[list[Path], Path, int]] = []
 
     monkeypatch.setattr(
@@ -203,7 +230,7 @@ def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeyp
 
     schema = expected_schema_for(1)
     input_path = cfg.ingested_rows_curated(1)
-    _write_curated(input_path, schema, [])
+    _write_curated(cfg, input_path, schema, [])
 
     out_dir = cfg.concat_ks_dir("combine")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -236,7 +263,7 @@ def test_pad_to_schema_adds_missing_columns():
 
 
 def test_concat_ks_output_ignores_generic_legacy_path(tmp_results_dir: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    cfg = _cfg(tmp_results_dir)
     legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined"
     legacy_dir.mkdir(parents=True, exist_ok=True)
     legacy_file = legacy_dir / "all_ingested_rows.parquet"
@@ -250,10 +277,10 @@ def test_concat_ks_output_ignores_generic_legacy_path(tmp_results_dir: Path) -> 
 
 
 def test_combine_respects_stage_cache(tmp_results_dir: Path, monkeypatch, capinfo) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    cfg = _cfg(tmp_results_dir)
     schema = pa.schema([("winner", pa.string())])
     curated = cfg.ingested_rows_curated(1)
-    _write_curated(curated, schema, [{"winner": "P1"}])
+    _write_curated(cfg, curated, schema, [{"winner": "P1"}])
 
     monkeypatch.setattr(combine, "stage_is_up_to_date", lambda *_, **__: True)
     called = []
@@ -269,10 +296,11 @@ def test_combine_respects_stage_cache(tmp_results_dir: Path, monkeypatch, capinf
 
 
 def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    cfg = _cfg(tmp_results_dir)
     p2 = cfg.ingested_rows_curated(2)
     schema2 = expected_schema_for(2)
     _write_curated(
+        cfg,
         p2,
         schema2,
         [
@@ -293,7 +321,7 @@ def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: 
 
     combine.run(cfg)
 
-    partition_file = cfg.combine_partitioned_dir / "2p_part-00000.parquet"
+    partition_file, _ = combine._partition_paths(cfg, 2)
     partition_done = cfg.combine_stage_dir / "combine_partition_2p.done.json"
     assert partition_file.exists()
     assert sidecar_path(partition_file).exists()
@@ -305,10 +333,11 @@ def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: 
 
 
 def test_combine_rerun_replaces_partition_and_combined_manifests(tmp_results_dir: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_results_dir))
+    cfg = _cfg(tmp_results_dir)
     p2 = cfg.ingested_rows_curated(2)
     schema2 = expected_schema_for(2)
     _write_curated(
+        cfg,
         p2,
         schema2,
         [

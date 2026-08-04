@@ -14,7 +14,10 @@ from farkle.orchestration.run_contexts import (
     RootPairRunContext,
     RunContextConfig,
     SeedRunContext,
+    load_run_context,
+    write_run_context_atomic,
 )
+from farkle.utils.authenticated_contract import CodeIdentity, CodeIdentityPolicy
 
 
 def _root_context(tmp_path: Path, root: int) -> SeedRunContext:
@@ -75,3 +78,47 @@ def test_run_context_config_analysis_dir_falls_back_to_base(tmp_path: Path) -> N
     base = _root_context(tmp_path, 11).config
 
     assert RunContextConfig.from_base(base).analysis_dir == base.analysis_dir
+
+
+def test_authenticated_context_records_requested_resolved_and_effective_workers(
+    tmp_path: Path,
+) -> None:
+    context = _root_context(tmp_path, 11)
+    worker_counts = {
+        "simulation": {
+            "requested_n_jobs": 12,
+            "resolved_n_jobs": 12,
+            "effective_n_jobs": 6,
+        },
+        "ingest": {
+            "requested_n_jobs": 3,
+            "resolved_n_jobs": 3,
+            "effective_n_jobs": 1,
+        },
+        "analysis": {
+            "requested_n_jobs": 4,
+            "resolved_n_jobs": 4,
+            "effective_n_jobs": 2,
+        },
+        "head2head": {
+            "requested_n_jobs": 0,
+            "resolved_n_jobs": 16,
+            "effective_n_jobs": 16,
+        },
+    }
+    write_run_context_atomic(
+        context,
+        code_identity=CodeIdentity(
+            commit="a" * 40,
+            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+            state="clean",
+            dirty_fingerprint_sha256=None,
+        ),
+        cli_overrides=("analysis.n_jobs=4",),
+        worker_counts=worker_counts,
+    )
+
+    payload = load_run_context(context.run_context_path)
+
+    assert payload["execution_controls"]["worker_counts"] == worker_counts
+    assert payload["cli_overrides"] == ["analysis.n_jobs=4"]

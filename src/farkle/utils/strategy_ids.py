@@ -37,17 +37,14 @@ def canonical_strategy_ids(
     if series.dtype == object:
         present_values = series.dropna().tolist()
         if all(
-            isinstance(value, Integral) and not isinstance(value, bool)
-            for value in present_values
+            isinstance(value, Integral) and not isinstance(value, bool) for value in present_values
         ):
             series = pd.Series(
                 pd.array(series.tolist(), dtype=STRATEGY_ID_PANDAS_DTYPE),
                 index=series.index,
                 name=series.name,
             )
-    if not pd.api.types.is_integer_dtype(series.dtype) or pd.api.types.is_bool_dtype(
-        series.dtype
-    ):
+    if not pd.api.types.is_integer_dtype(series.dtype) or pd.api.types.is_bool_dtype(series.dtype):
         raise ValueError(
             f"{context} must use a canonical integer logical type; found {series.dtype}"
         )

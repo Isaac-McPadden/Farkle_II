@@ -262,14 +262,10 @@ def test_two_root_combination_and_stability_contract(tmp_path: Path) -> None:
                 "scope": "cross_seed",
                 "method_contract": {
                     "kind": "root_combination",
-                    "procedure": load_authenticated_sidecar(
-                        path
-                    ).artifact.logical_operation,
+                    "procedure": load_authenticated_sidecar(path).artifact.logical_operation,
                     "parameters": {
                         "method_version": 2,
-                        "design_interpretation": (
-                            "fixed_design_descriptive_reproducibility"
-                        ),
+                        "design_interpretation": ("fixed_design_descriptive_reproducibility"),
                         "interval_role": "monte_carlo_precision",
                         "root_population_inference": "none",
                         "multiple_testing_inference": "none",

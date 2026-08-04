@@ -58,7 +58,7 @@ def test_player_count_from_stem_handles_variants():
 def _write_results_block(block: Path, winners: list[str]) -> None:
     block.mkdir(parents=True, exist_ok=True)
     prefix = block.name.split("_")[0]
-    np.save(block / f"keepers_{prefix}.npy", np.array(["A", "B"]))
+    np.save(block / f"keepers_{prefix}.npy", np.array([1, 2], dtype=np.int32))
 
     rows = []
     for winner in winners:
@@ -68,9 +68,9 @@ def _write_results_block(block: Path, winners: list[str]) -> None:
                     "termination_status": "completed",
                     "outcome_schema_version": 2,
                     "winner_seat": "P1",
-                    "winner_strategy": "A",
-                    "P1_strategy": "A",
-                    "P2_strategy": "B",
+                    "winner_strategy": 1,
+                    "P1_strategy": 1,
+                    "P2_strategy": 2,
                     "P1_rank": 1,
                     "P2_rank": 2,
                 }
@@ -81,9 +81,9 @@ def _write_results_block(block: Path, winners: list[str]) -> None:
                     "termination_status": "completed",
                     "outcome_schema_version": 2,
                     "winner_seat": "P2",
-                    "winner_strategy": "B",
-                    "P1_strategy": "A",
-                    "P2_strategy": "B",
+                    "winner_strategy": 2,
+                    "P1_strategy": 1,
+                    "P2_strategy": 2,
                     "P1_rank": 2,
                     "P2_rank": 1,
                 }

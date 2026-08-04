@@ -4,14 +4,17 @@ import json
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import (
+    clean_test_code_identity,
+    make_authenticated_v3_config,
+    publish_v3_parquet,
+    publish_v3_strategy_manifest,
+)
 
 from farkle.analysis.stage_registry import resolve_stage_layout
 from farkle.config import (
     AppConfig,
-    IOConfig,
-    SimConfig,
     assign_config_sha,
     compute_config_sha,
     load_app_config,
@@ -25,9 +28,9 @@ from farkle.orchestration.run_contexts import (
 )
 from farkle.orchestration.seed_utils import write_active_config
 from farkle.simulation import runner
-from farkle.utils.artifact_contract import make_artifact_sidecar, sidecar_path
-from farkle.utils.artifacts import write_parquet_artifact_atomic
-from farkle.utils.authenticated_contract import CodeIdentity, CodeIdentityPolicy
+from farkle.simulation.strategies import ThresholdStrategy
+from farkle.utils.artifact_contract import sidecar_path
+from farkle.utils.authenticated_contract import CodeIdentity
 from farkle.utils.stage_completion import (
     CompletionState,
     resolve_stage_state,
@@ -37,18 +40,14 @@ from farkle.utils.stage_completion import (
 
 
 def _code(commit: str = "a" * 40) -> CodeIdentity:
-    return CodeIdentity(
-        commit=commit,
-        policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
-        state="clean",
-        dirty_fingerprint_sha256=None,
-    )
+    return clean_test_code_identity(commit)
 
 
 def _cfg(tmp_path: Path, *, root: int = 11) -> AppConfig:
-    cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / f"root_{root}"),
-        sim=SimConfig(seed=root, seed_list=[root], n_players_list=[2]),
+    cfg = make_authenticated_v3_config(
+        tmp_path,
+        name=f"root_{root}",
+        root_seed=root,
     )
     cfg.screening.resolution_delta = 0.9
     cfg.batching.target_batches = 2
@@ -68,23 +67,15 @@ def _publish_table(
     sources: list[Path] | None = None,
 ) -> None:
     table = pa.table({"value": [1]})
-    scope = "by_k" if "by_k" in path.parts else "cross_seed"
-    write_parquet_artifact_atomic(
-        table,
+    publish_v3_parquet(
+        cfg,
         path,
-        sidecar=make_artifact_sidecar(
-            cfg,
-            path,
-            producer=producer,
-            scope=scope,
-            source_scope="by_k",
-            operation=f"publish_{producer}_test",
-            consistency_columns=table.schema.names,
-            source_artifacts=sources or [],
-            player_counts=[2],
-            required_player_counts=[2],
-            missing_cell_policy="fail",
-        ),
+        table,
+        stage_key=producer,
+        producer=producer,
+        operation=f"publish_{producer}_test",
+        sources=tuple(sources or ()),
+        source_scope="by_k",
     )
 
 
@@ -100,11 +91,12 @@ def test_simulation_completion_mutation_matrix(
     cfg = _cfg(tmp_path)
     n_dir = cfg.results_root / "2_players"
     n_dir.mkdir(parents=True)
-    strategy_manifest = cfg.strategy_manifest_root_path()
-    strategy_manifest.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(
-        pa.table({"strategy_id": pa.array([1, 2], type=pa.int32())}),
-        strategy_manifest,
+    strategy_manifest = publish_v3_strategy_manifest(
+        cfg,
+        (
+            ThresholdStrategy(score_threshold=0, dice_threshold=6, strategy_id=1),
+            ThresholdStrategy(score_threshold=100, dice_threshold=5, strategy_id=2),
+        ),
     )
     workload = n_dir / "simulation_workload_plan.json"
     workload.write_text("{}", encoding="utf-8")

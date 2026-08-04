@@ -13,7 +13,7 @@ sim:
   expanded_metrics: false   # bool: write expanded metrics parquet
   row_dir: null             # Path|str|None: relative folder for row dumps; null skips write
   per_n: {}                 # dict[int, SimConfig]: per-table overrides mirroring sim options
-  n_jobs: null              # int|None: parallel workers for simulation
+  n_jobs: null              # int|None: simulation workers; null=1, 0=detected CPUs, >0=explicit
   mp_start_method: null     # str|None: multiprocessing start method for simulation executors
   desired_sec_per_chunk: 10 # int: target seconds per work chunk
   ckpt_every_sec: 30        # int: checkpoint interval in seconds
@@ -29,7 +29,7 @@ sim:
   include_stop_at_heuristic: false     # bool: append heuristic stop-at variants
 
 analysis:
-  n_jobs: 1                 # int: parallel workers for analysis
+  n_jobs: 1                 # int: root-analysis workers; 0=detected CPUs, >0=explicit
   mp_start_method: null     # str|None: multiprocessing start method for analysis executors
   log_level: "INFO"         # str: logger level during analysis
   results_glob: "*_players" # str: glob selecting per-N result folders

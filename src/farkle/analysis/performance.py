@@ -102,9 +102,7 @@ def _read_batch_metrics(path: Path, k: int) -> pd.DataFrame:
         + frame["raw_safety_limit_player_game_exposures"]
     ).all():
         raise ValueError(f"{path} violates attempted exposure conservation")
-    if not (
-        frame["raw_losses"] == frame["raw_player_game_exposures"] - frame["raw_wins"]
-    ).all():
+    if not (frame["raw_losses"] == frame["raw_player_game_exposures"] - frame["raw_wins"]).all():
         raise ValueError(f"{path} violates all-participant loss conservation")
     return frame
 
@@ -337,14 +335,11 @@ def _batch_arrays(
         wins = frame.pivot(
             index="deterministic_batch_id", columns="strategy", values="raw_wins"
         ).reindex(columns=strategy_list)
-        exposures = (
-            frame.pivot(
-                index="deterministic_batch_id",
-                columns="strategy",
-                values="raw_player_game_exposures",
-            )
-            .reindex(index=wins.index, columns=strategy_list)
-        )
+        exposures = frame.pivot(
+            index="deterministic_batch_id",
+            columns="strategy",
+            values="raw_player_game_exposures",
+        ).reindex(index=wins.index, columns=strategy_list)
         if wins.isna().any().any() or exposures.isna().any().any():
             raise ValueError("joint resampling requires exact rectangular batch support")
         zero_containing_vectors = exposures.eq(0).any(axis=1)

@@ -181,7 +181,7 @@ def _h2h_tail_plan(
     def _execute(inner: AppConfig) -> None:
         execute_h2h_schedule(
             inner,
-            n_jobs=inner.analysis.n_jobs,
+            n_jobs=inner.head2head.n_jobs,
             oracle_game_profile=oracle_game_profile,
         )
 

@@ -8,7 +8,16 @@ from typing import Any
 import pytest
 
 from farkle.analysis.stage_registry import resolve_stage_layout
-from farkle.config import AppConfig, IOConfig, ScreeningConfig, SimConfig, assign_config_sha
+from farkle.config import (
+    AnalysisConfig,
+    AppConfig,
+    IOConfig,
+    ScreeningConfig,
+    SimConfig,
+    apply_dot_overrides,
+    assign_config_sha,
+    load_app_config,
+)
 from farkle.orchestration import two_seed_pipeline
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
@@ -301,12 +310,121 @@ def test_pipeline_health_rechecks_current_rng_diagnostic_freshness(
 def test_worker_budget_is_split_across_concurrent_roots(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     cfg.sim.n_jobs = 8
+    cfg.analysis.n_jobs = 6
     cfg.orchestration.parallel_seeds = True
 
     policy = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
 
     assert policy.simulation.process_workers == 4
-    assert policy.analysis.process_workers <= 4
+    assert policy.analysis.process_workers == 3
+
+
+def test_worker_sections_own_independent_explicit_budgets() -> None:
+    cfg = AppConfig(
+        sim=SimConfig(n_jobs=12),
+        analysis=AnalysisConfig(n_jobs=4),
+    )
+
+    policy = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
+
+    assert policy.simulation.process_workers == 12
+    assert policy.analysis.process_workers == 4
+    assert policy.as_metadata()["simulation"]["requested_n_jobs"] == 12
+    assert policy.as_metadata()["simulation"]["resolved_n_jobs"] == 12
+    assert policy.as_metadata()["simulation"]["effective_n_jobs"] == 12
+    assert policy.as_metadata()["analysis"]["requested_n_jobs"] == 4
+    assert policy.as_metadata()["analysis"]["resolved_n_jobs"] == 4
+    assert policy.as_metadata()["analysis"]["effective_n_jobs"] == 4
+    assert policy.as_metadata()["head2head"]["effective_n_jobs"] == 4
+
+
+def test_worker_defaults_and_explicit_auto_mode(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AppConfig()
+    defaults = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
+    assert defaults.simulation.process_workers == 1
+    assert defaults.analysis.process_workers == 1
+
+    original = two_seed_pipeline.normalize_n_jobs
+    monkeypatch.setattr(
+        two_seed_pipeline,
+        "normalize_n_jobs",
+        lambda value, default=1: 16 if value == 0 else original(value, default=default),
+    )
+    cfg.sim.n_jobs = 0
+    cfg.analysis.n_jobs = 0
+    auto = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
+    assert auto.resolved_n_jobs["simulation"] == 16
+    assert auto.resolved_n_jobs["analysis"] == 16
+    assert auto.simulation.process_workers == 16
+    assert auto.analysis.process_workers == 16
+
+
+def test_h2h_stage_uses_head2head_worker_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    cfg = AppConfig(
+        sim=SimConfig(seed=1, seed_list=[1]),
+        analysis=AnalysisConfig(n_jobs=3),
+    )
+    cfg.head2head.n_jobs = 7
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        "farkle.analysis.h2h_schedule.execute_h2h_schedule",
+        lambda _cfg, *, n_jobs, oracle_game_profile: captured.update(n_jobs=n_jobs),
+    )
+    plan = two_seed_pipeline.analysis.build_single_root_h2h_tail_plan(cfg)
+    next(item for item in plan if item.name == "h2h_execute").action(cfg)
+
+    assert captured["n_jobs"] == 7
+
+
+def test_yaml_then_cli_worker_override_precedence(tmp_path: Path) -> None:
+    config_path = tmp_path / "workers.yaml"
+    config_path.write_text("sim:\n  n_jobs: 7\nanalysis:\n  n_jobs: 3\n", encoding="utf-8")
+
+    cfg = load_app_config(config_path)
+    cfg = apply_dot_overrides(cfg, ["sim.n_jobs=9", "analysis.n_jobs=5"])
+    policy = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
+
+    assert policy.simulation.process_workers == 9
+    assert policy.analysis.process_workers == 5
+
+
+def test_file_capacity_projects_shards_blocks_sidecars_and_games(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = AppConfig(
+        sim=SimConfig(n_players_list=[2], row_dir=Path("rows")),
+        screening=ScreeningConfig(
+            practical_delta_by_k={2: 0.03},
+            candidate_contribution_size=75,
+        ),
+    )
+    monkeypatch.setattr(
+        two_seed_pipeline.runner,
+        "_resolve_strategies",
+        lambda _cfg, _strategies: ([], 10, True),
+    )
+
+    projection = two_seed_pipeline._project_file_capacity(cfg, root_count=2)
+
+    assert projection["required_games_all_roots"] == 43_000
+    assert projection["tournament_row_shards"] == 8_600
+    assert projection["h2h_candidate_count_upper_envelope"] == 10
+    assert projection["h2h_coordinate_blocks_upper_envelope"] == 180
+    assert projection["projected_sidecars"] == 8_780
+    assert projection["projected_total_files"] == 17_560
+    assert projection["operational_capacity_only"] is True
+    assert projection["warning_threshold"] is None
+    assert projection["workload_by_k"] == [
+        {
+            "k": 2,
+            "required_games_per_root": 21_500,
+            "required_shuffles_per_root": 4_300,
+            "row_shards_per_root": 4_300,
+            "cap_exceeded": False,
+            "cap_state": "not_started",
+        }
+    ]
 
 
 def test_force_bypasses_authenticated_simulation_skip(

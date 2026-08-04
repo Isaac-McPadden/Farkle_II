@@ -104,10 +104,33 @@ plan or block manifest.
 ## Simulation, analysis, and model settings
 
 `sim` owns `n_jobs`, process start method, checkpoint cadence, row/metric
-locations, and the strategy option grid. `analysis` owns analysis workers,
+locations, and the strategy option grid. `analysis` owns root-analysis workers,
 optional RNG diagnostics, game-stat thresholds, rare-event settings, and the
 three overridable output names (`curated_rows_name`, `metrics_name`, and
 `manifest_name`).
+
+Worker settings do not inherit across sections. `sim.n_jobs` controls only
+simulation workers, `analysis.n_jobs` controls root-analysis workers, and
+`head2head.n_jobs` controls H2H execution workers. A value of `0` is the explicit
+auto mode and resolves to the detected logical CPU count; positive values are
+explicit. `sim.n_jobs: null` retains its compatibility default of one worker.
+YAML is loaded first and a matching `--set` value wins.
+When `orchestration.parallel_seeds` is false (the default), roots remain
+sequential and each root receives the resolved section budget. When it is true,
+each section's own resolved budget is divided across concurrent roots. The
+authenticated run context records requested, resolved, and effective counts.
+
+The two-root preflight log/manifest event also reports a declared upper-envelope
+projection for tournament row shards, H2H pair/root/order blocks, their adjacent
+sidecars, and their total. This is operational file-system capacity information,
+not a statistical sample-size calculation. Fixed-count workflow artifacts,
+manifests, logs, and completion stamps are explicitly outside that projected
+high-cardinality total. No file-count threshold is currently configured, so the
+projection warns or blocks nothing.
+
+The reviewed fast run produced 75,609 files, so bounded, manifest-indexed shard
+aggregation remains justified future operational work. It is intentionally not
+part of this change; per-coordinate atomic H2H recovery remains unchanged.
 
 `trueskill` contains `beta`, `tau`, and `draw_probability`. Canonical ratings
 are always root/k cells. `hgb` contains `max_depth`, `n_estimators`,

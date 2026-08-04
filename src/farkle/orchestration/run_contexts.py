@@ -12,6 +12,7 @@ from typing import Any, cast
 from farkle.analysis.stage_registry import StageLayout, resolve_root_pair_stage_layout
 from farkle.config import AppConfig, assign_config_sha, compute_config_sha
 from farkle.utils.authenticated_contract import CodeIdentity, canonical_json_bytes, identity_sha256
+from farkle.utils.parallel import normalize_n_jobs
 from farkle.utils.writer import atomic_path
 
 SEED_PAIR_ANALYSIS_DIRNAME = "seed_pair_analysis"
@@ -246,6 +247,7 @@ def write_run_context_atomic(
     code_identity: CodeIdentity,
     parent_lifecycle_roots: tuple[str, ...] = (),
     cli_overrides: tuple[str, ...] = (),
+    worker_counts: Mapping[str, Mapping[str, int | None]] | None = None,
     game_profile_sha256: str | None = None,
 ) -> str:
     """Publish the authenticated runtime/layout artifact separately from YAML."""
@@ -274,6 +276,35 @@ def write_run_context_atomic(
         "analysis_mp_start_method": cfg.analysis.mp_start_method,
         "head2head_n_jobs": cfg.head2head.n_jobs,
         "parallel_seeds": cfg.orchestration.parallel_seeds,
+        "worker_counts": (
+            {
+                str(stage): {str(key): value for key, value in counts.items()}
+                for stage, counts in worker_counts.items()
+            }
+            if worker_counts is not None
+            else {
+                "simulation": {
+                    "requested_n_jobs": cfg.sim.n_jobs,
+                    "resolved_n_jobs": normalize_n_jobs(cfg.sim.n_jobs, default=1),
+                    "effective_n_jobs": normalize_n_jobs(cfg.sim.n_jobs, default=1),
+                },
+                "ingest": {
+                    "requested_n_jobs": cfg.ingest.n_jobs,
+                    "resolved_n_jobs": normalize_n_jobs(cfg.ingest.n_jobs, default=1),
+                    "effective_n_jobs": normalize_n_jobs(cfg.ingest.n_jobs, default=1),
+                },
+                "analysis": {
+                    "requested_n_jobs": cfg.analysis.n_jobs,
+                    "resolved_n_jobs": normalize_n_jobs(cfg.analysis.n_jobs, default=1),
+                    "effective_n_jobs": normalize_n_jobs(cfg.analysis.n_jobs, default=1),
+                },
+                "head2head": {
+                    "requested_n_jobs": cfg.head2head.n_jobs,
+                    "resolved_n_jobs": normalize_n_jobs(cfg.head2head.n_jobs, default=1),
+                    "effective_n_jobs": normalize_n_jobs(cfg.head2head.n_jobs, default=1),
+                },
+            }
+        ),
     }
     payload = {
         "run_context_contract_version": 1,

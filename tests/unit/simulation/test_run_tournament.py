@@ -443,12 +443,16 @@ def test_metric_only_checkpoint_resume_commits_statistics_before_ownership(
             0: float(position * position),
             1: float(9 * position * position),
         }
-    assert resumed["meta"]["completed_shuffle_indices"] == uninterrupted["meta"][
-        "completed_shuffle_indices"
-    ] == [0, 1, 2]
-    assert resumed["meta"]["completed_process_block_indices"] == uninterrupted["meta"][
-        "completed_process_block_indices"
-    ] == [1, 2, 3]
+    assert (
+        resumed["meta"]["completed_shuffle_indices"]
+        == uninterrupted["meta"]["completed_shuffle_indices"]
+        == [0, 1, 2]
+    )
+    assert (
+        resumed["meta"]["completed_process_block_indices"]
+        == uninterrupted["meta"]["completed_process_block_indices"]
+        == [1, 2, 3]
+    )
 
 
 def test_direct_resume_rejects_v1_checkpoint_identity(
@@ -517,3 +521,5 @@ def test_shuffle_rows_preserve_turns_and_rng_coordinates() -> None:
         assert row["rng_purpose_namespace"] == 102
         assert row["P1_n_turns"] >= 1
         assert row["P2_n_turns"] >= 1
+        assert isinstance(row["P1_strategy"], int)
+        assert isinstance(row["P2_strategy"], int)

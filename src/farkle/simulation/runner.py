@@ -32,7 +32,11 @@ import farkle.simulation.run_tournament as tournament_mod
 from farkle.config import AppConfig, ArtifactScope
 from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.run_tournament import METRIC_LABELS, TournamentConfig
-from farkle.simulation.simulation import experiment_size, generate_strategy_grid
+from farkle.simulation.simulation import (
+    _prepare_public_helper_strategies,
+    experiment_size,
+    generate_strategy_grid,
+)
 from farkle.simulation.strategies import (
     STRATEGY_MANIFEST_NAME,
     ThresholdStrategy,
@@ -118,6 +122,7 @@ def _resolve_strategies(
     else:
         used_custom = True  # caller provided a custom grid explicitly
 
+    strategies = _prepare_public_helper_strategies(strategies)
     grid_size = len(strategies)
 
     LOGGER.info(
@@ -399,11 +404,11 @@ def _publish_simulation_outputs_v3(
     ordered = sorted(
         ordinary,
         key=lambda path: (
-            0
-            if path.resolve() == strategy.resolve()
-            else 1
-            if path.resolve() == workload.resolve()
-            else 2,
+            (
+                0
+                if path.resolve() == strategy.resolve()
+                else 1 if path.resolve() == workload.resolve() else 2
+            ),
             path.as_posix(),
         ),
     )
@@ -433,9 +438,11 @@ def _publish_simulation_outputs_v3(
         operation = (
             "publish_strategy_manifest"
             if path.resolve() == strategy.resolve()
-            else "publish_simulation_workload_plan"
-            if path.resolve() == workload.resolve()
-            else "publish_simulation_output"
+            else (
+                "publish_simulation_workload_plan"
+                if path.resolve() == workload.resolve()
+                else "publish_simulation_output"
+            )
         )
         support_counts = (
             sorted({int(value) for value in cfg.sim.n_players_list})
@@ -470,6 +477,7 @@ def _publish_simulation_outputs_v3(
             },
         )
         existing = path.read_bytes()
+
         def _write_existing(
             staged: Path,
             *,

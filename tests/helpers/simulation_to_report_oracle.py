@@ -249,9 +249,8 @@ def assert_report_oracle(pair_context: RootPairRunContext) -> None:
     assert report["safety_limits"]["games_completed"] == 11
     assert report["safety_limits"]["games_safety_limit"] == 1
     assert report["conditioning"]["trueskill"] == TRUESKILL_CONDITIONING
-    assert (
-        "safety-limit attempts are excluded from rating updates"
-        in (report["conditioning"]["trueskill"])
+    assert "safety-limit attempts are excluded from rating updates" in (
+        report["conditioning"]["trueskill"]
     )
     assert report["candidate_family"]["candidate_count"] == 3
     assert report["h2h"]["role"] == "external_two_player_finalist_diagnostic"

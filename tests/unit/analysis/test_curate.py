@@ -2,25 +2,56 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pyarrow as pa
 import pyarrow.parquet as pq
+from tests.helpers.artifact_sidecars import (
+    make_authenticated_v3_config,
+    publish_v3_simulation_run,
+)
 
-from farkle.analysis import curate
-from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.analysis import curate, ingest
+from farkle.config import assign_config_sha
+from farkle.simulation.simulation import _play_game, simulation_rows_to_table
+from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
-from farkle.utils.schema_helpers import expected_schema_for
+from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 
 
 def test_curate_publishes_and_backfills_row_sidecars_without_recopying(tmp_path: Path) -> None:
-    cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / "results"),
-        sim=SimConfig(seed=7, seed_list=[7], n_players_list=[2]),
+    cfg = make_authenticated_v3_config(
+        tmp_path,
+        name="curate",
+        root_seed=7,
     )
-    raw = cfg.ingested_rows_raw(2)
-    raw.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist([], schema=expected_schema_for(2)), raw)
-    ingest_manifest = cfg.ingest_manifest(2)
-    ingest_manifest.write_text("{}\n", encoding="utf-8")
+    cfg.sim.row_dir = Path("rows")
+    cfg.ingest.n_jobs = 1
+    assign_config_sha(cfg)
+    strategies = (
+        ThresholdStrategy(score_threshold=0, dice_threshold=6, strategy_id=11),
+        ThresholdStrategy(score_threshold=0, dice_threshold=6, strategy_id=12),
+    )
+    row = _play_game(
+        123,
+        list(strategies),
+        target_score=200,
+        provenance={
+            "root_seed": cfg.sim.seed,
+            "k": 2,
+            "shuffle_index": 0,
+            "game_index": 0,
+            "deterministic_batch_id": 0,
+            "shuffle_seed": 456,
+            "game_seed": 123,
+            "rng_scheme_version": RNG_SCHEME_VERSION,
+            "rng_purpose_namespace": int(RandomPurpose.TOURNAMENT_GAME),
+        },
+    )
+    publish_v3_simulation_run(
+        cfg,
+        simulation_rows_to_table([row], 2),
+        strategies=strategies,
+    )
+    ingest.run(cfg)
+    assert pq.read_table(cfg.ingested_rows_raw(2)).num_rows == 1
 
     curate.run(cfg)
 

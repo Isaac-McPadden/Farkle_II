@@ -30,6 +30,7 @@ from farkle.simulation.game_profile import GameProfile
 from farkle.simulation.simulation import (
     PlayerRngCoordinates,
     _play_game,
+    _prepare_public_helper_strategies,
     generate_strategy_grid,
     simulation_rows_to_table,
 )
@@ -263,7 +264,7 @@ def _init_worker(
     global _STATE
     if len(strategies) % config.n_players != 0:
         raise ValueError(f"n_players must divide {len(strategies):,}")
-    _STATE = WorkerState(list(strategies), config, game_profile)
+    _STATE = WorkerState(_prepare_public_helper_strategies(strategies), config, game_profile)
 
 
 # ---------------------------------------------------------------------------
@@ -1050,6 +1051,10 @@ def run_tournament(
         to avoid recomputing completed work.
     checkpoint_metadata : Mapping[str, Any] | None, default None
         Optional metadata to store alongside checkpoints for resume validation.
+    strategies : Sequence[ThresholdStrategy] | None, default None
+        Ordered strategy grid. Canonical integer IDs are preserved; missing
+        IDs receive deterministic helper-local integers by input position
+        before throughput measurement or worker dispatch.
 
     Notes
     -----
@@ -1066,6 +1071,7 @@ def run_tournament(
     """
     if strategies is None:
         strategies, _ = generate_strategy_grid()  # 7_140 strategies
+    strategies = _prepare_public_helper_strategies(strategies)
 
     cfg = config or TournamentConfig()
     if num_shuffles != cfg.num_shuffles:

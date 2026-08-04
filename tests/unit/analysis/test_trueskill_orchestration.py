@@ -6,36 +6,76 @@ from types import SimpleNamespace
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import (
+    make_authenticated_v3_config,
+    mutate_json_identity_leaf,
+    publish_v3_parquet,
+    publish_v3_strategy_manifest,
+)
 
 from farkle.analysis import run_trueskill as run_trueskill_module
 from farkle.analysis import trueskill as trueskill_stage
-from farkle.analysis.stage_registry import resolve_root_pair_stage_layout, resolve_stage_layout
+from farkle.analysis.stage_registry import resolve_root_pair_stage_layout
 from farkle.analysis.trueskill_screening import ScreeningRatingCell, publish_rating_cell_contract
 from farkle.config import AppConfig, IOConfig, SimConfig
 from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifact_contract import (
-    ArtifactContractError,
     sha256_file,
     validate_artifact_sidecar,
 )
+from farkle.utils.authenticated_contract import validate_authenticated_artifact_unbound
 
 
 def _root_context(tmp_path: Path, seed: int, ks: tuple[int, ...] = (2, 4)) -> SeedRunContext:
-    cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / f"root_{seed}"),
-        sim=SimConfig(seed=seed, seed_list=[seed], n_players_list=list(ks)),
+    cfg = make_authenticated_v3_config(
+        tmp_path,
+        name=f"root_{seed}",
+        root_seed=seed,
+        player_counts=ks,
     )
-    cfg.set_stage_layout(resolve_stage_layout(cfg))
     return SeedRunContext.from_config(cfg)
 
 
+def _write_curated_source(context: SeedRunContext, k: int) -> Path:
+    path = context.config.ingested_rows_curated(k)
+    return publish_v3_parquet(
+        context.config,
+        path,
+        pa.table(
+            {
+                "termination_status": ["completed"],
+                "outcome_schema_version": [2],
+                "winner_seat": ["P1"],
+                "P1_strategy": pa.array([1], type=pa.int32()),
+                "P2_strategy": pa.array([2], type=pa.int32()),
+                "P1_rank": [1],
+                "P2_rank": [2],
+            }
+        ),
+        stage_key="curate",
+        producer="curate",
+        operation="curate_game_rows",
+    )
+
+
 def _write_rating_cell(context: SeedRunContext, k: int, *, valid_sidecar: bool = True) -> Path:
+    manifest = context.config.strategy_manifest_root_path()
+    if not manifest.exists():
+        publish_v3_strategy_manifest(
+            context.config,
+            (
+                ThresholdStrategy(score_threshold=300, dice_threshold=2, strategy_id=1),
+                ThresholdStrategy(score_threshold=400, dice_threshold=2, strategy_id=2),
+            ),
+        )
+    source = _write_curated_source(context, k)
     path = context.config.trueskill_rating_path(k, root_seed=context.seed)
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(
         pa.table(
             {
-                "strategy": ["A", "B"],
+                "strategy": pa.array([1, 2], type=pa.int32()),
                 "mu": [30.0 + context.seed / 100 + k / 1000, 20.0],
                 "sigma": [2.0, 3.0],
                 "strategy_attempted_exposures": [1, 1],
@@ -57,7 +97,12 @@ def _write_rating_cell(context: SeedRunContext, k: int, *, valid_sidecar: bool =
     if valid_sidecar:
         publish_rating_cell_contract(
             context.config,
-            ScreeningRatingCell(root_seed=context.seed, k=k, ratings_path=path),
+            ScreeningRatingCell(
+                root_seed=context.seed,
+                k=k,
+                ratings_path=path,
+                game_rows_path=source,
+            ),
             completed_artifact_sha256=sha256_file(path),
         )
     return path
@@ -84,10 +129,10 @@ def test_root_pair_trueskill_aggregates_complete_root_k_cells(tmp_path: Path) ->
 
     output = context.config.trueskill_candidate_contribution_path()
     frame = pq.read_table(output).to_pandas().set_index("strategy")
-    assert frame.loc["A", "rating_cells_present"] == 4
-    assert frame.loc["A", "rating_cells_required"] == 4
-    assert frame.loc["A", "complete_support"]
-    sidecar = validate_artifact_sidecar(
+    assert frame.loc[1, "rating_cells_present"] == 4
+    assert frame.loc[1, "rating_cells_required"] == 4
+    assert frame.loc[1, "complete_support"]
+    validate_artifact_sidecar(
         output,
         expected={
             "scope": "across_k",
@@ -95,21 +140,47 @@ def test_root_pair_trueskill_aggregates_complete_root_k_cells(tmp_path: Path) ->
             "seed_scope": "both_roots_combined",
         },
     )
-    assert set(sidecar.source_artifacts) == {str(path) for path in sources}
+    authenticated = validate_authenticated_artifact_unbound(
+        output,
+        validate_provenance=False,
+    )
+    assert {
+        (identity.artifact.content_sha256, identity.sidecar_sha256)
+        for identity in authenticated.source_artifacts
+    } == {
+        (sha256_file(path), sha256_file(path.with_name(f"{path.name}.sidecar.json")))
+        for path in sources
+    }
 
 
-def test_root_pair_trueskill_rejects_missing_and_invalid_cells(tmp_path: Path) -> None:
+@pytest.mark.parametrize("mutation", ["missing_rating", "mutated_sidecar"])
+def test_root_pair_trueskill_rejects_missing_and_invalid_cells(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
     context = _pair_context(tmp_path)
-    for root_context in context.root_contexts:
-        for k in (2, 4):
-            if (root_context.seed, k) != (22, 4):
-                _write_rating_cell(root_context, k)
+    ratings = [
+        _write_rating_cell(root_context, k)
+        for root_context in context.root_contexts
+        for k in (2, 4)
+    ]
+    trueskill_stage.run_root_pair(context.config, context.root_contexts)
 
-    with pytest.raises(FileNotFoundError, match="rating cells are missing"):
-        trueskill_stage.run_root_pair(context.config, context.root_contexts)
+    target = ratings[-1]
+    if mutation == "missing_rating":
+        target.unlink()
+        error: type[Exception] = FileNotFoundError
+        expected = "rating cells are missing"
+    else:
+        mutate_json_identity_leaf(
+            target.with_name(f"{target.name}.sidecar.json"),
+            ("artifact", "location", "scope"),
+            "diagnostics",
+        )
+        error = RuntimeError
+        expected = "scope|sidecar|location"
 
-    _write_rating_cell(context.root_contexts[1], 4, valid_sidecar=False)
-    with pytest.raises(ArtifactContractError):
+    with pytest.raises(error, match=expected):
         trueskill_stage.run_root_pair(context.config, context.root_contexts)
 
 
@@ -131,8 +202,13 @@ def test_run_trueskill_root_rejects_incomplete_configured_k_support(
 ) -> None:
     context = _root_context(tmp_path, 11)
     rating = _write_rating_cell(context, 2)
+    _write_curated_source(context, 4)
     monkeypatch.setattr(run_trueskill_module, "run_trueskill", lambda **_kwargs: None)
-    monkeypatch.setattr(run_trueskill_module, "_resolve_root_row_data_dir", lambda _cfg: tmp_path)
+    monkeypatch.setattr(
+        run_trueskill_module,
+        "_resolve_root_row_data_dir",
+        lambda _cfg: context.config.curate_stage_dir,
+    )
     monkeypatch.setattr(
         run_trueskill_module,
         "_iter_rating_parquets",
@@ -164,7 +240,11 @@ def test_run_trueskill_root_rejects_extra_k_cells(
         f"ratings_{k}_seed11.done.json": rating for k, rating in zip((2, 4), ratings, strict=True)
     }
     monkeypatch.setattr(run_trueskill_module, "run_trueskill", lambda **_kwargs: None)
-    monkeypatch.setattr(run_trueskill_module, "_resolve_root_row_data_dir", lambda _cfg: tmp_path)
+    monkeypatch.setattr(
+        run_trueskill_module,
+        "_resolve_root_row_data_dir",
+        lambda _cfg: context.config.curate_stage_dir,
+    )
     monkeypatch.setattr(
         run_trueskill_module,
         "_iter_rating_parquets",
@@ -238,7 +318,7 @@ def test_auxiliary_trueskill_exports_receive_sidecars(tmp_path: Path) -> None:
         context.config.trueskill_stage_dir, "2", suffix
     )
     paths["json"].write_text(
-        '{"A":{"mu":30.112,"sigma":2.0},"B":{"mu":20.0,"sigma":3.0}}',
+        '{"1":{"mu":30.112,"sigma":2.0},"2":{"mu":20.0,"sigma":3.0}}',
         encoding="utf-8",
     )
     shard, _done = run_trueskill_module._block_shard_paths(

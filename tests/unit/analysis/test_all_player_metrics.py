@@ -6,22 +6,23 @@ from typing import cast
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import (
+    make_authenticated_v3_config,
+    publish_v3_parquet,
+)
 
 from farkle.analysis.all_player_metrics import (
     all_player_batch_schema,
     build_all_player_batch_metrics,
     validate_unconditional_all_player_schema,
 )
-from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.config import AppConfig
 from farkle.utils.artifact_contract import validate_artifact_sidecar
 from farkle.utils.schema_helpers import expected_schema_for
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
-    return AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / "results"),
-        sim=SimConfig(seed=7, n_players_list=[2]),
-    )
+    return make_authenticated_v3_config(tmp_path, name="all_player_metrics", root_seed=7)
 
 
 def _exposure_values(
@@ -83,9 +84,15 @@ def _game_row(
 
 def _write_source(cfg: AppConfig, rows: list[dict[str, object]]) -> Path:
     path = cfg.ingested_rows_curated(2)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist(rows, schema=expected_schema_for(2)), path)
-    return path
+    return publish_v3_parquet(
+        cfg,
+        path,
+        pa.Table.from_pylist(rows, schema=expected_schema_for(2)),
+        stage_key="curate",
+        producer="curate",
+        operation="curate_game_rows",
+        source_scope="by_k",
+    )
 
 
 def test_all_player_turn_returns_include_zero_score_turns(tmp_path: Path) -> None:
@@ -193,7 +200,13 @@ def test_all_player_metrics_accept_zero_turn_safety_limit_as_attempted_loss(
             "winner_seat": None,
             "winner_strategy": None,
             "termination_status": "safety_limit",
+            "hit_safety_limit": True,
             "winning_score": None,
+            "seat_ranks": [None, None],
+            "P1_rank": None,
+            "P2_rank": None,
+            "P1_loss_margin": None,
+            "P2_loss_margin": None,
         }
     )
     _write_source(cfg, [row])

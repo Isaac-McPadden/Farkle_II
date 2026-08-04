@@ -12,7 +12,7 @@ Key entry points include:
 from __future__ import annotations
 
 import multiprocessing as mp
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Iterable, List, Mapping, Sequence, Tuple
 
 import numpy as np
@@ -358,6 +358,57 @@ class PlayerRngCoordinates:
         )
 
 
+def _prepare_public_helper_strategies(
+    strategies: Sequence[ThresholdStrategy],
+) -> list[ThresholdStrategy]:
+    """Return strategy copies with unique canonical IDs for public helpers.
+
+    Existing canonical ``strategy_id`` values are preserved. Missing IDs are
+    assigned, in input order, the smallest nonnegative canonical integers not
+    already supplied by the caller. Each input position owns one ID, so a
+    repeated object or semantically equivalent strategies receive distinct
+    local IDs. The caller's strategy objects are never mutated.
+
+    The resolved list is prepared before serial or process-worker dispatch so
+    both execution modes expose identical IDs. Duplicate caller-provided IDs
+    are rejected because canonical simulation rows require distinct seated
+    strategy identifiers.
+    """
+
+    provided_by_position: list[int | None] = []
+    used_ids: set[int] = set()
+    for position, strategy in enumerate(strategies):
+        raw_strategy_id = strategy.strategy_id
+        if raw_strategy_id is None:
+            provided_by_position.append(None)
+            continue
+        strategy_id = canonical_strategy_id(
+            raw_strategy_id,
+            context=f"strategies[{position}].strategy_id",
+        )
+        if strategy_id in used_ids:
+            raise ValueError(f"Caller-provided strategy IDs must be unique; found {strategy_id}")
+        provided_by_position.append(strategy_id)
+        used_ids.add(strategy_id)
+
+    next_local_id = 0
+    resolved: list[ThresholdStrategy] = []
+    for strategy, provided_id in zip(strategies, provided_by_position, strict=True):
+        if provided_id is None:
+            while next_local_id in used_ids:
+                next_local_id += 1
+            resolved_id = canonical_strategy_id(
+                next_local_id,
+                context="helper-local strategy identifier",
+            )
+            used_ids.add(resolved_id)
+            next_local_id += 1
+        else:
+            resolved_id = provided_id
+        resolved.append(replace(strategy, strategy_id=resolved_id))
+    return resolved
+
+
 def _make_players(
     strategies: Sequence[ThresholdStrategy],
     seed: int,
@@ -483,9 +534,7 @@ def validate_simulation_row(row: Mapping[str, Any]) -> None:
                 or not isinstance(loss_margin, (int, np.integer))
                 or int(loss_margin) != int(winning_score) - score
             ):
-                raise ValueError(
-                    f"Completed simulation row has inconsistent {seat}_loss_margin"
-                )
+                raise ValueError(f"Completed simulation row has inconsistent {seat}_loss_margin")
         expected_seat_ranks = [seats[index] for index in score_order]
         seat_ranks = row.get("seat_ranks")
         if seat_ranks is None or list(seat_ranks) != expected_seat_ranks:
@@ -621,7 +670,9 @@ def simulate_many_games(
     n_games
         Number of games to simulate.
     strategies
-        Strategies assigned to the players.
+        Strategies assigned to the players. Canonical integer ``strategy_id``
+        values are preserved. Missing IDs receive deterministic helper-local
+        integers by input position; equivalent inputs remain distinct seats.
     target_score
         Score required to trigger the final round.
     seed
@@ -636,15 +687,16 @@ def simulate_many_games(
     """
     if seed is None:
         raise ValueError("simulate_many_games requires an explicit seed")
+    resolved_strategies = _prepare_public_helper_strategies(strategies)
     seeds = spawn_seeds(n_games, seed=seed)
     args = [
         (
             int(game_seed),
-            strategies,
+            resolved_strategies,
             target_score,
             {
                 "root_seed": seed,
-                "k": len(strategies),
+                "k": len(resolved_strategies),
                 "shuffle_index": None,
                 "game_index": game_index,
                 "deterministic_batch_id": None,
@@ -656,7 +708,7 @@ def simulate_many_games(
             PlayerRngCoordinates(
                 purpose=RandomPurpose.PLAYER,
                 root_seed=seed,
-                k=len(strategies),
+                k=len(resolved_strategies),
                 game_index=game_index,
             ),
         )
@@ -685,7 +737,10 @@ def simulate_many_games_from_seeds(
     seeds : Iterable[int]
         Deterministic seeds to feed into :func:`_play_game`. Each seed produces one game.
     strategies : Sequence[ThresholdStrategy]
-        Strategies assigned to players in every simulated game.
+        Strategies assigned to players in every simulated game. Canonical
+        integer ``strategy_id`` values are preserved. Missing IDs receive
+        deterministic helper-local integers by input position; equivalent
+        inputs remain distinct seats.
     target_score : int, optional
         Score required to trigger the final round; defaults to ``10_000``.
     n_jobs : int, optional
@@ -697,14 +752,15 @@ def simulate_many_games_from_seeds(
         One row per simulated game, identical in shape to the output of
         :func:`simulate_many_games`.
     """
+    resolved_strategies = _prepare_public_helper_strategies(strategies)
     args = [
         (
             int(game_seed),
-            strategies,
+            resolved_strategies,
             target_score,
             {
                 "root_seed": int(game_seed) if root_seed is None else root_seed,
-                "k": len(strategies),
+                "k": len(resolved_strategies),
                 "shuffle_index": None,
                 "game_index": game_index,
                 "deterministic_batch_id": None,
@@ -716,7 +772,7 @@ def simulate_many_games_from_seeds(
             PlayerRngCoordinates(
                 purpose=RandomPurpose.PLAYER,
                 root_seed=int(game_seed) if root_seed is None else root_seed,
-                k=len(strategies),
+                k=len(resolved_strategies),
                 game_index=0 if root_seed is None else game_index,
             ),
         )

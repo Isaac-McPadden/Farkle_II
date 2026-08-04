@@ -535,10 +535,7 @@ def test_relabelled_permuted_inference_and_dominance_are_invariant(tmp_path: Pat
     assert {
         (row.graph_type, mapping[int(row.winner)], mapping[int(row.loser)])
         for row in first_edges.itertuples()
-    } == {
-        (row.graph_type, int(row.winner), int(row.loser))
-        for row in renamed_edges.itertuples()
-    }
+    } == {(row.graph_type, int(row.winner), int(row.loser)) for row in renamed_edges.itertuples()}
     first_fronts = pq.read_table(first_dominance.fronts).to_pandas()
     renamed_fronts = pq.read_table(renamed_dominance.fronts).to_pandas()
     assert {
@@ -554,8 +551,7 @@ def test_relabelled_permuted_inference_and_dominance_are_invariant(tmp_path: Pat
         (
             row.graph_type,
             tuple(
-                mapping[int(item)]
-                for item in json.loads(row.representative_shortest_cycle_json)
+                mapping[int(item)] for item in json.loads(row.representative_shortest_cycle_json)
             ),
         )
         for row in first_cycles.itertuples()

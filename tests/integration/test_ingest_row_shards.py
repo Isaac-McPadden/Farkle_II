@@ -2,36 +2,38 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import (
+    make_authenticated_v3_config,
+    publish_v3_simulation_run,
+)
 
 from farkle.analysis import ingest
-from farkle.config import AppConfig, IngestConfig, IOConfig, SimConfig
+from farkle.config import AppConfig, assign_config_sha
 from farkle.simulation.simulation import _play_game, simulation_rows_to_table
 from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
-from farkle.utils.manifest import append_manifest_line
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 from farkle.utils.schema_helpers import raw_simulation_schema_for
 
 
-def _write_completed_row_run(cfg: AppConfig, *, retired_winner_field: bool = False) -> Path:
-    block = cfg.n_dir(2)
-    row_dir = cfg.simulation_row_dir(2)
-    assert row_dir is not None
-    row_dir.mkdir(parents=True)
-    strategies = [
+def _strategies() -> tuple[ThresholdStrategy, ...]:
+    return (
         ThresholdStrategy(score_threshold=0, dice_threshold=6, strategy_id=11),
         ThresholdStrategy(score_threshold=0, dice_threshold=6, strategy_id=12),
-    ]
+    )
+
+
+def _valid_row_table(cfg: AppConfig) -> pa.Table:
+    strategies = _strategies()
     row = dict(
         _play_game(
             123,
-            strategies,
+            list(strategies),
             target_score=200,
             provenance={
                 "root_seed": cfg.sim.seed,
@@ -46,59 +48,30 @@ def _write_completed_row_run(cfg: AppConfig, *, retired_winner_field: bool = Fal
             },
         )
     )
-    shard = row_dir / "rows_test_456.parquet"
-    table = simulation_rows_to_table([row], 2)
-    if retired_winner_field:
-        winner = table["winner_seat"]
-        table = table.drop(["winner_seat"]).append_column("winner", winner)
-    pq.write_table(table, shard)
-    append_manifest_line(
-        row_dir / "manifest.jsonl",
-        {
-            "path": shard.name,
-            "rows": 1,
-            "root_seed": cfg.sim.seed,
-            "n_players": 2,
-            "shuffle_index": 0,
-            "shuffle_seed": 456,
-            "deterministic_batch_id": 0,
-            "rng_scheme_version": RNG_SCHEME_VERSION,
-            "outcome_schema_version": 2,
-            "tournament_method_version": 2,
-        },
-    )
-    (block / "simulation.done.json").write_text(
-        json.dumps(
-            {
-                "root_seed": cfg.sim.seed,
-                "n_players": 2,
-                "rng_scheme_version": RNG_SCHEME_VERSION,
-                "outcome_schema_version": 2,
-                "tournament_method_version": 2,
-                "shuffle_index_start": 0,
-                "shuffle_index_end": 0,
-                "shuffles_per_batch": 1,
-                "outputs": [str(row_dir)],
-            }
-        ),
-        encoding="utf-8",
-    )
-    return shard
+    return simulation_rows_to_table([row], 2)
 
 
-def _config(tmp_path: Path, *, workers: int) -> AppConfig:
-    cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / "review"),
-        sim=SimConfig(seed=7, seed_list=[7], n_players_list=[2], row_dir=Path("rows")),
-        ingest=IngestConfig(n_jobs=workers),
+def _publish_completed_row_run(cfg: AppConfig, table: pa.Table | None = None) -> Path:
+    published = publish_v3_simulation_run(
+        cfg,
+        _valid_row_table(cfg) if table is None else table,
+        strategies=_strategies(),
     )
+    return published.shard
+
+
+def _config(tmp_path: Path, *, workers: int, name: str = "review") -> AppConfig:
+    cfg = make_authenticated_v3_config(tmp_path, name=name, root_seed=7)
+    cfg.sim.row_dir = Path("rows")
+    cfg.ingest.n_jobs = workers
     cfg.analysis.mp_start_method = "spawn"
+    assign_config_sha(cfg)
     return cfg
 
 
 def test_ingest_reads_manifest_backed_row_directory_through_spawn_worker(tmp_path: Path) -> None:
     cfg = _config(tmp_path, workers=2)
-    _write_completed_row_run(cfg)
+    _publish_completed_row_run(cfg)
 
     ingest.run(cfg)
 
@@ -130,39 +103,60 @@ def test_ingest_reads_manifest_backed_row_directory_through_spawn_worker(tmp_pat
 
 
 def test_ingest_rejects_retired_winner_field_in_new_row_shard(tmp_path: Path) -> None:
-    cfg = _config(tmp_path, workers=1)
-    _write_completed_row_run(cfg, retired_winner_field=True)
+    def authenticated_run(name: str, *, retired_winner_field: bool) -> AppConfig:
+        cfg = _config(tmp_path, workers=1, name=name)
+        table = _valid_row_table(cfg)
+        if retired_winner_field:
+            winner = table["winner_seat"]
+            table = table.drop(["winner_seat"]).append_column("winner", winner)
+        _publish_completed_row_run(cfg, table)
+        return cfg
+
+    control = authenticated_run("control", retired_winner_field=False)
+    ingest.run(control)
+    assert pq.read_table(control.ingested_rows_raw(2)).num_rows == 1
+
+    cfg = authenticated_run("retired_winner", retired_winner_field=True)
 
     with pytest.raises(ValueError, match="noncanonical columns.*winner"):
         ingest.run(cfg)
 
 
 @pytest.mark.parametrize(
-    "corruption",
+    ("corruption", "oracle"),
     [
-        "wrong_root",
-        "wrong_k",
-        "wrong_shuffle",
-        "wrong_batch",
-        "wrong_game_index",
-        "duplicate_game_key",
-        "invalid_winner",
-        "invalid_rank",
-        "invalid_termination",
-        "repeated_strategy",
-        "bad_victory_margin",
-        "bad_loss_margin",
-        "missing_identity",
-        "nonnumeric_strategy",
+        ("wrong_root", "internal root/k/shuffle/batch identity mismatch"),
+        ("wrong_k", "internal root/k/shuffle/batch identity mismatch"),
+        ("wrong_shuffle", "internal root/k/shuffle/batch identity mismatch"),
+        ("wrong_batch", "internal root/k/shuffle/batch identity mismatch"),
+        ("wrong_rng_version", "internal version/namespace mismatch"),
+        ("wrong_purpose_namespace", "internal version/namespace mismatch"),
+        ("wrong_outcome_version", "internal version/namespace mismatch"),
+        ("wrong_game_index", "game_index support must be 0\\.\\.0"),
+        ("duplicate_game_key", "duplicate or invalid game key"),
+        ("invalid_winner", "exactly one winner matching its rank-1 seat"),
+        ("invalid_rank", "exactly one winner matching its rank-1 seat"),
+        ("invalid_termination", "Safety-limit simulation row must set hit_safety_limit=true"),
+        ("repeated_strategy", "must seat distinct strategies"),
+        ("bad_victory_margin", "inconsistent victory_margin"),
+        ("bad_loss_margin", "inconsistent P2_loss_margin"),
+        ("missing_identity", "noncanonical columns.*misses required columns.*root_seed"),
+        ("nonnumeric_strategy", "exact canonical raw schema"),
+        ("negative_strategy", "P1_strategy.*within"),
     ],
 )
 def test_ingest_rejects_internally_malformed_row_shards(
     tmp_path: Path,
     corruption: str,
+    oracle: str,
 ) -> None:
-    cfg = _config(tmp_path, workers=1)
-    shard = _write_completed_row_run(cfg)
-    table = pq.read_table(shard)
+    control = _config(tmp_path, workers=1, name="control")
+    _publish_completed_row_run(control)
+    ingest.run(control)
+    assert pq.read_table(control.ingested_rows_raw(2)).num_rows == 1
+
+    cfg = _config(tmp_path, workers=1, name=f"corrupt_{corruption}")
+    table = _valid_row_table(cfg)
     rows = table.to_pylist()
     row = rows[0]
 
@@ -174,6 +168,12 @@ def test_ingest_rejects_internally_malformed_row_shards(
         row["shuffle_index"] = 1
     elif corruption == "wrong_batch":
         row["deterministic_batch_id"] = 1
+    elif corruption == "wrong_rng_version":
+        row["rng_scheme_version"] += 1
+    elif corruption == "wrong_purpose_namespace":
+        row["rng_purpose_namespace"] += 1
+    elif corruption == "wrong_outcome_version":
+        row["outcome_schema_version"] += 1
     elif corruption == "wrong_game_index":
         row["game_index"] = 1
     elif corruption == "duplicate_game_key":
@@ -191,6 +191,8 @@ def test_ingest_rejects_internally_malformed_row_shards(
         row["victory_margin"] += 50
     elif corruption == "bad_loss_margin":
         row["P2_loss_margin"] += 50
+    elif corruption == "negative_strategy":
+        row["P1_strategy"] = -1
 
     rewritten = pa.Table.from_pylist(rows, schema=raw_simulation_schema_for(2))
     if corruption == "missing_identity":
@@ -202,13 +204,7 @@ def test_ingest_rejects_internally_malformed_row_shards(
             "P1_strategy",
             pa.array(["11"], type=pa.string()),
         )
-    pq.write_table(rewritten, shard)
+    _publish_completed_row_run(cfg, rewritten)
 
-    if corruption == "duplicate_game_key":
-        manifest_path = shard.parent / "manifest.jsonl"
-        record = json.loads(manifest_path.read_text(encoding="utf-8"))
-        record["rows"] = 2
-        manifest_path.write_text(json.dumps(record) + "\n", encoding="utf-8")
-
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError, match=oracle):
         ingest.run(cfg)

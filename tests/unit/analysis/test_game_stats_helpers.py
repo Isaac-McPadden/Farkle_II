@@ -451,9 +451,9 @@ def test_strategy_margin_empty_paths(caplog: pytest.LogCaptureFixture, tmp_path:
     _write_rows(
         nan_scores,
         pd.DataFrame(
-                {
-                    "termination_status": ["completed", "completed"],
-                    "P1_strategy": [1, 1],
+            {
+                "termination_status": ["completed", "completed"],
+                "P1_strategy": [1, 1],
                 "P2_strategy": [2, 2],
                 "P1_score": [np.nan, np.nan],
                 "P2_score": [np.nan, np.nan],

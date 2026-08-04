@@ -1107,9 +1107,7 @@ def _parse_method(payload: Mapping[str, Any]) -> MethodContract:
         required_player_counts=tuple(int(value) for value in payload["required_player_counts"]),
         consistency_columns=tuple(str(value) for value in payload["consistency_columns"]),
         grouping_keys=tuple(str(value) for value in payload["grouping_keys"]),
-        rng_diagnostic_lags=tuple(
-            int(value) for value in payload.get("rng_diagnostic_lags", ())
-        ),
+        rng_diagnostic_lags=tuple(int(value) for value in payload.get("rng_diagnostic_lags", ())),
     )
 
 

@@ -37,8 +37,8 @@ def test_size_and_grid_match():
 
 def test_play_helpers_consistency():
     # one always-stop, one always-roll (score_threshold huge)
-    s1 = ThresholdStrategy(score_threshold=0, dice_threshold=6)
-    s2 = ThresholdStrategy(score_threshold=10_000, dice_threshold=6)
+    s1 = ThresholdStrategy(score_threshold=0, dice_threshold=6, strategy_id=10)
+    s2 = ThresholdStrategy(score_threshold=10_000, dice_threshold=6, strategy_id=20)
 
     stats_dict = _play_game(seed=123, strategies=[s1, s2], target_score=1_000)
     gm = simulate_one_game(strategies=[s1, s2], target_score=1_000, seed=123)
@@ -215,3 +215,59 @@ def test_simulate_many_games_from_seeds_parallel():
     seeds = [1, 2, 3]
     df_parallel = simulate_many_games_from_seeds(seeds=seeds, strategies=strategies, n_jobs=2)
     assert len(df_parallel) == len(seeds)
+
+
+@pytest.mark.parametrize("helper", [simulate_many_games, simulate_many_games_from_seeds])
+def test_public_helpers_assign_deterministic_ids_without_mutating_inputs(helper):
+    repeated = ThresholdStrategy(score_threshold=0, dice_threshold=6)
+    equivalent = ThresholdStrategy(score_threshold=0, dice_threshold=6)
+    strategies = [repeated, repeated, equivalent]
+    common = {"strategies": strategies, "target_score": 200, "n_jobs": 1}
+
+    if helper is simulate_many_games:
+        frame = helper(n_games=2, seed=123, **common)
+    else:
+        frame = helper(seeds=[11, 12], root_seed=123, **common)
+
+    assert frame[
+        ["P1_strategy", "P2_strategy", "P3_strategy"]
+    ].drop_duplicates().values.tolist() == [[0, 1, 2]]
+    assert set(frame["winner_strategy"]) <= {0, 1, 2}
+    assert repeated.strategy_id is None
+    assert equivalent.strategy_id is None
+
+
+def test_public_helpers_preserve_provided_ids_and_avoid_them_for_local_ids():
+    strategies = [
+        ThresholdStrategy(score_threshold=0, dice_threshold=6, strategy_id=1),
+        ThresholdStrategy(score_threshold=500, dice_threshold=3),
+        ThresholdStrategy(score_threshold=1000, dice_threshold=2, strategy_id=7),
+    ]
+
+    frame = simulate_many_games(n_games=1, strategies=strategies, target_score=200, seed=123)
+
+    assert [frame.loc[0, f"P{seat}_strategy"] for seat in range(1, 4)] == [1, 0, 7]
+    assert [strategy.strategy_id for strategy in strategies] == [1, None, 7]
+
+
+def test_public_helpers_reject_duplicate_caller_provided_ids():
+    strategies = [
+        ThresholdStrategy(score_threshold=0, dice_threshold=6, strategy_id=4),
+        ThresholdStrategy(score_threshold=500, dice_threshold=3, strategy_id=4),
+    ]
+
+    with pytest.raises(ValueError, match="Caller-provided strategy IDs must be unique"):
+        simulate_many_games(n_games=1, strategies=strategies, seed=123)
+
+
+def test_serial_and_parallel_helpers_return_identical_rows_and_local_ids():
+    strategies = [
+        ThresholdStrategy(score_threshold=0, dice_threshold=6),
+        ThresholdStrategy(score_threshold=500, dice_threshold=3),
+    ]
+
+    serial = simulate_many_games(n_games=4, strategies=strategies, seed=321, n_jobs=1)
+    parallel = simulate_many_games(n_games=4, strategies=strategies, seed=321, n_jobs=2)
+
+    pd.testing.assert_frame_equal(serial, parallel)
+    assert serial[["P1_strategy", "P2_strategy"]].drop_duplicates().values.tolist() == [[0, 1]]

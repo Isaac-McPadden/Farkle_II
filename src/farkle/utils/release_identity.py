@@ -159,6 +159,19 @@ def _method_versions(
             and not isinstance(value, bool)
         ):
             versions[key] = int(value)
+    hgb_versions: dict[str, int] = {}
+    if stage_key == "hgb":
+        # Import lazily to avoid making the authenticated-contract primitives
+        # depend on analysis modules during module initialization.  HGB owns
+        # these current method identities; completion classification must use
+        # the same values as the stage wrapper so a method bump is stale.
+        from farkle.analysis import hgb_feat
+
+        hgb_versions = {
+            "hgb_method_version": hgb_feat.HGB_METHOD_VERSION,
+            "hgb_rng_method_version": hgb_feat.HGB_RNG_METHOD_VERSION,
+            "hgb_fold_construction_version": hgb_feat.HGB_FOLD_CONSTRUCTION_VERSION,
+        }
     stage_versions = {
         "simulation": {"tournament_method_version": TOURNAMENT_METHOD_VERSION},
         "ingest": {"tournament_method_version": TOURNAMENT_METHOD_VERSION},
@@ -167,11 +180,7 @@ def _method_versions(
             "trueskill_method_version": 3,
             "trueskill_diagnostic_method_version": 1,
         },
-        "hgb": {
-            "hgb_method_version": 2,
-            "hgb_rng_method_version": 2,
-            "hgb_fold_construction_version": 1,
-        },
+        "hgb": hgb_versions,
         "root_stability": {"root_stability_method_version": 2},
         "candidate_freeze": {
             "candidate_family_version": cfg.artifact_contract.candidate_family_version
@@ -340,10 +349,7 @@ def _source_role(source: AuthenticatedSidecar) -> str:
     root_bits = "_".join(str(value) for value in source.method_contract.root_seeds) or "none"
     k = "all" if location.player_count is None else str(location.player_count)
     relative = location.relative_path.replace("/", ".").replace("\\", ".")
-    return (
-        f"artifact.{location.stage_key}.{location.scope}."
-        f"k_{k}.roots_{root_bits}.{relative}"
-    )
+    return f"artifact.{location.stage_key}.{location.scope}." f"k_{k}.roots_{root_bits}.{relative}"
 
 
 def _manifest_role(source: Any) -> str:
@@ -807,13 +813,7 @@ def _root_owned_candidate(
         if location.player_count is None:
             return None
         scope_parts.append(f"{location.player_count}p")
-    return (
-        root
-        / cfg.io.analysis_subdir
-        / folder
-        / Path(*scope_parts)
-        / location.relative_path
-    )
+    return root / cfg.io.analysis_subdir / folder / Path(*scope_parts) / location.relative_path
 
 
 def _find_root_owned_source(
@@ -949,6 +949,25 @@ def _completion_contract(
             path,
             validate_provenance=False,
         )
+        if stage_key == "hgb":
+            expected_hgb_versions, _method_version = _method_versions(
+                cfg,
+                stage_key=stage_key,
+                metadata=_compatibility_view(path),
+            )
+            governed = {
+                key: expected_hgb_versions[key]
+                for key in (
+                    "hgb_method_version",
+                    "hgb_rng_method_version",
+                    "hgb_fold_construction_version",
+                )
+            }
+            recorded = sidecar.versions.method_versions
+            if any(recorded.get(key) != value for key, value in governed.items()):
+                raise ArtifactContractError(
+                    f"artifact method/version identity is stale for {stage_key}: {path}"
+                )
         location = derive_canonical_location(cfg, path, stage_key=stage_key)
         if sidecar.artifact.location != location:
             raise ArtifactContractError(f"artifact scope/path identity mismatch: {path}")
@@ -1047,9 +1066,7 @@ def _completion_contract(
             except (KeyError, ValueError):
                 manifest_candidate = None
             manifest_adjacent = (
-                sidecar_path(manifest_candidate)
-                if manifest_candidate is not None
-                else None
+                sidecar_path(manifest_candidate) if manifest_candidate is not None else None
             )
             if (
                 manifest_candidate is not None

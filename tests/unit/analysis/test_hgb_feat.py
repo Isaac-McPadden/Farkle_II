@@ -1,4 +1,5 @@
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pandas as pd
@@ -8,15 +9,23 @@ import pytest
 
 pytest.importorskip("sklearn")
 
+from tests.helpers.artifact_sidecars import (
+    clean_test_code_identity,
+    make_authenticated_v3_config,
+    mutate_artifact_bytes,
+    publish_v3_parquet,
+    publish_v3_strategy_manifest,
+)
+
 from farkle.analysis import hgb_feat, run_hgb
 from farkle.config import AppConfig, IOConfig
-from farkle.simulation.strategies import STRATEGY_TUPLE_FIELDS, ThresholdStrategy, strategy_tuple
+from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifact_contract import (
     make_artifact_sidecar,
     validate_artifact_sidecar,
     write_artifact_with_sidecar_atomic,
 )
-from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.authenticated_contract import validate_authenticated_artifact_unbound
 from farkle.utils.stage_completion import stage_done_path, write_stage_done
 
 
@@ -30,41 +39,31 @@ def test_hgb_external_random_state_is_direct_coordinate_owned() -> None:
 
 
 def _setup_cfg(tmp_path: Path) -> tuple[AppConfig, Path]:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
-    cfg.sim.n_players_list = [2]
+    cfg = make_authenticated_v3_config(tmp_path, name="hgb", root_seed=11)
     analysis_dir = cfg.analysis_dir
     analysis_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = cfg.performance_by_k_path(2)
     frame = pd.DataFrame(
         {
-            "strategy": ["Strat(300,2)[SD][FOFS][AND][H-]"],
+            "strategy": pd.array([0], dtype="Int32"),
             "k": [2],
             "win_rate": [0.5],
         }
     )
     table = pa.Table.from_pandas(frame, preserve_index=False)
-    sidecar = make_artifact_sidecar(
+    publish_v3_parquet(
         cfg,
         metrics_path,
+        table,
+        stage_key="metrics",
         producer="test",
-        scope="by_k",
         source_scope="by_k",
         operation="aggregate_strategy_outcomes",
-        consistency_columns=table.schema.names,
-        player_counts=[2],
-        required_player_counts=[2],
-        missing_cell_policy="fail",
     )
-    write_parquet_artifact_atomic(table, metrics_path, sidecar=sidecar)
-    manifest_path = cfg.strategy_manifest_root_path()
-    manifest_table = pa.table(
-        {
-            "strategy_id": pa.array([0], type=pa.int32()),
-            "score_threshold": [300],
-        }
+    publish_v3_strategy_manifest(
+        cfg,
+        (ThresholdStrategy(score_threshold=300, dice_threshold=2, strategy_id=0),),
     )
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(manifest_table, manifest_path)
     os.utime(metrics_path, (1000, 1000))
     return cfg, metrics_path
 
@@ -83,6 +82,7 @@ def _hgb_outputs(cfg: AppConfig) -> list[Path]:
 
 def _publish_output_placeholders(cfg: AppConfig, *, mtime: float) -> None:
     outputs = _hgb_outputs(cfg)
+    sources = [cfg.performance_by_k_path(2), cfg.strategy_manifest_root_path()]
     for path in outputs:
         is_per_k = "by_k" in path.parts
         scope = "by_k" if is_per_k else "concat_ks" if "concat_ks" in path.parts else "across_k"
@@ -93,13 +93,21 @@ def _publish_output_placeholders(cfg: AppConfig, *, mtime: float) -> None:
             scope=scope,
             source_scope="by_k",
             operation="heldout_prediction",
+            source_artifacts=sources,
             player_counts=[2],
             required_player_counts=[2],
             missing_cell_policy="fail",
         )
 
-        def _write_placeholder(staged: Path) -> None:
-            staged.write_text("{}")
+        def _write_placeholder(
+            staged: Path,
+            *,
+            is_parquet: bool = path.suffix == ".parquet",
+        ) -> None:
+            if is_parquet:
+                pq.write_table(pa.table({"fixture_value": [1]}), staged)
+            else:
+                staged.write_text("{}", encoding="utf-8")
 
         write_artifact_with_sidecar_atomic(path, metadata, _write_placeholder)
         os.utime(path, (mtime, mtime))
@@ -184,34 +192,25 @@ def test_hgb_authenticated_completion_recomputes_on_contract_mutation(
     if mutation == "target":
         frame = pd.DataFrame(
             {
-                "strategy": ["Strat(300,2)[SD][FOFS][AND][H-]"],
+                "strategy": pd.array([0], dtype="Int32"),
                 "k": [2],
                 "win_rate": [0.6],
             }
         )
         table = pa.Table.from_pandas(frame, preserve_index=False)
-        metadata = make_artifact_sidecar(
+        publish_v3_parquet(
             cfg,
             metrics,
+            table,
+            stage_key="metrics",
             producer="test",
-            scope="by_k",
             source_scope="by_k",
             operation="aggregate_strategy_outcomes",
-            consistency_columns=table.schema.names,
-            player_counts=[2],
-            required_player_counts=[2],
-            missing_cell_policy="fail",
         )
-        write_parquet_artifact_atomic(table, metrics, sidecar=metadata)
     elif mutation == "features":
-        pq.write_table(
-            pa.table(
-                {
-                    "strategy_id": pa.array([0], type=pa.int32()),
-                    "score_threshold": [350],
-                }
-            ),
-            cfg.strategy_manifest_root_path(),
+        publish_v3_strategy_manifest(
+            cfg,
+            (ThresholdStrategy(score_threshold=350, dice_threshold=2, strategy_id=0),),
         )
     elif mutation == "parameter":
         cfg.hgb.max_depth += 1
@@ -219,12 +218,7 @@ def test_hgb_authenticated_completion_recomputes_on_contract_mutation(
         with cfg.hgb_importance_path(2).open("ab") as handle:
             handle.write(b"changed")
     elif mutation == "code":
-        cfg._code_identity = {
-            "commit": "f" * 40,
-            "policy": "development_dirty",
-            "state": "development_dirty",
-            "dirty_fingerprint_sha256": "e" * 64,
-        }
+        cfg._code_identity = clean_test_code_identity("f" * 40)
     elif mutation == "method":
         monkeypatch.setattr(
             hgb_feat,
@@ -259,25 +253,44 @@ def test_hgb_force_recomputes_and_corrupt_bytes_cannot_be_blessed(
     assert calls == 2
 
     corrupted = cfg.hgb_importance_path(2)
-    metadata = make_artifact_sidecar(
-        cfg,
-        corrupted,
-        producer="test",
-        scope="by_k",
-        source_scope="by_k",
-        operation="heldout_prediction",
-        player_counts=[2],
-        required_player_counts=[2],
-        missing_cell_policy="fail",
-    )
-    def write_corruption(staged: Path) -> None:
-        staged.write_bytes(b"corrupt-but-sidecar-matches")
-
-    write_artifact_with_sidecar_atomic(corrupted, metadata, write_corruption)
     validate_artifact_sidecar(corrupted)
+    mutate_artifact_bytes(corrupted)
 
     hgb_feat.run(cfg)
     assert calls == 3, "a newly matching sidecar must not bless bytes absent from completion"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "mutated"])
+def test_hgb_rejects_invalid_strategy_manifest_sidecar_at_consumer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mutation: str,
+) -> None:
+    cfg, _metrics = _setup_cfg(tmp_path)
+    calls = 0
+
+    def fake_run(**_kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        _publish_output_placeholders(cfg, mtime=1010 + calls)
+
+    monkeypatch.setattr(hgb_feat._hgb, "run_hgb", fake_run)
+    hgb_feat.run(cfg)
+    assert calls == 1, "valid authenticated HGB control must reach the consumer"
+
+    manifest_sidecar = cfg.strategy_manifest_root_path().with_name(
+        f"{cfg.strategy_manifest_root_path().name}.sidecar.json"
+    )
+    if mutation == "missing":
+        manifest_sidecar.unlink()
+        expected = "missing sidecar"
+    else:
+        manifest_sidecar.write_text("{}", encoding="utf-8")
+        expected = "artifact_contract_version"
+
+    with pytest.raises(RuntimeError, match=expected):
+        hgb_feat.run(cfg)
+    assert calls == 1, "invalid manifest authentication must be rejected before HGB fitting"
 
 
 def test_hgb_feat_returns_when_metrics_missing(
@@ -324,27 +337,17 @@ def test_hgb_feat_returns_when_canonical_performance_missing(
 def test_configuration_run_writes_heldout_artifacts_and_sidecars(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
-    cfg.sim.n_players_list = [2]
+    cfg = make_authenticated_v3_config(tmp_path, name="configuration", root_seed=0)
     strategy_objects = [
         ThresholdStrategy(score_threshold=score, dice_threshold=dice)
         for score, dice in ((200, 1), (300, 2), (400, 1), (500, 2))
     ]
     strategy_ids = list(range(len(strategy_objects)))
-    manifest = pd.DataFrame(
-        [
-            {
-                "strategy_id": strategy_id,
-                **dict(zip(STRATEGY_TUPLE_FIELDS, strategy_tuple(strategy), strict=True)),
-            }
-            for strategy_id, strategy in zip(strategy_ids, strategy_objects, strict=True)
-        ]
+    canonical_strategies = tuple(
+        replace(strategy, strategy_id=strategy_id)
+        for strategy_id, strategy in zip(strategy_ids, strategy_objects, strict=True)
     )
-    manifest["favor_dice_or_score"] = manifest["favor_dice_or_score"].map(lambda value: value.value)
-    manifest["strategy_id"] = pd.array(manifest["strategy_id"].tolist(), dtype="Int32")
-    manifest_path = cfg.strategy_manifest_root_path()
-    manifest_path.parent.mkdir(parents=True, exist_ok=True)
-    manifest.to_parquet(manifest_path, index=False)
+    manifest_path = publish_v3_strategy_manifest(cfg, canonical_strategies)
     performance = pd.DataFrame(
         {
             "root_seed": [0] * 4,
@@ -356,19 +359,15 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
     performance["strategy"] = pd.array(performance["strategy"].tolist(), dtype="Int32")
     source = cfg.performance_by_k_path(2)
     table = pa.Table.from_pandas(performance, preserve_index=False)
-    source_sidecar = make_artifact_sidecar(
+    publish_v3_parquet(
         cfg,
         source,
+        table,
+        stage_key="metrics",
         producer="test",
-        scope="by_k",
         source_scope="by_k",
         operation="aggregate_strategy_outcomes",
-        consistency_columns=table.schema.names,
-        player_counts=[2],
-        required_player_counts=[2],
-        missing_cell_policy="fail",
     )
-    write_parquet_artifact_atomic(table, source, sidecar=source_sidecar)
     hgb_feat.run(cfg)
 
     outputs = [
@@ -383,7 +382,13 @@ def test_configuration_run_writes_heldout_artifacts_and_sidecars(
     for output in outputs:
         metadata = validate_artifact_sidecar(output)
         assert metadata.code_revision != "unknown"
-        assert set(metadata.source_artifacts) == {str(source), str(manifest_path)}
+        authenticated = validate_authenticated_artifact_unbound(
+            output,
+            validate_provenance=False,
+        )
+        assert {
+            identity.artifact.location.path(cfg) for identity in authenticated.source_artifacts
+        } == {source, manifest_path}
     concat_metadata = validate_artifact_sidecar(
         cfg.concat_ks_dir("hgb") / hgb_feat._hgb.LONG_IMPORTANCE_NAME,
         expected={

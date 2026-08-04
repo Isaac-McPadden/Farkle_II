@@ -405,12 +405,8 @@ def _standardized_frames(
         )
         wins = sum(int(cell.iloc[0]["raw_wins"]) for cell in cells)
         exposures = sum(int(cell.iloc[0]["raw_exposures"]) for cell in cells)
-        completed_exposures = sum(
-            int(cell.iloc[0]["raw_completed_exposures"]) for cell in cells
-        )
-        safety_exposures = sum(
-            int(cell.iloc[0]["raw_safety_limit_exposures"]) for cell in cells
-        )
+        completed_exposures = sum(int(cell.iloc[0]["raw_completed_exposures"]) for cell in cells)
+        safety_exposures = sum(int(cell.iloc[0]["raw_safety_limit_exposures"]) for cell in cells)
         baseline_mass = sum(
             int(cell.iloc[0]["raw_exposures"]) / k for k, cell in zip(ks, cells, strict=True)
         )
@@ -663,10 +659,10 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
             operation="calculate_strategy_seat_effects",
             sources=[count_path],
             ks=[k],
-        grouping_keys=["root_seed", "k", "strategy", "seat"],
-        conditioning=(
-            "all attempted player-game exposures conditional on root_seed, k, strategy, and seat"
-        ),
+            grouping_keys=["root_seed", "k", "strategy", "seat"],
+            conditioning=(
+                "all attempted player-game exposures conditional on root_seed, k, strategy, and seat"
+            ),
         )
         _write_frame(
             cfg,
@@ -676,8 +672,8 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
             operation="calculate_population_seat_effects",
             sources=[count_path],
             ks=[k],
-        grouping_keys=["root_seed", "k", "seat"],
-        conditioning="all attempted player-game exposures conditional on root_seed, k, and seat",
+            grouping_keys=["root_seed", "k", "seat"],
+            conditioning="all attempted player-game exposures conditional on root_seed, k, and seat",
         )
 
     standardized, mixture = _standardized_frames(cfg, by_k, population_by_k, ks)

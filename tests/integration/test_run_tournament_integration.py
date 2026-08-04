@@ -222,5 +222,5 @@ def test_run_tournament_process_executor(monkeypatch: pytest.MonkeyPatch, tmp_pa
         data["meta"]["completed_shuffle_indices"] == one_worker["meta"]["completed_shuffle_indices"]
     )
 
-    expected = {str(s) for s in _tiny_strategy_grid()}
+    expected = set(range(len(_tiny_strategy_grid())))
     assert set(wins.keys()).issubset(expected)

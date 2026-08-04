@@ -6,10 +6,14 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
+from tests.helpers.artifact_sidecars import (
+    make_authenticated_v3_config,
+    publish_v3_parquet,
+)
 from tests.helpers.diagnostic_fixtures import build_curated_fixture
 
 from farkle.analysis import game_stats
-from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.config import AppConfig, assign_config_sha
 from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
 
 
@@ -47,7 +51,68 @@ def test_summarize_rounds_handles_empty_and_values():
     assert stats["prob_rounds_le_5"] == pytest.approx(2 / 3)
 
 
-def _build_parquet(tmp_path: Path, cfg):
+def _cfg(
+    tmp_path: Path,
+    *,
+    player_counts: tuple[int, ...] = (2,),
+    root_seed: int = 0,
+) -> AppConfig:
+    return make_authenticated_v3_config(
+        tmp_path,
+        name="game_stats",
+        root_seed=root_seed,
+        player_counts=player_counts,
+    )
+
+
+def _canonical_strategy_columns(rows: pd.DataFrame) -> pd.DataFrame:
+    result = rows.copy()
+    for column in result.columns:
+        if column.endswith("_strategy"):
+            result[column] = result[column].astype("Int32")
+    return result
+
+
+def _publish_curated(cfg: AppConfig, path: Path, rows: pd.DataFrame) -> Path:
+    table = pa.Table.from_pandas(
+        _canonical_strategy_columns(rows),
+        preserve_index=False,
+    ).replace_schema_metadata(None)
+    return publish_v3_parquet(
+        cfg,
+        path,
+        table,
+        stage_key="curate",
+        producer="curate",
+        operation="curate_game_rows",
+        source_scope="by_k",
+    )
+
+
+def _publish_combined(
+    cfg: AppConfig,
+    path: Path,
+    rows: pd.DataFrame,
+    *,
+    sources: tuple[Path, ...],
+) -> Path:
+    table = pa.Table.from_pandas(
+        _canonical_strategy_columns(rows),
+        preserve_index=False,
+    ).replace_schema_metadata(None)
+    return publish_v3_parquet(
+        cfg,
+        path,
+        table,
+        stage_key="combine",
+        producer="combine",
+        operation="concatenate",
+        sources=sources,
+        source_scope="by_k",
+    )
+
+
+def _build_parquet(tmp_path: Path, cfg: AppConfig) -> tuple[Path, Path]:
     rows = pd.DataFrame(
         [
             {
@@ -81,18 +146,16 @@ def _build_parquet(tmp_path: Path, cfg):
     )
 
     per_n_path = cfg.ingested_rows_curated(2)
-    per_n_path.parent.mkdir(parents=True, exist_ok=True)
-    rows.to_parquet(per_n_path)
+    _publish_curated(cfg, per_n_path, rows)
 
     combined_path = cfg.curated_parquet
-    combined_path.parent.mkdir(parents=True, exist_ok=True)
-    rows.to_parquet(combined_path)
+    _publish_combined(cfg, combined_path, rows, sources=(per_n_path,))
 
     return per_n_path, combined_path
 
 
 def test_run_generates_all_outputs(tmp_path: Path):
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    cfg = _cfg(tmp_path)
     per_n_path, combined_path = _build_parquet(tmp_path, cfg)
 
     game_stats.run(cfg, force=True)
@@ -128,7 +191,16 @@ def test_run_generates_all_outputs(tmp_path: Path):
     stamp = cfg.game_stats_stage_dir / "game_stats.done.json"
     assert stamp.exists()
     stamp_meta = json.loads(stamp.read_text())
-    assert str(per_k_stats) in stamp_meta["outputs"]
+    assert any(
+        item["artifact"]["location"]
+        == {
+            "scope": "by_k",
+            "stage_key": "game_stats",
+            "player_count": 2,
+            "relative_path": per_k_stats.name,
+        }
+        for item in stamp_meta["outputs"]
+    )
 
     shard_path, stats_path, _done_path = game_stats._rare_event_shard_paths(rare_events_path, 2)
     for path in (rare_events_path, shard_path, stats_path):
@@ -144,7 +216,7 @@ def test_run_generates_all_outputs(tmp_path: Path):
 
 
 def test_run_requires_inputs(tmp_path: Path):
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg = _cfg(tmp_path)
 
     game_stats.run(cfg)
 
@@ -154,7 +226,7 @@ def test_run_requires_inputs(tmp_path: Path):
 
 
 def test_compute_margins_and_aggregation(tmp_path: Path):
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path))
+    cfg = _cfg(tmp_path)
     per_n_path, _ = _build_parquet(tmp_path, cfg)
 
     per_n_inputs = [(2, per_n_path)]
@@ -274,13 +346,16 @@ def _write_multi_k_curated_inputs(cfg: AppConfig) -> None:
 
     for n_players, rows in ((2, rows_2p), (3, rows_3p)):
         per_n_path = cfg.ingested_rows_curated(n_players)
-        per_n_path.parent.mkdir(parents=True, exist_ok=True)
-        rows.to_parquet(per_n_path)
+        _publish_curated(cfg, per_n_path, rows)
 
     combined = pd.concat([rows_2p, rows_3p], ignore_index=True, sort=False)
     combined_path = cfg.curated_parquet
-    combined_path.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_parquet(combined_path)
+    _publish_combined(
+        cfg,
+        combined_path,
+        combined,
+        sources=tuple(cfg.ingested_rows_curated(k) for k in (2, 3)),
+    )
 
 
 def _hash_file(path: Path) -> str:
@@ -289,10 +364,7 @@ def _hash_file(path: Path) -> str:
 
 def test_run_writes_per_k_outputs_and_is_idempotent_for_multi_k(tmp_path: Path) -> None:
     k_values = [2, 3]
-    cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path),
-        sim=SimConfig(n_players_list=k_values, seed=123, seed_list=[123]),
-    )
+    cfg = _cfg(tmp_path, player_counts=tuple(k_values), root_seed=123)
     _write_multi_k_curated_inputs(cfg)
 
     game_stats.run(cfg)
@@ -322,10 +394,11 @@ def test_run_writes_per_k_outputs_and_is_idempotent_for_multi_k(tmp_path: Path) 
 
 
 def test_run_resolves_rare_event_thresholds_from_histograms(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
-    _build_parquet(tmp_path, cfg)
+    cfg = _cfg(tmp_path)
     cfg.analysis.rare_event_margin_quantile = 0.5
     cfg.analysis.rare_event_target_rate = 0.4
+    assign_config_sha(cfg)
+    _build_parquet(tmp_path, cfg)
 
     game_stats.run(cfg, force=True)
 
@@ -339,11 +412,12 @@ def test_run_resolves_rare_event_thresholds_from_histograms(tmp_path: Path) -> N
 
 
 def test_run_generates_margin_summary_columns_and_histogram_inputs(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
-    _build_parquet(tmp_path, cfg)
+    cfg = _cfg(tmp_path)
     cfg.analysis.game_stats_margin_thresholds = (25, 175)
     cfg.analysis.rare_event_margin_quantile = 0.9
     cfg.analysis.rare_event_target_rate = 0.2
+    assign_config_sha(cfg)
+    _build_parquet(tmp_path, cfg)
 
     game_stats.run(cfg, force=True)
 
@@ -364,25 +438,27 @@ def test_run_generates_margin_summary_columns_and_histogram_inputs(tmp_path: Pat
 
 
 def test_run_rejects_noncanonical_aggregation_method_aliases(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    cfg = _cfg(tmp_path)
     _build_parquet(tmp_path, cfg)
     cfg.k_aggregation.method = "equal_k"
+    assign_config_sha(cfg)
 
     with pytest.raises(ValueError, match="Unknown aggregation scheme"):
         game_stats.run(cfg, force=True)
 
 
 def test_run_raises_for_invalid_aggregation_method(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    cfg = _cfg(tmp_path)
     _build_parquet(tmp_path, cfg)
     cfg.k_aggregation.method = "invalid-scheme"
+    assign_config_sha(cfg)
 
     with pytest.raises(ValueError, match="Unknown aggregation scheme"):
         game_stats.run(cfg, force=True)
 
 
 def test_discover_per_n_inputs_handles_partial_layouts(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2, 3]))
+    cfg = _cfg(tmp_path, player_counts=(2, 3))
 
     assert game_stats._discover_per_n_inputs(cfg) == []
 
@@ -412,10 +488,7 @@ def test_discover_per_n_inputs_handles_partial_layouts(tmp_path: Path) -> None:
 
 
 def test_run_rejects_incomplete_configured_k_support(tmp_path: Path) -> None:
-    cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path),
-        sim=SimConfig(n_players_list=[2, 3], seed=101, seed_list=[101]),
-    )
+    cfg = _cfg(tmp_path, player_counts=(2, 3), root_seed=101)
     _build_parquet(tmp_path, cfg)
 
     with pytest.raises(FileNotFoundError, match=r"incomplete canonical by-k support: \[3\]"):
@@ -423,13 +496,15 @@ def test_run_rejects_incomplete_configured_k_support(tmp_path: Path) -> None:
 
 
 def test_run_aggregation_alias_and_invalid_via_run(tmp_path: Path) -> None:
-    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path), sim=SimConfig(n_players_list=[2]))
+    cfg = _cfg(tmp_path)
     _build_parquet(tmp_path, cfg)
 
     cfg.k_aggregation.method = "count"
+    assign_config_sha(cfg)
     with pytest.raises(ValueError, match="Unknown aggregation scheme"):
         game_stats.run(cfg, force=True)
 
     cfg.k_aggregation.method = "definitely-bad"
+    assign_config_sha(cfg)
     with pytest.raises(ValueError, match="Unknown aggregation scheme"):
         game_stats.run(cfg, force=True)

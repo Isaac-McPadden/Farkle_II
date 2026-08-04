@@ -10,9 +10,13 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import (
+    make_authenticated_v3_config,
+    publish_v3_parquet,
+)
 
 from farkle.analysis import game_stats
-from farkle.config import AnalysisConfig, AppConfig, IOConfig, SimConfig
+from farkle.config import AnalysisConfig, AppConfig, assign_config_sha
 
 
 @pytest.mark.parametrize(
@@ -157,13 +161,29 @@ def _make_run_cfg(
     n_jobs: int = 1,
     rare_event_write_details: bool = False,
 ) -> AppConfig:
-    return AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / "results"),
-        sim=SimConfig(n_players_list=n_players_list or [2, 3], seed=7),
-        analysis=AnalysisConfig(
-            n_jobs=n_jobs,
-            rare_event_write_details=rare_event_write_details,
-        ),
+    cfg = make_authenticated_v3_config(
+        tmp_path,
+        name="game_stats_branches",
+        root_seed=7,
+        player_counts=tuple(n_players_list or [2, 3]),
+    )
+    cfg.analysis = AnalysisConfig(
+        n_jobs=n_jobs,
+        rare_event_write_details=rare_event_write_details,
+    )
+    assign_config_sha(cfg)
+    return cfg
+
+
+def _publish_curated_stub(cfg: AppConfig, n_players: int) -> Path:
+    return publish_v3_parquet(
+        cfg,
+        cfg.ingested_rows_curated(n_players),
+        pa.table({"P1_strategy": pa.array([], type=pa.int32())}),
+        stage_key="curate",
+        producer="curate",
+        operation="curate_game_rows",
+        source_scope="by_k",
     )
 
 
@@ -191,9 +211,7 @@ def test_run_raises_when_rare_event_summary_is_empty(
 ) -> None:
     stage_log = _DummyStageLog()
     cfg = _make_run_cfg(tmp_path, n_jobs=1, rare_event_write_details=False, n_players_list=[2])
-    per_n_path = tmp_path / "inputs" / "rows_2p.parquet"
-    per_n_path.parent.mkdir(parents=True, exist_ok=True)
-    per_n_path.write_text("stub", encoding="utf-8")
+    per_n_path = _publish_curated_stub(cfg, 2)
 
     monkeypatch.setattr(game_stats, "stage_logger", lambda *args, **kwargs: stage_log)
     monkeypatch.setattr(game_stats, "_discover_per_n_inputs", lambda _cfg: [(2, per_n_path)])
@@ -218,9 +236,7 @@ def test_run_raises_when_rare_event_details_are_empty(
 ) -> None:
     stage_log = _DummyStageLog()
     cfg = _make_run_cfg(tmp_path, n_jobs=1, rare_event_write_details=True, n_players_list=[2])
-    per_n_path = tmp_path / "inputs" / "rows_2p.parquet"
-    per_n_path.parent.mkdir(parents=True, exist_ok=True)
-    per_n_path.write_text("stub", encoding="utf-8")
+    per_n_path = _publish_curated_stub(cfg, 2)
 
     monkeypatch.setattr(game_stats, "stage_logger", lambda *args, **kwargs: stage_log)
     monkeypatch.setattr(game_stats, "_discover_per_n_inputs", lambda _cfg: [(2, per_n_path)])

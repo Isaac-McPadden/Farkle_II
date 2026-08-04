@@ -20,6 +20,7 @@ pytest.importorskip("pyarrow")
 
 import farkle.simulation.runner as runner
 from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.simulation.strategies import ThresholdStrategy, build_strategy_manifest
 
 
 def _patch_tournament(
@@ -82,6 +83,28 @@ def test_runner_passes_metric_flags(tmp_path, monkeypatch, sim_artifacts):
     except Exception:
         metrics_df = pd.read_csv(metrics_path)
     assert metrics_df.iloc[0].strategy == "alpha"
+
+
+def test_resolve_custom_strategies_assigns_manifested_local_ids_without_mutation(
+    tmp_path: Path,
+) -> None:
+    strategies = [
+        ThresholdStrategy(score_threshold=300, dice_threshold=2, strategy_id=41),
+        ThresholdStrategy(score_threshold=300, dice_threshold=2),
+    ]
+    cfg = AppConfig(
+        IOConfig(results_dir_prefix=tmp_path / "out"),
+        SimConfig(n_players_list=[2]),
+    )
+
+    resolved, grid_size, used_custom = runner._resolve_strategies(cfg, strategies)
+    manifest = build_strategy_manifest(resolved)
+
+    assert grid_size == 2
+    assert used_custom is True
+    assert [strategy.strategy_id for strategy in resolved] == [41, 0]
+    assert [strategy.strategy_id for strategy in strategies] == [41, None]
+    assert manifest["strategy_id"].tolist() == [0, 41]
 
 
 @pytest.mark.parametrize(

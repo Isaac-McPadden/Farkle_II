@@ -158,9 +158,7 @@ class ScreeningConfig:
 
     resolution_delta: float = 0.03
     interval_confidence: float = 0.95
-    practical_delta_by_k: dict[int, float] | None = field(
-        default_factory=lambda: {5: 0.03}
-    )
+    practical_delta_by_k: dict[int, float] | None = field(default_factory=lambda: {5: 0.03})
     delta_across_k: float | None = 0.03
     bootstrap_replicates: int = 2_000
     candidate_contribution_size: int = 75
@@ -1731,10 +1729,7 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         "schema_version": 2,
         "conditioning_version": 2,
     }
-    actual_v3 = {
-        name: int(getattr(cfg.artifact_contract, name))
-        for name in accepted_v3
-    }
+    actual_v3 = {name: int(getattr(cfg.artifact_contract, name)) for name in accepted_v3}
     if actual_v3 != accepted_v3:
         raise ValueError(
             "authenticated artifact contract 3 requires "

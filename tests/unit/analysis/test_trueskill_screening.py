@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import (
+    make_authenticated_v3_config,
+    mutate_json_identity_leaf,
+    publish_v3_parquet,
+    publish_v3_strategy_manifest,
+)
 
 from farkle.analysis.trueskill_screening import (
     MU_SOFTMAX_HEURISTIC,
@@ -21,22 +28,103 @@ from farkle.analysis.trueskill_screening import (
     publish_rating_cell_contract,
     trueskill_diagnostic_method_contract,
 )
-from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.config import AppConfig
+from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+from farkle.simulation.strategies import ThresholdStrategy
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     sha256_file,
     sidecar_path,
     validate_artifact_sidecar,
 )
+from farkle.utils.authenticated_contract import validate_authenticated_artifact_unbound
 from farkle.utils.schema_helpers import expected_schema_for
-from farkle.utils.stage_completion import read_stage_done, stage_done_path
+from farkle.utils.stage_completion import stage_done_path
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
-    return AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / "results"),
-        sim=SimConfig(seed=11, seed_list=[11, 17], n_players_list=[2, 4]),
+    return make_authenticated_v3_config(
+        tmp_path,
+        name="screening",
+        root_seed=11,
+        player_counts=(2, 4),
     )
+
+
+def _publish_strategy_control(cfg: AppConfig) -> Path:
+    path = cfg.strategy_manifest_root_path()
+    if not path.exists():
+        publish_v3_strategy_manifest(
+            cfg,
+            tuple(
+                ThresholdStrategy(
+                    score_threshold=200 + 100 * strategy_id,
+                    dice_threshold=2,
+                    strategy_id=strategy_id,
+                )
+                for strategy_id in range(1, 5)
+            ),
+        )
+    return path
+
+
+def _publish_game_source(cfg: AppConfig, k: int) -> Path:
+    data: dict[str, pa.Array | list[object]] = {
+        "termination_status": ["completed"],
+        "outcome_schema_version": [2],
+        "winner_seat": ["P1"],
+    }
+    for seat in range(1, k + 1):
+        data[f"P{seat}_strategy"] = pa.array([seat], type=pa.int32())
+        data[f"P{seat}_rank"] = [seat]
+    return publish_v3_parquet(
+        cfg,
+        cfg.ingested_rows_curated(k),
+        pa.table(data),
+        stage_key="curate",
+        producer="curate",
+        operation="curate_game_rows",
+    )
+
+
+def _publish_rating_control(
+    cfg: AppConfig,
+    k: int,
+    values: dict[str, tuple[float, float]],
+) -> ScreeningRatingCell:
+    _publish_strategy_control(cfg)
+    source = _publish_game_source(cfg, k)
+    path = _ratings(cfg.trueskill_rating_path(k, root_seed=cfg.sim.seed), values)
+    cell = ScreeningRatingCell(cfg.sim.seed, k, path, source)
+    publish_rating_cell_contract(
+        cfg,
+        cell,
+        completed_artifact_sha256=sha256_file(path),
+    )
+    validate_artifact_sidecar(path)
+    return cell
+
+
+def _pair_fixture(tmp_path: Path) -> tuple[AppConfig, tuple[SeedRunContext, SeedRunContext]]:
+    first = SeedRunContext.from_config(
+        make_authenticated_v3_config(
+            tmp_path,
+            name="root_11",
+            root_seed=11,
+            player_counts=(2, 4),
+        )
+    )
+    second = SeedRunContext.from_config(
+        make_authenticated_v3_config(
+            tmp_path,
+            name="root_17",
+            root_seed=17,
+            player_counts=(2, 4),
+        )
+    )
+    roots = (first, second)
+    pair = RootPairRunContext.from_root_contexts(roots, pair_root=tmp_path / "pair")
+    return pair.config, roots
 
 
 def _ratings(path: Path, values: dict[str, tuple[float, float]]) -> Path:
@@ -68,21 +156,15 @@ def _ratings(path: Path, values: dict[str, tuple[float, float]]) -> Path:
 
 
 def test_percentile_contribution_requires_complete_root_k_support(tmp_path: Path) -> None:
-    cfg = _cfg(tmp_path)
+    cfg, root_contexts = _pair_fixture(tmp_path)
+    by_seed = {context.seed: context.config for context in root_contexts}
     cells: list[ScreeningRatingCell] = []
     for root in (11, 17):
         for k in (2, 4):
             values = {"1": (30.0 + root / 100, 2.0), "2": (20.0, 3.0)}
             if (root, k) == (11, 2):
                 values["3"] = (40.0, 1.0)
-            path = _ratings(tmp_path / f"ratings_{root}_{k}.parquet", values)
-            cell = ScreeningRatingCell(root, k, path)
-            publish_rating_cell_contract(
-                cfg,
-                cell,
-                completed_artifact_sha256=sha256_file(path),
-            )
-            cells.append(cell)
+            cells.append(_publish_rating_control(by_seed[root], k, values))
 
     output = build_percentile_contribution(cfg, cells)
     frame = pq.read_table(output).to_pandas().set_index("strategy")
@@ -118,13 +200,13 @@ def test_percentile_contribution_requires_complete_root_k_support(tmp_path: Path
 
 
 def test_percentile_contribution_excludes_prior_only_rows(tmp_path: Path) -> None:
-    cfg = AppConfig(
-        io=IOConfig(results_dir_prefix=tmp_path / "results"),
-        sim=SimConfig(seed=11, seed_list=[11], n_players_list=[2, 4]),
-    )
+    cfg = _cfg(tmp_path)
+    _publish_strategy_control(cfg)
     cells: list[ScreeningRatingCell] = []
     for k in (2, 4):
-        path = tmp_path / f"ratings_{k}.parquet"
+        source = _publish_game_source(cfg, k)
+        path = cfg.trueskill_rating_path(k, root_seed=11)
+        path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(
             pa.table(
                 {
@@ -148,7 +230,7 @@ def test_percentile_contribution_excludes_prior_only_rows(tmp_path: Path) -> Non
             ),
             path,
         )
-        cell = ScreeningRatingCell(11, k, path)
+        cell = ScreeningRatingCell(11, k, path, source)
         publish_rating_cell_contract(
             cfg,
             cell,
@@ -164,22 +246,13 @@ def test_percentile_contribution_excludes_prior_only_rows(tmp_path: Path) -> Non
 
 def test_rating_cell_contract_does_not_repair_a_present_corrupt_sidecar(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    ratings = _ratings(tmp_path / "ratings.parquet", {"1": (30.0, 2.0), "2": (20.0, 3.0)})
-    cell = ScreeningRatingCell(11, 2, ratings)
-    with pytest.raises(ArtifactContractError, match="independent cell completion"):
-        publish_rating_cell_contract(cfg, cell)
-    publish_rating_cell_contract(
-        cfg,
-        cell,
-        completed_artifact_sha256=sha256_file(ratings),
-    )
+    cell = _publish_rating_control(cfg, 2, {"1": (30.0, 2.0), "2": (20.0, 3.0)})
+    ratings = cell.ratings_path
     metadata = sidecar_path(ratings)
-    original_bytes = metadata.read_bytes()
-    corrupt_bytes = original_bytes.replace(b'"scope": "by_k"', b'"scope": "nope"')
-    assert corrupt_bytes != original_bytes
-    metadata.write_bytes(corrupt_bytes)
+    mutate_json_identity_leaf(metadata, ("artifact", "location", "scope"), "diagnostics")
+    corrupt_bytes = metadata.read_bytes()
 
-    with pytest.raises(ArtifactContractError):
+    with pytest.raises(RuntimeError, match="scope|identity|sidecar|location"):
         publish_rating_cell_contract(cfg, cell)
 
     assert metadata.read_bytes() == corrupt_bytes
@@ -187,7 +260,8 @@ def test_rating_cell_contract_does_not_repair_a_present_corrupt_sidecar(tmp_path
 
 def test_prechange_rating_schema_is_rejected_as_stale(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
-    ratings = tmp_path / "prechange_ratings.parquet"
+    cell = _publish_rating_control(cfg, 2, {"1": (30.0, 2.0), "2": (20.0, 3.0)})
+    ratings = cell.ratings_path
     pq.write_table(
         pa.table(
             {
@@ -202,7 +276,7 @@ def test_prechange_rating_schema_is_rejected_as_stale(tmp_path: Path) -> None:
     with pytest.raises(ArtifactContractError, match="rating support is missing"):
         publish_rating_cell_contract(
             cfg,
-            ScreeningRatingCell(11, 2, ratings),
+            cell,
             completed_artifact_sha256=sha256_file(ratings),
         )
 
@@ -277,12 +351,27 @@ def test_mu_softmax_heuristic_claim_and_method_contract_are_exact() -> None:
 
 def test_tau_order_and_heldout_diagnostics(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
+    _publish_strategy_control(cfg)
     rating_path = _ratings(
-        tmp_path / "ratings.parquet",
+        cfg.trueskill_rating_path(2, root_seed=11),
         {"1": (25.0, 2.0), "2": (25.0, 2.0)},
     )
-    game_path = _game_rows(tmp_path / "games.parquet")
+    game_path = cfg.ingested_rows_curated(2)
+    _game_rows(game_path)
+    publish_v3_parquet(
+        cfg,
+        game_path,
+        pq.read_table(game_path),
+        stage_key="curate",
+        producer="curate",
+        operation="curate_game_rows",
+    )
     cell = ScreeningRatingCell(11, 2, rating_path, game_path)
+    publish_rating_cell_contract(
+        cfg,
+        cell,
+        completed_artifact_sha256=sha256_file(rating_path),
+    )
 
     row = diagnose_rating_cell(
         cell,
@@ -315,12 +404,18 @@ def test_tau_order_and_heldout_diagnostics(tmp_path: Path) -> None:
             "method_contract": trueskill_diagnostic_method_contract(),
         },
     )
-    completion = read_stage_done(
-        stage_done_path(cfg.trueskill_stage_dir, "trueskill_screening_diagnostics")
+    completion = json.loads(
+        stage_done_path(
+            cfg.trueskill_stage_dir,
+            "trueskill_screening_diagnostics",
+        ).read_text(encoding="utf-8")
     )
-    freshness_key = completion["freshness_key"]
-    assert isinstance(freshness_key, dict)
-    assert freshness_key["trueskill_diagnostic_method_version"] == 1
+    assert completion["state"] == "complete_valid"
+    authenticated = validate_authenticated_artifact_unbound(
+        output,
+        validate_provenance=False,
+    )
+    assert authenticated.versions.method_versions["trueskill_diagnostic_method_version"] == 1
 
 
 def test_diagnostics_report_mixed_support_and_prior_only_strategy(tmp_path: Path) -> None:
@@ -328,7 +423,7 @@ def test_diagnostics_report_mixed_support_and_prior_only_strategy(tmp_path: Path
     pq.write_table(
         pa.table(
             {
-                    "strategy": pa.array([1, 2, 3], type=pa.int32()),
+                "strategy": pa.array([1, 2, 3], type=pa.int32()),
                 "mu": [30.0, 20.0, 25.0],
                 "sigma": [5.0, 5.0, 25.0 / 3.0],
                 "strategy_performed_updates": [1, 1, 0],
@@ -392,15 +487,17 @@ def test_diagnostics_report_mixed_support_and_prior_only_strategy(tmp_path: Path
 
 @pytest.mark.parametrize("malformed", [None, "1", 1.0, True])
 def test_trueskill_row_rejects_noncanonical_strategy_ids(malformed: object) -> None:
-    row: dict[str, object] = {
+    valid: dict[str, object] = {
         "termination_status": "completed",
         "outcome_schema_version": 2,
         "winner_seat": "P1",
-        "P1_strategy": malformed,
+        "P1_strategy": 1,
         "P2_strategy": 2,
         "P1_rank": 1,
         "P2_rank": 2,
     }
+    assert classify_trueskill_row(valid, 2).ranks == [0, 1]
+    row = {**valid, "P1_strategy": malformed}
 
     with pytest.raises(ValueError, match="P1_strategy"):
         classify_trueskill_row(row, 2)

@@ -511,9 +511,7 @@ def freeze_h2h_candidate_family(
             "schema_version": trueskill.sidecar.schema_version,
             "rng_scheme_version": trueskill.sidecar.rng_scheme_version,
             "outcome_schema_version": trueskill_authenticated.versions.outcome_schema_version,
-            "conditioning_version": (
-                trueskill_authenticated.versions.conditioning_version
-            ),
+            "conditioning_version": (trueskill_authenticated.versions.conditioning_version),
             "method_contract_sha256": trueskill_authenticated.method_contract.sha256,
             "stage_identity_sha256": trueskill_authenticated.stage_identity.sha256,
             "conditioning": trueskill.sidecar.conditioning,

@@ -231,3 +231,23 @@ def test_safety_limit_row_claiming_a_winner_is_rejected(
         validate_simulation_row(row)
     with pytest.raises(RuntimeError, match="fabricates a winner"):
         _require_outcome(row, source="test row")
+
+
+@pytest.mark.parametrize(
+    "invalid_strategy_id",
+    [None, "not-an-id", "100", True, -1, 2**31],
+    ids=["null", "nonnumeric", "numeric-string-mixed-row", "boolean", "negative", "overflow"],
+)
+def test_persisted_rows_reject_noncanonical_strategy_ids(invalid_strategy_id: object) -> None:
+    row = dict(
+        _play_game(
+            123,
+            _strategies(2),
+            target_score=200,
+            provenance=_provenance(2),
+        )
+    )
+    row["P1_strategy"] = invalid_strategy_id
+
+    with pytest.raises(ValueError):
+        validate_simulation_row(row)

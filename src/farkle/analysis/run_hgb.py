@@ -506,8 +506,7 @@ def run_hgb(
     code_revision = code_identity.commit
     if code_identity.dirty_fingerprint_sha256 is not None:
         code_revision = (
-            f"{code_identity.commit}:development_dirty:"
-            f"{code_identity.dirty_fingerprint_sha256}"
+            f"{code_identity.commit}:development_dirty:" f"{code_identity.dirty_fingerprint_sha256}"
         )
 
     LOGGER.info(

@@ -238,9 +238,7 @@ def test_partial_zero_exposure_cell_is_recorded_and_joint_vector_is_excluded(
     rows = pq.read_table(path).to_pylist()
     replacement = _metric_row(4, 1, 2, 0, 0)
     rows = [
-        replacement
-        if row["deterministic_batch_id"] == 1 and row["strategy"] == 2
-        else row
+        replacement if row["deterministic_batch_id"] == 1 and row["strategy"] == 2 else row
         for row in rows
     ]
     rows.extend(

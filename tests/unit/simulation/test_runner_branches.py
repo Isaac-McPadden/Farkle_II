@@ -8,25 +8,34 @@ from unittest.mock import MagicMock
 
 import pandas as pd
 import pytest
+from tests.helpers.artifact_sidecars import (
+    make_authenticated_v3_config,
+    publish_v3_strategy_manifest,
+)
 
 pytest.importorskip("pyarrow")
 
 import farkle.simulation.runner as runner
-from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.config import AppConfig, SimConfig, assign_config_sha
 from farkle.simulation.strategies import ThresholdStrategy
 
 
 def _cfg(tmp_path: Path, **sim_kwargs: Any) -> AppConfig:
     test_batch_count = max(2, int(sim_kwargs.pop("num_shuffles", 2)))
-    sim_defaults = {
-        "n_players_list": [2],
-        "seed": 123,
-    }
-    sim_defaults.update(sim_kwargs)
-    cfg = AppConfig(IOConfig(results_dir_prefix=tmp_path / "out"), SimConfig(**sim_defaults))
+    seed = int(sim_kwargs.pop("seed", 123))
+    n_players_list = list(sim_kwargs.pop("n_players_list", [2]))
+    cfg = make_authenticated_v3_config(
+        tmp_path,
+        name="out",
+        root_seed=seed,
+        player_counts=tuple(n_players_list),
+    )
+    for name, value in sim_kwargs.items():
+        setattr(cfg.sim, name, value)
     cfg.screening.resolution_delta = 0.9
     cfg.batching.target_batches = test_batch_count
     cfg.batching.min_shuffles_per_batch = 1
+    assign_config_sha(cfg)
     return cfg
 
 
@@ -93,29 +102,34 @@ def test_output_dir_and_done_helpers(tmp_path: Path) -> None:
     assert runner.simulation_is_complete(cfg, 2) is False
 
     checkpoint = cfg.results_root / "2_players" / "2p_checkpoint.pkl"
-    checkpoint.write_bytes(b"checkpoint")
-    cfg.strategy_manifest_root_path().write_bytes(b"strategy-manifest")
-    (done_path.parent / "simulation_workload_plan.json").write_text("{}", encoding="utf-8")
+    checkpoint.write_bytes(pickle.dumps({"checkpoint": True}))
+    publish_v3_strategy_manifest(
+        cfg,
+        (
+            ThresholdStrategy(300, 3, strategy_id=1),
+            ThresholdStrategy(500, 2, strategy_id=2),
+        ),
+    )
+    workload = done_path.parent / "simulation_workload_plan.json"
+    workload.write_text("{}", encoding="utf-8")
     marker = runner.write_simulation_done(
         cfg,
         2,
         num_shuffles=3,
         shuffles_per_batch=1,
-        n_strategies=8,
-        outputs=[checkpoint],
+        n_strategies=2,
+        outputs=[checkpoint, cfg.strategy_manifest_root_path(), workload],
+        allow_unsealed_v3_outputs=True,
     )
     assert marker == done_path
     assert runner.simulation_is_complete(cfg, 2) is True
     payload = json.loads(done_path.read_text())
-    assert payload["n_players"] == 2
-    assert payload["root_seed"] == cfg.sim.seed
-    assert payload["k"] == 2
-    assert payload["num_shuffles"] == 3
-    assert payload["shuffle_index_start"] == 0
-    assert payload["shuffle_index_end"] == 2
-    assert payload["deterministic_batch_count"] == 3
-    assert payload["shuffles_per_batch"] == 1
-    assert payload["rng_scheme_version"] == runner.urandom.RNG_SCHEME_VERSION
+    assert payload["state"] == "complete_valid"
+    assert {item["artifact"]["location"]["relative_path"] for item in payload["outputs"]} == {
+        "2_players/2p_checkpoint.pkl",
+        "2_players/simulation_workload_plan.json",
+        "strategy_manifest.parquet",
+    }
 
 
 def test_manifest_digest_and_validate_mismatch(tmp_path: Path) -> None:
@@ -372,8 +386,8 @@ def test_run_single_n_cleanup_purges_done_file(
 
     assert runner.run_single_n(cfg, n_players, force=True) > 0
     payload = json.loads(stale_done.read_text())
-    assert payload["n_players"] == n_players
-    assert payload["num_shuffles"] == 2
+    assert payload["state"] == "complete_valid"
+    assert runner.simulation_is_complete(cfg, n_players)
 
 
 def test_run_single_n_cap_blocks_before_force_cleanup(tmp_path: Path) -> None:
@@ -993,26 +1007,26 @@ def test_run_single_n_empty_rows_and_metric_sq_sum_outputs(
         "build_strategy_manifest",
         lambda _strategies: pd.DataFrame(
             [
-                {"strategy_id": "s0", "strategy_str": "s0"},
-                {"strategy_id": "s1", "strategy_str": "s1"},
+                {"strategy_id": 0, "strategy_str": "s0"},
+                {"strategy_id": 1, "strategy_str": "s1"},
             ]
         ),
     )
 
     payloads = [
-        {"win_totals": {"s0": -1}, "meta": {}},
+        {"win_totals": {0: -1}, "meta": {}},
         {
-            "win_totals": {"s0": 2},
+            "win_totals": {0: 2},
             "outcome_counts": {
                 "games_attempted": 2,
                 "games_completed": 2,
                 "games_safety_limit": 0,
-                "attempted_exposures": {"s0": 2, "s1": 2},
-                "completed_exposures": {"s0": 2, "s1": 2},
+                "attempted_exposures": {0: 2, 1: 2},
+                "completed_exposures": {0: 2, 1: 2},
                 "safety_limit_exposures": {},
             },
-            "metric_sums": {"winning_score": {"s0": 8.0}},
-            "metric_sq_sums": {"winning_score": {"s0": 40.0}},
+            "metric_sums": {"winning_score": {0: 8.0}},
+            "metric_sq_sums": {"winning_score": {0: 40.0}},
             "meta": {},
         },
     ]
@@ -1041,7 +1055,9 @@ def test_run_single_n_empty_rows_and_metric_sq_sum_outputs(
         shuffles_per_batch: int,
         n_strategies: int,
         outputs: list[Path],
+        allow_unsealed_v3_outputs: bool = False,
     ) -> Path:
+        assert allow_unsealed_v3_outputs
         captured_outputs.append(outputs)
         return runner.simulation_done_path(cfg, n_players)
 
