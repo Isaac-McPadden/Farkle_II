@@ -38,6 +38,7 @@ def test_cli_run(tmp_path, monkeypatch, capsys) -> None:
             "seed": 42,
             "n_players_list": [2],
         },
+        "screening": {"practical_delta_by_k": {2: 0.03}},
     }
     cfg_path = tmp_path / "cfg.yml"
     cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
