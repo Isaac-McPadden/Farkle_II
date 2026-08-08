@@ -25,6 +25,7 @@ _DERIVED_SUFFIXES: Final = {
     ".json",
     ".jsonl",
     ".md",
+    ".npy",
     ".parquet",
     ".pkl",
     ".png",

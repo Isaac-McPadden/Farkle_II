@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import cast
 
@@ -9,11 +10,26 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import farkle.analysis.performance as performance_module
 from farkle.analysis.all_player_metrics import all_player_batch_schema
-from farkle.analysis.performance import _pareto_membership, build_canonical_performance
+from farkle.analysis.performance import (
+    _across_k_estimates,
+    _estimate_one_k,
+    _joint_batch_resampling,
+    _pareto_membership,
+    _read_batch_metrics,
+    build_canonical_performance,
+)
 from farkle.config import AppConfig, ArtifactScope, IOConfig, SimConfig
-from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
+from farkle.utils.artifact_contract import (
+    make_artifact_sidecar,
+    sha256_file,
+    sidecar_path,
+    validate_artifact_sidecar,
+)
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.parallel import ResourceSafetyError, process_tree_rss_bytes
+from farkle.utils.stage_completion import stage_done_path
 
 
 def _cfg(tmp_path: Path) -> AppConfig:
@@ -288,3 +304,164 @@ def test_pareto_membership_preserves_tradeoffs_and_exact_ties() -> None:
     strategies = np.asarray([1, 2, 3, 4, 5])
 
     assert _pareto_membership(values, strategies).tolist() == [True, True, True, False, True]
+
+
+def test_compact_matrix_and_resampling_match_legacy_small_fixture(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_inputs(cfg)
+    required_k = sorted(cfg.sim.n_players_list)
+    frames = {k: _read_batch_metrics(cfg.metrics_all_player_batch_path(k), k) for k in required_k}
+    estimates = {
+        k: _estimate_one_k(
+            frames[k],
+            k,
+            cfg.screening.resolution_delta,
+            float(cast(dict[int, float], cfg.screening.practical_delta_by_k)[k]),
+        )
+        for k in required_k
+    }
+    reference_across, strategies, _vectors = _across_k_estimates(
+        estimates, required_k, cast(float, cfg.screening.delta_across_k)
+    )
+    expected_bootstrap, expected_contrasts = _joint_batch_resampling(
+        cfg, frames, reference_across, strategies, required_k
+    )
+
+    artifacts = build_canonical_performance(cfg)
+    actual_bootstrap = pq.read_table(artifacts.bootstrap).to_pandas()
+    actual_contrasts = pq.read_table(artifacts.control_contrasts).to_pandas()
+    pd.testing.assert_frame_equal(expected_bootstrap, actual_bootstrap, check_dtype=False)
+    pd.testing.assert_frame_equal(expected_contrasts, actual_contrasts, check_dtype=False)
+    for path in artifacts.batch_matrices:
+        matrix = np.load(path, mmap_mode="r", allow_pickle=False)
+        assert isinstance(matrix, np.memmap)
+        assert matrix.dtype.names == (
+            "root_seed",
+            "deterministic_batch_id",
+            "strategy",
+            "raw_wins",
+            "raw_player_game_exposures",
+            "raw_completed_player_game_exposures",
+            "raw_safety_limit_player_game_exposures",
+            "raw_losses",
+        )
+        assert matrix.ndim == 2
+        del matrix
+        sidecar = json.loads(sidecar_path(path).read_text(encoding="utf-8"))
+        assert sidecar["artifact"]["format_identity"]["media_type"] == "application/x-npy"
+        assert sidecar["artifact"]["format_identity"]["structural_schema_sha256"]
+
+
+def test_bootstrap_worker_and_range_size_invariance(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.screening.bootstrap_replicates = 120
+    cfg.analysis.n_jobs = 1
+    _write_inputs(cfg)
+    serial = build_canonical_performance(cfg)
+    serial_bootstrap = pq.read_table(serial.bootstrap).to_pandas()
+    serial_contrasts = pq.read_table(serial.control_contrasts).to_pandas()
+
+    monkeypatch.setattr(performance_module, "_BOOTSTRAP_RANGE_SIZE", 100)
+    cfg.analysis.n_jobs = 2
+    cfg.analysis.mp_start_method = "spawn"
+    parallel = build_canonical_performance(cfg, force=True)
+    pd.testing.assert_frame_equal(serial_bootstrap, pq.read_table(parallel.bootstrap).to_pandas())
+    pd.testing.assert_frame_equal(
+        serial_contrasts, pq.read_table(parallel.control_contrasts).to_pandas()
+    )
+
+
+def test_corrupt_bootstrap_range_is_rebuilt_while_valid_range_is_reused(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.screening.bootstrap_replicates = 120
+    _write_inputs(cfg)
+    build_canonical_performance(cfg)
+    range_dir = cfg.performance_bootstrap_ranges_dir() / "units"
+    ranges = sorted(range_dir.glob("*.npy"))
+    assert len(ranges) == 3
+    valid_hash = sha256_file(ranges[0])
+    valid_mtime = ranges[0].stat().st_mtime_ns
+    ranges[1].write_bytes(b"corrupt")
+    stage_done_path(cfg.metrics_stage_dir, "canonical_performance").unlink()
+
+    resumed = build_canonical_performance(cfg)
+    assert sha256_file(ranges[0]) == valid_hash
+    assert ranges[0].stat().st_mtime_ns == valid_mtime
+    assert np.load(ranges[1], mmap_mode="r", allow_pickle=False).shape[0] == 50
+    assert pq.read_table(resumed.bootstrap).num_rows == 2
+    assert any((cfg.performance_bootstrap_ranges_dir() / "quarantine").iterdir())
+
+
+def test_interrupted_bootstrap_never_publishes_partial_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.screening.bootstrap_replicates = 120
+    cfg.analysis.n_jobs = 1
+    _write_inputs(cfg)
+    original = performance_module._BootstrapRangeWriter.__call__
+
+    def interrupt(writer, unit, path):
+        if int(unit.key[0]) >= 50:
+            raise RuntimeError("synthetic bootstrap interruption")
+        return original(writer, unit, path)
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(performance_module._BootstrapRangeWriter, "__call__", interrupt)
+        with pytest.raises(RuntimeError, match="synthetic bootstrap interruption"):
+            build_canonical_performance(cfg)
+    assert not cfg.performance_bootstrap_path().exists()
+    assert not (cfg.performance_bootstrap_ranges_dir() / "partition_manifest.jsonl").exists()
+
+    completed = build_canonical_performance(cfg)
+    assert pq.read_table(completed.bootstrap).num_rows == 2
+
+
+def test_performance_fails_before_rss_abort_and_publishes_no_bootstrap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    _write_inputs(cfg)
+
+    class AbortingGuard:
+        peak_rss_bytes = 949 * 1024 * 1024
+
+        def __init__(self, *_args, **_kwargs) -> None:
+            pass
+
+        def check_before_schedule(self, *, force: bool = False) -> int:
+            raise ResourceSafetyError("synthetic performance RSS abort")
+
+    monkeypatch.setattr(performance_module, "ProcessTreeMemoryGuard", AbortingGuard)
+    with pytest.raises(ResourceSafetyError, match="synthetic performance RSS abort"):
+        build_canonical_performance(cfg)
+    assert not cfg.performance_bootstrap_path().exists()
+
+
+def test_max_configured_k_and_bootstrap_count_stay_under_process_tree_ceiling(
+    tmp_path: Path,
+) -> None:
+    cfg = AppConfig(
+        io=IOConfig(results_dir_prefix=tmp_path / "stress"),
+        sim=SimConfig(seed=11, n_players_list=[12]),
+    )
+    cfg.screening.practical_delta_by_k = {12: 0.03}
+    cfg.screening.delta_across_k = 0.03
+    cfg.screening.bootstrap_replicates = 2_000
+    cfg.screening.candidate_contribution_size = 8
+    cfg.screening.controls = []
+    cfg.analysis.n_jobs = 2
+    cfg.analysis.mp_start_method = "spawn"
+    cfg.resources.stage_batch_bytes["performance"] = 64 * 1024
+    rows = [
+        _metric_row(12, batch, strategy, (batch * 7 + strategy * 3) % 40, 100)
+        for batch in range(100)
+        for strategy in range(1, 9)
+    ]
+    _write_batch_metrics(cfg, 12, rows)
+
+    artifacts = build_canonical_performance(cfg)
+    assert pq.read_table(artifacts.bootstrap).column("bootstrap_replicates")[0].as_py() == 2_000
+    assert process_tree_rss_bytes() < cfg.resources.rss_abort_mb * 1024 * 1024

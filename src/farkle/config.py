@@ -404,6 +404,8 @@ class ResourcesConfig:
             "simulation": 128,
             "ingest": 192,
             "analysis": 192,
+            "all_player_metrics": 160,
+            "performance_bootstrap": 160,
             "trueskill": 192,
             "head2head": 128,
             "partitioned_stage": 128,
@@ -414,6 +416,8 @@ class ResourcesConfig:
             "ingest": 32 * 1024 * 1024,
             "combine": 32 * 1024 * 1024,
             "analysis": 32 * 1024 * 1024,
+            "all_player_metrics": 16 * 1024 * 1024,
+            "performance": 16 * 1024 * 1024,
             "trueskill": 16 * 1024 * 1024,
             "partitioned_stage": 16 * 1024 * 1024,
         }
@@ -945,6 +949,16 @@ class AppConfig:
         """Canonical unconditional player-exposure batch metrics for ``k`` players."""
 
         return self.metrics_per_k_dir(k) / "all_player_batch_metrics.parquet"
+
+    def performance_batch_matrix_path(self, k: int) -> Path:
+        """Memory-mappable canonical batch-count matrix for ``k`` players."""
+
+        return self.metrics_per_k_dir(k) / "performance_batch_matrix.npy"
+
+    def performance_bootstrap_ranges_dir(self) -> Path:
+        """Resumable deterministic replicate-range workspace."""
+
+        return self.metrics_stage_dir / "_performance_bootstrap_ranges"
 
     def performance_by_k_path(self, k: int) -> Path:
         """Canonical chance-adjusted performance estimates for ``k`` players."""

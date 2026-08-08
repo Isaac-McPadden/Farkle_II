@@ -51,6 +51,7 @@ def _root_artifacts(context: SeedRunContext) -> list[Path]:
                 cfg.combined_rows_by_k(k),
                 cfg.by_k_dir("combine", k) / f"{k}p_partition.manifest.jsonl",
                 cfg.metrics_all_player_batch_path(k),
+                cfg.performance_batch_matrix_path(k),
                 cfg.performance_by_k_path(k),
                 cfg.seat_batch_counts_path(k),
                 cfg.seat_effects_by_k_path(k),

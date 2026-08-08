@@ -17,16 +17,21 @@ modules and use hand-checkable tests before accepting a claim.
 
 ## Returns and performance
 
-- `analysis/all_player_metrics.py`: all attempted player-game exposures, with a
-  safety-limit attempt counted as a loss for every participant; explicit
+- `analysis/all_player_metrics.py`: k/schema-aware byte-bounded Arrow projection
+  with stable source-row/seat accumulation over all attempted player-game
+  exposures. A safety-limit attempt counts as a loss for every participant; explicit
   completed/safety-limit support; exact turn- and game-denominated returns;
   rounds proxy, mismatch prevalence, and maximum-round abort exposures. A
   zero-turn/zero-round safety attempt has zero game-weighted return and no
   turn-weighted return; completed games still require positive denominators.
-- `analysis/performance.py`: primary per-attempt win rates relative to `1/k`, a
+- `analysis/performance.py`: compact memory-mapped root/k count matrices feed
+  primary per-attempt win rates relative to `1/k`, a
   labelled completed-only diagnostic, per-attempt Wilson checks and batch MCSE
   `s_batch/sqrt(B)`, complete-support equal-k performance, declared
   alternatives, controls, Pareto, maximin, and joint batch-vector resampling.
+  Bootstrap RNG is owned by root/k/replicate coordinates; fixed replicate-ID
+  ranges run in parallel, publish atomic result shards, resume by authenticated
+  range, and reduce in global replicate order before final publication.
 - Player-count diagnostics include finite chance-relative log odds, pairwise k
   contrasts, within-k spread, and cross-k Spearman/Kendall agreement. Boundary
   logits are unavailable.

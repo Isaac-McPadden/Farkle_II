@@ -20,6 +20,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Final, TypeVar, cast
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -772,7 +773,11 @@ def file_format_identity(
             b"\x89PNG\r\n\x1a\n"
         ):
             raise ArtifactMismatchError(f"invalid PNG artifact: {artifact}")
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        elif media_type == "application/x-npy":
+            array = np.load(artifact, mmap_mode="r", allow_pickle=False)
+            structural = identity_sha256({"dtype": array.dtype.descr, "shape": list(array.shape)})
+            del array
+    except (OSError, TypeError, UnicodeError, ValueError) as exc:
         raise ArtifactMismatchError(
             f"artifact does not satisfy declared format {media_type}: {artifact}"
         ) from exc

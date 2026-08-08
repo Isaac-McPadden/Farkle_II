@@ -12,6 +12,7 @@ from tests.helpers.artifact_sidecars import (
 )
 
 from farkle.analysis.all_player_metrics import (
+    _execution_batch_limits,
     all_player_batch_schema,
     build_all_player_batch_metrics,
     validate_unconditional_all_player_schema,
@@ -225,3 +226,60 @@ def test_all_player_metrics_accept_zero_turn_safety_limit_as_attempted_loss(
         assert metric["turn_return_turn_weighted"] is None
         assert metric["turn_return_game_weighted_exact"] == 0
         assert metric["turn_return_round_proxy"] == 0
+
+
+def test_arrow_execution_batches_are_byte_bounded_and_logically_invariant(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    rows = [
+        _game_row(
+            shuffle_index=index,
+            winner_seat="P1" if index % 2 == 0 else "P2",
+            n_rounds=3 + index % 3,
+            p1=_exposure_values(10 if index % 2 else 20, 101 + index, 3 + index % 3, 1),
+            p2=_exposure_values(20 if index % 2 else 10, 47 + index, 4 + index % 3, 2),
+        )
+        for index in range(40)
+    ]
+    source = _write_source(cfg, rows)
+    cfg.resources.stage_batch_bytes["all_player_metrics"] = 512
+    small_bytes, small_rows = _execution_batch_limits(cfg, source, 2)
+    small_output = build_all_player_batch_metrics(cfg, 2, force=True)
+    small = pq.read_table(small_output)
+
+    cfg.resources.stage_batch_bytes["all_player_metrics"] = 1024 * 1024
+    large_bytes, large_rows = _execution_batch_limits(cfg, source, 2)
+    large_output = build_all_player_batch_metrics(cfg, 2, force=True)
+    large = pq.read_table(large_output)
+
+    assert small_bytes < large_bytes
+    assert small_rows < large_rows
+    assert small.equals(large)
+
+
+def test_all_player_root_k_checkpoint_reuses_and_repairs_corruption(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_source(
+        cfg,
+        [
+            _game_row(
+                shuffle_index=0,
+                winner_seat="P1",
+                n_rounds=2,
+                p1=_exposure_values(10, 100, 2, 1),
+                p2=_exposure_values(20, 50, 3, 2),
+            )
+        ],
+    )
+    output = build_all_player_batch_metrics(cfg, 2)
+    original = output.read_bytes()
+    original_mtime = output.stat().st_mtime_ns
+
+    assert build_all_player_batch_metrics(cfg, 2) == output
+    assert output.stat().st_mtime_ns == original_mtime
+
+    output.write_bytes(b"corrupt")
+    repaired = build_all_player_batch_metrics(cfg, 2)
+    assert repaired.read_bytes() == original
+    assert pq.read_table(repaired).num_rows == 2

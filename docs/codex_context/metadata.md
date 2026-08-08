@@ -94,7 +94,15 @@ changing code or accepting a statistical conclusion.
   inference, dominance, agreement, and reporting. Reporting authenticates the
   migration report as a stage output, carries the canonical completed-game
   TrueSkill conditioning explicitly, and a no-force rerun preserves every
-  stable workflow byte.
+  stable workflow byte. Task 16 makes all-player aggregation use k/schema-aware
+  byte-bounded Arrow projections and stable NumPy row/seat accumulation,
+  retaining atomic root/k completion. Canonical performance now materializes
+  authenticated memory-mappable root/k count matrices, partitions bootstrap
+  replicate IDs into independently resumable atomic ranges, derives every draw
+  from the full root/k/replicate coordinate, and performs a sorted
+  per-replicate reduction. A final bootstrap artifact is published only after
+  the complete range manifest validates; execution worker and chunk controls
+  remain outside statistical freshness under explicit invariance tests.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

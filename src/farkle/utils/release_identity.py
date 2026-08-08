@@ -13,6 +13,8 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+
 from farkle.config import AppConfig, ArtifactScope, effective_config_dict
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
@@ -473,6 +475,7 @@ def _format_identity(path: Path, staged_path: Path) -> ArtifactFormatIdentity | 
         ".md": "text/markdown; charset=utf-8",
         ".txt": "text/plain; charset=utf-8",
         ".png": "image/png",
+        ".npy": "application/x-npy",
         ".pkl": "application/x-python-pickle",
         ".yaml": "application/yaml",
         ".yml": "application/yaml",
@@ -497,6 +500,13 @@ def _format_identity(path: Path, staged_path: Path) -> ArtifactFormatIdentity | 
     elif suffix == ".png":
         if not staged_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
             raise ArtifactContractError(f"invalid PNG artifact: {path}")
+    elif suffix == ".npy":
+        try:
+            array = np.load(staged_path, mmap_mode="r", allow_pickle=False)
+            structural = identity_sha256({"dtype": array.dtype.descr, "shape": list(array.shape)})
+            del array
+        except (OSError, TypeError, ValueError) as exc:
+            raise ArtifactContractError(f"invalid NumPy artifact: {path}") from exc
     return ArtifactFormatIdentity(
         media_type=media_type,
         format_version=1,

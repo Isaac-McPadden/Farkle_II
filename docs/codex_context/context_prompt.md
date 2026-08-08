@@ -50,6 +50,10 @@ Preserve these invariants:
   diagnostics publish an authenticated root/k result and completion stamp
   before deterministic aggregation, using one forward projected scan and a
   bounded reverse replay spool;
+- all-player metrics use k/schema-aware byte-bounded projections and stable
+  row/seat accumulation; canonical performance uses memory-mapped root/k count
+  matrices plus authenticated deterministic replicate-range shards, and only
+  publishes bootstrap summaries after a complete validated range manifest;
 - the H2H power plan and block manifest are immutable after publication;
   exact-power allocation is the global first admissible crossing, power is
   conditional on completed support, and cap authorization/execution progress

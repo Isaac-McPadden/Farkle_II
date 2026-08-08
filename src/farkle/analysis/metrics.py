@@ -71,6 +71,7 @@ def run(cfg: AppConfig) -> None:
 
     all_player_outputs = [cfg.metrics_all_player_batch_path(k) for k in player_counts]
     performance_outputs = [
+        *(cfg.performance_batch_matrix_path(k) for k in player_counts),
         *(cfg.performance_by_k_path(k) for k in player_counts),
         cfg.performance_across_k_path(),
         cfg.performance_bootstrap_path(),
@@ -102,7 +103,9 @@ def run(cfg: AppConfig) -> None:
 
     check_pre_metrics(concatenated_rows, winner_col="winner_seat")
     all_player_paths = _all_player_metrics(cfg, player_counts)
-    performance: PerformanceArtifacts = build_canonical_performance(cfg, force=True)
+    # The enclosing stage is stale, but performance owns authenticated per-k
+    # matrices and replicate ranges that remain reusable after interruption.
+    performance: PerformanceArtifacts = build_canonical_performance(cfg)
     seats: SeatAnalysisArtifacts = build_canonical_seat_analysis(cfg, force=True)
     emitted = [*all_player_paths, *performance.all_paths, *seats.all_paths]
     _require_paths(emitted, label="derived artifact")

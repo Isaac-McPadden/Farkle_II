@@ -136,6 +136,7 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "batching",
             "k_aggregation",
         ),
+        cache_key_version=2,
     ),
     StageDefinition(
         "game_stats",

@@ -136,6 +136,10 @@ process pools collapse to one process, and `stage_batch_bytes` bounds projected
 Arrow batches. Resource controls and resolved policies are authenticated in
 run-context contract v2 but are excluded from statistical freshness; focused
 worker-count, ordering, and batch-boundary invariance tests protect that split.
+The `all_player_metrics` byte budget is applied to the k-dependent wide source
+projection; `performance` bounds mapped-matrix column work, and
+`performance_bootstrap` supplies the per-worker memory estimate for independent
+replicate ranges.
 
 The two-root preflight log/manifest event also reports a declared upper-envelope
 projection for tournament row shards, H2H pair/root/order blocks, their adjacent
