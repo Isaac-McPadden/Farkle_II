@@ -1045,6 +1045,33 @@ class AppConfig:
 
         return self.cross_seed_dir("root_stability") / "root_half_drift.parquet"
 
+    def root_stability_matrix_path(self, root_seed: int, k: int) -> Path:
+        """Fallback immutable count matrix for an external root/k input.
+
+        Normal runs consume the performance-stage matrix next to the source
+        metrics artifact.  This path is only used when that shared artifact has
+        not yet been published (for example while assembling a root pair from
+        independently completed roots).
+        """
+
+        return (
+            self.cross_seed_dir("root_stability")
+            / "_root_batch_matrices"
+            / f"root_{int(root_seed)}"
+            / f"k_{int(k)}"
+            / "performance_batch_matrix.npy"
+        )
+
+    def root_stability_top_n_ranges_dir(self) -> Path:
+        """Authenticated deterministic replicate ranges for root top-N bootstrap."""
+
+        return self.cross_seed_dir("root_stability") / "_bootstrap_top_n_ranges"
+
+    def root_stability_joint_ranges_dir(self) -> Path:
+        """Authenticated deterministic replicate ranges for joint discrepancy bootstrap."""
+
+        return self.cross_seed_dir("root_stability") / "_joint_discrepancy_ranges"
+
     def seat_batch_counts_path(self, k: int) -> Path:
         """Canonical seat wins and exposures by root, k, batch, strategy, and seat."""
 

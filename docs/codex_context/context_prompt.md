@@ -54,6 +54,9 @@ Preserve these invariants:
   row/seat accumulation; canonical performance uses memory-mapped root/k count
   matrices plus authenticated deterministic replicate-range shards, and only
   publishes bootstrap summaries after a complete validated range manifest;
+- two-root stability reuses those immutable root/k matrices (or publishes a
+  compatible fallback cache once), with independently authenticated top-N and
+  joint-discrepancy ranges; final completion is stale unless both manifests validate;
 - the H2H power plan and block manifest are immutable after publication;
   exact-power allocation is the global first admissible crossing, power is
   conditional on completed support, and cap authorization/execution progress

@@ -7,6 +7,7 @@ reproducibility; they do not estimate a root superpopulation or random effect.
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Hashable
 from dataclasses import dataclass
 from math import ceil, sqrt
@@ -27,9 +28,32 @@ from farkle.analysis.batch_support import (
     RECTANGULAR_SUPPORT_POLICY,
     validate_rectangular_batch_support,
 )
+from farkle.analysis.performance import (
+    _BATCH_MATRIX_DTYPE,
+    _validate_matrix_array,
+    _write_batch_matrix,
+)
 from farkle.config import AppConfig, ArtifactScope
-from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
+from farkle.utils.artifact_contract import (
+    ArtifactSidecar,
+    make_artifact_sidecar,
+    sha256_file,
+    sidecar_path,
+    validate_artifact_sidecar,
+    write_artifact_with_sidecar_atomic,
+)
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.parallel import (
+    ProcessTreeMemoryGuard,
+    apply_native_thread_limits,
+    resolve_stage_parallel_policy,
+)
+from farkle.utils.partitioned_stage import (
+    PartitionedStageIdentity,
+    PartitionedUnit,
+    run_partitioned_stage,
+    validate_final_manifest,
+)
 from farkle.utils.random import RandomPurpose, coordinate_rng
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.strategy_ids import canonical_strategy_ids, require_strategy_id_field
@@ -45,7 +69,8 @@ _INPUT_COLUMNS: Final[tuple[str, ...]] = (
     "raw_safety_limit_player_game_exposures",
     "raw_losses",
 )
-ROOT_STABILITY_METHOD_VERSION: Final = 2
+ROOT_STABILITY_METHOD_VERSION: Final = 3
+_ROOT_BOOTSTRAP_RANGE_SIZE: Final = 50
 
 
 @dataclass(frozen=True)
@@ -55,6 +80,7 @@ class RootBatchCell:
     root_seed: int
     k: int
     path: Path
+    matrix_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -92,18 +118,25 @@ class RootStabilityArtifacts:
         )
 
 
-@dataclass(frozen=True)
-class _BatchMatrix:
-    """Dense batch arrays aligned to a complete strategy support."""
-
-    strategies: np.ndarray
-    batch_ids: np.ndarray
-    wins: np.ndarray
-    exposures: np.ndarray
-
-
 def _read_cell(cell: RootBatchCell) -> pd.DataFrame:
     """Read and strictly validate one unconditional root/k input."""
+
+    if cell.matrix_path is not None:
+        matrix = np.load(cell.matrix_path, mmap_mode="r", allow_pickle=False)
+        _validate_matrix_array(matrix, path=cell.matrix_path, k=cell.k)
+        roots = np.unique(matrix["root_seed"])
+        if roots.tolist() != [cell.root_seed]:
+            raise ValueError(f"{cell.matrix_path} has unexpected root support")
+        payload = {
+            "root_seed": matrix["root_seed"].reshape(-1),
+            "k": np.full(matrix.size, cell.k, dtype=np.int16),
+            "deterministic_batch_id": matrix["deterministic_batch_id"].reshape(-1),
+            "strategy": matrix["strategy"].reshape(-1),
+            **{name: matrix[name].reshape(-1) for name in _INPUT_COLUMNS[4:]},
+        }
+        frame = pd.DataFrame(payload)
+        del matrix
+        return frame
 
     validate_artifact_sidecar(
         cell.path,
@@ -140,6 +173,112 @@ def _read_cell(cell: RootBatchCell) -> pd.DataFrame:
     if not (frame["raw_losses"] == exposures - wins).all():
         raise ValueError(f"{cell.path} violates all-participant loss conservation")
     return frame
+
+
+def _validate_cell_source(cell: RootBatchCell) -> None:
+    """Validate source metadata without materializing its whole Parquet table."""
+
+    validate_artifact_sidecar(
+        cell.path,
+        expected={
+            "scope": ArtifactScope.BY_K.value,
+            "conditioning": ATTEMPT_CONDITIONING,
+        },
+    )
+    schema = pq.read_schema(cell.path)
+    validate_unconditional_all_player_schema(schema)
+    require_strategy_id_field(schema, "strategy", context=str(cell.path))
+    missing = sorted(set(_INPUT_COLUMNS).difference(schema.names))
+    if missing:
+        raise ValueError(f"{cell.path} lacks two-root inputs: {missing}")
+
+
+def _matrix_sidecar(cfg: AppConfig, source: Path, destination: Path, k: int) -> ArtifactSidecar:
+    """Describe the fallback with the same immutable layout as performance."""
+
+    return make_artifact_sidecar(
+        cfg,
+        destination,
+        producer="root_stability",
+        scope=ArtifactScope.CROSS_SEED,
+        source_scope=ArtifactScope.BY_K,
+        operation="materialize_root_stability_batch_matrix",
+        method_contract={
+            "kind": "root_combination",
+            "procedure": "materialize_root_stability_batch_matrix",
+            "parameters": {
+                "method_version": ROOT_STABILITY_METHOD_VERSION,
+                "numpy_dtype": _BATCH_MATRIX_DTYPE.descr,
+                "layout": "deterministic_batch_by_strategy",
+            },
+        },
+        source_artifacts=[source],
+        consistency_columns=list(_BATCH_MATRIX_DTYPE.names or ()),
+        grouping_keys=["root_seed", "k", "deterministic_batch_id", "strategy"],
+        player_counts=[k],
+        required_player_counts=[k],
+        missing_cell_policy="fail",
+        replication_unit="deterministic_shuffle_batch",
+        conditioning=ATTEMPT_CONDITIONING,
+        seed_scope="root_pair_stability",
+    )
+
+
+def _matrix_cell(
+    cfg: AppConfig,
+    cell: RootBatchCell,
+    *,
+    force: bool,
+    guard: ProcessTreeMemoryGuard,
+) -> RootBatchCell:
+    """Use the published performance matrix, or atomically create one fallback.
+
+    The fallback is deliberately the byte-compatible performance matrix format;
+    it is an immutable cache, not a second dataframe representation.
+    """
+
+    _validate_cell_source(cell)
+    shared = cell.path.with_name("performance_batch_matrix.npy")
+    candidate = (
+        shared if shared.exists() else cfg.root_stability_matrix_path(cell.root_seed, cell.k)
+    )
+    if shared.exists():
+        validate_artifact_sidecar(
+            shared, expected={"operation": "materialize_performance_batch_matrix"}
+        )
+    else:
+        done = stage_done_path(candidate.parent, "root_stability_batch_matrix")
+        if force or not stage_is_up_to_date(
+            done,
+            inputs=[cell.path],
+            outputs=[candidate],
+            cfg=cfg,
+            stage="root_stability",
+            sidecar_artifacts=[candidate],
+        ):
+            sidecar = _matrix_sidecar(cfg, cell.path, candidate, cell.k)
+            write_artifact_with_sidecar_atomic(
+                candidate,
+                sidecar,
+                lambda staged: _write_batch_matrix(cfg, cell.path, staged, k=cell.k, guard=guard),
+            )
+            write_stage_done(
+                done,
+                inputs=[cell.path],
+                outputs=[candidate],
+                cfg=cfg,
+                stage="root_stability",
+                sidecar_artifacts=[candidate],
+            )
+    matrix = np.load(candidate, mmap_mode="r", allow_pickle=False)
+    _validate_matrix_array(matrix, path=candidate, k=cell.k)
+    roots = np.unique(matrix["root_seed"])
+    if roots.tolist() != [cell.root_seed]:
+        raise ValueError(
+            f"{candidate} has root support {roots.tolist()}, expected [{cell.root_seed}]"
+        )
+    del matrix
+    return RootBatchCell(cell.root_seed, cell.k, cell.path, candidate)
 
 
 def _ratio_mcse(wins: np.ndarray, exposures: np.ndarray) -> float | None:
@@ -357,34 +496,6 @@ def cfg_method_name(weights: dict[int, float], required_k: list[int]) -> str:
     return "declared_k_weighted_mean"
 
 
-def _build_matrix(frame: pd.DataFrame, strategies: np.ndarray) -> _BatchMatrix:
-    """Pivot one root/k input into aligned batch matrices."""
-
-    batch_ids = np.sort(frame["deterministic_batch_id"].astype(int).unique())
-    wins = frame.pivot(index="deterministic_batch_id", columns="strategy", values="raw_wins")
-    exposures = frame.pivot(
-        index="deterministic_batch_id",
-        columns="strategy",
-        values="raw_player_game_exposures",
-    )
-    wins = wins.reindex(index=batch_ids, columns=strategies)
-    exposures = exposures.reindex(index=batch_ids, columns=strategies)
-    if wins.isna().any().any() or exposures.isna().any().any():
-        raise ValueError("every root/k batch must contain every strategy exactly once")
-    zero_containing_vectors = exposures.eq(0).any(axis=1)
-    wins = wins.loc[~zero_containing_vectors]
-    exposures = exposures.loc[~zero_containing_vectors]
-    batch_ids = batch_ids[~zero_containing_vectors.to_numpy()]
-    if not len(batch_ids):
-        raise ValueError("root stability has no positive-exposure batch vectors")
-    return _BatchMatrix(
-        strategies=strategies,
-        batch_ids=batch_ids,
-        wins=wins.to_numpy(dtype=float),
-        exposures=exposures.to_numpy(dtype=float),
-    )
-
-
 def _rank_vector(frame: pd.DataFrame, score_column: str) -> tuple[np.ndarray, np.ndarray]:
     """Return stable strategy order and one-based ranks."""
 
@@ -531,60 +642,212 @@ def _rank_and_selection_stability(
     )
 
 
+def _root_bootstrap_units(
+    replicates: int, range_size: int = _ROOT_BOOTSTRAP_RANGE_SIZE
+) -> tuple[PartitionedUnit, ...]:
+    return tuple(
+        PartitionedUnit(
+            (start, min(replicates, start + range_size)),
+            f"replicates_{start:08d}_{min(replicates, start + range_size):08d}.npy",
+        )
+        for start in range(0, replicates, range_size)
+    )
+
+
+def _root_bootstrap_identity(
+    cfg: AppConfig, cells: dict[tuple[int, int], RootBatchCell], roots: tuple[int, int], family: str
+) -> PartitionedStageIdentity:
+    inputs = tuple(
+        sorted(
+            (
+                f"root_{root}_k_{k}",
+                hashlib.sha256(
+                    (
+                        sha256_file(cast(Path, cells[(root, k)].matrix_path))
+                        + sha256_file(sidecar_path(cast(Path, cells[(root, k)].matrix_path)))
+                    ).encode("ascii")
+                ).hexdigest(),
+            )
+            for root in roots
+            for k in sorted({int(value) for value in cfg.sim.n_players_list})
+        )
+    )
+    return PartitionedStageIdentity(
+        stage_name=f"root_stability_{family}",
+        root_seed=roots[0],
+        input_identities=inputs,
+        statistical_config_sha256=cfg.stage_config_sha("root_stability"),
+        code_identity_sha256=sha256_file(Path(__file__)),
+        schema_version=1,
+        method_version=ROOT_STABILITY_METHOD_VERSION,
+    )
+
+
+def _bootstrap_ranges_validate(
+    cfg: AppConfig,
+    cells: dict[tuple[int, int], RootBatchCell],
+    roots: tuple[int, int],
+) -> bool:
+    """A root-stage completion is valid only when both range families validate."""
+
+    units = _root_bootstrap_units(int(cfg.screening.bootstrap_replicates))
+    unit_source = lambda: iter(units)  # noqa: E731 - stable reusable source
+    return all(
+        validate_final_manifest(
+            directory / "partition_manifest.jsonl",
+            root=directory,
+            identity=_root_bootstrap_identity(cfg, cells, roots, family),
+            unit_source=unit_source,
+        )
+        is not None
+        for directory, family in (
+            (cfg.root_stability_top_n_ranges_dir(), "top_n"),
+            (cfg.root_stability_joint_ranges_dir(), "joint_discrepancy"),
+        )
+    )
+
+
+@dataclass(frozen=True)
+class _RootTopNRangeWriter:
+    matrix_paths: tuple[Path, ...]
+    roots: tuple[int, int]
+    required_k: tuple[int, ...]
+    strategies: tuple[int, ...]
+    weights: tuple[float, ...]
+    top_n: int
+
+    def __call__(self, unit: PartitionedUnit, path: Path) -> None:
+        start, stop = (int(value) for value in unit.key)
+        strategy_ids = np.asarray(self.strategies, dtype=np.int64)
+        matrices: dict[tuple[int, int], np.ndarray] = {}
+        try:
+            for index, (root, k) in enumerate((r, p) for r in self.roots for p in self.required_k):
+                matrix = np.load(self.matrix_paths[index], mmap_mode="r", allow_pickle=False)
+                _validate_matrix_array(matrix, path=self.matrix_paths[index], k=k)
+                if not np.array_equal(matrix["strategy"][0], strategy_ids):
+                    raise ValueError(
+                        "root bootstrap strategy support differs across root/k matrices"
+                    )
+                matrices[(root, k)] = matrix
+            output = np.lib.format.open_memmap(
+                path,
+                mode="w+",
+                dtype=np.uint8,
+                shape=(stop - start, len(self.roots), len(strategy_ids)),
+            )
+            for row, replicate in enumerate(range(start, stop)):
+                for root_index, root in enumerate(self.roots):
+                    scores = np.zeros(len(strategy_ids), dtype=np.float64)
+                    for k, weight in zip(self.required_k, self.weights, strict=True):
+                        matrix = matrices[(root, k)]
+                        eligible = np.flatnonzero(
+                            np.all(matrix["raw_player_game_exposures"] > 0, axis=1)
+                        )
+                        if not eligible.size:
+                            raise ValueError(
+                                "root bootstrap has no positive-exposure batch vectors"
+                            )
+                        rng = coordinate_rng(
+                            RandomPurpose.ROOT_STABILITY_BOOTSTRAP,
+                            root_seed=root,
+                            k=k,
+                            replicate_index=replicate,
+                        )
+                        selected = eligible[rng.integers(0, len(eligible), size=len(eligible))]
+                        wins = matrix["raw_wins"][selected].sum(axis=0)
+                        exposures = matrix["raw_player_game_exposures"][selected].sum(axis=0)
+                        if np.any(exposures <= 0):
+                            raise ValueError(
+                                "root bootstrap produced zero complete-support exposure"
+                            )
+                        scores += weight * (wins / exposures - 1.0 / k)
+                    order = np.lexsort((strategy_ids, -scores))
+                    output[row, root_index, order[: self.top_n]] = 1
+            output.flush()
+            del output
+        finally:
+            matrices.clear()
+
+
 def _root_bootstrap_top_n_inclusion(
     cfg: AppConfig,
     cells: dict[tuple[int, int], RootBatchCell],
     roots: tuple[int, int],
     required_k: list[int],
+    *,
+    force: bool,
+    guard: ProcessTreeMemoryGuard,
 ) -> pd.DataFrame:
-    """Estimate root-specific top-N inclusion by joint complete-support resampling."""
+    """Reduce authenticated semantic-coordinate bootstrap ranges in stable order."""
 
+    strategies = np.load(
+        cast(Path, cells[(roots[0], required_k[0])].matrix_path), mmap_mode="r", allow_pickle=False
+    )["strategy"][0].astype(np.int64, copy=True)
     weights = _k_weights(cfg, required_k)
-    replicates = cfg.screening.bootstrap_replicates
-    reference = _read_cell(cells[(roots[0], required_k[0])])
-    strategies = np.sort(reference["strategy"].astype(int).unique())
-    if strategies.size == 0:
-        raise ValueError("root bootstrap top-N inclusion requires strategy support")
-    matrices: dict[tuple[int, int], _BatchMatrix] = {}
-    for root in roots:
-        for k in required_k:
-            matrices[(root, k)] = _build_matrix(_read_cell(cells[(root, k)]), strategies)
+    replicates = int(cfg.screening.bootstrap_replicates)
+    units = _root_bootstrap_units(replicates)
+    writer = _RootTopNRangeWriter(
+        tuple(cast(Path, cells[(root, k)].matrix_path) for root in roots for k in required_k),
+        roots,
+        tuple(required_k),
+        tuple(int(value) for value in strategies),
+        tuple(weights[k] for k in required_k),
+        min(cfg.screening.candidate_contribution_size, len(strategies)),
+    )
+    result = run_partitioned_stage(
+        root=cfg.root_stability_top_n_ranges_dir(),
+        identity=_root_bootstrap_identity(cfg, cells, roots, "top_n"),
+        unit_source=lambda: iter(units),
+        writer=writer,
+        resources=cfg.resources,
+        requested_workers=cfg.analysis.n_jobs,
+        mp_start_method=cfg.analysis.mp_start_method,
+        force=force,
+        memory_guard=guard,
+    )
+    if result.required_units != len(units):
+        raise RuntimeError("root top-N manifest does not cover every configured replicate")
+    counts = np.zeros((len(roots), len(strategies)), dtype=np.int64)
+    expected = 0
+    for unit in units:
+        start, stop = (int(value) for value in unit.key)
+        if start != expected:
+            raise RuntimeError("root top-N ranges are not contiguous")
+        shard = np.load(
+            cfg.root_stability_top_n_ranges_dir() / "units" / unit.relative_output,
+            mmap_mode="r",
+            allow_pickle=False,
+        )
+        if shard.dtype != np.dtype("u1") or shard.shape != (
+            stop - start,
+            len(roots),
+            len(strategies),
+        ):
+            raise ValueError("invalid root top-N bootstrap range")
+        counts += shard.sum(axis=0, dtype=np.int64)
+        expected = stop
+        del shard
+    if expected != replicates:
+        raise RuntimeError("root top-N reduction ended before every replicate")
     top_n = min(cfg.screening.candidate_contribution_size, len(strategies))
-    rows: list[dict[str, object]] = []
-    for root in roots:
-        counts = np.zeros(len(strategies), dtype=np.int64)
-        for replicate in range(replicates):
-            scores = np.zeros(len(strategies), dtype=float)
-            for k in required_k:
-                matrix = matrices[(root, k)]
-                rng = coordinate_rng(
-                    RandomPurpose.ROOT_STABILITY_BOOTSTRAP,
-                    root_seed=root,
-                    k=k,
-                    replicate_index=replicate,
-                )
-                selected = rng.integers(0, len(matrix.batch_ids), size=len(matrix.batch_ids))
-                wins = matrix.wins[selected].sum(axis=0)
-                exposures = matrix.exposures[selected].sum(axis=0)
-                if np.any(exposures <= 0):
-                    raise ValueError("root bootstrap produced zero complete-support exposure")
-                scores += weights[k] * (wins / exposures - 1.0 / k)
-            order = np.lexsort((strategies, -scores))
-            counts[order[:top_n]] += 1
-        for strategy, count in zip(strategies, counts, strict=True):
-            rows.append(
-                {
-                    "root_seed": root,
-                    "strategy": int(strategy),
-                    "required_k_count": len(required_k),
-                    "complete_support": True,
-                    "k_aggregation_method": cfg_method_name(weights, required_k),
-                    "bootstrap_replicates": replicates,
-                    "top_n_size": top_n,
-                    "bootstrap_top_n_inclusion_frequency": float(count / replicates),
-                }
-            )
-    return pd.DataFrame(rows)
+    return pd.DataFrame(
+        [
+            {
+                "root_seed": root,
+                "strategy": int(strategy),
+                "required_k_count": len(required_k),
+                "complete_support": True,
+                "k_aggregation_method": cfg_method_name(weights, required_k),
+                "bootstrap_replicates": replicates,
+                "top_n_size": top_n,
+                "bootstrap_top_n_inclusion_frequency": float(
+                    counts[root_index, strategy_index] / replicates
+                ),
+            }
+            for root_index, root in enumerate(roots)
+            for strategy_index, strategy in enumerate(strategies)
+        ]
+    )
 
 
 def _scope_estimates(
@@ -796,12 +1059,96 @@ def _discrepancies(
     return pd.DataFrame(rows)
 
 
+@dataclass(frozen=True)
+class _JointDiscrepancyRangeWriter:
+    """Write one independently authenticated range of joint bootstrap maxima."""
+
+    matrix_paths: tuple[Path, ...]
+    roots: tuple[int, int]
+    required_k: tuple[int, ...]
+    strategies: tuple[int, ...]
+    weights: tuple[float, ...]
+    observed_by_k: tuple[tuple[int, tuple[float, ...], tuple[float, ...]], ...]
+    observed_across: tuple[float, ...]
+    expected_across: tuple[float, ...]
+
+    def __call__(self, unit: PartitionedUnit, path: Path) -> None:
+        start, stop = (int(value) for value in unit.key)
+        strategy_ids = np.asarray(self.strategies, dtype=np.int64)
+        observed = {k: np.asarray(values) for k, values, _expected in self.observed_by_k}
+        expected = {k: np.asarray(values) for k, _values, values in self.observed_by_k}
+        matrices: dict[tuple[int, int], np.ndarray] = {}
+        try:
+            for index, (root, k) in enumerate((r, p) for r in self.roots for p in self.required_k):
+                matrix = np.load(self.matrix_paths[index], mmap_mode="r", allow_pickle=False)
+                _validate_matrix_array(matrix, path=self.matrix_paths[index], k=k)
+                if not np.array_equal(matrix["strategy"][0], strategy_ids):
+                    raise ValueError(
+                        "joint bootstrap strategy support differs across root/k matrices"
+                    )
+                matrices[(root, k)] = matrix
+            maxima = np.lib.format.open_memmap(
+                path, mode="w+", dtype=np.dtype("<f8"), shape=(stop - start,)
+            )
+            for output_row, replicate in enumerate(range(start, stop)):
+                rates: dict[tuple[int, int], np.ndarray] = {}
+                for root in self.roots:
+                    for k in self.required_k:
+                        matrix = matrices[(root, k)]
+                        eligible = np.flatnonzero(
+                            np.all(matrix["raw_player_game_exposures"] > 0, axis=1)
+                        )
+                        if not eligible.size:
+                            raise ValueError(
+                                "joint bootstrap has no positive-exposure batch vectors"
+                            )
+                        rng = coordinate_rng(
+                            RandomPurpose.ROOT_STABILITY_BOOTSTRAP,
+                            root_seed=root,
+                            k=k,
+                            replicate_index=replicate,
+                        )
+                        selected = eligible[rng.integers(0, len(eligible), size=len(eligible))]
+                        wins = matrix["raw_wins"][selected].sum(axis=0)
+                        exposures = matrix["raw_player_game_exposures"][selected].sum(axis=0)
+                        if np.any(exposures <= 0):
+                            raise ValueError("joint root bootstrap produced zero strategy exposure")
+                        rates[(root, k)] = wins / exposures - 1.0 / k
+                standardized: list[np.ndarray] = []
+                for k in self.required_k:
+                    valid = expected[k] > 0.0
+                    centered = rates[(self.roots[0], k)] - rates[(self.roots[1], k)] - observed[k]
+                    standardized.append(np.abs(centered[valid] / expected[k][valid]))
+                across = sum(
+                    weight * (rates[(self.roots[0], k)] - rates[(self.roots[1], k)])
+                    for k, weight in zip(self.required_k, self.weights, strict=True)
+                )
+                expected_across = np.asarray(self.expected_across)
+                valid_across = expected_across > 0.0
+                standardized.append(
+                    np.abs(
+                        (across - np.asarray(self.observed_across))[valid_across]
+                        / expected_across[valid_across]
+                    )
+                )
+                maxima[output_row] = max(
+                    (float(part.max()) for part in standardized if part.size), default=0.0
+                )
+            maxima.flush()
+            del maxima
+        finally:
+            matrices.clear()
+
+
 def _joint_discrepancy_bootstrap(
     cfg: AppConfig,
     cells: dict[tuple[int, int], RootBatchCell],
     roots: tuple[int, int],
     required_k: list[int],
     discrepancies: pd.DataFrame,
+    *,
+    force: bool,
+    guard: ProcessTreeMemoryGuard,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Calibrate dependent discrepancy flags from joint batch-vector resampling."""
 
@@ -809,10 +1156,6 @@ def _joint_discrepancy_bootstrap(
     reference_upper_tail_fraction = cfg.robustness.joint_discrepancy_alpha
     weights = _k_weights(cfg, required_k)
     strategies = np.sort(discrepancies["strategy"].astype(int).unique())
-    matrices: dict[tuple[int, int], _BatchMatrix] = {}
-    for root in roots:
-        for k in required_k:
-            matrices[(root, k)] = _build_matrix(_read_cell(cells[(root, k)]), strategies)
     root_a, root_b = roots
     by_k_rows = {
         k: discrepancies.loc[discrepancies["k"].eq(k)].sort_values("strategy") for k in required_k
@@ -828,42 +1171,48 @@ def _joint_discrepancy_bootstrap(
     }
     observed_across = across_rows["raw_difference"].to_numpy(dtype=float)
     expected_across = across_rows["expected_mcse"].to_numpy(dtype=float)
-    maxima = np.zeros(replicates, dtype=float)
-
-    for replicate in range(replicates):
-        replicate_rates: dict[tuple[int, int], np.ndarray] = {}
-        standardized_parts: list[np.ndarray] = []
-        for root in roots:
-            for k in required_k:
-                matrix = matrices[(root, k)]
-                rng = coordinate_rng(
-                    RandomPurpose.ROOT_STABILITY_BOOTSTRAP,
-                    root_seed=root,
-                    k=k,
-                    replicate_index=replicate,
-                )
-                selected = rng.integers(0, len(matrix.batch_ids), size=len(matrix.batch_ids))
-                wins = matrix.wins[selected].sum(axis=0)
-                exposures = matrix.exposures[selected].sum(axis=0)
-                if np.any(exposures <= 0):
-                    raise ValueError("joint root bootstrap produced zero strategy exposure")
-                replicate_rates[(root, k)] = wins / exposures - 1.0 / k
-        for k in required_k:
-            replicate_difference = replicate_rates[(root_a, k)] - replicate_rates[(root_b, k)]
-            centered = replicate_difference - observed_by_k[k]
-            valid = expected_by_k[k] > 0.0
-            standardized_parts.append(np.abs(centered[valid] / expected_by_k[k][valid]))
-        replicate_across = sum(
-            weights[k] * (replicate_rates[(root_a, k)] - replicate_rates[(root_b, k)])
-            for k in required_k
+    units = _root_bootstrap_units(replicates)
+    writer = _JointDiscrepancyRangeWriter(
+        tuple(cast(Path, cells[(root, k)].matrix_path) for root in roots for k in required_k),
+        roots,
+        tuple(required_k),
+        tuple(int(value) for value in strategies),
+        tuple(weights[k] for k in required_k),
+        tuple((k, tuple(observed_by_k[k]), tuple(expected_by_k[k])) for k in required_k),
+        tuple(observed_across),
+        tuple(expected_across),
+    )
+    result = run_partitioned_stage(
+        root=cfg.root_stability_joint_ranges_dir(),
+        identity=_root_bootstrap_identity(cfg, cells, roots, "joint_discrepancy"),
+        unit_source=lambda: iter(units),
+        writer=writer,
+        resources=cfg.resources,
+        requested_workers=cfg.analysis.n_jobs,
+        mp_start_method=cfg.analysis.mp_start_method,
+        force=force,
+        memory_guard=guard,
+    )
+    if result.required_units != len(units):
+        raise RuntimeError("joint discrepancy manifest does not cover every configured replicate")
+    maxima = np.empty(replicates, dtype=np.float64)
+    expected = 0
+    for unit in units:
+        start, stop = (int(value) for value in unit.key)
+        if start != expected:
+            raise RuntimeError("joint discrepancy ranges are not contiguous")
+        shard = np.load(
+            cfg.root_stability_joint_ranges_dir() / "units" / unit.relative_output,
+            mmap_mode="r",
+            allow_pickle=False,
         )
-        centered_across = replicate_across - observed_across
-        valid_across = expected_across > 0.0
-        standardized_parts.append(
-            np.abs(centered_across[valid_across] / expected_across[valid_across])
-        )
-        nonempty = [part for part in standardized_parts if part.size]
-        maxima[replicate] = max((float(part.max()) for part in nonempty), default=0.0)
+        if shard.dtype != np.dtype("<f8") or shard.shape != (stop - start,):
+            raise ValueError("invalid joint discrepancy bootstrap range")
+        maxima[start:stop] = shard
+        expected = stop
+        del shard
+    if expected != replicates:
+        raise RuntimeError("joint discrepancy reduction ended before every replicate")
 
     reference_quantile = float(
         np.quantile(maxima, 1.0 - reference_upper_tail_fraction, method="higher")
@@ -1207,7 +1556,7 @@ def build_two_root_stability(
     sources = [cell_map[key].path for key in sorted(cell_map)]
     artifacts = _artifact_paths(cfg, required_k)
     done = stage_done_path(cfg.stage_dir("root_stability"), "root_stability")
-    if not force and stage_is_up_to_date(
+    stage_current = not force and stage_is_up_to_date(
         done,
         inputs=sources,
         outputs=list(artifacts.all_paths),
@@ -1215,17 +1564,33 @@ def build_two_root_stability(
         stage="root_stability",
         freshness_key=_root_stability_freshness_key(cfg),
         sidecar_artifacts=list(artifacts.all_paths),
-    ):
+    )
+
+    cfg.validate_resource_contract()
+    policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
+    apply_native_thread_limits(policy)
+    guard = ProcessTreeMemoryGuard(
+        cfg.resources.rss_abort_mb,
+        cfg.resources.rss_sample_interval_seconds,
+    )
+    guard.check_before_schedule(force=True)
+    matrix_cells = {
+        key: _matrix_cell(cfg, cell, force=force, guard=guard)
+        for key, cell in sorted(cell_map.items())
+    }
+    if stage_current and _bootstrap_ranges_validate(cfg, matrix_cells, root_pair):
         return artifacts
 
-    by_k_tables, across_by_scope = _scope_estimates(cfg, cell_map, root_pair, required_k)
+    by_k_tables, across_by_scope = _scope_estimates(cfg, matrix_cells, root_pair, required_k)
     discrepancies = _discrepancies(cfg, root_pair, by_k_tables, across_by_scope)
     discrepancies, joint_summary = _joint_discrepancy_bootstrap(
         cfg,
-        cell_map,
+        matrix_cells,
         root_pair,
         required_k,
         discrepancies,
+        force=force,
+        guard=guard,
     )
     rank, top_n, controls, shortlist = _rank_and_selection_stability(
         cfg,
@@ -1234,18 +1599,20 @@ def build_two_root_stability(
     )
     bootstrap_top_n = _root_bootstrap_top_n_inclusion(
         cfg,
-        cell_map,
+        matrix_cells,
         root_pair,
         required_k,
+        force=force,
+        guard=guard,
     )
     convergence = _matched_count_convergence(
         cfg,
-        cell_map,
+        matrix_cells,
         root_pair,
         required_k,
         across_by_scope,
     )
-    drift = _half_drift(cfg, cell_map, root_pair, required_k)
+    drift = _half_drift(cfg, matrix_cells, root_pair, required_k)
     across = pd.concat(
         [across_by_scope[f"root_{root}"] for root in root_pair]
         + [across_by_scope["combined_roots"]],

@@ -9,6 +9,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+import farkle.analysis.performance as performance_module
+import farkle.analysis.root_stability as root_stability_module
 from farkle.analysis.all_player_metrics import all_player_batch_schema
 from farkle.analysis.root_stability import (
     RootBatchCell,
@@ -25,6 +27,7 @@ from farkle.utils.artifact_contract import (
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
 from farkle.utils.authenticated_contract import load_authenticated_sidecar
+from farkle.utils.parallel import ResourceSafetyError
 from farkle.utils.stage_completion import stage_done_path
 
 
@@ -264,7 +267,7 @@ def test_two_root_combination_and_stability_contract(tmp_path: Path) -> None:
                     "kind": "root_combination",
                     "procedure": load_authenticated_sidecar(path).artifact.logical_operation,
                     "parameters": {
-                        "method_version": 2,
+                        "method_version": 3,
                         "design_interpretation": ("fixed_design_descriptive_reproducibility"),
                         "interval_role": "monte_carlo_precision",
                         "root_population_inference": "none",
@@ -281,7 +284,7 @@ def test_two_root_combination_and_stability_contract(tmp_path: Path) -> None:
     assert completion["state"] == "complete_valid"
     assert completion["outputs"]
     authenticated = load_authenticated_sidecar(artifacts.discrepancies)
-    assert authenticated.versions.method_versions["root_stability_method_version"] == 2
+    assert authenticated.versions.method_versions["root_stability_method_version"] == 3
 
     first = pq.read_table(artifacts.discrepancies).to_pandas()
     build_two_root_stability(cfg, cells, force=True)
@@ -381,3 +384,97 @@ def test_root_stability_rejects_missing_strategy_batch_cell(tmp_path: Path) -> N
 
     with pytest.raises(ValueError, match="missing declared rectangular strategy/batch cells"):
         build_two_root_stability(cfg, cells)
+
+
+def test_root_stability_parses_each_source_only_for_its_immutable_matrix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All downstream diagnostics must consume the matrix cache, not Parquet again."""
+
+    cfg = _cfg(tmp_path)
+    cells = _write_inputs(cfg, tmp_path)
+    calls = 0
+    scans = 0
+    original = root_stability_module.pq.read_table
+    original_scan = performance_module.iter_parquet_tables_by_bytes
+
+    def counted(*args: object, **kwargs: object) -> pa.Table:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(root_stability_module.pq, "read_table", counted)
+
+    def counted_scan(*args: object, **kwargs: object) -> object:
+        nonlocal scans
+        scans += 1
+        return original_scan(*args, **kwargs)
+
+    monkeypatch.setattr(performance_module, "iter_parquet_tables_by_bytes", counted_scan)
+    build_two_root_stability(cfg, cells)
+
+    assert calls == 0
+    # Two bounded passes materialize each fallback matrix; no configured
+    # fraction or bootstrap family triggers another source scan.
+    assert scans == 2 * len(cells)
+
+
+def test_root_stability_rebuilds_corrupt_bootstrap_range_before_reusing_stage(
+    tmp_path: Path,
+) -> None:
+    cfg = _cfg(tmp_path)
+    cells = _write_inputs(cfg, tmp_path)
+    build_two_root_stability(cfg, cells)
+    shard = next((cfg.root_stability_top_n_ranges_dir() / "units").glob("*.npy"))
+    shard.write_bytes(b"corrupt")
+
+    build_two_root_stability(cfg, cells)
+
+    rebuilt = np.load(shard, mmap_mode="r", allow_pickle=False)
+    assert rebuilt.ndim == 3
+
+
+def test_root_bootstrap_is_invariant_to_range_size_and_worker_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    cfg.screening.bootstrap_replicates = 4
+    cells = _write_inputs(cfg, tmp_path)
+    monkeypatch.setattr(root_stability_module, "_ROOT_BOOTSTRAP_RANGE_SIZE", 1)
+    cfg.analysis.n_jobs = 1
+    first = build_two_root_stability(cfg, cells)
+    first_top_n = pq.read_table(first.bootstrap_top_n_inclusion).to_pandas()
+    first_discrepancies = pq.read_table(first.discrepancies).to_pandas()
+
+    monkeypatch.setattr(root_stability_module, "_ROOT_BOOTSTRAP_RANGE_SIZE", 3)
+    cfg.analysis.n_jobs = 2
+    second = build_two_root_stability(cfg, cells, force=True)
+
+    pd.testing.assert_frame_equal(
+        first_top_n,
+        pq.read_table(second.bootstrap_top_n_inclusion).to_pandas(),
+    )
+    pd.testing.assert_frame_equal(
+        first_discrepancies,
+        pq.read_table(second.discrepancies).to_pandas(),
+    )
+
+
+def test_root_stability_aborts_before_matrix_or_bootstrap_publication_at_rss_limit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    cells = _write_inputs(cfg, tmp_path)
+
+    class AbortingGuard:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def check_before_schedule(self, *, force: bool = False) -> int:
+            raise ResourceSafetyError("test abort")
+
+    monkeypatch.setattr(root_stability_module, "ProcessTreeMemoryGuard", AbortingGuard)
+    with pytest.raises(ResourceSafetyError, match="test abort"):
+        build_two_root_stability(cfg, cells)
+    assert not cfg.root_stability_top_n_ranges_dir().exists()
+    assert not cfg.root_stability_joint_ranges_dir().exists()

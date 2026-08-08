@@ -183,7 +183,7 @@ def _method_versions(
             "trueskill_diagnostic_method_version": 2,
         },
         "hgb": hgb_versions,
-        "root_stability": {"root_stability_method_version": 2},
+        "root_stability": {"root_stability_method_version": 3},
         "candidate_freeze": {
             "candidate_family_version": cfg.artifact_contract.candidate_family_version
         },
