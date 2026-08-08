@@ -69,6 +69,7 @@ from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code_identity
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
+    StageParallelPolicy,
     apply_native_thread_limits,
     resolve_mp_context,
     resolve_stage_parallel_policy,
@@ -94,6 +95,7 @@ DEFAULT_RATING = trueskill.Rating()  # uses env defaults
 TRUESKILL_CELL_METHOD_VERSION = TRUESKILL_METHOD_VERSION
 _EVIDENCE_BACKED = "evidence_backed_completed_games"
 _PRIOR_ONLY = "prior_only_unrated"
+_DEFAULT_STREAM_BATCH_BYTES = 16 * 1024 * 1024
 
 
 class RatingArtifactPaths(TypedDict):
@@ -700,7 +702,7 @@ def _stream_batches(
 ) -> Iterator[tuple[int, int, pa.Table]]:
     """Yield projected byte-bounded tables without reading whole row groups."""
 
-    byte_ceiling = max_batch_bytes if max_batch_bytes is not None else 2**63 - 1
+    byte_ceiling = max_batch_bytes if max_batch_bytes is not None else _DEFAULT_STREAM_BATCH_BYTES
     yield from iter_parquet_tables_by_bytes(
         parquet_path,
         columns=columns,
@@ -788,6 +790,7 @@ def _rate_block_worker(
     keep_path = block / f"keepers_{player_count}.npy"
     keepers = np.load(keep_path).tolist() if keep_path.exists() else []
     keepers = [_normalize_strategy_id(k) for k in keepers]
+    keeper_set = set(keepers)
 
     if row_data_path is None or curated_rows_name is None:
         raise ValueError("TrueSkill requires an explicit canonical curated-row directory and name")
@@ -899,14 +902,14 @@ def _rate_block_worker(
         ):
             for status, players, ranks in _classified_games_from_batch(batch, n):
                 attempted_games += 1
-                if keepers:
-                    selected = [
-                        (player, None if ranks is None else ranks[index])
-                        for index, player in enumerate(players)
-                        if player in keepers
-                    ]
-                    players = [player for player, _rank in selected]
-                    selected_ranks = [rank for _player, rank in selected]
+                if keeper_set:
+                    selected_players: list[str] = []
+                    selected_ranks: list[int | None] = []
+                    for index, player in enumerate(players):
+                        if player in keeper_set:
+                            selected_players.append(player)
+                            selected_ranks.append(None if ranks is None else ranks[index])
+                    players = selected_players
                 else:
                     selected_ranks = [] if ranks is None else list(ranks)
 
@@ -930,7 +933,7 @@ def _rate_block_worker(
                     raise ValueError("completed TrueSkill game unexpectedly lacks ranks")
                 if len(players) < 2:
                     continue
-                if keepers:
+                if keeper_set:
                     if any(rank is None for rank in selected_ranks):
                         raise ValueError("completed keeper ranks must be non-null")
                     ranks = [int(cast(int, rank)) for rank in selected_ranks]
@@ -1095,6 +1098,13 @@ def _rate_block_worker(
                     )
 
 
+def _initialize_trueskill_worker(policy: StageParallelPolicy) -> None:
+    """Apply the resolved native-thread cap in spawned rating workers."""
+
+    os.environ["FARKLE_PROCESS_POOL_ACTIVE"] = "1"
+    apply_native_thread_limits(policy)
+
+
 def run_trueskill(
     output_seed: int = 0,
     root: Path | None = None,
@@ -1179,24 +1189,21 @@ def run_trueskill(
     auto_default = max(1, (os.cpu_count() or 1) - 1)
     requested = workers or auto_default
     cpu_cap = os.cpu_count() or 1
-    if resources is None:
-        actual_workers = max(1, min(requested, cpu_cap, len(blocks)))
-        memory_guard = None
-    else:
-        policy_cfg = type("_TrueSkillPolicy", (), {"n_jobs": requested})()
-        policy = resolve_stage_parallel_policy(
-            "trueskill",
-            policy_cfg,
-            n_jobs_override=requested,
-            resources=resources,
-        )
-        apply_native_thread_limits(policy)
-        actual_workers = max(1, min(policy.process_workers, len(blocks)))
-        memory_guard = ProcessTreeMemoryGuard(
-            resources.rss_abort_mb,
-            resources.rss_sample_interval_seconds,
-        )
-        memory_guard.check_before_schedule(force=True)
+    effective_resources = resources or ResourcesConfig()
+    policy_cfg = type("_TrueSkillPolicy", (), {"n_jobs": requested})()
+    policy = resolve_stage_parallel_policy(
+        "trueskill",
+        policy_cfg,
+        n_jobs_override=requested,
+        resources=effective_resources,
+    )
+    apply_native_thread_limits(policy)
+    actual_workers = max(1, min(policy.process_workers, len(blocks)))
+    memory_guard = ProcessTreeMemoryGuard(
+        effective_resources.rss_abort_mb,
+        effective_resources.rss_sample_interval_seconds,
+    )
+    memory_guard.check_before_schedule(force=True)
     if actual_workers != requested:
         LOGGER.info(
             "TrueSkill workers capped",
@@ -1209,7 +1216,12 @@ def run_trueskill(
             },
         )
     if actual_workers > 1 and len(blocks) > 1:
-        with cf.ProcessPoolExecutor(max_workers=actual_workers, mp_context=mp_context) as ex:
+        with cf.ProcessPoolExecutor(
+            max_workers=actual_workers,
+            mp_context=mp_context,
+            initializer=_initialize_trueskill_worker,
+            initargs=(policy,),
+        ) as ex:
             block_iterator = iter(blocks)
             futures: dict[cf.Future[tuple[str, int]], Path] = {}
 
@@ -1239,7 +1251,7 @@ def run_trueskill(
                 futures[future] = block
                 return True
 
-            in_flight_per_worker = 1 if resources is None else resources.max_in_flight_per_worker
+            in_flight_per_worker = effective_resources.max_in_flight_per_worker
             for _ in range(min(len(blocks), actual_workers * in_flight_per_worker)):
                 submit_one()
             while futures:

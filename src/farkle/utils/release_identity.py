@@ -178,7 +178,7 @@ def _method_versions(
         "rng_diagnostics": {"rng_diagnostic_method_version": 4},
         "trueskill": {
             "trueskill_method_version": 3,
-            "trueskill_diagnostic_method_version": 1,
+            "trueskill_diagnostic_method_version": 2,
         },
         "hgb": hgb_versions,
         "root_stability": {"root_stability_method_version": 2},

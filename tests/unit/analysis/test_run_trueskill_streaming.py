@@ -363,6 +363,51 @@ def test_trueskill_results_are_invariant_to_byte_batch_ceiling(tmp_path: Path) -
     )
 
 
+def test_trueskill_root_k_cells_are_worker_count_invariant(tmp_path: Path) -> None:
+    def run(root: Path, workers: int) -> dict[str, dict[str, rt.RatingStats]]:
+        cfg = make_authenticated_v3_config(root, name="workers", root_seed=11, player_counts=(2, 3))
+        for k in (2, 3):
+            block = cfg.n_dir(k)
+            block.mkdir(parents=True, exist_ok=True)
+            np.save(block / f"keepers_{k}.npy", np.arange(1, k + 1, dtype=np.int32))
+            rows: list[dict[str, object]] = []
+            for game in range(4):
+                winner_seat = 1 + (game % k)
+                row: dict[str, object] = {
+                    "termination_status": "completed",
+                    "outcome_schema_version": 2,
+                    "winner_seat": f"P{winner_seat}",
+                }
+                for seat in range(1, k + 1):
+                    row[f"P{seat}_strategy"] = seat
+                    row[f"P{seat}_rank"] = 1 if seat == winner_seat else seat + 1
+                    if seat > winner_seat:
+                        row[f"P{seat}_rank"] = seat
+                rows.append(row)
+            source = cfg.ingested_rows_curated(k)
+            source.parent.mkdir(parents=True, exist_ok=True)
+            pq.write_table(pa.Table.from_pylist(rows), source)
+        rt.run_trueskill(
+            output_seed=11,
+            root=cfg.trueskill_stage_dir,
+            dataroot=cfg.results_root,
+            row_data_dir=cfg.curate_stage_dir,
+            curated_rows_name=cfg.curated_rows_name,
+            workers=workers,
+            resume_per_n=False,
+            checkpoint_every_batches=1,
+            cell_freshness_sha256="a" * 64,
+            resources=cfg.resources,
+            max_batch_bytes=512,
+        )
+        return {
+            str(k): rt._load_ratings_parquet(cfg.trueskill_rating_path(k, root_seed=11))
+            for k in (2, 3)
+        }
+
+    assert run(tmp_path / "single", 1) == run(tmp_path / "parallel", 2)
+
+
 @pytest.mark.parametrize(
     ("loader", "filename"),
     [

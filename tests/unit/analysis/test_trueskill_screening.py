@@ -14,6 +14,7 @@ from tests.helpers.artifact_sidecars import (
     publish_v3_strategy_manifest,
 )
 
+import farkle.analysis.trueskill_screening as screening_module
 from farkle.analysis.trueskill_screening import (
     MU_SOFTMAX_HEURISTIC,
     MU_SOFTMAX_HEURISTIC_CLAIM,
@@ -70,13 +71,13 @@ def _publish_strategy_control(cfg: AppConfig) -> Path:
 
 def _publish_game_source(cfg: AppConfig, k: int) -> Path:
     data: dict[str, pa.Array | list[object]] = {
-        "termination_status": ["completed"],
-        "outcome_schema_version": [2],
-        "winner_seat": ["P1"],
+        "termination_status": ["completed", "completed"],
+        "outcome_schema_version": [2, 2],
+        "winner_seat": ["P1", "P1"],
     }
     for seat in range(1, k + 1):
-        data[f"P{seat}_strategy"] = pa.array([seat], type=pa.int32())
-        data[f"P{seat}_rank"] = [seat]
+        data[f"P{seat}_strategy"] = pa.array([seat, seat], type=pa.int32())
+        data[f"P{seat}_rank"] = [seat, seat]
     return publish_v3_parquet(
         cfg,
         cfg.ingested_rows_curated(k),
@@ -338,7 +339,7 @@ def test_mu_softmax_heuristic_claim_and_method_contract_are_exact() -> None:
         "outcome_schema_version": 2,
         "conditioning": "termination_status == completed",
         "safety_limit_policy": "excluded_without_update_or_rank_imputation",
-        "diagnostic_method_version": 1,
+        "diagnostic_method_version": 2,
         "heldout_probability_method": "mu_softmax_heuristic",
         "heldout_probability_formula": "softmax(mu / beta)",
         "heldout_probability_sigma_policy": "ignored",
@@ -415,7 +416,128 @@ def test_tau_order_and_heldout_diagnostics(tmp_path: Path) -> None:
         output,
         validate_provenance=False,
     )
-    assert authenticated.versions.method_versions["trueskill_diagnostic_method_version"] == 1
+    assert authenticated.versions.method_versions["trueskill_diagnostic_method_version"] == 2
+
+
+def test_diagnostics_are_invariant_to_row_groups_and_byte_bounded_input_batches(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rating_path = _ratings(tmp_path / "ratings.parquet", {"1": (25.0, 2.0), "2": (25.0, 2.0)})
+    first = _game_rows(tmp_path / "first.parquet", games=11)
+    second = tmp_path / "second.parquet"
+    pq.write_table(pq.read_table(first), second, row_group_size=1)
+    cell_first = ScreeningRatingCell(11, 2, rating_path, first)
+    cell_second = ScreeningRatingCell(11, 2, rating_path, second)
+    seen_batch_bytes: list[int] = []
+    original = screening_module.iter_parquet_tables_by_bytes
+
+    def bounded(*args: object, **kwargs: object):
+        for item in original(*args, **kwargs):  # type: ignore[arg-type]
+            seen_batch_bytes.append(item[2].nbytes)
+            yield item
+
+    monkeypatch.setattr(screening_module, "iter_parquet_tables_by_bytes", bounded)
+    first_row = diagnose_rating_cell(
+        cell_first,
+        beta=25.0,
+        tau=0.1,
+        draw_probability=0.0,
+        max_batch_bytes=512,
+        batch_rows=100,
+    )
+    second_row = diagnose_rating_cell(
+        cell_second,
+        beta=25.0,
+        tau=0.1,
+        draw_probability=0.0,
+        max_batch_bytes=512,
+        batch_rows=1,
+    )
+
+    assert first_row == second_row
+    assert seen_batch_bytes and max(seen_batch_bytes) <= 512
+
+
+def test_diagnostic_cell_resume_rejects_missing_or_corrupt_completion_stamp(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    cell = _publish_rating_control(cfg, 2, {"1": (30.0, 2.0), "2": (20.0, 3.0)})
+    build_screening_diagnostics(cfg, [cell])
+    screening_module._diagnostic_cell_done_path(cfg, cell).write_text("{corrupt", encoding="utf-8")
+    calls = 0
+    original = screening_module.diagnose_rating_cell
+
+    def counted(*args: object, **kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(screening_module, "diagnose_rating_cell", counted)
+    output = build_screening_diagnostics(cfg, [cell])
+
+    assert output is not None
+    assert calls == 1
+    stamp = screening_module._diagnostic_cell_done_path(cfg, cell)
+    assert stamp.exists()
+    stamp.unlink()
+    assert build_screening_diagnostics(cfg, [cell]) is not None
+    assert calls == 2
+
+
+def test_interrupted_diagnostic_cell_retries_without_accepting_partial_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    cell = _publish_rating_control(cfg, 2, {"1": (30.0, 2.0), "2": (20.0, 3.0)})
+    cell_output = cfg.trueskill_screening_diagnostic_cell_path(2, root_seed=11)
+
+    def interrupted(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise RuntimeError("simulated interruption")
+
+    monkeypatch.setattr(screening_module, "diagnose_rating_cell", interrupted)
+    with pytest.raises(RuntimeError, match="simulated interruption"):
+        build_screening_diagnostics(cfg, [cell])
+    assert not cell_output.exists()
+    assert not screening_module._diagnostic_cell_done_path(cfg, cell).exists()
+
+    monkeypatch.undo()
+    assert build_screening_diagnostics(cfg, [cell]) is not None
+    assert cell_output.exists()
+
+
+def test_diagnostic_aggregate_is_worker_count_invariant_and_scans_once_per_cell(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = _cfg(tmp_path)
+    cells = [
+        _publish_rating_control(cfg, 2, {"1": (30.0, 2.0), "2": (20.0, 3.0)}),
+        _publish_rating_control(
+            cfg,
+            4,
+            {"1": (30.0, 2.0), "2": (20.0, 3.0), "3": (21.0, 3.0), "4": (22.0, 3.0)},
+        ),
+    ]
+    scans = 0
+    original_iter = screening_module.pq.ParquetFile.iter_batches
+
+    def counted_iter(self: pq.ParquetFile, *args: object, **kwargs: object):
+        nonlocal scans
+        scans += 1
+        yield from original_iter(self, *args, **kwargs)
+
+    monkeypatch.setattr(screening_module.pq.ParquetFile, "iter_batches", counted_iter)
+    cfg.analysis.n_jobs = 1
+    single = pq.read_table(build_screening_diagnostics(cfg, cells, force=True)).to_pydict()
+    assert scans <= len(cells) * 2
+
+    cfg.analysis.n_jobs = 2
+    parallel = pq.read_table(build_screening_diagnostics(cfg, cells, force=True)).to_pydict()
+    assert parallel == single
 
 
 def test_diagnostics_report_mixed_support_and_prior_only_strategy(tmp_path: Path) -> None:
@@ -483,6 +605,8 @@ def test_diagnostics_report_mixed_support_and_prior_only_strategy(tmp_path: Path
     assert row["performed_update_games"] == 1
     assert row["prior_only_strategy_count"] == 1
     assert row["prior_only_strategies"] == "3"
+    assert row["mu_softmax_heuristic_training_games"] == 1
+    assert row["mu_softmax_heuristic_holdout_games"] == 0
 
 
 @pytest.mark.parametrize("malformed", [None, "1", 1.0, True])

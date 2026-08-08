@@ -61,7 +61,10 @@ changing code or accepting a statistical conclusion.
   and suppresses nested process pools. The partitioned-stage primitive publishes
   exact-byte unit stamps and a final ordered manifest only after all units
   validate. TrueSkill projected reads use byte-bounded Arrow batches instead of
-  materializing complete Parquet row groups.
+  materializing complete Parquet row groups. TrueSkill screening diagnostic
+  method-v2 emits authenticated resumable root/k cells, aggregates only after
+  every cell validates, caps cell workers through the shared resource policy,
+  and uses one forward projected scan plus a bounded on-disk reverse replay.
   RNG diagnostic method-v4/cache-key-v6 replaces the global SQLite merge and
   matchup-strategy object graph with exact stable partitions. It checkpoints
   count routing, eligibility, eligible-observation routing, and bounded local

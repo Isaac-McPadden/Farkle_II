@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import math
+import tempfile
 from collections.abc import Iterator, Mapping, Sequence
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, cast
@@ -16,6 +16,7 @@ import pyarrow.parquet as pq
 import trueskill
 
 from farkle.config import AppConfig, ArtifactScope
+from farkle.utils.arrow_batches import iter_parquet_tables_by_bytes
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     TrueSkillMethodContract,
@@ -27,7 +28,14 @@ from farkle.utils.artifact_contract import (
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic
-from farkle.utils.parallel import normalize_n_jobs, resolve_mp_context
+from farkle.utils.parallel import (
+    ProcessTreeMemoryGuard,
+    StageParallelPolicy,
+    apply_native_thread_limits,
+    process_map,
+    resolve_mp_context,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
@@ -39,7 +47,7 @@ from farkle.utils.strategy_ids import (
 
 _HOLDOUT_FRACTION: Final = 0.2
 TRUESKILL_METHOD_VERSION: Final = 3
-TRUESKILL_DIAGNOSTIC_METHOD_VERSION: Final = 1
+TRUESKILL_DIAGNOSTIC_METHOD_VERSION: Final = 2
 MU_SOFTMAX_HEURISTIC: Final = "mu_softmax_heuristic"
 MU_SOFTMAX_HEURISTIC_OPERATION: Final = (
     "aggregate_trueskill_screening_diagnostics_mu_softmax_heuristic"
@@ -71,6 +79,9 @@ _RATING_COLUMNS: Final = {
     "cell_games_excluded_safety_limit",
     "cell_performed_updates",
 }
+_DIAGNOSTIC_CELL_OPERATION: Final = "trueskill_screening_diagnostic_cell"
+_DEFAULT_DIAGNOSTIC_BATCH_BYTES: Final = 16 * 1024 * 1024
+_DEFAULT_DIAGNOSTIC_BATCH_ROWS: Final = 100_000
 
 
 def trueskill_method_contract(procedure: str) -> TrueSkillMethodContract:
@@ -491,74 +502,71 @@ def _game_columns(k: int) -> list[str]:
     ]
 
 
-def _games(path: Path, k: int, *, reverse: bool = False) -> Iterator[tuple[list[str], list[int]]]:
-    parquet_file = pq.ParquetFile(path)
-    columns = _game_columns(k)
-    missing = sorted(set(columns).difference(parquet_file.schema_arrow.names))
-    if missing:
-        raise ValueError(f"{path} lacks TrueSkill diagnostic columns: {missing}")
-    row_groups = (
-        range(parquet_file.num_row_groups - 1, -1, -1)
-        if reverse
-        else range(parquet_file.num_row_groups)
-    )
-    for row_group in row_groups:
-        rows = parquet_file.read_row_group(row_group, columns=columns).to_pylist()
-        iterable = reversed(rows) if reverse else iter(rows)
-        for row in iterable:
-            game = classify_trueskill_row(row, k)
-            if game.ranks is not None:
-                yield game.players, game.ranks
+def _iter_classified_batch(batch: pa.Table, k: int) -> Iterator[ClassifiedTrueSkillGame]:
+    """Classify a bounded projected Arrow table without a wide Python row list."""
+
+    columns = {name: batch.column(name).combine_chunks() for name in _game_columns(k)}
+    for row_index in range(batch.num_rows):
+        yield classify_trueskill_row(
+            {name: column[row_index].as_py() for name, column in columns.items()},
+            k,
+        )
 
 
-def _support_counts(path: Path, k: int) -> dict[str, int]:
-    """Count attempted/completed/excluded games with exact conservation."""
+def _iter_classified_batch_reverse(batch: pa.Table, k: int) -> Iterator[ClassifiedTrueSkillGame]:
+    """Classify a bounded projected Arrow table in reverse record order."""
 
-    parquet_file = pq.ParquetFile(path)
-    columns = _game_columns(k)
-    missing = sorted(set(columns).difference(parquet_file.schema_arrow.names))
-    if missing:
-        raise ValueError(f"{path} lacks TrueSkill support columns: {missing}")
-    attempted = 0
-    completed = 0
-    excluded = 0
-    for batch in parquet_file.iter_batches(columns=columns):
-        for row in batch.to_pylist():
-            game = classify_trueskill_row(row, k)
-            attempted += 1
-            if game.termination_status == "completed":
-                completed += 1
-            else:
-                excluded += 1
-    if attempted != completed + excluded:
-        raise ValueError("TrueSkill support conservation failed")
-    return {
-        "attempted_games": attempted,
-        "completed_games": completed,
-        "excluded_safety_limit_games": excluded,
-    }
+    columns = {name: batch.column(name).combine_chunks() for name in _game_columns(k)}
+    for row_index in range(batch.num_rows - 1, -1, -1):
+        yield classify_trueskill_row(
+            {name: column[row_index].as_py() for name, column in columns.items()},
+            k,
+        )
 
 
-def _fit(
-    games: Iterator[tuple[list[str], list[int]]],
-    *,
-    beta: float,
-    tau: float,
-    draw_probability: float,
-    limit: int | None = None,
-) -> tuple[dict[str, tuple[float, float]], int]:
-    env = trueskill.TrueSkill(beta=beta, tau=tau, draw_probability=draw_probability)
-    ratings: dict[str, trueskill.Rating] = {}
-    game_count = 0
-    for players, ranks in games:
-        groups = [(ratings.setdefault(player, env.create_rating()),) for player in players]
-        updated = env.rate(groups, ranks=ranks)
-        for player, group in zip(players, updated, strict=True):
-            ratings[player] = group[0]
-        game_count += 1
-        if limit is not None and game_count >= limit:
-            break
-    return {key: (rating.mu, rating.sigma) for key, rating in ratings.items()}, game_count
+def _update_ratings(
+    env: trueskill.TrueSkill,
+    ratings: dict[str, trueskill.Rating],
+    players: Sequence[str],
+    ranks: Sequence[int],
+) -> None:
+    """Apply one deterministic completed-game TrueSkill update in seat order."""
+
+    groups = [(ratings.setdefault(player, env.create_rating()),) for player in players]
+    updated = env.rate(groups, ranks=list(ranks))
+    for player, group in zip(players, updated, strict=True):
+        ratings[player] = group[0]
+
+
+def _rating_pairs(ratings: Mapping[str, trueskill.Rating]) -> dict[str, tuple[float, float]]:
+    return {strategy: (rating.mu, rating.sigma) for strategy, rating in ratings.items()}
+
+
+def _write_reverse_spool(batch: pa.Table, directory: Path, batch_index: int) -> Path:
+    """Persist one bounded projected batch so reverse replay never widens a row group."""
+
+    path = directory / f"{batch_index:012d}.arrow"
+    with pa.OSFile(str(path), "wb") as sink, pa.ipc.new_file(sink, batch.schema) as writer:
+        writer.write_table(batch)
+    return path
+
+
+def _iter_reverse_spool(paths: Sequence[Path], k: int) -> Iterator[ClassifiedTrueSkillGame]:
+    """Yield the exact reverse record order from bounded on-disk projected batches."""
+
+    for path in reversed(paths):
+        with pa.memory_map(str(path), "r") as source:
+            table = pa.ipc.open_file(source).read_all()
+        yield from _iter_classified_batch_reverse(table, k)
+
+
+def _iter_forward_spool(paths: Sequence[Path], k: int) -> Iterator[ClassifiedTrueSkillGame]:
+    """Yield exact source record order from bounded projected batches."""
+
+    for path in paths:
+        with pa.memory_map(str(path), "r") as source:
+            table = pa.ipc.open_file(source).read_all()
+        yield from _iter_classified_batch(table, k)
 
 
 def _rank_correlation(
@@ -614,75 +622,22 @@ def mu_softmax_heuristic_probabilities(
     return probabilities / probabilities.sum()
 
 
-def _mu_softmax_heuristic_heldout_scores(
-    path: Path,
-    k: int,
-    *,
-    beta: float,
-    tau: float,
-    draw_probability: float,
-) -> dict[str, object]:
-    game_total = _support_counts(path, k)["completed_games"]
-    train_games = max(1, math.floor(game_total * (1.0 - _HOLDOUT_FRACTION))) if game_total else 0
-    fitted, observed_train = _fit(
-        _games(path, k),
-        beta=beta,
-        tau=tau,
-        draw_probability=draw_probability,
-        limit=train_games,
-    )
-    log_losses: list[float] = []
-    brier_scores: list[float] = []
-    confidences: list[float] = []
-    correct: list[float] = []
-    for index, (players, ranks) in enumerate(_games(path, k)):
-        if index < observed_train:
-            continue
-        ratings = [fitted.get(player, (25.0, 25.0 / 3.0)) for player in players]
-        probabilities = mu_softmax_heuristic_probabilities(ratings, beta=beta)
-        winner_positions = np.flatnonzero(np.asarray(ranks) == min(ranks))
-        target: np.ndarray = np.zeros(k, dtype=float)
-        target[winner_positions] = 1.0 / len(winner_positions)
-        log_losses.append(float(-np.sum(target * np.log(np.maximum(probabilities, 1e-15)))))
-        brier_scores.append(float(np.sum((probabilities - target) ** 2)))
-        predicted = int(np.argmax(probabilities))
-        confidences.append(float(probabilities[predicted]))
-        correct.append(float(predicted in winner_positions))
-    holdout_games = len(log_losses)
-    return {
-        "mu_softmax_heuristic_claim": MU_SOFTMAX_HEURISTIC_CLAIM,
-        "mu_softmax_heuristic_training_games": observed_train,
-        "mu_softmax_heuristic_holdout_games": holdout_games,
-        "mu_softmax_heuristic_heldout_log_loss": (
-            float(np.mean(log_losses)) if log_losses else None
-        ),
-        "mu_softmax_heuristic_uniform_reference_log_loss": (math.log(k) if holdout_games else None),
-        "mu_softmax_heuristic_heldout_brier_score": (
-            float(np.mean(brier_scores)) if brier_scores else None
-        ),
-        "mu_softmax_heuristic_uniform_reference_brier_score": (
-            1.0 - 1.0 / k if holdout_games else None
-        ),
-        "mu_softmax_heuristic_mean_top_probability": (
-            float(np.mean(confidences)) if confidences else None
-        ),
-        "mu_softmax_heuristic_top_prediction_accuracy": (
-            float(np.mean(correct)) if correct else None
-        ),
-        "mu_softmax_heuristic_mean_top_probability_minus_accuracy": (
-            float(np.mean(confidences) - np.mean(correct)) if confidences else None
-        ),
-    }
-
-
 def diagnose_rating_cell(
     cell: ScreeningRatingCell,
     *,
     beta: float,
     tau: float,
     draw_probability: float,
+    max_batch_bytes: int = _DEFAULT_DIAGNOSTIC_BATCH_BYTES,
+    batch_rows: int = _DEFAULT_DIAGNOSTIC_BATCH_ROWS,
 ) -> dict[str, object]:
-    """Replay one root/k stream for tau, order, and held-out diagnostics."""
+    """Replay one root/k stream with one forward and one bounded reverse pass.
+
+    Source rows are decoded once into a byte-bounded temporary projection.  It
+    supplies exact completed-game support for the chronological held-out split,
+    then supports forward training/scoring and reverse replay without rescanning
+    the Parquet source or widening a row group.
+    """
 
     if cell.game_rows_path is None:
         raise ValueError("TrueSkill diagnostics require canonical game rows")
@@ -694,19 +649,82 @@ def diagnose_rating_cell(
         strategy: (float(mu), float(sigma))
         for strategy, mu, sigma in zip(strategies, mus, sigmas, strict=True)
     }
-    tau_zero, tau_games = _fit(
-        _games(cell.game_rows_path, cell.k),
-        beta=beta,
-        tau=0.0,
-        draw_probability=draw_probability,
-    )
-    reversed_order, reversed_games = _fit(
-        _games(cell.game_rows_path, cell.k, reverse=True),
-        beta=beta,
-        tau=tau,
-        draw_probability=draw_probability,
-    )
-    support = _support_counts(cell.game_rows_path, cell.k)
+    parquet_file = pq.ParquetFile(cell.game_rows_path)
+    columns = _game_columns(cell.k)
+    missing = sorted(set(columns).difference(parquet_file.schema_arrow.names))
+    if missing:
+        raise ValueError(f"{cell.game_rows_path} lacks TrueSkill diagnostic columns: {missing}")
+    tau_zero_env = trueskill.TrueSkill(beta=beta, tau=0.0, draw_probability=draw_probability)
+    tau_zero_ratings: dict[str, trueskill.Rating] = {}
+    attempted = completed = excluded = tau_games = 0
+    with tempfile.TemporaryDirectory(
+        prefix=".trueskill_diag_", dir=cell.game_rows_path.parent
+    ) as tmp:
+        spool_dir = Path(tmp)
+        spool_paths: list[Path] = []
+        for batch_index, (_rg, _bi, batch) in enumerate(
+            iter_parquet_tables_by_bytes(
+                cell.game_rows_path,
+                columns=columns,
+                max_batch_bytes=max_batch_bytes,
+                max_batch_rows=batch_rows,
+                use_threads=False,
+            )
+        ):
+            spool_paths.append(_write_reverse_spool(batch, spool_dir, batch_index))
+            for game in _iter_classified_batch(batch, cell.k):
+                attempted += 1
+                if game.ranks is None:
+                    excluded += 1
+                    continue
+                completed += 1
+                _update_ratings(tau_zero_env, tau_zero_ratings, game.players, game.ranks)
+                tau_games += 1
+
+        if attempted != completed + excluded:
+            raise ValueError("TrueSkill support conservation failed")
+        training_games = (
+            max(1, math.floor(completed * (1.0 - _HOLDOUT_FRACTION))) if completed else 0
+        )
+        train_env = trueskill.TrueSkill(beta=beta, tau=tau, draw_probability=draw_probability)
+        train_ratings: dict[str, trueskill.Rating] = {}
+        observed_train = 0
+        log_loss_sum = brier_sum = confidence_sum = correct_sum = 0.0
+        holdout_games = 0
+        for game in _iter_forward_spool(spool_paths, cell.k):
+            if game.ranks is None:
+                continue
+            if observed_train < training_games:
+                _update_ratings(train_env, train_ratings, game.players, game.ranks)
+                observed_train += 1
+                continue
+            ratings = [
+                (
+                    (rating.mu, rating.sigma)
+                    if (rating := train_ratings.get(player)) is not None
+                    else (25.0, 25.0 / 3.0)
+                )
+                for player in game.players
+            ]
+            probabilities = mu_softmax_heuristic_probabilities(ratings, beta=beta)
+            winner_positions = np.flatnonzero(np.asarray(game.ranks) == 0)
+            target = np.zeros(cell.k, dtype=float)
+            target[winner_positions] = 1.0 / len(winner_positions)
+            log_loss_sum += float(-np.sum(target * np.log(np.maximum(probabilities, 1e-15))))
+            brier_sum += float(np.sum((probabilities - target) ** 2))
+            predicted = int(np.argmax(probabilities))
+            confidence_sum += float(probabilities[predicted])
+            correct_sum += float(predicted in winner_positions)
+            holdout_games += 1
+
+        reverse_env = trueskill.TrueSkill(beta=beta, tau=tau, draw_probability=draw_probability)
+        reverse_ratings: dict[str, trueskill.Rating] = {}
+        reversed_games = 0
+        for game in _iter_reverse_spool(spool_paths, cell.k):
+            if game.ranks is not None:
+                _update_ratings(reverse_env, reverse_ratings, game.players, game.ranks)
+                reversed_games += 1
+
     if "cell_performed_updates" in baseline_frame:
         update_counts = baseline_frame["cell_performed_updates"].drop_duplicates()
         if len(update_counts) != 1:
@@ -714,9 +732,8 @@ def diagnose_rating_cell(
         performed_updates = int(update_counts.iloc[0])
     else:
         performed_updates = tau_games
-    if performed_updates > support["completed_games"]:
+    if performed_updates > completed:
         raise ValueError("TrueSkill performed updates exceed completed support")
-    support["performed_update_games"] = performed_updates
     prior_only = (
         baseline_frame.loc[
             baseline_frame["rating_status"].eq(_PRIOR_ONLY),
@@ -725,31 +742,157 @@ def diagnose_rating_cell(
         .astype(str)
         .tolist()
     )
-    if tau_games != reversed_games:
+    if tau_games != reversed_games or tau_games != completed:
         raise ValueError("TrueSkill diagnostic replay orders disagree on completed support")
     return {
         "root_seed": cell.root_seed,
         "k": cell.k,
-        **support,
+        "attempted_games": attempted,
+        "completed_games": completed,
+        "excluded_safety_limit_games": excluded,
+        "performed_update_games": performed_updates,
         "rating_status": (
             "prior_only_unrated" if len(prior_only) == len(baseline_frame) else "evidence_backed"
         ),
         "prior_only_strategy_count": len(prior_only),
         "prior_only_strategies": ",".join(sorted(prior_only)),
         "tau_zero_games": tau_games,
-        "tau_zero_rank_correlation": _rank_correlation(baseline, tau_zero),
-        "tau_zero_max_abs_mu_shift": _max_mu_shift(baseline, tau_zero),
+        "tau_zero_rank_correlation": _rank_correlation(baseline, _rating_pairs(tau_zero_ratings)),
+        "tau_zero_max_abs_mu_shift": _max_mu_shift(baseline, _rating_pairs(tau_zero_ratings)),
         "reversed_order_games": reversed_games,
-        "reversed_order_rank_correlation": _rank_correlation(baseline, reversed_order),
-        "reversed_order_max_abs_mu_shift": _max_mu_shift(baseline, reversed_order),
-        **_mu_softmax_heuristic_heldout_scores(
-            cell.game_rows_path,
-            cell.k,
-            beta=beta,
-            tau=tau,
-            draw_probability=draw_probability,
+        "reversed_order_rank_correlation": _rank_correlation(
+            baseline, _rating_pairs(reverse_ratings)
+        ),
+        "reversed_order_max_abs_mu_shift": _max_mu_shift(baseline, _rating_pairs(reverse_ratings)),
+        "mu_softmax_heuristic_claim": MU_SOFTMAX_HEURISTIC_CLAIM,
+        "mu_softmax_heuristic_training_games": observed_train,
+        "mu_softmax_heuristic_holdout_games": holdout_games,
+        "mu_softmax_heuristic_heldout_log_loss": (
+            log_loss_sum / holdout_games if holdout_games else None
+        ),
+        "mu_softmax_heuristic_uniform_reference_log_loss": (
+            math.log(cell.k) if holdout_games else None
+        ),
+        "mu_softmax_heuristic_heldout_brier_score": (
+            brier_sum / holdout_games if holdout_games else None
+        ),
+        "mu_softmax_heuristic_uniform_reference_brier_score": (
+            1.0 - 1.0 / cell.k if holdout_games else None
+        ),
+        "mu_softmax_heuristic_mean_top_probability": (
+            confidence_sum / holdout_games if holdout_games else None
+        ),
+        "mu_softmax_heuristic_top_prediction_accuracy": (
+            correct_sum / holdout_games if holdout_games else None
+        ),
+        "mu_softmax_heuristic_mean_top_probability_minus_accuracy": (
+            (confidence_sum - correct_sum) / holdout_games if holdout_games else None
         ),
     }
+
+
+def _diagnostic_cell_freshness_key(cfg: AppConfig, cell: ScreeningRatingCell) -> dict[str, Any]:
+    """Bind a resumable diagnostic cell to its logical root/k coordinate."""
+
+    return {
+        **_trueskill_diagnostic_freshness_key(cfg),
+        "root_seed": cell.root_seed,
+        "player_count": cell.k,
+        "reverse_replay_source": "bounded_forward_projection_spool",
+    }
+
+
+def _diagnostic_cell_done_path(cfg: AppConfig, cell: ScreeningRatingCell) -> Path:
+    return stage_done_path(
+        cfg.by_k_dir("trueskill", cell.k),
+        f"screening_diagnostics_{cell.k}_seed{cell.root_seed}",
+    )
+
+
+def _build_diagnostic_cell(
+    cfg: AppConfig,
+    cell: ScreeningRatingCell,
+    *,
+    force: bool,
+    max_batch_bytes: int,
+) -> Path:
+    """Atomically publish one root/k diagnostic after exactly one forward replay."""
+
+    if cell.game_rows_path is None or not cell.game_rows_path.is_file():
+        raise FileNotFoundError(
+            f"TrueSkill diagnostic game rows missing for {cell.root_seed}/{cell.k}"
+        )
+    output = cfg.trueskill_screening_diagnostic_cell_path(cell.k, root_seed=cell.root_seed)
+    done = _diagnostic_cell_done_path(cfg, cell)
+    inputs = [cell.ratings_path, cell.game_rows_path]
+    freshness = _diagnostic_cell_freshness_key(cfg, cell)
+    if not force and stage_is_up_to_date(
+        done,
+        inputs=inputs,
+        outputs=[output],
+        cfg=cfg,
+        stage="trueskill",
+        freshness_key=freshness,
+        sidecar_artifacts=[output],
+    ):
+        return output
+    row = diagnose_rating_cell(
+        cell,
+        beta=cfg.trueskill.beta,
+        tau=cfg.trueskill.tau,
+        draw_probability=cfg.trueskill.draw_probability,
+        max_batch_bytes=max_batch_bytes,
+        batch_rows=_DEFAULT_DIAGNOSTIC_BATCH_ROWS,
+    )
+    table = pa.Table.from_pylist([row])
+    sidecar = make_artifact_sidecar(
+        cfg,
+        output,
+        producer="trueskill_screening",
+        scope=ArtifactScope.BY_K,
+        source_scope=ArtifactScope.BY_K,
+        operation=_DIAGNOSTIC_CELL_OPERATION,
+        weighted_quantity="trueskill_screening_sensitivity_and_mu_softmax_heuristic_scores",
+        support_count_role="ordered_attempted_and_completed_games",
+        uncertainty_method="descriptive_replay_and_mu_softmax_heuristic_scoring",
+        replication_unit="ordered_game",
+        conditioning=TRUESKILL_CONDITIONING,
+        consistency_columns=table.schema.names,
+        source_artifacts=inputs,
+        grouping_keys=["root_seed", "k"],
+        player_counts=[cell.k],
+        required_player_counts=[cell.k],
+        missing_cell_policy="fail",
+        seed_scope="single_root",
+        method_contract=cast(Any, trueskill_diagnostic_method_contract()),
+    )
+    write_parquet_artifact_atomic(table, output, sidecar=sidecar, codec=cfg.parquet_codec)
+    write_stage_done(
+        done,
+        inputs=inputs,
+        outputs=[output],
+        cfg=cfg,
+        stage="trueskill",
+        freshness_key=freshness,
+        sidecar_artifacts=[output],
+    )
+    return output
+
+
+def _initialize_diagnostic_worker(policy: StageParallelPolicy) -> None:
+    apply_native_thread_limits(policy)
+
+
+def _build_diagnostic_cell_task(
+    args: tuple[AppConfig, ScreeningRatingCell, bool, int],
+) -> Path:
+    cfg, cell, force, max_batch_bytes = args
+    return _build_diagnostic_cell(
+        cfg,
+        cell,
+        force=force,
+        max_batch_bytes=max_batch_bytes,
+    )
 
 
 def build_screening_diagnostics(
@@ -758,56 +901,109 @@ def build_screening_diagnostics(
     *,
     force: bool = False,
 ) -> Path | None:
-    """Write replay diagnostics for cells with available canonical game rows."""
+    """Publish validated root/k diagnostics, then deterministically aggregate them."""
 
-    eligible = [
-        cell for cell in cells if cell.game_rows_path is not None and cell.game_rows_path.exists()
-    ]
-    if not eligible:
+    if not cells:
         return None
+    coordinates = [(cell.root_seed, cell.k) for cell in cells]
+    if len(coordinates) != len(set(coordinates)):
+        raise ValueError("TrueSkill diagnostic cells contain duplicate root/k coordinates")
+    if any(cell.game_rows_path is None or not cell.game_rows_path.exists() for cell in cells):
+        raise FileNotFoundError(
+            "TrueSkill diagnostics require canonical game rows for every root/k cell"
+        )
+    eligible = sorted(cells, key=lambda cell: (cell.root_seed, cell.k))
     output = cfg.trueskill_screening_diagnostics_path()
     done = stage_done_path(cfg.trueskill_stage_dir, "trueskill_screening_diagnostics")
-    inputs = [
-        path
+    cell_outputs = [
+        cfg.trueskill_screening_diagnostic_cell_path(cell.k, root_seed=cell.root_seed)
         for cell in eligible
-        for path in (cell.ratings_path, cell.game_rows_path)
-        if path is not None
     ]
-    if not force and stage_is_up_to_date(
-        done,
-        inputs=inputs,
-        outputs=[output],
-        cfg=cfg,
-        stage="trueskill",
-        freshness_key=_trueskill_diagnostic_freshness_key(cfg),
-        sidecar_artifacts=[output],
+    cell_complete = all(
+        stage_is_up_to_date(
+            _diagnostic_cell_done_path(cfg, cell),
+            inputs=[cell.ratings_path, cast(Path, cell.game_rows_path)],
+            outputs=[cell_output],
+            cfg=cfg,
+            stage="trueskill",
+            freshness_key=_diagnostic_cell_freshness_key(cfg, cell),
+            sidecar_artifacts=[cell_output],
+        )
+        for cell, cell_output in zip(eligible, cell_outputs, strict=True)
+    )
+    if (
+        not force
+        and cell_complete
+        and stage_is_up_to_date(
+            done,
+            inputs=cell_outputs,
+            outputs=[output],
+            cfg=cfg,
+            stage="trueskill",
+            freshness_key=_trueskill_diagnostic_freshness_key(cfg),
+            sidecar_artifacts=[output],
+        )
     ):
         return output
-    worker_count = min(normalize_n_jobs(cfg.analysis.n_jobs), len(eligible))
-    if worker_count > 1:
-        context = resolve_mp_context(cfg.analysis.mp_start_method or cfg.sim.mp_start_method)
-        with ProcessPoolExecutor(max_workers=worker_count, mp_context=context) as executor:
-            futures = [
-                executor.submit(
-                    diagnose_rating_cell,
-                    cell,
-                    beta=cfg.trueskill.beta,
-                    tau=cfg.trueskill.tau,
-                    draw_probability=cfg.trueskill.draw_probability,
-                )
-                for cell in eligible
-            ]
-            rows = [future.result() for future in futures]
-    else:
-        rows = [
-            diagnose_rating_cell(
-                cell,
-                beta=cfg.trueskill.beta,
-                tau=cfg.trueskill.tau,
-                draw_probability=cfg.trueskill.draw_probability,
+
+    policy = resolve_stage_parallel_policy(
+        "trueskill",
+        cfg.analysis,
+        n_jobs_override=cfg.analysis.n_jobs,
+        resources=cfg.resources,
+    )
+    apply_native_thread_limits(policy)
+    memory_guard = ProcessTreeMemoryGuard(
+        cfg.resources.rss_abort_mb,
+        cfg.resources.rss_sample_interval_seconds,
+    )
+    memory_guard.check_before_schedule(force=True)
+    max_batch_bytes = cfg.resources.stage_batch_bytes["trueskill"]
+    tasks = [(cfg, cell, force, max_batch_bytes) for cell in eligible]
+    context = resolve_mp_context(cfg.analysis.mp_start_method or cfg.sim.mp_start_method)
+    built = list(
+        process_map(
+            _build_diagnostic_cell_task,
+            tasks,
+            n_jobs=min(policy.process_workers, len(tasks)),
+            initializer=_initialize_diagnostic_worker,
+            initargs=(policy,),
+            window=cfg.resources.max_in_flight_per_worker * max(1, policy.process_workers),
+            mp_context=context,
+            memory_guard=memory_guard,
+        )
+    )
+    if sorted(built, key=lambda path: path.as_posix()) != sorted(
+        cell_outputs, key=lambda path: path.as_posix()
+    ):
+        raise RuntimeError(
+            "TrueSkill diagnostic cells did not publish in deterministic coordinate order"
+        )
+    rows: list[dict[str, object]] = []
+    for cell, cell_output in zip(eligible, cell_outputs, strict=True):
+        cell_done = _diagnostic_cell_done_path(cfg, cell)
+        if not stage_is_up_to_date(
+            cell_done,
+            inputs=[cell.ratings_path, cast(Path, cell.game_rows_path)],
+            outputs=[cell_output],
+            cfg=cfg,
+            stage="trueskill",
+            freshness_key=_diagnostic_cell_freshness_key(cfg, cell),
+            sidecar_artifacts=[cell_output],
+        ):
+            raise ArtifactContractError(
+                f"incomplete TrueSkill diagnostic cell: {cell.root_seed}/{cell.k}"
             )
-            for cell in eligible
-        ]
+        cell_table = pq.read_table(cell_output)
+        if cell_table.num_rows != 1:
+            raise ArtifactContractError(f"invalid TrueSkill diagnostic cell payload: {cell_output}")
+        data = {
+            name: cell_table.column(name).combine_chunks()[0].as_py()
+            for name in cell_table.column_names
+        }
+        if data.get("root_seed") != cell.root_seed or data.get("k") != cell.k:
+            raise ArtifactContractError(f"invalid TrueSkill diagnostic cell payload: {cell_output}")
+        rows.append(data)
     frame = pd.DataFrame(rows).sort_values(["root_seed", "k"])
     table = pa.Table.from_pandas(frame, preserve_index=False)
     roots = sorted({cell.root_seed for cell in eligible})
@@ -825,12 +1021,7 @@ def build_screening_diagnostics(
         replication_unit="game",
         conditioning=TRUESKILL_CONDITIONING,
         consistency_columns=table.schema.names,
-        source_artifacts=[
-            path
-            for cell in eligible
-            for path in (cell.ratings_path, cell.game_rows_path)
-            if path is not None
-        ],
+        source_artifacts=cell_outputs,
         grouping_keys=["root_seed", "k"],
         player_counts=ks,
         required_player_counts=ks,
@@ -844,7 +1035,7 @@ def build_screening_diagnostics(
     write_parquet_artifact_atomic(table, output, sidecar=sidecar, codec=cfg.parquet_codec)
     write_stage_done(
         done,
-        inputs=inputs,
+        inputs=cell_outputs,
         outputs=[output],
         cfg=cfg,
         stage="trueskill",

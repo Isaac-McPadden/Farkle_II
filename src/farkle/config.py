@@ -1082,6 +1082,17 @@ class AppConfig:
 
         return self.diagnostics_dir("trueskill") / "screening_diagnostics.parquet"
 
+    def trueskill_screening_diagnostic_cell_path(
+        self, k: int, *, root_seed: int | None = None
+    ) -> Path:
+        """Authenticated replay diagnostic for one root/player-count cell."""
+
+        seed = int(self.sim.seed if root_seed is None else root_seed)
+        return (
+            self.by_k_dir("trueskill", int(k))
+            / f"screening_diagnostics_{int(k)}_seed{seed}.parquet"
+        )
+
     def h2h_candidate_family_path(self) -> Path:
         """Frozen H2H candidate membership and admission provenance."""
 

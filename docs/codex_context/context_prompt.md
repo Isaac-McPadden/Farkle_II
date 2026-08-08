@@ -46,6 +46,10 @@ Preserve these invariants:
 - process-tree execution uses a 1024 MiB hard envelope, a 768 MiB target and
   pre-limit RSS abort; worker counts obey both CPU/native-thread and per-stage
   memory caps, and partition manifests publish only after every unit validates;
+- TrueSkill projected reads use byte-bounded Arrow batches; screening
+  diagnostics publish an authenticated root/k result and completion stamp
+  before deterministic aggregation, using one forward projected scan and a
+  bounded reverse replay spool;
 - the H2H power plan and block manifest are immutable after publication;
   exact-power allocation is the global first admissible crossing, power is
   conditional on completed support, and cap authorization/execution progress
