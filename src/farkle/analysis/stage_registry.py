@@ -167,8 +167,9 @@ _REGISTRY: tuple[StageDefinition, ...] = (
             "rng",
             "analysis.rng_max_matchup_groups",
             "analysis.rng_diagnostic_lags",
+            "analysis.rng_diagnostic_partitions",
         ),
-        cache_key_version=5,
+        cache_key_version=6,
         disabled_predicate=_rng_diagnostics_disabled,
     ),
     StageDefinition(

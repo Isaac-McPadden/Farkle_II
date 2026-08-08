@@ -43,12 +43,14 @@ modules and use hand-checkable tests before accepting a claim.
 - `analysis/game_stats.py`: attempted-game lengths and multi-target events,
   completed-only winner/margin products, and explicit observational units.
   Strategy-conditioned counts use only canonical `P<seat>_strategy` columns.
-- `analysis/rng_diagnostics.py`: lag association after a disk-backed global
-  lexicographic merge on the complete RNG-v2 tournament-player coordinate
-  `(root_seed, k, shuffle_index, game_index, seat_index)`, with seats merged in
-  ascending zero-based order (`P1 = 0`) before group updates. Zero-centered
-  `zero_centered_descriptive_reference_band_*` references use lagged-pair
-  support and make no independence conclusion.
+- `analysis/rng_diagnostics.py`: method-v4 exact eligibility and lag association
+  through stable authenticated external partitions. Strategy groups use seat
+  exposures ordered by the RNG-v2 tournament-player coordinate and report win
+  and rounds. Matchup groups use one game per sorted participant-ID multiset,
+  ordered by the game coordinate, and report rounds only. Fixed max-lag rings
+  are allocated only after eligibility. Cap selection uses semantic priority;
+  exhaustion is `blocked_by_cap`. Zero-centered descriptive references use
+  lagged-pair support and make no independence conclusion.
 - `analysis/roll_enumeration.py`: exact enumeration of all `6**d` ordered
   outcomes for dice counts one through six.
 

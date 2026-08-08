@@ -75,8 +75,12 @@ operation and artifact.
 - `matched_count_fractions`
 
 `analysis.rng_diagnostic_lags` declares the sorted unique positive lag set used
-by RNG diagnostics. `analysis.rng_max_matchup_groups` bounds matchup-strategy
-accumulator state. Both fields participate in RNG-diagnostic freshness.
+by RNG diagnostics. `analysis.rng_max_matchup_groups` is a deterministic cap on
+eligible matchup groups; cap exhaustion publishes `blocked_by_cap`, never a
+successful completion. `analysis.rng_diagnostic_partitions` (1 through 256)
+sets the stable external partition count used for counting, eligibility,
+ordering, and resumable lag reduction. All three fields participate in
+RNG-diagnostic freshness.
 
 The workload planner chooses the smallest shuffle count meeting the Wilson
 target, then rounds upward to 100 equal contiguous batches. A cap that is too

@@ -1,429 +1,363 @@
 from __future__ import annotations
 
-import logging
-from collections.abc import Sequence
-from typing import cast
+import json
+from pathlib import Path
 
-import numpy as np
 import pandas as pd
-import pyarrow.dataset as ds
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
+from tests.helpers.artifact_sidecars import make_authenticated_v3_config, publish_v3_parquet
 
 from farkle.analysis import rng_diagnostics
 from farkle.analysis.stage_registry import resolve_stage_definition
-from farkle.config import AppConfig, ArtifactScope
-from farkle.utils.artifact_contract import MethodContract, make_artifact_sidecar
-from farkle.utils.progress import ScheduledProgressLogger
+from farkle.config import ArtifactScope, assign_config_sha
+from farkle.utils.artifact_contract import sidecar_path
+from farkle.utils.authenticated_contract import validate_authenticated_artifact_unbound
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
 from farkle.utils.release_identity import _typed_method
-from farkle.utils.stage_completion import stage_is_up_to_date, write_stage_done
+from farkle.utils.stage_completion import CompletionState, resolve_stage_state
 
 
-class _StubProgressLogger:
-    def __init__(self) -> None:
-        self.calls: list[tuple[int, str]] = []
-
-    def maybe_log(self, completed: int, *, detail: str | None = None, **_: object) -> bool:
-        self.calls.append((completed, detail or ""))
-        return True
-
-
-class _FakeBatch:
-    def __init__(self, frame: pd.DataFrame, *, num_rows: int | None = None) -> None:
-        self._frame = frame
-        self.num_rows = len(frame) if num_rows is None else num_rows
-
-    def to_pandas(self, *, categories: list[str] | None = None) -> pd.DataFrame:
-        del categories
-        return self._frame.copy()
-
-
-class _FakeScanner:
-    def __init__(self, batches: list[_FakeBatch]) -> None:
-        self._batches = batches
-
-    def to_batches(self):
-        return iter(self._batches)
-
-
-class _FakeDataset:
-    def __init__(self, batches: list[_FakeBatch]) -> None:
-        self._batches = batches
-
-    def scanner(self, **_: object) -> _FakeScanner:
-        return _FakeScanner(self._batches)
-
-
-def test_iter_prepared_and_melted_batches_skip_empty_batches() -> None:
-    populated = pd.DataFrame(
+def _curated_table(
+    *,
+    root_seed: int,
+    matchups: list[tuple[int, int]],
+    order: list[int] | None = None,
+) -> pa.Table:
+    if order is None:
+        order = list(range(len(matchups)))
+    p1 = [matchups[index][0] for index in order]
+    p2 = [matchups[index][1] for index in order]
+    n = len(order)
+    winners = [p1[index] if index % 3 else p2[index] for index in range(n)]
+    rounds = [2 + (index * 7) % 13 for index in range(n)]
+    return pa.table(
         {
-            "root_seed": [9, 9],
-            "k": [2, 2],
-            "shuffle_index": [1, 0],
-            "game_index": [0, 0],
-            "game_seed": [2, 1],
-            "rng_scheme_version": [RNG_SCHEME_VERSION, RNG_SCHEME_VERSION],
-            "rng_purpose_namespace": [
-                int(RandomPurpose.TOURNAMENT_GAME),
-                int(RandomPurpose.TOURNAMENT_GAME),
-            ],
-            "n_rounds": [7, 5],
-            "winner_seat": ["P2", "P1"],
-            "P1_strategy": ["A", "C"],
-            "P2_strategy": ["B", "D"],
+            "root_seed": pa.array([root_seed] * n, type=pa.int64()),
+            "k": pa.array([2] * n, type=pa.int16()),
+            "shuffle_index": pa.array(order, type=pa.int64()),
+            "game_index": pa.array([0] * n, type=pa.int64()),
+            "rng_scheme_version": pa.array([RNG_SCHEME_VERSION] * n, type=pa.int16()),
+            "rng_purpose_namespace": pa.array(
+                [int(RandomPurpose.TOURNAMENT_GAME)] * n, type=pa.int16()
+            ),
+            "n_rounds": pa.array(rounds, type=pa.int32()),
+            "winner_strategy": pa.array(winners, type=pa.int32()),
+            "P1_strategy": pa.array(p1, type=pa.int32()),
+            "P2_strategy": pa.array(p2, type=pa.int32()),
         }
     )
-    dataset = _FakeDataset(
-        [
-            _FakeBatch(pd.DataFrame(), num_rows=0),
-            _FakeBatch(pd.DataFrame(columns=populated.columns), num_rows=1),
-            _FakeBatch(populated),
-        ]
-    )
-
-    prepared = list(
-        rng_diagnostics._iter_prepared_batches(
-            cast(ds.Dataset, dataset),
-            columns=list(populated.columns),
-            winner_col="winner_seat",
-            strat_cols=["P1_strategy", "P2_strategy"],
-            batch_size=10,
-            arrow_threads=1,
-        )
-    )
-    melted = list(
-        rng_diagnostics._iter_melted_batches(
-            cast(ds.Dataset, dataset),
-            columns=list(populated.columns),
-            winner_col="winner_seat",
-            strat_cols=["P1_strategy", "P2_strategy"],
-            batch_size=10,
-            arrow_threads=1,
-        )
-    )
-
-    assert len(prepared) == 1
-    assert prepared[0]["winner_strategy"].tolist() == ["C", "B"]
-    assert prepared[0]["matchup"].tolist() == ["C | D", "A | B"]
-    assert prepared[0]["n_players"].tolist() == [2, 2]
-
-    assert len(melted) == 1
-    assert set(melted[0]["strategy"].tolist()) == {"A", "B", "C", "D"}
-    assert melted[0]["win_indicator"].sum() == 2
 
 
-def test_collect_diagnostics_streaming_compact_caps_matchups_and_logs_progress(
-    caplog,
-) -> None:
-    batch = pd.DataFrame(
-        {
-            "root_seed": [9, 9, 9],
-            "k": [2, 2, 2],
-            "shuffle_index": [0, 1, 2],
-            "game_index": [0, 0, 0],
-            "matchup": ["A | B", "A | C", "A | B"],
-            "n_players": [2, 2, 2],
-            "winner_strategy": ["A", "A", "B"],
-            "n_rounds": [5, 7, 9],
-            "P1_strategy": ["A", "A", "A"],
-            "P2_strategy": ["B", "C", "B"],
-        }
-    )
-    progress_logger = _StubProgressLogger()
-
-    with caplog.at_level(logging.WARNING):
-        diagnostics, melted_rows, capacity = rng_diagnostics._collect_diagnostics_streaming_compact(
-            [pd.DataFrame(), batch],
-            strat_cols=["P1_strategy", "P2_strategy", "P3_strategy"],
-            lags=(1,),
-            progress_logger=cast(ScheduledProgressLogger, progress_logger),
-            max_matchup_groups=1,
-        )
-
-    assert melted_rows == 6
-    assert not diagnostics.empty
-    assert capacity == rng_diagnostics.RNGDiagnosticCapacityMetadata(
-        effective_matchup_group_cap=1,
-        normalized_lags=(1,),
-        tracked_matchup_group_count=1,
-        skipped_matchup_group_count=3,
-        skipped_matchup_row_count=4,
-    )
-    assert progress_logger.calls
-    assert any(
-        record.message == "rng-diagnostics matchup grouping capped" for record in caplog.records
-    )
-
-
-def test_rng_cap_lags_freshness_and_typed_metadata(tmp_path) -> None:
-    cfg = AppConfig()
-    baseline = cfg.stage_config_sha("rng_diagnostics")
-
-    cfg.analysis.rng_max_matchup_groups = 150_000
-    cap_mutation = cfg.stage_config_sha("rng_diagnostics")
-    assert cap_mutation != baseline
-
-    cfg.analysis.rng_diagnostic_lags = (1, 2, 4)
-    lag_mutation = cfg.stage_config_sha("rng_diagnostics")
-    assert lag_mutation != cap_mutation
-    assert rng_diagnostics._rng_stage_config_sha(cfg, (4, 2, 1, 2, 0)) == (
-        rng_diagnostics._rng_stage_config_sha(cfg, (1, 2, 4))
-    )
-
-    capacity = rng_diagnostics.RNGDiagnosticCapacityMetadata(
-        effective_matchup_group_cap=150_000,
-        normalized_lags=(1, 2, 4),
-        tracked_matchup_group_count=117_292,
-        skipped_matchup_group_count=0,
-        skipped_matchup_row_count=0,
-    )
-    parameters = rng_diagnostics._rng_method_parameters(
-        capacity,
-        strat_cols=("P1_strategy", "P2_strategy"),
-    )
-    assert parameters["method_version"] == 3
-    assert parameters["effective_matchup_group_cap"] == 150_000
-    assert parameters["normalized_lags"] == [1, 2, 4]
-    assert parameters["tracked_matchup_group_count"] == 117_292
-    assert parameters["skipped_matchup_group_count"] == 0
-    artifact_metadata = make_artifact_sidecar(
+def _config_with_input(
+    tmp_path: Path,
+    *,
+    name: str,
+    table: pa.Table,
+    root_seed: int = 9,
+    partitions: int = 2,
+    cap: int = 100,
+    workers: int = 1,
+    lags: tuple[int, ...] = (1, 2),
+):
+    cfg = make_authenticated_v3_config(tmp_path, name=name, root_seed=root_seed, player_counts=(2,))
+    cfg.analysis.rng_diagnostic_partitions = partitions
+    cfg.analysis.rng_max_matchup_groups = cap
+    cfg.analysis.rng_diagnostic_lags = lags
+    cfg.analysis.n_jobs = workers
+    assign_config_sha(cfg)
+    publish_v3_parquet(
         cfg,
-        cfg.rng_output_path("rng_diagnostics.parquet"),
-        producer="rng_diagnostics",
-        scope=ArtifactScope.DIAGNOSTICS,
-        source_scope=ArtifactScope.CONCAT_KS,
-        operation="semantic_coordinate_lag_correlation",
-        method_contract=cast(
-            MethodContract,
-            {
-                "kind": "diagnostic_band",
-                "procedure": "semantic_coordinate_lag_correlation",
-                "parameters": parameters,
-            },
-        ),
-        player_counts=[5],
-        required_player_counts=[5],
+        cfg.curated_parquet,
+        table,
+        stage_key="combine",
+        producer="combine",
+        operation="concatenate",
+        source_scope=ArtifactScope.BY_K,
     )
-    typed_method = _typed_method(cfg, artifact_metadata, method_version=3)
-    assert typed_method.rng_effective_matchup_group_cap == 150_000
-    assert typed_method.rng_diagnostic_lags == (1, 2, 4)
-    assert typed_method.rng_tracked_matchup_group_count == 117_292
-    assert typed_method.rng_skipped_matchup_group_count == 0
+    return cfg
 
-    old_input = tmp_path / "input"
-    old_output = tmp_path / "output"
-    old_stamp = tmp_path / "rng.done.json"
-    old_input.write_text("input", encoding="utf-8")
-    old_output.write_text("output", encoding="utf-8")
-    write_stage_done(
-        old_stamp,
-        inputs=[old_input],
-        outputs=[old_output],
-        stage="rng_diagnostics",
-        stage_config_sha=lag_mutation,
-        cache_key_version=4,
+
+def _read_results(cfg) -> pd.DataFrame:
+    return pq.read_table(cfg.rng_output_path("rng_diagnostics.parquet")).to_pandas()
+
+
+def _sorted_results(cfg) -> pd.DataFrame:
+    frame = _read_results(cfg)
+    return frame.sort_values(
+        ["summary_level", "strategy", "matchup_id", "lag", "metric"],
+        kind="mergesort",
+        na_position="first",
+    ).reset_index(drop=True)
+
+
+def test_compact_group_records_and_shared_ring_accumulator() -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2), (1, 3), (1, 2)])
+    arrays = rng_diagnostics._extract_batch_arrays(
+        table.to_batches()[0],
+        winner_col="winner_strategy",
+        strat_cols=("P1_strategy", "P2_strategy"),
+        expected_root_seed=9,
     )
-    current_cache_version = resolve_stage_definition("rng_diagnostics").cache_key_version
-    assert current_cache_version == 5
-    assert not stage_is_up_to_date(
-        old_stamp,
-        inputs=[old_input],
-        outputs=[old_output],
-        stage="rng_diagnostics",
-        stage_config_sha=lag_mutation,
-        cache_key_version=current_cache_version,
-    )
+    counts = rng_diagnostics._count_records(arrays)
 
-
-def test_accumulators_and_rows_from_group_state_cover_none_paths() -> None:
-    empty_acc = rng_diagnostics._LagCorrelationAccumulator()
-    assert empty_acc.autocorr() is None
-
-    constant_acc = rng_diagnostics._LagCorrelationAccumulator()
-    constant_acc.update(1.0, 1.0)
-    constant_acc.update(1.0, 1.0)
-    assert constant_acc.autocorr() is None
-
-    metric_acc = rng_diagnostics._MetricStreamAccumulator((1,))
-    metric_acc.extend(pd.Series([1.0, np.nan, 1.0]))
-    assert metric_acc.n_obs == 2
-    assert metric_acc.autocorr(1) is None
-
-    group_state = rng_diagnostics._GroupStreamAccumulator((1,))
-    group_state.extend(pd.DataFrame({"win_indicator": [1, 1], "n_rounds": [10, 10]}))
-    rows = rng_diagnostics._rows_from_group_state(
-        summary_level="strategy",
-        strategy="A",
-        n_players=2,
-        lags=(1,),
-        group_state=group_state,
-    )
-
-    assert rows == []
-
-
-def _prepared_hand_frame() -> pd.DataFrame:
-    """Return deliberately unordered games for an independent lag oracle."""
-
-    return pd.DataFrame(
-        {
-            "root_seed": [9] * 6,
-            "k": [2] * 6,
-            "shuffle_index": [2, 0, 1, 0, 2, 1],
-            "game_index": [1, 0, 0, 1, 0, 1],
-            "rng_scheme_version": [RNG_SCHEME_VERSION] * 6,
-            "rng_purpose_namespace": [int(RandomPurpose.TOURNAMENT_GAME)] * 6,
-            "matchup": ["A | B"] * 6,
-            "n_players": [2] * 6,
-            "winner_strategy": ["B", "A", "B", "B", pd.NA, "A"],
-            "n_rounds": [9, 2, 1, 5, 4, 7],
-            "P1_strategy": ["B", "A", "A", "B", "A", "B"],
-            "P2_strategy": ["A", "B", "B", "A", "B", "A"],
-        }
-    )
-
-
-def _prepare_arrow_frames(frames: Sequence[pd.DataFrame]) -> list[pd.DataFrame]:
-    columns = [
-        "root_seed",
-        "k",
-        "shuffle_index",
-        "game_index",
-        "rng_scheme_version",
-        "rng_purpose_namespace",
-        "n_rounds",
-        "winner_strategy",
-        "P1_strategy",
-        "P2_strategy",
+    strategy_one = counts[
+        (counts["group_type"] == rng_diagnostics._GROUP_STRATEGY) & (counts["group_id"] == 1)
     ]
-    dataset = _FakeDataset([_FakeBatch(frame) for frame in frames])
-    return list(
-        rng_diagnostics._iter_prepared_batches(
-            cast(ds.Dataset, dataset),
-            columns=columns,
-            winner_col="winner_strategy",
-            strat_cols=["P1_strategy", "P2_strategy"],
-            batch_size=2,
-            arrow_threads=2,
-        )
+    matchup_rows = counts[counts["group_type"] == rng_diagnostics._GROUP_MATCHUP]
+    assert strategy_one["count"].tolist() == [3]
+    assert sorted(matchup_rows["count"].tolist()) == [1, 2]
+    assert counts.dtype.hasobject is False
+
+    metric = rng_diagnostics._OnlineMetric((1, 2, 4))
+    assert metric.ring.size == 4
+    for value in (1.0, 0.0, 1.0, 1.0):
+        metric.push(value)
+    assert metric.result(0)[0] == pytest.approx(-0.5)
+    assert metric.result(2) == (None, "insufficient_pairs")
+
+
+def test_small_fixture_matches_legacy_statistics_where_semantics_are_retained(
+    tmp_path: Path,
+) -> None:
+    matchups = [(1, 2)] * 8
+    table = _curated_table(root_seed=9, matchups=matchups, order=[7, 1, 4, 0, 6, 2, 5, 3])
+    cfg = _config_with_input(tmp_path, name="equivalence", table=table)
+
+    rng_diagnostics.run(cfg)
+    actual = _read_results(cfg)
+    ordered = table.to_pandas().sort_values(
+        ["root_seed", "k", "shuffle_index", "game_index"], kind="mergesort"
     )
-
-
-def _lag_one(values: Sequence[float]) -> float:
-    earlier = np.asarray(values[:-1], dtype=float)
-    later = np.asarray(values[1:], dtype=float)
-    return float(np.corrcoef(earlier, later)[0, 1])
-
-
-def test_one_frame_semantic_sequence_matches_hand_oracle() -> None:
-    frame = _prepared_hand_frame()
-    prepared = _prepare_arrow_frames([frame])
-
-    diagnostics, melted_rows, capacity = rng_diagnostics._collect_diagnostics_streaming_compact(
-        prepared,
-        strat_cols=["P1_strategy", "P2_strategy"],
-        lags=(1,),
-        progress_logger=None,
-        max_matchup_groups=None,
-    )
-
-    assert melted_rows == 12
-    assert capacity.skipped_matchup_group_count == 0
-    hand_sequences = {
-        "A": {
-            "win_indicator": [1, 0, 0, 1, 0, 0],
-            "n_rounds": [2, 5, 1, 7, 4, 9],
-        },
-        "B": {
-            "win_indicator": [0, 1, 1, 0, 0, 1],
-            "n_rounds": [2, 5, 1, 7, 4, 9],
-        },
-    }
-    strategy_rows = diagnostics.loc[diagnostics["summary_level"] == "strategy"]
-    assert len(strategy_rows) == 4
-    for strategy, metrics in hand_sequences.items():
-        for metric, values in metrics.items():
-            row = strategy_rows.loc[
-                (strategy_rows["strategy"] == strategy) & (strategy_rows["metric"] == metric)
+    for strategy in (1, 2):
+        values = (ordered["winner_strategy"] == strategy).astype(float)
+        rounds = ordered["n_rounds"].astype(float)
+        for lag in (1, 2):
+            win_row = actual.loc[
+                (actual["summary_level"] == "strategy")
+                & (actual["strategy"] == strategy)
+                & (actual["metric"] == "win_indicator")
+                & (actual["lag"] == lag)
             ].iloc[0]
-            assert row["autocorr"] == pytest.approx(_lag_one(values), abs=1e-15)
-            assert row["lagged_pairs"] == 5
-            half_width = 1.96 / np.sqrt(5)
-            assert row["zero_centered_descriptive_reference_band_lower"] == pytest.approx(
-                -half_width
-            )
-            assert row["zero_centered_descriptive_reference_band_upper"] == pytest.approx(
-                half_width
-            )
-            assert row["sequence_order"] == "root_seed,k,shuffle_index,game_index,seat_index"
-            assert "do not establish or refute independence" in row["note"]
+            round_row = actual.loc[
+                (actual["summary_level"] == "strategy")
+                & (actual["strategy"] == strategy)
+                & (actual["metric"] == "n_rounds")
+                & (actual["lag"] == lag)
+            ].iloc[0]
+            matchup_row = actual.loc[
+                (actual["summary_level"] == "matchup")
+                & (actual["metric"] == "n_rounds")
+                & (actual["lag"] == lag)
+            ].iloc[0]
+            assert win_row["autocorr"] == pytest.approx(values.autocorr(lag=lag), abs=1e-15)
+            assert round_row["autocorr"] == pytest.approx(rounds.autocorr(lag=lag), abs=1e-15)
+            assert matchup_row["autocorr"] == pytest.approx(rounds.autocorr(lag=lag), abs=1e-15)
+    matchup = actual.loc[actual["summary_level"] == "matchup"]
+    assert matchup["strategy"].isna().all()
+    assert set(matchup["metric"]) == {"n_rounds"}
+    assert len(matchup) == 2
 
 
-def test_fragmented_batches_and_seats_match_one_frame_oracle() -> None:
-    frame = _prepared_hand_frame()
-    one_frame, one_frame_rows, one_frame_capacity = (
-        rng_diagnostics._collect_diagnostics_streaming_compact(
-            [frame],
-            strat_cols=["P1_strategy", "P2_strategy"],
-            lags=(1, 2),
-            progress_logger=None,
-            max_matchup_groups=None,
-        )
-    )
-    fragments = [
-        frame.iloc[[4, 1]].copy(),
-        frame.iloc[[5]].copy(),
-        frame.iloc[[0, 3]].copy(),
-        frame.iloc[[2]].copy(),
-    ]
-    prepared_fragments = _prepare_arrow_frames(fragments)
+def test_worker_and_partition_count_do_not_change_logical_results(tmp_path: Path) -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2)] * 9 + [(1, 3)] * 9)
+    serial = _config_with_input(tmp_path, name="serial", table=table, partitions=2, workers=1)
+    parallel = _config_with_input(tmp_path, name="parallel", table=table, partitions=4, workers=2)
 
-    fragmented, fragmented_rows, fragmented_capacity = (
-        rng_diagnostics._collect_diagnostics_streaming_compact(
-            prepared_fragments,
-            strat_cols=["P1_strategy", "P2_strategy"],
-            lags=(1, 2),
-            progress_logger=None,
-            max_matchup_groups=None,
-        )
-    )
-    globally_ordered = pd.concat(
-        list(
-            rng_diagnostics._iter_globally_ordered_game_batches(
-                prepared_fragments,
-                strat_cols=["P1_strategy", "P2_strategy"],
-                output_batch_size=2,
-            )
-        ),
-        ignore_index=True,
-    )
-    seats = rng_diagnostics._merge_seats_in_semantic_order(
-        globally_ordered,
-        strat_cols=["P1_strategy", "P2_strategy"],
-    )
+    rng_diagnostics.run(serial)
+    rng_diagnostics.run(parallel)
 
     pd.testing.assert_frame_equal(
-        fragmented.reset_index(drop=True),
-        one_frame.reset_index(drop=True),
+        _sorted_results(serial),
+        _sorted_results(parallel),
         check_exact=False,
         rtol=1e-15,
         atol=1e-15,
     )
-    assert fragmented_rows == one_frame_rows == 12
-    assert fragmented_capacity == one_frame_capacity
-    assert list(
-        seats[["shuffle_index", "game_index", "seat_index"]].itertuples(index=False, name=None)
-    ) == [
-        (0, 0, 0),
-        (0, 0, 1),
-        (0, 1, 0),
-        (0, 1, 1),
-        (1, 0, 0),
-        (1, 0, 1),
-        (1, 1, 0),
-        (1, 1, 1),
-        (2, 0, 0),
-        (2, 0, 1),
-        (2, 1, 0),
-        (2, 1, 1),
-    ]
+
+
+def test_deterministic_cap_is_encounter_order_invariant_and_blocks_completion(
+    tmp_path: Path,
+) -> None:
+    matchups = [pair for opponent in range(2, 14) for pair in [(1, opponent)] * 3]
+    forward_table = _curated_table(root_seed=9, matchups=matchups)
+    reverse_order = list(reversed(range(len(matchups))))
+    reverse_table = _curated_table(root_seed=9, matchups=matchups, order=reverse_order)
+    forward = _config_with_input(
+        tmp_path, name="cap_forward", table=forward_table, partitions=4, cap=5
+    )
+    reverse = _config_with_input(
+        tmp_path, name="cap_reverse", table=reverse_table, partitions=4, cap=5
+    )
+
+    rng_diagnostics.run(forward)
+    rng_diagnostics.run(reverse)
+
+    selected_forward = pq.read_table(
+        forward.rng_output_path("rng_group_selection.parquet"),
+        columns=["group_type", "k", "group_id"],
+    ).to_pandas()
+    selected_reverse = pq.read_table(
+        reverse.rng_output_path("rng_group_selection.parquet"),
+        columns=["group_type", "k", "group_id"],
+    ).to_pandas()
+    selected_forward = selected_forward.loc[selected_forward["group_type"] == 1]
+    selected_reverse = selected_reverse.loc[selected_reverse["group_type"] == 1]
+    assert sorted(selected_forward["group_id"].tolist()) == sorted(
+        selected_reverse["group_id"].tolist()
+    )
+    summary = json.loads(
+        forward.rng_output_path("rng_diagnostics_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["deterministically_capped_group_count"] == 7
+    assert summary["completeness_status"] == "blocked_by_cap"
+    assert (
+        resolve_stage_state(
+            forward.rng_stage_dir / "rng_diagnostics.done.json",
+            [forward.curated_parquet],
+            [
+                forward.rng_output_path("rng_diagnostics.parquet"),
+                forward.rng_output_path("rng_diagnostics_summary.json"),
+            ],
+            cfg=forward,
+            stage="rng_diagnostics",
+        )
+        is CompletionState.BLOCKED_BY_CAP
+    )
+
+
+def test_insufficient_observations_publish_explicit_not_estimable_summary(
+    tmp_path: Path,
+) -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2), (1, 3)])
+    cfg = _config_with_input(tmp_path, name="not_estimable", table=table, lags=(2,))
+
+    rng_diagnostics.run(cfg)
+
+    assert _read_results(cfg).empty
+    summary = json.loads(
+        cfg.rng_output_path("rng_diagnostics_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["completeness_status"] == "not_estimable"
+    assert summary["below_minimum_group_count"] == summary["total_candidate_group_count"]
+    assert summary["exclusion_reasons"]["below_minimum_usable_observations"] > 0
+
+
+def test_corrupt_partition_is_quarantined_and_other_partitions_are_reused(
+    tmp_path: Path,
+) -> None:
+    table = _curated_table(root_seed=9, matchups=[(1, 2)] * 8 + [(1, 3)] * 8)
+    cfg = _config_with_input(tmp_path, name="corruption", table=table, partitions=4)
+    rng_diagnostics.run(cfg)
+    checkpoint_root = next((cfg.rng_stage_dir / "checkpoints").iterdir()) / "04_stats"
+    units = sorted((checkpoint_root / "units").glob("part-*.parquet"))
+    untouched = {path.name: path.read_bytes() for path in units[1:]}
+    units[0].write_bytes(b"corrupt")
+    for path in (
+        cfg.rng_output_path("rng_diagnostics.parquet"),
+        cfg.rng_output_path("rng_diagnostics_summary.json"),
+    ):
+        path.unlink()
+        sidecar_path(path).unlink()
+    (cfg.rng_stage_dir / "rng_diagnostics.done.json").unlink()
+
+    rng_diagnostics.run(cfg)
+
+    assert all(path.read_bytes() == untouched[path.name] for path in units[1:])
+    assert any((checkpoint_root / "quarantine").iterdir())
+    assert validate_authenticated_artifact_unbound(
+        cfg.rng_output_path("rng_diagnostics.parquet"), validate_provenance=False
+    )
+
+
+def test_sparse_high_cardinality_stays_bounded_and_resumes_after_interruption(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Mostly singleton matchups exercise the phase that previously retained every
+    # rejected key and accumulator.  The source is intentionally moderate for CI;
+    # its cardinality-to-row ratio is the stress property under test.
+    matchups = [(index * 2 + 1, index * 2 + 2) for index in range(12_000)]
+    table = _curated_table(root_seed=9, matchups=matchups)
+    cfg = _config_with_input(
+        tmp_path, name="sparse", table=table, partitions=16, cap=100, lags=(1,)
+    )
+    original = rng_diagnostics._EligibilityWriter.__call__
+    interrupted = {"raised": False}
+
+    def interrupt_once(self, unit, path):
+        if unit.key == (3,) and not interrupted["raised"]:
+            interrupted["raised"] = True
+            raise RuntimeError("synthetic kill")
+        return original(self, unit, path)
+
+    monkeypatch.setattr(rng_diagnostics._EligibilityWriter, "__call__", interrupt_once)
+    with pytest.raises(RuntimeError, match="synthetic kill"):
+        rng_diagnostics.run(cfg)
+    checkpoint_root = next((cfg.rng_stage_dir / "checkpoints").iterdir()) / "02_eligibility"
+    completed_before_resume = list((checkpoint_root / "units").glob("*.unit.done.json"))
+    assert completed_before_resume
+    assert not (checkpoint_root / "partition_manifest.jsonl").exists()
+
+    monkeypatch.setattr(rng_diagnostics._EligibilityWriter, "__call__", original)
+    rng_diagnostics.run(cfg)
+    summary = json.loads(
+        cfg.rng_output_path("rng_diagnostics_summary.json").read_text(encoding="utf-8")
+    )
+    assert summary["total_candidate_group_count"] == 36_000
+    assert summary["selected_group_count"] == 0
+    assert summary["peak_sampled_process_tree_rss_mb"] < cfg.resources.rss_abort_mb
+    assert summary["hard_memory_ceiling_mb"] == 1_024
+    assert (checkpoint_root / "partition_manifest.jsonl").exists()
+
+
+def test_rng_config_freshness_and_typed_metadata_migrate_to_method_v4() -> None:
+    cfg = make_authenticated_v3_config(Path("."), name="typed_rng", root_seed=9)
+    baseline = cfg.stage_config_sha("rng_diagnostics")
+    cfg.analysis.rng_diagnostic_partitions = 64
+    assert cfg.stage_config_sha("rng_diagnostics") != baseline
+    assert resolve_stage_definition("rng_diagnostics").cache_key_version == 6
+
+    capacity = rng_diagnostics.RNGDiagnosticCapacityMetadata(
+        effective_matchup_group_cap=100,
+        normalized_lags=(1, 2),
+        partition_count=4,
+        minimum_usable_observations=3,
+        total_candidate_group_count=12,
+        candidate_strategy_group_count=4,
+        candidate_matchup_group_count=8,
+        eligible_group_count=9,
+        eligible_strategy_group_count=4,
+        eligible_matchup_group_count=5,
+        selected_group_count=9,
+        selected_strategy_group_count=4,
+        selected_matchup_group_count=5,
+        below_minimum_group_count=3,
+        deterministically_capped_group_count=0,
+        observation_count_distribution=(),
+        usable_groups_per_lag=(),
+        completeness_status="complete",
+    )
+    parameters = rng_diagnostics._rng_method_parameters(capacity, strat_cols=("P1_strategy",))
+    assert parameters["rng_diagnostic_method_version"] == 4
+    assert parameters["tracked_matchup_group_count"] == 5
+    assert parameters["skipped_matchup_group_count"] == 3
+
+    # Exercise the release adapter with the migrated generic aliases retained.
+    artifact = Path("rng_diagnostics.parquet")
+    metadata = rng_diagnostics.make_artifact_sidecar(
+        cfg,
+        artifact,
+        producer="rng_diagnostics",
+        scope=ArtifactScope.DIAGNOSTICS,
+        source_scope=ArtifactScope.CONCAT_KS,
+        operation="semantic_coordinate_lag_correlation",
+        method_contract={
+            "kind": "diagnostic_band",
+            "procedure": "semantic_coordinate_lag_correlation",
+            "parameters": parameters,
+        },
+    )
+    typed = _typed_method(cfg, metadata, method_version=4)
+    assert typed.rng_diagnostic_lags == (1, 2)
+    assert typed.rng_tracked_matchup_group_count == 5

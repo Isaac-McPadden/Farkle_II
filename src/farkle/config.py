@@ -315,9 +315,11 @@ class AnalysisConfig:
     rare_event_target_rate: float | None = None
     """Optional target rate for multi-target rare-event thresholds."""
     rng_max_matchup_groups: int | None = 100_000
-    """Cap matchup-strategy group states in RNG diagnostics to bound memory use."""
+    """Deterministic cap on eligible matchup groups in RNG diagnostics."""
     rng_diagnostic_lags: tuple[int, ...] = (1,)
     """Normalized positive lags included in RNG-diagnostic freshness identity."""
+    rng_diagnostic_partitions: int = 32
+    """Stable external partitions used by the bounded RNG diagnostic reduction."""
 
 
 @dataclass
@@ -1811,6 +1813,14 @@ def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -
         or tuple(sorted(set(rng_lags))) != rng_lags
     ):
         raise ValueError("analysis.rng_diagnostic_lags must be unique increasing positive integers")
+    rng_partitions = cfg.analysis.rng_diagnostic_partitions
+    if (
+        isinstance(rng_partitions, bool)
+        or not isinstance(rng_partitions, int)
+        or rng_partitions < 1
+        or rng_partitions > 256
+    ):
+        raise ValueError("analysis.rng_diagnostic_partitions must be in [1, 256]")
     contract_versions = dataclasses.asdict(cfg.artifact_contract)
     if any(int(value) < 1 for value in contract_versions.values()):
         raise ValueError("artifact_contract versions must all be positive integers")

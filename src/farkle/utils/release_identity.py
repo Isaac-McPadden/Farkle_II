@@ -175,7 +175,7 @@ def _method_versions(
     stage_versions = {
         "simulation": {"tournament_method_version": TOURNAMENT_METHOD_VERSION},
         "ingest": {"tournament_method_version": TOURNAMENT_METHOD_VERSION},
-        "rng_diagnostics": {"rng_diagnostic_method_version": 3},
+        "rng_diagnostics": {"rng_diagnostic_method_version": 4},
         "trueskill": {
             "trueskill_method_version": 3,
             "trueskill_diagnostic_method_version": 1,

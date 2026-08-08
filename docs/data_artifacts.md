@@ -134,11 +134,15 @@ per attempted game. Winner/margin/close-game products use completed games or
 completed seated-strategy exposures only. Every game-stat output states its
 observational unit and its completed/safety-limit support. Canonical seat
 strategy columns match `P<seat>_strategy`; `winner_strategy` is never treated
-as another exposure. RNG lag diagnostics order every seat exposure
-lexicographically by the complete RNG-v2 tournament-player coordinate
-`(root_seed, k, shuffle_index, game_index, seat_index)`, merge seats in ascending
-zero-based seat order (`P1 = 0`) within each game, and then filter that stream
-into strategy and matchup-strategy sequences. The
+as another exposure. RNG lag diagnostics use two non-redundant semantics.
+Strategy groups contain seat exposures keyed by `(strategy_id, k)`, ordered by
+`(root_seed, k, shuffle_index, game_index, seat_index)`, and report win and
+round-count correlations. Matchup groups contain one game per sorted
+participant-ID multiset and `k`, ordered by
+`(root_seed, k, shuffle_index, game_index)`, and report round-count correlations
+only. Matchups are not expanded once per participant. Exact stable partitions
+own eligibility, bounded local ordering, authenticated unit stamps, and the
+validated completion manifest. The
 `zero_centered_descriptive_reference_band_*` fields are approximate descriptive
 references based on lagged-pair count; they do not establish or refute
 independence. Roll diagnostics exactly enumerate all ordered outcomes for one

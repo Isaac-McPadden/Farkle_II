@@ -48,11 +48,11 @@ changing code or accepting a statistical conclusion.
   root-stability method-v2 removes significance/rejection classifications,
   relabels intervals and joint-bootstrap quantities as descriptive Monte Carlo
   precision/reference diagnostics, and invalidates prior root-stability
-  artifacts through the versioned stage freshness identity. RNG diagnostic
-  method-v3 uses a disk-backed global merge over the full tournament-player
+  artifacts through the versioned stage freshness identity. The superseded RNG
+  diagnostic method-v3 used a disk-backed global merge over the full tournament-player
   coordinate, merges zero-based seats before group updates, publishes
-  zero-centered descriptive reference bands, and is bound to cache-key-v5.
-  Its freshness identity includes the typed public lag set and matchup-group
+  zero-centered descriptive reference bands, and was bound to cache-key-v5.
+  Its freshness identity included the typed public lag set and matchup-group
   cap, while artifact method metadata records the effective cap, normalized
   lags, and tracked/skipped group counts.
   Run-context contract v2 additionally authenticates execution-only resource
@@ -62,6 +62,12 @@ changing code or accepting a statistical conclusion.
   exact-byte unit stamps and a final ordered manifest only after all units
   validate. TrueSkill projected reads use byte-bounded Arrow batches instead of
   materializing complete Parquet row groups.
+  RNG diagnostic method-v4/cache-key-v6 replaces the global SQLite merge and
+  matchup-strategy object graph with exact stable partitions. It checkpoints
+  count routing, eligibility, eligible-observation routing, and bounded local
+  lag reduction, then publishes a partition manifest only after all units
+  validate. Output adds compact matchup IDs, participant-ID lists, explicit
+  estimability status, exact exclusions/support, and blocked-by-cap completion.
   Final pipeline health rechecks the current diagnostic-stage lifecycle state.
   Task 14's raw oracle adds an authenticated, immutable limit-only game profile:
   its canonical hash extends run lineage and simulation freshness while an

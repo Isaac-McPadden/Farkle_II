@@ -34,6 +34,9 @@ analysis:
   log_level: "INFO"         # str: logger level during analysis
   results_glob: "*_players" # str: glob selecting per-N result folders
   outputs: {}               # dict[str, Any]: optional custom output filenames
+  rng_max_matchup_groups: 100000
+  rng_diagnostic_lags: [1]
+  rng_diagnostic_partitions: 32
 
 ingest:
   row_group_size: 64000     # int: parquet row-group size

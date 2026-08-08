@@ -43,6 +43,7 @@ analysis:
   log_level: "INFO"
   rng_max_matchup_groups: 150000
   rng_diagnostic_lags: [1]
+  rng_diagnostic_partitions: 32
 
 ingest:
   row_group_size: 64000           # parquet/arrow row group target
