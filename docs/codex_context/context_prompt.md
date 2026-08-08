@@ -41,6 +41,9 @@ Preserve these invariants:
 - active configs contain only reloadable public fields; resolved paths, layouts,
   parent lifecycle roots, code identity, and execution controls live in the
   separately authenticated `run_context.json`;
+- process-tree execution uses a 1024 MiB hard envelope, a 768 MiB target and
+  pre-limit RSS abort; worker counts obey both CPU/native-thread and per-stage
+  memory caps, and partition manifests publish only after every unit validates;
 - the H2H power plan and block manifest are immutable after publication;
   exact-power allocation is the global first admissible crossing, power is
   conditional on completed support, and cap authorization/execution progress

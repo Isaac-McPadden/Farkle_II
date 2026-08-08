@@ -53,7 +53,8 @@ from farkle.analysis.trueskill_screening import (
     publish_rating_cell_contract,
     trueskill_method_contract,
 )
-from farkle.config import AppConfig, ArtifactScope
+from farkle.config import AppConfig, ArtifactScope, ResourcesConfig
+from farkle.utils.arrow_batches import iter_parquet_tables_by_bytes
 from farkle.utils.artifact_contract import (
     ArtifactContractError,
     ArtifactSidecar,
@@ -66,7 +67,12 @@ from farkle.utils.artifact_contract import (
 )
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.authenticated_contract import CodeIdentityPolicy, resolve_code_identity
-from farkle.utils.parallel import resolve_mp_context
+from farkle.utils.parallel import (
+    ProcessTreeMemoryGuard,
+    apply_native_thread_limits,
+    resolve_mp_context,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.random import seed_everything
 from farkle.utils.release_identity import is_v3_config
@@ -476,6 +482,7 @@ class _BlockCkpt:
     strategy_completed_exposures: dict[str, int] = field(default_factory=dict)
     strategy_excluded_safety_limit_exposures: dict[str, int] = field(default_factory=dict)
     strategy_performed_updates: dict[str, int] = field(default_factory=dict)
+    batch_bytes: int = 0
     version: int = 2
 
 
@@ -672,6 +679,7 @@ def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
                 "strategy_excluded_safety_limit_exposures"
             ),
             strategy_performed_updates=int_dict("strategy_performed_updates"),
+            batch_bytes=int(payload_any.get("batch_bytes", 0)),
             version=version_value,
         )
     except (TypeError, ValueError):
@@ -688,17 +696,20 @@ def _stream_batches(
     start_row_group: int = 0,
     start_batch_idx: int = 0,
     batch_rows: int = 100_000,
+    max_batch_bytes: int | None = None,
 ) -> Iterator[tuple[int, int, pa.Table]]:
-    """Yield (row_group_index, batch_index, batch_table)."""
-    pf = pq.ParquetFile(parquet_path)
-    n_rg = pf.num_row_groups
-    for rg in range(start_row_group, n_rg):
-        table = pf.read_row_group(rg, columns=columns)
-        # chunk the row-group into manageable batches
-        for bi, batch in enumerate(table.to_batches(max_chunksize=batch_rows)):
-            if rg == start_row_group and bi < start_batch_idx:
-                continue
-            yield rg, bi, pa.Table.from_batches([batch])
+    """Yield projected byte-bounded tables without reading whole row groups."""
+
+    byte_ceiling = max_batch_bytes if max_batch_bytes is not None else 2**63 - 1
+    yield from iter_parquet_tables_by_bytes(
+        parquet_path,
+        columns=columns,
+        max_batch_bytes=byte_ceiling,
+        max_batch_rows=batch_rows,
+        start_row_group=start_row_group,
+        start_batch_index=start_batch_idx,
+        use_threads=False,
+    )
 
 
 def _normalize_strategy_id(value: object) -> str:
@@ -724,7 +735,9 @@ def _classified_games_from_batch(
     missing = sorted(required.difference(batch.column_names))
     if missing:
         raise ValueError(f"TrueSkill canonical rows lack columns: {missing}")
-    for row in batch.to_pylist():
+    columns = {name: batch.column(name).combine_chunks() for name in required}
+    for row_index in range(batch.num_rows):
+        row = {name: column[row_index].as_py() for name, column in columns.items()}
         game = classify_trueskill_row(row, n)
         yield game.termination_status, game.players, game.ranks
 
@@ -754,6 +767,7 @@ def _rate_block_worker(
     curated_rows_name: str | None = None,
     cell_freshness_sha256: str | None = None,
     root_seed: int = 0,
+    max_batch_bytes: int | None = None,
 ) -> tuple[str, int]:
     """
     Process one <N>_players block with optional checkpointing.
@@ -832,7 +846,13 @@ def _rate_block_worker(
     strategy_updates: dict[str, int] = dict.fromkeys(keepers, 0)
     if resume:
         ck = _load_block_ckpt(ck_path)
-        if ck and Path(ck.row_file) == row_file and ck.freshness_sha256 == cell_freshness_sha256:
+        checkpoint_batch_bytes = 0 if max_batch_bytes is None else int(max_batch_bytes)
+        if (
+            ck
+            and Path(ck.row_file) == row_file
+            and ck.freshness_sha256 == cell_freshness_sha256
+            and ck.batch_bytes == checkpoint_batch_bytes
+        ):
             start_rg = ck.row_group
             start_bi = ck.batch_index
             performed_update_games = ck.games_done
@@ -862,14 +882,20 @@ def _rate_block_worker(
             if total_input_games > 0
             else None
         )
-        schema = pq.read_schema(row_file)
-        columns = list(schema.names)
+        columns = [
+            "termination_status",
+            "outcome_schema_version",
+            "winner_seat",
+            *(f"P{seat}_strategy" for seat in range(1, n + 1)),
+            *(f"P{seat}_rank" for seat in range(1, n + 1)),
+        ]
         for rg, bi, batch in _stream_batches(
             row_file,
             columns,
             start_row_group=start_rg,
             start_batch_idx=start_bi,
             batch_rows=batch_rows,
+            max_batch_bytes=max_batch_bytes,
         ):
             for status, players, ranks in _classified_games_from_batch(batch, n):
                 attempted_games += 1
@@ -937,6 +963,7 @@ def _rate_block_worker(
                         strategy_completed_exposures=strategy_completed,
                         strategy_excluded_safety_limit_exposures=strategy_excluded,
                         strategy_performed_updates=strategy_updates,
+                        batch_bytes=(0 if max_batch_bytes is None else int(max_batch_bytes)),
                     ),
                 )
                 if progress_logger is not None:
@@ -1082,6 +1109,8 @@ def run_trueskill(
     mp_start_method: str | None = None,
     progress_logging: ProgressLogConfig | None = None,
     cell_freshness_sha256: str | None = None,
+    resources: ResourcesConfig | None = None,
+    max_batch_bytes: int | None = None,
 ) -> None:
     """Compute TrueSkill ratings for all result blocks.
 
@@ -1150,7 +1179,24 @@ def run_trueskill(
     auto_default = max(1, (os.cpu_count() or 1) - 1)
     requested = workers or auto_default
     cpu_cap = os.cpu_count() or 1
-    actual_workers = max(1, min(requested, cpu_cap, len(blocks)))
+    if resources is None:
+        actual_workers = max(1, min(requested, cpu_cap, len(blocks)))
+        memory_guard = None
+    else:
+        policy_cfg = type("_TrueSkillPolicy", (), {"n_jobs": requested})()
+        policy = resolve_stage_parallel_policy(
+            "trueskill",
+            policy_cfg,
+            n_jobs_override=requested,
+            resources=resources,
+        )
+        apply_native_thread_limits(policy)
+        actual_workers = max(1, min(policy.process_workers, len(blocks)))
+        memory_guard = ProcessTreeMemoryGuard(
+            resources.rss_abort_mb,
+            resources.rss_sample_interval_seconds,
+        )
+        memory_guard.check_before_schedule(force=True)
     if actual_workers != requested:
         LOGGER.info(
             "TrueSkill workers capped",
@@ -1164,10 +1210,19 @@ def run_trueskill(
         )
     if actual_workers > 1 and len(blocks) > 1:
         with cf.ProcessPoolExecutor(max_workers=actual_workers, mp_context=mp_context) as ex:
-            futures = {
-                ex.submit(
+            block_iterator = iter(blocks)
+            futures: dict[cf.Future[tuple[str, int]], Path] = {}
+
+            def submit_one() -> bool:
+                if memory_guard is not None:
+                    memory_guard.check_before_schedule()
+                try:
+                    block = next(block_iterator)
+                except StopIteration:
+                    return False
+                future = ex.submit(
                     _rate_block_worker,
-                    str(b),
+                    str(block),
                     str(root),
                     suffix,
                     batch_rows,
@@ -1179,20 +1234,28 @@ def run_trueskill(
                     curated_rows_name=curated_rows_name,
                     cell_freshness_sha256=cell_freshness_sha256,
                     root_seed=output_seed,
-                ): b
-                for b in blocks
-            }
-            for fut in cf.as_completed(futures):
+                    max_batch_bytes=max_batch_bytes,
+                )
+                futures[future] = block
+                return True
+
+            in_flight_per_worker = 1 if resources is None else resources.max_in_flight_per_worker
+            for _ in range(min(len(blocks), actual_workers * in_flight_per_worker)):
+                submit_one()
+            while futures:
+                fut = next(iter(cf.as_completed(tuple(futures))))
                 try:
                     player_count, block_games = fut.result()
                 except Exception as e:
-                    bad = futures[fut]
+                    bad = futures.pop(fut)
                     LOGGER.exception(
                         "TrueSkill block failed",
                         extra={"stage": "trueskill", "block": bad.name, "error": str(e)},
                     )
                     raise RuntimeError(f"TrueSkill block failed for {bad.name}: {e}") from e
+                futures.pop(fut)
                 del player_count, block_games
+                submit_one()
     else:
         for block in blocks:
             player_count, block_games = _rate_block_worker(
@@ -1208,6 +1271,7 @@ def run_trueskill(
                 curated_rows_name=curated_rows_name,
                 cell_freshness_sha256=cell_freshness_sha256,
                 root_seed=output_seed,
+                max_batch_bytes=max_batch_bytes,
             )
             del player_count, block_games
 
@@ -1432,6 +1496,8 @@ def run_trueskill_root(cfg: AppConfig, *, force: bool = False) -> None:
             mp_start_method=analysis_cfg.mp_start_method,
             progress_logging=analysis_cfg.progress_logging,
             cell_freshness_sha256=cell_freshness,
+            resources=cfg.resources,
+            max_batch_bytes=cfg.resources.stage_batch_bytes["trueskill"],
         )
 
         seed_outputs: dict[str, Mapping[str, RatingStats]] = {}

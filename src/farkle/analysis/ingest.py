@@ -33,6 +33,7 @@ from farkle.utils.artifact_contract import (
 from farkle.utils.manifest import iter_manifest
 from farkle.utils.parallel import (
     ParallelNestingContext,
+    ProcessTreeMemoryGuard,
     apply_native_thread_limits,
     normalize_n_jobs,
     resolve_mp_context,
@@ -406,6 +407,7 @@ def _process_block(block: Path, cfg: AppConfig, *, parent_process_workers: int =
             active_process_executor=parent_process_workers > 1,
             parent_process_workers=max(1, int(parent_process_workers)),
         ),
+        resources=cfg.resources,
     )
     apply_native_thread_limits(worker_policy)
     pa.set_cpu_count(worker_policy.arrow_threads)
@@ -557,7 +559,7 @@ def run(cfg: AppConfig) -> None:
             parallelism controls.
     """
     resolved_n_jobs = normalize_n_jobs(cfg.ingest.n_jobs)
-    stage_policy = resolve_stage_parallel_policy("ingest", cfg.ingest)
+    stage_policy = resolve_stage_parallel_policy("ingest", cfg.ingest, resources=cfg.resources)
     apply_native_thread_limits(stage_policy)
     pa.set_cpu_count(stage_policy.arrow_threads)
     pa.set_io_thread_count(stage_policy.arrow_threads)
@@ -637,22 +639,30 @@ def run(cfg: AppConfig) -> None:
     mp_context = resolve_mp_context(cfg.analysis.mp_start_method)
 
     total_rows = 0
+    memory_guard = ProcessTreeMemoryGuard(
+        cfg.resources.rss_abort_mb,
+        cfg.resources.rss_sample_interval_seconds,
+    )
+    memory_guard.check_before_schedule(force=True)
     if stage_policy.process_workers <= 1:
         for block in blocks:
+            memory_guard.check_before_schedule()
             total_rows += _process_block(block, cfg, parent_process_workers=1)
     else:
         with ProcessPoolExecutor(
             max_workers=stage_policy.process_workers, mp_context=mp_context
         ) as executor:
-            futures = [
-                executor.submit(
-                    _process_block,
-                    block,
-                    cfg,
-                    parent_process_workers=stage_policy.process_workers,
+            futures = []
+            for block in blocks:
+                memory_guard.check_before_schedule()
+                futures.append(
+                    executor.submit(
+                        _process_block,
+                        block,
+                        cfg,
+                        parent_process_workers=stage_policy.process_workers,
+                    )
                 )
-                for block in blocks
-            ]
             for f in futures:
                 total_rows += f.result()
 

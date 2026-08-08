@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-07-30`
+- Reconciled date: `2026-08-07`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -55,6 +55,13 @@ changing code or accepting a statistical conclusion.
   Its freshness identity includes the typed public lag set and matchup-group
   cap, while artifact method metadata records the effective cap, normalized
   lags, and tracked/skipped group counts.
+  Run-context contract v2 additionally authenticates execution-only resource
+  controls. Shared parallel policy now caps processes by configured logical
+  CPUs/native threads and per-stage memory estimates, samples process-tree RSS,
+  and suppresses nested process pools. The partitioned-stage primitive publishes
+  exact-byte unit stamps and a final ordered manifest only after all units
+  validate. TrueSkill projected reads use byte-bounded Arrow batches instead of
+  materializing complete Parquet row groups.
   Final pipeline health rechecks the current diagnostic-stage lifecycle state.
   Task 14's raw oracle adds an authenticated, immutable limit-only game profile:
   its canonical hash extends run lineage and simulation freshness while an

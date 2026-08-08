@@ -11,6 +11,7 @@ from pytest import MonkeyPatch
 
 import farkle.utils.csv_files as csv_files
 import farkle.utils.parallel as parallel
+from farkle.config import ResourcesConfig
 
 
 def _times_two(value: int) -> int:
@@ -353,3 +354,60 @@ def test_apply_native_thread_limits(monkeypatch: MonkeyPatch) -> None:
     assert os.environ["VECLIB_MAXIMUM_THREADS"] == "4"
     assert os.environ["BLIS_NUM_THREADS"] == "4"
     assert os.environ["PYARROW_NUM_THREADS"] == "3"
+
+
+def test_resource_policy_enforces_cpu_and_memory_caps() -> None:
+    class DummyCfg:
+        n_jobs: int | None = 20
+
+    resources = ResourcesConfig(
+        target_memory_mb=768,
+        rss_abort_mb=950,
+        parent_reserve_mb=192,
+        logical_cpu_workers=12,
+        native_threads_per_worker=2,
+        estimated_worker_memory_mb={"analysis": 160},
+        stage_batch_bytes={"analysis": 4096},
+    )
+    policy = parallel.resolve_stage_parallel_policy("analysis", DummyCfg(), resources=resources)
+
+    assert policy.cpu_worker_cap == 6
+    assert policy.memory_worker_cap == 3
+    assert policy.process_workers == 3
+    assert policy.process_workers <= policy.configured_cpu_budget // 2
+    assert policy.process_workers <= (768 - 192) // 160
+    assert policy.native_threads_per_process == 2
+
+
+def test_concurrent_roots_share_the_cpu_and_memory_envelope() -> None:
+    class DummyCfg:
+        n_jobs: int | None = 8
+
+    resources = ResourcesConfig(
+        logical_cpu_workers=8,
+        native_threads_per_worker=1,
+        estimated_worker_memory_mb={"analysis": 128},
+        stage_batch_bytes={"analysis": 4096},
+    )
+    policy = parallel.resolve_stage_parallel_policy(
+        "analysis", DummyCfg(), resources=resources, concurrent_roots=2
+    )
+    assert policy.process_workers == 2
+    assert policy.cpu_worker_cap == 4
+    assert policy.memory_worker_cap == 2
+
+
+def test_nested_executor_environment_prevents_process_pool() -> None:
+    class DummyCfg:
+        n_jobs: int | None = 8
+
+    previous = os.environ.get("FARKLE_PROCESS_POOL_ACTIVE")
+    os.environ["FARKLE_PROCESS_POOL_ACTIVE"] = "1"
+    try:
+        policy = parallel.resolve_stage_parallel_policy("analysis", DummyCfg())
+    finally:
+        if previous is None:
+            os.environ.pop("FARKLE_PROCESS_POOL_ACTIVE", None)
+        else:
+            os.environ["FARKLE_PROCESS_POOL_ACTIVE"] = previous
+    assert policy.process_workers == 1

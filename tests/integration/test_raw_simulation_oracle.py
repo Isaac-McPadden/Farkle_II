@@ -291,7 +291,7 @@ def _assert_authenticated_simulations(
             context.run_context_path,
             active_config_path=context.active_config_path,
         )
-        assert persisted_context["run_context_contract_version"] == 1
+        assert persisted_context["run_context_contract_version"] == 2
         assert persisted_context["public_config_sha256"] == context.config.config_sha
         assert persisted_context["run_lineage_sha256"] == context.config._run_lineage_sha256
         assert len(str(persisted_context["run_context_sha256"])) == 64

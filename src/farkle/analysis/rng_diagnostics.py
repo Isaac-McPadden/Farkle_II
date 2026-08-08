@@ -119,7 +119,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     stage_log = stage_logger("rng_diagnostics", logger=LOGGER)
     stage_log.start()
 
-    policy = resolve_stage_parallel_policy("rng_diagnostics", cfg.analysis)
+    policy = resolve_stage_parallel_policy("rng_diagnostics", cfg.analysis, resources=cfg.resources)
     apply_native_thread_limits(policy)
     pa.set_cpu_count(policy.arrow_threads)
     pa.set_io_thread_count(policy.arrow_threads)

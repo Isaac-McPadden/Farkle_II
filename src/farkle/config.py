@@ -385,6 +385,39 @@ class OrchestrationConfig:
     parallel_seeds: bool = False
 
 
+@dataclass
+class ResourcesConfig:
+    """Execution-only CPU, native-thread, memory, and streaming budgets."""
+
+    max_memory_mb: int = 1_024
+    target_memory_mb: int = 768
+    rss_abort_mb: int = 950
+    parent_reserve_mb: int = 192
+    logical_cpu_workers: int = 0
+    native_threads_per_worker: int = 1
+    max_in_flight_per_worker: int = 1
+    rss_sample_interval_seconds: float = 0.25
+    estimated_worker_memory_mb: dict[str, int] = field(
+        default_factory=lambda: {
+            "simulation": 128,
+            "ingest": 192,
+            "analysis": 192,
+            "trueskill": 192,
+            "head2head": 128,
+            "partitioned_stage": 128,
+        }
+    )
+    stage_batch_bytes: dict[str, int] = field(
+        default_factory=lambda: {
+            "ingest": 32 * 1024 * 1024,
+            "combine": 32 * 1024 * 1024,
+            "analysis": 32 * 1024 * 1024,
+            "trueskill": 16 * 1024 * 1024,
+            "partitioned_stage": 16 * 1024 * 1024,
+        }
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AppConfig + convenience properties used by analysis code
 # ─────────────────────────────────────────────────────────────────────────────
@@ -403,6 +436,7 @@ class AppConfig:
     head2head: Head2HeadConfig = field(default_factory=Head2HeadConfig)
     hgb: HGBConfig = field(default_factory=HGBConfig)
     orchestration: OrchestrationConfig = field(default_factory=OrchestrationConfig)
+    resources: ResourcesConfig = field(default_factory=ResourcesConfig)
     rng: RNGConfig = field(default_factory=RNGConfig)
     screening: ScreeningConfig = field(default_factory=ScreeningConfig)
     batching: BatchingConfig = field(default_factory=BatchingConfig)
@@ -518,6 +552,11 @@ class AppConfig:
         """Validate locked production settings before expensive work is scheduled."""
 
         _validate_statistical_contract(self, require_two_roots=require_two_roots)
+
+    def validate_resource_contract(self) -> None:
+        """Validate execution budgets independently of statistical settings."""
+
+        _validate_resource_contract(self.resources)
 
     def stage_dir(
         self,
@@ -1296,6 +1335,7 @@ def _validate_config_keys(data: Mapping[str, Any]) -> None:
         "head2head": Head2HeadConfig,
         "hgb": HGBConfig,
         "orchestration": OrchestrationConfig,
+        "resources": ResourcesConfig,
         "rng": RNGConfig,
         "screening": ScreeningConfig,
         "batching": BatchingConfig,
@@ -1511,6 +1551,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
         head2head=build(Head2HeadConfig, data.get("head2head", {})),
         hgb=build(HGBConfig, data.get("hgb", {})),
         orchestration=build(OrchestrationConfig, data.get("orchestration", {})),
+        resources=build(ResourcesConfig, data.get("resources", {})),
         rng=build(RNGConfig, data.get("rng", {})),
         screening=build(ScreeningConfig, data.get("screening", {})),
         batching=build(BatchingConfig, data.get("batching", {})),
@@ -1537,6 +1578,7 @@ def load_app_config(*overlays: Path, seed_list_len: int | None = None) -> AppCon
                 expected_seed_len=None,
                 context=f"load_app_config(sim.per_n[{key_int}])",
             )
+    _validate_resource_contract(cfg.resources)
     return cfg
 
 
@@ -1650,7 +1692,7 @@ def _hashable_config_dict(cfg: AppConfig) -> dict[str, Any]:
     """Return the config payload used for deterministic cache hashing."""
 
     resolved = effective_config_dict(cfg)
-    for path in ("sim.progress_logging", "analysis.progress_logging"):
+    for path in ("sim.progress_logging", "analysis.progress_logging", "resources"):
         _drop_nested_path(resolved, path)
     return resolved
 
@@ -1691,6 +1733,60 @@ def _project_effective_config(
         if present:
             _assign_nested_path(projected, path, value)
     return projected
+
+
+def _validate_resource_contract(resources: ResourcesConfig) -> None:
+    """Reject resource settings that cannot preserve the 1 GiB safety envelope."""
+
+    integer_fields = {
+        "max_memory_mb": resources.max_memory_mb,
+        "target_memory_mb": resources.target_memory_mb,
+        "rss_abort_mb": resources.rss_abort_mb,
+        "parent_reserve_mb": resources.parent_reserve_mb,
+        "logical_cpu_workers": resources.logical_cpu_workers,
+        "native_threads_per_worker": resources.native_threads_per_worker,
+        "max_in_flight_per_worker": resources.max_in_flight_per_worker,
+    }
+    if any(
+        isinstance(value, bool) or not isinstance(value, int) for value in integer_fields.values()
+    ):
+        raise TypeError("resource memory, CPU, thread, and in-flight controls must be integers")
+    if resources.max_memory_mb > 1_024:
+        raise ValueError("resources.max_memory_mb cannot exceed the hard 1024 MiB ceiling")
+    if not (
+        0
+        < resources.parent_reserve_mb
+        < resources.target_memory_mb
+        < resources.rss_abort_mb
+        < resources.max_memory_mb
+    ):
+        raise ValueError(
+            "resources must satisfy 0 < parent_reserve_mb < target_memory_mb "
+            "< rss_abort_mb < max_memory_mb"
+        )
+    if resources.logical_cpu_workers < 0:
+        raise ValueError("resources.logical_cpu_workers must be >= 0")
+    if resources.native_threads_per_worker < 1:
+        raise ValueError("resources.native_threads_per_worker must be positive")
+    if resources.max_in_flight_per_worker < 1:
+        raise ValueError("resources.max_in_flight_per_worker must be positive")
+    if not math.isfinite(resources.rss_sample_interval_seconds) or (
+        resources.rss_sample_interval_seconds <= 0
+    ):
+        raise ValueError("resources.rss_sample_interval_seconds must be finite and positive")
+    for name, mapping in (
+        ("estimated_worker_memory_mb", resources.estimated_worker_memory_mb),
+        ("stage_batch_bytes", resources.stage_batch_bytes),
+    ):
+        if not mapping or any(
+            not isinstance(stage, str)
+            or not stage
+            or isinstance(value, bool)
+            or not isinstance(value, int)
+            or value < 1
+            for stage, value in mapping.items()
+        ):
+            raise ValueError(f"resources.{name} must contain positive integer stage budgets")
 
 
 def _validate_statistical_contract(cfg: AppConfig, *, require_two_roots: bool) -> None:
@@ -1911,6 +2007,8 @@ __all__ = [
     "TrueSkillConfig",
     "Head2HeadConfig",
     "HGBConfig",
+    "OrchestrationConfig",
+    "ResourcesConfig",
     "RNGConfig",
     "ScreeningConfig",
     "BatchingConfig",

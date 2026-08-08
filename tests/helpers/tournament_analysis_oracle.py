@@ -802,7 +802,7 @@ def assert_authenticated_analysis_graph(
             context.run_context_path,
             active_config_path=context.active_config_path,
         )
-        assert persisted["run_context_contract_version"] == 1
+        assert persisted["run_context_contract_version"] == 2
         assert persisted["public_config_sha256"] == context.config.config_sha
         assert persisted["lineage_extensions"] == {"game_profile_sha256": profile_sha256}
         assert Path(persisted["resolved_paths"]["results_root"]).is_absolute()
@@ -819,7 +819,7 @@ def assert_authenticated_analysis_graph(
         pair_context.run_context_path,
         active_config_path=pair_context.active_config_path,
     )
-    assert pair_persisted["run_context_contract_version"] == 1
+    assert pair_persisted["run_context_contract_version"] == 2
     assert pair_persisted["public_config_sha256"] == pair_context.config.config_sha
     assert pair_persisted["parent_lifecycle_roots"]
     assert len(pair_persisted["parent_lifecycle_roots"]) == 2

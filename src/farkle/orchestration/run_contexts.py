@@ -5,14 +5,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from dataclasses import dataclass, field, fields, replace
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Any, cast
 
 from farkle.analysis.stage_registry import StageLayout, resolve_root_pair_stage_layout
 from farkle.config import AppConfig, assign_config_sha, compute_config_sha
 from farkle.utils.authenticated_contract import CodeIdentity, canonical_json_bytes, identity_sha256
-from farkle.utils.parallel import normalize_n_jobs
+from farkle.utils.parallel import normalize_n_jobs, resolve_stage_parallel_policy
 from farkle.utils.writer import atomic_path
 
 SEED_PAIR_ANALYSIS_DIRNAME = "seed_pair_analysis"
@@ -225,7 +225,7 @@ def configure_run_lineage(
         list(context.root_pair) if isinstance(context, RootPairRunContext) else [int(context.seed)]
     )
     lineage = {
-        "run_context_contract_version": 1,
+        "run_context_contract_version": 2,
         "context_kind": "root_pair" if isinstance(context, RootPairRunContext) else "root",
         "roots": roots,
         "parent_lifecycle_roots": list(parent_lifecycle_roots),
@@ -266,6 +266,25 @@ def write_run_context_atomic(
         "analysis_root": str(context.analysis_root),
         "active_config": str(context.active_config_path),
     }
+
+    def default_worker_metadata(stage: str, section: Any) -> dict[str, int | None]:
+        requested = getattr(section, "n_jobs", None)
+        resolved = normalize_n_jobs(requested, default=1)
+        policy = resolve_stage_parallel_policy(
+            stage,
+            section,
+            resources=cfg.resources,
+        )
+        return {
+            "requested_n_jobs": requested,
+            "resolved_n_jobs": resolved,
+            "effective_n_jobs": policy.process_workers,
+            "cpu_worker_cap": policy.cpu_worker_cap,
+            "memory_worker_cap": policy.memory_worker_cap,
+            "native_threads_per_worker": policy.native_threads_per_process,
+            "estimated_worker_memory_mb": policy.estimated_worker_memory_mb,
+        }
+
     execution = {
         "sim_n_jobs": cfg.sim.n_jobs,
         "sim_mp_start_method": cfg.sim.mp_start_method,
@@ -276,6 +295,7 @@ def write_run_context_atomic(
         "analysis_mp_start_method": cfg.analysis.mp_start_method,
         "head2head_n_jobs": cfg.head2head.n_jobs,
         "parallel_seeds": cfg.orchestration.parallel_seeds,
+        "resources": asdict(cfg.resources),
         "worker_counts": (
             {
                 str(stage): {str(key): value for key, value in counts.items()}
@@ -283,33 +303,18 @@ def write_run_context_atomic(
             }
             if worker_counts is not None
             else {
-                "simulation": {
-                    "requested_n_jobs": cfg.sim.n_jobs,
-                    "resolved_n_jobs": normalize_n_jobs(cfg.sim.n_jobs, default=1),
-                    "effective_n_jobs": normalize_n_jobs(cfg.sim.n_jobs, default=1),
-                },
-                "ingest": {
-                    "requested_n_jobs": cfg.ingest.n_jobs,
-                    "resolved_n_jobs": normalize_n_jobs(cfg.ingest.n_jobs, default=1),
-                    "effective_n_jobs": normalize_n_jobs(cfg.ingest.n_jobs, default=1),
-                },
-                "analysis": {
-                    "requested_n_jobs": cfg.analysis.n_jobs,
-                    "resolved_n_jobs": normalize_n_jobs(cfg.analysis.n_jobs, default=1),
-                    "effective_n_jobs": normalize_n_jobs(cfg.analysis.n_jobs, default=1),
-                },
-                "head2head": {
-                    "requested_n_jobs": cfg.head2head.n_jobs,
-                    "resolved_n_jobs": normalize_n_jobs(cfg.head2head.n_jobs, default=1),
-                    "effective_n_jobs": normalize_n_jobs(cfg.head2head.n_jobs, default=1),
-                },
+                "simulation": default_worker_metadata("simulation", cfg.sim),
+                "ingest": default_worker_metadata("ingest", cfg.ingest),
+                "analysis": default_worker_metadata("analysis", cfg.analysis),
+                "head2head": default_worker_metadata("head2head", cfg.head2head),
             }
         ),
     }
     payload = {
-        "run_context_contract_version": 1,
+        "run_context_contract_version": 2,
         "run_lineage_sha256": lineage_sha,
         "public_config_sha256": cfg.config_sha,
+        "resource_config_sha256": identity_sha256(asdict(cfg.resources)),
         "parent_lifecycle_roots": list(parent_lifecycle_roots),
         "resolved_paths": resolved_paths,
         "resolved_stage_layout": cfg.stage_layout.to_resolved_layout(),
@@ -347,6 +352,8 @@ def load_run_context(path: Path, *, active_config_path: Path | None = None) -> d
         config = load_app_config(active_config_path, seed_list_len=expected_roots)
         if compute_config_sha(config) != payload.get("public_config_sha256"):
             raise ValueError("run context does not bind the adjacent public configuration")
+        if identity_sha256(asdict(config.resources)) != payload.get("resource_config_sha256"):
+            raise ValueError("run context does not bind adjacent execution resource controls")
     return payload
 
 

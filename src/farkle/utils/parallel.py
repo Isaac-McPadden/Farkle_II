@@ -10,10 +10,15 @@ from __future__ import annotations
 import contextlib
 import multiprocessing as mp
 import os
+import threading
+import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from multiprocessing.context import BaseContext
 from typing import Any, Mapping
+
+import psutil
+from threadpoolctl import ThreadpoolController
 
 _NATIVE_THREAD_ENV_VARS: tuple[str, ...] = (
     "OMP_NUM_THREADS",
@@ -23,6 +28,9 @@ _NATIVE_THREAD_ENV_VARS: tuple[str, ...] = (
     "VECLIB_MAXIMUM_THREADS",
     "BLIS_NUM_THREADS",
 )
+_NATIVE_LIMIT_LOCK = threading.Lock()
+_NATIVE_LIMITER: Any | None = None
+_NATIVE_LIMITER_CAP: int | None = None
 
 
 @dataclass(frozen=True)
@@ -34,6 +42,77 @@ class StageParallelPolicy:
     python_threads: int
     arrow_threads: int
     native_threads_per_process: int
+    configured_cpu_budget: int = 1
+    cpu_worker_cap: int = 1
+    memory_worker_cap: int = 1
+    estimated_worker_memory_mb: int = 0
+    target_memory_mb: int = 0
+    parent_reserve_mb: int = 0
+    concurrent_roots: int = 1
+
+
+class ResourceSafetyError(RuntimeError):
+    """Raised before more work is scheduled outside the safe resource envelope."""
+
+
+@dataclass(slots=True)
+class ProcessTreeMemoryGuard:
+    """Periodically sample current-process plus descendant resident memory."""
+
+    rss_abort_mb: int
+    sample_interval_seconds: float = 0.25
+    pid: int | None = None
+    last_rss_bytes: int = 0
+    peak_rss_bytes: int = 0
+    _last_sample_at: float = 0.0
+
+    def sample(self, *, force: bool = False) -> int:
+        """Return sampled process-tree RSS, reusing only a recent safe sample."""
+
+        now = time.monotonic()
+        if not force and now - self._last_sample_at < self.sample_interval_seconds:
+            return self.last_rss_bytes
+        self.last_rss_bytes = process_tree_rss_bytes(self.pid)
+        self.peak_rss_bytes = max(self.peak_rss_bytes, self.last_rss_bytes)
+        self._last_sample_at = now
+        return self.last_rss_bytes
+
+    def check_before_schedule(self, *, force: bool = False) -> int:
+        """Fail closed when sampled RSS reaches the configured abort threshold."""
+
+        rss = self.sample(force=force)
+        if rss >= self.rss_abort_mb * 1024 * 1024:
+            raise ResourceSafetyError(
+                "process-tree RSS safety threshold crossed: "
+                f"{rss / (1024 * 1024):.1f} MiB >= {self.rss_abort_mb} MiB"
+            )
+        return rss
+
+
+def process_tree_rss_bytes(pid: int | None = None) -> int:
+    """Return RSS for one process and all recursively reachable children."""
+
+    root = psutil.Process(os.getpid() if pid is None else pid)
+    processes = [root, *root.children(recursive=True)]
+    rss = 0
+    seen: set[int] = set()
+    for process in processes:
+        if process.pid in seen:
+            continue
+        seen.add(process.pid)
+        try:
+            rss += int(process.memory_info().rss)
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return rss
+
+
+def _stage_resource_value(values: Mapping[str, int], stage: str, fallback: str) -> int:
+    if stage in values:
+        return int(values[stage])
+    if fallback in values:
+        return int(values[fallback])
+    raise ValueError(f"resources do not define a budget for stage {stage!r}")
 
 
 @dataclass(frozen=True)
@@ -91,11 +170,12 @@ def resolve_stage_parallel_policy(
     outer_context: ParallelNestingContext | Mapping[str, Any] | None = None,
     *,
     n_jobs_override: int | None = None,
+    resources: Any | None = None,
+    concurrent_roots: int = 1,
 ) -> StageParallelPolicy:
     """Resolve per-stage parallel budgets with optional nesting awareness."""
-    del stage  # stage remains part of API for future stage-specific rules.
-
-    total_cores = os.cpu_count() or 1
+    detected_cores = os.cpu_count() or 1
+    total_cores = detected_cores
     context_total_cores: int | None = None
     active_process_executor = False
     parent_workers = 1
@@ -113,17 +193,62 @@ def resolve_stage_parallel_policy(
     if context_total_cores is not None:
         total_cores = max(1, context_total_cores)
 
+    if os.environ.get("FARKLE_PROCESS_POOL_ACTIVE") == "1":
+        active_process_executor = True
+
+    concurrent_roots = max(1, int(concurrent_roots))
+    if resources is not None:
+        configured_cpu = int(getattr(resources, "logical_cpu_workers", 0))
+        total_cores = normalize_n_jobs(
+            configured_cpu, cpu_count=detected_cores, default=detected_cores
+        )
+
     requested_n_jobs = (
         n_jobs_override if n_jobs_override is not None else getattr(cfg, "n_jobs", None)
     )
     process_workers = normalize_n_jobs(requested_n_jobs, cpu_count=total_cores, default=1)
+
+    configured_cpu_budget = max(1, total_cores // concurrent_roots)
+    cpu_worker_cap = configured_cpu_budget
+    memory_worker_cap = process_workers
+    estimated_worker_memory_mb = 0
+    target_memory_mb = 0
+    parent_reserve_mb = 0
+    if resources is not None:
+        native_threads = max(1, int(resources.native_threads_per_worker))
+        cpu_worker_cap = configured_cpu_budget // native_threads
+        if cpu_worker_cap < 1:
+            raise ResourceSafetyError(
+                "configured CPU budget cannot support one worker at "
+                f"{native_threads} native threads per worker"
+            )
+        fallback = "head2head" if "h2h" in stage else "analysis"
+        estimated_worker_memory_mb = _stage_resource_value(
+            resources.estimated_worker_memory_mb,
+            stage,
+            fallback,
+        )
+        target_memory_mb = int(resources.target_memory_mb)
+        parent_reserve_mb = int(resources.parent_reserve_mb)
+        available_mb = target_memory_mb - parent_reserve_mb
+        memory_worker_cap = available_mb // (estimated_worker_memory_mb * concurrent_roots)
+        if memory_worker_cap < 1:
+            raise ResourceSafetyError(
+                f"stage {stage!r} estimated worker memory ({estimated_worker_memory_mb} MiB) "
+                f"exceeds its process-tree target share ({available_mb // concurrent_roots} MiB)"
+            )
+        process_workers = min(process_workers, cpu_worker_cap, memory_worker_cap)
     if active_process_executor:
         process_workers = 1
 
     available_native_threads = (
         max(1, total_cores // parent_workers) if active_process_executor else total_cores
     )
-    native_threads_per_process = max(1, available_native_threads // max(1, process_workers))
+    native_threads_per_process = (
+        max(1, int(resources.native_threads_per_worker))
+        if resources is not None
+        else max(1, available_native_threads // max(1, process_workers))
+    )
     python_threads = native_threads_per_process
 
     requested_arrow_threads = getattr(cfg, "arrow_threads", None)
@@ -144,15 +269,36 @@ def resolve_stage_parallel_policy(
         python_threads=python_threads,
         arrow_threads=arrow_threads,
         native_threads_per_process=native_threads_per_process,
+        configured_cpu_budget=configured_cpu_budget,
+        cpu_worker_cap=cpu_worker_cap,
+        memory_worker_cap=memory_worker_cap,
+        estimated_worker_memory_mb=estimated_worker_memory_mb,
+        target_memory_mb=target_memory_mb,
+        parent_reserve_mb=parent_reserve_mb,
+        concurrent_roots=concurrent_roots,
     )
 
 
 def apply_native_thread_limits(policy: StageParallelPolicy) -> None:
     """Apply environment-based native thread caps for the current process."""
+    global _NATIVE_LIMITER, _NATIVE_LIMITER_CAP
     thread_cap = str(max(1, int(policy.native_threads_per_process)))
     for env_var in _NATIVE_THREAD_ENV_VARS:
         os.environ[env_var] = thread_cap
     os.environ["PYARROW_NUM_THREADS"] = str(max(1, int(policy.arrow_threads)))
+    with _NATIVE_LIMIT_LOCK:
+        resolved_cap = int(thread_cap)
+        if resolved_cap != _NATIVE_LIMITER_CAP:
+            _NATIVE_LIMITER = ThreadpoolController().limit(limits=resolved_cap)
+            _NATIVE_LIMITER_CAP = resolved_cap
+
+
+def _initialize_process_worker(initializer, initargs: tuple[Any, ...]) -> None:
+    """Mark executor children so nested stage policies collapse to one process."""
+
+    os.environ["FARKLE_PROCESS_POOL_ACTIVE"] = "1"
+    if initializer is not None:
+        initializer(*initargs)
 
 
 def process_map(
@@ -164,6 +310,7 @@ def process_map(
     initargs=None,
     window=0,
     mp_context: BaseContext | None = None,
+    memory_guard: ProcessTreeMemoryGuard | None = None,
 ):
     """Map ``fn`` across ``items`` with optional multiprocessing support."""
     if initargs is None:
@@ -175,6 +322,8 @@ def process_map(
         if initializer is not None:
             initializer(*tuple(initargs))
         for it in items:
+            if memory_guard is not None:
+                memory_guard.check_before_schedule()
             yield fn(it)
         return
     if window <= 0:
@@ -182,8 +331,8 @@ def process_map(
 
     with ProcessPoolExecutor(
         max_workers=resolved_jobs,
-        initializer=initializer,
-        initargs=tuple(initargs),
+        initializer=_initialize_process_worker,
+        initargs=(initializer, tuple(initargs)),
         mp_context=mp_context,
     ) as executor:
         it = iter(items)
@@ -191,6 +340,8 @@ def process_map(
         # prefill the window
         for _ in range(window):
             try:
+                if memory_guard is not None:
+                    memory_guard.check_before_schedule()
                 futs.append(executor.submit(fn, next(it)))
             except StopIteration:
                 break
@@ -199,15 +350,20 @@ def process_map(
             futs.remove(done)
             yield done.result()
             with contextlib.suppress(StopIteration):
+                if memory_guard is not None:
+                    memory_guard.check_before_schedule()
                 futs.append(executor.submit(fn, next(it)))
 
 
 __all__ = [
     "ParallelNestingContext",
+    "ProcessTreeMemoryGuard",
+    "ResourceSafetyError",
     "StageParallelPolicy",
     "apply_native_thread_limits",
     "normalize_n_jobs",
     "process_map",
+    "process_tree_rss_bytes",
     "resolve_mp_context",
     "resolve_stage_parallel_policy",
 ]

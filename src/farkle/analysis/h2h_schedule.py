@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-import os
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass
@@ -38,6 +37,11 @@ from farkle.utils.artifacts import (
     write_parquet_artifact_atomic,
 )
 from farkle.utils.authenticated_contract import load_authenticated_sidecar
+from farkle.utils.parallel import (
+    ProcessTreeMemoryGuard,
+    apply_native_thread_limits,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_seed
 from farkle.utils.schema_helpers import OUTCOME_SCHEMA_VERSION
 from farkle.utils.stage_completion import (
@@ -1576,13 +1580,24 @@ def execute_h2h_schedule(
         raise FileNotFoundError(f"strategy manifest is required for H2H execution: {manifest_path}")
 
     configured_jobs = cfg.head2head.n_jobs if n_jobs is None else n_jobs
-    worker_count = (os.cpu_count() or 1) if configured_jobs == 0 else int(configured_jobs)
-    if worker_count < 1:
-        raise ValueError("H2H process executor worker count must be positive or zero for auto")
+    policy = resolve_stage_parallel_policy(
+        "head2head",
+        cfg.head2head,
+        n_jobs_override=configured_jobs,
+        resources=cfg.resources,
+    )
+    apply_native_thread_limits(policy)
+    worker_count = policy.process_workers
+    memory_guard = ProcessTreeMemoryGuard(
+        cfg.resources.rss_abort_mb,
+        cfg.resources.rss_sample_interval_seconds,
+    )
+    memory_guard.check_before_schedule(force=True)
     if block_runner is not _simulate_block and worker_count != 1:
         raise ValueError("custom H2H block runners require n_jobs=1")
     if worker_count == 1:
         for block in pending:
+            memory_guard.check_before_schedule()
             current = block
             while True:
                 raw_result = (
@@ -1616,6 +1631,7 @@ def execute_h2h_schedule(
             active: dict[Future[dict[str, Any]], dict[str, Any]] = {}
 
             def submit_one() -> bool:
+                memory_guard.check_before_schedule()
                 try:
                     block = next(iterator)
                 except StopIteration:
@@ -1633,7 +1649,8 @@ def execute_h2h_schedule(
                 active[future] = block
                 return True
 
-            for _ in range(min(len(pending), worker_count * 2)):
+            submission_window = worker_count * cfg.resources.max_in_flight_per_worker
+            for _ in range(min(len(pending), submission_window)):
                 submit_one()
             while active:
                 finished, _ = wait(active, return_when=FIRST_COMPLETED)

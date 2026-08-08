@@ -62,6 +62,11 @@ from farkle.utils.authenticated_contract import (
     validate_authenticated_artifact_unbound,
 )
 from farkle.utils.manifest import iter_manifest
+from farkle.utils.parallel import (
+    ProcessTreeMemoryGuard,
+    apply_native_thread_limits,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.release_identity import (
     is_v3_config,
     publish_native_manifest_v3,
@@ -1201,9 +1206,16 @@ def run_single_n(
         mp_start_method=cfg.sim.mp_start_method,
         deterministic_batch_size=workload_plan.shuffles_per_batch,
     )
+    resource_policy = resolve_stage_parallel_policy("simulation", cfg.sim, resources=cfg.resources)
+    apply_native_thread_limits(resource_policy)
+    memory_guard = ProcessTreeMemoryGuard(
+        cfg.resources.rss_abort_mb,
+        cfg.resources.rss_sample_interval_seconds,
+    )
+    memory_guard.check_before_schedule(force=True)
     tournament_mod.run_tournament(
         global_seed=cfg.sim.seed,
-        n_jobs=cfg.sim.n_jobs,
+        n_jobs=resource_policy.process_workers,
         checkpoint_path=ckpt_path,
         collect_metrics=cfg.sim.expanded_metrics,
         row_output_directory=row_dir,
@@ -1228,6 +1240,7 @@ def run_single_n(
         workload_plan=workload_plan,
         workload_plan_path=workload_plan_path,
         oracle_game_profile=oracle_game_profile,
+        memory_guard=memory_guard,
     )
 
     # --- Final checkpoint post-processing ---

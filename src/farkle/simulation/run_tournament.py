@@ -1018,6 +1018,7 @@ def run_tournament(
     workload_plan: TournamentWorkloadPlan | None = None,
     workload_plan_path: Path | None = None,
     oracle_game_profile: GameProfile | None = None,
+    memory_guard: parallel.ProcessTreeMemoryGuard | None = None,
 ) -> None:
     """Run a multi-process Monte-Carlo Farkle tournament.
 
@@ -1382,6 +1383,7 @@ def run_tournament(
             initargs=(strategies, cfg, oracle_game_profile),
             window=4 * resolved_n_jobs,
             mp_context=mp_context,
+            memory_guard=memory_guard,
         ):
             if collect_metrics or collect_rows:
                 wins, sums, sqs = cast(

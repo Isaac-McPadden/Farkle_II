@@ -315,8 +315,10 @@ def test_worker_budget_is_split_across_concurrent_roots(tmp_path: Path) -> None:
 
     policy = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
 
-    assert policy.simulation.process_workers == 4
-    assert policy.analysis.process_workers == 3
+    assert policy.simulation.process_workers == 2
+    assert policy.analysis.process_workers == 1
+    assert policy.simulation.concurrent_roots == 2
+    assert policy.analysis.concurrent_roots == 2
 
 
 def test_worker_sections_own_independent_explicit_budgets() -> None:
@@ -327,14 +329,14 @@ def test_worker_sections_own_independent_explicit_budgets() -> None:
 
     policy = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
 
-    assert policy.simulation.process_workers == 12
-    assert policy.analysis.process_workers == 4
+    assert policy.simulation.process_workers == 4
+    assert policy.analysis.process_workers == 3
     assert policy.as_metadata()["simulation"]["requested_n_jobs"] == 12
     assert policy.as_metadata()["simulation"]["resolved_n_jobs"] == 12
-    assert policy.as_metadata()["simulation"]["effective_n_jobs"] == 12
+    assert policy.as_metadata()["simulation"]["effective_n_jobs"] == 4
     assert policy.as_metadata()["analysis"]["requested_n_jobs"] == 4
     assert policy.as_metadata()["analysis"]["resolved_n_jobs"] == 4
-    assert policy.as_metadata()["analysis"]["effective_n_jobs"] == 4
+    assert policy.as_metadata()["analysis"]["effective_n_jobs"] == 3
     assert policy.as_metadata()["head2head"]["effective_n_jobs"] == 4
 
 
@@ -355,8 +357,8 @@ def test_worker_defaults_and_explicit_auto_mode(monkeypatch: pytest.MonkeyPatch)
     auto = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
     assert auto.resolved_n_jobs["simulation"] == 16
     assert auto.resolved_n_jobs["analysis"] == 16
-    assert auto.simulation.process_workers == 16
-    assert auto.analysis.process_workers == 16
+    assert auto.simulation.process_workers == 4
+    assert auto.analysis.process_workers == 3
 
 
 def test_h2h_stage_uses_head2head_worker_owner(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -385,8 +387,10 @@ def test_yaml_then_cli_worker_override_precedence(tmp_path: Path) -> None:
     cfg = apply_dot_overrides(cfg, ["sim.n_jobs=9", "analysis.n_jobs=5"])
     policy = two_seed_pipeline._derive_per_seed_job_budgets(cfg, seed_count=2)
 
-    assert policy.simulation.process_workers == 9
-    assert policy.analysis.process_workers == 5
+    assert policy.resolved_n_jobs["simulation"] == 9
+    assert policy.resolved_n_jobs["analysis"] == 5
+    assert policy.simulation.process_workers == 4
+    assert policy.analysis.process_workers == 3
 
 
 def test_file_capacity_projects_shards_blocks_sidecars_and_games(

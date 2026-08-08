@@ -23,6 +23,7 @@ an actionable replacement message and are never reinterpreted.
 | `head2head` | Candidate cap, power, allocation, and inference settings |
 | `hgb` | Held-out predictive-association settings |
 | `orchestration` | Root execution concurrency |
+| `resources` | Process-tree memory, CPU/native-thread, and byte-batch execution budgets |
 
 ## Roots and player counts
 
@@ -119,6 +120,18 @@ When `orchestration.parallel_seeds` is false (the default), roots remain
 sequential and each root receives the resolved section budget. When it is true,
 each section's own resolved budget is divided across concurrent roots. The
 authenticated run context records requested, resolved, and effective counts.
+
+`resources.max_memory_mb` is locked to 1024 MiB for the whole process tree.
+The default target is 768 MiB and scheduling fails closed when sampled RSS
+reaches 950 MiB. `logical_cpu_workers` (`0` means detected logical CPUs) and
+`native_threads_per_worker` jointly cap processes; per-stage worker estimates
+also cap processes to `(target_memory_mb - parent_reserve_mb) /
+estimated_worker_memory_mb`. Concurrent roots share both envelopes. Native
+BLAS/OpenMP/Arrow thread settings are capped in executor children, nested
+process pools collapse to one process, and `stage_batch_bytes` bounds projected
+Arrow batches. Resource controls and resolved policies are authenticated in
+run-context contract v2 but are excluded from statistical freshness; focused
+worker-count, ordering, and batch-boundary invariance tests protect that split.
 
 The two-root preflight log/manifest event also reports a declared upper-envelope
 projection for tournament row shards, H2H pair/root/order blocks, their adjacent

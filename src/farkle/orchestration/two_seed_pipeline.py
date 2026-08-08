@@ -43,6 +43,7 @@ from farkle.utils.manifest import (
     validate_manifest_contract,
 )
 from farkle.utils.parallel import (
+    ProcessTreeMemoryGuard,
     StageParallelPolicy,
     apply_native_thread_limits,
     normalize_n_jobs,
@@ -90,6 +91,13 @@ class _PerSeedPolicyBundle:
                 "python_threads": policy.python_threads,
                 "arrow_threads": policy.arrow_threads,
                 "native_threads_per_process": policy.native_threads_per_process,
+                "configured_cpu_budget": policy.configured_cpu_budget,
+                "cpu_worker_cap": policy.cpu_worker_cap,
+                "memory_worker_cap": policy.memory_worker_cap,
+                "estimated_worker_memory_mb": policy.estimated_worker_memory_mb,
+                "target_memory_mb": policy.target_memory_mb,
+                "parent_reserve_mb": policy.parent_reserve_mb,
+                "concurrent_roots": policy.concurrent_roots,
             }
             for name, policy in (
                 ("simulation", self.simulation),
@@ -124,21 +132,28 @@ def _derive_per_seed_job_budgets(cfg: AppConfig, seed_count: int) -> _PerSeedPol
             "simulation",
             cfg.sim,
             n_jobs_override=effective["simulation"],
+            resources=cfg.resources,
+            concurrent_roots=concurrency,
         ),
         ingest=resolve_stage_parallel_policy(
             "ingest",
             cfg.ingest,
             n_jobs_override=effective["ingest"],
+            resources=cfg.resources,
+            concurrent_roots=concurrency,
         ),
         analysis=resolve_stage_parallel_policy(
             "analysis",
             cfg.analysis,
             n_jobs_override=effective["analysis"],
+            resources=cfg.resources,
+            concurrent_roots=concurrency,
         ),
         head2head=resolve_stage_parallel_policy(
             "head2head",
             cfg.head2head,
             n_jobs_override=effective["head2head"],
+            resources=cfg.resources,
         ),
         requested_n_jobs=requested,
         resolved_n_jobs=resolved,
@@ -513,6 +528,11 @@ def run_pipeline(
     run_id = make_run_id(f"two_seed_pipeline_{seed_pair[0]}_{seed_pair[1]}")
     validate_manifest_contract(manifest_path)
     policy_bundle = _derive_per_seed_job_budgets(cfg, len(seed_pair))
+    memory_guard = ProcessTreeMemoryGuard(
+        cfg.resources.rss_abort_mb,
+        cfg.resources.rss_sample_interval_seconds,
+    )
+    memory_guard.check_before_schedule(force=True)
     file_capacity = _project_file_capacity(cfg, root_count=len(seed_pair))
     LOGGER.info(
         "Projected pipeline file-count capacity",
@@ -533,8 +553,10 @@ def run_pipeline(
     )
     if cfg.orchestration.parallel_seeds:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            futures = {
-                seed: executor.submit(
+            futures = {}
+            for seed in seed_pair:
+                memory_guard.check_before_schedule()
+                futures[seed] = executor.submit(
                     _run_one_seed,
                     cfg,
                     seed=seed,
@@ -547,12 +569,12 @@ def run_pipeline(
                     cli_overrides=cli_overrides,
                     oracle_game_profile=oracle_game_profile,
                 )
-                for seed in seed_pair
-            }
             root_results = {seed: futures[seed].result() for seed in seed_pair}
     else:
-        root_results = {
-            seed: _run_one_seed(
+        root_results = {}
+        for seed in seed_pair:
+            memory_guard.check_before_schedule()
+            root_results[seed] = _run_one_seed(
                 cfg,
                 seed=seed,
                 seed_pair=seed_pair,
@@ -564,8 +586,6 @@ def run_pipeline(
                 cli_overrides=cli_overrides,
                 oracle_game_profile=oracle_game_profile,
             )
-            for seed in seed_pair
-        }
     root_health = {
         str(seed): {
             "simulation": "complete" if result.simulation_ok else "failed",

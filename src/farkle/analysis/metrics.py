@@ -12,7 +12,12 @@ from farkle.analysis.performance import PerformanceArtifacts, build_canonical_pe
 from farkle.analysis.seat_analysis import SeatAnalysisArtifacts, build_canonical_seat_analysis
 from farkle.config import AppConfig
 from farkle.utils.artifact_contract import sidecar_path
-from farkle.utils.parallel import process_map, resolve_mp_context
+from farkle.utils.parallel import (
+    ProcessTreeMemoryGuard,
+    process_map,
+    resolve_mp_context,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 
 LOGGER = logging.getLogger(__name__)
@@ -32,11 +37,18 @@ def _require_paths(paths: Sequence[Path], *, label: str) -> None:
 
 def _all_player_metrics(cfg: AppConfig, player_counts: Sequence[int]) -> list[Path]:
     tasks = [(cfg, int(k)) for k in player_counts]
+    policy = resolve_stage_parallel_policy("analysis", cfg.analysis, resources=cfg.resources)
+    guard = ProcessTreeMemoryGuard(
+        cfg.resources.rss_abort_mb,
+        cfg.resources.rss_sample_interval_seconds,
+    )
     results = process_map(
         _build_all_player_cell,
         tasks,
-        n_jobs=cfg.analysis.n_jobs,
+        n_jobs=policy.process_workers,
+        window=policy.process_workers * cfg.resources.max_in_flight_per_worker,
         mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
+        memory_guard=guard,
     )
     return [path for _, path in sorted(results)]
 

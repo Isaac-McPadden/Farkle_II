@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from farkle.analysis.stage_registry import resolve_stage_layout
-from farkle.config import AppConfig, IOConfig, SimConfig
+from farkle.config import AppConfig, IOConfig, SimConfig, assign_config_sha
 from farkle.orchestration.run_contexts import (
     SEED_PAIR_ANALYSIS_DIRNAME,
     RootPairRunContext,
@@ -121,4 +121,29 @@ def test_authenticated_context_records_requested_resolved_and_effective_workers(
     payload = load_run_context(context.run_context_path)
 
     assert payload["execution_controls"]["worker_counts"] == worker_counts
+    assert payload["execution_controls"]["resources"]["max_memory_mb"] == 1024
+    assert payload["execution_controls"]["resources"]["rss_abort_mb"] == 950
     assert payload["cli_overrides"] == ["analysis.n_jobs=4"]
+
+
+def test_run_context_authenticates_execution_resource_controls(tmp_path: Path) -> None:
+    context = _root_context(tmp_path, 11)
+    assign_config_sha(context.config)
+    write_run_context_atomic(
+        context,
+        code_identity=CodeIdentity(
+            commit="a" * 40,
+            policy=CodeIdentityPolicy.RELEASE_CLEAN.value,
+            state="clean",
+            dirty_fingerprint_sha256=None,
+        ),
+    )
+    context.config.resources.logical_cpu_workers = 2
+    from farkle.orchestration.seed_utils import write_active_config
+
+    write_active_config(context.config)
+    with pytest.raises(ValueError, match="execution resource controls"):
+        load_run_context(
+            context.run_context_path,
+            active_config_path=context.active_config_path,
+        )

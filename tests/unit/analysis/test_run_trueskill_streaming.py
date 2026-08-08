@@ -224,6 +224,7 @@ def _run_rating_fixture(
     rows: list[dict[str, object]],
     *,
     keepers: tuple[int, ...],
+    max_batch_bytes: int | None = None,
 ) -> tuple[dict[str, rt.RatingStats], rt._ShardDoneStamp]:
     cfg = make_authenticated_v3_config(tmp_path, name="rating", root_seed=11)
     root = cfg.trueskill_stage_dir
@@ -250,6 +251,7 @@ def _run_rating_fixture(
         curated_rows_name=cfg.curated_rows_name,
         cell_freshness_sha256="a" * 64,
         root_seed=11,
+        max_batch_bytes=max_batch_bytes,
     )
     rating_path = root / "by_k" / "2p" / "ratings_2_seed11.parquet"
     stamp = rt._load_done_stamp(root / "by_k" / "2p" / "ratings_2_seed11.done.json")
@@ -332,6 +334,33 @@ def test_mixed_support_excludes_safety_and_retains_prior_only_strategy(
         assert stats.strategy_attempted_exposures == (
             stats.strategy_completed_exposures + stats.strategy_excluded_safety_limit_exposures
         )
+
+
+def test_trueskill_results_are_invariant_to_byte_batch_ceiling(tmp_path: Path) -> None:
+    rows = [_completed_row("P1" if index % 3 else "P2") for index in range(40)]
+    small, small_stamp = _run_rating_fixture(
+        tmp_path / "small_batches",
+        rows,
+        keepers=(1, 2),
+        max_batch_bytes=256,
+    )
+    large, large_stamp = _run_rating_fixture(
+        tmp_path / "large_batches",
+        rows,
+        keepers=(1, 2),
+        max_batch_bytes=64 * 1024,
+    )
+
+    assert small == large
+    assert (
+        small_stamp.attempted_games,
+        small_stamp.completed_games,
+        small_stamp.performed_update_games,
+    ) == (
+        large_stamp.attempted_games,
+        large_stamp.completed_games,
+        large_stamp.performed_update_games,
+    )
 
 
 @pytest.mark.parametrize(
