@@ -57,6 +57,7 @@ from farkle.utils.artifact_contract import (
 )
 from farkle.utils.artifacts import write_parquet_atomic
 from farkle.utils.authenticated_contract import (
+    ArtifactMismatchError,
     ManifestEntry,
     load_authenticated_sidecar,
     validate_authenticated_artifact_unbound,
@@ -393,10 +394,12 @@ def _publish_simulation_outputs_v3(
     outputs: Sequence[Path],
     done_path: Path,
     allow_unsealed_outputs: bool,
+    rewritten_outputs: Sequence[Path] = (),
 ) -> None:
     if not is_v3_config(cfg):
         return
     files = _completion_output_files(outputs, done_path)
+    rewritten = {path.resolve() for path in rewritten_outputs}
     manifests = [
         path
         for path in files
@@ -421,16 +424,23 @@ def _publish_simulation_outputs_v3(
         if not path.is_file() or path.stat().st_size <= 0:
             raise FileNotFoundError(f"simulation output is missing or empty: {path}")
         adjacent = sidecar_path(path)
+        is_rewritten = path.resolve() in rewritten
         if adjacent.is_file():
             try:
                 payload = json.loads(adjacent.read_text(encoding="utf-8"))
             except (OSError, json.JSONDecodeError):
                 payload = {}
             if payload.get("artifact_contract_version") == 3:
-                validate_authenticated_artifact_unbound(path, validate_provenance=False)
-                continue
-            raise ValueError(f"legacy sidecar cannot satisfy simulation v3: {path}")
-        if not allow_unsealed_outputs:
+                try:
+                    validate_authenticated_artifact_unbound(path, validate_provenance=False)
+                except ArtifactMismatchError:
+                    if not is_rewritten:
+                        raise
+                else:
+                    continue
+            else:
+                raise ValueError(f"legacy sidecar cannot satisfy simulation v3: {path}")
+        if not allow_unsealed_outputs and not is_rewritten:
             raise ValueError(
                 "refusing to promote pre-existing simulation bytes into artifact "
                 f"contract v3: {path}"
@@ -512,6 +522,7 @@ def write_simulation_done(
     n_strategies: int,
     outputs: Sequence[Path],
     allow_unsealed_v3_outputs: bool = False,
+    rewritten_outputs: Sequence[Path] = (),
 ) -> Path:
     """Write a completion marker for a per-N simulation run."""
     done_path = simulation_done_path(cfg, n_players)
@@ -541,6 +552,7 @@ def write_simulation_done(
         outputs=outputs,
         done_path=done_path,
         allow_unsealed_outputs=allow_unsealed_v3_outputs,
+        rewritten_outputs=rewritten_outputs,
     )
     output_files = _completion_output_files(outputs, done_path)
     immutable_inputs = [
@@ -1360,6 +1372,12 @@ def run_single_n(
             n_strategies=grid_size,
             outputs=outputs,
             allow_unsealed_v3_outputs=force or not had_unsealed_v3_outputs,
+            rewritten_outputs=[
+                workload_plan_path,
+                ckpt_path,
+                *([ckpt_parquet] if ckpt_parquet.exists() else []),
+                *([metrics_file] if metrics_file.exists() else []),
+            ],
         )
     else:
         write_simulation_done(

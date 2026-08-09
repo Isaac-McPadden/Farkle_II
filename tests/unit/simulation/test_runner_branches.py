@@ -1056,8 +1056,10 @@ def test_run_single_n_empty_rows_and_metric_sq_sum_outputs(
         n_strategies: int,
         outputs: list[Path],
         allow_unsealed_v3_outputs: bool = False,
+        rewritten_outputs: tuple[Path, ...] = (),
     ) -> Path:
         assert allow_unsealed_v3_outputs
+        assert rewritten_outputs
         captured_outputs.append(outputs)
         return runner.simulation_done_path(cfg, n_players)
 
