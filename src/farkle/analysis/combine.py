@@ -41,7 +41,7 @@ def _pad_to_schema(tbl: pa.Table, target: pa.Schema) -> pa.Table:
             cols.append(tbl[f.name].cast(f.type))
         else:
             cols.append(pa.nulls(len(tbl), f.type))
-    return pa.table(cols, names=target.names)
+    return pa.Table.from_arrays(cols, schema=target)
 
 
 def _iter_parquet_tables(
@@ -202,7 +202,7 @@ def _write_partitioned_dataset(
                 table = pf_obj.read_row_group(idx)
                 if table.num_rows == 0:
                     continue
-                if table.schema.names != target.names:
+                if not table.schema.equals(target, check_metadata=False):
                     table = _pad_to_schema(table, target)
                 yield table
 

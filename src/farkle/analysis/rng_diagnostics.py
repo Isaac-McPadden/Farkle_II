@@ -24,6 +24,7 @@ import hashlib
 import heapq
 import json
 import logging
+import sys
 from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -1915,4 +1916,10 @@ def _rng_stage_config_sha(cfg: AppConfig, lags: Sequence[int]) -> str:
 
 
 if __name__ == "__main__":  # pragma: no cover
-    run(AppConfig())
+    from farkle.utils.os_memory import supervise_module_if_needed
+
+    direct_cfg = AppConfig()
+    exit_code = supervise_module_if_needed(__name__, sys.argv[1:], direct_cfg.resources)
+    if exit_code is not None:
+        raise SystemExit(exit_code)
+    run(direct_cfg)

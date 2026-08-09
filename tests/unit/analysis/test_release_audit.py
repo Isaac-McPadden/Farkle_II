@@ -130,6 +130,15 @@ def test_release_audit_validates_stage_root_artifacts_with_sidecars(tmp_path: Pa
     assert audit_sidecar_completeness(cfg.analysis_dir) == [f"missing sidecar: {path}"]
 
 
+def test_release_audit_ignores_authenticated_internal_work_manifests(tmp_path: Path) -> None:
+    cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
+    internal = cfg.diagnostics_dir("metrics") / "_bootstrap_ranges"
+    internal.mkdir(parents=True)
+    (internal / "partition_manifest.jsonl").write_text("{}\n", encoding="utf-8")
+
+    assert audit_sidecar_completeness(cfg.analysis_dir) == []
+
+
 def test_release_audit_rejects_mixed_v2_v3_descendants(tmp_path: Path) -> None:
     cfg = AppConfig(io=IOConfig(results_dir_prefix=tmp_path / "results"))
     current = cfg.scope_path("metrics", ArtifactScope.DIAGNOSTICS, "current.parquet")

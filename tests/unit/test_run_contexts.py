@@ -123,6 +123,13 @@ def test_authenticated_context_records_requested_resolved_and_effective_workers(
     assert payload["execution_controls"]["worker_counts"] == worker_counts
     assert payload["execution_controls"]["resources"]["max_memory_mb"] == 1024
     assert payload["execution_controls"]["resources"]["rss_abort_mb"] == 950
+    assert payload["execution_controls"]["os_memory_boundary"]["backend"] in {
+        "none",
+        "windows_job",
+        "cgroup_v2",
+        "unenforced",
+    }
+    assert "effective_hard_limit_mb" in payload["execution_controls"]["os_memory_boundary"]
     assert payload["cli_overrides"] == ["analysis.n_jobs=4"]
 
 

@@ -43,9 +43,11 @@ Preserve these invariants:
 - active configs contain only reloadable public fields; resolved paths, layouts,
   parent lifecycle roots, code identity, and execution controls live in the
   separately authenticated `run_context.json`;
-- process-tree execution uses a 1024 MiB hard envelope, a 768 MiB target and
-  pre-limit RSS abort; worker counts obey both CPU/native-thread and per-stage
-  memory caps, and partition manifests publish only after every unit validates;
+- public process-tree execution is launched inside one aggregate Windows Job
+  Object or delegated cgroup-v2 `memory.max` boundary at 1024 MiB; setup fails
+  closed in strict mode, the 768 MiB scheduler target and sticky 950 MiB RSS
+  abort remain cooperative controls, worker counts obey CPU/native-thread and
+  per-stage memory caps, and partition manifests publish only after every unit validates;
 - TrueSkill projected reads use byte-bounded Arrow batches; screening
   diagnostics publish an authenticated root/k result and completion stamp
   before deterministic aggregation, using one forward projected scan and a

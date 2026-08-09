@@ -11,6 +11,9 @@ def test_resource_defaults_hold_one_gib_process_tree_envelope() -> None:
     assert resources.max_memory_mb == 1024
     assert resources.target_memory_mb == 768
     assert resources.target_memory_mb < resources.rss_abort_mb < resources.max_memory_mb
+    assert resources.os_memory_limit_enabled is True
+    assert resources.os_memory_limit_required is True
+    assert resources.allow_unenforced_memory_fallback is False
     assert resources.native_threads_per_worker == 1
     assert all(value > 0 for value in resources.estimated_worker_memory_mb.values())
     assert all(value > 0 for value in resources.stage_batch_bytes.values())
@@ -38,6 +41,12 @@ def test_resource_controls_are_execution_provenance_not_statistical_freshness() 
         "resources:\n  target_memory_mb: 960\n  rss_abort_mb: 950\n",
         "resources:\n  native_threads_per_worker: 0\n",
         "resources:\n  estimated_worker_memory_mb: {analysis: 0}\n",
+        "resources:\n  os_memory_limit_enabled: false\n",
+        "resources:\n  os_memory_limit_required: false\n",
+        (
+            "resources:\n  os_memory_limit_required: true\n"
+            "  allow_unenforced_memory_fallback: true\n"
+        ),
     ],
 )
 def test_invalid_resource_envelopes_are_rejected(tmp_path: Path, yaml_text: str) -> None:

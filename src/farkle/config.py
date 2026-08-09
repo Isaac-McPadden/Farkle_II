@@ -394,6 +394,9 @@ class ResourcesConfig:
     max_memory_mb: int = 1_024
     target_memory_mb: int = 768
     rss_abort_mb: int = 950
+    os_memory_limit_enabled: bool = True
+    os_memory_limit_required: bool = True
+    allow_unenforced_memory_fallback: bool = False
     parent_reserve_mb: int = 192
     logical_cpu_workers: int = 0
     native_threads_per_worker: int = 1
@@ -1807,6 +1810,21 @@ def _validate_resource_contract(resources: ResourcesConfig) -> None:
         raise TypeError("resource memory, CPU, thread, and in-flight controls must be integers")
     if resources.max_memory_mb > 1_024:
         raise ValueError("resources.max_memory_mb cannot exceed the hard 1024 MiB ceiling")
+    boolean_fields = {
+        "os_memory_limit_enabled": resources.os_memory_limit_enabled,
+        "os_memory_limit_required": resources.os_memory_limit_required,
+        "allow_unenforced_memory_fallback": resources.allow_unenforced_memory_fallback,
+    }
+    if any(not isinstance(value, bool) for value in boolean_fields.values()):
+        raise TypeError("OS memory enforcement controls must be booleans")
+    if resources.os_memory_limit_required and not resources.os_memory_limit_enabled:
+        raise ValueError("required OS memory enforcement cannot be disabled")
+    if resources.os_memory_limit_required and resources.allow_unenforced_memory_fallback:
+        raise ValueError("strict OS memory enforcement cannot permit an unenforced fallback")
+    if not resources.os_memory_limit_required and not resources.allow_unenforced_memory_fallback:
+        raise ValueError(
+            "non-strict OS memory enforcement requires an explicit development fallback"
+        )
     if not (
         0
         < resources.parent_reserve_mb

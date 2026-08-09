@@ -3,7 +3,7 @@
 The orientation pack is a cache, not authority. Verify relevant source before
 changing code or accepting a statistical conclusion.
 
-- Reconciled date: `2026-08-07`
+- Reconciled date: `2026-08-09`
 - Source baseline: SCP-11 commit `eee9fbb` plus the natural seed-pair staging rework
 - Reconciliation scope: all CSRP/SCP source changes through the release
   closeout, including configuration, scopes, sidecars, lifecycle, RNG,
@@ -102,7 +102,17 @@ changing code or accepting a statistical conclusion.
   from the full root/k/replicate coordinate, and performs a sorted
   per-replicate reduction. A final bootstrap artifact is published only after
   the complete range manifest validates; execution worker and chunk controls
-  remain outside statistical freshness under explicit invariance tests.
+  remain outside statistical freshness under explicit invariance tests. Step
+  5.5 adds a lightweight public launcher and an aggregate OS-enforced allocation
+  boundary: a Windows Job Object or delegated cgroup-v2 `memory.max`. Strict
+  official execution fails before analysis when setup is unavailable; an
+  explicit development fallback is labelled unenforced. Backend/effective-limit
+  provenance lives in run contexts and manifests, not statistical freshness.
+  The two-root health marker becomes `running` before work, and process-tree
+  telemetry records peak RSS and native threads. Combine now normalizes Arrow
+  field nullability before streamed writes, and release audit excludes
+  underscore-prefixed authenticated working directories from the public
+  canonical sidecar graph.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

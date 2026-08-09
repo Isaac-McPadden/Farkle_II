@@ -262,6 +262,18 @@ def test_pad_to_schema_adds_missing_columns():
     assert padded.column("P2_strategy").null_count == 1
 
 
+def test_pad_to_schema_normalizes_field_nullability_exactly() -> None:
+    target = pa.schema([pa.field("value", pa.int64(), nullable=True)])
+    source = pa.Table.from_arrays(
+        [pa.array([1, 2], type=pa.int64())],
+        schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+    )
+
+    normalized = combine._pad_to_schema(source, target)
+
+    assert normalized.schema.equals(target, check_metadata=False)
+
+
 def test_concat_ks_output_ignores_generic_legacy_path(tmp_results_dir: Path) -> None:
     cfg = _cfg(tmp_results_dir)
     legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined"

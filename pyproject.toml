@@ -49,7 +49,7 @@ viz   = ["plotly>=5.21", "panel>=1.4", "dask[dataframe]>=2024.5"]
 docs  = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.24"]
 
 [project.scripts]
-farkle = "farkle.cli.main:main"
+farkle = "farkle.cli.launcher:main"
 
 # ── 3. Tell Hatchling where the code lives ───────────
 [tool.hatch.build.targets.wheel]

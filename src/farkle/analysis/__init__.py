@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Sequence
 from farkle.analysis.stage_runner import StagePlanItem, StageRunContext, StageRunner
 from farkle.config import AppConfig
 from farkle.orchestration.run_contexts import RootPairRunContext, SeedRunContext
+from farkle.utils.os_memory import memory_boundary_provenance
 from farkle.utils.stage_completion import stage_done_path
 
 if TYPE_CHECKING:
@@ -65,6 +66,7 @@ def _manifest_metadata(cfg: AppConfig, *, execution_scope: str) -> dict[str, Any
         "results_dir": str(cfg.results_root),
         "analysis_dir": str(cfg.analysis_dir),
         "execution_scope": execution_scope,
+        "os_memory_boundary": memory_boundary_provenance(cfg.resources),
     }
     if cfg.config_sha:
         payload["config_sha"] = cfg.config_sha

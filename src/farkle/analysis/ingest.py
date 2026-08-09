@@ -693,6 +693,12 @@ def main(argv: list[str] | None = None) -> None:  # pragma: no cover - thin CLI 
     )
     args = parser.parse_args(argv)
     app_cfg = load_app_config(Path(args.config))
+    from farkle.utils.os_memory import supervise_module_if_needed
+
+    arguments = list(argv) if argv is not None else sys.argv[1:]
+    exit_code = supervise_module_if_needed(__name__, arguments, app_cfg.resources)
+    if exit_code is not None:
+        raise SystemExit(exit_code)
     run(app_cfg)
 
 

@@ -57,6 +57,9 @@ Standalone analysis runs the root workflow and appends the same H2H tail with
 
 ## Public CLI mapping
 
+- `run`, `analyze`, and `two-seed-pipeline` enter through the lightweight OS
+  memory launcher before importing the real CLI. Windows uses an inherited Job
+  Object; Linux/containers/WSL require delegated cgroup v2 in strict mode.
 - `analyze pipeline` and `analyze analytics`: canonical standalone-root
   workflow with labelled H2H tail.
 - `two-seed-pipeline`: both root workflows, then one root-pair workflow.

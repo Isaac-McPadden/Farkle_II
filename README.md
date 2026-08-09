@@ -148,6 +148,10 @@ The interrupted/resumed two-root structural oracle is
 - `tests`: unit and integration oracles
 - `docs`: contracts and Codex orientation
 
+Public simulation and analysis commands establish the aggregate OS memory
+boundary documented in `docs/os_memory_enforcement.md` before loading the real
+pipeline process.
+
 ## License
 
 Apache License 2.0.

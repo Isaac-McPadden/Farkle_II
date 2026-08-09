@@ -118,6 +118,9 @@ resources:
   max_memory_mb: 1024
   target_memory_mb: 768
   rss_abort_mb: 950
+  os_memory_limit_enabled: true
+  os_memory_limit_required: true
+  allow_unenforced_memory_fallback: false
   parent_reserve_mb: 192
   logical_cpu_workers: 0
   native_threads_per_worker: 1

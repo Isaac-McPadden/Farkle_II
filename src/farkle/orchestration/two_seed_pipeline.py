@@ -42,6 +42,7 @@ from farkle.utils.manifest import (
     make_run_id,
     validate_manifest_contract,
 )
+from farkle.utils.os_memory import memory_boundary_provenance
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     ResourceSafetyError,
@@ -535,6 +536,17 @@ def run_pipeline(
     )
     memory_guard.check_before_schedule(force=True)
     file_capacity = _project_file_capacity(cfg, root_count=len(seed_pair))
+    boundary_provenance = memory_boundary_provenance(cfg.resources)
+    _write_pipeline_health(
+        health_path,
+        {
+            "seed_pair": list(seed_pair),
+            "status": "running",
+            "config_sha": cfg.config_sha,
+            "os_memory_boundary": boundary_provenance,
+            "release_audit": {"status": "not_run"},
+        },
+    )
     LOGGER.info(
         "Projected pipeline file-count capacity",
         extra={"stage": "orchestration_preflight", **file_capacity},
@@ -547,6 +559,7 @@ def run_pipeline(
             "results_dir": str(pair_root),
             "pair_analysis_dir": str(pair_root / SEED_PAIR_ANALYSIS_DIRNAME),
             "resolved_policy": policy_bundle.as_metadata(),
+            "os_memory_boundary": boundary_provenance,
             "file_count_capacity": file_capacity,
         },
         run_id=run_id,
@@ -697,6 +710,13 @@ def run_pipeline(
         "seed_pair": list(seed_pair),
         "status": overall_status,
         "config_sha": cfg.config_sha,
+        "resource_telemetry": {
+            "os_memory_boundary": boundary_provenance,
+            "peak_sampled_process_tree_rss_mb": memory_guard.peak_rss_bytes / (1024 * 1024),
+            "peak_sampled_native_threads": memory_guard.peak_native_threads,
+            "cooperative_rss_abort_mb": cfg.resources.rss_abort_mb,
+            "normal_target_memory_mb": cfg.resources.target_memory_mb,
+        },
         "pair_public_config_sha256": (
             pair_context.config.config_sha if pair_context is not None else None
         ),

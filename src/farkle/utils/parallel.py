@@ -71,16 +71,20 @@ class ProcessTreeMemoryGuard:
     pid: int | None = None
     last_rss_bytes: int = 0
     peak_rss_bytes: int = 0
+    last_native_threads: int = 0
+    peak_native_threads: int = 0
     _last_sample_at: float = 0.0
     tripped_rss_bytes: int = 0
     monitoring_error: str | None = None
     _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _monitor_started: bool = field(default=False, init=False, repr=False)
 
-    def _record_sample(self, rss: int, sampled_at: float) -> None:
+    def _record_sample(self, rss: int, sampled_at: float, native_threads: int = 0) -> None:
         with self._lock:
             self.last_rss_bytes = rss
             self.peak_rss_bytes = max(self.peak_rss_bytes, rss)
+            self.last_native_threads = native_threads
+            self.peak_native_threads = max(self.peak_native_threads, native_threads)
             self._last_sample_at = sampled_at
             if rss >= self.rss_abort_mb * 1024 * 1024:
                 self.tripped_rss_bytes = max(self.tripped_rss_bytes, rss)
@@ -100,7 +104,8 @@ class ProcessTreeMemoryGuard:
                     return
                 try:
                     rss = process_tree_rss_bytes(guard.pid)
-                    guard._record_sample(rss, time.monotonic())
+                    native_threads = process_tree_native_thread_count(guard.pid)
+                    guard._record_sample(rss, time.monotonic(), native_threads)
                 except Exception as exc:  # noqa: BLE001 - monitoring must fail closed
                     with guard._lock:
                         guard.monitoring_error = f"{type(exc).__name__}: {exc}"
@@ -126,7 +131,8 @@ class ProcessTreeMemoryGuard:
             if not force and now - self._last_sample_at < self.sample_interval_seconds:
                 return self.last_rss_bytes
         rss = process_tree_rss_bytes(self.pid)
-        self._record_sample(rss, now)
+        native_threads = process_tree_native_thread_count(self.pid)
+        self._record_sample(rss, now, native_threads)
         return rss
 
     def check_before_schedule(self, *, force: bool = False) -> int:
@@ -164,6 +170,24 @@ def process_tree_rss_bytes(pid: int | None = None) -> int:
         except (psutil.NoSuchProcess, psutil.AccessDenied):
             continue
     return rss
+
+
+def process_tree_native_thread_count(pid: int | None = None) -> int:
+    """Return the aggregate native-thread count for a process tree."""
+
+    root = psutil.Process(os.getpid() if pid is None else pid)
+    processes = [root, *root.children(recursive=True)]
+    threads = 0
+    seen: set[int] = set()
+    for process in processes:
+        if process.pid in seen:
+            continue
+        seen.add(process.pid)
+        try:
+            threads += int(process.num_threads())
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return threads
 
 
 def _stage_resource_value(values: Mapping[str, int], stage: str, fallback: str) -> int:
@@ -422,6 +446,7 @@ __all__ = [
     "apply_native_thread_limits",
     "normalize_n_jobs",
     "process_map",
+    "process_tree_native_thread_count",
     "process_tree_rss_bytes",
     "resolve_mp_context",
     "resolve_stage_parallel_policy",

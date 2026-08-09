@@ -67,6 +67,24 @@ head2head:
   total_game_cap:
   allow_single_root:
 
+orchestration:
+  parallel_seeds:    # bool: execute the two root workflows concurrently
+
+resources:
+  max_memory_mb:    # int: aggregate OS-enforced hard ceiling (maximum 1024 MiB)
+  target_memory_mb:    # int: normal process-tree scheduling target
+  rss_abort_mb:    # int: cooperative sticky abort threshold below the hard ceiling
+  os_memory_limit_enabled:    # bool: establish a Windows Job Object or cgroup-v2 boundary
+  os_memory_limit_required:    # bool: fail closed before analysis if unavailable
+  allow_unenforced_memory_fallback:    # bool: conspicuous development-only fallback
+  parent_reserve_mb:    # int: memory reserved for the parent process
+  logical_cpu_workers:    # int: zero means detected logical CPUs
+  native_threads_per_worker:    # int: native-library threads per process
+  max_in_flight_per_worker:    # int: bounded task submission multiplier
+  rss_sample_interval_seconds:    # float: cooperative guard sampling interval
+  estimated_worker_memory_mb: {}    # mapping[str, int]: per-stage process estimates
+  stage_batch_bytes: {}    # mapping[str, int]: per-stage streaming byte budgets
+
 rng:
   scheme_version:
   bit_generator:

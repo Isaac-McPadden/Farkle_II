@@ -12,6 +12,7 @@ from typing import Any, cast
 from farkle.analysis.stage_registry import StageLayout, resolve_root_pair_stage_layout
 from farkle.config import AppConfig, assign_config_sha, compute_config_sha
 from farkle.utils.authenticated_contract import CodeIdentity, canonical_json_bytes, identity_sha256
+from farkle.utils.os_memory import memory_boundary_provenance
 from farkle.utils.parallel import normalize_n_jobs, resolve_stage_parallel_policy
 from farkle.utils.writer import atomic_path
 
@@ -296,6 +297,7 @@ def write_run_context_atomic(
         "head2head_n_jobs": cfg.head2head.n_jobs,
         "parallel_seeds": cfg.orchestration.parallel_seeds,
         "resources": asdict(cfg.resources),
+        "os_memory_boundary": memory_boundary_provenance(cfg.resources),
         "worker_counts": (
             {
                 str(stage): {str(key): value for key, value in counts.items()}

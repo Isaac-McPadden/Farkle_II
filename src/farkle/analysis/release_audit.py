@@ -118,6 +118,7 @@ def _is_scoped_artifact(path: Path, root: Path) -> bool:
         and not path.name.endswith(_SIDECAR_SUFFIX)
         and not path.name.endswith(_STATE_SUFFIXES)
         and not path.name.startswith("._")
+        and not any(part.startswith("_") for part in relative.parts)
         and path.suffix.lower() in _DERIVED_SUFFIXES
         and bool(_CANONICAL_SCOPE_PARTS.intersection(relative.parts))
     )
