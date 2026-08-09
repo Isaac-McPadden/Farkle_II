@@ -112,6 +112,23 @@ def _status(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _partition_worker_status(_value: int) -> str:
+    """Pickle-safe worker used to prove inherited aggregate containment."""
+
+    return os.environ["FARKLE_OS_MEMORY_BOUNDARY"]
+
+
+def _partition_workers(args: argparse.Namespace) -> int:
+    from farkle.utils.parallel import process_map
+
+    print(
+        json.dumps(
+            list(process_map(_partition_worker_status, range(args.workers), n_jobs=args.workers))
+        )
+    )
+    return 0
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -129,6 +146,8 @@ def _parser() -> argparse.ArgumentParser:
     identity = subparsers.add_parser("identity")
     identity.add_argument("--seed", type=int, default=7)
     subparsers.add_parser("status")
+    workers = subparsers.add_parser("partition-workers")
+    workers.add_argument("--workers", type=int, default=2)
     return parser
 
 
@@ -142,6 +161,8 @@ def main() -> int:
         return _publication(args)
     if args.command == "status":
         return _status(args)
+    if args.command == "partition-workers":
+        return _partition_workers(args)
     return _identity(args)
 
 

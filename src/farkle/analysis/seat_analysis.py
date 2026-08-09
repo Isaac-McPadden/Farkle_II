@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
-from collections import Counter, defaultdict, deque
+import hashlib
+import heapq
+import math
+from collections import defaultdict
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final
 
+import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -15,8 +19,22 @@ import pyarrow.parquet as pq
 from farkle.analysis.all_player_metrics import ATTEMPT_CONDITIONING
 from farkle.config import AppConfig, ArtifactScope
 from farkle.game.engine import TerminationStatus
-from farkle.utils.artifact_contract import make_artifact_sidecar, validate_artifact_sidecar
+from farkle.utils.arrow_batches import iter_parquet_tables_by_bytes
+from farkle.utils.artifact_contract import (
+    make_artifact_sidecar,
+    sha256_file,
+    validate_artifact_sidecar,
+    write_artifact_with_sidecar_atomic,
+)
 from farkle.utils.artifacts import write_parquet_artifact_atomic
+from farkle.utils.parallel import ProcessTreeMemoryGuard
+from farkle.utils.partitioned_stage import (
+    PartitionedStageIdentity,
+    PartitionedUnit,
+    resolved_code_identity_sha256,
+    run_partitioned_stage,
+    validate_final_manifest,
+)
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.strategy_ids import STRATEGY_ID_ARROW_TYPE
 from farkle.utils.streaming_loop import run_streaming_shard
@@ -81,6 +99,22 @@ _MIRRORED_COLUMNS: Final = [
     "unpaired_reverse_games",
     "mean_p1_win_difference",
 ]
+_MIRROR_SHARD_SCHEMA: Final = pa.schema(
+    [
+        pa.field("root_seed", pa.int64(), nullable=False),
+        pa.field("deterministic_batch_id", pa.int32(), nullable=False),
+        pa.field("strategy_a", STRATEGY_ID_ARROW_TYPE, nullable=False),
+        pa.field("strategy_b", STRATEGY_ID_ARROW_TYPE, nullable=False),
+        pa.field("paired_mirrored_games", pa.int64(), nullable=False),
+        pa.field("p1_win_difference_sum", pa.int64(), nullable=False),
+        pa.field("games_completed", pa.int64(), nullable=False),
+        pa.field("games_safety_limit", pa.int64(), nullable=False),
+        pa.field("unpaired_forward_games", pa.int64(), nullable=False),
+        pa.field("unpaired_reverse_games", pa.int64(), nullable=False),
+    ]
+)
+_MIRROR_METHOD_VERSION: Final = 2
+_MIRROR_SCHEMA_VERSION: Final = 1
 
 
 @dataclass(frozen=True)
@@ -151,11 +185,12 @@ def _iter_seat_count_tables(source: Path, k: int) -> Iterator[pa.Table]:
         return pa.Table.from_pylist(rows, schema=_COUNT_SCHEMA)
 
     for batch in parquet_file.iter_batches(columns=columns):
-        for row in batch.to_pylist():
+        values = batch.to_pydict()
+        for index in range(batch.num_rows):
             current = (
-                int(row["root_seed"]),
-                int(row["k"]),
-                int(row["deterministic_batch_id"]),
+                int(values["root_seed"][index]),
+                int(values["k"][index]),
+                int(values["deterministic_batch_id"][index]),
             )
             if current[1] != k:
                 raise ValueError(f"{source} contains k={current[1]} in canonical k={k} input")
@@ -168,14 +203,14 @@ def _iter_seat_count_tables(source: Path, k: int) -> Iterator[pa.Table]:
                 counts = defaultdict(lambda: [0, 0, 0, 0])
             coordinate = current
             try:
-                status = TerminationStatus(row["termination_status"])
+                status = TerminationStatus(values["termination_status"][index])
             except (KeyError, ValueError) as exc:
                 raise ValueError(f"{source} contains invalid termination status") from exc
-            winner = row["winner_seat"]
+            winner = values["winner_seat"][index]
             if status is TerminationStatus.SAFETY_LIMIT and winner is not None:
                 raise ValueError(f"{source} credits a safety-limit winner")
             for seat in range(1, k + 1):
-                strategy_value = row[f"P{seat}_strategy"]
+                strategy_value = values[f"P{seat}_strategy"][index]
                 if strategy_value is None:
                     raise ValueError(f"{source} has a missing strategy exposure in seat {seat}")
                 cell = counts[(int(strategy_value), seat)]
@@ -244,11 +279,12 @@ def _validate_source(path: Path, k: int) -> int:
     observed_k_set: set[int] = set()
     roots_set: set[int] = set()
     for batch in pq.ParquetFile(path).iter_batches(columns=["root_seed", "k"]):
-        for row in batch.to_pylist():
-            if row["root_seed"] is not None:
-                roots_set.add(int(row["root_seed"]))
-            if row["k"] is not None:
-                observed_k_set.add(int(row["k"]))
+        values = batch.to_pydict()
+        for root, observed_k_value in zip(values["root_seed"], values["k"], strict=True):
+            if root is not None:
+                roots_set.add(int(root))
+            if observed_k_value is not None:
+                observed_k_set.add(int(observed_k_value))
     observed_k = sorted(observed_k_set)
     if observed_k != [k]:
         raise ValueError(f"{path} has k support {observed_k}, expected [{k}]")
@@ -434,50 +470,27 @@ def _standardized_frames(
     return standardized_frame, mixture_frame
 
 
-def _game_diagnostics(sources: dict[int, Path]) -> tuple[pd.DataFrame, pd.DataFrame]:
+def _game_diagnostics(sources: dict[int, Path]) -> pd.DataFrame:
     selfplay: defaultdict[tuple[int, int, int], list[int]] = defaultdict(lambda: [0, 0, 0])
-    mirrored: defaultdict[tuple[int, int, int], list[int]] = defaultdict(lambda: [0, 0])
-    unmatched: defaultdict[tuple[int, int, int], list[int]] = defaultdict(lambda: [0, 0])
-    safety: Counter[tuple[int, int, int]] = Counter()
     for k, source in sources.items():
         columns = _source_columns(k)
-        pending: defaultdict[tuple[int, int, int, int], dict[int, deque[int]]] = defaultdict(
-            lambda: {0: deque(), 1: deque()}
-        )
         for batch in pq.ParquetFile(source).iter_batches(columns=columns):
-            for row in batch.to_pylist():
-                root = int(row["root_seed"])
-                strategies = tuple(int(row[f"P{seat}_strategy"]) for seat in range(1, k + 1))
-                status = TerminationStatus(row["termination_status"])
-                if status is TerminationStatus.SAFETY_LIMIT and row["winner_seat"] is not None:
+            values = batch.to_pydict()
+            for index in range(batch.num_rows):
+                root = int(values["root_seed"][index])
+                strategies = tuple(
+                    int(values[f"P{seat}_strategy"][index]) for seat in range(1, k + 1)
+                )
+                status = TerminationStatus(values["termination_status"][index])
+                winner = values["winner_seat"][index]
+                if status is TerminationStatus.SAFETY_LIMIT and winner is not None:
                     raise ValueError(f"{source} credits a safety-limit winner")
-                p1_win = int(row["winner_seat"] == "P1")
+                p1_win = int(winner == "P1")
                 if len(set(strategies)) == 1:
                     cell = selfplay[(root, k, strategies[0])]
                     cell[0] += p1_win
                     cell[1] += 1
                     cell[2] += int(status is TerminationStatus.SAFETY_LIMIT)
-                if k != 2 or strategies[0] == strategies[1]:
-                    continue
-                a, b = sorted(strategies)
-                if status is TerminationStatus.SAFETY_LIMIT:
-                    safety[(root, a, b)] += 1
-                    continue
-                orientation = int(strategies == (b, a))
-                key = (root, int(row["deterministic_batch_id"]), a, b)
-                opposite = 1 - orientation
-                if pending[key][opposite]:
-                    other = pending[key][opposite].popleft()
-                    forward, reverse = (other, p1_win) if orientation == 1 else (p1_win, other)
-                    pair = mirrored[(root, a, b)]
-                    pair[0] += forward - reverse
-                    pair[1] += 1
-                else:
-                    pending[key][orientation].append(p1_win)
-        for (root, _, a, b), orientations in pending.items():
-            cell = unmatched[(root, a, b)]
-            cell[0] += len(orientations[0])
-            cell[1] += len(orientations[1])
     selfplay_rows: list[dict[str, Any]] = [
         {
             "root_seed": root,
@@ -495,70 +508,330 @@ def _game_diagnostics(sources: dict[int, Path]) -> tuple[pd.DataFrame, pd.DataFr
         }
         for (root, k, strategy), values in sorted(selfplay.items())
     ]
-    mirrored_rows: list[dict[str, Any]] = [
-        {
-            "root_seed": root,
-            "k": 2,
-            "strategy_a": a,
-            "strategy_b": b,
-            "paired_mirrored_games": values[1],
-            "games_attempted": (
-                2 * values[1]
-                + unmatched[(root, a, b)][0]
-                + unmatched[(root, a, b)][1]
-                + safety[(root, a, b)]
-            ),
-            "games_completed": (
-                2 * values[1] + unmatched[(root, a, b)][0] + unmatched[(root, a, b)][1]
-            ),
-            "games_safety_limit": safety[(root, a, b)],
-            "unpaired_forward_games": unmatched[(root, a, b)][0],
-            "unpaired_reverse_games": unmatched[(root, a, b)][1],
-            "mean_p1_win_difference": values[0] / values[1],
-        }
-        for (root, a, b), values in sorted(mirrored.items())
-        if values[1]
-    ]
-    for (root, a, b), values in sorted(unmatched.items()):
-        if (root, a, b) in mirrored:
-            continue
-        mirrored_rows.append(
-            {
-                "root_seed": root,
-                "k": 2,
-                "strategy_a": a,
-                "strategy_b": b,
-                "paired_mirrored_games": 0,
-                "games_attempted": values[0] + values[1] + safety[(root, a, b)],
-                "games_completed": values[0] + values[1],
-                "games_safety_limit": safety[(root, a, b)],
-                "unpaired_forward_games": values[0],
-                "unpaired_reverse_games": values[1],
-                "mean_p1_win_difference": None,
-            }
-        )
-    for (root, a, b), safety_games in sorted(safety.items()):
-        if (root, a, b) in mirrored or (root, a, b) in unmatched:
-            continue
-        mirrored_rows.append(
-            {
-                "root_seed": root,
-                "k": 2,
-                "strategy_a": a,
-                "strategy_b": b,
-                "paired_mirrored_games": 0,
-                "games_attempted": safety_games,
-                "games_completed": 0,
-                "games_safety_limit": safety_games,
-                "unpaired_forward_games": 0,
-                "unpaired_reverse_games": 0,
-                "mean_p1_win_difference": None,
-            }
-        )
-    return (
-        pd.DataFrame(selfplay_rows, columns=_SELFPLAY_COLUMNS),
-        pd.DataFrame(mirrored_rows, columns=_MIRRORED_COLUMNS),
+    return pd.DataFrame(selfplay_rows, columns=_SELFPLAY_COLUMNS)
+
+
+@dataclass(frozen=True)
+class _MirroredBatch:
+    root_seed: int
+    batch_id: int
+    rows: int
+
+
+def _mirror_partition(a: int, b: int, partitions: int) -> int:
+    """Return a hash-seed-independent canonical strategy-pair partition."""
+
+    digest = hashlib.blake2b(f"{a}:{b}".encode("ascii"), digest_size=8).digest()
+    return int.from_bytes(digest, "little") % partitions
+
+
+def _mirrored_batches(source: Path, *, max_batch_bytes: int) -> tuple[_MirroredBatch, ...]:
+    """Discover ordered deterministic batches without materializing game records."""
+
+    columns = ("root_seed", "k", "deterministic_batch_id")
+    current: tuple[int, int] | None = None
+    rows = 0
+    result: list[_MirroredBatch] = []
+    for _row_group, _batch, table in iter_parquet_tables_by_bytes(
+        source,
+        columns=columns,
+        max_batch_bytes=max_batch_bytes,
+        max_batch_rows=max(1, max_batch_bytes // 16),
+    ):
+        values = table.to_pydict()
+        for index in range(table.num_rows):
+            if int(values["k"][index]) != 2:
+                continue
+            coordinate = (
+                int(values["root_seed"][index]),
+                int(values["deterministic_batch_id"][index]),
+            )
+            if current is not None and coordinate < current:
+                raise ValueError(f"{source} is not ordered by root and deterministic batch")
+            if current is not None and coordinate != current:
+                result.append(_MirroredBatch(current[0], current[1], rows))
+                rows = 0
+            current = coordinate
+            rows += 1
+    if current is not None:
+        result.append(_MirroredBatch(current[0], current[1], rows))
+    return tuple(result)
+
+
+def _mirrored_units(
+    batches: tuple[_MirroredBatch, ...], *, max_records: int
+) -> tuple[PartitionedUnit, ...]:
+    units: list[PartitionedUnit] = []
+    for batch in batches:
+        # A deliberately conservative fixed-record budget leaves room for Arrow
+        # decode buffers, stable sorting, and two compact FIFO bit arrays.
+        partitions = max(1, math.ceil(batch.rows / max_records))
+        for partition in range(partitions):
+            units.append(
+                PartitionedUnit(
+                    (batch.root_seed, batch.batch_id, partition, partitions),
+                    (
+                        f"root-{batch.root_seed}/batch-{batch.batch_id:08d}/"
+                        f"part-{partition:04d}-of-{partitions:04d}.parquet"
+                    ),
+                )
+            )
+    return tuple(units)
+
+
+@dataclass(frozen=True)
+class _MirroredPartitionWriter:
+    source: str
+    columns: tuple[str, ...]
+    max_batch_bytes: int
+    max_records: int
+
+    def __call__(self, unit: PartitionedUnit, output: Path) -> None:
+        root, batch_id, partition, partitions = (int(value) for value in unit.key)
+        records: list[tuple[int, int, int, int, int]] = []
+        # The source is scanned only for a missing unit. Completed units are
+        # authenticated and skipped by the shared partition stage on resume.
+        for _rg, _bi, table in iter_parquet_tables_by_bytes(
+            Path(self.source),
+            columns=self.columns,
+            max_batch_bytes=self.max_batch_bytes,
+            max_batch_rows=max(1, self.max_batch_bytes // 32),
+        ):
+            values = table.to_pydict()
+            for index in range(table.num_rows):
+                if (
+                    int(values["root_seed"][index]) != root
+                    or int(values["deterministic_batch_id"][index]) != batch_id
+                ):
+                    continue
+                first = values["P1_strategy"][index]
+                second = values["P2_strategy"][index]
+                if first is None or second is None:
+                    raise ValueError("mirrored-game diagnostic has missing strategy exposure")
+                first_i, second_i = int(first), int(second)
+                if first_i == second_i:
+                    continue
+                a, b = sorted((first_i, second_i))
+                if _mirror_partition(a, b, partitions) != partition:
+                    continue
+                status = TerminationStatus(values["termination_status"][index])
+                winner = values["winner_seat"][index]
+                if status is TerminationStatus.SAFETY_LIMIT:
+                    if winner is not None:
+                        raise ValueError("mirrored-game safety-limit observation has a winner")
+                    records.append((a, b, 2, 0, len(records)))
+                    continue
+                if winner not in {"P1", "P2"}:
+                    raise ValueError("mirrored-game completed observation has no valid winner")
+                orientation = int((first_i, second_i) == (b, a))
+                records.append((a, b, orientation, int(winner == "P1"), len(records)))
+        if len(records) > self.max_records:
+            raise MemoryError(
+                "deterministic pair partition exceeds its assigned compact-record budget; "
+                "increase deterministic partitioning before publication"
+            )
+        if not records:
+            pq.write_table(pa.Table.from_pylist([], schema=_MIRROR_SHARD_SCHEMA), output)
+            return
+        raw = np.asarray(records, dtype=np.int64)
+        order = np.lexsort((raw[:, 4], raw[:, 1], raw[:, 0]))
+        raw = raw[order]
+        rows: list[dict[str, int]] = []
+        start = 0
+        while start < raw.shape[0]:
+            stop = start + 1
+            while stop < raw.shape[0] and tuple(raw[stop, :2]) == tuple(raw[start, :2]):
+                stop += 1
+            a, b = (int(value) for value in raw[start, :2])
+            forward = np.empty(stop - start, dtype=np.int8)
+            reverse = np.empty(stop - start, dtype=np.int8)
+            forward_head = reverse_head = forward_size = reverse_size = 0
+            matched = difference = completed = safety = 0
+            for orientation, p1 in raw[start:stop, 2:4]:
+                if orientation == 2:
+                    safety += 1
+                else:
+                    completed += 1
+                    if orientation == 0:
+                        if reverse_head < reverse_size:
+                            difference += int(p1) - int(reverse[reverse_head])
+                            reverse_head += 1
+                            matched += 1
+                        else:
+                            forward[forward_size] = p1
+                            forward_size += 1
+                    elif forward_head < forward_size:
+                        difference += int(forward[forward_head]) - int(p1)
+                        forward_head += 1
+                        matched += 1
+                    else:
+                        reverse[reverse_size] = p1
+                        reverse_size += 1
+            rows.append(
+                {
+                    "root_seed": root,
+                    "deterministic_batch_id": batch_id,
+                    "strategy_a": a,
+                    "strategy_b": b,
+                    "paired_mirrored_games": matched,
+                    "p1_win_difference_sum": difference,
+                    "games_completed": completed,
+                    "games_safety_limit": safety,
+                    "unpaired_forward_games": forward_size - forward_head,
+                    "unpaired_reverse_games": reverse_size - reverse_head,
+                }
+            )
+            start = stop
+        pq.write_table(pa.Table.from_pylist(rows, schema=_MIRROR_SHARD_SCHEMA), output)
+
+
+def _mirrored_identity(cfg: AppConfig, source: Path) -> PartitionedStageIdentity:
+    return PartitionedStageIdentity(
+        stage_name="seat_mirrored_pairing",
+        root_seed=int(cfg.sim.seed),
+        input_identities=(("combined_rows_k2", sha256_file(source)),),
+        statistical_config_sha256=cfg.stage_config_sha("metrics"),
+        code_identity_sha256=resolved_code_identity_sha256(cfg),
+        schema_version=_MIRROR_SCHEMA_VERSION,
+        method_version=_MIRROR_METHOD_VERSION,
     )
+
+
+def _write_mirrored_diagnostic(
+    cfg: AppConfig,
+    *,
+    source: Path,
+    units_root: Path,
+    units: tuple[PartitionedUnit, ...],
+    manifest: Path,
+    output: Path,
+    guard: ProcessTreeMemoryGuard,
+) -> None:
+    """Stable merge authenticated batch shards without a global pair map."""
+
+    sidecar = make_artifact_sidecar(
+        cfg,
+        output,
+        producer="seat_analysis",
+        scope=ArtifactScope.DIAGNOSTICS,
+        source_scope=ArtifactScope.BY_K,
+        operation="calculate_mirrored_game_diagnostics",
+        baseline="chance_1_over_k",
+        weighted_quantity="paired_p1_win_indicator_difference",
+        support_count_role="matched_unmatched_and_termination_partition_counts",
+        uncertainty_method="descriptive",
+        replication_unit="within_batch_count_matched_opposite_orientation_game_pair",
+        conditioning='termination_status == "completed"',
+        consistency_columns=_MIRRORED_COLUMNS,
+        source_artifacts=[source],
+        input_manifests=[manifest],
+        grouping_keys=["root_seed", "strategy_a", "strategy_b"],
+        player_counts=[2],
+        required_player_counts=[2],
+        missing_cell_policy="explicit_zero_matched_support",
+    )
+
+    def write(staged: Path) -> None:
+        guard.check_before_schedule(force=True)
+        output_schema = pa.schema(
+            [
+                pa.field("root_seed", pa.int64()),
+                pa.field("k", pa.int16()),
+                pa.field("strategy_a", STRATEGY_ID_ARROW_TYPE),
+                pa.field("strategy_b", STRATEGY_ID_ARROW_TYPE),
+                pa.field("paired_mirrored_games", pa.int64()),
+                pa.field("games_attempted", pa.int64()),
+                pa.field("games_completed", pa.int64()),
+                pa.field("games_safety_limit", pa.int64()),
+                pa.field("unpaired_forward_games", pa.int64()),
+                pa.field("unpaired_reverse_games", pa.int64()),
+                pa.field("mean_p1_win_difference", pa.float64()),
+            ]
+        )
+        writer = pq.ParquetWriter(staged, output_schema, compression=cfg.parquet_codec)
+        try:
+
+            def shard_rows(
+                unit: PartitionedUnit,
+            ) -> Iterator[tuple[tuple[int, int, int], list[int]]]:
+                shard = units_root / "units" / unit.relative_output
+                for batch in pq.ParquetFile(shard).iter_batches(
+                    batch_size=max(1, cfg.row_group_size)
+                ):
+                    values = batch.to_pydict()
+                    for index in range(batch.num_rows):
+                        yield (
+                            (
+                                int(values["root_seed"][index]),
+                                int(values["strategy_a"][index]),
+                                int(values["strategy_b"][index]),
+                            ),
+                            [
+                                int(values[name][index])
+                                for name in (
+                                    "paired_mirrored_games",
+                                    "p1_win_difference_sum",
+                                    "games_completed",
+                                    "games_safety_limit",
+                                    "unpaired_forward_games",
+                                    "unpaired_reverse_games",
+                                )
+                            ],
+                        )
+
+            streams = [shard_rows(unit) for unit in units]
+            heap: list[tuple[tuple[int, int, int], int, list[int]]] = []
+            for index, stream in enumerate(streams):
+                try:
+                    key, value = next(stream)
+                except StopIteration:
+                    continue
+                heapq.heappush(heap, (key, index, value))
+            rows: list[dict[str, Any]] = []
+            while heap:
+                key, index, value = heapq.heappop(heap)
+                totals = value
+                try:
+                    next_key, next_value = next(streams[index])
+                    heapq.heappush(heap, (next_key, index, next_value))
+                except StopIteration:
+                    pass
+                while heap and heap[0][0] == key:
+                    _same_key, same_index, same_value = heapq.heappop(heap)
+                    totals = [left + right for left, right in zip(totals, same_value, strict=True)]
+                    try:
+                        next_key, next_value = next(streams[same_index])
+                        heapq.heappush(heap, (next_key, same_index, next_value))
+                    except StopIteration:
+                        pass
+                matched, difference, completed, safety, forward, reverse = totals
+                root, a, b = key
+                rows.append(
+                    {
+                        "root_seed": root,
+                        "k": 2,
+                        "strategy_a": a,
+                        "strategy_b": b,
+                        "paired_mirrored_games": matched,
+                        "games_attempted": completed + safety,
+                        "games_completed": completed,
+                        "games_safety_limit": safety,
+                        "unpaired_forward_games": forward,
+                        "unpaired_reverse_games": reverse,
+                        "mean_p1_win_difference": difference / matched if matched else None,
+                    }
+                )
+                if len(rows) >= max(1, cfg.row_group_size):
+                    writer.write_table(pa.Table.from_pylist(rows, schema=output_schema))
+                    rows.clear()
+            if rows:
+                writer.write_table(pa.Table.from_pylist(rows, schema=output_schema))
+        finally:
+            writer.close()
+        guard.check_before_schedule(force=True)
+
+    write_artifact_with_sidecar_atomic(output, sidecar, write)
+    guard.check_before_schedule(force=True)
 
 
 def _write_frame(
@@ -631,13 +904,40 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
         mirrored_diagnostic=cfg.seat_mirrored_diagnostic_path(),
     )
     done = stage_done_path(cfg.metrics_stage_dir, "canonical_seat_analysis")
-    if not force and stage_is_up_to_date(
-        done,
-        inputs=list(sources.values()),
-        outputs=list(artifacts.all_paths),
-        cfg=cfg,
-        stage="metrics",
-        sidecar_artifacts=list(artifacts.all_paths),
+    mirror_bytes = int(
+        cfg.resources.stage_batch_bytes.get(
+            "partitioned_stage", cfg.resources.stage_batch_bytes["analysis"]
+        )
+    )
+    mirror_records = max(1_024, mirror_bytes // 128)
+    mirror_units: tuple[PartitionedUnit, ...] = ()
+    mirror_root: Path | None = None
+    mirror_cache_valid = True
+    if 2 in sources:
+        mirror_units = _mirrored_units(
+            _mirrored_batches(sources[2], max_batch_bytes=mirror_bytes), max_records=mirror_records
+        )
+        mirror_root = cfg.metrics_stage_dir / "checkpoints" / "seat_mirrored_pairing_v2"
+        mirror_cache_valid = (
+            validate_final_manifest(
+                mirror_root / "partition_manifest.jsonl",
+                root=mirror_root,
+                identity=_mirrored_identity(cfg, sources[2]),
+                unit_source=lambda: iter(mirror_units),
+            )
+            is not None
+        )
+    if (
+        not force
+        and stage_is_up_to_date(
+            done,
+            inputs=list(sources.values()),
+            outputs=list(artifacts.all_paths),
+            cfg=cfg,
+            stage="metrics",
+            sidecar_artifacts=list(artifacts.all_paths),
+        )
+        and mirror_cache_valid
     ):
         return artifacts
 
@@ -711,7 +1011,7 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
             "root_seed, effect_scope, strategy, and seat"
         ),
     )
-    selfplay, mirrored = _game_diagnostics(sources)
+    selfplay = _game_diagnostics(sources)
     _write_frame(
         cfg,
         selfplay,
@@ -724,18 +1024,50 @@ def build_canonical_seat_analysis(cfg: AppConfig, *, force: bool = False) -> Sea
         conditioning="all attempted games conditional on every seat using the same strategy",
         replication_unit="attempted_self_play_game",
     )
-    _write_frame(
-        cfg,
-        mirrored,
-        artifacts.mirrored_diagnostic,
-        scope=ArtifactScope.DIAGNOSTICS,
-        operation="calculate_mirrored_game_diagnostics",
-        sources=list(sources.values()),
-        ks=ks,
-        grouping_keys=["root_seed", "strategy_a", "strategy_b"],
-        conditioning='termination_status == "completed"',
-        replication_unit="within_batch_count_matched_opposite_orientation_game_pair",
-    )
+    if 2 in sources:
+        assert mirror_root is not None
+        mirror_guard = ProcessTreeMemoryGuard(
+            cfg.resources.rss_abort_mb, cfg.resources.rss_sample_interval_seconds
+        )
+        mirror_stage = run_partitioned_stage(
+            root=mirror_root,
+            identity=_mirrored_identity(cfg, sources[2]),
+            unit_source=lambda: iter(mirror_units),
+            writer=_MirroredPartitionWriter(
+                str(sources[2]), tuple(_source_columns(2)), mirror_bytes, mirror_records
+            ),
+            resources=cfg.resources,
+            requested_workers=cfg.analysis.n_jobs,
+            mp_start_method=cfg.analysis.mp_start_method,
+            force=force,
+            memory_guard=mirror_guard,
+        )
+        if mirror_stage.required_units != len(mirror_units):
+            raise RuntimeError(
+                "mirrored-game partition manifest does not cover every required unit"
+            )
+        _write_mirrored_diagnostic(
+            cfg,
+            source=sources[2],
+            units_root=mirror_root,
+            units=mirror_units,
+            manifest=mirror_stage.manifest_path,
+            output=artifacts.mirrored_diagnostic,
+            guard=mirror_guard,
+        )
+    else:
+        _write_frame(
+            cfg,
+            pd.DataFrame(columns=_MIRRORED_COLUMNS),
+            artifacts.mirrored_diagnostic,
+            scope=ArtifactScope.DIAGNOSTICS,
+            operation="calculate_mirrored_game_diagnostics",
+            sources=list(sources.values()),
+            ks=ks,
+            grouping_keys=["root_seed", "strategy_a", "strategy_b"],
+            conditioning='termination_status == "completed"',
+            replication_unit="within_batch_count_matched_opposite_orientation_game_pair",
+        )
     write_stage_done(
         done,
         inputs=list(sources.values()),

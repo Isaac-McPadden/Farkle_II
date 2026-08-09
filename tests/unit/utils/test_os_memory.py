@@ -124,6 +124,17 @@ def test_windows_backend_records_job_configuration_and_effective_limit() -> None
     assert isinstance(status["enclosing_job"], bool)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="live Job Object test")
+def test_partition_workers_inherit_the_aggregate_job_boundary() -> None:
+    completed = _supervisor(512, "partition-workers", "--workers", "2")
+
+    assert completed.returncode == 0
+    statuses = json.loads(completed.stdout)
+    assert len(statuses) == 2
+    assert all(json.loads(status)["backend"] == "windows_job" for status in statuses)
+    assert all(json.loads(status)["effective_hard_limit_mb"] <= 512 for status in statuses)
+
+
 def test_strict_mode_fails_closed_before_launch(monkeypatch: pytest.MonkeyPatch) -> None:
     launched = False
 

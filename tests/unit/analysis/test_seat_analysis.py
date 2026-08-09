@@ -24,13 +24,15 @@ def _cfg(tmp_path: Path) -> AppConfig:
     )
 
 
-def _row(k: int, game: int, strategies: list[int], winner_seat: int) -> dict[str, object]:
+def _row(
+    k: int, game: int, strategies: list[int], winner_seat: int, *, batch: int = 0
+) -> dict[str, object]:
     row: dict[str, object] = {
         "root_seed": 11,
         "k": k,
         "shuffle_index": game,
         "game_index": game,
-        "deterministic_batch_id": 0,
+        "deterministic_batch_id": batch,
         "winner_seat": f"P{winner_seat}",
         "winner_strategy": strategies[winner_seat - 1],
         "termination_status": "completed",
@@ -207,3 +209,47 @@ def test_mismatched_root_support_fails_before_estimation(tmp_path: Path) -> None
 
     with pytest.raises(ValueError, match="configured-root support"):
         build_canonical_seat_analysis(cfg)
+
+
+def test_mirrored_partition_shards_resume_after_missing_or_corrupt_unit(tmp_path: Path) -> None:
+    """Large sparse batches use reusable authenticated pair shards, not pending graphs."""
+
+    cfg = _cfg(tmp_path)
+    # 2,100 distinct pairs forces three deterministic partitions under the
+    # conservative 1,024-record unit budget.  Each pair has one FIFO mirror.
+    rows = [
+        row
+        for pair in range(2_100)
+        for row in (
+            _row(2, 2 * pair, [pair * 2 + 1, pair * 2 + 2], 1),
+            _row(2, 2 * pair + 1, [pair * 2 + 2, pair * 2 + 1], 2),
+        )
+    ]
+    _write_source(cfg, 2, rows)
+    _write_source(cfg, 4, [_row(4, 0, [1, 2, 1, 2], 1)])
+    cfg.resources.stage_batch_bytes["partitioned_stage"] = 64 * 1024
+
+    first = build_canonical_seat_analysis(cfg)
+    initial = pq.read_table(first.mirrored_diagnostic).to_pandas()
+    expected_rows = pq.read_table(first.mirrored_diagnostic).to_pylist()
+    assert len(initial) == 2_100
+    assert initial["paired_mirrored_games"].sum() == 2_100
+    assert initial["unpaired_forward_games"].sum() == 0
+    assert initial["unpaired_reverse_games"].sum() == 0
+
+    root = cfg.metrics_stage_dir / "checkpoints" / "seat_mirrored_pairing_v2"
+    shard = next((root / "units").rglob("*.parquet"))
+    shard.unlink()
+    # The stage-done cache is not accepted when its authenticated unit manifest
+    # no longer validates; only the missing shard is recomputed.  Reusing it
+    # with a different worker count must preserve canonical output order.
+    cfg.analysis.n_jobs = 2
+    resumed = build_canonical_seat_analysis(cfg)
+    assert pq.read_table(resumed.mirrored_diagnostic).to_pylist() == expected_rows
+
+    shard.write_bytes(b"corrupt")
+    repaired = build_canonical_seat_analysis(cfg)
+    assert (
+        pq.read_table(repaired.mirrored_diagnostic)["paired_mirrored_games"].to_pylist()
+        == [1] * 2_100
+    )
