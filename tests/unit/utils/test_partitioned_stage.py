@@ -3,15 +3,18 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from farkle.config import ResourcesConfig
+from farkle.utils.authenticated_contract import CodeIdentity, CodeIdentityPolicy
 from farkle.utils.parallel import ResourceSafetyError
 from farkle.utils.partitioned_stage import (
     PartitionedStageError,
     PartitionedStageIdentity,
     PartitionedUnit,
+    resolved_code_identity_sha256,
     run_partitioned_stage,
     validate_final_manifest,
 )
@@ -184,6 +187,20 @@ def test_identity_change_invalidates_every_unit(tmp_path: Path) -> None:
     assert result.completed_units == 12
 
 
+def test_resumable_identity_binds_full_dirty_code_fingerprint() -> None:
+    first = CodeIdentity(
+        commit="a" * 40,
+        policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY.value,
+        state="development_dirty",
+        dirty_fingerprint_sha256="b" * 64,
+    )
+    second = replace(first, dirty_fingerprint_sha256="c" * 64)
+
+    assert resolved_code_identity_sha256(SimpleNamespace(_code_identity=first)) != (
+        resolved_code_identity_sha256(SimpleNamespace(_code_identity=second))
+    )
+
+
 def test_unsorted_unit_enumeration_fails_closed(tmp_path: Path) -> None:
     def unsorted_units():
         return iter((PartitionedUnit((2,), "b.bin"), PartitionedUnit((1,), "a.bin")))
@@ -223,5 +240,34 @@ def test_rss_abort_stops_submission_and_never_publishes_manifest(tmp_path: Path)
             resources=_resources(),
             requested_workers=1,
             memory_guard=_AbortingGuard(),  # type: ignore[arg-type]
+        )
+    assert not (root / "partition_manifest.jsonl").exists()
+
+
+class _LateAbortingGuard:
+    peak_rss_bytes = 951 * 1024 * 1024
+
+    def __init__(self) -> None:
+        self.forced_calls = 0
+
+    def check_before_schedule(self, *, force: bool = False) -> int:
+        if force:
+            self.forced_calls += 1
+            if self.forced_calls == 3:
+                raise ResourceSafetyError("synthetic late RSS abort")
+        return self.peak_rss_bytes
+
+
+def test_late_rss_abort_quarantines_published_manifest(tmp_path: Path) -> None:
+    root = tmp_path / "stage"
+    with pytest.raises(ResourceSafetyError, match="synthetic late RSS abort"):
+        run_partitioned_stage(
+            root=root,
+            identity=_identity(),
+            unit_source=_unit_source,
+            writer=_deterministic_writer,
+            resources=_resources(),
+            requested_workers=1,
+            memory_guard=_LateAbortingGuard(),  # type: ignore[arg-type]
         )
     assert not (root / "partition_manifest.jsonl").exists()

@@ -55,6 +55,7 @@ from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedStageResult,
     PartitionedUnit,
+    resolved_code_identity_sha256,
     run_partitioned_stage,
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose
@@ -419,7 +420,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     )
     stage_root = cfg.rng_stage_dir / "checkpoints" / stage_config_sha[:20]
     source_sha = sha256_file(data_file)
-    code_sha = _diagnostic_code_sha256()
+    code_sha = _diagnostic_code_sha256(cfg)
     root_seed = int(cfg.sim.seed)
     minimum_observations = min(normalized_lags) + 2
 
@@ -550,6 +551,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         memory_guard=guard,
     )
 
+    guard.check_before_schedule(force=True)
     capacity = _finalize_outputs(
         cfg,
         data_file=data_file,
@@ -565,6 +567,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         peak_rss_mb=guard.peak_rss_bytes / (1024 * 1024),
     )
     status = "blocked_by_cap" if capacity.deterministically_capped_group_count else "success"
+    guard.check_before_schedule(force=True)
     write_stage_done(
         stamp_path,
         inputs=[data_file],
@@ -604,14 +607,8 @@ def _partition_identity(
     )
 
 
-def _diagnostic_code_sha256() -> str:
-    digest = hashlib.sha256()
-    for path in (
-        Path(__file__),
-        Path(__file__).resolve().parents[1] / "utils" / "partitioned_stage.py",
-    ):
-        digest.update(path.read_bytes())
-    return digest.hexdigest()
+def _diagnostic_code_sha256(cfg: AppConfig) -> str:
+    return resolved_code_identity_sha256(cfg)
 
 
 def _row_group_units(count: int) -> Iterator[PartitionedUnit]:

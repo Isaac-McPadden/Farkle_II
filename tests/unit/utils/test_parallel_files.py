@@ -397,6 +397,28 @@ def test_concurrent_roots_share_the_cpu_and_memory_envelope() -> None:
     assert policy.memory_worker_cap == 2
 
 
+def test_process_tree_memory_abort_is_sticky(monkeypatch: MonkeyPatch) -> None:
+    guard = parallel.ProcessTreeMemoryGuard(rss_abort_mb=950)
+    # Keep this unit test synchronous; the public sample/check path remains the
+    # behavior under test while the daemon sampler is covered by integration.
+    guard._monitor_started = True
+    monkeypatch.setattr(
+        parallel,
+        "process_tree_rss_bytes",
+        lambda _pid=None: 951 * 1024 * 1024,
+    )
+    with pytest.raises(parallel.ResourceSafetyError, match="threshold crossed"):
+        guard.check_before_schedule(force=True)
+
+    monkeypatch.setattr(
+        parallel,
+        "process_tree_rss_bytes",
+        lambda _pid=None: 100 * 1024 * 1024,
+    )
+    with pytest.raises(parallel.ResourceSafetyError, match="threshold crossed"):
+        guard.check_before_schedule(force=True)
+
+
 def test_nested_executor_environment_prevents_process_pool() -> None:
     class DummyCfg:
         n_jobs: int | None = 8

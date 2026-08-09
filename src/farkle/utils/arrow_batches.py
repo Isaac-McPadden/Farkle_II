@@ -13,6 +13,26 @@ class OversizedArrowRowError(MemoryError):
     """Raised when one Arrow row alone exceeds the configured batch ceiling."""
 
 
+def _conservative_projected_row_width(schema: pa.Schema, columns: Sequence[str]) -> int:
+    width = 0
+    for name in columns:
+        data_type = schema.field(name).type
+        if pa.types.is_boolean(data_type):
+            width += 2
+        elif pa.types.is_integer(data_type) or pa.types.is_floating(data_type):
+            width += max(1, int(data_type.bit_width) // 8) + 1
+        elif (
+            pa.types.is_string(data_type)
+            or pa.types.is_large_string(data_type)
+            or pa.types.is_binary(data_type)
+            or pa.types.is_large_binary(data_type)
+        ):
+            width += 64
+        else:
+            width += 128
+    return max(1, width)
+
+
 def _split_record_batch(batch: pa.RecordBatch, max_batch_bytes: int) -> Iterator[pa.RecordBatch]:
     """Split without Python row materialization until each slice fits the byte ceiling."""
 
@@ -60,10 +80,12 @@ def iter_parquet_tables_by_bytes(
     if max_batch_bytes < 1 or max_batch_rows < 1:
         raise ValueError("Arrow batch byte and row ceilings must be positive")
     parquet = pq.ParquetFile(path)
+    projected_width = _conservative_projected_row_width(parquet.schema_arrow, columns)
+    decode_rows = max(1, min(max_batch_rows, max_batch_bytes // projected_width))
     for row_group in range(start_row_group, parquet.num_row_groups):
         batch_index = 0
         raw_batches = parquet.iter_batches(
-            batch_size=max_batch_rows,
+            batch_size=decode_rows,
             row_groups=[row_group],
             columns=list(columns),
             use_threads=use_threads,

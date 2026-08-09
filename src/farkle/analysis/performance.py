@@ -40,6 +40,7 @@ from farkle.utils.parallel import (
 from farkle.utils.partitioned_stage import (
     PartitionedStageIdentity,
     PartitionedUnit,
+    resolved_code_identity_sha256,
     run_partitioned_stage,
 )
 from farkle.utils.random import RandomPurpose, coordinate_rng
@@ -419,6 +420,128 @@ def _estimate_one_k(
             }
         )
     return pd.DataFrame(rows)
+
+
+def _estimate_one_k_matrix(
+    path: Path,
+    k: int,
+    resolution_delta: float,
+    practical_delta: float,
+    *,
+    max_batch_bytes: int,
+) -> pd.DataFrame:
+    """Estimate one k directly from a memory map without a full pandas copy."""
+
+    matrix = np.load(path, mmap_mode="r", allow_pickle=False)
+    try:
+        _validate_matrix_array(matrix, path=path, k=k)
+        strategies = np.asarray(matrix["strategy"][0], dtype=np.int32)
+        strategy_count = len(strategies)
+        batch_count = matrix.shape[0]
+        # A chunk can hold wins, four exposure/count inputs, a positive mask,
+        # and batch rates while staying below the configured working budget.
+        bytes_per_cell = 6 * np.dtype("<i8").itemsize + np.dtype("<f8").itemsize + 1
+        chunk_size = max(
+            1,
+            min(
+                strategy_count,
+                max_batch_bytes // max(1, batch_count * bytes_per_cell),
+            ),
+        )
+        totals = {
+            name: np.zeros(strategy_count, dtype=np.int64)
+            for name in (
+                "raw_wins",
+                "raw_player_game_exposures",
+                "raw_completed_player_game_exposures",
+                "raw_safety_limit_player_game_exposures",
+                "raw_losses",
+            )
+        }
+        positive_batches = np.zeros(strategy_count, dtype=np.int64)
+        mcse = np.full(strategy_count, np.nan, dtype=np.float64)
+        for start in range(0, strategy_count, chunk_size):
+            stop = min(strategy_count, start + chunk_size)
+            for name, output in totals.items():
+                output[start:stop] = np.asarray(matrix[name][:, start:stop]).sum(
+                    axis=0, dtype=np.int64
+                )
+            exposures = np.asarray(
+                matrix["raw_player_game_exposures"][:, start:stop], dtype=np.int64
+            )
+            wins = np.asarray(matrix["raw_wins"][:, start:stop], dtype=np.int64)
+            for local in range(stop - start):
+                positive = exposures[:, local] > 0
+                count = int(np.count_nonzero(positive))
+                positive_batches[start + local] = count
+                if count >= 2:
+                    rates = wins[positive, local].astype(np.float64) / exposures[positive, local]
+                    mcse[start + local] = float(np.std(rates, ddof=1) / sqrt(count))
+
+        exposures = totals["raw_player_game_exposures"]
+        completed = totals["raw_completed_player_game_exposures"]
+        safety = totals["raw_safety_limit_player_game_exposures"]
+        wins = totals["raw_wins"]
+        losses = totals["raw_losses"]
+        if np.any(exposures <= 0):
+            missing = strategies[exposures <= 0].tolist()
+            raise ValueError(f"strategies have no positive exposure support: {missing[:10]}")
+        rates = wins / exposures
+        chance = 1.0 / k
+        wilson = [
+            wilson_ci(int(w), int(e), alpha=0.05) for w, e in zip(wins, exposures, strict=False)
+        ]
+        wilson_low = np.asarray([value[0] for value in wilson], dtype=np.float64)
+        wilson_high = np.asarray([value[1] for value in wilson], dtype=np.float64)
+        widths = wilson_high - wilson_low
+        interval_low = np.full(strategy_count, np.nan, dtype=np.float64)
+        interval_high = np.full(strategy_count, np.nan, dtype=np.float64)
+        finite = np.isfinite(mcse)
+        if np.any(finite):
+            critical = t.ppf(0.975, positive_batches[finite] - 1)
+            interval_low[finite] = np.maximum(0.0, rates[finite] - critical * mcse[finite])
+            interval_high[finite] = np.minimum(1.0, rates[finite] + critical * mcse[finite])
+        roots = np.unique(matrix["root_seed"])
+        root_seed = int(roots[0])
+        return pd.DataFrame(
+            {
+                "root_seed": root_seed,
+                "k": k,
+                "strategy": strategies,
+                "chance_baseline": chance,
+                "raw_wins": wins,
+                "raw_exposures": exposures,
+                "raw_attempted_exposures": exposures,
+                "raw_completed_exposures": completed,
+                "raw_safety_limit_exposures": safety,
+                "raw_losses": losses,
+                "raw_declared_batches": batch_count,
+                "raw_batches": positive_batches,
+                "excluded_zero_exposure_batch_cells": batch_count - positive_batches,
+                "batch_support_policy": RECTANGULAR_SUPPORT_POLICY,
+                "win_rate_per_attempt": rates,
+                "win_rate": rates,
+                "win_rate_given_completion": np.divide(
+                    wins,
+                    completed,
+                    out=np.full(strategy_count, np.nan, dtype=np.float64),
+                    where=completed > 0,
+                ),
+                "safety_limit_exposure_rate": safety / exposures,
+                "chance_delta": rates - chance,
+                "wilson_interval_low": wilson_low,
+                "wilson_interval_high": wilson_high,
+                "wilson_interval_width": widths,
+                "screening_resolution_delta": resolution_delta,
+                "practical_delta_by_k": practical_delta,
+                "wilson_resolution_met": widths <= resolution_delta,
+                "batch_mcse": mcse,
+                "batch_interval_low": interval_low,
+                "batch_interval_high": interval_high,
+            }
+        )
+    finally:
+        del matrix
 
 
 def _pareto_membership(values: np.ndarray, strategies: np.ndarray) -> np.ndarray:
@@ -835,7 +958,7 @@ def _bootstrap_identity(
         root_seed=int(cfg.sim.seed),
         input_identities=inputs,
         statistical_config_sha256=cfg.stage_config_sha("metrics"),
-        code_identity_sha256=sha256_file(Path(__file__)),
+        code_identity_sha256=resolved_code_identity_sha256(cfg),
         schema_version=1,
         method_version=_PERFORMANCE_METHOD_VERSION,
     )
@@ -1274,15 +1397,18 @@ def build_canonical_performance(cfg: AppConfig, *, force: bool = False) -> Perfo
     roots: set[int] = set()
     for k, matrix_path in zip(required_k, matrix_paths, strict=True):
         guard.check_before_schedule()
-        frame = _matrix_frame(matrix_path, k)
-        roots.add(int(frame["root_seed"].iloc[0]))
-        estimates[k] = _estimate_one_k(
-            frame,
+        estimates[k] = _estimate_one_k_matrix(
+            matrix_path,
             k,
             cfg.screening.resolution_delta,
             float(practical_by_k[k]),
+            max_batch_bytes=int(
+                cfg.resources.stage_batch_bytes.get(
+                    "performance", cfg.resources.stage_batch_bytes["analysis"]
+                )
+            ),
         )
-        del frame
+        roots.add(int(estimates[k]["root_seed"].iloc[0]))
     if len(roots) != 1:
         raise ValueError(f"single-root performance inputs disagree on root: {sorted(roots)}")
     for k, path in zip(required_k, by_k_paths, strict=True):
@@ -1364,6 +1490,7 @@ def build_canonical_performance(cfg: AppConfig, *, force: bool = False) -> Perfo
         uncertainty_method="descriptive_complete_support_rank_and_spread",
         k_aggregation_method=diagnostic_method,
     )
+    guard.check_before_schedule(force=True)
     write_stage_done(
         done,
         inputs=sources,

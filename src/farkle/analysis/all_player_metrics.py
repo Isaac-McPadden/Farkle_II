@@ -441,17 +441,27 @@ def _iter_batch_tables(
     current_coordinate: tuple[int, int, int] | None = None
     accumulators = _ColumnAccumulators()
 
-    def _flush() -> pa.Table | None:
+    output_rows = max(
+        1,
+        max_batch_bytes
+        // _projected_row_width(all_player_batch_schema(), all_player_batch_schema().names),
+    )
+
+    def _flush() -> Iterator[pa.Table]:
         if current_coordinate is None or not accumulators.strategies:
-            return None
+            return
         root_seed, row_k, batch_id = current_coordinate
-        rows = [
-            _finish_row(root_seed, row_k, batch_id, strategy, accumulators.mapping(strategy))
-            for strategy in sorted(accumulators.strategies)
-        ]
-        table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
-        validate_unconditional_all_player_schema(table.schema)
-        return table
+        ordered = sorted(accumulators.strategies)
+        for offset in range(0, len(ordered), output_rows):
+            rows = [
+                _finish_row(root_seed, row_k, batch_id, strategy, accumulators.mapping(strategy))
+                for strategy in ordered[offset : offset + output_rows]
+            ]
+            table = pa.Table.from_pylist(rows, schema=all_player_batch_schema())
+            validate_unconditional_all_player_schema(table.schema)
+            if table.nbytes > max_batch_bytes:
+                raise MemoryError("all-player output batch crossed its configured byte ceiling")
+            yield table
 
     stream = iter_parquet_tables_by_bytes(
         source,
@@ -487,9 +497,7 @@ def _iter_batch_tables(
             if current_coordinate is not None and coordinate < current_coordinate:
                 raise ValueError(f"{source} is not ordered by root, k, and deterministic batch")
             if current_coordinate is not None and coordinate != current_coordinate:
-                finished = _flush()
-                if finished is not None:
-                    yield finished
+                yield from _flush()
                 accumulators = _ColumnAccumulators()
             current_coordinate = coordinate
             segment = table.slice(int(start), int(stop - start))
@@ -517,9 +525,7 @@ def _iter_batch_tables(
                 n_rounds=rounds,
             )
 
-    final_table = _flush()
-    if final_table is not None:
-        yield final_table
+    yield from _flush()
 
 
 def build_all_player_batch_metrics(
@@ -618,6 +624,7 @@ def build_all_player_batch_metrics(
             f"expected exactly one manifest entry for {output}, found {len(records)}"
         )
     validate_unconditional_all_player_schema(pq.read_schema(output))
+    memory_guard.check_before_schedule(force=True)
     write_stage_done(
         done,
         inputs=[source],

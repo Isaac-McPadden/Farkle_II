@@ -12,8 +12,9 @@ import multiprocessing as mp
 import os
 import threading
 import time
+import weakref
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from multiprocessing.context import BaseContext
 from typing import Any, Mapping
 
@@ -55,9 +56,15 @@ class ResourceSafetyError(RuntimeError):
     """Raised before more work is scheduled outside the safe resource envelope."""
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True)
 class ProcessTreeMemoryGuard:
-    """Periodically sample current-process plus descendant resident memory."""
+    """Continuously sample current-process plus descendant resident memory.
+
+    A threshold crossing is sticky for the lifetime of the guard.  This matters
+    because a short-lived worker allocation can disappear before the next
+    scheduling boundary; a later low sample must never make that execution
+    eligible for successful publication.
+    """
 
     rss_abort_mb: int
     sample_interval_seconds: float = 0.25
@@ -65,26 +72,78 @@ class ProcessTreeMemoryGuard:
     last_rss_bytes: int = 0
     peak_rss_bytes: int = 0
     _last_sample_at: float = 0.0
+    tripped_rss_bytes: int = 0
+    monitoring_error: str | None = None
+    _lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
+    _monitor_started: bool = field(default=False, init=False, repr=False)
+
+    def _record_sample(self, rss: int, sampled_at: float) -> None:
+        with self._lock:
+            self.last_rss_bytes = rss
+            self.peak_rss_bytes = max(self.peak_rss_bytes, rss)
+            self._last_sample_at = sampled_at
+            if rss >= self.rss_abort_mb * 1024 * 1024:
+                self.tripped_rss_bytes = max(self.tripped_rss_bytes, rss)
+
+    def _ensure_monitor(self) -> None:
+        with self._lock:
+            if self._monitor_started:
+                return
+            self._monitor_started = True
+        guard_ref = weakref.ref(self)
+        interval = float(self.sample_interval_seconds)
+
+        def monitor() -> None:
+            while True:
+                guard = guard_ref()
+                if guard is None:
+                    return
+                try:
+                    rss = process_tree_rss_bytes(guard.pid)
+                    guard._record_sample(rss, time.monotonic())
+                except Exception as exc:  # noqa: BLE001 - monitoring must fail closed
+                    with guard._lock:
+                        guard.monitoring_error = f"{type(exc).__name__}: {exc}"
+                    return
+                finally:
+                    # Do not retain the guard across the wait; this lets a
+                    # completed stage release its daemon sampler naturally.
+                    del guard
+                time.sleep(interval)
+
+        threading.Thread(
+            target=monitor,
+            name="farkle-process-tree-rss-guard",
+            daemon=True,
+        ).start()
 
     def sample(self, *, force: bool = False) -> int:
         """Return sampled process-tree RSS, reusing only a recent safe sample."""
 
+        self._ensure_monitor()
         now = time.monotonic()
-        if not force and now - self._last_sample_at < self.sample_interval_seconds:
-            return self.last_rss_bytes
-        self.last_rss_bytes = process_tree_rss_bytes(self.pid)
-        self.peak_rss_bytes = max(self.peak_rss_bytes, self.last_rss_bytes)
-        self._last_sample_at = now
-        return self.last_rss_bytes
+        with self._lock:
+            if not force and now - self._last_sample_at < self.sample_interval_seconds:
+                return self.last_rss_bytes
+        rss = process_tree_rss_bytes(self.pid)
+        self._record_sample(rss, now)
+        return rss
 
     def check_before_schedule(self, *, force: bool = False) -> int:
         """Fail closed when sampled RSS reaches the configured abort threshold."""
 
         rss = self.sample(force=force)
-        if rss >= self.rss_abort_mb * 1024 * 1024:
+        with self._lock:
+            tripped = self.tripped_rss_bytes
+            monitoring_error = self.monitoring_error
+        if monitoring_error is not None:
+            raise ResourceSafetyError(
+                f"process-tree RSS monitoring failed closed: {monitoring_error}"
+            )
+        if tripped:
             raise ResourceSafetyError(
                 "process-tree RSS safety threshold crossed: "
-                f"{rss / (1024 * 1024):.1f} MiB >= {self.rss_abort_mb} MiB"
+                f"{tripped / (1024 * 1024):.1f} MiB >= {self.rss_abort_mb} MiB"
             )
         return rss
 

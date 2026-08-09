@@ -128,12 +128,20 @@ def _pair_fixture(tmp_path: Path) -> tuple[AppConfig, tuple[SeedRunContext, Seed
     return pair.config, roots
 
 
-def _ratings(path: Path, values: dict[str, tuple[float, float]]) -> Path:
+def _ratings(
+    path: Path,
+    values: dict[str, tuple[float, float]],
+    *,
+    cell_games_completed: int = 2,
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     strategy_count = len(values)
-    updates = [1] * strategy_count
-    for index in range(max(0, 4 - sum(updates))):
-        updates[index % strategy_count] += 1
+    if cell_games_completed == 2:
+        updates = [1] * strategy_count
+        for index in range(max(0, 4 - sum(updates))):
+            updates[index % strategy_count] += 1
+    else:
+        updates = [cell_games_completed] * strategy_count
     pq.write_table(
         pa.table(
             {
@@ -145,10 +153,10 @@ def _ratings(path: Path, values: dict[str, tuple[float, float]]) -> Path:
                 "strategy_excluded_safety_limit_exposures": [0] * strategy_count,
                 "strategy_performed_updates": updates,
                 "rating_status": ["evidence_backed_completed_games"] * strategy_count,
-                "cell_games_attempted": [2] * strategy_count,
-                "cell_games_completed": [2] * strategy_count,
+                "cell_games_attempted": [cell_games_completed] * strategy_count,
+                "cell_games_completed": [cell_games_completed] * strategy_count,
                 "cell_games_excluded_safety_limit": [0] * strategy_count,
-                "cell_performed_updates": [2] * strategy_count,
+                "cell_performed_updates": [cell_games_completed] * strategy_count,
             }
         ),
         path,
@@ -356,6 +364,7 @@ def test_tau_order_and_heldout_diagnostics(tmp_path: Path) -> None:
     rating_path = _ratings(
         cfg.trueskill_rating_path(2, root_seed=11),
         {"1": (25.0, 2.0), "2": (25.0, 2.0)},
+        cell_games_completed=10,
     )
     game_path = cfg.ingested_rows_curated(2)
     _game_rows(game_path)
@@ -423,7 +432,11 @@ def test_diagnostics_are_invariant_to_row_groups_and_byte_bounded_input_batches(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    rating_path = _ratings(tmp_path / "ratings.parquet", {"1": (25.0, 2.0), "2": (25.0, 2.0)})
+    rating_path = _ratings(
+        tmp_path / "ratings.parquet",
+        {"1": (25.0, 2.0), "2": (25.0, 2.0)},
+        cell_games_completed=11,
+    )
     first = _game_rows(tmp_path / "first.parquet", games=11)
     second = tmp_path / "second.parquet"
     pq.write_table(pq.read_table(first), second, row_group_size=1)

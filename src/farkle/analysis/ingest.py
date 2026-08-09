@@ -13,8 +13,8 @@ import json
 import logging
 import re
 import sys
-from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -36,6 +36,7 @@ from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     apply_native_thread_limits,
     normalize_n_jobs,
+    process_map,
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
@@ -649,22 +650,21 @@ def run(cfg: AppConfig) -> None:
             memory_guard.check_before_schedule()
             total_rows += _process_block(block, cfg, parent_process_workers=1)
     else:
-        with ProcessPoolExecutor(
-            max_workers=stage_policy.process_workers, mp_context=mp_context
-        ) as executor:
-            futures = []
-            for block in blocks:
-                memory_guard.check_before_schedule()
-                futures.append(
-                    executor.submit(
-                        _process_block,
-                        block,
-                        cfg,
-                        parent_process_workers=stage_policy.process_workers,
-                    )
-                )
-            for f in futures:
-                total_rows += f.result()
+        worker = partial(
+            _process_block,
+            cfg=cfg,
+            parent_process_workers=stage_policy.process_workers,
+        )
+        total_rows = sum(
+            process_map(
+                worker,
+                blocks,
+                n_jobs=stage_policy.process_workers,
+                window=(stage_policy.process_workers * cfg.resources.max_in_flight_per_worker),
+                mp_context=mp_context,
+                memory_guard=memory_guard,
+            )
+        )
 
     LOGGER.info(
         "Ingest finished",
@@ -674,6 +674,7 @@ def run(cfg: AppConfig) -> None:
             "rows": total_rows,
         },
     )
+    memory_guard.check_before_schedule(force=True)
     write_stage_done(
         done,
         inputs=upstream_inputs,

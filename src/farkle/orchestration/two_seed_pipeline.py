@@ -44,6 +44,7 @@ from farkle.utils.manifest import (
 )
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
+    ResourceSafetyError,
     StageParallelPolicy,
     apply_native_thread_limits,
     normalize_n_jobs,
@@ -602,6 +603,10 @@ def run_pipeline(
         for seed, status in root_health.items()
         if status["analysis"] != "complete"
     ]
+    try:
+        memory_guard.check_before_schedule(force=True)
+    except ResourceSafetyError as exc:
+        root_failures.append(f"process-tree resource safety: {exc}")
     pair_context: RootPairRunContext | None = None
     pair_error: str | None = None
     if not root_failures:
@@ -683,6 +688,10 @@ def run_pipeline(
         )
         if release_audit["status"] != "passed":
             pair_error = "final release audit failed: " + str(release_audit["failures"][0])
+    try:
+        memory_guard.check_before_schedule(force=True)
+    except ResourceSafetyError as exc:
+        pair_error = pair_error or f"process-tree resource safety: {exc}"
     overall_status = "complete_success" if not root_failures and pair_error is None else "failed"
     health = {
         "seed_pair": list(seed_pair),

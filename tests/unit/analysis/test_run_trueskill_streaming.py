@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -194,6 +195,11 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
             strategy_completed_exposures={"1": 1, "3": 0},
             strategy_excluded_safety_limit_exposures={"1": 0, "3": 0},
             strategy_performed_updates={"1": 0, "3": 0},
+            batch_bytes=rt._DEFAULT_STREAM_BATCH_BYTES,
+            batch_rows=1,
+            source_sha256=sha256_file(row_file),
+            source_sidecar_sha256=sha256_file(sidecar_path(row_file)),
+            ratings_sha256=sha256_file(ratings_ck),
         ),
     )
 
@@ -217,6 +223,41 @@ def test_rate_block_worker_resumes_from_checkpoint(tmp_path: Path) -> None:
     assert "2" not in ratings
     assert not (data_dir / "ratings_2.ckpt.json").exists()
     assert not (data_dir / "ratings_2.checkpoint.parquet").exists()
+
+
+def test_block_checkpoint_authenticates_source_snapshot_and_batch_boundaries(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "rows.parquet"
+    source.write_bytes(b"source")
+    ratings = tmp_path / "ratings.parquet"
+    ratings.write_bytes(b"ratings")
+    checkpoint = rt._BlockCkpt(
+        row_file=str(source),
+        row_group=1,
+        batch_index=2,
+        games_done=3,
+        ratings_path=str(ratings),
+        freshness_sha256="a" * 64,
+        batch_bytes=4096,
+        batch_rows=100,
+        source_sha256=sha256_file(source),
+        source_sidecar_sha256=None,
+        ratings_sha256=sha256_file(ratings),
+    )
+    kwargs = {
+        "row_file": source,
+        "freshness_sha256": "a" * 64,
+        "batch_bytes": 4096,
+        "batch_rows": 100,
+        "source_sha256": sha256_file(source),
+        "source_sidecar_sha256": None,
+    }
+    assert rt._block_ckpt_matches(checkpoint, **kwargs)
+    assert not rt._block_ckpt_matches(replace(checkpoint, batch_rows=101), **kwargs)
+    assert not rt._block_ckpt_matches(replace(checkpoint, source_sha256="b" * 64), **kwargs)
+    ratings.write_bytes(b"mutated")
+    assert not rt._block_ckpt_matches(checkpoint, **kwargs)
 
 
 def _run_rating_fixture(

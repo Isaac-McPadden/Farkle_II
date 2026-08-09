@@ -485,7 +485,11 @@ class _BlockCkpt:
     strategy_excluded_safety_limit_exposures: dict[str, int] = field(default_factory=dict)
     strategy_performed_updates: dict[str, int] = field(default_factory=dict)
     batch_bytes: int = 0
-    version: int = 2
+    batch_rows: int = 0
+    source_sha256: str = ""
+    source_sidecar_sha256: str | None = None
+    ratings_sha256: str = ""
+    version: int = 3
 
 
 @dataclass(slots=True)
@@ -647,6 +651,10 @@ def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
         "strategy_completed_exposures": dict,
         "strategy_excluded_safety_limit_exposures": dict,
         "strategy_performed_updates": dict,
+        "batch_bytes": int,
+        "batch_rows": int,
+        "source_sha256": str,
+        "ratings_sha256": str,
     }
     for key, expected_type in required_keys.items():
         value = payload_any.get(key)
@@ -654,7 +662,10 @@ def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
             return None
 
     version_value = payload_any.get("version")
-    if version_value != 2:
+    if version_value != 3:
+        return None
+    source_sidecar_sha256 = payload_any.get("source_sidecar_sha256")
+    if source_sidecar_sha256 is not None and not isinstance(source_sidecar_sha256, str):
         return None
 
     def int_dict(name: str) -> dict[str, int]:
@@ -681,11 +692,42 @@ def _load_block_ckpt(path: Path) -> Optional[_BlockCkpt]:
                 "strategy_excluded_safety_limit_exposures"
             ),
             strategy_performed_updates=int_dict("strategy_performed_updates"),
-            batch_bytes=int(payload_any.get("batch_bytes", 0)),
+            batch_bytes=payload_any["batch_bytes"],
+            batch_rows=payload_any["batch_rows"],
+            source_sha256=payload_any["source_sha256"],
+            source_sidecar_sha256=source_sidecar_sha256,
+            ratings_sha256=payload_any["ratings_sha256"],
             version=version_value,
         )
     except (TypeError, ValueError):
         return None
+
+
+def _block_ckpt_matches(
+    checkpoint: _BlockCkpt | None,
+    *,
+    row_file: Path,
+    freshness_sha256: str,
+    batch_bytes: int,
+    batch_rows: int,
+    source_sha256: str,
+    source_sidecar_sha256: str | None,
+) -> bool:
+    """Authenticate every input and boundary needed for exact replay resume."""
+
+    if checkpoint is None:
+        return False
+    ratings_path = Path(checkpoint.ratings_path)
+    return bool(
+        Path(checkpoint.row_file) == row_file
+        and checkpoint.freshness_sha256 == freshness_sha256
+        and checkpoint.batch_bytes == batch_bytes
+        and checkpoint.batch_rows == batch_rows
+        and checkpoint.source_sha256 == source_sha256
+        and checkpoint.source_sidecar_sha256 == source_sidecar_sha256
+        and ratings_path.is_file()
+        and checkpoint.ratings_sha256 == sha256_file(ratings_path)
+    )
 
 
 # ---------- Single-pass streaming ----------
@@ -802,6 +844,13 @@ def _rate_block_worker(
         total_input_games = max(0, int(pq.read_metadata(row_file).num_rows))
     except Exception:
         total_input_games = 0
+    source_sha256 = sha256_file(row_file)
+    source_sidecar_sha256 = (
+        sha256_file(sidecar_path(row_file)) if sidecar_path(row_file).is_file() else None
+    )
+    effective_batch_bytes = int(
+        _DEFAULT_STREAM_BATCH_BYTES if max_batch_bytes is None else max_batch_bytes
+    )
 
     # Up-to-date guard
     paths = _rating_artifact_paths(root, player_count, suffix)
@@ -849,13 +898,16 @@ def _rate_block_worker(
     strategy_updates: dict[str, int] = dict.fromkeys(keepers, 0)
     if resume:
         ck = _load_block_ckpt(ck_path)
-        checkpoint_batch_bytes = 0 if max_batch_bytes is None else int(max_batch_bytes)
-        if (
-            ck
-            and Path(ck.row_file) == row_file
-            and ck.freshness_sha256 == cell_freshness_sha256
-            and ck.batch_bytes == checkpoint_batch_bytes
+        if _block_ckpt_matches(
+            ck,
+            row_file=row_file,
+            freshness_sha256=cell_freshness_sha256,
+            batch_bytes=effective_batch_bytes,
+            batch_rows=int(batch_rows),
+            source_sha256=source_sha256,
+            source_sidecar_sha256=source_sidecar_sha256,
         ):
+            assert ck is not None
             start_rg = ck.row_group
             start_bi = ck.batch_index
             performed_update_games = ck.games_done
@@ -866,9 +918,8 @@ def _rate_block_worker(
             strategy_completed = ck.strategy_completed_exposures
             strategy_excluded = ck.strategy_excluded_safety_limit_exposures
             strategy_updates = ck.strategy_performed_updates
-            if Path(ck.ratings_path).exists():
-                interim = _load_ratings_parquet(Path(ck.ratings_path))
-                ratings = {k: env.create_rating(mu=v.mu, sigma=v.sigma) for k, v in interim.items()}
+            interim = _load_ratings_parquet(Path(ck.ratings_path))
+            ratings = {k: env.create_rating(mu=v.mu, sigma=v.sigma) for k, v in interim.items()}
 
     run_completed = False
     try:
@@ -950,6 +1001,7 @@ def _rate_block_worker(
             batches_since_ck += 1
             if batches_since_ck >= checkpoint_every_batches or (time.time() - last_ck) > 60:
                 _save_ratings_parquet(rk_path, ratings)
+                ratings_sha256 = sha256_file(rk_path)
                 _save_block_ckpt(
                     ck_path,
                     _BlockCkpt(
@@ -966,7 +1018,11 @@ def _rate_block_worker(
                         strategy_completed_exposures=strategy_completed,
                         strategy_excluded_safety_limit_exposures=strategy_excluded,
                         strategy_performed_updates=strategy_updates,
-                        batch_bytes=(0 if max_batch_bytes is None else int(max_batch_bytes)),
+                        batch_bytes=effective_batch_bytes,
+                        batch_rows=int(batch_rows),
+                        source_sha256=source_sha256,
+                        source_sidecar_sha256=source_sidecar_sha256,
+                        ratings_sha256=ratings_sha256,
                     ),
                 )
                 if progress_logger is not None:
@@ -1287,6 +1343,7 @@ def run_trueskill(
             )
             del player_count, block_games
 
+    memory_guard.check_before_schedule(force=True)
     per_player_parquets = _iter_rating_parquets(root, suffix)
     valid_per_player_parquets: list[Path] = []
     for parquet in per_player_parquets:
@@ -1316,6 +1373,7 @@ def run_trueskill(
             continue
         valid_per_player_parquets.append(parquet)
 
+    memory_guard.check_before_schedule(force=True)
     LOGGER.info(
         "TrueSkill per-root/per-k ratings complete",
         extra={

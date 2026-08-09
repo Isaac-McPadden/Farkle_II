@@ -69,7 +69,13 @@ from farkle.utils.artifact_contract import (
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_parquet_artifact_atomic, write_parquet_atomic
-from farkle.utils.parallel import normalize_n_jobs, resolve_mp_context
+from farkle.utils.parallel import (
+    ProcessTreeMemoryGuard,
+    apply_native_thread_limits,
+    normalize_n_jobs,
+    resolve_mp_context,
+    resolve_stage_parallel_policy,
+)
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import n_players_from_schema
@@ -90,6 +96,13 @@ StrategyPandasDtype: TypeAlias = (
     | pd.Int32Dtype
     | pd.Int64Dtype
 )
+
+
+def _resolve_analysis_workers(cfg: AppConfig) -> int:
+    """Compatibility shim; the shared resource policy remains authoritative."""
+
+    return normalize_n_jobs(cfg.analysis.n_jobs)
+
 
 LOGGER = logging.getLogger(__name__)
 _SEAT_STRATEGY_RE = re.compile(r"^P[1-9][0-9]*_strategy$")
@@ -128,10 +141,6 @@ class _BinnedAccumulator:
 
 
 _MARGIN_BIN_WIDTH = 25.0
-
-
-def _resolve_analysis_workers(cfg: AppConfig) -> int:
-    return normalize_n_jobs(cfg.analysis.n_jobs)
 
 
 def _per_k_game_stats_paths(stage_dir: Path, k: int) -> tuple[Path, Path]:
@@ -349,6 +358,18 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
 
     stage_log = stage_logger("game_stats", logger=LOGGER)
     stage_log.start()
+    policy = resolve_stage_parallel_policy(
+        "game_stats",
+        cfg.analysis,
+        n_jobs_override=cfg.analysis.n_jobs,
+        resources=cfg.resources,
+    )
+    apply_native_thread_limits(policy)
+    memory_guard = ProcessTreeMemoryGuard(
+        cfg.resources.rss_abort_mb,
+        cfg.resources.rss_sample_interval_seconds,
+    )
+    memory_guard.check_before_schedule(force=True)
     roll_artifacts = build_exact_roll_enumeration(cfg, force=force)
 
     stage_dir = cfg.game_stats_stage_dir
@@ -386,7 +407,11 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     missing_k = sorted(set(configured_k_values) - set(input_by_k))
     if missing_k:
         raise FileNotFoundError(f"game_stats: incomplete canonical by-k support: {missing_k}")
-    workers = min(max(1, _resolve_analysis_workers(cfg)), max(1, len(configured_k_values)))
+    workers = min(
+        policy.process_workers,
+        max(1, _resolve_analysis_workers(cfg)),
+        max(1, len(configured_k_values)),
+    )
     stage_config_sha = cfg.stage_config_sha("game_stats")
     cache_key_version = cfg.stage_cache_key_version("game_stats")
     normalize_k_aggregation_method(cfg.k_aggregation.method)
@@ -414,6 +439,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         )
         if workers == 1:
             for k in stale_ks:
+                memory_guard.check_before_schedule()
                 _compute_k_game_stats(
                     cfg=cfg,
                     k=k,
@@ -446,6 +472,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                     for k in stale_ks
                 ]
                 _run_per_k_fanout(futures)
+        memory_guard.check_before_schedule(force=True)
 
     game_length_output = cfg.game_stats_concat_path("game_length.parquet")
     margin_output = cfg.game_stats_concat_path("margin_stats.parquet")
@@ -529,6 +556,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             target_rate=cfg.analysis.rare_event_target_rate,
         )
         if not rare_events_summary_data_up_to_date:
+            memory_guard.check_before_schedule()
             sidecar_path(rare_events_output).unlink(missing_ok=True)
             rare_event_rows = _rare_event_flags(
                 per_n_inputs,
@@ -570,6 +598,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
         ),
     )
     if not rare_events_summary_contract_up_to_date:
+        memory_guard.check_before_schedule(force=True)
         write_stage_done(
             rare_events_summary_stamp,
             inputs=input_paths,
@@ -579,6 +608,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             sidecar_artifacts=[rare_events_output],
         )
     if write_details and not rare_events_details_contract_up_to_date:
+        memory_guard.check_before_schedule(force=True)
         write_stage_done(
             rare_events_details_stamp,
             inputs=input_paths,
@@ -588,6 +618,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
             sidecar_artifacts=[rare_events_details_output],
         )
 
+    memory_guard.check_before_schedule(force=True)
     write_stage_done(
         stamp_path,
         inputs=input_paths,

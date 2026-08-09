@@ -14,8 +14,14 @@ from pathlib import Path, PurePosixPath
 from typing import Any, TypeAlias
 
 from farkle.config import ResourcesConfig
+from farkle.utils.authenticated_contract import (
+    CodeIdentityPolicy,
+    identity_sha256,
+    resolve_code_identity,
+)
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
+    ResourceSafetyError,
     StageParallelPolicy,
     apply_native_thread_limits,
     process_map,
@@ -30,6 +36,18 @@ UnitWriter: TypeAlias = Callable[["PartitionedUnit", Path], None]
 
 class PartitionedStageError(RuntimeError):
     """Raised when partitioned work or its authenticated lifecycle is invalid."""
+
+
+def resolved_code_identity_sha256(cfg: Any) -> str:
+    """Return the full repository code identity for resumable unit freshness."""
+
+    identity = getattr(cfg, "_code_identity", None)
+    if identity is None:
+        identity = resolve_code_identity(
+            Path(__file__).resolve().parents[3],
+            policy=CodeIdentityPolicy.DEVELOPMENT_DIRTY,
+        )
+    return identity_sha256(asdict(identity))
 
 
 def _canonical_bytes(value: Any) -> bytes:
@@ -465,6 +483,7 @@ def run_partitioned_stage(
         )
         if current is not None:
             manifest_sha, count = current
+            guard.check_before_schedule(force=True)
             return PartitionedStageResult(
                 manifest_path,
                 manifest_sha,
@@ -502,6 +521,7 @@ def run_partitioned_stage(
     ):
         guard.check_before_schedule()
 
+    guard.check_before_schedule(force=True)
     manifest_sha, count = _publish_final_manifest(
         manifest_path,
         root=root,
@@ -517,6 +537,11 @@ def run_partitioned_stage(
     if validated != (manifest_sha, count):
         _quarantine_paths(root, (manifest_path,))
         raise PartitionedStageError("final partition manifest failed post-publication validation")
+    try:
+        guard.check_before_schedule(force=True)
+    except ResourceSafetyError:
+        _quarantine_paths(root, (manifest_path,))
+        raise
     return PartitionedStageResult(
         manifest_path,
         manifest_sha,
@@ -534,5 +559,6 @@ __all__ = [
     "PartitionedStageResult",
     "PartitionedUnit",
     "run_partitioned_stage",
+    "resolved_code_identity_sha256",
     "validate_final_manifest",
 ]

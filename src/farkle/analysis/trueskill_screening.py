@@ -551,22 +551,16 @@ def _write_reverse_spool(batch: pa.Table, directory: Path, batch_index: int) -> 
     return path
 
 
-def _iter_reverse_spool(paths: Sequence[Path], k: int) -> Iterator[ClassifiedTrueSkillGame]:
+def _iter_reverse_spool(
+    directory: Path, batch_count: int, k: int
+) -> Iterator[ClassifiedTrueSkillGame]:
     """Yield the exact reverse record order from bounded on-disk projected batches."""
 
-    for path in reversed(paths):
+    for batch_index in range(batch_count - 1, -1, -1):
+        path = directory / f"{batch_index:012d}.arrow"
         with pa.memory_map(str(path), "r") as source:
             table = pa.ipc.open_file(source).read_all()
         yield from _iter_classified_batch_reverse(table, k)
-
-
-def _iter_forward_spool(paths: Sequence[Path], k: int) -> Iterator[ClassifiedTrueSkillGame]:
-    """Yield exact source record order from bounded projected batches."""
-
-    for path in paths:
-        with pa.memory_map(str(path), "r") as source:
-            table = pa.ipc.open_file(source).read_all()
-        yield from _iter_classified_batch(table, k)
 
 
 def _rank_correlation(
@@ -656,12 +650,26 @@ def diagnose_rating_cell(
         raise ValueError(f"{cell.game_rows_path} lacks TrueSkill diagnostic columns: {missing}")
     tau_zero_env = trueskill.TrueSkill(beta=beta, tau=0.0, draw_probability=draw_probability)
     tau_zero_ratings: dict[str, trueskill.Rating] = {}
+    completed_support = baseline_frame["cell_games_completed"].drop_duplicates()
+    if len(completed_support) != 1:
+        raise ValueError("TrueSkill rating rows disagree on completed-game support")
+    expected_completed = int(completed_support.iloc[0])
+    training_games = (
+        max(1, math.floor(expected_completed * (1.0 - _HOLDOUT_FRACTION)))
+        if expected_completed
+        else 0
+    )
+    train_env = trueskill.TrueSkill(beta=beta, tau=tau, draw_probability=draw_probability)
+    train_ratings: dict[str, trueskill.Rating] = {}
+    observed_train = 0
+    log_loss_sum = brier_sum = confidence_sum = correct_sum = 0.0
+    holdout_games = 0
     attempted = completed = excluded = tau_games = 0
     with tempfile.TemporaryDirectory(
         prefix=".trueskill_diag_", dir=cell.game_rows_path.parent
     ) as tmp:
         spool_dir = Path(tmp)
-        spool_paths: list[Path] = []
+        spool_batch_count = 0
         for batch_index, (_rg, _bi, batch) in enumerate(
             iter_parquet_tables_by_bytes(
                 cell.game_rows_path,
@@ -671,7 +679,8 @@ def diagnose_rating_cell(
                 use_threads=False,
             )
         ):
-            spool_paths.append(_write_reverse_spool(batch, spool_dir, batch_index))
+            _write_reverse_spool(batch, spool_dir, batch_index)
+            spool_batch_count += 1
             for game in _iter_classified_batch(batch, cell.k):
                 attempted += 1
                 if game.ranks is None:
@@ -680,47 +689,40 @@ def diagnose_rating_cell(
                 completed += 1
                 _update_ratings(tau_zero_env, tau_zero_ratings, game.players, game.ranks)
                 tau_games += 1
+                if observed_train < training_games:
+                    _update_ratings(train_env, train_ratings, game.players, game.ranks)
+                    observed_train += 1
+                    continue
+                ratings = [
+                    (
+                        (rating.mu, rating.sigma)
+                        if (rating := train_ratings.get(player)) is not None
+                        else (25.0, 25.0 / 3.0)
+                    )
+                    for player in game.players
+                ]
+                probabilities = mu_softmax_heuristic_probabilities(ratings, beta=beta)
+                winner_positions = np.flatnonzero(np.asarray(game.ranks) == 0)
+                target = np.zeros(cell.k, dtype=float)
+                target[winner_positions] = 1.0 / len(winner_positions)
+                log_loss_sum += float(-np.sum(target * np.log(np.maximum(probabilities, 1e-15))))
+                brier_sum += float(np.sum((probabilities - target) ** 2))
+                predicted = int(np.argmax(probabilities))
+                confidence_sum += float(probabilities[predicted])
+                correct_sum += float(predicted in winner_positions)
+                holdout_games += 1
 
         if attempted != completed + excluded:
             raise ValueError("TrueSkill support conservation failed")
-        training_games = (
-            max(1, math.floor(completed * (1.0 - _HOLDOUT_FRACTION))) if completed else 0
-        )
-        train_env = trueskill.TrueSkill(beta=beta, tau=tau, draw_probability=draw_probability)
-        train_ratings: dict[str, trueskill.Rating] = {}
-        observed_train = 0
-        log_loss_sum = brier_sum = confidence_sum = correct_sum = 0.0
-        holdout_games = 0
-        for game in _iter_forward_spool(spool_paths, cell.k):
-            if game.ranks is None:
-                continue
-            if observed_train < training_games:
-                _update_ratings(train_env, train_ratings, game.players, game.ranks)
-                observed_train += 1
-                continue
-            ratings = [
-                (
-                    (rating.mu, rating.sigma)
-                    if (rating := train_ratings.get(player)) is not None
-                    else (25.0, 25.0 / 3.0)
-                )
-                for player in game.players
-            ]
-            probabilities = mu_softmax_heuristic_probabilities(ratings, beta=beta)
-            winner_positions = np.flatnonzero(np.asarray(game.ranks) == 0)
-            target = np.zeros(cell.k, dtype=float)
-            target[winner_positions] = 1.0 / len(winner_positions)
-            log_loss_sum += float(-np.sum(target * np.log(np.maximum(probabilities, 1e-15))))
-            brier_sum += float(np.sum((probabilities - target) ** 2))
-            predicted = int(np.argmax(probabilities))
-            confidence_sum += float(probabilities[predicted])
-            correct_sum += float(predicted in winner_positions)
-            holdout_games += 1
+        if completed != expected_completed:
+            raise ValueError(
+                "TrueSkill diagnostic source support differs from the authenticated rating cell"
+            )
 
         reverse_env = trueskill.TrueSkill(beta=beta, tau=tau, draw_probability=draw_probability)
         reverse_ratings: dict[str, trueskill.Rating] = {}
         reversed_games = 0
-        for game in _iter_reverse_spool(spool_paths, cell.k):
+        for game in _iter_reverse_spool(spool_dir, spool_batch_count, cell.k):
             if game.ranks is not None:
                 _update_ratings(reverse_env, reverse_ratings, game.players, game.ranks)
                 reversed_games += 1
@@ -979,6 +981,7 @@ def build_screening_diagnostics(
         raise RuntimeError(
             "TrueSkill diagnostic cells did not publish in deterministic coordinate order"
         )
+    memory_guard.check_before_schedule(force=True)
     rows: list[dict[str, object]] = []
     for cell, cell_output in zip(eligible, cell_outputs, strict=True):
         cell_done = _diagnostic_cell_done_path(cfg, cell)
@@ -1033,6 +1036,7 @@ def build_screening_diagnostics(
         ),
     )
     write_parquet_artifact_atomic(table, output, sidecar=sidecar, codec=cfg.parquet_codec)
+    memory_guard.check_before_schedule(force=True)
     write_stage_done(
         done,
         inputs=cell_outputs,
