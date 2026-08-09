@@ -17,6 +17,8 @@ sim:
   expanded_metrics: true          # if true, also write {N}p_metrics.parquet with sums & sq_sums
   row_dir: "rows"                 # rows => per-N rows under {results}/{N}_players/rows/
                                   # If row_dir == null, row writing skipped
+  metric_chunk_dir: null          # optional relative folder for metric chunks
+  per_n: {}                       # optional per-table overrides
   desired_sec_per_chunk: 10
   ckpt_every_sec: 30
   progress_logging:
@@ -42,6 +44,7 @@ sim:
     # "12":
 
 analysis:
+  disable_rng_diagnostics: false
   n_jobs: 16                      # parallel workers for analysis
   mp_start_method: null            # start method: default|null|spawn|fork|forkserver
   log_level: "INFO"               # logger level during analysis
@@ -55,6 +58,14 @@ analysis:
 
   # Optional custom output filenames / aliases
   outputs: {}                     # dict[str, Any]: e.g. override metrics/parquet names if desired
+  game_stats_margin_thresholds: [500, 1000]
+  rare_event_target_score: 10000
+  rare_event_write_details: false
+  rare_event_margin_quantile: null
+  rare_event_target_rate: null
+  rng_max_matchup_groups: 100000
+  rng_diagnostic_lags: [1]
+  rng_diagnostic_partitions: 32
 
 ingest:
   row_group_size: 64000           # parquet/arrow row group target
@@ -116,13 +127,54 @@ artifact_contract:
   artifact_contract_version: 3
   estimand_version: 2
   schema_version: 2
+  baseline_version: 1
+  k_support_version: 1
+  weighting_version: 1
   conditioning_version: 2
+  multiplicity_version: 1
+  candidate_family_version: 1
 
 k_aggregation:
   method: "equal-k"
+  k_weights: null
 hgb:
   max_depth: 6
   n_estimators: 300
   heldout_folds: 5
   permutation_repeats: 10
   future_proposal_limit: 100
+
+orchestration:
+  parallel_seeds: false
+
+resources:
+  max_memory_mb: 1024
+  target_memory_mb: 768
+  rss_abort_mb: 950
+  os_memory_limit_enabled: true
+  os_memory_limit_required: true
+  allow_unenforced_memory_fallback: false
+  parent_reserve_mb: 192
+  logical_cpu_workers: 0
+  native_threads_per_worker: 1
+  max_in_flight_per_worker: 1
+  rss_sample_interval_seconds: 0.25
+  estimated_worker_memory_mb:
+    simulation: 128
+    ingest: 192
+    analysis: 192
+    game_stats: 192
+    all_player_metrics: 160
+    performance_bootstrap: 160
+    trueskill: 192
+    head2head: 128
+    partitioned_stage: 128
+  stage_batch_bytes:
+    ingest: 33554432
+    combine: 33554432
+    analysis: 33554432
+    game_stats: 16777216
+    all_player_metrics: 16777216
+    performance: 16777216
+    trueskill: 16777216
+    partitioned_stage: 16777216

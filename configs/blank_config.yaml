@@ -1,129 +1,149 @@
-# configs/blank_config.yaml
 # Drives BOTH simulation and analysis.
-# This config is left blank for reference use only.
+# Reference template: leave values unassigned and use the comments as a guide.
 
 io:
-  results_dir_prefix:    # Path|str: prefix under data/ for per-N run folders
-  analysis_subdir:    # str: analysis outputs subdirectory under results_root
+  results_dir_prefix:  # Path|str: prefix under data/ for root-specific results
+  analysis_subdir:  # str: analysis output subdirectory under results_root
 
 sim:
-  n_players_list:    # list[int]: table sizes to simulate
-  seed:    # int: active root RNG seed (results_root uses root suffix)
-  seed_list:    # list[int]|None: explicit seeds (len 1 single-seed, len 2 two-seed)
-  expanded_metrics:    # bool: write expanded metrics parquet
-  row_dir:    # Path|str|None: relative folder for row dumps; blank skips write
-  per_n: {}    # dict[int, SimConfig]: per-table overrides mirroring sim options
-  n_jobs:    # int|None: parallel workers for simulation
-  mp_start_method:    # str|None: multiprocessing start method for simulation executors
-  desired_sec_per_chunk:    # int: target seconds per work chunk
-  ckpt_every_sec:    # int: checkpoint interval in seconds
-  score_thresholds:    # list[int]|None: custom threshold grid for scoring
-  dice_thresholds:    # list[int]|None: custom dice thresholds
-  smart_five_opts:    # sequence[bool]|None: toggle smart five behavior
-  smart_one_opts:    # sequence[bool]|None: toggle smart one behavior
-  consider_score_opts:    # sequence[bool]: include score-based branching
-  consider_dice_opts:    # sequence[bool]: include dice-count branching
-  auto_hot_dice_opts:    # sequence[bool]: auto roll on hot dice
-  run_up_score_opts:    # sequence[bool]: allow run-up scoring strategy
-  include_stop_at:    # bool: append stop_at_{350,400,450,500} variants
-  include_stop_at_heuristic:    # bool: append heuristic stop-at variants
+  n_players_list:  # list[int]: table sizes to simulate
+  seed:  # int: active root RNG seed
+  seed_list:  # list[int]|None: roots (one for root-local, two for two-root)
+  expanded_metrics:  # bool: write expanded metric aggregates
+  row_dir:  # Path|str|None: relative folder for game rows; null skips writing
+  metric_chunk_dir:  # Path|str|None: relative folder for metric chunks
+  per_n: {}  # dict[int, SimConfig]: per-table overrides using these sim fields
+  n_jobs:  # int|None: simulation workers; null=1 and 0=detected CPUs
+  mp_start_method:  # str|None: multiprocessing start method
+  desired_sec_per_chunk:  # int: target seconds per simulation work chunk
+  ckpt_every_sec:  # int: simulation checkpoint interval in seconds
+  progress_logging:
+    frequent_interval_sec:  # float: initial progress-log interval in seconds
+    info_phase_sec:  # float: duration of INFO-level frequent logs
+    ongoing_interval_sec:  # float: continuing progress-log interval in seconds
+  score_thresholds:  # list[int]|None: custom score-threshold grid
+  dice_thresholds:  # list[int]|None: custom dice-threshold grid
+  smart_five_opts:  # sequence[bool]|None: smart-five alternatives
+  smart_one_opts:  # sequence[bool]|None: smart-one alternatives
+  consider_score_opts:  # sequence[bool]: score-branching alternatives
+  consider_dice_opts:  # sequence[bool]: dice-branching alternatives
+  auto_hot_dice_opts:  # sequence[bool]: hot-dice alternatives
+  run_up_score_opts:  # sequence[bool]: run-up-scoring alternatives
+  include_stop_at:  # bool: add fixed stop-at strategy variants
+  include_stop_at_heuristic:  # bool: add heuristic stop-at variants
 
 analysis:
-  n_jobs:    # int: parallel workers for analysis
-  mp_start_method:    # str|None: multiprocessing start method for analysis executors
-  log_level:    # str: logger level during analysis
-  results_glob:    # str: glob selecting per-N result folders
-  outputs:
-    curated_rows_name:    # str: curated rows filename
-    metrics_name:    # str: metrics parquet filename
-    manifest_name:    # str: manifest jsonl filename
+  disable_rng_diagnostics:  # bool: omit root-local RNG diagnostics
+  n_jobs:  # int: analysis workers; 0=detected CPUs
+  mp_start_method:  # str|None: multiprocessing start method
+  progress_logging:
+    frequent_interval_sec:  # float: initial progress-log interval in seconds
+    info_phase_sec:  # float: duration of INFO-level frequent logs
+    ongoing_interval_sec:  # float: continuing progress-log interval in seconds
+  log_level:  # str: root-analysis logging level
+  results_glob:  # str: glob selecting per-player-count result folders
+  outputs: {}  # dict[str, Any]: optional curated_rows_name, metrics_name, manifest_name
+  game_stats_margin_thresholds:  # sequence[int]: victory-margin report thresholds
+  rare_event_target_score:  # int: multi-target rare-event score threshold
+  rare_event_write_details:  # bool: write per-game rare-event detail rows
+  rare_event_margin_quantile:  # float|None: optional margin rare-event quantile
+  rare_event_target_rate:  # float|None: optional multi-target rare-event rate
+  rng_max_matchup_groups:  # int|None: cap on eligible RNG matchup groups
+  rng_diagnostic_lags:  # sequence[int]: increasing positive RNG diagnostic lags
+  rng_diagnostic_partitions:  # int: stable external RNG diagnostic partitions
 
 ingest:
-  row_group_size:    # int: parquet row-group size
-  parquet_codec:    # str: parquet compression codec
-  batch_rows:    # int: rows processed per batch
-  n_jobs:    # int: concurrent ingest workers
+  row_group_size:  # int: parquet row-group size
+  parquet_codec:  # str: parquet compression codec
+  batch_rows:  # int: rows processed per ingest batch
+  n_jobs:  # int: concurrent ingest workers
 
 combine:
-  max_players:    # int: maximum table size to combine
+  max_players:  # int: maximum player count in normalized concat data
 
 trueskill:
-  beta:    # float: performance variability parameter
-  tau:    # float: dynamics factor between runs
-  draw_probability:    # float: draw probability
+  beta:  # float: performance variability parameter
+  tau:  # float: dynamics factor between updates
+  draw_probability:  # float: draw probability
 
 head2head:
-  n_jobs:
-  family_alpha:
-  target_power:
-  practical_delta:
-  sensitivity_deltas:
-  seat1_advantage_scenarios:
-  delta_equivalence: null
-  candidate_cap: null
-  candidate_cap_policy:
-  min_candidate_completion_rate:
-  max_attempt_multiplier:
-  total_game_cap:
-  allow_single_root:
+  n_jobs:  # int: H2H workers; 0=detected CPUs
+  family_alpha:  # float: multiplicity-controlled family alpha
+  target_power:  # float: target completed-game power
+  practical_delta:  # float: primary practical win-rate effect
+  sensitivity_deltas:  # sequence[float]: effects for H2H power sensitivity
+  seat1_advantage_scenarios:  # sequence[float]: seat-one advantage scenarios
+  delta_equivalence:  # float|None: equivalence margin; null disables it
+  candidate_cap:  # int|None: cap on frozen H2H candidates
+  candidate_cap_policy:  # str: candidate-cap selection policy
+  min_candidate_completion_rate:  # float: minimum attempted-game completion rate
+  max_attempt_multiplier:  # float: cap on attempts relative to completed target
+  total_game_cap:  # int|None: operational H2H total-game authorization cap
+  allow_single_root:  # bool: permit labelled single-root H2H execution
+
+hgb:
+  max_depth:  # int: maximum tree depth
+  n_estimators:  # int: boosting iterations
+  heldout_folds:  # int: deterministic held-out strategy folds
+  permutation_repeats:  # int: held-out permutation repeats per fold
+  future_proposal_limit:  # int: candidates reserved for future simulation
 
 orchestration:
-  parallel_seeds:    # bool: execute the two root workflows concurrently
+  parallel_seeds:  # bool: run two root workflows concurrently
 
 resources:
-  max_memory_mb:    # int: aggregate OS-enforced hard ceiling (maximum 1024 MiB)
-  target_memory_mb:    # int: normal process-tree scheduling target
-  rss_abort_mb:    # int: cooperative sticky abort threshold below the hard ceiling
-  os_memory_limit_enabled:    # bool: establish a Windows Job Object or cgroup-v2 boundary
-  os_memory_limit_required:    # bool: fail closed before analysis if unavailable
-  allow_unenforced_memory_fallback:    # bool: conspicuous development-only fallback
-  parent_reserve_mb:    # int: memory reserved for the parent process
-  logical_cpu_workers:    # int: zero means detected logical CPUs
-  native_threads_per_worker:    # int: native-library threads per process
-  max_in_flight_per_worker:    # int: bounded task submission multiplier
-  rss_sample_interval_seconds:    # float: cooperative guard sampling interval
-  estimated_worker_memory_mb: {}    # mapping[str, int]: per-stage process estimates
-  stage_batch_bytes: {}    # mapping[str, int]: per-stage streaming byte budgets
+  max_memory_mb:  # int: aggregate OS-enforced hard ceiling (maximum 1024 MiB)
+  target_memory_mb:  # int: normal process-tree scheduling target
+  rss_abort_mb:  # int: cooperative sticky abort threshold
+  os_memory_limit_enabled:  # bool: establish an OS memory boundary
+  os_memory_limit_required:  # bool: fail closed if the boundary is unavailable
+  allow_unenforced_memory_fallback:  # bool: development-only fallback
+  parent_reserve_mb:  # int: memory reserved for the parent process
+  logical_cpu_workers:  # int: zero means detected logical CPUs
+  native_threads_per_worker:  # int: native-library threads per worker
+  max_in_flight_per_worker:  # int: bounded task-submission multiplier
+  rss_sample_interval_seconds:  # float: cooperative RSS sampling interval
+  estimated_worker_memory_mb: {}  # mapping[str, int]: per-stage worker estimates
+  stage_batch_bytes: {}  # mapping[str, int]: per-stage streaming byte budgets
 
 rng:
-  scheme_version:
-  bit_generator:
+  scheme_version:  # int: deterministic RNG contract version
+  bit_generator:  # str: NumPy bit-generator name
 
 screening:
-  resolution_delta:
-  interval_confidence:
-  practical_delta_by_k: null
-  delta_across_k: null
-  bootstrap_replicates:
-  candidate_contribution_size:
-  controls:
-  mandatory_diagnostics:
-  max_shuffles_per_root_k:
-  projected_games_per_second:
+  resolution_delta:  # float: maximum full Wilson interval width
+  interval_confidence:  # float: locked screening interval confidence
+  practical_delta_by_k:  # mapping[int, float]|None: practical threshold by k
+  delta_across_k:  # float|None: cross-k practical threshold
+  bootstrap_replicates:  # int: screening bootstrap replicate count
+  candidate_contribution_size:  # int: root/k TrueSkill contribution size
+  controls:  # list[int]: required control strategy identifiers
+  mandatory_diagnostics:  # list[int]: required diagnostic strategy identifiers
+  max_shuffles_per_root_k:  # int|None: per-root/k workload cap
+  projected_games_per_second:  # float|None: planning throughput estimate
 
 batching:
-  target_batches:
-  min_shuffles_per_batch:
+  target_batches:  # int: deterministic shuffle batches per root/k
+  min_shuffles_per_batch:  # int: minimum shuffles in each batch
 
 robustness:
-  report_pareto:
-  report_maximin:
-  delta_seed_stability:
-  joint_discrepancy_alpha:
-  matched_count_fractions:
+  report_pareto:  # bool: emit Pareto membership summary
+  report_maximin:  # bool: emit maximin-leadership summary
+  delta_seed_stability:  # float: practical two-root stability threshold
+  joint_discrepancy_alpha:  # float: joint discrepancy reference upper-tail fraction
+  matched_count_fractions:  # sequence[float]: matched-count stability fractions
 
 artifact_contract:
-  artifact_contract_version:  # accepted public release value: 3
-  estimand_version:  # accepted public release value: 2
-  schema_version:  # accepted public release value: 2
-  conditioning_version:  # accepted public release value: 2
+  artifact_contract_version:  # int: authenticated artifact-contract version
+  estimand_version:  # int: estimand definition version
+  schema_version:  # int: derived artifact schema version
+  baseline_version:  # int: chance-baseline definition version
+  k_support_version:  # int: player-count support definition version
+  weighting_version:  # int: cross-k weighting definition version
+  conditioning_version:  # int: outcome-conditioning definition version
+  multiplicity_version:  # int: multiplicity procedure version
+  candidate_family_version:  # int: frozen candidate-family definition version
 
 k_aggregation:
-  method:
-  k_weights: null
-hgb:
-  max_depth:    # int: maximum tree depth
-  n_estimators:    # int: boosting iterations
-  heldout_folds:    # int >=2: held-out strategy-configuration folds
-  permutation_repeats:    # int >=1: held-out permutation repeats per fold
-  future_proposal_limit:    # int >=0: future-run candidate cap
+  method:  # str: equal-k or declared-mapping aggregation method
+  k_weights:  # mapping[int, float]|None: declared cross-k weights

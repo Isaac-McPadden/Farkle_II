@@ -1,17 +1,55 @@
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 
 import pytest
 import yaml
 
 from farkle.config import (
+    AnalysisConfig,
     AppConfig,
     ArtifactContractConfig,
     ArtifactScope,
+    BatchingConfig,
+    CombineConfig,
+    Head2HeadConfig,
+    HGBConfig,
+    IngestConfig,
     IOConfig,
+    KAggregationConfig,
+    OrchestrationConfig,
+    ResourcesConfig,
+    RNGConfig,
+    RobustnessConfig,
+    ScreeningConfig,
+    SimConfig,
+    TrueSkillConfig,
+    compute_config_sha,
     load_app_config,
 )
+from farkle.utils.progress import ProgressLogConfig
+
+CONFIG_SECTION_TYPES = {
+    "io": IOConfig,
+    "sim": SimConfig,
+    "analysis": AnalysisConfig,
+    "ingest": IngestConfig,
+    "combine": CombineConfig,
+    "trueskill": TrueSkillConfig,
+    "head2head": Head2HeadConfig,
+    "hgb": HGBConfig,
+    "orchestration": OrchestrationConfig,
+    "resources": ResourcesConfig,
+    "rng": RNGConfig,
+    "screening": ScreeningConfig,
+    "batching": BatchingConfig,
+    "robustness": RobustnessConfig,
+    "artifact_contract": ArtifactContractConfig,
+    "k_aggregation": KAggregationConfig,
+}
+
+CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
 
 
 @pytest.mark.parametrize(
@@ -19,7 +57,7 @@ from farkle.config import (
     ["default_config.yaml", "farkle_mega_config.yaml", "fast_config.yaml"],
 )
 def test_active_configuration_examples_use_the_current_contract(filename: str) -> None:
-    config_path = Path(__file__).resolve().parents[3] / "configs" / filename
+    config_path = CONFIG_DIR / filename
     cfg = load_app_config(config_path)
     cfg.validate_statistical_contract(
         require_two_roots=filename in {"farkle_mega_config.yaml", "fast_config.yaml"}
@@ -32,6 +70,31 @@ def test_active_configuration_examples_use_the_current_contract(filename: str) -
         cfg.artifact_contract.estimand_version,
         cfg.artifact_contract.conditioning_version,
     ) == (3, 2, 2, 2, 2, 2)
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["blank_config.yaml", "default_config.yaml", "farkle_mega_config.yaml", "fast_config.yaml"],
+)
+def test_checked_in_config_templates_list_every_public_field(filename: str) -> None:
+    """Keep every checked-in config synchronized with the typed public schema."""
+
+    payload = yaml.safe_load((CONFIG_DIR / filename).read_text(encoding="utf-8"))
+    assert set(payload) == set(CONFIG_SECTION_TYPES)
+    for section_name, section_type in CONFIG_SECTION_TYPES.items():
+        assert set(payload[section_name]) == {
+            config_field.name for config_field in dataclasses.fields(section_type)
+        }
+
+    for section_name in ("sim", "analysis"):
+        assert set(payload[section_name]["progress_logging"]) == {
+            config_field.name for config_field in dataclasses.fields(ProgressLogConfig)
+        }
+
+
+def test_default_config_materializes_exact_app_config_defaults() -> None:
+    config = load_app_config(CONFIG_DIR / "default_config.yaml")
+    assert compute_config_sha(config) == compute_config_sha(AppConfig())
 
 
 def test_public_artifact_contract_defaults_and_freshness_use_exact_release_identity() -> None:
