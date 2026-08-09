@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pyarrow as pa
 import pyarrow.compute as pc
@@ -17,6 +18,9 @@ import pyarrow.parquet as pq
 
 from farkle.utils.artifact_contract import validate_artifact_sidecar
 from farkle.utils.schema_helpers import expected_schema_for
+
+if TYPE_CHECKING:
+    from farkle.config import AppConfig
 
 LOGGER = logging.getLogger(__name__)
 
@@ -86,16 +90,52 @@ def _negative_columns_from_metadata(
     return negative
 
 
-def check_pre_metrics(combined_parquet: Path, winner_col: str = "winner") -> None:
-    """Assert winner column exists, no negative counters, row counts match manifests.
+def check_pre_metrics(combined: AppConfig | Path, winner_col: str = "winner") -> None:
+    """Validate a partitioned logical concat table or explicit compatibility file.
 
     Parameters
     ----------
-    combined_parquet:
-        Path to the combined parquet produced by :mod:`combine`.
+    combined:
+        Owning config for the canonical partitioned dataset, or an explicit
+        non-canonical materialized compatibility Parquet.
     winner_col:
         Name of the column holding the winner label.
     """
+    from farkle.config import AppConfig
+
+    if isinstance(combined, AppConfig):
+        from farkle.analysis.combine import combined_partition_paths
+
+        paths = combined_partition_paths(combined)
+        if not paths:
+            raise RuntimeError("check_pre_metrics: partitioned concat_ks dataset is empty")
+        schemas = [pq.read_schema(path) for path in paths]
+        if any(not schema.equals(schemas[0], check_metadata=False) for schema in schemas[1:]):
+            raise RuntimeError("check_pre_metrics: partition schemas are incompatible")
+        schema = schemas[0]
+        if winner_col not in schema.names:
+            raise RuntimeError(f"check_pre_metrics: missing '{winner_col}' column")
+        checked_columns = [
+            field.name
+            for field in schema
+            if pa.types.is_signed_integer(field.type) and field.name != "loss_margin"
+        ]
+        negative: set[str] = set()
+        for path in paths:
+            parquet = pq.ParquetFile(path)
+            negative.update(_negative_columns_from_metadata(path, parquet, checked_columns))
+        neg_cols = [name for name in checked_columns if name in negative]
+        if neg_cols:
+            raise RuntimeError(
+                f"check_pre_metrics: negative values present in {', '.join(neg_cols)}"
+            )
+        LOGGER.info(
+            "check_pre_metrics passed",
+            extra={"stage": "checks", "path": str(combined.combined_manifest_path())},
+        )
+        return
+
+    combined_parquet = Path(combined)
     if not combined_parquet.exists():
         raise RuntimeError(f"check_pre_metrics: missing {combined_parquet}")
     if combined_parquet.parent.name != "concat_ks":

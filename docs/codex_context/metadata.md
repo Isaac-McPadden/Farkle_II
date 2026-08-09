@@ -113,6 +113,16 @@ changing code or accepting a statistical conclusion.
   field nullability before streamed writes, and release audit excludes
   underscore-prefixed authenticated working directories from the public
   canonical sidecar graph.
+  The subsequent curate/combine I/O revision replaces unconditional curated
+  copies with independently mutable reflinks plus deterministic bounded-copy
+  fallback and records that execution provenance in authenticated manifests.
+  Combine's normalized by-k Parquets are now its only canonical physical row
+  units. The shared partitioned-stage manifest binds per-k source/sidecar
+  identities, counts, target schema, bytes, order, stage config, and complete
+  repository code identity; a deterministic scanner supplies the logical
+  `concat_ks` table. Routine completion no longer writes or row-compares a
+  monolithic duplicate, while deep verification and explicit non-canonical
+  release materialization remain available.
 - Files checked: `config.py`, `analysis/__init__.py`, `stage_registry.py`,
   `run_contexts.py`, `two_seed_pipeline.py`, canonical analysis modules,
   sidecar/lifecycle utilities, CLI dispatch, and current tests.

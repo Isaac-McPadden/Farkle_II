@@ -118,12 +118,14 @@ _REGISTRY: tuple[StageDefinition, ...] = (
         group="pipeline",
         depends_on=("ingest",),
         cache_scope=("io", "analysis.outputs"),
+        cache_key_version=4,
     ),
     StageDefinition(
         "combine",
         group="pipeline",
         depends_on=("curate",),
         cache_scope=("io", "combine"),
+        cache_key_version=4,
     ),
     StageDefinition(
         "metrics",

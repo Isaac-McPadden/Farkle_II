@@ -5,8 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import shutil
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,10 +16,12 @@ from farkle.utils.artifact_contract import (
     ArtifactSidecar,
     ensure_artifact_sidecar_atomic,
     make_artifact_sidecar,
+    sha256_file,
     validate_artifact_sidecar,
     write_artifact_with_sidecar_atomic,
 )
 from farkle.utils.artifacts import write_json_artifact_atomic
+from farkle.utils.copy_on_write import CopyProvenance, clone_or_copy_bounded
 from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import expected_schema_for, n_players_from_schema
 from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
@@ -108,6 +108,9 @@ def _write_manifest(
     rows: int,
     schema: pa.Schema,
     cfg: AppConfig,
+    raw_sha256: str,
+    curated_sha256: str,
+    copy_provenance: CopyProvenance,
 ) -> None:
     n_players = n_players_from_schema(schema)
     payload: dict[str, Any] = {
@@ -115,7 +118,12 @@ def _write_manifest(
         "schema_hash": _schema_hash(n_players),
         "compression": cfg.parquet_codec,
         "config_sha": cfg.config_sha,
-        "created_at": datetime.now(UTC).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "source_sha256": raw_sha256,
+        "curated_sha256": curated_sha256,
+        "representation": copy_provenance.representation,
+        "representation_backend": copy_provenance.backend,
+        "reflink_fallback_reason": copy_provenance.fallback_reason,
+        "copy_buffer_bytes": copy_provenance.copy_buffer_bytes,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
     if is_v3_config(cfg):
@@ -152,12 +160,14 @@ def run(cfg: AppConfig) -> None:
 
     player_counts = sorted({int(k) for k in cfg.sim.n_players_list})
     raw_files = [cfg.ingested_rows_raw(k) for k in player_counts]
+    ingest_manifests = [cfg.ingest_manifest(k) for k in player_counts]
+    inputs = [*raw_files, *ingest_manifests]
     curated_files = [cfg.ingested_rows_curated(k) for k in player_counts]
     manifests = [cfg.manifest_for(k) for k in player_counts]
     done = stage_done_path(cfg.curate_stage_dir, "curate")
     if stage_is_up_to_date(
         done,
-        inputs=raw_files,
+        inputs=inputs,
         outputs=[*curated_files, *manifests],
         cfg=cfg,
         stage="curate",
@@ -168,7 +178,7 @@ def run(cfg: AppConfig) -> None:
 
     if stage_is_up_to_date(
         done,
-        inputs=raw_files,
+        inputs=inputs,
         outputs=[*curated_files, *manifests],
         cfg=cfg,
         stage="curate",
@@ -183,7 +193,7 @@ def run(cfg: AppConfig) -> None:
             )
         write_stage_done(
             done,
-            inputs=raw_files,
+            inputs=inputs,
             outputs=[*curated_files, *manifests],
             cfg=cfg,
             stage="curate",
@@ -192,7 +202,7 @@ def run(cfg: AppConfig) -> None:
         LOGGER.info("Curate sidecars backfilled", extra={"stage": "curate"})
         return
 
-    missing = [path for path in raw_files if not path.exists()]
+    missing = [path for path in inputs if not path.exists()]
     if missing:
         raise FileNotFoundError(
             "curate: incomplete canonical raw by-k support: "
@@ -203,18 +213,24 @@ def run(cfg: AppConfig) -> None:
     for n_players, raw, output, manifest in zip(
         player_counts, raw_files, curated_files, manifests, strict=True
     ):
+        raw_sha256: str
         if is_v3_config(cfg):
-            validate_artifact_sidecar(
+            raw_sidecar = validate_artifact_sidecar(
                 raw,
                 expected={
                     "scope": ArtifactScope.BY_K.value,
                     "operation": "ingest_simulation_rows",
                 },
             )
+            raw_sha256 = raw_sidecar.artifact_sha256
+        else:
+            raw_sha256 = sha256_file(raw)
         metadata = pq.read_metadata(raw)
         schema = metadata.schema.to_arrow_schema()
         expected = expected_schema_for(n_players_from_schema(schema))
-        if schema.names != expected.names:
+        if schema.names != expected.names or any(
+            actual.type != wanted.type for actual, wanted in zip(schema, expected, strict=True)
+        ):
             raise ValueError(f"curate: incompatible schema for {raw}")
         sidecar = _curated_rows_sidecar(
             cfg,
@@ -225,16 +241,45 @@ def run(cfg: AppConfig) -> None:
             schema=schema,
         )
 
-        def _copy(staged: Path, *, source: Path = raw) -> None:
-            shutil.copy2(source, staged)
+        copy_buffer_bytes = int(
+            cfg.resources.stage_batch_bytes.get(
+                "curate",
+                cfg.resources.stage_batch_bytes["partitioned_stage"],
+            )
+        )
+        copy_provenance: CopyProvenance | None = None
 
-        write_artifact_with_sidecar_atomic(output, sidecar, _copy)
-        _write_manifest(manifest, rows=metadata.num_rows, schema=schema, cfg=cfg)
+        def _copy(
+            staged: Path,
+            *,
+            source: Path = raw,
+            buffer_bytes: int = copy_buffer_bytes,
+        ) -> None:
+            nonlocal copy_provenance
+            copy_provenance = clone_or_copy_bounded(
+                source,
+                staged,
+                copy_buffer_bytes=buffer_bytes,
+            )
+
+        published = write_artifact_with_sidecar_atomic(output, sidecar, _copy)
+        assert copy_provenance is not None
+        if published.artifact_sha256 != raw_sha256:
+            raise RuntimeError(f"curate: byte-preserving representation changed bytes for {raw}")
+        _write_manifest(
+            manifest,
+            rows=metadata.num_rows,
+            schema=schema,
+            cfg=cfg,
+            raw_sha256=raw_sha256,
+            curated_sha256=published.artifact_sha256,
+            copy_provenance=copy_provenance,
+        )
         total_rows += metadata.num_rows
 
     write_stage_done(
         done,
-        inputs=raw_files,
+        inputs=inputs,
         outputs=[*curated_files, *manifests],
         cfg=cfg,
         stage="curate",
@@ -242,7 +287,17 @@ def run(cfg: AppConfig) -> None:
     )
     LOGGER.info(
         "Curate complete",
-        extra={"stage": "curate", "files": len(curated_files), "rows": total_rows},
+        extra={
+            "stage": "curate",
+            "files": len(curated_files),
+            "rows": total_rows,
+            "representations": sorted(
+                {
+                    json.loads(path.read_text(encoding="utf-8"))["representation"]
+                    for path in manifests
+                }
+            ),
+        },
     )
 
 

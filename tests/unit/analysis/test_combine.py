@@ -1,8 +1,12 @@
-import os
+from __future__ import annotations
+
+import json
+from dataclasses import replace
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from tests.helpers.artifact_sidecars import (
     make_authenticated_v3_config,
     publish_v3_parquet,
@@ -10,381 +14,301 @@ from tests.helpers.artifact_sidecars import (
 
 from farkle.analysis import combine
 from farkle.analysis.checks import check_pre_metrics
+from farkle.analysis.release_audit import audit_sidecar_completeness
 from farkle.config import AppConfig
 from farkle.utils.artifact_contract import sidecar_path, validate_artifact_sidecar
 from farkle.utils.schema_helpers import expected_schema_for
 
 
-def _cfg(tmp_path: Path) -> AppConfig:
-    return make_authenticated_v3_config(
+def _cfg(tmp_path: Path, player_counts: tuple[int, ...] = (1, 2)) -> AppConfig:
+    cfg = make_authenticated_v3_config(
         tmp_path,
         name="combine",
         root_seed=0,
-        player_counts=(1, 2),
+        player_counts=player_counts,
     )
+    cfg.analysis.n_jobs = 1
+    return cfg
 
 
-def _write_curated(
-    cfg: AppConfig,
-    path: Path,
-    schema: pa.Schema,
-    rows: list[dict[str, object]],
-) -> None:
-    tbl = pa.Table.from_pylist(rows, schema=schema)
+def _row(k: int, index: int = 0) -> dict[str, object]:
+    row: dict[str, object] = {
+        "root_seed": 0,
+        "k": k,
+        "shuffle_index": index,
+        "game_index": 0,
+        "deterministic_batch_id": index,
+        "shuffle_seed": 400 + index,
+        "winner_seat": "P1",
+        "winner_strategy": 10 + k,
+        "game_seed": 100 + index,
+        "seat_ranks": [f"P{seat}" for seat in range(1, k + 1)],
+        "n_rounds": 1 + index,
+        "winning_score": 100 + k,
+    }
+    for seat in range(1, k + 1):
+        row[f"P{seat}_strategy"] = 10 + seat
+        row[f"P{seat}_rank"] = seat
+    return row
+
+
+def _write_curated(cfg: AppConfig, k: int, rows: list[dict[str, object]]) -> Path:
+    path = cfg.ingested_rows_curated(k)
     publish_v3_parquet(
         cfg,
         path,
-        tbl,
+        pa.Table.from_pylist(rows, schema=expected_schema_for(k)),
         stage_key="curate",
         producer="curate",
         operation="curate_game_rows",
         source_scope="by_k",
     )
+    return path
 
 
-def test_combine_pads_and_counts(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = _cfg(tmp_results_dir)
-    # create per-N curated files
-    p1 = cfg.ingested_rows_curated(1)
-    schema1 = expected_schema_for(1)
-    _write_curated(
-        cfg,
-        p1,
-        schema1,
-        [
-            {
-                "root_seed": 41,
-                "k": 1,
-                "shuffle_index": 0,
-                "game_index": 0,
-                "deterministic_batch_id": 0,
-                "shuffle_seed": 401,
-                "winner_seat": "P1",
-                "winner_strategy": 11,
-                "game_seed": 101,
-                "seat_ranks": ["P1"],
-                "n_rounds": 1,
-                "winning_score": 100,
-                # use wider integer dtypes so combine must normalize to target schema
-                "P1_strategy": 11,
-                "P1_rank": 1,
-            },
-        ],
-    )
-    p2 = cfg.ingested_rows_curated(2)
-    schema2 = expected_schema_for(2)
-    _write_curated(
-        cfg,
-        p2,
-        schema2,
-        [
-            {
-                "root_seed": 41,
-                "k": 2,
-                "shuffle_index": 3,
-                "game_index": 0,
-                "deterministic_batch_id": 1,
-                "shuffle_seed": 402,
-                "winner_seat": "P1",
-                "winner_strategy": 22,
-                "game_seed": 202,
-                "seat_ranks": ["P1", "P2"],
-                "n_rounds": 1,
-                "winning_score": 200,
-                "P1_strategy": 22,
-                "P2_strategy": 33,
-                "P1_rank": 1,
-                "P2_rank": 2,
-            },
-        ],
-    )
-    calls: list[tuple[list[Path], Path, int]] = []
+def _write_all_sources(cfg: AppConfig) -> tuple[Path, ...]:
+    return tuple(_write_curated(cfg, k, [_row(k, k)]) for k in sorted(cfg.sim.n_players_list))
 
-    def _capture(files: list[Path], combined: Path, max_players: int = 12) -> None:
-        calls.append((files, combined, max_players))
 
-    monkeypatch.setattr(combine, "check_post_combine", _capture)
+def _manifest_units(cfg: AppConfig) -> list[dict[str, object]]:
+    records = [
+        json.loads(line)
+        for line in cfg.combined_manifest_path().read_text(encoding="utf-8").splitlines()
+    ]
+    return [record for record in records if record["type"] == "unit"]
 
-    # run combine
+
+def test_partitioned_concat_is_logically_equivalent_and_deterministic(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_all_sources(cfg)
+
     combine.run(cfg)
-    out = cfg.curated_parquet
-    pf = pq.ParquetFile(out)
-    schema = pq.read_schema(out)
 
-    # Invariants: shard rows are preserved and canonical superset fields are present.
-    assert pf.metadata.num_rows == 2
-    assert schema.names == expected_schema_for(12).names
-    for required in ("winner_seat", "winner_strategy", "game_seed", "P1_strategy", "P12_rank"):
-        assert required in schema.names
-    assert schema.field("winner_strategy").type == pa.int32()
-    assert schema.field("P1_strategy").type == pa.int32()
-    assert schema.field("n_rounds").type == pa.int16()
-    concatenated = pq.read_table(out).select(
+    paths = combine.combined_partition_paths(cfg)
+    assert paths == (cfg.combined_rows_by_k(1), cfg.combined_rows_by_k(2))
+    assert not cfg.curated_parquet.exists()
+    assert [record["unit_key"] for record in _manifest_units(cfg)] == [[1], [2]]
+    assert [record["unit_metadata"]["row_count"] for record in _manifest_units(cfg)] == [1, 1]
+    assert all(
+        record["unit_metadata"]["schema_sha256"]
+        == _manifest_units(cfg)[0]["unit_metadata"]["schema_sha256"]
+        for record in _manifest_units(cfg)
+    )
+    projected = []
+    for batch in combine.scan_concat_ks(
+        cfg,
+        columns=["k", "shuffle_index", "winner_strategy"],
+        max_batch_bytes=1024,
+        max_batch_rows=1,
+    ):
+        projected.extend(pa.Table.from_batches([batch]).to_pylist())
+    assert projected == [
+        {"k": 1, "shuffle_index": 1, "winner_strategy": 11},
+        {"k": 2, "shuffle_index": 2, "winner_strategy": 12},
+    ]
+    check_pre_metrics(cfg, winner_col="winner_seat")
+    validate_artifact_sidecar(
+        cfg.combined_manifest_path(),
+        expected={"scope": "concat_ks", "operation": "concatenate"},
+    )
+    stable = {
+        path: path.read_bytes()
+        for path in (
+            *paths,
+            cfg.combined_manifest_path(),
+            sidecar_path(cfg.combined_manifest_path()),
+        )
+    }
+    combine.run(cfg)
+    assert {path: path.read_bytes() for path in stable} == stable
+
+
+def test_partial_partition_set_never_publishes_completion(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_curated(cfg, 1, [_row(1)])
+
+    with pytest.raises(FileNotFoundError, match="incomplete canonical curated by-k support"):
+        combine.run(cfg)
+
+    assert not cfg.combined_manifest_path().exists()
+    assert not (cfg.combine_stage_dir / "combine.done.json").exists()
+
+
+def test_interrupted_combination_resumes_only_missing_partition(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cfg = _cfg(tmp_path)
+    _write_all_sources(cfg)
+    original = combine._PartitionWriter.__call__
+
+    def interrupt(self, unit, output):
+        if unit.key == (2,):
+            raise RuntimeError("synthetic combine interruption")
+        return original(self, unit, output)
+
+    monkeypatch.setattr(combine._PartitionWriter, "__call__", interrupt)
+    with pytest.raises(RuntimeError, match="synthetic combine interruption"):
+        combine.run(cfg)
+    first = cfg.combined_rows_by_k(1)
+    first_bytes = first.read_bytes()
+    assert first.exists()
+    assert not cfg.combined_manifest_path().exists()
+
+    monkeypatch.setattr(combine._PartitionWriter, "__call__", original)
+    combine.run(cfg)
+
+    assert first.read_bytes() == first_bytes
+    assert combine.verify_concat_ks(cfg) == {
+        "partitions": 2,
+        "rows": 2,
+        "deep_verified": False,
+        "deep_scanned_rows": 0,
+    }
+
+
+def test_changed_one_source_precisely_rewrites_one_partition(tmp_path: Path, caplog) -> None:
+    caplog.set_level("INFO")
+    cfg = _cfg(tmp_path)
+    _write_all_sources(cfg)
+    combine.run(cfg)
+    first = cfg.combined_rows_by_k(1)
+    first_bytes = first.read_bytes()
+
+    _write_curated(cfg, 2, [_row(2), _row(2, 9)])
+    combine.run(cfg)
+
+    record = [
+        item for item in caplog.records if item.message == "Combine: partitioned dataset written"
+    ][-1]
+    assert record.reused_partitions == 1
+    assert record.written_partitions == 1
+    assert first.read_bytes() == first_bytes
+    assert pq.read_metadata(cfg.combined_rows_by_k(2)).num_rows == 2
+
+
+@pytest.mark.parametrize("mutation", ["bytes", "sidecar"])
+def test_changed_source_bytes_or_sidecar_invalidates_dataset(tmp_path: Path, mutation: str) -> None:
+    cfg = _cfg(tmp_path)
+    sources = _write_all_sources(cfg)
+    combine.run(cfg)
+    source = sources[1]
+    if mutation == "bytes":
+        with source.open("ab") as handle:
+            handle.write(b"mutation")
+    else:
+        with sidecar_path(source).open("a", encoding="utf-8") as handle:
+            handle.write("\n")
+
+    with pytest.raises(RuntimeError):
+        combine.combined_partition_paths(cfg)
+    if mutation == "bytes":
+        with pytest.raises(RuntimeError):
+            combine.run(cfg)
+    else:
+        combine.run(cfg)
+        assert combine.verify_concat_ks(cfg)["partitions"] == 2
+
+
+def test_complete_repository_code_identity_change_invalidates_all_partitions(
+    tmp_path: Path, caplog
+) -> None:
+    caplog.set_level("INFO")
+    cfg = _cfg(tmp_path)
+    _write_all_sources(cfg)
+    combine.run(cfg)
+    assert cfg._code_identity is not None
+    cfg._code_identity = replace(
+        cfg._code_identity,
+        commit="b" * 40,
+    )
+
+    combine.run(cfg)
+
+    record = [
+        item for item in caplog.records if item.message == "Combine: partitioned dataset written"
+    ][-1]
+    assert record.reused_partitions == 0
+    assert record.written_partitions == 2
+
+
+def test_missing_corrupt_and_reordered_partitions_are_not_complete(tmp_path: Path, caplog) -> None:
+    caplog.set_level("INFO")
+    cfg = _cfg(tmp_path)
+    _write_all_sources(cfg)
+    combine.run(cfg)
+    cfg.combined_rows_by_k(2).write_bytes(b"corrupt")
+    with pytest.raises(RuntimeError):
+        combine.combined_partition_paths(cfg)
+
+    combine.run(cfg)
+    assert combine.verify_concat_ks(cfg)["partitions"] == 2
+    lines = cfg.combined_manifest_path().read_text(encoding="utf-8").splitlines()
+    cfg.combined_manifest_path().write_text(
+        "\n".join([lines[0], lines[2], lines[1], lines[3]]) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(RuntimeError):
+        combine.combined_partition_paths(cfg)
+    combine.run(cfg)
+    assert [record["unit_key"] for record in _manifest_units(cfg)] == [[1], [2]]
+    record = [
+        item for item in caplog.records if item.message == "Combine: partitioned dataset written"
+    ][-1]
+    assert record.reused_partitions == 2
+    assert record.written_partitions == 0
+
+    cfg.sim.n_players_list = [1]
+    combine.run(cfg)
+    assert combine.combined_partition_paths(cfg) == (cfg.combined_rows_by_k(1),)
+    assert not cfg.combined_rows_by_k(2).exists()
+
+
+def test_release_materialization_and_deep_verification(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
+    _write_all_sources(cfg)
+    combine.run(cfg)
+    materialized = combine.materialize_concat_ks(
+        cfg,
+        cfg.concat_ks_dir("combine") / "release_materialized" / "concat.parquet",
+    )
+
+    former = pq.read_table(materialized)
+    current = pa.Table.from_batches(list(combine.scan_concat_ks(cfg)))
+    assert current.equals(former, check_metadata=False)
+    assert combine.verify_concat_ks(cfg, deep=True)["deep_scanned_rows"] == former.num_rows
+    validate_artifact_sidecar(
+        materialized,
+        expected={"operation": "materialize_concat_ks_compatibility"},
+    )
+    assert audit_sidecar_completeness(cfg.analysis_dir) == []
+    # The fixture demonstrates the eliminated canonical bytes: the materialized
+    # compatibility file is exactly the extra physical representation no longer stored.
+    assert materialized.stat().st_size > 0
+    assert not cfg.curated_parquet.exists()
+
+
+def test_materialization_cannot_restore_retired_canonical_path(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, (1,))
+    _write_all_sources(cfg)
+    combine.run(cfg)
+
+    with pytest.raises(ValueError, match="retired canonical path"):
+        combine.materialize_concat_ks(cfg, cfg.curated_parquet)
+
+
+def test_padding_normalizes_types_and_nullability() -> None:
+    target = pa.schema(
         [
-            "root_seed",
-            "k",
-            "shuffle_index",
-            "game_index",
-            "deterministic_batch_id",
-            "shuffle_seed",
-            "winner_strategy",
+            pa.field("value", pa.int64(), nullable=True),
+            pa.field("missing", pa.int32(), nullable=True),
         ]
     )
-    assert concatenated.to_pylist() == [
-        {
-            "root_seed": 41,
-            "k": 1,
-            "shuffle_index": 0,
-            "game_index": 0,
-            "deterministic_batch_id": 0,
-            "shuffle_seed": 401,
-            "winner_strategy": 11,
-        },
-        {
-            "root_seed": 41,
-            "k": 2,
-            "shuffle_index": 3,
-            "game_index": 0,
-            "deterministic_batch_id": 1,
-            "shuffle_seed": 402,
-            "winner_strategy": 22,
-        },
-    ]
-
-    # Invariants: atomic writer leaves only finalized files.
-    assert not list(cfg.concat_ks_dir("combine").glob("*.tmp"))
-    assert not list(cfg.concat_ks_dir("combine").glob("*.partial"))
-
-    log = next(rec for rec in capinfo.records if rec.message == "Combine: parquet written")
-    assert getattr(log, "stage", None) == "combine"
-    assert getattr(log, "path", "") == str(out)
-    assert getattr(log, "rows", None) == 2
-    manifest_path = out.with_suffix(".manifest.jsonl")
-    assert manifest_path.exists()
-    assert sidecar_path(out).exists()
-    metadata = validate_artifact_sidecar(
-        out, expected={"scope": "concat_ks", "operation": "concatenate"}
-    )
-    assert metadata.player_counts == [1, 2]
-    assert calls and calls[0][0] == [p1, p2]
-    assert calls[0][1] == out
-    assert calls[0][2] == 12
-
-
-def test_combine_logs_when_no_inputs(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = _cfg(tmp_results_dir)
-    calls: list[tuple[list[Path], Path, int]] = []
-
-    monkeypatch.setattr(
-        combine,
-        "check_post_combine",
-        lambda *args, **kwargs: calls.append(([], Path(), 0)),
-    )
-
-    combine.run(cfg)
-
-    assert any(
-        rec.message == "Combine: no inputs discovered" and getattr(rec, "stage", None) == "combine"
-        for rec in capinfo.records
-    )
-    assert not calls
-
-
-def test_combine_skips_when_output_newer(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = _cfg(tmp_results_dir)
-    calls: list[tuple[list[Path], Path, int]] = []
-
-    monkeypatch.setattr(
-        combine,
-        "check_post_combine",
-        lambda *args, **kwargs: calls.append(([], Path(), 0)),
-    )
-
-    schema = pa.schema([("winner", pa.string())])
-    input_path = cfg.ingested_rows_curated(1)
-    _write_curated(cfg, input_path, schema, [{"winner": "P1"}])
-
-    out_dir = cfg.concat_ks_dir("combine")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / "all_ingested_rows.parquet"
-    pq.write_table(pa.Table.from_pylist([{"winner": "P1"}], schema=schema), out)
-    os.utime(input_path, (0, 0))
-
-    combine.run(cfg)
-
-    assert any(
-        rec.message == "Combine: parquet written" and getattr(rec, "stage", None) == "combine"
-        for rec in capinfo.records
-    )
-
-
-def test_combine_zero_row_inputs_cleanup(tmp_results_dir: Path, capinfo, monkeypatch) -> None:
-    cfg = _cfg(tmp_results_dir)
-    calls: list[tuple[list[Path], Path, int]] = []
-
-    monkeypatch.setattr(
-        combine,
-        "check_post_combine",
-        lambda *args, **kwargs: calls.append(([], Path(), 0)),
-    )
-
-    schema = expected_schema_for(1)
-    input_path = cfg.ingested_rows_curated(1)
-    _write_curated(cfg, input_path, schema, [])
-
-    out_dir = cfg.concat_ks_dir("combine")
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out = out_dir / "all_ingested_rows.parquet"
-    out.write_text("stale")
-    manifest = out.with_suffix(".manifest.jsonl")
-    manifest.write_text("old")
-    os.utime(out, (0, 0))
-
-    combine.run(cfg)
-
-    assert any(
-        rec.message == "Combine: inputs produced zero rows"
-        and getattr(rec, "stage", None) == "combine"
-        for rec in capinfo.records
-    )
-    assert not out.exists()
-    assert not manifest.exists()
-    assert not calls
-
-
-def test_pad_to_schema_adds_missing_columns():
-    target = expected_schema_for(2)
-    table = pa.Table.from_pylist([{"winner": "P1"}], schema=pa.schema([("winner", pa.string())]))
-
-    padded = combine._pad_to_schema(table, target)
-
-    assert padded.schema.names == target.names
-    assert padded.column("P2_strategy").null_count == 1
-
-
-def test_pad_to_schema_normalizes_field_nullability_exactly() -> None:
-    target = pa.schema([pa.field("value", pa.int64(), nullable=True)])
     source = pa.Table.from_arrays(
-        [pa.array([1, 2], type=pa.int64())],
-        schema=pa.schema([pa.field("value", pa.int64(), nullable=False)]),
+        [pa.array([1, 2], type=pa.int32())],
+        schema=pa.schema([pa.field("value", pa.int32(), nullable=False)]),
     )
 
     normalized = combine._pad_to_schema(source, target)
 
     assert normalized.schema.equals(target, check_metadata=False)
-
-
-def test_concat_ks_output_ignores_generic_legacy_path(tmp_results_dir: Path) -> None:
-    cfg = _cfg(tmp_results_dir)
-    legacy_dir = cfg.combine_stage_dir / f"{cfg.combine_max_players}p" / "combined"
-    legacy_dir.mkdir(parents=True, exist_ok=True)
-    legacy_file = legacy_dir / "all_ingested_rows.parquet"
-    legacy_file.write_text("legacy")
-
-    canonical = combine._concat_ks_output(cfg)
-
-    assert canonical == cfg.concat_ks_dir("combine") / "all_ingested_rows.parquet"
-    assert not canonical.exists()
-    assert legacy_file.exists()
-
-
-def test_combine_respects_stage_cache(tmp_results_dir: Path, monkeypatch, capinfo) -> None:
-    cfg = _cfg(tmp_results_dir)
-    schema = pa.schema([("winner", pa.string())])
-    curated = cfg.ingested_rows_curated(1)
-    _write_curated(cfg, curated, schema, [{"winner": "P1"}])
-
-    monkeypatch.setattr(combine, "stage_is_up_to_date", lambda *_, **__: True)
-    called = []
-    monkeypatch.setattr(combine, "check_post_combine", lambda *args, **kwargs: called.append(1))
-
-    combine.run(cfg)
-
-    assert any(
-        rec.message == "Combine: output up-to-date" and getattr(rec, "stage", None) == "combine"
-        for rec in capinfo.records
-    )
-    assert not called
-
-
-def test_combine_writes_partitioned_dataset_and_partition_done(tmp_results_dir: Path) -> None:
-    cfg = _cfg(tmp_results_dir)
-    p2 = cfg.ingested_rows_curated(2)
-    schema2 = expected_schema_for(2)
-    _write_curated(
-        cfg,
-        p2,
-        schema2,
-        [
-            {
-                "winner_seat": "P1",
-                "winner_strategy": 22,
-                "game_seed": 202,
-                "seat_ranks": ["P1", "P2"],
-                "n_rounds": 3,
-                "winning_score": 200,
-                "P1_strategy": 22,
-                "P2_strategy": 33,
-                "P1_rank": 1,
-                "P2_rank": 2,
-            },
-        ],
-    )
-
-    combine.run(cfg)
-
-    partition_file, _ = combine._partition_paths(cfg, 2)
-    partition_done = cfg.combine_stage_dir / "combine_partition_2p.done.json"
-    assert partition_file.exists()
-    assert sidecar_path(partition_file).exists()
-    validate_artifact_sidecar(
-        partition_file,
-        expected={"scope": "by_k", "operation": "concatenate_rows_within_k"},
-    )
-    assert partition_done.exists()
-
-
-def test_combine_rerun_replaces_partition_and_combined_manifests(tmp_results_dir: Path) -> None:
-    cfg = _cfg(tmp_results_dir)
-    p2 = cfg.ingested_rows_curated(2)
-    schema2 = expected_schema_for(2)
-    _write_curated(
-        cfg,
-        p2,
-        schema2,
-        [
-            {
-                "root_seed": 41,
-                "k": 2,
-                "shuffle_index": 3,
-                "game_index": 0,
-                "deterministic_batch_id": 1,
-                "shuffle_seed": 402,
-                "winner_seat": "P1",
-                "winner_strategy": 22,
-                "game_seed": 202,
-                "seat_ranks": ["P1", "P2"],
-                "n_rounds": 3,
-                "winning_score": 200,
-                "P1_strategy": 22,
-                "P2_strategy": 33,
-                "P1_rank": 1,
-                "P2_rank": 2,
-            },
-        ],
-    )
-
-    cfg.config_sha = "sha-one"
-    combine.run(cfg)
-
-    cfg.config_sha = "sha-two"
-    combine.run(cfg)
-
-    partition_manifest = cfg.by_k_dir("combine", 2) / "2p_partition.manifest.jsonl"
-    combined_manifest = cfg.combined_manifest_path()
-    partition_lines = partition_manifest.read_text(encoding="utf-8").splitlines()
-    combined_lines = combined_manifest.read_text(encoding="utf-8").splitlines()
-
-    assert len([line for line in partition_lines if line.strip()]) == 1
-    assert len([line for line in combined_lines if line.strip()]) == 1
-    check_pre_metrics(cfg.curated_parquet, winner_col="winner_seat")
+    assert normalized["missing"].null_count == 2

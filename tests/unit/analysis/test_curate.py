@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
+import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from tests.helpers.artifact_sidecars import (
     make_authenticated_v3_config,
+    publish_v3_parquet,
     publish_v3_simulation_run,
 )
 
@@ -57,6 +61,10 @@ def test_curate_publishes_and_backfills_row_sidecars_without_recopying(tmp_path:
 
     output = cfg.ingested_rows_curated(2)
     original = output.read_bytes()
+    manifest = json.loads(cfg.manifest_for(2).read_text(encoding="utf-8"))
+    assert manifest["representation"] in {"reflink", "physical_copy"}
+    assert manifest["source_sha256"] == manifest["curated_sha256"]
+    assert manifest["copy_buffer_bytes"] <= cfg.resources.stage_batch_bytes["partitioned_stage"]
     validate_artifact_sidecar(
         output,
         expected={
@@ -71,3 +79,25 @@ def test_curate_publishes_and_backfills_row_sidecars_without_recopying(tmp_path:
 
     assert output.read_bytes() == original
     validate_artifact_sidecar(output)
+
+    with cfg.ingested_rows_raw(2).open("ab") as handle:
+        handle.write(b"post-creation mutation")
+    with pytest.raises(RuntimeError):
+        curate.run(cfg)
+
+    incompatible = pq.read_table(output).set_column(
+        0,
+        pa.field("root_seed", pa.string()),
+        pa.array([str(cfg.sim.seed)], type=pa.string()),
+    )
+    publish_v3_parquet(
+        cfg,
+        cfg.ingested_rows_raw(2),
+        incompatible,
+        stage_key="ingest",
+        producer="ingest",
+        operation="ingest_simulation_rows",
+        source_scope="by_k",
+    )
+    with pytest.raises(ValueError, match="incompatible schema"):
+        curate.run(cfg)

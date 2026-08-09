@@ -62,7 +62,7 @@ def run(cfg: AppConfig) -> None:
     if cfg.screening.delta_across_k is None:
         raise ValueError("metrics: screening.delta_across_k must be explicitly configured")
 
-    concatenated_rows = cfg.curated_parquet
+    concatenated_rows = cfg.combined_manifest_path()
     per_k_curated = [cfg.ingested_rows_curated(k) for k in player_counts]
     per_k_combined = [cfg.combined_rows_by_k(k) for k in player_counts]
     _require_paths([concatenated_rows], label="concat_ks")
@@ -101,7 +101,7 @@ def run(cfg: AppConfig) -> None:
         LOGGER.info("Metrics stage up-to-date", extra={"stage": "metrics", "path": str(done)})
         return
 
-    check_pre_metrics(concatenated_rows, winner_col="winner_seat")
+    check_pre_metrics(cfg, winner_col="winner_seat")
     all_player_paths = _all_player_metrics(cfg, player_counts)
     # The enclosing stage is stale, but performance owns authenticated per-k
     # matrices and replicate ranges that remain reusable after interruption.

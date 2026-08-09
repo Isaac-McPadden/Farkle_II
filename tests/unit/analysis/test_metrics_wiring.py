@@ -1,12 +1,9 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
-import pyarrow as pa
 import pytest
-from tests.helpers.artifact_sidecars import write_parquet_test_artifact
 
 from farkle.analysis import metrics
 from farkle.analysis.stage_registry import resolve_stage_layout
@@ -24,16 +21,9 @@ def test_fresh_metrics_tracks_concat_without_semantic_scan(
     cfg.screening.delta_across_k = 0.03
     cfg.set_stage_layout(resolve_stage_layout(cfg))
 
-    concat = cfg.curated_parquet
-    write_parquet_test_artifact(
-        pa.table({"winner_seat": ["P1"], "n_rounds": pa.array([1], type=pa.int16())}),
-        concat,
-        scope="concat_ks",
-    )
-    concat.with_suffix(".manifest.jsonl").write_text(
-        json.dumps({"path": concat.name, "rows": 1}) + "\n",
-        encoding="utf-8",
-    )
+    concat = cfg.combined_manifest_path()
+    concat.parent.mkdir(parents=True, exist_ok=True)
+    concat.write_text("fixture\n", encoding="utf-8")
     for path in (cfg.ingested_rows_curated(2), cfg.combined_rows_by_k(2)):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"test")
@@ -53,7 +43,7 @@ def test_fresh_metrics_tracks_concat_without_semantic_scan(
 
     metrics.run(cfg)
 
-    assert captured["inputs"][0] == cfg.curated_parquet
+    assert captured["inputs"][0] == cfg.combined_manifest_path()
     assert cfg.curated_dataset not in captured["inputs"]
 
 
@@ -65,7 +55,7 @@ def test_stale_metrics_validates_before_building(tmp_path: Path, monkeypatch) ->
     cfg.screening.delta_across_k = 0.03
     cfg.set_stage_layout(resolve_stage_layout(cfg))
     for path in (
-        cfg.curated_parquet,
+        cfg.combined_manifest_path(),
         cfg.ingested_rows_curated(2),
         cfg.combined_rows_by_k(2),
     ):
@@ -81,9 +71,9 @@ def test_stale_metrics_validates_before_building(tmp_path: Path, monkeypatch) ->
     class ExpectedValidation(Exception):
         pass
 
-    def _validate(path: Path, *, winner_col: str) -> None:
+    def _validate(path: AppConfig, *, winner_col: str) -> None:
         events.append("validation")
-        assert path == cfg.curated_parquet
+        assert path is cfg
         assert winner_col == "winner_seat"
         raise ExpectedValidation
 

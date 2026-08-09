@@ -187,6 +187,57 @@ def test_identity_change_invalidates_every_unit(tmp_path: Path) -> None:
     assert result.completed_units == 12
 
 
+def test_per_unit_input_identity_change_rewrites_only_that_unit(tmp_path: Path) -> None:
+    root = tmp_path / "stage"
+
+    def units(digest: str):
+        return (
+            PartitionedUnit((0,), "part-000.bin", (("source", "a" * 64),)),
+            PartitionedUnit((1,), "part-001.bin", (("source", digest),)),
+        )
+
+    run_partitioned_stage(
+        root=root,
+        identity=_identity(),
+        unit_source=lambda: iter(units("b" * 64)),
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=1,
+    )
+    result = run_partitioned_stage(
+        root=root,
+        identity=_identity(),
+        unit_source=lambda: iter(units("c" * 64)),
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=1,
+    )
+
+    assert result.reused_units == 1
+    assert result.completed_units == 1
+
+
+def test_manifest_authenticates_validator_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "stage"
+
+    def validator(unit: PartitionedUnit, output: Path) -> dict[str, int]:
+        return {"coordinate": int(unit.key[0]), "bytes": output.stat().st_size}
+
+    result = run_partitioned_stage(
+        root=root,
+        identity=_identity(),
+        unit_source=_unit_source,
+        writer=_deterministic_writer,
+        resources=_resources(),
+        requested_workers=1,
+        validator=validator,
+    )
+    records = [json.loads(line) for line in result.manifest_path.read_text().splitlines()]
+
+    assert records[1]["unit_metadata"]["coordinate"] == 0
+    assert records[-2]["unit_metadata"]["coordinate"] == 11
+
+
 def test_resumable_identity_binds_full_dirty_code_fingerprint() -> None:
     first = CodeIdentity(
         commit="a" * 40,

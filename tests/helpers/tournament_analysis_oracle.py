@@ -19,7 +19,7 @@ from tests.helpers.raw_simulation_oracle import (
 )
 
 from farkle import analysis
-from farkle.analysis import hgb_feat, trueskill
+from farkle.analysis import combine, hgb_feat, trueskill
 from farkle.analysis.all_player_metrics import all_player_batch_schema
 from farkle.analysis.candidate_family import freeze_h2h_candidate_family
 from farkle.analysis.h2h_schedule import (
@@ -282,7 +282,7 @@ def assert_root_pipeline_oracle(
             assert set(predictions["strategy"].astype(int)) == {0, 1, 2, 3}
             assert len(importance) == 10
 
-        combined = pq.read_table(cfg.curated_parquet)
+        combined = pa.Table.from_batches(list(combine.scan_concat_ks(cfg)))
         assert combined.schema == expected_schema_for(12)
         assert combined.num_rows == 6
         assert _coordinates(combined) == concat_coordinates

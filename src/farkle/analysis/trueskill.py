@@ -29,17 +29,17 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     stage_log = stage_logger("trueskill", logger=LOGGER)
     stage_log.start()
 
-    curated_parquet = cfg.curated_parquet
+    concat_manifest = cfg.combined_manifest_path()
     roots = tuple(int(root) for root in (cfg.sim.seed_list or [cfg.sim.seed]))
     if len(roots) != 1:
         raise ValueError(f"TrueSkill root execution requires exactly one root, found {roots}")
-    if not curated_parquet.exists():
+    if not concat_manifest.exists():
         raise FileNotFoundError(
-            f"TrueSkill requires canonical concatenated rows: {curated_parquet}"
+            f"TrueSkill requires the canonical partition manifest: {concat_manifest}"
         )
     if is_v3_config(cfg):
         validate_artifact_sidecar(
-            curated_parquet,
+            concat_manifest,
             expected={
                 "scope": ArtifactScope.CONCAT_KS.value,
                 "operation": "concatenate",

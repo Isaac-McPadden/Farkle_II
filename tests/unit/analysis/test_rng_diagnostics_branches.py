@@ -9,7 +9,7 @@ import pyarrow.parquet as pq
 import pytest
 from tests.helpers.artifact_sidecars import make_authenticated_v3_config, publish_v3_parquet
 
-from farkle.analysis import rng_diagnostics
+from farkle.analysis import combine, rng_diagnostics
 from farkle.analysis.stage_registry import resolve_stage_definition
 from farkle.config import ArtifactScope, assign_config_sha
 from farkle.utils.artifact_contract import sidecar_path
@@ -69,13 +69,14 @@ def _config_with_input(
     assign_config_sha(cfg)
     publish_v3_parquet(
         cfg,
-        cfg.curated_parquet,
+        cfg.ingested_rows_curated(2),
         table,
-        stage_key="combine",
-        producer="combine",
-        operation="concatenate",
-        source_scope=ArtifactScope.BY_K,
+        stage_key="curate",
+        producer="curate",
+        operation="curate_game_rows",
+        source_scope="by_k",
     )
+    combine.run(cfg)
     return cfg
 
 
@@ -215,7 +216,7 @@ def test_deterministic_cap_is_encounter_order_invariant_and_blocks_completion(
     assert (
         resolve_stage_state(
             forward.rng_stage_dir / "rng_diagnostics.done.json",
-            [forward.curated_parquet],
+            [forward.combined_manifest_path()],
             [
                 forward.rng_output_path("rng_diagnostics.parquet"),
                 forward.rng_output_path("rng_diagnostics_summary.json"),

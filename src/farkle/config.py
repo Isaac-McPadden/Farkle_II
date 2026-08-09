@@ -1265,7 +1265,7 @@ class AppConfig:
 
     @property
     def curated_parquet(self) -> Path:
-        """Canonical row-preserving cross-k curated parquet."""
+        """Retired monolithic compatibility path; canonical data is partitioned."""
 
         return self.input_scope_path(
             "combine", ArtifactScope.CONCAT_KS, "all_ingested_rows.parquet"
@@ -1316,7 +1316,7 @@ class AppConfig:
         return self.by_k_dir("combine", int(n)) / f"{int(n)}p_part-00000.parquet"
 
     def combined_manifest_path(self) -> Path:
-        """Path to the manifest accompanying ``curated_parquet``."""
+        """Authenticated manifest for the logical partitioned ``concat_ks`` table."""
 
         return self.input_scope_path(
             "combine", ArtifactScope.CONCAT_KS, "all_ingested_rows.manifest.jsonl"

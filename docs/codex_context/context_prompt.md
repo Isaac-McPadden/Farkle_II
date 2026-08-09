@@ -48,6 +48,12 @@ Preserve these invariants:
   closed in strict mode, the 768 MiB scheduler target and sticky 950 MiB RSS
   abort remain cooperative controls, worker counts obey CPU/native-thread and
   per-stage memory caps, and partition manifests publish only after every unit validates;
+- curate preserves its authenticated provenance boundary with independent
+  copy-on-write reflinks where supported and deterministic bounded physical-copy
+  fallback; combine keeps normalized by-k Parquets as its only canonical data
+  bytes and exposes `concat_ks` through one authenticated ordered partition
+  manifest and deterministic scanner, with explicit deep verification and
+  non-canonical release materialization;
 - TrueSkill projected reads use byte-bounded Arrow batches; screening
   diagnostics publish an authenticated root/k result and completion stamp
   before deterministic aggregation, using one forward projected scan and a

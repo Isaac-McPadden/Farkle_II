@@ -49,7 +49,6 @@ def _root_artifacts(context: SeedRunContext) -> list[Path]:
                 cfg.ingested_rows_curated(k),
                 cfg.manifest_for(k),
                 cfg.combined_rows_by_k(k),
-                cfg.by_k_dir("combine", k) / f"{k}p_partition.manifest.jsonl",
                 cfg.metrics_all_player_batch_path(k),
                 cfg.performance_batch_matrix_path(k),
                 cfg.performance_by_k_path(k),
@@ -69,7 +68,6 @@ def _root_artifacts(context: SeedRunContext) -> list[Path]:
         )
     paths.extend(
         [
-            cfg.curated_parquet,
             cfg.curated_dataset,
             cfg.combined_manifest_path(),
             cfg.performance_across_k_path(),

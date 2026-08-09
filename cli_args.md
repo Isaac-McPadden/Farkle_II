@@ -80,9 +80,13 @@ Subcommands:
 - `ingest`
   Convert raw simulation outputs into ingest-stage parquet artifacts.
 - `curate`
-  Finalize ingest outputs into canonical curated row files.
+  Finalize ingest outputs using authenticated reflinks where supported and a
+  bounded physical-copy fallback.
 - `combine`
-  Merge curated per-player-count files into pooled combined data.
+  Normalize independently resumable by-k partitions and publish the logical
+  `concat_ks` manifest. `--force` rewrites all partitions, `--deep-verify`
+  rereads and hashes them, and `--materialize PATH` writes a non-canonical
+  release compatibility Parquet inside the `concat_ks` scope.
 - `metrics`
   Compute pooled metrics and optional game-stat and RNG side outputs.
 - `variance`

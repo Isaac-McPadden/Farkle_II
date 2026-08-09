@@ -173,7 +173,7 @@ class _BatchArrays:
 
 @dataclass(frozen=True, slots=True)
 class _CountRouteWriter:
-    source: str
+    sources: tuple[tuple[int, str, int], ...]
     columns: tuple[str, ...]
     winner_col: str
     strat_cols: tuple[str, ...]
@@ -182,11 +182,12 @@ class _CountRouteWriter:
     expected_root_seed: int
 
     def __call__(self, unit: PartitionedUnit, path: Path) -> None:
-        row_group = int(unit.key[0])
+        source_map = {ordinal: (source, row_group) for ordinal, source, row_group in self.sources}
+        source, row_group = source_map[int(unit.key[0])]
         schema = _count_arrow_schema(len(self.strat_cols))
         with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
             for batch in _iter_row_group_batches(
-                Path(self.source),
+                Path(source),
                 row_group,
                 columns=self.columns,
                 batch_bytes=self.batch_bytes,
@@ -251,7 +252,7 @@ class _EligibilityWriter:
 
 @dataclass(frozen=True, slots=True)
 class _StatsRouteWriter:
-    source: str
+    sources: tuple[tuple[int, str, int], ...]
     selection: str
     columns: tuple[str, ...]
     winner_col: str
@@ -267,11 +268,12 @@ class _StatsRouteWriter:
             partition_count=self.partition_count,
             max_bytes=self.selection_memory_bytes,
         )
-        row_group = int(unit.key[0])
+        source_map = {ordinal: (source, row_group) for ordinal, source, row_group in self.sources}
+        source, row_group = source_map[int(unit.key[0])]
         schema = _observation_arrow_schema(len(self.strat_cols))
         with path.open("wb") as handle, ipc.new_file(handle, schema) as writer:
             for batch in _iter_row_group_batches(
-                Path(self.source),
+                Path(source),
                 row_group,
                 columns=self.columns,
                 batch_bytes=self.batch_bytes,
@@ -349,7 +351,10 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     guard.check_before_schedule(force=True)
 
     try:
-        data_file = cfg.curated_parquet
+        from farkle.analysis.combine import combined_partition_paths
+
+        data_file = cfg.combined_manifest_path()
+        data_partitions = combined_partition_paths(cfg)
     except KeyError as exc:
         stage_log.missing_input(str(exc))
         return
@@ -363,7 +368,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         stage_log.missing_input("no valid lags provided")
         return
     if not data_file.exists():
-        stage_log.missing_input("missing curated parquet", path=str(data_file))
+        stage_log.missing_input("missing concat_ks partition manifest", path=str(data_file))
         return
     if is_v3_config(cfg):
         validate_artifact_sidecar(
@@ -386,7 +391,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         )
         return
 
-    parquet = pq.ParquetFile(data_file)
+    parquet = pq.ParquetFile(data_partitions[0])
     schema_names = set(parquet.schema_arrow.names)
     strat_cols = tuple(_seat_strategy_columns(cfg, parquet.schema_arrow.names))
     winner_col = _winner_column(schema_names)
@@ -398,7 +403,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
     }
     if winner_col is None or not strat_cols or not required.issubset(schema_names):
         stage_log.missing_input(
-            "curated parquet missing RNG diagnostic columns",
+            "concat_ks partitions missing RNG diagnostic columns",
             path=str(data_file),
             required_cols=sorted(required | {"winner_strategy", "P1_strategy"}),
         )
@@ -413,7 +418,15 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         *strat_cols,
     )
     partitions = int(cfg.analysis.rng_diagnostic_partitions)
-    row_groups = int(parquet.num_row_groups)
+    row_group_sources = tuple(
+        (ordinal, str(path), row_group)
+        for ordinal, (path, row_group) in enumerate(
+            (path, row_group)
+            for path in data_partitions
+            for row_group in range(pq.ParquetFile(path).num_row_groups)
+        )
+    )
+    row_groups = len(row_group_sources)
     batch_bytes = int(
         cfg.resources.stage_batch_bytes.get(
             "rng_diagnostics", cfg.resources.stage_batch_bytes["analysis"]
@@ -437,7 +450,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         ),
         unit_source=lambda: _row_group_units(row_groups),
         writer=_CountRouteWriter(
-            str(data_file),
+            row_group_sources,
             tuple(columns),
             winner_col,
             strat_cols,
@@ -509,7 +522,7 @@ def run(cfg: AppConfig, *, lags: Sequence[int] | None = None, force: bool = Fals
         ),
         unit_source=lambda: _row_group_units(row_groups),
         writer=_StatsRouteWriter(
-            str(data_file),
+            row_group_sources,
             str(selection_file),
             tuple(columns),
             winner_col,

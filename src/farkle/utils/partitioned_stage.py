@@ -14,7 +14,12 @@ from pathlib import Path, PurePosixPath
 from typing import Any, TypeAlias
 
 from farkle.config import ResourcesConfig
-from farkle.utils.artifact_contract import ArtifactSidecar, publish_staged_artifact_with_sidecar
+from farkle.utils.artifact_contract import (
+    ArtifactSidecar,
+    publish_staged_artifact_with_sidecar,
+    sidecar_path,
+    validate_artifact_sidecar,
+)
 from farkle.utils.authenticated_contract import (
     CodeIdentityPolicy,
     identity_sha256,
@@ -35,7 +40,7 @@ UnitCoordinate: TypeAlias = int | str
 UnitWriter: TypeAlias = Callable[["PartitionedUnit", Path], None]
 UnitSidecarFactory: TypeAlias = Callable[["PartitionedUnit", Path], ArtifactSidecar | None]
 UnitPostPublisher: TypeAlias = Callable[["PartitionedUnit", Path], None]
-UnitValidator: TypeAlias = Callable[["PartitionedUnit", Path], bool]
+UnitValidator: TypeAlias = Callable[["PartitionedUnit", Path], bool | Mapping[str, Any]]
 
 
 class PartitionedStageError(RuntimeError):
@@ -146,6 +151,7 @@ class PartitionedUnit:
 
     key: tuple[UnitCoordinate, ...]
     relative_output: str
+    input_identities: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
         if not self.key or any(not isinstance(item, (int, str)) for item in self.key):
@@ -158,10 +164,22 @@ class PartitionedUnit:
             or relative.as_posix() != self.relative_output.replace("\\", "/")
         ):
             raise ValueError("partitioned unit output must be a normalized relative path")
+        if self.input_identities != tuple(sorted(self.input_identities)):
+            raise ValueError("partitioned unit input identities must be sorted by logical role")
+        if len({role for role, _digest in self.input_identities}) != len(self.input_identities):
+            raise ValueError("partitioned unit input identity roles must be unique")
+        if any(_SHA256.fullmatch(digest) is None for _role, digest in self.input_identities):
+            raise ValueError("partitioned unit input identities require lowercase SHA-256 digests")
 
     @property
     def order_bytes(self) -> bytes:
-        return _canonical_bytes({"key": self.key, "relative_output": self.relative_output})
+        return _canonical_bytes(
+            {
+                "key": self.key,
+                "relative_output": self.relative_output,
+                "input_identities": self.input_identities,
+            }
+        )
 
     @property
     def order_key(self) -> tuple[tuple[int, int | str], ...]:
@@ -210,6 +228,8 @@ def _stamp_payload(
     unit: PartitionedUnit,
     identity: PartitionedStageIdentity,
     output: Path,
+    *,
+    unit_metadata: Mapping[str, Any],
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "unit_stamp_schema_version": 1,
@@ -224,11 +244,35 @@ def _stamp_payload(
         "method_version": identity.method_version,
         "unit_key": list(unit.key),
         "relative_output": unit.relative_output,
+        "unit_input_identities": [list(item) for item in unit.input_identities],
         "output_size_bytes": output.stat().st_size,
         "output_sha256": _sha256_file(output),
+        "unit_metadata": dict(unit_metadata),
     }
     payload["stamp_sha256"] = _identity_sha256(payload)
     return payload
+
+
+def _validated_unit_metadata(
+    unit: PartitionedUnit,
+    output: Path,
+    validator: UnitValidator | None,
+) -> dict[str, Any] | None:
+    if validator is None:
+        return {}
+    try:
+        result = validator(unit, output)
+    except Exception:  # noqa: BLE001 - invalid auxiliary evidence is not reusable
+        return None
+    if result is False:
+        return None
+    if result is True:
+        return {}
+    try:
+        normalized = json.loads(_canonical_bytes(dict(result)))
+    except (TypeError, ValueError):
+        return None
+    return normalized if isinstance(normalized, dict) else None
 
 
 def _validate_unit(
@@ -242,6 +286,9 @@ def _validate_unit(
     output = _output_path(root, unit, output_prefix=output_prefix)
     stamp_path = _stamp_path(output)
     if not output.is_file() or not stamp_path.is_file():
+        return None
+    unit_metadata = _validated_unit_metadata(unit, output, validator)
+    if unit_metadata is None:
         return None
     try:
         payload = json.loads(stamp_path.read_text(encoding="utf-8"))
@@ -260,19 +307,15 @@ def _validate_unit(
             and payload["method_version"] == identity.method_version
             and payload["unit_key"] == list(unit.key)
             and payload["relative_output"] == unit.relative_output
+            and payload["unit_input_identities"] == [list(item) for item in unit.input_identities]
             and payload["output_size_bytes"] == output.stat().st_size
             and payload["output_sha256"] == _sha256_file(output)
+            and payload["unit_metadata"] == unit_metadata
         )
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         return None
     if not valid:
         return None
-    if validator is not None:
-        try:
-            if not validator(unit, output):
-                return None
-        except Exception:  # noqa: BLE001 - invalid auxiliary evidence is not reusable
-            return None
     payload["stamp_sha256"] = recorded
     return payload
 
@@ -331,7 +374,17 @@ def _execute_unit(task: _UnitTask) -> tuple[UnitCoordinate, ...]:
         _fsync_directory(output.parent)
         if task.post_publisher is not None:
             task.post_publisher(task.unit, output)
-        stamp = _stamp_payload(task.unit, task.identity, output)
+        unit_metadata = _validated_unit_metadata(task.unit, output, task.validator)
+        if unit_metadata is None:
+            raise PartitionedStageError(
+                f"published unit failed output validation: {task.unit.key!r}"
+            )
+        stamp = _stamp_payload(
+            task.unit,
+            task.identity,
+            output,
+            unit_metadata=unit_metadata,
+        )
         _write_bytes_atomic(
             _stamp_path(output),
             _canonical_bytes(stamp) + b"\n",
@@ -370,9 +423,11 @@ def _manifest_entry(unit: PartitionedUnit, stamp: Mapping[str, Any]) -> dict[str
         "type": "unit",
         "unit_key": list(unit.key),
         "relative_output": unit.relative_output,
+        "unit_input_identities": [list(item) for item in unit.input_identities],
         "output_size_bytes": stamp["output_size_bytes"],
         "output_sha256": stamp["output_sha256"],
         "stamp_sha256": stamp["stamp_sha256"],
+        "unit_metadata": stamp["unit_metadata"],
     }
 
 
@@ -384,6 +439,7 @@ def _publish_final_manifest(
     unit_source: Callable[[], Iterable[PartitionedUnit]],
     output_prefix: str = "units",
     validator: UnitValidator | None = None,
+    sidecar: ArtifactSidecar | None = None,
 ) -> tuple[str, int]:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix="._partition_manifest_", dir=path.parent)
@@ -431,7 +487,10 @@ def _publish_final_manifest(
             handle.write(trailer)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        if sidecar is None:
+            os.replace(temporary, path)
+        else:
+            publish_staged_artifact_with_sidecar(temporary, path, sidecar)
         _fsync_directory(path.parent)
         return manifest_sha, count
     finally:
@@ -446,12 +505,15 @@ def validate_final_manifest(
     unit_source: Callable[[], Iterable[PartitionedUnit]],
     output_prefix: str = "units",
     validator: UnitValidator | None = None,
+    require_sidecar: bool = False,
 ) -> tuple[str, int] | None:
     """Validate the manifest identity, ordering, every stamp, and every output."""
 
     if not path.is_file():
         return None
     try:
+        if require_sidecar:
+            validate_artifact_sidecar(path)
         with path.open("rb") as handle:
             header_line = handle.readline()
             header = json.loads(header_line)
@@ -486,7 +548,7 @@ def validate_final_manifest(
             }:
                 return None
             return digest.hexdigest(), count
-    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError):
         return None
 
 
@@ -505,6 +567,8 @@ def run_partitioned_stage(
     sidecar_factory: UnitSidecarFactory | None = None,
     post_publisher: UnitPostPublisher | None = None,
     validator: UnitValidator | None = None,
+    manifest_path: Path | None = None,
+    manifest_sidecar: ArtifactSidecar | None = None,
 ) -> PartitionedStageResult:
     """Run/reuse units and publish a final manifest only after complete validation."""
 
@@ -537,7 +601,13 @@ def run_partitioned_stage(
     guard.check_before_schedule(force=True)
     root.mkdir(parents=True, exist_ok=True)
     _quarantine_temporary_files(root)
-    manifest_path = root / "partition_manifest.jsonl"
+    manifest_path = (
+        root / "partition_manifest.jsonl" if manifest_path is None else Path(manifest_path)
+    )
+    try:
+        manifest_path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("partition manifest must be inside the partitioned-stage root") from exc
     if not force:
         current = validate_final_manifest(
             manifest_path,
@@ -546,6 +616,7 @@ def run_partitioned_stage(
             unit_source=unit_source,
             output_prefix=output_prefix,
             validator=validator,
+            require_sidecar=manifest_sidecar is not None,
         )
         if current is not None:
             manifest_sha, count = current
@@ -560,7 +631,7 @@ def run_partitioned_stage(
                 policy,
             )
         if manifest_path.exists():
-            _quarantine_paths(root, (manifest_path,))
+            _quarantine_paths(root, (manifest_path, sidecar_path(manifest_path)))
 
     reused = 0
     scheduled = 0
@@ -615,6 +686,7 @@ def run_partitioned_stage(
         unit_source=unit_source,
         output_prefix=output_prefix,
         validator=validator,
+        sidecar=manifest_sidecar,
     )
     validated = validate_final_manifest(
         manifest_path,
@@ -623,14 +695,15 @@ def run_partitioned_stage(
         unit_source=unit_source,
         output_prefix=output_prefix,
         validator=validator,
+        require_sidecar=manifest_sidecar is not None,
     )
     if validated != (manifest_sha, count):
-        _quarantine_paths(root, (manifest_path,))
+        _quarantine_paths(root, (manifest_path, sidecar_path(manifest_path)))
         raise PartitionedStageError("final partition manifest failed post-publication validation")
     try:
         guard.check_before_schedule(force=True)
     except ResourceSafetyError:
-        _quarantine_paths(root, (manifest_path,))
+        _quarantine_paths(root, (manifest_path, sidecar_path(manifest_path)))
         raise
     return PartitionedStageResult(
         manifest_path,

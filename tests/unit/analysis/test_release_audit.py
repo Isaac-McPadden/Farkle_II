@@ -135,6 +135,7 @@ def test_release_audit_ignores_authenticated_internal_work_manifests(tmp_path: P
     internal = cfg.diagnostics_dir("metrics") / "_bootstrap_ranges"
     internal.mkdir(parents=True)
     (internal / "partition_manifest.jsonl").write_text("{}\n", encoding="utf-8")
+    (internal / "partition.bin.sidecar.json").write_text("{}\n", encoding="utf-8")
 
     assert audit_sidecar_completeness(cfg.analysis_dir) == []
 

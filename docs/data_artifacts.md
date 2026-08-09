@@ -80,9 +80,25 @@ exposure counters by strategy. Both version identifiers participate explicitly
 in freshness identity, so winner-only predecessor artifacts cannot resume into
 this contract.
 
-Ingest and curate operate by k and preserve those identifiers. The combine
-stage writes a row-preserving `concat_ks` union. It verifies source/output row
-identity and total count without changing values or keys.
+Ingest and curate operate by k and preserve those identifiers. Curate first
+attempts an independent filesystem copy-on-write reflink of each byte-identical
+ingest Parquet and falls back to a physical copy with a configured byte-bounded
+buffer. Its authenticated manifest records the selected representation,
+backend, fallback reason, source/output hashes, schema, and row count. Reflinks
+are treated as mutable files: current source bytes, source sidecars, schema,
+code identity, and stage identity must still validate.
+
+Combine normalizes one canonical physical Parquet partition per k. The logical
+`concat_ks` table is the deterministic k-ordered, row-ordered scan of those
+partitions; no canonical monolithic Parquet is stored. The shared partitioned
+stage lifecycle gives every k an exact source identity, atomic output and
+sidecar, authenticated unit stamp, row count, target-schema identity, and
+output hash. The final `concat_ks` manifest publishes only after all configured
+partitions validate and carries complete repository code identity. A changed
+source resumes only its k, while a changed code identity invalidates every
+partition. `analyze combine --deep-verify` rereads all logical rows and hashes;
+`--materialize PATH` creates an explicitly non-canonical compatibility Parquet
+inside `combine/concat_ks` for release packaging.
 
 ## All-player metrics and performance
 

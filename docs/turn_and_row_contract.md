@@ -38,10 +38,14 @@ as roots for child generators.
 Ingest and curate retain these coordinates as typed columns rather than
 reconstructing them from filenames or row order. The canonical row schema also
 retains `shuffle_seed`, `game_seed`, RNG contract fields, `P#_n_turns`, and
-`P#_hit_max_rounds`. The combine stage aligns only missing later-seat columns;
-it verifies every normalized source row against its `concat_ks` output in a
-bounded streaming comparison. That check covers row order, values, coordinate
-keys, and total count, and performs no aggregation.
+`P#_hit_max_rounds`. The combine stage aligns only missing later-seat columns
+inside independently resumable by-k Parquet partitions. Its authenticated
+manifest binds deterministic partition order, per-partition row counts,
+schemas, source identities, output hashes, and complete repository code
+identity. The logical `concat_ks` scanner visits partitions by increasing k and
+preserves row order within each source. It performs concatenation only, never
+statistical aggregation. Routine validation uses this evidence; explicit deep
+verification rereads all logical rows and hashes every partition.
 
 Legacy concatenations are never selected as inputs. Existing retired paths are
 listed with their canonical replacement in

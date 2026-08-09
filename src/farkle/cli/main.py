@@ -104,7 +104,22 @@ def build_parser() -> argparse.ArgumentParser:
     analyze_sub = analyze_parser.add_subparsers(dest="an_cmd", required=True)
     analyze_sub.add_parser("ingest", help="Ingest raw CSV data")
     analyze_sub.add_parser("curate", help="Curate ingested data")
-    analyze_sub.add_parser("combine", help="Combine curated data into a superset parquet")
+    combine_parser = analyze_sub.add_parser(
+        "combine", help="Publish the normalized partitioned concat_ks dataset"
+    )
+    combine_parser.add_argument(
+        "--force", action="store_true", help="Rewrite every normalized partition"
+    )
+    combine_parser.add_argument(
+        "--deep-verify",
+        action="store_true",
+        help="Reread every partition and verify row counts and byte identities",
+    )
+    combine_parser.add_argument(
+        "--materialize",
+        type=Path,
+        help="Write a non-canonical monolithic compatibility Parquet at this path",
+    )
     metrics_parser = analyze_sub.add_parser("metrics", help="Compute metrics")
     metrics_parser.add_argument(
         "--compute-game-stats",
@@ -447,7 +462,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         elif args.an_cmd == "curate":
             curate.run(cfg)
         elif args.an_cmd == "combine":
-            combine.run(cfg)
+            if args.force:
+                combine.run(cfg, force=True)
+            else:
+                combine.run(cfg)
+            if args.deep_verify:
+                combine.verify_concat_ks(cfg, deep=True)
+            if args.materialize is not None:
+                combine.materialize_concat_ks(cfg, args.materialize)
         elif args.an_cmd == "metrics":
             metrics.run(cfg)
         elif args.an_cmd == "preprocess":

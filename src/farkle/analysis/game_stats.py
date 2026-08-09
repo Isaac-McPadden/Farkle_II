@@ -560,7 +560,7 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
     per_n_inputs = _discover_per_n_inputs(cfg)
     input_by_k = dict(per_n_inputs)
     input_paths: list[Path] = [p for _, p in per_n_inputs]
-    combined_path = cfg.curated_parquet
+    combined_path = cfg.combined_manifest_path()
     if combined_path.exists():
         input_paths.append(combined_path)
 

@@ -215,7 +215,12 @@ def _build_audit_index(root: Path) -> tuple[_AuditIndex, list[str]]:
 
     files = tuple(sorted(path for path in root.rglob("*") if path.is_file()))
     data_paths = tuple(path for path in files if _is_scoped_artifact(path, root))
-    sidecar_paths = tuple(path for path in files if path.name.endswith(_SIDECAR_SUFFIX))
+    sidecar_paths = tuple(
+        path
+        for path in files
+        if path.name.endswith(_SIDECAR_SUFFIX)
+        and not any(part.startswith("_") for part in path.relative_to(root).parts)
+    )
     completion_paths = tuple(
         path for path in files if path.name.endswith(".done.json") and path.parent.parent == root
     )

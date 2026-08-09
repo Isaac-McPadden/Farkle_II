@@ -18,7 +18,7 @@ an actionable replacement message and are never reinterpreted.
 | `artifact_contract` | Versions used by sidecars and freshness keys |
 | `analysis` | Root-local diagnostics, workers, output names, and rare-event settings |
 | `ingest` | Streaming parquet settings |
-| `combine` | Maximum supported player count |
+| `combine` | Maximum normalized schema width for the partitioned concat dataset |
 | `trueskill` | Root/k TrueSkill screening parameters |
 | `head2head` | Candidate cap, power, allocation, and inference settings |
 | `hgb` | Held-out predictive-association settings |
