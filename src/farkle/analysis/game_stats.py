@@ -42,7 +42,7 @@ import logging
 import math
 import re
 from collections.abc import Iterable, Mapping, Sequence
-from concurrent.futures import FIRST_EXCEPTION, Future, ProcessPoolExecutor, wait
+from concurrent.futures import FIRST_EXCEPTION, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeAlias, cast
@@ -61,9 +61,11 @@ from farkle.analysis.roll_enumeration import build_exact_roll_enumeration
 from farkle.config import AppConfig, ArtifactScope
 from farkle.utils.aggregation import normalize_k_aggregation_method
 from farkle.utils.analysis_shared import to_int
+from farkle.utils.arrow_batches import iter_parquet_tables_by_bytes
 from farkle.utils.artifact_contract import (
     ensure_artifact_sidecar_atomic,
     make_artifact_sidecar,
+    sha256_file,
     sidecar_path,
     validate_artifact_sidecar,
     write_artifact_with_sidecar_atomic,
@@ -73,9 +75,11 @@ from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     apply_native_thread_limits,
     normalize_n_jobs,
+    process_map,
     resolve_mp_context,
     resolve_stage_parallel_policy,
 )
+from farkle.utils.partitioned_stage import resolved_code_identity_sha256
 from farkle.utils.progress import ProgressLogConfig, ScheduledProgressLogger
 from farkle.utils.release_identity import is_v3_config
 from farkle.utils.schema_helpers import n_players_from_schema
@@ -109,6 +113,114 @@ _SEAT_STRATEGY_RE = re.compile(r"^P[1-9][0-9]*_strategy$")
 _COMPLETED_CONDITIONING = 'termination_status == "completed"'
 _ATTEMPTED_STRATEGY_UNIT = "seated_strategy_exposure_per_attempted_game"
 _ATTEMPTED_GAME_UNIT = "attempted_game"
+
+
+def _game_stats_batch_limits(
+    cfg: AppConfig,
+    source: Path,
+    columns: Sequence[str],
+    *,
+    k: int,
+    seat_expansion: int = 1,
+) -> tuple[int, int]:
+    """Return a source-byte ceiling that reserves space for expanded seats.
+
+    The decoded Arrow table is only one of several live representations: pandas
+    conversion, numeric score arrays, and one compact seat exposure are all
+    live while a batch is reduced.  Scale the source ceiling by ``k`` and the
+    declared expansion instead of assuming every player count has the same
+    working set.
+    """
+
+    stage_bytes = int(
+        cfg.resources.stage_batch_bytes.get(
+            "game_stats", cfg.resources.stage_batch_bytes["analysis"]
+        )
+    )
+    schema = pq.read_schema(source)
+    projected_width = 0
+    for name in columns:
+        dtype = schema.field(name).type
+        if pa.types.is_boolean(dtype):
+            projected_width += 2
+        elif pa.types.is_integer(dtype) or pa.types.is_floating(dtype):
+            projected_width += max(1, dtype.bit_width // 8) + 1
+        elif pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
+            projected_width += 64
+        else:
+            projected_width += 128
+    # Four source-sized working copies is conservative for the vectorized
+    # operations below; seat_expansion covers the per-seat reductions.
+    expanded_width = max(1, projected_width * max(1, k) * max(1, seat_expansion) * 4)
+    source_bytes = max(1, stage_bytes // max(1, k * seat_expansion * 4))
+    return source_bytes, max(1, min(65_536, stage_bytes // expanded_width))
+
+
+def _game_stats_batches(
+    cfg: AppConfig,
+    source: Path,
+    columns: Sequence[str],
+    *,
+    k: int,
+    seat_expansion: int = 1,
+) -> Iterable[pa.Table]:
+    """Yield source projections under the k-aware working-set ceiling."""
+
+    max_bytes, max_rows = _game_stats_batch_limits(
+        cfg, source, columns, k=k, seat_expansion=seat_expansion
+    )
+    for _row_group, _batch, table in iter_parquet_tables_by_bytes(
+        source,
+        columns=columns,
+        max_batch_bytes=max_bytes,
+        max_batch_rows=max_rows,
+        use_threads=False,
+    ):
+        yield table
+
+
+def _unweighted_state(acc: _UnweightedAccumulator) -> dict[str, object]:
+    return {
+        "count": acc.count,
+        "total": acc.total,
+        "total_sq": acc.total_sq,
+        "hist": [[value, count] for value, count in sorted(acc.hist.items())],
+    }
+
+
+def _unweighted_from_state(payload: Mapping[str, object]) -> _UnweightedAccumulator:
+    state = cast(dict[str, Any], payload)
+    hist = cast(list[tuple[Any, Any]], state["hist"])
+    return _UnweightedAccumulator(
+        count=int(state["count"]),
+        total=float(state["total"]),
+        total_sq=float(state["total_sq"]),
+        hist={float(value): int(count) for value, count in hist},
+    )
+
+
+def _binned_state(acc: _BinnedAccumulator) -> dict[str, object]:
+    return {
+        "count": acc.count,
+        "total": acc.total,
+        "total_sq": acc.total_sq,
+        "min_value": acc.min_value,
+        "max_value": acc.max_value,
+        "bins": [[value, count] for value, count in sorted(acc.bins.items())],
+    }
+
+
+def _binned_from_state(payload: Mapping[str, object]) -> _BinnedAccumulator:
+    state = cast(dict[str, Any], payload)
+    bins = cast(list[tuple[Any, Any]], state["bins"])
+    return _BinnedAccumulator(
+        count=int(state["count"]),
+        total=float(state["total"]),
+        total_sq=float(state["total_sq"]),
+        min_value=float(state["min_value"]),
+        max_value=float(state["max_value"]),
+        bins={int(value): int(count) for value, count in bins},
+    )
 
 
 def _seat_strategy_columns(names: Iterable[str]) -> list[str]:
@@ -152,26 +264,97 @@ def _per_k_game_stats_aggregation_marker(stage_dir: Path) -> Path:
     return stage_dir / "across_k" / "game_stats.aggregate.done.json"
 
 
-def _run_per_k_fanout(
-    futures: Sequence[Future[None]],
-) -> None:
-    """Wait for per-``k`` workers and cancel the remainder on first failure.
+@dataclass(frozen=True, slots=True)
+class _PerKGameStatsTask:
+    """Pickle-safe bounded-map payload for one independent player count."""
 
-    Args:
-        futures: Submitted futures for independent per-player-count jobs.
+    cfg: AppConfig
+    k: int
+    input_path: Path
+    stage_dir: Path
+    thresholds: tuple[int, ...]
+    config_sha: str | None
+    stage_config_sha: str
+    cache_key_version: int
+    progress_logging: ProgressLogConfig | None
+
+
+def _run_per_k_game_stats_task(task: _PerKGameStatsTask) -> None:
+    """Execute one player-count job inside the shared process-map boundary."""
+
+    _compute_k_game_stats(
+        cfg=task.cfg,
+        k=task.k,
+        input_path=task.input_path,
+        stage_dir=task.stage_dir,
+        thresholds=task.thresholds,
+        config_sha=task.config_sha,
+        stage_config_sha=task.stage_config_sha,
+        cache_key_version=task.cache_key_version,
+        progress_logging=task.progress_logging,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _RareEventShardTask:
+    """Pickle-safe bounded-map payload for one rare-event shard."""
+
+    n_players: int
+    input_path: Path
+    thresholds: tuple[int, ...]
+    target_score: int
+    strategy_arrow: pa.DataType
+    shard_path: Path
+    stats_path: Path
+    done_path: Path
+    codec: Compression
+    config_sha: str | None
+    run_config_sha: str | None
+    cache_key_version: int
+    progress_logging: ProgressLogConfig | None
+    publish_completion: bool
+    max_batch_bytes: int
+
+
+def _run_rare_event_shard_task(task: _RareEventShardTask) -> None:
+    """Execute one rare-event shard inside the shared process-map boundary."""
+
+    _build_rare_event_summary_shard(
+        n_players=task.n_players,
+        input_path=task.input_path,
+        thresholds=task.thresholds,
+        target_score=task.target_score,
+        strategy_arrow=task.strategy_arrow,
+        shard_path=task.shard_path,
+        stats_path=task.stats_path,
+        done_path=task.done_path,
+        codec=task.codec,
+        config_sha=task.config_sha,
+        run_config_sha=task.run_config_sha,
+        cache_key_version=task.cache_key_version,
+        progress_logging=task.progress_logging,
+        publish_completion=task.publish_completion,
+        max_batch_bytes=task.max_batch_bytes,
+    )
+
+
+def _run_per_k_fanout(futures: Sequence[Any]) -> None:
+    """Legacy test helper; production fan-out uses :func:`process_map`.
+
+    Keeping this tiny compatibility helper avoids reintroducing an unbounded
+    executor solely for callers that pass already-created futures.
     """
-    if not futures:
-        return
+
     pending = set(futures)
     while pending:
         done, pending = wait(pending, return_when=FIRST_EXCEPTION)
         for future in done:
-            exc = future.exception()
-            if exc is None:
-                continue
-            for pending_future in pending:
-                pending_future.cancel()
-            raise exc
+            try:
+                future.result()
+            except BaseException:
+                for remaining in pending:
+                    remaining.cancel()
+                raise
 
 
 def _strategy_arrow_type(per_n_inputs: Sequence[tuple[int, Path]]) -> pa.DataType:
@@ -452,26 +635,31 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                     progress_logging=cfg.analysis.progress_logging,
                 )
         else:
-            with ProcessPoolExecutor(
-                max_workers=min(workers, len(stale_ks)),
+            tasks = (
+                _PerKGameStatsTask(
+                    cfg=cfg,
+                    k=k,
+                    input_path=input_by_k[k],
+                    stage_dir=stage_dir,
+                    thresholds=tuple(cfg.game_stats_margin_thresholds),
+                    config_sha=cfg.config_sha,
+                    stage_config_sha=stage_config_sha,
+                    cache_key_version=cache_key_version,
+                    progress_logging=cfg.analysis.progress_logging,
+                )
+                for k in stale_ks
+            )
+            # ``process_map`` limits serialized/submitted work as well as live
+            # workers and marks children as nested-pool participants.
+            for _ in process_map(
+                _run_per_k_game_stats_task,
+                tasks,
+                n_jobs=min(workers, len(stale_ks)),
+                window=min(workers, len(stale_ks)) * cfg.resources.max_in_flight_per_worker,
                 mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
-            ) as executor:
-                futures = [
-                    executor.submit(
-                        _compute_k_game_stats,
-                        cfg=cfg,
-                        k=k,
-                        input_path=input_by_k[k],
-                        stage_dir=stage_dir,
-                        thresholds=cfg.game_stats_margin_thresholds,
-                        config_sha=cfg.config_sha,
-                        stage_config_sha=stage_config_sha,
-                        cache_key_version=cache_key_version,
-                        progress_logging=cfg.analysis.progress_logging,
-                    )
-                    for k in stale_ks
-                ]
-                _run_per_k_fanout(futures)
+                memory_guard=memory_guard,
+            ):
+                pass
         memory_guard.check_before_schedule(force=True)
 
     game_length_output = cfg.game_stats_concat_path("game_length.parquet")
@@ -570,6 +758,8 @@ def run(cfg: AppConfig, *, force: bool = False) -> None:
                 cache_key_version=cache_key_version,
                 n_workers=workers,
                 progress_logging=cfg.analysis.progress_logging,
+                mp_start_method=cfg.analysis.mp_start_method,
+                memory_guard=memory_guard,
             )
             if rare_event_rows == 0:
                 raise RuntimeError("game-stats: no rare events available to summarize")
@@ -680,6 +870,27 @@ def _compute_k_game_stats(
     if not strategy_cols:
         return
 
+    scanner_cols = ["n_rounds", "termination_status", *strategy_cols]
+    if score_cols:
+        scanner_cols.extend(score_cols)
+    batch_limits = (
+        _game_stats_batch_limits(cfg, input_path, scanner_cols, k=k, seat_expansion=k)
+        if input_path.is_file()
+        else None
+    )
+    checkpoint_identity: dict[str, object] = {
+        "checkpoint_schema_version": 2,
+        "source_sha256": sha256_file(input_path) if input_path.is_file() else None,
+        "source_sidecar_sha256": (
+            sha256_file(sidecar_path(input_path)) if sidecar_path(input_path).is_file() else None
+        ),
+        "code_identity_sha256": resolved_code_identity_sha256(cfg),
+        "stage_config_sha256": stage_config_sha,
+        "cache_key_version": cache_key_version,
+        "k": k,
+        "columns": scanner_cols,
+        "batch_limits": batch_limits,
+    }
     rounds_by_strategy: dict[Scalar, _UnweightedAccumulator] = {}
     runner_by_strategy: dict[Scalar, _BinnedAccumulator] = {}
     spread_by_strategy: dict[Scalar, _BinnedAccumulator] = {}
@@ -687,10 +898,35 @@ def _compute_k_game_stats(
     outcome_counts: dict[Scalar, list[int]] = {}
     global_completed = 0
     global_safety_limit = 0
-
-    scanner_cols = ["n_rounds", "termination_status", *strategy_cols]
-    if score_cols:
-        scanner_cols.extend(score_cols)
+    resumed_batches = 0
+    if temp_state_path.is_file():
+        try:
+            saved = json.loads(temp_state_path.read_text(encoding="utf-8"))
+            if saved.get("identity") == checkpoint_identity and not saved.get("complete", False):
+                resumed_batches = int(saved["next_batch"])
+                rounds_by_strategy = {
+                    int(key): _unweighted_from_state(value)
+                    for key, value in dict(saved["rounds_by_strategy"]).items()
+                }
+                runner_by_strategy = {
+                    int(key): _binned_from_state(value)
+                    for key, value in dict(saved["runner_by_strategy"]).items()
+                }
+                spread_by_strategy = {
+                    int(key): _binned_from_state(value)
+                    for key, value in dict(saved["spread_by_strategy"]).items()
+                }
+                outcome_counts = {
+                    int(key): [int(item) for item in value]
+                    for key, value in dict(saved["outcome_counts"]).items()
+                }
+                global_rounds = _unweighted_from_state(saved["global_rounds"])
+                global_completed = int(saved["global_completed"])
+                global_safety_limit = int(saved["global_safety_limit"])
+            elif saved.get("identity") != checkpoint_identity:
+                temp_state_path.unlink(missing_ok=True)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            temp_state_path.unlink(missing_ok=True)
     total_rows = int(ds_in.count_rows())
     progress_logger = (
         ScheduledProgressLogger(
@@ -704,8 +940,17 @@ def _compute_k_game_stats(
         else None
     )
     processed_rows = 0
-    scanner = ds_in.scanner(columns=scanner_cols, batch_size=65_536)
-    for batch_idx, batch in enumerate(scanner.to_batches(), start=1):
+    # Tests exercise the schema-only fallback with a dummy dataset. Production
+    # Parquet uses the byte-bounded path, whose ceiling shrinks with k.
+    if input_path.is_file():
+        batches: Iterable[pa.Table | pa.RecordBatch] = _game_stats_batches(
+            cfg, input_path, scanner_cols, k=k, seat_expansion=k
+        )
+    else:
+        batches = ds_in.scanner(columns=scanner_cols, batch_size=65_536).to_batches()
+    for batch_idx, batch in enumerate(batches, start=1):
+        if batch_idx <= resumed_batches:
+            continue
         df = batch.to_pandas(categories=strategy_cols)
         if df.empty:
             continue
@@ -772,11 +1017,42 @@ def _compute_k_game_stats(
                             s_acc, group["spread"].to_numpy(dtype=float, copy=False)
                         )
 
-        if batch_idx % 25 == 0:
-            with atomic_path(str(temp_state_path)) as tmp_path:
-                Path(tmp_path).write_text(
-                    json.dumps({"k": k, "batches": batch_idx}, sort_keys=True), encoding="utf-8"
+        checkpoint = {
+            "identity": checkpoint_identity,
+            "complete": False,
+            "next_batch": batch_idx,
+            "rounds_by_strategy": {
+                str(strategy): _unweighted_state(acc)
+                for strategy, acc in sorted(
+                    rounds_by_strategy.items(), key=lambda item: _strategy_key_to_int(item[0])
                 )
+            },
+            "runner_by_strategy": {
+                str(strategy): _binned_state(acc)
+                for strategy, acc in sorted(
+                    runner_by_strategy.items(), key=lambda item: _strategy_key_to_int(item[0])
+                )
+            },
+            "spread_by_strategy": {
+                str(strategy): _binned_state(acc)
+                for strategy, acc in sorted(
+                    spread_by_strategy.items(), key=lambda item: _strategy_key_to_int(item[0])
+                )
+            },
+            "outcome_counts": {
+                str(strategy): counts
+                for strategy, counts in sorted(
+                    outcome_counts.items(), key=lambda item: _strategy_key_to_int(item[0])
+                )
+            },
+            "global_rounds": _unweighted_state(global_rounds),
+            "global_completed": global_completed,
+            "global_safety_limit": global_safety_limit,
+        }
+        with atomic_path(str(temp_state_path)) as tmp_path:
+            Path(tmp_path).write_text(
+                json.dumps(checkpoint, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+            )
         if progress_logger is not None:
             progress_logger.maybe_log(
                 processed_rows,
@@ -934,6 +1210,11 @@ def _compute_k_game_stats(
         stage_config_sha=stage_config_sha,
         cache_key_version=cache_key_version,
     )
+    checkpoint["complete"] = True
+    with atomic_path(str(temp_state_path)) as tmp_path:
+        Path(tmp_path).write_text(
+            json.dumps(checkpoint, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+        )
 
 
 def _write_scoped_game_stats(
@@ -1858,6 +2139,8 @@ def _rare_event_flags(
     cache_key_version: int = 2,
     n_workers: int = 1,
     progress_logging: ProgressLogConfig | None = None,
+    mp_start_method: str | None = None,
+    memory_guard: ProcessTreeMemoryGuard | None = None,
 ) -> int:
     """Write combined per-game and summary rare-event rows to parquet."""
     if not per_n_inputs:
@@ -1910,6 +2193,38 @@ def _rare_event_flags(
             sidecar_path(shard_path).unlink(missing_ok=True)
             sidecar_path(stats_path).unlink(missing_ok=True)
         worker_count = max(1, min(len(stale_inputs), max(1, n_workers)))
+        tasks = (
+            _RareEventShardTask(
+                n_players=n_players,
+                input_path=path,
+                thresholds=tuple(thresholds),
+                target_score=target_score,
+                strategy_arrow=strategy_arrow,
+                shard_path=shard_path,
+                stats_path=stats_path,
+                done_path=done_path,
+                codec=codec,
+                config_sha=resume_sha,
+                run_config_sha=config_sha,
+                cache_key_version=cache_key_version,
+                progress_logging=progress_logging,
+                publish_completion=not is_v3_config(cfg),
+                max_batch_bytes=(
+                    max(
+                        1,
+                        int(
+                            cfg.resources.stage_batch_bytes.get(
+                                "game_stats", cfg.resources.stage_batch_bytes["analysis"]
+                            )
+                        )
+                        // (max(1, n_players) ** 2 * 4),
+                    )
+                    if cfg is not None
+                    else 16 * 1024 * 1024
+                ),
+            )
+            for n_players, path, shard_path, stats_path, done_path in stale_inputs
+        )
         if worker_count == 1:
             for n_players, path, shard_path, stats_path, done_path in stale_inputs:
                 _build_rare_event_summary_shard(
@@ -1927,30 +2242,30 @@ def _rare_event_flags(
                     cache_key_version=cache_key_version,
                     progress_logging=progress_logging,
                     publish_completion=not is_v3_config(cfg),
+                    max_batch_bytes=(
+                        max(
+                            1,
+                            int(
+                                cfg.resources.stage_batch_bytes.get(
+                                    "game_stats", cfg.resources.stage_batch_bytes["analysis"]
+                                )
+                            )
+                            // (max(1, n_players) ** 2 * 4),
+                        )
+                        if cfg is not None
+                        else 16 * 1024 * 1024
+                    ),
                 )
         else:
-            with ProcessPoolExecutor(max_workers=worker_count) as executor:
-                futures = [
-                    executor.submit(
-                        _build_rare_event_summary_shard,
-                        n_players=n_players,
-                        input_path=path,
-                        thresholds=thresholds,
-                        target_score=target_score,
-                        strategy_arrow=strategy_arrow,
-                        shard_path=shard_path,
-                        stats_path=stats_path,
-                        done_path=done_path,
-                        codec=codec,
-                        config_sha=resume_sha,
-                        run_config_sha=config_sha,
-                        cache_key_version=cache_key_version,
-                        progress_logging=progress_logging,
-                        publish_completion=not is_v3_config(cfg),
-                    )
-                    for n_players, path, shard_path, stats_path, done_path in stale_inputs
-                ]
-                _run_per_k_fanout(futures)
+            for _ in process_map(
+                _run_rare_event_shard_task,
+                tasks,
+                n_jobs=worker_count,
+                window=worker_count * (cfg.resources.max_in_flight_per_worker if cfg else 1),
+                mp_context=resolve_mp_context(mp_start_method),
+                memory_guard=memory_guard,
+            ):
+                pass
 
     strategy_sums: dict[tuple[int, int], dict[str, int]] = {}
     global_sums: dict[int, dict[str, int]] = {}
@@ -2411,6 +2726,7 @@ def _build_rare_event_summary_shard(
     cache_key_version: int,
     progress_logging: ProgressLogConfig | None = None,
     publish_completion: bool = True,
+    max_batch_bytes: int = 16 * 1024 * 1024,
 ) -> None:
     """Build one player-count rare-event shard and its summary counters.
 
@@ -2483,10 +2799,22 @@ def _build_rare_event_summary_shard(
                 else None
             )
             processed_rows = 0
-            scanner = ds_in.scanner(
-                columns=["termination_status", *strategy_cols, *score_cols], batch_size=65_536
-            )
-            for batch_idx, batch in enumerate(scanner.to_batches(), start=1):
+            columns = ["termination_status", *strategy_cols, *score_cols]
+            batches: Iterable[pa.Table | pa.RecordBatch]
+            if input_path.is_file():
+                batches = (
+                    table
+                    for _row_group, _batch, table in iter_parquet_tables_by_bytes(
+                        input_path,
+                        columns=columns,
+                        max_batch_bytes=max_batch_bytes,
+                        max_batch_rows=max(1, max_batch_bytes // max(1, n_players * 32)),
+                        use_threads=False,
+                    )
+                )
+            else:
+                batches = ds_in.scanner(columns=columns, batch_size=65_536).to_batches()
+            for batch_idx, batch in enumerate(batches, start=1):
                 df = batch.to_pandas(categories=strategy_cols)
                 if df.empty:
                     continue

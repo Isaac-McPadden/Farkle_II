@@ -365,6 +365,8 @@ def _hash_file(path: Path) -> str:
 def test_run_writes_per_k_outputs_and_is_idempotent_for_multi_k(tmp_path: Path) -> None:
     k_values = [2, 3]
     cfg = _cfg(tmp_path, player_counts=tuple(k_values), root_seed=123)
+    cfg.analysis.n_jobs = 2
+    assign_config_sha(cfg)
     _write_multi_k_curated_inputs(cfg)
 
     game_stats.run(cfg)

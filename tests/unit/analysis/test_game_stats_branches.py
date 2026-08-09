@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
@@ -377,7 +378,12 @@ def test_compute_k_game_stats_handles_no_strategy_and_checkpoint_paths(
         ".checkpoint.json"
     )
     assert checkpoint_path.exists()
-    assert checkpoint_path.read_text(encoding="utf-8") == '{"batches": 25, "k": 2}'
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint["complete"] is True
+    assert checkpoint["next_batch"] == 26
+    assert checkpoint["identity"]["k"] == 2
+    assert checkpoint["identity"]["source_sha256"] is None
+    assert checkpoint["global_rounds"]["count"] == 25
     assert artifact_writes == [stage_dir / "by_k" / "2p" / "game_stats.2p.parquet"]
     assert stage_done_calls == [stage_dir / "by_k" / "2p" / "game_stats.2p.done.json"]
     assert progress_calls[-1] == 25
@@ -422,3 +428,111 @@ def test_low_level_stat_helper_edge_case_branches() -> None:
     )
     assert game_stats._quantile_from_binned(corrupt_binned, 0.9) == 50.0
     assert np.isnan(game_stats._probability_le_from_binned(binned, float("nan")))
+
+
+def test_per_k_checkpoint_recovers_exactly_after_interruption(tmp_path: Path) -> None:
+    """A saved accumulator resumes at a canonical batch boundary exactly."""
+
+    cfg = _make_run_cfg(tmp_path, n_players_list=[2])
+    cfg.resources.stage_batch_bytes["game_stats"] = 2_048
+    assign_config_sha(cfg)
+    source = cfg.ingested_rows_curated(2)
+    table = pa.table(
+        {
+            "termination_status": ["completed", "completed"],
+            "n_rounds": [3, 7],
+            "P1_strategy": pa.array([1, 1], type=pa.int32()),
+            "P2_strategy": pa.array([2, 2], type=pa.int32()),
+            "P1_score": [100, 150],
+            "P2_score": [90, 80],
+        }
+    )
+    publish_v3_parquet(
+        cfg,
+        source,
+        table,
+        stage_key="curate",
+        producer="curate",
+        operation="curate_game_rows",
+        source_scope="by_k",
+    )
+    stage_dir = cfg.game_stats_stage_dir
+
+    original = game_stats._compute_margin_columns
+    calls = 0
+
+    def interrupt_after_first(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise RuntimeError("forced interruption")
+        return original(*args, **kwargs)
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(game_stats, "_compute_margin_columns", interrupt_after_first)
+    with pytest.raises(RuntimeError, match="forced interruption"):
+        game_stats._compute_k_game_stats(
+            cfg=cfg,
+            k=2,
+            input_path=source,
+            stage_dir=stage_dir,
+            thresholds=(10,),
+            config_sha=cfg.config_sha,
+            stage_config_sha=cfg.stage_config_sha("game_stats"),
+            cache_key_version=cfg.stage_cache_key_version("game_stats"),
+        )
+    monkeypatch.undo()
+
+    checkpoint_path = (stage_dir / "by_k" / "2p" / "game_stats.2p.parquet").with_suffix(
+        ".checkpoint.json"
+    )
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint["complete"] is False
+    assert checkpoint["next_batch"] == 1
+
+    kwargs = {
+        "cfg": cfg,
+        "k": 2,
+        "input_path": source,
+        "stage_dir": stage_dir,
+        "thresholds": (10,),
+        "config_sha": cfg.config_sha,
+        "stage_config_sha": cfg.stage_config_sha("game_stats"),
+        "cache_key_version": cfg.stage_cache_key_version("game_stats"),
+    }
+    game_stats._compute_k_game_stats(**kwargs)
+    resumed = pd.read_parquet(stage_dir / "by_k" / "2p" / "game_stats.2p.parquet")
+
+    checkpoint_path.unlink()
+    (stage_dir / "by_k" / "2p" / "game_stats.2p.parquet").unlink()
+    game_stats._compute_k_game_stats(**kwargs)
+    fresh = pd.read_parquet(stage_dir / "by_k" / "2p" / "game_stats.2p.parquet")
+    pd.testing.assert_frame_equal(resumed, fresh)
+
+
+def test_k_aware_batch_ceiling_shrinks_for_expanded_seat_working_set(tmp_path: Path) -> None:
+    cfg = _make_run_cfg(tmp_path, n_players_list=[2, 6])
+    source = tmp_path / "rows.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "termination_status": ["completed"],
+                "n_rounds": [1],
+                **{
+                    f"P{seat}_{field}": [seat]
+                    for seat in range(1, 7)
+                    for field in ("strategy", "score")
+                },
+            }
+        ),
+        source,
+    )
+    columns = pq.read_schema(source).names
+    k2_bytes, k2_rows = game_stats._game_stats_batch_limits(
+        cfg, source, columns, k=2, seat_expansion=2
+    )
+    k6_bytes, k6_rows = game_stats._game_stats_batch_limits(
+        cfg, source, columns, k=6, seat_expansion=6
+    )
+    assert k6_bytes < k2_bytes
+    assert k6_rows < k2_rows
