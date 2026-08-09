@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import numpy as np
 import pandas as pd
@@ -38,7 +38,9 @@ from farkle.utils.authenticated_contract import (
     CodeIdentityPolicy,
     resolve_code_identity,
 )
+from farkle.utils.parallel import apply_native_thread_limits, resolve_stage_parallel_policy
 from farkle.utils.random import RandomPurpose, coordinate_rng, coordinate_seed_sequence
+from farkle.utils.stage_completion import stage_done_path, stage_is_up_to_date, write_stage_done
 from farkle.utils.strategy_ids import canonical_strategy_ids, require_strategy_id_field
 
 if TYPE_CHECKING:
@@ -496,6 +498,15 @@ def run_hgb(
     max_depth = cfg.hgb.max_depth
     max_iter = cfg.hgb.n_estimators
     proposal_limit = cfg.hgb.future_proposal_limit
+    # sklearn may delegate histogram construction to OpenMP/BLAS.  Keep that
+    # native work inside the shared process-level budget even for the serial
+    # per-cell fitting path below.
+    parallel_policy = resolve_stage_parallel_policy(
+        "analysis",
+        cfg.analysis,
+        resources=cfg.resources,
+    )
+    apply_native_thread_limits(parallel_policy)
     if manifest_path is None or not Path(manifest_path).exists():
         raise FileNotFoundError("HGB requires the canonical strategy manifest")
     manifest = pd.read_parquet(manifest_path)
@@ -517,6 +528,7 @@ def run_hgb(
             "seed": seed,
             "metrics_paths": [str(path) for path in metrics_paths],
             "evaluation": "heldout_strategy_configurations",
+            "native_threads_per_process": parallel_policy.native_threads_per_process,
         },
     )
 
@@ -535,64 +547,42 @@ def run_hgb(
             context=str(path),
         )
     source_artifacts = [*source_metrics, Path(manifest_path)]
-    metrics = pd.concat([pd.read_parquet(path) for path in source_metrics], ignore_index=True)
-    metrics = metrics.copy()
-    if "strategy" in metrics.columns:
-        metrics["strategy"] = coerce_strategy_ids(metrics["strategy"])
-    raw_players: set[int] = set()
-    if "n_players" in metrics.columns:
-        raw_players.update(int(p) for p in metrics["n_players"].dropna().astype(int).unique())
-        metrics.rename(columns={"n_players": "players"}, inplace=True)
-    if "k" in metrics.columns:
-        raw_players.update(int(p) for p in metrics["k"].dropna().astype(int).unique())
-        if "players" not in metrics.columns:
-            metrics.rename(columns={"k": "players"}, inplace=True)
-    if "players" not in metrics.columns:
-        metrics["players"] = 0
-    raw_players.update(int(p) for p in metrics["players"].dropna().astype(int).unique())
-    metrics["players"] = metrics["players"].fillna(0).astype(int)
-
-    if "win_rate" not in metrics.columns:
-        raise ValueError("metrics parquet missing win_rate column required for HGB regression")
-
-    data = metrics
-
-    feature_frame = _parse_strategy_features(data["strategy"], manifest=manifest)
-    if feature_frame.empty:
-        LOGGER.warning(
-            "HGB regression skipped: no strategies produced features",
-            extra={"stage": "hgb"},
-        )
-        return
-
     feature_cols = [name for name, _dtype in FEATURE_SPECS]
-    expected_strategy_support = {int(value) for value in data["strategy"]}
-    if {int(value) for value in feature_frame.index} != expected_strategy_support:
-        raise ValueError("HGB feature support differs from canonical performance support")
-    if data.duplicated(subset=["strategy", "players"]).any():
-        raise ValueError("HGB performance input contains duplicate strategy/k rows")
-    data = data.join(feature_frame, on="strategy", how="inner")
-    if len(data) != len(metrics) or {int(value) for value in data["strategy"]} != (
-        expected_strategy_support
-    ):
-        raise ValueError("HGB feature join dropped canonical strategy support")
-    data = data.reset_index(drop=True)
-    if data.empty:
-        LOGGER.warning(
-            "HGB regression skipped: no rows after feature join",
-            extra={"stage": "hgb"},
-        )
-        return
-
-    metrics_players = (
-        sorted(raw_players) if raw_players else sorted({int(p) for p in data["players"].unique()})
-    )
+    metric_cells: list[tuple[int, pd.DataFrame, list[Path]]] = []
+    seen_players: set[int] = set()
+    for path in source_metrics:
+        # Canonical compact performance artifacts are read one at a time and
+        # projected to the only columns used by HGB.  Keeping a single cell in
+        # memory avoids an all-k pandas concatenation and its object copies.
+        schema_names = set(pq.read_schema(path).names)
+        required = {"strategy", "win_rate"}
+        if not required <= schema_names:
+            raise ValueError("metrics parquet missing strategy/win_rate columns required for HGB")
+        player_column = "n_players" if "n_players" in schema_names else "k"
+        columns = ["strategy", "win_rate"]
+        if player_column in schema_names:
+            columns.append(player_column)
+        cell_frame = pq.read_table(path, columns=columns).to_pandas()
+        if player_column not in cell_frame:
+            raise ValueError("canonical HGB performance artifact must declare k or n_players")
+        cell_frame = cell_frame.rename(columns={player_column: "players"})
+        cell_frame["strategy"] = coerce_strategy_ids(cell_frame["strategy"])
+        cell_frame["players"] = cell_frame["players"].astype(int)
+        for players, subset in cell_frame.groupby("players", sort=True, observed=True):
+            player_count = int(cast(Any, players))
+            if player_count in seen_players:
+                raise ValueError("HGB requires one canonical compact performance artifact per k")
+            seen_players.add(player_count)
+            metric_cells.append(
+                (player_count, subset.reset_index(drop=True), [path, Path(manifest_path)])
+            )
+    metric_cells.sort(key=lambda item: item[0])
+    metrics_players = [players for players, _subset, _sources in metric_cells]
     importance_summary: dict[str, dict[str, float]] = {}
     collected_frames: list[pd.DataFrame] = []
     collected_proposals: list[pd.DataFrame] = []
 
-    for players in metrics_players:
-        subset = data[data["players"] == players].copy()
+    for players, subset, cell_sources in metric_cells:
         subset["strategy"] = coerce_strategy_ids(subset["strategy"])
         per_player_dir = cfg.hgb_per_k_dir(players)
         per_player_dir.mkdir(parents=True, exist_ok=True)
@@ -605,6 +595,19 @@ def run_hgb(
                 f"HGB requires finite-grid performance rows for configured k={players}"
             )
 
+        feature_frame = _parse_strategy_features(subset["strategy"], manifest=manifest)
+        expected_strategy_support = {int(value) for value in subset["strategy"]}
+        if {int(value) for value in feature_frame.index} != expected_strategy_support:
+            raise ValueError("HGB feature support differs from canonical performance support")
+        if subset.duplicated(subset=["strategy", "players"]).any():
+            raise ValueError("HGB performance input contains duplicate strategy/k rows")
+        subset = subset.join(feature_frame, on="strategy", how="inner")
+        if (
+            len(subset) != len(expected_strategy_support)
+            or {int(value) for value in subset["strategy"]} != expected_strategy_support
+        ):
+            raise ValueError("HGB feature join dropped canonical strategy support")
+
         features = subset[feature_cols].astype(np.float32)
         target = subset["win_rate"].astype(np.float32)
 
@@ -614,56 +617,91 @@ def run_hgb(
                 f"configurations for k={players}; found {len(subset)}"
             )
 
-        heldout = _heldout_strategy_evaluation(
-            players=players,
-            subset=subset,
-            feature_cols=feature_cols,
-            root_seed=seed,
-            requested_folds=heldout_folds,
-            permutation_repeats=permutation_repeats,
-            max_depth=max_depth,
-            max_iter=max_iter,
-        )
+        cell_outputs = [importance_path, predictions_path, fold_metrics_path]
+        cell_done = stage_done_path(per_player_dir, f"hgb_{players}p")
+        cell_freshness = {
+            "hgb_method_version": 2,
+            "fold_unit": "whole_strategy_configuration",
+            "players": players,
+            "heldout_folds": heldout_folds,
+            "permutation_repeats": permutation_repeats,
+            "max_depth": max_depth,
+            "max_iter": max_iter,
+        }
+        if stage_is_up_to_date(
+            cell_done,
+            inputs=cell_sources,
+            outputs=cell_outputs,
+            cfg=cfg,
+            stage="hgb",
+            freshness_key=cell_freshness,
+            sidecar_artifacts=cell_outputs,
+        ):
+            heldout = HeldoutEvaluation(
+                importance=pd.read_parquet(importance_path),
+                predictions=pd.read_parquet(predictions_path),
+                fold_metrics=pd.read_parquet(fold_metrics_path),
+            )
+        else:
+            heldout = _heldout_strategy_evaluation(
+                players=players,
+                subset=subset,
+                feature_cols=feature_cols,
+                root_seed=seed,
+                requested_folds=heldout_folds,
+                permutation_repeats=permutation_repeats,
+                max_depth=max_depth,
+                max_iter=max_iter,
+            )
+            _write_hgb_frame(
+                importance_path,
+                heldout.importance,
+                cfg=cfg,
+                source_artifacts=cell_sources,
+                players=[players],
+                scope="by_k",
+                operation="heldout_permutation_importance",
+                conditioning="finite_grid_predictive_association_not_causal",
+                grouping_keys=["players", "feature"],
+                weighted_quantity="heldout_permutation_association_importance",
+                code_revision=code_revision,
+            )
+            _write_hgb_frame(
+                predictions_path,
+                heldout.predictions,
+                cfg=cfg,
+                source_artifacts=cell_sources,
+                players=[players],
+                scope="by_k",
+                operation="heldout_prediction",
+                conditioning="finite_grid_predictive_association_not_causal",
+                grouping_keys=["players", "fold", "strategy"],
+                weighted_quantity="heldout_predicted_win_rate",
+                code_revision=code_revision,
+            )
+            _write_hgb_frame(
+                fold_metrics_path,
+                heldout.fold_metrics,
+                cfg=cfg,
+                source_artifacts=cell_sources,
+                players=[players],
+                scope="by_k",
+                operation="heldout_fold_diagnostics",
+                conditioning="finite_grid_predictive_association_not_causal",
+                grouping_keys=["players", "fold"],
+                weighted_quantity="heldout_predictive_error",
+                code_revision=code_revision,
+            )
+            write_stage_done(
+                cell_done,
+                inputs=cell_sources,
+                outputs=cell_outputs,
+                cfg=cfg,
+                stage="hgb",
+                freshness_key=cell_freshness,
+                sidecar_artifacts=cell_outputs,
+            )
         importance_df = heldout.importance
-        _write_hgb_frame(
-            importance_path,
-            importance_df,
-            cfg=cfg,
-            source_artifacts=source_artifacts,
-            players=[players],
-            scope="by_k",
-            operation="heldout_permutation_importance",
-            conditioning="finite_grid_predictive_association_not_causal",
-            grouping_keys=["players", "feature"],
-            weighted_quantity="heldout_permutation_association_importance",
-            code_revision=code_revision,
-        )
-        _write_hgb_frame(
-            predictions_path,
-            heldout.predictions,
-            cfg=cfg,
-            source_artifacts=source_artifacts,
-            players=[players],
-            scope="by_k",
-            operation="heldout_prediction",
-            conditioning="finite_grid_predictive_association_not_causal",
-            grouping_keys=["players", "fold", "strategy"],
-            weighted_quantity="heldout_predicted_win_rate",
-            code_revision=code_revision,
-        )
-        _write_hgb_frame(
-            fold_metrics_path,
-            heldout.fold_metrics,
-            cfg=cfg,
-            source_artifacts=source_artifacts,
-            players=[players],
-            scope="by_k",
-            operation="heldout_fold_diagnostics",
-            conditioning="finite_grid_predictive_association_not_causal",
-            grouping_keys=["players", "fold"],
-            weighted_quantity="heldout_predictive_error",
-            code_revision=code_revision,
-        )
         association_values = importance_df.set_index("feature")["association_importance_mean"]
         importance_summary[f"{players}p"] = {
             str(feature): float(value) for feature, value in association_values.items()

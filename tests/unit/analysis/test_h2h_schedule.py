@@ -708,6 +708,41 @@ def test_engine_block_oracle_excludes_safety_attempt_and_uses_replacement_coordi
     assert completed["completion_status"] == "complete"
 
 
+def test_worker_initializer_caches_immutable_strategy_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A worker parses the immutable strategy artifact once, not once per chunk."""
+
+    manifest = pd.DataFrame({"strategy_id": pd.array([1, 2], dtype="Int32")})
+    reads: list[Path] = []
+    observed_manifests: list[pd.DataFrame] = []
+
+    def fake_read(path: Path) -> pd.DataFrame:
+        reads.append(path)
+        return manifest
+
+    monkeypatch.setattr(h2h_schedule_module.pd, "read_parquet", fake_read)
+    monkeypatch.setattr(h2h_schedule_module, "apply_native_thread_limits", lambda _policy: None)
+    monkeypatch.setattr(
+        h2h_schedule_module,
+        "_simulate_block_from_manifest",
+        lambda block, cached_manifest, _chunk, _profile: (
+            observed_manifests.append(cached_manifest) or dict(block)
+        ),
+    )
+    h2h_schedule_module._H2H_WORKER_MANIFEST = None
+    h2h_schedule_module._H2H_WORKER_MANIFEST_PATH = None
+    h2h_schedule_module._initialize_h2h_worker(Path("canonical.parquet"), None, object())
+    h2h_schedule_module._initialize_h2h_worker(Path("canonical.parquet"), None, object())
+
+    block = {"block_id": "first"}
+    assert h2h_schedule_module._simulate_cached_block((block, 10)) == (block, block)
+    assert h2h_schedule_module._simulate_cached_block((block, 10)) == (block, block)
+    assert reads == [Path("canonical.parquet")]
+    assert len(observed_manifests) == 2
+    assert all(observed is manifest for observed in observed_manifests)
+
+
 def test_large_h2h_execution_throttles_execution_state_rewrites(tmp_path: Path) -> None:
     cfg = _cfg(tmp_path)
     _write_frozen_family(cfg, strategies=tuple(range(8)))

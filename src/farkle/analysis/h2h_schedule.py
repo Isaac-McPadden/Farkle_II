@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
+import time
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from dataclasses import dataclass
 from functools import lru_cache
 from itertools import combinations
@@ -29,6 +30,7 @@ from farkle.utils.artifact_contract import (
     H2HMethodContract,
     make_artifact_sidecar,
     sha256_file,
+    sidecar_path,
     validate_artifact_sidecar,
 )
 from farkle.utils.artifacts import (
@@ -40,6 +42,8 @@ from farkle.utils.authenticated_contract import load_authenticated_sidecar
 from farkle.utils.parallel import (
     ProcessTreeMemoryGuard,
     apply_native_thread_limits,
+    process_map,
+    resolve_mp_context,
     resolve_stage_parallel_policy,
 )
 from farkle.utils.random import RNG_SCHEME_VERSION, RandomPurpose, coordinate_seed
@@ -61,6 +65,13 @@ H2H_CONDITIONING: Final = (
 )
 _EXECUTION_STATE_CHECKPOINT_BLOCKS: Final = 100
 _TERMINAL_BLOCK_STATUSES: Final = {"complete", "unresolved_nonviable"}
+
+# The immutable strategy table is deliberately initialized once per child.  A
+# block is a semantic RNG coordinate, so caching this parsed input changes
+# neither the game schedule nor a resumed attempt prefix.
+_H2H_WORKER_MANIFEST: pd.DataFrame | None = None
+_H2H_WORKER_PROFILE: GameProfile | None = None
+_H2H_WORKER_MANIFEST_PATH: Path | None = None
 
 
 def h2h_method_contract(
@@ -1069,15 +1080,14 @@ def _block_progress(
     }
 
 
-def _simulate_block(
+def _simulate_block_from_manifest(
     block: dict[str, Any],
-    strategy_manifest_path: Path,
+    manifest: pd.DataFrame,
     chunk_games: int,
     oracle_game_profile: GameProfile | None = None,
 ) -> dict[str, Any]:
-    """Advance one root/order block by at most ``chunk_games`` attempts."""
+    """Advance one root/order block using an already parsed immutable manifest."""
 
-    manifest = pd.read_parquet(strategy_manifest_path)
     strategy1 = parse_strategy_identifier(
         block["seat1_strategy"],
         manifest=manifest,
@@ -1094,7 +1104,6 @@ def _simulate_block(
     wins_seat1 = int(block.get("wins_seat1", 0))
     wins_seat2 = int(block.get("wins_seat2", 0))
     stop = min(max_attempts, games_attempted + chunk_games)
-    rows: list[dict[str, Any]] = []
     for attempt_index in range(games_attempted, stop):
         if games_completed >= target:
             break
@@ -1141,16 +1150,23 @@ def _simulate_block(
                 target_score=limits.target_score,
                 max_rounds=limits.max_rounds,
             )
-        rows.append(dict(_play_game(game_seed, [strategy1, strategy2], **play_kwargs)))
-        if rows[-1]["termination_status"] == "completed":
+        outcome = _play_game(game_seed, [strategy1, strategy2], **play_kwargs)
+        games_attempted += 1
+        if outcome["termination_status"] == "completed":
             games_completed += 1
-    if rows:
-        frame = pd.DataFrame(rows)
-        first, second, safety = _winner_seat_counts(frame)
-        wins_seat1 += first
-        wins_seat2 += second
-        games_safety_limit += safety
-        games_attempted += len(rows)
+            winner = outcome.get("winner_seat")
+            if winner == "P1":
+                wins_seat1 += 1
+            elif winner == "P2":
+                wins_seat2 += 1
+            else:
+                raise ValueError("completed H2H game has no valid winner seat")
+        elif outcome["termination_status"] == "safety_limit":
+            games_safety_limit += 1
+        else:
+            raise ValueError(
+                f"H2H game has unsupported termination status: {outcome['termination_status']!r}"
+            )
     return _block_progress(
         block,
         games_attempted=games_attempted,
@@ -1161,12 +1177,72 @@ def _simulate_block(
     )
 
 
+def _simulate_block(
+    block: dict[str, Any],
+    strategy_manifest_path: Path,
+    chunk_games: int,
+    oracle_game_profile: GameProfile | None = None,
+) -> dict[str, Any]:
+    """Advance one block directly; retained for single-process callers and tests."""
+
+    return _simulate_block_from_manifest(
+        block,
+        pd.read_parquet(strategy_manifest_path),
+        chunk_games,
+        oracle_game_profile,
+    )
+
+
+def _initialize_h2h_worker(
+    strategy_manifest_path: Path,
+    oracle_game_profile: GameProfile | None,
+    policy: Any,
+) -> None:
+    """Load one immutable manifest per worker before processing any blocks."""
+
+    global _H2H_WORKER_MANIFEST, _H2H_WORKER_MANIFEST_PATH, _H2H_WORKER_PROFILE
+    apply_native_thread_limits(policy)
+    if _H2H_WORKER_MANIFEST is None or strategy_manifest_path != _H2H_WORKER_MANIFEST_PATH:
+        _H2H_WORKER_MANIFEST = pd.read_parquet(strategy_manifest_path)
+        _H2H_WORKER_MANIFEST_PATH = strategy_manifest_path
+    _H2H_WORKER_PROFILE = oracle_game_profile
+
+
+def _simulate_cached_block(
+    task: tuple[dict[str, Any], int],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Run one bounded chunk against worker-initialized immutable state."""
+
+    block, chunk_games = task
+    if _H2H_WORKER_MANIFEST is None:
+        raise RuntimeError("H2H worker manifest cache was not initialized")
+    return (
+        block,
+        _simulate_block_from_manifest(
+            block,
+            _H2H_WORKER_MANIFEST,
+            chunk_games,
+            _H2H_WORKER_PROFILE,
+        ),
+    )
+
+
 def _block_path(cfg: AppConfig, block: Mapping[str, Any]) -> Path:
     return cfg.h2h_block_result_path(
         int(block["pair_id"]),
         int(block["root_seed"]),
         int(block["order"]),
     )
+
+
+def _quarantine_new_h2h_aggregate(cfg: AppConfig, output: Path) -> None:
+    """Retain a newly written aggregate for diagnosis after a sticky RSS abort."""
+
+    quarantine = cfg.h2h_2p_dir("h2h_execute") / "quarantine"
+    quarantine.mkdir(parents=True, exist_ok=True)
+    for candidate in (output, sidecar_path(output)):
+        if candidate.exists():
+            os.replace(candidate, quarantine / f"{time.time_ns()}_{candidate.name}")
 
 
 def _read_authenticated_block(path: Path, block: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -1595,25 +1671,25 @@ def execute_h2h_schedule(
     memory_guard.check_before_schedule(force=True)
     if block_runner is not _simulate_block and worker_count != 1:
         raise ValueError("custom H2H block runners require n_jobs=1")
-    if worker_count == 1:
-        for block in pending:
-            memory_guard.check_before_schedule()
-            current = block
-            while True:
-                raw_result = (
-                    _simulate_block(
-                        current,
-                        manifest_path,
-                        chunk_games,
-                        oracle_game_profile,
-                    )
-                    if block_runner is _simulate_block
-                    else block_runner(current, manifest_path, chunk_games)
-                )
-                result = _normalize_runner_result(
-                    current,
-                    raw_result,
-                )
+    if block_runner is _simulate_block and pending:
+        # ``process_map`` is the shared bounded-submission policy.  Process
+        # workers receive the inherited Step 5.5 Job/cgroup boundary before
+        # this initializer loads the manifest or allocates model state.
+        active_chunks = pending
+        while active_chunks:
+            next_chunks: list[dict[str, Any]] = []
+            tasks = ((block, chunk_games) for block in active_chunks)
+            for previous, raw_result in process_map(
+                _simulate_cached_block,
+                tasks,
+                n_jobs=min(worker_count, len(active_chunks)),
+                initializer=_initialize_h2h_worker,
+                initargs=(manifest_path, oracle_game_profile, policy),
+                window=worker_count * cfg.resources.max_in_flight_per_worker,
+                mp_context=resolve_mp_context(cfg.analysis.mp_start_method),
+                memory_guard=memory_guard,
+            ):
+                result = _normalize_runner_result(previous, raw_result)
                 _write_block(
                     cfg,
                     result,
@@ -1621,66 +1697,36 @@ def execute_h2h_schedule(
                     roots=roots,
                 )
                 if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
+                    completed_block_count += 1
+                    checkpoint_execution_state()
+                else:
+                    next_chunks.append(result)
+            # Canonical submission order is independent of the order in which
+            # worker futures completed.
+            active_chunks = sorted(
+                next_chunks,
+                key=lambda item: (
+                    int(item["pair_id"]),
+                    int(item["root_index"]),
+                    int(item["order"]),
+                ),
+            )
+    elif pending:
+        # Custom runners are intentionally serial test/instrumentation hooks.
+        for block in pending:
+            current = block
+            while True:
+                memory_guard.check_before_schedule()
+                result = _normalize_runner_result(
+                    current,
+                    block_runner(current, manifest_path, chunk_games),
+                )
+                _write_block(cfg, result, schedule_path=schedule_path, roots=roots)
+                if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
+                    completed_block_count += 1
+                    checkpoint_execution_state()
                     break
                 current = result
-            completed_block_count += 1
-            checkpoint_execution_state()
-    elif pending:
-        with ProcessPoolExecutor(max_workers=min(worker_count, len(pending))) as executor:
-            iterator = iter(pending)
-            active: dict[Future[dict[str, Any]], dict[str, Any]] = {}
-
-            def submit_one() -> bool:
-                memory_guard.check_before_schedule()
-                try:
-                    block = next(iterator)
-                except StopIteration:
-                    return False
-                if block_runner is _simulate_block:
-                    future = executor.submit(
-                        _simulate_block,
-                        block,
-                        manifest_path,
-                        chunk_games,
-                        oracle_game_profile,
-                    )
-                else:
-                    future = executor.submit(block_runner, block, manifest_path, chunk_games)
-                active[future] = block
-                return True
-
-            submission_window = worker_count * cfg.resources.max_in_flight_per_worker
-            for _ in range(min(len(pending), submission_window)):
-                submit_one()
-            while active:
-                finished, _ = wait(active, return_when=FIRST_COMPLETED)
-                for future in finished:
-                    block = active.pop(future)
-                    result = _normalize_runner_result(block, future.result())
-                    _write_block(
-                        cfg,
-                        result,
-                        schedule_path=schedule_path,
-                        roots=roots,
-                    )
-                    if str(result["completion_status"]) in _TERMINAL_BLOCK_STATUSES:
-                        completed_block_count += 1
-                        checkpoint_execution_state()
-                        submit_one()
-                    else:
-                        if block_runner is _simulate_block:
-                            next_future = executor.submit(
-                                _simulate_block,
-                                result,
-                                manifest_path,
-                                chunk_games,
-                                oracle_game_profile,
-                            )
-                        else:
-                            next_future = executor.submit(
-                                block_runner, result, manifest_path, chunk_games
-                            )
-                        active[next_future] = result
 
     completed_records: list[dict[str, Any]] = []
     for record, path in zip(records, block_paths, strict=True):
@@ -1690,6 +1736,7 @@ def execute_h2h_schedule(
         ):
             raise RuntimeError(f"scheduled H2H block did not complete: {path}")
         completed_records.append(block_row)
+    memory_guard.check_before_schedule(force=True)
     combined = pd.DataFrame(completed_records).sort_values(
         ["pair_id", "root_index", "order"], kind="mergesort"
     )
@@ -1731,6 +1778,13 @@ def execute_h2h_schedule(
         sidecar=sidecar,
         codec=cfg.parquet_codec,
     )
+    try:
+        # The guard is sticky: a short-lived child spike is still fatal even
+        # when this final parent-side sample is below the threshold.
+        memory_guard.check_before_schedule(force=True)
+    except Exception:
+        _quarantine_new_h2h_aggregate(cfg, output)
+        raise
     _write_execution_state(
         cfg,
         plan,
