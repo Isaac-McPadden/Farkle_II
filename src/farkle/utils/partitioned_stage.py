@@ -14,6 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, TypeAlias
 
 from farkle.config import ResourcesConfig
+from farkle.utils.artifact_contract import ArtifactSidecar, publish_staged_artifact_with_sidecar
 from farkle.utils.authenticated_contract import (
     CodeIdentityPolicy,
     identity_sha256,
@@ -32,6 +33,9 @@ from farkle.utils.parallel import (
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 UnitCoordinate: TypeAlias = int | str
 UnitWriter: TypeAlias = Callable[["PartitionedUnit", Path], None]
+UnitSidecarFactory: TypeAlias = Callable[["PartitionedUnit", Path], ArtifactSidecar | None]
+UnitPostPublisher: TypeAlias = Callable[["PartitionedUnit", Path], None]
+UnitValidator: TypeAlias = Callable[["PartitionedUnit", Path], bool]
 
 
 class PartitionedStageError(RuntimeError):
@@ -185,13 +189,17 @@ class _UnitTask:
     identity: PartitionedStageIdentity
     writer: UnitWriter
     policy: StageParallelPolicy
+    output_prefix: str
+    sidecar_factory: UnitSidecarFactory | None
+    post_publisher: UnitPostPublisher | None
+    validator: UnitValidator | None
 
 
-def _output_path(root: Path, unit: PartitionedUnit) -> Path:
+def _output_path(root: Path, unit: PartitionedUnit, *, output_prefix: str = "units") -> Path:
     # ``PartitionedUnit`` already rejects absolute and parent-traversal paths.
     # Avoid resolving not-yet-created OneDrive paths: Windows providers can
     # transiently return differently cased aliases in concurrent children.
-    return root / "units" / Path(unit.relative_output)
+    return root / output_prefix / Path(unit.relative_output)
 
 
 def _stamp_path(output: Path) -> Path:
@@ -227,8 +235,11 @@ def _validate_unit(
     root: Path,
     unit: PartitionedUnit,
     identity: PartitionedStageIdentity,
+    *,
+    output_prefix: str = "units",
+    validator: UnitValidator | None = None,
 ) -> dict[str, Any] | None:
-    output = _output_path(root, unit)
+    output = _output_path(root, unit, output_prefix=output_prefix)
     stamp_path = _stamp_path(output)
     if not output.is_file() or not stamp_path.is_file():
         return None
@@ -256,6 +267,12 @@ def _validate_unit(
         return None
     if not valid:
         return None
+    if validator is not None:
+        try:
+            if not validator(unit, output):
+                return None
+        except Exception:  # noqa: BLE001 - invalid auxiliary evidence is not reusable
+            return None
     payload["stamp_sha256"] = recorded
     return payload
 
@@ -271,8 +288,10 @@ def _quarantine_paths(root: Path, paths: Iterable[Path]) -> None:
         os.replace(path, destination)
 
 
-def _quarantine_invalid_unit(root: Path, unit: PartitionedUnit) -> None:
-    output = _output_path(root, unit)
+def _quarantine_invalid_unit(
+    root: Path, unit: PartitionedUnit, *, output_prefix: str = "units"
+) -> None:
+    output = _output_path(root, unit, output_prefix=output_prefix)
     _quarantine_paths(root, (output, _stamp_path(output)))
 
 
@@ -290,7 +309,7 @@ def _quarantine_temporary_files(root: Path) -> None:
 
 def _execute_unit(task: _UnitTask) -> tuple[UnitCoordinate, ...]:
     apply_native_thread_limits(task.policy)
-    output = _output_path(task.root, task.unit)
+    output = _output_path(task.root, task.unit, output_prefix=task.output_prefix)
     output.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix="._partition_output_", dir=output.parent)
     os.close(descriptor)
@@ -302,15 +321,32 @@ def _execute_unit(task: _UnitTask) -> tuple[UnitCoordinate, ...]:
         with temporary.open("rb+") as handle:
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, output)
+        metadata = (
+            task.sidecar_factory(task.unit, output) if task.sidecar_factory is not None else None
+        )
+        if metadata is None:
+            os.replace(temporary, output)
+        else:
+            publish_staged_artifact_with_sidecar(temporary, output, metadata)
         _fsync_directory(output.parent)
+        if task.post_publisher is not None:
+            task.post_publisher(task.unit, output)
         stamp = _stamp_payload(task.unit, task.identity, output)
         _write_bytes_atomic(
             _stamp_path(output),
             _canonical_bytes(stamp) + b"\n",
             prefix="._partition_stamp_",
         )
-        if _validate_unit(task.root, task.unit, task.identity) is None:
+        if (
+            _validate_unit(
+                task.root,
+                task.unit,
+                task.identity,
+                output_prefix=task.output_prefix,
+                validator=task.validator,
+            )
+            is None
+        ):
             raise PartitionedStageError(f"published unit failed validation: {task.unit.key!r}")
         return task.unit.key
     finally:
@@ -346,6 +382,8 @@ def _publish_final_manifest(
     root: Path,
     identity: PartitionedStageIdentity,
     unit_source: Callable[[], Iterable[PartitionedUnit]],
+    output_prefix: str = "units",
+    validator: UnitValidator | None = None,
 ) -> tuple[str, int]:
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary_name = tempfile.mkstemp(prefix="._partition_manifest_", dir=path.parent)
@@ -368,7 +406,13 @@ def _publish_final_manifest(
             handle.write(header)
             digest.update(header)
             for unit in _iter_ordered_units(unit_source):
-                stamp = _validate_unit(root, unit, identity)
+                stamp = _validate_unit(
+                    root,
+                    unit,
+                    identity,
+                    output_prefix=output_prefix,
+                    validator=validator,
+                )
                 if stamp is None:
                     raise PartitionedStageError(
                         f"required unit is missing or invalid during finalization: {unit.key!r}"
@@ -400,6 +444,8 @@ def validate_final_manifest(
     root: Path,
     identity: PartitionedStageIdentity,
     unit_source: Callable[[], Iterable[PartitionedUnit]],
+    output_prefix: str = "units",
+    validator: UnitValidator | None = None,
 ) -> tuple[str, int] | None:
     """Validate the manifest identity, ordering, every stamp, and every output."""
 
@@ -421,7 +467,13 @@ def validate_final_manifest(
             for unit in _iter_ordered_units(unit_source):
                 line = handle.readline()
                 entry = json.loads(line)
-                stamp = _validate_unit(root, unit, identity)
+                stamp = _validate_unit(
+                    root,
+                    unit,
+                    identity,
+                    output_prefix=output_prefix,
+                    validator=validator,
+                )
                 if stamp is None or entry != _manifest_entry(unit, stamp):
                     return None
                 digest.update(line)
@@ -449,10 +501,22 @@ def run_partitioned_stage(
     mp_start_method: str | None = None,
     force: bool = False,
     memory_guard: ProcessTreeMemoryGuard | None = None,
+    output_prefix: str = "units",
+    sidecar_factory: UnitSidecarFactory | None = None,
+    post_publisher: UnitPostPublisher | None = None,
+    validator: UnitValidator | None = None,
 ) -> PartitionedStageResult:
     """Run/reuse units and publish a final manifest only after complete validation."""
 
     root = Path(root)
+    normalized_prefix = PurePosixPath(output_prefix.replace("\\", "/"))
+    if (
+        normalized_prefix.is_absolute()
+        or ".." in normalized_prefix.parts
+        or normalized_prefix.as_posix() != output_prefix.replace("\\", "/")
+    ):
+        raise ValueError("partitioned output_prefix must be a normalized relative path")
+    output_prefix = normalized_prefix.as_posix()
     resources_stage = (
         identity.stage_name
         if identity.stage_name in resources.estimated_worker_memory_mb
@@ -480,6 +544,8 @@ def run_partitioned_stage(
             root=root,
             identity=identity,
             unit_source=unit_source,
+            output_prefix=output_prefix,
+            validator=validator,
         )
         if current is not None:
             manifest_sha, count = current
@@ -502,13 +568,33 @@ def run_partitioned_stage(
     def pending_tasks() -> Iterable[_UnitTask]:
         nonlocal reused, scheduled
         for unit in _iter_ordered_units(unit_source):
-            valid = None if force else _validate_unit(root, unit, identity)
+            valid = (
+                None
+                if force
+                else _validate_unit(
+                    root,
+                    unit,
+                    identity,
+                    output_prefix=output_prefix,
+                    validator=validator,
+                )
+            )
             if valid is not None:
                 reused += 1
                 continue
-            _quarantine_invalid_unit(root, unit)
+            _quarantine_invalid_unit(root, unit, output_prefix=output_prefix)
             scheduled += 1
-            yield _UnitTask(root, unit, identity, writer, policy)
+            yield _UnitTask(
+                root,
+                unit,
+                identity,
+                writer,
+                policy,
+                output_prefix,
+                sidecar_factory,
+                post_publisher,
+                validator,
+            )
 
     window = policy.process_workers * resources.max_in_flight_per_worker
     for _completed_key in process_map(
@@ -527,12 +613,16 @@ def run_partitioned_stage(
         root=root,
         identity=identity,
         unit_source=unit_source,
+        output_prefix=output_prefix,
+        validator=validator,
     )
     validated = validate_final_manifest(
         manifest_path,
         root=root,
         identity=identity,
         unit_source=unit_source,
+        output_prefix=output_prefix,
+        validator=validator,
     )
     if validated != (manifest_sha, count):
         _quarantine_paths(root, (manifest_path,))

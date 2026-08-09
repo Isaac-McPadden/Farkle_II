@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 
 import pyarrow as pa
@@ -69,6 +69,7 @@ def iter_parquet_tables_by_bytes(
     start_row_group: int = 0,
     start_batch_index: int = 0,
     use_threads: bool = False,
+    on_decoded_batch: Callable[[int], None] | None = None,
 ) -> Iterator[tuple[int, int, pa.Table]]:
     """Yield projected tables without whole-row-group reads or Python row graphs.
 
@@ -91,6 +92,8 @@ def iter_parquet_tables_by_bytes(
             use_threads=use_threads,
         )
         for raw in raw_batches:
+            if on_decoded_batch is not None:
+                on_decoded_batch(raw.nbytes)
             for bounded in _split_record_batch(raw, max_batch_bytes):
                 if row_group != start_row_group or batch_index >= start_batch_index:
                     yield row_group, batch_index, pa.Table.from_batches([bounded])
