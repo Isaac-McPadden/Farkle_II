@@ -283,7 +283,10 @@ def assert_root_pipeline_oracle(
             assert len(importance) == 10
 
         combined = pa.Table.from_batches(list(combine.scan_concat_ks(cfg)))
-        assert combined.schema == expected_schema_for(12)
+        # ``combine`` publishes the rectangular schema selected by the
+        # configured maximum, not the production default.  The tiny oracle
+        # deliberately bounds this to four seats.
+        assert combined.schema == expected_schema_for(cfg.combine_max_players)
         assert combined.num_rows == 6
         assert _coordinates(combined) == concat_coordinates
 
